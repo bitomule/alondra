@@ -20,7 +20,7 @@ fn waiting(s: &DomainState) -> Vec<(String, String)> {
 /// The MCP waits' cards Waiting for You lists.
 fn listed(s: &DomainState) -> Vec<String> {
     super::read_index::inbox_items(s).into_iter().filter(|item| item.pending).filter_map(|item| {
-        let InboxSubject::Interaction { interaction_id } = item.subject;
+        let InboxSubject::Interaction { interaction_id, .. } = item.subject;
         interaction_id.0.starts_with(MCP_WAIT_PREFIX).then_some(interaction_id.0)
     }).collect()
 }

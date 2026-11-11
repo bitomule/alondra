@@ -87,6 +87,8 @@ pub enum Settled {
     Accepted,
     Read,
     TaskOver,
+    Merged,
+    ClosedUnmerged,
 }
 impl Settled {
     /// The short notice a client shows as it closes the card.
@@ -98,13 +100,15 @@ impl Settled {
             Self::Accepted => t!(lang, "Already accepted", "Ya aceptada"),
             Self::Read => t!(lang, "Already read", "Ya leída"),
             Self::TaskOver => t!(lang, "Its task is over", "Su tarea ya terminó"),
+            Self::Merged => t!(lang, "Already merged", "Ya tiene merge"),
+            Self::ClosedUnmerged => t!(lang, "Closed without merging", "Cerrada sin hacer merge"),
         }
     }
 }
 impl RenderContext<'_> {
     /// Waiting for You, in its order, each card with its buttons.
     pub(super) fn waiting(&self) -> &[InboxItem] {
-        self.index.waiting()
+        self.index.cards()
     }
     pub(super) fn reading(&self, task: &TaskId) -> Option<&TaskReading> {
         self.index.task(task)
@@ -120,8 +124,9 @@ impl RenderContext<'_> {
     }
     /// The cards a task waits on the user with, in the queue's order.
     pub(super) fn waiting_cards_of(&self, task: &TaskId) -> impl Iterator<Item = &InboxItem> {
-        self.reading(task).into_iter().flat_map(|read| &read.waiting).filter_map(|id| {
-            self.index.waiting_card(id).or_else(|| self.index.snoozed_card(id).map(|entry| &entry.card))
+        self.reading(task).into_iter().flat_map(|read| &read.waiting).flat_map(|id| {
+            let cards = self.index.cards_of(id);
+            if cards.is_empty() { self.index.snoozed_card(id).map(|entry| std::slice::from_ref(&entry.card)).unwrap_or_default() } else { cards }
         })
     }
     /// The task a node works for: its latest open one, or else its latest.
@@ -135,7 +140,7 @@ impl RenderContext<'_> {
 }
 /// The app icon badge: the same count as the Waiting for You queue and `Status::badge`.
 pub fn inbox_badge(index: &crate::domain::ReadIndex) -> u32 {
-    index.waiting().len() as u32
+    index.cards().len() as u32
 }
 /// The counts the status header and the phone's Live Activity show, so they never differ.
 pub fn activity_counts(index: &crate::domain::ReadIndex) -> crate::domain::ActivityCounts {

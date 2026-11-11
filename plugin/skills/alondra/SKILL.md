@@ -455,9 +455,11 @@ card) is a delivery guarantee Alondra handles; this section is about their conte
 - Present your PRs with `present_result` as your final result: `{"kind": "pull_request"}` in
   `targets` takes every open PR of your task. Leave `head` out and Alondra uses the commit each PR
   is at, or give that full commit sha. A PR you opened after an earlier delivery goes in a new
-  final result the same way. The user sees every PR on the card, each with its own merge, so never
-  ask about merging, to authorize a merge, or to merge one by hand. When a PR is merged Alondra
-  tells you how many are left, and once they all are it asks you to clean up; a PR someone merged on
+  final result the same way. The user reviews each PR on its own card, with its title, its
+  description and captures from GitHub, its diff and its own merge, so write each PR's description
+  for that PR alone, and never ask about merging, to authorize a merge, or to merge one by hand.
+  When a PR is merged or closed without merging Alondra tells you how many are left, and once none
+  is open, with at least one merged, it asks you to clean up; a PR someone merged or closed on
   GitHub counts the same, and Alondra sees it by itself. Never merge a PR yourself.
 - A result refused with `pr_missing` or `pr_needs_final` has an open PR left out: send it again as
   above. `pr_being_read` means Alondra is still reading a PR you opened: send the same result

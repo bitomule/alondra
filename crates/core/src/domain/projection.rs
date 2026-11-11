@@ -10,8 +10,11 @@ pub struct InboxCounts {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InboxSubject {
+    /// A card, or for a delivery of several PRs the card of one of them.
     Interaction {
         interaction_id: InteractionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pr_id: Option<PrId>,
     },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,6 +228,32 @@ impl DomainState {
         let task = self.tasks.get(task_id).filter(|t| !t.over())?;
         self.handed_back(self.interactions.get(task.final_presentation.as_ref()?)?)
     }
+    /// A delivery of several PRs is one card per PR still open, each offering only that PR's
+    /// merge, so the user reviews and merges each apart. Any other card stands for itself.
+    pub fn pr_cards(&self, item: &InboxItem) -> Vec<InboxItem> {
+        let whole = || vec![item.clone()];
+        let InboxSubject::Interaction { interaction_id, pr_id: None } = &item.subject else { return whole() };
+        let Some(InteractionPayload::Delivery { targets, .. }) = self.interactions.get(interaction_id).map(|i| &i.payload) else {
+            return whole();
+        };
+        let prs: Vec<(&PrId, &str)> = targets.iter().filter_map(|target| match target {
+            DeliveryTarget::PullRequest { pr_id, head } => Some((pr_id, head.as_str())),
+            _ => None,
+        }).collect();
+        let open: Vec<(&PrId, &str)> = prs.iter().copied()
+            .filter(|(id, _)| self.pull_requests.get(*id).is_some_and(|pr| pr.state == PrState::Open))
+            .collect();
+        if prs.len() < 2 || open.is_empty() {
+            return whole();
+        }
+        open.into_iter().map(|(pr_id, head)| {
+            let mut card = item.clone();
+            card.subject = InboxSubject::Interaction { interaction_id: interaction_id.clone(), pr_id: Some(pr_id.clone()) };
+            card.available_actions.retain(|action| action.kind != "accept_delivery"
+                && (action.kind != "authorize_merge" || action.expected_head.as_deref() == Some(head)));
+            card
+        }).collect()
+    }
     /// The card decided from the state alone: what the index must agree with.
     #[cfg(test)]
     pub(crate) fn item(&self, i: &Interaction) -> InboxItem {
@@ -412,6 +441,7 @@ impl DomainState {
             kind: kind.into(),
             subject: InboxSubject::Interaction {
                 interaction_id: i.id.clone(),
+                pr_id: None,
             },
             title: task
                 .map(|t| t.title.clone())
@@ -541,7 +571,7 @@ impl DomainState {
     fn order_inbox(&self, items: Vec<InboxItem>) -> Vec<InboxItem> {
         let sequence = {
             let facts: Vec<_> = items.iter().map(|item| {
-                let InboxSubject::Interaction { interaction_id } = &item.subject;
+                let InboxSubject::Interaction { interaction_id, .. } = &item.subject;
                 InboxOrderFacts {
                     id: &item.id,
                     interaction_id,
@@ -612,7 +642,7 @@ mod inbox_order_tests {
     fn item(id: &str, order: Revision, kind: CardKind, blockers: &[&str]) -> InboxItem {
         InboxItem {
             id: format!("interaction:{id}"), kind: "information".into(),
-            subject: InboxSubject::Interaction { interaction_id: id.into() },
+            subject: InboxSubject::Interaction { interaction_id: id.into(), pr_id: None },
             title: id.into(), body: Some("Body is irrelevant to ordering".into()),
             task_id: None, request_id: None, agent_id: None,
             revision: order, order, pending: false, available_actions: vec![],

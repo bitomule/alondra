@@ -1393,7 +1393,7 @@ fn only_its_author_withdraws_an_open_question_which_then_neither_blocks_nor_take
     assert!(s.interactions[&"q".into()].withdrawn);
     assert_ne!(s.tasks[&"t".into()].state, TaskState::NeedsYou, "a withdrawn question no longer blocks");
     let action = inbox_items(&s).iter()
-        .find(|i| matches!(&i.subject, InboxSubject::Interaction { interaction_id } if interaction_id.0 == "q"))
+        .find(|i| matches!(&i.subject, InboxSubject::Interaction { interaction_id, .. } if interaction_id.0 == "q"))
         .map(|i| i.available_actions[0].clone());
     assert_eq!(action.map(|a| (a.enabled, a.disabled_reason)), Some((false, Some("withdrawn".into()))));
     reject_unchanged(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "q".into(), option_id: "yes".into(),
@@ -1688,14 +1688,15 @@ fn a_presented_pr_closed_after_the_user_accepted_it_closes_the_node() {
     end_node(&mut state, "t");
     assert_eq!(state.tasks[&"t".into()].state, TaskState::Done);
 }
-/// Every task in Closing either waits for its node to clean up and be closed, or for an open PR
-/// that Alondra merges or GitHub settles.
+/// Every task in Closing either waits for its node to clean up and be closed, for Alondra to
+/// close the node of a cancelled task, or for an open PR that Alondra merges or GitHub settles.
 #[test]
 fn no_task_stays_closing_without_a_way_out() {
     let closing_has_a_way_out = |s: &DomainState| {
         let t = &s.tasks[&"t".into()];
         t.state != TaskState::Closing
             || (s.in_cleanup(t) && s.wraps_up(t))
+            || (t.ending == Some(TaskEnding::Cancelling) && t.wrap_up.close_cancelled)
             || t.pr_id.as_ref().is_some_and(|pr| s.pull_requests[pr].state == PrState::Open)
     };
     for presented in [false, true] {

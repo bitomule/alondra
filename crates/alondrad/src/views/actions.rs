@@ -10,7 +10,7 @@ mod model_input;
 
 use alondra_core::domain::{
     Actor, ANSWER_CONTENT, ANSWER_TEXT, AuthorizationId, Command, CommandEnvelope, CommandId, DataEpoch, DomainError, Hold, Instruction,
-    InteractionId, InteractionPayload, MergeMethod, Refusal, Revision, Target, TaskId,
+    InteractionId, InteractionPayload, MergeMethod, PrId, Refusal, Revision, Target, TaskId,
 };
 use alondra_core::views::{action_id::{ActionId, Verb}, Lang, Outcome, OutcomeKind, VIEWS_PROTOCOL, refusal_text};
 use axum::{extract::State, http::StatusCode, response::{IntoResponse, Response}, Extension, Json};
@@ -295,9 +295,7 @@ fn resources_of(state: &alondra_core::domain::DomainState, action: &ActionId) ->
             }
         },
         Verb::CloseUnmerged => {
-            if let Some(interaction) = state.interactions.get(&InteractionId(action.subject.clone()))
-                && let Some(pr) = pr_of(state, current_delivery(state, interaction))
-            {
+            if let Some(pr) = closed_pr(state, &action.subject) {
                 add(LocalActionResource::PullRequest(pr.id.0.clone()), true);
                 add(LocalActionResource::Task(pr.task_id.0.clone()), true);
             }
@@ -527,11 +525,7 @@ async fn execute_external(
             Ok(to_applied(reply["status"].as_u64().unwrap_or(500) as u16, reply["body"].clone()))
         }
         Verb::CloseUnmerged => {
-            let Some(interaction) = state.interactions.get(&InteractionId(action.subject.clone())) else {
-                return Ok(refused_value(&Refusal::NoLongerAvailable, lang));
-            };
-            let interaction = current_delivery(&state, interaction);
-            let Some(pr) = pr_of(&state, interaction) else { return Ok(refused_value(&Refusal::NoLongerAvailable, lang)); };
+            let Some(pr) = closed_pr(&state, &action.subject) else { return Ok(refused_value(&Refusal::NoLongerAvailable, lang)); };
             let Some(task) = state.tasks.get(&pr.task_id).filter(|task| !task.over()) else {
                 return Ok(refused_value(&Refusal::TaskNotActive, lang));
             };
@@ -546,7 +540,31 @@ async fn execute_external(
                     }
                 }
             }
-            // The task may have moved while GitHub answered: cancel it as it is now.
+            if pr.state == alondra_core::domain::PrState::Open {
+                let closed = Command::ObservePrState { pr_id: pr.id.clone(), head: pr.head.clone(), base: pr.base.clone(),
+                    state: alondra_core::domain::PrState::Closed, merged_head: None };
+                if let Err(error) = crate::domain_github::execute_system(domain, closed) {
+                    log!("could not record that PR #{number} was closed: {error}");
+                }
+            }
+            // The close is recorded at once, and the domain decides what it does to the task: its
+            // other PRs stay on their cards, one that merged ends it, and with nothing left it is
+            // cancelled.
+            let now = domain.state()?;
+            let task_now = now.tasks.get(&task_id);
+            let over = task_now.is_none_or(|task| task.over());
+            if over || task_now.is_some_and(|task| now.open_prs(task).any(|other| other.id != pr.id) || now.merged_pr(task).is_some()) {
+                let es = lang == Lang::Es;
+                let text = match (over, was_open, es) {
+                    (true, false, true) => format!("La PR #{number} ya estaba cerrada. Tarea cancelada."),
+                    (true, false, false) => format!("PR #{number} was already closed. Task cancelled."),
+                    (true, true, true) => format!("PR #{number} cerrada sin hacer merge. Tarea cancelada."),
+                    (true, true, false) => format!("PR #{number} closed without merging. Task cancelled."),
+                    (false, _, true) => format!("PR #{number} cerrada sin hacer merge."),
+                    (false, _, false) => format!("PR #{number} closed without merging."),
+                };
+                return Ok(json!({"protocol": VIEWS_PROTOCOL, "outcome": "applied", "revision": now.revision, "result": Outcome::done(text)}));
+            }
             let cancel = ActionId::new(Verb::Cancel, task_id.0.clone(), domain.state()?.revision, None)
                 .map_err(|_| anyhow::anyhow!("invalid cancel id"))?;
             let mut request = request.clone();
@@ -1278,6 +1296,15 @@ fn current_delivery<'a>(
         .and_then(|id| state.interactions.get(id))
         .filter(|current| matches!(current.payload, InteractionPayload::Delivery { .. }))
         .unwrap_or(interaction)
+}
+
+/// The PR "Close without merging" is about: the one its card names, or its delivery's.
+fn closed_pr<'a>(state: &'a alondra_core::domain::DomainState, subject: &str) -> Option<&'a alondra_core::domain::PullRequest> {
+    if let Some(pr) = state.pull_requests.get(&PrId(subject.to_owned())) {
+        return Some(pr);
+    }
+    let interaction = state.interactions.get(&InteractionId(subject.to_owned()))?;
+    pr_of(state, current_delivery(state, interaction))
 }
 
 fn pr_of<'a>(
@@ -3694,31 +3721,37 @@ for line in sys.stdin:
         }
     }
 
-    #[tokio::test]
-    async fn a_merge_on_a_delivery_of_several_prs_merges_the_pr_it_names() {
-        let (home, domain, client) = action_home();
-        apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "Agent A".into(), at: 0 });
+    /// A task with two PRs in two repositories, both in its final delivery, `result`.
+    fn presented_two_prs(domain: &crate::domain_runtime::DomainRuntime) -> (PrId, PrId) {
+        apply_seed_command(domain, Actor::System, "register-agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "Agent A".into(), at: 0 });
         let agent = Actor::Agent { agent_id: "agent-a".into() };
-        apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "create-request", Command::CreateRequest {
+        apply_seed_command(domain, Actor::User { user_id: "user".into() }, "create-request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
-        apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask { plan_items: None, continues: None,
+        apply_seed_command(domain, Actor::Orchestrator { generation: 0 }, "create-task", Command::CreateTask { plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
             agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
         });
         for (id, repository, number, head) in [("app", "me/app", 7, "0123456789abcdef"), ("site", "me/site", 6, "fedcba9876543210")] {
-            apply_seed_command(&domain, agent.clone(), id, Command::RegisterPr {
+            apply_seed_command(domain, agent.clone(), id, Command::RegisterPr {
                 task_id: "task".into(), pr_id: alondra_core::domain::hosted_pr_id("github.com", repository, number), host: "github.com".into(), repository: repository.into(),
                 number, head: head.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
             });
         }
         let site = alondra_core::domain::hosted_pr_id("github.com", "me/site", 6);
-        apply_seed_command(&domain, agent, "present", Command::PresentResult {
+        apply_seed_command(domain, agent, "present", Command::PresentResult {
             checklist: Vec::new(), attachments: vec![], task_id: "task".into(), interaction_id: "result".into(), body: "Ready".into(),
             targets: vec![alondra_core::domain::DeliveryTarget::PullRequest { pr_id: site.clone(), head: "fedcba9876543210".into() }],
             is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
         });
+        (alondra_core::domain::hosted_pr_id("github.com", "me/app", 7), site)
+    }
+
+    #[tokio::test]
+    async fn a_merge_on_a_delivery_of_several_prs_merges_the_pr_it_names() {
+        let (home, domain, client) = action_home();
+        let (_, site) = presented_two_prs(&domain);
         let revision = domain.state().unwrap().revision;
         let id = ActionId::new(Verb::Merge, &site.0, revision, Some("fedcba98-result".into())).unwrap();
         let merged = act(&home, &domain, &client, FIRST, id, None, None).await;
@@ -3726,6 +3759,52 @@ for line in sys.stdin:
         let state = domain.state().unwrap();
         let authorized: Vec<_> = state.merge_authorizations.values().map(|a| (a.pr_id.clone(), a.head.as_str())).collect();
         assert_eq!(authorized, [(site, "fedcba9876543210")], "the PR the button names, at the commit presented");
+    }
+
+    #[test]
+    fn a_final_delivery_of_three_prs_reaches_the_inbox_as_three_cards_and_one_notice() {
+        let (_home, domain, _client) = action_home();
+        let (app, site) = presented_two_prs(&domain);
+        let docs = alondra_core::domain::hosted_pr_id("github.com", "me/docs", 3);
+        let agent = Actor::Agent { agent_id: "agent-a".into() };
+        apply_seed_command(&domain, agent.clone(), "docs", Command::RegisterPr {
+            task_id: "task".into(), pr_id: docs.clone(), host: "github.com".into(), repository: "me/docs".into(),
+            number: 3, head: "abcdefabcdefabcd".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+        });
+        apply_seed_command(&domain, agent, "present-again", Command::PresentResult {
+            checklist: Vec::new(), attachments: vec![], task_id: "task".into(), interaction_id: "result-2".into(), body: "Ready".into(),
+            targets: vec![alondra_core::domain::DeliveryTarget::PullRequest { pr_id: app.clone(), head: String::new() }],
+            is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+        });
+        let read = domain.read();
+        let cards: Vec<Option<PrId>> = read.index().cards().iter().map(|item| {
+            let alondra_core::domain::InboxSubject::Interaction { pr_id, .. } = &item.subject;
+            pr_id.clone()
+        }).collect();
+        assert_eq!(cards, [Some(app), Some(site), Some(docs)], "one card per PR, each naming its PR");
+        assert_eq!(alondra_core::views::inbox_badge(read.index()), 3);
+        assert_eq!(alondra_core::views::waiting_cards(read.index()), ["result-2"], "the phone is told once about the delivery");
+    }
+
+    #[tokio::test]
+    async fn closing_one_pr_of_several_closes_only_it_and_the_last_one_cancels_a_task_with_nothing_merged() {
+        let (home, domain, client) = action_home();
+        let github = std::sync::Arc::new(ClosesPrs(Default::default(), None, None, None));
+        client.use_github(github.clone());
+        let (app, site) = presented_two_prs(&domain);
+        let close = |pr: &PrId| ActionId::new(Verb::CloseUnmerged, &pr.0, domain.state().unwrap().revision, None).unwrap();
+        let reply = act(&home, &domain, &client, FIRST, close(&site), None, None).await;
+        assert_eq!(reply["outcome"], "applied", "{reply}");
+        assert_eq!(reply["result"]["title"], "PR #6 cerrada sin hacer merge.");
+        let state = domain.state().unwrap();
+        assert_eq!(state.pull_requests[&site].state, alondra_core::domain::PrState::Closed, "recorded at once, before the watcher's round");
+        assert_eq!(state.pull_requests[&app].state, alondra_core::domain::PrState::Open);
+        assert!(!state.tasks[&"task".into()].over(), "the other PR still waits on its card");
+        assert_eq!(github.0.lock().unwrap().iter().map(|(number, _)| *number).collect::<Vec<_>>(), [6]);
+
+        let reply = act(&home, &domain, &client, SECOND, close(&app), None, None).await;
+        assert_eq!(reply["outcome"], "applied", "{reply}");
+        assert!(domain.state().unwrap().tasks[&"task".into()].cancelled(), "nothing merged and nothing left open");
     }
 
     #[tokio::test]
@@ -4029,7 +4108,7 @@ for line in sys.stdin:
     }
 
     #[tokio::test]
-    async fn closing_an_already_closed_pr_cancels_the_task_without_talking_about_merging() {
+    async fn a_pr_closed_on_github_cancels_its_task_and_its_card_has_nothing_left_to_close() {
         let (home, domain, client) = action_home();
         let github = std::sync::Arc::new(ClosesPrs(Default::default(), None, None, None));
         client.use_github(github.clone());
@@ -4038,12 +4117,12 @@ for line in sys.stdin:
             pr_id: "pr".into(), head: "0123456789abcdef".into(), base: "main".into(),
             state: alondra_core::domain::PrState::Closed, merged_head: None,
         });
+        assert!(domain.state().unwrap().tasks[&"task".into()].cancelled(), "nothing is left to review");
+        assert!(domain.read().index().cards().is_empty());
         let close = ActionId::new(Verb::CloseUnmerged, "result", domain.state().unwrap().revision, None).unwrap();
         let reply = act(&home, &domain, &client, FIRST, close, None, None).await;
-        assert_eq!(reply["outcome"], "applied", "{reply}");
-        assert_eq!(reply["result"]["title"], "La PR #7 ya estaba cerrada. Tarea cancelada.");
+        assert_eq!(reply["result"]["kind"], "refused", "{reply}");
         assert!(github.0.lock().unwrap().is_empty(), "nothing to close on GitHub");
-        assert!(domain.state().unwrap().tasks[&"task".into()].cancelled());
     }
 
     #[tokio::test]

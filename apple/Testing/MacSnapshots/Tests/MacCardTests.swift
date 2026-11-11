@@ -60,10 +60,11 @@ final class MacCardTests: XCTestCase {
         XCTAssertEqual(review.reply?.label, "Request changes")
     }
 
-    func test_aDeliveryOfTwoPullRequests_offersTheMergeOfEach() throws {
+    func test_aPullRequestOfADeliveryOfTwo_offersOnlyItsOwnMerge() throws {
         let buttons = MacCardButtons(try card("card-two-prs-es-mac"))
-        XCTAssertEqual(buttons.visible.map(\.label), ["Squash and merge · alondra#17", "Squash and merge · storefront#6"])
-        XCTAssertEqual(buttons.visible.map(\.paintedRole), [.advance, .advance])
+        XCTAssertEqual(buttons.visible.first?.label, "Squash and merge")
+        XCTAssertEqual(buttons.visible.filter { $0.label == "Squash and merge" }.count, 1)
+        XCTAssertEqual(buttons.visible.first?.paintedRole, .advance)
     }
 
     func test_everyCardAlwaysCanBeRepliedTo() throws {

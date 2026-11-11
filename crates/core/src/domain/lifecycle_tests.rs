@@ -770,7 +770,7 @@ fn sign_in_cards(s: &DomainState) -> Vec<&Interaction> {
 /// The cards of Claude's holds Waiting for You lists.
 fn listed_holds(s: &DomainState) -> Vec<String> {
     super::read_index::inbox_items(s).into_iter().filter(|item| item.pending).map(|item| {
-        let InboxSubject::Interaction { interaction_id } = item.subject;
+        let InboxSubject::Interaction { interaction_id, .. } = item.subject;
         interaction_id.0
     }).filter(|id| s.claude_hold(&InteractionId::from(id.as_str())).is_some()).collect()
 }

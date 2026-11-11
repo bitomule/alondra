@@ -105,6 +105,8 @@ pub struct ReadIndex {
     queue: Vec<InteractionId>,
     queue_at: HashMap<InteractionId, usize>,
     waiting: Vec<InboxItem>,
+    cards: Vec<InboxItem>,
+    cards_at: HashMap<InteractionId, std::ops::Range<usize>>,
     snoozed: Vec<SnoozedCard>,
     snoozed_at: HashMap<InteractionId, usize>,
     asks_outside_tasks: bool,
@@ -205,6 +207,15 @@ impl ReadIndex {
     /// Waiting for You: the cards that wait for the user, in order, each with its buttons.
     pub fn waiting(&self) -> &[InboxItem] {
         &self.waiting
+    }
+    /// Waiting for You as the user sees it: a delivery of several PRs is one card per open PR
+    /// (`DomainState::pr_cards`).
+    pub fn cards(&self) -> &[InboxItem] {
+        &self.cards
+    }
+    /// The cards one waiting card of the queue is shown as.
+    pub fn cards_of(&self, card: &InteractionId) -> &[InboxItem] {
+        self.cards_at.get(card).map_or(&[], |range| &self.cards[range.clone()])
     }
     pub fn snoozed(&self) -> &[SnoozedCard] {
         &self.snoozed
@@ -503,10 +514,10 @@ impl<'a> Builder<'a> {
             index.waiting_at.get(id).map(|at| &index.waiting[*at])
                 .or_else(|| index.snoozed_at.get(id).map(|at| &index.snoozed[*at].card))
         }).filter(|item| {
-            let InboxSubject::Interaction { interaction_id } = &item.subject;
+            let InboxSubject::Interaction { interaction_id, .. } = &item.subject;
             state.card_waits_for_user(&state.interactions[interaction_id], |t| attention[&t.id].clone())
         }) {
-            let InboxSubject::Interaction { interaction_id } = &item.subject;
+            let InboxSubject::Interaction { interaction_id, .. } = &item.subject;
             if let Some(task) = &item.task_id {
                 waiting_of_task.entry(task).or_default().push(item);
             }
@@ -532,7 +543,7 @@ impl<'a> Builder<'a> {
                 waits_for_review: waits_for_user
                     && waiting.iter().filter(|item| item.kind != "information").all(|item| item.kind == "delivery"),
                 waiting: waiting.iter().map(|item| {
-                    let InboxSubject::Interaction { interaction_id } = &item.subject;
+                    let InboxSubject::Interaction { interaction_id, .. } = &item.subject;
                     interaction_id.clone()
                 }).collect(),
             };
@@ -540,7 +551,7 @@ impl<'a> Builder<'a> {
         }
         self.nodes(&mut index, waiting_of_node);
         index.activity = ActivityCounts {
-            inbox: index.waiting.len() as u32,
+            inbox: index.cards.len() as u32,
             waiting: state.agents.values().filter(|agent| index.waits_for_an_answer(&agent.id)).count() as u32,
             working: state.slots().len() as u32,
         };
@@ -737,6 +748,12 @@ impl<'a> Builder<'a> {
                 index.waiting.push(state.item_given(i, true, blocked_by, blocks, self));
             }
         }
+        for item in &index.waiting {
+            let InboxSubject::Interaction { interaction_id, .. } = &item.subject;
+            let start = index.cards.len();
+            index.cards.extend(state.pr_cards(item));
+            index.cards_at.insert(interaction_id.clone(), start..index.cards.len());
+        }
         index.asks_outside_tasks = index.waiting.iter().any(|item| item.task_id.is_none() && item.kind != "information");
         index.counts = InboxCounts {
             roots: index.queue.len() as u64,
@@ -839,7 +856,7 @@ pub(super) fn assert_index_matches(state: &DomainState) {
     let index = ReadIndex::build(state);
     let ids = |items: &[InboxItem]| -> Vec<InteractionId> {
         items.iter().map(|item| {
-            let InboxSubject::Interaction { interaction_id } = &item.subject;
+            let InboxSubject::Interaction { interaction_id, .. } = &item.subject;
             interaction_id.clone()
         }).collect()
     };
@@ -851,9 +868,12 @@ pub(super) fn assert_index_matches(state: &DomainState) {
     let waiting: Vec<InboxItem> = inbox.iter().filter(|item| item.pending).cloned().collect();
     assert_eq!(index.waiting(), waiting.as_slice(), "Waiting for You, with its buttons");
     for item in &waiting {
-        let InboxSubject::Interaction { interaction_id } = &item.subject;
+        let InboxSubject::Interaction { interaction_id, .. } = &item.subject;
         assert_eq!(index.waiting_card(interaction_id), Some(item));
+        assert_eq!(index.cards_of(interaction_id), state.pr_cards(item).as_slice(), "the cards {interaction_id} is shown as");
     }
+    let cards: Vec<InboxItem> = waiting.iter().flat_map(|item| state.pr_cards(item)).collect();
+    assert_eq!(index.cards(), cards.as_slice(), "Waiting for You, one card per open PR");
     let unread_information = state.interactions.values().filter(|i| {
         i.recipient == Recipient::User
             && matches!(&i.payload, InteractionPayload::Information { read_by } if read_by.is_empty())
@@ -862,26 +882,26 @@ pub(super) fn assert_index_matches(state: &DomainState) {
     let counts = InboxCounts { roots: inbox.len() as u64, pending: waiting.len() as u64, unread_information };
     assert_eq!(index.counts(), &counts, "the counts");
     let snoozed: Vec<_> = inbox.iter().filter_map(|item| {
-        let InboxSubject::Interaction { interaction_id } = &item.subject;
+        let InboxSubject::Interaction { interaction_id, .. } = &item.subject;
         let card = &state.interactions[interaction_id];
         card.snoozed_until.filter(|_| state.open(card)).map(|until| SnoozedCard { card: item.clone(), until })
     }).collect();
     assert_eq!(index.snoozed(), snoozed.as_slice(), "snoozed cards and their return times");
     assert_eq!(index.next_snoozed_until(), snoozed.iter().map(|entry| entry.until).min());
     for (at, entry) in snoozed.iter().enumerate() {
-        let InboxSubject::Interaction { interaction_id } = &entry.card.subject;
+        let InboxSubject::Interaction { interaction_id, .. } = &entry.card.subject;
         assert_eq!(index.snoozed_at.get(interaction_id), Some(&at));
         assert_eq!(index.snoozed_card(interaction_id), Some(entry));
         assert_eq!(index.waiting_card(interaction_id), None);
     }
     let logical_waiting: Vec<_> = inbox.iter().filter(|item| {
-        let InboxSubject::Interaction { interaction_id } = &item.subject;
+        let InboxSubject::Interaction { interaction_id, .. } = &item.subject;
         state.card_waits_for_user(&state.interactions[interaction_id], |task| state.attention(task))
     }).cloned().collect();
     let waiting_nodes = state.agents.values()
         .filter(|agent| logical_waiting.iter().any(|item| item.kind != "information" && item.agent_id.as_ref() == Some(&agent.id)))
         .count() as u32;
-    let activity = ActivityCounts { inbox: waiting.len() as u32, waiting: waiting_nodes, working: state.slots().len() as u32 };
+    let activity = ActivityCounts { inbox: cards.len() as u32, waiting: waiting_nodes, working: state.slots().len() as u32 };
     assert_eq!(index.activity(), activity, "the activity counts");
     assert_eq!(index.mcp_waiting(), state.mcp_waiting().as_slice(), "the tasks that wait for an MCP server");
     let reported: Vec<(TaskId, Vec<McpServerState>)> = state.tasks.values().filter(|task| !task.over())

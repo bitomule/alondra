@@ -25,8 +25,9 @@ and only if that passes does the old daemon exit and launchd start the new versi
 ## Domain: requests, tasks, nodes and cards
 
 - A **request** is what you ask for. The **orchestrator** turns it into a plan and **tasks**.
-- A **task** owns one piece of work: its worktree, its pull request and its state
-  (waiting for another task, running, needs you, in review, closing, done, cancelled).
+- A **task** owns one piece of work: its worktree, its pull requests and its state
+  (waiting for another task, running, needs you, in review, closing, done, cancelled). Each pull
+  request reaches you on its own card, and the task closes once none is open and one merged.
 - A **node** is the agent session that does a task. One node per task; it closes with the task.
 - A **card** is something that needs you: a question, a plan, a permission, a delivery. Each card
   is decided from itself alone.
