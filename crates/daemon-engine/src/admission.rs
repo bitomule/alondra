@@ -186,11 +186,12 @@ struct Inner {
     /// Resumes the gate let through whose node was seen at work since: its own phase holds its
     /// slot from then on, so the admission no longer counts.
     at_work: BTreeSet<Key>,
-    /// The turns whose live owner asked for a slot and waits for one.
-    turns_asked: BTreeSet<TaskId>,
     /// The turns the gate gave a slot that their owner has not taken yet: each holds it until its
     /// owner takes it or ends, or its node stops waiting, whatever the time.
     turns: BTreeSet<TaskId>,
+    /// The turns whose owner took the slot the gate gave, with what waited then, while it is on its
+    /// way: an answer counts here until it reaches its turn. What waits after it queues again.
+    taken: BTreeMap<TaskId, BTreeSet<String>>,
     tuning: Tuning,
     told: Told,
     /// Resumes the node machine refused, by session, with the revision of its task's lifecycle
@@ -453,13 +454,13 @@ impl Admission {
 
     /// Whether the node of `task` may go on with what waits for a slot, counted at once when it may.
     /// If not, it waits in the queue by its priority and age, and `domain.seals` wakes it when the
-    /// gate gives it the slot. Every look after the first only reads the answer. A slot given is
-    /// taken once: from then on the node's own state holds it, and its next turn asks again.
+    /// gate gives it the slot. The queue comes from the domain's state, so a node waits there whether
+    /// or not its owner asked; asking only lets it go on in the same look when there is room. A slot
+    /// given counts from then on until what the node goes on with reaches it.
     pub(crate) fn may_take_turn(&self, domain: &DomainRuntime, task: &TaskId, now: Millis) -> bool {
         if fixes_accepted_pr(domain, task) {
             let mut inner = self.lock();
             inner.turns.remove(task);
-            inner.turns_asked.remove(task);
             if inner.saved.turn_waits.remove(task).is_some() {
                 self.save(&inner);
             }
@@ -467,11 +468,12 @@ impl Admission {
             return true;
         }
         {
+            let Ok(state) = domain.state() else { return false };
             let mut inner = self.lock();
-            if inner.turns.remove(task) {
+            if take_granted(&mut inner, &state, task) {
                 return true;
             }
-            if inner.turns_asked.contains(task) {
+            if inner.saved.turn_waits.contains_key(task) {
                 return false;
             }
         }
@@ -479,27 +481,34 @@ impl Admission {
         let queued = queued_launches(domain, &state, now);
         let mut inner = self.lock_with(domain);
         let Ok(state) = domain.state() else { return false };
-        if inner.turns.remove(task) || carries_slot_over(&mut inner, &state, task, now) {
+        if take_granted(&mut inner, &state, task) {
             return true;
         }
-        inner.saved.turn_waits.entry(task.clone()).or_insert(now);
-        inner.turns_asked.insert(task.clone());
+        if carries_slot_over(&mut inner, &state, task, now) {
+            inner.taken.insert(task.clone(), slot_waiters(&state, task));
+            return true;
+        }
         let granted = grant_turns(domain, &state, &mut inner, queued, now);
         self.save(&inner);
-        let may = inner.turns.remove(task);
+        let may = take_granted(&mut inner, &state, task);
         drop(inner);
-        if granted {
-            domain.seals.wake();
-        }
+        go_on(domain, &state, &granted);
         may
     }
 
-    /// The owner of `task` ended: nothing of it waits for a slot or holds one, and the owner that
-    /// takes its place asks again with the age it had.
+    /// Whether the gate gave `task` a slot that still counts for it.
+    #[cfg(test)]
+    pub(crate) fn gave_slot(&self, task: &TaskId) -> bool {
+        let inner = self.lock();
+        inner.turns.contains(task) || inner.taken.contains_key(task)
+    }
+
+    /// The owner of `task` ended: nothing of it holds a slot, and its task waits in the queue again
+    /// with the age it had while its state still waits for one.
     pub(crate) fn owner_ended(&self, task: &TaskId) {
         let mut inner = self.lock();
-        inner.turns_asked.remove(task);
         inner.turns.remove(task);
+        inner.taken.remove(task);
         drop(inner);
         self.poke();
     }
@@ -854,10 +863,28 @@ fn carries_slot_over(inner: &mut Inner, state: &DomainState, task: &TaskId, now:
     true
 }
 
+/// A slot the gate gave `task` is its owner's: taking it marks what waited then, and it stays
+/// counted until that reaches the node. Something that waits after it asks for a slot of its own.
+fn take_granted(inner: &mut Inner, state: &DomainState, task: &TaskId) -> bool {
+    if inner.turns.remove(task) {
+        inner.taken.insert(task.clone(), slot_waiters(state, task));
+    }
+    covered(inner, state, task)
+}
+
+fn slot_waiters(state: &DomainState, task: &TaskId) -> BTreeSet<String> {
+    state.lifecycle_of(task).map(|lifecycle| lifecycle.slot_waiters()).unwrap_or_default()
+}
+
+/// The slot `task`'s owner took still covers everything that waits.
+fn covered(inner: &Inner, state: &DomainState, task: &TaskId) -> bool {
+    inner.taken.get(task).is_some_and(|held| slot_waiters(state, task).is_subset(held))
+}
+
 /// Keeps the turns that still wait, then gives the free slots to those whose place comes, and says
-/// whether it gave any. `state` was read holding the gate, so what it counts is what is reserved.
-fn grant_turns(domain: &DomainRuntime, state: &DomainState, inner: &mut Inner, queued: Vec<Waiting>, now: Millis) -> bool {
-    settle_turns(state, inner);
+/// which it gave. `state` was read holding the gate, so what it counts is what is reserved.
+fn grant_turns(domain: &DomainRuntime, state: &DomainState, inner: &mut Inner, queued: Vec<Waiting>, now: Millis) -> Vec<TaskId> {
+    settle_turns(state, inner, now);
     let snapshot = snapshot_locked(domain, state, inner, queued, now);
     let free = usize::try_from(snapshot.limit).unwrap_or(usize::MAX).saturating_sub(snapshot.working);
     let start_reserves = snapshot.next_start().is_some() && matches!(snapshot.hold, None | Some(Hold::Spacing { .. }));
@@ -865,18 +892,41 @@ fn grant_turns(domain: &DomainRuntime, state: &DomainState, inner: &mut Inner, q
     for task in &granted {
         log!("the admission gate gives {task} a slot for its turn: {} of {} working", snapshot.working, snapshot.limit);
         inner.saved.turn_waits.remove(task);
-        inner.turns_asked.remove(task);
         inner.turns.insert(task.clone());
     }
-    !granted.is_empty()
+    granted
+}
+
+/// The turns given a slot go on: their owners are woken, and a task with no owner in this daemon
+/// is taken over by a host that resumes its session and is handed what it goes on with.
+fn go_on(domain: &DomainRuntime, state: &DomainState, granted: &[TaskId]) {
+    if granted.is_empty() {
+        return;
+    }
+    domain.seals.wake();
+    for task in granted.iter().filter(|task| !has_host(domain, state, task)) {
+        crate::sdk_owner::take_if_unowned(domain, task);
+    }
+}
+
+/// The tasks whose node has an input or an answer that waits for a slot, as the domain says,
+/// whoever asked. A node that fixes its accepted PR goes on without one.
+fn waiting_turns(state: &DomainState) -> BTreeSet<TaskId> {
+    state.tasks.values().filter(|task| !task.over() && state.waits_for_turn(&task.id) && state.task_merge_failure(&task.id).is_none())
+        .map(|task| task.id.clone()).collect()
 }
 
 /// Forgets the turns whose node no longer waits for one: it went to work, its task ended or its
-/// pause holds it.
-fn settle_turns(state: &DomainState, inner: &mut Inner) {
-    inner.saved.turn_waits.retain(|task, _| state.waits_for_turn(task));
-    inner.turns_asked.retain(|task| state.waits_for_turn(task));
-    inner.turns.retain(|task| state.waits_for_turn(task));
+/// pause holds it. Every turn that still waits and has no slot keeps the time it began to wait.
+fn settle_turns(state: &DomainState, inner: &mut Inner, now: Millis) {
+    let waiting = waiting_turns(state);
+    inner.turns.retain(|task| waiting.contains(task));
+    inner.taken.retain(|task, held| waiting.contains(task) && slot_waiters(state, task).is_subset(held));
+    let queued: Vec<TaskId> = waiting.into_iter().filter(|task| !inner.turns.contains(task) && !inner.taken.contains_key(task)).collect();
+    inner.saved.turn_waits.retain(|task, _| queued.contains(task));
+    for task in queued {
+        inner.saved.turn_waits.entry(task).or_insert(now);
+    }
 }
 
 fn has_host(domain: &DomainRuntime, state: &DomainState, task: &TaskId) -> bool {
@@ -1099,10 +1149,11 @@ fn machine_size() -> (usize, u64) {
 }
 
 fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, queued: Vec<Waiting>, now: Millis) -> Snapshot {
-    let turn_waits: BTreeMap<&TaskId, Millis> = inner.turns_asked.iter().filter(|task| state.waits_for_turn(task))
+    let waiting = waiting_turns(state);
+    let turn_waits: BTreeMap<&TaskId, Millis> = waiting.iter().filter(|task| !inner.turns.contains(*task) && !covered(inner, state, task))
         .map(|task| (task, inner.saved.turn_waits.get(task).copied().unwrap_or(now))).collect();
     let mut busy = working_tasks(state);
-    busy.retain(|task| !turn_waits.contains_key(task) && (inner.turns.contains(task) || !state.waits_for_turn(task) || has_host(domain, state, task)));
+    busy.retain(|task| !turn_waits.contains_key(task));
     let paused = |task: &TaskId| crate::pauses::session_of(state, task).is_some_and(|session| inner.saved.pauses.paused.contains_key(&session));
     let waiting_again: BTreeSet<&Key> = queued.iter()
         .filter(|waiting| !matches!(&waiting.key, Key::Task(task) if domain.live.is_launching(&task.0)))
@@ -1126,7 +1177,8 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
     // A start counts until its task has a node, and a resume until its node is seen at work; from
     // then on the node's own phase says whether it takes a slot, as a node of the Agent SDK that
     // ends its first turn on a card within seconds.
-    let turning: Vec<&TaskId> = inner.turns.iter().filter(|task| state.waits_for_turn(task) && !busy.contains(*task)).collect();
+    let turning: Vec<&TaskId> = inner.turns.iter().chain(inner.taken.keys().filter(|task| covered(inner, state, task)))
+        .filter(|task| waiting.contains(*task) && !busy.contains(*task)).collect();
     let working = busy.len() + in_flight.len() + turning.len();
     let admitted = inner.admitted.iter().filter(|(_, at)| now - at < IN_FLIGHT).count();
     let working_tasks: BTreeSet<TaskId> = busy.iter().cloned().chain(in_flight.into_iter().flatten()).chain(turning.into_iter().cloned()).collect();
@@ -1299,6 +1351,7 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
     }
     let gate = &domain.live.gate;
     let to_halt;
+    let granted;
     let head = {
         let queued = queued_launches(domain, &state, now);
         let mut inner = gate.lock_with(domain);
@@ -1307,9 +1360,7 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
         crate::pauses::look(domain, &state, &mut inner.saved.pauses, now);
         deliver_owed(domain, &mut inner);
         note_at_work(&mut inner, &state);
-        if grant_turns(domain, &state, &mut inner, queued.clone(), now) {
-            domain.seals.wake();
-        }
+        granted = grant_turns(domain, &state, &mut inner, queued.clone(), now);
         let snapshot = snapshot_locked(domain, &state, &inner, queued, now);
         gate.save_with(domain, &mut inner);
         let held = snapshot.next_start().zip(snapshot.hold.as_ref());
@@ -1348,6 +1399,7 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
         to_halt = crate::pauses::to_halt(domain, &state, &inner.saved.pauses);
         head
     };
+    go_on(domain, &state, &granted);
     for (session, paused) in to_halt {
         crate::pauses::hold_sdk_turn(domain, &session, &paused);
     }

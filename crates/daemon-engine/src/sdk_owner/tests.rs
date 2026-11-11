@@ -4668,6 +4668,76 @@ fn an_approved_plan_reaches_claude_only_when_the_gate_has_a_slot() {
     driver.stop().unwrap();
 }
 
+fn gate_pass(domain: &DomainRuntime, home: &std::path::Path) {
+    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+        .block_on(crate::admission::pass_at(domain, home, alondra_core::now_millis())).unwrap();
+}
+
+fn slots(domain: &DomainRuntime, limit: u32) {
+    domain.live.gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(limit)) });
+}
+
+/// 11 November, 00:21: a permission answered inside an open turn got no slot until 03:25, because
+/// only an owner that asked waited in the queue, and the turn kept counting as working meanwhile.
+/// The answer waits in the queue because the domain says so, takes no slot while it waits, and goes
+/// on when one frees though nobody asked.
+#[test]
+fn an_answered_permission_goes_on_when_a_slot_frees_with_nobody_asking() {
+    let slice = Slice::new();
+    let (mut driver, card) = slice.asked("decide:bash make test");
+    slice.domain.driven_by_hand.lock().unwrap().insert(driver.agent().clone());
+    let gate = &slice.domain.live.gate;
+    slots(&slice.domain, 0);
+    slice.answer(&card, Hold::ALLOW, None).unwrap();
+    gate_pass(&slice.domain, slice.worktree.as_path());
+    let snapshot = gate.snapshot(&slice.domain, alondra_core::now_millis()).unwrap();
+    assert!(!snapshot.working_tasks.contains(&TaskId::from(TASK)), "a turn whose answer has not reached it takes no slot: {:?}", snapshot.working_tasks);
+    assert!(snapshot.queue.iter().any(|waiting| waiting.key == crate::admission::Key::Turn(TASK.into())), "its answer waits for a slot, though its owner never asked");
+    assert!(slice.decisions().is_empty());
+
+    slots(&slice.domain, 1);
+    gate_pass(&slice.domain, slice.worktree.as_path());
+    assert!(gate.gave_slot(&TASK.into()), "the slot that freed went to the answer in that pass");
+    assert_eq!(gate.snapshot(&slice.domain, alondra_core::now_millis()).unwrap().working, 1, "the slot given counts until the answer reaches its turn");
+    slice.rest(&mut driver);
+    assert_eq!(only_response(&slice)["behavior"], "allow");
+    driver.stop().unwrap();
+}
+
+/// With a free slot, the pass that sees the answer gives it the slot: its owner need not ask first.
+#[test]
+fn an_answered_permission_with_room_goes_on_in_the_same_pass() {
+    let slice = Slice::new();
+    let (mut driver, card) = slice.asked("decide:bash make test");
+    slice.domain.driven_by_hand.lock().unwrap().insert(driver.agent().clone());
+    slots(&slice.domain, 1);
+    slice.answer(&card, Hold::ALLOW, None).unwrap();
+    gate_pass(&slice.domain, slice.worktree.as_path());
+    assert!(slice.domain.live.gate.gave_slot(&TASK.into()), "the pass that saw the answer gave it a slot");
+    slice.rest(&mut driver);
+    assert_eq!(only_response(&slice)["behavior"], "allow");
+    driver.stop().unwrap();
+}
+
+/// An answer whose task has no owner in this daemon is not left waiting for one: the pass that
+/// gives it a slot has a host take the task over, without waiting for the minute between takeovers
+/// of tasks that read as working with no owner.
+#[test]
+fn an_answered_permission_of_a_task_without_an_owner_is_retaken() {
+    let slice = Slice::new();
+    let (driver, card) = slice.asked("decide:bash make test");
+    let agent = driver.agent().clone();
+    drop(driver);
+    slice.domain.enable_sdk(slice.backend.clone());
+    slots(&slice.domain, 1);
+    slice.answer(&card, Hold::ALLOW, None).unwrap();
+    slice.domain.unowned_takes.lock().unwrap().insert(TASK.into(), alondra_core::now_millis());
+    assert!(!slice.domain.owns_sdk_host(&agent));
+    gate_pass(&slice.domain, slice.worktree.as_path());
+    assert!(slice.domain.retakes.lock().unwrap().iter().any(|(task, _)| *task == TaskId::from(TASK)), "the pass that gave the answer its slot had a host take its task over");
+    slice.domain.stop_sdk_owners();
+}
+
 /// The owner of a turn the gate gave a slot ends before it starts it: the slot goes back.
 #[test]
 fn a_host_that_ends_with_a_slot_it_never_used_gives_it_back() {

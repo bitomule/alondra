@@ -90,8 +90,14 @@ host covers it too: adoption, a replacement, a move of account or provider, beca
 session on its first input.
 
 What does not fit stays as the task's pending input, with no card and no slot, and the task reads
-«Waiting for capacity» with its place in the queue. The gate wakes its owner when a slot frees, by
-priority and then age, in the same queue as starts and resumes. The age lives in `admission.json`.
+«Waiting for capacity» with its place in the queue. The queue comes from the domain's state
+(`DomainState::waits_for_turn`), not from who asked: an input or an answer waits there whether or not
+its owner is looking, and asking only lets it go on in the same look when there is room. A turn whose
+answer has not reached it yet holds no slot while it waits for one (`TaskLifecycle::holds_slot`). The
+gate gives the slot when one frees, by priority and then age, in the same queue as starts and
+resumes, and wakes the owner; a task with no owner in this daemon is taken over. The slot counts from
+then until what waited reaches the node; something that waits after it queues again. The age lives
+in `admission.json`.
 
 A turn only needs a slot. Neither memory nor the spacing of starts holds it: its process exists or
 costs little to resume, and the user's answers do not go out one a minute. The first start of the
