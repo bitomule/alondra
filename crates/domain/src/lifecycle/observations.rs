@@ -47,6 +47,11 @@ impl TaskLifecycle {
             RuntimeFact::HostEnded { resume, .. } => resume.clone(),
             _ => None,
         };
+        let takeover_fact = matches!(fact, RuntimeFact::TakenOver | RuntimeFact::TakeoverUnanswered);
+        // Only what the host itself shows answers a takeover: its end, a lost connection or a
+        // released resource are what Alondra saw of it, not anything it did.
+        let shown_by_host = !takeover_fact && !matches!(fact,
+            RuntimeFact::HostEnded { .. } | RuntimeFact::HostStopped { .. } | RuntimeFact::ConnectionLost { .. } | RuntimeFact::ResourceReleased { .. });
         match fact {
             RuntimeFact::Ask {
                 card,
@@ -450,6 +455,18 @@ impl TaskLifecycle {
                 }
             }
             RuntimeFact::Notification => {}
+            RuntimeFact::TakenOver => {
+                if execution.takeover == Takeover::Pending {
+                    return Err(Refusal::RepeatedTakeover);
+                }
+                execution.takeover = Takeover::Pending;
+            }
+            RuntimeFact::TakeoverUnanswered => {
+                if execution.takeover != Takeover::Pending {
+                    return Err(Refusal::InvalidState);
+                }
+                execution.takeover = Takeover::Unanswered;
+            }
             RuntimeFact::HostEnded { unheard_card, .. } | RuntimeFact::HostStopped { unheard_card } => {
                 let resume = host_resume;
                 valid_id(&unheard_card.0)?;
@@ -478,6 +495,9 @@ impl TaskLifecycle {
                 }
                 resume_instead = resume;
             }
+        }
+        if shown_by_host {
+            execution.takeover = Takeover::None;
         }
         let held = self
             .cards()
@@ -670,9 +690,9 @@ impl TaskLifecycle {
                 }
                 delivered.session = Session::Present(execution);
             }
-            // A task that is closing has nobody to ask how it goes on: the end of its host is kept
-            // for the drain, which still owes everything the task owed when it began to close.
-            State::Finishing(finishing) if host_end.is_some() => {
+            // A task that is closing has nobody to ask how it goes on: the end of its host, or its
+            // takeover, is kept for the drain, which still owes everything the task owed when it began to close.
+            State::Finishing(finishing) if host_end.is_some() || takeover_fact => {
                 finishing.session = Session::Present(execution);
             }
             State::Finishing(_)

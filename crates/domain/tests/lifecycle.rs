@@ -1228,6 +1228,8 @@ fn arbitrary_event(task: &TaskLifecycle, action: u8) -> Option<Event> {
         36 => Some(Event::Tell { input: input("told"), answers: None }),
         37 => runtime(RuntimeFact::TurnStarted { turn: turn("told"), trigger: Trigger::Input(input("told")) }),
         38 => runtime(RuntimeFact::TurnStarted { turn: turn("own"), trigger: Trigger::Unprompted }),
+        72 => runtime(RuntimeFact::TakenOver),
+        73 => runtime(RuntimeFact::TakeoverUnanswered),
         _ => Some(Event::HandBack { delivery: "result".into(), input: input("changes") }),
     }
 }
@@ -3414,4 +3416,144 @@ fn what_a_task_no_node_started_is_told_waits_in_order_for_the_node_that_starts_i
     fact(&mut task, RuntimeFact::InputConsumed { input: input("first") });
     fact(&mut task, RuntimeFact::InputConsumed { input: input("second") });
     assert!(task.pending_inputs().is_empty(), "each message reaches the node once");
+}
+
+/// A task whose node waits to be handed its input, as Alondra sees it when the node has no host.
+fn delivering() -> TaskLifecycle {
+    let mut task = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
+    admit(&mut task, "instance");
+    fact(&mut task, RuntimeFact::ResourceAvailable);
+    task
+}
+
+#[test]
+fn a_takeover_its_host_never_answered_is_refused_and_the_same_input_goes_to_a_fresh_host() {
+    let mut task = delivering();
+    assert_eq!(task.activity(), ActivityView::Starting);
+    fact(&mut task, RuntimeFact::TakenOver);
+    assert_eq!(task.takeover(), Takeover::Pending);
+    fact(&mut task, RuntimeFact::HostEnded { unheard_card: "ended".into(), resume: None });
+    assert_eq!(task.takeover(), Takeover::Pending, "the end of the host is Alondra's own reading, not an answer");
+    let stamp = task.execution().unwrap().clone();
+    let cursor = task.cursor().unwrap() + 1;
+    assert_eq!(task.apply(task.revision(), Event::Runtime { stamp, cursor, fact: RuntimeFact::TakenOver }), Err(Refusal::RepeatedTakeover));
+    fact(&mut task, RuntimeFact::TakeoverUnanswered);
+    assert_eq!(task.takeover(), Takeover::Unanswered);
+    assert_eq!(task.pending_inputs(), [&input("initial")], "the input waits as it was, once");
+    assert!(task.cards().is_empty(), "nobody is asked about a host that showed nothing");
+    fact(&mut task, RuntimeFact::TakenOver);
+    started(&mut task, "root", "initial");
+    assert_eq!((task.takeover(), task.activity()), (Takeover::None, ActivityView::Working));
+}
+
+#[test]
+fn an_unanswered_takeover_needs_one_first() {
+    let mut task = delivering();
+    let stamp = task.execution().unwrap().clone();
+    let cursor = task.cursor().unwrap() + 1;
+    assert_eq!(task.apply(task.revision(), Event::Runtime { stamp, cursor, fact: RuntimeFact::TakeoverUnanswered }), Err(Refusal::InvalidState));
+}
+
+/// What Alondra's look at a task no host of its own holds goes on with: a node at work, about to
+/// start, or with a notification to take up, unless the user holds it on a pause, a pause holds it
+/// after it was taken over (the end of the pause takes it over), or the task is ending, which its
+/// drain owns.
+fn taken_over_by_alondra(task: &TaskLifecycle) -> bool {
+    !matches!(task.phase(), TaskPhase::Finishing | TaskPhase::Completed | TaskPhase::Cancelled)
+        && task.execution().is_some()
+        && matches!(task.activity(), ActivityView::Working | ActivityView::OwnWork | ActivityView::Starting | ActivityView::Continuation)
+        && !task.cards().into_iter().any(|(card, reason)| reason == WaitReason::Pause
+            && (task.card_owner(card) == Some(Owner::User) || task.takeover() != Takeover::None))
+}
+
+/// What a look of the daemon can change: never the revision or the cursor alone.
+fn shape(task: &TaskLifecycle) -> String {
+    format!("{:?} {:?} {:?} {:?} {:?} {:?} {:?}", task.phase(), task.activity(), task.takeover(), task.turn(), task.pending_inputs(), task.cards(), task.live())
+}
+
+/// A fresh host takes what the execution waits for: the input it was handed, or, in place of a
+/// host still at work that showed nothing, the session it resumes. When it cannot, the takeover
+/// failed, as one whose host's end the task cannot take does: the task holds on the user's card,
+/// or on the pause that holds it already, whose end takes it over.
+fn fresh_host_takes_over(task: &mut TaskLifecycle, look: usize) -> Result<(), Refusal> {
+    let runtime = |task: &mut TaskLifecycle, fact| {
+        let stamp = task.execution().unwrap().clone();
+        let cursor = task.cursor().unwrap() + 1;
+        task.apply(task.revision(), Event::Runtime { stamp, cursor, fact })
+    };
+    if task.activity() != ActivityView::Starting {
+        let resume = input(&format!("resumed-{look}"));
+        runtime(task, RuntimeFact::HostEnded { unheard_card: format!("ended-{look}").as_str().into(), resume: Some(resume) })
+            .or_else(|_| runtime(task, RuntimeFact::HostEnded { unheard_card: format!("ended-{look}").as_str().into(), resume: None }))?;
+    }
+    if task.resource() == Some(ResourceEvidence::Reserved) {
+        runtime(task, RuntimeFact::ResourceAvailable)?;
+    }
+    match task.pending_inputs().first().map(|input| (*input).clone()) {
+        Some(handed) if task.activity() == ActivityView::Starting => runtime(task, RuntimeFact::TurnStarted { turn: turn(&format!("fresh-{look}")), trigger: Trigger::Input(handed) }),
+        _ => Ok(()),
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 512,
+        failure_persistence: None,
+        rng_seed: proptest::test_runner::RngSeed::Fixed(0x7a_ce),
+        ..ProptestConfig::default()
+    })]
+    /// From any state a task reaches, with nothing from outside and every host Alondra adopts
+    /// showing nothing, each look of Alondra changes the task, never asks anyone about it, and
+    /// within two looks the task runs a turn of a fresh host, waits on its owner, or ended.
+    #[test]
+    fn a_task_no_host_holds_reaches_a_live_turn_or_its_owner_and_no_takeover_repeats_unchanged(
+        started in any::<bool>(),
+        actions in prop::collection::vec(prop_oneof![1 => Just(72u8), 1 => Just(73u8), 8 => 0u8..72], 1..160),
+    ) {
+        let mut task = if started { running() } else { TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap() };
+        for action in actions {
+            if let Some(event) = arbitrary_event(&task, action) {
+                let _ = task.apply(task.revision(), event);
+            }
+        }
+        let mut live_turn = false;
+        let mut held = false;
+        for look in 0..2 {
+            if !taken_over_by_alondra(&task) || live_turn || held {
+                break;
+            }
+            let before = shape(&task);
+            let cards = task.cards().len();
+            let earlier = task.takeover();
+            let stamp = task.execution().unwrap().clone();
+            let cursor = task.cursor().unwrap() + 1;
+            let fresh = match task.apply(task.revision(), Event::Runtime { stamp, cursor, fact: RuntimeFact::TakenOver }) {
+                Ok(()) => earlier == Takeover::Unanswered,
+                Err(Refusal::RepeatedTakeover) => {
+                    for fact in [RuntimeFact::TakeoverUnanswered, RuntimeFact::TakenOver] {
+                        let stamp = task.execution().unwrap().clone();
+                        let cursor = task.cursor().unwrap() + 1;
+                        let taken = task.apply(task.revision(), Event::Runtime { stamp, cursor, fact });
+                        prop_assert!(taken.is_ok(), "an unanswered takeover goes to a fresh host ({:?}): {:?}", taken, task);
+                    }
+                    true
+                }
+                Err(refusal) => return Err(TestCaseError::fail(format!("the takeover was refused ({refusal:?}): {task:?}"))),
+            };
+            if fresh {
+                if fresh_host_takes_over(&mut task, look).is_err() {
+                    held = task.cards().into_iter().any(|(_, reason)| reason == WaitReason::Pause);
+                    if !held {
+                        let lost = task.apply(task.revision(), Event::Pause { card: "host-lost".into(), owner: Owner::User });
+                        prop_assert!(lost.is_ok(), "a takeover that fails holds the task on the user's card ({:?}): {:?}", lost, task);
+                    }
+                }
+                live_turn = task.turn().is_some();
+            }
+            prop_assert_ne!(shape(&task), before, "a look of Alondra changed nothing: {:?}", task);
+            prop_assert!(cards > 0 || task.cards().is_empty(), "a look of Alondra asked someone: {:?}", task);
+        }
+        prop_assert!(!taken_over_by_alondra(&task) || live_turn || held,
+            "two looks left the task with no host and no turn: {:?}", task);
+    }
 }

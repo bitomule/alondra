@@ -341,6 +341,9 @@ pub enum Refusal {
     InvalidDecision,
     /// An MCP server name that is empty, blank, longer than 256 bytes or carries control characters.
     InvalidMcpServer,
+    /// A takeover of an execution whose last takeover its host never answered: it would change
+    /// nothing, so what the execution waits for goes to a fresh host instead.
+    RepeatedTakeover,
 }
 
 impl From<IdentityError> for Refusal {
@@ -830,6 +833,23 @@ pub enum RuntimeFact {
         unheard_card: InteractionId,
         resume: Option<InputId>,
     },
+    /// The execution had no host of its own and Alondra took it over with a new one. Until that
+    /// host shows a fact, another takeover is refused: it would change nothing.
+    TakenOver,
+    /// The host of the last takeover showed nothing: what the execution waits for, the same input
+    /// included, goes to a fresh host, which the next takeover starts.
+    TakeoverUnanswered,
+}
+
+/// Where the execution stands with Alondra taking it over when no host of its own holds it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Takeover {
+    #[default]
+    None,
+    /// Taken over: its host has shown no fact since.
+    Pending,
+    /// The takeover's host showed nothing: the next takeover starts a fresh host.
+    Unanswered,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -946,6 +966,7 @@ struct Execution {
     callbacks: Vec<CallbackState>,
     effects: BTreeSet<OperationId>,
     inbox: Inputs,
+    takeover: Takeover,
 }
 impl Execution {
     /// A node whose turn ended on work of its own keeps its process and its memory while that
@@ -1206,6 +1227,9 @@ impl TaskLifecycle {
     }
     pub fn execution(&self) -> Option<&ExecutionStamp> {
         self.session().map(|execution| &execution.stamp)
+    }
+    pub fn takeover(&self) -> Takeover {
+        self.session().map_or(Takeover::None, |execution| execution.takeover)
     }
     pub fn activity(&self) -> ActivityView {
         self.session().map_or(ActivityView::None, |execution| {
@@ -1551,7 +1575,9 @@ fn keeps_wake(event: &Event, woken: Option<&InputId>) -> bool {
         | RuntimeFact::EffectAccepted { .. }
         | RuntimeFact::EffectObserved { .. }
         | RuntimeFact::InterruptAccepted { .. }
-        | RuntimeFact::Notification => true,
+        | RuntimeFact::Notification
+        | RuntimeFact::TakenOver
+        | RuntimeFact::TakeoverUnanswered => true,
         RuntimeFact::Ask { .. }
         | RuntimeFact::TurnStarted { .. }
         | RuntimeFact::InputDropped { .. }

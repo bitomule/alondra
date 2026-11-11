@@ -4425,6 +4425,42 @@ fn hold_prompts(slice: &Slice) -> PathBuf {
     fake
 }
 
+/// A takeover adopted a live host that never took the input it was handed, and its owner went
+/// without a word. The next look does not adopt that host again, which would change nothing: it
+/// ends it, and a fresh host takes the same input, which reaches Claude once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_takeover_its_host_never_answered_hands_the_same_input_to_a_fresh_host() {
+    let slice = Slice::new();
+    slice.domain.enable_sdk(slice.backend.clone());
+    let mut driver = slice.launch();
+    slice.settle(&mut driver);
+    instruct(&slice.domain, "Add the tests first");
+    kill_host_and_daemon(driver);
+    let fake = hold_prompts(&slice);
+    let mut held = adopt(Arc::clone(&slice.domain), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
+    slice.run(&Actor::System, "taken-over", Command::RecordRuntimeFacts {
+        task_id: TASK.into(), generation: lifecycle(&slice.domain).generation(), facts: vec![RuntimeObservation::TakenOver] });
+    while held.pending_permits() > 0 {
+        held.step(&|| false).unwrap();
+    }
+    let ignoring = alondra_process_group::members(held.worker.host_group().unwrap()).unwrap();
+    held.let_go();
+    drop(held);
+    assert_eq!(lifecycle(&slice.domain).activity(), ActivityView::Starting, "the input waits for a host to take it");
+    std::fs::copy(&fake, &slice.backend.native).unwrap();
+
+    crate::sdk_owner::take_working_unowned(&slice.domain, &slice.domain.state().unwrap(), alondra_core::now_millis());
+    slice.domain.join_retakes();
+    assert!(ignoring.iter().all(|process| !alondra_process_group::alive(process).unwrap()), "the host that never took the input was ended");
+    until_last_prompt_ends_with(&slice.domain, &slice.capture, "Add the tests first").await;
+    let told = slice.prompts().iter().filter(|prompt| prompt.ends_with("Add the tests first")).count();
+    assert_eq!(told, 1, "the input reached Claude once: {:?}", slice.prompts());
+    for prefix in [HANDOFF_DOUBT_PREFIX, HOST_LOST_PREFIX, SESSION_ENDED_PREFIX, DROPPED_PREFIX] {
+        assert!(open_card(&slice.domain, prefix).is_none(), "nobody is asked about it: {prefix}");
+    }
+    slice.domain.stop_sdk_owners();
+}
+
 /// Tells the node `text` as the user does, through the daemon `domain`.
 fn tell_through(domain: &DomainRuntime, slice: &Slice, driver: &Driver, text: &str) {
     let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": text})).unwrap();

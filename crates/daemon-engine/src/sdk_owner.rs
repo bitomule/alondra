@@ -1017,11 +1017,15 @@ const UNOWNED_TAKE_EVERY: alondra_core::Millis = 60_000;
 /// start, a notification to take up) while no owner of this daemon holds its execution: its host
 /// ended and nobody told the domain, as when an owner stops on a broken connection. It is taken
 /// over, which records the host's end, so a task never reads as running or starting with no node;
-/// one held by a pause waits for it, and is told to go on when the pause ends.
+/// one held by a pause waits for it, and is told to go on when the pause ends. A task the user
+/// holds on a pause, as when its host was lost, waits for their answer, and one a pause holds
+/// after it was taken over is taken over again when that pause ends.
 pub(crate) fn take_working_unowned(domain: &DomainRuntime, state: &DomainState, now: alondra_core::Millis) {
     let working: Vec<TaskId> = state.tasks.values().filter(|task| !task.over())
         .filter(|task| state.lifecycle_of(&task.id).is_ok_and(|lifecycle| matches!(lifecycle.activity(),
-            ActivityView::Working | ActivityView::OwnWork | ActivityView::Starting | ActivityView::Continuation)))
+            ActivityView::Working | ActivityView::OwnWork | ActivityView::Starting | ActivityView::Continuation)
+            && !lifecycle.cards().into_iter().any(|(card, reason)| reason == alondra_domain::WaitReason::Pause
+                && (lifecycle.card_owner(card) == Some(alondra_domain::Owner::User) || lifecycle.takeover() != alondra_domain::Takeover::None))))
         .filter(|task| to_take(domain, state, &task.id))
         .map(|task| task.id.clone()).collect();
     let due: Vec<TaskId> = {
@@ -1064,9 +1068,54 @@ fn retake_with_policy(domain: &DomainRuntime, task: TaskId,explicit_account_retr
     })));
 }
 
+/// Takes the execution of `task` over with a new host, and records it. A takeover whose host never
+/// answered the last one changes nothing: the domain refuses it, the last takeover is recorded as
+/// unanswered, and a fresh host takes the same input the execution waits for, any host still
+/// running ended first.
 fn take_again(runtime: &Arc<DomainRuntime>, backend: &SdkBackend, task: &TaskId, explicit_account_retry: bool) {
     if runtime.state().ok().and_then(|state| state.tasks.get(task).and_then(|task| task.agent_id.clone())).is_some_and(|agent| runtime.owns_sdk_host(&agent)) {
         return;
+    }
+    let record = |fact: RuntimeObservation| -> Result<(), StoreError> {
+        let state = runtime.state().map_err(StoreError::Storage)?;
+        let generation = state.lifecycle_of(task).map_err(StoreError::Domain)?.execution().map(|stamp| stamp.generation())
+            .ok_or_else(|| StoreError::Domain(DomainError::new("conflict", format!("Task {task} has no execution to take over"))))?;
+        runtime.execute_as_system(CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            data_epoch: state.data_epoch.clone(),
+            command_id: format!("takeover-{task}-{}", crate::auth::random_hex(8)).into(),
+            expected_revision: 0,
+            command: Command::RecordRuntimeFacts { task_id: task.clone(), generation, facts: vec![fact] },
+        }).map(drop)
+    };
+    let earlier = runtime.state().ok().and_then(|state| state.lifecycle_of(task).ok().map(|lifecycle| lifecycle.takeover()));
+    let fresh = match record(RuntimeObservation::TakenOver) {
+        Ok(()) => earlier == Some(alondra_domain::Takeover::Unanswered),
+        Err(StoreError::Domain(error)) if error.code == REPEATED_TAKEOVER => {
+            log!("the host that last took {task} over showed nothing: a fresh host takes what it waits for");
+            if let Err(error) = record(RuntimeObservation::TakeoverUnanswered).and_then(|()| record(RuntimeObservation::TakenOver)) {
+                log!("could not record the unanswered takeover of {task}: {}", store_text(&error));
+            }
+            true
+        }
+        Err(error) => {
+            log!("the takeover of {task} was not recorded: {}", store_text(&error));
+            false
+        }
+    };
+    if fresh && host_started(backend, runtime, task) {
+        let directory = {
+            let read = runtime.read();
+            let instance = read.state().lifecycle_of(task).ok().and_then(|lifecycle| lifecycle.execution().map(|stamp| stamp.instance().as_str().to_owned()));
+            let provider = read.state().tasks.get(task).map(|task| task.provider).unwrap_or_default();
+            instance.zip(backend.for_provider(provider, runtime.home()).ok()).map(|(instance, backend)| backend.state_root.join(instance))
+        };
+        if let Some(directory) = directory {
+            mark_stopped_by_alondra(&directory);
+            if let Err(error) = alondra_agent_runtime::owned_host::EndedHost::end_holders(&directory) {
+                return not_taken(runtime, task, Failed::new(format!("its host, which never took what it was handed, did not stop: {error}")));
+            }
+        }
     }
     let plugin = crate::plugins::node_in(runtime.home());
     let taken = if host_started(backend, runtime, task) {
@@ -1110,11 +1159,12 @@ pub(crate) fn halt(domain: &DomainRuntime, task: TaskId, agent: AgentId) {
     })));
 }
 
-/// Whether the task runs through the SDK, has not ended, and no owner of this daemon, launch or
-/// takeover under way, or move to another account holds its execution.
+/// Whether the task runs through the SDK, has not ended, and no owner of this daemon, launch,
+/// takeover or retake under way, or move to another account holds its execution.
 fn to_take(domain: &DomainRuntime, state: &DomainState, task: &TaskId) -> bool {
     state.tasks.get(task).and_then(|task| task.agent_id.as_ref()).is_some_and(|agent| !domain.owns_sdk_host(agent))
         && !domain.in_hand.lock_or_recover("the executions in hand").contains_key(task)
+        && !domain.retakes.lock_or_recover("the retakes").iter().any(|(taking, retake)| taking == task && !retake.is_finished())
         && !crate::account_move::holds_execution(domain, task)
         && !crate::provider_transition::holds_execution(domain, task)
         && state.lifecycle_of(task).ok().is_some_and(|lifecycle| {
