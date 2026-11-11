@@ -775,6 +775,7 @@ async fn execute_external(
             let actor = Actor::User { user_id: user_id.clone() };
             match crate::provider_transition::request_move(domain, &actor, &task_id, account, expected,
                 || authorize().map_err(|_| DomainError::new("forbidden", "device approval was revoked"))) {
+                Ok(value) if value["status"] == "moved" => Ok(applied(action.verb, lang, if lang == Lang::Es { "Movida" } else { "Moved" }, state.revision, 200, value)),
                 Ok(value) => Ok(to_applied(202, value)),
                 Err(error) => Ok(domain_refusal_value(&error, lang)),
             }

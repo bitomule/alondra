@@ -1199,6 +1199,8 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::ReleaseTask { task_id, .. }
         | Command::RaiseStartProblem { task_id, .. }
         | Command::RecordTaskSelection { task_id, .. }
+        | Command::DeferTaskMove { task_id, .. }
+        | Command::AbortTaskSelection { task_id, .. }
         | Command::RequestTaskSelection { task_id, .. }
         | Command::MoveTask { task_id, .. }
         | Command::SettlePlanReview { task_id, .. }

@@ -905,6 +905,19 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         if let Some(pending) = model.pending { model_readings.push(Fact { kind: None, label: t!(context.lang, "Pending model", "Modelo pendiente").into(), value: pending, tone: Some(Tone::Warning), link: None }); }
         if let Some(reason) = model.reason { model_readings.push(Fact { kind: None, label: t!(context.lang, "Reason", "Motivo").into(), value: reason, tone: None, link: None }); }
     }
+    if let Some(refused) = &task.move_refused {
+        let account = refused.account.wire_id();
+        model_readings.push(Fact {
+            kind: None,
+            label: t!(context.lang, "Move", "Mudanza").into(),
+            value: match context.lang {
+                super::Lang::Es => format!("No se pudo mover a {account}: {}", refused.reason),
+                _ => format!("Could not move to {account}: {}", refused.reason),
+            },
+            tone: Some(Tone::Warning),
+            link: None,
+        });
+    }
     facts.push(Fact {
         kind: Some(FactKind::Request),
         label: t!(context.lang, "Request", "Solicitud").into(),

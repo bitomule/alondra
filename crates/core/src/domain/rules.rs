@@ -2614,6 +2614,8 @@ impl DomainState {
             | Command::RecordClaudeHold { task_id, .. }
             | Command::RecordHostEnded { task_id, .. }
             | Command::RecordStranded { task_id }
+            | Command::DeferTaskMove { task_id, .. }
+            | Command::AbortTaskSelection { task_id, .. }
             | Command::RecordInterruptAccepted { task_id, .. }
             | Command::RecordDoubtfulHandoff { task_id, .. }
             | Command::RecordHostLost { task_id, .. }
@@ -3176,12 +3178,14 @@ impl DomainState {
                 let task = self.tasks.get_mut(task_id).expect("checked above");
                 task.selection = Some(selection.clone());
                 task.pending_selection = Some(pending.clone());
+                task.move_refused = None;
             }
             Command::MoveTask { task_id, expected_selection, account } => {
                 let (selection, pending) = self.move_task_guard(actor, task_id, expected_selection, account)?;
                 let task = self.tasks.get_mut(task_id).expect("checked above");
                 task.selection = Some(selection);
                 task.pending_selection = pending;
+                task.move_refused = None;
             }
             Command::RecordTaskSelection { task_id, selection, pending } => {
                 system(actor)?;
@@ -3468,7 +3472,7 @@ impl DomainState {
                         documents: BTreeMap::new(),
                         archived: false,
                         model: None,
-                        waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, continues: continues.clone(), worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, account: None, allowed: Default::default(), project: launch.as_ref().and_then(|launch| launch.project.clone()),
+                        waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(), verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, continues: continues.clone(), worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: launch.as_ref().and_then(|launch| launch.project.clone()),
                     },
                 );
                 self.dependency_graph()?;
@@ -5197,7 +5201,8 @@ impl DomainState {
                 let previously_admitted=self.lifecycle_journal.get(task_id).is_some_and(|records|records.iter().any(|record|matches!(record,LifecycleRecord::Admitted{execution:Some(_),..}|LifecycleRecord::ResourceAvailable)));
                 if (previously_admitted || task.started) && self.pending_reopening(task_id).is_none() {
                     let target=crate::accounts::AccountKey::new(*provider,account.clone().unwrap_or_else(crate::accounts::AccountId::default_account));
-                    if target!=task.account_key() && self.moving_to(task_id)!=Some(&target){return fail("active_account_immutable","Choose an account and provider when creating a new node. This task keeps its original native session and account")}
+                    let moved_here=task.selection.as_ref().and_then(|selection|selection.account.as_ref())==Some(&target) && task.pending_selection.is_none() && self.lifecycle_of(task_id).is_ok_and(|lifecycle|lifecycle.execution().is_none());
+                    if target!=task.account_key() && self.moving_to(task_id)!=Some(&target) && !moved_here{return fail("active_account_immutable","Choose an account and provider when creating a new node. This task keeps its original native session and account")}
                 }
                 self.invalidate(task_id);
                 if let Some(card) = leaves_limit {
@@ -5249,6 +5254,26 @@ impl DomainState {
                 system(actor)?;
                 self.task(task_id)?;
                 self.record_stranded(task_id, effects, lifecycles)?;
+            }
+            Command::DeferTaskMove { task_id, account } => {
+                system(actor)?;
+                self.active(task_id)?;
+                if self.task(task_id)?.pending_selection.as_ref().map(|pending| &pending.account) != Some(account) {
+                    return fail("conflict", "The task is not moving to that account");
+                }
+                if self.lifecycle(lifecycles, task_id)?.execution().is_some() {
+                    self.release(task_id, lifecycles)?;
+                }
+                self.tasks.get_mut(task_id).expect("checked above").pending_selection = None;
+            }
+            Command::AbortTaskSelection { task_id, selection, refused } => {
+                system(actor)?;
+                self.task(task_id)?;
+                if let Some(refused) = refused { nonempty(&refused.reason)?; }
+                let task = self.tasks.get_mut(task_id).expect("checked above");
+                task.selection = selection.clone();
+                task.pending_selection = None;
+                if refused.is_some() { task.move_refused = refused.clone(); }
             }
             Command::RecordDoubtfulHandoff { task_id, generation, input, text, resumes, .. } => {
                 system(actor)?;

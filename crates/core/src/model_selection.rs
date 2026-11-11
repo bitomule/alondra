@@ -219,6 +219,14 @@ pub struct PendingTaskSelection {
     pub reason: String,
 }
 
+/// Why the task could not move to `account`: shown on the task until its selection changes again.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MoveRefused {
+    pub account: AccountKey,
+    pub reason: String,
+}
+
 pub fn resolve_selection(intent: &TaskSelection, profiles: &ModelProfiles, catalogs: &[AccountModelCatalog], eligible: &[AccountKey]) -> Result<SelectionDecision, Vec<String>> {
     let mut rejected = vec![];
     let accounts: Vec<_> = eligible.iter().filter(|key| intent.account.as_ref().is_none_or(|pinned| pinned == *key)).collect();
