@@ -99,15 +99,6 @@ pub fn is_node_pause(card: &Interaction) -> bool {
     matches!(card.system_card, Some(SystemCard::NodePause { .. }))
 }
 
-/// Whether a task in `live` has its node at work: its turn, its own work, the work it declared for
-/// after the merge, or Alondra starting it, handing it an input or waking it. Only such a node
-/// takes one of the gate's slots, and only while its lifecycle says its execution holds one.
-pub fn node_at_work(live: &alondra_domain::LiveState) -> bool {
-    use alondra_domain::{LiveState, Step, Worker};
-    matches!(live, LiveState::Working(Worker::Turn | Worker::OwnWork | Worker::AfterMerge
-        | Worker::Alondra(Step::Starting | Step::Delivering | Step::Waking)))
-}
-
 /// The longest last words a node's card carries.
 pub(super) const LAST_WORDS_MAX: usize = 20_000;
 
@@ -855,19 +846,16 @@ impl DomainState {
         t.agent_id.as_ref().is_none_or(|agent| self.node_pause(agent).is_none()) && self.sdk_task_holds_slot(t, &facts)
     }
 
-    /// Its `LiveState` has the node at work, or in a turn it runs after delivering, which is real
-    /// work; it waits on no card of the user's or the orchestrator's; its task is not ending; and
-    /// its lifecycle says its execution holds a slot. A turn kept open on a plan or a question for
-    /// the user holds none.
+    /// The task's situation has its node working, or Alondra starting it, handing it an input or
+    /// waking it; its task is not ending; and its lifecycle says its execution holds a slot. A turn
+    /// kept open on a plan or a question for the user, or held by a pause, holds none.
     fn sdk_task_holds_slot(&self, task: &Task, facts: &TaskFacts) -> bool {
-        use alondra_domain::LiveState;
-        let at_work = match self.live_state(&task.id) {
-            Some(LiveState::Working(_)) => true,
-            Some(LiveState::WaitingUser(cards)) => cards.iter().all(|card| task.final_presentation.as_ref() == Some(card))
-                && self.lifecycle_of(&task.id).is_ok_and(|lifecycle| lifecycle.activity() != alondra_domain::ActivityView::OwnWork),
-            _ => false,
-        };
-        at_work && !(facts.card || facts.held || facts.closing) && self.lifecycle_of(&task.id).is_ok_and(|lifecycle| lifecycle.holds_slot())
+        use super::situation::{AlondraStep, Doing, Listing, Situation, WaitsFor};
+        let listing = Listing { needs_you: facts.card || facts.held, listed: &|_| true };
+        let takes_slot = matches!(self.situation(task, &listing).situation,
+            Situation::Working(Doing::Turn | Doing::OwnWork | Doing::AfterMerge)
+            | Situation::Waiting(WaitsFor::Step(AlondraStep::Starting | AlondraStep::Delivering | AlondraStep::Waking)));
+        takes_slot && !facts.closing && self.lifecycle_of(&task.id).is_ok_and(|lifecycle| lifecycle.holds_slot())
     }
 
     /// What `task`'s node goes on with passes the gate first. A node that closes does not: cleaning

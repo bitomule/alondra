@@ -1518,3 +1518,29 @@ fn with_no_other_node_at_work_the_next_one_comes_back_whatever_its_estimate() {
     assert!(!still_paused(&domain, "t1"), "14.5 GB free and nothing else at work: it comes back");
     assert_eq!(machine_cards(&domain), 0);
 }
+
+/// 11 November, 00:29: the log said "8 of 8 working" and named 14 tasks. What the gate counts and
+/// what it names are one list.
+#[test]
+fn the_gate_names_as_many_tasks_as_it_counts() {
+    let (_home, domain) = world();
+    let gate = &domain.live.gate;
+    gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
+    let now = alondra_core::now_millis();
+    for id in ["t1", "t2", "t3", "t4"] {
+        create(&domain, id);
+    }
+    for id in ["t1", "t2"] {
+        assert_eq!(ask(&domain, id, now), Ok(()));
+        start(&domain, id, now);
+    }
+    assert_eq!(ask(&domain, "t3", now), Ok(()), "admitted, its node not yet at work");
+    let snapshot = gate.snapshot(&domain, now).unwrap();
+    assert_eq!(snapshot.working, 3);
+    assert_eq!(snapshot.working_tasks.len(), snapshot.working, "{:?}", snapshot.working_tasks);
+    let state = domain.state().unwrap();
+    let working: Vec<TaskId> = snapshot.working_tasks.iter().cloned().collect();
+    let line = hold_line(1, "t4", TaskPriority::Normal, &Hold::Slots { working: snapshot.working, limit: 3 }, &working, &[], 0).unwrap();
+    assert!(line.contains("3 of 3 working (t1, t2, t3)") && !line.contains("starting"), "{line}");
+    assert_eq!(super::working_tasks(&state).len(), state.slots().len());
+}
