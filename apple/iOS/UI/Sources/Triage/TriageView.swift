@@ -56,10 +56,14 @@ public struct TriageView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if store.screen.document == nil {
-                VStack(spacing: 16) {
-                    ProgressView().controlSize(.large).tint(Palette.dawn)
-                    Text("Connecting to your Mac…").font(.subheadline).foregroundStyle(.secondary)
-                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                centeredScrolling {
+                    VStack(spacing: 16) {
+                        ProgressView().controlSize(.large).tint(Palette.dawn)
+                        Text("Connecting to your Mac…").font(.subheadline).foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding(.horizontal, 24).frame(maxWidth: .infinity)
+                }
             } else if store.orderedIDs.isEmpty {
                 empty
             } else {
@@ -110,7 +114,7 @@ public struct TriageView: View {
             ConnectionLine(indicators.line, alert: Palette.rose) {
                 summary.foregroundStyle(.secondary).contentTransition(.numericText())
             }
-            .font(.subheadline.weight(.medium)).lineLimit(1)
+            .font(.subheadline.weight(.medium)).lineLimit(typeSize.isAccessibilitySize ? nil : 1)
             HStack(alignment: .center) {
                 pageDots
                     .opacity(store.orderedIDs.count > 1 ? 1 : 0)
@@ -273,25 +277,39 @@ public struct TriageView: View {
             }
     }
 
-    private var empty: some View {
-        VStack(spacing: 18) {
-            Spacer()
-            Image(systemName: "sunrise.fill")
-                .font(.system(size: 64, weight: .light))
-                .foregroundStyle(LinearGradient(colors: [Palette.dawn, Palette.ember], startPoint: .top, endPoint: .bottom))
-                .symbolEffect(.breathe.pulse, options: .repeat(.continuous))
-            Text(store.screen.document?.empty?.text ?? String(localized: "Nothing is waiting for you"))
-                .font(.display(.title, weight: .bold))
-            Text("Your tasks carry on by themselves. When one needs you, it will show up here.")
-                .font(.body).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 300)
-            HStack(spacing: 10) {
-                emptyStat("working", count: statusCount("working"), tint: Palette.sky)
-                emptyStat("waiting", count: statusCount("waiting"), tint: Palette.dawn)
-                emptyStat("total", count: statusCount("agents"), tint: Palette.sage)
-            }.padding(.top, 8)
-            Spacer(); Spacer()
+    /// Centred when it fits; when text is large enough that it does not, the person scrolls to read it all.
+    private func centeredScrolling<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        let body = content()
+        return GeometryReader { proxy in
+            ScrollView {
+                body.frame(maxWidth: .infinity, minHeight: proxy.size.height)
+            }
+            .scrollBounceBehavior(.basedOnSize)
         }
-        .padding(.horizontal, 24).frame(maxWidth: .infinity)
+    }
+
+    private var empty: some View {
+        centeredScrolling {
+            VStack(spacing: 18) {
+                Image(systemName: "sunrise.fill")
+                    .font(.system(size: 64, weight: .light))
+                    .foregroundStyle(LinearGradient(colors: [Palette.dawn, Palette.ember], startPoint: .top, endPoint: .bottom))
+                    .symbolEffect(.breathe.pulse, options: .repeat(.continuous))
+                Text(store.screen.document?.empty?.text ?? String(localized: "Nothing is waiting for you"))
+                    .font(.display(.title, weight: .bold)).multilineTextAlignment(.center)
+                Text("Your tasks carry on by themselves. When one needs you, it will show up here.")
+                    .font(.body).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    .frame(maxWidth: typeSize.isAccessibilitySize ? .infinity : 300)
+                let stats = typeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(spacing: 10)) : AnyLayout(HStackLayout(spacing: 10))
+                stats {
+                    emptyStat("working", count: statusCount("working"), tint: Palette.sky)
+                    emptyStat("waiting", count: statusCount("waiting"), tint: Palette.dawn)
+                    emptyStat("total", count: statusCount("agents"), tint: Palette.sage)
+                }.padding(.top, 8)
+            }
+            .padding(.horizontal, 24).padding(.vertical, 24)
+        }
     }
 
     private func statusCount(_ id: String) -> Int {
@@ -304,7 +322,7 @@ public struct TriageView: View {
                 .foregroundStyle(tint).contentTransition(.numericText())
             Text(label).font(.caption).foregroundStyle(.secondary)
         }
-        .frame(minWidth: 88).padding(.vertical, 12)
+        .frame(minWidth: 88, maxWidth: typeSize.isAccessibilitySize ? .infinity : nil).padding(.vertical, 12)
         .background(Palette.card.opacity(0.7), in: .rect(cornerRadius: 18))
     }
 }
