@@ -253,7 +253,7 @@ pub(crate) fn rests_on(task: &str, card: &InteractionId) -> bool {
 }
 
 pub(crate) fn not_wakes(prompts: impl Iterator<Item = String>) -> Vec<String> {
-    prompts.filter(|prompt| prompt != alondra_core::domain::WAKE_INSTRUCTION).collect()
+    prompts.filter(|prompt| !prompt.starts_with(alondra_core::domain::WAKE_INSTRUCTION)).collect()
 }
 
 impl Drop for SdkLaunches {
@@ -2189,7 +2189,7 @@ fn a_dead_host_is_replaced_by_one_that_resumes_the_same_claude_session() {
     let starts = slice.starts();
     assert_eq!(starts.len(), 2, "{starts:?}");
     assert_eq!(starts[1]["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {starts:?}");
-    assert_eq!(starts[1]["history"], 2, "with the transcript of the first turn and of the one its wake opened");
+    assert_eq!(starts[1]["history"], 1 + u64::from(alondra_domain::EMPTY_TURN_WAKES), "with the transcript of the first turn and of the ones its wakes opened");
     let prompts = slice.prompts();
     assert_eq!(prompts.len(), 2, "{prompts:?}");
     assert!(prompts[1].ends_with("Add the tests first"), "{}", prompts[1]);

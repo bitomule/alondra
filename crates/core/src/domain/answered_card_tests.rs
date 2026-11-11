@@ -69,6 +69,16 @@ fn notifies_user(outcome: &CommandOutcome) -> bool {
 fn unfinished(s: &DomainState) -> usize {
     s.lifecycle_journal[&TaskId::from("t")].iter().filter(|record| matches!(record, LifecycleRecord::Unfinished { .. })).count()
 }
+/// The node, woken once on what it owes, rests again on each of its other wakes: they wake it
+/// again with the same step.
+fn rest_through_wakes(s: &mut DomainState) {
+    for n in 2..=alondra_domain::EMPTY_TURN_WAKES {
+        let turn = format!("turn-woken-{n}");
+        start(s, &turn);
+        end_empty(s, &turn);
+        assert!(matches!(last(s, "t"), LifecycleRecord::Unfinished { wake: Some(_), .. }), "wake {n} in a row: {:?}", last(s, "t"));
+    }
+}
 /// The node presented in `turn-1`, asked `beta-go` and ended the turn on it; the user answered
 /// and the answer reached the node, which took it up in `turn-2`.
 fn answer_taken() -> DomainState {
@@ -100,13 +110,14 @@ fn a_delivered_node_that_rests_on_the_answer_to_its_card_is_woken_with_that_answ
 }
 
 #[test]
-fn the_second_rest_after_the_answer_goes_to_the_orchestrator_never_the_user() {
+fn the_rest_after_the_wakes_goes_to_the_orchestrator_never_the_user() {
     let mut s = answer_taken();
     end_empty(&mut s, "turn-2");
+    rest_through_wakes(&mut s);
     start(&mut s, "turn-3");
     let ended = end_empty(&mut s, "turn-3");
-    assert!(matches!(last(&s, "t"), LifecycleRecord::Unfinished { wake: None, .. }), "no second wake: {:?}", last(&s, "t"));
-    let case = open_case(&s).expect("the second rest is a case");
+    assert!(matches!(last(&s, "t"), LifecycleRecord::Unfinished { wake: None, .. }), "no fourth wake: {:?}", last(&s, "t"));
+    let case = open_case(&s).expect("the rest after the wakes is a case");
     assert_eq!(case, stalled_card_id(&"t".into(), 1, "turn-3"));
     assert!(ended.effects.iter().any(|e| matches!(e, DomainEffect::NotifyOrchestrator { interaction_id: Some(id), .. } if *id == case)), "the orchestrator hears of it");
     assert!(!notifies_user(&ended), "the user hears of nothing");
@@ -146,6 +157,7 @@ fn a_post_merge_turn_that_rests_with_its_work_owed_is_woken() {
     assert_eq!(text, EmptyTurn::AfterMerge { reason: "publish the release".into() }.wake_text());
     assert!(text.contains("publish the release") && text.contains("cleanup_done"), "{text}");
     assert!(!notifies_user(&ended) && pending(&s).is_empty(), "{:?}", pending(&s));
+    rest_through_wakes(&mut s);
     start(&mut s, "turn-3");
     let ended = end_empty(&mut s, "turn-3");
     let case = open_case(&s).expect("resting again is a case");
@@ -173,14 +185,15 @@ fn a_delivery_resting_after_presenting_is_left_to_the_user() {
 fn the_users_word_after_the_answer_ends_the_owed_step() {
     let mut s = answer_taken();
     end_empty(&mut s, "turn-2");
+    rest_through_wakes(&mut s);
     start(&mut s, "turn-3");
     end_empty(&mut s, "turn-3");
-    let case = open_case(&s).expect("the second rest is a case");
+    let case = open_case(&s).expect("the rest after the wakes is a case");
     must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Never mind, keep it as it is".into(), from_user: true, answers: None });
     assert!(s.interactions[&case].withdrawn, "what the user wrote settles the case");
     start(&mut s, "turn-4");
     end_empty(&mut s, "turn-4");
-    assert_eq!(unfinished(&s), 2, "nothing is owed after the user's word");
+    assert_eq!(unfinished(&s), 1 + usize::from(alondra_domain::EMPTY_TURN_WAKES), "nothing is owed after the user's word");
     assert!(open_case(&s).is_none() && lifecycle(&s).pending_inputs().is_empty());
     assert_eq!(pending(&s), ["r"]);
     assert_aggregate_rules(&s);
@@ -190,9 +203,10 @@ fn the_users_word_after_the_answer_ends_the_owed_step() {
 fn alondras_unsettled_case_on_a_delivery_never_cancels_it() {
     let mut s = answer_taken();
     end_empty(&mut s, "turn-2");
+    rest_through_wakes(&mut s);
     start(&mut s, "turn-3");
     end_empty(&mut s, "turn-3");
-    let case = open_case(&s).expect("the second rest is a case");
+    let case = open_case(&s).expect("the rest after the wakes is a case");
     must(&mut s, Actor::System, Command::SettleStall { case_id: case, task_id: "t".into(), outcome: StallOutcome::Unsettled });
     let t = &s.tasks[&TaskId::from("t")];
     assert!(!t.over() && t.stall_closing.is_none(), "{t:?}");
@@ -200,7 +214,7 @@ fn alondras_unsettled_case_on_a_delivery_never_cancels_it() {
     assert!(matches!(last(&s, "t"), LifecycleRecord::Answered { text: Some(text), .. } if text == UNSETTLED_DELIVERY), "{:?}", last(&s, "t"));
     start(&mut s, "turn-4");
     end_empty(&mut s, "turn-4");
-    assert_eq!(unfinished(&s), 2, "the node waits for the user now");
+    assert_eq!(unfinished(&s), 1 + usize::from(alondra_domain::EMPTY_TURN_WAKES), "the node waits for the user now");
     assert!(open_case(&s).is_none());
     assert_eq!(pending(&s), ["r"]);
     assert_eq!(lifecycle(&s).live(), alondra_domain::Several::new([InteractionId::from("r")]).map(alondra_domain::LiveState::WaitingUser));
@@ -255,6 +269,7 @@ fn the_beta_go_sequence_under_the_new_rules_wakes_then_cases() {
     end_empty(&mut s, "turn-2");
     assert!(matches!(last(&s, "t"), LifecycleRecord::Unfinished { wake: Some(_), .. }), "woken with the answer: {:?}", last(&s, "t"));
     s = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+    rest_through_wakes(&mut s);
     start(&mut s, "turn-3");
     let ended = end_empty(&mut s, "turn-3");
     assert!(matches!(last(&s, "t"), LifecycleRecord::Unfinished { wake: None, .. }), "{:?}", last(&s, "t"));
@@ -262,7 +277,7 @@ fn the_beta_go_sequence_under_the_new_rules_wakes_then_cases() {
     settle(&mut s, "Present beta 61 again as it is");
     start(&mut s, "turn-4");
     end_empty(&mut s, "turn-4");
-    assert_eq!(unfinished(&s), 2, "the instruction is what the node owes now");
+    assert_eq!(unfinished(&s), 1 + usize::from(alondra_domain::EMPTY_TURN_WAKES), "the instruction is what the node owes now");
     assert!(open_case(&s).is_none() && lifecycle(&s).pending_inputs().is_empty());
     assert_aggregate_rules(&s);
 }
@@ -428,6 +443,30 @@ proptest! {
                 let awaits = lifecycle(&run.s).awaits().cloned();
                 prop_assert!(!matches!(&awaits, Some(alondra_domain::Await::User(card)) if run.answered.contains(card) && !run.outbox.contains(card)),
                     "the node still waits on a card it was told the answer of: {:?}", awaits);
+            }
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 256, failure_persistence: None, ..ProptestConfig::default() })]
+
+    /// Every end of a turn, whatever the node presented, asked and was answered before it, leaves
+    /// the task with a closed result, an input on its way to the node, or a case someone settles.
+    #[test]
+    fn every_turn_end_leaves_a_closed_outcome_an_input_or_a_case(steps in prop::collection::vec(step(), 1..60)) {
+        let mut run = Run { s: world(), turns: 1, cards: 0, deliveries: 0, outbox: vec![], answered: vec![] };
+        sdk_turn(&mut run.s, "t", "a");
+        for step in &steps {
+            let before = run.s.lifecycle_journal[&TaskId::from("t")].len();
+            run.apply(step);
+            let ended = run.s.lifecycle_journal[&TaskId::from("t")].iter().skip(before).find_map(|record| match record {
+                LifecycleRecord::TurnEnded { unheard_card, .. } | LifecycleRecord::AwaitEnded { unheard_card, .. } => Some(unheard_card.clone()),
+                _ => None,
+            });
+            if let Some(unheard) = ended {
+                let after = super::stall_tests::after_the_end(&run.s, &unheard);
+                prop_assert!(after.is_ok(), "after {:?}: {}", step, after.unwrap_err());
             }
         }
     }

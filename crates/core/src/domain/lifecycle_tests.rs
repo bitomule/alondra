@@ -364,10 +364,25 @@ pub(super) fn woken(s: &mut DomainState, id: &str, turn: &str, next: &str) -> St
     must(s, Actor::System, Command::RecordTurnBoundary { task_id: id.into(), generation: 1, turn: turn.into(), failure: None, failed: None });
     let LifecycleRecord::TurnEnded { wake: Some(input), text: Some(text), .. } = last(s, id) else { panic!("the node is woken: {:?}", last(s, id)) };
     assert_eq!(text, WAKE_INSTRUCTION);
+    let input = rewoken(s, id, &format!("{turn}-woken"), input);
     must(s, Actor::System, Command::RecordRuntimeFacts { task_id: id.into(), generation: 1, facts: vec![
         RuntimeObservation::TurnStarted { turn: next.into(), input },
     ] });
     format!("{STALLED_PREFIX}{id}-1-{next}")
+}
+/// The node of the SDK task `id`, woken once with `input`, starts and ends empty the turns of
+/// its other wakes, `{prefix}-2` and on: this returns the input of its last wake.
+pub(super) fn rewoken(s: &mut DomainState, id: &str, prefix: &str, mut input: String) -> String {
+    for n in 2..=alondra_domain::EMPTY_TURN_WAKES {
+        let turn = format!("{prefix}-{n}");
+        must(s, Actor::System, Command::RecordRuntimeFacts { task_id: id.into(), generation: 1, facts: vec![
+            RuntimeObservation::TurnStarted { turn: turn.clone(), input: input.clone() },
+        ] });
+        must(s, Actor::System, Command::RecordTurnBoundary { task_id: id.into(), generation: 1, turn, failure: None, failed: None });
+        let LifecycleRecord::TurnEnded { wake: Some(next), .. } = last(s, id) else { panic!("wake {n} in a row: {:?}", last(s, id)) };
+        input = next;
+    }
+    input
 }
 /// An SDK task whose `turn` is the one Alondra woke its node for after an empty turn before it:
 /// ending it with nothing that explains the next step opens the case for the orchestrator whose
@@ -699,14 +714,16 @@ fn work_that_ends_after_its_turn_wakes_a_turn_of_its_own_that_ends_on_one_card()
     assert_eq!(s.interactions.keys().filter(|id| id.0.starts_with(STALLED_PREFIX)).map(|id| id.0.as_str()).collect::<Vec<_>>(),
         [format!("{STALLED_PREFIX}t-1-turn-3")], "one case, from the woken turn that rested");
     assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Running, "the orchestrator settles it, not the user");
-    assert_eq!(kinds(&s, "t")[4..], ["work_started", "turn_ended", "work_ended", "turn_resumed", "turn_ended", "turn_started", "turn_ended"]);
+    assert_eq!(kinds(&s, "t")[4..], ["work_started", "turn_ended", "work_ended", "turn_resumed", "turn_ended", "turn_started", "turn_ended", "turn_started", "turn_ended", "turn_started", "turn_ended"],
+        "three wakes in a row, then the case");
     let journal = s.lifecycle_journal[&TaskId::from("t")].clone();
     assert!(replay(&TaskId::from("t"), &journal).is_ok(), "the journal replays");
     assert_aggregate_rules(&s);
 }
 
 // A subagent hands its report back after the turn ended and Claude takes it up by itself: the card
-// that asked how the task goes on is withdrawn, the task runs, and the end of that turn asks again.
+// that asked how the task goes on is withdrawn, the task runs, and a turn of its own starts the count
+// of empty turns again: its empty end goes back to the node.
 #[test]
 fn a_turn_claude_opens_by_itself_withdraws_the_card_that_asked_how_it_goes_on() {
     let mut s = world();
@@ -719,8 +736,10 @@ fn a_turn_claude_opens_by_itself_withdraws_the_card_that_asked_how_it_goes_on() 
     assert!(s.interactions[&InteractionId::from(card.as_str())].withdrawn, "the case no longer holds");
     assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Running);
     must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-2".into(), failure: None, failed: None });
-    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Running, "its empty end is a case for the orchestrator again");
-    assert_eq!(kinds(&s, "t")[6..], ["turn_ended", "turn_unprompted", "turn_ended"]);
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Running);
+    assert!(matches!(last(&s, "t"), LifecycleRecord::TurnEnded { wake: Some(_), .. }), "its empty end goes back to the node: {:?}", last(&s, "t"));
+    let kinds = kinds(&s, "t");
+    assert_eq!(kinds[kinds.len() - 3..], ["turn_ended", "turn_unprompted", "turn_ended"]);
     assert!(replay(&TaskId::from("t"), &s.lifecycle_journal[&TaskId::from("t")]).is_ok(), "the journal replays");
     assert_aggregate_rules(&s);
 }
@@ -1714,9 +1733,10 @@ fn a_pause_a_host_ended_in_while_the_node_worked_on_what_the_user_sent_back_ends
 }
 
 // A host that ends with no session to resume leaves the delivery sent back with nobody on it: the
-// invariant tells the node to go on, with no card, and a second stop is the orchestrator's case.
+// invariant tells the node to go on, with no card, up to three times in a row, and the stop after
+// them is the orchestrator's case.
 #[test]
-fn a_stranded_task_goes_back_to_work_once_and_then_to_the_orchestrator_never_to_the_user() {
+fn a_stranded_task_goes_back_to_work_three_times_and_then_to_the_orchestrator_never_to_the_user() {
     let mut s = world();
     working_on_what_the_user_sent_back(&mut s, Instruction::Changes);
     assert_eq!(s.stranded_tasks(), Vec::<TaskId>::new(), "a turn runs");
@@ -1730,9 +1750,19 @@ fn a_stranded_task_goes_back_to_work_once_and_then_to_the_orchestrator_never_to_
     assert_eq!(s.stranded_tasks(), Vec::<TaskId>::new(), "it has what it goes on with");
     assert!(s.lifecycle_of(&"t".into()).unwrap().cards().is_empty(), "no card");
 
-    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![RuntimeObservation::TurnStarted { turn: "turn-3".into(), input }] });
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-3".into(), failure: None, failed: None });
-    assert_eq!(s.stranded_tasks(), [TaskId::from("t")], "its turn ended with nothing delivered");
+    let mut input = input;
+    for n in 1..=alondra_domain::EMPTY_TURN_WAKES {
+        let turn = format!("turn-stranded-{n}");
+        must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![RuntimeObservation::TurnStarted { turn: turn.clone(), input: input.clone() }] });
+        must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn, failure: None, failed: None });
+        assert_eq!(s.stranded_tasks(), [TaskId::from("t")], "its turn ended with nothing delivered");
+        if n == alondra_domain::EMPTY_TURN_WAKES {
+            break;
+        }
+        must(&mut s, Actor::System, Command::RecordStranded { task_id: "t".into() });
+        let Some(LifecycleRecord::Unfinished { wake: Some(next), .. }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("woken again: {:?}", s.lifecycle_journal[&TaskId::from("t")].last()) };
+        input = next;
+    }
 
     let again = must(&mut s, Actor::System, Command::RecordStranded { task_id: "t".into() });
     assert!(again.effects.iter().all(|e| !matches!(e, DomainEffect::NotifyUser { .. })), "the user is not asked");

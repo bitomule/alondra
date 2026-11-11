@@ -1,8 +1,9 @@
 //! A node that stops with nothing explaining its next step is Alondra's to fix, never the user's:
-//! the first time Alondra wakes it, and from then on each stop is a case for the orchestrator,
-//! which settles it with one closed outcome. Cases are counted by turns since the task last moved
-//! on; past the limit the only outcome is to close the task with a result.
+//! Alondra hands it back its turn up to `EMPTY_TURN_WAKES` times in a row, and the next stop is a
+//! case for the orchestrator, which settles it with one closed outcome. Cases are counted since
+//! the task last moved on; past the limit the only outcome is to close the task with a result.
 use super::*;
+use alondra_domain::EMPTY_TURN_WAKES;
 use serde::{Deserialize, Serialize};
 
 /// The case Alondra opens for the orchestrator when a node stopped: this prefix, then the task,
@@ -61,6 +62,12 @@ pub fn is_stall_case(i: &Interaction) -> bool {
     i.system_card == Some(SystemCard::Stalled) && i.author == Author::System && i.recipient == Recipient::Orchestrator
 }
 
+/// Whether a stop of the task `lifecycle` follows opens a case at once instead of waking its node:
+/// Alondra already woke it `EMPTY_TURN_WAKES` times in a row with nothing new since.
+pub(in crate::domain) fn stalled_before(lifecycle: &alondra_domain::TaskLifecycle) -> bool {
+    lifecycle.empty_turns() >= EMPTY_TURN_WAKES
+}
+
 impl DomainState {
     /// Whether `i` is a case about a stopped node still waiting for someone to settle it. A case
     /// closed while the task's PR was open stays open until Alondra delivers the PR, and nobody
@@ -88,12 +95,6 @@ fn stall_options(only_close: bool) -> Vec<QuestionOption> {
 }
 
 impl DomainState {
-    /// Whether a stop of `task` opens a case at once instead of waking its node: a case was opened
-    /// since the task last moved on, so Alondra already woke it.
-    pub(in crate::domain) fn stalled_before(&self, task: &TaskId) -> bool {
-        self.tasks.get(task).is_some_and(|t| t.stalls > 0)
-    }
-
     /// The case the lifecycle of `task` now waits on, `card`, goes to the orchestrator.
     pub(in crate::domain) fn open_stall(&mut self, task: &TaskId, card: InteractionId, effects: &mut Vec<DomainEffect>) {
         let why = self.empty_turn(task);
@@ -119,7 +120,7 @@ impl DomainState {
             format!("This is case {number} of {STALL_ATTEMPTS} since the task last moved on. Settle it with instruct (one concrete next step the node gets) or close (the task ends with your result, what got done and what did not). After case {STALL_ATTEMPTS}, close is the only outcome.")
         };
         let body = format!(
-            "The node of Task “{title}” ({task}) stopped with nothing that explains its next step: no result, no question, no work of its own running and nothing it waits for. {why} Alondra already woke it once with what happened. \
+            "The node of Task “{title}” ({task}) stopped with nothing that explains its next step: no result, no question, no work of its own running and nothing it waits for. {why} Alondra already handed it back its turn {EMPTY_TURN_WAKES} times in a row with what happened. \
              This is never a question for the user: read its mission, its last words and its worktree below, and settle it with settle_stall(case_id: \"{card}\", task_id: \"{task}\", outcome). {outcomes}{delivery}");
         let need = fit_title(&title, CardSpec::TITLED_NEED_MAX, |title| format!("“{title}” stopped without a result or a question: settle how it goes on"));
         self.interactions.insert(card.clone(), Interaction {

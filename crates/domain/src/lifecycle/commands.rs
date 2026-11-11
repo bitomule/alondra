@@ -888,23 +888,17 @@ impl TaskLifecycle {
 
     fn await_ended(&mut self, unheard: InteractionId, wake: Option<InputId>, owner: Owner) -> Result<(), Refusal> {
         valid_id(&unheard.0)?;
-        if wake.as_ref().is_some_and(|input| self.settled.contains(input)) {
-            return Err(Refusal::InvalidState);
-        }
+        let wake = wake.filter(|input| !self.settled.contains(input) && self.may_wake());
         let execution = self.session_mut().ok_or(Refusal::InvalidState)?;
         if !matches!(execution.activity, Activity::Awaiting(_)) {
             return Err(Refusal::InvalidState);
         }
         execution.activity = Activity::Resting;
         let State::InProgress(Progress::Executing { stage, execution }) = &self.state else {
-            return if wake.is_some() { Err(Refusal::InvalidState) } else { Ok(()) };
+            return Ok(());
         };
         let (stage, mut execution) = (*stage, execution.0.clone());
-        let woken = match wake {
-            Some(_) if self.woken.is_some() => return Err(Refusal::InvalidState),
-            wake => wake,
-        };
-        self.state = match &woken {
+        self.state = match &wake {
             Some(input) => {
                 queue_input(&mut execution, input.clone())?;
                 State::InProgress(Progress::Executing { stage, execution: ActiveExecution::new(execution)? })
@@ -915,15 +909,15 @@ impl TaskLifecycle {
                 session: Session::Present(execution),
             }),
         };
-        self.woken = woken;
+        if let Some(input) = wake {
+            self.wake_with(input);
+        }
         Ok(())
     }
 
     fn unfinished(&mut self, unheard: InteractionId, wake: Option<InputId>) -> Result<(), Refusal> {
         valid_id(&unheard.0)?;
-        if wake.as_ref().is_some_and(|input| self.settled.contains(input) || self.is_pending(input)) || (wake.is_some() && self.woken.is_some()) {
-            return Err(Refusal::InvalidState);
-        }
+        let wake = wake.filter(|input| !self.settled.contains(input) && !self.is_pending(input) && self.may_wake());
         let State::Delivered(delivered) = &mut self.state else {
             return Err(Refusal::InvalidState);
         };
@@ -942,7 +936,9 @@ impl TaskLifecycle {
                 delivered.decisions.insert(unheard.clone(), Card { id: unheard, reason: WaitReason::Unheard, owner: Owner::Orchestrator, callback: None });
             }
         }
-        self.woken = wake;
+        if let Some(input) = wake {
+            self.wake_with(input);
+        }
         Ok(())
     }
 

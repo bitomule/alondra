@@ -833,19 +833,43 @@ fn started(task: &mut TaskLifecycle, root: &str, by: &str) {
 }
 
 #[test]
-fn the_first_empty_turn_wakes_the_node_and_the_second_asks_the_user() {
+fn an_empty_turn_is_handed_back_three_times_and_then_goes_to_the_orchestrator() {
     let mut task = running();
-    ended(&mut task, "root", Some("wake"), None);
+    stalled(&mut task, "root", Some("wake-1"));
     assert!(task.cards().is_empty(), "the first empty turn asks nobody");
-    assert_eq!(task.pending_inputs(), vec![&input("wake")], "it wakes the node with what happened");
+    assert_eq!(task.pending_inputs(), vec![&input("wake-1")], "it hands the node back its turn with what happened");
     assert_eq!(task.live(), Some(LiveState::Working(Worker::Alondra(Step::Delivering))));
-    started(&mut task, "woken", "wake");
-    let stamp = task.execution().unwrap().clone();
-    let cursor = task.cursor().unwrap() + 1;
-    let again = RuntimeFact::TurnEnded { turn: turn("woken"), unheard_card: "unheard-woken".into(), wake: Some(input("wake-again")), awaits: None, stalled: false };
-    task.apply(task.revision(), Event::Runtime { stamp, cursor, fact: again }).unwrap();
-    assert!(task.pending_inputs().is_empty(), "a second wake in a row is never sent");
-    assert_eq!(task.live(), Several::new([InteractionId::from("unheard-woken")]).map(LiveState::WaitingUser));
+    for n in 2..=EMPTY_TURN_WAKES {
+        let (root, wake) = (format!("woken-{}", n - 1), format!("wake-{n}"));
+        started(&mut task, &root, &format!("wake-{}", n - 1));
+        stalled(&mut task, &root, Some(&wake));
+        assert!(task.cards().is_empty(), "empty turn {n} still asks nobody");
+        assert_eq!(task.pending_inputs(), vec![&input(&wake)]);
+    }
+    assert_eq!(task.empty_turns(), EMPTY_TURN_WAKES);
+    started(&mut task, "woken-3", "wake-3");
+    stalled(&mut task, "woken-3", Some("wake-4"));
+    assert!(task.pending_inputs().is_empty(), "a fourth wake in a row is never sent");
+    let case = InteractionId::from("stalled-woken-3");
+    assert_eq!(task.cards(), [(&case, WaitReason::Unheard)]);
+    assert_eq!(task.card_owner(&case), Some(Owner::Orchestrator), "the fourth empty turn is the orchestrator's case");
+}
+
+#[test]
+fn progress_resets_the_count_of_empty_turns() {
+    let mut task = running();
+    stalled(&mut task, "root", Some("wake-1"));
+    started(&mut task, "woken-1", "wake-1");
+    stalled(&mut task, "woken-1", Some("wake-2"));
+    assert_eq!(task.empty_turns(), 2);
+    started(&mut task, "woken-2", "wake-2");
+    fact(&mut task, RuntimeFact::Ask { card: "permission".into(), callback: CallbackId::new("permission").unwrap(), reason: WaitReason::Permission });
+    apply(&mut task, Event::Decide { card: "permission".into(), decision: Decision::Allow });
+    fact(&mut task, RuntimeFact::CallbackSettled { callback: CallbackId::new("permission").unwrap(), continuation: continuation("allowed") });
+    fact(&mut task, RuntimeFact::ContinuationConsumed { continuation: continuation("allowed") });
+    stalled(&mut task, "woken-2", Some("wake-3"));
+    assert_eq!(task.empty_turns(), 1, "the node's card starts the count again");
+    assert_eq!(task.pending_inputs(), vec![&input("wake-3")]);
 }
 
 #[test]
@@ -900,14 +924,26 @@ fn stalled(task: &mut TaskLifecycle, root: &str, wake: Option<&str>) {
     fact(task, RuntimeFact::TurnEnded { turn: turn(root), unheard_card: InteractionId::from(format!("stalled-{root}")), wake: wake.map(input), awaits: None, stalled: true });
 }
 
-/// A node that stops is Alondra's to fix: the first empty turn wakes it, and the next one waits on
+/// `EMPTY_TURN_WAKES` turns in a row that end empty, each handed back to the node, and the turn
+/// the last wake starts, "woken", still running.
+fn handed_back_until_the_limit(task: &mut TaskLifecycle) {
+    stalled(task, "root", Some("wake-1"));
+    for n in 1..EMPTY_TURN_WAKES {
+        started(task, &format!("woken-{n}"), &format!("wake-{n}"));
+        stalled(task, &format!("woken-{n}"), Some(&format!("wake-{}", n + 1)));
+    }
+    started(task, "woken", &format!("wake-{EMPTY_TURN_WAKES}"));
+}
+
+/// A node that stops is Alondra's to fix: the first empty turns wake it, and the next one waits on
 /// the orchestrator, never on the user, until something tells the node how it goes on.
 #[test]
-fn the_second_empty_turn_waits_on_the_orchestrator_never_on_the_user() {
+fn an_empty_turn_past_the_wakes_waits_on_the_orchestrator_never_on_the_user() {
     let mut task = running();
     stalled(&mut task, "root", Some("wake"));
     assert_eq!(task.pending_inputs(), vec![&input("wake")], "the first stop wakes the node");
-    started(&mut task, "woken", "wake");
+    let mut task = running();
+    handed_back_until_the_limit(&mut task);
     stalled(&mut task, "woken", None);
     assert_eq!(task.cards(), [(&InteractionId::from("stalled-woken"), WaitReason::Unheard)]);
     assert_eq!(task.live(), Some(LiveState::Working(Worker::Alondra(Step::Answering))), "the orchestrator settles it");
@@ -919,8 +955,7 @@ fn the_second_empty_turn_waits_on_the_orchestrator_never_on_the_user() {
 #[test]
 fn a_delivery_ends_the_case_of_a_stopped_node() {
     let mut task = running();
-    stalled(&mut task, "root", Some("wake"));
-    started(&mut task, "woken", "wake");
+    handed_back_until_the_limit(&mut task);
     stalled(&mut task, "woken", None);
     apply(&mut task, Event::Present { delivery: "result".into() });
     assert!(task.cards().is_empty(), "the orchestrator no longer settles anything: {:?}", task.cards());
@@ -956,8 +991,7 @@ fn a_delivery_under_review_is_work_while_a_turn_runs_and_waits_for_the_user_once
 #[test]
 fn a_lapsed_wait_with_nothing_told_waits_on_the_orchestrator_once_the_node_was_woken() {
     let mut task = running();
-    stalled(&mut task, "root", Some("wake"));
-    started(&mut task, "woken", "wake");
+    handed_back_until_the_limit(&mut task);
     fact(&mut task, RuntimeFact::TurnEnded { turn: turn("woken"), unheard_card: "stalled-woken".into(), wake: None, awaits: Some(Await::Orchestrator("question".into())), stalled: true });
     apply(&mut task, Event::AwaitEnded { unheard_card: "stalled-woken".into(), wake: None, stalled: true });
     assert_eq!(task.live(), Some(LiveState::Working(Worker::Alondra(Step::Answering))));
@@ -1147,14 +1181,15 @@ proptest! {
     }
 
     /// No turn that ends empty is left without its wake or its card, and the node is never woken
-    /// twice in a row: between two wakes there is a fact other than the wake's own turn.
+    /// more than `EMPTY_TURN_WAKES` times in a row: past them there is a fact other than the wakes'
+    /// own turns.
     #[test]
-    fn every_empty_turn_wakes_the_node_once_and_then_asks_the_user(started in any::<bool>(), actions in prop::collection::vec(prop_oneof![
+    fn every_empty_turn_wakes_the_node_up_to_three_times_and_then_asks_the_user(started in any::<bool>(), actions in prop::collection::vec(prop_oneof![
         3 => prop::sample::select(vec![2u8, 3, 4, 6, 7, 17, 23, 36, 37, 38, 46, 47, 48, 49, 50, 52, 53]),
         1 => 0u8..56,
     ], 1..160)) {
         let mut task = if started { running() } else { TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap() };
-        let mut woke = false;
+        let mut woke = 0;
         for action in actions {
             let Some(event) = arbitrary_event(&task, action) else { continue };
             let wake = match &event {
@@ -1168,19 +1203,19 @@ proptest! {
             let executing = task.phase() == TaskPhase::InProgress && task.cards().is_empty() && task.dependencies().is_empty();
             if task.apply(task.revision(), event).is_err() { continue }
             let Some(wake) = wake else {
-                if !quiet { woke = false; }
+                if !quiet { woke = 0; }
                 continue;
             };
             let woken = task.pending_inputs().contains(&&wake) && !pending_before.contains(&wake);
             let explained = matches!(task.activity(), ActivityView::OwnWork | ActivityView::Continuation);
             prop_assert!(woken || waking || explained || !task.cards().is_empty() || !task.dependencies().is_empty() || task.phase() != TaskPhase::InProgress, "an accepted end that names a wake sends it, unless a wake is already on its way, the turn left work or a notification, the task waits on other tasks or is delivered, or someone is asked: {:?}", task);
             if woken {
-                prop_assert!(!woke, "a node woken after an empty turn is not woken again before anything new: {:?}", task);
+                prop_assert!(woke < EMPTY_TURN_WAKES, "a node woken {} times in a row is not woken again before anything new: {:?}", woke, task);
             }
             if executing && task.activity() == ActivityView::Resting {
                 prop_assert!(!task.cards().is_empty(), "an empty turn nobody wakes asks the user: {:?}", task);
             }
-            woke = woken;
+            woke = if woken { woke + 1 } else { 0 };
         }
     }
 
@@ -3149,10 +3184,10 @@ fn unfinished(task: &mut TaskLifecycle, wake: Option<&str>) -> Result<(), Refusa
 }
 
 /// beta-go, 3 November: the node presented, asked the user, was told the answer and rested on
-/// it for two hours. The step it owes wakes it once; resting again waits on the orchestrator,
-/// never on the user, who still sees only the delivery.
+/// it for two hours. The step it owes wakes it up to three times; resting again waits on the
+/// orchestrator, never on the user, who still sees only the delivery.
 #[test]
-fn unfinished_wakes_a_resting_delivery_once_then_waits_on_the_orchestrator() {
+fn unfinished_wakes_a_resting_delivery_up_to_three_times_then_waits_on_the_orchestrator() {
     let mut task = resting_delivery();
     let review = Several::new([InteractionId::from("result")]).map(LiveState::WaitingUser);
     unfinished(&mut task, Some("owed")).unwrap();
@@ -3160,8 +3195,13 @@ fn unfinished_wakes_a_resting_delivery_once_then_waits_on_the_orchestrator() {
     assert!(task.cards().is_empty());
     started(&mut task, "woken", "owed");
     stalled(&mut task, "woken", None);
-    assert_eq!(unfinished(&mut task, Some("owed-again")), Err(Refusal::InvalidState), "a second wake in a row is never sent");
-    unfinished(&mut task, None).unwrap();
+    for n in 2..=EMPTY_TURN_WAKES {
+        let (owed, turn) = (format!("owed-{n}"), format!("woken-{n}"));
+        unfinished(&mut task, Some(&owed)).unwrap();
+        started(&mut task, &turn, &owed);
+        stalled(&mut task, &turn, None);
+    }
+    unfinished(&mut task, Some("owed-again")).unwrap();
     assert_eq!(task.cards(), [(&InteractionId::from("stalled-owed"), WaitReason::Unheard)]);
     assert!(task.pending_inputs().is_empty());
     assert_eq!(task.live(), review, "the user sees only the delivery");

@@ -196,6 +196,10 @@ pub enum ActivityView {
 
 /// Card ids of the holds recorded before a pause named who it waits on. Only a hold on Claude's
 /// API or on its usage limit waits on capacity; every other card waits on the user.
+/// How many turns in a row that end empty hand the node back its turn before the next one waits on
+/// the orchestrator's case.
+pub const EMPTY_TURN_WAKES: u8 = 3;
+
 pub const CLAUDE_OUTAGE_CARD_PREFIX: &str = "claude-outage-";
 pub const CLAUDE_USAGE_CARD_PREFIX: &str = "claude-usage-limit-";
 
@@ -669,17 +673,18 @@ pub enum Event {
         stalled: bool,
     },
     /// What the execution's last turn ended waiting for no longer holds, and nothing reached the
-    /// node for it: the turn is empty after all, so it wakes the node with `wake` or, when that
-    /// already happened with nothing new since, waits on `unheard_card`, the orchestrator's when
-    /// `stalled`.
+    /// node for it: the turn is empty after all, so it wakes the node with `wake` or, once
+    /// `EMPTY_TURN_WAKES` wakes in a row happened with nothing new since, waits on `unheard_card`,
+    /// the orchestrator's when `stalled`.
     AwaitEnded {
         unheard_card: InteractionId,
         wake: Option<InputId>,
         stalled: bool,
     },
     /// A delivery whose node rests still owes a step the node never took after it (the answer to
-    /// its own card, its work after the merge): it wakes the node with `wake` or, woken already
-    /// with nothing new since, waits on `unheard_card`, the orchestrator's.
+    /// its own card, its work after the merge): it wakes the node with `wake` or, once
+    /// `EMPTY_TURN_WAKES` wakes in a row happened with nothing new since, waits on `unheard_card`,
+    /// the orchestrator's.
     Unfinished {
         unheard_card: InteractionId,
         wake: Option<InputId>,
@@ -1155,8 +1160,9 @@ pub struct TaskLifecycle {
     /// Inputs the user settled (sent again, taken as received, or dropped with the task), whose
     /// uncertain handoff no longer holds the task.
     settled: BTreeSet<InputId>,
-    /// The input that woke the node after a turn that ended empty, while no new fact came since:
-    /// the next empty turn asks the user instead of waking it again.
+    /// How many turns in a row ended empty and woke the node, with no new fact since, and the
+    /// input of the last wake: once `EMPTY_TURN_WAKES` did, the next empty turn waits on a case.
+    empty_turns: u8,
     woken: Option<InputId>,
     /// The revision since which the task owes its current `obligation()`.
     owed_since: Revision,
@@ -1175,12 +1181,45 @@ impl TaskLifecycle {
             post_merge: None,
             doubts: BTreeMap::new(),
             settled: BTreeSet::new(),
+            empty_turns: 0,
             woken: None,
             owed_since: 0,
         })
     }
     pub fn task(&self) -> &TaskId {
         &self.task
+    }
+    /// How many turns in a row ended empty and woke the node, with no new fact since.
+    pub fn empty_turns(&self) -> u8 {
+        self.empty_turns
+    }
+    /// Whether the next turn that ends empty hands the node back its turn.
+    fn may_wake(&self) -> bool {
+        self.empty_turns < EMPTY_TURN_WAKES
+    }
+    /// Whether the end of the running turn, with nothing explaining what follows, hands the node
+    /// back its turn: the task runs, the turn leaves no work and no notification behind, nothing
+    /// already waits to reach the node, and its empty turns in a row are under `EMPTY_TURN_WAKES`.
+    pub fn hands_back_an_empty_turn(&self) -> bool {
+        let State::InProgress(Progress::Executing { execution, .. }) = &self.state else {
+            return false;
+        };
+        let execution = &execution.0;
+        self.may_wake()
+            && execution.inbox.is_empty()
+            && match &execution.activity {
+                Activity::Turn { work, continuations, taken, .. } => work.is_empty() && continuations.is_subset(taken),
+                Activity::Awaiting(_) | Activity::Resting => true,
+                Activity::Launching(_) | Activity::InputPending(_) | Activity::OwnWork { .. } | Activity::Continuation(_) => false,
+            }
+    }
+    fn wake_with(&mut self, input: InputId) {
+        self.empty_turns += 1;
+        self.woken = Some(input);
+    }
+    fn rest_wakes(&mut self) {
+        self.empty_turns = 0;
+        self.woken = None;
     }
     pub fn revision(&self) -> Revision {
         self.revision
@@ -1585,13 +1624,14 @@ impl TaskLifecycle {
             post_merge: self.post_merge.clone(),
             doubts: self.doubts.clone(),
             settled: self.settled.clone(),
+            empty_turns: self.empty_turns,
             woken: self.woken.clone(),
             owed_since: self.owed_since,
         };
         let keeps_wake = keeps_wake(&event, self.woken.as_ref());
         candidate.transition(event)?;
         if !keeps_wake {
-            candidate.woken = None;
+            candidate.rest_wakes();
         }
         candidate.revision += 1;
         if candidate.owes() != self.owes() {

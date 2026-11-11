@@ -336,7 +336,7 @@ impl TaskLifecycle {
                         Await::Tasks(tasks) if tasks.iter().any(|task| *task == self.task) => return Err(Refusal::SelfDependency),
                         Await::Tasks(_) | Await::Machine | Await::Instruction => {}
                     }
-                    self.woken = None;
+                    self.rest_wakes();
                     Activity::Awaiting(awaits)
                 } else {
                     Activity::Resting
@@ -526,11 +526,10 @@ impl TaskLifecycle {
         {
             if let Some(input) = resume_instead.take() {
                 queue_unless_waiting(&mut execution, input)?;
-            } else if let Some(input) = wake_instead.take_if(|_| self.woken.is_none()) {
+            } else if let Some(input) = wake_instead.take_if(|_| self.may_wake()) {
                 queue_unless_waiting(&mut execution, input.clone())?;
-                self.woken = Some(input);
+                self.wake_with(input);
             } else {
-                self.woken = None;
                 let id = resting_card
                     .clone()
                     .or_else(|| aborted_callback.as_ref().map(|(_, id)| id.clone()))
