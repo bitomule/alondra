@@ -467,8 +467,9 @@ card) is a delivery guarantee Alondra handles; this section is about their conte
 - Updating your branch with its base (conflicts, or you need what landed there): use the method
   Alondra's message names, which the user picks in Settings («Update a PR's branch with main»).
   - Rebase, the default: `git fetch origin <base>`, `git rebase origin/<base>`, resolve, run the
-    tests, then `git push --force-with-lease` to your own task's branch only. Never force-push
-    `main`, the base, or any branch that is not your task's.
+    tests, then `git push --force-with-lease` to your own task's branch only. That push is part
+    of the rebase: do it without asking the user. Never force-push `main`, the base, or any
+    branch that is not your task's.
   - If the rebase gets hard (many conflicts across intermediate commits), `git rebase --abort`,
     merge `origin/<base>` into your branch instead this once, push normally, and say in your
     delivery that you merged instead of rebasing and why.
