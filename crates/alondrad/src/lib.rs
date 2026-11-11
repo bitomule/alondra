@@ -81,6 +81,7 @@ use alondra_daemon_engine::{
     node_reports,
     node_revival,
     node_work,
+    obligation_watch,
     options,
     pauses,
     pr_images,
@@ -699,6 +700,7 @@ async fn serve_domain(
     tokio::spawn(sdk_handover::run(state_domain.clone()));
     tokio::spawn(account_move::run(state_domain.clone()));
     tokio::spawn(provider_transition::run(state_domain.clone()));
+    tokio::spawn(obligation_watch::run(state_domain.clone()));
     let compaction = if config.fast_timing { &idle_compaction::Timing::SANDBOX } else { &idle_compaction::Timing::LIVE };
     tokio::spawn(idle_compaction::run(state_domain.clone(), compaction));
     let closer = if config.fast_timing { task_closer::Timing::sandbox(config.close_free_nodes_after) } else { task_closer::Timing::new(config.close_free_nodes_after) };
