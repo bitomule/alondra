@@ -7,8 +7,8 @@ use super::*;
 use alondra_domain::{Capacity, LiveState};
 use proptest::prelude::*;
 
-const SDK: &str = "s-task";
-const NODE: &str = "c";
+pub(super) const SDK: &str = "s-task";
+pub(super) const NODE: &str = "c";
 
 #[test]
 fn only_a_closed_and_reopened_task_can_choose_a_new_native_provider_and_account() {
@@ -80,7 +80,7 @@ fn reopening_with_the_original_node_kept_cannot_change_its_native_session_accoun
 }
 
 #[derive(Clone, Debug)]
-enum Act {
+pub(super) enum Act {
     Task(Step),
     Pause { by_user: bool },
     DiskPause,
@@ -93,7 +93,7 @@ enum Act {
     SendBack,
 }
 
-fn act() -> impl Strategy<Value = Act> {
+pub(super) fn act() -> impl Strategy<Value = Act> {
     prop_oneof![
         4 => step().prop_map(Act::Task),
         1 => any::<bool>().prop_map(|by_user| Act::Pause { by_user }),
@@ -116,7 +116,7 @@ fn pause(by_user: bool, since: Millis) -> Pause {
 }
 
 /// What the gate does: it pauses the node, and resumes it by telling it how it goes on first.
-fn perform(s: &mut DomainState, act: &Act, n: usize) {
+pub(super) fn perform(s: &mut DomainState, act: &Act, n: usize) {
     let at = 1_000 + n as Millis;
     let _ = match act {
         Act::Task(step) => run(s, step, n).map(drop),

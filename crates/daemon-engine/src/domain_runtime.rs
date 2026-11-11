@@ -519,6 +519,12 @@ impl DomainRuntime {
         #[cfg(any(test, feature = "test-hooks"))]
         self.index_builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let snapshot = Arc::new(ReadSnapshot::build(Arc::clone(state)));
+        let before = self.read();
+        for (task, card) in snapshot.index().unlisted_waits() {
+            if before.index().task(task).and_then(|read| read.unlisted.as_ref()) != Some(card) {
+                log!("{task} waits on card {card} that the inbox does not list");
+            }
+        }
         *self.snapshot.write_or_recover("the domain snapshot") = snapshot;
     }
     pub(crate) fn publish_batch_report(&self, run: &str, cursor: u64, evidence: &[u8], report: &crate::domain_store::batch_effects::BatchReport) -> Result<(), StoreError> {
