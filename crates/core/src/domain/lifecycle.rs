@@ -1483,13 +1483,20 @@ impl DomainState {
         if self.interactions.contains_key(&turn_ended_card_id(task, generation, turn)) || self.interactions.contains_key(&stalled_card_id(task, generation, turn)) {
             return Err(DomainError::new("conflict", format!("The end of turn {turn} of task {task} is already recorded")));
         }
-        let kind = failure.and_then(|failure| classify_sdk(&failure.error, failure.status));
-        if let Some(hold) = kind.and_then(ClaudeHold::for_failure) {
-            self.hold_on_claude(task, hold, failure.and_then(|failure| failure.resets_at), effects, lifecycles)?;
+        if let Some(failure) = failure {
+            self.hold_after_failure(task, failure, effects, lifecycles)?;
         }
         let end = self.observed_turn_end(task, turn, failure, failed);
         let unexplained = end.is_none() && failure.is_none();
         self.finish_observed_turn(task, generation, turn, end, unexplained, effects, lifecycles)
+    }
+
+    /// The wait `failure` asks for, when it asks for one.
+    pub(super) fn hold_after_failure(&mut self, task: &TaskId, failure: &SdkApiFailure, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+        match classify_sdk(&failure.error, failure.status).and_then(ClaudeHold::for_failure) {
+            Some(hold) => self.hold_on_claude(task, hold, failure.resets_at, effects, lifecycles),
+            None => Ok(()),
+        }
     }
 
     fn observed_turn_end<'a>(&self, task: &TaskId, turn: &str, failure: Option<&'a SdkApiFailure>, failed: Option<&'a str>) -> Option<TurnEnd<'a>> {

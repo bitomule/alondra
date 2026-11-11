@@ -637,6 +637,15 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         failed: Option<String>,
     },
+    /// The API error `failure` ended a turn of the Task's SDK execution of `generation`, and the
+    /// lifecycle refused to record that end: the wait the error asks for (a sign-in, the API, the
+    /// usage limit) stands all the same. An error no wait answers, and a Task already waiting,
+    /// change nothing.
+    RecordClaudeHold {
+        task_id: TaskId,
+        generation: u64,
+        failure: SdkApiFailure,
+    },
     /// The Task's SDK host of `generation` ended: no process holds its lock any more. What it had
     /// running ended with it. When a host that resumes the same Claude session takes its place
     /// (`resumes`), what was cut goes on by itself; otherwise, when nothing explains the Task's next

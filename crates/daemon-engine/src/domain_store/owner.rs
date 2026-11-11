@@ -636,6 +636,17 @@ impl<'connection> OwnerTransaction<'connection> {
                 continue;
             }
             if let Command::RecordTurnBoundary { task_id, generation, turn, failure, failed } = &envelope.command {
+                let hold = failure.as_ref()
+                    .filter(|failure| alondra_core::domain::classify_sdk(&failure.error, failure.status).and_then(alondra_core::domain::ClaudeHold::for_failure).is_some())
+                    .map(|failure| CommandEnvelope {
+                        command_id: format!("{}:hold", envelope.command_id.0).as_str().into(),
+                        command: Command::RecordClaudeHold { task_id: task_id.clone(), generation: *generation, failure: failure.clone() },
+                        ..envelope.clone()
+                    });
+                if let Some(hold) = hold.filter(|hold| self.refusal(hold).is_none()) {
+                    self.stage_command(&Actor::System, &hold, Attached::None)?;
+                    log!("the wait that the end of {turn} on {task_id} asks for is recorded although its end was refused: {}", refusal.message);
+                }
                 let technical = CommandEnvelope {
                     command_id: format!("{}:observed-end", envelope.command_id.0).as_str().into(),
                     command: Command::RecordRuntimeFacts {

@@ -258,3 +258,68 @@ fn a_second_empty_turn_over_the_notification_of_ended_work_is_left_to_the_orches
 fn a_second_empty_turn_over_a_notification_and_a_told_message_is_left_to_the_orchestrator() {
     replay_acts(&[Act::EndTurn(0), Act::TakeInput(0), Act::EndTurn(0), Act::OwnTurn(0), Act::StartWork(0), Act::EndTurn(0), Act::Tell(0), Act::EndWork(0), Act::TakeInput(0), Act::EndTurn(0)]);
 }
+
+/// 2026-11-10, t-task-list-queue-block: the host reported the end of turns the lifecycle never saw
+/// start, each one ended by Codex's usage limit. The domain refused each end and, with it, the
+/// hold the limit puts on the task: the hold is recorded on its own, as the daemon does then.
+fn limit() -> SdkApiFailure {
+    SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: None }
+}
+
+fn holds(world: &World) -> usize {
+    world.s.claude_held().iter().filter(|held| held.task == TaskId::from("t") && held.hold == ClaudeHold::Usage).count()
+}
+
+fn record_hold(world: &mut World, generation: u64, failure: SdkApiFailure) -> Result<CommandOutcome, DomainError> {
+    exec(&mut world.s, Actor::System, Command::RecordClaudeHold { task_id: "t".into(), generation, failure })
+}
+
+#[test]
+fn a_usage_limit_that_ends_a_turn_the_lifecycle_never_saw_start_holds_the_task_once_it_is_recorded_on_its_own() {
+    let mut world = World::new();
+    world.end_turn(0).unwrap();
+    let ended = exec(&mut world.s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-it-never-saw".into(), failure: Some(limit()), failed: None });
+    assert!(ended.is_err() && holds(&world) == 0, "the refused end takes the hold with it");
+
+    record_hold(&mut world, 1, limit()).unwrap();
+
+    assert_eq!(holds(&world), 1);
+    assert_eq!(world.s.live_state(&"t".into()), Some(LiveState::WaitingCapacity(Capacity::Usage)));
+}
+
+#[test]
+fn an_input_told_after_the_limit_hold_leaves_the_task_waiting_for_the_reset() {
+    let mut world = World::new();
+    world.end_turn(0).unwrap();
+    record_hold(&mut world, 1, limit()).unwrap();
+    exec(&mut world.s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Carry on with the queue".into(), from_user: false, answers: None }).unwrap();
+    assert_eq!(world.s.live_state(&"t".into()), Some(LiveState::WaitingCapacity(Capacity::Usage)), "nothing is delivered before the reset");
+}
+
+#[test]
+fn recording_the_same_limit_again_adds_no_second_hold() {
+    let mut world = World::new();
+    world.end_turn(0).unwrap();
+    record_hold(&mut world, 1, limit()).unwrap();
+    record_hold(&mut world, 1, limit()).unwrap();
+    assert_eq!(holds(&world), 1);
+}
+
+#[test]
+fn an_error_no_wait_answers_holds_nothing() {
+    let mut world = World::new();
+    world.end_turn(0).unwrap();
+    let refused_by_claude = SdkApiFailure { error: "invalid_request".into(), status: Some(400), resets_at: None };
+    record_hold(&mut world, 1, refused_by_claude).unwrap();
+    assert!(world.s.claude_held().is_empty());
+}
+
+#[test]
+fn only_the_system_holds_a_task_and_only_on_its_current_execution() {
+    let mut world = World::new();
+    world.end_turn(0).unwrap();
+    let by_user = exec(&mut world.s, super::lifecycle_tests::user(), Command::RecordClaudeHold { task_id: "t".into(), generation: 1, failure: limit() });
+    assert!(by_user.is_err());
+    assert!(record_hold(&mut world, 2, limit()).is_err(), "another execution's limit is not this one's");
+    assert_eq!(holds(&world), 0);
+}

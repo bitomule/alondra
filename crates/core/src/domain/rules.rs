@@ -2592,6 +2592,7 @@ impl DomainState {
             | Command::AdmitExecution { task_id, .. }
             | Command::RecordRuntimeFacts { task_id, .. }
             | Command::RecordTurnBoundary { task_id, .. }
+            | Command::RecordClaudeHold { task_id, .. }
             | Command::RecordHostEnded { task_id, .. }
             | Command::RecordStranded { task_id }
             | Command::RecordInterruptAccepted { task_id, .. }
@@ -5193,6 +5194,12 @@ impl DomainState {
                     nonempty(code)?;
                 }
                 self.record_turn_boundary(task_id, *generation, turn, failure.as_ref(), failed.as_deref(), effects, lifecycles)?;
+            }
+            Command::RecordClaudeHold { task_id, generation, failure } => {
+                system(actor)?;
+                self.task(task_id)?;
+                self.sdk_execution(task_id, *generation, lifecycles)?;
+                self.hold_after_failure(task_id, failure, effects, lifecycles)?;
             }
             Command::RecordDroppedInput { task_id, generation, input, text } => {
                 system(actor)?;

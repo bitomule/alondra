@@ -3243,6 +3243,7 @@ fn variant_index(c: &Command) -> usize {
         Command::AdoptOpenPr { .. } => 130,
         Command::RequestPrAdoption { .. } => 131,
         Command::ClosePrOfCancelledTask { .. } => 133,
+        Command::RecordClaudeHold { .. } => 134,
     }
 }
 const COMMAND_KINDS: usize = 135;
@@ -3392,6 +3393,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
             reading: crate::usage::UsageReading::default(), at: 1, day: "2026-10-21".into() }, true),
         (Command::RecordHostEnded { task_id: ids.task.into(), generation: 1, resumes: false, ended_work: vec![], by_alondra: false }, false),
         (Command::RecordStranded { task_id: ids.task.into() }, false),
+        (Command::RecordClaudeHold { task_id: ids.task.into(), generation: 1, failure: SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: None } }, false),
         (Command::RecordDoubtfulHandoff { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into(), resumes: false, by_alondra: false }, false),
         (Command::RecordHostLost { task_id: ids.task.into(), reason: "its host did not stop".into(), quiet: false }, false),
         (Command::ResendUntakenInput { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into() }, false),
