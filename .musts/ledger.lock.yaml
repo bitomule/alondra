@@ -6389,6 +6389,7 @@ satisfied:
 - {check: "root/sandbox-tool", scope_hash: "d20eed43995393e8915f1ac39182f64607b5fd5d2cd239d747bad6168979c0fd"}
 - {check: "root/sandbox-tool", scope_hash: "df7fbe60312d1e14cb877e70872e8ca40742658b6cd4270556cfa0b74d7ecde3"}
 - {check: "root/sandbox-tool", scope_hash: "e20d43d5fca7f984701249ea75658fdc8b0f4a4e6c3a73463c68446b41c79985"}
+- {check: "root/sandbox-tool", scope_hash: "e53d11b568a8a2a5488ae5022adb41d12c5b65aa7e199c3cca82f5e61c4364e3"}
 - {check: "root/sandbox-tool", scope_hash: "ec587f06b055a6bfbdf736bc965af7206a56c426f9c14848d5aa5505da705ed6"}
 - {check: "root/sandbox-tool", scope_hash: "f7c6c12bf507ae914f2ffe07fe16347725b5ab81694e06c193592a4283806b38"}
 - {check: "root/sdk-host", scope_hash: "04e96267e442149cfd538b173146f8cc68d01258679f4f4bcbb6e2a9fda82a8b"}

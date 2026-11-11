@@ -226,15 +226,26 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         press(report, &user, &view, "merge:", None, None, "the user merges the fixed PR")?;
         merged(report, fakes, 13, &head)
     });
-    report.case("F4", "A second PR for the same task is refused", |report| {
-        request(report, fakes, &user, &task_script("req-f4", "t-f4", "Add one PR only"), "Add one PR only")?;
+    report.case("F4", "A task owns every PR its node opens, and its delivery carries both", |report| {
+        request(report, fakes, &user, &task_script("req-f4", "t-f4", "Add two PRs"), "Add two PRs")?;
         let node = launched(report, fakes, "t-f4")?;
         state(report, &user, "t-f4", WORKING)?;
         let mut work = Step::work(14, "one.txt");
-        work.pop();
+        let deliver = work.pop().expect("work ends with a delivery");
         act(report, fakes, &node, "the node opens and registers PR #14", &work)?;
-        act(report, fakes, &node, "the node opens PR #15 on the fake GitHub", &[Step::OpenPr { number: 15, draft: false, checks: Checks::Success }])?;
-        refused(report, fakes, &node, "Alondra refuses to register PR #15 for the same task", &Step::RegisterPr { number: 15 }, "owns one PR").map(drop)
+        act(report, fakes, &node, "the node opens and registers PR #15 for the same task", &[
+            Step::OpenPr { number: 15, draft: false, checks: Checks::Success },
+            Step::RegisterPr { number: 15 },
+        ])?;
+        act(report, fakes, &node, "the node delivers its PRs", &[deliver])?;
+        let (_, view) = review_card(report, &user, &node)?;
+        report.step("the review card carries PR #14 and PR #15", || {
+            let card = view.to_string();
+            for number in [14, 15] {
+                anyhow::ensure!(card.contains(&format!("#{number}")), "the card does not name PR #{number}: {card}");
+            }
+            Ok(())
+        })
     });
     report.case("F5", "A final delivery whose git is slower than Alondra answers within is told to send it again, and the same id brings the card", |report| {
         request(report, fakes, &user, &task_script("req-f5", "t-f5", "Add a slow file"), "Add a slow file")?;
