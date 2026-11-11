@@ -16,7 +16,7 @@ use std::fs;
 use std::io::Write as _;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -27,6 +27,10 @@ const HELLO_TIMEOUT: Duration = Duration::from_millis(1500);
 const PAIRING_WAIT: Duration = Duration::from_secs(130);
 /// After an iroh connection failed, requests go over HTTP this long before iroh is tried again.
 const IROH_RETRY: Duration = Duration::from_secs(60);
+/// An envelope this close to its expiry is not sent: it would reach the Mac already expired.
+const EXPIRY_MARGIN_MS: u64 = 1_000;
+/// A clock this far from the Mac's is worth telling the user about.
+pub const NOTABLE_SKEW_MS: i64 = 5_000;
 
 /// One Mac this terminal paired with directly.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -213,14 +217,43 @@ fn forget_routes_of_others(home: &Path, mac_id: &str, routes: &[String], dial: O
     crate::iroh_client::save_dial(home, mac_id, dial)
 }
 
-fn not_accepted(name: &str) -> anyhow::Error {
-    anyhow::Error::new(Answered {
-        status: 401,
-        message: trf!(
-            "{name} no longer accepts this terminal; pair again with: alondra mac connect",
-            "{name} ya no acepta este terminal; vuelve a emparejar con: alondra mac connect"
-        ),
-    })
+/// A refusal that is not the Mac's signed word on this device: the request is sent again.
+fn refused_for_now(name: &str, reason: &str) -> anyhow::Error {
+    anyhow::Error::new(Unanswered(trf!(
+        "{name} refused the request ({reason}); Alondra will send it again",
+        "{name} rechazó la petición ({reason}); Alondra la enviará de nuevo"
+    )))
+}
+
+fn too_late(name: &str) -> anyhow::Error {
+    anyhow::Error::new(Unanswered(trf!(
+        "{name} did not answer before the request expired; Alondra will send it again",
+        "{name} no respondió antes de que caducara la petición; Alondra la enviará de nuevo"
+    )))
+}
+
+/// How far the Mac's clock is from this one's, in words, for a notice.
+pub fn skew_notice(name: &str, offset_ms: i64) -> String {
+    let seconds = (offset_ms.unsigned_abs() + 500) / 1_000;
+    if offset_ms > 0 {
+        trf!(
+            "This computer's clock is {seconds} s behind {name}. Alondra corrects for it, but set the time automatically in System Settings → General → Date & Time.",
+            "El reloj de este ordenador va {seconds} s por detrás de {name}. Alondra lo compensa, pero activa la hora automática en Ajustes del Sistema → General → Fecha y hora."
+        )
+    } else {
+        trf!(
+            "This computer's clock is {seconds} s ahead of {name}. Alondra corrects for it, but set the time automatically in System Settings → General → Date & Time.",
+            "El reloj de este ordenador va {seconds} s por delante de {name}. Alondra lo compensa, pero activa la hora automática en Ajustes del Sistema → General → Fecha y hora."
+        )
+    }
+}
+
+/// The Mac's clock, from an answer that says the envelope reached it after it expired.
+fn late_answer(answer: &Result<(u16, Value)>) -> Option<u64> {
+    match answer {
+        Ok((_, body)) if body["error"] == "envelope_expired" => body["mac_now_ms"].as_u64(),
+        _ => None,
+    }
 }
 
 pub fn hello(route: &str) -> Result<Hello> {
@@ -279,6 +312,8 @@ pub struct Connection {
     current: Mutex<Option<String>>,
     iroh: Mutex<IrohLink>,
     learned: AtomicBool,
+    /// The Mac's clock minus this one's, once a late answer said what the Mac's clock reads.
+    clock_offset_ms: AtomicI64,
 }
 
 impl Connection {
@@ -293,7 +328,21 @@ impl Connection {
             current: Mutex::new(None),
             iroh: Mutex::new(IrohLink::Untried),
             learned: AtomicBool::new(false),
+            clock_offset_ms: AtomicI64::new(0),
         }
+    }
+
+    /// How far the Mac's clock is from this one's, once it is far enough to tell the user.
+    pub fn clock_skew(&self) -> Option<i64> {
+        Some(self.clock_offset_ms.load(Ordering::Relaxed)).filter(|offset| offset.abs() >= NOTABLE_SKEW_MS)
+    }
+
+    fn mac_now(&self) -> u64 {
+        now_ms().saturating_add_signed(self.clock_offset_ms.load(Ordering::Relaxed))
+    }
+
+    fn expired(&self, expires_at_ms: u64) -> bool {
+        self.mac_now() + EXPIRY_MARGIN_MS >= expires_at_ms
     }
 
     pub fn mac(&self) -> &DirectMac {
@@ -359,9 +408,9 @@ impl Connection {
                 OverIroh::Answered(self.open(&sealed, request_id))
             }
             Ok(Reply::Refused { error, detail }) => match error.as_str() {
-                "unauthorized" => {
+                "unauthorized" | "unavailable" => {
                     if let Some(observer) = observer { observer.received(); }
-                    OverIroh::Answered(Err(not_accepted(name)))
+                    OverIroh::Answered(Err(refused_for_now(name, &error)))
                 }
                 "idempotency_conflict" => {
                     if let Some(observer) = observer { observer.received(); }
@@ -419,23 +468,23 @@ impl Connection {
         }
     }
 
-    fn seal(&self, method: &str, path: &str, body: Option<&Value>, timeout: Duration) -> Result<(String, Vec<u8>)> {
-        let request_id = format!("op-{}", B64.encode(random::<16>()?));
-        let plaintext = serde_json::to_vec(&json!({"method": method, "path": path, "body": body}))?;
+    /// Seals one request whose expiry is measured on the Mac's clock, as far as this terminal knows it.
+    fn seal(&self, request_id: &str, plaintext: &[u8], timeout: Duration) -> Result<(Vec<u8>, u64)> {
+        let expires_at_ms = self.mac_now() + timeout.as_millis().min(590_000) as u64;
         let envelope = Envelope::seal_random(
             EnvelopeContext {
                 route: &self.mac.mac_id,
                 sender: &self.mac.device_id,
                 recipient: &self.mac.mac_id,
-                request_id: &request_id,
+                request_id,
                 kind: "request",
-                expires_at_ms: now_ms() + timeout.as_millis().min(590_000) as u64,
+                expires_at_ms,
             },
-            &plaintext,
+            plaintext,
             &SigningKey::from_slice(&B64.decode(&self.mac.signing_key)?)?,
             &PublicKey::from_sec1_bytes(&B64.decode(&self.mac.mac_agreement_key)?)?,
         )?;
-        Ok((request_id, serde_json::to_vec(&envelope)?))
+        Ok((serde_json::to_vec(&envelope)?, expires_at_ms))
     }
 
     fn open(&self, bytes: &[u8], request_id: &str) -> Result<(u16, Value)> {
@@ -466,24 +515,49 @@ impl Connection {
         self.request_observed(method, path, body, timeout, None)
     }
 
+    /// A request that reached the Mac after it expired ran nothing and left its ID free: it is
+    /// sealed again, once, with the same ID and an expiry measured on the clock the Mac reported.
     pub(crate) fn request_observed(&self, method: &str, path: &str, body: Option<&Value>, timeout: Duration, observer: Option<&crate::client::availability::ResponseObserver>) -> Result<(u16, Value)> {
-        let (request_id, bytes) = self.seal(method, path, body, timeout)?;
-        let sent = match self.over_iroh(&bytes, &request_id, timeout, observer) {
-            OverIroh::Answered(answer) => return answer,
-            OverIroh::NotSent => false,
-            OverIroh::Lost => true,
-        };
-        let answer = self.over_http(&request_id, &bytes, timeout, sent, observer);
+        let request_id = format!("op-{}", B64.encode(random::<16>()?));
+        let plaintext = serde_json::to_vec(&json!({"method": method, "path": path, "body": body}))?;
+        let mut answer = self.deliver(&request_id, &plaintext, timeout, observer)?;
+        if let Some(mac_now) = late_answer(&answer) {
+            self.clock_offset_ms.store(mac_now as i64 - now_ms() as i64, Ordering::Relaxed);
+            answer = self.deliver(&request_id, &plaintext, timeout, observer)?;
+            if late_answer(&answer).is_some() {
+                return Err(too_late(&self.mac.name));
+            }
+        }
         if answer.is_ok() {
             self.learn_dial_once();
         }
         answer
     }
 
-    fn over_http(&self, request_id: &str, bytes: &[u8], timeout: Duration, mut sent: bool, observer: Option<&crate::client::availability::ResponseObserver>) -> Result<(u16, Value)> {
+    fn deliver(&self, request_id: &str, plaintext: &[u8], timeout: Duration, observer: Option<&crate::client::availability::ResponseObserver>) -> Result<Result<(u16, Value)>> {
+        let (mut bytes, mut expires_at_ms) = self.seal(request_id, plaintext, timeout)?;
+        let sent = match self.over_iroh(&bytes, request_id, timeout, observer) {
+            OverIroh::Answered(answer) => return Ok(answer),
+            OverIroh::NotSent => false,
+            OverIroh::Lost => true,
+        };
+        if !sent && self.expired(expires_at_ms) {
+            (bytes, expires_at_ms) = self.seal(request_id, plaintext, timeout)?;
+        }
+        Ok(self.over_http(request_id, &bytes, expires_at_ms, timeout, sent, observer))
+    }
+
+    fn over_http(&self, request_id: &str, bytes: &[u8], expires_at_ms: u64, timeout: Duration, mut sent: bool, observer: Option<&crate::client::availability::ResponseObserver>) -> Result<(u16, Value)> {
         let deadline = Instant::now() + timeout;
         let name = &self.mac.name;
+        let mut refused = None;
         for route in self.candidates() {
+            if self.expired(expires_at_ms) {
+                return Err(if sent { too_late(name) } else { anyhow::Error::new(Unsent(trf!(
+                    "{name} did not answer before the request expired",
+                    "{name} no respondió antes de que caducara la petición"
+                ))) });
+            }
             let known = self.current.lock().expect("route lock poisoned").as_deref() == Some(route.as_str());
             if !known && !self.validate(&route)? {
                 continue;
@@ -511,8 +585,15 @@ impl Connection {
                 *self.current.lock().expect("route lock poisoned") = Some(route.clone());
                 return Ok(answer);
             }
+            if matches!(status, 401 | 503) {
+                let reason = serde_json::from_slice::<Value>(&text).ok().and_then(|body| body["error"].as_str().map(str::to_owned));
+                refused = Some(format!("HTTP {status}{}", reason.map(|reason| format!(" {reason}")).unwrap_or_default()));
+            }
             sent = true;
             *self.current.lock().expect("route lock poisoned") = None;
+        }
+        if let Some(reason) = refused {
+            return Err(refused_for_now(name, &reason));
         }
         if sent {
             return Err(anyhow::Error::new(Unanswered(trf!(

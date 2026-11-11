@@ -789,6 +789,8 @@ pub struct App {
     #[cfg(test)]
     spawned: std::cell::RefCell<Vec<Option<String>>>,
     target: MacTarget,
+    /// The clock difference with the direct Mac the user was last told about.
+    skew_told: Option<i64>,
     /// Every Mac this terminal is connected to, when there is more than one.
     pub macs: Vec<MacTab>,
     /// Devices waiting for this Mac to let them in; only the instance for this Mac asks.
@@ -1277,6 +1279,7 @@ impl App {
             #[cfg(test)]
             spawned: Default::default(),
             target,
+            skew_told: None,
             macs: Vec::new(),
             pairing: Vec::new(),
             pairing_answered: HashSet::new(),
@@ -2565,12 +2568,27 @@ impl App {
             dirty = true;
         }
         dirty |= self.tick_answers(now);
+        dirty |= self.tell_clock_skew();
         let waiting = self.pairing.len();
         self.pairing.retain(|d| d.expires_at_ms > now);
         dirty |= self.pairing.len() != waiting;
         dirty |= self.version_tick();
         self.load_threads();
         dirty
+    }
+
+    /// Once a direct Mac's late answer showed this computer's clock is off, the user is told how
+    /// far and how to fix it; the requests already go out sealed on the Mac's clock.
+    fn tell_clock_skew(&mut self) -> bool {
+        let MacTarget::Direct(connection) = &self.target else { return false };
+        let Some(skew) = connection.clock_skew() else { return false };
+        if self.skew_told.is_some_and(|told| (told - skew).abs() < crate::direct_client::NOTABLE_SKEW_MS) {
+            return false;
+        }
+        let text = crate::direct_client::skew_notice(&connection.mac().name, skew);
+        self.skew_told = Some(skew);
+        self.notice(text);
+        true
     }
 
     fn on_paste(&mut self, s: &str) {
