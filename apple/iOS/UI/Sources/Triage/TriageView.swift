@@ -107,7 +107,7 @@ public struct TriageView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(store.queueTitle ?? String(localized: "Waiting for You"))
+            (store.queueTitle.map { Text($0) } ?? Text("Waiting for You"))
                 .font(.display(.largeTitle, weight: .bold)).foregroundStyle(Palette.ink)
                 .lineLimit(typeSize.isAccessibilitySize ? 1 : nil)
                 .minimumScaleFactor(0.5)
@@ -132,7 +132,7 @@ public struct TriageView: View {
 
     private var summary: Text {
         guard let header = store.header else {
-            return Text(store.status?.summary ?? String(localized: "Connecting to your Mac…"))
+            return store.status.map { Text($0.summary) } ?? Text("Connecting to your Mac…")
         }
         var parts: [Text] = []
         if header.questions > 0 { parts.append(Text("\(header.questions) questions")) }
@@ -295,7 +295,7 @@ public struct TriageView: View {
                     .font(.system(size: 64, weight: .light))
                     .foregroundStyle(LinearGradient(colors: [Palette.dawn, Palette.ember], startPoint: .top, endPoint: .bottom))
                     .symbolEffect(.breathe.pulse, options: .repeat(.continuous))
-                Text(store.screen.document?.empty?.text ?? String(localized: "Nothing is waiting for you"))
+                (store.screen.document?.empty.map { Text($0.text) } ?? Text("Nothing is waiting for you"))
                     .font(.display(.title, weight: .bold)).multilineTextAlignment(.center)
                 Text("Your tasks carry on by themselves. When one needs you, it will show up here.")
                     .font(.body).foregroundStyle(.secondary).multilineTextAlignment(.center)

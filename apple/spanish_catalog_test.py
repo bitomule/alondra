@@ -15,6 +15,8 @@ LITERAL = re.compile(
     r'|String\(localized:\s*"([^"\\]+)"'
 )
 
+TEXT_IGNORING_THE_VIEW_LANGUAGE = re.compile(r'Text\(.*String\(localized:')
+
 
 def strings(path):
     return json.load(open(path))["strings"]
@@ -57,6 +59,8 @@ def main():
     for source in sources:
         client = clientFor(source)
         for number, line in enumerate(open(source), 1):
+            if TEXT_IGNORING_THE_VIEW_LANGUAGE.search(line):
+                missing.append(f"{source}:{number}: Text(String(localized:)) ignores the view's language: pass the literal to Text")
             for match in LITERAL.finditer(line):
                 key = match.group(1) or match.group(2)
                 if key in BRAND or "\\(" in key or not re.search("[A-Za-z]", key):
