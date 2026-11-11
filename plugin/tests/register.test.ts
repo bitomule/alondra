@@ -425,7 +425,7 @@ test('an interrupt aborts the running turn by its id, and does nothing between t
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.abort', ($, e) => {
     aborts.push(e.turnId)
-    return {}
+    return { value: undefined }
   })
 
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })

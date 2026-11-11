@@ -51,7 +51,7 @@ test('AskUserQuestion is answered from the card and never reaches the tool', asy
 })
 
 test('a question the daemon does not hold, or a subagent asks, goes to Claude Code', async ($, on) => {
-  const held = await startWithHolds($, on, () => ({ held: false }))
+  const held = await startWithHolds($, on, () => ({ held: false }), () => ({ decision: 'allow' }))
   const notHeld = await $.tool.call({ tool: 'AskUserQuestion', tool_use_id: 'toolu-1', questions } as never)
   const subagent = await $.tool.call({ tool: 'AskUserQuestion', tool_use_id: 'toolu-2', questions, agentId: 'sub-1' } as never)
   expect(notHeld).toEqual({ result: 'claude code ran the tool' })
@@ -60,18 +60,21 @@ test('a question the daemon does not hold, or a subagent asks, goes to Claude Co
 })
 
 test('a plan the user sends back is denied with their words, an approved one is allowed for that call', async ($, on) => {
+  const asked: string[] = []
   const held = await startWithHolds($, on, (card) =>
     card.id === 'toolu-back'
       ? { held: true, approved: false, feedback: 'Alice requested changes to the plan: use v2' }
-      : { held: true, approved: true })
+      : { held: true, approved: true }, (e) => {
+    asked.push(e.tool)
+    return { decision: 'ask' }
+  })
 
   const back = await $.tool.call({ tool: 'ExitPlanMode', tool_use_id: 'toolu-back', plan: 'p' } as never)
   expect(back).toEqual({ deny: 'Alice requested changes to the plan: use v2' })
 
   const approved = await $.tool.call({ tool: 'ExitPlanMode', tool_use_id: 'toolu-ok', plan: 'p' } as never)
   expect(approved).toEqual({ result: 'claude code ran the tool' })
-  const checked = await $.tool.check({ tool: 'ExitPlanMode', tool_use_id: 'toolu-ok', input: { plan: 'p' } } as never)
-  expect(checked.decision).toBe('allow')
+  expect(asked).toEqual([])
   expect(held.cards.map((card) => card.kind)).toEqual(['plan', 'plan'])
   expect(held.cards.map((card) => card.cwd)).toEqual(['/work', '/work'])
   expect(held.runs()).toBe(2)
