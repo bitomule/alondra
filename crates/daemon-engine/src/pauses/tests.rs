@@ -1101,7 +1101,7 @@ async fn ten_nodes_the_disk_held_come_back_one_by_one_on_19_gb_free_before_a_new
     }
     watch.measure_disk(crate::disk::Space { free: 19 * GB, purgeable: 0, total: 500 * GB });
     node.gate_look().await;
-    assert_eq!(crate::admission::working_tasks(&domain.state().unwrap()).len(), 10, "their turns go on and keep their slots");
+    assert_eq!(crate::admission::working_tasks(&domain.state().unwrap()).len(), 0, "their turns go on, but they take no slot while the disk holds them");
 
     let mut end_turn = |index: usize| {
         let (task, driver) = &mut drivers[index];
@@ -1129,7 +1129,7 @@ async fn ten_nodes_the_disk_held_come_back_one_by_one_on_19_gb_free_before_a_new
     assert_eq!(back(), 4, "the four back reserve 12 GB: one more needs 20 GB");
     let state = domain.state().unwrap();
     let at_work = crate::admission::working_tasks(&state);
-    assert_eq!(at_work.len(), 9, "the five turns still held keep their slots beside the four back");
+    assert_eq!(at_work.len(), 4, "the five turns still held take no slot: only the four back do");
     assert_eq!(watch.disk_reserved(&crate::admission::reserving_tasks(&state, at_work.iter())), 12 * GB, "only the four back reserve");
     assert!(domain.read().index().waiting().is_empty(), "nobody is asked anything");
     for (_, driver) in &mut drivers {
@@ -1137,8 +1137,23 @@ async fn ten_nodes_the_disk_held_come_back_one_by_one_on_19_gb_free_before_a_new
     }
 }
 
+/// The 7 of 6 working of 11 November: a node of the Agent SDK whose turn the disk's floor held was
+/// counted by the gate while its task read paused, so the gate and the header disagreed.
+#[tokio::test]
+async fn a_node_paused_for_disk_takes_no_slot_in_the_gate_or_the_header() {
+    let node = SdkNode::working();
+    let domain = Arc::clone(&node.domain);
+    assert_eq!(crate::admission::working_tasks(&domain.state().unwrap()).len(), 1, "its turn works");
+    assert!(domain.live.gate.hold_back(&domain, &node.agent(), Reason::Disk, alondra_core::now_millis()));
+    node.gate_look().await;
+    let state = domain.state().unwrap();
+    assert!(crate::admission::working_tasks(&state).is_empty(), "the disk holds it: no slot");
+    assert_eq!(state.slots().len(), 0);
+    assert_eq!(domain.read().index().activity().working, 0, "the header counts none either");
+}
+
 /// The disk fell under its floor while two nodes built. The heavier one's turn goes on uncut and
-/// still counts as working; once it ends, what the node is told waits, with no card, shown in the
+/// takes no slot; once it ends, what the node is told waits, with no card, shown in the
 /// queue for the disk; once the disk has room it gets it, and is never told it was held. The
 /// lighter one, of `claude --bg`, goes on.
 #[tokio::test]
@@ -1172,7 +1187,7 @@ async fn under_the_disks_floor_the_heavier_nodes_next_turn_waits_for_room_withou
     node.step();
     assert_eq!(node.lifecycle().activity(), alondra_domain::ActivityView::Working, "the turn it runs is not cut");
     assert_eq!(node.prompts(), ["consume-and-hold"]);
-    assert!(crate::admission::working_tasks(&domain.state().unwrap()).contains(&TaskId::from(SDK_TASK)), "it counts as working until its turn ends");
+    assert!(!crate::admission::working_tasks(&domain.state().unwrap()).contains(&TaskId::from(SDK_TASK)), "the disk holds it: its turn runs but it takes no slot");
 
     interrupt_sdk_node(&domain, &node.agent());
     node.step_until(SdkNode::turn_ended);

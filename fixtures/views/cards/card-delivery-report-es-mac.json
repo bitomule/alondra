@@ -4,12 +4,12 @@
   "view": "card",
   "key": "card:result-2",
   "client": "mac",
-  "version": "v5e827a4081db9b01",
+  "version": "v9674d21511f799d1",
   "cursor": "cursor-1",
   "title": "Read why Redraft does not need a widget",
   "status": {
-    "version": "vb7b081b6c72395b1",
-    "summary": "1 por leer · 1 nodo trabajando",
+    "version": "v3ca84408e03b9580",
+    "summary": "1 por leer · 0 nodos trabajando",
     "badge": 1,
     "counts": [
       {
@@ -30,7 +30,7 @@
       {
         "id": "working",
         "label": "trabajando",
-        "value": 1
+        "value": 0
       },
       {
         "id": "waiting",

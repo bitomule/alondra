@@ -4,13 +4,13 @@
   "view": "mcp_servers",
   "key": "mcp_servers",
   "client": "ios",
-  "version": "v3c3a95e3cb30034d",
+  "version": "v8a86a70a3381d8eb",
   "cursor": "cursor-1",
   "title": "MCP servers",
   "summary": "9 servers · 3 need sign-in",
   "status": {
-    "version": "ve4008980d1dbc4ce",
-    "summary": "2 questions · 3 to read · 2 nodes working",
+    "version": "vb47ba1ff9953979d",
+    "summary": "2 questions · 3 to read · 1 node working",
     "badge": 5,
     "counts": [
       {
@@ -31,7 +31,7 @@
       {
         "id": "working",
         "label": "working",
-        "value": 2
+        "value": 1
       },
       {
         "id": "waiting",

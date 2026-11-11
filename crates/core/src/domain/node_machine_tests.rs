@@ -1104,9 +1104,10 @@ impl World {
         }
 
         let header = tasks.status.counts.iter().find(|count| count.id == "working").map(|count| count.value as usize);
-        assert_eq!(header, Some(slots.len()), "the header counts the same nodes");
-
         let index = ReadIndex::build(&self.s);
+        let working = self.s.tasks.values().filter(|task| matches!(index.task(&task.id).map(|read| read.situation), Some(Situation::Working(_)))).count();
+        assert_eq!(header, Some(working), "the header counts the tasks that work");
+
         for task in for_you(&tasks) {
             assert!(index.task(&TaskId(task.clone())).is_some_and(|read| read.waits_for_user), "«For you» lists {task} only with a card waiting for the user");
             let detail = self.render(&format!("task:{task}"));

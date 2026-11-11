@@ -571,7 +571,7 @@ impl<'a> Builder<'a> {
         index.activity = ActivityCounts {
             inbox: index.cards.len() as u32,
             waiting: state.agents.values().filter(|agent| index.waits_for_an_answer(&agent.id)).count() as u32,
-            working: state.slots().len() as u32,
+            working: index.tasks.values().filter(|reading| matches!(reading.situation, Situation::Working(_))).count() as u32,
         };
         index.cards_before = self.cards_before.into_iter().map(|(delivery, cards)| (delivery.clone(), cards)).collect();
         index.blocks = self.blocks;
@@ -919,7 +919,7 @@ pub(super) fn assert_index_matches(state: &DomainState) {
     let waiting_nodes = state.agents.values()
         .filter(|agent| logical_waiting.iter().any(|item| item.kind != "information" && item.agent_id.as_ref() == Some(&agent.id)))
         .count() as u32;
-    let activity = ActivityCounts { inbox: cards.len() as u32, waiting: waiting_nodes, working: state.slots().len() as u32 };
+    let activity = ActivityCounts { inbox: cards.len() as u32, waiting: waiting_nodes, working: state.tasks.values().filter(|task| index.task(&task.id).is_some_and(|reading| matches!(reading.situation, Situation::Working(_)))).count() as u32 };
     assert_eq!(index.activity(), activity, "the activity counts");
     assert_eq!(index.mcp_waiting(), state.mcp_waiting().as_slice(), "the tasks that wait for an MCP server");
     let reported: Vec<(TaskId, Vec<McpServerState>)> = state.tasks.values().filter(|task| !task.over())

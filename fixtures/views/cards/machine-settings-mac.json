@@ -4,12 +4,12 @@
   "view": "machine",
   "key": "machine",
   "client": "mac",
-  "version": "v33c02298c6095bd9",
+  "version": "v5930880d824c3a95",
   "cursor": "cursor-1",
   "title": "Machine",
   "status": {
-    "version": "vc27e33cc05a39d44",
-    "summary": "2 questions · 3 to read · 1 node working",
+    "version": "vb7cd498c8c145512",
+    "summary": "2 questions · 3 to read · 0 nodes working",
     "badge": 5,
     "counts": [
       {
@@ -30,7 +30,7 @@
       {
         "id": "working",
         "label": "working",
-        "value": 1
+        "value": 0
       },
       {
         "id": "waiting",

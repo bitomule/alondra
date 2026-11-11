@@ -1024,13 +1024,12 @@ fn still_waits(state: &DomainState, key: &Key) -> bool {
 
 /// The tasks whose node takes a slot, as the node machine says: the one count the gate, the
 /// Tasks list and the header share. A paused node, one that waits on the user and one whose session
-/// was lost and waits for the gate hold none, whatever their session still reports; one the gate let
-/// back and Alondra is restarting holds one, and so does one the disk's floor held until the turn it
-/// runs, and the work of its own it left running, end.
+/// was lost and waits for the gate hold none, whatever their session still reports, and so does one
+/// the disk's floor held while the turn it runs ends; one the gate let back and Alondra is
+/// restarting holds one.
 pub(crate) fn working_tasks(state: &DomainState) -> BTreeSet<TaskId> {
     state.slots().into_iter()
         .filter_map(|agent| state.node_task(&agent.id).filter(|task| !task.over()).map(|task| task.id.clone()))
-        .chain(turns_held_for_disk(state))
         .collect()
 }
 
@@ -1196,8 +1195,9 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
     let usage_clear = !domain.live.usage_pause.is_active();
     let probe = crate::api_failures::outage_probe(&inner.saved.pauses.paused, &domain.live.api_watch, now);
     let resumed = &inner.saved.pauses.resumed;
+    let held_turns: BTreeSet<TaskId> = turns_held_for_disk(state).collect();
     let returning = inner.saved.pauses.paused.iter()
-        .filter(|(_, paused)| !(paused.reason == Reason::Disk && working_tasks.contains(&paused.task)))
+        .filter(|(_, paused)| !(paused.reason == Reason::Disk && held_turns.contains(&paused.task)))
         .filter(|(session, _)| inner.refused.get(*session).is_none_or(|refused| lifecycle_revision(state, session) != Some(*refused)))
         .filter(|(session, paused)| resumed.contains_key(*session) || match &paused.reason {
         Reason::ApiError(retry) if retry.outage => domain.live.api_watch.answered_since(paused.since) || probe.as_ref() == Some(*session),
@@ -1365,7 +1365,7 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
         gate.save_with(domain, &mut inner);
         let held = snapshot.next_start().zip(snapshot.hold.as_ref());
         if inner.told.due(held.and_then(|(_, hold)| Cause::of(hold)), now) && let Some((head, hold)) = held {
-            let working: Vec<TaskId> = working_tasks(&state).into_iter().collect();
+            let working: Vec<TaskId> = snapshot.working_tasks.iter().cloned().collect();
             let on_user: Vec<TaskId> = state.agents.values().filter(|agent| state.node_waits_on_user(&agent.id))
                 .filter_map(|agent| state.node_task(&agent.id).map(|task| task.id.clone())).collect();
             if let Some(line) = hold_line(snapshot.queue.len(), &key_text(&state, &head.key), head.priority, hold, &working, &on_user, inner.saved.pauses.paused.len()) {

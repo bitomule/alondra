@@ -166,6 +166,30 @@ proptest! {
     }
 
     #[test]
+    fn the_header_the_live_activity_and_the_slots_count_the_same_tasks(history in histories()) {
+        each_state(&history, |s, index| {
+            let working = s.tasks.values().filter(|task| matches!(situation(index, &task.id), Situation::Working(_))).count() as u32;
+            if index.activity().working != working {
+                return Err(format!("the header counts {} working, the tasks say {working}", index.activity().working));
+            }
+            Ok(())
+        })?;
+    }
+
+    #[test]
+    fn a_node_paused_for_disk_takes_no_slot_and_does_not_work(history in histories()) {
+        let mut moves = history;
+        moves.push(Move::Sdk(Act::DiskPause));
+        each_state(&moves, |s, _| {
+            let Some(pause) = s.node_pause(&NODE.into()) else { return Ok(()) };
+            if s.slots().iter().any(|agent| agent.id == NODE.into()) {
+                return Err(format!("it holds a slot while paused for {:?}", pause.reason));
+            }
+            Ok(())
+        })?;
+    }
+
+    #[test]
     fn a_task_that_holds_a_slot_works_or_is_a_step_from_it(history in histories()) {
         each_state(&history, |s, index| {
             let through_sdk = |task: &Task| task.agent_id.as_ref().is_some_and(|agent| s.through_sdk(agent));
