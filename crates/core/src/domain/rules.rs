@@ -2078,7 +2078,7 @@ impl DomainState {
     }
     /// What the user chose on a start problem card that the domain does itself: cancel the task, or
     /// let it start without the cancelled task it waited for. "Try again" is the daemon's to do.
-    fn settle_start_problem(&mut self, actor: &Actor, card: &InteractionId, option: &str, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+    fn settle_start_problem(&mut self, actor: &Actor, card: &InteractionId, option: &str, effects: &mut Vec<DomainEffect>, created: &mut Vec<String>, lifecycles: &mut Lifecycles) -> Result<()> {
         let Some(i) = self.interactions.get(card).filter(|i| i.system_card == Some(SystemCard::StartProblem) && i.author == Author::System) else { return Ok(()) };
         let Scope::Task { task_id } = i.scope.clone() else { return Ok(()) };
         let Ok(problem) = serde_json::from_str::<StartProblem>(&i.body) else { return Ok(()) };
@@ -2086,7 +2086,7 @@ impl DomainState {
             return Ok(());
         }
         match (option, problem) {
-            (START_CANCEL, _) => self.close_task(actor, &task_id, None, effects, lifecycles)?,
+            (START_CANCEL, _) => self.close_task(actor, &task_id, None, effects, created, lifecycles)?,
             (START_WITHOUT, StartProblem::DependencyCancelled { dependency }) => {
                 self.invalidate(&task_id);
                 let t = self.tasks.get_mut(&task_id).unwrap();
@@ -4113,9 +4113,9 @@ impl DomainState {
                     && !self.decide_sdk_card(interaction_id, lifecycles)?
                     && !self.settle_host_lost(interaction_id, option_id, written.as_deref(), lifecycles)?
                 {
-                    self.answer_lifecycle_card(actor, interaction_id, option_id, written.as_deref(), effects, lifecycles)?;
+                    self.answer_lifecycle_card(actor, interaction_id, option_id, written.as_deref(), effects, created, lifecycles)?;
                 }
-                self.settle_start_problem(actor, interaction_id, option_id, effects, lifecycles)?;
+                self.settle_start_problem(actor, interaction_id, option_id, effects, created, lifecycles)?;
                 self.settle_post_merge_problem(interaction_id, option_id, lifecycles)?;
                 self.settle_plan_review_problem(interaction_id, option_id, lifecycles)?;
                 if matches!(actor, Actor::User { .. }) {
@@ -4144,7 +4144,7 @@ impl DomainState {
                 self.settle_plan_review(actor, review_id, task_id, outcome, effects, created, lifecycles)?;
             }
             Command::SettleStall { case_id, task_id, outcome } => {
-                self.settle_stall(actor, case_id, task_id, outcome, effects, lifecycles)?;
+                self.settle_stall(actor, case_id, task_id, outcome, effects, created, lifecycles)?;
             }
             Command::CreateDocument {
                 task_id,
@@ -4926,7 +4926,7 @@ impl DomainState {
             }
             Command::CancelTask { task_id } => {
                 self.cancel_guard(actor, task_id)?;
-                self.close_task(actor, task_id, None, effects, lifecycles)?;
+                self.close_task(actor, task_id, None, effects, created, lifecycles)?;
             }
             Command::SettleOpenPr { task_id, status } => {
                 self.settle_open_pr(actor, task_id, status, None, effects, created, lifecycles)?;

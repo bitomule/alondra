@@ -170,13 +170,12 @@ impl DomainState {
     /// The orchestrator's settlement of a stopped node: the node gets the instruction, or the task
     /// ends with the result.
     pub(in crate::domain) fn settle_stall(&mut self, actor: &Actor, case_id: &InteractionId, task: &TaskId, outcome: &StallOutcome,
-        effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+        effects: &mut Vec<DomainEffect>, created: &mut Vec<String>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.settle_stall_guard(actor, case_id, task, outcome)?;
         let text = outcome.written().map(|(_, text)| text.trim().to_owned());
-        // The case stays open, held by the task, until Alondra delivers the PR it read on GitHub.
         if !matches!(outcome, StallOutcome::Instruct { .. }) && self.open_pr_of(task).is_some()
             && self.lifecycle(lifecycles, task)?.phase() != alondra_domain::TaskPhase::Delivered {
-            return self.close_task(actor, task, text, effects, lifecycles);
+            return self.close_task(actor, task, text, effects, created, lifecycles);
         }
         let at = self.revision + 1;
         let i = self.interactions.get_mut(case_id).expect("the guard found it");
