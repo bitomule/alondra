@@ -30,7 +30,7 @@ low_opt_rust_test(
     edition = "2024",
     version = "0.1.0",
     deps = _DEPS + all_crate_deps(normal_dev = True),
-    compile_data = ["//crates/agent-protocol:fixtures/hello.json"],
+    compile_data = ["//crates/agent-protocol:fixtures/hello.json"] + glob(["fixtures/native/*.jsonl"]),
     env = {"HOME": "."},
 )
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

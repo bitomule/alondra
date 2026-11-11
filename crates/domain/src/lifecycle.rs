@@ -1257,6 +1257,14 @@ impl TaskLifecycle {
             _ => None,
         }
     }
+    /// The work the execution holds as running, in its root turn or as work of its own.
+    pub fn running_work(&self) -> Vec<&WorkId> {
+        match self.session().map(|execution| &execution.activity) {
+            Some(Activity::Turn { work, .. }) => work.iter().collect(),
+            Some(Activity::OwnWork { work, .. }) => work.iter().collect(),
+            _ => vec![],
+        }
+    }
     /// What the execution's last turn ended waiting for, while nothing has moved it on since.
     pub fn awaits(&self) -> Option<&Await> {
         match &self.session()?.activity {

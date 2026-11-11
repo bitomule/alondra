@@ -205,7 +205,7 @@ export class Session {
     if (config.sessionId !== undefined && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(config.sessionId)) throw new Error('SDK session id must be a UUID');
     if (!isAbsolute(config.executable) || !isAbsolute(config.cwd)) throw new Error('Executable and cwd must be absolute');
     this.permissions = new PermissionCallbacks(config.observe);
-    const env = { ...config.env, CLAUDE_CODE_STARTUP_FAILURE_RESULTS: '1' };
+    const env = { ...config.env, CLAUDE_CODE_STARTUP_FAILURE_RESULTS: '1', CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1' };
     const sessionId = config.sessionId?.toLowerCase();
     const profile = config.orchestrator;
     if (profile?.reasoning_effort && !['low', 'medium', 'high', 'xhigh', 'max'].includes(profile.reasoning_effort)) throw new Error('The selected Claude reasoning effort is unsupported by this SDK');

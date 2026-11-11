@@ -187,6 +187,13 @@ pub enum Observation {
         turn: TurnId,
         outcome: TurnOutcome,
     },
+    /// The provider said, as a whole, what runs now: no root turn when `idle`, and of its work
+    /// only `live`. Whatever the task's record holds beyond that ended, though the facts that
+    /// would have said so were lost or never sent.
+    Reconciled {
+        idle: bool,
+        live: BTreeSet<WorkId>,
+    },
     /// The model answered the root turn: the API and the account Claude Code uses work.
     ModelAnswered,
     TransportLost,
@@ -432,4 +439,14 @@ mod pull_request_tests {
             OpenedPullRequest { host: "ghe.corp.io".into(), repository: "O/R".into(), number: 4 },
         ]);
     }
+}
+
+/// How a turn ends when its provider went idle and no result of it ever came.
+pub const ENDED_WITHOUT_RESULT: &str = "ended_without_result";
+
+/// The notification of `work`, which ended with no word of its own: the provider's whole list of
+/// what runs no longer named it.
+pub fn reconciled_continuation(work: &WorkId) -> ContinuationId {
+    let provider = if work.as_str().starts_with("codex:") { "codex" } else { "claude" };
+    ContinuationId::new(format!("{provider}-reconciled:{}", work.as_str())).expect("a work id prefixed stays a valid continuation id")
 }

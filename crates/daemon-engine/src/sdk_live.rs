@@ -117,6 +117,19 @@ pub(crate) fn observe(session: &mut Reported, message: &Value, now: Millis) -> O
                 finished(session, &mut readings, id, outcome, now);
             }
         }
+        (Some("system"), Some("session_state_changed")) => match message["state"].as_str() {
+            Some("running") if !readings.in_turn => {
+                readings.in_turn = true;
+                readings.since = Some(now);
+            }
+            Some("idle") => {
+                session.tool = None;
+                readings.said = None;
+                readings.in_turn = false;
+                readings.since = Some(now);
+            }
+            _ => {}
+        },
         (Some("system"), Some("background_tasks_changed")) => listed(session, &mut readings, message["tasks"].as_array().map_or(&[][..], Vec::as_slice), now),
         (Some("assistant"), _) => {
             readings.in_turn |= parent.is_none();

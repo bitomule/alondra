@@ -384,11 +384,12 @@ impl ClaudeWorker {
     pub fn stopper(&self) -> Option<HostStop> {
         self.adapter.host.as_ref().map(Host::stopper)
     }
-    /// The process group a launched host leads, named by the host's PID.
+    /// The process group the host leads, named by the host's PID: for an adopted host, the live
+    /// process this daemon reached at its endpoint.
     pub fn host_group(&self) -> Option<i32> {
         match self.adapter.host.as_ref()? {
             Host::Launched(host) => Some(host.process_group()),
-            Host::Adopted(..) => None,
+            Host::Adopted(host, _) => host.stopper().process_group(),
         }
     }
     /// Whether this worker's host was launched by a daemon of another release, which left it

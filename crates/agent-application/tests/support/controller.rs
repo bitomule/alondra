@@ -34,6 +34,7 @@ pub fn record_facts(
             | ObservedFact::McpServers { .. }
             | ObservedFact::McpSignIn { .. }
             | ObservedFact::McpToolFailed
+            | ObservedFact::Reconciled { .. }
             | ObservedFact::Usage(_) => continue,
             ObservedFact::ContinuationRequested { .. } | ObservedFact::TurnEnded { .. } | ObservedFact::InputDropped { .. } | ObservedFact::Asked { .. } | ObservedFact::Settled { .. } => {
                 return Err(Error::RequiresDomainCommand);

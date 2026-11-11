@@ -1,0 +1,16 @@
+{"type":"system","subtype":"session_state_changed","state":"running","uuid":"24851552-6b3d-4588-a5e1-a33bb921bafb"}
+{"type":"command_lifecycle","state":"queued","uuid":"e6ba407c-72d5-4031-be1f-6c03f77f2771","command_uuid":"93a49cea-d522-4345-b71c-a4113cb81acb"}
+{"type":"command_lifecycle","state":"started","uuid":"fa912a64-1f5b-4b43-885c-30fc2adb409b","command_uuid":"93a49cea-d522-4345-b71c-a4113cb81acb"}
+{"type":"system","subtype":"init","uuid":"5063c780-295b-42ca-bed0-d4fc8a45797a","user_message_uuids":["93a49cea-d522-4345-b71c-a4113cb81acb"]}
+{"type":"assistant","uuid":"fc30aa5b-d79b-4079-8382-255416b57360","parent_tool_use_id":null,"user_message_uuid":"93a49cea-d522-4345-b71c-a4113cb81acb","user_message_uuids":["93a49cea-d522-4345-b71c-a4113cb81acb"],"message":{"role":"assistant","content":[{"type":"text","text":"one"}]}}
+{"type":"result","subtype":"success","uuid":"2ac5e40b-6695-4f23-a362-56dac8cf0d90","user_message_uuid":"93a49cea-d522-4345-b71c-a4113cb81acb","user_message_uuids":["93a49cea-d522-4345-b71c-a4113cb81acb"],"is_error":false,"stop_reason":"end_turn","terminal_reason":"completed","result":"one"}
+{"type":"command_lifecycle","state":"completed","uuid":"3d6ffcae-dcdc-4530-ac89-9660b4be2520","command_uuid":"93a49cea-d522-4345-b71c-a4113cb81acb"}
+{"type":"system","subtype":"session_state_changed","state":"idle","uuid":"36f0999f-c44a-487f-97ed-1b578e5bbd24"}
+{"type":"system","subtype":"session_state_changed","state":"running","uuid":"b0f59461-9af0-4a2d-af03-fa46c91e81e6"}
+{"type":"command_lifecycle","state":"queued","uuid":"85ee3acc-4a0e-4f8e-8ff0-a8f108b8fb8e","command_uuid":"1c39d0ac-20b6-4171-97df-94edb81359eb"}
+{"type":"command_lifecycle","state":"started","uuid":"c0c04b9a-e99c-4b8d-9641-4e976b077833","command_uuid":"1c39d0ac-20b6-4171-97df-94edb81359eb"}
+{"type":"system","subtype":"init","uuid":"f5912910-caa4-4ed5-a157-8cf459e76c0a","user_message_uuids":["1c39d0ac-20b6-4171-97df-94edb81359eb"]}
+{"type":"assistant","uuid":"9e0291e7-0eee-4871-b60c-f8f7fcb16f89","parent_tool_use_id":null,"user_message_uuid":"1c39d0ac-20b6-4171-97df-94edb81359eb","user_message_uuids":["1c39d0ac-20b6-4171-97df-94edb81359eb"],"message":{"role":"assistant","content":[{"type":"text","text":"two"}]}}
+{"type":"result","subtype":"success","uuid":"1b6b4b38-c84a-4a05-a676-b15b5ac62596","user_message_uuid":"1c39d0ac-20b6-4171-97df-94edb81359eb","user_message_uuids":["1c39d0ac-20b6-4171-97df-94edb81359eb"],"is_error":false,"stop_reason":"end_turn","terminal_reason":"completed","result":"two"}
+{"type":"command_lifecycle","state":"completed","uuid":"85799350-5fed-41ad-bc4e-d01b1f4e396a","command_uuid":"1c39d0ac-20b6-4171-97df-94edb81359eb"}
+{"type":"system","subtype":"session_state_changed","state":"idle","uuid":"74ec1c49-aa89-4b7f-b2da-4a9eab2ad20d"}

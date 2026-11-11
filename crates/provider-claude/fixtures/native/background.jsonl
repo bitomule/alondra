@@ -1,0 +1,20 @@
+{"type":"system","subtype":"session_state_changed","state":"running","uuid":"76ae3dcf-fde8-4a7f-b54c-8fe9537fc757"}
+{"type":"command_lifecycle","state":"queued","uuid":"d76492e5-1339-47a1-93a4-672bebdafa2b","command_uuid":"8dcd3b60-c320-4555-9671-22148f567692"}
+{"type":"command_lifecycle","state":"started","uuid":"650f5ac4-a1d2-4dd3-9a7c-812ecc91de08","command_uuid":"8dcd3b60-c320-4555-9671-22148f567692"}
+{"type":"system","subtype":"init","uuid":"c3ffe4cd-35ae-4287-b2ad-b3e4e893ba59","user_message_uuids":["8dcd3b60-c320-4555-9671-22148f567692"]}
+{"type":"assistant","uuid":"dea73c59-1ce8-4778-8246-03d43ef750c2","parent_tool_use_id":null,"user_message_uuid":"8dcd3b60-c320-4555-9671-22148f567692","user_message_uuids":["8dcd3b60-c320-4555-9671-22148f567692"],"message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01QghX6Xdyhcwh5B11r9hMN5","name":"Bash"}]}}
+{"type":"system","subtype":"background_tasks_changed","uuid":"67d1340f-475f-44bc-9b14-cd332ecbc311","tasks":[{"task_id":"b90rsrxwh","run_id":"0mwcfcxlu-74379feb","task_type":"local_bash","description":"Sleep 8 seconds in background"}]}
+{"type":"system","subtype":"task_started","uuid":"8f71f58d-f0ee-4615-85b4-a0300155b293","task_id":"b90rsrxwh","run_id":"0mwcfcxlu-74379feb","tool_use_id":"toolu_01QghX6Xdyhcwh5B11r9hMN5","is_backgrounded":true,"task_type":"local_bash","description":"Sleep 8 seconds in background"}
+{"type":"user","uuid":"1cc11b92-c23f-4603-ba4e-b962cc3feafa","parent_tool_use_id":null,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01QghX6Xdyhcwh5B11r9hMN5"}]}}
+{"type":"assistant","uuid":"ec45d3d0-050c-4105-a8be-cf2df0e5bb97","parent_tool_use_id":null,"message":{"role":"assistant","content":[{"type":"text","text":"started"}]}}
+{"type":"result","subtype":"success","uuid":"28c804e2-ef24-4842-af42-96b8a8fd540f","user_message_uuid":"8dcd3b60-c320-4555-9671-22148f567692","user_message_uuids":["8dcd3b60-c320-4555-9671-22148f567692"],"is_error":false,"stop_reason":"end_turn","terminal_reason":"completed","result":"started"}
+{"type":"command_lifecycle","state":"completed","uuid":"94588db3-a0c6-489d-a822-b854a79ec220","command_uuid":"8dcd3b60-c320-4555-9671-22148f567692"}
+{"type":"system","subtype":"session_state_changed","state":"idle","uuid":"6d82f838-98cf-493c-80ba-a06737340dbd"}
+{"type":"system","subtype":"task_updated","uuid":"47a050d7-d0ba-478a-972b-3ac301ea630f","task_id":"b90rsrxwh","run_id":"0mwcfcxlu-74379feb","patch":{"status":"completed","end_time":1794420044689}}
+{"type":"system","subtype":"task_notification","uuid":"7131953a-fb27-48a3-88ed-1471684e93e6","task_id":"b90rsrxwh","run_id":"0mwcfcxlu-74379feb","tool_use_id":"toolu_01QghX6Xdyhcwh5B11r9hMN5","status":"completed"}
+{"type":"system","subtype":"background_tasks_changed","uuid":"edf024d4-d613-493c-bb65-73eb47442d33","tasks":[]}
+{"type":"system","subtype":"session_state_changed","state":"running","uuid":"bc646843-280a-403f-b54e-58f10e7311f8"}
+{"type":"system","subtype":"init","uuid":"d1183bf0-1fba-480d-a4f5-8adfa005196e"}
+{"type":"assistant","uuid":"1344c0a3-198d-4562-9743-07cb5bae60ef","parent_tool_use_id":null,"message":{"role":"assistant","content":[{"type":"text","text":"The background `sleep 8` finished with exit code 0. Nothing else is pending from this request."}]}}
+{"type":"result","subtype":"success","uuid":"f203efd0-9a19-4b44-a8a3-8636af9f2860","is_error":false,"stop_reason":"end_turn","terminal_reason":"completed","origin":{"kind":"task-notification","producer":"session-task","runId":"0mwcfcxlu-74379feb"},"result":"The background `sleep 8` finished with exit code 0. Nothing else is pending from"}
+{"type":"system","subtype":"session_state_changed","state":"idle","uuid":"cce98836-23cd-41d9-be0f-619659e3da97"}
