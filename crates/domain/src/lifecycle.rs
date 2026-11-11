@@ -1340,6 +1340,10 @@ impl TaskLifecycle {
     pub fn waits_for_slot(&self) -> bool {
         self.input_starts_turn() || self.answer_goes_on()
     }
+    /// Whether a pause card holds the task: another pause is refused while it does.
+    pub fn held_by_pause(&self) -> bool {
+        self.cards().iter().any(|(_, reason)| *reason == WaitReason::Pause)
+    }
     pub fn cards(&self) -> Vec<(&InteractionId, WaitReason)> {
         match &self.state {
             State::InProgress(Progress::Waiting { cards, .. }) => {

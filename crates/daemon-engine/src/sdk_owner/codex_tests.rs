@@ -1790,6 +1790,41 @@ async fn a_task_whose_host_was_resumed_after_it_ended_moves_too(){
     slice.domain.stop_sdk_owners();
 }
 
+// 10 November: a task's replacement host claimed its next message and died before the command was
+// recorded, after the end of the host before it was already committed. Its move to another provider
+// took that end as the source's and kept the claim: the new node's admission was refused for an
+// unresolved dispatch, again on every try. The move ends the dead host and settles its claim first.
+#[tokio::test]
+async fn a_move_from_a_dead_host_that_left_a_claimed_message_settles_it_and_admits_the_new_node(){
+    use crate::domain_store::provider_transition::Phase;
+    let slice=Slice::new();let task:TaskId=TASK.into();
+    working_on_codex(&slice);
+    slice.domain.stop_sdk_owners();
+    let mut resumed=adopt(Arc::clone(&slice.domain),&slice.backend,task.clone(),Some(&slice.plugin)).unwrap();
+    slice.run(&Actor::System,"told",Command::TellNode{task_id:TASK.into(),text:"Add the changelog".into(),from_user:false,answers:None});
+    resumed.sealed();
+    let permit=resumed.permits.pop_back().expect("the message waits for the host");
+    resumed.domain.own(resumed.scope.clone(),|owner|owner.claim(permit)).unwrap();
+    let _abandoned=resumed.sealed().attempts.pop().unwrap();
+    resumed.stop().unwrap();
+    drop(resumed);
+    let left:i64=slice.observer().query_row("SELECT id FROM lifecycle_dispatches WHERE task_id=?1 AND status='claimed'",[TASK],|row|row.get(0)).expect("the dead host left its claim");
+    let status=|slice:&Slice|->String{slice.observer().query_row("SELECT status FROM lifecycle_dispatches WHERE id=?1",[left],|row|row.get(0)).unwrap()};
+    request_move(&slice);
+    let(pulse,mut changed)=tokio::sync::watch::channel(0_u64);slice.domain.before_owner_publish(move||pulse.send_modify(|count|*count+=1));
+    let mut advanced=crate::provider_transition::advance(&slice.domain,&task).await.unwrap();
+    assert_eq!(status(&slice),"rejected","the move settled what the dead host claimed: it never got it");
+    let mut cycle=slice.domain.subscribe();
+    while advanced==Phase::ContextReady{
+        tokio::select!{_=cycle.changed()=>{},_=tokio::time::sleep(std::time::Duration::from_millis(250))=>{}}
+        advanced=crate::provider_transition::advance(&slice.domain,&task).await.unwrap();
+    }
+    assert_eq!(advanced,Phase::TargetAdmitted);
+    until_moved(&slice,&mut changed).await;
+    assert_eq!(slice.domain.state().unwrap().tasks[&task].account_key(),AccountKey::native(Provider::Claude));
+    slice.domain.stop_sdk_owners();
+}
+
 #[test]
 fn a_test_that_leaves_a_codex_host_running_fails_and_the_host_ends_with_it() {
     let slice = Slice::new();

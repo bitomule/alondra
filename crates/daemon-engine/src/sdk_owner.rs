@@ -976,6 +976,7 @@ pub(crate) fn retake_waiting_for_space(domain: &DomainRuntime) {
 /// card without a push.
 pub(crate) fn lost(domain: &DomainRuntime, task: &TaskId, why: &str) {
     log!("the SDK execution of {task} was not taken over: {why}");
+    end_dead_host_claims(domain, task);
     let Ok(state) = domain.state() else { return };
     if node_paused(&state, task) {
         log!("{task} is paused: a host that resumes its session takes it over when the pause ends");
@@ -991,6 +992,34 @@ pub(crate) fn lost(domain: &DomainRuntime, task: &TaskId, why: &str) {
     };
     if let Err(error) = domain.execute_as_system(envelope) {
         log!("could not put the card of {task}, whose execution was not taken over: {}", store_text(&error));
+    }
+}
+
+/// Whether the task's current execution still has something claimed for a host that never
+/// answered for it.
+pub(crate) fn claims_left(domain: &DomainRuntime, task: &TaskId) -> Result<bool, Failed> {
+    let state = domain.state().map_err(|error| Failed::new(format!("reading the domain: {error:#}")))?;
+    let scope = AuthorityScope::new(state.data_epoch.clone()).map_err(|error| Failed::new(format!("{error:?}")))?;
+    domain.own(scope, |owner| owner.claims_left(task)).map(|(left, _)| left).map_err(failed("reading the task's claims"))
+}
+
+/// A host given up as lost answers for nothing it claimed: its end is committed from its journal,
+/// so what it never got goes back to the queue and what it may have got is resent or asked about,
+/// and no claim is left holding the task's next execution.
+fn end_dead_host_claims(domain: &DomainRuntime, task: &TaskId) {
+    let Some((backend, runtime)) = domain.sdk() else { return };
+    match claims_left(domain, task) {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(failed) => return log!("could not read what the lost host of {task} claimed: {failed}"),
+    }
+    if !host_started(backend, domain, task) {
+        return;
+    }
+    let backend = backend.clone();
+    match end_unowned_host(runtime, &backend, task.clone()) {
+        Ok(()) => log!("the lost host of {task} ended: what it claimed was settled from its journal"),
+        Err(failed) => log!("the lost host of {task} left claims that could not be settled: {failed}"),
     }
 }
 

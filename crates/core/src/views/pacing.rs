@@ -64,8 +64,8 @@ pub(super) fn pause_node_action(agent: &AgentId, context: &RenderContext<'_>) ->
         _ => common::working(&agent.0, context),
     };
     working.then_some(())?;
-    common::current_task(context, agent)?;
-    if paused_node(&agent.0, context).is_some() {
+    let task = common::current_task(context, agent)?;
+    if paused_node(&agent.0, context).is_some() || context.domain.lifecycle_of(&task.id).is_ok_and(|lifecycle| lifecycle.held_by_pause()) {
         return None;
     }
     let lang = context.lang;

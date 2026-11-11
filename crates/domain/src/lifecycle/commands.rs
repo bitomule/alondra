@@ -105,11 +105,7 @@ impl TaskLifecycle {
                 if owner == Owner::Capacity(Capacity::Gate) {
                     return Err(Refusal::InvalidState);
                 }
-                if self
-                    .cards()
-                    .iter()
-                    .any(|(_, reason)| *reason == WaitReason::Pause)
-                {
+                if self.held_by_pause() {
                     return Err(Refusal::DuplicateObligation);
                 }
                 valid_id(&card.0)?;

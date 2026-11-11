@@ -2407,6 +2407,38 @@ async fn a_replacement_whose_owner_fails_is_stopped_and_its_task_gets_a_card_to_
     assert_eq!(card.card.content.as_ref().map(|content| content.body.as_str()), Some("Its new host stopped before it could take the task's next message"));
 }
 
+// 10 November: a replacement host claimed the task's next message and died before the command was
+// recorded; its owner gave up with the host-lost card. The claim stayed open with no owner, and every
+// later resume or move of the task was refused for an unresolved dispatch. A host known dead settles
+// its claims when its owner gives up: the message goes back to the queue as never delivered.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_replacement_that_gives_up_with_a_claimed_message_leaves_no_claim_holding_the_task() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("consume-and-hold");
+    slice.until_working(&mut driver);
+    kill_host_and_daemon(driver);
+    let restarted = slice.restart();
+    restarted.enable_sdk(slice.backend.clone());
+    let mut resumed = slice.take_over(&restarted);
+    let state = restarted.state().unwrap();
+    restarted.execute_fixture(&Actor::System, envelope(&state, "told", Command::TellNode { task_id: TASK.into(), text: "Add the changelog".into(), from_user: false, answers: None })).unwrap();
+    resumed.sealed();
+    let permit = resumed.permits.pop_back().expect("the message waits for the host");
+    resumed.domain.own(resumed.scope.clone(), |owner| owner.claim(permit)).unwrap();
+    let _abandoned = resumed.sealed().attempts.pop().unwrap();
+    resumed.fail_next_step = true;
+    let mut changed = restarted.subscribe();
+    let owner = Owner::spawn(resumed);
+    let reader = Arc::clone(&restarted);
+    changed.wait_for(|_| open_card(&reader, HOST_LOST_PREFIX).is_some()).await.unwrap();
+    restarted.add_sdk_owner(owner);
+    let rows: Vec<(String, String)> = slice.observer().prepare("SELECT input_id,status FROM lifecycle_dispatches WHERE task_id=?1 AND kind='input' ORDER BY id").unwrap()
+        .query_map([TASK], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().map(Result::unwrap).collect();
+    assert!(!rows.iter().any(|(_, status)| status == "claimed"), "no claim is left with no owner: {rows:?}");
+    assert!(rows.iter().any(|(_, status)| status == "rejected"), "the dead host never received the claimed message: {rows:?}");
+    assert!(!Slice::lifecycle(&restarted).pending_inputs().is_empty(), "the message waits for the next host");
+}
+
 // The daemon's start could not take the execution over (here no new host can get its folder): the
 // task gets a card with that reason instead of being left as it is. Once that is fixed, «Try
 // again» takes it over and the same session goes on.
