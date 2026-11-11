@@ -1,3 +1,4 @@
+mod calls_log;
 mod output;
 mod overview;
 use std::collections::{HashMap, HashSet};
@@ -995,7 +996,71 @@ impl std::fmt::Display for VersionMismatch {
 
 impl std::error::Error for VersionMismatch {}
 
+/// How many times a card is sent when Alondra's answer is lost. Every send carries the same
+/// command id, so Alondra takes the card once however many of them reach it.
+const CARD_SENDS: usize = 3;
+const CARD_RESEND_PAUSE: Duration = Duration::from_secs(1);
+
+/// A card whose answer was lost on every send: Alondra may or may not have it.
+#[derive(Debug)]
+struct Unconfirmed {
+    tool: String,
+    sends: usize,
+}
+
+impl std::fmt::Display for Unconfirmed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "don't proceed: Alondra did not confirm this {} after {} sends, so it may or may not have it. Send the same {} again with the same interaction_id: it never duplicates the card, and a delivery Alondra already has is answered as stored. Never treat the lost reply as permission.", self.tool, self.sends, self.tool)
+    }
+}
+
+impl std::error::Error for Unconfirmed {}
+
+/// Whether the call left without an answer that says what became of it: a refusal is an answer.
+fn answer_lost(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<crate::client::Refused>().is_none()
+        && error.downcast_ref::<crate::client::DaemonBehind>().is_none()
+        && error.chain().any(|cause| cause.downcast_ref::<ureq::Error>().is_some())
+}
+
 fn send_command(client: &Client, bearer: &str, name: &str, args: &Value) -> Result<String> {
+    let card = stable_card(name, args);
+    let sends = if card.is_some() { CARD_SENDS } else { 1 };
+    let call = format!("{name} {}", card.unwrap_or("-"));
+    let mut send = 1;
+    loop {
+        let started = std::time::Instant::now();
+        calls_log::line(&format!("{call}: sent ({send} of {sends})"));
+        let error = match send_command_once(client, bearer, name, args) {
+            Ok(answer) => {
+                calls_log::line(&format!("{call}: answered in {} ms", started.elapsed().as_millis()));
+                return Ok(answer);
+            }
+            Err(error) => error,
+        };
+        let lost = answer_lost(&error);
+        calls_log::line(&format!("{call}: {} after {} ms: {error:#}", if lost { "no answer" } else { "refused" }, started.elapsed().as_millis()));
+        if !lost {
+            return Err(error);
+        }
+        if send == sends {
+            return Err(match card {
+                Some(_) => error.context(Unconfirmed { tool: name.to_owned(), sends }),
+                None => error,
+            });
+        }
+        std::thread::sleep(CARD_RESEND_PAUSE);
+        send += 1;
+    }
+}
+
+/// The interaction id of a card whose command id is the same on every send.
+fn stable_card<'a>(name: &str, args: &'a Value) -> Option<&'a str> {
+    args.get("interaction_id").and_then(Value::as_str)
+        .filter(|id| CARD_COMMANDS.contains(&name) && id.len() <= 200 && !id.chars().any(char::is_control))
+}
+
+fn send_command_once(client: &Client, bearer: &str, name: &str, args: &Value) -> Result<String> {
     let capabilities = client.domain_get("/capabilities", bearer)?;
     let data_epoch = capabilities.get("data_epoch").and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("incompatible_protocol: daemon returned no data epoch"))?;
@@ -1039,7 +1104,7 @@ fn command_request(name: &str, args: &Value, data_epoch: &str) -> Result<(&'stat
 
 fn scoped_command_request(name:&str,args:&Value,epoch:&str,operation:Option<&str>)->Result<(&'static str,String,Value)> {
     let (method,path,mut body)=command_request(name,args,epoch)?;
-    let stable_card=CARD_COMMANDS.contains(&name) && args.get("interaction_id").and_then(Value::as_str).is_some_and(|id|id.len()<=200 && !id.chars().any(char::is_control));
+    let stable_card=stable_card(name,args).is_some();
     if let Some(operation)=operation && !stable_card {
         use sha2::{Digest,Sha256};
         let digest=Sha256::digest(serde_json::to_vec(&(operation,name))?);
@@ -1055,11 +1120,9 @@ const CARD_COMMANDS: [&str; 10] = [
 ];
 
 fn command_id(name: &str, args: &Value) -> String {
-    let card = args.get("interaction_id").and_then(Value::as_str)
-        .filter(|id| id.len() <= 200 && !id.chars().any(char::is_control));
-    match card {
-        Some(id) if CARD_COMMANDS.contains(&name) => format!("mcp-{name}-{id}"),
-        _ => crate::client::new_id("mcp"),
+    match stable_card(name, args) {
+        Some(id) => format!("mcp-{name}-{id}"),
+        None => crate::client::new_id("mcp"),
     }
 }
 
@@ -1069,11 +1132,14 @@ fn explain(error: &anyhow::Error) -> String {
     if let Some(behind) = error.downcast_ref::<crate::client::DaemonBehind>() {
         return explain(&behind.refusal);
     }
+    if let Some(unconfirmed) = error.downcast_ref::<Unconfirmed>() {
+        return unconfirmed.to_string();
+    }
     if let Some(crate::client::Refused(refused)) = error.downcast_ref() {
         let guidance = match refused.code.as_str() {
             "idempotency_conflict" => "That id already carries a different card: send a new interaction_id for a different card, or replaces to correct one that is still open.",
             "no_effect" => "Alondra already had what this command asks for, so it changed nothing: read the reason, check the task's state, and do not send it again expecting a different answer.",
-            "delivery_review_pending" => "This is not a refusal of the card: GitHub is slow. Wait a few seconds, then send the same present_result again with the same interaction_id; it joins the read already running and nothing is repeated.",
+            "delivery_review_pending" => "This is not a refusal of the card: GitHub or git is slow. Wait a few seconds, then send the same present_result again with the same interaction_id; it joins the check already running and nothing is repeated.",
             _ => "Fix what it says and send the card again with the same interaction_id. Repeating the same refused card three times raises a Problem for the user.",
         };
         return format!("Alondra refused it [{}]: {} Nothing was sent, and a refusal is never an answer or a permission: do not go on as if it had been granted. {guidance}", refused.code, refused.message);
@@ -3169,8 +3235,81 @@ mod card_tool_tests {
         let args = with(json!({"need":"Pick a name","why":"Why","options":options(),"blocking":true}));
         let error = submit(&client, &"a".repeat(64), "ask", &args).unwrap_err();
         let text = explain(&error);
-        assert!(text.starts_with("don't proceed: could not reach Alondra;") && text.contains("unconfirmed") && text.contains("durable outcome") && !text.contains("Nothing was sent"), "{text}");
+        assert!(text.starts_with("don't proceed: Alondra did not confirm this ask after 3 sends") && !text.contains("Nothing was sent"), "{text}");
+        assert!(text.contains("same interaction_id: it never duplicates the card") && text.contains("permission"), "{text}");
+        let error = submit(&client, &"a".repeat(64), "start_task", &json!({"task_id":"t-1"})).unwrap_err();
+        let text = explain(&error);
+        assert!(text.starts_with("don't proceed: could not reach Alondra;") && text.contains("unconfirmed") && text.contains("durable outcome"), "{text}");
         assert!(text.contains("never blindly") && text.contains("permission") && !text.contains("Nothing was sent"), "{text}");
+    }
+
+    /// What the daemon does with each connection, in order.
+    enum Daemon {
+        Answers(&'static str),
+        CutsTheConnection,
+    }
+
+    /// A daemon on a free port that serves one request per connection as `script` says, and the
+    /// bodies of the requests it received.
+    fn scripted_daemon(script: Vec<Daemon>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let mut bodies = vec![];
+            for step in script {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = vec![];
+                let mut chunk = [0; 8192];
+                let complete = |request: &[u8]| {
+                    let text = String::from_utf8_lossy(request);
+                    let Some((head, body)) = text.split_once("\r\n\r\n") else { return None };
+                    let length = head.lines().find_map(|line| line.to_ascii_lowercase().strip_prefix("content-length:").map(|n| n.trim().parse::<usize>().unwrap())).unwrap_or(0);
+                    (body.len() >= length).then(|| body.to_owned())
+                };
+                let body = loop {
+                    let read = stream.read(&mut chunk).unwrap();
+                    request.extend_from_slice(&chunk[..read]);
+                    if let Some(body) = complete(&request) { break body; }
+                };
+                bodies.push(body);
+                match step {
+                    Daemon::Answers(json) => {
+                        let reply = format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{json}", json.len());
+                        stream.write_all(reply.as_bytes()).unwrap();
+                    }
+                    Daemon::CutsTheConnection => drop(stream),
+                }
+            }
+            bodies
+        });
+        (base, server)
+    }
+
+    #[test]
+    fn a_card_whose_answer_is_lost_is_sent_again_with_the_same_command_id_and_logged() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        calls_log::TEST_HOME.with(|test| *test.borrow_mut() = Some(home.to_path_buf()));
+        let (base, daemon) = scripted_daemon(vec![
+            Daemon::Answers(r#"{"data_epoch":"epoch"}"#), Daemon::CutsTheConnection,
+            Daemon::Answers(r#"{"data_epoch":"epoch"}"#), Daemon::Answers(r#"{"effect":["The question waits for the user."]}"#),
+        ]);
+        let args = with(json!({"need":"Pick a name","why":"Why","options":options(),"blocking":true}));
+
+        let answer = submit(&Client::at(base), &"a".repeat(64), "ask", &args);
+
+        calls_log::TEST_HOME.with(|test| *test.borrow_mut() = None);
+        assert_eq!(answer.unwrap(), "The question waits for the user.");
+        let bodies = daemon.join().unwrap();
+        let ids: Vec<Value> = [&bodies[1], &bodies[3]].iter().map(|body| serde_json::from_str::<Value>(body).unwrap()["command_id"].clone()).collect();
+        assert_eq!(ids[0], ids[1], "both sends are the same command");
+        let log = std::fs::read_to_string(home.join("mcp-calls.log")).unwrap();
+        let lines: Vec<&str> = log.lines().collect();
+        assert_eq!(lines.len(), 4, "{log}");
+        assert!(lines[0].ends_with("ask card-1: sent (1 of 3)"), "{log}");
+        assert!(lines[1].contains("ask card-1: no answer after ") && lines[2].ends_with("ask card-1: sent (2 of 3)")
+            && lines[3].contains("ask card-1: answered in "), "{log}");
     }
 
     #[test]

@@ -89,12 +89,14 @@ pub fn perform(fakes: &Fakes, worker: &Worker, step: &Step) -> Option<Result<mcp
                 "title": need, "need": if *is_final { "Review the result" } else { "Read the update" }, "body": "The sandbox changes are ready.", "targets": targets, "is_final": is_final,
                 "content": {"kind": "report", "body": "The sandbox node completed the scripted work."},
             });
-            // Alondra learns a pushed head from GitHub a moment later; a node told so sends the
-            // same card again, as the refusal says.
+            // Alondra learns a pushed head from GitHub a moment later, and a slow git or GitHub
+            // keeps it checking past its answer; a node told so sends the same card again, as the
+            // refusal says.
             let start = std::time::Instant::now();
             loop {
                 let reply = worker.tool(fakes, "present_result", arguments.clone())?;
-                if !reply.text.contains("[pr_mismatch]") || start.elapsed() > Duration::from_secs(15) {
+                let again = ["[pr_mismatch]", "[delivery_review_pending]"].iter().any(|code| reply.text.contains(code));
+                if !again || start.elapsed() > Duration::from_secs(30) {
                     return Ok(reply);
                 }
                 std::thread::sleep(Duration::from_millis(500));

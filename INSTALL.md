@@ -30,7 +30,7 @@ alondra doctor          # what works and what is missing, with the command that 
 alondra doctor --fix    # repairs what it can
 ```
 
-`alondra update` installs the newest release. Logs are in `~/.alondra/alondrad.log`; past 10 MB it moves to `alondrad.log.1`, replacing the previous one.
+`alondra update` installs the newest release. Logs are in `~/.alondra/alondrad.log`; past 10 MB it moves to `alondrad.log.1`, replacing the previous one. What each node's Alondra tools sent and how long each answer took is in `~/.alondra/mcp-calls.log` (past 2 MB it moves to `mcp-calls.log.1`).
 
 Building from the source, using your own Apple developer account, or Tailscale for access from
 outside home: [`docs/building-from-source.md`](docs/building-from-source.md).
