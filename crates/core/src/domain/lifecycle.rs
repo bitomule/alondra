@@ -2022,6 +2022,9 @@ impl DomainState {
         if cards.iter().any(|(card, _)| self.interactions.get(card).is_some_and(retakes)) {
             return Ok(());
         }
+        if cards.iter().any(|(card, _)| self.claude_hold(card) == Some(ClaudeHold::Usage)) {
+            return Ok(());
+        }
         let title = self.tasks[task].title.clone();
         let unheard = cards.into_iter().find(|(card, reason)| *reason == WaitReason::Unheard && self.interactions.get(card).is_some_and(|i| i.author == Author::System && self.open(i)));
         if let Some((card, _)) = unheard {

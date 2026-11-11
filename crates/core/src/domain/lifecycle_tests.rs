@@ -2041,6 +2041,19 @@ fn a_quiet_host_loss_opens_its_card_without_a_push() {
     assert!(matches!(stored, Command::RecordHostLost { quiet: false, .. }), "a stored command without it tells the user");
 }
 
+#[test]
+fn a_task_the_usage_limit_holds_is_not_lost_when_its_host_ends_and_gives_up_its_slot() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    usage_turn(&mut s, "t", 4_102_444_800);
+    assert!(!s.task_holds_slot(&"t".into()), "the limit frees the slot");
+    let lost = must(&mut s, Actor::System, Command::RecordHostLost { task_id: "t".into(), reason: "its new host stopped".into(), quiet: false });
+    assert!(!s.interactions.keys().any(|id| id.0.starts_with(HOST_LOST_PREFIX)), "no lost-host card");
+    assert_eq!(notices(&lost), 0);
+    assert_eq!(held(&s), [("t".into(), ClaudeHold::Usage)], "it still waits for the limit");
+    assert_eq!(s.live_state(&"t".into()), Some(alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::Usage)));
+}
+
 // An execution no host runs, because the daemon could not take it over, holds on a card that says
 // why. «Try again» lets it go on, told to carry on; «Cancel the task» ends it.
 #[test]

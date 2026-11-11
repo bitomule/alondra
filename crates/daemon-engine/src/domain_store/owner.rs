@@ -411,7 +411,7 @@ impl<'connection> OwnerTransaction<'connection> {
                     }
                     let (failure, failed) = match outcome {
                         TurnOutcome::Completed => (None, None),
-                        TurnOutcome::ApiFailed(_) if !account_fresh => (None,Some("stale_native_account_observation".into())),
+                        TurnOutcome::ApiFailed(failure) if !account_fresh && alondra_core::domain::classify_sdk(&failure.error,failure.status)!=Some(alondra_core::domain::SdkFailureKind::Usage) => (None,Some("stale_native_account_observation".into())),
                         TurnOutcome::ApiFailed(failure) => {
                             (Some(SdkApiFailure { error: failure.error.clone(), status: failure.status, resets_at: failure.resets_at }), None)
                         }
