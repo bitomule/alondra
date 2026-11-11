@@ -1407,6 +1407,20 @@ fn a_previous_native_credentials_generation_cannot_change_the_new_accounts_auth_
 }
 
 #[test]
+fn a_codex_turn_the_usage_limit_ended_holds_its_task_even_when_its_account_is_not_confirmed(){
+    use alondra_core::domain::ClaudeHold;
+    use alondra_provider_contract::{ApiFailure,TurnOutcome};
+    let native=ProviderBinding::new("composite-binding".into(),"codex-app-server".into(),"fixture-instance".into(),"fixture-config".into(),1,1,BTreeSet::from([Capability::OfferInput]),"default".into(),1).unwrap();
+    let (fixture,store,execution)=running_with(&native);let runtime=runtime(&fixture,store);
+    let input=runtime.read().state().lifecycle_of(&task()).unwrap().pending_inputs()[0].clone();let turn=TurnId::new("codex-limit-turn").unwrap();
+    let observe=|cursor:u64,facts:Vec<Observation>|{let state=Arc::clone(runtime.read().state());runtime.own(scope_of(&state),|owner|owner.stage_observation(&native,1,&batch(&execution,cursor),&Normalizer::Facts(facts),no_home(),false)).unwrap();};
+    observe(1,vec![Observation::Available,Observation::TurnStarted{input,turn:turn.clone()}]);
+    observe(2,vec![Observation::TurnEnded{turn,outcome:TurnOutcome::ApiFailed(ApiFailure{error:"rate_limit".into(),status:Some(429),resets_at:Some(4_102_444_800)})}]);
+    let state=runtime.read();
+    assert!(state.state().claude_held().iter().any(|held|held.task==task() && held.hold==ClaudeHold::Usage),"the limit holds the task until the provider's reset");
+}
+
+#[test]
 fn a_live_native_cell_continuation_is_one_durable_input_without_retiring_own_work() {
     let (fixture,mut store,execution)=running();let input=pending_input(&mut store);let runtime=runtime(&fixture,store);let work=WorkId::new("owned-code-cell").unwrap();let turn=TurnId::new("cell-origin").unwrap();
     let observe=|cursor,facts|{let state=runtime.state().unwrap();runtime.own(scope_of(&state),|owner|owner.stage_observation(&binding(),1,&batch(&execution,cursor),&Normalizer::Facts(facts),no_home(),false)).unwrap().0};
