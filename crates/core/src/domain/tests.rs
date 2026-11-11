@@ -3243,10 +3243,10 @@ fn variant_index(c: &Command) -> usize {
         Command::AdoptOpenPr { .. } => 130,
         Command::RequestPrAdoption { .. } => 131,
         Command::ClosePrOfCancelledTask { .. } => 133,
-        Command::RecordClaudeHold { .. } => 134,
+        Command::RecordClaudeHold { .. } => 135,
     }
 }
-const COMMAND_KINDS: usize = 135;
+const COMMAND_KINDS: usize = 136;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
