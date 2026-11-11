@@ -499,7 +499,8 @@ fn nodes_of_the_sdk_waiting_on_the_user_inside_their_turn_hold_no_slot_until_ans
     must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: decision_card_id(&"p1".into(), 1, 1),
         option_id: Hold::APPROVE.into(), inputs: BTreeMap::new() });
     must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "ask-q1".into(), option_id: "short".into(), inputs: BTreeMap::new() });
-    assert_eq!(slots(&s), ["node-busy", "node-p1", "node-q1"], "answered, they work again");
+    assert_eq!(slots(&s), ["node-busy", "node-q1"], "the question answered through Alondra works again");
+    assert!(!holds_slot(&s, "p1") && s.waits_for_turn(&"p1".into()), "the approved plan has not reached its turn: it waits for a slot and holds none");
     assert_aggregate_rules(&s);
 }
 

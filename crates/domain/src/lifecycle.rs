@@ -973,18 +973,21 @@ struct Execution {
 }
 impl Execution {
     /// A node whose turn ended on work of its own keeps its process and its memory while that
-    /// work runs, and goes on without passing the gate, so it keeps its slot.
+    /// work runs, and goes on without passing the gate, so it keeps its slot. A turn whose answer
+    /// has not reached it yet does not work: it waits for a slot instead of holding one.
     fn holds_slot(&self) -> bool {
-        matches!(
-            self.resource,
-            ResourceEvidence::Reserved | ResourceEvidence::ObservationPending
-        ) || self.activity.turn_runs_work()
-            || (self.resource == ResourceEvidence::Available && !self.activity.rests())
+        !self.answer_waits()
+            && (matches!(self.resource, ResourceEvidence::Reserved | ResourceEvidence::ObservationPending)
+                || self.activity.turn_runs_work()
+                || (self.resource == ResourceEvidence::Available && !self.activity.rests()))
     }
 }
 
 // Startup has a reservation; subsequent activity requires an observed running execution.
 impl Execution {
+    fn answer_waits(&self) -> bool {
+        self.callbacks.iter().any(|state| matches!(state, CallbackState::Decided(_)))
+    }
     /// Who works for an execution that is not resting.
     fn worker(&self) -> Option<Worker> {
         match &self.activity {
@@ -1339,12 +1342,27 @@ impl TaskLifecycle {
         self.session().is_some_and(|execution| execution.resource == ResourceEvidence::Available && matches!(execution.activity, Activity::InputPending(_)))
     }
     /// The user answered a decision a turn held open, which took no slot while it waited on them.
+    /// A task that finishes drains its execution with the slot it holds, without the gate.
     pub fn answer_goes_on(&self) -> bool {
-        self.session().is_some_and(|execution| execution.callbacks.iter().any(|state| matches!(state, CallbackState::Decided(_))))
+        !matches!(self.state, State::Finishing(_)) && self.session().is_some_and(Execution::answer_waits)
     }
     /// What the node goes on with waits for a slot of the gate.
     pub fn waits_for_slot(&self) -> bool {
         self.input_starts_turn() || self.answer_goes_on()
+    }
+    /// What waits for a slot of the gate, by id: the input that starts a turn and the answers that
+    /// have not reached theirs. A slot given for these does not cover what waits after them.
+    pub fn slot_waiters(&self) -> BTreeSet<String> {
+        let Some(execution) = self.session() else { return BTreeSet::new() };
+        let input = match &execution.activity {
+            Activity::InputPending(input) if self.input_starts_turn() => Some(format!("input:{}", input.as_str())),
+            _ => None,
+        };
+        let answers = execution.callbacks.iter().filter(|_| self.answer_goes_on()).filter_map(|state| match state {
+            CallbackState::Decided(callback) => Some(format!("answer:{}", callback.as_str())),
+            _ => None,
+        });
+        input.into_iter().chain(answers).collect()
     }
     /// Whether a pause card holds the task: another pause is refused while it does.
     pub fn held_by_pause(&self) -> bool {

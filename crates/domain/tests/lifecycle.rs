@@ -103,7 +103,8 @@ fn a_human_permission_and_owned_background_work_coexist_and_only_a_working_turn_
             decision: Decision::Allow,
         },
     );
-    assert!(task.holds_slot(), "the permission answered, the work still runs");
+    assert!(!task.holds_slot(), "the answer has not reached its turn: it waits for a slot instead of holding one");
+    assert!(task.waits_for_slot());
     fact(
         &mut task,
         RuntimeFact::CallbackSettled {
@@ -1271,7 +1272,7 @@ proptest! {
                 prop_assert_eq!(task.drain().count(), 0);
             }
             if task.phase() == TaskPhase::Finishing { prop_assert!(task.drain().count() > 0); }
-            if task.activity() == ActivityView::OwnWork && task.resource() == Some(ResourceEvidence::Available) { prop_assert!(task.holds_slot(), "a turn that ended on its own work keeps its slot once its host is seen: {:?}", task); }
+            if task.activity() == ActivityView::OwnWork && task.resource() == Some(ResourceEvidence::Available) && !task.answer_goes_on() { prop_assert!(task.holds_slot(), "a turn that ended on its own work keeps its slot once its host is seen: {:?}", task); }
             if host_ended && open && users && task.revision() != revision {
                 prop_assert!(!task.pending_inputs().is_empty() || !task.cards().is_empty() || !task.dependencies().is_empty(),
                     "a session its host's end cut gets an input or a card when the user waits on it or a resumed session is told to go on: {:?}", task);
@@ -1279,6 +1280,20 @@ proptest! {
             if task.phase() == TaskPhase::InProgress && task.activity() == ActivityView::Resting { prop_assert!(!task.cards().is_empty() || !task.dependencies().is_empty() || task.awaits().is_some()); }
             if let Some(stamp) = task.execution() { prop_assert_eq!(stamp.task(), task.task()); }
             prop_assert_eq!(task.turn_stop().is_some(), task.turn().is_some());
+        }
+    }
+
+    /// A task never holds a slot while an answer of the user's waits for one to reach its turn.
+    #[test]
+    fn a_task_never_holds_a_slot_while_it_waits_for_one(started in any::<bool>(), actions in prop::collection::vec(prop_oneof![
+        3 => prop::sample::select(vec![1u8, 2, 3, 4, 5, 6, 7, 15, 17, 29, 30, 36, 37, 44, 45, 69]),
+        1 => 0u8..74,
+    ], 1..160)) {
+        let mut task = if started { running() } else { TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap() };
+        for action in actions {
+            let Some(event) = arbitrary_event(&task, action) else { continue };
+            let _ = task.apply(task.revision(), event);
+            prop_assert!(!(task.answer_goes_on() && task.holds_slot()), "an answer waits for a slot while its turn holds one: {:?}", task);
         }
     }
 }
@@ -3557,4 +3572,21 @@ fn turns_the_provider_starts_with_inputs_behind_the_head_of_the_queue_are_taken(
     fact(&mut task, RuntimeFact::TurnEnded { turn: turn("codex-2"), unheard_card: card("codex-2-card"), wake: None, awaits: None, stalled: false });
     assert!(task.pending_inputs().is_empty(), "every input the provider took left the queue");
     assert_eq!(task.cards(), [(&card("codex-2-card"), WaitReason::Unheard)]);
+}
+
+/// 11 November, 00:21: a permission answered inside an open turn waited three hours for a slot while
+/// it still counted as working. Until the answer reaches its turn, the turn takes no slot and waits
+/// for one.
+#[test]
+fn a_turn_whose_answer_has_not_reached_it_takes_no_slot() {
+    let mut task = running();
+    let callback = CallbackId::new("permission-callback").unwrap();
+    fact(&mut task, RuntimeFact::Ask { card: "permission".into(), callback: callback.clone(), reason: WaitReason::Permission });
+    apply(&mut task, Event::Decide { card: "permission".into(), decision: Decision::Allow });
+    assert!(!task.holds_slot(), "the answer has not reached its turn");
+    assert!(task.waits_for_slot());
+    assert_eq!(task.obligation().map(|obligation| obligation.owed), Some(Owed::HandDecision));
+    fact(&mut task, RuntimeFact::CallbackSettled { callback, continuation: continuation("allowed") });
+    assert!(task.holds_slot(), "the answer reached its turn, which works again");
+    assert!(!task.waits_for_slot());
 }
