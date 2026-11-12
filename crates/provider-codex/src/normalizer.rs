@@ -201,16 +201,10 @@ fn fold(batch: &OrderedObservation, state: &mut Checkpoint, method: &str, params
         end_turn(batch, state, TurnOutcome::Failed { code: ENDED_WITHOUT_RESULT.into() }, facts)?;
     }
     match method {
-        // Codex's own word on the thread: active as it takes a turn's input, idle as the turn is
-        // over, just before its turn/completed.
+        // Codex's own word on the thread: idle as the turn is over, just before its
+        // turn/completed. An input of ours is taken only when Codex records it as the turn's user
+        // message, which names it.
         "thread/status/changed" => match status {
-            Some("active") if state.turn.is_none() => {
-                let accepted = state.accepted.iter().min_by_key(|(_, client)| state.input_starts.get(*client).copied().unwrap_or(u64::MAX)).map(|(turn, client)| (turn.clone(), client.clone()));
-                if let Some((turn, client)) = accepted {
-                    facts.push(Observation::TurnStarted { input: lookup(&client)?, turn: native_turn(batch, &state.process, &turn)? });
-                    state.turn = Some(turn);
-                }
-            }
             Some("idle") if state.turn.is_some() => state.idled = true,
             Some("idle") => reconcile(state, facts)?,
             _ => {}
@@ -223,6 +217,12 @@ fn fold(batch: &OrderedObservation, state: &mut Checkpoint, method: &str, params
         "alondra/inputRefused" => {
             if params.get("nativeSubmitted").and_then(Value::as_bool)!=Some(false){return invalid()}
             let client=string(params,"inputId").ok_or(AdapterError::InvalidObservation)?;
+            state.input_starts.remove(client);facts.push(Observation::InputDropped{input:lookup(client)?});
+        }
+        // Codex answered the turn/start of an input of ours with an error: it refused it.
+        "alondra/inputRejected" => {
+            let client=string(params,"inputId").ok_or(AdapterError::InvalidObservation)?;
+            if state.accepted.values().any(|accepted|accepted==client){return invalid()}
             state.input_starts.remove(client);facts.push(Observation::InputDropped{input:lookup(client)?});
         }
         "alondra/planContinuationAccepted" => {
@@ -273,7 +273,11 @@ fn fold(batch: &OrderedObservation, state: &mut Checkpoint, method: &str, params
         }
         "turn/completed" => {
             let id = params.pointer("/turn/id").and_then(Value::as_str);
-            if id.is_some() && id == state.turn.as_deref() {
+            if let Some(turn) = id && state.turn.as_deref() != Some(turn) && let Some(client) = state.accepted.remove(turn) {
+                // The turn Codex started for an input of ours ended without recording it.
+                state.input_starts.remove(&client);
+                facts.push(Observation::InputDropped { input: lookup(&client)? });
+            } else if id.is_some() && id == state.turn.as_deref() {
                 let status = params.pointer("/turn/status").and_then(Value::as_str).unwrap_or("");
                 let outcome = match status {
                     "completed" => Some(TurnOutcome::Completed),
@@ -540,9 +544,10 @@ mod tests {
         }
         out
     }
-    // Codex says the thread is active as it takes the input, and idle just before the turn's
-    // turn/completed: the first turn starts at active and completes; the second, whose
-    // turn/completed the recording stops before, ends at the thread's next word.
+    // Codex records each input as its turn's user message, naming it, and says the thread is idle
+    // just before the turn's turn/completed: the first turn starts at its user message and
+    // completes; the second, whose turn/completed the recording stops before, ends at the
+    // thread's next word.
     #[test]
     fn a_codex_thread_that_goes_idle_ends_its_turn() {
         let batch=batch();let mut state=Checkpoint{thread:Some("root".into()),process:"process".into(),initialized:true,..Checkpoint::default()};
@@ -554,7 +559,7 @@ mod tests {
         }
         let started:Vec<_>=per.iter().filter(|(_,_,facts)|facts.iter().any(|fact|matches!(fact,Observation::TurnStarted{..}))).collect();
         assert_eq!(started.len(),2);
-        assert!(started.iter().all(|(method,params,_)|method=="thread/status/changed" && params["status"]["type"]=="active"),"each turn starts as the thread goes active");
+        assert!(started.iter().all(|(method,params,_)|method=="item/started" && params["item"]["type"]=="userMessage"),"each turn starts as Codex records its input");
         let ended:Vec<&Observation>=per.iter().flat_map(|(_,_,facts)|facts).filter(|fact|matches!(fact,Observation::TurnEnded{..})).collect();
         assert_eq!(ended.len(),1);
         assert!(matches!(ended[0],Observation::TurnEnded{outcome:TurnOutcome::Completed,..}),"an idle thread whose turn/completed follows keeps its outcome");
@@ -563,6 +568,27 @@ mod tests {
         fold(&batch,&mut state,"thread/status/changed",&json!({"threadId":"root","status":{"type":"active","activeFlags":[]}}),&mut facts,|id|Ok(InputId::new(id).unwrap())).unwrap();
         assert!(matches!(&facts[0],Observation::TurnEnded{outcome:TurnOutcome::Failed{code},..} if code==ENDED_WITHOUT_RESULT),"{facts:?}");
         assert!(state.turn.is_none() && !state.idled);
+    }
+    // Codex answers the turn/start of an input of ours with an error, or ends the turn it started
+    // for it without recording it as the turn's user message: it never took it.
+    #[test]
+    fn an_input_codex_refuses_or_never_records_is_dropped() {
+        let batch=batch();let input=|id:&str|{assert_eq!(id,"client");Ok(InputId::new("registered").unwrap())};
+        let dropped=|facts:&[Observation]|matches!(facts,[Observation::InputDropped{input}] if input.as_str()=="registered");
+        let mut state=Checkpoint{thread:Some("root".into()),process:"process".into(),initialized:true,..Checkpoint::default()};let mut facts=vec![];
+        fold(&batch,&mut state,"alondra/inputStarting",&json!({"threadId":"root","inputId":"client"}),&mut facts,|_|invalid()).unwrap();
+        fold(&batch,&mut state,"alondra/inputRejected",&json!({"threadId":"root","inputId":"client","code":"-32600"}),&mut facts,input).unwrap();
+        assert!(dropped(&facts),"{facts:?}");assert!(state.input_starts.is_empty());
+
+        let mut state=Checkpoint{thread:Some("root".into()),process:"process".into(),initialized:true,..Checkpoint::default()};let mut facts=vec![];
+        fold(&batch,&mut state,"alondra/inputAccepted",&json!({"threadId":"root","turnId":"turn","inputId":"client"}),&mut facts,|_|invalid()).unwrap();
+        fold(&batch,&mut state,"thread/status/changed",&json!({"threadId":"root","status":{"type":"active","activeFlags":[]}}),&mut facts,|_|invalid()).unwrap();
+        fold(&batch,&mut state,"turn/started",&json!({"threadId":"root","turn":{"id":"turn"}}),&mut facts,|_|invalid()).unwrap();
+        assert!(facts.is_empty(),"an accepted input is not taken until Codex records it: {facts:?}");
+        fold(&batch,&mut state,"thread/status/changed",&json!({"threadId":"root","status":{"type":"idle"}}),&mut facts,|_|invalid()).unwrap();
+        facts.clear();
+        fold(&batch,&mut state,"turn/completed",&json!({"threadId":"root","turn":{"id":"turn","status":"failed"}}),&mut facts,input).unwrap();
+        assert!(dropped(&facts),"{facts:?}");assert!(state.accepted.is_empty() && state.turn.is_none());
     }
     #[test]
     fn a_closed_thread_ends_all_its_open_work_without_waking_a_turn() {

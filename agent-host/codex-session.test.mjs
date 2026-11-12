@@ -104,6 +104,19 @@ test('native turn acceptance survives exit while its response is still unread', 
   assert(final >= 0 && final < exit, 'the accepted turn retains its final native item');
 });
 
+test('a turn/start Codex answers with an error refuses only that input and the session takes the next', { timeout: 15000 }, async (t) => {
+  const f = fixture(t, { env: { ALONDRA_FAKE_MODE: 'refuse_first_turn_start' } });
+  f.session.offer('00000000-0000-4000-8000-000000000003', 'Codex refuses this turn');
+  const rejected = await f.next(method('alondra/inputRejected'));
+  assert.equal(rejected.payload.params.inputId, '00000000-0000-4000-8000-000000000003');
+  assert.equal(rejected.payload.params.code, '-32600');
+  f.session.offer('00000000-0000-4000-8000-000000000004', 'Codex takes this one');
+  const accepted = await f.next(method('alondra/inputAccepted'));
+  assert.equal(accepted.payload.params.inputId, '00000000-0000-4000-8000-000000000004');
+  assert.equal(f.session.failure, undefined);
+  assert(!f.events.some(method('alondra/transportFailed')));
+});
+
 test('native stdout EOF ends the session even when the app-server process stays alive', { timeout: 15000 }, async (t) => {
   const f = fixture(t, { nativeFailure: true, env: { ALONDRA_FAKE_MODE: 'close_stdout' } });
   f.session.offer('00000000-0000-4000-8000-000000000003', 'Close only the output pipe');

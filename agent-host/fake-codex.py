@@ -9,6 +9,7 @@ thread = '00000000-0000-4000-8000-000000000001'
 turn = 'native-turn'
 turn_number = 0
 accepted_input = None
+refused_turn_start = False
 child_pending = False
 child_turn = 'child-turn-' + str(os.getpid())
 mode = os.environ.get('ALONDRA_FAKE_MODE', 'complete')
@@ -145,6 +146,10 @@ for line in sys.stdin:
             with open(fixture['turnResponseReady'], 'wb', buffering=0) as ready: ready.write(b'R')
             with open(fixture['turnResponseBarrier'], 'rb', buffering=0) as release: release.read(1)
         turn_mode = fixture.get('turnMode', mode)
+        if turn_mode == 'refuse_first_turn_start' and not refused_turn_start:
+            refused_turn_start = True
+            send({'id': identity, 'error': {'code': -32600, 'message': 'Fixture turn start refused'}})
+            continue
         retained = retained_thread(thread)
         if retained.get('path') and not os.path.exists(retained['path']):
             with open(retained['path'], 'w') as target:

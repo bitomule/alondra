@@ -442,8 +442,9 @@ fn fold(
     let kind = string(payload, "type")?;
     let mut facts = Vec::new();
     if kind == "command_lifecycle" {
-        // The native Claude's trace of an input. One of ours it finishes or cancels without having
-        // taken it in is one it never reads; the rest, and another's command, is evidence.
+        // The native Claude's trace of an input. One of ours it refuses, discards, cancels or
+        // completes without having started it is one no turn reads: completed unstarted, it is
+        // one its transcript already held. Another's command is evidence.
         let Some(command) = payload.get("command_uuid").and_then(Value::as_str).and_then(|id| MessageUuid::new(id).ok()) else {
             return Ok(facts);
         };
@@ -475,7 +476,7 @@ fn fold(
                 Err(AdapterError::UnknownInput) => {}
                 Err(error) => return Err(error),
             },
-            Some("completed" | "cancelled") => {
+            Some("completed" | "cancelled" | "discarded" | "refused") => {
                 if let Some(index) = state.taken.iter().position(|taken| *taken == command) {
                     state.taken.remove(index);
                     remember(&mut state.finished, command);
@@ -2143,6 +2144,45 @@ mod tests {
         assert!(fold(&lifecycle(NOTIFIED, "completed"), &session(), &mut state, foreign).is_err(), "another's command is evidence");
         let mut early = Checkpoint { format: CHECKPOINT_FORMAT, ..Checkpoint::default() };
         assert_eq!(fold(&lifecycle(FIRST, "completed"), &session(), &mut early, |_| panic!("before init nothing is dropped")).unwrap(), vec![]);
+    }
+    // Claude Code 2.1.322 refuses an input before queueing it, or discards one still queued as its
+    // session ends: neither will run in this session.
+    #[test]
+    fn an_input_claude_refuses_or_discards_is_dropped() {
+        let lifecycle = |command: &str, state: &str| event(json!({"type":"command_lifecycle","command_uuid":command,"state":state,"uuid":REPLY}));
+        let dropped = |id: &str| vec![Observation::InputDropped { input: InputId::new(id).unwrap() }];
+        let mut state = state();
+        assert_eq!(fold(&lifecycle(FIRST, "refused"), &session(), &mut state, input).unwrap(), dropped(FIRST));
+        assert_eq!(fold(&lifecycle(SECOND, "queued"), &session(), &mut state, input).unwrap(), vec![]);
+        assert_eq!(fold(&lifecycle(SECOND, "discarded"), &session(), &mut state, input).unwrap(), dropped(SECOND));
+        assert_eq!(fold(&lifecycle(THIRD, "started"), &session(), &mut state, input).unwrap(), vec![]);
+        assert_eq!(fold(&lifecycle(THIRD, "discarded"), &session(), &mut state, input).unwrap(), vec![], "what it started is no drop");
+    }
+    // Recorded from Claude Code 2.1.322 on 12 Nov 2026: a second input written while the first ran
+    // was queued during that turn, and the first turn's result still counted no queued send
+    // (`queued_turn_count` 0) before Claude started it. That count is no evidence an input left the
+    // queue: only the input's own lifecycle or a result naming it decides.
+    #[test]
+    fn a_result_that_counts_no_queued_send_drops_nothing_still_queued() {
+        const LATER: &str = "10000000-0000-4000-8000-000000000008";
+        let lifecycle = |command: &str, state: &str| event(json!({"type":"command_lifecycle","command_uuid":command,"state":state,"uuid":NOTIFIED}));
+        let session_state = |state: &str| event(json!({"type":"system","subtype":"session_state_changed","state":state,"uuid":THIRD}));
+        let assistant = |reply: &str, id: &str| event(json!({"type":"assistant","uuid":reply,"parent_tool_use_id":null,"user_message_uuid":id,"user_message_uuids":[id]}));
+        let result = |id: &str| event(json!({"type":"result","uuid":NOTIFIED,"subtype":"success","is_error":false,"user_message_uuid":id,"user_message_uuids":[id],"queued_turn_count":0}));
+        let mut state = state();
+        let mut facts = vec![];
+        for frame in [
+            session_state("running"), lifecycle(FIRST, "queued"), lifecycle(FIRST, "started"), lifecycle(SECOND, "queued"),
+            event(json!({"type":"system","subtype":"init","uuid":FOURTH})), assistant(REPLY, FIRST), result(FIRST), lifecycle(FIRST, "completed"),
+            lifecycle(SECOND, "started"), event(json!({"type":"system","subtype":"init","uuid":LATER})), assistant(LATER, SECOND), result(SECOND),
+            lifecycle(SECOND, "completed"), session_state("idle"),
+        ] {
+            facts.extend(fold(&frame, &session(), &mut state, input).unwrap());
+        }
+        assert!(!facts.iter().any(|fact| matches!(fact, Observation::InputDropped { .. })), "{facts:?}");
+        let started: Vec<_> = facts.iter().filter_map(|fact| match fact { Observation::TurnStarted { input, .. } => Some(input.as_str().to_owned()), _ => None }).collect();
+        assert_eq!(started, [FIRST, SECOND]);
+        assert_eq!(facts.iter().filter(|fact| matches!(fact, Observation::TurnEnded { outcome: TurnOutcome::Completed, .. })).count(), 2);
     }
     // 25 Oct, t-duo-parcel and t-release-apps-beta-61: Claude Code folded an input of ours into a
     // running turn and finished it before that turn's result, which named it again. The input
