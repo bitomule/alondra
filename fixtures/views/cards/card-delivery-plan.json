@@ -4,12 +4,12 @@
   "view": "card",
   "key": "card:result-1",
   "client": "ios",
-  "version": "v1e7338a60f9e5077",
+  "version": "va4009bb28408a77b",
   "cursor": "cursor-1",
   "title": "Approve the plan to index Redraft's whole library",
   "status": {
-    "version": "v887807058841bf6a",
-    "summary": "1 to read · 1 node working",
+    "version": "v63843208edea3b28",
+    "summary": "1 to read · 0 nodes working",
     "badge": 1,
     "counts": [
       {
@@ -30,7 +30,7 @@
       {
         "id": "working",
         "label": "working",
-        "value": 1
+        "value": 0
       },
       {
         "id": "waiting",

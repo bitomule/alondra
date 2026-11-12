@@ -4,12 +4,12 @@
   "view": "card",
   "key": "card:github.com/bitomule/alondra#17",
   "client": "ios",
-  "version": "vff0e63e43dfaddeb",
+  "version": "v205feae43ac8cb09",
   "cursor": "cursor-1",
   "title": "Review the result · alondra#17",
   "status": {
-    "version": "v399b251bf8914b0b",
-    "summary": "2 to read · 1 node working",
+    "version": "vcc48ea0259977dc2",
+    "summary": "2 to read · 0 nodes working",
     "badge": 2,
     "counts": [
       {
@@ -30,7 +30,7 @@
       {
         "id": "working",
         "label": "working",
-        "value": 1
+        "value": 0
       },
       {
         "id": "waiting",

@@ -4,12 +4,12 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "v3c883f906d860e0f",
+  "version": "veef11289b217341b",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
-    "version": "v41891ae08ceb5ca5",
-    "summary": "2 preguntas · 3 por leer · 3 nodos trabajando",
+    "version": "vcaf24a89cb36a3b8",
+    "summary": "2 preguntas · 3 por leer · 2 nodos trabajando",
     "badge": 5,
     "counts": [
       {
@@ -30,7 +30,7 @@
       {
         "id": "working",
         "label": "trabajando",
-        "value": 3
+        "value": 2
       },
       {
         "id": "waiting",

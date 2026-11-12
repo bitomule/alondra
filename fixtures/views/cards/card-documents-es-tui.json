@@ -4,12 +4,12 @@
   "view": "card",
   "key": "card:result-1",
   "client": "tui",
-  "version": "vd298e0df7b257ab6",
+  "version": "v80554ff1e8591939",
   "cursor": "cursor-1",
   "title": "Approve the plan to index Redraft's whole library",
   "status": {
-    "version": "vb7b081b6c72395b1",
-    "summary": "1 por leer · 1 nodo trabajando",
+    "version": "v3ca84408e03b9580",
+    "summary": "1 por leer · 0 nodos trabajando",
     "badge": 1,
     "counts": [
       {
@@ -30,7 +30,7 @@
       {
         "id": "working",
         "label": "trabajando",
-        "value": 1
+        "value": 0
       },
       {
         "id": "waiting",
