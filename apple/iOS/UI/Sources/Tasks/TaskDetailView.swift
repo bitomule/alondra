@@ -96,9 +96,11 @@ public struct TaskDetailView: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 0) {
                 if let state = detail.state {
-                    Text(verbatim: state)
+                    Text(MarkdownBlock.line(state))
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(tint)
+                        .lineLimit(detail.since == nil && detail.runTime == nil ? 2 : 1)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 if let date = detail.since {
                     since(date)

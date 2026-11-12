@@ -4,6 +4,7 @@
 use super::{
     Icon, LiveHold, LivePauseReason, RenderContext, Tone, common,
     text::{t, tf},
+    now_fact::{NowDoing, NowFact, now_fact},
 };
 use alondra_domain::LiveState;
 use crate::domain::{
@@ -59,18 +60,6 @@ impl StateLabel {
             Self::Cancelled => "cancelled",
         }
     }
-
-    fn of(situation: Situation) -> Self {
-        match situation {
-            Situation::Working(_) => Self::Working,
-            Situation::Waiting(_) => Self::Waiting,
-            Situation::NeedsYou => Self::NeedsYou,
-            Situation::Paused => Self::Paused,
-            Situation::Delivered(_) => Self::Delivered,
-            Situation::Finished => Self::Finished,
-            Situation::Cancelled => Self::Cancelled,
-        }
-    }
 }
 
 pub(super) struct Presentation {
@@ -83,19 +72,38 @@ pub(super) struct Presentation {
     pub block: Block,
     /// Its place in the queue of starts.
     pub queue: Option<usize>,
-    /// When it last did something, to order the work in progress; a task at work shows no time.
+    /// When it last did something, to order the work in progress.
     pub active_at: Option<String>,
     /// Its fact belongs beside its state on the task's screen too, though it is in progress.
     pub fact_in_state: bool,
 }
 
+enum StateFact {
+    Working(NowFact),
+    NeedsYou(String),
+    Delivered(String),
+    Waiting(Option<String>),
+    Paused(String),
+    Finished(String),
+    Cancelled(String),
+}
+
 impl Presentation {
     /// Where a request the orchestrator has not split yet sorts, as if it were a task.
     pub(super) fn waiting_request(block: Block, since: Option<String>) -> Self {
-        Self { since, state: String::new(), ..Self::new(StateLabel::Waiting, Tone::Neutral, block, None, super::Lang::En) }
+        Self { since, state: String::new(), ..Self::new(StateFact::Waiting(None), Tone::Neutral, block, super::Lang::En) }
     }
 
-    fn new(label: StateLabel, tone: Tone, block: Block, fact: Option<String>, lang: super::Lang) -> Self {
+    fn new(state: StateFact, tone: Tone, block: Block, lang: super::Lang) -> Self {
+        let (label, fact) = match state {
+            StateFact::Working(now) => (StateLabel::Working, Some(now.text(lang))),
+            StateFact::NeedsYou(fact) => (StateLabel::NeedsYou, Some(fact)),
+            StateFact::Delivered(fact) => (StateLabel::Delivered, Some(fact)),
+            StateFact::Waiting(fact) => (StateLabel::Waiting, fact),
+            StateFact::Paused(fact) => (StateLabel::Paused, Some(fact)),
+            StateFact::Finished(fact) => (StateLabel::Finished, Some(fact)),
+            StateFact::Cancelled(fact) => (StateLabel::Cancelled, Some(fact)),
+        };
         let icon = match label {
             StateLabel::Working => Icon::Mission,
             StateLabel::NeedsYou => Icon::Action,
@@ -138,16 +146,14 @@ fn since_clock(task: &Task, context: &RenderContext<'_>) -> Option<String> {
 
 fn classify(task: &Task, situation: Situation, context: &RenderContext<'_>) -> Presentation {
     let lang = context.lang;
-    let label = StateLabel::of(situation);
     match situation {
-        Situation::Finished => Presentation::new(label, Tone::Success, Block::Ended, Some(done_fact(task, context)), lang),
+        Situation::Finished => Presentation::new(StateFact::Finished(done_fact(task, context)), Tone::Success, Block::Ended, lang),
         Situation::Cancelled => Presentation { fact_in_state: true,
-            ..Presentation::new(label, Tone::Neutral, Block::Ended, Some(cancelled_fact(task, context)), lang) },
-        Situation::NeedsYou => Presentation::new(label, Tone::Warning, Block::ForYou,
-            Some(open_questions(task, context).or_else(|| sign_in_fact(task, context))
-                .unwrap_or_else(|| t!(lang, "Waiting for your answer", "Espera tu respuesta").into())), lang),
+            ..Presentation::new(StateFact::Cancelled(cancelled_fact(task, context)), Tone::Neutral, Block::Ended, lang) },
+        Situation::NeedsYou => Presentation::new(StateFact::NeedsYou(open_questions(task, context).or_else(|| sign_in_fact(task, context))
+                .unwrap_or_else(|| t!(lang, "Waiting for your answer", "Espera tu respuesta").into())), Tone::Warning, Block::ForYou, lang),
         Situation::Paused if common::gate_queued(task, context).is_some() => waiting(task, WaitsFor::Slot, context),
-        Situation::Paused => Presentation::new(label, Tone::Neutral, Block::Waiting, Some(paused_fact(task, context)), lang),
+        Situation::Paused => Presentation::new(StateFact::Paused(paused_fact(task, context)), Tone::Neutral, Block::Waiting, lang),
         Situation::Delivered(delivery) => delivered(task, delivery, context),
         Situation::Working(doing) => failed_merge(task, working(task, doing, context), context),
         Situation::Waiting(waits) => failed_merge(task, waiting(task, waits, context), context),
@@ -158,43 +164,50 @@ fn classify(task: &Task, situation: Situation, context: &RenderContext<'_>) -> P
 fn failed_merge(task: &Task, presentation: Presentation, context: &RenderContext<'_>) -> Presentation {
     let lang = context.lang;
     match context.reading(&task.id).and_then(|read| read.merge_failure.clone()) {
-        Some((_, reason)) => Presentation { fact: Some(tf!(lang, "Couldn't merge · {reason}", "No se pudo hacer merge · {reason}")), ..presentation },
+        Some((_, reason)) => {
+            let failure = tf!(lang, "Couldn't merge · {reason}", "No se pudo hacer merge · {reason}");
+            let fact = if presentation.label == StateLabel::Working {
+                format!("{failure} · {}", presentation.fact.as_deref().unwrap_or_default())
+            } else { failure };
+            Presentation { fact: Some(fact), ..presentation }
+        }
         None => presentation,
     }
 }
 
-fn working(task: &Task, doing: Doing, context: &RenderContext<'_>) -> Presentation {
+pub(super) fn working(task: &Task, doing: Doing, context: &RenderContext<'_>) -> Presentation {
     let lang = context.lang;
     let node = node_of(task, context);
-    let step = node.and_then(|node| super::task_node::step(node, lang));
-    let fact = match doing {
-        Doing::AfterMerge => task.wrap_up.post_merge_work.as_ref().map(|work| work.reason.clone())
-            .unwrap_or_else(|| t!(lang, "Finishing after the merge", "Terminando tras el merge").into()),
-        Doing::OwnWork => {
-            let stored = match context.reading(&task.id).and_then(|read| read.activity.as_ref()) {
-                Some(TaskActivity::WaitingBackground(work)) if work.gone.is_none() => Some(work),
-                _ => None,
-            };
-            left_running(node, stored, lang).map(|running| tf!(lang, "In the background: {running}", "En segundo plano: {running}"))
-                .unwrap_or_else(|| t!(lang, "Work in the background", "Trabajo en segundo plano").into())
-        }
-        Doing::Turn => {
-            let returned = match context.reading(&task.id).and_then(|read| read.handed_back) {
-                Some(Instruction::Changes) => Some(t!(lang, "Making changes", "Corrigiendo")),
-                Some(Instruction::Conflicts) => Some(t!(lang, "Resolving conflicts", "Resolviendo conflictos")),
-                Some(Instruction::Question | Instruction::Reply) => Some(t!(lang, "Answering you", "Respondiéndote")),
-                None => None,
-            };
-            match (returned, step) {
-                (Some(returned), Some(step)) => format!("{returned} · {step}"),
-                (Some(only), None) => only.into(),
-                (None, Some(step)) => step,
-                (None, None) => t!(lang, "Turn running", "Turno en marcha").into(),
-            }
-        }
-    };
     let active_at = node.and_then(|node| node.state_since.clone()).or_else(|| task_since(task, context));
-    Presentation { active_at, fact_in_state: true, ..Presentation::new(StateLabel::Working, Tone::Accent, Block::InProgress, Some(fact), lang) }
+    let since = active_at.as_deref().unwrap_or("—");
+    let mut now = now_fact(node, &doing, since, lang);
+    if doing == Doing::OwnWork && matches!(now.doing, NowDoing::Turn { .. })
+        && let Some(TaskActivity::WaitingBackground(work)) = context.reading(&task.id).and_then(|read| read.activity.as_ref())
+        && work.gone.is_none() && !work.label.trim().is_empty() {
+        now.doing = NowDoing::Background {
+            label: super::now_fact::shorten(work.label.lines().next().unwrap_or_default().trim()),
+            more: work.others as usize, since: clock(since).into(),
+        };
+    }
+    let mut presentation = Presentation { active_at, fact_in_state: true,
+        ..Presentation::new(StateFact::Working(now), Tone::Accent, Block::InProgress, lang) };
+    let mut prefixes = Vec::new();
+    if let Some(step) = node.and_then(|node| super::task_node::step(node, lang)) {
+        prefixes.push(step);
+    }
+    if doing == Doing::AfterMerge {
+        prefixes.push(task.wrap_up.post_merge_work.as_ref().map(|work| work.reason.clone())
+            .unwrap_or_else(|| t!(lang, "Finishing after the merge", "Terminando tras el merge").into()));
+    } else if let Some(instruction) = context.reading(&task.id).and_then(|read| read.handed_back) {
+        prefixes.push(match instruction {
+            Instruction::Changes => t!(lang, "Making changes", "Corrigiendo"),
+            Instruction::Conflicts => t!(lang, "Resolving conflicts", "Resolviendo conflictos"),
+            Instruction::Question | Instruction::Reply => t!(lang, "Answering you", "Respondiéndote"),
+        }.into());
+    }
+    prefixes.extend(presentation.fact.take());
+    presentation.fact = Some(prefixes.join(" · "));
+    presentation
 }
 
 fn waiting(task: &Task, waits: WaitsFor, context: &RenderContext<'_>) -> Presentation {
@@ -260,7 +273,7 @@ fn waiting(task: &Task, waits: WaitsFor, context: &RenderContext<'_>) -> Present
         WaitsFor::Slot | WaitsFor::Machine | WaitsFor::Disk | WaitsFor::Usage | WaitsFor::ProviderApi => with_pending(fact, task, context),
         _ => fact,
     };
-    Presentation { queue, ..Presentation::new(StateLabel::Waiting, Tone::Neutral, Block::Waiting, Some(fact), lang) }
+    Presentation { queue, ..Presentation::new(StateFact::Waiting(Some(fact)), Tone::Neutral, Block::Waiting, lang) }
 }
 
 fn provider_name(task: &Task) -> &'static str {
@@ -391,7 +404,6 @@ fn paused_fact(task: &Task, context: &RenderContext<'_>) -> String {
 
 fn delivered(task: &Task, delivery: Delivery, context: &RenderContext<'_>) -> Presentation {
     let lang = context.lang;
-    let label = StateLabel::Delivered;
     match delivery {
         Delivery::ForReview => {
             let fact = match review_fact(task, context) {
@@ -400,17 +412,17 @@ fn delivered(task: &Task, delivery: Delivery, context: &RenderContext<'_>) -> Pr
             };
             let asks_the_orchestrator = matches!(context.attention(task), Attention::Wait(WaitReason::Answer { .. }));
             let block = if context.waits_for_review(&task.id) && !asks_the_orchestrator { Block::ForYou } else { Block::InProgress };
-            Presentation { fact_in_state: true, ..Presentation::new(label, Tone::Info, block, Some(fact), lang) }
+            Presentation { fact_in_state: true, ..Presentation::new(StateFact::Delivered(fact), Tone::Info, block, lang) }
         }
         Delivery::Blocked => Presentation { fact_in_state: true,
-            ..Presentation::new(label, Tone::Info, Block::Waiting, Some(tasks_fact(task, context)), lang) },
+            ..Presentation::new(StateFact::Delivered(tasks_fact(task, context)), Tone::Info, Block::Waiting, lang) },
         Delivery::Closing => {
             let fact = if task.wrap_up.asked_at.is_some() {
                 t!(lang, "Cleaning up before closing", "Limpiando antes de cerrar")
             } else {
                 t!(lang, "Accepted · Alondra merges its PR", "Aceptada · Alondra hace merge de su PR")
             };
-            Presentation { fact_in_state: true, ..Presentation::new(label, Tone::Success, Block::InProgress, Some(fact.into()), lang) }
+            Presentation { fact_in_state: true, ..Presentation::new(StateFact::Delivered(fact.into()), Tone::Success, Block::InProgress, lang) }
         }
     }
 }
@@ -490,27 +502,6 @@ fn open_questions(task: &Task, context: &RenderContext<'_>) -> Option<String> {
             Some(tf!(lang, "{count} open questions", "{count} preguntas abiertas"))
         }
     }
-}
-
-/// What a node left running when its turn ended, by name, the oldest first: what its readings say
-/// still runs, else what its phase recorded when the turn ended.
-fn left_running(node: Option<&super::LiveNode>, stored: Option<&crate::domain::Background>, lang: super::Lang) -> Option<String> {
-    let running = |state: super::RunState| state == super::RunState::Running;
-    let mut runs: Vec<(&str, &str)> = node.map(|node| node.background.iter().filter(|item| running(item.state))
-        .map(|item| (item.since.as_str(), item.label.as_str()))
-        .chain(node.workflows.iter().chain(&node.subagents).filter(|run| running(run.state)).map(|run| (run.since.as_str(), run.label.as_str())))
-        .filter(|(_, label)| !label.trim().is_empty())
-        .collect()).unwrap_or_default();
-    runs.sort();
-    let (first, more) = match (runs.first(), stored) {
-        (Some((_, label)), _) => (label.trim().to_owned(), runs.len() - 1),
-        (None, Some(work)) if !work.label.trim().is_empty() => (work.label.trim().to_owned(), work.others as usize),
-        _ => return None,
-    };
-    Some(match more {
-        0 => first,
-        more => tf!(lang, "{first} and {more} more", "{first} y {more} más"),
-    })
 }
 
 /// What a paused task's node still owes the user, when its delivery went back to it.

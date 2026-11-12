@@ -186,6 +186,13 @@ pub(crate) enum Halt {
 }
 
 impl Reported {
+    pub fn last_message(&self) -> Option<(&str, Millis)> {
+        self.sdk.as_ref().and_then(crate::sdk_live::Readings::last_message).into_iter()
+            .chain(self.answer.as_ref().map(|answer| (answer.text.as_str(), answer.at)))
+            .filter(|(text, _)| !text.trim().is_empty())
+            .max_by_key(|(_, at)| *at)
+    }
+
     pub fn activity(&self) -> Activity {
         match self.job.as_ref().map(|job| job.phase) {
             Some(crate::job_state::Phase::Failed) => Activity::Idle,

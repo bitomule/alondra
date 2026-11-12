@@ -220,7 +220,7 @@ struct TaskCard: View {
                 layout {
                     if let activity = line.activity {
                         Text(MarkdownBlock.line(activity)).font(.footnote).foregroundStyle(.secondary)
-                            .lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     if !typeSize.isAccessibilitySize { Spacer(minLength: 4) }
                     if let at = line.activityAt {

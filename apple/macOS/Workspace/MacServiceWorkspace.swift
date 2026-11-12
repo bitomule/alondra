@@ -814,7 +814,10 @@ private struct MacTaskSidebarRow: View {
                     ElapsedText(elapsed).font(.caption.monospacedDigit()).foregroundStyle(.secondary).lineLimit(1).layoutPriority(1)
                 }
             }
-            if let line { Text(MarkdownBlock.line(line)).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+            if let line {
+                Text(MarkdownBlock.line(line)).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }.padding(.vertical, 2).accessibilityElement(children: .combine)
     }
     private var taskColor: Color {

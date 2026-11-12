@@ -64,6 +64,7 @@ pub struct Readings {
     /// The runs `background_tasks_changed` listed last.
     listed: Vec<String>,
     said: Option<String>,
+    last_message: Option<(String, Millis)>,
     /// Between the main thread's first message of a turn and the turn's result.
     in_turn: bool,
     pub cost_cents: Option<u64>,
@@ -74,6 +75,10 @@ pub struct Readings {
 }
 
 impl Readings {
+    pub(crate) fn last_message(&self) -> Option<(&str, Millis)> {
+        self.last_message.as_ref().map(|(text, at)| (text.as_str(), *at))
+    }
+
     fn run_of(&self, call: &str) -> Option<String> {
         self.runs.iter().find(|(known, _)| known == call).map(|(_, run)| run.clone())
     }
@@ -287,7 +292,9 @@ fn said(session: &mut Reported, readings: &mut Readings, message: &Value, parent
     let words: Vec<&str> = blocks.iter().filter(|block| block["type"] == "text").filter_map(|block| block["text"].as_str())
         .filter(|words| !words.trim().is_empty()).collect();
     if run.is_none() && !words.is_empty() {
-        readings.said = Some(words.join("\n\n"));
+        let text = words.join("\n\n");
+        readings.last_message = Some((text.chars().take(ANSWER_LIMIT).collect(), now));
+        readings.said = Some(text);
     }
     for block in blocks.iter().filter(|block| block["type"] == "tool_use") {
         let (Some(name), Some(call)) = (block["name"].as_str(), block["id"].as_str()) else { continue };

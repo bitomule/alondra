@@ -402,11 +402,12 @@ async fn gather_inner(
                 None => tool.name.clone(),
             });
             let answer = reported.answer.as_ref().filter(|answer| !answer.text.trim().is_empty());
+            let last_message = reported.last_message();
             let failure = reported.job.as_ref().filter(|job| job.phase == crate::job_state::Phase::Failed).map(|job| job.detail.clone()).filter(|detail| !detail.is_empty());
             let summary = failure.or_else(|| tool.clone())
                 .or_else(|| node.daemon_needs.clone())
                 .or_else(|| node.daemon_detail.clone())
-                .or_else(|| answer.map(|answer| answer.text.clone()))
+                .or_else(|| last_message.map(|(text, _)| text.to_owned()))
                 .map(|summary| summary.lines().next().unwrap_or("").chars().take(141).collect());
             let running: Vec<(&str, &alondra_core::BackgroundItem)> = reported.background.iter()
                 .filter(|(_, item)| reported.shell_end(item).is_none()).map(|(id, item)| (id.as_str(), item)).collect();
@@ -490,8 +491,8 @@ async fn gather_inner(
                     None => matches!(agent.phase, NodePhase::WaitingUser { .. } | NodePhase::Paused(_)),
                 },
                 state_since: state_since.map(timestamp),
-                last_message: answer.map(|answer| answer.text.clone()),
-                last_message_at: answer.map(|answer| timestamp(answer.at)),
+                last_message: last_message.map(|(text, _)| text.to_owned()),
+                last_message_at: last_message.map(|(_, at)| timestamp(at)),
                 last_turn_aborted: answer.is_some_and(|answer| answer.aborted),
                 tool: tool.map(|tool| tool.chars().take(141).collect()),
                 tool_since: reported.tool.as_ref().map(|tool| crate::usage_pause::clock_text(tool.since, now, lang == Lang::Es)),
@@ -1316,6 +1317,43 @@ mod cache_tests {
         let answer_view = client.views.render("tasks", &alondra_core::domain::ReadSnapshot::build(state.clone()), &answer, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         assert_ne!(answer_view.cursor, working_view.cursor);
         assert_eq!(client.views.build_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn words_written_during_an_open_turn_reach_the_live_row_with_their_time() {
+        use serde_json::json;
+        let home = crate::test_support::Directory::new();
+        fs::create_dir_all(&home).unwrap();
+        let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        let client = std::thread::scope(|scope| scope.spawn(||
+            crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)))).join().unwrap());
+        execute(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "sdk-a".into(), name: "Writer".into(), at: 0 });
+        let message = |parent: Option<&str>, content: Value| json!({"type": "assistant", "parent_tool_use_id": parent,
+            "message": {"role": "assistant", "content": content}});
+        for (at, observed) in [
+            (1_000, json!({"type": "result", "result": "Previous turn."})),
+            (2_000, json!({"type": "system", "subtype": "session_state_changed", "state": "running"})),
+            (2_100, message(None, json!([{"type": "text", "text": "The parser checks passed. I am reviewing the diff."}]))),
+            (2_200, message(None, json!([{"type": "tool_use", "id": "build", "name": "Bash", "input": {"command": "make build"}}]))),
+            (2_300, message(Some("child"), json!([{"type": "text", "text": "Child thread only."}]))),
+        ] {
+            domain.live.mods.apply_sdk("sdk-a", &observed, at);
+        }
+        let state = domain.state().unwrap();
+        let open = gather_at(&client, &state, Lang::En, &[], false, false, 2_400).await;
+        let node = &open.nodes[0];
+        assert_eq!(node.last_message.as_deref(), Some("The parser checks passed. I am reviewing the diff."));
+        assert_eq!(node.last_message_at, Some(timestamp(2_100)));
+        assert_eq!(node.tool.as_deref(), Some("Bash: make build"));
+        assert_eq!(domain.live.mods.session("sdk-a").unwrap().answer.unwrap().text, "Previous turn.");
+        domain.live.mods.apply_sdk("sdk-a", &json!({"type": "system", "subtype": "session_state_changed", "state": "idle"}), 2_500);
+        let idle = gather_at(&client, &state, Lang::En, &[], false, false, 2_500).await;
+        assert_eq!(idle.nodes[0].last_message, node.last_message, "idle without a result keeps the last words");
+        assert_eq!(idle.nodes[0].last_message_at, node.last_message_at);
+        domain.live.mods.apply_sdk("sdk-a", &json!({"type": "result", "result": "Review complete."}), 2_600);
+        let ended = gather_at(&client, &state, Lang::En, &[], false, false, 2_700).await;
+        assert_eq!(ended.nodes[0].last_message.as_deref(), Some("Review complete."));
+        assert_eq!(ended.nodes[0].last_message_at, Some(timestamp(2_600)));
     }
 
     #[tokio::test]

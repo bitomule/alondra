@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "va5b17f319d5095e1",
+  "version": "va6045912b3bc0e55",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -106,7 +106,7 @@
                 {
                   "id": "activity",
                   "icon": "notice",
-                  "title": "Turn running",
+                  "title": "Turn running since 09:30",
                   "depth": 0,
                   "struck": false
                 }

@@ -141,6 +141,16 @@ final class TasksSnapshotTests: XCTestCase {
         assertScreen(lightAndDark, language: .spanish, inWindow: true) { daemonsOwnTasks(document, height: 1750) }
     }
 
+    func test_tasks_workingFacts() throws {
+        let document = try ScreenFixtures.document("task-working-rows-ios")
+        assertScreen(lightAndDark, inWindow: true) { daemonsOwnTasks(document, height: 1000) }
+    }
+
+    func test_tasks_workingFacts_spanish() throws {
+        let document = try ScreenFixtures.document("task-working-rows-ios-es")
+        assertScreen(lightAndDark, language: .spanish, inWindow: true) { daemonsOwnTasks(document, height: 1000) }
+    }
+
     func test_tasks_theDaemonsOwnFixture_foldsOpen() throws {
         let document = try SampleViews.document("tasks-ios")
         let finished = try SampleViews.document("tasks-ios-finished")

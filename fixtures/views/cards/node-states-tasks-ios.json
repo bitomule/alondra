@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v9cfa1c246d3d9794",
+  "version": "v412365fabbb0d3fd",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -186,7 +186,7 @@
                 {
                   "id": "activity",
                   "icon": "notice",
-                  "title": "In the background: ./deploy/brew/release.sh 0.2.67",
+                  "title": "In the background: `./deploy/brew/release.sh 0.2.67` · since 09:40",
                   "depth": 0,
                   "struck": false
                 }
@@ -221,7 +221,7 @@
                 {
                   "id": "activity",
                   "icon": "notice",
-                  "title": "Turn running",
+                  "title": "Turn running since 09:35",
                   "depth": 0,
                   "struck": false
                 }

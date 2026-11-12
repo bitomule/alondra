@@ -1,0 +1,194 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "tasks",
+  "key": "tasks",
+  "client": "tui",
+  "version": "v1e4b88404e5ac8ab",
+  "cursor": "cursor-1",
+  "title": "Tareas",
+  "status": {
+    "version": "v0be5ae069e9bdd14",
+    "summary": "3 nodos trabajando",
+    "badge": 0,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 0
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 3
+      },
+      {
+        "id": "agents",
+        "label": "En marcha",
+        "value": 3
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 3
+      },
+      {
+        "id": "waiting",
+        "label": "esperando",
+        "value": 0
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "scheduled",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "schedules",
+          "link": {
+            "kind": "view",
+            "key": "schedules"
+          },
+          "icon": "schedule",
+          "title": "Tareas programadas",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "active",
+      "title": "Activas",
+      "count": 3,
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "block:in-progress",
+          "icon": "task",
+          "title": "En marcha",
+          "trailing": {
+            "kind": "text",
+            "text": "3"
+          },
+          "depth": 0,
+          "struck": false,
+          "children": [
+            {
+              "id": "t-background",
+              "link": {
+                "kind": "view",
+                "key": "task:t-background"
+              },
+              "icon": "mission",
+              "title": "Build the app",
+              "subtitle": "En segundo plano: `Check the links` y 1 más · desde las 09:40 · Dijo: «The checks passed.» 09:31",
+              "badges": [
+                {
+                  "text": "Trabajando",
+                  "tone": "accent"
+                }
+              ],
+              "depth": 1,
+              "struck": false
+            },
+            {
+              "id": "t-command",
+              "link": {
+                "kind": "view",
+                "key": "task:t-command"
+              },
+              "icon": "mission",
+              "title": "Check the release",
+              "subtitle": "Paso 1 de 1 · Check the release · `bazel test //crates/...` · desde las 09:38 · Dijo: «The checks passed.» 09:31",
+              "badges": [
+                {
+                  "text": "Trabajando",
+                  "tone": "accent"
+                }
+              ],
+              "depth": 1,
+              "struck": false,
+              "actions": [
+                {
+                  "id": "pause:a-command@0",
+                  "label": "Pausar",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "confirm": {
+                    "title": "¿Pausar este nodo?",
+                    "message": "Deja lo que está ejecutando ahora y conserva su tarea. Alondra no lo reanuda solo: solo tú.",
+                    "button": "Pausar"
+                  },
+                  "enabled": true,
+                  "stamp": "En pausa",
+                  "key": "p",
+                  "resolves_card": false
+                }
+              ]
+            },
+            {
+              "id": "t-said",
+              "link": {
+                "kind": "view",
+                "key": "task:t-said"
+              },
+              "icon": "mission",
+              "title": "Review the parser",
+              "subtitle": "Turno en marcha desde las 09:30 · Dijo: «The checks passed.» 09:31",
+              "badges": [
+                {
+                  "text": "Trabajando",
+                  "tone": "accent"
+                }
+              ],
+              "depth": 1,
+              "struck": false,
+              "actions": [
+                {
+                  "id": "pause:a-said@0",
+                  "label": "Pausar",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "confirm": {
+                    "title": "¿Pausar este nodo?",
+                    "message": "Deja lo que está ejecutando ahora y conserva su tarea. Alondra no lo reanuda solo: solo tú.",
+                    "button": "Pausar"
+                  },
+                  "enabled": true,
+                  "stamp": "En pausa",
+                  "key": "p",
+                  "resolves_card": false
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "finished",
+      "title": "Completadas",
+      "count": 0,
+      "collapsed": true,
+      "items": []
+    }
+  ]
+}
