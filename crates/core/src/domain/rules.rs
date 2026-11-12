@@ -5264,8 +5264,9 @@ impl DomainState {
                     return fail("conflict", "The task is not moving to that account");
                 }
                 if self.lifecycle(lifecycles, task_id)?.execution().is_some() {
-                    self.release(task_id, lifecycles)?;
+                    self.leave_for_the_move(task_id, lifecycles)?;
                 }
+                self.end_gate_pause(task_id, lifecycles)?;
                 self.tasks.get_mut(task_id).expect("checked above").pending_selection = None;
             }
             Command::AbortTaskSelection { task_id, selection, refused } => {

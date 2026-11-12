@@ -398,7 +398,7 @@ fn touched_tasks(db: &Connection, window: Window) -> Vec<String> {
 const EVENT_KINDS: &[&str] = &[
     "admit", "runtime", "ask", "answer", "decide", "move_card", "plan_approved", "block_delivery", "delivery_unblocked", "present", "accept",
     "merge_observed", "hand_back", "wait_for_dependencies", "dependencies_resolved", "tell", "pause", "resume", "finish", "drain_observed",
-    "post_merge_declared", "post_merge_ended", "retire_released_execution", "execution_released", "reopen", "hold_for_plan_review",
+    "post_merge_declared", "post_merge_ended", "retire_released_execution", "execution_released", "execution_left_for_review", "reopen", "hold_for_plan_review",
     "plan_review_settled", "doubt_handoff", "settle_handoff", "resend_untaken", "resend_doubtful", "discard", "await_ended", "request_control",
     "compact", "unfinished",
 ];

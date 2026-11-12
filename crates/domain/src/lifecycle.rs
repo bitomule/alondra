@@ -625,6 +625,10 @@ pub enum Event {
     ExecutionReleased {
         input: InputId,
     },
+    /// The execution of a delivery the user reviews is gone and the delivery rests with the user:
+    /// unlike `ExecutionReleased`, nothing is queued for a next execution, which starts only once
+    /// something is told. What the execution had not consumed still waits for it.
+    ExecutionLeftForReview,
     Reopen {
         input: InputId,
     },
@@ -751,6 +755,7 @@ impl Event {
             | Self::Discard { .. }
             | Self::AwaitEnded { wake: None, .. }
             | Self::Unfinished { wake: None, .. }
+            | Self::ExecutionLeftForReview
             | Self::RequestControl { .. } => vec![],
         }
     }

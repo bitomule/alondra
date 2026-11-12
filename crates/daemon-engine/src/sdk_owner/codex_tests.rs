@@ -1973,6 +1973,42 @@ async fn a_resting_task_moves_at_once(){
     slice.domain.stop_sdk_owners();
 }
 
+// Found by the whole-machine model: a delivery moved while the user reviewed it read as starting
+// for ever, and once the user sent it back nothing started it on the account it moved to.
+#[tokio::test]
+async fn a_delivery_moved_while_reviewed_waits_for_the_user_and_starts_on_the_new_account_once_sent_back(){
+    let slice=Slice::new();let task:TaskId=TASK.into();
+    let source=working_on_codex(&slice);
+    let targets=vec![DeliveryTarget::Text{text:"The release notes".into()}];
+    slice.run(&Actor::Agent{agent_id:source.clone()},"deliver-notes",Command::PresentResult{
+        checklist:vec![],attachments:vec![],task_id:task.clone(),interaction_id:"notes".into(),
+        body:"The release notes are written.".into(),targets:targets.clone(),is_final:true,nothing_to_review:false,
+        card:CardSpec::delivery("Review the release notes",&targets,true),
+    });
+    request_move(&slice);
+    assert_eq!(settled_move(&slice).await,"done");
+    for _ in 0..3{crate::provider_transition::pass(&slice.domain).await;}
+    let owed=Slice::lifecycle(&slice.domain).obligation().map(|obligation|(obligation.party,obligation.owed));
+    assert_eq!(owed,Some((alondra_domain::Party::User,alondra_domain::Owed::User)),"the delivery waits for the user's review");
+    assert_eq!(admissions(&slice),1);
+    slice.domain.live.gate.ignore_mac();
+    slice.domain.live.gate.tune(crate::admission::Tuning{spacing:0,limit:Some(crate::admission::Limit::Fixed(0))});
+    slice.run(&user(),"send-back",Command::SubmitFeedback{merge_failure:None,attachments:vec![],presentation_id:"notes".into(),
+        targets:targets.clone(),body:"Add the date".into(),instruction:alondra_core::domain::Instruction::Changes});
+    slice.run(&system(),"tell-back",Command::TellNode{task_id:task.clone(),text:alondra_core::domain::Instruction::Changes.message("Add the date"),from_user:false,answers:None});
+    for _ in 0..3{crate::provider_transition::pass(&slice.domain).await;}
+    assert_eq!(admissions(&slice),1,"the gate holds the start while it has no slot");
+    slice.domain.live.gate.tune(crate::admission::Tuning{spacing:0,limit:Some(crate::admission::Limit::Fixed(4))});
+    let mut changed=slice.domain.subscribe();
+    while admissions(&slice)<2{
+        crate::provider_transition::pass(&slice.domain).await;
+        if admissions(&slice)<2{tokio::time::timeout(std::time::Duration::from_secs(60),changed.changed()).await.expect("the delivery sent back never started").unwrap();}
+    }
+    assert_eq!(slice.domain.state().unwrap().tasks[&task].account_key(),AccountKey::native(Provider::Claude));
+    assert!(!crate::provider_transition::moving(&slice.domain,&task));
+    slice.domain.stop_sdk_owners();
+}
+
 #[tokio::test]
 async fn a_task_whose_host_died_moves(){
     let slice=Slice::new();let task:TaskId=TASK.into();

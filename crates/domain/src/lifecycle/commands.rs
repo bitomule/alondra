@@ -448,54 +448,13 @@ impl TaskLifecycle {
                     })
                 };
             }
-            Event::ExecutionReleased { input } => {
-                let execution = self.session().ok_or(Refusal::InvalidState)?;
-                if execution.activity.owns_work()
-                    || !execution.callbacks.is_empty()
-                    || !execution.effects.is_empty()
-                {
+            Event::ExecutionLeftForReview => {
+                if !matches!(&self.state, State::Delivered(Delivered { gate: DeliveryGate::Review, .. })) {
                     return Err(Refusal::InvalidState);
                 }
-                let mut pending = execution_pending(execution);
-                if pending.is_empty() {
-                    pending.push_back(input);
-                }
-                self.state = match &self.state {
-                    State::InProgress(Progress::Executing { stage, .. }) => {
-                        let first = pending.pop_front().ok_or(Refusal::EmptyObligation)?;
-                        State::InProgress(Progress::Queued {
-                            stage: *stage,
-                            input: first,
-                            remaining: pending,
-                        })
-                    }
-                    State::InProgress(Progress::Waiting { stage, cards, .. }) => {
-                        State::InProgress(Progress::Waiting {
-                            stage: *stage,
-                            cards: cards.clone(),
-                            session: Session::Absent(pending),
-                        })
-                    }
-                    State::InProgress(Progress::Dependency {
-                        stage,
-                        tasks,
-                        decisions,
-                        ..
-                    }) => State::InProgress(Progress::Dependency {
-                        stage: *stage,
-                        tasks: tasks.clone(),
-                        decisions: decisions.clone(),
-                        session: Session::Absent(pending),
-                    }),
-                    State::Delivered(delivered) => State::Delivered(Delivered {
-                        delivery: delivered.delivery.clone(),
-                        gate: delivered.gate.clone(),
-                        decisions: delivered.decisions.clone(),
-                        session: Session::Absent(pending),
-                    }),
-                    _ => return Err(Refusal::InvalidState),
-                };
+                self.release_execution(None)?;
             }
+            Event::ExecutionReleased { input } => self.release_execution(Some(input))?,
             Event::Reopen { input } => {
                 if !matches!(self.state, State::Completed | State::Cancelled) {
                     return Err(Refusal::InvalidState);
@@ -1156,4 +1115,58 @@ enum Reply {
 /// Who settles the card of a node left with nothing explaining its next step.
 fn unheard_owner(stalled: bool) -> Owner {
     if stalled { Owner::Orchestrator } else { Owner::User }
+}
+
+impl TaskLifecycle {
+    /// The execution is gone and left nothing behind: what it had not consumed waits for the next
+    /// one, or `input` when it had nothing and the task has to go on.
+    fn release_execution(&mut self, input: Option<InputId>) -> Result<(), Refusal> {
+        let execution = self.session().ok_or(Refusal::InvalidState)?;
+        if execution.activity.owns_work()
+            || !execution.callbacks.is_empty()
+            || !execution.effects.is_empty()
+        {
+            return Err(Refusal::InvalidState);
+        }
+        let mut pending = execution_pending(execution);
+        if let Some(input) = input.filter(|_| pending.is_empty()) {
+            pending.push_back(input);
+        }
+        self.state = match &self.state {
+            State::InProgress(Progress::Executing { stage, .. }) => {
+                let first = pending.pop_front().ok_or(Refusal::EmptyObligation)?;
+                State::InProgress(Progress::Queued {
+                    stage: *stage,
+                    input: first,
+                    remaining: pending,
+                })
+            }
+            State::InProgress(Progress::Waiting { stage, cards, .. }) => {
+                State::InProgress(Progress::Waiting {
+                    stage: *stage,
+                    cards: cards.clone(),
+                    session: Session::Absent(pending),
+                })
+            }
+            State::InProgress(Progress::Dependency {
+                stage,
+                tasks,
+                decisions,
+                ..
+            }) => State::InProgress(Progress::Dependency {
+                stage: *stage,
+                tasks: tasks.clone(),
+                decisions: decisions.clone(),
+                session: Session::Absent(pending),
+            }),
+            State::Delivered(delivered) => State::Delivered(Delivered {
+                delivery: delivered.delivery.clone(),
+                gate: delivered.gate.clone(),
+                decisions: delivered.decisions.clone(),
+                session: Session::Absent(pending),
+            }),
+            _ => return Err(Refusal::InvalidState),
+        };
+        Ok(())
+    }
 }

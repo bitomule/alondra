@@ -343,6 +343,8 @@ pub enum LifecycleRecord {
         text: Option<String>,
     },
     ExecutionReleased { input: String },
+    /// The execution of a delivery the user reviews is gone and nothing is queued for a next one.
+    ExecutionLeftForReview,
     /// Someone told the task's node `text` outside a card, as `input`. The store lets the text
     /// go once the task ended, so a journal read back may have none.
     Told {
@@ -688,6 +690,7 @@ fn event(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle) -> 
             wake: wake.as_deref().map(|input| input_id(task, input)).transpose()?,
         },
         LifecycleRecord::ExecutionReleased { input } => Event::ExecutionReleased { input: input_id(task, input)? },
+        LifecycleRecord::ExecutionLeftForReview => Event::ExecutionLeftForReview,
         LifecycleRecord::Told { input, answers, .. } => Event::Tell { input: input_id(task, input)?, answers: answers.clone() },
         LifecycleRecord::Presented { delivery } => Event::Present { delivery: delivery.clone() },
         LifecycleRecord::HandedBack { delivery, input, .. } => Event::HandBack { delivery: delivery.clone(), input: input_id(task, input)? },
@@ -982,6 +985,7 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>, li
             text: wake.as_ref().and_then(|input| texts.get(input).cloned()),
         },
         Event::ExecutionReleased { input } => LifecycleRecord::ExecutionReleased { input: input.as_str().into() },
+        Event::ExecutionLeftForReview => LifecycleRecord::ExecutionLeftForReview,
         Event::Present { delivery } => LifecycleRecord::Presented { delivery: delivery.clone() },
         Event::HandBack { delivery, input } => LifecycleRecord::HandedBack {
             delivery: delivery.clone(),
@@ -2286,6 +2290,16 @@ impl DomainState {
     pub(super) fn release(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
         let record = LifecycleRecord::ExecutionReleased { input: self.next_input(task) };
         self.decide(lifecycles, task, record)
+    }
+
+    /// The execution a deferred move ends leaves the task: a delivery the user reviews rests with
+    /// the user until it is sent back, and anything else waits for its next execution.
+    pub(super) fn leave_for_the_move(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
+        let lifecycle = self.lifecycle(lifecycles, task)?;
+        if lifecycle.advanced(lifecycle.revision(), alondra_domain::Event::ExecutionLeftForReview).is_ok() {
+            return self.decide(lifecycles, task, LifecycleRecord::ExecutionLeftForReview);
+        }
+        self.release(task, lifecycles)
     }
 
     /// A receipt of an ending task discharges what its ending still owes among `which`. A task

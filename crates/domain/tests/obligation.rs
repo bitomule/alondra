@@ -130,3 +130,25 @@ fn ended_work_with_an_input_handed_meanwhile_owes_the_input() {
     assert_eq!(task.activity(), ActivityView::Continuation);
     assert_eq!(owed(task.obligation()), Some((Party::Alondra, Owed::HandInput)));
 }
+
+/// The execution of a delivery under review leaves while nothing was told: the delivery rests with
+/// the user, and only what the user tells it later owes a start.
+#[test]
+fn a_delivery_whose_execution_left_for_review_owes_the_user_until_told() {
+    let mut task = running();
+    apply(&mut task, Event::Present { delivery: "result".into() });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None, stalled: false });
+    apply(&mut task, Event::ExecutionLeftForReview);
+    assert_eq!(task.execution(), None);
+    assert!(task.pending_inputs().is_empty());
+    assert_eq!(owed(task.obligation()), Some((Party::User, Owed::User)));
+    apply(&mut task, Event::Tell { input: input("changes"), answers: None });
+    assert_eq!(owed(task.obligation()), Some((Party::Alondra, Owed::Start)));
+}
+
+/// Only a delivery under review rests with the user: a task at work still needs its next execution.
+#[test]
+fn only_a_delivery_under_review_leaves_its_execution_for_review() {
+    let mut task = running();
+    assert!(task.apply(task.revision(), Event::ExecutionLeftForReview).is_err());
+}

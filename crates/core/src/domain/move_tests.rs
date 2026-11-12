@@ -1,6 +1,6 @@
 //! Moving a task to another account: the task stays itself, only the rule's accounts are offered,
 //! and the end of the execution it leaves hands over to the next node without asking anyone.
-use super::lifecycle_tests::{exec, last, must, task, user, world};
+use super::lifecycle_tests::{deliver, exec, last, must, task, user, world};
 use super::*;
 use crate::accounts::{AccountBilling, AccountId, AccountKey, AccountState, AccountStatus, Provider};
 use crate::model_selection::*;
@@ -146,4 +146,53 @@ fn a_move_within_a_provider_keeps_the_model_the_task_ran_on_when_the_account_has
     let t = &s.tasks[&TaskId::from("t")];
     assert_eq!(t.pending_selection.as_ref().map(|pending| (&pending.account, &pending.model.model.model)), Some((&destination, &"gpt".to_owned())));
     assert_eq!(t.selection.as_ref().unwrap().requested, None, "keeping the model is not a choice the user made");
+}
+
+fn situation(s: &DomainState) -> Situation {
+    super::read_index::ReadIndex::build(s).task(&"t".into()).expect("a reading").situation
+}
+/// The source's host ends into the move and the move is deferred: nothing has to start yet.
+fn moved_and_deferred(s: &mut DomainState) {
+    move_to(s, claude()).unwrap();
+    must(s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false, by_alondra: true, ended_work: vec![] });
+    must(s, Actor::System, Command::DeferTaskMove { task_id: "t".into(), account: claude() });
+}
+
+// Found by the whole-machine model: the user moved a delivery under review to the other account.
+// The notice of the move stayed pending with no execution to take it, so the task read as starting
+// for ever while it waited for the user's review, and once the user sent it back nothing started it.
+#[test]
+fn a_delivery_moved_while_the_user_reviews_it_waits_for_the_review_and_goes_on_once_sent_back() {
+    let mut s = on_codex();
+    deliver(&mut s, "t", "a", "result");
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn".into(), failure: None, failed: None });
+    moved_and_deferred(&mut s);
+    assert_eq!(situation(&s), Situation::Delivered(Delivery::ForReview));
+    assert!(s.lifecycle_of(&"t".into()).unwrap().pending_inputs().is_empty(), "nothing goes on until the user says");
+
+    must(&mut s, user(), Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "result".into(),
+        targets: vec![DeliveryTarget::Text { text: "Done".into() }], body: "Name the states".into(), instruction: Instruction::Changes });
+    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: Instruction::Changes.message("Name the states"), from_user: false, answers: None });
+    let lifecycle = s.lifecycle_of(&"t".into()).unwrap();
+    assert_eq!(lifecycle.pending_inputs().len(), 1, "what the user sent back waits for the next node");
+    assert_eq!(lifecycle.obligation().map(|owed| (owed.party, owed.owed)), Some((alondra_domain::Party::Alondra, alondra_domain::Owed::Start)));
+    assert_eq!(situation(&s), Situation::Waiting(WaitsFor::Step(AlondraStep::Starting)));
+    must(&mut s, Actor::System, Command::AdmitExecution { provider: Provider::Claude, task_id: "t".into(), agent_id: "b".into(), conversation: "next".into(),
+        instance: "next".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None });
+    assert_eq!(s.tasks[&TaskId::from("t")].account_key(), claude(), "it goes on on the account it moved to");
+}
+
+// Found by the whole-machine model: a task paused for the disk moved to the other account. Its
+// pause outlived the node it paused, so no gate pass ended it and the task read as waiting for the
+// disk for ever.
+#[test]
+fn a_disk_pause_ends_with_the_move_of_the_task_it_paused() {
+    let mut s = on_codex();
+    must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Paused { pause: Pause {
+        reason: PauseReason::Disk, since: 5, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false } }, at: 5 });
+    assert_eq!(situation(&s), Situation::Waiting(WaitsFor::Disk));
+    moved_and_deferred(&mut s);
+    assert_eq!(s.node_pause(&"a".into()), None, "the pause ended with the node it paused");
+    assert_eq!(situation(&s), Situation::Waiting(WaitsFor::Slot), "it goes on on the account it moved to");
+    assert_eq!(s.lifecycle_of(&"t".into()).unwrap().pending_inputs().len(), 1);
 }

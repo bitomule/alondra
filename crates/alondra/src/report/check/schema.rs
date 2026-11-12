@@ -212,6 +212,7 @@ const EVENTS: &[&str] = &[
     "post_merge_ended",
     "retire_released_execution",
     "execution_released",
+    "execution_left_for_review",
     "reopen",
     "hold_for_plan_review",
     "plan_review_settled",

@@ -979,6 +979,19 @@ impl DomainState {
         }
     }
 
+    /// The gate's pause of the node `task` leaves ends with it: the gate sees pauses through
+    /// nodes, so nothing else would end it. The user's own pause stays until the user resumes it.
+    pub(super) fn end_gate_pause(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
+        let Some(card) = self.held_pause(task) else { return Ok(()) };
+        if self.interactions.get(&card).and_then(pause_of_card).is_none_or(|pause| pause.reason == PauseReason::ByUser) {
+            return Ok(());
+        }
+        let record = self.end_of_pause(task, &card, lifecycles)?;
+        self.decide(lifecycles, task, record)?;
+        self.retire(&card);
+        Ok(())
+    }
+
     /// How the gate's pause `card` of `task` ends: with nothing new when what the task goes on with
     /// already waits for its node, or, when its node rested through the pause with nothing left to
     /// do (its turn ended, or its host did), told to carry on in the same session. A delivery takes
