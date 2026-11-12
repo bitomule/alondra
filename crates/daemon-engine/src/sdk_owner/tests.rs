@@ -4731,7 +4731,8 @@ fn an_answered_permission_of_a_task_without_an_owner_is_retaken() {
     slice.domain.enable_sdk(slice.backend.clone());
     slots(&slice.domain, 1);
     slice.answer(&card, Hold::ALLOW, None).unwrap();
-    slice.domain.unowned_takes.lock().unwrap().insert(TASK.into(), alondra_core::now_millis());
+    let revision = Slice::lifecycle(&slice.domain).revision();
+    slice.domain.unowned_takes.lock().unwrap().insert(TASK.into(), (alondra_core::now_millis(), revision));
     assert!(!slice.domain.owns_sdk_host(&agent));
     gate_pass(&slice.domain, slice.worktree.as_path());
     assert!(slice.domain.retakes.lock().unwrap().iter().any(|(task, _)| *task == TaskId::from(TASK)), "the pass that gave the answer its slot had a host take its task over");
