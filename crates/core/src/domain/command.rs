@@ -777,6 +777,7 @@ pub enum Command {
     },
     /// The task's move to the account its pending selection names ends before any node started
     /// there: its execution is released, the selection it moves with stays, and nothing is pending.
+    /// A pause the gate put on the node it leaves ends with it; the user's own pause stays.
     DeferTaskMove {
         task_id: TaskId,
         account: crate::accounts::AccountKey,

@@ -2909,7 +2909,7 @@ proptest! {
     /// What lets a replay look up only the inputs each event names: an input becomes pending only
     /// through an event that names it, and `is_pending` answers what `pending_inputs` lists.
     #[test]
-    fn an_input_becomes_pending_only_through_the_event_that_names_it(actions in prop::collection::vec((0u8..28, 0u8..6), 1..200)) {
+    fn an_input_becomes_pending_only_through_the_event_that_names_it(actions in prop::collection::vec((0u8..29, 0u8..6), 1..200)) {
         let pool: Vec<InputId> = ["initial", "a", "b", "c", "d", "e"].iter().map(|name| input(name)).collect();
         let mut task = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
         for (action, pick) in actions {
@@ -2941,6 +2941,7 @@ proptest! {
                 24 => Some(Event::Reopen { input: named }),
                 25 => runtime(RuntimeFact::HostEnded { unheard_card: "ended".into(), resume: Some(named) }),
                 26 => Some(Event::ResendDoubtful { input: first, resend: named }),
+                27 => Some(Event::ExecutionLeftForReview),
                 _ => Some(Event::Compact { input: named }),
             };
             let Some(event) = event else { continue };

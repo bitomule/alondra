@@ -887,6 +887,7 @@ pub(super) enum EventRecord {
     ExecutionReleased {
         input: String,
     },
+    ExecutionLeftForReview,
     Reopen {
         input: String,
     },
@@ -1053,6 +1054,7 @@ impl From<&Event> for EventRecord {
             Event::ExecutionReleased { input } => Self::ExecutionReleased {
                 input: input.as_str().to_owned(),
             },
+            Event::ExecutionLeftForReview => Self::ExecutionLeftForReview,
             Event::Reopen { input } => Self::Reopen {
                 input: input.as_str().to_owned(),
             },
@@ -1142,6 +1144,7 @@ impl EventRecord {
             Self::PostMergeEnded { .. } => "PostMergeEnded",
             Self::RetireReleasedExecution { .. } => "RetireReleasedExecution",
             Self::ExecutionReleased { .. } => "ExecutionReleased",
+            Self::ExecutionLeftForReview => "ExecutionLeftForReview",
             Self::Reopen { .. } => "Reopen",
             Self::HoldForPlanReview { .. } => "HoldForPlanReview",
             Self::PlanReviewSettled { .. } => "PlanReviewSettled",
@@ -1275,6 +1278,7 @@ impl EventRecord {
             EventRecord::ExecutionReleased { input } => Event::ExecutionReleased {
                 input: InputId::new(input).map_err(Error::from)?,
             },
+            EventRecord::ExecutionLeftForReview => Event::ExecutionLeftForReview,
             EventRecord::Reopen { input } => Event::Reopen {
                 input: InputId::new(input).map_err(Error::from)?,
             },
@@ -1607,6 +1611,7 @@ mod tests {
                 input: InputId::new("input").unwrap(),
             },
         );
+        roundtrip(&current, Event::ExecutionLeftForReview);
         roundtrip(
             &current,
             Event::Reopen {

@@ -242,18 +242,31 @@ fn start_target(domain:&Arc<DomainRuntime>,plan:&Plan,prepared:PreparedHandoff)-
 /// Starts on its new account the task a move left waiting, once it has something to go on with.
 pub(crate) async fn start_moved(domain:&Arc<DomainRuntime>,task:&TaskId)->Result<bool,DomainError>{
     let _advance=domain.selection_changes.advancing.lock().await;
-    if !starts_elsewhere(domain,task) || !ready_to_start(domain,task)?
-        || domain.read().state().lifecycle_of(task)?.phase()!=alondra_domain::TaskPhase::InProgress{return Ok(false)}
+    if !starts_elsewhere(domain,task) || !ready_to_start(domain,task)? || !admitted(domain,task){return Ok(false)}
     let change=domain.store.lock_or_exit("the domain store").deferred_move(task).map_err(failure)?.ok_or_else(||failure("The move is missing"))?;
     let prepared=serde_json::from_value(prepared_facts(change.clone())).map_err(failure)?;
     start_target(domain,&change.plan,prepared)?;
     Ok(true)
 }
+/// Whether the gate lets the moved task's next node start, as it lets a queued task: a free slot,
+/// the disk's floor and the Mac's memory hold it until there is room.
+fn admitted(domain:&DomainRuntime,task:&TaskId)->bool{
+    let Some(priority)=domain.read().state().tasks.get(task).map(|task|task.priority) else{return false};
+    let now=alondra_core::now_millis();
+    domain.live.gate.ask(domain,crate::admission::Waiting{key:crate::admission::Key::Task(task.clone()),priority,resuming:false,since:now},now).is_ok()
+}
 /// Whether the task has something to go on with and nobody else to wait for: the moment its next
-/// node starts, as the node it moved from would have resumed then.
+/// node starts, as the node it moved from would have resumed then. A delivery goes on once the
+/// user sent it back.
 fn ready_to_start(domain:&DomainRuntime,task:&TaskId)->Result<bool,DomainError>{
+    use alondra_domain::{Capacity,LiveState,Owed,TaskPhase};
     let read=domain.read();let lifecycle=read.state().lifecycle_of(task)?;
-    Ok(!lifecycle.pending_inputs().is_empty() && matches!(lifecycle.live(),Some(alondra_domain::LiveState::Working(_)|alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::Gate))))
+    let goes_on=match lifecycle.phase(){
+        TaskPhase::InProgress=>matches!(lifecycle.live(),Some(LiveState::Working(_)|LiveState::WaitingCapacity(Capacity::Gate))),
+        TaskPhase::Delivered=>lifecycle.obligation().is_some_and(|obligation|obligation.owed==Owed::Start),
+        _=>false,
+    };
+    Ok(!lifecycle.pending_inputs().is_empty() && goes_on)
 }
 /// Stops the source's host and commits its end, keeping as the fence the folder the end was read
 /// from, still locked: a lock released and taken again can be held meanwhile by a child this
