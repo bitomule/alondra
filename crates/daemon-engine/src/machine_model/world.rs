@@ -51,6 +51,8 @@ pub(super) enum Action {
     /// The session leaves the next input it is offered untaken.
     IgnoresNextInput(usize),
     HostDies(usize),
+    /// The host is stopped on purpose: no new one takes its place on its own.
+    StopsHost(usize),
     /// What the host observed reaches the daemon only a minute later.
     FactsLate(usize),
     /// The host sends what it last sent again.

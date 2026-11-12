@@ -474,6 +474,36 @@ async fn a_host_that_dies_under_a_disk_hold_of_a_delivery_sent_back_goes_on_once
     assert!(domain.read().index().waiting().is_empty(), "nobody is asked anything: {:?}", domain.read().index().waiting());
 }
 
+/// A host stopped on purpose while its node worked on what the user sent back leaves the delivery
+/// with nothing that starts a turn. The end of the host owes the start at once: no clock decides it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_host_stopped_on_purpose_while_the_node_worked_on_a_delivery_sent_back_owes_its_start_at_once() {
+    let mut node = SdkNode::working();
+    let domain = Arc::clone(&node.domain);
+    domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
+    node.deliver();
+    node.get_it_back();
+    node.tell(SDK_TASK, "Pass the MCP variables too");
+    for _ in 0..50 {
+        if node.pending_inputs() == 0 {
+            break;
+        }
+        node.step();
+    }
+    assert_eq!(node.pending_inputs(), 0, "the node took what the user sent back");
+
+    node.lose_host();
+    let generation = node.lifecycle().execution().unwrap().generation();
+    run(&domain, Actor::System, Command::RecordHostEnded { task_id: SDK_TASK.into(), generation, resumes: false, ended_work: vec![], by_alondra: true });
+    assert_eq!(node.pending_inputs(), 1, "the end of the host queued what the node goes on with");
+    assert_eq!(node.lifecycle().obligation().map(|obligation| obligation.party), Some(alondra_domain::Party::Alondra), "Alondra owes the start");
+
+    node.gate_look().await;
+    domain.join_retakes();
+    assert!(domain.owns_sdk_host(&AgentId(node.agent())), "a host took the task over");
+    domain.stop_sdk_owners();
+}
+
 /// An intentional interruption is never woken automatically by the gate, however long it waits.
 #[tokio::test]
 async fn an_interrupted_task_waits_for_instruction_instead_of_being_woken_by_the_gate() {

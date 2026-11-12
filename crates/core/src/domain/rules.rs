@@ -823,6 +823,10 @@ impl DomainState {
             && matches!(i.scope, Scope::Task { .. })
             && matches!(i.payload, InteractionPayload::Question { .. } | InteractionPayload::ActionRequest { .. })
     }
+    fn suggests(i: &Interaction) -> bool {
+        matches!(i.author, Author::Agent { .. }) && i.recipient == Recipient::Orchestrator && i.card.kind == CardKind::Propose
+            && matches!(i.payload, InteractionPayload::Question { .. })
+    }
     /// The task's node waits for the orchestrator's answer to one of its questions.
     pub fn waits_for_orchestrator(&self, task: &TaskId) -> bool {
         self.interactions.values().any(|i| Self::asks_the_orchestrator(i) && self.open(i)
@@ -2166,11 +2170,11 @@ impl DomainState {
             )
     }
     /// A question the task left unanswered when it ended: the user's, or the one its node asked the
-    /// orchestrator, which nobody can answer any more.
+    /// orchestrator, or a suggestion it sent, which nobody can answer any more.
     fn left_open(&self, i: &Interaction, t: &TaskId) -> bool {
         self.unanswered_card(i, t)
             || (matches!(&i.scope, Scope::Task { task_id } if task_id == t)
-                && Self::asks_the_orchestrator(i)
+                && (Self::asks_the_orchestrator(i) || Self::suggests(i))
                 && !i.withdrawn
                 && matches!(i.payload, InteractionPayload::Question { answer: None, .. }))
     }

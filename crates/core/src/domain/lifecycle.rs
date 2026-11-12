@@ -1975,6 +1975,29 @@ impl DomainState {
             self.interactions.insert(card.clone(), ended);
             effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
         }
+        if !resumed {
+            self.go_on_if_stranded(task, effects, lifecycles)?;
+        }
+        Ok(())
+    }
+
+    /// A host that ended with nothing to take its place leaves the node of `task` owing what the
+    /// user sent back with nothing that starts a turn: the node is told to go on at once, and if
+    /// it stops again the orchestrator gets the case. Nothing changes for a task not left so.
+    fn go_on_if_stranded(&mut self, task: &TaskId, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+        let lifecycle = self.lifecycle(lifecycles, task)?;
+        if !self.stranded(task, lifecycle) {
+            return Ok(());
+        }
+        let card = stalled_card_id(task, lifecycle.generation(), &format!("stranded-{}", self.revision + 1));
+        let wake = self.wake_for(task, lifecycles)?;
+        let asked = self.tasks.get(task).map(|task| asked_changes(self, task)).unwrap_or_default();
+        let told = if asked.is_empty() { STRANDED_INSTRUCTION.to_owned() } else { format!("{STRANDED_INSTRUCTION}\n\n{asked}") };
+        let text = wake.as_ref().map(|_| told);
+        self.decide(lifecycles, task, LifecycleRecord::Unfinished { unheard_card: card.clone(), text, wake })?;
+        if self.lifecycle(lifecycles, task)?.cards().iter().any(|(required, _)| **required == card) {
+            self.open_stall(task, card, effects);
+        }
         Ok(())
     }
 
@@ -2637,6 +2660,8 @@ impl EmptyTurn {
         }
     }
 }
+/// What a node is told when its host ended and left it owing what the user sent back.
+pub const STRANDED_INSTRUCTION: &str = "Nothing is running for your task, and the user still waits for what they sent back on your delivery. Check where you were and go on with it, then present your result again. Whatever you ran in the background ended and will not report back: run again what you still need.";
 pub const WAKE_INSTRUCTION: &str = "Your turn ended without a result, a question or work of your own running, and your task is still open. Deliver your result with `present_result`, ask the user with `ask`, or, if you wait for something, wait on it through its Alondra tool (`wait_for_machine`, `wait_for_tasks`, or `post_merge_work` with `waits_for`) and end your turn. If your turns keep ending this way, Alondra reminds you up to 3 times in a row; after that the orchestrator decides how your task goes on, and it may close it.";
 /// What a wake says follows when the node's turns keep ending empty.
 const WAKE_LIMIT: &str = "If your turns keep ending this way, Alondra reminds you up to 3 times in a row; after that the orchestrator decides how your task goes on, and it may close it.";
@@ -3004,4 +3029,19 @@ fn refused(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle, r
 
 fn is_false(value: &bool) -> bool {
     !value
+}
+
+/// The changes the user asked for on a result the task's earlier node delivered: they go to the
+/// node that takes the task over, since the one they were sent to is gone.
+pub fn asked_changes(state: &DomainState, task: &Task) -> String {
+    let Some(InteractionPayload::Delivery { feedback, acceptance, .. }) = task.final_presentation.as_ref()
+        .and_then(|id| state.interactions.get(id)).map(|result| &result.payload)
+    else {
+        return String::new();
+    };
+    if feedback.is_empty() || acceptance.as_ref().is_some_and(|accepted| accepted.valid) {
+        return String::new();
+    }
+    let asked: Vec<String> = feedback.iter().map(|change| format!("- {}", change.body.trim())).collect();
+    format!("## Changes the user asked for on the result you take over\n\n{}", asked.join("\n"))
 }

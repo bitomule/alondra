@@ -729,6 +729,33 @@ fn the_orchestrators_answer_and_note_reach_the_node() {
     assert_eq!(answer.decision, Some(current("Step 3 of your plan covers it")));
 }
 
+/// A suggestion nobody settled stayed open after its task ended: the sweep skipped Propose cards,
+/// so it kept showing in the orchestrator's pending list and in its author's open cards.
+#[test]
+fn a_task_that_ends_takes_the_suggestions_nobody_settled_with_it() {
+    for cancelled in [false, true] {
+        let mut s = fixture();
+        ok(&mut s, agent(), suggest("waiting"));
+        ok(&mut s, agent(), suggest("settled"));
+        ok(&mut s, orchestrator(), settle("settled", discard("Task 12 already covers it")));
+        if cancelled {
+            ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+        } else {
+            ok(&mut s, agent(), present("final", text(), true, review()));
+            ok(&mut s, user(), Command::AcceptDelivery { presentation_id: "final".into(), targets: text() });
+        }
+        ok(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: Some("a".into()) });
+        assert!(s.tasks[&TaskId::from("t")].state.terminal());
+        let waiting = &s.interactions[&"waiting".into()];
+        assert!(waiting.withdrawn && !s.open(waiting), "cancelled={cancelled}: the suggestion leaves with its task");
+        assert!(matches!(&waiting.payload, InteractionPayload::Question { answer: None, .. }), "the suggestion stays as it was asked");
+        assert!(s.open_cards(&agent(), Some(&"t".into())).iter().all(|card| card.id.0 != "waiting"));
+        let settled = &s.interactions[&"settled".into()];
+        assert!(!settled.withdrawn && matches!(&settled.payload, InteractionPayload::Question { answer: Some(_), .. }));
+        assert!(!s.interactions.keys().any(|id| id.0.starts_with(ENDED_UNANSWERED_PREFIX)), "the user is told nothing about a suggestion");
+    }
+}
+
 fn new_task(task_id: &str, request_id: &str) -> SuggestionDecision {
     SuggestionDecision::NewTask {
         task_id: task_id.into(), request_id: request_id.into(), title: "Update the README flag".into(),

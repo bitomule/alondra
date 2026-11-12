@@ -209,6 +209,20 @@ fn holds(history: &History, verdict: impl Fn(&Verdicts) -> &Option<String>) -> R
     }
 }
 
+/// A host stopped on purpose while the node worked on what the user sent back leaves nothing that
+/// starts a turn: the task still ends at work, never delivered with the user's request unheard.
+#[test]
+fn a_host_stopped_on_purpose_while_the_node_worked_on_what_the_user_sent_back_ends_at_work() {
+    let history = History {
+        script: vec![world::Turn::Deliver, world::Turn::Background],
+        slots: 3,
+        actions: vec![world::Action::TurnEnds(0), world::Action::User(world::UserAct::Return, 0), world::Action::Clock(world::PASS * 2), world::Action::StopsHost(0)],
+    };
+    if let Err(failure) = holds(&history, |verdicts| &verdicts.ends) {
+        panic!("{failure}");
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 256, failure_persistence: None, rng_seed: proptest::test_runner::RngSeed::Fixed(14), ..ProptestConfig::default()

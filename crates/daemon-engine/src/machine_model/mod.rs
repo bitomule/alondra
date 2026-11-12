@@ -260,6 +260,7 @@ impl Machine {
             Action::HostDies(index) => {
                 if let Some(host) = self.world.host(&task(index)) { host.alive = false; }
             }
+            Action::StopsHost(index) => self.stop_host(&task(index)),
             Action::FactsLate(index) => {
                 let until = self.world.now + MINUTE;
                 if let Some(host) = self.world.host(&task(index)) { host.late_until = until; }
@@ -517,6 +518,15 @@ impl Machine {
 
     fn progress(&mut self, task: &TaskId) {
         self.wakes.remove(task);
+    }
+
+    /// A host stopped on purpose: its end is recorded without a host that resumes its session.
+    fn stop_host(&mut self, task: &TaskId) {
+        let Some(host) = self.world.hosts.remove(task) else { return };
+        if self.generation(task) == Some(host.generation) && self.state().lifecycle_of(task).is_ok_and(|lifecycle| lifecycle.resource() != Some(ResourceEvidence::Released)) {
+            let _ = self.run(Actor::System, Command::RecordHostEnded { task_id: task.clone(), generation: host.generation, resumes: false, ended_work: vec![], by_alondra: true });
+        }
+        self.world.retired.push((task.clone(), host));
     }
 
     /// A host that died: its owner records the end, and while the task lives starts a host that
