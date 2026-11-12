@@ -80,6 +80,8 @@ pub mod local_network_card;
 pub mod machine;
 pub mod machine_state;
 pub mod machine_watch;
+#[cfg(test)]
+mod machine_model;
 pub mod mcp_probe;
 pub mod mcp_remove;
 pub mod mcp_sign_in;
