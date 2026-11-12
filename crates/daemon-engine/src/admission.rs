@@ -115,7 +115,7 @@ pub(crate) fn decide(head: &Waiting, working: usize, limit: u32, mac: &MacState,
     decide_pacing(working, limit, mac.warned(), last_admission, spacing, now)
 }
 
-fn decide_pacing(working: usize, limit: u32, warned: bool, last_admission: Option<Millis>, spacing: Millis, now: Millis) -> Result<(), Hold> {
+pub(crate) fn decide_pacing(working: usize, limit: u32, warned: bool, last_admission: Option<Millis>, spacing: Millis, now: Millis) -> Result<(), Hold> {
     if working >= limit as usize {
         return Err(Hold::Slots { working, limit });
     }
@@ -909,7 +909,7 @@ fn go_on(domain: &DomainRuntime, state: &DomainState, granted: &[TaskId]) {
 
 /// The tasks whose node has an input or an answer that waits for a slot, as the domain says,
 /// whoever asked. A node that fixes its accepted PR goes on without one.
-fn waiting_turns(state: &DomainState) -> BTreeSet<TaskId> {
+pub(crate) fn waiting_turns(state: &DomainState) -> BTreeSet<TaskId> {
     state.tasks.values().filter(|task| !task.over() && state.waits_for_turn(&task.id) && state.task_merge_failure(&task.id).is_none())
         .map(|task| task.id.clone()).collect()
 }
@@ -1434,24 +1434,34 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
     Ok(())
 }
 
+/// The tasks stranded for `STRANDED_AFTER` by `now`, each with since when it has been, and those
+/// that stopped being stranded. `seen` keeps since when each task has been stranded.
+pub(crate) fn stranded_due(state: &DomainState, seen: &mut BTreeMap<TaskId, Millis>, now: Millis) -> (Vec<(TaskId, Millis)>, Vec<TaskId>) {
+    let stranded = state.stranded_tasks();
+    let over: Vec<TaskId> = seen.keys().filter(|task| !stranded.contains(*task)).cloned().collect();
+    for task in &over {
+        seen.remove(task);
+    }
+    let due = stranded.into_iter().filter_map(|task| {
+        let since = *seen.entry(task.clone()).or_insert(now);
+        (now - since >= STRANDED_AFTER).then_some((task, since))
+    }).collect();
+    (due, over)
+}
+
 /// A task only waits for capacity or the user: one stranded past `STRANDED_AFTER` goes back through
 /// the gate like a node that resumes, with no card, and waits there while the Mac has no room.
 fn send_back_stranded(domain: &DomainRuntime, state: &DomainState, now: Millis) {
     let gate = &domain.live.gate;
-    let stranded = state.stranded_tasks();
     let due: Vec<(TaskId, Millis)> = {
         let mut inner = gate.lock_with(domain);
-        let over: Vec<TaskId> = inner.stranded.keys().filter(|task| !stranded.contains(*task)).cloned().collect();
+        let (due, over) = stranded_due(state, &mut inner.stranded, now);
         for task in over {
-            inner.stranded.remove(&task);
             if let Some(session) = crate::pauses::session_of(state, &task) {
                 inner.asking.remove(&Key::Resume(session));
             }
         }
-        stranded.into_iter().filter_map(|task| {
-            let since = *inner.stranded.entry(task.clone()).or_insert(now);
-            (now - since >= STRANDED_AFTER).then_some((task, since))
-        }).collect()
+        due
     };
     for (task, since) in due {
         let Some(session) = crate::pauses::session_of(state, &task) else { continue };

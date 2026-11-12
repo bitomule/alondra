@@ -14,7 +14,7 @@ use crate::domain_runtime::DomainRuntime;
 use crate::locks::Poisonable as _;
 use alondra_core::domain::obligation_policy::{ANSWER, Millis};
 use alondra_core::domain::{
-    Author, CardKind, DomainState, InboxCard, Interaction, InteractionId, InteractionPayload, PlanReview, PlanReviewOutcome, QuestionOption,
+    Author, CardKind, Command, DomainState, InboxCard, Interaction, InteractionId, InteractionPayload, PlanReview, PlanReviewOutcome, QuestionOption,
     Request, RequestId, STALL_ATTEMPTS, Scope, StallOutcome, StartProblem, SystemCard, Task, TaskId, UNSETTLED_INSTRUCT,
 };
 use alondra_core::orchestrator_cards::{
@@ -392,6 +392,19 @@ pub(crate) fn settle_answers(domain: &DomainRuntime, state: &DomainState, due: &
             log!("the orchestrator owed {} past its deadline: {step:?}", tasks.iter().map(|task| task.0.as_str()).collect::<Vec<_>>().join(", "));
         }
     }
+}
+
+/// The command that carries out `step`, for the steps one command settles.
+pub(crate) fn command_of(step: &Step) -> Option<Command> {
+    Some(match step {
+        Step::Tell { id, card, text } | Step::Remind { id, card, text, .. } => crate::domain_runtime::problems::tell_command(id, Some(card.clone()), text.clone()),
+        Step::Withdraw { question } => Command::Withdraw { interaction_id: question.clone() },
+        Step::SettleStall { case, task, outcome } => Command::SettleStall { case_id: case.clone(), task_id: task.clone(), outcome: outcome.clone() },
+        Step::ReleaseUnreviewed { review, task, note } => Command::SettlePlanReview {
+            review_id: review.clone(), task_id: task.clone(), outcome: PlanReviewOutcome::Unchanged { reason: note.clone() },
+        },
+        _ => return None,
+    })
 }
 
 /// Whether `step` was carried out.

@@ -1583,7 +1583,7 @@ mod producer_revision_tests {
 
 mod capabilities;
 mod inbox;
-mod problems;
+pub(crate) mod problems;
 mod rejections;
 
 #[cfg(test)]

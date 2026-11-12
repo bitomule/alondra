@@ -122,14 +122,7 @@ impl DomainRuntime {
             data_epoch: state.data_epoch.clone(),
             command_id: format!("tell-{id}").into(),
             expected_revision: state.revision,
-            command: Command::PublishInformation {
-                attachments: vec![],
-                interaction_id: id.to_owned().into(),
-                scope: Scope::Orchestrator { request_id: None },
-                recipient: Recipient::Orchestrator,
-                card: CardSpec { system, ..CardSpec::new(CardKind::Know, "Task update").content(ContentKind::Report, &body) },
-                body,
-            },
+            command: tell_command(id, system, body),
         })
     }
 
@@ -205,5 +198,17 @@ impl DomainRuntime {
             expected_revision: state.revision,
             command: Command::Withdraw { interaction_id: id.clone() },
         })
+    }
+}
+
+/// The command that tells the orchestrator `body` as the update `id`.
+pub(crate) fn tell_command(id: &str, system: Option<SystemCard>, body: String) -> Command {
+    Command::PublishInformation {
+        attachments: vec![],
+        interaction_id: id.to_owned().into(),
+        scope: Scope::Orchestrator { request_id: None },
+        recipient: Recipient::Orchestrator,
+        card: CardSpec { system, ..CardSpec::new(CardKind::Know, "Task update").content(ContentKind::Report, &body) },
+        body,
     }
 }
