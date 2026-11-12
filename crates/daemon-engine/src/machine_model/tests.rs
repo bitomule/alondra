@@ -13,7 +13,7 @@ pub(super) enum Gap {
     /// Phase 7 wrote the deadline of an input the session does not take, but enforces it only
     /// after a day of measurement (`obligation_policy::enforced`): until then the model does.
     HandInput,
-    /// A task the user sent back still owes the user and reads as Alondra delivering the hand-back
+    /// A task the user sent back still owes the user and reads as a step of Alondra's (delivering the hand-back, or answering the node)
     /// (`handed_back` holds until the node presents again), whether its node already took it and
     /// asked the orchestrator, or a deferred account move left nothing to start a node for it.
     HandedBackOwesUser,
@@ -104,7 +104,7 @@ fn ends_well(machine: &Machine, state: &DomainState, index: &ReadIndex, task: &T
         Situation::Waiting(WaitsFor::Step(AlondraStep::Delivering)) if state.waits_for_turn(task) || state.stranded_tasks().contains(task) => {
             room_is_scarce(machine, state)
         }
-        Situation::Waiting(WaitsFor::Step(AlondraStep::Delivering)) if listed(Gap::HandedBackOwesUser) && handed_back_owing_the_user(state, task) => true,
+        Situation::Waiting(WaitsFor::Step(AlondraStep::Delivering | AlondraStep::Answering)) if listed(Gap::HandedBackOwesUser) && handed_back_owing_the_user(state, task) => true,
         Situation::Waiting(WaitsFor::Machine) => world.memory_tight,
         Situation::Waiting(WaitsFor::Disk) => world.disk_full,
         Situation::Waiting(WaitsFor::Usage) => world.usage_holds(),
