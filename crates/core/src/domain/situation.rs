@@ -102,6 +102,9 @@ impl DomainState {
             return Situation::Waiting(WaitsFor::Slot).into();
         }
         let Ok(lifecycle) = self.lifecycle_of(&task.id) else { return without_lifecycle(task).into() };
+        if lifecycle.phase() == TaskPhase::Delivered && self.node_closing(task) {
+            return Situation::Delivered(Delivery::Closing).into();
+        }
         let Some(obligation) = lifecycle.obligation() else {
             return if lifecycle.phase() == TaskPhase::Cancelled { Situation::Cancelled } else { Situation::Finished }.into();
         };

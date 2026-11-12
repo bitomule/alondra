@@ -37,7 +37,8 @@ pub async fn run(
                 alondra_core::now_millis()
                     .saturating_sub(crate::domain_store::ORCHESTRATOR_MESSAGE_TTL_MS),
             )?;
-            store.pending_messages()?
+            let held = store.user_notices_in_open_passes()?;
+            store.pending_messages()?.into_iter().filter(|message| !held.contains(&message.id)).collect::<Vec<_>>()
         };
         first_seen.retain(|id, _| pending.iter().any(|message| message.id == *id));
         // SQLite errors stop this worker. The daemon supervisor then fails the

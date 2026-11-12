@@ -55,6 +55,8 @@ pub(super) enum Action {
     /// The session leaves the next input it is offered untaken.
     IgnoresNextInput(usize),
     HostDies(usize),
+    /// The task's node says its cleanup is done (`cleanup_done`), whatever its session is doing.
+    ConfirmsCleanup(usize),
     /// What the host observed reaches the daemon only a minute later.
     FactsLate(usize),
     /// The host sends what it last sent again.
@@ -125,6 +127,8 @@ impl Host {
 
 pub(super) struct World {
     pub hosts: BTreeMap<TaskId, Host>,
+    /// Hosts the closer took from their owner and is stopping: no owner holds them while they end.
+    pub closing: BTreeMap<TaskId, Host>,
     /// Hosts of executions that ended, whose facts may still arrive late.
     pub retired: Vec<(TaskId, Host)>,
     pub slots: usize,
@@ -141,7 +145,7 @@ pub(super) struct World {
 impl World {
     pub fn new(script: Vec<Turn>, slots: usize) -> Self {
         Self {
-            hosts: BTreeMap::new(), retired: Vec::new(), slots, memory_tight: false, disk_full: false, usage_until: None,
+            hosts: BTreeMap::new(), closing: BTreeMap::new(), retired: Vec::new(), slots, memory_tight: false, disk_full: false, usage_until: None,
             orchestrator_answers: true, now: 1_800_000_000_000, script, turns_ended: BTreeMap::new(), seq: 0,
         }
     }
@@ -229,4 +233,10 @@ pub(super) struct History {
 
 pub(super) fn history() -> impl Strategy<Value = History> {
     (script(), 1..=3usize, prop::collection::vec(action(), 1..40)).prop_map(|(script, slots, actions)| History { script, slots, actions })
+}
+
+/// Histories whose nodes also confirm their cleanup, whatever their session is doing.
+pub(super) fn history_with_cleanups() -> impl Strategy<Value = History> {
+    let action = prop_oneof![4 => action(), 1 => task().prop_map(Action::ConfirmsCleanup)];
+    (script(), 1..=3usize, prop::collection::vec(action, 1..40)).prop_map(|(script, slots, actions)| History { script, slots, actions })
 }

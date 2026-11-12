@@ -386,6 +386,14 @@ pub fn plan_while_waiting_notice(titles: &[String]) -> String {
 longer needed, ask the orchestrator to remove it, naming the fact that proves it (for example the pull request that is \
 already on the default branch). Once your task is running again, present the plan.", names.join(", "))
 }
+pub fn node_closing_notice() -> String {
+    "Your task is closing: your cleanup is confirmed and this session ends now, so nothing is asked of the user. \
+Stop here and end your turn.".into()
+}
+pub fn plan_after_acceptance_notice() -> String {
+    "Your delivery was accepted and the task is closing, so a plan is not reviewed: do not go on with it. Finish \
+the cleanup Alondra asked for and call cleanup_done. New work goes to the orchestrator as a new request.".into()
+}
 pub fn delivery_withdrawn_for_questions() -> String {
     "You asked the user something after your final delivery, so that delivery was withdrawn and the task \
 is in progress again. When the answers arrive, present your result again as it is if nothing changes, or \
@@ -744,6 +752,16 @@ impl DomainState {
             }
             if reserved_card_id(&i.0) {
                 return refuse("invalid_input", "interaction_id", "This id names one of Alondra's own cards: choose another interaction_id");
+            }
+        }
+        if let (Author::Agent { .. }, Scope::Task { task_id }) = (&author, scope)
+            && let Some(t) = self.tasks.get(task_id)
+        {
+            if self.cleanup_confirmed(t) {
+                return refuse(CLOSING, "interaction_id", &node_closing_notice());
+            }
+            if card.plan.is_some() && self.in_cleanup(t) {
+                return refuse(CLOSING, "plan", &plan_after_acceptance_notice());
             }
         }
         self.recipient(to)?;
@@ -2378,6 +2396,17 @@ impl DomainState {
     /// The task waits for its node to clean up and be closed.
     pub fn in_cleanup(&self, t: &Task) -> bool {
         !t.over() && t.wrap_up.asked_at.is_some()
+    }
+    /// The task's node has nothing left to do but close: it confirmed its cleanup, the user chose
+    /// to close it, its end is recorded, or the task ended. Such a node never reads as working,
+    /// is never taken over, and opens no card. The node of a cancelled task still winds down and
+    /// may ask the user until Alondra closes it.
+    pub fn node_closing(&self, t: &Task) -> bool {
+        t.state.terminal() || t.wrap_up.node.is_some() || self.cleanup_confirmed(t)
+    }
+    /// The node of an accepted task said its cleanup is done, or the user chose to close it.
+    pub fn cleanup_confirmed(&self, t: &Task) -> bool {
+        self.in_cleanup(t) && (t.wrap_up.cleaned_at.is_some() || self.post_merge_closed_by_user(&t.id))
     }
     /// Asks the node of every task whose delivery just settled to clean up, and forgets the
     /// request of one whose delivery is no longer settled.

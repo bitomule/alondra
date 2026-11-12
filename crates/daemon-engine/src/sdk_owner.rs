@@ -1074,10 +1074,46 @@ pub(crate) fn take_working_unowned(domain: &DomainRuntime, state: &DomainState, 
     }
 }
 
+/// Every host this daemon owns whose node Alondra already recorded as closed or gone is closed:
+/// a closed task never keeps a host, whatever started it after its close. A node the user kept is
+/// theirs and stays.
+pub(crate) fn close_hosts_of_ended_nodes(domain: &DomainRuntime, state: &DomainState) {
+    for (task, agent) in ended_nodes_with_hosts(domain, state) {
+        let Some((_, runtime)) = domain.sdk() else { return };
+        let mut retakes = domain.retakes.lock_or_recover("the retakes");
+        retakes.retain(|(_, retake)| !retake.is_finished());
+        if retakes.iter().any(|(taking, _)| *taking == task) {
+            continue;
+        }
+        log!("the node {agent} ended with its task, but its SDK host still runs: it is closed");
+        retakes.push((task, std::thread::spawn(move || {
+            if let Err(failed) = runtime.close_sdk_host(&agent) {
+                log!("the SDK host of the ended node {agent} did not close: {failed}");
+            }
+        })));
+    }
+}
+
+/// The nodes whose host this daemon still owns although Alondra recorded them closed or gone.
+fn ended_nodes_with_hosts(domain: &DomainRuntime, state: &DomainState) -> Vec<(TaskId, AgentId)> {
+    ended_node_tasks(state).into_iter()
+        .filter_map(|task| state.tasks[&task].agent_id.clone().map(|agent| (task, agent)))
+        .filter(|(_, agent)| domain.owns_sdk_host(agent))
+        .collect()
+}
+
+/// The tasks whose node Alondra recorded as closed or gone: no host of theirs may still run.
+pub(crate) fn ended_node_tasks(state: &DomainState) -> Vec<TaskId> {
+    state.tasks.values()
+        .filter(|task| matches!(task.wrap_up.node, Some(NodeEnd::Closed | NodeEnd::Gone)))
+        .map(|task| task.id.clone())
+        .collect()
+}
+
 /// The open tasks that read as working, starting or woken, but for one a pause holds on the user,
 /// or after a takeover: those a host of their own must run.
 pub(crate) fn reads_as_working(state: &DomainState) -> Vec<TaskId> {
-    state.tasks.values().filter(|task| !task.over())
+    state.tasks.values().filter(|task| !task.over() && !state.node_closing(task))
         .filter(|task| state.lifecycle_of(&task.id).is_ok_and(|lifecycle| matches!(lifecycle.activity(),
             ActivityView::Working | ActivityView::OwnWork | ActivityView::Starting | ActivityView::Continuation)
             && !lifecycle.cards().into_iter().any(|(card, reason)| reason == alondra_domain::WaitReason::Pause
@@ -1172,6 +1208,9 @@ fn take_again(runtime: &Arc<DomainRuntime>, backend: &SdkBackend, task: &TaskId,
             }
             true
         }
+        Err(StoreError::Domain(error)) if error.code == CLOSING => {
+            return log!("{task} is closing, so no host takes it over: {}", error.message);
+        }
         Err(error) => {
             log!("the takeover of {task} was not recorded: {}", store_text(&error));
             false
@@ -1247,7 +1286,13 @@ fn to_take(domain: &DomainRuntime, state: &DomainState, task: &TaskId) -> bool {
         && !domain.retakes.lock_or_recover("the retakes").iter().any(|(taking, retake)| taking == task && !retake.is_finished())
         && !crate::account_move::holds_execution(domain, task)
         && !crate::provider_transition::holds_execution(domain, task)
-        && runs_on_sdk_host(state, task)
+        && takeable(state, task)
+}
+
+/// Whether a host may take `task`'s execution over: it runs through the Agent SDK, is still open,
+/// and its node does not only close now.
+pub(crate) fn takeable(state: &DomainState, task: &TaskId) -> bool {
+    runs_on_sdk_host(state, task) && state.tasks.get(task).is_some_and(|task| !state.node_closing(task))
 }
 
 /// Whether `task`'s current execution is one of the Agent SDK host and still open.
