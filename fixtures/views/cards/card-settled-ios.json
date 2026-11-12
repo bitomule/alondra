@@ -4,11 +4,11 @@
   "view": "settled_card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "vcb965d0149d59aaa",
+  "version": "vc38ab0670d906504",
   "cursor": "cursor-1",
   "status": {
-    "version": "v8e6d4c39b4a6185d",
-    "summary": "1 question · 3 to read · 0 nodes working",
+    "version": "v6d9e8a2824e144ce",
+    "summary": "1 question · 3 to read · 0 tasks working",
     "badge": 4,
     "counts": [
       {

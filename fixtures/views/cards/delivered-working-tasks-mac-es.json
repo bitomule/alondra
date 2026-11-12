@@ -4,12 +4,12 @@
   "view": "tasks",
   "key": "tasks",
   "client": "mac",
-  "version": "vcc440519db852ede",
+  "version": "vf70519b8e35b2809",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
-    "version": "v1d4f55aa17852112",
-    "summary": "1 por leer · 1 nodo trabajando",
+    "version": "v2dd59c372bac4fa9",
+    "summary": "1 por leer · 1 tarea trabajando",
     "badge": 1,
     "counts": [
       {

@@ -4,12 +4,12 @@
   "view": "card",
   "key": "card:mcp-sign-in-t-18",
   "client": "mac",
-  "version": "v983203dce727aa0e",
+  "version": "v5bb640ec5982ff81",
   "cursor": "cursor-1",
   "title": "Sign in to linear: 2 tasks wait for it",
   "status": {
-    "version": "vd657412a9bf7fd00",
-    "summary": "1 question · 1 node working",
+    "version": "vfff2f11c16c27699",
+    "summary": "1 question · 1 task working",
     "badge": 1,
     "counts": [
       {
