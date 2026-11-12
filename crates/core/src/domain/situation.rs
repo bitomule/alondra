@@ -156,7 +156,7 @@ impl DomainState {
             Owed::Tasks => WaitsFor::Tasks,
             Owed::Answer if !lifecycle.plan_reviews().is_empty() => WaitsFor::PlanReview,
             Owed::Start => WaitsFor::Step(AlondraStep::Starting),
-            Owed::HandInput | Owed::HandDecision => WaitsFor::Step(AlondraStep::Delivering),
+            Owed::HandInput | Owed::ReadInput | Owed::HandDecision => WaitsFor::Step(AlondraStep::Delivering),
             Owed::Wake => WaitsFor::Step(AlondraStep::Waking),
             Owed::Merge | Owed::Close => return Situation::Delivered(Delivery::Closing).into(),
             Owed::Answer | Owed::User | Owed::Turn | Owed::OwnWork => WaitsFor::Step(AlondraStep::Answering),

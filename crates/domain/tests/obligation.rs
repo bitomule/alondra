@@ -171,3 +171,33 @@ fn a_returned_delivery_whose_node_the_disk_paused_owes_room_on_the_disk() {
     apply(&mut task, Event::Pause { card: "disk".into(), owner: Owner::Capacity(Capacity::Disk) });
     assert_eq!(owed(task.obligation()), Some((Party::Capacity(Capacity::Disk), Owed::Room(Capacity::Disk))));
 }
+
+/// An input handed to a session that said nothing yet is owed by Alondra; once the provider names
+/// it as held, the provider owes its reading, with no step of Alondra's to be late, and the
+/// execution still reads as starting. A new input in its place is Alondra's to hand again.
+#[test]
+fn an_input_the_provider_holds_is_owed_by_the_provider_until_it_is_replaced() {
+    let mut task = TaskLifecycle::planned(TaskId::from("task"), input("initial")).unwrap();
+    admit(&mut task, "instance");
+    fact(&mut task, RuntimeFact::ResourceAvailable);
+    assert_eq!(owed(task.obligation()), Some((Party::Alondra, Owed::HandInput)));
+    fact(&mut task, RuntimeFact::InputHeld { input: input("unknown") });
+    assert_eq!(owed(task.obligation()), Some((Party::Alondra, Owed::HandInput)), "only an input the task waits on can be held");
+    fact(&mut task, RuntimeFact::InputHeld { input: input("initial") });
+    assert_eq!(owed(task.obligation()), Some((Party::Provider, Owed::ReadInput)));
+    assert_eq!(task.activity(), ActivityView::Starting, "the label does not change");
+    apply(&mut task, Event::ResendUntaken { input: input("initial"), resend: input("again") });
+    assert_eq!(task.pending_inputs(), vec![&input("again")]);
+    assert_eq!(owed(task.obligation()), Some((Party::Alondra, Owed::HandInput)));
+}
+
+/// What the provider holds behind the input it is reading is read in its turn, and an input held
+/// while another runs owes nothing of Alondra's once its own turn comes.
+#[test]
+fn an_input_held_before_its_turn_is_owed_by_the_provider_when_it_comes_up() {
+    let mut task = running();
+    apply(&mut task, Event::Tell { input: input("queued"), answers: None });
+    fact(&mut task, RuntimeFact::InputHeld { input: input("queued") });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None, stalled: false });
+    assert_eq!(owed(task.obligation()), Some((Party::Provider, Owed::ReadInput)));
+}

@@ -4,7 +4,7 @@
 use super::*;
 use crate::obligation_watch::{Watch, pass};
 use alondra_core::domain::obligation_policy::Millis;
-use alondra_domain::Owed;
+use alondra_domain::{Owed, Party};
 
 const S: Millis = 1000;
 
@@ -60,7 +60,7 @@ pub fn drive_by_hand(slice: &Slice, driver: &Driver) {
 /// The owner gives its host up on its next step and, with the gate full, a host that resumes the
 /// same session takes its place.
 pub fn replaced_with_the_gate_full(slice: &Slice, mut driver: Driver) -> Driver {
-    assert!(driver.step(&|| false).is_err(), "the owner gives its host up");
+    assert!(driver.host_to_replace() || driver.step(&|| false).is_err(), "the owner gives its host up");
     slice.domain.live.gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(0)) });
     assert!(driver.host_to_replace());
     let mut next = driver.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
@@ -128,45 +128,112 @@ fn an_input_refused_twice_goes_back_to_the_queue() {
     queued.stop().unwrap();
 }
 
-// 10 November: Claude held what it was handed and started no turn on it, and the task read «Waiting
-// for Claude to start» with no end, holding its slot. Past the deadline the input is offered again;
-// past it once more the task gives up its slot, waits in the queue with its input, and the host the
-// gate admits next resumes the same session and takes it up. No card asks the user.
+// Claude Code refuses an input before queueing it: nobody is asked, the same text goes again at
+// once as a new input, and when the same session refuses that one too a host that resumes the
+// same session takes the message when the gate gives the task a slot.
 #[test]
-fn an_offered_input_nobody_takes_is_offered_again_then_requeued() {
+fn an_input_the_provider_refuses_goes_again_and_a_second_refusal_goes_to_a_resuming_host() {
     let slice = Slice::new();
-    let text = "Add the tests first stall-while-held";
+    let text = "Add the tests first refused-by-claude";
+    let mut driver = slice.launch_with("Write the release notes");
+    slice.settle(&mut driver);
+    drive_by_hand(&slice, &driver);
+    let cards = slice.domain.state().unwrap().interactions.len();
+    tell(&slice, text, "tell-refused");
+    for _ in 0..5000 {
+        if driver.step(&|| false).is_err() {
+            break;
+        }
+    }
+    assert!(driver.host_to_replace(), "the second refusal made the owner give its host up");
+    assert_eq!(told(&slice, text), 2, "the refused text went again once: {:?}", slice.prompts());
+    assert_eq!(journal(&slice).iter().filter(|record| matches!(record, LifecycleRecord::HandoffResent { .. })).count(), 2, "each refusal staged its resend");
+    let mut queued = replaced_with_the_gate_full(&slice, driver);
+    let gate = slice.domain.live.gate.snapshot(&slice.domain, alondra_core::now_millis()).unwrap();
+    assert!(gate.queue.iter().any(|waiting| waiting.key == crate::admission::Key::Turn(TASK.into())), "its turn is queued: {:?}", gate.queue);
+    assert_eq!(lifecycle(&slice.domain).pending_inputs().len(), 1, "one input waits for the resuming host");
+    assert_eq!(slice.domain.state().unwrap().interactions.len(), cards, "no card asks the user");
+    goes_on_when_the_gate_has_room(&slice, &mut queued, text, 3);
+    assert_eq!(told(&slice, text), 3, "the resuming host got the message once: {:?}", slice.prompts());
+    queued.stop().unwrap();
+}
+
+/// The process of the node wrote at `at`, the last time the clock sees it write.
+fn wrote_at(slice: &Slice, at: Millis) {
+    slice.domain.live.outputs.lock().unwrap().insert(TASK.into(), at);
+}
+
+// A Claude process that hangs on what it was handed writes nothing at all and no event names the
+// input. Past the deadline since its last output the task gives up its slot, waits in the queue
+// with its input, and the host the gate admits next resumes the same session and takes it up,
+// flagged as possibly received. No card asks the user.
+#[test]
+fn a_hung_process_that_wrote_nothing_is_given_up_for_a_host_that_resumes_the_session() {
+    let slice = Slice::new();
+    let text = "Add the tests first hung-silent";
     let mut driver = hand(&slice, text);
     drive_by_hand(&slice, &driver);
+    wrote_at(&slice, 0);
     let cards = slice.domain.state().unwrap().interactions.len();
     let mut watch = enforcing_every_deadline();
     pass(&slice.domain, &mut watch, 0);
-    pass(&slice.domain, &mut watch, 119 * S);
-    assert!(!journal(&slice).iter().any(|record| matches!(record, LifecycleRecord::DoubtResent { .. })), "nothing before the deadline");
-
-    pass(&slice.domain, &mut watch, 121 * S);
-    let resent = journal(&slice).iter().find_map(|record| match record {
-        LifecycleRecord::DoubtResent { resent, text: Some(again), .. } if again.contains(text) => Some(resent.clone()),
-        _ => None,
-    }).expect("the input is offered again");
-    while driver.pending_permits() > 0 {
-        driver.step(&|| false).unwrap();
-    }
-    assert_eq!(dispatch_status(&slice, &resent).as_deref(), Some("handed"), "the host has it again");
-
-    pass(&slice.domain, &mut watch, 200 * S);
+    pass(&slice.domain, &mut watch, 299 * S);
     driver.step(&|| false).unwrap();
-    assert!(!driver.host_to_replace(), "the offer again has a deadline of its own");
-    pass(&slice.domain, &mut watch, 242 * S);
+    assert!(!driver.host_to_replace(), "nothing before the deadline");
+
+    wrote_at(&slice, 0);
+    pass(&slice.domain, &mut watch, 301 * S);
+    assert!(slice.domain.requeues.lock().unwrap().contains(&TaskId::from(TASK)), "the watch gave the process up; the task owes {:?}", lifecycle(&slice.domain).obligation());
     let mut queued = replaced_with_the_gate_full(&slice, driver);
     assert_waits_for_a_slot(&slice, &mut queued);
     assert_eq!(slice.domain.state().unwrap().interactions.len(), cards, "no card asks the user");
+    assert!(journal(&slice).iter().any(|record| matches!(record, LifecycleRecord::DoubtResent { text: Some(again), .. } if again.contains(text))), "the input goes again flagged as possibly received");
     goes_on_when_the_gate_has_room(&slice, &mut queued, text, 2);
     queued.stop().unwrap();
 }
 
+// A process that wrote recently is not hung, whatever the input did not get.
+#[test]
+fn a_process_that_wrote_within_the_deadline_is_not_given_up() {
+    let slice = Slice::new();
+    let mut driver = hand(&slice, "Add the tests first hung-silent");
+    drive_by_hand(&slice, &driver);
+    wrote_at(&slice, 0);
+    let mut watch = enforcing_every_deadline();
+    pass(&slice.domain, &mut watch, 0);
+    wrote_at(&slice, 250 * S);
+    pass(&slice.domain, &mut watch, 301 * S);
+    driver.step(&|| false).unwrap();
+    assert!(!driver.host_to_replace(), "it wrote 51 s ago");
+    driver.stop().unwrap();
+}
+
+// 10 November: Claude held what it was handed and started no turn on it. Claude Code said it had
+// the input (queued), so the provider owes the next step and no deadline of Alondra's ends it: the
+// input waits for the provider's own event however long it takes.
+#[test]
+fn an_input_the_provider_holds_is_never_given_up() {
+    let slice = Slice::new();
+    let mut driver = hand(&slice, "Add the tests first stall-while-held");
+    drive_by_hand(&slice, &driver);
+    while lifecycle(&slice.domain).obligation().is_some_and(|obligation| obligation.owed != Owed::ReadInput) {
+        driver.observe().unwrap();
+    }
+    wrote_at(&slice, 0);
+    assert_eq!(lifecycle(&slice.domain).obligation().map(|obligation| (obligation.party, obligation.owed)), Some((Party::Provider, Owed::ReadInput)));
+    assert_eq!(lifecycle(&slice.domain).activity(), ActivityView::Starting, "the user still reads that Alondra is delivering");
+    let mut watch = enforcing_every_deadline();
+    for at in [0, 301, 3600, 24 * 3600] {
+        pass(&slice.domain, &mut watch, at * S);
+    }
+    driver.step(&|| false).unwrap();
+    assert!(!driver.host_to_replace(), "the task keeps its host");
+    assert!(!journal(&slice).iter().any(|record| matches!(record, LifecycleRecord::DoubtResent { .. })), "nothing is offered again");
+    driver.stop().unwrap();
+}
+
 // The deadline is on the session's own word that it took the input, not on its first message:
-// a session that says it runs at once and writes nothing for minutes is never offered it again.
+// a session that says it runs at once and writes nothing for minutes is never given up.
 #[test]
 fn a_session_that_is_running_is_not_reoffered() {
     let slice = Slice::new();

@@ -80,6 +80,9 @@ pub struct Live {
     /// The one clock over what live tasks are owed. A holder that panics leaves it whole: each pass
     /// replaces whole entries.
     pub(crate) obligations: Mutex<crate::obligation_watch::Watch>,
+    /// When each task's node process last wrote anything. A holder that panics leaves it whole:
+    /// one insert.
+    pub(crate) outputs: Mutex<std::collections::BTreeMap<alondra_core::domain::TaskId, alondra_core::Millis>>,
     /// A holder that panics leaves it whole, so it is recovered: one insert or remove of a marker.
     watching: Mutex<std::collections::HashSet<String>>,
     launching: tokio::sync::watch::Sender<std::collections::HashSet<String>>,
@@ -114,6 +117,7 @@ impl Live {
             usage_pause: crate::usage_pause::UsagePause::default(),
             machine_watch: crate::machine_watch::MachineWatch::persisted_in(home),
             gate: crate::admission::Admission::persisted_in(home),
+            outputs: Default::default(),
             closed: Mutex::new(closed),
             closed_file: Some(file),
             ..Self::default()

@@ -33,19 +33,6 @@ pub(crate) fn resend_refused(owner: &mut OwnerTransaction<'_>, task: &TaskId, in
     })))
 }
 
-/// The session holds what it was handed past its deadline: it is offered again, flagged as
-/// possibly received already. Whether something was offered again.
-pub(crate) fn offer_again(owner: &mut OwnerTransaction<'_>, task: &TaskId) -> Result<bool, StoreError> {
-    let Some(generation) = generation(owner, task)? else { return Ok(false) };
-    let doubted: Vec<InputId> = owner.lifecycle(task)?.doubts().into_iter().map(|(_, input)| input.clone()).collect();
-    let handed = owner.pending_handoffs(task)?.into_iter()
-        .find(|(pending, status)| matches!(status.as_str(), "handed" | "uncertain") && !doubted.contains(pending.id()));
-    let Some((input, _)) = handed else { return Ok(false) };
-    let command = Command::RecordDoubtfulHandoff { task_id: task.clone(), generation, input: input.id().as_str().into(), text: input.text().into(), resumes: true, by_alondra: true };
-    owner.stage_command(&Actor::System, &envelope(owner, format!("reoffer:{task}:{generation}:{}", input.id().as_str()), command), Attached::None)?;
-    Ok(true)
-}
-
 /// Work of the node's own ended and no turn took up its notice: the node is told. Whether it was.
 pub(crate) fn wake(owner: &mut OwnerTransaction<'_>, task: &TaskId, agent: &AgentId) -> Result<bool, StoreError> {
     let Some((id, command)) = wake_command(owner.state(), task, agent) else { return Ok(false) };

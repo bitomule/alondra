@@ -11,6 +11,23 @@ impl World for Room {
     fn orchestrator_held(&self) -> bool {
         false
     }
+    fn last_output(&self, _: &TaskId) -> Option<Millis> {
+        Some(0)
+    }
+}
+
+/// A node whose process, when it is alive, last wrote at `output`.
+struct Process(Option<Millis>);
+impl World for Process {
+    fn waits_for_slot(&self, _: &TaskId) -> bool {
+        false
+    }
+    fn orchestrator_held(&self) -> bool {
+        false
+    }
+    fn last_output(&self, _: &TaskId) -> Option<Millis> {
+        self.0
+    }
 }
 
 fn owes(party: Party, owed: Owed, since: Revision) -> Vec<(TaskId, Obligation)> {
@@ -26,9 +43,29 @@ fn a_step_owed_by_alondra_past_its_deadline_is_reported_once() {
     let mut watch = Watch::default();
     let at = |watch: &mut Watch, seconds| watch.observe(hand_input(1), &Room(false), seconds * S);
     assert_eq!(at(&mut watch, 0), vec![]);
-    assert_eq!(at(&mut watch, 119), vec![]);
-    assert_eq!(at(&mut watch, 121), vec![Overdue { task: "t-1".into(), party: Party::Alondra, owed: Owed::HandInput, age: 121 * S }]);
-    assert_eq!(at(&mut watch, 300), vec![]);
+    assert_eq!(at(&mut watch, 299), vec![]);
+    assert_eq!(at(&mut watch, 301), vec![Overdue { task: "t-1".into(), party: Party::Alondra, owed: Owed::HandInput, age: 301 * S }]);
+    assert_eq!(at(&mut watch, 400), vec![]);
+}
+
+#[test]
+fn an_input_is_overdue_only_for_a_live_process_and_counts_from_its_last_output() {
+    let mut watch = Watch::default();
+    watch.observe(hand_input(1), &Process(Some(0)), 0);
+    assert_eq!(watch.observe(hand_input(1), &Process(None), 400 * S), vec![], "a process that is gone is not a hung one");
+    let mut watch = Watch::default();
+    watch.observe(hand_input(1), &Process(Some(0)), 0);
+    assert_eq!(watch.observe(hand_input(1), &Process(Some(200 * S)), 301 * S), vec![], "it wrote 101 s ago");
+    assert_eq!(watch.observe(hand_input(1), &Process(Some(200 * S)), 499 * S), vec![]);
+    assert_eq!(watch.observe(hand_input(1), &Process(Some(200 * S)), 501 * S).len(), 1, "it has been silent for 301 s");
+}
+
+#[test]
+fn an_input_the_provider_holds_has_no_deadline() {
+    let mut watch = Watch::default();
+    let held = || owes(Party::Provider, Owed::ReadInput, 1);
+    assert_eq!(watch.observe(held(), &Process(Some(0)), 0), vec![]);
+    assert_eq!(watch.observe(held(), &Process(Some(0)), 24 * HOUR), vec![]);
 }
 
 #[test]
@@ -61,7 +98,7 @@ fn a_new_obligation_restarts_the_clock() {
     assert_eq!(watch.observe(hand_input(1), &Room(false), 0), vec![]);
     assert_eq!(watch.observe(owes(Party::Provider, Owed::Turn, 2), &Room(false), 100 * S), vec![]);
     assert_eq!(watch.observe(hand_input(3), &Room(false), 130 * S), vec![]);
-    assert_eq!(watch.observe(hand_input(3), &Room(false), 249 * S), vec![]);
+    assert_eq!(watch.observe(hand_input(3), &Room(false), 429 * S), vec![]);
 }
 
 #[test]
@@ -89,29 +126,19 @@ fn acted(watch: &mut Watch, obligations: Vec<(TaskId, Obligation)>, now: Millis)
 }
 
 #[test]
-fn an_input_past_its_deadline_is_offered_again_then_requeued_each_after_a_deadline_of_its_own() {
+fn a_hung_process_is_given_up_for_a_host_that_resumes_the_session_after_a_deadline_of_its_own_each_time() {
     let mut watch = every_deadline();
     assert_eq!(acted(&mut watch, hand_input(1), 0), vec![]);
-    assert_eq!(acted(&mut watch, hand_input(1), 121 * S), vec![("t-1".into(), Action::OfferAgain)]);
-    assert_eq!(acted(&mut watch, hand_input(1), 200 * S), vec![], "the offer again has a deadline of its own");
-    assert_eq!(acted(&mut watch, hand_input(1), 242 * S), vec![("t-1".into(), Action::Requeue)]);
-}
-
-#[test]
-fn a_new_step_starts_the_count_of_attempts_again() {
-    let mut watch = every_deadline();
-    acted(&mut watch, hand_input(1), 0);
-    assert_eq!(acted(&mut watch, hand_input(1), 121 * S), vec![("t-1".into(), Action::OfferAgain)]);
-    acted(&mut watch, owes(Party::Provider, Owed::Turn, 2), 130 * S);
-    acted(&mut watch, hand_input(3), 140 * S);
-    assert_eq!(acted(&mut watch, hand_input(3), 261 * S), vec![("t-1".into(), Action::OfferAgain)], "a turn started between the two");
+    assert_eq!(acted(&mut watch, hand_input(1), 301 * S), vec![("t-1".into(), Action::Requeue)]);
+    assert_eq!(acted(&mut watch, hand_input(1), 400 * S), vec![], "the step has a deadline of its own again");
+    assert_eq!(acted(&mut watch, hand_input(1), 602 * S), vec![("t-1".into(), Action::Requeue)]);
 }
 
 #[test]
 fn only_an_enforced_deadline_is_acted_on() {
-    let mut watch = Watch::default();
+    let mut watch = Watch::enforcing(|owed| matches!(owed, Owed::Wake | Owed::Answer));
     acted(&mut watch, hand_input(1), 0);
-    assert_eq!(acted(&mut watch, hand_input(1), 121 * S), vec![], "handing an input waits for its measure");
+    assert_eq!(acted(&mut watch, hand_input(1), 301 * S), vec![], "a deadline the policy does not enforce is only reported");
     let mut watch = Watch::default();
     acted(&mut watch, owes(Party::Alondra, Owed::Wake, 1), 0);
     assert_eq!(acted(&mut watch, owes(Party::Alondra, Owed::Wake, 1), 121 * S), vec![("t-1".into(), Action::Wake)]);

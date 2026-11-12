@@ -724,6 +724,7 @@ impl Event {
             | Self::Runtime {
                 fact: RuntimeFact::TurnStarted { trigger: Trigger::Input(input), .. }
                     | RuntimeFact::InputConsumed { input }
+                    | RuntimeFact::InputHeld { input }
                     | RuntimeFact::InputDropped { input, .. }
                     | RuntimeFact::HostEnded { resume: Some(input), .. }
                     | RuntimeFact::TurnEnded { wake: Some(input), .. },
@@ -774,6 +775,11 @@ pub enum RuntimeFact {
         trigger: Trigger,
     },
     InputConsumed {
+        input: InputId,
+    },
+    /// The provider holds `input`, handed to it and named by its own evidence: what it owes next
+    /// is reading it, which no deadline of Alondra's ends.
+    InputHeld {
         input: InputId,
     },
     /// Claude will never read `input`, still pending: it leaves the queue and `card` asks the user
@@ -979,6 +985,8 @@ struct Execution {
     callbacks: Vec<CallbackState>,
     effects: BTreeSet<OperationId>,
     inbox: Inputs,
+    /// The inputs the provider named as held, whose reading it owes.
+    held: BTreeSet<InputId>,
     takeover: Takeover,
 }
 impl Execution {
@@ -1665,6 +1673,7 @@ fn keeps_wake(event: &Event, woken: Option<&InputId>) -> bool {
         | RuntimeFact::EffectObserved { .. }
         | RuntimeFact::InterruptAccepted { .. }
         | RuntimeFact::Notification
+        | RuntimeFact::InputHeld { .. }
         | RuntimeFact::TakenOver
         | RuntimeFact::TakeoverUnanswered => true,
         RuntimeFact::Ask { .. }

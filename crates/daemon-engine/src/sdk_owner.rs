@@ -1566,6 +1566,32 @@ impl Driver {
         Ok(())
     }
 
+    fn journal_len(&self) -> usize {
+        self.domain.read().state().lifecycle_journal.get(&self.task).map_or(0, |journal| journal.len())
+    }
+
+    /// The provider explicitly refused an input: the domain already sent the same text again as a
+    /// new input, with no card. When the provider refuses that one too, the owner fails: a host
+    /// that resumes the same session takes this one's place.
+    fn provider_refusals_since(&mut self, journaled: usize) -> Result<(), Failed> {
+        let resent: Vec<(String, String)> = self.domain.read().state().lifecycle_journal.get(&self.task).into_iter().flat_map(|journal| journal.since(journaled))
+            .filter_map(|record| match record {
+                LifecycleRecord::HandoffResent { input, resent, .. } => Some((input.clone(), resent.clone())),
+                _ => None,
+            })
+            .collect();
+        for (input, resent) in resent {
+            let (Ok(input), Ok(resent)) = (InputId::new(input), InputId::new(resent)) else { continue };
+            if self.refused.remove(&input) {
+                log!("the provider of {} refused input {} again: the task gives up its slot and a host that resumes the same session gets it", self.task, input.as_str());
+                return Err(Failed::new("the provider refused the same input twice".into()));
+            }
+            log!("the provider of {} refused input {}: it goes again as {}", self.task, input.as_str(), resent.as_str());
+            self.refused.insert(resent);
+        }
+        Ok(())
+    }
+
     /// Whether the task's Claude session has not opened yet: it has read nothing it was handed.
     fn unopened(&self) -> Result<bool, Failed> {
         let read = self.domain.read();
@@ -1611,8 +1637,11 @@ impl Driver {
             }
         }
         let (worker, home) = (&self.worker, self.domain.home());
+        self.domain.live.outputs.lock_or_recover("the node outputs").insert(self.task.clone(), alondra_core::now_millis());
+        let journaled = self.journal_len();
         let (acceptance, unrecorded) = commit_observation(&self.domain, &self.scope, &binding, generation, &batch, worker.normalizer(), home,identity.as_ref())
             .map_err(failed("committing the observation"))?;
+        self.provider_refusals_since(journaled)?;
         if let Some(answered) = self.worker.answered_control(&batch) {
             self.results.retain(|awaited| *awaited != answered);
         }
@@ -1774,8 +1803,8 @@ impl Driver {
             return Err(Failed::new("the host did not open its Claude session in time".into()));
         }
         if self.domain.requeues.lock_or_recover("the requeued tasks").remove(&self.task) {
-            log!("the session of {} took no turn on its input offered again: the task gives up its slot and a host that resumes the same session gets the input when the gate gives it one", self.task);
-            return Err(Failed::new("the session took no turn on its input offered again".into()));
+            log!("the process of {} wrote nothing since it was handed an input and no event named it: it is stopped and a host that resumes the same session gets the input again, flagged as possibly received, when the gate gives it a slot", self.task);
+            return Err(Failed::new("the process wrote nothing since it was handed an input".into()));
         }
         if self.advance_idle_host_of_another_release()? {
             return Ok(());

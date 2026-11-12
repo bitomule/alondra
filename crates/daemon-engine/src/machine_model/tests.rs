@@ -10,27 +10,29 @@ use proptest::prelude::*;
 /// PR that makes the code apply it removes the row and drives the real code from the model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Gap {
-    /// Phase 7 wrote the deadline of an input the session does not take, but enforces it only
-    /// after a day of measurement (`obligation_policy::enforced`): until then the model does.
-    HandInput,
     /// A task the user sent back still owes the user and reads as a step of Alondra's (delivering the hand-back, or answering the node)
     /// (`handed_back` holds until the node presents again), whether its node already took it and
     /// asked the orchestrator, or a deferred account move left nothing to start a node for it.
     HandedBackOwesUser,
 }
 
-pub(super) const KNOWN_GAPS: &[Gap] = &[Gap::HandInput, Gap::HandedBackOwesUser];
+pub(super) const KNOWN_GAPS: &[Gap] = &[Gap::HandedBackOwesUser];
 
 fn listed(gap: Gap) -> bool {
     KNOWN_GAPS.contains(&gap)
 }
 
-/// Whether the model enforces a deadline in place of the clock.
-pub(super) fn gap_open(owed: Owed) -> bool {
-    match owed {
-        Owed::HandInput => listed(Gap::HandInput),
-        _ => false,
-    }
+/// The delivery deadline is no gap: the model runs the real watch, which enforces it.
+#[test]
+fn the_hand_input_deadline_is_enforced_by_the_real_policy() {
+    assert!(alondra_core::domain::obligation_policy::enforced(&Owed::HandInput));
+    assert!(!alondra_core::domain::obligation_policy::enforced(&Owed::ReadInput));
+}
+
+/// `task` was sent back by the user and the domain still says the user owes the next step.
+fn handed_back_owing_the_user(state: &DomainState, task: &TaskId) -> bool {
+    state.task_handed_back(task).is_some()
+        && state.lifecycle_of(task).ok().and_then(|lifecycle| lifecycle.obligation()).is_some_and(|obligation| obligation.party == Party::User)
 }
 
 /// How many times a step may be owed again as the one before it, with nobody acting in between: a
@@ -66,12 +68,6 @@ fn open_tasks(state: &DomainState) -> Vec<TaskId> {
 fn room_is_scarce(machine: &Machine, state: &DomainState) -> bool {
     let world = &machine.world;
     slot_tasks(state).len() >= world.slots || world.memory_tight || world.disk_full || world.usage_holds()
-}
-
-/// `task` was sent back by the user and the domain still says the user owes the next step.
-fn handed_back_owing_the_user(state: &DomainState, task: &TaskId) -> bool {
-    state.task_handed_back(task).is_some()
-        && state.lifecycle_of(task).ok().and_then(|lifecycle| lifecycle.obligation()).is_some_and(|obligation| obligation.party == Party::User)
 }
 
 /// The host has given the daemon everything it observed of `task`.

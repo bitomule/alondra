@@ -162,6 +162,10 @@ pub enum Observation {
     InputConsumed {
         input: InputId,
     },
+    /// The provider named `input` as held: its own evidence says it has it and will read it.
+    InputHeld {
+        input: InputId,
+    },
     /// Claude finished or cancelled an input of Alondra's without taking it in, or answered it
     /// with a result that never delivered it: it will not read it.
     InputDropped {

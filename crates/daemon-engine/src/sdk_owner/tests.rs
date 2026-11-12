@@ -844,7 +844,7 @@ fn the_slice_counts_its_aggregate_loads_decodes_and_index_builds() {
     let turn_end = observations.last().unwrap();
     assert_eq!(turn_end.index_builds, 1, "the turn end publishes the wake it sends once");
     let (traces, facts): (Vec<&Work>, Vec<&Work>) = observations.iter().partition(|work| work.writes == 0);
-    assert_eq!(traces.len(), 5, "the native trace of the first prompt, queued and started, its title before init and two system messages no SDK release declares: {observations:?}");
+    assert_eq!(traces.len(), 4, "the native trace of the first prompt, started, its title before init and two system messages no SDK release declares: {observations:?}");
     assert!(traces.iter().all(|work| work.index_builds == 0), "an observation that changes nothing for readers builds no index: {observations:?}");
     assert!(facts.iter().all(|work| work.index_builds == 1), "each observation with facts builds one index: {observations:?}");
     assert!(launch.aggregate_loads <= launch.transactions, "the launch rebuilds its one task at most once per transaction: {launch:?}");
@@ -2833,52 +2833,45 @@ fn a_turn_claude_ends_as_failed_asks_how_to_go_on_and_names_its_error() {
     driver.stop().unwrap();
 }
 
-// Claude answered the prompt with a result that never delivered it. The owner stops waiting for
-// it, the user sees the whole message, and «Send it again» gives Claude the same words.
+/// Moves the owner until it fails: the provider refused the same input twice.
+fn until_the_owner_fails(driver: &mut Driver) {
+    for _ in 0..5000 {
+        if driver.step(&|| false).is_err() {
+            return;
+        }
+    }
+    panic!("the owner never failed");
+}
+
+// Claude answered the prompt with a result that never delivered it. The same words go again at
+// once with no card, and when Claude refuses that one too the owner gives its host up, so a host
+// that resumes the same session takes the message.
 #[test]
-fn a_prompt_claude_never_delivers_asks_whether_to_send_it_again_and_goes_again_on_the_users_word() {
+fn a_prompt_claude_never_delivers_goes_again_without_a_card_and_a_second_time_changes_host() {
     let slice = Slice::new();
     let mut driver = slice.launch_with("failed-delivery");
-    slice.settle(&mut driver);
-    let card = open_card(&slice.domain, DROPPED_PREFIX).expect("the dropped prompt asks the user");
-    assert_eq!(card.card.effective_title(), "Claude didn't get to read your message");
-    assert_eq!(card.card.content.as_ref().map(|content| content.body.as_str()), Some("failed-delivery"));
-    assert!(Slice::lifecycle(&slice.domain).pending_inputs().is_empty(), "nothing waits for Claude to read it");
-    assert!(!driver.waits_for_host(), "the owner no longer waits for it");
-    assert_eq!(Slice::read_cards(&slice.domain), [], "no other card");
-
-    let state = slice.domain.state().unwrap();
-    let again = Command::AnswerQuestion { interaction_id: card.id.clone(), option_id: SEND_AGAIN.into(),
-        inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text("Write the release notes".into()))]), attachments: vec![] };
-    slice.domain.execute_with(&user(), &envelope(&state, "client-send-again", again), None, None, || Ok(())).unwrap();
-    driver.step(&|| false).unwrap();
-    slice.settle(&mut driver);
-    let prompts = slice.prompts();
-    assert_eq!(prompts, ["failed-delivery", "failed-delivery\n\nWrite the release notes"]);
-    assert_eq!(Slice::read_cards(&slice.domain).len(), 1, "its turn ended with its own card");
-    driver.stop().unwrap();
+    until_the_owner_fails(&mut driver);
+    assert!(open_card(&slice.domain, DROPPED_PREFIX).is_none(), "nobody is asked");
+    assert_eq!(Slice::read_cards(&slice.domain), [], "no card at all");
+    assert_eq!(slice.prompts(), ["failed-delivery", "failed-delivery"], "the same words went again once");
+    assert_eq!(Slice::lifecycle(&slice.domain).pending_inputs().len(), 1, "a host that resumes the session still has it to take");
+    let _ = driver.stop();
 }
 
 // A prompt Claude completes without starting fails its turn, as Claude does with one its
-// transcript already holds. The message leaves the queue and «Discard» lets it go: the
-// orchestrator gets the case of how the task goes on and Claude gets nothing more.
+// transcript already holds: it is sent again at once and, refused again, goes to a resuming host.
 #[test]
-fn a_message_claude_completes_without_starting_it_can_be_discarded() {
+fn a_message_claude_completes_without_starting_it_goes_again_without_a_card() {
     let slice = Slice::new();
     let mut driver = slice.launch();
     slice.settle(&mut driver);
     instruct(&slice.domain, "complete-unstarted");
     driver.step(&|| false).unwrap();
-    slice.settle(&mut driver);
-    let card = open_card(&slice.domain, DROPPED_PREFIX).expect("the dropped message asks the user");
-    assert!(card.card.content.as_ref().is_some_and(|content| content.body.ends_with("complete-unstarted")), "{:?}", card.card.content);
-    assert!(!driver.waits_for_host(), "the owner no longer waits for it");
-    answer(&slice.domain, &card.id, DISCARD);
-    assert!(Slice::lifecycle(&slice.domain).pending_inputs().is_empty());
-    assert_eq!(driver.pending_permits(), 0, "nothing is sent");
-    assert!(Slice::read_cards(&slice.domain).iter().any(|(card, settled)| !settled && card.starts_with(STALLED_PREFIX)), "the orchestrator settles how it goes on");
-    assert_eq!(slice.prompts().len(), 2);
-    driver.stop().unwrap();
+    until_the_owner_fails(&mut driver);
+    assert!(open_card(&slice.domain, DROPPED_PREFIX).is_none(), "nobody is asked");
+    assert_eq!(slice.prompts().len(), 3, "the message went twice: {:?}", slice.prompts());
+    assert_eq!(Slice::lifecycle(&slice.domain).pending_inputs().len(), 1);
+    let _ = driver.stop();
 }
 
 #[test]

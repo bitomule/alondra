@@ -5239,7 +5239,7 @@ impl DomainState {
                 self.task(task_id)?;
                 nonempty(input)?;
                 nonempty(text)?;
-                self.record_dropped_input(task_id, *generation, input, text, effects, lifecycles)?;
+                self.record_dropped_input(task_id, *generation, input, text, lifecycles)?;
             }
             Command::RecordHostEnded { task_id, generation, resumes, ended_work, by_alondra } => {
                 system(actor)?;

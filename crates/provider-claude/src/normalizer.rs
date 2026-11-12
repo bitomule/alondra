@@ -476,6 +476,11 @@ fn fold(
                 Err(AdapterError::UnknownInput) => {}
                 Err(error) => return Err(error),
             },
+            Some("queued") => match lookup(std::slice::from_ref(&command)) {
+                Ok(mut inputs) => facts.push(Observation::InputHeld { input: inputs.remove(0) }),
+                Err(AdapterError::UnknownInput) => {}
+                Err(error) => return Err(error),
+            },
             Some("completed" | "cancelled" | "discarded" | "refused") => {
                 if let Some(index) = state.taken.iter().position(|taken| *taken == command) {
                     state.taken.remove(index);
@@ -1199,10 +1204,10 @@ mod tests {
     // and init again as the next prompt starts. Evidence of the inputs, ours or not, with no fact;
     // init again with no prompt of ours started is a turn Claude opens by itself.
     #[test]
-    fn the_native_prompt_lifecycle_records_nothing_and_an_init_no_prompt_of_ours_started_opens_claudes_own_turn() {
+    fn the_native_prompt_lifecycle_records_only_what_it_holds_and_an_init_no_prompt_of_ours_started_opens_claudes_own_turn() {
         let mut state = Checkpoint { format: CHECKPOINT_FORMAT, ..Checkpoint::default() };
         let queued = event(json!({"type":"command_lifecycle","command_uuid":FIRST,"state":"queued","uuid":REPLY}));
-        assert_eq!(fold(&queued, &session(), &mut state, input).unwrap(), vec![]);
+        assert_eq!(fold(&queued, &session(), &mut state, input).unwrap(), vec![Observation::InputHeld { input: InputId::new(FIRST).unwrap() }], "queued is Claude holding the input");
         let foreign = |_: &[MessageUuid]| -> Result<Vec<InputId>, AdapterError> { panic!("a lifecycle needs no input of ours") };
         let native = event(json!({"type":"command_lifecycle","command_uuid":"cli-own-command","state":"completed","uuid":REPLY}));
         assert_eq!(fold(&native, &session(), &mut state, foreign).unwrap(), vec![], "Claude's own command is evidence");
@@ -2145,8 +2150,9 @@ mod tests {
     fn an_input_claude_finishes_or_cancels_without_taking_it_in_is_dropped() {
         let lifecycle = |command: &str, state: &str| event(json!({"type":"command_lifecycle","command_uuid":command,"state":state,"uuid":REPLY}));
         let dropped = |id: &str| vec![Observation::InputDropped { input: InputId::new(id).unwrap() }];
+        let held = |id: &str| vec![Observation::InputHeld { input: InputId::new(id).unwrap() }];
         let mut state = state();
-        assert_eq!(fold(&lifecycle(FIRST, "queued"), &session(), &mut state, input).unwrap(), vec![]);
+        assert_eq!(fold(&lifecycle(FIRST, "queued"), &session(), &mut state, input).unwrap(), held(FIRST));
         assert_eq!(fold(&lifecycle(FIRST, "completed"), &session(), &mut state, input).unwrap(), dropped(FIRST));
         assert_eq!(fold(&lifecycle(SECOND, "cancelled"), &session(), &mut state, input).unwrap(), dropped(SECOND));
 
@@ -2170,7 +2176,7 @@ mod tests {
         let dropped = |id: &str| vec![Observation::InputDropped { input: InputId::new(id).unwrap() }];
         let mut state = state();
         assert_eq!(fold(&lifecycle(FIRST, "refused"), &session(), &mut state, input).unwrap(), dropped(FIRST));
-        assert_eq!(fold(&lifecycle(SECOND, "queued"), &session(), &mut state, input).unwrap(), vec![]);
+        assert_eq!(fold(&lifecycle(SECOND, "queued"), &session(), &mut state, input).unwrap(), vec![Observation::InputHeld { input: InputId::new(SECOND).unwrap() }]);
         assert_eq!(fold(&lifecycle(SECOND, "discarded"), &session(), &mut state, input).unwrap(), dropped(SECOND));
         assert_eq!(fold(&lifecycle(THIRD, "started"), &session(), &mut state, input).unwrap(), vec![]);
         assert_eq!(fold(&lifecycle(THIRD, "discarded"), &session(), &mut state, input).unwrap(), vec![], "what it started is no drop");
