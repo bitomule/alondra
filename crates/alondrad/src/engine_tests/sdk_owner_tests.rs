@@ -22,7 +22,7 @@ fn a_reported_wait_reaches_every_client_task_screen_without_changing_slots_or_th
         let path = slice.backend.state_root.join(lifecycle.execution().unwrap().instance().as_str()).join("wait.json");
         std::fs::write(&path, br#"{"what":"the server","progress":"2 of 3","detail":"Acknowledgement","since_ms":1794324000000}"#).unwrap();
         let before = slice.domain.read();
-        let slots = before.state().slots();
+        let slots = before.index().slots().clone();
         let client = crate::client_routes::Client::open(Arc::clone(&slice.domain), &slice._home, Default::default());
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let read = slice.domain.read();
@@ -42,7 +42,7 @@ fn a_reported_wait_reaches_every_client_task_screen_without_changing_slots_or_th
                 assert!(!list.contains("the server") && !list.contains("Acknowledgement"), "{list}");
             }
         }
-        assert_eq!(slice.domain.read().state().slots(), slots);
+        assert_eq!(*slice.domain.read().index().slots(), slots);
         driver.stop().unwrap();
     }
 }

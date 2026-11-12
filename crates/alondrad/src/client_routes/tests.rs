@@ -456,7 +456,7 @@ async fn closing_an_interactive_session_only_closes_it() {
     assert_eq!(answer["interactive"], true);
     assert!(answer["output"].as_str().unwrap().contains("interactive session"));
     assert!(sessions.calls.lock().unwrap().iter().all(|call| call[0] == "agents"), "claude rm is never run for a terminal session");
-    assert!(!fixture.domain.state().unwrap().slots().iter().any(|agent| agent.id.0 == "agent-b"));
+    assert!(!fixture.domain.read().index().holds_slot(&"agent-b".into()));
 }
 
 #[tokio::test(flavor = "multi_thread")]

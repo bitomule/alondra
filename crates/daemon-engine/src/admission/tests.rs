@@ -1215,7 +1215,7 @@ fn swap_does_not_spend_the_build_reserve_and_its_log_names_the_whole_budget() {
         swap_sample_with_total(&domain, 12 * GB - step * 100_000_000, 20 * GB + step * 100_000_000,
             21 * GB + step * 100_000_000, 20_000 + step as Millis * SAMPLE);
     }
-    let working = working_projects(&domain.state().unwrap());
+    let working = working_projects(&domain, &domain.state().unwrap());
     assert_eq!(watch.disk_reserved(&working), 4 * GB, "the 3 GB lost to swap did not pay for a build");
     assert_eq!(watch.disk_used(&TaskId::from("build")), 0);
     let line = watch.disk_detail(&working, Some("next"), 20_000 + 5 * MIN).unwrap();
@@ -1488,7 +1488,7 @@ fn eighteen_paused_and_forty_four_waiting_with_14_5_gb_free_all_get_to_work() {
         let now = base + step as Millis * SAMPLE;
         disk_sample(&domain, FREE, now);
         let state = domain.state().unwrap();
-        let working = working_projects(&state);
+        let working = working_projects(&domain, &state);
         assert!(working.len() <= 8, "step {step}: {} working", working.len());
         assert!(watch.disk_reserved(&working) <= working.len() as u64 * GB,
             "step {step}: the reserve covers only the {} at work", working.len());
@@ -1572,5 +1572,5 @@ fn the_gate_names_as_many_tasks_as_it_counts() {
     let working: Vec<TaskId> = snapshot.working_tasks.iter().cloned().collect();
     let line = hold_line(1, "t4", TaskPriority::Normal, &Hold::Slots { working: snapshot.working, limit: 3 }, &working, &[], 0).unwrap();
     assert!(line.contains("3 of 3 working (t1, t2, t3)") && !line.contains("starting"), "{line}");
-    assert_eq!(super::working_tasks(&state).len(), state.slots().len());
+    assert_eq!(super::working_tasks(&domain, &state).len(), domain.read().index().slots().len());
 }

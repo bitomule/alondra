@@ -117,6 +117,7 @@ pub struct ReadIndex {
     waiting_at: HashMap<InteractionId, usize>,
     counts: InboxCounts,
     activity: ActivityCounts,
+    slots: BTreeSet<AgentId>,
     mcp_waiting: Vec<McpWaiting>,
     mcp_nodes: Vec<McpNodeReading>,
     accounts: Vec<crate::accounts::AccountStatus>,
@@ -244,13 +245,13 @@ impl ReadIndex {
     pub fn activity(&self) -> ActivityCounts {
         self.activity
     }
-    /// The node wrote a card that waits for the user to answer, act or review, not only to read.
-    fn waits_for_an_answer(&self, node: &AgentId) -> bool {
-        self.nodes.get(node).is_some_and(|node| {
-            node.waiting.iter().filter_map(|id| self.waiting_card(id).or_else(|| {
-                self.snoozed_at.get(id).map(|at| &self.snoozed[*at].card)
-            })).any(|item| item.kind != "information")
-        })
+    /// The nodes that take a slot: the one count the gate, Tasks and the header share, read from
+    /// the same situation every screen shows.
+    pub fn slots(&self) -> &BTreeSet<AgentId> {
+        &self.slots
+    }
+    pub fn holds_slot(&self, node: &AgentId) -> bool {
+        self.slots.contains(node)
     }
     /// Where a card stands in the queue Waiting for You is drawn from, if it is in it.
     pub fn queue_position(&self, card: &InteractionId) -> Option<usize> {
@@ -440,6 +441,19 @@ impl ReadSnapshot {
     }
 }
 
+impl TaskReading {
+    /// The task belongs in «For you»: a card of it the inbox lists asks the user, or its delivery
+    /// is in front of them for review and nothing it asked the orchestrator holds it.
+    pub fn for_you(&self) -> bool {
+        match self.situation {
+            Situation::NeedsYou => true,
+            Situation::Delivered(crate::domain::Delivery::ForReview) =>
+                self.waits_for_review && !matches!(self.attention, Attention::Wait(super::attention::WaitReason::Answer { .. })),
+            _ => false,
+        }
+    }
+}
+
 impl Holds for Builder<'_> {
     fn first_blocker(&self, task: &TaskId) -> Option<TaskId> {
         self.open_blockers.get(task).and_then(|b| b.first()).cloned()
@@ -540,6 +554,7 @@ impl<'a> Builder<'a> {
                 .is_some_and(|members| members.iter().any(shown))
             || state.interactions.get(card).is_some_and(|i| state.grouped_away(i) || state.mcp_grouped_away(i));
         let mut readings = Vec::with_capacity(state.tasks.len());
+        let mut slots = BTreeSet::new();
         for t in state.tasks.values() {
             let waiting = waiting_of_task.remove(&t.id).unwrap_or_default();
             let waits_for_user = waiting.iter().any(|item| item.kind != "information");
@@ -566,13 +581,19 @@ impl<'a> Builder<'a> {
                 situation,
                 unlisted,
             };
+            if let Some(agent) = t.agent_id.as_ref().filter(|agent| Some(*agent) != state.orchestrator_session.as_ref()) {
+                if !t.state.terminal() && admitted_through_sdk(state, &t.id, agent) && state.takes_slot(t, situation) {
+                    slots.insert(agent.clone());
+                }
+            }
             readings.push((t.id.clone(), facts));
         }
         index.tasks.extend(readings);
+        index.slots = slots;
         self.nodes(&mut index, waiting_of_node);
         index.activity = ActivityCounts {
             inbox: index.cards.len() as u32,
-            waiting: state.agents.values().filter(|agent| index.waits_for_an_answer(&agent.id)).count() as u32,
+            waiting: index.tasks.values().filter(|reading| reading.for_you()).count() as u32,
             working: index.tasks.values().filter(|reading| matches!(reading.situation, Situation::Working(_))).count() as u32,
         };
         index.cards_before = self.cards_before.into_iter().map(|(delivery, cards)| (delivery.clone(), cards)).collect();
@@ -918,10 +939,8 @@ pub(super) fn assert_index_matches(state: &DomainState) {
         let InboxSubject::Interaction { interaction_id, .. } = &item.subject;
         state.card_waits_for_user(&state.interactions[interaction_id], |task| state.attention(task))
     }).cloned().collect();
-    let waiting_nodes = state.agents.values()
-        .filter(|agent| logical_waiting.iter().any(|item| item.kind != "information" && item.agent_id.as_ref() == Some(&agent.id)))
-        .count() as u32;
-    let activity = ActivityCounts { inbox: cards.len() as u32, waiting: waiting_nodes, working: state.tasks.values().filter(|task| index.task(&task.id).is_some_and(|reading| matches!(reading.situation, Situation::Working(_)))).count() as u32 };
+    let for_you = state.tasks.values().filter(|task| index.task(&task.id).is_some_and(TaskReading::for_you)).count() as u32;
+    let activity = ActivityCounts { inbox: cards.len() as u32, waiting: for_you, working: state.tasks.values().filter(|task| index.task(&task.id).is_some_and(|reading| matches!(reading.situation, Situation::Working(_)))).count() as u32 };
     assert_eq!(index.activity(), activity, "the activity counts");
     assert_eq!(index.mcp_waiting(), state.mcp_waiting().as_slice(), "the tasks that wait for an MCP server");
     let reported: Vec<(TaskId, Vec<McpServerState>)> = state.tasks.values().filter(|task| !task.over())

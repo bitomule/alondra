@@ -161,7 +161,7 @@ fn agree(s: &DomainState) -> Result<(), String> {
     if task.agent_id.as_ref() == Some(&agent) && !task.over() && node != live {
         return Err(format!("the orchestrator's node reads {node:?}, the task says {live:?}"));
     }
-    let slot = s.slots().iter().any(|a| a.id == agent);
+    let slot = s.slots().contains(&agent);
     if slot != (task.agent_id.as_ref() == Some(&agent) && !task.state.terminal() && s.task_holds_slot(&task.id)) {
         return Err(format!("the gate counts a slot ({slot}) its task does not ({live:?})"));
     }
@@ -239,12 +239,12 @@ fn a_pause_of_a_node_of_the_agent_sdk_lives_in_its_task_s_lifecycle() {
     let mut s = three_tasks();
     let agent = AgentId::from(NODE);
     assert_eq!(s.node_phase(&agent), Some(&NodePhase::ThroughSdk));
-    assert!(s.slots().iter().any(|a| a.id == agent), "its turn takes a slot");
+    assert!(s.slots().contains(&agent), "its turn takes a slot");
     must(&mut s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Paused { pause: pause(true, 5) }});
     assert_eq!(s.node_phase(&agent), Some(&NodePhase::ThroughSdk), "no event moves its phase");
     assert_eq!(s.node_pause(&agent).map(|pause| (pause.reason, pause.since)), Some((PauseReason::ByUser, 5)));
     assert!(matches!(s.live_state(&SDK.into()), Some(LiveState::WaitingUser(cards)) if cards.first().0.starts_with(NODE_PAUSE_PREFIX)));
-    assert!(!s.slots().iter().any(|a| a.id == agent), "a paused node takes no slot");
+    assert!(!s.slots().contains(&agent), "a paused node takes no slot");
     run(&mut s, &Step::TurnEnded, 0).unwrap();
     assert!(matches!(s.live_state(&SDK.into()), Some(LiveState::WaitingUser(cards)) if cards.iter().all(|card| card.0.starts_with(NODE_PAUSE_PREFIX))),
         "its interrupted turn ends on the pause, with no card that asks how it goes on");

@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:d",
   "client": "mac",
-  "version": "vd6792b436b1c9290",
+  "version": "ve544ea1c1c3b8c27",
   "cursor": "cursor-1",
   "title": "Review the result",
   "status": {
-    "version": "v63843208edea3b28",
+    "version": "v55e3a60b72097c50",
     "summary": "1 to read · 0 nodes working",
     "badge": 1,
     "counts": [
@@ -35,7 +35,7 @@
       {
         "id": "waiting",
         "label": "waiting",
-        "value": 1
+        "value": 0
       }
     ],
     "gauges": [],

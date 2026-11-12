@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:mcp-sign-in-t-18",
   "client": "ios",
-  "version": "v8a243cc2831a80ea",
+  "version": "v0b2a0119c689a9ee",
   "cursor": "cursor-1",
   "title": "Sign in to linear: 2 tasks wait for it",
   "status": {
-    "version": "v6dd91deae398bcb5",
+    "version": "vd657412a9bf7fd00",
     "summary": "1 question · 1 node working",
     "badge": 1,
     "counts": [
@@ -35,7 +35,7 @@
       {
         "id": "waiting",
         "label": "waiting",
-        "value": 0
+        "value": 2
       }
     ],
     "gauges": [],

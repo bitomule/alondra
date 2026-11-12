@@ -4,11 +4,11 @@
   "view": "tasks",
   "key": "tasks",
   "client": "mac",
-  "version": "v1455e712d5dd089d",
+  "version": "vc147a51efc9d0cbb",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
-    "version": "v887807058841bf6a",
+    "version": "vc0ee4c0d55d59c2a",
     "summary": "1 to read · 1 node working",
     "badge": 1,
     "counts": [
@@ -35,7 +35,7 @@
       {
         "id": "waiting",
         "label": "waiting",
-        "value": 1
+        "value": 0
       }
     ],
     "gauges": [],

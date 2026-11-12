@@ -1167,7 +1167,9 @@ impl Machine {
                     review_id: review.clone(), task_id: task.clone(), outcome: PlanReviewOutcome::Unchanged { reason: note.clone() },
                 });
             }
-            _ => {}
+            Step::TellPlanReview { .. } => {}
+            Step::Close { .. } | Step::Raise { .. } | Step::RaiseDependencyCancelled { .. } | Step::CancelRefusedPlan { .. } =>
+                panic!("a step past its deadline ends in a card for the user or outside what the orchestrator owes: {step:?}"),
         }
     }
 }

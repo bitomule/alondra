@@ -937,7 +937,7 @@ pub fn pace(domain: &DomainRuntime, machine: &Machine) {
         Err(error) => watch.nodes_unavailable(&error),
     }
     let mac = watch.mac();
-    let working = domain.state().map(|state| crate::admission::working_projects(&state)).unwrap_or_default();
+    let working = domain.state().map(|state| crate::admission::working_projects(domain, &state)).unwrap_or_default();
     let usable = disk_space(machine).usable();
     let measured_disk = valid_disk(disk_space(machine));
     let freed = measured_disk && watch.measure_peaks(usable, &working, now);

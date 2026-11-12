@@ -412,8 +412,7 @@ fn delivered(task: &Task, delivery: Delivery, context: &RenderContext<'_>) -> Pr
                 Some(fact) => tf!(lang, "For review · {fact}", "Para revisar · {fact}"),
                 None => t!(lang, "For review", "Para revisar").into(),
             };
-            let asks_the_orchestrator = matches!(context.attention(task), Attention::Wait(WaitReason::Answer { .. }));
-            let block = if context.waits_for_review(&task.id) && !asks_the_orchestrator { Block::ForYou } else { Block::InProgress };
+            let block = if context.reading(&task.id).is_some_and(|read| read.for_you()) { Block::ForYou } else { Block::InProgress };
             Presentation { fact_in_state: true, ..Presentation::new(StateFact::Delivered(fact), Tone::Info, block, lang) }
         }
         Delivery::Blocked => Presentation { fact_in_state: true,

@@ -2285,8 +2285,7 @@ impl DomainState {
     /// The execution a deferred move ends leaves the task: a delivery the user reviews rests with
     /// the user until it is sent back, and anything else waits for its next execution.
     pub(super) fn leave_for_the_move(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
-        let lifecycle = self.lifecycle(lifecycles, task)?;
-        if lifecycle.advanced(lifecycle.revision(), alondra_domain::Event::ExecutionLeftForReview).is_ok() {
+        if self.lifecycle(lifecycles, task)?.in_review() {
             return self.decide(lifecycles, task, LifecycleRecord::ExecutionLeftForReview);
         }
         self.release(task, lifecycles)
