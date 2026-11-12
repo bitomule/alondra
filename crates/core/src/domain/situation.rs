@@ -122,6 +122,9 @@ impl DomainState {
         }
         if lifecycle.phase() == TaskPhase::Delivered {
             match obligation.owed {
+                Owed::User if self.task_handed_back(&task.id).is_some() && matches!(lifecycle.awaits(), Some(Await::Orchestrator(_))) => {
+                    return Situation::Waiting(WaitsFor::Step(AlondraStep::Answering)).into();
+                }
                 Owed::User if self.task_handed_back(&task.id).is_some() => return Situation::Waiting(WaitsFor::Step(AlondraStep::Delivering)).into(),
                 Owed::User => return Situation::Delivered(Delivery::ForReview).into(),
                 Owed::Tasks => return Situation::Delivered(Delivery::Blocked).into(),

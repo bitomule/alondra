@@ -255,3 +255,28 @@ fn a_delivery_sent_back_with_its_host_gone_waits_for_alondra_not_the_user() {
     assert_eq!(read.situation, Situation::Waiting(WaitsFor::Step(AlondraStep::Delivering)));
     assert_eq!(read.unlisted, None);
 }
+
+/// A delivery the user sent back with changes, whose node took the changes and then asked the
+/// orchestrator something it must have answered before it goes on, is not «delivering»: the node
+/// holds the changes and waits for that answer.
+#[test]
+fn a_node_that_took_the_changes_and_asks_the_orchestrator_is_not_delivering() {
+    use super::lifecycle_cache_tests::{run, Step};
+    let mut s = three_tasks();
+    let task = TaskId::from(SDK);
+    let asked = |s: &mut DomainState| exec(s, node(NODE), Command::AskQuestion {
+        attachments: vec![], interaction_id: "to-orchestrator".into(), scope: Scope::Task { task_id: SDK.into() },
+        recipient: Recipient::Orchestrator, body: "Split the follow-up?".into(), blocking: true,
+        options: vec![QuestionOption { id: "split".into(), label: "Split it".into(), description: None },
+            QuestionOption { id: "keep".into(), label: "Keep one task".into(), description: None }],
+        card: CardSpec::derived(CardKind::Decide, "Decide whether to split the follow-up"),
+    }).unwrap();
+    run(&mut s, &Step::Deliver(2), 0).unwrap();
+    apply(&mut s, &Move::Sdk(Act::SendBack), 1);
+    run(&mut s, &Step::TakeInput, 2).unwrap();
+    asked(&mut s);
+    run(&mut s, &Step::TurnEnded, 3).unwrap();
+    let index = ReadIndex::build(&s);
+    assert_eq!(s.task_handed_back(&task), Some(Instruction::Changes));
+    assert_eq!(situation(&index, &task), Situation::Waiting(WaitsFor::Step(AlondraStep::Answering)), "the node already took the changes and waits for the orchestrator");
+}
