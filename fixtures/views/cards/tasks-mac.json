@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "mac",
-  "version": "ve627324cea9a73ea",
+  "version": "vac4a774ce816c088",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -164,7 +164,7 @@
               },
               "icon": "mission",
               "title": "Count the retracted pushes",
-              "subtitle": "Turn running · Badge accuracy",
+              "subtitle": "Turn running since 09:00 · Badge accuracy",
               "badges": [
                 {
                   "text": "Working",
@@ -207,31 +207,6 @@
               ]
             },
             {
-              "id": "t-legacy-editor",
-              "link": {
-                "kind": "view",
-                "key": "task:t-legacy-editor"
-              },
-              "icon": "pull_request",
-              "title": "Review the schedule editor",
-              "subtitle": "For review",
-              "badges": [
-                {
-                  "text": "Delivered",
-                  "tone": "info"
-                },
-                {
-                  "text": "running since 17:15",
-                  "tone": "neutral",
-                  "elapsed": {
-                    "since": "2026-09-29T17:15:00.000Z"
-                  }
-                }
-              ],
-              "depth": 1,
-              "struck": false
-            },
-            {
               "id": "t-scheduled-lumo",
               "link": {
                 "kind": "view",
@@ -239,7 +214,7 @@
               },
               "icon": "mission",
               "title": "Lumo · weekly improvement",
-              "subtitle": "Turn running",
+              "subtitle": "Turn running since 09:00",
               "badges": [
                 {
                   "text": "Working",
@@ -284,6 +259,31 @@
                   "resolves_card": false
                 }
               ]
+            },
+            {
+              "id": "t-legacy-editor",
+              "link": {
+                "kind": "view",
+                "key": "task:t-legacy-editor"
+              },
+              "icon": "pull_request",
+              "title": "Review the schedule editor",
+              "subtitle": "For review",
+              "badges": [
+                {
+                  "text": "Delivered",
+                  "tone": "info"
+                },
+                {
+                  "text": "running since 17:15",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-29T17:15:00.000Z"
+                  }
+                }
+              ],
+              "depth": 1,
+              "struck": false
             }
           ]
         },

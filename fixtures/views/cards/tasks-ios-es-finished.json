@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks?section=finished&after=0",
   "client": "ios",
-  "version": "v9fb10bedb476b7e2",
+  "version": "v6b7eceb53703152d",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -206,7 +206,7 @@
                 {
                   "id": "activity",
                   "icon": "notice",
-                  "title": "Turno en marcha · Badge accuracy",
+                  "title": "Turno en marcha desde las 09:00 · Badge accuracy",
                   "depth": 0,
                   "struck": false
                 }
@@ -214,6 +214,73 @@
               "actions": [
                 {
                   "id": "pause:a-badge@6",
+                  "label": "Pausar",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "confirm": {
+                    "title": "¿Pausar este nodo?",
+                    "message": "Deja lo que está ejecutando ahora y conserva su tarea. Alondra no lo reanuda solo: solo tú.",
+                    "button": "Pausar"
+                  },
+                  "enabled": true,
+                  "stamp": "En pausa",
+                  "resolves_card": false
+                }
+              ]
+            },
+            {
+              "id": "t-scheduled-lumo",
+              "link": {
+                "kind": "view",
+                "key": "task:t-scheduled-lumo"
+              },
+              "icon": "mission",
+              "title": "Lumo · weekly improvement",
+              "subtitle": "Trabajando",
+              "badges": [
+                {
+                  "text": "Trabajando",
+                  "tone": "accent"
+                },
+                {
+                  "text": "Programada",
+                  "tone": "neutral"
+                },
+                {
+                  "text": "Lumo",
+                  "tone": "neutral"
+                },
+                {
+                  "text": "en marcha desde las 09:48",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:48:00.000Z"
+                  }
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "Turno en marcha desde las 09:00",
+                  "depth": 0,
+                  "struck": false
+                }
+              ],
+              "actions": [
+                {
+                  "id": "pause:a-lumo@6",
                   "label": "Pausar",
                   "style": "secondary",
                   "role": "neutral",
@@ -268,73 +335,6 @@
                   "title": "Para revisar",
                   "depth": 0,
                   "struck": false
-                }
-              ]
-            },
-            {
-              "id": "t-scheduled-lumo",
-              "link": {
-                "kind": "view",
-                "key": "task:t-scheduled-lumo"
-              },
-              "icon": "mission",
-              "title": "Lumo · weekly improvement",
-              "subtitle": "Trabajando",
-              "badges": [
-                {
-                  "text": "Trabajando",
-                  "tone": "accent"
-                },
-                {
-                  "text": "Programada",
-                  "tone": "neutral"
-                },
-                {
-                  "text": "Lumo",
-                  "tone": "neutral"
-                },
-                {
-                  "text": "en marcha desde las 09:48",
-                  "tone": "neutral",
-                  "elapsed": {
-                    "since": "2026-09-30T09:48:00.000Z"
-                  }
-                }
-              ],
-              "trailing": {
-                "kind": "count",
-                "value": 0
-              },
-              "depth": 1,
-              "struck": false,
-              "children": [
-                {
-                  "id": "activity",
-                  "icon": "notice",
-                  "title": "Turno en marcha",
-                  "depth": 0,
-                  "struck": false
-                }
-              ],
-              "actions": [
-                {
-                  "id": "pause:a-lumo@6",
-                  "label": "Pausar",
-                  "style": "secondary",
-                  "role": "neutral",
-                  "presentation": "button",
-                  "input": {
-                    "kind": "none"
-                  },
-                  "attachments": false,
-                  "confirm": {
-                    "title": "¿Pausar este nodo?",
-                    "message": "Deja lo que está ejecutando ahora y conserva su tarea. Alondra no lo reanuda solo: solo tú.",
-                    "button": "Pausar"
-                  },
-                  "enabled": true,
-                  "stamp": "En pausa",
-                  "resolves_card": false
                 }
               ]
             }

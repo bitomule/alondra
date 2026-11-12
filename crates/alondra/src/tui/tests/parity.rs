@@ -368,18 +368,6 @@ fn failed_views_feed_marks_cached_tasks_as_outdated_until_recovery() {
 }
 
 #[test]
-fn the_task_list_counts_running_time_instead_of_the_text_older_clients_read() {
-    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
-    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
-    let mut app = App::new(tx);
-    app.screen = Screen::Tasks;
-    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("tasks-tui.json")).unwrap())));
-    let drawn = screen(&mut app, 200, 40);
-    assert!(!drawn.contains("running since"), "{drawn}");
-    assert!(drawn.lines().any(|line| line.contains("Count the retracted pushes") && line.contains(" d ")), "{drawn}");
-}
-
-#[test]
 fn tasks_search_shows_pending_and_uses_the_typed_query() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);

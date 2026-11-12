@@ -1,0 +1,194 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "tasks",
+  "key": "tasks",
+  "client": "tui",
+  "version": "v81ab1907a8720149",
+  "cursor": "cursor-1",
+  "title": "Tasks",
+  "status": {
+    "version": "vd11a79a790b7196d",
+    "summary": "3 nodes working",
+    "badge": 0,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 0
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 3
+      },
+      {
+        "id": "agents",
+        "label": "In progress",
+        "value": 3
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 3
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 0
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "scheduled",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "schedules",
+          "link": {
+            "kind": "view",
+            "key": "schedules"
+          },
+          "icon": "schedule",
+          "title": "Scheduled Tasks",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "active",
+      "title": "Active",
+      "count": 3,
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "block:in-progress",
+          "icon": "task",
+          "title": "In progress",
+          "trailing": {
+            "kind": "text",
+            "text": "3"
+          },
+          "depth": 0,
+          "struck": false,
+          "children": [
+            {
+              "id": "t-background",
+              "link": {
+                "kind": "view",
+                "key": "task:t-background"
+              },
+              "icon": "mission",
+              "title": "Build the app",
+              "subtitle": "In the background: `Check the links` and 1 more · since 09:40 · Said: “The checks passed.” 09:31",
+              "badges": [
+                {
+                  "text": "Working",
+                  "tone": "accent"
+                }
+              ],
+              "depth": 1,
+              "struck": false
+            },
+            {
+              "id": "t-command",
+              "link": {
+                "kind": "view",
+                "key": "task:t-command"
+              },
+              "icon": "mission",
+              "title": "Check the release",
+              "subtitle": "Step 1 of 1 · Check the release · `bazel test //crates/...` · since 09:38 · Said: “The checks passed.” 09:31",
+              "badges": [
+                {
+                  "text": "Working",
+                  "tone": "accent"
+                }
+              ],
+              "depth": 1,
+              "struck": false,
+              "actions": [
+                {
+                  "id": "pause:a-command@0",
+                  "label": "Pause",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "confirm": {
+                    "title": "Pause this node?",
+                    "message": "It stops what it is running now and keeps its task. Alondra does not resume it by itself: only you do.",
+                    "button": "Pause"
+                  },
+                  "enabled": true,
+                  "stamp": "Paused",
+                  "key": "p",
+                  "resolves_card": false
+                }
+              ]
+            },
+            {
+              "id": "t-said",
+              "link": {
+                "kind": "view",
+                "key": "task:t-said"
+              },
+              "icon": "mission",
+              "title": "Review the parser",
+              "subtitle": "Turn running since 09:30 · Said: “The checks passed.” 09:31",
+              "badges": [
+                {
+                  "text": "Working",
+                  "tone": "accent"
+                }
+              ],
+              "depth": 1,
+              "struck": false,
+              "actions": [
+                {
+                  "id": "pause:a-said@0",
+                  "label": "Pause",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "confirm": {
+                    "title": "Pause this node?",
+                    "message": "It stops what it is running now and keeps its task. Alondra does not resume it by itself: only you do.",
+                    "button": "Pause"
+                  },
+                  "enabled": true,
+                  "stamp": "Paused",
+                  "key": "p",
+                  "resolves_card": false
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "finished",
+      "title": "Completed",
+      "count": 0,
+      "collapsed": true,
+      "items": []
+    }
+  ]
+}

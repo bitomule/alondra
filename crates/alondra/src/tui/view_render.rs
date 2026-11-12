@@ -277,9 +277,10 @@ fn row_lines_at(row: &Row, width: usize, selected: bool, nested: bool, now: i64)
         lines.push(fit(second, width));
     }
     if let Some(subtitle) = subtitle {
-        let mut line = vec![bar, Span::raw(under)];
-        line.extend(super::md::inline(subtitle, Style::new().fg(Color::Gray)));
-        lines.push(fit(line, width));
+        let lead = vec![bar, Span::raw(under)];
+        lines.extend(super::md::wrap(
+            super::md::inline(subtitle, Style::new().fg(Color::Gray)), width, lead.clone(), lead,
+        ).into_iter().map(|line| fit(line.spans, width)));
     }
     lines
 }
@@ -1447,6 +1448,34 @@ mod tests {
             .map(ToString::to_string)
             .collect();
         assert_eq!(rendered.matches("working").count(), 1, "{rendered}");
+    }
+
+    #[test]
+    fn the_task_list_counts_running_time_and_keeps_the_current_facts_time() {
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+        let view: View = serde_json::from_value(crate::tui::parity::view_fixture("tasks-tui.json")).unwrap();
+        let (row, nested) = rows(&view).into_iter().find(|(row, _)| row.id == "t-badge-count").unwrap();
+        let now = parse_utc("2026-10-02T09:20:00Z").unwrap();
+        let lines = row_lines_at(row, 200, false, nested, now);
+        let title = lines[0].to_string();
+        assert!(title.contains("Count the retracted pushes") && title.contains("Working · Demo Garden · 2 d 0 h"), "{title}");
+        assert!(!title.contains("running since"), "elapsed badges replace their legacy text");
+        assert!(lines[1].to_string().contains("Turn running since 09:00"));
+    }
+
+    #[test]
+    fn a_narrow_task_row_keeps_the_command_and_last_sentence_with_their_times() {
+        let row: Row = serde_json::from_value(serde_json::json!({
+            "id": "task", "icon": "task", "title": "Check the release", "depth": 0,
+            "subtitle": "bazel test //crates/... · since 15:38 · Said: “The checks passed.” 15:31",
+            "badges": [{"text": "Working", "tone": "info"}], "struck": false
+        })).unwrap();
+        let lines = row_lines_at(&row, 42, false, false, 0);
+        let shown = lines.iter().map(ToString::to_string).collect::<Vec<_>>().join(" ");
+        for text in ["bazel test", "15:38", "checks passed.", "15:31"] {
+            assert!(shown.contains(text), "{shown}");
+        }
+        assert!(lines.iter().all(|line| line.width() <= 42));
     }
 
     #[test]

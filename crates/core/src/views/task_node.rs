@@ -86,15 +86,15 @@ fn context_label(percent: u32, lang: super::Lang) -> super::Label {
     }
 }
 
-/// What a node does, only as facts it reports: the step of its own task list while it works; once it stopped,
-/// the first sentence it said and when. Nothing is inferred from the commands it runs, and a node at work carries
-/// no time, so its row never goes stale.
+/// A live node says what runs now, alongside its own step; a stopped node quotes its last sentence.
 pub(super) fn doing(node: &super::LiveNode, working: bool, lang: super::Lang) -> Option<(String, Option<String>)> {
+    if working {
+        let now = super::now_fact::now_fact(Some(node), &crate::domain::Doing::Turn,
+            node.state_since.as_deref().unwrap_or("—"), lang).text(lang);
+        return Some((step(node, lang).map_or_else(|| now.clone(), |step| format!("{step} · {now}")), None));
+    }
     if let Some(step) = step(node, lang) {
         return Some((step, None));
-    }
-    if working {
-        return None;
     }
     node.last_message.as_deref().and_then(said).map(|sentence| (
         tf!(lang, "Said: “{sentence}”", "Dijo: «{sentence}»"),
@@ -111,11 +111,11 @@ pub(super) fn step(node: &super::LiveNode, lang: super::Lang) -> Option<String> 
     Some(tf!(lang, "Step {number} of {total} · {subject}", "Paso {number} de {total} · {subject}"))
 }
 
-const SAID_LIMIT: usize = 80;
+const SAID_LIMIT: usize = 60;
 
 /// The first sentence of what a node said, when it is prose: not a tool, a path or code. Its Markdown
 /// headings are skipped and a list item or quote loses its mark.
-fn said(message: &str) -> Option<String> {
+pub(super) fn said(message: &str) -> Option<String> {
     let line = message.lines().map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#') && line.chars().any(char::is_alphanumeric))
         .map(item_text)

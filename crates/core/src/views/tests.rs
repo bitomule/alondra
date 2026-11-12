@@ -735,6 +735,7 @@ fn tasks_fixture() -> (DomainState, LiveSnapshot) {
     for (task, agent) in [("t-badge-count", "a-badge"), ("t-scheduled-lumo", "a-lumo")] {
         state.agents.insert(agent.into(), Agent { id: agent.into(), name: agent.into(), phase: NodePhase::Working, since: 0 });
         state.tasks.get_mut(&task.into()).unwrap().agent_id = Some(agent.into());
+        live.task_since.insert(task.into(), "2026-09-30T09:00:00Z".into());
     }
     state.tasks.get_mut(&"t-hf-share-hint".into()).unwrap().agent_id = Some("a-hf".into());
     live.nodes.push(LiveNode {
@@ -1989,10 +1990,11 @@ fn a_task_whose_node_waits_for_its_own_command_says_so_and_names_it_on_every_scr
     node_in(&mut state, NodePhase::WaitingBackground(work));
     let mut live = LiveSnapshot::default();
     live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), ..LiveNode::default() });
+    live.task_since.insert("t-1".into(), "2026-09-30T09:40:00Z".into());
     assert_eq!(task_state_text(&state, &live, Lang::Es), "Trabajando");
     assert_eq!(task_state_text(&state, &live, Lang::En), "Working");
     let (block, row) = active_row(&state, &live, Client::Mac, Lang::Es, "t-1");
-    assert_eq!((block.as_str(), row.subtitle.as_deref()), ("block:in-progress", Some("En segundo plano: ./deploy/brew/release.sh 0.2.67")));
+    assert_eq!((block.as_str(), row.subtitle.as_deref()), ("block:in-progress", Some("En segundo plano: `./deploy/brew/release.sh 0.2.67` · desde las 09:40")));
     for (screen, text) in every_screen(&state, &live) {
         assert!(text.contains("En segundo plano"), "{screen}: {text}");
         if !screen.ends_with("sidebar") {
@@ -2411,7 +2413,7 @@ fn a_request_row_links_to_its_most_recently_changed_task() {
 }
 
 #[test]
-fn a_working_task_says_only_working_or_its_own_step_and_no_time() {
+fn a_working_task_shows_its_command_and_time_after_its_own_step() {
     let mut state = fixture();
     state.interactions.clear();
     let task = state.tasks.get_mut(&"t-1".into()).unwrap();
@@ -2420,16 +2422,16 @@ fn a_working_task_says_only_working_or_its_own_step_and_no_time() {
     live.task_since.insert("t-1".into(), "2026-09-30T06:58:00Z".into());
     live.nodes.push(LiveNode {
         agent_id: "a-1".into(), name: "Node One".into(), working: true,
-        tool: Some("Bash: f=/private/tmp/out.txt; until grep -q done $f; do sleep 5; done".into()),
+        tool: Some("Bash: bazel test //crates/...".into()),
         state_since: Some("2026-09-30T06:58:00Z".into()),
         ..LiveNode::default()
     });
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         let (block, row) = active_row(&state, &live, client, Lang::Es, "t-1");
         assert_eq!((block.as_str(), row.badges[0].text.as_str()), ("block:in-progress", "Trabajando"), "{client:?}");
-        assert!(!matches!(row.trailing, Some(Trailing::Time { .. })), "{client:?}: a task at work shows no time");
-        assert!(row.subtitle.as_deref().is_none_or(|subtitle| subtitle == "Trabajando" || subtitle == "Turno en marcha"), "{client:?}: {:?}", row.subtitle);
-        assert!(every_text(&[row]).iter().all(|text| !text.contains("grep") && !text.contains("Bash")), "{client:?}");
+        assert!(!matches!(row.trailing, Some(Trailing::Time { .. })), "{client:?}: its time is in the fact itself");
+        let fact = if client == Client::Ios { row.children[0].title.as_str() } else { row.subtitle.as_deref().unwrap() };
+        assert_eq!(fact, "`Bash: bazel test //crates/...` · desde las 06:58", "{client:?}");
     }
     live.nodes[0].steps = ["Plan", "Build", "Generate iOS screenshots", "Ship"].iter().enumerate().map(|(index, subject)| LiveStep {
         subject: (*subject).into(), active_form: None,
@@ -2437,7 +2439,7 @@ fn a_working_task_says_only_working_or_its_own_step_and_no_time() {
     }).collect();
     let ios = active_row(&state, &live, Client::Ios, Lang::Es, "t-1").1.children;
     assert_eq!(ios.iter().map(|line| (line.id.as_str(), line.title.as_str(), line.trailing.is_none())).collect::<Vec<_>>(),
-        [("activity", "Paso 3 de 4 · Generate iOS screenshots", true)], "its own plan is a fact; still no time");
+        [("activity", "Paso 3 de 4 · Generate iOS screenshots · `Bash: bazel test //crates/...` · desde las 06:58", true)], "the step comes before the command and its time");
 }
 #[test]
 fn only_the_iphone_gets_no_link_to_the_request_view() {
@@ -3708,6 +3710,7 @@ fn task_working_fixture() -> (DomainState, LiveSnapshot) {
     live.nodes[0].background.push(LiveBackground { kind: "shell".into(), label: "cargo fmt".into(), since: "2026-09-30T09:20:00Z".into(),
         state: RunState::Ended { outcome: RunOutcome::Finished, ran_secs: 3 } });
     live.task_costs.insert("t-1".into(), 120);
+    live.task_since.insert("t-1".into(), "2026-09-30T09:30:00Z".into());
     state.tasks.get_mut(&"t-1".into()).unwrap().worktrees.insert("/work/alondra/.claude/worktrees/t-1".into(),
         crate::domain::TaskWorktree { origin: crate::domain::WorktreeOrigin::Task, branch: None, discard: false, end: None });
     live.activity.insert("a-1".into(), vec![LiveActivity { agent_id: None, agent_type: None, task: None,
@@ -5380,7 +5383,7 @@ fn a_pr_sent_back_leaves_waiting_for_you_and_its_task_says_what_alondra_asked() 
         targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
     });
     let english = task(&state, Lang::En);
-    assert!(english.contains("Couldn't merge") && !english.contains("Resolving conflicts"), "{english}");
+    assert!(english.contains("Couldn't merge") && english.contains("Resolving conflicts") && english.contains("Turn running since"), "{english}");
     assert!(task(&state, Lang::Es).contains("No se pudo hacer merge"));
     let turn_queued = pacing_live(vec![LiveQueued { pausable: false, task_id: "t".into(), position: 1, of: 1, hold: LiveHold::Slots { working: 8, limit: 8 } }], vec![], None);
     for client in [Client::Tui, Client::Ios] {
@@ -5945,6 +5948,8 @@ fn nodes_fixture() -> (DomainState, LiveSnapshot) {
 /// The nodes fixture with one node waiting for its own command and one the machine paused.
 fn node_states_fixture() -> (DomainState, LiveSnapshot) {
     let (mut state, mut live) = nodes_fixture();
+    live.task_since.insert("t-zeta-worker".into(), "2026-09-30T09:35:00Z".into());
+    live.task_since.insert("t-release-runner".into(), "2026-09-30T09:40:00Z".into());
     let template = state.tasks[&"t-zeta-worker".into()].clone();
     let declared = Pause { reason: PauseReason::Declared { reason: "The build queue is full".into() }, since: 0, cut: None,
         turn_since: None, cleanup: PauseCleanup::Done, released: false };
@@ -6921,7 +6926,7 @@ fn a_node_that_stopped_says_what_it_said_and_only_in_prose() {
     assert_eq!(doing(&node("> 1. Shipped it. Then more."), Lang::En).as_deref(), Some("Said: “Shipped it.”"));
     assert_eq!(doing(&node("---\n2) Merged the fix."), Lang::En).as_deref(), Some("Said: “Merged the fix.”"));
     let working = LiveNode { tool: Some("Bash: cargo test".into()), ..node("Earlier") };
-    assert_eq!(task_node::doing(&working, true, Lang::En), None, "at work, nothing inferred from its tool");
+    assert!(task_node::doing(&working, true, Lang::En).unwrap().0.contains("`Bash: cargo test` · since"));
 }
 #[test]
 fn a_task_that_needs_you_says_its_question_never_its_own_title() {
@@ -6947,7 +6952,7 @@ fn a_task_that_needs_you_says_its_question_never_its_own_title() {
 
 
 #[test]
-fn a_working_task_between_turns_still_says_only_working() {
+fn a_working_task_shows_what_it_said_last_as_a_separate_fact() {
     let mut state = fixture();
     state.interactions.clear();
     let task = state.tasks.get_mut(&"t-1".into()).unwrap();
@@ -6959,7 +6964,9 @@ fn a_working_task_between_turns_still_says_only_working() {
     }], ..LiveSnapshot::default() };
     let (block, row) = active_row(&state, &live, Client::Ios, Lang::Es, "t-1");
     assert_eq!((block.as_str(), row.badges[0].text.as_str()), ("block:in-progress", "Trabajando"));
-    assert!(!serde_json::to_string(&row).unwrap().contains("Folding"), "what it said last is not what it does now");
+    let fact = row.children.iter().find(|line| line.id == "activity").unwrap();
+    assert!(fact.title.contains("Turno en marcha desde las") && fact.title.contains("Dijo: «Folding"));
+    assert!(fact.title.contains("06:40"));
 }
 
 /// A task Claude Code would not start in: the card is worded in the viewer's language, its button
@@ -8553,7 +8560,7 @@ fn a_task_whose_turn_ended_behind_its_own_work_says_so_and_names_what_runs() {
     let ended = RunState::Ended { outcome: RunOutcome::Finished, ran_secs: 3 };
     let item = |kind: &str, label: &str, since: &str, state| LiveBackground { kind: kind.into(), label: label.into(), since: since.into(), state };
     let run = |label: &str, since: &str, state| LiveRun { label: label.into(), since: since.into(), state, ..Default::default() };
-    let node = |background, workflows, subagents| LiveNode { background, workflows, subagents, steps: vec![], background_badge: None, ..node_on_its_task() };
+    let node = |background, workflows, subagents| LiveNode { background, workflows, subagents, tool: None, steps: vec![], background_badge: None, ..node_on_its_task() };
     let sleep = || item("shell", "sleep 5900", "2026-10-23T08:27:00Z", RunState::Running);
     let workflow = |state| run("Mide con git y PRs la velocidad", "2026-10-23T08:54:00Z", state);
     let subagent = |state| run("Explore the parser", "2026-10-23T08:55:00Z", state);
@@ -8563,7 +8570,7 @@ fn a_task_whose_turn_ended_behind_its_own_work_says_so_and_names_what_runs() {
             "Monitor: tail -f build.log", "Monitor: tail -f build.log"),
         (node(vec![], vec![workflow(RunState::Running)], vec![subagent(ended)]), "Mide con git y PRs la velocidad", "Mide con git y PRs la velocidad"),
         (node(vec![], vec![], vec![subagent(RunState::Running)]), "Explore the parser", "Explore the parser"),
-        (node(vec![sleep()], vec![workflow(RunState::Running)], vec![subagent(RunState::Running)]), "sleep 5900 and 2 more", "sleep 5900 y 2 más"),
+        (node(vec![sleep()], vec![workflow(RunState::Running)], vec![subagent(RunState::Running)]), "`sleep 5900` and 2 more", "`sleep 5900` y 2 más"),
     ];
     let stored = Background { work: crate::model::BackgroundKind::Shell, label: "sleep 5900".into(), since: 0, others: 1, gone: None };
     let mut by_bg = fixture();
@@ -8576,7 +8583,7 @@ fn a_task_whose_turn_ended_behind_its_own_work_says_so_and_names_what_runs() {
         runs.push(("claude --bg", &by_bg, None, live.clone(), Some((*en, *es))));
         runs.push(("the Agent SDK", &sdk, Some(&own_work), live, Some((*en, *es))));
     }
-    runs.push(("claude --bg with no readings", &by_bg, None, LiveSnapshot::default(), Some(("sleep 5900 and 1 more", "sleep 5900 y 1 más"))));
+    runs.push(("claude --bg with no readings", &by_bg, None, LiveSnapshot::default(), Some(("`sleep 5900` and 1 more", "`sleep 5900` y 1 más"))));
     runs.push(("the Agent SDK with no readings", &sdk, Some(&own_work), LiveSnapshot::default(), None));
     for (through, state, in_state, live, named) in &runs {
         for (lang, waits) in [(Lang::En, "Working"), (Lang::Es, "Trabajando")] {
@@ -9401,7 +9408,6 @@ fn a_task_that_presents_and_goes_on_in_the_same_turn_reads_working_until_the_tur
 /// The task list and the task's screen of `presented_in_a_turn`, as the iPhone and the Mac draw them.
 #[test]
 fn a_delivery_in_its_turn_and_after_it_matches_goldens() {
-    let live = LiveSnapshot::default();
     for (ended, name, client, lang, key, expected) in [
         (false, "delivered-working-tasks-ios.json", Client::Ios, Lang::En, "tasks", include_str!("../../../../fixtures/views/cards/delivered-working-tasks-ios.json")),
         (false, "delivered-working-tasks-ios-es.json", Client::Ios, Lang::Es, "tasks", include_str!("../../../../fixtures/views/cards/delivered-working-tasks-ios-es.json")),
@@ -9416,6 +9422,9 @@ fn a_delivery_in_its_turn_and_after_it_matches_goldens() {
         (true, "delivered-review-tasks-mac.json", Client::Mac, Lang::En, "tasks", include_str!("../../../../fixtures/views/cards/delivered-review-tasks-mac.json")),
         (true, "delivered-review-tasks-mac-es.json", Client::Mac, Lang::Es, "tasks", include_str!("../../../../fixtures/views/cards/delivered-review-tasks-mac-es.json")),
     ] {
+        let live = if ended { LiveSnapshot::default() } else {
+            LiveSnapshot { task_since: [("t-1".into(), "2026-09-30T09:30:00Z".into())].into(), ..Default::default() }
+        };
         assert_golden(name, &render(&presented_in_a_turn(ended), &live, client, lang, key, "2026-09-30T10:00:00Z"), expected);
     }
 }
@@ -9762,5 +9771,96 @@ fn a_task_with_no_card_in_the_inbox_never_reads_needs_you() {
                 assert!(row.badges.iter().all(|badge| badge.text != needs_you), "{task_state:?} {client:?} {lang:?}: {:?}", row.badges);
             }
         }
+    }
+}
+
+proptest::proptest! {
+    #[test]
+    fn a_working_task_always_says_what_happens_now(
+        tool in proptest::bool::ANY, background in proptest::bool::ANY,
+        message in proptest::bool::ANY, has_node in proptest::bool::ANY,
+        state_since in proptest::bool::ANY, doing in 0u8..3,
+    ) {
+        let (mut state, mut live) = task_working_fixture();
+        state.interactions.clear();
+        live.task_since.insert("t-1".into(), "2026-11-11T15:00:00+01:00".into());
+        let node = &mut live.nodes[0];
+        node.state_since = state_since.then(|| "2026-11-11T15:10:00+01:00".into());
+        node.tool = tool.then(|| "bazel test //…".into());
+        node.tool_since = Some("15:38".into());
+        node.background = if background { vec![LiveBackground { kind: "shell".into(), label: "build".into(),
+            since: "15:20".into(), state: RunState::Running }] } else { vec![] };
+        node.subagents.clear();
+        node.workflows.clear();
+        node.last_message = message.then(|| "The checks passed.".into());
+        node.last_message_at = Some("15:31".into());
+        if !has_node { live.nodes.clear(); }
+        let doing = match doing { 0 => crate::domain::Doing::Turn, 1 => crate::domain::Doing::OwnWork, _ => crate::domain::Doing::AfterMerge };
+        for client in [Client::Ios, Client::Mac, Client::Tui] {
+            for lang in [Lang::En, Lang::Es] {
+                let index = crate::domain::ReadIndex::build(&state);
+                let context = RenderContext { domain: &state, index: &index, live: &live, client, lang,
+                    transport: Transport::Loopback, cursor: "", rendered_at: "2026-11-11T16:00:00+01:00" };
+                let presentation = task_state::working(&state.tasks[&"t-1".into()], doing, &context);
+                let row = tasks::presented_row(&state.tasks[&"t-1".into()], &presentation, &context);
+                let fact = if client == Client::Ios { row.children[0].title.as_str() } else { row.subtitle.as_deref().unwrap() };
+                proptest::prop_assert!(!fact.is_empty());
+                proptest::prop_assert!(fact.contains("15:"), "{fact}");
+                if has_node && message { proptest::prop_assert!(fact.contains("The checks passed.") && fact.contains("15:31")); }
+                if !has_node || (!tool && !background) {
+                    let since = if has_node && state_since { "15:10" } else { "15:00" };
+                    proptest::prop_assert!(fact.contains(since), "{fact}");
+                }
+            }
+        }
+    }
+}
+
+fn working_rows_fixture() -> (DomainState, LiveSnapshot) {
+    let (mut state, _) = task_working_fixture();
+    state.interactions.clear();
+    state.tasks.clear();
+    state.agents.clear();
+    let mut live = LiveSnapshot::default();
+    for (id, title) in [("command", "Check the release"), ("background", "Build the app"), ("said", "Review the parser")] {
+        let task = format!("t-{id}");
+        let agent = format!("a-{id}");
+        task_in(&mut state, &task, "r-1", TaskState::Running);
+        state.tasks.get_mut(&task.clone().into()).unwrap().agent_id = Some(agent.clone().into());
+        state.tasks.get_mut(&task.clone().into()).unwrap().title = title.into();
+        let background = Background { work: crate::model::BackgroundKind::Shell, label: "make build".into(), since: 0, others: 1, gone: None };
+        state.agents.insert(agent.clone().into(), Agent { id: agent.clone().into(), name: title.into(),
+            phase: if id == "background" { NodePhase::WaitingBackground(background) } else { NodePhase::Working }, since: 0 });
+        let mut node = LiveNode { agent_id: agent, name: title.into(), working: true,
+            state_since: Some("2026-09-30T09:30:00Z".into()),
+            last_message: Some("The checks passed. I am reviewing the diff.".into()),
+            last_message_at: Some("2026-09-30T09:31:00Z".into()), ..Default::default() };
+        if id == "command" {
+            node.tool = Some("bazel test //crates/...".into());
+            node.tool_since = Some("09:38".into());
+            node.steps = vec![LiveStep { subject: "Check the release".into(), state: StepState::InProgress, active_form: None }];
+        } else if id == "background" {
+            node.background = ["make build", "Check the links"].into_iter().map(|label| LiveBackground {
+                kind: "shell".into(), label: label.into(), since: "2026-09-30T09:40:00Z".into(), state: RunState::Running,
+            }).collect();
+        }
+        live.nodes.push(node);
+        live.task_since.insert(task, "2026-09-30T09:30:00Z".into());
+    }
+    (state, live)
+}
+
+#[test]
+fn task_working_rows_match_goldens() {
+    let (state, live) = working_rows_fixture();
+    for (client, lang, filename, expected) in [
+        (Client::Ios, Lang::En, "task-working-rows-ios.json", include_str!("../../../../fixtures/views/cards/task-working-rows-ios.json")),
+        (Client::Ios, Lang::Es, "task-working-rows-ios-es.json", include_str!("../../../../fixtures/views/cards/task-working-rows-ios-es.json")),
+        (Client::Mac, Lang::En, "task-working-rows-mac.json", include_str!("../../../../fixtures/views/cards/task-working-rows-mac.json")),
+        (Client::Mac, Lang::Es, "task-working-rows-mac-es.json", include_str!("../../../../fixtures/views/cards/task-working-rows-mac-es.json")),
+        (Client::Tui, Lang::En, "task-working-rows-tui.json", include_str!("../../../../fixtures/views/cards/task-working-rows-tui.json")),
+        (Client::Tui, Lang::Es, "task-working-rows-tui-es.json", include_str!("../../../../fixtures/views/cards/task-working-rows-tui-es.json")),
+    ] {
+        assert_golden(filename, &render(&state, &live, client, lang, "tasks", "2026-09-30T10:00:00Z"), expected);
     }
 }

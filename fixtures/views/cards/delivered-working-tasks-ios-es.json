@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "ve3b72ef9ab9f423b",
+  "version": "v6e9260eb8dd470e4",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -106,7 +106,7 @@
                 {
                   "id": "activity",
                   "icon": "notice",
-                  "title": "Turno en marcha",
+                  "title": "Turno en marcha desde las 09:30",
                   "depth": 0,
                   "struck": false
                 }

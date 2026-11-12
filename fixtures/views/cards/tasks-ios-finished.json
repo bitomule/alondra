@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks?section=finished&after=0",
   "client": "ios",
-  "version": "v90cb492c56d7bb8b",
+  "version": "v3872ffcf00a31fa2",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -206,7 +206,7 @@
                 {
                   "id": "activity",
                   "icon": "notice",
-                  "title": "Turn running · Badge accuracy",
+                  "title": "Turn running since 09:00 · Badge accuracy",
                   "depth": 0,
                   "struck": false
                 }
@@ -214,6 +214,73 @@
               "actions": [
                 {
                   "id": "pause:a-badge@6",
+                  "label": "Pause",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "confirm": {
+                    "title": "Pause this node?",
+                    "message": "It stops what it is running now and keeps its task. Alondra does not resume it by itself: only you do.",
+                    "button": "Pause"
+                  },
+                  "enabled": true,
+                  "stamp": "Paused",
+                  "resolves_card": false
+                }
+              ]
+            },
+            {
+              "id": "t-scheduled-lumo",
+              "link": {
+                "kind": "view",
+                "key": "task:t-scheduled-lumo"
+              },
+              "icon": "mission",
+              "title": "Lumo · weekly improvement",
+              "subtitle": "Working",
+              "badges": [
+                {
+                  "text": "Working",
+                  "tone": "accent"
+                },
+                {
+                  "text": "Scheduled",
+                  "tone": "neutral"
+                },
+                {
+                  "text": "Lumo",
+                  "tone": "neutral"
+                },
+                {
+                  "text": "running since 09:48",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:48:00.000Z"
+                  }
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "Turn running since 09:00",
+                  "depth": 0,
+                  "struck": false
+                }
+              ],
+              "actions": [
+                {
+                  "id": "pause:a-lumo@6",
                   "label": "Pause",
                   "style": "secondary",
                   "role": "neutral",
@@ -268,73 +335,6 @@
                   "title": "For review",
                   "depth": 0,
                   "struck": false
-                }
-              ]
-            },
-            {
-              "id": "t-scheduled-lumo",
-              "link": {
-                "kind": "view",
-                "key": "task:t-scheduled-lumo"
-              },
-              "icon": "mission",
-              "title": "Lumo · weekly improvement",
-              "subtitle": "Working",
-              "badges": [
-                {
-                  "text": "Working",
-                  "tone": "accent"
-                },
-                {
-                  "text": "Scheduled",
-                  "tone": "neutral"
-                },
-                {
-                  "text": "Lumo",
-                  "tone": "neutral"
-                },
-                {
-                  "text": "running since 09:48",
-                  "tone": "neutral",
-                  "elapsed": {
-                    "since": "2026-09-30T09:48:00.000Z"
-                  }
-                }
-              ],
-              "trailing": {
-                "kind": "count",
-                "value": 0
-              },
-              "depth": 1,
-              "struck": false,
-              "children": [
-                {
-                  "id": "activity",
-                  "icon": "notice",
-                  "title": "Turn running",
-                  "depth": 0,
-                  "struck": false
-                }
-              ],
-              "actions": [
-                {
-                  "id": "pause:a-lumo@6",
-                  "label": "Pause",
-                  "style": "secondary",
-                  "role": "neutral",
-                  "presentation": "button",
-                  "input": {
-                    "kind": "none"
-                  },
-                  "attachments": false,
-                  "confirm": {
-                    "title": "Pause this node?",
-                    "message": "It stops what it is running now and keeps its task. Alondra does not resume it by itself: only you do.",
-                    "button": "Pause"
-                  },
-                  "enabled": true,
-                  "stamp": "Paused",
-                  "resolves_card": false
                 }
               ]
             }

@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "mac",
-  "version": "vc2a7d88238ddb05a",
+  "version": "v37d82c7f71e32386",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -151,7 +151,7 @@
               },
               "icon": "mission",
               "title": "Release the daemon",
-              "subtitle": "In the background: ./deploy/brew/release.sh 0.2.67",
+              "subtitle": "In the background: `./deploy/brew/release.sh 0.2.67` · since 09:40",
               "badges": [
                 {
                   "text": "Working",
@@ -173,7 +173,7 @@
               },
               "icon": "mission",
               "title": "Build the importer",
-              "subtitle": "Turn running",
+              "subtitle": "Turn running since 09:35",
               "badges": [
                 {
                   "text": "Working",

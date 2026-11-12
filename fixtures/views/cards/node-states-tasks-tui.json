@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "veef11289b217341b",
+  "version": "v10064171772f7494",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -152,7 +152,7 @@
               },
               "icon": "mission",
               "title": "Release the daemon",
-              "subtitle": "En segundo plano: ./deploy/brew/release.sh 0.2.67",
+              "subtitle": "En segundo plano: `./deploy/brew/release.sh 0.2.67` · desde las 09:40",
               "badges": [
                 {
                   "text": "Trabajando",
@@ -174,7 +174,7 @@
               },
               "icon": "mission",
               "title": "Build the importer",
-              "subtitle": "Turno en marcha",
+              "subtitle": "Turno en marcha desde las 09:35",
               "badges": [
                 {
                   "text": "Trabajando",

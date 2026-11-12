@@ -9,6 +9,7 @@ mod common;
 pub mod components;
 mod details;
 mod task_node;
+pub mod now_fact;
 mod home;
 pub mod mcp_servers;
 pub mod id;

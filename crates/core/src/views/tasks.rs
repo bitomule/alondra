@@ -47,7 +47,7 @@ pub(super) fn task_row(task: &Task, context: &RenderContext<'_>) -> super::Row {
 
 /// One task as the list draws it: its state in colour, its title, and one fact with since when it holds. The iPhone
 /// reads the fact from the row's `activity` line, the Mac beside the state, the TUI under the title.
-fn presented_row(task: &Task, presentation: &task_state::Presentation, context: &RenderContext<'_>) -> super::Row {
+pub(super) fn presented_row(task: &Task, presentation: &task_state::Presentation, context: &RenderContext<'_>) -> super::Row {
     let mut row = common::row(&task.id.0, &format!("task:{}", task.id), presentation.icon, task.title.clone(),
         Some(presentation.state.clone()));
     row.struck = task.state == TaskState::Cancelled;
