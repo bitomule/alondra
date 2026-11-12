@@ -370,40 +370,6 @@ struct FakeSessions {
     stuck: bool,
 }
 
-/// `claude rm` that drops the session's connection while it runs, as the real one does, and lets
-/// the revival loop look at the session before it answers.
-struct DroppingSessions {
-    inner: Arc<FakeSessions>,
-    domain: Arc<crate::domain_runtime::DomainRuntime>,
-    session: String,
-    connection: u64,
-    /// Whether the revival could take the session each time it looked at it while it was removed.
-    free_to_revive: std::sync::Mutex<Vec<bool>>,
-}
-
-const REVIVAL: crate::node_revival::Timing = crate::node_revival::Timing { grace: std::time::Duration::from_millis(10) };
-
-impl Sessions for DroppingSessions {
-    fn claude<'a>(&'a self, args: Vec<String>) -> close::Answer<'a, Result<crate::node_close::Ran, String>> {
-        Box::pin(async move {
-            if args[0] == "rm" {
-                self.domain.live.mods.disconnect(&self.session, self.connection);
-                let free = self.domain.live.begin_watch(&self.session);
-                if free {
-                    self.domain.live.end_watch(&self.session);
-                }
-                self.free_to_revive.lock().unwrap().push(free);
-                crate::node_revival::revive(&self.domain, &self.session, &REVIVAL).await;
-            }
-            self.inner.claude(args).await
-        })
-    }
-
-    fn leftovers<'a>(&'a self, session_id: &'a str) -> close::Answer<'a, Option<String>> {
-        self.inner.leftovers(session_id)
-    }
-}
-
 impl FakeSessions {
     fn listing(ids: &[&str]) -> Arc<Self> {
         Arc::new(Self { listed: std::sync::Mutex::new(ids.iter().map(|id| id.to_string()).collect()), leftovers: None,
@@ -438,7 +404,6 @@ async fn closing_a_background_session_runs_claude_rm_and_closes_it() {
     seed_work(&fixture);
     observe_sessions(&fixture);
     fixture.domain.live.observe(&hook("agent-a", "Stop", json!({})));
-    fixture.command(Actor::System, "connect-a", Command::MoveNode { agent_id: "agent-a".into(), event: alondra_core::domain::NodeEvent::TurnStarted, at: 0 });
     let short = fixture.domain.live.node("agent-a").unwrap().short_id;
     let sessions = FakeSessions::listing(&[&short]);
     fixture.client.use_sessions(sessions.clone());
@@ -452,7 +417,7 @@ async fn closing_a_background_session_runs_claude_rm_and_closes_it() {
     assert_eq!(answer["interactive"], false);
     let calls = sessions.calls.lock().unwrap().clone();
     assert!(calls.iter().any(|call| call == &["rm".to_string(), short.clone()]), "{calls:?}");
-    assert!(!fixture.domain.state().unwrap().agents[&"agent-a".into()].phase.holds_slot(), "the domain sees the session gone");
+    assert_eq!(fixture.domain.state().unwrap().agents[&"agent-a".into()].phase, alondra_core::domain::NodePhase::Closed, "the domain sees the session gone");
     assert!(fixture.domain.resolve_bearer(&bearer).is_err(), "its capability is revoked");
     let runtime = fixture.runtime_json().await;
     assert!(runtime["nodes"].as_array().unwrap().iter().all(|node| node["session_id"] != "agent-a"), "what was observed of it is forgotten");
@@ -465,7 +430,6 @@ async fn a_node_the_user_closed_leaves_the_tasks_in_progress_stays_gone_after_a_
     seed_work(&fixture);
     observe_sessions(&fixture);
     fixture.domain.live.observe(&hook("agent-a", "Stop", json!({})));
-    fixture.command(Actor::System, "connect-a", Command::MoveNode { agent_id: "agent-a".into(), event: alondra_core::domain::NodeEvent::TurnStarted, at: 0 });
     let short = fixture.domain.live.node("agent-a").unwrap().short_id;
     fixture.client.use_sessions(FakeSessions::listing(&[&short]));
     assert!(in_progress(&fixture, "task-1").await, "its task is in progress before it is closed");
@@ -481,33 +445,10 @@ async fn a_node_the_user_closed_leaves_the_tasks_in_progress_stays_gone_after_a_
 }
 
 #[tokio::test]
-async fn a_node_closed_with_alondra_close_is_never_revived_while_or_after_it_is_removed() {
-    let fixture = Fixture::start().await;
-    seed_work(&fixture);
-    observe_sessions(&fixture);
-    fixture.domain.live.observe(&hook("agent-a", "Stop", json!({})));
-    fixture.command(Actor::System, "connect-a", Command::MoveNode { agent_id: "agent-a".into(), event: alondra_core::domain::NodeEvent::TurnStarted, at: 0 });
-    let connection = fixture.domain.connect_node(serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap(), 1);
-    let short = fixture.domain.live.node("agent-a").unwrap().short_id;
-    let sessions = Arc::new(DroppingSessions { inner: FakeSessions::listing(&[&short]), domain: fixture.domain.clone(),
-        session: "agent-a".into(), connection, free_to_revive: Default::default() });
-    fixture.client.use_sessions(sessions.clone());
-    assert!(fixture.domain.state().unwrap().tasks.values().any(|task| task.agent_id == Some("agent-a".into()) && !task.state.terminal()),
-        "the node has an open task, which is what the revival restarts for");
-
-    let (status, answer) = fixture.local_send("/agents/agent-a/close", &json!({})).await;
-    assert_eq!(status, StatusCode::OK, "{answer}");
-    assert_eq!(*sessions.free_to_revive.lock().unwrap(), [false], "the revival left the session being closed alone");
-    crate::node_revival::revive(&fixture.domain, "agent-a", &REVIVAL).await;
-    assert!(!crate::node_revival::needed(&fixture.domain, "agent-a"), "and never brings it back afterwards");
-}
-
-#[tokio::test]
 async fn closing_an_interactive_session_only_closes_it() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
     observe_sessions(&fixture);
-    fixture.command(Actor::System, "connect-b", Command::MoveNode { agent_id: "agent-b".into(), event: alondra_core::domain::NodeEvent::TurnStarted, at: 0 });
     let sessions = FakeSessions::listing(&[]);
     fixture.client.use_sessions(sessions.clone());
     let (status, answer) = fixture.local_send("/agents/agent-b/close", &json!({})).await;
@@ -515,7 +456,7 @@ async fn closing_an_interactive_session_only_closes_it() {
     assert_eq!(answer["interactive"], true);
     assert!(answer["output"].as_str().unwrap().contains("interactive session"));
     assert!(sessions.calls.lock().unwrap().iter().all(|call| call[0] == "agents"), "claude rm is never run for a terminal session");
-    assert!(!fixture.domain.state().unwrap().agents[&"agent-b".into()].phase.holds_slot());
+    assert!(!fixture.domain.state().unwrap().slots().iter().any(|agent| agent.id.0 == "agent-b"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1093,7 +1034,6 @@ async fn the_task_detail_shows_what_its_node_mod_reports() {
         && fact["value"].as_str().is_some_and(|value| value.starts_with("Bash: bazel test //crates/... · desde las "))), "{readings:?}");
 
     report(json!({"event": "turn.complete", "turn_id": "t1", "answer": "Stopped halfway through the parser", "aborted": true}));
-    crate::domain_agent_lifecycle::node_event(&fixture.domain, &AgentId::from("agent-a"), alondra_core::domain::NodeEvent::TurnEnded).unwrap();
     mods.live.mods.disconnect("agent-a", connection);
     let shown = task_shown(&fixture, "task-1", "en").await;
     assert!(!shown.iter().any(|(text, _)| text.contains("Unreachable") || text.contains("conexión")), "a closed connection is never a state: {shown:?}");
@@ -1103,49 +1043,6 @@ async fn the_task_detail_shows_what_its_node_mod_reports() {
     assert!(readings.iter().any(|fact| fact["label"] == "Last turn" && fact["value"] == "Interrupted"), "{readings:?}");
     let said = detail["sections"].as_array().unwrap().iter().find(|section| section["id"] == "last_message").unwrap();
     assert_eq!(said["items"][0]["text"], "Stopped halfway through the parser", "the answer is the mod's, not the Stop hook's");
-}
-
-#[tokio::test]
-async fn a_nodes_state_comes_from_its_mods_events_and_connection_not_from_hooks_or_job_files() {
-    let fixture = Fixture::start().await;
-    seed_work(&fixture);
-    observe_sessions(&fixture);
-    let mods = &fixture.domain;
-    let now = alondra_core::now_millis();
-    let report = |report: Value, at: i64| {
-        let mut report = report;
-        report["session_id"] = json!("agent-a");
-        mods.report(serde_json::from_value(report).unwrap(), at);
-    };
-    let state = async |fixture: &Fixture| task_shown(fixture, "task-1", "en").await[0].0.clone();
-    let hello: crate::node_reports::Hello = serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap();
-    assert!(!state(&fixture).await.starts_with("Working"), "recent hooks alone do not make a node work: only its mod says so");
-
-    let connection = mods.connect_node(hello, now);
-    report(json!({"event": "turn.start", "turn_id": "t1"}), now);
-    assert!(state(&fixture).await.starts_with("Working"));
-
-    report(json!({"event": "tool.start", "tool": "Bash", "tool_use_id": "u1", "input": {"command": "sleep 99999"}}), now - 48 * 60 * 60 * 1000);
-    assert!(state(&fixture).await.starts_with("Working"), "a call two days long is still work");
-    mods.live.mods.set_shell_alive("agent-a", Some(false), now);
-    mods.live.mods.set_shell_alive("agent-a", Some(false), now + 1);
-    assert!(state(&fixture).await.starts_with("Working"), "a lost shell brings the node back through the Agent SDK; it is never a state");
-    report(json!({"event": "tool.end", "tool_use_id": "u1"}), now);
-    assert!(state(&fixture).await.starts_with("Working"));
-
-    report(json!({"event": "turn.complete", "turn_id": "t1", "answer": "Done."}), now);
-    crate::domain_agent_lifecycle::node_event_at(&fixture.domain, &AgentId::from("agent-a"), alondra_core::domain::NodeEvent::TurnEnded, now).unwrap();
-    assert!(!state(&fixture).await.starts_with("Working"), "the turn ended, as the Stop hook says: the node is idle");
-
-    report(json!({"event": "turn.start", "turn_id": "t2"}), now);
-    mods.live.mods.disconnect("agent-a", connection);
-    assert!(state(&fixture).await.starts_with("Working"), "a node whose connection closed keeps its last factual state while the daemon brings it back");
-    crate::domain_agent_lifecycle::node_event(&fixture.domain, &AgentId::from("agent-a"), alondra_core::domain::NodeEvent::SessionLost).unwrap();
-    assert!(!in_progress(&fixture, "task-1").await, "its session is gone: its task is not in progress while it waits to be brought back");
-    assert_eq!(state(&fixture).await, "Waiting · Starts when there is room", "and its screen says it waits");
-    crate::domain_agent_lifecycle::node_event(&fixture.domain, &AgentId::from("agent-a"), alondra_core::domain::NodeEvent::RevivalAdmitted).unwrap();
-    assert!(state(&fixture).await.starts_with("Waiting · Starting"), "the gate let it back: Alondra restarts it");
-    assert!(in_progress(&fixture, "task-1").await, "the task of a node being restarted is in progress");
 }
 
 /// The last minute of the Mac as `pace` samples it: macOS at critical pressure, or normal with room.
@@ -1159,49 +1056,6 @@ fn memory(fixture: &Fixture, pressure: alondra_core::MemoryPressure, at: &[i64])
     }
 }
 
-/// 13 October: quill's (1d6d53c5) session ended and its restart waited at the admission gate for
-/// memory ("waits at the admission gate to come back: Pressure(Warning)", every 30 s), while its task
-/// and its screen said «Reconectando». A lost node held by the gate waits for the machine, queued
-/// with what holds it, and is brought back only once the gate lets it.
-#[tokio::test]
-async fn a_lost_node_the_gate_holds_for_memory_waits_for_the_machine_and_comes_back_only_once_admitted() {
-    use alondra_core::{MemoryPressure, domain::NodeEvent, domain::NodePhase};
-    let fixture = Fixture::start().await;
-    seed_work(&fixture);
-    observe_sessions(&fixture);
-    fixture.agent("agent-a", "start-1", Command::StartTask { task_id: "task-1".into() });
-    let agent = AgentId::from("agent-a");
-    let hello = serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap();
-    let connection = fixture.domain.connect_node(hello, alondra_core::now_millis());
-    fixture.domain.live.mods.disconnect("agent-a", connection);
-    crate::domain_agent_lifecycle::node_event(&fixture.domain, &agent, NodeEvent::SessionLost).unwrap();
-    let now = alondra_core::now_millis();
-    memory(&fixture, MemoryPressure::Critical, &[now - 120_000, now - 90_000, now - 61_000]);
-
-    let timing = crate::node_revival::Timing { grace: Duration::from_millis(30) };
-    let revival = tokio::spawn({
-        let domain = fixture.domain.clone();
-        async move { crate::node_revival::revive(&domain, "agent-a", &timing).await }
-    });
-    let queued = || fixture.domain.live.gate.live(&fixture.domain, alondra_core::now_millis()).unwrap().queued;
-    for _ in 0..500 {
-        if !queued().is_empty() { break; }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert!(queued().iter().any(|queued| queued.task_id == "task-1"), "its restart waits at the gate");
-    let phase = || fixture.domain.state().unwrap().agents[&agent].phase.clone();
-    assert_eq!(phase(), NodePhase::Lost);
-    assert!(!revival.is_finished(), "nothing brings it back while the Mac has no room");
-    assert!(task_shown(&fixture, "task-1", "es").await[0].0.starts_with("En espera"), "its task's screen says it waits");
-    let held = view_json(&fixture, "tasks", "es").await.to_string();
-    assert!(held.contains("1.º de 1") && held.contains("Los arranques nuevos esperan: el Mac va justo de memoria") && !held.contains("Reconectando"), "{held}");
-
-    memory(&fixture, MemoryPressure::Normal, &[alondra_core::now_millis()]);
-    crate::admission::pass(&fixture.domain, &fixture.home).await.unwrap();
-    revival.await.unwrap();
-    assert!(!queued().iter().any(|queued| queued.task_id == "task-1"), "the gate let it back");
-}
-
 /// 25 October: the disk filled with the nodes' builds and the daemon restarted without space. With
 /// less room on the disk than one more build needs no node starts, and its task waits for capacity
 /// with the free space and what is needed; once the disk has room the gate lets it start.
@@ -1212,6 +1066,12 @@ async fn a_task_waits_for_room_on_the_disk_and_starts_once_the_disk_has_it() {
     let fixture = Fixture::start().await;
     memory(&fixture, alondra_core::MemoryPressure::Normal, &[alondra_core::now_millis()]);
     seed_work(&fixture);
+    alondra_daemon_engine::domain_store::admit_through_sdk(&fixture.domain, &"task-1".into(), "agent-a");
+    let input = fixture.domain.state().unwrap().lifecycle_of(&"task-1".into()).unwrap().pending_inputs()[0].as_str().to_owned();
+    fixture.command(Actor::System, "turn-1", Command::RecordRuntimeFacts { task_id: "task-1".into(), generation: 2, facts: vec![
+        alondra_core::domain::RuntimeObservation::ResourceAvailable,
+        alondra_core::domain::RuntimeObservation::TurnStarted { turn: "turn-1".into(), input },
+    ] });
     fixture.user("title-1", Command::TitleRequest { request_id: "request-1".into(), title: "Editor".into() });
     fixture.orchestrator("task-9", Command::CreateTask { plan_items: None, continues: None,
         task_id: "task-9".into(), request_id: "request-1".into(), title: "Faster search".into(),
@@ -1231,16 +1091,6 @@ async fn a_task_waits_for_room_on_the_disk_and_starts_once_the_disk_has_it() {
     assert!(matches!(ask(), Err(Hold::Disk { .. })), "past the line, not past its margin");
     watch.measure_disk(crate::disk::Space { free: 4 * GB, purgeable: 20 * GB, total: 500 * GB });
     assert_eq!(ask(), Ok(()), "purgeable space counts: the disk has room for its build, and it starts");
-}
-
-#[tokio::test]
-async fn a_node_the_daemon_never_heard_a_hook_from_shows_once_its_mod_connects() {
-    let fixture = Fixture::start().await;
-    seed_work(&fixture);
-    let hello: crate::node_reports::Hello = serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287", "working": true})).unwrap();
-    assert!(fixture.domain.live.node("agent-a").is_none());
-    fixture.domain.connect_node(hello, alondra_core::now_millis());
-    assert!(task_shown(&fixture, "task-1", "en").await[0].0.starts_with("Working"), "a restarted daemon learns the node is mid-turn from its reconnection");
 }
 
 #[tokio::test]
@@ -1267,7 +1117,6 @@ async fn the_background_badges_come_from_the_mods_subagent_shell_and_end_of_turn
     report(json!({"event": "subagent.start", "id": "sa-2", "description": "Review it"}), now);
     report(json!({"event": "shell.start", "id": "u1", "command": "until false; do sleep 5; done"}), now);
     assert!(badge(&fixture).await.contains(&"2 subagents · 1 shell".to_owned()), "the same text as when the job state listed them");
-    assert!(badge(&fixture).await[0].starts_with("Working"), "a node with background work and no turn still works");
 
     report(json!({"event": "subagent.end", "id": "sa-1"}), now);
     assert!(badge(&fixture).await.contains(&"1 subagent · 1 shell".to_owned()));
@@ -1340,7 +1189,7 @@ async fn a_background_shell_whose_process_is_gone_ended_and_stops_counting_as_wo
 }
 
 #[tokio::test]
-async fn a_node_whose_session_ended_with_its_task_open_leaves_the_tasks_in_progress_while_alondra_brings_it_back() {
+async fn a_node_whose_session_ended_with_its_task_open_leaves_the_tasks_in_progress() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
     let domain = &fixture.domain;
@@ -1362,7 +1211,7 @@ async fn a_node_whose_session_ended_with_its_task_open_leaves_the_tasks_in_progr
     let connection = mods.connect_node(serde_json::from_value(json!({"session_id": "stopped", "version": "2.1.287"})).unwrap(), alondra_core::now_millis());
     mods.report(serde_json::from_value(json!({"session_id": "stopped", "event": "session.end"})).unwrap(), alondra_core::now_millis());
     mods.live.mods.disconnect("stopped", connection);
-    crate::domain_agent_lifecycle::move_instance(domain, &"stopped".into(), alondra_core::domain::NodeEvent::SessionLost,
+    crate::domain_agent_lifecycle::move_instance(domain, &"stopped".into(), alondra_core::domain::NodeEvent::SessionClosed,
         &crate::domain_agent_lifecycle::prepare_event(domain, "end-stopped").unwrap()).unwrap();
 
     assert!(!in_progress(&fixture, "task-stopped").await, "no session, not in progress");

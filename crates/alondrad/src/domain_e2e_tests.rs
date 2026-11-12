@@ -94,7 +94,7 @@ fn tool_text(reply: &Value) -> (bool, String) {
     (result["isError"] == true, result["content"][0]["text"].as_str().unwrap_or_default().to_owned())
 }
 
-/// The fake session's hook side: what Claude Code runs on each lifecycle event.
+/// The fake session's node mod: what `plugin/hooks/register.ts` runs for each report.
 fn hook(home: &Path, payload: Value) -> Value {
     let mut child = Process::new(alondra_binary())
         .arg("hook")
@@ -109,7 +109,6 @@ fn hook(home: &Path, payload: Value) -> Value {
     if text.trim().is_empty() { json!({}) } else { serde_json::from_str(text.trim()).unwrap() }
 }
 
-/// The fake session's node mod: what `plugin/hooks/register.ts` runs for each report.
 fn node_event(home: &Path, report: Value) {
     let mut child = Process::new(alondra_binary())
         .args(["node", "event"])
@@ -175,98 +174,6 @@ fn tool_args(epoch: &str, id: &str, expected_revision: u64, command: Value) -> V
     let mut args = json!({"data_epoch":epoch,"command_id":id,"expected_revision":expected_revision}).as_object().unwrap().clone();
     args.extend(command);
     Value::Object(args)
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_claude_bg_node_commands_and_receives_its_answer_once_across_a_daemon_restart() {
-    let scratch_directory = crate::test_support::Directory::new();
-    let root = scratch_directory.parent().unwrap().join(format!("alondra-e2e-{}", crate::auth::random_hex(8)));
-    let home = root.join("home");
-    std::fs::create_dir_all(&home).unwrap();
-    std::fs::create_dir_all(root.join("projects")).unwrap();
-    std::fs::write(alondra_core::options::path_in(&home),
-        format!("projects_root = {:?}\n", root.join("projects").to_str().unwrap())).unwrap();
-    let daemon = Daemon::start(&home).await;
-    let (capability, task) = bg_node_with_a_task(&daemon, &home, "Nightly review");
-    let node_bearer = ("ALONDRA_DOMAIN_CAPABILITY", capability.as_str());
-    let session = SESSION.to_owned();
-    let state = daemon.domain.state().unwrap();
-    let task = state.tasks[&task].clone();
-    assert_eq!(task.agent_id.as_ref().unwrap().0, session);
-    let epoch = state.data_epoch.0.clone();
-
-    // The session reports through the MCP and asks the user a question.
-    let scope = json!({"kind": "task", "task_id": task.id.0});
-    let replies = mcp(&home, daemon.port, node_bearer, vec![
-        ("present_result", tool_args(&epoch, "info-1", 0, json!({"kind": "present_result", "task_id": task.id.0,
-            "interaction_id": "info-1", "need": "The review started", "body": "Started the review", "targets": [{"kind": "text", "text": "Started the review"}], "is_final": false}))),
-        ("ask", tool_args(&epoch, "question-1", 0, json!({"kind": "ask_question", "interaction_id": "question-1",
-            "scope": scope, "recipient": {"kind": "user"}, "need": "Decide on merging the fix", "why": "The review is done and waits for it", "blocking": true,
-            "options": [{"id": "yes", "label": "Yes"}, {"id": "no", "label": "No"}]}))),
-    ]);
-    assert!(!tool_text(&replies[0]).0, "{}", tool_text(&replies[0]).1);
-    assert!(!tool_text(&replies[1]).0, "{}", tool_text(&replies[1]).1);
-    let state = daemon.domain.state().unwrap();
-    assert!(matches!(state.interactions[&"question-1".into()].payload, InteractionPayload::Question { .. }));
-    assert_ne!(state.tasks[&task.id].state, TaskState::Done);
-
-    // The user answers; the answer is written down the session's open connection at once.
-    let (mut helper, pushed) = connect(&home);
-    let mut pushed = Some(pushed);
-    let patience = std::time::Duration::from_secs(10);
-    daemon.execute(Actor::User { user_id: "device:phone".into() }, "answer", Command::AnswerQuestion {
-        attachments: vec![], interaction_id: "question-1".into(), option_id: "yes".into(), inputs: BTreeMap::new(),
-    });
-    let line = next_line(&mut pushed, patience).expect("the answer was written down the connection");
-    let id = line["id"].as_str().unwrap().to_owned();
-    assert!(line["text"].as_str().unwrap().ends_with("Answer to your card question-1 (Decide on merging the fix): Yes."), "{line}");
-    assert_eq!(line["as_user"].as_bool(), Some(true), "{line}");
-    assert!(daemon.domain.store.lock().unwrap().delivery_evidence_page(0).unwrap().is_empty(), "written is not handed");
-
-    // The Stop hook holds back a turn end without a result, and never carries the outbox.
-    assert_eq!(hook(&home, json!({"session_id": "stranger", "hook_event_name": "Stop"})), json!({}));
-    let stop = hook(&home, json!({"session_id": session, "hook_event_name": "Stop"}));
-    assert_eq!(stop["decision"], "block", "{stop}");
-    assert!(stop["reason"].as_str().unwrap().starts_with("[Alondra] Do not end your turn yet") && !stop["reason"].as_str().unwrap().contains("Yes."), "{stop}");
-
-    node_ack(&home, &[&id]);
-    let evidence = daemon.domain.store.lock().unwrap().delivery_evidence_page(0).unwrap();
-    assert_eq!(evidence.iter().filter(|item| item.recipient_kind == "agent").count(), 1);
-    assert!(evidence.iter().all(|item| item.recipient_kind != "agent" || item.state == "handed"));
-
-    // The daemon restarts: the session keeps acting with its bearer and is not written the answer again.
-    helper.kill().unwrap();
-    helper.wait().unwrap();
-    daemon.stop().await;
-    let daemon = Daemon::start(&home).await;
-    let (mut helper, pushed) = connect(&home);
-    let mut pushed = Some(pushed);
-    assert!(next_line(&mut pushed, std::time::Duration::from_millis(500)).is_none(), "an acknowledged message is not written again");
-    let replies = mcp(&home, daemon.port, node_bearer, vec![
-        ("present_result", tool_args(&epoch, "info-2", 0, json!({"kind": "present_result", "task_id": task.id.0,
-            "interaction_id": "info-2", "need": "Acting on the answer", "body": "Acting on the answer", "targets": [{"kind": "text", "text": "Acting on the answer"}], "is_final": false}))),
-    ]);
-    assert!(!tool_text(&replies[0]).0, "{}", tool_text(&replies[0]).1);
-    assert!(daemon.domain.state().unwrap().interactions.contains_key(&"info-2".into()));
-    let evidence = daemon.domain.store.lock().unwrap().delivery_evidence_page(0).unwrap();
-    assert_eq!(evidence.iter().filter(|item| item.recipient_kind == "agent").count(), 1, "no second delivery");
-    helper.kill().unwrap();
-    helper.wait().unwrap();
-
-    // The session ends: its bearer stops working.
-    let mut recorded = daemon.domain.live.changed.subscribe();
-    assert_eq!(hook(&home, json!({"session_id": session, "hook_event_name": "SessionEnd"})), json!({}));
-    recorded.changed().await.unwrap();
-    daemon.domain.hook_work.run(|| ()).await.unwrap();
-    let replies = mcp(&home, daemon.port, ("ALONDRA_DOMAIN_CAPABILITY", &capability), vec![
-        ("present_result", tool_args(&epoch, "info-3", 0, json!({"kind": "present_result", "task_id": task.id.0,
-            "interaction_id": "info-3", "need": "Too late", "body": "Too late", "targets": [{"kind": "text", "text": "Too late"}], "is_final": false}))),
-    ]);
-    let (refused, text) = tool_text(&replies[0]);
-    assert!(refused && text.contains("forbidden"), "{text}");
-    assert!(!daemon.domain.state().unwrap().agents[&AgentId(session.clone())].phase.holds_slot());
-    daemon.stop().await;
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 /// The node mod's connection: the real `alondra node connect`, holding the hook socket open.

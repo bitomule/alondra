@@ -14,7 +14,6 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::time::Duration;
 
 #[derive(Deserialize, Debug, PartialEq)]
 #[serde(tag = "event")]
@@ -200,11 +199,6 @@ impl Reported {
             _ if self.working_since.is_some() || self.tool.is_some() || self.background.iter().any(|(_, item)| !self.shell_gone(item)) => Activity::Working,
             _ => Activity::Idle,
         }
-    }
-
-    /// The session has a shell call running: a build that stays silent for an hour is still work.
-    pub(crate) fn shell_running(&self) -> bool {
-        self.shell_alive == Some(true)
     }
 
     fn in_turn(&self) -> bool {
@@ -466,28 +460,6 @@ impl Reports {
         self.sessions.lock_or_exit("the node reports").entry(session_id.to_owned()).or_default().peer_pid = Some(pid);
     }
 
-    /// One look at whether the session's own process still runs.
-    pub(crate) fn set_session_alive(&self, session_id: &str, alive: Option<bool>) {
-        let changed = match self.sessions.lock_or_exit("the node reports").get_mut(session_id) {
-            Some(session) => std::mem::replace(&mut session.session_alive, alive) != alive,
-            None => false,
-        };
-        if changed { self.changed.publish(); }
-    }
-
-    pub(crate) fn set_job(&self, session_id: &str, job: Option<crate::job_state::Job>, dir: Option<PathBuf>) {
-        let changed = match self.sessions.lock_or_exit("the node reports").get_mut(session_id) {
-            Some(session) => {
-                let changed = session.job != job;
-                session.job = job;
-                session.job_dir = dir;
-                changed
-            }
-            None => false,
-        };
-        if changed { self.changed.publish(); }
-    }
-
     pub fn set_shell_alive(&self, session_id: &str, alive: Option<bool>, now: Millis) {
         let changed = match self.sessions.lock_or_exit("the node reports").get_mut(session_id) {
             Some(session) => {
@@ -543,22 +515,6 @@ impl Reports {
         self.sessions.lock_or_exit("the node reports").get(session_id).is_some_and(|session| session.started_at.is_some())
     }
 
-    /// Whether the session holds a connection within `deadline`.
-    pub(crate) async fn wait_connected(&self, session_id: &str, deadline: Duration) -> bool {
-        tokio::time::timeout(deadline, async {
-            loop {
-                let started = self.started.notified();
-                tokio::pin!(started);
-                started.as_mut().enable();
-                if self.connected(session_id) {
-                    return;
-                }
-                started.await;
-            }
-        })
-        .await
-        .is_ok()
-    }
 }
 
 pub use alondra_daemon_engine_model::local_day;
@@ -754,18 +710,6 @@ mod tests {
     }
 
     #[test]
-    fn the_session_process_gone_mid_turn_halts_the_turn() {
-        let reports = Reports::default();
-        reports.connect(hello("s"), 0);
-        reports.set_session_alive("s", Some(false));
-        assert_eq!(reports.session("s").unwrap().halt(), None, "between turns nothing is stopped");
-        reports.apply(report(json!({"session_id": "s", "event": "turn.start", "turn_id": "t"})), 1);
-        assert_eq!(reports.session("s").unwrap().halt(), Some(Halt::SessionGone));
-        reports.set_session_alive("s", Some(true));
-        assert_eq!(reports.session("s").unwrap().activity(), Activity::Working);
-    }
-
-    #[test]
     fn a_live_background_shell_is_working_and_a_dead_one_ends_without_stalling_anything() {
         let reports = Reports::default();
         reports.connect(hello("s"), 0);
@@ -780,28 +724,9 @@ mod tests {
             "a look after it started found its shell gone: it ended then");
     }
 
-    fn job(phase: crate::job_state::Phase, tasks: u64, updated_at: Millis) -> crate::job_state::Job {
-        crate::job_state::Job { phase, detail: "exit 1 before init".into(), tasks, updated_at, settings: None, worktree: None }
-    }
-
-    #[test]
-    fn a_failed_job_is_no_work_and_a_working_one_works_however_still_it_stays() {
-        use crate::job_state::Phase;
-        let reports = Reports::default();
-        reports.connect(hello("s"), 0);
-        reports.set_job("s", Some(job(Phase::Working, 0, 0)), None);
-        assert_eq!(reports.session("s").unwrap().activity(), Activity::Working, "nothing in flight and its state still: Claude Code says it works");
-        reports.set_job("s", Some(job(Phase::Blocked, 0, 0)), None);
-        assert_eq!(reports.session("s").unwrap().activity(), Activity::Idle, "the mod reports no turn");
-        reports.set_job("s", Some(job(Phase::Failed, 0, 0)), None);
-        reports.set_session_alive("s", Some(false));
-        let session = reports.session("s").unwrap();
-        assert_eq!((session.activity(), session.halt()), (Activity::Idle, None));
-    }
-
     /// The user's rule, 15 October: what a node does (working or idle), what stopped
     /// it, and whether its own work is over follow from what the mod reported, its connection and
-    /// what the looks at its processes and its job saw, in their order, never from how long any of
+    /// what the looks at its processes saw, in their order, never from how long any of
     /// it has run. The same 256 generated histories on a clock that moves a millisecond a fact and
     /// on one that moves up to two days give the same answers.
     #[test]
@@ -845,14 +770,6 @@ mod tests {
                     9 => json!({"event": "tool.end", "tool_use_id": id}),
                     10 => json!({"connect": next(2) == 0}),
                     11 => json!({"disconnect": true}),
-                    12 => {
-                        let alive = [Some(true), Some(false), None][next(3) as usize];
-                        json!({"session_alive": alive})
-                    }
-                    13 => {
-                        let phase = ["working", "idle", "failed", "none"][next(4) as usize];
-                        json!({"job": phase})
-                    }
                     _ => {
                         let alive = [Some(true), Some(false), None][next(3) as usize];
                         json!({"look": alive})
@@ -867,12 +784,6 @@ mod tests {
                 fast_now += 1;
                 slow_now += gap;
                 for (index, (reports, now)) in [(&fast, fast_now), (&slow, slow_now)].into_iter().enumerate() {
-                    let phase = |name: &str| match name {
-                        "working" => Some(crate::job_state::Phase::Working),
-                        "idle" => Some(crate::job_state::Phase::Idle),
-                        "failed" => Some(crate::job_state::Phase::Failed),
-                        _ => None,
-                    };
                     if let Some(alive) = fact.get("look") {
                         reports.set_shell_alive("s", alive.as_bool(), now);
                     } else if let Some(working) = fact.get("connect") {
@@ -881,10 +792,6 @@ mod tests {
                         connections[index] = reports.connect(again, now);
                     } else if fact.get("disconnect").is_some() {
                         reports.disconnect("s", connections[index]);
-                    } else if let Some(alive) = fact.get("session_alive") {
-                        reports.set_session_alive("s", alive.as_bool());
-                    } else if let Some(name) = fact.get("job").and_then(Value::as_str) {
-                        reports.set_job("s", phase(name).map(|phase| job(phase, 0, now)), None);
                     } else {
                         let mut fact = fact.clone();
                         fact["session_id"] = json!("s");

@@ -105,7 +105,7 @@ fn a_turn_end_is_recorded_once_whatever_the_state() {
     sdk_turn(&mut paused, "t", "a");
     must(&mut paused, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Paused { pause: Pause {
         reason: PauseReason::Disk, since: 0, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false,
-    } }, at: 0 });
+    } } });
     for (state, mut s) in [("delivered", delivered), ("own work", own_work), ("paused", paused)] {
         let before = ends(&s);
         end_empty(&mut s, "turn-1");

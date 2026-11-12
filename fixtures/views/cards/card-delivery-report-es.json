@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:result-2",
   "client": "ios",
-  "version": "v0968392c3b59206c",
+  "version": "v29720b3d5063a3d2",
   "cursor": "cursor-1",
   "title": "Read why Redraft does not need a widget",
   "status": {
@@ -63,7 +63,7 @@
             "summary": "1 punto"
           },
           "reply": {
-            "id": "changes:result-2@5",
+            "id": "changes:result-2@10",
             "label": "Pedir cambios",
             "style": "secondary",
             "role": "neutral",
@@ -106,7 +106,7 @@
           "detail": "included",
           "actions": [
             {
-              "id": "accept:result-2@5",
+              "id": "accept:result-2@10",
               "label": "Visto",
               "style": "primary",
               "role": "advance",

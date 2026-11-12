@@ -4,11 +4,11 @@
 use super::{
     Icon, LiveHold, LivePauseReason, RenderContext, Tone, common,
     text::{t, tf},
-    now_fact::{NowDoing, NowFact, now_fact},
+    now_fact::{NowFact, now_fact},
 };
 use alondra_domain::LiveState;
 use crate::domain::{
-    Attention, Delivery, Doing, Instruction, InteractionId, PauseReason, PrState, Situation, StallClosing, Task, TaskActivity,
+    Attention, Delivery, Doing, Instruction, InteractionId, PrState, Situation, StallClosing, Task,
     TaskEnding, TaskPriority, WaitReason, WaitsFor,
 };
 use crate::domain::AlondraStep as Step;
@@ -180,15 +180,7 @@ pub(super) fn working(task: &Task, doing: Doing, context: &RenderContext<'_>) ->
     let node = node_of(task, context);
     let active_at = node.and_then(|node| node.state_since.clone()).or_else(|| task_since(task, context));
     let since = active_at.as_deref().unwrap_or("—");
-    let mut now = now_fact(node, &doing, since, lang);
-    if doing == Doing::OwnWork && matches!(now.doing, NowDoing::Turn { .. })
-        && let Some(TaskActivity::WaitingBackground(work)) = context.reading(&task.id).and_then(|read| read.activity.as_ref())
-        && work.gone.is_none() && !work.label.trim().is_empty() {
-        now.doing = NowDoing::Background {
-            label: super::now_fact::shorten(work.label.lines().next().unwrap_or_default().trim()),
-            more: work.others as usize, since: clock(since).into(),
-        };
-    }
+    let now = now_fact(node, &doing, since, lang);
     let mut presentation = Presentation { active_at, fact_in_state: true,
         ..Presentation::new(StateFact::Working(now), Tone::Accent, Block::InProgress, lang) };
     let mut prefixes = Vec::new();
@@ -325,8 +317,6 @@ fn slot_fact(task: &Task, context: &RenderContext<'_>) -> (String, Option<usize>
         Some(_) if context.live.usage_exhausted.is_some() => t!(lang, "Usage limit reached · starts when it is back",
             "Límite de uso alcanzado · arranca cuando vuelva"),
         Some(_) => t!(lang, "Starts when there is room", "Arranca cuando haya sitio"),
-        None if task.agent_id.as_ref().is_some_and(|agent| context.domain.node_phase(agent) == Some(&crate::domain::NodePhase::Lost)) =>
-            t!(lang, "Starts when there is room", "Arranca cuando haya sitio"),
         None => t!(lang, "Its session ended before it delivered", "Su sesión terminó sin que entregara"),
     };
     (fact.into(), None)
@@ -358,11 +348,6 @@ fn machine_fact(task: &Task, context: &RenderContext<'_>) -> String {
             _ => tf!(lang, "Mac memory since {at} · resumes by itself", "Memoria del Mac desde las {at} · se reanuda sola"),
         };
     }
-    if let Some(TaskActivity::Paused(pause)) = context.reading(&task.id).and_then(|read| read.activity.as_ref())
-        && let PauseReason::Declared { reason } = &pause.reason
-        && let Some(reason) = declared(reason) {
-        return reason;
-    }
     t!(lang, "Mac memory · resumes by itself", "Memoria del Mac · se reanuda sola").into()
 }
 
@@ -391,13 +376,12 @@ fn paused_fact(task: &Task, context: &RenderContext<'_>) -> String {
         return t!(lang, "Turn interrupted. Send a message to continue.", "Turno interrumpido. Envía un mensaje para continuar.").into();
     }
     let by_user = common::paused(task, context).filter(|paused| paused.reason == LivePauseReason::User);
-    let fact = match (by_user, read.and_then(|read| read.activity.as_ref())) {
-        (Some(paused), _) => {
+    let fact = match by_user {
+        Some(paused) => {
             let at = clock(&paused.at);
             tf!(lang, "You paused it at {at}", "La pausaste a las {at}")
         }
-        (None, Some(TaskActivity::Paused(pause))) if pause.reason == PauseReason::ByUser => t!(lang, "You paused it", "La pausaste").into(),
-        _ => t!(lang, "You paused it", "La pausaste").into(),
+        None => t!(lang, "You paused it", "La pausaste").into(),
     };
     with_pending(fact, task, context)
 }

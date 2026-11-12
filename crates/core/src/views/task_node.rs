@@ -2,7 +2,7 @@ use super::{
     Confirm, Fact, Facts, Icon, Item, Markdown, RenderContext, StepState, Style, Tone, Trailing,
     action_id::Verb, common, text::{t, tf},
 };
-use crate::domain::{AgentId, NodePhase, TaskId};
+use crate::domain::{AgentId, TaskId};
 
 /// Stopping a node's current turn, offered only while it works: for a node that runs through the
 /// SDK, while its execution runs a turn or work of its own. Once Claude accepted the interrupt and
@@ -54,7 +54,7 @@ pub(super) fn on_open_task(agent: &crate::domain::Agent, context: &RenderContext
         && context.domain.orchestrator_session.as_ref() != Some(&agent.id)
         && match common::sdk_live(&agent.id, context) {
             Some(live) => live.is_some(),
-            None => agent.phase.live() && agent.phase != NodePhase::Lost,
+            None => agent.phase.live(),
         }
         && node_tasks(&agent.id, context).any(|task| !task.state.terminal())
 }
@@ -377,10 +377,8 @@ pub(super) fn last_message_section(node: &super::LiveNode, context: &RenderConte
 /// says so, and each names the task it works for by its title, but in that task's own detail
 /// (`shown`).
 pub(super) fn activity_rows(agent: &crate::domain::Agent, context: &RenderContext<'_>, shown: Option<&TaskId>) -> Option<Vec<Item>> {
-    let activity = context.live.activity.get(&agent.id.0).filter(|items| !items.is_empty() && match common::sdk_live(&agent.id, context) {
-        Some(live) => matches!(live, Some(alondra_domain::LiveState::Working(alondra_domain::Worker::Turn))),
-        None => agent.phase.in_turn(),
-    })?;
+    let activity = context.live.activity.get(&agent.id.0).filter(|items| !items.is_empty()
+        && matches!(common::sdk_live(&agent.id, context), Some(Some(alondra_domain::LiveState::Working(alondra_domain::Worker::Turn)))))?;
     Some(activity.iter().map(|entry| {
         let title = entry.summary.clone().or_else(|| entry.tool.clone())
             .unwrap_or_else(|| t!(context.lang, "Working", "Trabajando").into());

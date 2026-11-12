@@ -3,7 +3,7 @@
 //! undelivered messages. Each answer has the shape the MCP's summaries already read.
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain::{body_title, Agent, AgentId, Author, DomainError, DomainState, Interaction, InteractionPayload, NodePhase, PauseReason, Recipient, Scope, TaskActivity, TaskId, NODE_PAUSE_PREFIX};
+use alondra_core::domain::{body_title, Agent, AgentId, Author, DomainError, DomainState, Interaction, InteractionPayload, NodePhase, Recipient, Scope, TaskActivity};
 use alondra_domain::{Capacity, LiveState, Step, Worker};
 use alondra_core::Node;
 use serde_json::{Value, json};
@@ -21,38 +21,11 @@ fn model_of(domain: &DomainRuntime, session_id: &str) -> Value {
     json!(domain.live.mods.session(session_id).and_then(|reported| reported.model))
 }
 
-/// A node's state as the node machine holds it, the one every screen reads: its phase and why.
-fn phase_fields(row: &mut Value, phase: &NodePhase) {
-    let since = |at: alondra_core::Millis| crate::log::local_iso(at.div_euclid(1000) as libc::time_t, at.rem_euclid(1000) as u32);
-    row["state"] = json!(match phase {
-        NodePhase::Closing | NodePhase::Closed => "done",
-        phase => phase.key(),
-    });
-    row["alive"] = json!(phase.live() && *phase != NodePhase::Lost);
-    row["evidence"] = json!(match phase {
-        NodePhase::Starting { reviving: false, .. } => "admitted by the gate; no turn yet".to_owned(),
-        NodePhase::Starting { reviving: true, .. } => "its lost session is being restarted".to_owned(),
-        NodePhase::Lost => "its session is gone; it waits for the gate to be restarted".to_owned(),
-        NodePhase::Working => "a turn is running".to_owned(),
-        NodePhase::WaitingBackground(work) => format!("its turn ended behind its own background work (`{}`, since {}{}); it wakes when that ends",
-            work.label, since(work.since), if work.others > 0 { format!(", {} more", work.others) } else { String::new() }),
-        NodePhase::WaitingUser { .. } => "a card of its task waits for an answer: the user's, or yours to a question it asked you".to_owned(),
-        NodePhase::Paused(pause) => format!("paused ({}) since {}", match &pause.reason {
-            PauseReason::Memory => "memory".to_owned(),
-            PauseReason::Declared { reason } => format!("it waits for the machine: {reason}"),
-            PauseReason::Usage => "the usage limit".to_owned(),
-            PauseReason::Disk => "the disk fell under its floor; its next turn waits for room".to_owned(),
-            PauseReason::ByUser => "by the user".to_owned(),
-            PauseReason::ApiError(retry) => format!("a Claude API error, {}", retry.error),
-        }, since(pause.since)),
-        NodePhase::Delivered { .. } => "its result waits for the user's review".to_owned(),
-        NodePhase::Resuming { .. } => "the user's answer is on its way to it and starts its next turn".to_owned(),
-        NodePhase::WaitingDependency => "its task waits for another task to be done".to_owned(),
-        NodePhase::NoTask => "its turn ended and it has no open task".to_owned(),
-        NodePhase::Closing => "its task is over; it cleans up".to_owned(),
-        NodePhase::Closed => "its session is closed".to_owned(),
-        NodePhase::ThroughSdk => "it runs through the Agent SDK".to_owned(),
-    });
+/// A node whose session is closed, and that its task's lifecycle no longer runs.
+fn closed_fields(row: &mut Value) {
+    row["state"] = json!("done");
+    row["alive"] = json!(false);
+    row["evidence"] = json!("its session is closed");
 }
 
 /// A node of the Agent SDK as its task's lifecycle holds it: what its task does or who it waits on,
@@ -99,8 +72,8 @@ fn node_row(node: &Node, state: &DomainState, domain: &DomainRuntime) -> Value {
     let agent = AgentId(node.session_id.clone());
     if state.node_phase(&agent) == Some(&NodePhase::ThroughSdk) || state.through_sdk(&agent) {
         live_fields(&mut row, state, &agent);
-    } else if let Some(phase) = state.node_phase(&agent) {
-        phase_fields(&mut row, phase);
+    } else if state.node_phase(&agent).is_some() {
+        closed_fields(&mut row);
     }
     row["model"] = model_of(domain, &node.session_id);
     if node.name.is_none() {

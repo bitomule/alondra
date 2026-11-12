@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:result-1",
   "client": "ios",
-  "version": "vb693f85c6ff8b197",
+  "version": "vd2676ade0766fd39",
   "cursor": "cursor-1",
   "title": "Approve the plan to index Redraft's whole library",
   "status": {
@@ -64,7 +64,7 @@
             "summary": "3 pasos"
           },
           "reply": {
-            "id": "changes:result-1@4",
+            "id": "changes:result-1@6",
             "label": "Pedir cambios",
             "style": "secondary",
             "role": "neutral",
@@ -111,7 +111,7 @@
           "detail": "included",
           "actions": [
             {
-              "id": "accept:result-1@4~implement",
+              "id": "accept:result-1@6~implement",
               "label": "Aprobar",
               "style": "primary",
               "role": "advance",

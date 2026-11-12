@@ -115,11 +115,6 @@ impl Pushes {
         Ok(receiver)
     }
 
-    /// Whether a direct message waits for the session to acknowledge it.
-    pub(crate) fn waiting(&self, session: &str) -> bool {
-        self.direct.lock_or_recover("the direct pushes").get(session).is_some_and(|waiting| !waiting.is_empty())
-    }
-
     /// An interrupt is only meaningful to the turn running now, so it is never kept or resent.
     pub fn interrupt(&self, session: &str) -> Result<(), Unreachable> {
         self.write(session, serde_json::json!({"interrupt": true}).to_string())

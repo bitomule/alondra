@@ -438,7 +438,9 @@ mod tests {
         domain.report(serde_json::from_value(json!({"session_id": "agent-a", "event": "turn.start", "turn_id": "t"})).unwrap(), now);
         let quiet = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(json!({"text": "quiet"})), true).await;
         assert!(quiet.is_ok(), "a quiet turn takes messages however long it has been quiet");
-        domain.live.mods.set_session_alive("agent-a", Some(false));
+        domain.report(serde_json::from_value(json!({"session_id": "agent-a", "event": "tool.start", "tool": "Bash", "tool_use_id": "call"})).unwrap(), now + 1);
+        domain.live.mods.set_shell_alive("agent-a", Some(false), now + 2);
+        domain.live.mods.set_shell_alive("agent-a", Some(false), now + 3);
         let refused = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(json!({"text": "hi"})), true).await.unwrap_err();
         assert_eq!(refused.code, "session_stalled");
         assert_eq!(node.texts(), ["quiet"], "nothing more was written down its connection");

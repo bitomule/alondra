@@ -6,7 +6,7 @@ use crate::locks::Poisonable as _;
 use crate::live::Relaunch;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
-use alondra_core::domain::{NodePhase, 
+use alondra_core::domain::{
     AfterFailure, Command, CommandEnvelope, DomainState, NodeFact, Reaction, Start, StartFacts, StartProblem, TaskId,
     PROTOCOL_VERSION, after_failure,
 };
@@ -135,10 +135,6 @@ pub(crate) fn facts(domain: &DomainRuntime, state: &DomainState) -> Result<BTree
             (None, None) => Start::Ready,
         };
         let node = match task.agent_id.as_ref().and_then(|id| state.agents.get(id)) {
-            Some(agent) if agent.phase.coming_back() => match crate::domain_holds::waits_on_user(state, &agent.id.0) {
-                true => NodeFact::Asking,
-                false => NodeFact::Reviving,
-            },
             Some(agent) if agent.phase.live() => crate::domain_transport::stopped_without_delivering(domain, state, &agent.id,
                 |task| store.stop_blocks(task).ok().flatten()).map_or(NodeFact::Alive, |sent_back| NodeFact::Stopped { sent_back }),
             Some(_) | None => NodeFact::Gone,

@@ -586,10 +586,10 @@ impl Machine {
                 matches!(lifecycle.activity(), alondra_domain::ActivityView::Working | alondra_domain::ActivityView::OwnWork)
             }) {
                 let pause = Pause { reason: PauseReason::Disk, since: at, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false };
-                moved |= self.run(Actor::System, Command::MoveNode { agent_id: agent, event: NodeEvent::Paused { pause }, at }).is_ok();
+                moved |= self.run(Actor::System, Command::MoveNode { agent_id: agent, event: NodeEvent::Paused { pause } }).is_ok();
             } else if !self.world.disk_full && pause.is_some_and(|pause| pause.reason == PauseReason::Disk) {
                 let _ = self.run(Actor::System, Command::TellNode { task_id: task.clone(), text: "The disk has room again: carry on".into(), from_user: false, answers: None });
-                moved |= self.run(Actor::System, Command::MoveNode { agent_id: agent, event: NodeEvent::Resumed, at }).is_ok();
+                moved |= self.run(Actor::System, Command::MoveNode { agent_id: agent, event: NodeEvent::Resumed }).is_ok();
             }
         }
         moved
@@ -953,7 +953,7 @@ impl Machine {
             UserAct::Pause => {
                 let Some(agent) = self.agent(task) else { return };
                 let pause = Pause { reason: PauseReason::ByUser, since: at, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false };
-                if self.run(Actor::System, Command::MoveNode { agent_id: agent, event: NodeEvent::Paused { pause }, at }).is_ok()
+                if self.run(Actor::System, Command::MoveNode { agent_id: agent, event: NodeEvent::Paused { pause } }).is_ok()
                     && let Some(host) = self.world.host(task).filter(|host| host.alive)
                     && let Some(turn) = host.turn.take() {
                     host.emit(Fact::TurnEnded(turn.id));

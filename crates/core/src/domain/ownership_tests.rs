@@ -22,10 +22,6 @@ enum Step {
     Admit(usize),
     LaunchFails { pick: usize, failure: Failure },
     Tick(i64),
-    NodeDies(usize),
-    NodeBack(usize),
-    RevivalFails(usize),
-    AnswerRevival { pick: usize, retry: bool },
     UserClosesNode(usize),
     NodeStops(usize),
     Deliver(usize),
@@ -50,10 +46,6 @@ fn step() -> impl Strategy<Value = Step> {
         3 => (0usize..8).prop_map(Step::Admit),
         2 => (0usize..8, 0u8..10).prop_map(|(pick, kind)| Step::LaunchFails { pick, failure: match kind { 0 | 1 => Failure::Untrusted, 2 => Failure::PlanRefused, _ => Failure::Launch } }),
         2 => (1i64..30).prop_map(|minutes| Step::Tick(minutes * 60_000)),
-        1 => (0usize..8).prop_map(Step::NodeDies),
-        1 => (0usize..8).prop_map(Step::NodeBack),
-        1 => (0usize..8).prop_map(Step::RevivalFails),
-        1 => (0usize..8, any::<bool>()).prop_map(|(pick, retry)| Step::AnswerRevival { pick, retry }),
         1 => (0usize..8).prop_map(Step::UserClosesNode),
         3 => (0usize..8).prop_map(Step::NodeStops),
         2 => (0usize..8).prop_map(Step::Deliver),
@@ -254,50 +246,6 @@ impl World {
                     }
                 }
             }
-            Step::NodeDies(n) => {
-                if let Some(task) = self.pick(n, |t, f| t.agent_id.is_some() && matches!(f.node, NodeFact::Alive | NodeFact::Stopped { .. })) {
-                    let agent = self.agent_of(&task).unwrap();
-                    self.must(Actor::System, Command::MoveNode { agent_id: agent, event: NodeEvent::SessionLost, at: 0 });
-                    self.fact(&task).node = NodeFact::Reviving;
-                }
-            }
-            Step::NodeBack(n) => {
-                if let Some(task) = self.pick(n, |t, f| t.agent_id.is_some() && f.node == NodeFact::Reviving) {
-                    let agent = self.agent_of(&task).unwrap();
-                    if !self.s.node_phase(&agent).is_some_and(NodePhase::coming_back) {
-                        return;
-                    }
-                    self.must(Actor::System, Command::MoveNode { agent_id: agent, event: NodeEvent::TurnStarted, at: 0 });
-                    self.fact(&task).node = NodeFact::Alive;
-                }
-            }
-            Step::RevivalFails(n) => {
-                if let Some(task) = self.pick(n, |t, f| t.agent_id.is_some() && f.node == NodeFact::Reviving) {
-                    let agent = self.agent_of(&task).unwrap();
-                    let options = vec![
-                        QuestionOption { id: "retry".into(), label: "Try again".into(), description: None },
-                        QuestionOption { id: "cancel".into(), label: "Cancel its task".into(), description: None },
-                    ];
-                    let id: InteractionId = format!("hold-{}", self.s.revision).into();
-                    self.must(Actor::System, Command::HoldHook {
-                        interaction_id: id, task_id: task.clone(), agent_id: agent, hold: Hold::Question,
-                        body: "The node is not responding and restarting it failed".into(), options,
-                        card: CardSpec::derived(CardKind::Decide, "Restart the node or cancel its task"),
-                    });
-                    self.fact(&task).node = NodeFact::Asking;
-                }
-            }
-            Step::AnswerRevival { pick, retry } => {
-                let Some(task) = self.pick(pick, |_, f| f.node == NodeFact::Asking) else { return };
-                let Some(card) = self.s.open_user_card(&task).map(|i| i.id.clone()) else { return };
-                let option = if retry { "retry" } else { "cancel" };
-                self.must(user(), Command::AnswerQuestion { attachments: vec![], interaction_id: card, option_id: option.into(), inputs: BTreeMap::new() });
-                if retry {
-                    self.fact(&task).node = NodeFact::Reviving;
-                } else if !self.s.tasks[&task].over() {
-                    self.must(user(), Command::CancelTask { task_id: task });
-                }
-            }
             Step::UserClosesNode(n) => {
                 if let Some(task) = self.pick(n, |t, _| t.agent_id.is_some() && t.final_presentation.is_none() && t.id.0 != "run") {
                     if self.s.tasks[&task].over() {
@@ -353,8 +301,6 @@ impl World {
                 }
                 if let Some(agent) = self.agent_of(&task) {
                     let node = match self.s.node_phase(&agent) {
-                        Some(phase) if phase.coming_back() && self.s.open_user_card(&task).is_some() => NodeFact::Asking,
-                        Some(phase) if phase.coming_back() => NodeFact::Reviving,
                         Some(phase) if phase.live() => NodeFact::Alive,
                         _ => NodeFact::Gone,
                     };

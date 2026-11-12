@@ -606,7 +606,7 @@ fn explicit_acceptance_completes_the_task_and_feedback_revokes_it_first() {
     exec(
         &mut s,
         Actor::System,
-        Command::MoveNode { agent_id: "a".into(), event: NodeEvent::SessionLost, at: 0 },
+        Command::MoveNode { agent_id: "a".into(), event: NodeEvent::SessionClosed},
     )
     .unwrap();
     exec(
@@ -1656,7 +1656,7 @@ fn a_task_left_closing_by_an_older_daemon_completes_with_the_next_command() {
         presentation_id: "final".into(), targets: text(),
     }).unwrap();
     state.tasks.get_mut(&"t".into()).unwrap().state = TaskState::Closing;
-    exec(&mut state, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::TurnStarted, at: 0 }).unwrap();
+    exec(&mut state, Actor::System, Command::ReviewWaits).unwrap();
     end_node(&mut state, "t");
     assert_eq!(state.tasks[&"t".into()].state, TaskState::Done);
 }
@@ -1729,7 +1729,7 @@ fn no_task_stays_closing_without_a_way_out() {
                 if presented && end != PrState::Open {
                     observe(&mut s);
                 }
-                exec(&mut s, Actor::System, Command::ReconcileNodes { listed: [("a".into(), Listed::Idle)].into(), at: 0 }).unwrap();
+                exec(&mut s, Actor::System, Command::ReviewWaits).unwrap();
                 assert!(closing_has_a_way_out(&s), "presented={presented} {end:?} accepted={accept}: {:?}", s.tasks[&"t".into()]);
             }
         }
@@ -3125,7 +3125,6 @@ fn variant_index(c: &Command) -> usize {
         Command::CloseRequest { .. } => 10,
         Command::RegisterAgent { .. } => 11,
         Command::MoveNode { .. } => 12,
-        Command::ReconcileNodes { .. } => 12,
         Command::AdvanceOrchestratorGeneration { .. } => 13,
         Command::CreateTask { .. } => 14,
         Command::AssignTask { .. } => 15,
@@ -3217,7 +3216,6 @@ fn variant_index(c: &Command) -> usize {
         Command::RecordDistribution { .. } => 100,
         Command::ChangeAccounts { .. } => 101,
         Command::RevokeTaskGrant { .. } => 102,
-        Command::AdoptSdkNodes => 103,
         Command::SetAccountOrder { .. } => 104,
         Command::RecordAccountConfiguration { .. } => 105,
         Command::RecordModelCatalog { .. } => 106,
@@ -3240,7 +3238,7 @@ fn variant_index(c: &Command) -> usize {
         Command::AcknowledgeRequestTasks => 123,
         Command::MoveTask { .. } => 124,
         Command::DeferTaskMove { .. } => 136,
-        Command::AbortTaskSelection { .. } => 137,
+        Command::AbortTaskSelection { .. } => 103,
         Command::SettleOpenPr { .. } => 125,
         Command::RecordStranded { .. } => 126,
         Command::NotePrOpened { .. } => 127,
@@ -3252,7 +3250,7 @@ fn variant_index(c: &Command) -> usize {
         Command::RecordClaudeHold { .. } => 135,
     }
 }
-const COMMAND_KINDS: usize = 138;
+const COMMAND_KINDS: usize = 137;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3287,7 +3285,6 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordScheduleRunFailed { run_id: ids.run.into(), reason: "boom".into(), finished_at: 1 }, false),
         (Command::RaiseStartProblem { task_id: ids.task.into(), problem: StartProblem::NodeClosed }, false),
         (Command::InterruptScheduleRunsOnRestart, true),
-        (Command::AdoptSdkNodes, true),
         (Command::ReviewWaits, true),
         (Command::AnnounceRequestTasks, true),
         (Command::AcknowledgeRequestTasks, true),
@@ -3295,7 +3292,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::CreateCardReply { request_id: "fresh-reply".into(), interaction_id: ids.interaction.into(), body: "Explain".into(), auto_merge: false }, false),
         (Command::CloseRequest { request_id: ids.request.into(), answer: None, withdrawn: false, title: None, headline: None, folded_into: None }, false),
         (Command::RegisterAgent { agent_id: ids.agent.into(), name: "Ghost".into(), at: 0 }, true),
-        (Command::MoveNode { agent_id: ids.agent.into(), event: NodeEvent::TurnStarted, at: 0 }, false),
+        (Command::MoveNode { agent_id: ids.agent.into(), event: NodeEvent::Resumed}, false),
         (Command::RecordLastWords { agent_id: ids.agent.into(), text: "Done for now".into() }, false),
         (Command::AdvanceOrchestratorGeneration { generation: 1 }, true),
         (Command::BindOrchestratorSession { session_id: ids.agent.into() }, true),
@@ -3691,31 +3688,7 @@ fn a_delivery_sent_back_with_an_instruction_waits_on_its_agent_until_it_presents
 }
 
 fn node(s: &mut DomainState, event: NodeEvent) {
-    exec(s, Actor::System, Command::MoveNode { agent_id: "a".into(), event, at: 0 }).unwrap();
-}
-
-#[test]
-fn a_reply_takes_the_delivery_away_until_its_node_ends_the_turn_and_then_the_same_one_is_back() {
-    let mut s = fixture();
-    register(&mut s);
-    present(&mut s, "d", pr_targets());
-    assert_eq!(pending_ids(&s), ["d"]);
-    let outcome = hand_back(&mut s, user(), Instruction::Reply).unwrap();
-    assert!(matches!(&outcome.effects[..], [DomainEffect::NotifyAgent { message, .. }]
-        if message == &Instruction::Reply.message("Back to you")));
-    assert!(!waiting(&s, "d"), "the node acts on the reply");
-    assert_eq!((s.tasks[&"t".into()].state, s.task_handed_back(&"t".into())), (TaskState::Running, Some(Instruction::Reply)));
-    node(&mut s, NodeEvent::TurnStarted);
-    assert!(!waiting(&s, "d"), "a turn on the reply keeps it away");
-
-    let back = exec(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::TurnEnded, at: 0 }).unwrap();
-    assert!(waiting(&s, "d"), "the node answered: the same delivery waits for the user again");
-    assert!(back.effects.iter().any(|effect| matches!(effect, DomainEffect::NotifyUser { interaction_id, .. } if interaction_id.0 == "d")),
-        "the user is told it is back: {:?}", back.effects);
-    assert_eq!((s.tasks[&"t".into()].state, s.task_handed_back(&"t".into())), (TaskState::ForYourReview, None));
-    assert_eq!(s.node_phase(&"a".into()), Some(&NodePhase::Delivered { in_turn: false }), "never stopped with nothing to show");
-    exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets: pr_targets() }).unwrap();
-    assert!(s.accepted(&s.interactions[&"d".into()]));
+    exec(s, Actor::System, Command::MoveNode { agent_id: "a".into(), event}).unwrap();
 }
 
 fn pending_ids(s: &DomainState) -> Vec<String> {
@@ -3756,20 +3729,13 @@ fn a_reply_to_a_delivery_takes_it_out_of_the_queue_and_nothing_later_brings_it_b
 
 #[test]
 fn a_replied_delivery_comes_back_once_its_node_cannot_act_on_the_reply() {
-    let pause = || Pause { reason: PauseReason::Memory, since: 0, cut: None, turn_since: None, cleanup: PauseCleanup::Pending, released: false };
-    for event in [NodeEvent::Paused { pause: pause() }, NodeEvent::SessionLost, NodeEvent::SessionClosed] {
-        let mut s = fixture();
-        register(&mut s);
-        present(&mut s, "d", pr_targets());
-        hand_back(&mut s, user(), Instruction::Reply).unwrap();
-        assert!(!waiting(&s, "d"));
-        node(&mut s, event.clone());
-        assert!(waiting(&s, "d"), "{event:?}: the user can accept it while the node is away");
-        if matches!(event, NodeEvent::Paused { .. }) {
-            node(&mut s, NodeEvent::Resumed);
-            assert!(waiting(&s, "d"), "a node coming back never takes it away again");
-        }
-    }
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    hand_back(&mut s, user(), Instruction::Reply).unwrap();
+    assert!(!waiting(&s, "d"));
+    node(&mut s, NodeEvent::SessionClosed);
+    assert!(waiting(&s, "d"), "the user can accept it while the node is away");
 }
 
 #[test]
@@ -4135,7 +4101,7 @@ fn a_task_whose_node_session_closed_is_reopened_only_once_the_node_end_is_record
     let mut s = fixture();
     exec(&mut s, agent(), Command::StartTask { task_id: "t".into() }).unwrap();
     exec(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into() }).unwrap();
-    exec(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::SessionClosed, at: 0 }).unwrap();
+    exec(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::SessionClosed}).unwrap();
     reject_unchanged(&mut s, orchestrator(), Command::ReopenTask { task_id: "t".into() }, "task_not_active");
     exec(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Gone, agent_id: Some("a".into()) }).unwrap();
     exec(&mut s, orchestrator(), Command::ReopenTask { task_id: "t".into() }).unwrap();
@@ -4428,7 +4394,7 @@ fn a_question_the_node_of_a_cancelled_task_asks_while_it_winds_down_reaches_the_
     exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
     assert!(s.interactions[&"before".into()].withdrawn, "what it asked about the work the user stopped leaves");
     ask_aside(&mut s, "stuck");
-    exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();
+    exec(&mut s, Actor::System, Command::ReviewWaits).unwrap();
     assert!(!s.interactions[&"stuck".into()].withdrawn);
     assert!(pending(&s, "stuck"), "the user sees what the node asks while it winds down");
     let item = inbox_items(&s).into_iter().find(|item| item.id == "interaction:stuck").unwrap();
@@ -4449,12 +4415,12 @@ fn a_notice_left_for_a_cancelled_task_is_taken_away() {
     ask_aside(&mut s, "q");
     s.tasks.get_mut(&"t".into()).unwrap().final_presentation = Some("final".into());
     left_by_an_older_daemon(&mut s, "t", TaskState::Done);
-    exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();
+    exec(&mut s, Actor::System, Command::ReviewWaits).unwrap();
     let notice = format!("{ENDED_UNANSWERED_PREFIX}q");
     assert!(pending(&s, &notice));
     s.tasks.get_mut(&"t".into()).unwrap().final_presentation = None;
     left_by_an_older_daemon(&mut s, "t", TaskState::Cancelled);
-    exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();
+    exec(&mut s, Actor::System, Command::ReviewWaits).unwrap();
     assert!(!pending(&s, &notice));
 }
 /// A plan nobody approved for work that is already done changes nothing for the user.
@@ -4465,7 +4431,7 @@ fn a_task_done_with_its_plan_open_says_nothing_about_the_plan() {
     hold_plan(&mut s, "plan");
     s.tasks.get_mut(&"t".into()).unwrap().final_presentation = Some("final".into());
     left_by_an_older_daemon(&mut s, "t", TaskState::Done);
-    exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();
+    exec(&mut s, Actor::System, Command::ReviewWaits).unwrap();
     assert!(s.interactions[&"plan".into()].withdrawn);
     assert!(notices(&s).is_empty());
 }
@@ -4477,14 +4443,14 @@ fn a_task_left_done_with_an_open_question_tells_the_user_once() {
     ask_aside(&mut s, "q");
     s.tasks.get_mut(&"t".into()).unwrap().final_presentation = Some("final".into());
     left_by_an_older_daemon(&mut s, "t", TaskState::Done);
-    exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();
+    exec(&mut s, Actor::System, Command::ReviewWaits).unwrap();
     let notice = format!("{ENDED_UNANSWERED_PREFIX}q");
     assert!(pending(&s, &notice) && !pending(&s, "q"));
     let card = &s.interactions[&InteractionId(notice.clone())].card;
     assert_eq!(card.effective_title(), "No longer waits for your answer: Decide whether to cover invalid card numbers");
     assert_eq!(card.why, "The work was finished before you answered");
     assert_eq!(card.content.as_ref().unwrap().body, "Cover card numbers that fail Luhn too?");
-    let again = exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();
+    let again = exec(&mut s, Actor::System, Command::ReviewWaits).unwrap();
     assert!(!again.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { .. })));
     assert_eq!(s.interactions.keys().filter(|id| id.0.starts_with(ENDED_UNANSWERED_PREFIX)).count(), 1);
 }
@@ -4541,7 +4507,7 @@ fn questions_to_the_orchestrator_left_on_ended_tasks_by_an_older_daemon_are_take
         s.tasks.get_mut(&"t".into()).unwrap().final_presentation = Some("final".into());
         left_by_an_older_daemon(&mut s, "t", ended);
         assert!(s.open(&s.interactions[&"orch".into()]), "{ended:?}: the old state has it open");
-        exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();
+        exec(&mut s, Actor::System, Command::ReviewWaits).unwrap();
         orchestrator_question_is_settled(&s, "orch");
     }
 }
@@ -4659,7 +4625,7 @@ fn a_node_waiting_on_a_task_is_resumed_once_when_that_task_is_done() {
     let result = s.interactions[s.tasks[&"t".into()].final_presentation.as_ref().unwrap()].body.clone();
     let landed = Landed { title: "Result".into(), cancelled: false, result: Some(result_excerpt(&result).text), merged_pr: None };
     assert_eq!(resumed, vec![(Some("waits".into()), dependencies_done_notice(&[landed], BranchUpdate::Rebase))]);
-    let later = exec(&mut s, Actor::System, Command::ReconcileNodes { listed: BTreeMap::new(), at: 0 }).unwrap();
+    let later = exec(&mut s, Actor::System, Command::ReviewWaits).unwrap();
     assert!(!later.effects.iter().any(|e| matches!(e, DomainEffect::NotifyAgent { .. })));
 }
 #[test]
@@ -5412,12 +5378,12 @@ fn a_crash_report_is_offered_for_the_last_failure_a_report_explains() {
     exec(&mut ended, Actor::System, Command::RecordHostEnded { task_id: "sdk".into(), generation: 1, resumes: false, ended_work: vec![], by_alondra: false }).unwrap();
     assert_eq!(offered(&ended), Some(ReportedFailure::SessionEnded));
     let mut paused = sdk.clone();
-    exec(&mut paused, Actor::System, Command::MoveNode { agent_id: "s".into(), at: 1, event: NodeEvent::Paused { pause: Pause {
+    exec(&mut paused, Actor::System, Command::MoveNode { agent_id: "s".into(), event: NodeEvent::Paused { pause: Pause {
         reason: PauseReason::ByUser, since: 1, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false } } }).unwrap();
     exec(&mut paused, Actor::System, Command::RecordHostEnded { task_id: "sdk".into(), generation: 1, resumes: true, ended_work: vec![], by_alondra: true }).unwrap();
     assert_eq!(offered(&paused), None, "a pause by the user stops the host: that is no failure");
     let mut held = sdk.clone();
-    exec(&mut held, Actor::System, Command::MoveNode { agent_id: "s".into(), at: 1, event: NodeEvent::Paused { pause: Pause {
+    exec(&mut held, Actor::System, Command::MoveNode { agent_id: "s".into(), event: NodeEvent::Paused { pause: Pause {
         reason: PauseReason::Disk, since: 1, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false } } }).unwrap();
     exec(&mut held, Actor::System, Command::RecordHostEnded { task_id: "sdk".into(), generation: 1, resumes: true, ended_work: vec![], by_alondra: false }).unwrap();
     assert_eq!(offered(&held), Some(ReportedFailure::SessionEnded), "no other pause stops the host: its end is a failure");

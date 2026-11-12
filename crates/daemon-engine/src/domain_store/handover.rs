@@ -103,6 +103,7 @@ impl DomainStore {
 
     /// Records the plan of `node`'s move. The first plan this database records keeps a private
     /// copy of it first, as it was. False when the node already has a move.
+    #[cfg(test)]
     pub(crate) fn plan_handover(&mut self, node: &AgentId, task: &TaskId, plan: &Plan) -> Result<bool> {
         let first: bool = self.conn.query_row("SELECT NOT EXISTS(SELECT 1 FROM sdk_handover_steps)", [], |r| r.get(0))?;
         if first {

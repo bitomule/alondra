@@ -160,17 +160,9 @@ struct FakeSessions {
     stop_panics: AtomicBool,
     /// Whether the node was on a turn at each stop.
     busy_at_stop: Mutex<Vec<bool>>,
-    /// The connection a stop drops, which the revival then sees lost.
-    drops_on_stop: Mutex<Option<u64>>,
 }
 
-const REVIVAL: crate::node_revival::Timing = crate::node_revival::Timing { grace: std::time::Duration::from_millis(10) };
-
 impl BgSessions for FakeSessions {
-    fn seen(&self, _: &DomainRuntime, _: &str) -> Option<HandoverProcess> {
-        None
-    }
-
     fn listed<'a>(&'a self, _: &'a str) -> Answer<'a, Result<Option<HandoverProcess>, String>> {
         Box::pin(async { Ok(None) })
     }
@@ -185,11 +177,6 @@ impl BgSessions for FakeSessions {
             let domain = self.domain.get().and_then(Weak::upgrade);
             if let Some(domain) = &domain {
                 self.busy_at_stop.lock().unwrap().push(domain.live.node(session).is_some_and(|node| node.busy));
-            }
-            let dropped = self.drops_on_stop.lock().unwrap().take();
-            if let (Some(connection), Some(domain)) = (dropped, &domain) {
-                domain.live.mods.disconnect(session, connection);
-                crate::node_revival::revive(domain, session, &REVIVAL).await;
             }
             Ok(())
         })
@@ -352,8 +339,6 @@ async fn a_launch_is_refused_for_a_closed_or_taken_task() {
     let f = world();
     let actor = the_orchestrator(&f.domain);
     command(&f.domain, actor.clone(), Command::AssignTask { task_id: "t".into(), agent_id: "agent-b".into(), model: None });
-    crate::domain_agent_lifecycle::move_instance(&f.domain, &"agent-b".into(), alondra_core::domain::NodeEvent::TurnStarted,
-        &crate::domain_agent_lifecycle::prepare_event(&f.domain, "start-b").unwrap()).unwrap();
     let taken = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap_err();
     assert_eq!(taken.code, "conflict");
     command(&f.domain, user(), Command::CancelTask { task_id: "t".into() });
@@ -910,7 +895,7 @@ async fn a_task_in_progress_whose_node_died_is_relaunched_and_assigned_to_the_ne
     f.domain.stop_sdk_host(&old).unwrap();
     let (backend, runtime) = f.domain.sdk().unwrap();
     crate::sdk_owner::end_unowned_host(runtime, backend, "t".into()).unwrap();
-    crate::node_revival::take_out(&f.domain, &old.0, "the native process ended", Some(f.project.to_str().unwrap().into()), crate::live::Relaunch::AskUser).unwrap();
+    crate::node_exit::take_out(&f.domain, &old.0, "the native process ended", Some(f.project.to_str().unwrap().into()), crate::live::Relaunch::AskUser).unwrap();
     assert!(f.task_node().is_none(), "the confirmed exit releases the old assignment before recovery");
     answer_ended_cards(&f);
     let answer = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
@@ -967,7 +952,7 @@ fn close_sdk_node(f: &Fixture, agent: &AgentId) {
     f.domain.stop_sdk_host(agent).unwrap();
     let (backend, runtime) = f.domain.sdk().unwrap();
     crate::sdk_owner::end_unowned_host(runtime, backend, "t".into()).unwrap();
-    crate::node_revival::user_closed(&f.domain, &agent.0).unwrap();
+    crate::node_exit::user_closed(&f.domain, &agent.0).unwrap();
     answer_ended_cards(f);
 }
 
@@ -1009,23 +994,7 @@ fn connected_node_on_the_task(f: &Fixture) -> u64 {
 fn connected_node(f: &Fixture, agent: &str) -> u64 {
     give(f, "t", agent);
     command(&f.domain, Actor::Agent { agent_id: agent.into() }, Command::StartTask { task_id: "t".into() });
-    crate::domain_agent_lifecycle::move_instance(&f.domain, &agent.into(), alondra_core::domain::NodeEvent::TurnStarted,
-        &crate::domain_agent_lifecycle::prepare_event(&f.domain, &format!("start-{agent}")).unwrap()).unwrap();
     f.domain.connect_node(serde_json::from_value(json!({"session_id": agent, "version": "2.1.287", "cwd": f.project.to_str().unwrap()})).unwrap(), 1)
-}
-
-#[tokio::test]
-async fn the_replaced_node_is_never_revived_when_its_stop_drops_the_connection() {
-    let f = world();
-    let connection = connected_node_on_the_task(&f);
-    *f.sessions.drops_on_stop.lock().unwrap() = Some(connection);
-    stop_replaced(&f.domain, &"agent-b".into()).await.unwrap();
-    assert_eq!(*f.sessions.stopped.lock().unwrap(), ["agent-b"]);
-    let agent_b = AgentId::from("agent-b");
-    assert!(!crate::sdk_handover::moved(&f.domain, &agent_b), "the revival saw the stop and did not bring the old node back");
-    crate::node_revival::revive(&f.domain, "agent-b", &REVIVAL).await;
-    assert!(!crate::sdk_handover::moved(&f.domain, &agent_b), "nor later when the daemon reports every known session as lost");
-    assert!(f.sdk().starts().is_empty(), "stopping a legacy process does not invent a native session");
 }
 
 #[tokio::test]
@@ -1049,7 +1018,7 @@ async fn replacing_a_tasks_node_stops_it_keeps_its_folder_and_gives_the_task_to_
     let state = f.domain.state().unwrap();
     assert_eq!(state.agents[&agent].name, "Instance B", "it keeps the old node's name");
     assert_eq!(state.tasks[&TaskId::from("t")].agent_id, Some(agent));
-    assert!(!state.agents[&old].phase.holds_slot(), "the old node is disconnected");
+    assert!(!state.slots().iter().any(|agent| agent.id == old), "the old node is disconnected");
     assert!(f.domain.live.closed_task_ids().is_empty());
 }
 
@@ -1063,7 +1032,7 @@ async fn a_replacement_that_cannot_launch_leaves_the_old_node_working() {
     assert!(f.sessions.stopped.lock().unwrap().is_empty() && f.sdk().starts().is_empty());
     let state = f.domain.state().unwrap();
     assert_eq!(state.tasks[&TaskId::from("t")].agent_id, Some(AgentId::from("agent-b")));
-    assert!(state.agents[&AgentId::from("agent-b")].phase.holds_slot());
+    assert!(state.agents[&AgentId::from("agent-b")].phase.live());
 
     command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: "free".into(), request_id: "r".into(), title: "Free".into(),
         agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
@@ -1108,7 +1077,7 @@ async fn a_replacement_whose_stop_fails_launches_nothing_and_the_old_node_keeps_
     assert_eq!(state.tasks[&TaskId::from("t")].agent_id, Some(AgentId::from("agent-b")), "the old node keeps its task");
     assert_eq!(state.tasks[&TaskId::from("t")].state, TaskState::Running);
     assert_eq!(state.agents.len(), 1, "no new agent was registered");
-    assert!(state.agents[&AgentId::from("agent-b")].phase.holds_slot() && !f.domain.live.is_closed("agent-b"));
+    assert!(state.agents[&AgentId::from("agent-b")].phase.live() && !f.domain.live.is_closed("agent-b"));
 }
 
 fn release_reasons(f: &Fixture) -> Vec<String> {
@@ -1140,21 +1109,6 @@ async fn a_replacement_inherits_only_a_worktree_alondra_owned() {
     assert_eq!(g.domain.inherited_worktree(&agent_of(&answer).0).unwrap().as_deref(), Some(dir), "a worktree passed down a chain of replacements stays Alondra's");
 }
 
-/// `claude stop` can report a failure for a session that ended anyway: the replacement goes on.
-#[tokio::test]
-async fn a_replacement_whose_stop_errs_but_whose_node_ended_finishes() {
-    let f = world();
-    connected_node_on_the_task(&f);
-    f.domain.live.mods.set_job("agent-b", None, Some(f.root.join("jobs/gone")));
-    *f.sessions.stop_fails.lock().unwrap() = Some("claude stop timed out".into());
-    stop_replaced(&f.domain, &"agent-b".into()).await.unwrap();
-    crate::node_revival::take_out(&f.domain, "agent-b", "node replaced by the orchestrator", Some(f.project.display().to_string()), crate::live::Relaunch::ByItself).unwrap();
-    assert!(f.domain.live.is_closed("agent-b"));
-    assert_eq!(f.task_node(), None, "positive end evidence lets the caller release the task");
-    assert_eq!(release_reasons(&f), ["node replaced by the orchestrator"]);
-    assert!(f.sdk().starts().is_empty(), "this historical stop test does not invent recoverable native history");
-}
-
 /// The node a replacement could not stop ends later: the task is freed for that reason, never as
 /// closed by the user, and Alondra starts its next node by itself instead of asking the
 /// orchestrator to.
@@ -1164,9 +1118,9 @@ async fn a_node_that_ends_after_its_replacement_stopped_short_frees_its_task_to_
     connected_node_on_the_task(&f);
     *f.sessions.stop_fails.lock().unwrap() = Some("claude agents still shows agent-b running after claude stop".into());
     stop_replaced(&f.domain, &"agent-b".into()).await.unwrap_err();
-    crate::node_revival::user_closed(&f.domain, "agent-b").unwrap();
+    crate::node_exit::user_closed(&f.domain, "agent-b").unwrap();
     assert_eq!(f.task_node(), None, "the task is free");
-    assert_eq!(release_reasons(&f), [crate::node_revival::REPLACE_ABORTED]);
+    assert_eq!(release_reasons(&f), [crate::node_exit::REPLACE_ABORTED]);
     assert_eq!(f.domain.live.closed_task("t").map(|node| node.relaunch), Some(crate::live::Relaunch::ByItself));
     assert!(f.domain.live.user_closed_task_ids().is_empty(), "nobody is asked to relaunch it");
     assert!(told_orchestrator(&f, "replace-aborted-").is_empty(), "the orchestrator is not asked to launch it");
@@ -1493,7 +1447,7 @@ async fn an_ended_session_leaves_no_inherited_worktree_or_aborted_replace_behind
     connected_node_on_the_task(&f);
     f.domain.set_inherited_worktree("agent-b", f.project.to_str().unwrap(), "agent-a").unwrap();
     f.domain.live.note_aborted_replace("agent-b", "stop failed");
-    crate::node_revival::take_out(&f.domain, "agent-b", "node closed by the user", None, crate::live::Relaunch::AskUser).unwrap();
+    crate::node_exit::take_out(&f.domain, "agent-b", "node closed by the user", None, crate::live::Relaunch::AskUser).unwrap();
     assert_eq!(f.domain.inherited_worktree("agent-b").unwrap(), None);
     assert_eq!(f.domain.live.take_aborted_replace("agent-b"), None);
 }
@@ -1640,35 +1594,8 @@ async fn an_unverified_legacy_native_session_is_kept_until_it_can_be_recovered()
     let state = f.domain.state().unwrap();
     assert_eq!(state.tasks[&TaskId::from("t")].agent_id, original.agent_id);
     assert_eq!(state.tasks[&TaskId::from("t")].account_key(), original.account_key());
-    assert!(state.agents[&AgentId::from("agent-b")].phase.holds_slot());
+    assert!(state.agents[&AgentId::from("agent-b")].phase.live());
     assert!(!f.domain.live.is_closed("agent-b"));
-}
-
-struct NoBgSessions;
-
-impl crate::node_close::Sessions for NoBgSessions {
-    fn claude<'a>(&'a self, _: Vec<String>) -> Answer<'a, Result<crate::node_close::Ran, String>> {
-        Box::pin(async { Ok(crate::node_close::Ran::ok("[]")) })
-    }
-    fn leftovers<'a>(&'a self, _: &'a str) -> Answer<'a, Option<String>> {
-        Box::pin(async { None })
-    }
-}
-
-// `claude agents` lists only claude --bg sessions: a node of the SDK missing from it is not lost,
-// and stays live while its task is open.
-#[tokio::test]
-async fn a_node_of_the_sdk_missing_from_claudes_listing_stays_live() {
-    let f = world();
-    let agent = agent_of(&launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap());
-    assert!(crate::node_reconcile::once(&f.domain, &NoBgSessions).await);
-    let first = alondra_core::now_millis();
-    while alondra_core::now_millis() <= first {
-        tokio::task::yield_now().await;
-    }
-    assert!(crate::node_reconcile::once(&f.domain, &NoBgSessions).await, "a starting node is judged on a second look");
-    let phase = f.domain.state().unwrap().agents[&agent].phase.clone();
-    assert!(phase.live() && phase != alondra_core::domain::NodePhase::Lost, "{phase:?}");
 }
 
 #[tokio::test]
@@ -1845,7 +1772,7 @@ async fn a_started_legacy_background_node_cannot_be_stopped_to_select_another_ac
     assert!(f.sessions.stopped.lock().unwrap().is_empty(),"wrong-account replacement is refused before stopping the legacy native session");
     assert_eq!(f.sdk().starts(),before);assert!(f.domain.live.mods.session("agent-b").is_some());
     assert!(!f.domain.live.is_closed("agent-b"));
-    assert!(f.domain.state().unwrap().agents[&AgentId::from("agent-b")].phase.holds_slot());
+    assert!(f.domain.state().unwrap().agents[&AgentId::from("agent-b")].phase.live());
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].account_key().account,AccountId::default_account());
 }
 

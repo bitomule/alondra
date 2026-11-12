@@ -77,8 +77,6 @@ INTEGRATION_FILTERS = [
     "domain_orchestrator_tools::tests::",
     "domain_schedule_api::tests::",
     "domain_schedule_runner::tests::",
-    "node_reconcile::tests::",
-    "node_revival::tests::",
     "orchestrator_codex::",
     "orchestrator_sdk::tests::",
     "pauses::tests::",

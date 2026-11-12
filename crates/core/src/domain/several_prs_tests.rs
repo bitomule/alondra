@@ -41,12 +41,24 @@ fn at_work() -> DomainState {
     must(&mut s, Actor::System, Command::RegisterAgent { agent_id: AGENT.into(), name: "Node".into(), at: 0 });
     must(&mut s, user(), Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
     must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
-        task_id: TASK.into(), request_id: "r".into(), title: "Fix the phone menu".into(), agent_id: Some(AGENT.into()), review_prs: false,
+        task_id: TASK.into(), request_id: "r".into(), title: "Fix the phone menu".into(), agent_id: None, review_prs: false,
         dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
     });
-    must(&mut s, node(), Command::StartTask { task_id: TASK.into() });
-    must(&mut s, Actor::System, Command::MoveNode { agent_id: AGENT.into(), event: NodeEvent::TurnStarted, at: 1 });
+    must(&mut s, Actor::System, Command::AdmitExecution { provider: crate::accounts::Provider::Claude, task_id: TASK.into(), agent_id: AGENT.into(),
+        conversation: "conversation".into(), instance: "instance".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None });
+    let LifecycleRecord::Planned { input } = s.lifecycle_journal[&TaskId::from(TASK)][0].clone() else { panic!("planned first") };
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: TASK.into(), generation: 1, facts: vec![
+        RuntimeObservation::ResourceAvailable,
+        RuntimeObservation::TurnStarted { turn: TURN.into(), input },
+    ] });
     s
+}
+
+const TURN: &str = "turn-1";
+
+/// The node's turn ends after what it did in it.
+fn turn_ends(s: &mut DomainState) {
+    must(s, Actor::System, Command::RecordTurnBoundary { task_id: TASK.into(), generation: 1, turn: TURN.into(), failure: None, failed: None });
 }
 
 fn register(s: &mut DomainState, repository: &str, number: u64, head: &str) {
@@ -340,6 +352,7 @@ pub(crate) fn two_open_prs() -> DomainState {
     register(&mut s, "bitomule/alondra", 17, FIRST_HEAD);
     register(&mut s, "acme/storefront", 6, CLOUD_HEAD);
     must(&mut s, node(), result("final", vec![pr(PUBLIC, "")], true));
+    turn_ends(&mut s);
     s
 }
 

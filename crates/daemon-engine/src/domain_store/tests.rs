@@ -821,10 +821,6 @@ fn work_declared_after_the_merge_survives_a_restart_and_leaves_no_row_once_it_en
     let work = store.load().unwrap().tasks[&"task-1".into()].wrap_up.post_merge_work.clone().unwrap();
     assert_eq!(work.reason, "release.sh publishes 0.2.54");
     assert!(!work.turn_since);
-    execute(&mut store, &Actor::System, "turn", Command::MoveNode { agent_id: "agent-1".into(), event: alondra_core::domain::NodeEvent::TurnStarted, at: 1 });
-    drop(store);
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
-    assert!(store.load().unwrap().tasks[&"task-1".into()].wrap_up.post_merge_work.clone().unwrap().turn_since, "the turn begun since survives a restart");
     execute(&mut store, &agent(), "finished", declare(None));
     assert_eq!((count(&store, "task_post_merge_work"), count(&store, "task_post_merge_turns")), (0, 0));
 }
@@ -2136,7 +2132,7 @@ fn a_command_about_another_task_leaves_a_task_as_its_journal_left_it() {
     let events = |store: &DomainStore| -> i64 { store.conn.query_row("SELECT count(*) FROM lifecycle_events WHERE task_id='task-1'", [], |r| r.get(0)).unwrap() };
     let kept = events(&store);
     execute(&mut store, &Actor::System, "last-words", Command::RecordLastWords { agent_id: "agent-1".into(), text: "Still here".into() });
-    execute(&mut store, &Actor::System, "listed", Command::ReconcileNodes { listed: Default::default(), at: 1 });
+    execute(&mut store, &Actor::System, "listed", Command::ReviewWaits);
     let after = store.load().unwrap();
     assert_eq!(after.tasks[&TaskId::from("task-1")].state, before.tasks[&TaskId::from("task-1")].state);
     assert_eq!(after.tasks[&TaskId::from("task-1")].agent_id, before.tasks[&TaskId::from("task-1")].agent_id);

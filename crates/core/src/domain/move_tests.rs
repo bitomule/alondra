@@ -189,7 +189,7 @@ fn a_delivery_moved_while_the_user_reviews_it_waits_for_the_review_and_goes_on_o
 fn a_disk_pause_ends_with_the_move_of_the_task_it_paused() {
     let mut s = on_codex();
     must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Paused { pause: Pause {
-        reason: PauseReason::Disk, since: 5, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false } }, at: 5 });
+        reason: PauseReason::Disk, since: 5, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false } } });
     assert_eq!(situation(&s), Situation::Waiting(WaitsFor::Disk));
     moved_and_deferred(&mut s);
     assert_eq!(s.node_pause(&"a".into()), None, "the pause ended with the node it paused");

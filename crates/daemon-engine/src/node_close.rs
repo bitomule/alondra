@@ -142,7 +142,7 @@ pub async fn close_node(
     };
     if !listed(&listing, &short) {
         if leave_if_not_listed {
-            crate::node_revival::user_closed(domain, agent_id)?;
+            crate::node_exit::user_closed(domain, agent_id)?;
         }
         return Ok(CloseOutcome::NotListed);
     }
@@ -156,9 +156,6 @@ pub async fn close_node(
     let removed = remove(domain, sessions, agent_id, &short).await;
     if watched {
         domain.live.end_watch(agent_id);
-    }
-    if !matches!(removed, Ok(CloseOutcome::Closed { .. })) && !domain.live.is_closed(agent_id) {
-        domain.live.losses.report(agent_id);
     }
     removed
 }
@@ -201,7 +198,7 @@ async fn remove(domain: &DomainRuntime, sessions: &dyn Sessions, agent_id: &str,
                 if let Some(dir) = worktree.as_ref().filter(|d| d.exists()) {
                     return Ok(failed(StatusCode::CONFLICT, format!("{short} is gone from claude agents but its worktree is still at {}", dir.display())));
                 }
-                crate::node_revival::user_closed(domain, agent_id)?;
+                crate::node_exit::user_closed(domain, agent_id)?;
                 return Ok(CloseOutcome::Closed { output: said });
             }
             Ok(_) => continue,

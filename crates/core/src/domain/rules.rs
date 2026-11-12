@@ -2756,7 +2756,6 @@ impl DomainState {
         next.withdraw_deliveries_asked_after(&mut effects, &mut lifecycles)?;
         next.withdraw_deliveries_behind_their_pr(&mut effects, &mut lifecycles)?;
         next.adopt_declared_post_merge(&mut lifecycles)?;
-        next.adopt_sdk_nodes(&mut lifecycles)?;
         next.finish_settled_deliveries(&mut lifecycles)?;
         next.withdraw_cancelled_requests(self, actor);
         next.derive_states();
@@ -2795,7 +2794,6 @@ impl DomainState {
             }
         }
         next.wrap_up_step(&mut effects);
-        next.settle_nodes();
         // Compacting an ended task changes nothing a screen shows of it, so the buttons it already
         // shows, which carry its revision, stay valid.
         let touched = if matches!(envelope.command, Command::CompactEndedTasks { .. }) { BTreeSet::new() } else { self.touched_tasks(&next) };
@@ -2819,7 +2817,6 @@ impl DomainState {
             outside.map(|line| vec![line.to_owned()]).unwrap_or_default()
         };
         next.validate()?;
-        next.validate_nodes()?;
         next.validate_lifecycles(touched.iter())?;
         let superseded_acceptances = self
             .interactions
@@ -3119,10 +3116,6 @@ impl DomainState {
                 system(actor)?;
                 self.schedule.interrupt_on_restart();
             }
-            Command::AdoptSdkNodes => {
-                system(actor)?;
-                self.adopt_sdk_nodes(lifecycles)?;
-            }
             Command::ReviewWaits => system(actor)?,
             Command::BeginAccountLogin { account, attempt, started_at } => self.begin_account_login(actor, account, attempt, *started_at)?,
             Command::CancelAccountLogin { account, attempt } => self.cancel_account_login(actor, account, attempt)?,
@@ -3353,25 +3346,15 @@ impl DomainState {
                     Agent {
                         id: agent_id.clone(),
                         name: name.clone(),
-                        phase: NodePhase::Starting { reviving: false, idle_since: None },
+                        phase: NodePhase::ThroughSdk,
                         since: *at,
                     },
                 );
                 created.push(agent_id.0.clone());
             }
-            Command::MoveNode { agent_id, event, at } => {
+            Command::MoveNode { agent_id, event } => {
                 system(actor)?;
-                if self.through_sdk(agent_id) || self.node_phase(agent_id) == Some(&NodePhase::ThroughSdk) {
-                    return self.move_sdk_node(agent_id, event, *at, lifecycles);
-                }
-                self.move_node(agent_id, event, *at)?;
-                self.post_merge_turn(agent_id, event, lifecycles)?;
-                if *event == NodeEvent::TurnStarted {
-                    let task = self.node_task(agent_id).filter(|t| !t.state.terminal() && t.agent_id.as_ref() == Some(agent_id)).map(|t| t.id.clone());
-                    if let Some(task) = task {
-                        self.node_has_run(&task, lifecycles)?;
-                    }
-                }
+                self.move_node(agent_id, event, lifecycles)?;
             }
             Command::RecordLastWords { agent_id, text } => {
                 system(actor)?;
@@ -3379,10 +3362,6 @@ impl DomainState {
                     return fail("not_found", "Agent missing");
                 }
                 self.last_words.insert(agent_id.clone(), clip(text.trim(), LAST_WORDS_MAX));
-            }
-            Command::ReconcileNodes { listed, at } => {
-                system(actor)?;
-                self.reconcile_nodes(listed, *at);
             }
             Command::AdvanceOrchestratorGeneration { generation } => {
                 system(actor)?;

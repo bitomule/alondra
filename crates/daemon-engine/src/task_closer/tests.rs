@@ -721,27 +721,6 @@ async fn hours_of_work_after_the_merge_ask_nothing_raise_no_card_and_close_nothi
     assert!(rig.post_merge_cards().is_empty() && rig.cards().is_empty());
 }
 
-/// After the merge the turn the node does its work in ends without declaring it again: that turn
-/// end is the fact that ends the work, and the usual wait for its cleanup then closes it.
-#[tokio::test]
-async fn a_turn_after_the_merge_that_ends_without_declaring_again_ends_the_work_and_the_node_closes() {
-    use alondra_core::domain::NodeEvent;
-    let rig = Rig::merged(Some("publish the release"));
-    rig.pass(T0).await;
-    rig.node_event(NodeEvent::TurnStarted);
-    rig.domain.live.observe(&hook("UserPromptSubmit"));
-    rig.pass(T0 + 5 * HOUR).await;
-    assert_eq!(rig.sessions.removals(), 0, "it works on it");
-    rig.domain.live.observe(&hook("Stop"));
-    rig.node_event(NodeEvent::TurnEnded);
-    assert!(!rig.domain.state().unwrap().post_merge_owed(&rig.task()), "its turn ended without declaring it again");
-    rig.pass(T0 + 5 * HOUR + MINUTE).await;
-    rig.pass(T0 + 5 * HOUR + 31 * MINUTE).await;
-    assert_eq!(rig.sessions.removals(), 1);
-    rig.assert_done(NodeEnd::Closed);
-    assert!(rig.post_merge_cards().is_empty());
-}
-
 #[tokio::test]
 async fn a_node_whose_work_after_the_merge_the_user_ended_on_any_card_closes_without_waiting_for_its_cleanup() {
     let rig = Rig::new(thirty_minutes());
@@ -938,7 +917,7 @@ impl Rig {
         self.sessions.listed.lock().unwrap().clear();
         self.domain.live.observe(&hook("SessionEnd"));
         let agent = alondra_core::domain::AgentId(SESSION.into());
-        crate::domain_agent_lifecycle::node_event(&self.domain, &agent, alondra_core::domain::NodeEvent::SessionLost).unwrap();
+        crate::domain_agent_lifecycle::node_event(&self.domain, &agent, alondra_core::domain::NodeEvent::SessionClosed).unwrap();
         crate::domain_transport::session_ended(&self.domain, &agent).unwrap();
     }
 

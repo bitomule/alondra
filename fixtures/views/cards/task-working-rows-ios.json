@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v75857da572d7da90",
+  "version": "v07af01120f3bc32d",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -109,6 +109,27 @@
                   "title": "In the background: `Check the links` and 1 more · since 09:40 · Said: “The checks passed.” 09:31",
                   "depth": 0,
                   "struck": false
+                }
+              ],
+              "actions": [
+                {
+                  "id": "pause:a-background@0",
+                  "label": "Pause",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "confirm": {
+                    "title": "Pause this node?",
+                    "message": "It stops what it is running now and keeps its task. Alondra does not resume it by itself: only you do.",
+                    "button": "Pause"
+                  },
+                  "enabled": true,
+                  "stamp": "Paused",
+                  "resolves_card": false
                 }
               ]
             },

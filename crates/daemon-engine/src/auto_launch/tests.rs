@@ -731,7 +731,7 @@ async fn a_node_the_user_closes_asks_to_relaunch_and_the_relaunch_starts_a_new_n
     f.domain.stop_sdk_host(&node).unwrap();
     let (backend, runtime) = f.domain.sdk().unwrap();
     crate::sdk_owner::end_unowned_host(runtime, backend, "f1".into()).unwrap();
-    crate::node_revival::take_out(&f.domain, &node.0, "node closed by the user", Some(f.project.to_str().unwrap().into()), crate::live::Relaunch::AskUser).unwrap();
+    crate::node_exit::take_out(&f.domain, &node.0, "node closed by the user", Some(f.project.to_str().unwrap().into()), crate::live::Relaunch::AskUser).unwrap();
     assert!(agent_of(&f, "f1").is_none());
     let state = f.domain.state().unwrap();
     let cases: Vec<_> = state.interactions.values()
@@ -982,7 +982,7 @@ async fn a_node_alondra_closed_is_relaunched_by_itself_and_a_failed_relaunch_is_
     f.domain.stop_sdk_host(&node).unwrap();
     let (backend, runtime) = f.domain.sdk().unwrap();
     crate::sdk_owner::end_unowned_host(runtime, backend, "f1".into()).unwrap();
-    crate::node_revival::take_out(&f.domain, &node.0, crate::node_revival::REPLACE_ABORTED, Some(f.project.to_str().unwrap().into()),
+    crate::node_exit::take_out(&f.domain, &node.0, crate::node_exit::REPLACE_ABORTED, Some(f.project.to_str().unwrap().into()),
         crate::live::Relaunch::ByItself).unwrap();
     let state = f.domain.state().unwrap();
     let cases: Vec<_> = state.interactions.values()

@@ -193,33 +193,9 @@ impl DomainRuntime {
             #[cfg(any(test, feature = "test-hooks"))]
             index_builds: Default::default(),
         };
-        runtime.adopt_sdk_nodes()?;
         runtime.review_waits()?;
         runtime.run_request_tasks(Command::AcknowledgeRequestTasks)?;
         Ok(runtime)
-    }
-    /// Moves every node of the Agent SDK an older daemon left in a phase of its own to its task's
-    /// lifecycle, before the gate or an SDK owner reads the domain.
-    fn adopt_sdk_nodes(&self) -> Result<()> {
-        let state = self.state()?;
-        if state.unadopted_sdk_nodes().is_empty() {
-            return Ok(());
-        }
-        let envelope = CommandEnvelope {
-            protocol_version: PROTOCOL_VERSION,
-            data_epoch: state.data_epoch.clone(),
-            command_id: format!("adopt-sdk-nodes-{}", crate::auth::random_hex(8)).into(),
-            expected_revision: 0,
-            command: Command::AdoptSdkNodes,
-        };
-        match self.execute_as_system(envelope) {
-            Ok(_) => Ok(()),
-            Err(StoreError::Domain(error)) => {
-                log!("could not move the nodes of the Agent SDK to their tasks' lifecycles: {}", error.message);
-                Ok(())
-            }
-            Err(error) => Err(error.into()),
-        }
     }
     /// Ends every wait the store keeps whose waits are over, such as one whose dependency a newer
     /// release counts as landed: the task goes on, saved, and its node is told or it starts.
@@ -776,36 +752,17 @@ impl DomainRuntime {
     }
 
     /// Whether Alondra launched this session: a recorded launch, or a scheduled run it started.
-    /// A node mod connected: a session that says it is mid-turn tells the node machine so, as a
-    /// daemon that restarted meanwhile learns it.
+    /// A node mod connected.
     pub fn connect_node(&self, hello: crate::node_reports::Hello, at: alondra_core::Millis) -> u64 {
-        let (agent, working) = (AgentId(hello.session_id.clone()), hello.working);
-        let number = self.live.mods.connect(hello, at);
-        if working && let Err(error) = crate::domain_agent_lifecycle::node_event_at(self, &agent, alondra_core::domain::NodeEvent::TurnStarted, at) {
-            log!("could not record that {} is mid-turn: {error}", agent.0);
-        }
-        number
+        self.live.mods.connect(hello, at)
     }
 
-    /// A node mod's report: what it says is kept for the views, and a turn it started or a session
-    /// it ended goes to the node machine. A turn's end is the Stop hook's to say: only it knows
-    /// whether Alondra held the turn back.
+    /// A node mod's report: what it says is kept for the views.
     pub fn report(&self, envelope: crate::node_reports::Envelope, at: alondra_core::Millis) {
-        let happened = match envelope.report {
-            crate::node_reports::Report::TurnStart => Some(alondra_core::domain::NodeEvent::TurnStarted),
-            crate::node_reports::Report::SessionEnd => Some(alondra_core::domain::NodeEvent::SessionLost),
-            _ => None,
-        };
-        let agent = AgentId(envelope.session_id.clone());
         if let crate::node_reports::Report::PromptSubmit { origin } = envelope.report {
             self.live.observe_prompt(&envelope.session_id, origin);
         }
         self.live.mods.apply(envelope, at);
-        if let Some(happened) = happened
-            && let Err(error) = crate::domain_agent_lifecycle::node_event_at(self, &agent, happened, at)
-        {
-            log!("could not record what {} reported: {error}", agent.0);
-        }
     }
 
     pub(crate) fn launched_by_alondra(&self, agent: &AgentId) -> Result<bool> {
@@ -1273,14 +1230,12 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RecordScheduleLaunchHanded { .. }
         | Command::RecordScheduleRunFailed { .. }
         | Command::InterruptScheduleRunsOnRestart { .. }
-        | Command::AdoptSdkNodes
         | Command::ReviewWaits
         | Command::AnnounceRequestTasks
         | Command::AcknowledgeRequestTasks
         | Command::RegisterAgent { .. }
         | Command::MoveNode { .. }
         | Command::RecordLastWords { .. }
-        | Command::ReconcileNodes { .. }
         | Command::AdvanceOrchestratorGeneration { .. }
         | Command::BindOrchestratorSession { .. }
         | Command::HoldHook { .. }

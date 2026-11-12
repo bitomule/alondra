@@ -60,7 +60,7 @@ fn short_line(text: &str) -> Option<String> {
     Some(shorten(line))
 }
 
-pub(super) fn shorten(text: &str) -> String {
+fn shorten(text: &str) -> String {
     if text.chars().count() <= 60 { return text.into(); }
     format!("{}…", text.chars().take(59).collect::<String>())
 }

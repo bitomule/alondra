@@ -396,7 +396,7 @@ fn a_turn_that_ends_while_the_node_waits_for_the_machine_asks_nobody() {
     let card = InteractionId::from(sdk_turn(&mut s, "t", "a").as_str());
     let pause = Pause { reason: PauseReason::Declared { reason: "Bazel needs the disk".into() }, since: 5, cut: None, turn_since: None,
         cleanup: PauseCleanup::Done, released: false };
-    must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Paused { pause }, at: 5 });
+    must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Paused { pause }});
     let ended = end_turn(&mut s, "turn-1");
     assert!(!notified(&ended, &card));
     assert_eq!(s.live_state(&"t".into()), Some(alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::Machine)),
@@ -407,7 +407,7 @@ fn a_turn_that_ends_while_the_node_waits_for_the_machine_asks_nobody() {
     }
     assert!(!s.interactions.contains_key(&card), "the turn ends on the pause its task's lifecycle holds: no card says it stopped");
     must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "The Mac is fine again.".into(), from_user: false, answers: None });
-    must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Resumed, at: 6 });
+    must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Resumed});
     let lifecycle = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap();
     assert!(lifecycle.cards().is_empty(), "nothing holds the task: {:?}", lifecycle.cards());
     assert_eq!(lifecycle.activity(), alondra_domain::ActivityView::Starting, "its next turn starts with what it was told");
@@ -541,9 +541,9 @@ fn the_26_october_turn_that_ended_with_its_pr_registered_and_unpresented_wakes_t
         head: "head1".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
     });
     let pause = Pause { reason: PauseReason::Usage, since: 5, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false };
-    must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Paused { pause }, at: 5 });
+    must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Paused { pause }});
     must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "sigue".into(), from_user: false, answers: None });
-    must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Resumed, at: 6 });
+    must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Resumed});
     let input = lifecycle(&s).pending_inputs().first().map(|input| input.as_str().to_owned()).expect("«sigue» waits for the node");
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
         RuntimeObservation::TurnStarted { turn: "turn-2".into(), input },

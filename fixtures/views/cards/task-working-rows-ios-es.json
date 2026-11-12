@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v182b63314ca093ef",
+  "version": "v2e876c60384527b8",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -109,6 +109,27 @@
                   "title": "En segundo plano: `Check the links` y 1 más · desde las 09:40 · Dijo: «The checks passed.» 09:31",
                   "depth": 0,
                   "struck": false
+                }
+              ],
+              "actions": [
+                {
+                  "id": "pause:a-background@0",
+                  "label": "Pausar",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "confirm": {
+                    "title": "¿Pausar este nodo?",
+                    "message": "Deja lo que está ejecutando ahora y conserva su tarea. Alondra no lo reanuda solo: solo tú.",
+                    "button": "Pausar"
+                  },
+                  "enabled": true,
+                  "stamp": "En pausa",
+                  "resolves_card": false
                 }
               ]
             },

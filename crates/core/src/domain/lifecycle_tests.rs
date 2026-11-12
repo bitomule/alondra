@@ -76,11 +76,9 @@ pub(super) fn assert_aggregate_rules(s: &DomainState) {
     s.validate_journal().unwrap_or_else(|error| panic!("{error}"));
     let mut again = s.clone();
     again.derive_states();
-    again.settle_nodes();
     for (id, task) in &s.tasks {
         assert_eq!(&again.tasks[id], task, "derive_states moved the task {id} without a decision");
     }
-    assert_eq!(again.agents, s.agents, "settle_nodes moved a node without a decision");
     for card in s.interactions.values() {
         assert!(!(card.withdrawn && DomainState::answered_question(card)), "the card {} is answered and withdrawn, which the store refuses", card.id);
     }
@@ -143,8 +141,6 @@ fn cancelling_a_task_with_a_node_is_cancelled_only_with_the_node_end_receipt() {
     must(&mut s, node("a"), Command::StartTask { task_id: "t".into() });
     assert_eq!(lifecycle(&s, "t"), (TaskState::Running, true, Some("a".into()), None));
     assert_eq!(kinds(&s, "t"), ["planned", "admitted", "resource_available", "turn_started"]);
-    must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::TurnStarted, at: 1 });
-    assert!(s.slots().iter().any(|agent| agent.id.0 == "a"));
     assert_aggregate_rules(&s);
 
     let out = must(&mut s, user(), Command::CancelTask { task_id: "t".into() });
@@ -213,8 +209,6 @@ fn a_withdrawn_delivery_hands_the_task_back_and_the_next_turn_consumes_the_input
     assert_eq!(lifecycle(&s, "t"), (TaskState::Running, true, Some("a".into()), None));
     assert_eq!(kinds(&s, "t").last().map(String::as_str), Some("handed_back"));
     assert_aggregate_rules(&s);
-    must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::TurnStarted, at: 1 });
-    assert_eq!(kinds(&s, "t").last().map(String::as_str), Some("input_consumed"));
     deliver(&mut s, "t", "a", "d2");
     must(&mut s, user(), Command::AcceptDelivery { presentation_id: "d2".into(), targets: vec![DeliveryTarget::Text { text: "Done".into() }] });
     assert_eq!(lifecycle(&s, "t").0, TaskState::Closing);
@@ -1714,11 +1708,11 @@ fn a_pause_a_host_ended_in_while_the_node_worked_on_what_the_user_sent_back_ends
         for instruction in [Instruction::Changes, Instruction::Reply] {
             let mut s = world();
             working_on_what_the_user_sent_back(&mut s, instruction);
-            must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Paused { pause: gate_pause(reason.clone(), 5) }, at: 5 });
+            must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Paused { pause: gate_pause(reason.clone(), 5) }});
             must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: true, ended_work: vec!["claude-task:build".into()], by_alondra: false });
             let session = s.lifecycle_of(&"t".into()).unwrap().execution().cloned();
 
-            must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Resumed, at: 6 });
+            must(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::Resumed});
 
             let replayed = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap();
             assert_eq!(replayed.phase(), alondra_domain::TaskPhase::Delivered, "{reason:?} {instruction:?}");
@@ -2631,7 +2625,7 @@ fn a_managed_codex_answer_never_heals_an_original_paid_target_with_the_same_publ
 fn an_already_started_legacy_background_node_cannot_change_account_or_provider_at_sdk_handover(){
     use crate::accounts::{AccountId,Provider};
     let mut s=world();task(&mut s,"t",Some("a"));
-    must(&mut s,Actor::System,Command::MoveNode{agent_id:"a".into(),event:NodeEvent::TurnStarted,at:1});
+    must(&mut s,node("a"),Command::StartTask{task_id:"t".into()});
     assert!(s.tasks[&TaskId::from("t")].started);assert!(s.tasks[&TaskId::from("t")].selection.is_none());
     for (provider,account) in [(Provider::Codex,None),(Provider::Claude,Some(AccountId::parse("work").unwrap()))]{
         let revision=s.revision;let journal=s.lifecycle_journal.clone();
