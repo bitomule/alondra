@@ -75,6 +75,18 @@ impl From<Situation> for Reckoned {
     }
 }
 
+impl Situation {
+    /// A paused task whose next start already waits in the gate's queue waits for a slot, not for the user:
+    /// the gate is the only thing that holds it. The queue is the daemon's, so it is told here, once.
+    #[must_use]
+    pub fn queued_at_gate(self, queued: bool) -> Self {
+        match self {
+            Self::Paused if queued => Self::Waiting(WaitsFor::Slot),
+            other => other,
+        }
+    }
+}
+
 impl DomainState {
     /// The one state `task` shows, given what the inbox lists of it.
     pub fn situation(&self, task: &Task, listing: &Listing<'_>) -> Reckoned {
@@ -160,6 +172,7 @@ fn without_lifecycle(task: &Task) -> Situation {
         TaskState::AwaitingBlocker => Situation::Delivered(Delivery::Blocked),
         TaskState::ForYourReview => Situation::Delivered(Delivery::ForReview),
         TaskState::WaitingDependency => Situation::Waiting(WaitsFor::Tasks),
+        TaskState::Closing if task.cancelled() => Situation::Cancelled,
         TaskState::Closing => Situation::Delivered(Delivery::Closing),
         TaskState::Done => Situation::Finished,
         TaskState::Cancelled => Situation::Cancelled,

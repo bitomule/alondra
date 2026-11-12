@@ -4,12 +4,12 @@
   "view": "card",
   "key": "card:github.com/example/repo#12",
   "client": "mac",
-  "version": "vd5e969336be872e6",
+  "version": "va44ce58981af0a40",
   "cursor": "cursor-1",
   "title": "Review the beta candidate",
   "status": {
-    "version": "v21e817e49a9c8092",
-    "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+    "version": "v7aaf7463a05118f9",
+    "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
     "badge": 5,
     "counts": [
       {

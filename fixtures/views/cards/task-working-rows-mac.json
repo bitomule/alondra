@@ -4,12 +4,12 @@
   "view": "tasks",
   "key": "tasks",
   "client": "mac",
-  "version": "v29db30ab7012546a",
+  "version": "vbb226fc1ff15fdbc",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
-    "version": "v5ed76fed389422b8",
-    "summary": "4 nodes working",
+    "version": "v1db7915796a90317",
+    "summary": "4 tasks working",
     "badge": 0,
     "counts": [
       {

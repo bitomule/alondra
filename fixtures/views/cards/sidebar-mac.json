@@ -4,7 +4,7 @@
   "view": "sidebar",
   "key": "sidebar",
   "client": "mac",
-  "version": "ve78422abce73ef2f",
+  "version": "vbe970388d8773b72",
   "cursor": "cursor-1",
   "status": {
     "version": "v6aa5809268a89138",
@@ -261,12 +261,12 @@
       "view": "card",
       "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
       "client": "mac",
-      "version": "vef39396d6388d9b5",
+      "version": "v31f91fd0eda23663",
       "cursor": "cursor-1",
       "title": "Choose the welcome copy",
       "status": {
-        "version": "vf84c4996f0984c30",
-        "summary": "2 questions · 3 to read · 0 nodes working",
+        "version": "v65386d57058832ba",
+        "summary": "2 questions · 3 to read · 0 tasks working",
         "badge": 5,
         "counts": [
           {
@@ -464,12 +464,12 @@
       "view": "card",
       "key": "card:8fa4034b-249e-4487-a89b-57de38c26372",
       "client": "mac",
-      "version": "v6826de97d6637086",
+      "version": "v265823e59d789b28",
       "cursor": "cursor-1",
       "title": "Ship the compact schedule editor with this beta?",
       "status": {
-        "version": "vf84c4996f0984c30",
-        "summary": "2 questions · 3 to read · 0 nodes working",
+        "version": "v65386d57058832ba",
+        "summary": "2 questions · 3 to read · 0 tasks working",
         "badge": 5,
         "counts": [
           {
@@ -649,12 +649,12 @@
       "view": "card",
       "key": "card:hf-weekly-2026-09-30",
       "client": "mac",
-      "version": "vb03a97a19bc140f4",
+      "version": "v2a96caa2994ad749",
       "cursor": "cursor-1",
       "title": "Review the beta candidate",
       "status": {
-        "version": "vf84c4996f0984c30",
-        "summary": "2 questions · 3 to read · 0 nodes working",
+        "version": "v65386d57058832ba",
+        "summary": "2 questions · 3 to read · 0 tasks working",
         "badge": 5,
         "counts": [
           {

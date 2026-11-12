@@ -279,4 +279,13 @@ fn a_node_that_took_the_changes_and_asks_the_orchestrator_is_not_delivering() {
     let index = ReadIndex::build(&s);
     assert_eq!(s.task_handed_back(&task), Some(Instruction::Changes));
     assert_eq!(situation(&index, &task), Situation::Waiting(WaitsFor::Step(AlondraStep::Answering)), "the node already took the changes and waits for the orchestrator");
+
+#[test]
+fn a_paused_task_the_gate_queues_waits_for_a_slot_and_nothing_else_changes() {
+    assert_eq!(Situation::Paused.queued_at_gate(true), Situation::Waiting(WaitsFor::Slot));
+    assert_eq!(Situation::Paused.queued_at_gate(false), Situation::Paused);
+    for other in [Situation::NeedsYou, Situation::Finished, Situation::Cancelled, Situation::Working(Doing::Turn),
+        Situation::Waiting(WaitsFor::Disk), Situation::Delivered(Delivery::ForReview)] {
+        assert_eq!(other.queued_at_gate(true), other);
+    }
 }

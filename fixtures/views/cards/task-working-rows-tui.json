@@ -4,12 +4,12 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "va265204ca8d5b99b",
+  "version": "v03c40db1440ac31f",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
-    "version": "v5ed76fed389422b8",
-    "summary": "4 nodes working",
+    "version": "v1db7915796a90317",
+    "summary": "4 tasks working",
     "badge": 0,
     "counts": [
       {

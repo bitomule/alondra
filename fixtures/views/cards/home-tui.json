@@ -4,11 +4,11 @@
   "view": "home",
   "key": "home",
   "client": "tui",
-  "version": "v1a3f9c9de096fd68",
+  "version": "va7957dd340696738",
   "cursor": "cursor-1",
   "status": {
-    "version": "vf84c4996f0984c30",
-    "summary": "2 questions · 3 to read · 0 nodes working",
+    "version": "v65386d57058832ba",
+    "summary": "2 questions · 3 to read · 0 tasks working",
     "badge": 5,
     "counts": [
       {

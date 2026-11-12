@@ -4,12 +4,12 @@
   "view": "card",
   "key": "card:result-2",
   "client": "ios",
-  "version": "vec10fa9a04f8656e",
+  "version": "v657db8cde7466217",
   "cursor": "cursor-1",
   "title": "Read why Redraft does not need a widget",
   "status": {
-    "version": "v63843208edea3b28",
-    "summary": "1 to read · 0 nodes working",
+    "version": "v43e74adb518ed391",
+    "summary": "1 to read · 0 tasks working",
     "badge": 1,
     "counts": [
       {

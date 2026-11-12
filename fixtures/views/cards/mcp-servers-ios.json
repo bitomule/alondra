@@ -4,13 +4,13 @@
   "view": "mcp_servers",
   "key": "mcp_servers",
   "client": "ios",
-  "version": "v8a86a70a3381d8eb",
+  "version": "v7fcd4bf9dee8dc98",
   "cursor": "cursor-1",
   "title": "MCP servers",
   "summary": "9 servers · 3 need sign-in",
   "status": {
-    "version": "vb47ba1ff9953979d",
-    "summary": "2 questions · 3 to read · 1 node working",
+    "version": "v8e3c4a7e0f2dad1b",
+    "summary": "2 questions · 3 to read · 1 task working",
     "badge": 5,
     "counts": [
       {

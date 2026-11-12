@@ -4,12 +4,12 @@
   "view": "card",
   "key": "card:github.com/acme/storefront#6",
   "client": "ios",
-  "version": "v0512899c87872726",
+  "version": "v41fcc341241433f6",
   "cursor": "cursor-1",
   "title": "Review the result · storefront#6",
   "status": {
-    "version": "vc09971552b9c4ff5",
-    "summary": "2 por leer · 0 nodos trabajando",
+    "version": "ve8ea681644dff779",
+    "summary": "2 por leer · 0 tareas trabajando",
     "badge": 2,
     "counts": [
       {

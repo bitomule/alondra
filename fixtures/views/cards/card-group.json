@@ -4,12 +4,12 @@
   "view": "card",
   "key": "card:g-q2",
   "client": "ios",
-  "version": "v4727436dda4ec236",
+  "version": "vd5b686d1a2b33ff8",
   "cursor": "cursor-1",
   "title": "Ship it today?",
   "status": {
-    "version": "v68de4c89cd854dfb",
-    "summary": "3 questions · 2 to read · 0 nodes working",
+    "version": "va31a7099f87a3e1c",
+    "summary": "3 questions · 2 to read · 0 tasks working",
     "badge": 5,
     "counts": [
       {

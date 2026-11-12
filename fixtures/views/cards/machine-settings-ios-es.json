@@ -4,12 +4,12 @@
   "view": "machine",
   "key": "machine",
   "client": "ios",
-  "version": "vd612174df5a2f155",
+  "version": "va0894098696d63fa",
   "cursor": "cursor-1",
   "title": "Máquina",
   "status": {
-    "version": "v1c3caa7d09923c13",
-    "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+    "version": "v18f81a5169940804",
+    "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
     "badge": 5,
     "counts": [
       {

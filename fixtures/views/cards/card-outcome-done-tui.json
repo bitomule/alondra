@@ -4,12 +4,12 @@
   "view": "card",
   "key": "card:request-done-r-accounts",
   "client": "tui",
-  "version": "v86b323334306f22d",
+  "version": "vc0b3de50436a3e75",
   "cursor": "cursor-1",
   "title": "Done in part: 1 of 3 tasks was cancelled",
   "status": {
-    "version": "v2eb6ac28b67dc787",
-    "summary": "3 to read · 0 nodes working",
+    "version": "v775f56d5f93fe430",
+    "summary": "3 to read · 0 tasks working",
     "badge": 3,
     "counts": [
       {

@@ -4,12 +4,12 @@
   "view": "card",
   "key": "card:request-tasks-r-sync-1",
   "client": "tui",
-  "version": "va87da41e69224158",
+  "version": "v2b34477fba4a39c9",
   "cursor": "cursor-1",
   "title": "I created 3 tasks",
   "status": {
-    "version": "v2eb6ac28b67dc787",
-    "summary": "3 to read · 0 nodes working",
+    "version": "v775f56d5f93fe430",
+    "summary": "3 to read · 0 tasks working",
     "badge": 3,
     "counts": [
       {

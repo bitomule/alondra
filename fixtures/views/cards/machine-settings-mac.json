@@ -4,12 +4,12 @@
   "view": "machine",
   "key": "machine",
   "client": "mac",
-  "version": "v5930880d824c3a95",
+  "version": "vd410f18b9aab17c5",
   "cursor": "cursor-1",
   "title": "Machine",
   "status": {
-    "version": "vb7cd498c8c145512",
-    "summary": "2 questions · 3 to read · 0 nodes working",
+    "version": "vbcfa7634a3ce3123",
+    "summary": "2 questions · 3 to read · 0 tasks working",
     "badge": 5,
     "counts": [
       {

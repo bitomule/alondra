@@ -4,12 +4,12 @@
   "view": "task",
   "key": "task:t-1",
   "client": "ios",
-  "version": "vaa07b63125366e39",
+  "version": "v7230b8df59c2cb2c",
   "cursor": "cursor-1",
   "title": "Build a feature",
   "status": {
-    "version": "v82c7b6cd48c03746",
-    "summary": "1 node working",
+    "version": "v3b6122f3d54ef982",
+    "summary": "1 task working",
     "badge": 0,
     "counts": [
       {

@@ -4,12 +4,12 @@
   "view": "card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "tui",
-  "version": "vf53009dbe21e948e",
+  "version": "v0c479a9f3ff62c5b",
   "cursor": "cursor-1",
   "title": "Choose the welcome copy",
   "status": {
-    "version": "v21e817e49a9c8092",
-    "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+    "version": "v7aaf7463a05118f9",
+    "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
     "badge": 5,
     "counts": [
       {

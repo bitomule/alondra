@@ -4,12 +4,12 @@
   "view": "task",
   "key": "task:t-1",
   "client": "tui",
-  "version": "ve6259c291c641144",
+  "version": "v34f50939ab38509e",
   "cursor": "cursor-1",
   "title": "Build a feature",
   "status": {
-    "version": "v82c7b6cd48c03746",
-    "summary": "1 node working",
+    "version": "v3b6122f3d54ef982",
+    "summary": "1 task working",
     "badge": 0,
     "counts": [
       {

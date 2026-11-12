@@ -4,12 +4,12 @@
   "view": "metrics",
   "key": "metrics?period=7d&compare=previous",
   "client": "ios",
-  "version": "v2bdcfff9e635340c",
+  "version": "v03091af343c22618",
   "cursor": "metrics-cursor",
   "title": "Métricas",
   "status": {
-    "version": "v22faa503d0e2ceea",
-    "summary": "0 nodos trabajando",
+    "version": "v0214296c4e5a67cf",
+    "summary": "0 tareas trabajando",
     "badge": 0,
     "counts": [
       {

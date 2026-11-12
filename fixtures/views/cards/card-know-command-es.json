@@ -4,12 +4,12 @@
   "view": "card",
   "key": "card:cc2d034b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "v48c4a7c660e10026",
+  "version": "vb2309af1c6dee4cb",
   "cursor": "cursor-1",
   "title": "Pega este comando en el terminal: confía en todos los repos de ~/Projects",
   "status": {
-    "version": "v21e817e49a9c8092",
-    "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+    "version": "v7aaf7463a05118f9",
+    "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
     "badge": 5,
     "counts": [
       {

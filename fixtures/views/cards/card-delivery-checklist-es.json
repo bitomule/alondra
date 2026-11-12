@@ -4,12 +4,12 @@
   "view": "card",
   "key": "card:hf-weekly-2026-09-30",
   "client": "ios",
-  "version": "v318e6ef21307fe0d",
+  "version": "v5f51468ff09cd1e7",
   "cursor": "cursor-1",
   "title": "Review the beta candidate",
   "status": {
-    "version": "v21e817e49a9c8092",
-    "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+    "version": "v7aaf7463a05118f9",
+    "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
     "badge": 5,
     "counts": [
       {

@@ -4,12 +4,12 @@
   "view": "card",
   "key": "card:cc2d034b-249e-4487-a89b-57de38c26372",
   "client": "mac",
-  "version": "v7d0ed3fd1033a81a",
+  "version": "v0fe1b2eaa5756739",
   "cursor": "cursor-1",
   "title": "Run `git reset --hard origin/main`",
   "status": {
-    "version": "v0fc8bdd5258c1239",
-    "summary": "3 questions · 2 to read · 0 nodes working",
+    "version": "vd788c26af237a680",
+    "summary": "3 questions · 2 to read · 0 tasks working",
     "badge": 5,
     "counts": [
       {

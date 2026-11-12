@@ -4,12 +4,12 @@
   "view": "card",
   "key": "card:memory-pause-livelock-ask",
   "client": "tui",
-  "version": "vc6d0d74807369647",
+  "version": "v546d4d3038028950",
   "cursor": "cursor-1",
   "title": "Decide who fixes the memory pauses that cut the same build in a loop",
   "status": {
-    "version": "vec15468fac9f8344",
-    "summary": "3 questions · 3 to read · 0 nodes working",
+    "version": "vea96eecd562a64dc",
+    "summary": "3 questions · 3 to read · 0 tasks working",
     "badge": 6,
     "counts": [
       {

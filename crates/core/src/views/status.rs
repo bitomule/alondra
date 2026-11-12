@@ -33,14 +33,14 @@ pub(super) fn build(context: &RenderContext<'_>) -> Status {
     summary.push(if working == 1 {
         tf!(
             context.lang,
-            "{working} node working",
-            "{working} nodo trabajando"
+            "{working} task working",
+            "{working} tarea trabajando"
         )
     } else {
         tf!(
             context.lang,
-            "{working} nodes working",
-            "{working} nodos trabajando"
+            "{working} tasks working",
+            "{working} tareas trabajando"
         )
     });
     let mut status = Status {

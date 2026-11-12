@@ -4,12 +4,12 @@
   "view": "card",
   "key": "card:request-done-r-accounts",
   "client": "mac",
-  "version": "v053b04b0abd03139",
+  "version": "ve5e0db2b3b7e8d44",
   "cursor": "cursor-1",
   "title": "Hecho en parte: se canceló 1 de 3 tareas",
   "status": {
-    "version": "v3f1618d548c7eb72",
-    "summary": "3 por leer · 0 nodos trabajando",
+    "version": "v8e3680d030d58cd5",
+    "summary": "3 por leer · 0 tareas trabajando",
     "badge": 3,
     "counts": [
       {

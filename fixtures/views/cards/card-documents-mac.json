@@ -4,12 +4,12 @@
   "view": "card",
   "key": "card:result-1",
   "client": "mac",
-  "version": "vb76e18e2ec1a5e93",
+  "version": "v250681dec80fd58c",
   "cursor": "cursor-1",
   "title": "Approve the plan to index Redraft's whole library",
   "status": {
-    "version": "v63843208edea3b28",
-    "summary": "1 to read · 0 nodes working",
+    "version": "v43e74adb518ed391",
+    "summary": "1 to read · 0 tasks working",
     "badge": 1,
     "counts": [
       {

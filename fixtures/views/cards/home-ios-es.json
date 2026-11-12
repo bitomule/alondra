@@ -4,11 +4,11 @@
   "view": "home",
   "key": "home",
   "client": "ios",
-  "version": "v35c13e9687b544dd",
+  "version": "vb0a95eacd5784c91",
   "cursor": "cursor-1",
   "status": {
-    "version": "v21e817e49a9c8092",
-    "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+    "version": "v7aaf7463a05118f9",
+    "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
     "badge": 5,
     "counts": [
       {
@@ -88,12 +88,12 @@
       "view": "card",
       "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
       "client": "ios",
-      "version": "v3ddbe285507e4b76",
+      "version": "v3b43ad4e2af20830",
       "cursor": "cursor-1",
       "title": "Choose the welcome copy",
       "status": {
-        "version": "v21e817e49a9c8092",
-        "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+        "version": "v7aaf7463a05118f9",
+        "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
         "badge": 5,
         "counts": [
           {
@@ -288,12 +288,12 @@
       "view": "card",
       "key": "card:8fa4034b-249e-4487-a89b-57de38c26372",
       "client": "ios",
-      "version": "vb0379b140caac899",
+      "version": "v16af4b6558885d05",
       "cursor": "cursor-1",
       "title": "Ship the compact schedule editor with this beta?",
       "status": {
-        "version": "v21e817e49a9c8092",
-        "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+        "version": "v7aaf7463a05118f9",
+        "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
         "badge": 5,
         "counts": [
           {
@@ -470,12 +470,12 @@
       "view": "card",
       "key": "card:hf-weekly-2026-09-30",
       "client": "ios",
-      "version": "v0e2d246650294d91",
+      "version": "va6659555a84c25a5",
       "cursor": "cursor-1",
       "title": "Review the beta candidate",
       "status": {
-        "version": "v21e817e49a9c8092",
-        "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+        "version": "v7aaf7463a05118f9",
+        "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
         "badge": 5,
         "counts": [
           {

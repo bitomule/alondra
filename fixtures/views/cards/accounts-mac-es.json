@@ -4,12 +4,12 @@
   "view": "accounts",
   "key": "accounts",
   "client": "mac",
-  "version": "vb5367de200f986f4",
+  "version": "v756c4743e6437092",
   "cursor": "cursor-1",
   "title": "Cuentas",
   "status": {
-    "version": "v98d627cc842f14b6",
-    "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+    "version": "v06fb6e6dd67b5404",
+    "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
     "badge": 5,
     "counts": [
       {

@@ -4,12 +4,12 @@
   "view": "accounts",
   "key": "accounts",
   "client": "ios",
-  "version": "v263cb9a860cb3674",
+  "version": "v80e0cf8327f9cca5",
   "cursor": "cursor-1",
   "title": "Accounts",
   "status": {
-    "version": "ve626d8542726ea98",
-    "summary": "2 questions · 3 to read · 0 nodes working",
+    "version": "v4b0ed98d28810640",
+    "summary": "2 questions · 3 to read · 0 tasks working",
     "badge": 5,
     "counts": [
       {

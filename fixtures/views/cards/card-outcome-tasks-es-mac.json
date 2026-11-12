@@ -4,12 +4,12 @@
   "view": "card",
   "key": "card:request-tasks-r-sync-1",
   "client": "mac",
-  "version": "v086a569f88eb4c29",
+  "version": "vf3e76419bdd4656c",
   "cursor": "cursor-1",
   "title": "He creado 3 tareas",
   "status": {
-    "version": "v3f1618d548c7eb72",
-    "summary": "3 por leer · 0 nodos trabajando",
+    "version": "v8e3680d030d58cd5",
+    "summary": "3 por leer · 0 tareas trabajando",
     "badge": 3,
     "counts": [
       {

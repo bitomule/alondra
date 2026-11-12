@@ -999,33 +999,24 @@ final class TriageFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testTheHeaderCountsExactlyTheCardsTheQueueShowsInEveryFixture() async throws {
-        for (name, spanish) in [("home-ios", false), ("home-ios-es", true)] {
+    func testTheHeaderIsTheSentenceTheMacSendsInEveryFixture() async throws {
+        for name in ["home-ios", "home-ios-es"] {
             let home = try Fixtures.document(name)
-            let ids = try XCTUnwrap(home.sections.first?.cardIds)
             let store = store(FeedStub([home]))
             await store.send(.task)
             await store.skipReceivedActions()
-            XCTAssertEqual(store.state.header?.waiting, store.state.orderedIDs.count, name)
-            let daemonNumbers = home.status.summary.components(separatedBy: " · ").dropLast().map { Int($0.prefix { $0.isNumber }) ?? -1 }
-            let header = try XCTUnwrap(store.state.header)
-            XCTAssertEqual(daemonNumbers, [header.questions, header.toRead].filter { $0 > 0 }, "\(name): with nothing hidden it reads as the Mac's line")
-
-            let request = ActionRequest(commandId: "c-\(name)", dataEpoch: home.dataEpoch, client: .ios, lang: spanish ? "es" : "en", actionId: "accept:x@1")
-            await store.send(.handedOff(request, cardID: ids[0]))
-            XCTAssertEqual(store.state.orderedIDs.count, ids.count - 1, name)
-            XCTAssertEqual(store.state.header?.waiting, store.state.orderedIDs.count, "\(name): a card the queue hides is not counted")
+            XCTAssertEqual(store.state.status?.summary, home.status.summary, name)
         }
     }
 
     /// The user saw «1 pregunta · 1 por leer» over «Nada te espera»: they had replied to the machine
     /// notice, which hid it although a reply answers nothing, then read the orchestrator's answer.
     @MainActor
-    func testReplyingFromACardKeepsItWaitingAndTheHeaderNeverCountsWhatIsHidden() async throws {
+    func testReplyingFromACardKeepsItWaiting() async throws {
         let store = store(try fullFeed())
         await store.send(.task)
         await store.skipReceivedActions()
-        XCTAssertEqual(store.state.header?.waiting, 4)
+        XCTAssertEqual(store.state.badge, 4)
 
         let reply = ActionRequest(commandId: "c-reply", dataEpoch: try XCTUnwrap(store.state.screen.document).dataEpoch, client: .ios, lang: "en", actionId: "msg:view@7")
         await store.send(.handedOff(reply, cardID: ids.question))
@@ -1035,7 +1026,7 @@ final class TriageFeatureTests: XCTestCase {
         let read = ActionRequest(commandId: "c-read", dataEpoch: try XCTUnwrap(store.state.screen.document).dataEpoch, client: .ios, lang: "en", actionId: "read:x@1")
         await store.send(.handedOff(read, cardID: ids.information))
         XCTAssertEqual(store.state.orderedIDs, [ids.question, ids.delivery, ids.pullRequest])
-        XCTAssertEqual(store.state.header?.waiting, 3, "the header drops the card the queue hides")
+        XCTAssertEqual(store.state.badge, 3, "the queue drops the card it hides")
     }
 
     /// The user wrote their answer to a question in its reply field: the daemon took the text as the
