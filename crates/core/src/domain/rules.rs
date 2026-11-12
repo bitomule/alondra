@@ -13,7 +13,7 @@ pub use effect::command_name;
 use effect::{answers_with_its_effect, effect_outside_the_domain};
 pub use open_pr::cancelled_pr_comment;
 mod stall;
-pub use stall::{STALL_ATTEMPTS, STALL_CLOSE, STALL_INSTRUCT, STALL_TEXT_MAX, STALLED_PREFIX, StallOutcome, UNSETTLED_AFTER_MERGE, UNSETTLED_DELIVERY, is_stall_case, stalled_card_id};
+pub use stall::{STALL_ATTEMPTS, STALL_CLOSE, STALL_INSTRUCT, STALL_TEXT_MAX, STALLED_PREFIX, StallOutcome, UNSETTLED_AFTER_MERGE, UNSETTLED_DELIVERY, UNSETTLED_INSTRUCT, is_stall_case, stalled_card_id};
 pub(in crate::domain) use stall::{stalled_before, stalled_in_place_of};
 mod turn_result;
 pub use turn_result::TurnResult;
@@ -93,7 +93,7 @@ pub const SUGGESTION_ANSWERS: [(&str, &str, &str); 3] = [
 ];
 /// What a node is told when its question to the orchestrator is withdrawn because nobody answered it.
 pub fn unanswered_withdrawn_notice(need: &str) -> String {
-    format!("Your question to the orchestrator \"{need}\" got no answer and is withdrawn. Carry on without it if you can; if you cannot, ask the user with ask.")
+    format!("The orchestrator did not answer “{need}”. Decide with what you know, or ask the user if it is theirs to decide.")
 }
 /// A node's suggestions still waiting for the orchestrator, per task.
 pub const OPEN_SUGGESTIONS_MAX: usize = 5;

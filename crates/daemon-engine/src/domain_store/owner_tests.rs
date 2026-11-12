@@ -174,6 +174,27 @@ fn launch_with(journal: &mut LifecycleTransaction<'_>, binding: &ProviderBinding
     Ok(execution)
 }
 
+/// Task `task` runs an execution of node `agent` that the SDK host owns, launched and with the
+/// text of its first input given: what a test needs before the provider's facts are recorded.
+pub(crate) fn admit_through_sdk(runtime: &DomainRuntime, task: &TaskId, agent: &str) {
+    let state = runtime.state().unwrap();
+    let admit = Command::AdmitExecution { provider: alondra_core::accounts::Provider::Claude,
+        task_id: task.clone(), agent_id: agent.into(), conversation: format!("conversation-{task}"), instance: format!("resource-{task}"),
+        host: "fixture-service".into(), model: None, account: None, leaves_limit: None,
+    };
+    let admit = CommandEnvelope { expected_revision: state.revision, ..envelope(&state, &format!("admit-{task}"), admit) };
+    runtime.own(scope_of(&state), |owner| {
+        owner.stage_command(&Actor::System, &admit, Attached::None)?;
+        let journal = owner.journal();
+        let pending = journal.load(task)?.pending_inputs()[0].clone();
+        journal.give_input_text(task, InputPayload::new(pending, "Fixture input").unwrap())?;
+        journal.stage_launch(task, &Placement::RemoteWorkspace("fixture/workspace".into()), &binding())?;
+        let execution = journal.load(task)?.execution().unwrap().clone();
+        journal.reserve_owner(&execution, 0)?;
+        Ok(())
+    }).unwrap();
+}
+
 /// The Task runs an execution the SDK host owns at generation 1, whose provider has observed
 /// nothing yet: its `claude --bg` node was released and the domain admitted the SDK's.
 pub(in crate::domain_store) fn running() -> (Fixture, DomainStore, ExecutionStamp) {
@@ -917,12 +938,13 @@ fn a_turn_end_commits_its_one_card_with_the_raw_observation_and_is_acknowledged_
 }
 
 /// A stopped node's case the orchestrator leaves unsettled comes back to it once, and after that
-/// Alondra closes the task itself; the count of stops and the closing outlive a restart, and no
-/// card ever asks the user.
+/// Alondra hands the node its turn back itself; the count of stops and the case outlive a restart,
+/// and no card ever asks the user.
 #[test]
-fn a_stop_left_unsettled_is_reminded_once_then_closed_and_both_outlive_a_restart() {
-    use alondra_core::domain::{STALL_ATTEMPTS, StallClosing};
+fn a_stop_left_unsettled_is_reminded_once_then_handed_back_and_both_outlive_a_restart() {
+    use alondra_core::domain::{STALL_ATTEMPTS, UNSETTLED_INSTRUCT};
     use alondra_core::orchestrator_cards::STALL_NOTICE_PREFIX;
+    const MINUTE: i64 = 60_000;
     let (fixture, mut store, execution) = running();
     let normalizer = woken(&mut store, &execution);
     let runtime = runtime(&fixture, store);
@@ -930,6 +952,9 @@ fn a_stop_left_unsettled_is_reminded_once_then_closed_and_both_outlive_a_restart
     runtime.own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, WOKEN_CURSOR), &normalizer, no_home(), false)).unwrap();
     let case = stall_case_of("turn-2");
     crate::orchestrator_inbox::settle(&runtime);
+    crate::orchestrator_inbox::settle_overdue(&runtime, 0);
+    assert!(!runtime.state().unwrap().interactions.keys().any(|id| id.0.starts_with(STALL_NOTICE_PREFIX)), "nothing before its deadline");
+    crate::orchestrator_inbox::settle_overdue(&runtime, 10 * MINUTE);
     let state = runtime.state().unwrap();
     assert!(state.interactions.contains_key(&InteractionId::from(format!("{STALL_NOTICE_PREFIX}{case}").as_str())), "the orchestrator is reminded");
     assert!(state.open(&state.interactions[&case]) && !state.tasks[&task()].over(), "it gets one more go first");
@@ -939,11 +964,14 @@ fn a_stop_left_unsettled_is_reminded_once_then_closed_and_both_outlive_a_restart
     let state = runtime.state().unwrap();
     assert_eq!(state.tasks[&task()].stalls, 1, "the count outlives the restart");
     assert!(state.open(&state.interactions[&case]), "and so does the case");
-    crate::orchestrator_inbox::settle(&runtime);
+    crate::orchestrator_inbox::settle_overdue(&runtime, 30 * MINUTE);
+    crate::orchestrator_inbox::settle_overdue(&runtime, 40 * MINUTE);
     let runtime = runtime_reopened(&fixture, runtime);
     let state = runtime.state().unwrap();
-    assert_eq!(state.tasks[&task()].stall_closing, Some(StallClosing::Unsettled), "Alondra closed it, and that outlives the restart");
-    assert!(state.tasks[&task()].over());
+    assert!(!state.open(&state.interactions[&case]), "Alondra settled it, and that outlives the restart");
+    assert!(matches!(state.lifecycle_journal[&task()].iter().rev().find(|record| matches!(record, LifecycleRecord::Answered { .. })),
+        Some(LifecycleRecord::Answered { text: Some(text), .. }) if text == UNSETTLED_INSTRUCT), "the node is told to go on");
+    assert!(!state.tasks[&task()].over());
     let observer = observer(&fixture);
     let asked: i64 = observer.query_row("SELECT count(*) FROM interactions WHERE task_id=?1 AND recipient_kind='user' AND (id LIKE 'turn-ended-%' OR id LIKE 'stalled-%' OR id LIKE 'problem-%')",
         [TASK], |r| r.get(0)).unwrap();
@@ -959,11 +987,12 @@ fn a_stop_the_orchestrator_settles_gets_no_reminder() {
     let runtime = runtime(&fixture, store);
     let state = Arc::clone(runtime.read().state());
     runtime.own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, WOKEN_CURSOR), &normalizer, no_home(), false)).unwrap();
+    crate::orchestrator_inbox::settle_overdue(&runtime, 0);
     let state = Arc::clone(runtime.read().state());
     let settle = Command::SettleStall { case_id: stall_case_of("turn-2"), task_id: task(), outcome: alondra_core::domain::StallOutcome::Instruct { text: "Present it".into() } };
     let fresh = CommandEnvelope { expected_revision: state.revision, ..envelope(&state, "orchestrator-instructs", settle) };
     runtime.execute(&Actor::Orchestrator { generation: state.orchestrator_generation }, &fresh, None, || Ok(())).unwrap();
-    crate::orchestrator_inbox::settle(&runtime);
+    crate::orchestrator_inbox::settle_overdue(&runtime, 11 * 60_000);
     assert!(!runtime.state().unwrap().interactions.keys().any(|id| id.0.starts_with(STALL_NOTICE_PREFIX)));
 }
 

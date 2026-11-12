@@ -131,6 +131,9 @@ mod recovery_tests;
 #[cfg(test)]
 #[path = "domain_orchestrator/tests/recovery_decisions.rs"]
 mod recovery_decisions;
+#[cfg(test)]
+#[path = "domain_orchestrator/tests/deadline.rs"]
+mod deadline_tests;
 
 /// A failed batch's Problem is `problem-orchestrator-<run id>`; its options are the decisions.
 const PROBLEM_PREFIX: &str = BATCH_PROBLEM_PREFIX;
@@ -399,11 +402,12 @@ impl Executor {
         stop: tokio::sync::watch::Receiver<bool>,
         now: Option<i64>,
     ) -> Result<()> {
+        let now = now.unwrap_or_else(now_millis);
+        crate::orchestrator_inbox::settle_overdue(&self.domain, now);
         self.repair_incomplete().await?;
         if *stop.borrow() { return Ok(()); }
         self.apply_problem_answers()?;
         let mut runtime = load(&self.home)?;
-        let now = now.unwrap_or_else(now_millis);
         crate::usage_probe::follow(&self.domain, now);
         if self.domain.live.usage_pause.current().is_some_and(|pause|pause.by_user) { return Ok(()); }
         if runtime.active_run.is_some() || runtime.retry_at.is_some_and(|at| at > now) {
@@ -1409,7 +1413,7 @@ mod tests {
             && !prompt.contains("interaction_id=") && prompt.contains("new conversation"), "{prompt}");
         assert!(prompt.contains(" (tasks: t not_started): Work\n") && prompt.contains("task t of request r: \"Task\" state=not_started agent=a\n"), "{prompt}");
         assert!(unhandled(domain).is_empty());
-        assert_eq!(reminders(domain).len(), 2, "the two questions it left unanswered go back once, in the same step");
+        assert!(reminders(domain).is_empty(), "the questions it left unanswered wait for their deadline, not for the batch's end");
         assert!(attempts(domain).iter().all(|(_, state, _)| state == "handed"));
         let runtime = load(&f.executor.home).unwrap();
         assert!(runtime.active_run.is_none() && runtime.session_id.is_some() && runtime.last_error.is_none());
@@ -1433,9 +1437,7 @@ mod tests {
             });
         }
         f.tick().await;
-        assert_eq!(f.starts().len(), 2, "the reminders are a batch of their own");
-        f.tick().await;
-        assert_eq!(f.starts().len(), 2, "nothing pending, no launch");
+        assert_eq!(f.starts().len(), 1, "nothing pending, no launch");
         ask_orchestrator(&f, 3);
         f.tick().await;
         let prompt = last_prompt(&f);
@@ -2191,7 +2193,7 @@ mod tests {
         assert_eq!(f.starts().len(), 1, "resumed: the pending batch runs");
         assert!(unhandled(domain).is_empty());
         f.tick().await;
-        assert_eq!(f.starts().len(), 2, "and only once: the next run is the reminder of the question it left open");
+        assert_eq!(f.starts().len(), 1, "and only once");
     }
 
     #[tokio::test]
