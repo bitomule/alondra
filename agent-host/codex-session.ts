@@ -57,6 +57,10 @@ export function codexPolicy(config: HostConfiguration, mode: 'default' | 'plan' 
 }
 
 class NativeAccountRefusal extends InputNotOffered {}
+/** Codex answered a request with an error: it refused it, and changed nothing. */
+class NativeRequestRefused extends Error {
+  constructor(readonly code: string) { super(`Codex RPC ${code}`); }
+}
 type NativeAuthIdentity = { authMethod: 'chatgpt' | 'apikey'; email: string | null; workspaceId: string | null };
 /** Owns stdio for its entire lifetime; losing a daemon socket does not close this session. */
 export class CodexSession implements HostSession {
@@ -217,7 +221,7 @@ export class CodexSession implements HostSession {
           if (message.error !== undefined) {
             const error = object(message.error);
             this.config.nativeRpcError?.(pending.method, String(error.code ?? 'failed'), typeof error.message === 'string' ? error.message.slice(0, 2000) : '');
-            pending.reject(new Error(`Codex RPC ${String(error.code ?? 'failed')}`));
+            pending.reject(new NativeRequestRefused(String(error.code ?? 'failed')));
           } else pending.resolve(object(message.result));
         } else throw new Error('Invalid native message');
       }
@@ -450,6 +454,11 @@ export class CodexSession implements HostSession {
         if (input?.plan) { this.answeringPlans.delete(input.plan.key); this.settled(input.plan.key, input.plan.entry, 'cancelled'); }
         else if (input) this.emit('alondra/inputRefused', { threadId: this.thread ?? null, inputId: input.id, nativeSubmitted: false, code: error.code }, 'diagnostic');
         this.emit('alondra/accountBlocked', { threadId: this.thread ?? null, code: error.code }, 'diagnostic');
+      } else if (error instanceof NativeRequestRefused && input && this.starting && !input.plan && !this.config.orchestrator) {
+        this.starting = false;
+        this.emit('alondra/inputRejected', { threadId: this.thread, inputId: input.id, code: error.code });
+        for (const message of this.notifications.splice(0)) this.notification(message);
+        this.notificationBytes = 0;
       } else this.fail('native_turn_start_uncertain');
     }
     finally { this.pumping = false; if (!this.turn && this.queue.length > 0 && !this.closed && !this.closing) void this.pump(); }
