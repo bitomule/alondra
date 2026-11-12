@@ -2793,3 +2793,17 @@ fn a_journal_recorded_while_work_of_its_own_held_no_slot_replays_and_holds_one()
     assert!(lifecycle.holds_slot(), "work of its own keeps its process and its memory");
     assert_eq!(serde_json::to_string(&records).unwrap(), recorded, "the records are the bytes that were recorded");
 }
+
+#[test]
+fn a_delivery_that_replaces_another_leaves_the_node_nothing_to_be_told() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    deliver(&mut s, "t", "a", "result-1");
+    deliver(&mut s, "t", "a", "result-2");
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
+    let replayed = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap();
+    assert!(replayed.pending_inputs().is_empty(), "the notice is read inside the turn: {:?}", replayed.pending_inputs());
+    let obligation = replayed.obligation().expect("a delivery is owed a decision");
+    assert_eq!(obligation.party, alondra_domain::Party::User, "the delivery waits for the user, not for the node: {obligation:?}");
+    assert_eq!(s.tasks[&TaskId::from("t")].final_presentation, Some(InteractionId::from("result-2")));
+}
