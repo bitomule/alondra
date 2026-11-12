@@ -75,6 +75,14 @@ card; never rewrite history, close or delete anything on your own.
 
 ## Your task
 
+When your node or a command waits for something, run `alondra report-wait '<what>'`
+with optional `--progress '<text>'` and `--detail '<text>'`. Alondra shows these free
+texts with their start time, without interpreting them or changing the task's slot.
+A script passes `--pid $$` so its report ends with its process; the node omits it.
+Use `alondra report-wait --clear` when the wait ends. A report also ends when replaced
+or when the node's turn ends. The host supplies `ALONDRA_WAIT_FILE`; without it the
+command silently succeeds. The file format is in `docs/wait-report.md`.
+
 The work you were launched for is an Alondra task; its id (`t-…`) is in your mission. Pass it as
 `task_id` (or in `scope`) on every call about it. A node works on one task at a time: work only
 on the task assigned to you. Alondra shows the task as working from your first step; `start_task`

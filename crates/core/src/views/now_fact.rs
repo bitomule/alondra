@@ -23,6 +23,10 @@ pub struct Said {
 
 pub fn now_fact(node: Option<&LiveNode>, _doing: &Doing, turn_since: &str, _lang: Lang) -> NowFact {
     let doing = node.and_then(|node| {
+        if let Some(wait) = &node.reported_wait {
+            return Some(NowDoing::Reported { what: wait.what.clone(), progress: wait.progress.clone(),
+                detail: wait.detail.clone(), since: clock(&wait.since).into() });
+        }
         if let Some(label) = node.tool.as_deref().and_then(short_line) {
             return Some(NowDoing::Command {
                 label,

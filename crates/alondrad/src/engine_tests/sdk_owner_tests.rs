@@ -10,6 +10,41 @@ use alondra_core::accounts::{AccountId, Provider};
 use alondra_core::domain::*;
 use std::sync::Arc;
 
+#[test]
+fn a_reported_wait_reaches_every_client_row_without_changing_slots() {
+    use alondra_core::views::{Client, Lang, Transport, now_fact::NowDoing};
+    for background in [false, true] {
+        let slice = Slice::new();
+        slice.domain.enable_sdk(slice.backend.clone());
+        let mut driver = if background { slice.launch_with("background-shell") } else { slice.launch_working() };
+        if background { until_own_work(&slice, &mut driver); }
+        let lifecycle = Slice::lifecycle(&slice.domain);
+        let path = slice.backend.state_root.join(lifecycle.execution().unwrap().instance().as_str()).join("wait.json");
+        std::fs::write(&path, br#"{"what":"the server","progress":"2 of 3","detail":"Acknowledgement","since_ms":1794324000000}"#).unwrap();
+        let before = slice.domain.read();
+        let slots = before.state().slots();
+        let client = crate::client_routes::Client::open(Arc::clone(&slice.domain), &slice._home, Default::default());
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let read = slice.domain.read();
+        for lang in [Lang::En, Lang::Es] {
+            let live = runtime.block_on(crate::views::live::gather(&client, read.state(), lang, &[], false, false));
+            let node = live.nodes.iter().find(|node| node.agent_id == driver.agent().0).unwrap();
+            let wait = node.reported_wait.as_ref().unwrap();
+            assert_eq!((&*wait.what, wait.progress.as_deref(), wait.detail.as_deref()), ("the server", Some("2 of 3"), Some("Acknowledgement")));
+            assert!(!wait.since.is_empty());
+            assert!(matches!(alondra_core::views::now_fact::now_fact(Some(node), &Doing::Turn, "15:00", lang).doing, NowDoing::Reported { .. }));
+            for target in [Client::Ios, Client::Mac, Client::Tui] {
+                let view = client.views.render("tasks", &read, &live, target, lang, Transport::Loopback).unwrap();
+                let text = serde_json::to_string(&view).unwrap();
+                assert!(text.contains(if lang == Lang::Es { "Espera a the server" } else { "Waiting for the server" }), "{text}");
+                assert!(text.contains("2 of 3") && text.contains("Acknowledgement"));
+            }
+        }
+        assert_eq!(slice.domain.read().state().slots(), slots);
+        driver.stop().unwrap();
+    }
+}
+
 // The node asks the user during its turn and the turn ends: the turn waits on that question and no
 // card says it stopped; the user's answer reaches Claude as its next input and ends the wait.
 #[test]

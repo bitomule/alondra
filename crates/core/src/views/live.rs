@@ -294,6 +294,8 @@ pub struct LiveNode {
     /// Claude ends it, and says since when.
     #[serde(default)]
     pub tool_since: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reported_wait: Option<LiveReportedWait>,
     #[serde(default)]
     pub context_percent: Option<u32>,
     #[serde(default)]
@@ -318,6 +320,14 @@ pub struct LiveNode {
     /// Its Claude Code task list, in order.
     #[serde(default)]
     pub steps: Vec<LiveStep>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveReportedWait {
+    pub what: String,
+    pub progress: Option<String>,
+    pub detail: Option<String>,
+    pub since: String,
 }
 /// Whether something a node started in the background runs, or how it ended. Only a fact moves
 /// it: Claude's notice that the work ended (with its status), the work leaving Claude's list, its

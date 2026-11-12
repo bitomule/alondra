@@ -48,6 +48,39 @@ fn document(output: &Output) -> serde_json::Value {
 }
 
 #[test]
+fn report_wait_writes_and_clears_the_file() {
+    let root = test_support::Directory::new();
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("wait.json");
+    let run = |args: &[&str], configured: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_alondra"));
+        command.env_clear().env("HOME", &*root).env("ALONDRA_LANG", "en").args(args);
+        if configured { command.env("ALONDRA_WAIT_FILE", &path); }
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stdout.is_empty() && output.stderr.is_empty(), "a local report is silent: {output:?}");
+    };
+    run(&["report-wait", "the deployment", "--progress", "2 of 3", "--detail", "Waiting for acknowledgement", "--pid", &std::process::id().to_string()], true);
+    let report: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(report["what"], "the deployment");
+    assert_eq!(report["progress"], "2 of 3");
+    assert_eq!(report["detail"], "Waiting for acknowledgement");
+    assert_eq!(report["pid"], std::process::id());
+    assert!(report["since_ms"].as_i64().is_some());
+    run(&["report-wait", "the server"], true);
+    let report: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(report["what"], "the server");
+    assert!(report.get("pid").is_none() && report.get("progress").is_none());
+    run(&["report-wait", "--clear"], true);
+    assert!(!path.exists());
+    run(&["report-wait", "--clear"], true);
+    run(&["report-wait", "the server"], false);
+    run(&["report-wait", "--clear"], false);
+    assert!(!path.exists());
+    assert_eq!(std::fs::read_dir(&*root).unwrap().count(), 0, "no temporary report remains");
+}
+
+#[test]
 fn each_json_command_prints_one_document_with_its_schema() {
     let mac = Mac::new();
     let list = document(&mac.run(&["config", "list", "--json"]));

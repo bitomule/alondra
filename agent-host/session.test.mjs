@@ -28,10 +28,12 @@ try {
     let cursor = 0;
     session = new Session({
       executable: '/fixture/original-claude', cwd: root,
+      stateDirectory: home,
       env: { HOME: home, PATH: '/fixture/no-js-runtime', FIXTURE_SCENARIO: scenario, FIXTURE_CAPTURE: capture, FIXTURE_DECISION: decision },
       spawn(options) {
         assert.equal(options.command, '/fixture/original-claude');
         assert.equal(options.env.HOME, home);
+        assert.equal(options.env.ALONDRA_WAIT_FILE, join(home, 'wait.json'));
         assert.equal(options.env.CLAUDE_CONFIG_DIR, undefined);
         return spawn(process.env.JS_BINARY__NODE_BINARY, [fixture, ...options.args], { cwd: options.cwd, env: options.env, signal: options.signal, stdio: ['pipe', 'pipe', 'inherit'] });
       },

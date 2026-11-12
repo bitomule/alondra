@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
@@ -51,6 +51,15 @@ function fixture(t, options = {}) {
   return { session, home, config, accountFile, events, next, messages: () => readFileSync(transcript, 'utf8').trim().split('\n').map(JSON.parse) };
 }
 const method = (name) => (event) => event.type === 'sdk' && event.payload.method === name;
+
+test('a Codex node inherits its own host wait report path', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'wait-report-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const capture = join(root, 'path');
+  const f = fixture(t, { env: { ALONDRA_FAKE_WAIT_CAPTURE: capture, ALONDRA_WAIT_FILE: '/unrelated/wait.json' } });
+  await f.session.ready;
+  assert.equal(readFileSync(capture, 'utf8'), join(f.config.stateDirectory, 'wait.json'));
+});
 
 test('an adopted persistent Codex host ends its native command group and retains exit evidence', { timeout: 15000 }, failedAdoptedHost);
 
@@ -445,8 +454,32 @@ test('an input whose session could not start is refused as never offered, and th
   } finally { later.close(); await later.finished; }
 });
 
+async function nativeRequestWritten(home, session, method) {
+  let check;
+  const changed = watch(home, () => check());
+  let exited;
+  try {
+    await new Promise((resolve, reject) => {
+      exited = () => reject(new Error(`Codex exited before recording ${method}`));
+      check = () => {
+        try {
+          const lines = readFileSync(join(home, 'transcript'), 'utf8').split('\n').slice(0, -1);
+          if (lines.some((line) => JSON.parse(line).method === method)) return resolve();
+        } catch (error) { if (error.code !== 'ENOENT') return reject(error); }
+        if (session.child.exitCode !== null || session.child.signalCode !== null) exited();
+      };
+      session.child.once('exit', exited);
+      check();
+    });
+  } finally {
+    changed.close();
+    session.child.off('exit', exited);
+  }
+}
+
 for (const [silentOn, step] of [['initialize', 'initialize'], ['thread/start', 'thread_start'], ['thread/resume', 'thread_resume']]) {
   test(`a Codex that never answers ${silentOn} refuses the input as never offered and says which step did not answer`, { timeout: 15000 }, async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
     const resume = silentOn === 'thread/resume';
     const f = fixture(t, resume ? { config: { worker: workerProfile('Instructions') } } : { config: { worker: workerProfile('Instructions'), openingTimeoutMs: 200 }, env: { ALONDRA_FAKE_SILENT_ON: silentOn } });
     let session = f.session;
@@ -457,7 +490,10 @@ for (const [silentOn, step] of [['initialize', 'initialize'], ['thread/start', '
     }
     const firstEvent = f.events.length;
     try {
-      await assert.rejects(session.offer('00000000-0000-4000-8000-000000000081', 'Continue'), (error) => error instanceof InputNotOffered && error.code === 'native_initialization_timeout');
+      const refused = assert.rejects(session.offer('00000000-0000-4000-8000-000000000081', 'Continue'), (error) => error instanceof InputNotOffered && error.code === 'native_initialization_timeout');
+      await nativeRequestWritten(f.home, session, silentOn);
+      t.mock.timers.tick(200);
+      await refused;
       await session.finished;
       assert.equal(session.failure, 'native_initialization_timeout');
       const failed = f.events.slice(firstEvent).find(method('alondra/transportFailed'));
