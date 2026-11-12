@@ -141,10 +141,15 @@ fn background_work_for_the_users_reply_that_its_replaced_host_ended_is_reported_
 }
 
 // The user replied to a delivery and Claude, busy, never started on the reply: the task read
-// «Answering you» although no turn ran. It reads that Claude has not started, until a turn does.
+// «Answering you» although no turn ran, and then «Waiting for Claude to start» with no end, holding
+// its slot. Until its deadline it reads that Claude has not started; past it the reply is offered
+// again, and past it once more the task gives up its slot and the reply waits in the queue, until
+// the host the gate admits next resumes the same session and Claude starts on it. No card asks.
 #[test]
-fn a_reply_claude_has_not_started_reads_waiting_for_claude_not_answering_you() {
+fn a_reply_claude_holds_past_its_deadline_is_offered_again_then_waits_in_the_queue() {
     use alondra_core::views::{Client, RenderContext, Transport, build, live::LiveSnapshot, text::Lang};
+    use alondra_daemon_engine::obligation_watch::pass;
+    use alondra_daemon_engine::sdk_owner::tests::untaken::{assert_waits_for_a_slot, drive_by_hand, enforcing_every_deadline, goes_on_when_the_gate_has_room, replaced_with_the_gate_full, until_prompted};
     let slice = Slice::new();
     let mut driver = slice.launch_working();
     let node = Actor::Agent { agent_id: driver.agent().clone() };
@@ -154,18 +159,18 @@ fn a_reply_claude_has_not_started_reads_waiting_for_claude_not_answering_you() {
         targets: targets.clone(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the notes", &[], true),
     });
     let message: crate::domain_messages::MessageBody = serde_json::from_value(serde_json::json!({"text": "Wrap up"})).unwrap();
-    tokio::runtime::Runtime::new().unwrap()
-        .block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "Alice", driver.agent(), message, true)).unwrap();
+    tokio::runtime::Runtime::new().unwrap().block_on(crate::domain_messages::deliver(&slice.domain, &slice._home, &user(), "Alice", driver.agent(), message, true)).unwrap();
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
+    let reply = "Shorter please stall-while-held";
     slice.run(&user(), "reply", Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "final".into(), targets,
-        body: "stall-before-starting".into(), instruction: alondra_core::domain::Instruction::Reply });
+        body: reply.into(), instruction: alondra_core::domain::Instruction::Reply });
     assert_eq!(crate::domain_delivery::tell_sdk_nodes(&slice.domain), 1);
-    driver.step(&|| false).unwrap();
+    until_prompted(&slice, &mut driver, reply, 1);
     assert_eq!(lifecycle(&slice.domain).activity(), ActivityView::Starting, "Claude holds the reply and starts no turn");
     let shown = |lang| {
         let read = slice.domain.read();
-        let live = LiveSnapshot::default();
+        let live = LiveSnapshot { pacing: slice.domain.live.gate.live(&slice.domain, alondra_core::now_millis()), ..LiveSnapshot::default() };
         let view = build(&format!("task:{TASK}"), RenderContext {
             domain: read.state(), index: read.index(), live: &live, client: Client::Tui, lang,
             transport: Transport::Loopback, cursor: "test", rendered_at: "",
@@ -175,7 +180,25 @@ fn a_reply_claude_has_not_started_reads_waiting_for_claude_not_answering_you() {
     let (english, spanish) = (shown(Lang::En), shown(Lang::Es));
     assert!(english.contains("Waiting for Claude to start") && !english.contains("Answering you"), "{english}");
     assert!(spanish.contains("Esperando a que Claude empiece") && !spanish.contains("Respondiéndote"), "{spanish}");
-    driver.stop().unwrap();
+
+    drive_by_hand(&slice, &driver);
+    let cards = slice.domain.state().unwrap().interactions.len();
+    let mut watch = enforcing_every_deadline();
+    pass(&slice.domain, &mut watch, 0);
+    pass(&slice.domain, &mut watch, 121_000);
+    let journal = || slice.domain.state().unwrap().lifecycle_journal[&TaskId::from(TASK)].iter().cloned().collect::<Vec<_>>();
+    assert!(journal().iter().any(|record| matches!(record, LifecycleRecord::DoubtResent { text: Some(text), .. } if text.contains(reply))), "the reply is offered again");
+    while driver.pending_permits() > 0 {
+        driver.step(&|| false).unwrap();
+    }
+    pass(&slice.domain, &mut watch, 242_000);
+    let mut queued = replaced_with_the_gate_full(&slice, driver);
+    assert_waits_for_a_slot(&slice, &mut queued);
+    let (english, spanish) = (shown(Lang::En), shown(Lang::Es));
+    assert!(!english.contains("Waiting for Claude to start") && !spanish.contains("Esperando a que Claude empiece"), "{english}");
+    assert_eq!(slice.domain.state().unwrap().interactions.len(), cards, "no card asks the user");
+    goes_on_when_the_gate_has_room(&slice, &mut queued, reply, 2);
+    queued.stop().unwrap();
 }
 
 /// The user presses «Interrupt» on the task of `agent`, through the action path the clients use.

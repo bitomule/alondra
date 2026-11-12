@@ -496,6 +496,16 @@ impl Admission {
         may
     }
 
+    /// Whether what `task` goes on with still waits for a slot: its state waits for one and the
+    /// gate has not given it one that covers it. A slot given and taken is no longer a wait.
+    pub(crate) fn waits_for_slot(&self, domain: &DomainRuntime, state: &DomainState, task: &TaskId) -> bool {
+        if !state.waits_for_turn(task) || fixes_accepted_pr(domain, task) {
+            return false;
+        }
+        let inner = self.lock();
+        !inner.turns.contains(task) && !covered(&inner, state, task)
+    }
+
     /// Whether the gate gave `task` a slot that still counts for it.
     #[cfg(test)]
     pub(crate) fn gave_slot(&self, task: &TaskId) -> bool {

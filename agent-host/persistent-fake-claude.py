@@ -481,6 +481,19 @@ for raw in sys.stdin:
             pass
         elif text == 'native-failure-now':
             sys.exit(7)
+        elif 'stall-while-held' in text and not os.path.exists(capture + '.start'):
+            # Like a native Claude that holds the prompt without a turn, resumed or not, until the
+            # test lets it start with a file next to the capture.
+            time.sleep(3600)
+        elif text.endswith('running-then-silent') and not resumed:
+            # Like a native Claude that takes the prompt up at once and says nothing for long.
+            serial += 1
+            send(dict(type='system', subtype='session_state_changed', state='running', session_id=session_id,
+                      uuid='00000000-0000-4000-8000-' + str(serial).zfill(12)))
+            serial += 1
+            send(dict(type='command_lifecycle', command_uuid=message['uuid'], state='started', session_id=session_id,
+                      uuid='00000000-0000-4000-8000-' + str(serial).zfill(12)))
+            time.sleep(3600)
         elif text.endswith('stall-before-starting') and not resumed:
             # Like a native Claude busy with something else: the Claude that started the session
             # holds the prompt in its transcript but starts no turn for it until the host's process

@@ -74,6 +74,10 @@ impl Worker {
     pub fn stage_input(&mut self, metadata: InputMetadata<'_, '_>) -> Result<(), AdapterError> { dispatch!(self, stage_input, metadata) }
     pub fn prepare(&mut self, attempt: &DispatchAttempt, metadata: InputMetadata<'_, '_>) -> Result<PreparedCommand, AdapterError> { dispatch!(self, prepare, attempt, metadata) }
     pub fn submit(&mut self, command: &CommittedCommand) -> Result<Handoff, AdapterError> { dispatch!(self, submit, command) }
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn discard_prepared(&mut self) {
+        if let Self::Claude(worker) = self { worker.discard_prepared() }
+    }
     pub fn stopper(&self) -> Option<HostStop> { dispatch!(self, stopper) }
     pub fn host_group(&self) -> Option<i32> { dispatch!(self, host_group) }
     pub fn supports_plan_supersession(&self) -> bool {
