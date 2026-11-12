@@ -8,6 +8,7 @@ pub(crate) mod seals;
 mod worker;
 mod claude_history;
 mod node_environment;
+pub(crate) mod untaken;
 pub(crate) use alondra_daemon_engine_model::NativeAccountIdentity;
 use worker::{Worker, Found};
 use alondra_core::accounts::{AccountKey, Provider};
@@ -206,6 +207,10 @@ pub struct Driver {
     /// host takes its place and gets what is pending again, since a session that never opened read
     /// nothing.
     opening_deadline: Option<Instant>,
+    /// Inputs that are themselves the resend of one this host refused before offering it.
+    refused: BTreeSet<InputId>,
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) refuse_offers: usize,
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fail_next_step: bool,
     #[cfg(any(test, feature = "test-hooks"))]
@@ -1378,7 +1383,7 @@ fn node_environment(home: &std::path::Path, agent: &AgentId, capability: &str) -
 
 impl Driver {
     fn new(domain: Arc<DomainRuntime>, worker: Worker, scope: AuthorityScope, task: TaskId, agent: AgentId, opening_timeout: Duration) -> Self {
-        Self { in_hand: Some(InHand::new(&domain, &task)), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, untaken: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout, opening_deadline: None, #[cfg(any(test, feature = "test-hooks"))] fail_next_step: false, #[cfg(any(test, feature = "test-hooks"))] panic_next_step: false }
+        Self { in_hand: Some(InHand::new(&domain, &task)), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, untaken: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout, opening_deadline: None, refused: BTreeSet::new(), #[cfg(any(test, feature = "test-hooks"))] refuse_offers: 0, #[cfg(any(test, feature = "test-hooks"))] fail_next_step: false, #[cfg(any(test, feature = "test-hooks"))] panic_next_step: false }
     }
 
     pub fn agent(&self) -> &AgentId {
@@ -1489,7 +1494,7 @@ impl Driver {
             .map_err(failed("recording the command"))?;
         let command = self.sealed().commands.pop().ok_or_else(|| Failed::new("the command left no seal".into()))?;
         self.domain.contexts.handed(&self.task, alondra_core::now_millis());
-        let handoff = self.worker.submit(&command).unwrap_or(Handoff::Uncertain);
+        let handoff = self.submit(&command);
         if handoff == Handoff::Uncertain && self.worker.host_exited() {
             self.host_closed = true;
         }
@@ -1504,11 +1509,45 @@ impl Driver {
             self.opening_deadline.get_or_insert(Instant::now() + self.opening_timeout);
         }
         if handoff == Handoff::Offered {
-            self.awaiting = Some(input);
+            self.awaiting = Some(input.clone());
             self.replacement = false;
             self.relaunches = 0;
         } else if self.replacement {
             self.untaken = true;
+        }
+        if handoff == Handoff::RefusedBeforeOffer {
+            return self.offer_refused(&input);
+        }
+        Ok(())
+    }
+
+    fn submit(&mut self, command: &alondra_store::CommittedCommand) -> Handoff {
+        #[cfg(any(test, feature = "test-hooks"))]
+        if self.refuse_offers > 0 {
+            self.refuse_offers -= 1;
+            self.worker.discard_prepared();
+            return Handoff::RefusedBeforeOffer;
+        }
+        self.worker.submit(command).unwrap_or(Handoff::Uncertain)
+    }
+
+    /// The host of an open session refused `input` before offering it, which leaves nothing for a
+    /// provider event to end: the same text goes again at once. When the host refuses that one
+    /// too, the owner fails: a host that resumes the same session takes this one's place, and the
+    /// input waits for a slot of the gate. A session that never opened keeps the start it has.
+    fn offer_refused(&mut self, input: &InputId) -> Result<(), Failed> {
+        let task = self.task.clone();
+        if self.unopened()? {
+            return Ok(());
+        }
+        if self.refused.remove(input) {
+            log!("the SDK host of {task} refused input {} again before offering it: the task gives up its slot and a host that resumes the same session gets the input when the gate gives it one", input.as_str());
+            return Err(Failed::new("the host refused the same input twice before offering it".into()));
+        }
+        let (resent, _) = self.domain.own(self.scope.clone(), |owner| untaken::resend_refused(owner, &task, input)).map_err(failed("sending the refused input again"))?;
+        if let Some(resent) = resent {
+            log!("the SDK host of {task} refused input {} before offering it: it goes again as {}", input.as_str(), resent.as_str());
+            self.refused.insert(resent);
         }
         Ok(())
     }
@@ -1586,36 +1625,15 @@ impl Driver {
         Ok(acceptance)
     }
 
-    /// Whether the node is paused: what it is told waits for the user to resume it, or for their own
-    /// words, which end the pause.
-    fn wake_completed_codex_work(&mut self)->Result<(),Failed>{
-        if self.worker.provider()!=Provider::Codex || self.paused(){return Ok(())}
-        let snapshot=self.domain.read();let lifecycle=snapshot.state().lifecycle_of(&self.task).map_err(|error|Failed::new(error.message))?;
-        if lifecycle.activity()!=ActivityView::Continuation || !lifecycle.pending_inputs().is_empty(){return Ok(())}
-        drop(snapshot);
-        let stamp=self.domain.read().state().lifecycle_of(&self.task).map_err(|error|Failed::new(error.message))?.execution().cloned().ok_or_else(||Failed::new("The native work has no execution".into()))?;
-        self.domain.own(self.scope.clone(),|owner|{
-            let lifecycle=owner.lifecycle(&self.task)?;
-            if lifecycle.execution()!=Some(&stamp) || lifecycle.resource()!=Some(alondra_domain::ResourceEvidence::Available) || lifecycle.activity()!=ActivityView::Continuation || !lifecycle.pending_inputs().is_empty() || !lifecycle.cards().is_empty() || lifecycle.awaits().is_some() || !matches!(lifecycle.phase(),alondra_domain::TaskPhase::InProgress|alondra_domain::TaskPhase::Delivered){return Ok(())}
-            if owner.state().node_pause(&self.agent).is_some_and(|pause|!pause.released){return Ok(())}
-            let mut pending=std::collections::BTreeSet::new();
-            if let Some(journal)=owner.state().lifecycle_journal.get(&self.task){
-                for record in journal{
-                    match record{
-                        LifecycleRecord::Admitted{..}|LifecycleRecord::HostEnded{..}|LifecycleRecord::HostStopped{..}=>pending.clear(),
-                        LifecycleRecord::WorkEnded{continuation,..}=>{pending.insert(continuation.clone());},
-                        LifecycleRecord::WorkContinued{continuation}|LifecycleRecord::TurnResumed{continuation,..}=>{pending.remove(continuation);},
-                        _=>{},
-                    }
-                }
-            }
-            if pending.is_empty(){return Ok(())}
-            use sha2::Digest;
-            let digest=sha2::Sha256::digest(pending.iter().flat_map(|id|id.as_bytes().iter().copied().chain(std::iter::once(0))).collect::<Vec<_>>());
-            let key:String=digest.iter().map(|byte|format!("{byte:02x}")).collect();
-            let command=CommandEnvelope{protocol_version:PROTOCOL_VERSION,data_epoch:owner.state().data_epoch.clone(),command_id:format!("codex-work-wake:{}:{}:{key}",self.task,stamp.generation()).as_str().into(),expected_revision:0,command:Command::TellNode{task_id:self.task.clone(),text:"Managed native work finished. Inspect its public result, preserve completed work, and continue this task through Alondra.".into(), from_user: false, answers: None}};
-            owner.stage_command(&Actor::System,&command,Attached::None)?;Ok(())
-        }).map_err(failed("queuing the completed native work"))?;Ok(())
+    /// Codex opens no turn for its own work that ended: the node is told at once. Claude opens one
+    /// by itself, and the one clock tells the node only when it did not (`obligation_watch`).
+    fn wake_completed_codex_work(&mut self) -> Result<(), Failed> {
+        if self.worker.provider() != Provider::Codex || self.paused() {
+            return Ok(());
+        }
+        let (task, agent) = (self.task.clone(), self.agent.clone());
+        self.domain.own(self.scope.clone(), |owner| untaken::wake(owner, &task, &agent)).map_err(failed("queuing the completed native work"))?;
+        Ok(())
     }
 
     fn paused(&self) -> bool {
@@ -1740,6 +1758,10 @@ impl Driver {
         if self.opening_overdue(now)? {
             log!("the SDK host of {} did not open its Claude session within {} s of its input: another host takes its place", self.task, self.opening_timeout.as_secs());
             return Err(Failed::new("the host did not open its Claude session in time".into()));
+        }
+        if self.domain.requeues.lock_or_recover("the requeued tasks").remove(&self.task) {
+            log!("the session of {} took no turn on its input offered again: the task gives up its slot and a host that resumes the same session gets the input when the gate gives it one", self.task);
+            return Err(Failed::new("the session took no turn on its input offered again".into()));
         }
         if self.advance_idle_host_of_another_release()? {
             return Ok(());

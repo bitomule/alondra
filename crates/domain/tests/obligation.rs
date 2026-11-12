@@ -115,3 +115,18 @@ fn a_delivery_whose_execution_left_with_an_input_pending_owes_a_start_not_the_us
     assert_eq!(task.pending_inputs(), vec![&input("changes")]);
     assert_eq!(owed(task.obligation()), Some((Party::Alondra, Owed::Start)));
 }
+
+// Work of the node's own ended and the node was handed an input before any turn took up the
+// notice: what is owed is that input. Owing the notice instead, the clock would tell the node
+// again behind an input it never took, which nothing would offer again.
+#[test]
+fn ended_work_with_an_input_handed_meanwhile_owes_the_input() {
+    let mut task = running();
+    fact(&mut task, RuntimeFact::WorkStarted { turn: turn("root"), work: work("child") });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unused".into(), wake: None, awaits: None, stalled: false });
+    fact(&mut task, RuntimeFact::WorkEnded { work: work("child"), continuation: continuation("wake") });
+    assert_eq!(owed(task.obligation()), Some((Party::Alondra, Owed::Wake)), "nothing handed yet: the node is owed the notice");
+    apply(&mut task, Event::Tell { input: input("told"), answers: None });
+    assert_eq!(task.activity(), ActivityView::Continuation);
+    assert_eq!(owed(task.obligation()), Some((Party::Alondra, Owed::HandInput)));
+}

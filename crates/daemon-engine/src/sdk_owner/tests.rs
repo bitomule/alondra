@@ -3979,6 +3979,11 @@ impl Slice {
             .into_iter().find(|member| member.pid == pid).expect("the background command runs")
     }
 
+    /// Claude starts a turn on the prompts it held with `stall-while-held`, from now on.
+    pub fn let_claude_start(&self) {
+        std::fs::write(format!("{}.start", self.capture.display()), "").unwrap();
+    }
+
     /// Ends the command Claude left running in the background.
     fn release_background_command(&self) {
         std::fs::write(format!("{}.release", self.capture.display()), "done\n").unwrap();
@@ -4167,6 +4172,9 @@ fn a_live_host_of_a_release_older_than_the_oldest_adoptable_is_replaced_as_befor
 
 #[path = "codex_tests.rs"]
 pub mod codex_tests;
+
+#[path = "untaken_tests.rs"]
+pub mod untaken;
 
 #[test]
 fn fixture_current_revision_keeps_actor_fences_and_client_staleness() {

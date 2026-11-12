@@ -358,6 +358,13 @@ impl ClaudeWorker {
         self.prepared = Some(PreparedDispatch::new(attempt, owner_generation, command));
         Ok(output)
     }
+    /// Drops the preparation without sending it, as a host that refuses the command before
+    /// offering it leaves nothing pending. Only tests that stand in for that host call it.
+    #[doc(hidden)]
+    pub fn discard_prepared(&mut self) {
+        self.prepared = None;
+    }
+
     /// Requires the exact preparation persisted under this sealed attempt and owner.
     /// The application must recheck its current SQL fence before calling; this is not a lease.
     pub fn submit(&mut self, committed: &CommittedCommand) -> Result<Handoff, AdapterError> {

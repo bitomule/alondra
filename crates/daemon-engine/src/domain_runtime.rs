@@ -76,6 +76,9 @@ pub struct DomainRuntime {
     pub(crate) host_losses_told: Mutex<std::collections::BTreeSet<TaskId>>,
     /// When the gate last took over each task it found working with no owner of this daemon.
     pub(crate) unowned_takes: Mutex<std::collections::BTreeMap<TaskId, (alondra_core::Millis, u64)>>,
+    /// The tasks whose session took no turn on the input offered again: their owner puts a host
+    /// that resumes the same session in place of its own, and the input waits for a slot.
+    pub(crate) requeues: Mutex<std::collections::BTreeSet<TaskId>>,
     /// Makes every write of the capability registry fail as on a full disk.
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) full_disk: std::sync::atomic::AtomicBool,
@@ -170,6 +173,7 @@ impl DomainRuntime {
             waiting_for_space: Default::default(),
             host_losses_told: Default::default(),
             unowned_takes: Default::default(),
+            requeues: Default::default(),
             #[cfg(any(test, feature = "test-hooks"))]
             full_disk: Default::default(),
             handovers: Default::default(),

@@ -75,3 +75,43 @@ fn the_hourly_summary_counts_every_finished_step() {
     let line = lines.iter().find(|line| line.starts_with("obligations HandInput")).expect("a line for HandInput");
     assert!(line.contains("n=3") && line.contains("max=90s") && line.contains("overdue=0"), "{line}");
 }
+
+fn every_deadline() -> Watch {
+    Watch::enforcing(|owed| matches!(owed, Owed::HandInput | Owed::Wake))
+}
+
+fn acted(watch: &mut Watch, obligations: Vec<(TaskId, Obligation)>, now: Millis) -> Vec<(TaskId, Action)> {
+    let late = watch.observe(obligations, &Room(false), now);
+    watch.enforce(&late, now)
+}
+
+#[test]
+fn an_input_past_its_deadline_is_offered_again_then_requeued_each_after_a_deadline_of_its_own() {
+    let mut watch = every_deadline();
+    assert_eq!(acted(&mut watch, hand_input(1), 0), vec![]);
+    assert_eq!(acted(&mut watch, hand_input(1), 121 * S), vec![("t-1".into(), Action::OfferAgain)]);
+    assert_eq!(acted(&mut watch, hand_input(1), 200 * S), vec![], "the offer again has a deadline of its own");
+    assert_eq!(acted(&mut watch, hand_input(1), 242 * S), vec![("t-1".into(), Action::Requeue)]);
+}
+
+#[test]
+fn a_new_step_starts_the_count_of_attempts_again() {
+    let mut watch = every_deadline();
+    acted(&mut watch, hand_input(1), 0);
+    assert_eq!(acted(&mut watch, hand_input(1), 121 * S), vec![("t-1".into(), Action::OfferAgain)]);
+    acted(&mut watch, owes(Party::Provider, Owed::Turn, 2), 130 * S);
+    acted(&mut watch, hand_input(3), 140 * S);
+    assert_eq!(acted(&mut watch, hand_input(3), 261 * S), vec![("t-1".into(), Action::OfferAgain)], "a turn started between the two");
+}
+
+#[test]
+fn only_an_enforced_deadline_is_acted_on() {
+    let mut watch = Watch::default();
+    acted(&mut watch, hand_input(1), 0);
+    assert_eq!(acted(&mut watch, hand_input(1), 121 * S), vec![], "handing an input waits for its measure");
+    let mut watch = Watch::default();
+    acted(&mut watch, owes(Party::Alondra, Owed::Wake, 1), 0);
+    assert_eq!(acted(&mut watch, owes(Party::Alondra, Owed::Wake, 1), 121 * S), vec![("t-1".into(), Action::Wake)]);
+    assert_eq!(acted(&mut watch, owes(Party::Alondra, Owed::Answer, 2), 0), vec![]);
+    assert_eq!(acted(&mut watch, owes(Party::Alondra, Owed::Answer, 2), 24 * HOUR), vec![], "what the orchestrator owes is not acted on here");
+}

@@ -1,0 +1,79 @@
+//! What Alondra does with an input its SDK session did not take, and with work of the node's own
+//! that ended while no turn took up its notice. The owner of the host acts on a refusal at once;
+//! the one clock (`obligation_watch`) acts on what is past its deadline. Both stage the same
+//! commands, so a step repeated by either is a repeat the domain recognises by its id.
+use crate::domain_store::{Attached, OwnerTransaction, StoreError};
+use alondra_core::domain::*;
+use alondra_domain::ActivityView;
+use alondra_foundation::InputId;
+
+pub(crate) const WORK_ENDED: &str = "Managed native work finished. Inspect its public result, preserve completed work, and continue this task through Alondra.";
+
+fn envelope(owner: &OwnerTransaction<'_>, id: String, command: Command) -> CommandEnvelope {
+    CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: owner.state().data_epoch.clone(), command_id: id.as_str().into(), expected_revision: 0, command }
+}
+
+fn generation(owner: &OwnerTransaction<'_>, task: &TaskId) -> Result<Option<u64>, StoreError> {
+    Ok(owner.lifecycle(task)?.execution().map(|stamp| stamp.generation()))
+}
+
+/// The host refused `input` before offering it: the same text goes again as a new input, in the
+/// same step. The new input, if the domain recorded one.
+pub(crate) fn resend_refused(owner: &mut OwnerTransaction<'_>, task: &TaskId, input: &InputId) -> Result<Option<InputId>, StoreError> {
+    let Some(generation) = generation(owner, task)? else { return Ok(None) };
+    let refused = owner.pending_handoffs(task)?.into_iter()
+        .find(|(pending, status)| pending.id() == input && status == "rejected")
+        .map(|(pending, _)| pending.text().to_owned());
+    let Some(text) = refused else { return Ok(None) };
+    let command = Command::ResendUntakenInput { task_id: task.clone(), generation, input: input.as_str().into(), text };
+    owner.stage_command(&Actor::System, &envelope(owner, format!("refused:{task}:{generation}:{}", input.as_str()), command), Attached::None)?;
+    Ok(owner.state().lifecycle_journal.get(task).and_then(|journal| journal.iter().rev().find_map(|record| match record {
+        LifecycleRecord::HandoffResent { input: refused, resent, .. } if refused == input.as_str() => InputId::new(resent.clone()).ok(),
+        _ => None,
+    })))
+}
+
+/// The session holds what it was handed past its deadline: it is offered again, flagged as
+/// possibly received already. Whether something was offered again.
+pub(crate) fn offer_again(owner: &mut OwnerTransaction<'_>, task: &TaskId) -> Result<bool, StoreError> {
+    let Some(generation) = generation(owner, task)? else { return Ok(false) };
+    let doubted: Vec<InputId> = owner.lifecycle(task)?.doubts().into_iter().map(|(_, input)| input.clone()).collect();
+    let handed = owner.pending_handoffs(task)?.into_iter()
+        .find(|(pending, status)| matches!(status.as_str(), "handed" | "uncertain") && !doubted.contains(pending.id()));
+    let Some((input, _)) = handed else { return Ok(false) };
+    let command = Command::RecordDoubtfulHandoff { task_id: task.clone(), generation, input: input.id().as_str().into(), text: input.text().into(), resumes: true, by_alondra: true };
+    owner.stage_command(&Actor::System, &envelope(owner, format!("reoffer:{task}:{generation}:{}", input.id().as_str()), command), Attached::None)?;
+    Ok(true)
+}
+
+/// Work of the node's own ended and no turn took up its notice: the node is told. Whether it was.
+pub(crate) fn wake(owner: &mut OwnerTransaction<'_>, task: &TaskId, agent: &AgentId) -> Result<bool, StoreError> {
+    let lifecycle = owner.lifecycle(task)?;
+    let Some(stamp) = lifecycle.execution().cloned() else { return Ok(false) };
+    if lifecycle.resource() != Some(alondra_domain::ResourceEvidence::Available) || lifecycle.activity() != ActivityView::Continuation
+        || !lifecycle.pending_inputs().is_empty() || !lifecycle.cards().is_empty() || lifecycle.awaits().is_some()
+        || !matches!(lifecycle.phase(), alondra_domain::TaskPhase::InProgress | alondra_domain::TaskPhase::Delivered) {
+        return Ok(false);
+    }
+    if owner.state().node_pause(agent).is_some_and(|pause| !pause.released) {
+        return Ok(false);
+    }
+    let mut pending = std::collections::BTreeSet::new();
+    for record in owner.state().lifecycle_journal.get(task).into_iter().flatten() {
+        match record {
+            LifecycleRecord::Admitted { .. } | LifecycleRecord::HostEnded { .. } | LifecycleRecord::HostStopped { .. } => pending.clear(),
+            LifecycleRecord::WorkEnded { continuation, .. } => { pending.insert(continuation.clone()); }
+            LifecycleRecord::WorkContinued { continuation } | LifecycleRecord::TurnResumed { continuation, .. } => { pending.remove(continuation); }
+            _ => {}
+        }
+    }
+    if pending.is_empty() {
+        return Ok(false);
+    }
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(pending.iter().flat_map(|id| id.as_bytes().iter().copied().chain(std::iter::once(0))).collect::<Vec<_>>());
+    let key: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    let command = Command::TellNode { task_id: task.clone(), text: WORK_ENDED.into(), from_user: false, answers: None };
+    owner.stage_command(&Actor::System, &envelope(owner, format!("work-wake:{task}:{}:{key}", stamp.generation()), command), Attached::None)?;
+    Ok(true)
+}

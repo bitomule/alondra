@@ -57,7 +57,7 @@ impl TaskLifecycle {
                 (Party::Alondra, Owed::Answer)
             }),
             State::InProgress(Progress::Executing { execution, .. }) => {
-                Some(answer_on_its_way(&execution.0).unwrap_or_else(|| by_activity(&execution.0.activity)))
+                Some(answer_on_its_way(&execution.0).unwrap_or_else(|| by_activity(&execution.0)))
             }
             State::InProgress(Progress::Waiting { cards, session, .. }) => {
                 cards_owe(cards.iter()).or_else(|| session.execution().and_then(answer_on_its_way))
@@ -78,7 +78,7 @@ fn delivered_owes(delivered: &Delivered) -> (Party, Owed) {
         execution.and_then(answer_on_its_way).or_else(|| {
             execution
                 .filter(|execution| matches!(execution.activity, Activity::Launching(_) | Activity::InputPending(_) | Activity::Turn { .. } | Activity::Continuation(_)))
-                .map(|execution| by_activity(&execution.activity))
+                .map(by_activity)
         })
     };
     let gate = || match &delivered.gate {
@@ -124,8 +124,11 @@ fn cards_owe<'a>(cards: impl Iterator<Item = &'a Card>) -> Option<(Party, Owed)>
     }
 }
 
-fn by_activity(activity: &Activity) -> (Party, Owed) {
-    match activity {
+/// What the execution owes by what it does. Ended work of its own whose node was handed an input
+/// meanwhile owes that input, which the turn the work ending opens would also take up.
+fn by_activity(execution: &Execution) -> (Party, Owed) {
+    match &execution.activity {
+        Activity::Continuation(_) if !execution.inbox.is_empty() => (Party::Alondra, Owed::HandInput),
         Activity::Launching(_) => (Party::Alondra, Owed::Start),
         Activity::InputPending(_) => (Party::Alondra, Owed::HandInput),
         Activity::Turn { .. } => (Party::Provider, Owed::Turn),
