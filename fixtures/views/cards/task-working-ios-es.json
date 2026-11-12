@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-1",
   "client": "ios",
-  "version": "v05d7cd2bfee40647",
+  "version": "v9257e523059efe80",
   "cursor": "cursor-1",
   "title": "Build a feature",
   "status": {
@@ -55,7 +55,7 @@
             {
               "kind": "state",
               "label": "Estado",
-              "value": "Trabajando · Paso 3 de 5 · Run the tests · `Bash: cargo test` · desde las 09:30 · Dijo: «Tests pass; opening the PR» 09:58",
+              "value": "Trabajando · Paso 3 de 5 · Run the tests · `Bash: cargo test` · desde las 09:30",
               "tone": "accent"
             },
             {
@@ -448,7 +448,7 @@
               "resolves_card": false
             },
             {
-              "id": "pause:a-1@0",
+              "id": "pause:a-1@1",
               "label": "Pausar",
               "style": "secondary",
               "role": "neutral",

@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "mac",
-  "version": "v47f6111e21351119",
+  "version": "vd6b4c451892dc323",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -89,11 +89,17 @@
               },
               "icon": "mission",
               "title": "Release the daemon with the memory pause fix",
-              "subtitle": "Turno en marcha desde las 09:30",
               "badges": [
                 {
                   "text": "Trabajando",
                   "tone": "accent"
+                },
+                {
+                  "text": "desde las 09:30",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:30:00Z"
+                  }
                 }
               ],
               "trailing": {
@@ -104,7 +110,7 @@
               "struck": false,
               "actions": [
                 {
-                  "id": "pause:a-1@0",
+                  "id": "pause:a-1@1",
                   "label": "Pausar",
                   "style": "secondary",
                   "role": "neutral",

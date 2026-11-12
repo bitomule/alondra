@@ -51,7 +51,7 @@ fn pause_label(lang: super::Lang) -> &'static str {
 /// Takes a queued task out of the queue; it stays out until the user resumes it.
 pub(super) fn pause_queued_action(task: &Task, context: &RenderContext<'_>) -> Option<super::Action> {
     common::queued(task, context).filter(|queued| queued.pausable)?;
-    let mut action = common::action(Verb::Pause, &task.id.0, context.domain.revision, pause_label(context.lang), Style::Secondary)?;
+    let mut action = common::action(Verb::Pause, &task.id.0, task.revision, pause_label(context.lang), Style::Secondary)?;
     action.key = (context.client == super::Client::Tui).then(|| "p".into());
     action.stamp = Some(t!(context.lang, "Paused", "En pausa").into());
     Some(action)
@@ -69,7 +69,7 @@ pub(super) fn pause_node_action(agent: &AgentId, context: &RenderContext<'_>) ->
         return None;
     }
     let lang = context.lang;
-    let mut action = common::action(Verb::Pause, &agent.0, context.domain.revision, pause_label(lang), Style::Secondary)?;
+    let mut action = common::action(Verb::Pause, &agent.0, task.revision, pause_label(lang), Style::Secondary)?;
     action.key = (context.client == super::Client::Tui).then(|| "p".into());
     action.stamp = Some(t!(lang, "Paused", "En pausa").into());
     action.confirm = Some(Confirm {
@@ -86,10 +86,10 @@ fn paused_node<'a>(session: &str, context: &'a RenderContext<'_>) -> Option<&'a 
 }
 
 /// Puts a paused node or task back in the queue, where it waits for a slot like a start.
-pub(super) fn resume_action(paused: &LivePaused, context: &RenderContext<'_>) -> Option<super::Action> {
+pub(super) fn resume_action(paused: &LivePaused, task: &Task, context: &RenderContext<'_>) -> Option<super::Action> {
     let subject = paused.session.as_deref().unwrap_or(&paused.task_id);
     let lang = context.lang;
-    let mut action = common::action(Verb::Resume, subject, context.domain.revision, t!(lang, "Resume", "Reanudar"), Style::Primary)?;
+    let mut action = common::action(Verb::Resume, subject, task.revision, t!(lang, "Resume", "Reanudar"), Style::Primary)?;
     action.key = (context.client == super::Client::Tui).then(|| "u".into());
     action.stamp = Some(t!(lang, "Resuming…", "Reanudando…").into());
     action.description = Some(t!(lang, "As soon as a slot is free", "En cuanto haya hueco").into());
@@ -102,7 +102,7 @@ pub(super) fn task_actions(task: &Task, context: &RenderContext<'_>) -> Vec<supe
         return vec![];
     }
     if let Some(paused) = common::paused(task, context) {
-        return resume_action(paused, context).into_iter().collect();
+        return resume_action(paused, task, context).into_iter().collect();
     }
     if let Some(pause) = pause_queued_action(task, context) {
         return vec![pause];

@@ -22,7 +22,7 @@ fn task_groups(context: &RenderContext<'_>) -> super::Section {
         let children: Vec<_> = presented.iter().filter(|(_, presentation)| presentation.label == label)
             .map(|(task, presentation)| {
                 let mut row = common::row(&task.id.0, &format!("task:{}", task.id), presentation.icon, task.title.clone(),
-                    task_subtitle(task, presentation.fact.as_deref()));
+                    task_subtitle(task, presentation.reason.as_deref()));
                 row.struck = label == StateLabel::Cancelled;
                 row.badges.push(Label { text: presentation.state.clone(), tone: presentation.tone, elapsed: None });
                 row.badges.extend(common::scheduled_mark(task, context));
@@ -88,19 +88,12 @@ fn defining_group(children: Vec<super::Row>, lang: super::Lang) -> super::Row {
 fn project_sections(context: &RenderContext<'_>) -> Vec<super::Section> {
     let mut projects: BTreeMap<String, Vec<super::Row>> = BTreeMap::new();
     for (task, agent) in super::tasks::in_progress(context) {
-        let live = context.live.nodes.iter().find(|node| node.agent_id == agent.id.0);
         let project = task.project.as_deref().unwrap_or(t!(context.lang, "Other", "Otros"));
         let (icon, _) = common::task_presentation(task.state);
         let presented = super::task_state::present(task, context);
         let mut row = common::row(&task.id.0, &format!("task:{}", task.id), icon, task.title.clone(), None);
         row.badges.push(Label { text: presented.state, tone: presented.tone, elapsed: None });
-        if let Some(node) = live {
-            let summary = node.summary.as_deref().unwrap_or("").lines().next().unwrap_or("");
-            row.subtitle = (!summary.is_empty()).then(|| summary.chars().take(140).collect::<String>());
-            if let Some(text) = &node.background_badge {
-                row.badges.push(Label { text: text.clone(), tone: Tone::Neutral, elapsed: None });
-            }
-        }
+        row.subtitle = presented.reason;
         let pending = context.index.node(&agent.id).map_or(0, |node| node.waiting.len());
         row.trailing = Some(Trailing::Count { value: pending as u32 });
         projects.entry(project.into()).or_default().push(row);

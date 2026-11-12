@@ -1364,7 +1364,7 @@ fn the_mac_sidebar_lists_the_tasks_in_progress_by_project() {
     assert_eq!(row.link, Some(Link::View { key: "task:t-651c38484cd2f34e74d5107ba05f7f15".into() }));
     assert_eq!(row.title, "Restore the native review experience");
     assert_eq!(row.badges[0], Label { text: "Needs you".into(), tone: Tone::Warning, elapsed: None }, "its task's state");
-    assert_eq!(row.badges[1], Label { text: "2 subagents".into(), tone: Tone::Neutral, elapsed: None }, "and what runs in its background");
+    assert_eq!(row.badges.len(), 1, "nothing that changes inside a turn, as what runs in its background");
     assert!(row.children.is_empty());
     assert!(view.status.summary.ends_with(" · 1 in progress"), "{}", view.status.summary);
 }
@@ -1760,6 +1760,15 @@ fn task_detail_keeps_dependencies_options_and_human_request_text() {
     assert!(facts.iter().any(|fact| fact.label == "Effort" && fact.value == "High"));
 }
 
+/// The state and its fact as the task's own screen says them.
+fn detail_state_text(state: &DomainState, live: &LiveSnapshot, client: Client, lang: Lang) -> String {
+    let view = render(state, live, client, lang, "task:t-1", "");
+    view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
+        Item::Facts(facts) => facts.items.iter().find(|fact| fact.kind == Some(FactKind::State)).map(|fact| fact.value.clone()),
+        _ => None,
+    }).unwrap()
+}
+
 fn task_state_text(state: &DomainState, live: &LiveSnapshot, lang: Lang) -> String {
     let row = active_row(state, live, Client::Mac, lang, "t-1").1;
     row.badges.first().map(|badge| badge.text.clone()).unwrap()
@@ -1924,13 +1933,15 @@ fn a_reopened_task_waiting_in_the_queue_says_its_place_and_why_never_that_it_sto
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         let (block, row) = active_row(&state, &live, client, Lang::Es, "t-1");
         let shown = serde_json::to_string(&row).unwrap();
-        assert!(shown.contains("2.º de 5 · 4 de 4 huecos ocupados"), "{client:?}: {shown}");
+        assert!(shown.contains("Arranca cuando haya sitio") && !shown.contains("2.º de 5"), "{client:?}: {shown}");
         assert!(!shown.contains("Detenida") && !shown.contains("sin que entregara"), "{client:?}: {shown}");
         assert_eq!(block, "block:waiting", "{client:?}");
+        let detail = detail_state_text(&state, &live, client, Lang::Es);
+        assert!(detail.contains("2.º de 5 · 4 de 4 huecos ocupados"), "{client:?}: {detail}");
     }
     let held = pacing_live(vec![LiveQueued { pausable: true, task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Memory { free: Some(9) } }], vec![], None);
-    let shown = serde_json::to_string(&active_row(&state, &held, Client::Ios, Lang::Es, "t-1").1).unwrap();
-    assert!(shown.contains("1.º de 1") && !shown.contains("memoria"), "{shown}");
+    let detail = detail_state_text(&state, &held, Client::Ios, Lang::Es);
+    assert!(detail.contains("1.º de 1") && !detail.contains("memoria"), "{detail}");
 }
 
 fn node_in(state: &mut DomainState, phase: NodePhase) {
@@ -2439,17 +2450,16 @@ fn a_working_task_shows_its_command_and_time_after_its_own_step() {
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         let (block, row) = active_row(&state, &live, client, Lang::Es, "t-1");
         assert_eq!((block.as_str(), row.badges[0].text.as_str()), ("block:in-progress", "Trabajando"), "{client:?}");
-        assert!(!matches!(row.trailing, Some(Trailing::Time { .. })), "{client:?}: its time is in the fact itself");
-        let fact = if client == Client::Ios { row.children[0].title.as_str() } else { row.subtitle.as_deref().unwrap() };
-        assert_eq!(fact, "`Bash: bazel test //crates/...` · desde las 06:58", "{client:?}");
+        assert!(row.children.is_empty() && !serde_json::to_string(&row).unwrap().contains("bazel test"), "{client:?}: the list never names the command");
+        assert_eq!(detail_state_text(&state, &live, client, Lang::Es), "Trabajando · `Bash: bazel test //crates/...` · desde las 06:58", "{client:?}");
     }
     live.nodes[0].steps = ["Plan", "Build", "Generate iOS screenshots", "Ship"].iter().enumerate().map(|(index, subject)| LiveStep {
         subject: (*subject).into(), active_form: None,
         state: match index { 0 | 1 => StepState::Completed, 2 => StepState::InProgress, _ => StepState::Pending },
     }).collect();
-    let ios = active_row(&state, &live, Client::Ios, Lang::Es, "t-1").1.children;
-    assert_eq!(ios.iter().map(|line| (line.id.as_str(), line.title.as_str(), line.trailing.is_none())).collect::<Vec<_>>(),
-        [("activity", "Paso 3 de 4 · Generate iOS screenshots · `Bash: bazel test //crates/...` · desde las 06:58", true)], "the step comes before the command and its time");
+    assert_eq!(detail_state_text(&state, &live, Client::Ios, Lang::Es),
+        "Trabajando · Paso 3 de 4 · Generate iOS screenshots · `Bash: bazel test //crates/...` · desde las 06:58", "the step comes before the command and its time");
+    assert!(active_row(&state, &live, Client::Ios, Lang::Es, "t-1").1.children.is_empty(), "the step stays on the task's screen");
 }
 #[test]
 fn only_the_iphone_gets_no_link_to_the_request_view() {
@@ -6879,9 +6889,10 @@ fn the_active_list_is_for_you_then_in_progress_then_waiting_each_in_its_own_orde
     for (id, at) in [("t-old", "2026-10-08T08:00:00+02:00"), ("t-new", "2026-10-08T09:00:00+02:00")] {
         live.task_since.insert(id.into(), at.into());
     }
-    for (agent, since) in [("a-busy", "2026-10-08T10:05:00+02:00"), ("a-other", "2026-10-08T10:01:00+02:00")] {
+    for (agent, task, since) in [("a-busy", "t-busy", "2026-10-08T10:05:00+02:00"), ("a-other", "t-run2", "2026-10-08T10:01:00+02:00")] {
         live.nodes.push(LiveNode { agent_id: agent.into(), name: agent.into(), working: true, tool: Some("Read: src/lib.rs".into()),
-            state_since: Some(since.into()), ..LiveNode::default() });
+            state_since: Some("2026-10-08T07:00:00+02:00".into()), ..LiveNode::default() });
+        live.task_since.insert(task.into(), since.into());
     }
     live.pacing = Some(LivePacing { working: 2, limit: 2, fixed: None, auto: 2, most: 12, memory_free: Some(40), tight: false, paused: vec![],
         queued: ["t-q1", "t-q2"].iter().enumerate().map(|(index, id)| LiveQueued {
@@ -6890,7 +6901,7 @@ fn the_active_list_is_for_you_then_in_progress_then_waiting_each_in_its_own_orde
         ("block:for-you".to_owned(), vec!["t-old".to_owned(), "t-new".to_owned()]),
         ("block:in-progress".to_owned(), vec!["t-busy".to_owned(), "t-run2".to_owned()]),
         ("block:waiting".to_owned(), vec!["t-q1".to_owned(), "t-q2".to_owned()]),
-    ], "longest waiting first, most recently active first, the queue by its place");
+    ], "longest waiting first, the latest to start working first, the queue by its place");
     let blocks = active_blocks(&state, &live, Client::Ios, Lang::Es);
     assert_eq!(blocks.iter().map(|block| (block.title.as_str(), block.trailing.clone())).collect::<Vec<_>>(), [
         ("Para ti", Some(Trailing::Text { text: "2".into() })),
@@ -6898,9 +6909,9 @@ fn the_active_list_is_for_you_then_in_progress_then_waiting_each_in_its_own_orde
         ("En espera", Some(Trailing::Text { text: "2".into() })),
     ]);
     let (_, queued) = active_row(&state, &live, Client::Mac, Lang::Es, "t-q2");
-    assert_eq!((queued.badges[0].text.as_str(), queued.subtitle.as_deref()), ("En espera", Some("2.º de 2 · 2 de 2 huecos ocupados")));
+    assert_eq!((queued.badges[0].text.as_str(), queued.subtitle.as_deref()), ("En espera", Some("Arranca cuando haya sitio")));
     live.pacing.as_mut().unwrap().queued[0].hold = LiveHold::Next;
-    assert_eq!(active_row(&state, &live, Client::Mac, Lang::Es, "t-q1").1.subtitle.as_deref(), Some("Arranca en menos de un minuto"));
+    assert_eq!(active_row(&state, &live, Client::Mac, Lang::Es, "t-q1").1.subtitle.as_deref(), Some("Arranca cuando haya sitio"));
     state.tasks.retain(|id, _| id.0.starts_with("t-q"));
     assert_eq!(block_ids(&state, &live).iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["block:waiting"], "an empty block is not shown");
 }
@@ -6982,7 +6993,7 @@ fn a_task_that_needs_you_says_its_question_never_its_own_title() {
 
 
 #[test]
-fn a_working_task_shows_what_it_said_last_as_a_separate_fact() {
+fn what_a_working_task_said_last_is_only_on_its_own_screen_with_its_time() {
     let mut state = fixture();
     state.interactions.clear();
     let task = state.tasks.get_mut(&"t-1".into()).unwrap();
@@ -6992,11 +7003,17 @@ fn a_working_task_shows_what_it_said_last_as_a_separate_fact() {
         last_message: Some("Folding works. Now the captures.".into()), last_message_at: Some("2026-10-09T06:40:00+02:00".into()),
         ..LiveNode::default()
     }], ..LiveSnapshot::default() };
-    let (block, row) = active_row(&state, &live, Client::Ios, Lang::Es, "t-1");
-    assert_eq!((block.as_str(), row.badges[0].text.as_str()), ("block:in-progress", "Trabajando"));
-    let fact = row.children.iter().find(|line| line.id == "activity").unwrap();
-    assert!(fact.title.contains("Turno en marcha desde las") && fact.title.contains("Dijo: «Folding"));
-    assert!(fact.title.contains("06:40"));
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let (block, row) = active_row(&state, &live, client, Lang::Es, "t-1");
+        assert_eq!((block.as_str(), row.badges[0].text.as_str()), ("block:in-progress", "Trabajando"));
+        let list = serde_json::to_string(&render(&state, &live, client, Lang::Es, "tasks", "")).unwrap();
+        assert!(!list.contains("Folding") && !list.contains("Dijo"), "{client:?}: {list}");
+        let view = render(&state, &live, client, Lang::Es, "task:t-1", "");
+        let section = view.sections.iter().find(|section| section.id == "last_message").expect("the task's screen has its last words");
+        assert!(matches!(&section.items[0], Item::Markdown(words) if words.text == "Folding works. Now the captures."), "{client:?}");
+        assert!(matches!(&section.items[1], Item::Row(row) if row.trailing == Some(Trailing::Time {
+            at: "2026-10-09T06:40:00+02:00".into(), format: TimeFormat::Relative })), "{client:?}: and when it said them");
+    }
 }
 
 /// A task Claude Code would not start in: the card is worded in the viewer's language, its button
@@ -8614,7 +8631,7 @@ fn a_task_whose_turn_ended_behind_its_own_work_says_so_and_names_what_runs() {
                 assert!(screen.contains(waits), "{through} {client:?} {lang:?}: the task's screen says {waits}: {screen}");
                 match named {
                     Some(named) => {
-                        assert!(list.contains(named), "{through} {client:?} {lang:?}: the list names {named}: {list}");
+                        assert!(!list.contains(named), "{through} {client:?} {lang:?}: only the task's screen names {named}: {list}");
                         assert!(screen.contains(named), "{through} {client:?} {lang:?}: the screen names {named}: {screen}");
                     }
                     None => assert!(!list.contains("sleep 5900"), "{through} {client:?} {lang:?}: nothing is named without readings: {list}"),
@@ -8712,7 +8729,7 @@ fn elapsed_row(view: &View) -> Option<&Row> {
 }
 
 #[test]
-fn a_task_counts_its_time_from_its_first_start_in_its_history_not_from_its_node() {
+fn the_list_counts_the_time_in_its_state_and_the_task_screen_its_run_time() {
     let mut state = fixture();
     state.interactions.clear();
     let task = state.tasks.get_mut(&"t-1".into()).unwrap();
@@ -8724,17 +8741,20 @@ fn a_task_counts_its_time_from_its_first_start_in_its_history_not_from_its_node(
         state_since: Some("2026-09-30T09:40:00.000+02:00".into()),
         ..LiveNode::default()
     });
+    let in_state = Some(Elapsed { since: "2026-09-30T09:40:00.000+02:00".into(), until: None });
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         let (_, row) = active_row(&state, &live, client, Lang::En, "t-1");
-        assert!(row.badges.iter().all(|badge| badge.elapsed.is_none()), "{client:?}: a task without a start in its history counts nothing");
+        let mark = row.badges.last().unwrap();
+        assert_eq!((mark.text.as_str(), &mark.elapsed), ("since 09:40", &in_state), "{client:?}: the list counts the time in its state");
+        assert!(elapsed_row(&render(&state, &live, client, Lang::En, "task:t-1", "")).is_none(), "{client:?}: a task without a start in its history counts no run time");
     }
     live.task_started.insert("t-1".into(), LiveTaskStart { since: "2026-09-30T08:05:00.000+02:00".into(), until: None, ran_secs: None });
     let started = Some(Elapsed { since: "2026-09-30T08:05:00.000+02:00".into(), until: None });
-    for (client, lang, text) in [(Client::Ios, Lang::Es, "en marcha desde las 08:05"), (Client::Mac, Lang::En, "running since 08:05"),
-        (Client::Tui, Lang::Es, "en marcha desde las 08:05")] {
+    for (client, lang, text) in [(Client::Ios, Lang::Es, "desde las 09:40"), (Client::Mac, Lang::En, "since 09:40"),
+        (Client::Tui, Lang::Es, "desde las 09:40")] {
         let (_, row) = active_row(&state, &live, client, lang, "t-1");
         let mark = row.badges.last().unwrap();
-        assert_eq!((mark.text.as_str(), &mark.elapsed), (text, &started), "{client:?}: counts from the history while it waits for the user");
+        assert_eq!((mark.text.as_str(), &mark.elapsed), (text, &in_state), "{client:?}: the list still counts the time in its state");
         let view = render(&state, &live, client, lang, "task:t-1", "");
         let detail = elapsed_row(&view).expect("the task's screen says how long it runs");
         let (title, since) = match lang { Lang::En => ("Running for", "since 08:05"), Lang::Es => ("En marcha", "desde las 08:05") };
@@ -9793,7 +9813,7 @@ fn a_task_with_no_card_in_the_inbox_never_reads_needs_you() {
 
 proptest::proptest! {
     #[test]
-    fn a_working_task_always_says_what_happens_now(
+    fn a_working_task_says_what_happens_now_only_on_its_own_screen(
         tool in proptest::bool::ANY, background in proptest::bool::ANY,
         message in proptest::bool::ANY, has_node in proptest::bool::ANY,
         state_since in proptest::bool::ANY, doing in 0u8..3,
@@ -9818,12 +9838,16 @@ proptest::proptest! {
                 let index = crate::domain::ReadIndex::build(&state);
                 let context = RenderContext { domain: &state, index: &index, live: &live, client, lang,
                     transport: Transport::Loopback, cursor: "", rendered_at: "2026-11-11T16:00:00+01:00" };
-                let presentation = task_state::working(&state.tasks[&"t-1".into()], doing, &context);
+                let mut presentation = task_state::working(&state.tasks[&"t-1".into()], doing, &context);
+                presentation.since = Some("2026-11-11T15:00:00+01:00".into());
                 let row = tasks::presented_row(&state.tasks[&"t-1".into()], &presentation, &context);
-                let fact = if client == Client::Ios { row.children[0].title.as_str() } else { row.subtitle.as_deref().unwrap() };
-                proptest::prop_assert!(!fact.is_empty());
+                let state_word = (client == Client::Ios).then_some(presentation.state.as_str());
+                proptest::prop_assert!(row.children.is_empty() && row.subtitle.as_deref() == state_word, "{row:?}");
+                let elapsed = row.badges.iter().find_map(|badge| badge.elapsed.as_ref()).map(|elapsed| elapsed.since.as_str());
+                proptest::prop_assert_eq!(elapsed, Some("2026-11-11T15:00:00+01:00"));
+                let fact = presentation.fact.as_deref().unwrap();
                 proptest::prop_assert!(fact.contains("15:"), "{fact}");
-                if has_node && message { proptest::prop_assert!(fact.contains("The checks passed.") && fact.contains("15:31")); }
+                proptest::prop_assert!(!fact.contains("The checks passed."), "{fact}");
                 if !has_node || (!tool && !background) {
                     let since = if has_node && state_since { "15:10" } else { "15:00" };
                     proptest::prop_assert!(fact.contains(since), "{fact}");

@@ -102,7 +102,7 @@ final class TasksBoardTests: XCTestCase {
         XCTAssertEqual(task.title, "Lumo · weekly improvement")
         XCTAssertEqual(task.state, "Working")
         XCTAssertEqual(task.marks, ["Scheduled", "Lumo"], "the time it runs is counted apart, not shown as a mark")
-        XCTAssertEqual(task.elapsed?.elapsed, Elapsed(since: "2026-09-30T09:48:00.000Z"))
+        XCTAssertEqual(task.elapsed?.elapsed, Elapsed(since: "2026-09-30T09:00:00Z"), "the time in its state, which the app counts")
         XCTAssertEqual(task.tone, .accent, "the mark never takes the state's place")
 
         let spanish = TasksBoard(document: try Fixtures.document("tasks-ios-es"))

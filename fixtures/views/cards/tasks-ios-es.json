@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v4bb5d6972d4be7f2",
+  "version": "v3c9159b24ffb7da8",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -115,10 +115,10 @@
                   "tone": "neutral"
                 },
                 {
-                  "text": "en marcha desde las 08:00",
+                  "text": "desde las 09:30",
                   "tone": "neutral",
                   "elapsed": {
-                    "since": "2026-09-30T08:00:00Z"
+                    "since": "2026-09-30T09:30:00Z"
                   }
                 }
               ],
@@ -133,11 +133,6 @@
                   "id": "activity",
                   "icon": "notice",
                   "title": "5 preguntas abiertas",
-                  "trailing": {
-                    "kind": "time",
-                    "at": "2026-09-30T09:30:00Z",
-                    "format": "relative"
-                  },
                   "depth": 0,
                   "struck": false
                 }
@@ -189,10 +184,10 @@
                   "tone": "neutral"
                 },
                 {
-                  "text": "en marcha desde las 09:20",
+                  "text": "desde las 09:00",
                   "tone": "neutral",
                   "elapsed": {
-                    "since": "2026-09-30T09:20:00.000Z"
+                    "since": "2026-09-30T09:00:00Z"
                   }
                 }
               ],
@@ -206,7 +201,7 @@
                 {
                   "id": "activity",
                   "icon": "notice",
-                  "title": "Turno en marcha desde las 09:00 · Badge accuracy",
+                  "title": "Badge accuracy",
                   "depth": 0,
                   "struck": false
                 }
@@ -256,10 +251,10 @@
                   "tone": "neutral"
                 },
                 {
-                  "text": "en marcha desde las 09:48",
+                  "text": "desde las 09:00",
                   "tone": "neutral",
                   "elapsed": {
-                    "since": "2026-09-30T09:48:00.000Z"
+                    "since": "2026-09-30T09:00:00Z"
                   }
                 }
               ],
@@ -269,15 +264,6 @@
               },
               "depth": 1,
               "struck": false,
-              "children": [
-                {
-                  "id": "activity",
-                  "icon": "notice",
-                  "title": "Turno en marcha desde las 09:00",
-                  "depth": 0,
-                  "struck": false
-                }
-              ],
               "actions": [
                 {
                   "id": "pause:a-lumo@6",
@@ -313,13 +299,6 @@
                 {
                   "text": "Entregada",
                   "tone": "info"
-                },
-                {
-                  "text": "en marcha desde las 17:15",
-                  "tone": "neutral",
-                  "elapsed": {
-                    "since": "2026-09-29T17:15:00.000Z"
-                  }
                 }
               ],
               "trailing": {
@@ -382,7 +361,7 @@
                 {
                   "id": "activity",
                   "icon": "notice",
-                  "title": "1.º de 1",
+                  "title": "Arranca cuando haya sitio",
                   "depth": 0,
                   "struck": false
                 }

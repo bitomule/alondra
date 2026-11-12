@@ -26,7 +26,7 @@ fn relaunch_action(task: &Task, context: &RenderContext<'_>) -> Option<super::Ac
         return None;
     }
     let label = t!(context.lang, "Relaunch", "Relanzar");
-    let mut action = common::action(Verb::Relaunch, &task.id.0, context.domain.revision, label, Style::Primary)?;
+    let mut action = common::action(Verb::Relaunch, &task.id.0, task.revision, label, Style::Primary)?;
     action.key = (context.client == super::Client::Tui).then(|| "l".into());
     Some(action)
 }
@@ -39,6 +39,21 @@ pub(super) fn in_progress<'a>(context: &'a RenderContext<'_>) -> impl Iterator<I
             .filter(|task| !task.archived && !task.state.terminal())
             .or_else(|| super::task_node::node_tasks(&agent.id, context).find(|task| !task.state.terminal()))
             .map(|task| (task, agent)))
+}
+
+/// How long an open task has been in its state, which each client counts from the start the row carries; how long an
+/// ended one took.
+pub(super) fn state_mark(task: &Task, presentation: &task_state::Presentation, context: &RenderContext<'_>) -> Option<super::Label> {
+    if task.state.terminal() {
+        return common::elapsed_mark(task, false, context);
+    }
+    let since = presentation.since.clone()?;
+    let at = since.get(11..16).unwrap_or_default();
+    Some(super::Label {
+        text: tf!(context.lang, "since {at}", "desde las {at}"),
+        tone: Tone::Neutral,
+        elapsed: Some(super::Elapsed { since, until: None }),
+    })
 }
 
 pub(super) fn task_row(task: &Task, context: &RenderContext<'_>) -> super::Row {
@@ -54,26 +69,23 @@ pub(super) fn presented_row(task: &Task, presentation: &task_state::Presentation
     row.badges.push(super::Label { text: presentation.state.clone(), tone: presentation.tone, elapsed: None });
     row.badges.extend(common::scheduled_mark(task, context));
     row.badges.extend(task.project.as_ref().map(|project| super::Label { text: project.clone(), tone: Tone::Neutral, elapsed: None }));
-    row.badges.extend(common::elapsed_mark(task, false, context));
+    row.badges.extend(state_mark(task, presentation, context));
     row.actions.extend(relaunch_action(task, context));
     row.actions.extend(super::pacing::task_actions(task, context));
-    let since = presentation.since.clone().map(|at| Trailing::Time { at, format: super::TimeFormat::Relative });
     match context.client {
         super::Client::Tui => {
-            row.subtitle = presentation.fact.clone();
-            row.trailing = since;
+            row.subtitle = presentation.reason.clone();
             return row;
         }
         super::Client::Ios => {
-            if let Some(fact) = &presentation.fact {
-                let mut line = common::row("activity", "node", Icon::Notice, fact.clone(), None);
+            if let Some(reason) = &presentation.reason {
+                let mut line = common::row("activity", "node", Icon::Notice, reason.clone(), None);
                 line.link = None;
-                line.trailing = since;
                 row.children.push(line);
             }
         }
         _ => {
-            row.subtitle = presentation.fact.clone();
+            row.subtitle = presentation.reason.clone();
             let count = waiting_count(task, context);
             row.trailing = (count > 0).then(|| Trailing::Text {
                 text: match count {
@@ -289,10 +301,10 @@ fn request_row(request: &Request, forest: &Forest<'_>, context: &RenderContext<'
                 let presented = task_state::present(task, context);
                 row.icon = icon;
                 row.struck = task.state == TaskState::Cancelled;
-                row.subtitle = None;
-                row.badges.insert(0, super::Label { text: presented.state, tone: presented.tone, elapsed: None });
+                row.subtitle = presented.reason.clone();
+                row.badges.insert(0, super::Label { text: presented.state.clone(), tone: presented.tone, elapsed: None });
                 row.badges.extend(common::scheduled_mark(task, context));
-                row.badges.extend(common::elapsed_mark(task, false, context));
+                row.badges.extend(state_mark(task, &presented, context));
                 row.actions.extend(relaunch_action(task, context));
                 row.actions.extend(super::pacing::task_actions(task, context));
                 row.children = match children.as_mut_slice() {
@@ -589,7 +601,7 @@ fn order(presentation: &task_state::Presentation) -> Order {
     match (presentation.block, presentation.queue) {
         (Block::ForYou, _) => (0, 0, at.unwrap_or_else(|| "~".into()), std::cmp::Reverse(String::new())),
         (Block::Waiting, Some(place)) => (0, place, String::new(), std::cmp::Reverse(String::new())),
-        _ => (1, 0, String::new(), std::cmp::Reverse(presentation.active_at.clone().or(at).unwrap_or_default())),
+        _ => (1, 0, String::new(), std::cmp::Reverse(at.unwrap_or_default())),
     }
 }
 

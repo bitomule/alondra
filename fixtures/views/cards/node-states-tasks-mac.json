@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "mac",
-  "version": "v5490899c66c7e023",
+  "version": "v6827228b532dd33a",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -115,10 +115,10 @@
                   "tone": "neutral"
                 },
                 {
-                  "text": "running since 08:00",
+                  "text": "since 09:30",
                   "tone": "neutral",
                   "elapsed": {
-                    "since": "2026-09-30T08:00:00Z"
+                    "since": "2026-09-30T09:30:00Z"
                   }
                 }
               ],
@@ -151,7 +151,6 @@
               },
               "icon": "mission",
               "title": "Release the daemon",
-              "subtitle": "In the background: `./deploy/brew/release.sh 0.2.67` · since 09:40",
               "badges": [
                 {
                   "text": "Working",
@@ -160,6 +159,13 @@
                 {
                   "text": "Demo Garden",
                   "tone": "neutral"
+                },
+                {
+                  "text": "since 09:40",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:40:00Z"
+                  }
                 }
               ],
               "depth": 1,
@@ -194,7 +200,6 @@
               },
               "icon": "mission",
               "title": "Build the importer",
-              "subtitle": "Turn running since 09:35",
               "badges": [
                 {
                   "text": "Working",
@@ -203,6 +208,13 @@
                 {
                   "text": "Demo Garden",
                   "tone": "neutral"
+                },
+                {
+                  "text": "since 09:35",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:35:00Z"
+                  }
                 }
               ],
               "depth": 1,

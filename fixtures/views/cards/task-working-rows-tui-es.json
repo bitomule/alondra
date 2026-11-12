@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "v5f9cf5adc431fc21",
+  "version": "vf436c9f37731da88",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -89,18 +89,24 @@
               },
               "icon": "mission",
               "title": "Build the app",
-              "subtitle": "En segundo plano: `Check the links` y 1 más · desde las 09:40 · Dijo: «The checks passed.» 09:31",
               "badges": [
                 {
                   "text": "Trabajando",
                   "tone": "accent"
+                },
+                {
+                  "text": "desde las 09:30",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:30:00Z"
+                  }
                 }
               ],
               "depth": 1,
               "struck": false,
               "actions": [
                 {
-                  "id": "pause:a-background@0",
+                  "id": "pause:a-background@1",
                   "label": "Pausar",
                   "style": "secondary",
                   "role": "neutral",
@@ -129,18 +135,24 @@
               },
               "icon": "mission",
               "title": "Check the release",
-              "subtitle": "Paso 1 de 1 · Check the release · `bazel test //crates/...` · desde las 09:38 · Dijo: «The checks passed.» 09:31",
               "badges": [
                 {
                   "text": "Trabajando",
                   "tone": "accent"
+                },
+                {
+                  "text": "desde las 09:30",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:30:00Z"
+                  }
                 }
               ],
               "depth": 1,
               "struck": false,
               "actions": [
                 {
-                  "id": "pause:a-command@0",
+                  "id": "pause:a-command@1",
                   "label": "Pausar",
                   "style": "secondary",
                   "role": "neutral",
@@ -169,18 +181,24 @@
               },
               "icon": "mission",
               "title": "Wait for the deployment",
-              "subtitle": "Espera a la confirmación del despliegue · 2 de 3 · Esperando al servidor · desde las 09:42 · Dijo: «The checks passed.» 09:31",
               "badges": [
                 {
                   "text": "Trabajando",
                   "tone": "accent"
+                },
+                {
+                  "text": "desde las 09:30",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:30:00Z"
+                  }
                 }
               ],
               "depth": 1,
               "struck": false,
               "actions": [
                 {
-                  "id": "pause:a-reported@0",
+                  "id": "pause:a-reported@1",
                   "label": "Pausar",
                   "style": "secondary",
                   "role": "neutral",
@@ -209,18 +227,24 @@
               },
               "icon": "mission",
               "title": "Review the parser",
-              "subtitle": "Turno en marcha desde las 09:30 · Dijo: «The checks passed.» 09:31",
               "badges": [
                 {
                   "text": "Trabajando",
                   "tone": "accent"
+                },
+                {
+                  "text": "desde las 09:30",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:30:00Z"
+                  }
                 }
               ],
               "depth": 1,
               "struck": false,
               "actions": [
                 {
-                  "id": "pause:a-said@0",
+                  "id": "pause:a-said@1",
                   "label": "Pausar",
                   "style": "secondary",
                   "role": "neutral",

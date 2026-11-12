@@ -350,12 +350,15 @@ async fn the_users_own_message_to_a_paused_sdk_node_waits_for_a_slot_and_then_re
     assert_eq!(pacing.queued.iter().map(|queued| queued.task_id.as_str()).collect::<Vec<_>>(), [SDK_TASK], "it waits in the queue");
     let read = node.domain.read();
     let live = alondra_core::views::live::LiveSnapshot { pacing: Some(pacing), ..Default::default() };
-    let tasks = serde_json::to_string(&alondra_core::views::build("tasks", alondra_core::views::RenderContext {
+    let shown = |key: &str| serde_json::to_string(&alondra_core::views::build(key, alondra_core::views::RenderContext {
         domain: read.state(), index: read.index(), live: &live, client: alondra_core::views::Client::Tui,
         lang: alondra_core::views::text::Lang::En, transport: alondra_core::views::Transport::Loopback, cursor: "test", rendered_at: "",
     }).unwrap()).unwrap();
-    assert!(tasks.contains("1st of 1 · 0 of 0 slots taken") && !tasks.contains("\"text\":\"Paused") && !tasks.contains("\"resume:"),
+    let tasks = shown("tasks");
+    assert!(tasks.contains("Starts when there is room") && !tasks.contains("\"text\":\"Paused") && !tasks.contains("\"resume:"),
         "its task shows it queued, with no Resume: {tasks}");
+    let screen = shown(&format!("task:{SDK_TASK}"));
+    assert!(screen.contains("1st of 1 · 0 of 0 slots taken"), "its own screen says its place: {screen}");
     drop(read);
 
     node.domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(1)) });

@@ -4,7 +4,7 @@
   "view": "sidebar",
   "key": "sidebar",
   "client": "mac",
-  "version": "vee46f9cf6c323ffb",
+  "version": "vd3b8fac9717acee2",
   "cursor": "cursor-1",
   "status": {
     "version": "vcc58fbd373b76f9d",
@@ -240,7 +240,7 @@
           },
           "icon": "mission",
           "title": "Restore the native review experience",
-          "subtitle": "Reviewing the native beta experience",
+          "subtitle": "5 open questions",
           "badges": [
             {
               "text": "Needs you",
