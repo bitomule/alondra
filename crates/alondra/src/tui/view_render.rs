@@ -1451,7 +1451,7 @@ mod tests {
     }
 
     #[test]
-    fn the_task_list_counts_running_time_and_keeps_the_current_facts_time() {
+    fn the_task_list_counts_the_time_in_its_state_and_never_what_runs_now() {
         crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
         let view: View = serde_json::from_value(crate::tui::parity::view_fixture("tasks-tui.json")).unwrap();
         let (row, nested) = rows(&view).into_iter().find(|(row, _)| row.id == "t-badge-count").unwrap();
@@ -1460,19 +1460,19 @@ mod tests {
         let title = lines[0].to_string();
         assert!(title.contains("Count the retracted pushes") && title.contains("Working · Demo Garden · 2 d 0 h"), "{title}");
         assert!(!title.contains("running since"), "elapsed badges replace their legacy text");
-        assert!(lines[1].to_string().contains("Turn running since 09:00"));
+        assert!(lines.iter().all(|line| !line.to_string().contains("Turn running")), "{lines:?}");
     }
 
     #[test]
-    fn a_narrow_task_row_keeps_the_command_and_last_sentence_with_their_times() {
+    fn a_narrow_task_row_keeps_its_whole_reason() {
         let row: Row = serde_json::from_value(serde_json::json!({
             "id": "task", "icon": "task", "title": "Check the release", "depth": 0,
-            "subtitle": "bazel test //crates/... · since 15:38 · Said: “The checks passed.” 15:31",
-            "badges": [{"text": "Working", "tone": "info"}], "struck": false
+            "subtitle": "Waits for “Install the release” · since 15:38 · has your changes pending",
+            "badges": [{"text": "Waiting", "tone": "neutral"}], "struck": false
         })).unwrap();
         let lines = row_lines_at(&row, 42, false, false, 0);
         let shown = lines.iter().map(ToString::to_string).collect::<Vec<_>>().join(" ");
-        for text in ["bazel test", "15:38", "checks passed.", "15:31"] {
+        for text in ["Install the release", "15:38", "changes pending"] {
             assert!(shown.contains(text), "{shown}");
         }
         assert!(lines.iter().all(|line| line.width() <= 42));

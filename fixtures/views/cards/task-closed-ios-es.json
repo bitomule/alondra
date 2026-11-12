@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "ios",
-  "version": "v7835fb2010252cdd",
+  "version": "v1cf4209d5b51c4be",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -210,7 +210,7 @@
               "resolves_card": false
             },
             {
-              "id": "relaunch:t-651c38484cd2f34e74d5107ba05f7f15@6",
+              "id": "relaunch:t-651c38484cd2f34e74d5107ba05f7f15@1",
               "label": "Relanzar",
               "style": "primary",
               "role": "advance",

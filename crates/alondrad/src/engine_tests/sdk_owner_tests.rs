@@ -11,7 +11,7 @@ use alondra_core::domain::*;
 use std::sync::Arc;
 
 #[test]
-fn a_reported_wait_reaches_every_client_row_without_changing_slots() {
+fn a_reported_wait_reaches_every_client_task_screen_without_changing_slots_or_the_list() {
     use alondra_core::views::{Client, Lang, Transport, now_fact::NowDoing};
     for background in [false, true] {
         let slice = Slice::new();
@@ -34,10 +34,12 @@ fn a_reported_wait_reaches_every_client_row_without_changing_slots() {
             assert!(!wait.since.is_empty());
             assert!(matches!(alondra_core::views::now_fact::now_fact(Some(node), &Doing::Turn, "15:00", lang).doing, NowDoing::Reported { .. }));
             for target in [Client::Ios, Client::Mac, Client::Tui] {
-                let view = client.views.render("tasks", &read, &live, target, lang, Transport::Loopback).unwrap();
-                let text = serde_json::to_string(&view).unwrap();
-                assert!(text.contains(if lang == Lang::Es { "Espera a the server" } else { "Waiting for the server" }), "{text}");
-                assert!(text.contains("2 of 3") && text.contains("Acknowledgement"));
+                let text = |key: &str| serde_json::to_string(&client.views.render(key, &read, &live, target, lang, Transport::Loopback).unwrap()).unwrap();
+                let screen = text(&format!("task:{TASK}"));
+                assert!(screen.contains(if lang == Lang::Es { "Espera a the server" } else { "Waiting for the server" }), "{screen}");
+                assert!(screen.contains("2 of 3") && screen.contains("Acknowledgement"));
+                let list = text("tasks");
+                assert!(!list.contains("the server") && !list.contains("Acknowledgement"), "{list}");
             }
         }
         assert_eq!(slice.domain.read().state().slots(), slots);

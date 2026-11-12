@@ -4,7 +4,6 @@ use crate::domain::Doing;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NowFact {
     pub doing: NowDoing,
-    pub said: Option<Said>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -13,12 +12,6 @@ pub enum NowDoing {
     Command { label: String, since: String },
     Background { label: String, more: usize, since: String },
     Turn { since: String },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Said {
-    pub sentence: String,
-    pub at: String,
 }
 
 pub fn now_fact(node: Option<&LiveNode>, _doing: &Doing, turn_since: &str, _lang: Lang) -> NowFact {
@@ -43,11 +36,7 @@ pub fn now_fact(node: Option<&LiveNode>, _doing: &Doing, turn_since: &str, _lang
         Some(NowDoing::Background { label: short_line(label)?, more: runs.len() - 1,
             since: clock(if since.is_empty() { turn_since } else { since }).into() })
     }).unwrap_or_else(|| NowDoing::Turn { since: clock(turn_since).into() });
-    let said = node.and_then(|node| Some(Said {
-        sentence: super::task_node::said(node.last_message.as_deref()?)?,
-        at: clock(node.last_message_at.as_deref().filter(|at| !at.is_empty())?).into(),
-    }));
-    NowFact { doing, said }
+    NowFact { doing }
 }
 
 pub(super) fn clock(at: &str) -> &str {
@@ -77,7 +66,7 @@ fn code_label(label: &str) -> String {
 
 impl NowFact {
     pub fn text(&self, lang: Lang) -> String {
-        let mut text = match &self.doing {
+        match &self.doing {
             NowDoing::Reported { what, progress, detail, since } => {
                 let mut parts = vec![tf!(lang, "Waiting for {what}", "Espera a {what}")];
                 parts.extend(progress.iter().chain(detail).cloned());
@@ -94,11 +83,7 @@ impl NowFact {
                 tf!(lang, "In the background: {label} · since {since}", "En segundo plano: {label} · desde las {since}")
             }
             NowDoing::Turn { since } => tf!(lang, "Turn running since {since}", "Turno en marcha desde las {since}"),
-        };
-        if let Some(Said { sentence, at }) = &self.said {
-            text.push_str(&tf!(lang, " · Said: “{sentence}” {at}", " · Dijo: «{sentence}» {at}"));
         }
-        text
     }
 }
 

@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v05e41f7e417c3c3d",
+  "version": "v5412242811aa44e5",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -115,10 +115,10 @@
                   "tone": "neutral"
                 },
                 {
-                  "text": "running since 08:00",
+                  "text": "since 09:30",
                   "tone": "neutral",
                   "elapsed": {
-                    "since": "2026-09-30T08:00:00Z"
+                    "since": "2026-09-30T09:30:00Z"
                   }
                 }
               ],
@@ -133,11 +133,6 @@
                   "id": "activity",
                   "icon": "notice",
                   "title": "5 open questions · Polish the Alondra beta",
-                  "trailing": {
-                    "kind": "time",
-                    "at": "2026-09-30T09:30:00Z",
-                    "format": "relative"
-                  },
                   "depth": 0,
                   "struck": false
                 }
@@ -174,6 +169,13 @@
                 {
                   "text": "Demo Garden",
                   "tone": "neutral"
+                },
+                {
+                  "text": "since 09:40",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:40:00Z"
+                  }
                 }
               ],
               "trailing": {
@@ -182,15 +184,6 @@
               },
               "depth": 1,
               "struck": false,
-              "children": [
-                {
-                  "id": "activity",
-                  "icon": "notice",
-                  "title": "In the background: `./deploy/brew/release.sh 0.2.67` · since 09:40",
-                  "depth": 0,
-                  "struck": false
-                }
-              ],
               "actions": [
                 {
                   "id": "pause:release-runner@6",
@@ -230,6 +223,13 @@
                 {
                   "text": "Demo Garden",
                   "tone": "neutral"
+                },
+                {
+                  "text": "since 09:35",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:35:00Z"
+                  }
                 }
               ],
               "trailing": {
@@ -238,15 +238,6 @@
               },
               "depth": 1,
               "struck": false,
-              "children": [
-                {
-                  "id": "activity",
-                  "icon": "notice",
-                  "title": "Turn running since 09:35",
-                  "depth": 0,
-                  "struck": false
-                }
-              ],
               "actions": [
                 {
                   "id": "pause:zeta-worker@6",

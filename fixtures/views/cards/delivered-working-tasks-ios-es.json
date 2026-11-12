@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v6e9260eb8dd470e4",
+  "version": "v61c9cad959d13d48",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -94,6 +94,13 @@
                 {
                   "text": "Trabajando",
                   "tone": "accent"
+                },
+                {
+                  "text": "desde las 09:30",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:30:00Z"
+                  }
                 }
               ],
               "trailing": {
@@ -102,18 +109,9 @@
               },
               "depth": 1,
               "struck": false,
-              "children": [
-                {
-                  "id": "activity",
-                  "icon": "notice",
-                  "title": "Turno en marcha desde las 09:30",
-                  "depth": 0,
-                  "struck": false
-                }
-              ],
               "actions": [
                 {
-                  "id": "pause:a-1@0",
+                  "id": "pause:a-1@1",
                   "label": "Pausar",
                   "style": "secondary",
                   "role": "neutral",

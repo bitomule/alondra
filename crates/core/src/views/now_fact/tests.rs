@@ -2,13 +2,13 @@ use super::*;
 use crate::views::{LiveBackground, RunOutcome};
 
 #[test]
-fn the_command_and_what_it_said_last_are_both_shown() {
+fn the_command_is_shown_with_its_start_and_never_what_it_said() {
     let node = LiveNode { tool: Some("bazel test //…\nsecond line".into()), tool_since: Some("15:38".into()),
         last_message: Some("The checks passed. I am opening the PR.".into()), last_message_at: Some("2026-11-11T15:31:00+01:00".into()),
         ..Default::default() };
     let fact = now_fact(Some(&node), &Doing::Turn, "15:00", Lang::Es);
-    assert_eq!(fact.text(Lang::Es), "`bazel test //…` · desde las 15:38 · Dijo: «The checks passed.» 15:31");
-    assert_eq!(fact.text(Lang::En), "`bazel test //…` · since 15:38 · Said: “The checks passed.” 15:31");
+    assert_eq!(fact.text(Lang::Es), "`bazel test //…` · desde las 15:38");
+    assert_eq!(fact.text(Lang::En), "`bazel test //…` · since 15:38");
 }
 
 #[test]
@@ -35,12 +35,10 @@ fn a_command_wins_over_background_work_and_missing_times_use_the_turn_start() {
 }
 
 #[test]
-fn labels_and_sentences_fit_sixty_characters_without_splitting_unicode() {
-    let node = LiveNode { tool: Some(format!("{}\nignored", "á🦜".repeat(50))),
-        last_message: Some("á🦜".repeat(50)), last_message_at: Some("15:31".into()), ..Default::default() };
+fn labels_fit_sixty_characters_without_splitting_unicode() {
+    let node = LiveNode { tool: Some(format!("{}\nignored", "á🦜".repeat(50))), ..Default::default() };
     let fact = now_fact(Some(&node), &Doing::Turn, "15:38", Lang::En);
     let NowDoing::Command { label, .. } = fact.doing else { panic!("command") };
     assert_eq!(label.chars().count(), 60);
     assert!(!label.contains('\n'));
-    assert!(fact.said.unwrap().sentence.chars().count() <= 60);
 }

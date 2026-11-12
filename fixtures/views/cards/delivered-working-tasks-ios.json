@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "va6045912b3bc0e55",
+  "version": "vb73239f09732c031",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -94,6 +94,13 @@
                 {
                   "text": "Working",
                   "tone": "accent"
+                },
+                {
+                  "text": "since 09:30",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:30:00Z"
+                  }
                 }
               ],
               "trailing": {
@@ -102,18 +109,9 @@
               },
               "depth": 1,
               "struck": false,
-              "children": [
-                {
-                  "id": "activity",
-                  "icon": "notice",
-                  "title": "Turn running since 09:30",
-                  "depth": 0,
-                  "struck": false
-                }
-              ],
               "actions": [
                 {
-                  "id": "pause:a-1@0",
+                  "id": "pause:a-1@1",
                   "label": "Pause",
                   "style": "secondary",
                   "role": "neutral",

@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-1",
   "client": "ios",
-  "version": "v248cf9ddae93417c",
+  "version": "ve9df769f168d2b1f",
   "cursor": "cursor-1",
   "title": "Release the daemon with the memory pause fix",
   "status": {
@@ -189,7 +189,7 @@
               "resolves_card": false
             },
             {
-              "id": "pause:a-1@0",
+              "id": "pause:a-1@1",
               "label": "Pausar",
               "style": "secondary",
               "role": "neutral",

@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "vf462669d0705e74d",
+  "version": "v9c1999b3f0cd0fb3",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -115,18 +115,13 @@
                   "tone": "neutral"
                 },
                 {
-                  "text": "en marcha desde las 08:00",
+                  "text": "desde las 09:30",
                   "tone": "neutral",
                   "elapsed": {
-                    "since": "2026-09-30T08:00:00Z"
+                    "since": "2026-09-30T09:30:00Z"
                   }
                 }
               ],
-              "trailing": {
-                "kind": "time",
-                "at": "2026-09-30T09:30:00Z",
-                "format": "relative"
-              },
               "depth": 1,
               "struck": false
             }
@@ -152,7 +147,6 @@
               },
               "icon": "mission",
               "title": "Release the daemon",
-              "subtitle": "En segundo plano: `./deploy/brew/release.sh 0.2.67` · desde las 09:40",
               "badges": [
                 {
                   "text": "Trabajando",
@@ -161,6 +155,13 @@
                 {
                   "text": "Demo Garden",
                   "tone": "neutral"
+                },
+                {
+                  "text": "desde las 09:40",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:40:00Z"
+                  }
                 }
               ],
               "depth": 1,
@@ -196,7 +197,6 @@
               },
               "icon": "mission",
               "title": "Build the importer",
-              "subtitle": "Turno en marcha desde las 09:35",
               "badges": [
                 {
                   "text": "Trabajando",
@@ -205,6 +205,13 @@
                 {
                   "text": "Demo Garden",
                   "tone": "neutral"
+                },
+                {
+                  "text": "desde las 09:35",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:35:00Z"
+                  }
                 }
               ],
               "depth": 1,

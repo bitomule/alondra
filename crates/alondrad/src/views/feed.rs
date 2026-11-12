@@ -125,7 +125,7 @@ async fn next_sample(
     }
 }
 
-async fn sample_live(
+pub(crate) async fn sample_live(
     client: &crate::client_routes::Client,
     state: &Arc<alondra_core::domain::DomainState>,
     last: &mut Option<String>,

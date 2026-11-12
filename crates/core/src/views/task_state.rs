@@ -68,12 +68,13 @@ pub(super) struct Presentation {
     pub tone: Tone,
     pub icon: Icon,
     pub fact: Option<String>,
+    /// What the list says beside the state: nothing while it works, and for any other state only words that
+    /// change with that state, never a count, a place or a reading of the Mac.
+    pub reason: Option<String>,
     pub since: Option<String>,
     pub block: Block,
     /// Its place in the queue of starts.
     pub queue: Option<usize>,
-    /// When it last did something, to order the work in progress.
-    pub active_at: Option<String>,
     /// Its fact belongs beside its state on the task's screen too, though it is in progress.
     pub fact_in_state: bool,
 }
@@ -112,14 +113,15 @@ impl Presentation {
             StateLabel::Cancelled => Icon::Warning,
             StateLabel::Waiting | StateLabel::Paused => Icon::Task,
         };
-        Self { label, state: label.text(lang).into(), tone, icon, fact, since: None, block, queue: None, active_at: None, fact_in_state: false }
+        let reason = (label != StateLabel::Working).then(|| fact.clone()).flatten();
+        Self { label, state: label.text(lang).into(), tone, icon, fact, reason, since: None, block, queue: None, fact_in_state: false }
     }
 }
 
 pub(super) fn present(task: &Task, context: &RenderContext<'_>) -> Presentation {
     let situation = context.reading(&task.id).map_or(Situation::Waiting(WaitsFor::Slot), |read| read.situation);
     let mut presentation = classify(task, situation, context);
-    if presentation.since.is_none() && presentation.active_at.is_none() {
+    if presentation.since.is_none() {
         presentation.since = task_since(task, context);
     }
     presentation
@@ -166,10 +168,11 @@ fn failed_merge(task: &Task, presentation: Presentation, context: &RenderContext
     match context.reading(&task.id).and_then(|read| read.merge_failure.clone()) {
         Some((_, reason)) => {
             let failure = tf!(lang, "Couldn't merge · {reason}", "No se pudo hacer merge · {reason}");
-            let fact = if presentation.label == StateLabel::Working {
-                format!("{failure} · {}", presentation.fact.as_deref().unwrap_or_default())
-            } else { failure };
-            Presentation { fact: Some(fact), ..presentation }
+            if presentation.label == StateLabel::Working {
+                let fact = format!("{failure} · {}", presentation.fact.as_deref().unwrap_or_default());
+                return Presentation { fact: Some(fact), ..presentation };
+            }
+            Presentation { fact: Some(failure.clone()), reason: Some(failure), ..presentation }
         }
         None => presentation,
     }
@@ -178,10 +181,10 @@ fn failed_merge(task: &Task, presentation: Presentation, context: &RenderContext
 pub(super) fn working(task: &Task, doing: Doing, context: &RenderContext<'_>) -> Presentation {
     let lang = context.lang;
     let node = node_of(task, context);
-    let active_at = node.and_then(|node| node.state_since.clone()).or_else(|| task_since(task, context));
-    let since = active_at.as_deref().unwrap_or("—");
+    let turn_since = node.and_then(|node| node.state_since.clone()).or_else(|| task_since(task, context));
+    let since = turn_since.as_deref().unwrap_or("—");
     let now = now_fact(node, &doing, since, lang);
-    let mut presentation = Presentation { active_at, fact_in_state: true,
+    let mut presentation = Presentation { fact_in_state: true,
         ..Presentation::new(StateFact::Working(now), Tone::Accent, Block::InProgress, lang) };
     let mut prefixes = Vec::new();
     if let Some(step) = node.and_then(|node| super::task_node::step(node, lang)) {
@@ -214,17 +217,28 @@ fn waiting(task: &Task, waits: WaitsFor, context: &RenderContext<'_>) -> Present
         other => other,
     };
     let mut queue = None;
+    let mut listed = None;
+    let disk = || t!(lang, "Disk space · resumes by itself", "Espacio en disco · se reanuda sola").to_owned();
     let fact = match waits {
         WaitsFor::Slot => {
             let (fact, place) = slot_fact(task, context);
             queue = place;
+            if place.is_some() {
+                listed = Some(match common::gate_queued(task, context).map(|queued| &queued.hold) {
+                    Some(LiveHold::Disk { .. }) => disk(),
+                    _ => t!(lang, "Starts when there is room", "Arranca cuando haya sitio").into(),
+                });
+            }
             fact
         }
         WaitsFor::Machine => machine_fact(task, context),
-        WaitsFor::Disk => match common::held_for_disk(task, context) {
-            Some((free, needed, volume)) => common::disk_room_fact(free, needed, volume, lang),
-            None => t!(lang, "Disk space · resumes by itself", "Espacio en disco · se reanuda sola").into(),
-        },
+        WaitsFor::Disk => {
+            listed = Some(disk());
+            match common::held_for_disk(task, context) {
+                Some((free, needed, volume)) => common::disk_room_fact(free, needed, volume, lang),
+                None => disk(),
+            }
+        }
         WaitsFor::Usage => usage_wait(task, context),
         WaitsFor::ProviderApi => match common::paused(task, context).filter(|paused| matches!(paused.reason, LivePauseReason::ApiError | LivePauseReason::ApiOutage)) {
             Some(paused) => common::api_wait_label(paused, lang),
@@ -242,6 +256,11 @@ fn waiting(task: &Task, waits: WaitsFor, context: &RenderContext<'_>) -> Present
             match (common::gate_queued(task, context), answer) {
                 (Some(queued), answer) => {
                     queue = Some(queued.position);
+                    listed = Some(if answer {
+                        t!(lang, "Your answer waits for a slot", "Tu respuesta espera hueco")
+                    } else {
+                        t!(lang, "Your message waits for a slot", "Tu mensaje espera hueco")
+                    }.to_owned());
                     let place = common::ordinal(queued.position, lang);
                     let of = queued.of;
                     if answer {
@@ -261,11 +280,10 @@ fn waiting(task: &Task, waits: WaitsFor, context: &RenderContext<'_>) -> Present
         WaitsFor::Step(Step::Waking) => from(t!(lang, "Alondra tells it its work finished", "Alondra le avisa de que su trabajo acabó").into()),
         WaitsFor::Step(Step::Answering) => from(t!(lang, "Alondra prepares its next step", "Alondra prepara su siguiente paso").into()),
     };
-    let fact = match waits {
-        WaitsFor::Slot | WaitsFor::Machine | WaitsFor::Disk | WaitsFor::Usage | WaitsFor::ProviderApi => with_pending(fact, task, context),
-        _ => fact,
-    };
-    Presentation { queue, ..Presentation::new(StateFact::Waiting(Some(fact)), Tone::Neutral, Block::Waiting, lang) }
+    let pending = matches!(waits, WaitsFor::Slot | WaitsFor::Machine | WaitsFor::Disk | WaitsFor::Usage | WaitsFor::ProviderApi);
+    let pending = |text: String| if pending { with_pending(text, task, context) } else { text };
+    let reason = pending(listed.unwrap_or_else(|| fact.clone()));
+    Presentation { queue, reason: Some(reason), ..Presentation::new(StateFact::Waiting(Some(pending(fact))), Tone::Neutral, Block::Waiting, lang) }
 }
 
 fn provider_name(task: &Task) -> &'static str {

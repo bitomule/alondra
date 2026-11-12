@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "mac",
-  "version": "vac4a774ce816c088",
+  "version": "v730d388bb20f63de",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -115,10 +115,10 @@
                   "tone": "neutral"
                 },
                 {
-                  "text": "running since 08:00",
+                  "text": "since 09:30",
                   "tone": "neutral",
                   "elapsed": {
-                    "since": "2026-09-30T08:00:00Z"
+                    "since": "2026-09-30T09:30:00Z"
                   }
                 }
               ],
@@ -164,7 +164,7 @@
               },
               "icon": "mission",
               "title": "Count the retracted pushes",
-              "subtitle": "Turn running since 09:00 · Badge accuracy",
+              "subtitle": "Badge accuracy",
               "badges": [
                 {
                   "text": "Working",
@@ -175,10 +175,10 @@
                   "tone": "neutral"
                 },
                 {
-                  "text": "running since 09:20",
+                  "text": "since 09:00",
                   "tone": "neutral",
                   "elapsed": {
-                    "since": "2026-09-30T09:20:00.000Z"
+                    "since": "2026-09-30T09:00:00Z"
                   }
                 }
               ],
@@ -214,7 +214,6 @@
               },
               "icon": "mission",
               "title": "Lumo · weekly improvement",
-              "subtitle": "Turn running since 09:00",
               "badges": [
                 {
                   "text": "Working",
@@ -229,10 +228,10 @@
                   "tone": "neutral"
                 },
                 {
-                  "text": "running since 09:48",
+                  "text": "since 09:00",
                   "tone": "neutral",
                   "elapsed": {
-                    "since": "2026-09-30T09:48:00.000Z"
+                    "since": "2026-09-30T09:00:00Z"
                   }
                 }
               ],
@@ -273,13 +272,6 @@
                 {
                   "text": "Delivered",
                   "tone": "info"
-                },
-                {
-                  "text": "running since 17:15",
-                  "tone": "neutral",
-                  "elapsed": {
-                    "since": "2026-09-29T17:15:00.000Z"
-                  }
                 }
               ],
               "depth": 1,
@@ -308,7 +300,7 @@
               },
               "icon": "task",
               "title": "Refresh the App Store screenshots",
-              "subtitle": "1st of 1",
+              "subtitle": "Starts when there is room",
               "badges": [
                 {
                   "text": "Waiting",
