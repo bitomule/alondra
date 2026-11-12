@@ -21,13 +21,19 @@ fn something_runs(task: &TaskLifecycle) -> bool {
     matches!(task.activity(), ActivityView::Starting | ActivityView::Working | ActivityView::OwnWork | ActivityView::Continuation)
 }
 
-/// A delivery under review that the user told something while no execution runs: an execution
-/// has to start to take it.
+/// A delivery under review that the user told something while no execution runs and no pause holds
+/// it: an execution has to start to take it.
 fn told_with_no_execution(task: &TaskLifecycle) -> bool {
     task.phase() == TaskPhase::Delivered
         && !task.pending_inputs().is_empty()
         && task.resource().is_none_or(|resource| resource == ResourceEvidence::Released)
         && !task.cards().into_iter().any(|(card, _)| task.card_owner(card) == Some(Owner::User))
+        && !held_by_capacity(task)
+}
+
+/// A pause a capacity owns holds the task until the capacity has room, whatever else it waits on.
+fn held_by_capacity(task: &TaskLifecycle) -> bool {
+    task.cards().into_iter().any(|(card, _)| matches!(task.card_owner(card), Some(Owner::Capacity(_))))
 }
 
 fn owed(obligation: Option<Obligation>) -> Option<(Party, Owed)> {
@@ -59,7 +65,7 @@ proptest! {
             match task.live() {
                 Some(LiveState::WaitingUser(_)) if told_with_no_execution(&task) => prop_assert_eq!(owed(Some(obligation)), Some((Party::Alondra, Owed::Start)),
                     "a delivery told something with no execution to take it owes a start: {:?}", task),
-                Some(LiveState::WaitingUser(_)) if !something_runs(&task) && !answer => prop_assert_eq!(obligation.party, Party::User,
+                Some(LiveState::WaitingUser(_)) if !something_runs(&task) && !answer && !held_by_capacity(&task) => prop_assert_eq!(obligation.party, Party::User,
                     "a task that waits on the user with nothing running owes the user: {:?}", task),
                 Some(LiveState::Working(Worker::Turn)) if task.phase() != TaskPhase::Finishing && !answer => prop_assert_eq!(obligation.owed, Owed::Turn,
                     "a running turn is owed by the provider: {:?}", task),
@@ -151,4 +157,17 @@ fn a_delivery_whose_execution_left_for_review_owes_the_user_until_told() {
 fn only_a_delivery_under_review_leaves_its_execution_for_review() {
     let mut task = running();
     assert!(task.apply(task.revision(), Event::ExecutionLeftForReview).is_err());
+}
+
+/// The user sent a delivery back, the node began on the changes and the disk filled: the pause
+/// is what the task waits on, not the input that was handed.
+#[test]
+fn a_returned_delivery_whose_node_the_disk_paused_owes_room_on_the_disk() {
+    let mut task = running();
+    apply(&mut task, Event::Present { delivery: "result".into() });
+    fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None, stalled: false });
+    apply(&mut task, Event::Tell { input: input("changes"), answers: None });
+    assert_eq!(task.phase(), TaskPhase::Delivered);
+    apply(&mut task, Event::Pause { card: "disk".into(), owner: Owner::Capacity(Capacity::Disk) });
+    assert_eq!(owed(task.obligation()), Some((Party::Capacity(Capacity::Disk), Owed::Room(Capacity::Disk))));
 }

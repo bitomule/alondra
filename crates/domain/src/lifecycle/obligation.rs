@@ -89,7 +89,10 @@ fn delivered_owes(delivered: &Delivered) -> (Party, Owed) {
     };
     let sent_back = || waits_for_an_execution(delivered).then_some((Party::Alondra, Owed::Start));
     match delivered.gate {
-        DeliveryGate::Review => session().or_else(sent_back).unwrap_or_else(gate),
+        DeliveryGate::Review => {
+            let pauses = delivered.decisions.values().filter(|card| matches!(card.owner, Owner::Capacity(_)));
+            cards_owe(pauses).or_else(session).or_else(sent_back).unwrap_or_else(gate)
+        }
         _ => cards_owe(delivered.decisions.values()).or_else(session).unwrap_or_else(gate),
     }
 }
