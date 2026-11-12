@@ -92,6 +92,8 @@ pub enum ReviewOutcome {
 pub const COMPACT: &str = "/compact";
 /// The code of a takeover refused because its host never answered the last one.
 pub const REPEATED_TAKEOVER: &str = "repeated_takeover";
+/// The refusal of what a task's node may no longer do once it only closes.
+pub const CLOSING: &str = "closing";
 
 /// The permission modes an SDK execution can be set to; none grants a permission by default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -2196,6 +2198,9 @@ impl DomainState {
         self.sdk_execution(task, generation, lifecycles)?;
         if facts.is_empty() {
             return Err(DomainError::new("invalid_input", "An observation without facts records nothing"));
+        }
+        if facts.contains(&RuntimeObservation::TakenOver) && self.tasks.get(task).is_some_and(|t| self.node_closing(t)) {
+            return Err(DomainError::new(CLOSING, format!("Task {} is closing: its node only ends now, and no host takes it over", task.0)));
         }
         for fact in facts {
             let record = match fact.clone() {

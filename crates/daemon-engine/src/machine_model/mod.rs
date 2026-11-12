@@ -57,6 +57,10 @@ struct Seen {
     most_rearms: u32,
     /// The commands before the first wake or re-arm past its bound.
     excess: Option<String>,
+    /// A task taken over while its node only closed.
+    closing_taken: Vec<String>,
+    /// A card a node opened for the user after its cleanup was confirmed.
+    closing_cards: Vec<String>,
 }
 
 struct Machine {
@@ -212,11 +216,20 @@ impl Machine {
             expected_revision: state.revision, command,
         };
         drop(state);
+        let closing: BTreeSet<TaskId> = self.state().tasks.values().filter(|task| self.state().node_closing(task)).map(|task| task.id.clone()).collect();
         let result = Arc::make_mut(&mut self.domain).execute(&actor, &envelope).map_err(|error| error.code);
         let state_revision = key.0;
         match &result {
             Ok(_) if self.revision() == state_revision => self.seen.unchanged.push(name.clone()),
             Ok(outcome) => {
+                for effect in &outcome.effects {
+                    if let DomainEffect::NotifyUser { task_id: Some(task), interaction_id } = effect
+                        && closing.contains(task)
+                        && self.domain.interactions.get(interaction_id).is_some_and(|card| matches!(card.author, alondra_core::domain::Author::Agent { .. }))
+                    {
+                        self.seen.closing_cards.push(format!("{task}: {interaction_id} by {name}"));
+                    }
+                }
                 for effect in &outcome.effects {
                     if let DomainEffect::NotifyAgent { agent_id, task_id, interaction_id, message } = effect {
                         self.messages.push(Message { agent: agent_id.clone(), task: task_id.clone(), card: interaction_id.clone(), text: message.clone() });
@@ -274,6 +287,11 @@ impl Machine {
             }
             Action::HostDies(index) => {
                 if let Some(host) = self.world.host(&task(index)) { host.alive = false; }
+            }
+            Action::ConfirmsCleanup(index) => {
+                if let Some(agent) = self.agent(&task(index)) {
+                    let _ = self.run(Actor::Agent { agent_id: agent }, Command::ConfirmCleanup { task_id: task(index), discard: vec![] });
+                }
             }
             Action::FactsLate(index) => {
                 let until = self.world.now + MINUTE;
@@ -384,9 +402,11 @@ impl Machine {
             moved |= self.hand_decisions();
             moved |= self.consume_inputs_in_turn();
             moved |= self.take_unowned();
+            moved |= self.close_hosts_of_ended_nodes();
             moved |= self.send_back_stranded();
             moved |= self.merge_authorized();
             moved |= self.close_ending();
+            moved |= self.close_cleaned();
             moved |= self.orchestrate();
             if !moved && self.revision() == revision {
                 return;
@@ -461,7 +481,7 @@ impl Machine {
     fn unowned(&self, task: &TaskId) -> bool {
         let state = self.state();
         let Some(generation) = state.lifecycle_of(task).ok().and_then(|lifecycle| lifecycle.execution().map(|stamp| stamp.generation())) else { return false };
-        sdk_owner::runs_on_sdk_host(&state, task) && self.world.hosts.get(task).is_none_or(|host| !host.alive || host.generation != generation)
+        sdk_owner::takeable(&state, task) && self.world.hosts.get(task).is_none_or(|host| !host.alive || host.generation != generation)
     }
 
     /// A host that resumes the task's session takes its execution over, as `sdk_owner::take_again` does.
@@ -500,9 +520,52 @@ impl Machine {
         let due = sdk_owner::due_unowned(&mut self.taken, working, self.world.now);
         let mut moved = false;
         for task in due {
-            moved |= self.retake(&task);
+            let closing = state.node_closing(&state.tasks[&task]);
+            let taken = self.retake(&task);
+            if closing && taken {
+                self.seen.closing_taken.push(format!("{task} was taken over while its node only closed"));
+            }
+            moved |= taken;
         }
         moved
+    }
+
+    /// The closer stops the host of a node that confirmed its cleanup, as `task_closer` does: it
+    /// first takes the host from its owner, then waits for the host and its turn to end, and only
+    /// then records the node's end. A look of the gate can fall between the two.
+    fn close_cleaned(&mut self) -> bool {
+        let state = self.state();
+        let mut moved = false;
+        for name in TASKS {
+            let task = TaskId::from(name);
+            let t = &state.tasks[&task];
+            if t.state.terminal() || t.wrap_up.node.is_some() || !state.node_closing(t) {
+                continue;
+            }
+            if let Some(stopping) = self.world.closing.remove(&task) {
+                if self.generation(&task) == Some(stopping.generation) {
+                    let _ = self.run(Actor::System, Command::RecordHostEnded { task_id: task.clone(), generation: stopping.generation, resumes: false, ended_work: vec![], by_alondra: true });
+                }
+                let agent = self.agent(&task);
+                let _ = self.run(Actor::System, Command::RecordNodeEnd { task_id: task.clone(), end: NodeEnd::Closed, agent_id: agent });
+                moved = true;
+            } else if let Some(host) = self.world.hosts.remove(&task) {
+                self.world.closing.insert(task, host);
+                moved = true;
+            }
+        }
+        moved
+    }
+
+    /// The gate closes every host still running for a node whose end is recorded
+    /// (`sdk_owner::close_hosts_of_ended_nodes`).
+    fn close_hosts_of_ended_nodes(&mut self) -> bool {
+        let state = self.state();
+        let ended: Vec<TaskId> = sdk_owner::ended_node_tasks(&state).into_iter().filter(|task| self.world.hosts.contains_key(task)).collect();
+        for task in &ended {
+            self.world.hosts.remove(task);
+        }
+        !ended.is_empty()
     }
 
     /// A delivered task its node owes work for and nothing starts goes back to work after five

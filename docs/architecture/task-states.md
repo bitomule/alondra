@@ -104,6 +104,19 @@ Each rule is held by a type or by a property test.
    recorded, or it is refused with the reason.
 6. **Every visible state carries a present fact.** `Working` cannot be rendered without one.
 7. **A task waits for the user only on a card the inbox lists.**
+8. **A closing node only closes.** `DomainState::node_closing` holds once the node confirmed its
+   cleanup, the user chose to close it, its end is recorded or the task ended (the node of a
+   cancelled task still winds down and may ask the user until it is closed). From then on its
+   task reads `Delivered` (closing) even while its last turn is still open, no host takes it over
+   (the domain refuses `TakenOver` with `closing`), and nothing it asks becomes a card: a request
+   of Claude is denied by policy with the reason, and a card it sends is refused. A host still
+   running for a node recorded closed or gone is closed by the gate. A task whose delivery was
+   accepted and that was asked to clean up may still ask the user what its cleanup needs, but a
+   plan is denied.
+9. **A message waits for a paused node.** The orchestrator's `send` to a paused node keeps the
+   message with its task's inputs; the pause holds it and the node reads it when it resumes.
+10. **The orchestrator's cards are announced after its pass.** A card the orchestrator puts for
+    the user during a pass is pushed only once that pass ended, and only if still open.
 
 A model test (`crates/daemon-engine/src/machine_model`) mixes provider facts, user actions, daemon restarts and
 limits, then lets the clock run with nothing else happening, and checks that every open task ends
