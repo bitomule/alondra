@@ -999,13 +999,34 @@ final class TriageFeatureTests: XCTestCase {
     }
 
     @MainActor
+    func testTheHeaderDropsWithAHiddenCardInTheSameFrameAndNeverSubtractsTwice() async throws {
+        let store = store(try fullFeed())
+        await store.send(.task)
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.headerText, "1 question · 3 to read · 0 tasks working")
+
+        let read = ActionRequest(commandId: "c-read", dataEpoch: try XCTUnwrap(store.state.screen.document).dataEpoch, client: .ios, lang: "en", actionId: "read:x@1")
+        await store.send(.handedOff(read, cardID: ids.information))
+        XCTAssertEqual(store.state.headerText, "1 question · 2 to read · 0 tasks working", "the count drops with the card")
+
+        let answered = ActionRequest(commandId: "c-answer", dataEpoch: try XCTUnwrap(store.state.screen.document).dataEpoch, client: .ios, lang: "en", actionId: "ans:x@1", resolvesCard: true)
+        await store.send(.handedOff(answered, cardID: ids.question))
+        XCTAssertEqual(store.state.headerText, "2 to read · 0 tasks working", "a segment that reaches zero leaves the sentence")
+
+        let confirmed = [ids.delivery, ids.pullRequest]
+        await store.send(.screen(.loaded(try Fixtures.home(queue: confirmed, version: "vq-confirmed"))))
+        XCTAssertEqual(store.state.orderedIDs, confirmed)
+        XCTAssertEqual(store.state.headerText, "2 to read · 0 tasks working", "the Mac's view carries both changes: nothing is subtracted twice")
+    }
+
+    @MainActor
     func testTheHeaderIsTheSentenceTheMacSendsInEveryFixture() async throws {
         for name in ["home-ios", "home-ios-es"] {
             let home = try Fixtures.document(name)
             let store = store(FeedStub([home]))
             await store.send(.task)
             await store.skipReceivedActions()
-            XCTAssertEqual(store.state.status?.summary, home.status.summary, name)
+            XCTAssertEqual(store.state.headerText, home.status.summary, name)
         }
     }
 

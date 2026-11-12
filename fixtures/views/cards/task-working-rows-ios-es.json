@@ -4,12 +4,20 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "vb9bab1c49d41561f",
+  "version": "ve457f391be962277",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
-    "version": "v331c6e9f35142982",
+    "version": "vb9c56b5c0232574c",
     "summary": "4 tareas trabajando",
+    "summary_parts": [
+      {
+        "id": "working",
+        "count": 4,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
     "badge": 0,
     "counts": [
       {

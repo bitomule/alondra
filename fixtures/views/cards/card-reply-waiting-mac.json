@@ -4,12 +4,26 @@
   "view": "card",
   "key": "card:d",
   "client": "mac",
-  "version": "ve48092d0a7dd7534",
+  "version": "vb54d02c32cbd3061",
   "cursor": "cursor-1",
   "title": "Review the result",
   "status": {
-    "version": "vf9240fd97a033ea1",
+    "version": "ve369301004b9cb46",
     "summary": "1 to read · 0 tasks working",
+    "summary_parts": [
+      {
+        "id": "to_read",
+        "count": 1,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
     "badge": 1,
     "counts": [
       {

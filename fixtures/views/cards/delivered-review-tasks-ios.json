@@ -4,12 +4,26 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v211f8d26f64c36fa",
+  "version": "v5a58eaae37e41667",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
-    "version": "v43e74adb518ed391",
+    "version": "v7f698c7ff5f3d864",
     "summary": "1 to read · 0 tasks working",
+    "summary_parts": [
+      {
+        "id": "to_read",
+        "count": 1,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
     "badge": 1,
     "counts": [
       {

@@ -4,12 +4,32 @@
   "view": "card",
   "key": "card:hf-weekly-2026-09-30",
   "client": "mac",
-  "version": "v499a4c2340dea056",
+  "version": "vd2086a511d720e47",
   "cursor": "cursor-1",
   "title": "Review the beta candidate",
   "status": {
-    "version": "v7aaf7463a05118f9",
+    "version": "vf8bd13a3dc364c4d",
     "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} pregunta",
+        "other": "{count} preguntas"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} por leer",
+        "other": "{count} por leer"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
     "badge": 5,
     "counts": [
       {

@@ -4,12 +4,26 @@
   "view": "card",
   "key": "card:d",
   "client": "mac",
-  "version": "v881ccf306c6e9b29",
+  "version": "v6e416369decfcbc5",
   "cursor": "cursor-1",
   "title": "Review the result",
   "status": {
-    "version": "v7cf454e8b06de022",
+    "version": "vf7e60f126391afec",
     "summary": "1 por leer · 0 tareas trabajando",
+    "summary_parts": [
+      {
+        "id": "to_read",
+        "count": 1,
+        "one": "{count} por leer",
+        "other": "{count} por leer"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
     "badge": 1,
     "counts": [
       {

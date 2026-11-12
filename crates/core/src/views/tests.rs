@@ -360,6 +360,21 @@ fn orchestrator_questions_to_the_user_wait_in_home() {
         "2 questions · 2 to read · 0 tasks working"
     );
 }
+/// The header's pieces carry the wording in both numbers, and write the very sentence the summary holds.
+#[test]
+fn the_header_parts_write_the_summary_in_both_languages() {
+    for lang in [Lang::En, Lang::Es] {
+        let status = render(&fixture(), &LiveSnapshot::default(), Client::Ios, lang, "home", "").status;
+        let ids: Vec<&str> = status.summary_parts.iter().map(|part| part.id.as_str()).collect();
+        assert_eq!(ids, ["questions", "to_read", "working"]);
+        let written: Vec<String> = status.summary_parts.iter().map(SummaryPart::text).collect();
+        assert_eq!(written.join(" · "), status.summary);
+        let questions = &status.summary_parts[0];
+        assert!(questions.one.contains("{count}") && questions.other.contains("{count}"));
+        assert_ne!(questions.one, questions.other, "{lang:?}: singular and plural differ");
+    }
+}
+
 /// The header counts tasks that work, and says so in both languages.
 #[test]
 fn the_header_says_tasks_working_never_nodes() {

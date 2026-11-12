@@ -127,7 +127,7 @@ public struct TriageView: View {
     }
 
     private var summary: Text {
-        Text(store.status?.summary ?? String(localized: "Connecting to your Mac…"))
+        Text(store.headerText ?? String(localized: "Connecting to your Mac…"))
     }
 
     /// Cards that arrived while the person was reading wait right behind; this brings the first forward.

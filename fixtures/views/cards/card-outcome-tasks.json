@@ -4,12 +4,26 @@
   "view": "card",
   "key": "card:request-tasks-r-sync-1",
   "client": "ios",
-  "version": "ve54212fe03f49238",
+  "version": "vb2dcfd93ad41145e",
   "cursor": "cursor-1",
   "title": "I created 3 tasks",
   "status": {
-    "version": "v775f56d5f93fe430",
+    "version": "v330b229db951a302",
     "summary": "3 to read · 0 tasks working",
+    "summary_parts": [
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
     "badge": 3,
     "counts": [
       {

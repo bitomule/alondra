@@ -4,12 +4,32 @@
   "view": "card",
   "key": "card:f12d034b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "v3594896f26a54e8a",
+  "version": "v6116eafcfacfc09e",
   "cursor": "cursor-1",
   "title": "The simulator pass is clean",
   "status": {
-    "version": "v65386d57058832ba",
+    "version": "vec309c5722d410ab",
     "summary": "2 questions · 3 to read · 0 tasks working",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} question",
+        "other": "{count} questions"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
     "badge": 5,
     "counts": [
       {

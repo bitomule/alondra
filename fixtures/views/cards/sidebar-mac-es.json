@@ -4,11 +4,31 @@
   "view": "sidebar",
   "key": "sidebar",
   "client": "mac",
-  "version": "vbb8256d744408ac9",
+  "version": "vd19977e6c2d02f8d",
   "cursor": "cursor-1",
   "status": {
-    "version": "v628d97b17c8156ba",
+    "version": "ve1d848d6f93b4bb1",
     "summary": "5 pendientes · 0 en marcha",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} pregunta",
+        "other": "{count} preguntas"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} por leer",
+        "other": "{count} por leer"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
     "badge": 5,
     "counts": [
       {
@@ -261,12 +281,32 @@
       "view": "card",
       "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
       "client": "mac",
-      "version": "v5d4c96899151fc95",
+      "version": "v14ab096ac4413781",
       "cursor": "cursor-1",
       "title": "Choose the welcome copy",
       "status": {
-        "version": "v7aaf7463a05118f9",
+        "version": "vf8bd13a3dc364c4d",
         "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
+        "summary_parts": [
+          {
+            "id": "questions",
+            "count": 2,
+            "one": "{count} pregunta",
+            "other": "{count} preguntas"
+          },
+          {
+            "id": "to_read",
+            "count": 3,
+            "one": "{count} por leer",
+            "other": "{count} por leer"
+          },
+          {
+            "id": "working",
+            "count": 0,
+            "one": "{count} tarea trabajando",
+            "other": "{count} tareas trabajando"
+          }
+        ],
         "badge": 5,
         "counts": [
           {
@@ -464,12 +504,32 @@
       "view": "card",
       "key": "card:8fa4034b-249e-4487-a89b-57de38c26372",
       "client": "mac",
-      "version": "v28e479754b3c6610",
+      "version": "v7b3e98b0b58fdbb9",
       "cursor": "cursor-1",
       "title": "Ship the compact schedule editor with this beta?",
       "status": {
-        "version": "v7aaf7463a05118f9",
+        "version": "vf8bd13a3dc364c4d",
         "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
+        "summary_parts": [
+          {
+            "id": "questions",
+            "count": 2,
+            "one": "{count} pregunta",
+            "other": "{count} preguntas"
+          },
+          {
+            "id": "to_read",
+            "count": 3,
+            "one": "{count} por leer",
+            "other": "{count} por leer"
+          },
+          {
+            "id": "working",
+            "count": 0,
+            "one": "{count} tarea trabajando",
+            "other": "{count} tareas trabajando"
+          }
+        ],
         "badge": 5,
         "counts": [
           {
@@ -649,12 +709,32 @@
       "view": "card",
       "key": "card:hf-weekly-2026-09-30",
       "client": "mac",
-      "version": "vc5c1aba203593e7a",
+      "version": "vb8f84ff1727bf3f9",
       "cursor": "cursor-1",
       "title": "Review the beta candidate",
       "status": {
-        "version": "v7aaf7463a05118f9",
+        "version": "vf8bd13a3dc364c4d",
         "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
+        "summary_parts": [
+          {
+            "id": "questions",
+            "count": 2,
+            "one": "{count} pregunta",
+            "other": "{count} preguntas"
+          },
+          {
+            "id": "to_read",
+            "count": 3,
+            "one": "{count} por leer",
+            "other": "{count} por leer"
+          },
+          {
+            "id": "working",
+            "count": 0,
+            "one": "{count} tarea trabajando",
+            "other": "{count} tareas trabajando"
+          }
+        ],
         "badge": 5,
         "counts": [
           {

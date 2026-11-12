@@ -4,12 +4,32 @@
   "view": "tasks",
   "key": "tasks",
   "client": "mac",
-  "version": "vc2a1ef7f31145179",
+  "version": "vc2ba1c3ca27bc3d2",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
-    "version": "v18a954131fb34b13",
+    "version": "vf15e27e74fa727a8",
     "summary": "2 questions · 3 to read · 2 tasks working",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} question",
+        "other": "{count} questions"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 2,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
     "badge": 5,
     "counts": [
       {

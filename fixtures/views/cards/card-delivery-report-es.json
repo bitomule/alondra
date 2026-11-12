@@ -4,12 +4,26 @@
   "view": "card",
   "key": "card:result-2",
   "client": "ios",
-  "version": "v2c04e43e80e12ce6",
+  "version": "vb43710d640d1ff52",
   "cursor": "cursor-1",
   "title": "Read why Redraft does not need a widget",
   "status": {
-    "version": "v6b231fefa53e1d8f",
+    "version": "v3abe8a9de57dd4ff",
     "summary": "1 por leer · 0 tareas trabajando",
+    "summary_parts": [
+      {
+        "id": "to_read",
+        "count": 1,
+        "one": "{count} por leer",
+        "other": "{count} por leer"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
     "badge": 1,
     "counts": [
       {

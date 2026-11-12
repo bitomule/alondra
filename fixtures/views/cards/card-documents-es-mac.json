@@ -4,12 +4,26 @@
   "view": "card",
   "key": "card:result-1",
   "client": "mac",
-  "version": "va31a080d77193d8d",
+  "version": "va70b0835c164de49",
   "cursor": "cursor-1",
   "title": "Approve the plan to index Redraft's whole library",
   "status": {
-    "version": "v6b231fefa53e1d8f",
+    "version": "v3abe8a9de57dd4ff",
     "summary": "1 por leer · 0 tareas trabajando",
+    "summary_parts": [
+      {
+        "id": "to_read",
+        "count": 1,
+        "one": "{count} por leer",
+        "other": "{count} por leer"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
     "badge": 1,
     "counts": [
       {

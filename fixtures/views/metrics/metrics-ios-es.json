@@ -4,12 +4,20 @@
   "view": "metrics",
   "key": "metrics?period=7d&compare=previous",
   "client": "ios",
-  "version": "v03091af343c22618",
+  "version": "v3ebce51fba574aec",
   "cursor": "metrics-cursor",
   "title": "Métricas",
   "status": {
-    "version": "v0214296c4e5a67cf",
+    "version": "v7166fa23ed219a9e",
     "summary": "0 tareas trabajando",
+    "summary_parts": [
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
     "badge": 0,
     "counts": [
       {

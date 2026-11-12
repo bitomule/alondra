@@ -4,12 +4,32 @@
   "view": "machine",
   "key": "machine",
   "client": "ios",
-  "version": "v1ac7a5635585bd27",
+  "version": "vccd8225882e44900",
   "cursor": "cursor-1",
   "title": "Machine",
   "status": {
-    "version": "vbcfa7634a3ce3123",
+    "version": "vd7ab20c854f7f54b",
     "summary": "2 questions · 3 to read · 0 tasks working",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} question",
+        "other": "{count} questions"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
     "badge": 5,
     "counts": [
       {

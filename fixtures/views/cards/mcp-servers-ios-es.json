@@ -4,13 +4,33 @@
   "view": "mcp_servers",
   "key": "mcp_servers",
   "client": "ios",
-  "version": "v6ceaece87b67d4f1",
+  "version": "v4a74e18fba5590f1",
   "cursor": "cursor-1",
   "title": "Servidores MCP",
   "summary": "9 servidores · 3 piden iniciar sesión",
   "status": {
-    "version": "v783e2068aae9aca6",
+    "version": "vb1a46f5165d38baa",
     "summary": "2 preguntas · 3 por leer · 1 tarea trabajando",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} pregunta",
+        "other": "{count} preguntas"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} por leer",
+        "other": "{count} por leer"
+      },
+      {
+        "id": "working",
+        "count": 1,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
     "badge": 5,
     "counts": [
       {

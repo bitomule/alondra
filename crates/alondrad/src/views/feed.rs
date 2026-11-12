@@ -686,7 +686,7 @@ mod tests {
         let current = Current {
             cursor: "cursor-1".into(),
             status: alondra_core::views::Status {
-                version: "v0000000000000000".into(), summary: "Ready".into(), badge: 0,
+                version: "v0000000000000000".into(), summary: "Ready".into(), summary_parts: vec![], badge: 0,
                 counts: vec![], gauges: vec![], orchestrator: alondra_core::views::Label {
                     text: "Idle".into(), tone: alondra_core::views::Tone::Neutral, elapsed: None,
                 }, update: None, usage_exhausted: None, session_wait: None,

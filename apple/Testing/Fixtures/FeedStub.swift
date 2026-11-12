@@ -77,6 +77,19 @@ extension Fixtures {
         sections[0]["card_ids"] = queue
         sections[0]["card_waits"] = queue.map { [informationID, deliveryID, pullRequestID].contains($0) ? "read" : "question" }
         object["sections"] = sections
+        var status = try XCTUnwrap(object["status"] as? [String: Any])
+        let questions = queue.filter { ![informationID, deliveryID, pullRequestID].contains($0) }.count
+        let parts: [[String: Any]] = [
+            ["id": "questions", "count": questions, "one": "{count} question", "other": "{count} questions"],
+            ["id": "to_read", "count": queue.count - questions, "one": "{count} to read", "other": "{count} to read"],
+            ["id": "working", "count": 0, "one": "{count} task working", "other": "{count} tasks working"],
+        ].filter { ($0["count"] as? Int ?? 0) > 0 || $0["id"] as? String == "working" }
+        status["summary_parts"] = parts
+        status["summary"] = parts.map { part in
+            let count = part["count"] as? Int ?? 0
+            return ((count == 1 ? part["one"] : part["other"]) as? String ?? "").replacingOccurrences(of: "{count}", with: String(count))
+        }.joined(separator: " · ")
+        object["status"] = status
         return try ContractCodec.decode(ViewDocument.self, from: JSONSerialization.data(withJSONObject: object))
     }
 

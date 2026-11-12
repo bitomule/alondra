@@ -4,13 +4,33 @@
   "view": "mcp_servers",
   "key": "mcp_servers",
   "client": "mac",
-  "version": "v206abc096377b7c4",
+  "version": "v67346cb57db5900d",
   "cursor": "cursor-1",
   "title": "MCP servers",
   "summary": "9 servers · 3 need sign-in",
   "status": {
-    "version": "v8e3c4a7e0f2dad1b",
+    "version": "vbb3efc840798c4ba",
     "summary": "2 questions · 3 to read · 1 task working",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} question",
+        "other": "{count} questions"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 1,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
     "badge": 5,
     "counts": [
       {

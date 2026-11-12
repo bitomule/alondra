@@ -4,12 +4,32 @@
   "view": "accounts",
   "key": "accounts",
   "client": "mac",
-  "version": "v756c4743e6437092",
+  "version": "v4df5d085dd2a6274",
   "cursor": "cursor-1",
   "title": "Cuentas",
   "status": {
-    "version": "v06fb6e6dd67b5404",
+    "version": "vab193903528c25af",
     "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} pregunta",
+        "other": "{count} preguntas"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} por leer",
+        "other": "{count} por leer"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
     "badge": 5,
     "counts": [
       {
