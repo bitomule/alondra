@@ -24,6 +24,7 @@ mod provider_accounts;
 mod ops;
 mod pty;
 mod report;
+mod report_wait;
 mod service_setup;
 mod service_pair;
 mod service_client;
@@ -71,6 +72,19 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    #[command(about = tr!("Report what this node or command waits for", "Indica a qué espera este nodo o comando"))]
+    ReportWait {
+        #[arg(required_unless_present = "clear", conflicts_with = "clear")]
+        what: Option<String>,
+        #[arg(long, conflicts_with = "clear")]
+        progress: Option<String>,
+        #[arg(long, conflicts_with = "clear")]
+        detail: Option<String>,
+        #[arg(long, conflicts_with = "clear", value_parser = clap::value_parser!(u32).range(1..=i32::MAX as i64))]
+        pid: Option<u32>,
+        #[arg(long)]
+        clear: bool,
+    },
     #[command(about = tr!("Check everything; --fix repairs or finishes the setup", "Lo comprueba todo; --fix arregla o termina la instalación"),
         after_help = examples(&["alondra doctor", "alondra doctor --fix", "alondra doctor --fix --yes --only service"]))]
     Doctor {
@@ -468,7 +482,7 @@ pub fn main() -> Result<()> {
 /// `update` has just replaced this binary, so the service it installed is never newer than the release it ran.
 fn warns_when_older(command: Option<&Cmd>, json: bool) -> bool {
     match command {
-        None | Some(Cmd::McpNode | Cmd::McpOrchestrator | Cmd::Hook | Cmd::Node { .. } | Cmd::Keys | Cmd::Update { .. }) => false,
+        None | Some(Cmd::ReportWait { .. } | Cmd::McpNode | Cmd::McpOrchestrator | Cmd::Hook | Cmd::Node { .. } | Cmd::Keys | Cmd::Update { .. }) => false,
         Some(_) => !json,
     }
 }
@@ -489,6 +503,7 @@ fn takes_json(command: Option<&Cmd>) -> bool {
 
 fn run(command: Option<Cmd>, json: bool, no_input: bool) -> Result<()> {
     match command {
+        Some(Cmd::ReportWait { what, progress, detail, pid, clear }) => report_wait::run(what, progress, detail, pid, clear),
         None => doctor::launch(),
         Some(Cmd::Doctor { after_update: true, .. }) => {
             match doctor::after_update() {

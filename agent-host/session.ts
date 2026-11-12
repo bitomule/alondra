@@ -1,6 +1,6 @@
 import { query, type CanUseTool, type ElicitationResult, type HookCallback, type OnElicitation, type Options, type Query, type SDKUserMessage, type PermissionResult, type SpawnOptions, type SpawnedProcess } from '@anthropic-ai/claude-agent-sdk/core';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { isAbsolute } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { OrchestratorProfile, WorkerProfile } from './bootstrap.js';
 import { fitValue, framingProblem, hasToolUse, jsonEvidence, MAX_DECISION_BYTES, MAX_DIAGNOSTIC_BYTES, type Decision, type DecisionKind } from './frame.js';
@@ -205,7 +205,7 @@ export class Session {
     if (config.sessionId !== undefined && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(config.sessionId)) throw new Error('SDK session id must be a UUID');
     if (!isAbsolute(config.executable) || !isAbsolute(config.cwd)) throw new Error('Executable and cwd must be absolute');
     this.permissions = new PermissionCallbacks(config.observe);
-    const env = { ...config.env, CLAUDE_CODE_STARTUP_FAILURE_RESULTS: '1', CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1' };
+    const env = { ...config.env, ...(config.stateDirectory && { ALONDRA_WAIT_FILE: join(config.stateDirectory, 'wait.json') }), CLAUDE_CODE_STARTUP_FAILURE_RESULTS: '1', CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: '1' };
     const sessionId = config.sessionId?.toLowerCase();
     const profile = config.orchestrator;
     if (profile?.reasoning_effort && !['low', 'medium', 'high', 'xhigh', 'max'].includes(profile.reasoning_effort)) throw new Error('The selected Claude reasoning effort is unsupported by this SDK');

@@ -3,6 +3,8 @@ import json, os, sys, subprocess, threading
 import signal
 if os.environ.get('ALONDRA_FAKE_ARGV'):
     with open(os.environ['ALONDRA_FAKE_ARGV'], 'w') as target: json.dump(sys.argv[1:], target)
+if os.environ.get('ALONDRA_FAKE_WAIT_CAPTURE'):
+    with open(os.environ['ALONDRA_FAKE_WAIT_CAPTURE'], 'w') as target: target.write(os.environ.get('ALONDRA_WAIT_FILE', ''))
 thread = '00000000-0000-4000-8000-000000000001'
 turn = 'native-turn'
 turn_number = 0

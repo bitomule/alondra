@@ -430,6 +430,13 @@ async fn gather_inner(
             let context = state.tasks.values().filter(|task| task.agent_id.as_ref() == Some(&agent.id))
                 .find_map(|task| client.domain.contexts.used(&task.id))
                 .map(|used| (used.percent(), used.window));
+            let reported_wait = state.tasks.values().find(|task| task.agent_id.as_ref() == Some(&agent.id))
+                .and_then(|task| {
+                    let lifecycle = state.lifecycle_of(&task.id).ok()?;
+                    alondra_daemon_engine::sdk_live::wait_file(&client.domain, task.account_key().provider, lifecycle.execution()?.instance().as_str())
+                })
+                .and_then(|path| alondra_daemon_engine::sdk_live::read_wait_file(&path))
+                .map(|wait| alondra_core::views::LiveReportedWait { what: wait.what, progress: wait.progress, detail: wait.detail, since: timestamp(wait.since_ms) });
             Some(LiveNode {
                 agent_id: node.session_id,
                 short_id: Some(node.short_id),
@@ -482,6 +489,7 @@ async fn gather_inner(
                         state: run_state(item.started_at, end),
                     }).collect(),
                 background_badge,
+                reported_wait,
                 working: match &sdk {
                     Some(live) => matches!(live, Some(alondra_domain::LiveState::Working(alondra_domain::Worker::Turn))),
                     None => agent.phase == NodePhase::Working,

@@ -106,7 +106,7 @@ export class CodexSession implements HostSession {
     this.config.beforeSpawn?.();
     const accountArgs = config.accountId && config.accountId !== 'default' ? ['-c', 'cli_auth_credentials_store="file"'] : [];
     this.child = spawn(config.executable, [...accountArgs, 'app-server', '--listen', 'stdio://'], {
-      cwd: config.cwd, env: config.env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+      cwd: config.cwd, env: { ...config.env, ...(config.stateDirectory && { ALONDRA_WAIT_FILE: join(config.stateDirectory, 'wait.json') }) }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
     });
     this.child.stdout.on('data', (bytes: Buffer) => this.consume(bytes));
     // Native stderr must always be drained. It is not semantic evidence and may contain credentials.

@@ -4,12 +4,12 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v36551a9d28fccf01",
+  "version": "v75857da572d7da90",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
-    "version": "vd11a79a790b7196d",
-    "summary": "3 nodes working",
+    "version": "v5ed76fed389422b8",
+    "summary": "4 nodes working",
     "badge": 0,
     "counts": [
       {
@@ -20,17 +20,17 @@
       {
         "id": "tasks",
         "label": "Tasks",
-        "value": 3
+        "value": 4
       },
       {
         "id": "agents",
         "label": "In progress",
-        "value": 3
+        "value": 4
       },
       {
         "id": "working",
         "label": "working",
-        "value": 3
+        "value": 4
       },
       {
         "id": "waiting",
@@ -66,7 +66,7 @@
     {
       "id": "active",
       "title": "Active",
-      "count": 3,
+      "count": 4,
       "collapsed": false,
       "items": [
         {
@@ -76,7 +76,7 @@
           "title": "In progress",
           "trailing": {
             "kind": "text",
-            "text": "3"
+            "text": "4"
           },
           "depth": 0,
           "struck": false,
@@ -145,6 +145,58 @@
               "actions": [
                 {
                   "id": "pause:a-command@0",
+                  "label": "Pause",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "confirm": {
+                    "title": "Pause this node?",
+                    "message": "It stops what it is running now and keeps its task. Alondra does not resume it by itself: only you do.",
+                    "button": "Pause"
+                  },
+                  "enabled": true,
+                  "stamp": "Paused",
+                  "resolves_card": false
+                }
+              ]
+            },
+            {
+              "id": "t-reported",
+              "link": {
+                "kind": "view",
+                "key": "task:t-reported"
+              },
+              "icon": "mission",
+              "title": "Wait for the deployment",
+              "subtitle": "Working",
+              "badges": [
+                {
+                  "text": "Working",
+                  "tone": "accent"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "Waiting for deployment confirmation · 2 of 3 · Waiting for the server · since 09:42 · Said: “The checks passed.” 09:31",
+                  "depth": 0,
+                  "struck": false
+                }
+              ],
+              "actions": [
+                {
+                  "id": "pause:a-reported@0",
                   "label": "Pause",
                   "style": "secondary",
                   "role": "neutral",

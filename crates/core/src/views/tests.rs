@@ -9822,7 +9822,7 @@ fn working_rows_fixture() -> (DomainState, LiveSnapshot) {
     state.tasks.clear();
     state.agents.clear();
     let mut live = LiveSnapshot::default();
-    for (id, title) in [("command", "Check the release"), ("background", "Build the app"), ("said", "Review the parser")] {
+    for (id, title) in [("command", "Check the release"), ("background", "Build the app"), ("said", "Review the parser"), ("reported", "Wait for the deployment")] {
         let task = format!("t-{id}");
         let agent = format!("a-{id}");
         task_in(&mut state, &task, "r-1", TaskState::Running);
@@ -9835,7 +9835,11 @@ fn working_rows_fixture() -> (DomainState, LiveSnapshot) {
             state_since: Some("2026-09-30T09:30:00Z".into()),
             last_message: Some("The checks passed. I am reviewing the diff.".into()),
             last_message_at: Some("2026-09-30T09:31:00Z".into()), ..Default::default() };
-        if id == "command" {
+        if id == "reported" {
+            node.reported_wait = Some(LiveReportedWait { what: "the deployment".into(), progress: Some("2 of 3".into()),
+                detail: Some("Waiting for acknowledgement".into()), since: "2026-09-30T09:42:00Z".into() });
+            node.tool = Some("deploy".into());
+        } else if id == "command" {
             node.tool = Some("bazel test //crates/...".into());
             node.tool_since = Some("09:38".into());
             node.steps = vec![LiveStep { subject: "Check the release".into(), state: StepState::InProgress, active_form: None }];
@@ -9861,6 +9865,16 @@ fn task_working_rows_match_goldens() {
         (Client::Tui, Lang::En, "task-working-rows-tui.json", include_str!("../../../../fixtures/views/cards/task-working-rows-tui.json")),
         (Client::Tui, Lang::Es, "task-working-rows-tui-es.json", include_str!("../../../../fixtures/views/cards/task-working-rows-tui-es.json")),
     ] {
+        let mut live = live.clone();
+        let wait = live.nodes.iter_mut().find_map(|node| node.reported_wait.as_mut()).unwrap();
+        if lang == Lang::Es {
+            wait.what = "la confirmación del despliegue".into();
+            wait.progress = Some("2 de 3".into());
+            wait.detail = Some("Esperando al servidor".into());
+        } else {
+            wait.what = "deployment confirmation".into();
+            wait.detail = Some("Waiting for the server".into());
+        }
         assert_golden(filename, &render(&state, &live, client, lang, "tasks", "2026-09-30T10:00:00Z"), expected);
     }
 }

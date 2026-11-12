@@ -17,6 +17,64 @@ const SUMMARY_LIMIT: usize = 300;
 const REMEMBERED: usize = 50;
 const PROGRESS_TOOLS: [&str; 4] = ["TaskCreate", "TaskUpdate", "TaskList", "Workflow"];
 
+#[derive(Debug, Deserialize)]
+pub struct WaitReport {
+    pub what: String,
+    pub detail: Option<String>,
+    pub progress: Option<String>,
+    pub since_ms: Millis,
+    pid: Option<i32>,
+}
+
+/// A report is display text, never an input to admission or lifecycle decisions.
+pub fn read_wait_file(path: &std::path::Path) -> Option<WaitReport> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW).open(path).ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() || metadata.len() > 4096 { return None; }
+    let mut bytes = Vec::new();
+    file.take(4097).read_to_end(&mut bytes).ok()?;
+    if bytes.len() > 4096 { return None; }
+    let mut report: WaitReport = serde_json::from_slice(&bytes).ok()?;
+    if let Some(pid) = report.pid {
+        if pid <= 0 { return None; }
+        if unsafe { libc::kill(pid, 0) } != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EPERM) { return None; }
+    }
+    fn single_line(text: &str, limit: usize) -> String {
+        text.chars().map(|c| if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') { ' ' } else { c }).take(limit).collect::<String>().trim().into()
+    }
+    report.what = single_line(&report.what, 60);
+    if report.what.is_empty() { return None; }
+    report.progress = report.progress.map(|text| single_line(&text, 40)).filter(|text| !text.is_empty());
+    report.detail = report.detail.map(|text| single_line(&text, 120)).filter(|text| !text.is_empty());
+    Some(report)
+}
+
+pub fn wait_file(domain: &crate::domain_runtime::DomainRuntime, provider: alondra_core::accounts::Provider, instance: &str) -> Option<std::path::PathBuf> {
+    let (backend, _) = domain.sdk()?;
+    Some(backend.for_provider(provider, domain.home()).ok()?.state_root.join(instance).join("wait.json"))
+}
+
+/// Called before publishing a committed turn boundary, including host loss and interruptions.
+pub(crate) fn clear_ended_waits(domain: &crate::domain_runtime::DomainRuntime, before: &alondra_core::domain::DomainState, after: &alondra_core::domain::DomainState) {
+    if domain.sdk().is_none() { return; }
+    for (id, journal) in &before.lifecycle_journal {
+        if after.lifecycle_journal.get(id).is_some_and(|new| new.len() == journal.len()) { continue; }
+        let Some(task) = before.tasks.get(id) else { continue };
+        let Ok(old) = before.lifecycle_of(&task.id) else { continue };
+        if old.turn().is_none() { continue; }
+        let same_turn = after.lifecycle_of(&task.id).is_ok_and(|new| new.execution() == old.execution() && new.turn() == old.turn());
+        if same_turn { continue; }
+        let Some(stamp) = old.execution() else { continue };
+        if let Some(path) = wait_file(domain, task.account_key().provider, stamp.instance().as_str()) {
+            if let Err(error) = std::fs::remove_file(path) && error.kind() != std::io::ErrorKind::NotFound {
+                log!("could not clear the ended turn's wait report for {}: {error}", task.id);
+            }
+        }
+    }
+}
+
 /// Why a turn of the SDK stopped: `TerminalReason` of `@anthropic-ai/claude-agent-sdk` 0.3.322.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -397,6 +455,88 @@ mod tests {
     use crate::node_reports::Reports;
     use crate::node_work::StepStatus;
     use serde_json::json;
+
+    fn wait_row(path: &std::path::Path) -> alondra_core::views::now_fact::NowFact {
+        use alondra_core::views::{Lang, LiveNode, LiveReportedWait, now_fact::now_fact};
+        let reported_wait = read_wait_file(path).map(|wait| {
+            assert_eq!(wait.since_ms, 1_794_324_000_000);
+            LiveReportedWait { what: wait.what, detail: wait.detail, progress: wait.progress, since: "15:38".into() }
+        });
+        let node = LiveNode { reported_wait, tool: Some("deploy".into()), tool_since: Some("15:30".into()), ..Default::default() };
+        now_fact(Some(&node), &alondra_core::domain::Doing::Turn, "15:00", Lang::Es)
+    }
+
+    #[test]
+    fn a_reported_wait_of_a_live_process_reaches_the_row() {
+        use alondra_core::views::{Lang, now_fact::NowDoing};
+        let root = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("wait.json");
+        std::fs::write(&path, serde_json::to_vec(&json!({"what": "the server", "progress": "2 of 3", "detail": "Acknowledgement", "since_ms": 1_794_324_000_000i64, "pid": std::process::id()})).unwrap()).unwrap();
+        let row = wait_row(&path);
+        assert_eq!(row.doing, NowDoing::Reported { what: "the server".into(), progress: Some("2 of 3".into()), detail: Some("Acknowledgement".into()), since: "15:38".into() });
+        assert_eq!(row.text(Lang::Es), "Espera a the server · 2 of 3 · Acknowledgement · desde las 15:38");
+        assert_eq!(row.text(Lang::En), "Waiting for the server · 2 of 3 · Acknowledgement · since 15:38");
+    }
+
+    #[test]
+    fn a_reported_wait_needs_only_what() {
+        let root = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("wait.json");
+        std::fs::write(&path, br#"{"what":"the server","since_ms":1794324000000}"#).unwrap();
+        assert_eq!(wait_row(&path).text(alondra_core::views::Lang::Es), "Espera a the server · desde las 15:38");
+    }
+
+    #[test]
+    fn a_reported_wait_of_a_dead_process_is_ignored() {
+        let root = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("wait.json");
+        // wait() proves the process ended; the test never waits for a duration.
+        let mut child = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        std::fs::write(&path, serde_json::to_vec(&json!({"what": "the server", "since_ms": 1_794_324_000_000i64, "pid": pid})).unwrap()).unwrap();
+        assert!(read_wait_file(&path).is_none());
+        assert!(matches!(wait_row(&path).doing, alondra_core::views::now_fact::NowDoing::Command { .. }));
+    }
+
+    #[test]
+    fn a_malformed_or_oversized_report_is_ignored() {
+        let root = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("wait.json");
+        for bytes in [br#"{"what":"cut"#.to_vec(),
+            serde_json::to_vec(&json!({"what": "x".repeat(5 * 1024), "since_ms": 1})).unwrap(),
+            br#"{"since_ms":1}"#.to_vec(), br#"{"what":"server"}"#.to_vec(),
+            br#"{"what":"","since_ms":1}"#.to_vec(), br#"{"what":"x","since_ms":1,"pid":0}"#.to_vec()] {
+            std::fs::write(&path, bytes).unwrap();
+            assert!(read_wait_file(&path).is_none());
+        }
+        let bytes = br#"{"what":"server","since_ms":1794324000000}"#;
+        let mut boundary = bytes.to_vec(); boundary.resize(4096, b' ');
+        std::fs::write(&path, &boundary).unwrap();
+        assert!(read_wait_file(&path).is_some(), "exactly 4 KiB is valid");
+        boundary.push(b' ');
+        std::fs::write(&path, &boundary).unwrap();
+        assert!(read_wait_file(&path).is_none());
+    }
+
+    #[test]
+    fn reported_wait_text_is_bounded_single_line_unicode_without_interpretation() {
+        let root = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("wait.json");
+        let text = format!("é\n\r\u{2028}{}", "🦜".repeat(150));
+        std::fs::write(&path, serde_json::to_vec(&json!({"what": text, "progress": text, "detail": text, "since_ms": 1})).unwrap()).unwrap();
+        let wait = read_wait_file(&path).unwrap();
+        for (text, limit) in [(&wait.what, 60), (wait.progress.as_ref().unwrap(), 40), (wait.detail.as_ref().unwrap(), 120)] {
+            assert_eq!(text.chars().count(), limit);
+            assert!(!text.contains(['\n', '\r', '\u{2028}']));
+            assert!(text.starts_with("é   🦜"));
+        }
+    }
 
     const MINUTE: Millis = 60_000;
 

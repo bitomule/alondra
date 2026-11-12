@@ -232,6 +232,38 @@ fn runtime(fixture: &Fixture, store: DomainStore) -> DomainRuntime {
     DomainRuntime::open_at(&fixture.0, &fixture.path()).unwrap()
 }
 
+#[test]
+fn a_reported_wait_without_a_pid_lasts_until_the_turn_ends() {
+    use std::sync::Arc;
+    use crate::sdk_owner::SdkBackend;
+    let (fixture, mut store, execution) = running();
+    let input = pending_input(&mut store);
+    let runtime = Arc::new(runtime(&fixture, store));
+    let root = fixture.0.join("hosts");
+    runtime.enable_sdk(SdkBackend {
+        provider: alondra_core::accounts::Provider::Claude, origin: None,
+        node: "/fixture/node".into(), node_sha256: String::new(),
+        host: "/fixture/host".into(), host_sha256: String::new(),
+        native: "/fixture/claude".into(), native_sha256: String::new(),
+        host_environment: BTreeMap::new(), native_environment: BTreeMap::new(),
+        confinement: None, state_root: root.clone(), io_timeout_seconds: 30, installed_native: false,
+    });
+    let observe = |cursor, facts| {
+        let state = runtime.state().unwrap();
+        runtime.own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, cursor), &Normalizer::Facts(facts), no_home(), false)).unwrap();
+    };
+    let turn = TurnId::new("reported-turn").unwrap();
+    observe(1, vec![Observation::Available, Observation::TurnStarted { input, turn: turn.clone() }]);
+    let path = root.join(execution.instance().as_str()).join("wait.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, br#"{"what":"the server","since_ms":1794324000000}"#).unwrap();
+    assert!(crate::sdk_live::read_wait_file(&path).is_some());
+    observe(2, vec![Observation::ModelAnswered]);
+    assert!(crate::sdk_live::read_wait_file(&path).is_some(), "another fact does not expire a report without a PID");
+    observe(3, vec![Observation::TurnEnded { turn, outcome: alondra_provider_contract::TurnOutcome::Completed }]);
+    assert!(!path.exists(), "the committed TurnEnded deletes the report before publishing");
+}
+
 const TABLES: [&str; 8] = [
     "provider_observations",
     "provider_normalization_checkpoints",
