@@ -619,7 +619,7 @@ fn fold(
                 let task = string(payload, "task_id")?;
                 if !matches!(
                     payload.get("status").and_then(Value::as_str),
-                    Some("completed" | "failed" | "stopped")
+                    Some("completed" | "failed" | "stopped" | "killed")
                 ) || payload.get("reason").is_some()
                 {
                     return Err(AdapterError::Unsupported);
@@ -1600,6 +1600,23 @@ mod tests {
             work: WorkId::new(format!("claude-task:{SECOND}")).unwrap(),
             continuation: ContinuationId::new(format!("claude-notification:{NOTIFIED}")).unwrap(),
         }]);
+    }
+    // Claude Code ends a background command that reached its time limit and says it was killed:
+    // that ends the work like any other end.
+    #[test]
+    fn background_work_killed_at_its_time_limit_ends() {
+        let mut state = state();
+        let assistant = event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST]}));
+        fold(&assistant, &session(), &mut state, input).unwrap();
+        let started = event(json!({"type":"system","subtype":"task_started","uuid":SECOND,"task_id":"bash-1","tool_use_id":"toolu_1","task_type":"local_bash","is_backgrounded":true}));
+        fold(&started, &session(), &mut state, input).unwrap();
+        fold(&event(json!({"type":"result","uuid":SECOND,"user_message_uuid":FIRST})), &session(), &mut state, input).unwrap();
+        let killed = event(json!({"type":"system","subtype":"task_notification","uuid":NOTIFIED,"task_id":"bash-1","tool_use_id":"toolu_1","status":"killed"}));
+        assert_eq!(fold(&killed, &session(), &mut state, input).unwrap(), vec![Observation::WorkEnded {
+            work: WorkId::new(format!("claude-task:{SECOND}")).unwrap(),
+            continuation: ContinuationId::new(format!("claude-notification:{NOTIFIED}")).unwrap(),
+        }]);
+        assert!(state.work.is_empty());
     }
     // A Monitor watch is a background task of its own (`local_bash`, per the SDK's
     // SDKTaskStartedMessage): the turn that started it ends behind it, and its end wakes the node.
