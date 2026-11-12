@@ -235,11 +235,15 @@ fn waiting(task: &Task, waits: WaitsFor, context: &RenderContext<'_>) -> Present
             let answer = context.domain.lifecycle_of(&task.id).ok().and_then(|lifecycle| lifecycle.obligation())
                 .is_some_and(|obligation| obligation.owed == alondra_domain::Owed::HandDecision);
             match (common::gate_queued(task, context), answer) {
-                (Some(queued), true) => {
+                (Some(queued), answer) => {
                     queue = Some(queued.position);
                     let place = common::ordinal(queued.position, lang);
                     let of = queued.of;
-                    tf!(lang, "{place} of {of} · your answer waits for a slot", "{place} de {of} · tu respuesta espera hueco")
+                    if answer {
+                        tf!(lang, "{place} of {of} · your answer waits for a slot", "{place} de {of} · tu respuesta espera hueco")
+                    } else {
+                        tf!(lang, "{place} of {of} · your message waits for a slot", "{place} de {of} · tu mensaje espera hueco")
+                    }
                 }
                 (_, true) => from(t!(lang, "Alondra delivers your answer to it", "Alondra le entrega tu respuesta").into()),
                 _ => from(match context.reading(&task.id).and_then(|read| read.handed_back) {
