@@ -170,6 +170,12 @@ pub(super) fn stage(
         if let Some((task_id, plan)) = plan_set_by(&envelope.command) {
             store_launch_plan(conn, task_id, plan)?;
         }
+        if let (Actor::System, Command::SettlePlanReview { task_id, outcome: PlanReviewOutcome::Unchanged { reason }, .. }) = (actor, &envelope.command)
+            && let Some(plan) = stored_plan(conn, task_id)?
+        {
+            let mission = plan.mission.as_deref().map_or_else(|| reason.clone(), |mission| format!("{reason}\n\n{mission}"));
+            store_launch_plan(conn, task_id, &LaunchPlan { mission: Some(mission), ..plan })?;
+        }
         if let Command::SettlePlanReview { task_id, outcome: PlanReviewOutcome::Cancelled { reason }, .. } = &envelope.command {
             repository::exec(conn,
                 "INSERT INTO task_cancel_reason(task_id,reason) VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET reason=excluded.reason",

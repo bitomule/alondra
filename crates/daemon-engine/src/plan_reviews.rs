@@ -49,8 +49,7 @@ mod tests {
     use super::*;
     use crate::domain_runtime::DomainRuntime;
     use alondra_core::domain::{
-        Actor, CardKind, CardSpec, Command, CommandEnvelope, PLAN_REVIEW_KEEP_PLANS, PLAN_REVIEW_PROBLEM_PREFIX, PLAN_REVIEW_REMIND,
-        PROTOCOL_VERSION, PlanReviewOutcome, QuestionOption, Recipient, Scope, SuggestionDecision,
+        Actor, CardKind, CardSpec, Command, CommandEnvelope, PROTOCOL_VERSION, PlanReviewOutcome, QuestionOption, Recipient, Scope, SuggestionDecision,
     };
     use alondra_core::orchestrator_cards::PLAN_REVIEW_NOTICE_PREFIX;
     use std::collections::{BTreeMap, BTreeSet};
@@ -189,58 +188,39 @@ mod tests {
         assert_eq!(domain.launch_plan(&"readme".into()).unwrap().unwrap().mission.as_deref(), Some("Replace the old flag in the README"));
     }
 
-    fn problems(domain: &DomainRuntime) -> Vec<String> {
-        domain.state().unwrap().interactions.keys().filter(|id| id.0.starts_with(PLAN_REVIEW_PROBLEM_PREFIX)).map(|id| id.0.clone()).collect()
-    }
-
     fn reminders(domain: &DomainRuntime) -> usize {
         domain.state().unwrap().interactions.keys().filter(|id| id.0.starts_with(PLAN_REVIEW_NOTICE_PREFIX)).count()
     }
 
-    #[test]
-    fn an_unsettled_review_goes_back_once_then_the_user_keeps_the_plans() {
-        let (_home, domain) = redraft();
-        settle(&domain, "c-same", "c", PlanReviewOutcome::Unchanged { reason: "Phase C does not depend on the print size".into() }).unwrap();
-        crate::orchestrator_inbox::settle(&domain);
-        assert_eq!((reminders(&domain), problems(&domain).len()), (1, 0), "the orchestrator gets one more go first");
-        let reminder = domain.state().unwrap().interactions.values().find(|i| i.id.0.starts_with(PLAN_REVIEW_NOTICE_PREFIX)).unwrap().body.clone();
-        assert!(reminder.contains("Phase D: 360 px everywhere") && !reminder.contains("Phase C: group"), "only what is still held: {reminder}");
-        crate::orchestrator_inbox::settle(&domain);
-        let raised = problems(&domain);
-        assert_eq!(raised.len(), 1);
-        crate::orchestrator_inbox::settle(&domain);
-        assert_eq!(problems(&domain).len(), 1, "an open problem is not raised twice");
-        let state = domain.state().unwrap();
-        let card = &state.interactions[&raised[0].as_str().into()];
-        let (need, why) = alondra_core::domain::PlanReviewProblem::from_body(&card.body).unwrap().text(alondra_core::views::Lang::Es);
-        assert_eq!(need, "Las tareas tras «Redraft index · Phase B» esperan revisión de plan");
-        assert!(why.contains("«Redraft index · Phase D», «Redraft index · Phase E»"), "{why}");
-        must(&domain, Actor::User { user_id: "u".into() }, "remind", Command::AnswerQuestion {
-            attachments: vec![], interaction_id: raised[0].as_str().into(), option_id: PLAN_REVIEW_REMIND.into(), inputs: BTreeMap::new() });
-        crate::orchestrator_inbox::settle(&domain);
-        assert_eq!((reminders(&domain), problems(&domain).len()), (2, 1), "reminding hands the decision over again");
-        crate::orchestrator_inbox::settle(&domain);
-        let raised = problems(&domain);
-        assert_eq!(raised.len(), 2);
-        let second = raised.iter().find(|id| id.ends_with("-2")).unwrap();
-        must(&domain, Actor::User { user_id: "u".into() }, "keep", Command::AnswerQuestion {
-            attachments: vec![], interaction_id: second.as_str().into(), option_id: PLAN_REVIEW_KEEP_PLANS.into(), inputs: BTreeMap::new() });
-        let state = domain.state().unwrap();
-        assert!(held(&state, &"d".into()).is_none() && held(&state, &"e".into()).is_none(), "keeping the plans releases them");
-        assert!(matches!(state.plan_reviews[&"decision-1".into()].dependents[&TaskId::from("d")].as_ref().unwrap().outcome, PlanReviewOutcome::KeptByUser));
-        crate::orchestrator_inbox::settle(&domain);
-        assert_eq!((reminders(&domain), problems(&domain).len()), (2, 2), "a settled review asks nothing more");
-    }
+    const MINUTE: i64 = 60_000;
 
     #[test]
-    fn the_problem_goes_once_the_orchestrator_settles_what_it_held() {
+    fn an_unreviewed_plan_is_released_unchanged_and_its_node_is_told() {
         let (_home, domain) = redraft();
+        let queued = alondra_daemon_engine_model::LaunchBody::from_plan("d".into(), &plan("d", "Phase D: 360 px everywhere")).to_queue();
+        domain.store.lock().unwrap().enqueue_launch(&"d".into(), &queued, "auto", 1).unwrap();
+        settle(&domain, "c-same", "c", PlanReviewOutcome::Unchanged { reason: "Phase C does not depend on the print size".into() }).unwrap();
         crate::orchestrator_inbox::settle(&domain);
-        crate::orchestrator_inbox::settle(&domain);
-        let raised = problems(&domain);
-        for task in ["c", "d", "e"] {
-            settle(&domain, &format!("same-{task}"), task, PlanReviewOutcome::Unchanged { reason: "Same plan".into() }).unwrap();
+        assert_eq!(reminders(&domain), 0, "a handled batch reminds of nothing");
+        for minutes in [0, 10] {
+            crate::orchestrator_inbox::settle_overdue(&domain, minutes * MINUTE);
         }
-        assert!(domain.state().unwrap().interactions[&raised[0].as_str().into()].withdrawn, "nothing is left to ask the user");
+        assert_eq!(reminders(&domain), 1, "reminded at its deadline");
+        let reminder = domain.state().unwrap().interactions.values().find(|i| i.id.0.starts_with(PLAN_REVIEW_NOTICE_PREFIX)).unwrap().body.clone();
+        assert!(reminder.contains("Phase D: 360 px everywhere") && !reminder.contains("Phase C: group"), "only what is still held: {reminder}");
+        assert!(held(&domain.state().unwrap(), &"d".into()).is_some(), "one more go for the orchestrator first");
+        crate::orchestrator_inbox::settle_overdue(&domain, 21 * MINUTE);
+        let state = domain.state().unwrap();
+        assert!(held(&state, &"d".into()).is_none() && held(&state, &"e".into()).is_none(), "released");
+        assert!(matches!(state.plan_reviews[&"decision-1".into()].dependents[&TaskId::from("d")].as_ref().unwrap().outcome, PlanReviewOutcome::Unchanged { .. }));
+        let note = "The user decided “Decide the index's next step: Alternative plan: 512 px prints” on “Redraft index · Phase B” after your plan was written: check that your plan still holds before you start.";
+        assert_eq!(domain.launch_plan(&"d".into()).unwrap().unwrap().mission.as_deref(), Some(format!("{note}\n\nPhase D: 360 px everywhere").as_str()));
+        assert!(domain.launch_plan(&"e".into()).unwrap().unwrap().mission.unwrap().starts_with(note));
+        assert_eq!(domain.launch_plan(&"c".into()).unwrap().unwrap().mission.as_deref(), Some("Phase C: group with prints of the 360 px copy"), "what the orchestrator reviewed is left as it is");
+        let queue = domain.store.lock().unwrap().launch_queue().unwrap();
+        let body = alondra_daemon_engine_model::LaunchBody::from_queue(&queue.iter().find(|row| row.task_id == "d".into()).unwrap().body).unwrap();
+        assert!(body.to_queue()["body"]["prompt"].as_str().unwrap().starts_with(note), "its first input carries the note");
+        assert!(state.interactions.values().all(|i| i.id.0 == "decision-1" || i.recipient != Recipient::User), "no card for the user");
     }
 }
+

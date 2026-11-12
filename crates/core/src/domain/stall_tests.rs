@@ -207,11 +207,10 @@ fn settle_closed(s: &mut DomainState, case: &InteractionId) -> DomainError {
 }
 
 #[test]
-fn only_the_orchestrator_settles_a_case_and_only_alondra_closes_one_left_unsettled() {
+fn only_the_orchestrator_or_alondra_settles_a_case_and_only_alondra_leaves_one_unsettled() {
     let mut s = first_case();
     assert_eq!(settle(&mut s, user(), instruct("Go on")).unwrap_err().code, "forbidden");
     assert_eq!(settle(&mut s, node("a"), StallOutcome::Close { result: "Done".into() }).unwrap_err().code, "forbidden");
-    assert_eq!(settle(&mut s, Actor::System, instruct("Go on")).unwrap_err().code, "forbidden");
     assert_eq!(settle(&mut s, orchestrator(), StallOutcome::Unsettled).unwrap_err().code, "invalid_input");
     assert_eq!(settle(&mut s, orchestrator(), instruct("  ")).unwrap_err().code, "invalid_input");
     let case = open_case(&s).unwrap();

@@ -16,12 +16,14 @@ pub const STALL_CLOSE: &str = "close";
 /// What a delivered node is told when nobody settled the case of its rest: the delivery is the user's.
 pub const UNSETTLED_DELIVERY: &str = "Your delivery stays with the user for review: do nothing more until they write to you.";
 pub const UNSETTLED_AFTER_MERGE: &str = "Nobody settled how your work after the merge goes on: do nothing more until the user writes to you.";
+/// What a stopped node is told when nobody settled its case in time and it has attempts left.
+pub const UNSETTLED_INSTRUCT: &str = "Nobody settled why you stopped. Go on with your task; if you cannot, ask the user or deliver what you have.";
 /// The longest instruction or result a settlement carries.
 pub const STALL_TEXT_MAX: usize = 4000;
 
 /// How the orchestrator settles a stopped node: a concrete instruction it gets, or the end of its
-/// task with a result that says what got done. Never words alone. Only Alondra closes a case the
-/// orchestrator left `Unsettled`.
+/// task with a result that says what got done. Never words alone. A case nobody settled in time
+/// Alondra settles itself: it instructs the node to go on, or, past the limit, closes it `Unsettled`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum StallOutcome {
@@ -142,11 +144,11 @@ impl DomainState {
         effects.push(DomainEffect::NotifyOrchestrator { interaction_id: Some(card), request_id: None });
     }
 
-    /// The case `case_id` of `task` the orchestrator, or Alondra at the limit, may settle with `outcome` now.
+    /// The case `case_id` of `task` the orchestrator, or Alondra once nobody settled it in time, may settle with `outcome` now.
     pub(in crate::domain) fn settle_stall_guard(&self, actor: &Actor, case_id: &InteractionId, task: &TaskId, outcome: &StallOutcome) -> Result<()> {
         self.fence(actor)?;
         match (actor, outcome) {
-            (Actor::System, StallOutcome::Unsettled) | (Actor::Orchestrator { .. }, StallOutcome::Instruct { .. } | StallOutcome::Close { .. }) => {}
+            (Actor::System, StallOutcome::Unsettled | StallOutcome::Instruct { .. }) | (Actor::Orchestrator { .. }, StallOutcome::Instruct { .. } | StallOutcome::Close { .. }) => {}
             (Actor::Orchestrator { .. }, StallOutcome::Unsettled) => return refuse("invalid_input", "outcome.kind", "Settle it with instruct or close"),
             _ => return fail("forbidden", "Only the orchestrator settles a stopped node"),
         }

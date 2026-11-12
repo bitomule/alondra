@@ -1,7 +1,9 @@
 //! The one clock over what every live task is owed. It measures how long each step lasts, logs
 //! the steps past their deadline, and acts on those whose deadline `obligation_policy` enforces:
-//! an input the session did not take is offered again and then goes back to the queue, and a node
-//! whose work ended with no turn to take up its notice is told. Nothing it does opens a card.
+//! an input the session did not take is offered again and then goes back to the queue, a node
+//! whose work ended with no turn to take up its notice is told, and what the orchestrator owes is
+//! reminded to it and then settled by Alondra. Nothing it does opens a card. The daemon keeps one
+//! clock, in `Live`: its own loop and every pass of the orchestrator step that one.
 use crate::domain_runtime::DomainRuntime;
 use crate::locks::Poisonable as _;
 use crate::sdk_owner::untaken;
@@ -29,6 +31,8 @@ pub struct Overdue {
 /// What the daemon knows that the task's lifecycle does not.
 pub trait World {
     fn waits_for_slot(&self, task: &TaskId) -> bool;
+    /// The usage limit holds the orchestrator: what it owes does not age meanwhile.
+    fn orchestrator_held(&self) -> bool;
 }
 
 struct Seen {
@@ -51,6 +55,8 @@ pub enum Action {
     Requeue,
     /// The node is told its work ended.
     Wake,
+    /// The orchestrator is reminded of what it owes the task, and the next time Alondra settles it.
+    Answer,
 }
 
 /// The action for the `attempt`-th time the same step went past its deadline.
@@ -59,6 +65,7 @@ pub fn action(owed: &Owed, attempt: u32) -> Option<Action> {
         Owed::HandInput if attempt <= 1 => Some(Action::OfferAgain),
         Owed::HandInput => Some(Action::Requeue),
         Owed::Wake => Some(Action::Wake),
+        Owed::Answer => Some(Action::Answer),
         _ => None,
     }
 }
@@ -75,6 +82,7 @@ pub struct Watch {
     tries: BTreeMap<TaskId, (Revision, u32)>,
     finished: BTreeMap<String, Finished>,
     summarized_at: Option<Millis>,
+    last_pass: Option<Millis>,
     enforced: fn(&Owed) -> bool,
 }
 
@@ -93,7 +101,7 @@ fn effective(world: &dyn World, task: &TaskId, obligation: &Obligation) -> (Part
 
 impl Watch {
     pub fn enforcing(enforced: fn(&Owed) -> bool) -> Self {
-        Self { seen: BTreeMap::new(), tries: BTreeMap::new(), finished: BTreeMap::new(), summarized_at: None, enforced }
+        Self { seen: BTreeMap::new(), tries: BTreeMap::new(), finished: BTreeMap::new(), summarized_at: None, last_pass: None, enforced }
     }
 
     pub fn step(&mut self, state: &DomainState, world: &dyn World, now: Millis) -> Vec<Overdue> {
@@ -108,6 +116,11 @@ impl Watch {
 
     pub fn observe(&mut self, obligations: Vec<(TaskId, Obligation)>, world: &dyn World, now: Millis) -> Vec<Overdue> {
         let mut overdue = Vec::new();
+        let held = if world.orchestrator_held() { now - self.last_pass.unwrap_or(now) } else { 0 };
+        self.last_pass = Some(now);
+        for seen in self.seen.values_mut().filter(|seen| seen.owed == Owed::Answer) {
+            seen.clock += held;
+        }
         let live: std::collections::BTreeSet<&TaskId> = obligations.iter().map(|(task, _)| task).collect();
         let gone: Vec<TaskId> = self.seen.keys().filter(|task| !live.contains(task)).cloned().collect();
         for task in gone {
@@ -195,19 +208,29 @@ impl World for GateWorld<'_> {
     fn waits_for_slot(&self, task: &TaskId) -> bool {
         self.domain.live.gate.waits_for_slot(self.domain, self.state, task)
     }
+
+    fn orchestrator_held(&self) -> bool {
+        self.domain.live.usage_pause.is_active()
+    }
 }
 
 /// One pass of the clock at `now`: what is past its deadline is logged and, where enforced, acted on.
-pub fn pass(domain: &Arc<DomainRuntime>, watch: &mut Watch, now: Millis) {
+pub fn pass(domain: &DomainRuntime, watch: &mut Watch, now: Millis) {
     let Ok(state) = domain.state() else { return };
     let late = watch.step(&state, &GateWorld { domain, state: &state }, now);
     for overdue in &late {
         log!("{} has waited {} s for {:?} owed by {:?}: past its deadline", overdue.task, overdue.age / 1000, overdue.owed, overdue.party);
     }
+    let mut answers = std::collections::BTreeSet::new();
     for (task, action) in watch.enforce(&late, now) {
-        if let Err(error) = apply(domain, &task, action) {
+        if action == Action::Answer {
+            answers.insert(task);
+        } else if let Err(error) = apply(domain, &task, action) {
             log!("{task} is past its deadline and Alondra could not act on it ({action:?}): {error}");
         }
+    }
+    if !answers.is_empty() {
+        crate::orchestrator_inbox::settle_answers(domain, &state, &answers);
     }
     for line in watch.summary(now) {
         log!("{line}");
@@ -215,7 +238,7 @@ pub fn pass(domain: &Arc<DomainRuntime>, watch: &mut Watch, now: Millis) {
 }
 
 /// Does `action` for `task`. Requeueing is the owner's to do, on its next step.
-pub fn apply(domain: &Arc<DomainRuntime>, task: &TaskId, action: Action) -> Result<(), String> {
+pub fn apply(domain: &DomainRuntime, task: &TaskId, action: Action) -> Result<(), String> {
     let state = domain.state().map_err(|error| format!("{error:#}"))?;
     let scope = AuthorityScope::new(state.data_epoch.clone()).map_err(|error| format!("{error:?}"))?;
     let agent = state.tasks.get(task).and_then(|task| task.agent_id.clone());
@@ -239,15 +262,15 @@ pub fn apply(domain: &Arc<DomainRuntime>, task: &TaskId, action: Action) -> Resu
                 domain.seals.wake();
             }
         }
+        Action::Answer => crate::orchestrator_inbox::settle_answers(domain, &state, &[task.clone()].into()),
     }
     Ok(())
 }
 
 pub async fn run(domain: Arc<DomainRuntime>) {
-    let watch = Arc::new(std::sync::Mutex::new(Watch::default()));
     loop {
-        let (domain, watch) = (Arc::clone(&domain), Arc::clone(&watch));
-        let passed = tokio::task::spawn_blocking(move || pass(&domain, &mut watch.lock_or_recover("the obligation watch"), now_millis())).await;
+        let domain = Arc::clone(&domain);
+        let passed = tokio::task::spawn_blocking(move || pass(&domain, &mut domain.live.obligations.lock_or_recover("the obligation watch"), now_millis())).await;
         if let Err(error) = passed {
             log!("a pass of the obligation watch stopped: {error}");
         }

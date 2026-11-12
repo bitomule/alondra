@@ -8,6 +8,9 @@ impl World for Room {
     fn waits_for_slot(&self, _: &TaskId) -> bool {
         self.0
     }
+    fn orchestrator_held(&self) -> bool {
+        false
+    }
 }
 
 fn owes(party: Party, owed: Owed, since: Revision) -> Vec<(TaskId, Obligation)> {
@@ -113,5 +116,5 @@ fn only_an_enforced_deadline_is_acted_on() {
     acted(&mut watch, owes(Party::Alondra, Owed::Wake, 1), 0);
     assert_eq!(acted(&mut watch, owes(Party::Alondra, Owed::Wake, 1), 121 * S), vec![("t-1".into(), Action::Wake)]);
     assert_eq!(acted(&mut watch, owes(Party::Alondra, Owed::Answer, 2), 0), vec![]);
-    assert_eq!(acted(&mut watch, owes(Party::Alondra, Owed::Answer, 2), 24 * HOUR), vec![], "what the orchestrator owes is not acted on here");
+    assert_eq!(acted(&mut watch, owes(Party::Alondra, Owed::Answer, 2), 24 * HOUR), vec![("t-1".into(), Action::Answer)], "what the orchestrator owes is acted on past its deadline");
 }

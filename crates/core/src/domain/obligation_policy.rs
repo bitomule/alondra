@@ -17,9 +17,10 @@ pub fn deadline(owed: &Owed) -> Option<Millis> {
     }
 }
 
-/// Whether an overdue step is acted on. Telling a node its work ended is. Handing an input waits
-/// for a day of `obligations HandInput` lines measured from the session's own `running` event,
-/// which fix its deadline at the larger of `HAND_INPUT` and ten times their p99.
+/// Whether an overdue step is acted on. Telling a node its work ended is, and so is what the
+/// orchestrator owes. Handing an input waits for a day of `obligations HandInput` lines measured
+/// from the session's own `running` event, which fix its deadline at the larger of `HAND_INPUT`
+/// and ten times their p99.
 pub fn enforced(owed: &Owed) -> bool {
-    matches!(owed, Owed::Wake)
+    matches!(owed, Owed::Wake | Owed::Answer)
 }

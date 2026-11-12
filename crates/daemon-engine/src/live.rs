@@ -78,6 +78,9 @@ pub struct Live {
     pub(crate) api_watch: crate::api_failures::ApiWatch,
     pub machine_watch: crate::machine_watch::MachineWatch,
     pub gate: crate::admission::Admission,
+    /// The one clock over what live tasks are owed. A holder that panics leaves it whole: each pass
+    /// replaces whole entries.
+    pub(crate) obligations: Mutex<crate::obligation_watch::Watch>,
     /// A holder that panics leaves it whole, so it is recovered: one insert or remove of a marker.
     watching: Mutex<std::collections::HashSet<String>>,
     launching: tokio::sync::watch::Sender<std::collections::HashSet<String>>,

@@ -7,6 +7,8 @@ mod connection;
 #[cfg(any(test, feature = "test-hooks"))]
 pub mod live_read_trace;
 mod owner;
+#[cfg(test)]
+pub(crate) use owner::tests::admit_through_sdk;
 mod discarded_observations;
 pub use discarded_observations::{AdapterRefusal, DiscardReason};
 pub(crate) use owner::{OwnerTransaction, Preparer, StagedOutcome};

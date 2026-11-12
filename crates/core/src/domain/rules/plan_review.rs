@@ -1,6 +1,7 @@
 //! A decision of the user on a Task that others wait for holds those that have not started, until
 //! the orchestrator reviews the launch plan each was given before it. Only a settlement releases
-//! one: never time, and never the end of what it waits for.
+//! one: the orchestrator's, or Alondra's once nobody reviewed it in time, which keeps the plan and
+//! tells its node what was decided. Never the end of what it waits for.
 use super::*;
 use serde::{Deserialize, Serialize};
 
@@ -111,7 +112,7 @@ impl DomainState {
     pub(super) fn settle_plan_review(&mut self, actor: &Actor, review_id: &InteractionId, task_id: &TaskId, outcome: &PlanReviewOutcome,
         effects: &mut Vec<DomainEffect>, created: &mut Vec<String>, lifecycles: &mut Lifecycles) -> Result<()> {
         self.fence(actor)?;
-        if !matches!(actor, Actor::Orchestrator { .. }) {
+        if !matches!((actor, outcome), (Actor::Orchestrator { .. }, _) | (Actor::System, PlanReviewOutcome::Unchanged { .. })) {
             return fail("forbidden", "Only the orchestrator settles a plan review");
         }
         let Some(review) = self.plan_reviews.get(review_id) else {
@@ -141,6 +142,21 @@ impl DomainState {
             self.apply(actor, &Command::CancelTask { task_id: task_id.clone() }, effects, created, lifecycles)?;
         }
         Ok(())
+    }
+
+    /// What the node of a task Alondra released unreviewed reads first: what the user decided, and
+    /// on which task, after its plan was written.
+    pub fn unreviewed_plan_note(&self, review_id: &InteractionId) -> Option<String> {
+        let review = self.plan_reviews.get(review_id)?;
+        let source = self.tasks.get(&review.task_id).map_or("", |t| t.title.as_str());
+        let decided: Vec<String> = review.decisions.iter().filter_map(|id| self.interactions.get(id)).map(|card| match &card.payload {
+            InteractionPayload::Question { options, answer: Some(answer) } => {
+                let option = options.iter().find(|o| o.id == answer.option_id).map_or(answer.option_id.as_str(), |o| o.label.as_str());
+                format!("{}: {option}", card.card.effective_title())
+            }
+            _ => card.card.effective_title().to_owned(),
+        }).collect();
+        Some(format!("The user decided “{}” on “{source}” after your plan was written: check that your plan still holds before you start.", decided.join("; ")))
     }
 
     /// Once a review holds nothing, the problem raised about it no longer asks anything.
