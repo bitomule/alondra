@@ -1673,7 +1673,7 @@ impl DomainState {
         if self.delivery_left_to_the_user(&since) {
             return None;
         }
-        self.unacted_answer(task, &since).or_else(|| {
+        self.unacted_answer(task).or_else(|| {
             let ran = since.iter().any(|record| matches!(record, LifecycleRecord::TurnStarted { .. } | LifecycleRecord::InputConsumed { .. }));
             let reason = self.work_after_merge(task, lifecycle).filter(|_| ran)?;
             Some(EmptyTurn::AfterMerge { reason })
@@ -1739,14 +1739,21 @@ impl DomainState {
         Ok(())
     }
 
-    /// The answer to its own card the node of `task` was told last, newest first in `since`, when
-    /// a turn took it up and nothing else was told to the node or opened a case after it.
-    fn unacted_answer(&self, task: &TaskId, since: &[&LifecycleRecord]) -> Option<EmptyTurn> {
+    /// The answer to its own card the node of `task` was told last, when a turn took it up after
+    /// the last delivery and nothing else was told to the node or opened a case after it. The
+    /// answer may have been told before that delivery: a node that presented again without having
+    /// read it did not act on it.
+    fn unacted_answer(&self, task: &TaskId) -> Option<EmptyTurn> {
         let mut taken: BTreeSet<&str> = BTreeSet::new();
-        for record in since {
+        let mut presented = false;
+        for record in self.lifecycle_journal.get(task)?.iter().rev() {
             match record {
+                LifecycleRecord::Presented { .. } => presented = true,
+                LifecycleRecord::HandedBack { .. } if presented => {}
                 LifecycleRecord::TurnStarted { input, .. } | LifecycleRecord::InputConsumed { input } => {
-                    taken.insert(input);
+                    if !presented {
+                        taken.insert(input);
+                    }
                 }
                 LifecycleRecord::HandoffResent { input, resent, .. } | LifecycleRecord::DoubtResent { input, resent, .. } => {
                     if taken.contains(resent.as_str()) {

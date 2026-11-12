@@ -110,6 +110,31 @@ fn a_delivered_node_that_rests_on_the_answer_to_its_card_is_woken_with_that_answ
 }
 
 #[test]
+fn an_answer_taken_after_a_delivery_that_did_not_read_it_is_woken_when_the_node_rests_on_it() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    present(&mut s);
+    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Keep going".into(), from_user: true, answers: None });
+    ask(&mut s, "beta-go");
+    end_empty(&mut s, "turn-1");
+    answer_text(&mut s, "beta-go");
+    deliver_answer(&mut s, "beta-go");
+    let keep_going = lifecycle(&s).pending_inputs()[0].as_str().to_owned();
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::TurnStarted { turn: "turn-2".into(), input: keep_going },
+    ] });
+    must(&mut s, node("a"), Command::PresentResult {
+        attachments: vec![], task_id: "t".into(), interaction_id: "r2".into(), body: "Beta 62 is ready".into(), is_final: true, nothing_to_review: false,
+        targets: vec![DeliveryTarget::Text { text: "Beta 62".into() }], checklist: vec![], card: CardSpec::delivery("Review beta 62", &[], true),
+    });
+    end_empty(&mut s, "turn-2");
+    start(&mut s, "turn-3");
+    end_empty(&mut s, "turn-3");
+    assert!(matches!(last(&s, "t"), LifecycleRecord::Unfinished { wake: Some(_), .. }), "woken with the answer: {:?}", last(&s, "t"));
+    assert_aggregate_rules(&s);
+}
+
+#[test]
 fn the_rest_after_the_wakes_goes_to_the_orchestrator_never_the_user() {
     let mut s = answer_taken();
     end_empty(&mut s, "turn-2");
