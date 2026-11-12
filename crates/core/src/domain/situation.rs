@@ -100,7 +100,7 @@ impl DomainState {
             _ => {}
         }
         let user_paused = lifecycle.cards().iter()
-            .any(|(card, reason)| *reason == WaitReason::Pause && lifecycle.card_owner(card) == Some(Owner::User));
+            .any(|(card, reason)| *reason == WaitReason::Pause && lifecycle.card_owner(card) == Some(Owner::User) && self.node_pause_card(card));
         if user_paused || lifecycle.awaits() == Some(&Await::Instruction) {
             return Situation::Paused.into();
         }
@@ -113,8 +113,11 @@ impl DomainState {
                     _ => None,
                 })
                 .collect();
-            if let Some(card) = waited.into_iter().find(|card| !(listing.listed)(card)) {
+            if let Some(card) = waited.iter().find(|card| !(listing.listed)(card)).cloned() {
                 return Reckoned { situation: Situation::Waiting(WaitsFor::Step(AlondraStep::Answering)), unlisted: Some(card) };
+            }
+            if !waited.is_empty() && lifecycle.phase() != TaskPhase::Delivered {
+                return Situation::NeedsYou.into();
             }
         }
         if lifecycle.phase() == TaskPhase::Delivered {
@@ -152,7 +155,7 @@ fn of_an_old_node(activity: &TaskActivity) -> Situation {
         TaskActivity::ComingBack | TaskActivity::NodeClosed => Situation::Waiting(WaitsFor::Slot),
         TaskActivity::Working => Situation::Working(Doing::Turn),
         TaskActivity::WaitingBackground(_) => Situation::Working(Doing::OwnWork),
-        TaskActivity::WaitingUser => Situation::NeedsYou,
+        TaskActivity::WaitingUser => Situation::Waiting(WaitsFor::Step(AlondraStep::Answering)),
         TaskActivity::WaitingDependency => Situation::Waiting(WaitsFor::Tasks),
         TaskActivity::Paused(pause) => match pause.reason {
             PauseReason::ByUser => Situation::Paused,
@@ -178,5 +181,33 @@ fn without_lifecycle(task: &Task) -> Situation {
         TaskState::Closing => Situation::Delivered(Delivery::Closing),
         TaskState::Done => Situation::Finished,
         TaskState::Cancelled => Situation::Cancelled,
+    }
+}
+
+#[cfg(test)]
+impl Situation {
+    /// The situation a task in `live` reads, so a screen test reaches every state without building its history.
+    pub(crate) fn of_live(live: &alondra_domain::LiveState) -> Self {
+        use alondra_domain::{LiveState, Step, Worker};
+        match live {
+            LiveState::Working(Worker::Turn) => Self::Working(Doing::Turn),
+            LiveState::Working(Worker::OwnWork) => Self::Working(Doing::OwnWork),
+            LiveState::Working(Worker::AfterMerge) => Self::Working(Doing::AfterMerge),
+            LiveState::Working(Worker::Alondra(Step::Starting)) => Self::Waiting(WaitsFor::Step(AlondraStep::Starting)),
+            LiveState::Working(Worker::Alondra(Step::Delivering)) => Self::Waiting(WaitsFor::Step(AlondraStep::Delivering)),
+            LiveState::Working(Worker::Alondra(Step::Waking)) => Self::Waiting(WaitsFor::Step(AlondraStep::Waking)),
+            LiveState::Working(Worker::Alondra(Step::Answering)) => Self::Waiting(WaitsFor::Step(AlondraStep::Answering)),
+            LiveState::Working(Worker::Alondra(Step::Merging | Step::Finishing)) => Self::Delivered(Delivery::Closing),
+            LiveState::WaitingUser(cards) if cards.iter().all(|card| card.0.starts_with("delivery")) => Self::Delivered(Delivery::ForReview),
+            LiveState::WaitingUser(cards) if cards.iter().all(|card| card.0.starts_with(crate::domain::NODE_PAUSE_PREFIX)) => Self::Paused,
+            LiveState::WaitingUser(_) => Self::NeedsYou,
+            LiveState::WaitingCapacity(Capacity::Gate) => Self::Waiting(WaitsFor::Slot),
+            LiveState::WaitingCapacity(Capacity::Machine) => Self::Waiting(WaitsFor::Machine),
+            LiveState::WaitingCapacity(Capacity::Disk) => Self::Waiting(WaitsFor::Disk),
+            LiveState::WaitingCapacity(Capacity::Usage) => Self::Waiting(WaitsFor::Usage),
+            LiveState::WaitingCapacity(Capacity::ClaudeApi) => Self::Waiting(WaitsFor::ProviderApi),
+            LiveState::WaitingTask(_) => Self::Waiting(WaitsFor::Tasks),
+            LiveState::Paused => Self::Paused,
+        }
     }
 }

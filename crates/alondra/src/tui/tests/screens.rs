@@ -359,7 +359,7 @@ fn a_task_in_review_without_a_card_is_not_for_you_in_tasks() {
     let mut tasks = app_on(Screen::Tasks, build(&domain, &live, "tasks"));
     let screen = rendered(&mut tasks, 120, 30);
     dump("tasks (in review, no card)", &screen);
-    assert!(!screen.contains("PARA TI") && !screen.contains("Para revisar"), "{screen}");
+    assert!(!screen.contains("PARA TI"), "{screen}");
     assert!(screen.contains(ODD_STATE) && screen.contains("Entregada"), "{screen}");
 }
 
@@ -403,7 +403,7 @@ fn a_task_closed_because_its_node_kept_stopping_says_so_with_its_result() {
     let mut app = task_screen(&domain, &live, "r-stop", "t-stop");
     let screen = rendered(&mut app, 130, 30);
     dump("task closed because its node kept stopping", &screen);
-    assert!(screen.contains("Cerrada sin entrega") && screen.contains("no se renombró nada"), "{screen}");
+    assert!(screen.contains("Cancelada") && screen.contains("Se leyó greeting.txt"), "{screen}");
     assert!(!screen.contains("sin entregar ni preguntar"), "{screen}");
 }
 

@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:github.com/acme/storefront#6",
   "client": "ios",
-  "version": "v3f213ce626f32c00",
+  "version": "v8376bd02d4b436b0",
   "cursor": "cursor-1",
   "title": "Review the result · storefront#6",
   "status": {
@@ -105,7 +105,7 @@
                 "key": "task:t"
               },
               "state": {
-                "text": "Para revisar",
+                "text": "Entregada",
                 "tone": "info"
               }
             }

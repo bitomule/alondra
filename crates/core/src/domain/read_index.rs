@@ -198,6 +198,7 @@ impl ReadIndex {
     #[cfg(test)]
     pub(crate) fn put_live(&mut self, task: &TaskId, live: alondra_domain::LiveState) {
         let reading = self.tasks.get_mut(task).expect("an indexed task");
+        reading.situation = Situation::of_live(&live);
         reading.activity = Some(TaskActivity::Live(live.clone()));
         reading.live = Some(live);
     }
@@ -536,7 +537,8 @@ impl<'a> Builder<'a> {
         let shown = |id: &InteractionId| index.waiting_at.contains_key(id) || index.snoozed_at.contains_key(id);
         let listed = |card: &InteractionId| shown(card)
             || state.interactions.get(card).and_then(|i| i.card.group.as_ref()).and_then(|group| index.groups.get(&group.id))
-                .is_some_and(|members| members.iter().any(shown));
+                .is_some_and(|members| members.iter().any(shown))
+            || state.interactions.get(card).is_some_and(|i| state.grouped_away(i) || state.mcp_grouped_away(i));
         let mut readings = Vec::with_capacity(state.tasks.len());
         for t in state.tasks.values() {
             let waiting = waiting_of_task.remove(&t.id).unwrap_or_default();

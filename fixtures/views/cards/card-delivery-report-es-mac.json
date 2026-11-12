@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:result-2",
   "client": "mac",
-  "version": "v9674d21511f799d1",
+  "version": "v24f809cf986ed9ab",
   "cursor": "cursor-1",
   "title": "Read why Redraft does not need a widget",
   "status": {
@@ -99,7 +99,7 @@
                 "key": "task:t-1"
               },
               "state": {
-                "text": "Para revisar",
+                "text": "Entregada",
                 "tone": "info"
               }
             }

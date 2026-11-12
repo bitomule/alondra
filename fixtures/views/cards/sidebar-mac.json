@@ -4,7 +4,7 @@
   "view": "sidebar",
   "key": "sidebar",
   "client": "mac",
-  "version": "v8f412fa5c61aea82",
+  "version": "ve78422abce73ef2f",
   "cursor": "cursor-1",
   "status": {
     "version": "v6aa5809268a89138",
@@ -211,7 +211,7 @@
               },
               "icon": "action",
               "title": "Restore the native review experience",
-              "subtitle": "Demo Garden",
+              "subtitle": "Demo Garden · 5 open questions",
               "badges": [
                 {
                   "text": "Needs you",

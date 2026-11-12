@@ -182,7 +182,7 @@ fn the_session_of_a_node_with_work_after_the_merge_ends_and_its_task_closes() {
     merge(&mut s);
     assert_eq!(s.tasks[&TASK.into()].state, TaskState::Running);
     assert_eq!(s.task_activity(&s.tasks[&TASK.into()]), Some(TaskActivity::AfterMerge { reason: "publish the release".into() }));
-    assert!(render(&s, "tasks").contains("Finishing after the merge"));
+    assert!(render(&s, "tasks").contains("publish the release"));
     apply(&mut s, &Step::Node(NodeEvent::SessionLost), 5_000);
     assert_eq!(s.tasks[&TASK.into()].state, TaskState::Closing, "work after the merge cannot run in a session that is over");
     apply(&mut s, &Step::Node(NodeEvent::SessionClosed), 6_000);

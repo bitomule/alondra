@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks?section=finished&after=0",
   "client": "ios",
-  "version": "vb93f2ae7ab7b3321",
+  "version": "v9fb10bedb476b7e2",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -206,7 +206,7 @@
                 {
                   "id": "activity",
                   "icon": "notice",
-                  "title": "Badge accuracy",
+                  "title": "Turno en marcha · Badge accuracy",
                   "depth": 0,
                   "struck": false
                 }
@@ -260,7 +260,16 @@
                 "value": 0
               },
               "depth": 1,
-              "struck": false
+              "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "Para revisar",
+                  "depth": 0,
+                  "struck": false
+                }
+              ]
             },
             {
               "id": "t-scheduled-lumo",
@@ -298,6 +307,15 @@
               },
               "depth": 1,
               "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "Turno en marcha",
+                  "depth": 0,
+                  "struck": false
+                }
+              ],
               "actions": [
                 {
                   "id": "pause:a-lumo@6",
@@ -343,10 +361,10 @@
               },
               "icon": "task",
               "title": "Refresh the App Store screenshots",
-              "subtitle": "En cola · 1.º de 1",
+              "subtitle": "En espera",
               "badges": [
                 {
-                  "text": "En cola · 1.º de 1",
+                  "text": "En espera",
                   "tone": "neutral"
                 },
                 {
@@ -360,6 +378,15 @@
               },
               "depth": 1,
               "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "1.º de 1",
+                  "depth": 0,
+                  "struck": false
+                }
+              ],
               "actions": [
                 {
                   "id": "pause:t-copy-screens@6",
@@ -385,11 +412,11 @@
               },
               "icon": "task",
               "title": "Decrement the badge on retraction",
-              "subtitle": "Esperando",
+              "subtitle": "En espera",
               "badges": [
                 {
-                  "text": "Esperando",
-                  "tone": "info"
+                  "text": "En espera",
+                  "tone": "neutral"
                 },
                 {
                   "text": "Demo Garden",
@@ -418,13 +445,13 @@
                 "kind": "view",
                 "key": "task:t-hf-registry"
               },
-              "icon": "notice",
+              "icon": "task",
               "title": "Link the website in app.json",
-              "subtitle": "No arrancó",
+              "subtitle": "En espera",
               "badges": [
                 {
-                  "text": "No arrancó",
-                  "tone": "warning"
+                  "text": "En espera",
+                  "tone": "neutral"
                 },
                 {
                   "text": "BlurCamera",
@@ -453,7 +480,7 @@
                 "kind": "view",
                 "key": "task:t-hf-share-hint"
               },
-              "icon": "mission",
+              "icon": "task",
               "title": "Photos extension hint after the first blur",
               "subtitle": "Pausada",
               "badges": [
@@ -488,13 +515,13 @@
                 "kind": "view",
                 "key": "task:t-legacy-notes"
               },
-              "icon": "notice",
+              "icon": "task",
               "title": "Write the release notes",
-              "subtitle": "No arrancó",
+              "subtitle": "En espera",
               "badges": [
                 {
-                  "text": "No arrancó",
-                  "tone": "warning"
+                  "text": "En espera",
+                  "tone": "neutral"
                 }
               ],
               "trailing": {

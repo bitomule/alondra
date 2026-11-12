@@ -59,7 +59,7 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
         }];
         request(report, &fakes, &user, &working, "Write the release notes")?;
         launched(report, &fakes, "t-working")?;
-        state(report, &user, "t-working", "In the background")?;
+        state(report, &user, "t-working", "Working")?;
 
         let mut follow_up = task_script("req-follow-up", "t-follow-up", "Announce the release on the blog");
         follow_up.tasks[0].dependencies = vec!["t-working".into()];
@@ -177,7 +177,7 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
         let unpresented = [
             ("unpresented", "Validate the ignored parent folder", 49, "ignored-parent.txt", Checks::Mixed, false),
             ("unpresented-green", "Trim the release notes", 50, "release-notes.txt", Checks::Success, false),
-            ("unpresented-conflicts", "Rename the cache folder", 51, "cache.txt", Checks::Success, true),
+            ("unpresented-conflicts", "Rename the cache folder", 53, "cache.txt", Checks::Success, true),
         ];
         for (slug, title, number, file, checks, conflicts) in unpresented {
             let task = format!("t-pr-{slug}");

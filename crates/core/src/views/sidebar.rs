@@ -2,63 +2,35 @@ use super::{
     BuildError, Client, Icon, Item, Label, Notice, RenderContext, Tone, Trailing, View, common,
     text::{t, tf},
 };
-use crate::domain::{Task, TaskState};
+use super::task_state::StateLabel;
+use crate::domain::Task;
 use std::collections::BTreeMap;
 
-fn task_subtitle(task: &Task, context: &RenderContext<'_>, group: Option<&str>) -> Option<String> {
-    let queued = common::held_for_disk(task, context).is_none().then(|| common::paused(task, context).map(|paused| common::paused_label(paused, context.lang))
-        .or_else(|| common::queued(task, context).or_else(|| common::coming_back_queued(task, context)).or_else(|| common::resume_queued(task, context)).or_else(|| common::turn_queued(task, context))
-            .map(|queued| common::queued_label(queued, context.lang)))).flatten();
-    let presented = super::task_state::present(task, context).state;
-    let state = queued.as_deref().unwrap_or(&presented);
-    let project = task.project.as_deref();
-    let state = (group != Some(state)).then_some(state);
-    match (project, state) {
-        (Some(project), Some(state)) => Some(format!("{project} · {state}")),
+fn task_subtitle(task: &Task, fact: Option<&str>) -> Option<String> {
+    match (task.project.as_deref(), fact) {
+        (Some(project), Some(fact)) => Some(format!("{project} · {fact}")),
         (Some(text), None) | (None, Some(text)) => Some(text.into()),
         (None, None) => None,
     }
 }
 
-/// The state a task is listed under: «Needs you» and «In review» only with a card waiting for the
-/// user, the same one the inbox and the task's detail show.
-fn shown_state(task: &Task, context: &RenderContext<'_>) -> TaskState {
-    match (task.state, context.waits_for_user(&task.id)) {
-        (TaskState::NeedsYou, false) => TaskState::Running,
-        (TaskState::ForYourReview, false) => TaskState::AwaitingBlocker,
-        (state, _) => state,
-    }
-}
-
 fn task_groups(context: &RenderContext<'_>) -> super::Section {
-    let states = [
-        (TaskState::NeedsYou, "needs_you", t!(context.lang, "Needs you", "Te necesita")),
-        (TaskState::ForYourReview, "in_review", t!(context.lang, "In review", "En revisión")),
-        (TaskState::AwaitingBlocker, "awaiting_blocker", t!(context.lang, "Waiting", "Esperando")),
-        (TaskState::Closing, "closing", t!(context.lang, "Closing", "Cerrando")),
-        (TaskState::Running, "running", t!(context.lang, "In progress", "En marcha")),
-        (TaskState::WaitingDependency, "waiting_dependency", t!(context.lang, "Waiting", "Esperando")),
-        (TaskState::NotStarted, "not_started", t!(context.lang, "Not started", "Sin empezar")),
-        (TaskState::Done, "done", t!(context.lang, "Finished", "Terminado")),
-        (TaskState::Cancelled, "cancelled", t!(context.lang, "Cancelled", "Cancelado")),
-    ];
+    let presented: Vec<_> = context.domain.tasks.values().filter(|task| !task.archived)
+        .map(|task| (task, super::task_state::present(task, context))).collect();
     let mut rows = Vec::new();
-    for (state, id, title) in states {
-        let children: Vec<_> = context.domain.tasks.values()
-            .filter(|task| !task.archived && shown_state(task, context) == state)
-            .map(|task| {
-                let (icon, _) = common::task_presentation(state);
-                let presented = super::task_state::present(task, context);
-                let mut row = common::row(&task.id.0, &format!("task:{}", task.id),
-                    icon, task.title.clone(), task_subtitle(task, context, Some(&presented.state)));
-                row.struck = state == TaskState::Cancelled;
-                row.badges.push(Label { text: presented.state, tone: presented.tone, elapsed: None });
+    for label in StateLabel::ALL {
+        let children: Vec<_> = presented.iter().filter(|(_, presentation)| presentation.label == label)
+            .map(|(task, presentation)| {
+                let mut row = common::row(&task.id.0, &format!("task:{}", task.id), presentation.icon, task.title.clone(),
+                    task_subtitle(task, presentation.fact.as_deref()));
+                row.struck = label == StateLabel::Cancelled;
+                row.badges.push(Label { text: presentation.state.clone(), tone: presentation.tone, elapsed: None });
                 row.badges.extend(common::scheduled_mark(task, context));
                 row.depth = 1;
                 row
             }).collect();
         if !children.is_empty() {
-            rows.push(group_row(id, title, children));
+            rows.push(group_row(label, children, context.lang));
         }
     }
     let defining: Vec<_> = context.domain.requests.values()
@@ -72,7 +44,7 @@ fn task_groups(context: &RenderContext<'_>) -> super::Section {
         }).collect();
     let defining_count = defining.len();
     if !defining.is_empty() {
-        rows.insert(rows.len().min(6), group_row("defining", t!(context.lang, "Defining", "Definiendo"), defining));
+        rows.insert(rows.len().min(6), defining_group(defining, context.lang));
     }
     let open_count = context.domain.tasks.values().filter(|task| !task.archived && !task.state.terminal()).count()
         + defining_count;
@@ -84,25 +56,30 @@ fn task_groups(context: &RenderContext<'_>) -> super::Section {
     section
 }
 
-fn group_row(id: &str, title: &str, children: Vec<super::Row>) -> super::Row {
-    let state = match id {
-        "needs_you" => "needs_you", "in_review" => "in_review", "awaiting_blocker" => "awaiting_blocker", "closing" => "closing",
-        "running" => "running", "waiting_dependency" => "waiting_dependency",
-        "not_started" => "not_started", "done" => "done", "cancelled" => "cancelled",
-        _ => "defining",
+fn group_row(label: StateLabel, children: Vec<super::Row>, lang: super::Lang) -> super::Row {
+    let icon = match label {
+        StateLabel::NeedsYou => super::Icon::Action,
+        StateLabel::Delivered => super::Icon::PullRequest,
+        StateLabel::Finished => super::Icon::Check,
+        StateLabel::Working => super::Icon::Mission,
+        StateLabel::Waiting => super::Icon::Branch,
+        StateLabel::Cancelled => super::Icon::Warning,
+        StateLabel::Paused => super::Icon::Task,
     };
-    let icon = match state {
-        "needs_you" => super::Icon::Action,
-        "in_review" => super::Icon::PullRequest,
-        "closing" | "done" => super::Icon::Check,
-        "running" => super::Icon::Mission,
-        "waiting_dependency" | "awaiting_blocker" => super::Icon::Branch,
-        "cancelled" => super::Icon::Warning,
-        _ => super::Icon::Task,
-    };
-    let mut row = common::row(id, "tasks", icon, title.into(), None);
+    let title = label.text(lang);
+    let mut row = common::row(label.key(), "tasks", icon, title.into(), None);
     row.link = None;
-    row.badges.push(Label { text: title.into(), tone: common::state_tone(state), elapsed: None });
+    row.badges.push(Label { text: title.into(), tone: common::state_tone(label.key()), elapsed: None });
+    row.trailing = Some(Trailing::Count { value: children.len() as u32 });
+    row.children = children;
+    row
+}
+
+fn defining_group(children: Vec<super::Row>, lang: super::Lang) -> super::Row {
+    let title = t!(lang, "Defining", "Definiendo");
+    let mut row = common::row("defining", "tasks", super::Icon::Task, title.into(), None);
+    row.link = None;
+    row.badges.push(Label { text: title.into(), tone: common::state_tone("defining"), elapsed: None });
     row.trailing = Some(Trailing::Count { value: children.len() as u32 });
     row.children = children;
     row

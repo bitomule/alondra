@@ -131,7 +131,7 @@ fn the_21_october_turn_that_ended_on_a_message_to_the_orchestrator_waits_for_it(
     assert!(!notified(&ended, &card), "the user hears of nothing");
     awaits(&s, &card, alondra_domain::Await::Orchestrator("t-rename-queue-1".into()));
     assert!(pending(&s).is_empty(), "nothing waits for the user: {:?}", pending(&s));
-    shows_waiting(&s, "Trabajando");
+    shows_waiting(&s, "Alondra prepara su siguiente paso");
     assert_aggregate_rules(&s);
 
     let answered = answer_as_orchestrator(&mut s, "t-rename-queue-1");
@@ -149,7 +149,7 @@ fn a_turn_that_ends_on_a_blocking_question_to_the_orchestrator_waits_for_it() {
     assert!(!notified(&ended, &card));
     awaits(&s, &card, alondra_domain::Await::Orchestrator("q".into()));
     assert!(pending(&s).is_empty(), "{:?}", pending(&s));
-    shows_waiting(&s, "Trabajando");
+    shows_waiting(&s, "Alondra prepara su siguiente paso");
     answer_as_orchestrator(&mut s, "q");
     resumes(&mut s, &card);
 }
@@ -516,7 +516,7 @@ fn a_turn_that_ends_with_nothing_open_wakes_the_node_and_the_next_goes_to_the_or
     let second = InteractionId::from(woken_again(&mut s).as_str());
     let ended = end_turn(&mut s, "turn-2");
     goes_to_the_orchestrator(&s, &ended, &second);
-    shows_waiting(&s, "Alondra lo está reconduciendo");
+    shows_waiting(&s, "Alondra prepara su siguiente paso");
     assert!(matches!(super::lifecycle_tests::last(&s, "t"), LifecycleRecord::TurnEnded { wake: None, .. }), "the second end names no wake: nothing is sent");
     assert_aggregate_rules(&s);
 }

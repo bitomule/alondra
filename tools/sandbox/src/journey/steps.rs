@@ -13,7 +13,7 @@ use crate::fake::{
 };
 
 pub const WORKING: &str = "Working";
-pub const IN_REVIEW: &str = "Ready for review";
+pub const IN_REVIEW: &str = "Delivered";
 pub const FINISHED: &str = "Finished";
 pub const CANCELLED: &str = "Cancelled";
 pub const STALL_CLOSED: &str = "Closed without a delivery";

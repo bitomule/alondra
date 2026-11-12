@@ -1119,32 +1119,32 @@ async fn a_nodes_state_comes_from_its_mods_events_and_connection_not_from_hooks_
     };
     let state = async |fixture: &Fixture| task_shown(fixture, "task-1", "en").await[0].0.clone();
     let hello: crate::node_reports::Hello = serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap();
-    assert_ne!(state(&fixture).await, "Working", "recent hooks alone do not make a node work: only its mod says so");
+    assert!(!state(&fixture).await.starts_with("Working"), "recent hooks alone do not make a node work: only its mod says so");
 
     let connection = mods.connect_node(hello, now);
     report(json!({"event": "turn.start", "turn_id": "t1"}), now);
-    assert_eq!(state(&fixture).await, "Working");
+    assert!(state(&fixture).await.starts_with("Working"));
 
     report(json!({"event": "tool.start", "tool": "Bash", "tool_use_id": "u1", "input": {"command": "sleep 99999"}}), now - 48 * 60 * 60 * 1000);
-    assert_eq!(state(&fixture).await, "Working", "a call two days long is still work");
+    assert!(state(&fixture).await.starts_with("Working"), "a call two days long is still work");
     mods.live.mods.set_shell_alive("agent-a", Some(false), now);
     mods.live.mods.set_shell_alive("agent-a", Some(false), now + 1);
-    assert_eq!(state(&fixture).await, "Working", "a lost shell brings the node back through the Agent SDK; it is never a state");
+    assert!(state(&fixture).await.starts_with("Working"), "a lost shell brings the node back through the Agent SDK; it is never a state");
     report(json!({"event": "tool.end", "tool_use_id": "u1"}), now);
-    assert_eq!(state(&fixture).await, "Working");
+    assert!(state(&fixture).await.starts_with("Working"));
 
     report(json!({"event": "turn.complete", "turn_id": "t1", "answer": "Done."}), now);
     crate::domain_agent_lifecycle::node_event_at(&fixture.domain, &AgentId::from("agent-a"), alondra_core::domain::NodeEvent::TurnEnded, now).unwrap();
-    assert_ne!(state(&fixture).await, "Working", "the turn ended, as the Stop hook says: the node is idle");
+    assert!(!state(&fixture).await.starts_with("Working"), "the turn ended, as the Stop hook says: the node is idle");
 
     report(json!({"event": "turn.start", "turn_id": "t2"}), now);
     mods.live.mods.disconnect("agent-a", connection);
-    assert_eq!(state(&fixture).await, "Working", "a node whose connection closed keeps its last factual state while the daemon brings it back");
+    assert!(state(&fixture).await.starts_with("Working"), "a node whose connection closed keeps its last factual state while the daemon brings it back");
     crate::domain_agent_lifecycle::node_event(&fixture.domain, &AgentId::from("agent-a"), alondra_core::domain::NodeEvent::SessionLost).unwrap();
     assert!(!in_progress(&fixture, "task-1").await, "its session is gone: its task is not in progress while it waits to be brought back");
-    assert_eq!(state(&fixture).await, "Waiting for the machine", "and its screen says it waits");
+    assert_eq!(state(&fixture).await, "Waiting · Starts when there is room", "and its screen says it waits");
     crate::domain_agent_lifecycle::node_event(&fixture.domain, &AgentId::from("agent-a"), alondra_core::domain::NodeEvent::RevivalAdmitted).unwrap();
-    assert_eq!(state(&fixture).await, "Reconnecting", "the gate let it back: Alondra restarts it");
+    assert!(state(&fixture).await.starts_with("Waiting · Starting"), "the gate let it back: Alondra restarts it");
     assert!(in_progress(&fixture, "task-1").await, "the task of a node being restarted is in progress");
 }
 
@@ -1192,9 +1192,9 @@ async fn a_lost_node_the_gate_holds_for_memory_waits_for_the_machine_and_comes_b
     let phase = || fixture.domain.state().unwrap().agents[&agent].phase.clone();
     assert_eq!(phase(), NodePhase::Lost);
     assert!(!revival.is_finished(), "nothing brings it back while the Mac has no room");
-    assert!(task_shown(&fixture, "task-1", "es").await[0].0.starts_with("En cola"), "its task's screen says it is queued");
+    assert!(task_shown(&fixture, "task-1", "es").await[0].0.starts_with("En espera"), "its task's screen says it waits");
     let held = view_json(&fixture, "tasks", "es").await.to_string();
-    assert!(held.contains("En cola · 1.º de 1") && held.contains("Los arranques nuevos esperan: el Mac va justo de memoria") && !held.contains("Reconectando"), "{held}");
+    assert!(held.contains("1.º de 1") && held.contains("Los arranques nuevos esperan: el Mac va justo de memoria") && !held.contains("Reconectando"), "{held}");
 
     memory(&fixture, MemoryPressure::Normal, &[alondra_core::now_millis()]);
     crate::admission::pass(&fixture.domain, &fixture.home).await.unwrap();
@@ -1223,9 +1223,9 @@ async fn a_task_waits_for_room_on_the_disk_and_starts_once_the_disk_has_it() {
     watch.measure_disk(crate::disk::Space { free: 6 * GB, purgeable: 0, total: 500 * GB });
     assert_eq!(ask(), Err(Hold::Disk { free: 6 * GB, needed: 21 * GB, volume: None }),
         "projects never measured: 8 GB for the build of the node at work and 8 GB for this one, on top of the 5 GB line");
-    assert_eq!(task_shown(&fixture, "task-9", "en").await[0].0, "Waiting for capacity · Disk · 6.0 GB free of 21.0 GB needed");
+    assert_eq!(task_shown(&fixture, "task-9", "en").await[0].0, "Waiting · Disk · 6.0 GB free of 21.0 GB needed");
     let screen = view_json(&fixture, "task:task-9", "es").await.to_string();
-    assert!(screen.contains("Esperando capacidad") && screen.contains("Disco · 6,0 GB libres de 21,0 GB necesarios"), "{screen}");
+    assert!(screen.contains("En espera") && screen.contains("Disco · 6,0 GB libres de 21,0 GB necesarios"), "{screen}");
 
     watch.measure_disk(crate::disk::Space { free: 22 * GB, purgeable: 0, total: 500 * GB });
     assert!(matches!(ask(), Err(Hold::Disk { .. })), "past the line, not past its margin");
@@ -1240,7 +1240,7 @@ async fn a_node_the_daemon_never_heard_a_hook_from_shows_once_its_mod_connects()
     let hello: crate::node_reports::Hello = serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287", "working": true})).unwrap();
     assert!(fixture.domain.live.node("agent-a").is_none());
     fixture.domain.connect_node(hello, alondra_core::now_millis());
-    assert_eq!(task_shown(&fixture, "task-1", "en").await[0].0, "Working", "a restarted daemon learns the node is mid-turn from its reconnection");
+    assert!(task_shown(&fixture, "task-1", "en").await[0].0.starts_with("Working"), "a restarted daemon learns the node is mid-turn from its reconnection");
 }
 
 #[tokio::test]
@@ -1267,7 +1267,7 @@ async fn the_background_badges_come_from_the_mods_subagent_shell_and_end_of_turn
     report(json!({"event": "subagent.start", "id": "sa-2", "description": "Review it"}), now);
     report(json!({"event": "shell.start", "id": "u1", "command": "until false; do sleep 5; done"}), now);
     assert!(badge(&fixture).await.contains(&"2 subagents · 1 shell".to_owned()), "the same text as when the job state listed them");
-    assert_eq!(badge(&fixture).await[0], "Working", "a node with background work and no turn still works");
+    assert!(badge(&fixture).await[0].starts_with("Working"), "a node with background work and no turn still works");
 
     report(json!({"event": "subagent.end", "id": "sa-1"}), now);
     assert!(badge(&fixture).await.contains(&"1 subagent · 1 shell".to_owned()));
@@ -1333,7 +1333,7 @@ async fn a_background_shell_whose_process_is_gone_ended_and_stops_counting_as_wo
     mods.live.mods.set_shell_alive("agent-a", Some(false), now);
     let shown = task_shown(&fixture, "task-1", "en").await;
     assert!(shown.iter().all(|(label, _)| !label.contains("shell")), "nothing runs once its shell is gone: {shown:?}");
-    assert_ne!(shown[0].0, "Working", "a shell whose process is gone is not work");
+    assert!(!shown[0].0.starts_with("Working"), "a shell whose process is gone is not work");
     let detail = view_json(&fixture, "task:task-1", "en").await;
     let background = detail["sections"].as_array().unwrap().iter().find(|section| section["id"] == "background").cloned().unwrap();
     assert_eq!(background["items"][0]["badges"][0]["text"], "Finished", "it ended when the look found it gone: {background}");

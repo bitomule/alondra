@@ -156,7 +156,7 @@ that its working task has a native session and positive simulated tokens recorde
     the default once Claude reports Trabajo at 90 %.
   - A2: the default account's turn is refused for its usage limit: its task waits on its card, the
     Mac does not wait, and a new task starts on Trabajo.
-  - A3: with Trabajo out too the Mac waits, a reopened task reads «Didn't start · Claude usage ran
+  - A3: with Trabajo out too the Mac waits, a reopened task reads «Waiting · Claude usage ran
     out» and nothing starts; once Claude reports Trabajo's window reset, both start on Trabajo, its
     held task goes on, and the default's still waits.
   - A4: Trabajo's sign-in expires: its task's card says to run `CLAUDE_CONFIG_DIR=<its folder> claude`

@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:result-1",
   "client": "ios",
-  "version": "v35cd66568ac7241e",
+  "version": "v5ccf09fd699e113a",
   "cursor": "cursor-1",
   "title": "Approve the plan to index Redraft's whole library",
   "status": {
@@ -103,7 +103,7 @@
                 "key": "task:t-1"
               },
               "state": {
-                "text": "Ready for review",
+                "text": "Delivered",
                 "tone": "info"
               }
             }

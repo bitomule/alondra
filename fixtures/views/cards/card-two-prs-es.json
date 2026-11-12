@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:github.com/bitomule/alondra#17",
   "client": "ios",
-  "version": "vcd419007365f1d08",
+  "version": "vbaf8b41f0e8c554d",
   "cursor": "cursor-1",
   "title": "Review the result · alondra#17",
   "status": {
@@ -105,7 +105,7 @@
                 "key": "task:t"
               },
               "state": {
-                "text": "Para revisar",
+                "text": "Entregada",
                 "tone": "info"
               }
             }

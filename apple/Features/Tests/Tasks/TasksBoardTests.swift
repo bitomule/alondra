@@ -179,7 +179,7 @@ final class TasksBoardTests: XCTestCase {
         let live = board.active.requests.filter { $0.id.hasPrefix("t-hf-") }
         XCTAssertEqual(live.map(\.isLoose), [true, true], "a request whose tasks wait stands loose in Waiting")
         XCTAssertEqual(live.flatMap(\.tasks).filter { $0.depth == 0 }.map(\.title), ["Link the website in app.json", "Photos extension hint after the first blur"])
-        XCTAssertEqual(live.flatMap(\.tasks).filter { $0.depth == 0 }.map(\.state), ["Didn't start", "Paused"])
+        XCTAssertEqual(live.flatMap(\.tasks).filter { $0.depth == 0 }.map(\.state), ["Waiting", "Paused"])
 
         let page = try Fixtures.document("tasks-ios-finished")
         let ended = page.sections.first { $0.id == "finished" }?.items.compactMap { item -> String? in

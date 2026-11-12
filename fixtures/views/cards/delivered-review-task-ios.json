@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-1",
   "client": "ios",
-  "version": "v61858291d55f4473",
+  "version": "vbdabb64c4ebbf9e9",
   "cursor": "cursor-1",
   "title": "Release the daemon with the memory pause fix",
   "status": {
@@ -55,7 +55,7 @@
             {
               "kind": "state",
               "label": "State",
-              "value": "Ready for review",
+              "value": "Delivered · For review",
               "tone": "info"
             },
             {
@@ -104,7 +104,7 @@
                 "key": "task:t-1"
               },
               "state": {
-                "text": "Ready for review",
+                "text": "Delivered",
                 "tone": "info"
               }
             }

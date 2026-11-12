@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-queued-next",
   "client": "ios",
-  "version": "v969a5860d99e266d",
+  "version": "va85126b052008b52",
   "cursor": "cursor-1",
   "title": "Fix the crash when the schedule list is empty",
   "status": {
@@ -70,7 +70,7 @@
             {
               "kind": "state",
               "label": "Estado",
-              "value": "En cola · 1.º de 2 · Prioridad alta",
+              "value": "En espera · 1.º de 2 · Prioridad alta",
               "tone": "neutral"
             },
             {

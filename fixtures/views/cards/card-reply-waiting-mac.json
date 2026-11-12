@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:d",
   "client": "mac",
-  "version": "ve9ebabc519ed4422",
+  "version": "v8e8894a47f8a5cef",
   "cursor": "cursor-1",
   "title": "Review the result",
   "status": {
@@ -108,8 +108,8 @@
                 "key": "task:t"
               },
               "state": {
-                "text": "Ready for review",
-                "tone": "info"
+                "text": "Waiting",
+                "tone": "neutral"
               }
             }
           ],

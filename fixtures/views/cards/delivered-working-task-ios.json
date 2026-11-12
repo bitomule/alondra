@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-1",
   "client": "ios",
-  "version": "vcbf48230c41abcf9",
+  "version": "ve93941144847bfed",
   "cursor": "cursor-1",
   "title": "Release the daemon with the memory pause fix",
   "status": {
@@ -55,7 +55,7 @@
             {
               "kind": "state",
               "label": "State",
-              "value": "Working",
+              "value": "Working · Turn running",
               "tone": "accent"
             },
             {

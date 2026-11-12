@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-1",
   "client": "mac",
-  "version": "v5b966f3142d88bba",
+  "version": "vb9479f62b607ba3e",
   "cursor": "cursor-1",
   "title": "Build a feature",
   "status": {
@@ -55,7 +55,7 @@
             {
               "kind": "state",
               "label": "State",
-              "value": "Working",
+              "value": "Working · Step 3 of 5 · Run the tests",
               "tone": "accent"
             },
             {

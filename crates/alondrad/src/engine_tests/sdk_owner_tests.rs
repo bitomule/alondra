@@ -178,8 +178,8 @@ fn a_reply_claude_holds_past_its_deadline_is_offered_again_then_waits_in_the_que
         serde_json::to_string(&view).unwrap()
     };
     let (english, spanish) = (shown(Lang::En), shown(Lang::Es));
-    assert!(english.contains("Waiting for Claude to start") && !english.contains("Answering you"), "{english}");
-    assert!(spanish.contains("Esperando a que Claude empiece") && !spanish.contains("Respondiéndote"), "{spanish}");
+    assert!(english.contains("Alondra delivers your message to it") && !english.contains("Answering you"), "{english}");
+    assert!(spanish.contains("Alondra le entrega tu mensaje") && !spanish.contains("Respondiéndote"), "{spanish}");
 
     drive_by_hand(&slice, &driver);
     let cards = slice.domain.state().unwrap().interactions.len();
@@ -195,7 +195,7 @@ fn a_reply_claude_holds_past_its_deadline_is_offered_again_then_waits_in_the_que
     let mut queued = replaced_with_the_gate_full(&slice, driver);
     assert_waits_for_a_slot(&slice, &mut queued);
     let (english, spanish) = (shown(Lang::En), shown(Lang::Es));
-    assert!(!english.contains("Waiting for Claude to start") && !spanish.contains("Esperando a que Claude empiece"), "{english}");
+    assert!(!english.contains("Alondra delivers your message to it") && !spanish.contains("Alondra le entrega tu mensaje"), "{english}");
     assert_eq!(slice.domain.state().unwrap().interactions.len(), cards, "no card asks the user");
     goes_on_when_the_gate_has_room(&slice, &mut queued, reply, 2);
     queued.stop().unwrap();
