@@ -4,11 +4,31 @@
   "view": "settled_card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "ve9a9670411a84ab4",
+  "version": "v6a2d888ff6936e2e",
   "cursor": "cursor-1",
   "status": {
-    "version": "vc12dc8a31ddb84a1",
-    "summary": "1 pregunta · 3 por leer · 0 nodos trabajando",
+    "version": "v570a6e608a3c7c5b",
+    "summary": "1 pregunta · 3 por leer · 0 tareas trabajando",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 1,
+        "one": "{count} pregunta",
+        "other": "{count} preguntas"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} por leer",
+        "other": "{count} por leer"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
     "badge": 4,
     "counts": [
       {
@@ -34,7 +54,7 @@
       {
         "id": "waiting",
         "label": "esperando",
-        "value": 0
+        "value": 1
       }
     ],
     "gauges": [

@@ -4,12 +4,26 @@
   "view": "card",
   "key": "card:result-1",
   "client": "ios",
-  "version": "v1b06bab2863d6ca4",
+  "version": "v3050b866939d4be1",
   "cursor": "cursor-1",
   "title": "Approve the plan to index Redraft's whole library",
   "status": {
-    "version": "v63843208edea3b28",
-    "summary": "1 to read · 0 nodes working",
+    "version": "v7f698c7ff5f3d864",
+    "summary": "1 to read · 0 tasks working",
+    "summary_parts": [
+      {
+        "id": "to_read",
+        "count": 1,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
     "badge": 1,
     "counts": [
       {

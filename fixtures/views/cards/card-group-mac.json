@@ -4,12 +4,32 @@
   "view": "card",
   "key": "card:g-q2",
   "client": "mac",
-  "version": "v5da7e9078e972577",
+  "version": "vd23eda9c96b22c24",
   "cursor": "cursor-1",
   "title": "Ship it today?",
   "status": {
-    "version": "v68de4c89cd854dfb",
-    "summary": "3 questions · 2 to read · 0 nodes working",
+    "version": "v879f9f42621bddc0",
+    "summary": "3 questions · 2 to read · 0 tasks working",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 3,
+        "one": "{count} question",
+        "other": "{count} questions"
+      },
+      {
+        "id": "to_read",
+        "count": 2,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
     "badge": 5,
     "counts": [
       {

@@ -7,3 +7,4 @@ mod domain_transport_tests;
 mod launch_plans_tests;
 mod load_bench_tests;
 mod sdk_owner_tests;
+mod task_list_tests;

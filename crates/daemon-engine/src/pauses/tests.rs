@@ -350,12 +350,15 @@ async fn the_users_own_message_to_a_paused_sdk_node_waits_for_a_slot_and_then_re
     assert_eq!(pacing.queued.iter().map(|queued| queued.task_id.as_str()).collect::<Vec<_>>(), [SDK_TASK], "it waits in the queue");
     let read = node.domain.read();
     let live = alondra_core::views::live::LiveSnapshot { pacing: Some(pacing), ..Default::default() };
-    let tasks = serde_json::to_string(&alondra_core::views::build("tasks", alondra_core::views::RenderContext {
+    let shown = |key: &str| serde_json::to_string(&alondra_core::views::build(key, alondra_core::views::RenderContext {
         domain: read.state(), index: read.index(), live: &live, client: alondra_core::views::Client::Tui,
         lang: alondra_core::views::text::Lang::En, transport: alondra_core::views::Transport::Loopback, cursor: "test", rendered_at: "",
     }).unwrap()).unwrap();
-    assert!(tasks.contains("1st of 1 · 0 of 0 slots taken") && !tasks.contains("\"text\":\"Paused") && !tasks.contains("\"resume:"),
+    let tasks = shown("tasks");
+    assert!(tasks.contains("Starts when there is room") && !tasks.contains("\"text\":\"Paused") && !tasks.contains("\"resume:"),
         "its task shows it queued, with no Resume: {tasks}");
+    let screen = shown(&format!("task:{SDK_TASK}"));
+    assert!(screen.contains("1st of 1 · 0 of 0 slots taken"), "its own screen says its place: {screen}");
     drop(read);
 
     node.domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(1)) });
@@ -557,7 +560,7 @@ async fn ten_nodes_the_disk_held_come_back_one_by_one_on_19_gb_free_before_a_new
     }
     watch.measure_disk(crate::disk::Space { free: 19 * GB, purgeable: 0, total: 500 * GB });
     node.gate_look().await;
-    assert_eq!(crate::admission::working_tasks(&domain.state().unwrap()).len(), 0, "their turns go on, but they take no slot while the disk holds them");
+    assert_eq!(crate::admission::working_tasks(&domain, &domain.state().unwrap()).len(), 0, "their turns go on, but they take no slot while the disk holds them");
 
     let mut end_turn = |index: usize| {
         let (task, driver) = &mut drivers[index];
@@ -584,7 +587,7 @@ async fn ten_nodes_the_disk_held_come_back_one_by_one_on_19_gb_free_before_a_new
     node.gate_look().await;
     assert_eq!(back(), 4, "the four back reserve 12 GB: one more needs 20 GB");
     let state = domain.state().unwrap();
-    let at_work = crate::admission::working_tasks(&state);
+    let at_work = crate::admission::working_tasks(&domain, &state);
     assert_eq!(at_work.len(), 4, "the five turns still held take no slot: only the four back do");
     assert_eq!(watch.disk_reserved(&crate::admission::reserving_tasks(&state, at_work.iter())), 12 * GB, "only the four back reserve");
     assert!(domain.read().index().waiting().is_empty(), "nobody is asked anything");
@@ -599,12 +602,12 @@ async fn ten_nodes_the_disk_held_come_back_one_by_one_on_19_gb_free_before_a_new
 async fn a_node_paused_for_disk_takes_no_slot_in_the_gate_or_the_header() {
     let node = SdkNode::working();
     let domain = Arc::clone(&node.domain);
-    assert_eq!(crate::admission::working_tasks(&domain.state().unwrap()).len(), 1, "its turn works");
+    assert_eq!(crate::admission::working_tasks(&domain, &domain.state().unwrap()).len(), 1, "its turn works");
     assert!(domain.live.gate.hold_back(&domain, &node.agent(), Reason::Disk, alondra_core::now_millis()));
     node.gate_look().await;
     let state = domain.state().unwrap();
-    assert!(crate::admission::working_tasks(&state).is_empty(), "the disk holds it: no slot");
-    assert_eq!(state.slots().len(), 0);
+    assert!(crate::admission::working_tasks(&domain, &state).is_empty(), "the disk holds it: no slot");
+    assert_eq!(domain.read().index().slots().len(), 0);
     assert_eq!(domain.read().index().activity().working, 0, "the header counts none either");
 }
 
@@ -629,7 +632,7 @@ async fn under_the_disks_floor_the_heavier_nodes_next_turn_waits_for_room_withou
         alondra_core::domain::RuntimeObservation::TurnStarted { turn: "turn-light".into(), input },
     ] });
     let now = alondra_core::now_millis();
-    let working = crate::admission::working_projects(&domain.state().unwrap());
+    let working = crate::admission::working_projects(&domain, &domain.state().unwrap());
     assert_eq!(working.keys().map(|task| task.0.as_str()).collect::<Vec<_>>(), ["t-light", SDK_TASK]);
     let watch = &domain.live.machine_watch;
     let heavy: std::collections::BTreeMap<TaskId, Option<String>> = [(TaskId::from(SDK_TASK), None)].into();
@@ -646,14 +649,14 @@ async fn under_the_disks_floor_the_heavier_nodes_next_turn_waits_for_room_withou
     node.step();
     assert_eq!(node.lifecycle().activity(), alondra_domain::ActivityView::Working, "the turn it runs is not cut");
     assert_eq!(node.prompts(), ["consume-and-hold"]);
-    assert!(!crate::admission::working_tasks(&domain.state().unwrap()).contains(&TaskId::from(SDK_TASK)), "the disk holds it: its turn runs but it takes no slot");
+    assert!(!crate::admission::working_tasks(&domain, &domain.state().unwrap()).contains(&TaskId::from(SDK_TASK)), "the disk holds it: its turn runs but it takes no slot");
 
     interrupt_sdk_node(&domain, &node.agent());
     node.step_until(SdkNode::turn_ended);
     crate::domain_messages::tell_sdk_node(&domain, &SDK_TASK.into(), crate::node_push::ALONDRA, "Use the short changelog format", "tell-while-held", false).unwrap();
     node.gate_look().await;
     node.step();
-    assert!(!crate::admission::working_tasks(&domain.state().unwrap()).contains(&TaskId::from(SDK_TASK)), "its turn ended: it holds no slot");
+    assert!(!crate::admission::working_tasks(&domain, &domain.state().unwrap()).contains(&TaskId::from(SDK_TASK)), "its turn ended: it holds no slot");
     assert!(domain.live.gate.paused(&domain, &node.agent()).is_some(), "the disk has no room: it still waits");
     assert_eq!(node.dispatched_inputs(), 0, "what it is told waits for room");
     let pacing = domain.live.gate.live(&domain, alondra_core::now_millis()).unwrap();

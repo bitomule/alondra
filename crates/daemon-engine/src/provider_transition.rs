@@ -259,14 +259,25 @@ fn admitted(domain:&DomainRuntime,task:&TaskId)->bool{
 /// node starts, as the node it moved from would have resumed then. A delivery goes on once the
 /// user sent it back.
 fn ready_to_start(domain:&DomainRuntime,task:&TaskId)->Result<bool,DomainError>{
+    ready_in(domain.read().state(),task)
+}
+/// `ready_to_start` over a state: the decision the daemon and the whole-machine model share.
+pub(crate) fn ready_in(state:&DomainState,task:&TaskId)->Result<bool,DomainError>{
     use alondra_domain::{Capacity,LiveState,Owed,TaskPhase};
-    let read=domain.read();let lifecycle=read.state().lifecycle_of(task)?;
+    let lifecycle=state.lifecycle_of(task)?;
     let goes_on=match lifecycle.phase(){
         TaskPhase::InProgress=>matches!(lifecycle.live(),Some(LiveState::Working(_)|LiveState::WaitingCapacity(Capacity::Gate))),
         TaskPhase::Delivered=>lifecycle.obligation().is_some_and(|obligation|obligation.owed==Owed::Start),
         _=>false,
     };
     Ok(!lifecycle.pending_inputs().is_empty() && goes_on)
+}
+/// How a move whose source has ended goes on: its target starts now, or the move ends at once and
+/// the target starts when something resumes the task. A move never waits for the task to be ready.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub(crate) enum MoveStart{Start,Defer}
+pub(crate) fn move_start(state:&DomainState,task:&TaskId)->Result<MoveStart,DomainError>{
+    Ok(if ready_in(state,task)?{MoveStart::Start}else{MoveStart::Defer})
 }
 /// Stops the source's host and commits its end, keeping as the fence the folder the end was read
 /// from, still locked: a lock released and taken again can be held meanwhile by a child this
@@ -356,9 +367,13 @@ pub(crate) async fn advance(domain:&Arc<DomainRuntime>,task:&TaskId)->Result<Pha
             Phase::SourceFenced=>{ensure_fence(domain,plan)?;prepare_context(domain,plan)?;}
             Phase::ContextReady=>{
                 ensure_fence(domain,plan)?;
-                if plan.kind==Kind::Move && !ready_to_start(domain,task)?{defer(domain,&change)?;return Ok(Phase::Done)}
-                start_target(domain,plan,serde_json::from_value(change.facts.clone()).map_err(failure)?)?;
-                return Ok(Phase::TargetAdmitted)
+                match if plan.kind==Kind::Move{move_start(domain.read().state(),task)?}else{MoveStart::Start}{
+                    MoveStart::Defer=>{defer(domain,&change)?;return Ok(Phase::Done)}
+                    MoveStart::Start=>{
+                        start_target(domain,plan,serde_json::from_value(change.facts.clone()).map_err(failure)?)?;
+                        return Ok(Phase::TargetAdmitted)
+                    }
+                }
             }
             Phase::TargetReady if change.facts["same_host"].as_bool()==Some(true)=>{phase(domain,&change,Phase::Done,change.facts.clone())?;return Ok(Phase::Done)}
             Phase::TargetAdmitted|Phase::TargetReady=>{

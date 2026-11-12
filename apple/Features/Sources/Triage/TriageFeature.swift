@@ -54,17 +54,27 @@ public struct TriageFeature: Sendable {
         /// Nil until the first queue arrives, so a fresh launch keeps the number a push set.
         public var iconBadge: Int? { screen.document == nil ? nil : badge }
         public var queueTitle: String? { screen.document?.sections.first { $0.id == "queue" }?.title }
-        /// The header's numbers, counted over the cards the queue shows, so it never states one it
-        /// hides. Nil from a daemon that does not say what each card waits for.
-        public var header: Header? {
-            guard let status, let queue = screen.document?.sections.first(where: { $0.id == "queue" }),
-                  let ids = queue.cardIds, let waits = queue.cardWaits, waits.count == ids.count else { return nil }
-            let waiting = Dictionary(zip(ids, waits), uniquingKeysWith: { first, _ in first })
-            let questions = orderedIDs.filter { waiting[$0] == "question" }.count
-            return Header(
-                questions: questions, toRead: orderedIDs.count - questions,
-                working: Int(status.counts.first { $0.id == "working" }?.value ?? 0)
-            )
+        /// The header sentence the Mac writes, recounted for the cards the person just hid while its queue
+        /// still lists them: it drops with the card, and once the Mac's view agrees nothing is subtracted twice.
+        public var headerText: String? {
+            guard let status else { return nil }
+            guard let parts = status.summaryParts,
+                  let queue = screen.document?.sections.first(where: { $0.id == "queue" }),
+                  let ids = queue.cardIds, let waits = queue.cardWaits, waits.count == ids.count else { return status.summary }
+            let shown = Set(orderedIDs)
+            let hidden = zip(ids, waits).filter { !shown.contains($0.0) }.map(\.1)
+            guard !hidden.isEmpty else { return status.summary }
+            let hiddenQuestions = UInt32(hidden.filter { $0 == "question" }.count)
+            let hiddenToRead = UInt32(hidden.count) - hiddenQuestions
+            let lines = parts.compactMap { part -> String? in
+                let count = switch part.id {
+                case "questions": part.count - min(part.count, hiddenQuestions)
+                case "to_read": part.count - min(part.count, hiddenToRead)
+                default: part.count
+                }
+                return count == 0 && part.id != "working" ? nil : part.text(count: count)
+            }
+            return lines.joined(separator: " · ")
         }
         public var loadError: String? {
             guard screen.document == nil else { return nil }
@@ -76,13 +86,6 @@ public struct TriageFeature: Sendable {
         }
 
         fileprivate var stampShowing: Bool { visibleIDs.contains { cards[id: $0]?.actions.stamp != nil } }
-    }
-
-    public struct Header: Equatable, Sendable {
-        public let questions: Int
-        public let toRead: Int
-        public let working: Int
-        public var waiting: Int { questions + toRead }
     }
 
     /// A drag on the front card, from its first movement until the card has left or sprung back.

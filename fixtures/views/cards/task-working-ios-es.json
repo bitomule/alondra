@@ -4,12 +4,20 @@
   "view": "task",
   "key": "task:t-1",
   "client": "ios",
-  "version": "v05d7cd2bfee40647",
+  "version": "v7bfccf8ad8aad4dd",
   "cursor": "cursor-1",
   "title": "Build a feature",
   "status": {
-    "version": "v73340bacd6f9082e",
-    "summary": "1 nodo trabajando",
+    "version": "v7c751e31bed7af7b",
+    "summary": "1 tarea trabajando",
+    "summary_parts": [
+      {
+        "id": "working",
+        "count": 1,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
     "badge": 0,
     "counts": [
       {
@@ -55,7 +63,7 @@
             {
               "kind": "state",
               "label": "Estado",
-              "value": "Trabajando · Paso 3 de 5 · Run the tests · `Bash: cargo test` · desde las 09:30 · Dijo: «Tests pass; opening the PR» 09:58",
+              "value": "Trabajando · Paso 3 de 5 · Run the tests · `Bash: cargo test` · desde las 09:30",
               "tone": "accent"
             },
             {
@@ -448,7 +456,7 @@
               "resolves_card": false
             },
             {
-              "id": "pause:a-1@0",
+              "id": "pause:a-1@1",
               "label": "Pausar",
               "style": "secondary",
               "role": "neutral",

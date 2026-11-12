@@ -465,7 +465,7 @@ fn a_turn_that_ends_with_the_nodes_question_open_shows_only_that_question() {
 fn a_node_of_the_sdk_takes_a_slot_only_while_its_task_runs() {
     let mut s = world();
     sdk_turn(&mut s, "t", "a");
-    let takes_slot = |s: &DomainState| s.slots().iter().any(|agent| agent.id.0 == "a");
+    let takes_slot = |s: &DomainState| s.slots().iter().any(|agent| agent.0 == "a");
     assert!(takes_slot(&s), "its turn runs");
     deliver(&mut s, "t", "a", "result");
     must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
@@ -498,7 +498,7 @@ fn nodes_of_the_sdk_waiting_on_the_user_inside_their_turn_hold_no_slot_until_ans
             scope: Scope::Task { task_id: id.into() }, recipient: Recipient::User, body: "Pick the name".into(), blocking: true, options,
             card: CardSpec::derived(CardKind::Decide, "Pick the name") });
     }
-    let slots = |s: &DomainState| s.slots().iter().map(|agent| agent.id.0.clone()).filter(|id| id.starts_with("node-")).collect::<Vec<_>>();
+    let slots = |s: &DomainState| s.slots().iter().map(|agent| agent.0.clone()).filter(|id| id.starts_with("node-")).collect::<Vec<_>>();
     for id in plans.iter().chain(&questions) {
         assert!(s.node_waits_on_user(&AgentId::from(format!("node-{id}").as_str())), "{id} waits on the user inside its turn");
         assert!(holds_slot(&s, id), "{id}'s turn is still open");
@@ -646,12 +646,12 @@ fn a_turn_that_ends_behind_work_of_its_own_asks_nothing_and_keeps_its_slot() {
     must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
     assert!(!s.interactions.keys().any(|id| id.0.starts_with(TURN_ENDED_PREFIX)), "its own work explains the next step");
     assert!(holds_slot(&s, "t"), "work of its own keeps its process and its memory");
-    assert!(s.slots().iter().any(|agent| agent.id == AgentId::from("a")), "a node in the background counts in the limit of nodes at work");
+    assert!(s.slots().contains(&AgentId::from("a")), "a node in the background counts in the limit of nodes at work");
     assert_eq!(kinds(&s, "t").last().map(String::as_str), Some("turn_ended"), "no work end is made up");
     assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Running);
     assert_aggregate_rules(&s);
     deliver(&mut s, "t", "a", "final");
-    assert!(!s.slots().iter().any(|agent| agent.id == AgentId::from("a")), "work left running behind a delivery waits for the user, who decides what comes next");
+    assert!(!s.slots().contains(&AgentId::from("a")), "work left running behind a delivery waits for the user, who decides what comes next");
 }
 
 // Claude Code tracks a foreground command that runs for seconds as its own work. It ends inside

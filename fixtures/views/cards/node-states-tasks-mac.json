@@ -4,12 +4,32 @@
   "view": "tasks",
   "key": "tasks",
   "client": "mac",
-  "version": "v5490899c66c7e023",
+  "version": "v352ac98663698e43",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
-    "version": "v1f87f20b79473ef7",
-    "summary": "2 questions · 3 to read · 2 nodes working",
+    "version": "vab90e959b686570a",
+    "summary": "2 questions · 3 to read · 2 tasks working",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} question",
+        "other": "{count} questions"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 2,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
     "badge": 5,
     "counts": [
       {
@@ -115,10 +135,10 @@
                   "tone": "neutral"
                 },
                 {
-                  "text": "running since 08:00",
+                  "text": "since 09:30",
                   "tone": "neutral",
                   "elapsed": {
-                    "since": "2026-09-30T08:00:00Z"
+                    "since": "2026-09-30T09:30:00Z"
                   }
                 }
               ],
@@ -151,7 +171,6 @@
               },
               "icon": "mission",
               "title": "Release the daemon",
-              "subtitle": "In the background: `./deploy/brew/release.sh 0.2.67` · since 09:40",
               "badges": [
                 {
                   "text": "Working",
@@ -160,6 +179,13 @@
                 {
                   "text": "Demo Garden",
                   "tone": "neutral"
+                },
+                {
+                  "text": "since 09:40",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:40:00Z"
+                  }
                 }
               ],
               "depth": 1,
@@ -194,7 +220,6 @@
               },
               "icon": "mission",
               "title": "Build the importer",
-              "subtitle": "Turn running since 09:35",
               "badges": [
                 {
                   "text": "Working",
@@ -203,6 +228,13 @@
                 {
                   "text": "Demo Garden",
                   "tone": "neutral"
+                },
+                {
+                  "text": "since 09:35",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:35:00Z"
+                  }
                 }
               ],
               "depth": 1,

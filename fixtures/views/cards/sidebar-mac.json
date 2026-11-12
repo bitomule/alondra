@@ -4,11 +4,31 @@
   "view": "sidebar",
   "key": "sidebar",
   "client": "mac",
-  "version": "ve78422abce73ef2f",
+  "version": "va1bc22635526f484",
   "cursor": "cursor-1",
   "status": {
-    "version": "v6aa5809268a89138",
+    "version": "vad1df51584fb0530",
     "summary": "5 pending · 0 in progress",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} question",
+        "other": "{count} questions"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
     "badge": 5,
     "counts": [
       {
@@ -261,12 +281,32 @@
       "view": "card",
       "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
       "client": "mac",
-      "version": "vef39396d6388d9b5",
+      "version": "vaaec1a530861b210",
       "cursor": "cursor-1",
       "title": "Choose the welcome copy",
       "status": {
-        "version": "vf84c4996f0984c30",
-        "summary": "2 questions · 3 to read · 0 nodes working",
+        "version": "vec309c5722d410ab",
+        "summary": "2 questions · 3 to read · 0 tasks working",
+        "summary_parts": [
+          {
+            "id": "questions",
+            "count": 2,
+            "one": "{count} question",
+            "other": "{count} questions"
+          },
+          {
+            "id": "to_read",
+            "count": 3,
+            "one": "{count} to read",
+            "other": "{count} to read"
+          },
+          {
+            "id": "working",
+            "count": 0,
+            "one": "{count} task working",
+            "other": "{count} tasks working"
+          }
+        ],
         "badge": 5,
         "counts": [
           {
@@ -464,12 +504,32 @@
       "view": "card",
       "key": "card:8fa4034b-249e-4487-a89b-57de38c26372",
       "client": "mac",
-      "version": "v6826de97d6637086",
+      "version": "vdaf82dd87ab26611",
       "cursor": "cursor-1",
       "title": "Ship the compact schedule editor with this beta?",
       "status": {
-        "version": "vf84c4996f0984c30",
-        "summary": "2 questions · 3 to read · 0 nodes working",
+        "version": "vec309c5722d410ab",
+        "summary": "2 questions · 3 to read · 0 tasks working",
+        "summary_parts": [
+          {
+            "id": "questions",
+            "count": 2,
+            "one": "{count} question",
+            "other": "{count} questions"
+          },
+          {
+            "id": "to_read",
+            "count": 3,
+            "one": "{count} to read",
+            "other": "{count} to read"
+          },
+          {
+            "id": "working",
+            "count": 0,
+            "one": "{count} task working",
+            "other": "{count} tasks working"
+          }
+        ],
         "badge": 5,
         "counts": [
           {
@@ -649,12 +709,32 @@
       "view": "card",
       "key": "card:hf-weekly-2026-09-30",
       "client": "mac",
-      "version": "vb03a97a19bc140f4",
+      "version": "v760e7a081aafe8c7",
       "cursor": "cursor-1",
       "title": "Review the beta candidate",
       "status": {
-        "version": "vf84c4996f0984c30",
-        "summary": "2 questions · 3 to read · 0 nodes working",
+        "version": "vec309c5722d410ab",
+        "summary": "2 questions · 3 to read · 0 tasks working",
+        "summary_parts": [
+          {
+            "id": "questions",
+            "count": 2,
+            "one": "{count} question",
+            "other": "{count} questions"
+          },
+          {
+            "id": "to_read",
+            "count": 3,
+            "one": "{count} to read",
+            "other": "{count} to read"
+          },
+          {
+            "id": "working",
+            "count": 0,
+            "one": "{count} task working",
+            "other": "{count} tasks working"
+          }
+        ],
         "badge": 5,
         "counts": [
           {

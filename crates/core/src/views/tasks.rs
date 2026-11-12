@@ -1,5 +1,5 @@
 use super::{
-    task_state::{self, Block},
+    task_state::{self, Block, StateLabel},
     BuildError, Confirm, Fact, FactKind, Facts, Icon, Item, Markdown, Notice, RenderContext,
     Style, Tone, Trailing, View, action_id::Verb, common, text::{t, tf},
 };
@@ -10,10 +10,10 @@ use std::collections::{BTreeMap, BTreeSet};
 /// A task's own screen says its state with the fact that explains it, unless what it does now has its own lines.
 fn detail_state(task: &Task, context: &RenderContext<'_>) -> String {
     let presentation = task_state::present(task, context);
-    match (&presentation.fact, presentation.block) {
-        (Some(fact), Block::ForYou | Block::Waiting) => format!("{} · {fact}", presentation.state),
-        (Some(fact), _) if presentation.fact_in_state => format!("{} · {fact}", presentation.state),
-        _ => presentation.state,
+    match (presentation.fact(), presentation.block()) {
+        (Some(fact), Block::ForYou | Block::Waiting) => format!("{} · {fact}", presentation.state()),
+        (Some(fact), _) if presentation.fact_in_state() => format!("{} · {fact}", presentation.state()),
+        _ => presentation.state().to_owned(),
     }
 }
 
@@ -26,7 +26,7 @@ fn relaunch_action(task: &Task, context: &RenderContext<'_>) -> Option<super::Ac
         return None;
     }
     let label = t!(context.lang, "Relaunch", "Relanzar");
-    let mut action = common::action(Verb::Relaunch, &task.id.0, context.domain.revision, label, Style::Primary)?;
+    let mut action = common::action(Verb::Relaunch, &task.id.0, task.revision, label, Style::Primary)?;
     action.key = (context.client == super::Client::Tui).then(|| "l".into());
     Some(action)
 }
@@ -41,6 +41,21 @@ pub(super) fn in_progress<'a>(context: &'a RenderContext<'_>) -> impl Iterator<I
             .map(|task| (task, agent)))
 }
 
+/// How long an open task has been in its state, which each client counts from the start the row carries; how long an
+/// ended one took.
+pub(super) fn state_mark(task: &Task, presentation: &task_state::Presentation, context: &RenderContext<'_>) -> Option<super::Label> {
+    if task.state.terminal() {
+        return common::elapsed_mark(task, false, context);
+    }
+    let since = presentation.since()?.to_owned();
+    let at = since.get(11..16).unwrap_or_default();
+    Some(super::Label {
+        text: tf!(context.lang, "since {at}", "desde las {at}"),
+        tone: Tone::Neutral,
+        elapsed: Some(super::Elapsed { since, until: None }),
+    })
+}
+
 pub(super) fn task_row(task: &Task, context: &RenderContext<'_>) -> super::Row {
     presented_row(task, &task_state::present(task, context), context)
 }
@@ -48,32 +63,29 @@ pub(super) fn task_row(task: &Task, context: &RenderContext<'_>) -> super::Row {
 /// One task as the list draws it: its state in colour, its title, and one fact with since when it holds. The iPhone
 /// reads the fact from the row's `activity` line, the Mac beside the state, the TUI under the title.
 pub(super) fn presented_row(task: &Task, presentation: &task_state::Presentation, context: &RenderContext<'_>) -> super::Row {
-    let mut row = common::row(&task.id.0, &format!("task:{}", task.id), presentation.icon, task.title.clone(),
-        Some(presentation.state.clone()));
-    row.struck = task.state == TaskState::Cancelled;
-    row.badges.push(super::Label { text: presentation.state.clone(), tone: presentation.tone, elapsed: None });
+    let mut row = common::row(&task.id.0, &format!("task:{}", task.id), presentation.icon(), task.title.clone(),
+        Some(presentation.state().to_owned()));
+    row.struck = presentation.label() == StateLabel::Cancelled;
+    row.badges.push(super::Label { text: presentation.state().to_owned(), tone: presentation.tone(), elapsed: None });
     row.badges.extend(common::scheduled_mark(task, context));
     row.badges.extend(task.project.as_ref().map(|project| super::Label { text: project.clone(), tone: Tone::Neutral, elapsed: None }));
-    row.badges.extend(common::elapsed_mark(task, false, context));
+    row.badges.extend(state_mark(task, presentation, context));
     row.actions.extend(relaunch_action(task, context));
     row.actions.extend(super::pacing::task_actions(task, context));
-    let since = presentation.since.clone().map(|at| Trailing::Time { at, format: super::TimeFormat::Relative });
     match context.client {
         super::Client::Tui => {
-            row.subtitle = presentation.fact.clone();
-            row.trailing = since;
+            row.subtitle = presentation.reason().map(str::to_owned);
             return row;
         }
         super::Client::Ios => {
-            if let Some(fact) = &presentation.fact {
-                let mut line = common::row("activity", "node", Icon::Notice, fact.clone(), None);
+            if let Some(reason) = presentation.reason() {
+                let mut line = common::row("activity", "node", Icon::Notice, reason.to_owned(), None);
                 line.link = None;
-                line.trailing = since;
                 row.children.push(line);
             }
         }
         _ => {
-            row.subtitle = presentation.fact.clone();
+            row.subtitle = presentation.reason().map(str::to_owned);
             let count = waiting_count(task, context);
             row.trailing = (count > 0).then(|| Trailing::Text {
                 text: match count {
@@ -285,14 +297,13 @@ fn request_row(request: &Request, forest: &Forest<'_>, context: &RenderContext<'
     if context.client != super::Client::Ios && !split {
         match tasks {
             [task] => {
-                let (icon, _) = common::task_presentation(task.state);
                 let presented = task_state::present(task, context);
-                row.icon = icon;
-                row.struck = task.state == TaskState::Cancelled;
-                row.subtitle = None;
-                row.badges.insert(0, super::Label { text: presented.state, tone: presented.tone, elapsed: None });
+                row.icon = presented.icon();
+                row.struck = presented.label() == StateLabel::Cancelled;
+                row.subtitle = presented.reason().map(str::to_owned);
+                row.badges.insert(0, super::Label { text: presented.state().to_owned(), tone: presented.tone(), elapsed: None });
                 row.badges.extend(common::scheduled_mark(task, context));
-                row.badges.extend(common::elapsed_mark(task, false, context));
+                row.badges.extend(state_mark(task, &presented, context));
                 row.actions.extend(relaunch_action(task, context));
                 row.actions.extend(super::pacing::task_actions(task, context));
                 row.children = match children.as_mut_slice() {
@@ -485,13 +496,12 @@ fn active_items(buckets: &BTreeMap<&RequestId, Bucket>, context: &RenderContext<
             Entry::Request(request) => {
                 let since = context.live.request_times.get(&request.id.0).cloned();
                 let block = if orchestrator_asks(context) { Block::ForYou } else { Block::InProgress };
-                let presentation = task_state::Presentation::waiting_request(block, since);
-                return (block, order(&presentation));
+                return (block, order(block, None, since));
             }
         };
         tasks.iter().map(|task| {
             let presentation = &shown[&task.id];
-            (presentation.block, order(presentation))
+            (presentation.block(), order_of(presentation))
         }).min().expect("an entry has a task")
     };
     let mut blocks: BTreeMap<Block, Vec<(Entry<'_>, Order)>> = BTreeMap::new();
@@ -503,7 +513,7 @@ fn active_items(buckets: &BTreeMap<&RequestId, Bucket>, context: &RenderContext<
         };
         let mut by_block: BTreeMap<Block, Vec<&Task>> = BTreeMap::new();
         for task in tasks {
-            by_block.entry(shown[&task.id].block).or_default().push(task);
+            by_block.entry(shown[&task.id].block()).or_default().push(task);
         }
         for (block, tasks) in by_block {
             if tasks.len() > 1 && block != Block::Waiting {
@@ -511,7 +521,7 @@ fn active_items(buckets: &BTreeMap<&RequestId, Bucket>, context: &RenderContext<
                 let (_, key) = lead(&entry);
                 blocks.entry(block).or_default().push((entry, key));
             } else {
-                for task in tasks { blocks.entry(block).or_default().push((Entry::Task(task), order(&shown[&task.id]))); }
+                for task in tasks { blocks.entry(block).or_default().push((Entry::Task(task), order_of(&shown[&task.id]))); }
             }
         }
     }
@@ -584,12 +594,15 @@ fn orchestrator_asks(context: &RenderContext<'_>) -> bool {
 
 /// Where a task goes inside its block: what needs the user longest waiting first; what works most recently active
 /// first; the queue by its place, then the rest most recent first.
-fn order(presentation: &task_state::Presentation) -> Order {
-    let at = presentation.since.clone();
-    match (presentation.block, presentation.queue) {
+fn order_of(presentation: &task_state::Presentation) -> Order {
+    order(presentation.block(), presentation.queue(), presentation.since().map(str::to_owned))
+}
+
+fn order(block: Block, queue: Option<usize>, at: Option<String>) -> Order {
+    match (block, queue) {
         (Block::ForYou, _) => (0, 0, at.unwrap_or_else(|| "~".into()), std::cmp::Reverse(String::new())),
         (Block::Waiting, Some(place)) => (0, place, String::new(), std::cmp::Reverse(String::new())),
-        _ => (1, 0, String::new(), std::cmp::Reverse(presentation.active_at.clone().or(at).unwrap_or_default())),
+        _ => (1, 0, String::new(), std::cmp::Reverse(at.unwrap_or_default())),
     }
 }
 
@@ -779,71 +792,67 @@ fn wait_text(reason: &crate::domain::WaitReason, context: &RenderContext<'_>) ->
     }
 }
 
+/// The sentence under a task's state that says what it waits for or what comes next. It reads the task's
+/// `Situation`, so it never says something the state beside it contradicts.
 fn now_line(task: &Task, context: &RenderContext<'_>) -> Option<super::Row> {
+    use crate::domain::{Delivery, Doing, Situation, WaitReason, WaitsFor};
+    let lang = context.lang;
+    let situation = task_state::situation(task, context);
     let line = |text: String, link: Option<super::Link>| {
         let mut row = common::row("now", "task", Icon::History, text, None);
         row.link = link;
-        row
+        Some(row)
     };
-    if let crate::domain::Attention::Wait(reason) = context.attention(task)
-        && matches!(
-            reason,
-            crate::domain::WaitReason::BlockedBy { .. } | crate::domain::WaitReason::UpstreamPr { .. }
-                | crate::domain::WaitReason::Answer { .. } | crate::domain::WaitReason::NodeFixing { .. }
-        )
+    let wait = match context.attention(task) {
+        crate::domain::Attention::Wait(reason) => Some(reason),
+        _ => None,
+    };
+    if let Some(reason) = wait.as_ref().filter(|reason| matches!(reason,
+        WaitReason::BlockedBy { .. } | WaitReason::UpstreamPr { .. } | WaitReason::Answer { .. } | WaitReason::NodeFixing { .. }))
     {
-        return Some(line(wait_text(&reason, context), None));
+        return line(wait_text(reason, context), None);
+    }
+    if let Some(error) = common::failed_launch(task, context) {
+        return line(if error.is_empty() {
+            t!(lang, "the scheduled run could not launch its node", "la ejecución programada no pudo lanzar su nodo").into()
+        } else {
+            tf!(lang, "the scheduled run could not launch its node: {error}",
+                "la ejecución programada no pudo lanzar su nodo: {error}", error = error)
+        }, None);
     }
     if let Some(work) = task.wrap_up.post_merge_work.as_ref().filter(|_| !task.state.terminal()) {
-        return Some(line(tf!(context.lang, "finishing after the merge: {reason}", "terminando tras el merge: {reason}",
-            reason = work.reason), None));
+        return line(tf!(lang, "finishing after the merge: {reason}", "terminando tras el merge: {reason}", reason = work.reason), None);
     }
-    match task.state {
-        TaskState::NeedsYou => context.waiting_cards_of(&task.id).next()
-            .map(|item| line(
-                tf!(context.lang, "question: {title}", "pregunta: {title}", title = item.title),
-                Some(super::Link::View { key: super::card::card_key(&item) }),
-            )),
-        TaskState::AwaitingBlocker => match context.attention(task) {
-            crate::domain::Attention::Wait(reason) => Some(line(wait_text(&reason, context), None)),
-            _ => None,
-        },
-        TaskState::ForYourReview => task.documents.keys().last()
+    match situation {
+        Situation::NeedsYou => context.waiting_cards_of(&task.id).next().and_then(|item| line(
+            tf!(lang, "question: {title}", "pregunta: {title}", title = item.title),
+            Some(super::Link::View { key: super::card::card_key(item) }),
+        )),
+        Situation::Delivered(Delivery::Blocked) => wait.and_then(|reason| line(wait_text(&reason, context), None)),
+        Situation::Delivered(Delivery::ForReview) => task.documents.keys().last()
             .and_then(|id| context.domain.documents.get(id))
-            .map(|document| line(
-                tf!(context.lang, "document: {title}", "documento: {title}", title = document.title), None)),
-        TaskState::WaitingDependency => task.stack.as_ref()
-            .and_then(|stack| context.domain.pull_requests.get(&stack.pr_id))
-            .map(|pr| line(
-                tf!(context.lang, "waits for PR #{number} to be merged",
-                    "espera al merge del PR #{number}", number = pr.number), None)),
-        TaskState::Closing => Some(line(if task.cancelled() {
-            if task.agent_id.is_some() && task.wrap_up.node.is_none() {
-                t!(context.lang, "cancelled; Alondra closes its node", "cancelada; Alondra cierra su nodo").into()
-            } else {
-                t!(context.lang, "cancelled; Alondra removes what it left", "cancelada; Alondra retira lo que dejó").into()
-            }
-        } else if task.wrap_up.asked_at.is_some() {
-            t!(context.lang, "finished; the node cleans up before Alondra closes it",
-                "terminada; el nodo limpia antes de que Alondra lo cierre").into()
+            .and_then(|document| line(tf!(lang, "document: {title}", "documento: {title}", title = document.title), None)),
+        Situation::Delivered(Delivery::Closing) => line(if task.wrap_up.asked_at.is_some() {
+            t!(lang, "finished; the node cleans up before Alondra closes it", "terminada; el nodo limpia antes de que Alondra lo cierre").into()
         } else {
-            t!(context.lang, "accepted; Alondra merges its pull request", "aceptada; Alondra hace merge de su PR").into()
-        }, None)),
-        TaskState::NotStarted => common::failed_launch(task, context).map(|error| line(
-            if error.is_empty() {
-                t!(context.lang, "the scheduled run could not launch its node",
-                    "la ejecución programada no pudo lanzar su nodo").into()
-            } else {
-                tf!(context.lang, "the scheduled run could not launch its node: {error}",
-                    "la ejecución programada no pudo lanzar su nodo: {error}", error = error)
-            }, None)),
-        TaskState::Done | TaskState::Cancelled => task.wrap_up.node.map(|end| line(match end {
-            NodeEnd::Closed => t!(context.lang, "node closed", "nodo cerrado"),
-            NodeEnd::Gone => t!(context.lang, "node already closed", "el nodo ya estaba cerrado"),
-            NodeEnd::KeptByUser => t!(context.lang, "node left open: you chose to keep it", "nodo abierto: elegiste dejarlo"),
-            NodeEnd::UsersOwn => t!(context.lang, "node left open: it is your own session", "nodo abierto: es tu propia sesión"),
+            t!(lang, "accepted; Alondra merges its pull request", "aceptada; Alondra hace merge de su PR").into()
+        }, None),
+        Situation::Cancelled if !task.state.terminal() => line(if task.agent_id.is_some() && task.wrap_up.node.is_none() {
+            t!(lang, "cancelled; Alondra closes its node", "cancelada; Alondra cierra su nodo").into()
+        } else {
+            t!(lang, "cancelled; Alondra removes what it left", "cancelada; Alondra retira lo que dejó").into()
+        }, None),
+        Situation::Waiting(WaitsFor::Tasks) => task.stack.as_ref()
+            .and_then(|stack| context.domain.pull_requests.get(&stack.pr_id))
+            .and_then(|pr| line(tf!(lang, "waits for PR #{number} to be merged",
+                "espera al merge de la PR #{number}", number = pr.number), None)),
+        Situation::Finished | Situation::Cancelled => task.wrap_up.node.and_then(|end| line(match end {
+            NodeEnd::Closed => t!(lang, "node closed", "nodo cerrado"),
+            NodeEnd::Gone => t!(lang, "node already closed", "el nodo ya estaba cerrado"),
+            NodeEnd::KeptByUser => t!(lang, "node left open: you chose to keep it", "nodo abierto: elegiste dejarlo"),
+            NodeEnd::UsersOwn => t!(lang, "node left open: it is your own session", "nodo abierto: es tu propia sesión"),
         }.into(), None)),
-        TaskState::Running => None,
+        Situation::Working(Doing::Turn | Doing::OwnWork | Doing::AfterMerge) | Situation::Paused | Situation::Waiting(_) => None,
     }
 }
 
@@ -895,7 +904,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         kind: Some(FactKind::State),
         label: t!(context.lang, "State", "Estado").into(),
         value: detail_state(task, context),
-        tone: Some(task_state::present(task, context).tone),
+        tone: Some(task_state::present(task, context).tone()),
         link: None,
     }];
     let mut model_readings = vec![];

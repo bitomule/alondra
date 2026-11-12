@@ -127,14 +127,7 @@ public struct TriageView: View {
     }
 
     private var summary: Text {
-        guard let header = store.header else {
-            return Text(store.status?.summary ?? String(localized: "Connecting to your Mac…"))
-        }
-        var parts: [Text] = []
-        if header.questions > 0 { parts.append(Text("\(header.questions) questions")) }
-        if header.toRead > 0 { parts.append(Text("\(header.toRead) to read")) }
-        parts.append(Text("\(header.working) nodes working"))
-        return parts.dropFirst().reduce(parts[0]) { line, part in Text("\(line) · \(part)") }
+        Text(store.headerText ?? String(localized: "Connecting to your Mac…"))
     }
 
     /// Cards that arrived while the person was reading wait right behind; this brings the first forward.

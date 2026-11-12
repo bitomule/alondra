@@ -4,12 +4,32 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "vcf89cd4320defa11",
+  "version": "v8ba555d6d200b91f",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
-    "version": "vcaf24a89cb36a3b8",
-    "summary": "2 preguntas · 3 por leer · 2 nodos trabajando",
+    "version": "v0bde2a907585e746",
+    "summary": "2 preguntas · 3 por leer · 2 tareas trabajando",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} pregunta",
+        "other": "{count} preguntas"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} por leer",
+        "other": "{count} por leer"
+      },
+      {
+        "id": "working",
+        "count": 2,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
     "badge": 5,
     "counts": [
       {
@@ -115,10 +135,10 @@
                   "tone": "neutral"
                 },
                 {
-                  "text": "en marcha desde las 08:00",
+                  "text": "desde las 09:30",
                   "tone": "neutral",
                   "elapsed": {
-                    "since": "2026-09-30T08:00:00Z"
+                    "since": "2026-09-30T09:30:00Z"
                   }
                 }
               ],
@@ -133,11 +153,6 @@
                   "id": "activity",
                   "icon": "notice",
                   "title": "5 preguntas abiertas · Polish the Alondra beta",
-                  "trailing": {
-                    "kind": "time",
-                    "at": "2026-09-30T09:30:00Z",
-                    "format": "relative"
-                  },
                   "depth": 0,
                   "struck": false
                 }
@@ -174,6 +189,13 @@
                 {
                   "text": "Demo Garden",
                   "tone": "neutral"
+                },
+                {
+                  "text": "desde las 09:40",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:40:00Z"
+                  }
                 }
               ],
               "trailing": {
@@ -182,15 +204,6 @@
               },
               "depth": 1,
               "struck": false,
-              "children": [
-                {
-                  "id": "activity",
-                  "icon": "notice",
-                  "title": "En segundo plano: `./deploy/brew/release.sh 0.2.67` · desde las 09:40",
-                  "depth": 0,
-                  "struck": false
-                }
-              ],
               "actions": [
                 {
                   "id": "pause:release-runner@6",
@@ -230,6 +243,13 @@
                 {
                   "text": "Demo Garden",
                   "tone": "neutral"
+                },
+                {
+                  "text": "desde las 09:35",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:35:00Z"
+                  }
                 }
               ],
               "trailing": {
@@ -238,15 +258,6 @@
               },
               "depth": 1,
               "struck": false,
-              "children": [
-                {
-                  "id": "activity",
-                  "icon": "notice",
-                  "title": "Turno en marcha desde las 09:35",
-                  "depth": 0,
-                  "struck": false
-                }
-              ],
               "actions": [
                 {
                   "id": "pause:zeta-worker@6",

@@ -4,12 +4,20 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "ios",
-  "version": "v7835fb2010252cdd",
+  "version": "v6c8fdb3549a96506",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
-    "version": "vd0205ea5d30722b5",
-    "summary": "0 nodos trabajando",
+    "version": "v8c107e22c1754195",
+    "summary": "0 tareas trabajando",
+    "summary_parts": [
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
     "badge": 0,
     "counts": [
       {
@@ -210,7 +218,7 @@
               "resolves_card": false
             },
             {
-              "id": "relaunch:t-651c38484cd2f34e74d5107ba05f7f15@6",
+              "id": "relaunch:t-651c38484cd2f34e74d5107ba05f7f15@1",
               "label": "Relanzar",
               "style": "primary",
               "role": "advance",

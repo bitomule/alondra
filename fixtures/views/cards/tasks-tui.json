@@ -4,12 +4,32 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "v0f14406cf55e4fef",
+  "version": "vb7c0232e7f45a2ce",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
-    "version": "v7bd6622d72998685",
-    "summary": "2 questions · 3 to read · 2 nodes working",
+    "version": "vf15e27e74fa727a8",
+    "summary": "2 questions · 3 to read · 2 tasks working",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} question",
+        "other": "{count} questions"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 2,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
     "badge": 5,
     "counts": [
       {
@@ -115,18 +135,13 @@
                   "tone": "neutral"
                 },
                 {
-                  "text": "running since 08:00",
+                  "text": "since 09:30",
                   "tone": "neutral",
                   "elapsed": {
-                    "since": "2026-09-30T08:00:00Z"
+                    "since": "2026-09-30T09:30:00Z"
                   }
                 }
               ],
-              "trailing": {
-                "kind": "time",
-                "at": "2026-09-30T09:30:00Z",
-                "format": "relative"
-              },
               "depth": 1,
               "struck": false
             }
@@ -165,7 +180,7 @@
               },
               "icon": "mission",
               "title": "Count the retracted pushes",
-              "subtitle": "Turn running since 09:00 · Badge accuracy",
+              "subtitle": "Badge accuracy",
               "badges": [
                 {
                   "text": "Working",
@@ -176,10 +191,10 @@
                   "tone": "neutral"
                 },
                 {
-                  "text": "running since 09:20",
+                  "text": "since 09:00",
                   "tone": "neutral",
                   "elapsed": {
-                    "since": "2026-09-30T09:20:00.000Z"
+                    "since": "2026-09-30T09:00:00Z"
                   }
                 }
               ],
@@ -216,7 +231,6 @@
               },
               "icon": "mission",
               "title": "Lumo · weekly improvement",
-              "subtitle": "Turn running since 09:00",
               "badges": [
                 {
                   "text": "Working",
@@ -231,10 +245,10 @@
                   "tone": "neutral"
                 },
                 {
-                  "text": "running since 09:48",
+                  "text": "since 09:00",
                   "tone": "neutral",
                   "elapsed": {
-                    "since": "2026-09-30T09:48:00.000Z"
+                    "since": "2026-09-30T09:00:00Z"
                   }
                 }
               ],
@@ -276,13 +290,6 @@
                 {
                   "text": "Delivered",
                   "tone": "info"
-                },
-                {
-                  "text": "running since 17:15",
-                  "tone": "neutral",
-                  "elapsed": {
-                    "since": "2026-09-29T17:15:00.000Z"
-                  }
                 }
               ],
               "depth": 1,
@@ -311,7 +318,7 @@
               },
               "icon": "task",
               "title": "Refresh the App Store screenshots",
-              "subtitle": "1st of 1",
+              "subtitle": "Starts when there is room",
               "badges": [
                 {
                   "text": "Waiting",

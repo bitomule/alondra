@@ -240,21 +240,6 @@ pub(super) fn node_closed(task: &crate::domain::Task, context: &super::RenderCon
         && context.live.closed_tasks.contains(&task.id.0)
 }
 
-pub(super) fn task_presentation(state: crate::domain::TaskState) -> (super::Icon, super::Tone) {
-    use crate::domain::TaskState as S;
-    use super::{Icon, Tone};
-    match state {
-        S::Running => (Icon::Mission, Tone::Accent),
-        S::NeedsYou => (Icon::Action, Tone::Warning),
-        S::ForYourReview => (Icon::PullRequest, Tone::Info),
-        S::AwaitingBlocker => (Icon::Branch, Tone::Info),
-        S::WaitingDependency => (Icon::Branch, Tone::Info),
-        S::Done | S::Closing => (Icon::Check, Tone::Success),
-        S::Cancelled => (Icon::Warning, Tone::Neutral),
-        S::NotStarted => (Icon::Task, Tone::Neutral),
-    }
-}
-
 pub(super) fn action(
     verb: Verb,
     subject: &str,

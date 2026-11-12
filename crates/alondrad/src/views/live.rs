@@ -403,7 +403,6 @@ async fn gather_inner(
             let summary = failure.or_else(|| tool.clone())
                 .or_else(|| node.daemon_needs.clone())
                 .or_else(|| node.daemon_detail.clone())
-                .or_else(|| last_message.map(|(text, _)| text.to_owned()))
                 .map(|summary| summary.lines().next().unwrap_or("").chars().take(141).collect());
             let running: Vec<(&str, &alondra_core::BackgroundItem)> = reported.background.iter()
                 .filter(|(_, item)| reported.shell_end(item).is_none()).map(|(id, item)| (id.as_str(), item)).collect();

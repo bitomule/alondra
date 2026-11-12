@@ -16,6 +16,8 @@ enum Move {
     Snooze,
     /// Its execution is released and the gate admits a new one, which starts.
     Relaunch,
+    /// The SDK node asks the orchestrator something and goes on with its turn.
+    AskOrchestrator,
 }
 
 fn moves() -> impl Strategy<Value = Move> {
@@ -24,6 +26,7 @@ fn moves() -> impl Strategy<Value = Move> {
         1 => Just(Move::AskGrouped),
         1 => Just(Move::Snooze),
         1 => Just(Move::Relaunch),
+        1 => Just(Move::AskOrchestrator),
     ]
 }
 
@@ -40,6 +43,14 @@ fn apply(s: &mut DomainState, step: &Move, n: usize) {
                     recipient: Recipient::User, body: "Which way?".into(), blocking: true, options: options.clone(), card,
                 });
             }
+        }
+        Move::AskOrchestrator => {
+            let options = vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }];
+            let _ = exec(s, node(NODE), Command::AskQuestion {
+                attachments: vec![], interaction_id: format!("to-orchestrator-{n}").into(), scope: Scope::Task { task_id: SDK.into() },
+                recipient: Recipient::Orchestrator, body: "Is the other task done?".into(), blocking: false, options: options.clone(),
+                card: CardSpec::question("Is the other task done?", &options),
+            });
         }
         Move::Relaunch => {
             let _ = exec(s, Actor::System, Command::ReleaseTask { task_id: SDK.into(), reason: "The host ended".into() });
@@ -172,6 +183,14 @@ proptest! {
             if index.activity().working != working {
                 return Err(format!("the header counts {} working, the tasks say {working}", index.activity().working));
             }
+            let for_you = s.tasks.values().filter(|task| match situation(index, &task.id) {
+                Situation::NeedsYou => true,
+                Situation::Delivered(crate::domain::Delivery::ForReview) => index.task(&task.id).is_some_and(|reading| reading.for_you()),
+                Situation::Working(_) | Situation::Waiting(_) | Situation::Paused | Situation::Delivered(_) | Situation::Finished | Situation::Cancelled => false,
+            }).count() as u32;
+            if index.activity().waiting != for_you {
+                return Err(format!("the header counts {} waiting, {for_you} tasks need the user or have their delivery in front of them", index.activity().waiting));
+            }
             Ok(())
         })?;
     }
@@ -182,7 +201,7 @@ proptest! {
         moves.push(Move::Sdk(Act::DiskPause));
         each_state(&moves, |s, _| {
             let Some(pause) = s.node_pause(&NODE.into()) else { return Ok(()) };
-            if s.slots().iter().any(|agent| agent.id == NODE.into()) {
+            if s.slots().contains(&NODE.into()) {
                 return Err(format!("it holds a slot while paused for {:?}", pause.reason));
             }
             Ok(())
@@ -197,6 +216,24 @@ proptest! {
                 let shown = situation(index, &task.id);
                 if !matches!(shown, Situation::Working(_) | Situation::Waiting(WaitsFor::Step(AlondraStep::Starting | AlondraStep::Delivering | AlondraStep::Waking))) {
                     return Err(format!("{} holds a slot and reads {shown:?}", task.id));
+                }
+            }
+            Ok(())
+        })?;
+    }
+
+    #[test]
+    fn the_header_the_live_activity_and_the_gate_count_the_same_tasks(history in histories()) {
+        each_state(&history, |s, index| {
+            for task in s.tasks.values().filter(|task| !task.state.terminal() && task.state != TaskState::Closing && task.wrap_up.asked_at.is_none()) {
+                let Some(agent) = task.agent_id.as_ref().filter(|agent| s.through_sdk(agent) && s.node_pause(agent).is_none()) else { continue };
+                let shown = situation(index, &task.id);
+                let takes = matches!(shown, Situation::Working(_) | Situation::Waiting(WaitsFor::Step(AlondraStep::Starting | AlondraStep::Delivering | AlondraStep::Waking)))
+                    && s.lifecycle_of(&task.id).is_ok_and(|lifecycle| lifecycle.holds_slot());
+                let counted = index.holds_slot(agent);
+                if takes != counted {
+                    return Err(format!("{} reads {shown:?} and its execution {} a slot, but the gate {} it", task.id,
+                        if takes { "holds" } else { "holds no" }, if counted { "counts" } else { "does not count" }));
                 }
             }
             Ok(())
@@ -217,4 +254,39 @@ fn a_delivery_sent_back_with_its_host_gone_waits_for_alondra_not_the_user() {
     let read = index.task(&SDK.into()).unwrap();
     assert_eq!(read.situation, Situation::Waiting(WaitsFor::Step(AlondraStep::Delivering)));
     assert_eq!(read.unlisted, None);
+}
+
+/// A delivery the user sent back with changes, whose node took the changes and then asked the
+/// orchestrator something it must have answered before it goes on, is not «delivering»: the node
+/// holds the changes and waits for that answer.
+#[test]
+fn a_node_that_took_the_changes_and_asks_the_orchestrator_is_not_delivering() {
+    use super::lifecycle_cache_tests::{run, Step};
+    let mut s = three_tasks();
+    let task = TaskId::from(SDK);
+    let asked = |s: &mut DomainState| exec(s, node(NODE), Command::AskQuestion {
+        attachments: vec![], interaction_id: "to-orchestrator".into(), scope: Scope::Task { task_id: SDK.into() },
+        recipient: Recipient::Orchestrator, body: "Split the follow-up?".into(), blocking: true,
+        options: vec![QuestionOption { id: "split".into(), label: "Split it".into(), description: None },
+            QuestionOption { id: "keep".into(), label: "Keep one task".into(), description: None }],
+        card: CardSpec::derived(CardKind::Decide, "Decide whether to split the follow-up"),
+    }).unwrap();
+    run(&mut s, &Step::Deliver(2), 0).unwrap();
+    apply(&mut s, &Move::Sdk(Act::SendBack), 1);
+    run(&mut s, &Step::TakeInput, 2).unwrap();
+    asked(&mut s);
+    run(&mut s, &Step::TurnEnded, 3).unwrap();
+    let index = ReadIndex::build(&s);
+    assert_eq!(s.task_handed_back(&task), Some(Instruction::Changes));
+    assert_eq!(situation(&index, &task), Situation::Waiting(WaitsFor::Step(AlondraStep::Answering)), "the node already took the changes and waits for the orchestrator");
+}
+
+#[test]
+fn a_paused_task_the_gate_queues_waits_for_a_slot_and_nothing_else_changes() {
+    assert_eq!(Situation::Paused.queued_at_gate(true), Situation::Waiting(WaitsFor::Slot));
+    assert_eq!(Situation::Paused.queued_at_gate(false), Situation::Paused);
+    for other in [Situation::NeedsYou, Situation::Finished, Situation::Cancelled, Situation::Working(Doing::Turn),
+        Situation::Waiting(WaitsFor::Disk), Situation::Delivered(Delivery::ForReview)] {
+        assert_eq!(other.queued_at_gate(true), other);
+    }
 }

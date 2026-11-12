@@ -359,36 +359,26 @@ impl DomainState {
         }
     }
 
-    /// The nodes that take a slot: the one count the gate, Tasks and the header share.
-    pub fn slots(&self) -> Vec<&Agent> {
-        let index = self.fact_index();
-        self.agents.values().filter(|a| Some(&a.id) != self.orchestrator_session.as_ref() && self.holds_slot(a, &index)).collect()
+    /// Whether the node of `task` takes a slot of the gate, given the one situation its task reads:
+    /// it works, or Alondra starts it, hands it an input or wakes it; its task is not ending; no
+    /// pause holds its node; and its lifecycle says its execution holds a slot.
+    pub fn takes_slot(&self, task: &Task, situation: super::situation::Situation) -> bool {
+        use super::situation::{AlondraStep, Situation, WaitsFor};
+        let closing = task.state.terminal() || task.state == TaskState::Closing || task.wrap_up.asked_at.is_some();
+        matches!(situation, Situation::Working(_) | Situation::Waiting(WaitsFor::Step(AlondraStep::Starting | AlondraStep::Delivering | AlondraStep::Waking)))
+            && !closing
+            && task.agent_id.as_ref().is_none_or(|agent| self.node_pause(agent).is_none())
+            && self.lifecycle_of(&task.id).is_ok_and(|lifecycle| lifecycle.holds_slot())
     }
 
-    /// A node takes a slot while its task's lifecycle has it at work and says its execution holds one.
-    fn holds_slot(&self, agent: &Agent, index: &FactIndex<'_>) -> bool {
-        self.tasks.values()
-            .find(|t| t.agent_id.as_ref() == Some(&agent.id) && !t.state.terminal() && super::read_index::admitted_through_sdk(self, &t.id, &agent.id))
-            .is_some_and(|task| self.node_pause(&agent.id).is_none() && self.sdk_task_holds_slot(task, &self.facts_in(index, &agent.id)))
+    #[cfg(test)]
+    pub(crate) fn slots(&self) -> Vec<AgentId> {
+        super::ReadIndex::build(self).slots().iter().cloned().collect()
     }
 
-    /// Whether the node of `task`, one of the Agent SDK, takes a slot of the gate.
-    pub fn task_holds_slot(&self, task: &TaskId) -> bool {
-        let Some(t) = self.tasks.get(task) else { return false };
-        let facts = t.agent_id.as_ref().map(|agent| self.task_facts(agent)).unwrap_or_default();
-        t.agent_id.as_ref().is_none_or(|agent| self.node_pause(agent).is_none()) && self.sdk_task_holds_slot(t, &facts)
-    }
-
-    /// The task's situation has its node working, or Alondra starting it, handing it an input or
-    /// waking it; its task is not ending; and its lifecycle says its execution holds a slot. A turn
-    /// kept open on a plan or a question for the user, or held by a pause, holds none.
-    fn sdk_task_holds_slot(&self, task: &Task, facts: &TaskFacts) -> bool {
-        use super::situation::{AlondraStep, Doing, Listing, Situation, WaitsFor};
-        let listing = Listing { needs_you: facts.card || facts.held, listed: &|_| true };
-        let takes_slot = matches!(self.situation(task, &listing).situation,
-            Situation::Working(Doing::Turn | Doing::OwnWork | Doing::AfterMerge)
-            | Situation::Waiting(WaitsFor::Step(AlondraStep::Starting | AlondraStep::Delivering | AlondraStep::Waking)));
-        takes_slot && !facts.closing && self.lifecycle_of(&task.id).is_ok_and(|lifecycle| lifecycle.holds_slot())
+    #[cfg(test)]
+    pub(crate) fn task_holds_slot(&self, task: &TaskId) -> bool {
+        self.tasks.get(task).and_then(|task| task.agent_id.as_ref()).is_some_and(|agent| self.slots().contains(agent))
     }
 
     /// What `task`'s node goes on with passes the gate first. A node that closes does not: cleaning

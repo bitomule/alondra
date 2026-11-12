@@ -123,9 +123,23 @@ public extension ViewDocument {
     }
 }
 
+/// One count of the header sentence. `one` and `other` hold `{count}` where the number goes.
+public struct SummaryPart: Codable, Equatable, Sendable {
+    public let id: String
+    public let count: UInt32
+    public let one: String
+    public let other: String
+
+    public func text(count: UInt32) -> String {
+        (count == 1 ? one : other).replacingOccurrences(of: "{count}", with: String(count))
+    }
+}
+
 public struct ViewStatus: Codable, Equatable, Sendable {
     public let version: String
     public let summary: String
+    /// The pieces of `summary` with their wording, so a count can be redone for a change not heard back about.
+    public let summaryParts: [SummaryPart]?
     public let badge: UInt32
     public let counts: [ViewCount]
     public let gauges: [Gauge]
@@ -136,6 +150,7 @@ public struct ViewStatus: Codable, Equatable, Sendable {
     public let sessionWait: Notice?
     enum CodingKeys: String, CodingKey {
         case version, summary, badge, counts, gauges, orchestrator, update
+        case summaryParts = "summary_parts"
         case usageExhausted = "usage_exhausted"
         case sessionWait = "session_wait"
     }

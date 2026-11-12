@@ -4,12 +4,32 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "va47e4350b8e5d27d",
+  "version": "v02351e827c5bfcd3",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
-    "version": "v7bd6622d72998685",
-    "summary": "2 questions · 3 to read · 2 nodes working",
+    "version": "vf15e27e74fa727a8",
+    "summary": "2 questions · 3 to read · 2 tasks working",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} question",
+        "other": "{count} questions"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 2,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
     "badge": 5,
     "counts": [
       {
@@ -115,10 +135,10 @@
                   "tone": "neutral"
                 },
                 {
-                  "text": "running since 08:00",
+                  "text": "since 09:30",
                   "tone": "neutral",
                   "elapsed": {
-                    "since": "2026-09-30T08:00:00Z"
+                    "since": "2026-09-30T09:30:00Z"
                   }
                 }
               ],
@@ -133,11 +153,6 @@
                   "id": "activity",
                   "icon": "notice",
                   "title": "5 open questions",
-                  "trailing": {
-                    "kind": "time",
-                    "at": "2026-09-30T09:30:00Z",
-                    "format": "relative"
-                  },
                   "depth": 0,
                   "struck": false
                 }
@@ -189,10 +204,10 @@
                   "tone": "neutral"
                 },
                 {
-                  "text": "running since 09:20",
+                  "text": "since 09:00",
                   "tone": "neutral",
                   "elapsed": {
-                    "since": "2026-09-30T09:20:00.000Z"
+                    "since": "2026-09-30T09:00:00Z"
                   }
                 }
               ],
@@ -206,7 +221,7 @@
                 {
                   "id": "activity",
                   "icon": "notice",
-                  "title": "Turn running since 09:00 · Badge accuracy",
+                  "title": "Badge accuracy",
                   "depth": 0,
                   "struck": false
                 }
@@ -256,10 +271,10 @@
                   "tone": "neutral"
                 },
                 {
-                  "text": "running since 09:48",
+                  "text": "since 09:00",
                   "tone": "neutral",
                   "elapsed": {
-                    "since": "2026-09-30T09:48:00.000Z"
+                    "since": "2026-09-30T09:00:00Z"
                   }
                 }
               ],
@@ -269,15 +284,6 @@
               },
               "depth": 1,
               "struck": false,
-              "children": [
-                {
-                  "id": "activity",
-                  "icon": "notice",
-                  "title": "Turn running since 09:00",
-                  "depth": 0,
-                  "struck": false
-                }
-              ],
               "actions": [
                 {
                   "id": "pause:a-lumo@6",
@@ -313,13 +319,6 @@
                 {
                   "text": "Delivered",
                   "tone": "info"
-                },
-                {
-                  "text": "running since 17:15",
-                  "tone": "neutral",
-                  "elapsed": {
-                    "since": "2026-09-29T17:15:00.000Z"
-                  }
                 }
               ],
               "trailing": {
@@ -382,7 +381,7 @@
                 {
                   "id": "activity",
                   "icon": "notice",
-                  "title": "1st of 1",
+                  "title": "Starts when there is room",
                   "depth": 0,
                   "struck": false
                 }

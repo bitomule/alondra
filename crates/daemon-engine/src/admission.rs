@@ -112,7 +112,7 @@ pub(crate) fn decide(head: &Waiting, working: usize, limit: u32, mac: &MacState,
     decide_pacing(working, limit, mac.warned(), last_admission, spacing, now)
 }
 
-fn decide_pacing(working: usize, limit: u32, warned: bool, last_admission: Option<Millis>, spacing: Millis, now: Millis) -> Result<(), Hold> {
+pub(crate) fn decide_pacing(working: usize, limit: u32, warned: bool, last_admission: Option<Millis>, spacing: Millis, now: Millis) -> Result<(), Hold> {
     if working >= limit as usize {
         return Err(Hold::Slots { working, limit });
     }
@@ -536,7 +536,7 @@ impl Admission {
         }
         let waiting = inner.asking.get(&key).map_or(waiting.clone(), |known| Waiting { since: known.since, ..waiting });
         inner.asking.insert(key.clone(), waiting);
-        note_at_work(&mut inner, &state);
+        note_at_work(domain, &mut inner, &state);
         let snapshot = snapshot_locked(domain, &state, &inner, queued, now);
         let head = snapshot.next_start().filter(|head| head.key == key);
         let Some(head) = head else {
@@ -904,7 +904,7 @@ fn go_on(domain: &DomainRuntime, state: &DomainState, granted: &[TaskId]) {
 
 /// The tasks whose node has an input or an answer that waits for a slot, as the domain says,
 /// whoever asked. A node that fixes its accepted PR goes on without one.
-fn waiting_turns(state: &DomainState) -> BTreeSet<TaskId> {
+pub(crate) fn waiting_turns(state: &DomainState) -> BTreeSet<TaskId> {
     state.tasks.values().filter(|task| !task.over() && state.waits_for_turn(&task.id) && state.task_merge_failure(&task.id).is_none())
         .map(|task| task.id.clone()).collect()
 }
@@ -927,8 +927,8 @@ fn has_host(domain: &DomainRuntime, state: &DomainState, task: &TaskId) -> bool 
 }
 
 /// Remembers the resumes the gate let through whose node now holds a slot of its own.
-fn note_at_work(inner: &mut Inner, state: &DomainState) {
-    let busy = working_tasks(state);
+fn note_at_work(domain: &DomainRuntime, inner: &mut Inner, state: &DomainState) {
+    let busy = working_tasks(domain, state);
     let seen: Vec<Key> = inner.admitted.iter()
         .filter(|(key, _)| matches!(key, Key::Resume(_)) && task_of(state, key).is_some_and(|task| busy.contains(&task)))
         .map(|(key, _)| key.clone()).collect();
@@ -1020,9 +1020,18 @@ fn still_waits(state: &DomainState, key: &Key) -> bool {
 /// was lost and waits for the gate hold none, whatever their session still reports, and so does one
 /// the disk's floor held while the turn it runs ends; one the gate let back and Alondra is
 /// restarting holds one.
-pub(crate) fn working_tasks(state: &DomainState) -> BTreeSet<TaskId> {
-    state.slots().into_iter()
-        .filter_map(|agent| state.node_task(&agent.id).filter(|task| !task.over()).map(|task| task.id.clone()))
+pub(crate) fn working_tasks(domain: &DomainRuntime, state: &DomainState) -> BTreeSet<TaskId> {
+    let read = domain.read();
+    if read.index().describes(state) {
+        return slot_tasks(state, read.index());
+    }
+    slot_tasks(state, &alondra_core::domain::ReadIndex::build(state))
+}
+
+/// The open tasks whose node holds a slot in `index`, the read index of `state`.
+pub(crate) fn slot_tasks(state: &DomainState, index: &alondra_core::domain::ReadIndex) -> BTreeSet<TaskId> {
+    index.slots().iter()
+        .filter_map(|agent| state.node_task(agent).filter(|task| !task.over()).map(|task| task.id.clone()))
         .collect()
 }
 
@@ -1033,8 +1042,8 @@ fn turns_held_for_disk(state: &DomainState) -> impl Iterator<Item = TaskId> + '_
 }
 
 /// `working_tasks` with the project each one works on.
-pub(crate) fn working_projects(state: &DomainState) -> BTreeMap<TaskId, Option<String>> {
-    projects_of(state, working_tasks(state).iter())
+pub(crate) fn working_projects(domain: &DomainRuntime, state: &DomainState) -> BTreeMap<TaskId, Option<String>> {
+    projects_of(state, working_tasks(domain, state).iter())
 }
 
 /// Those of `tasks` the disk is reserved for: a paused node reserves nothing, whatever its held turn
@@ -1055,7 +1064,7 @@ pub(crate) fn hold_for_disk(domain: &DomainRuntime, now: Millis) {
     let Ok(state) = domain.state() else { return };
     let gate = &domain.live.gate;
     let pauses = gate.pauses(domain);
-    let at_work: Vec<crate::disk_peaks::AtWork> = working_tasks(&state).into_iter().filter_map(|task| {
+    let at_work: Vec<crate::disk_peaks::AtWork> = working_tasks(domain, &state).into_iter().filter_map(|task| {
         let session = crate::pauses::session_of(&state, &task)?;
         Some(crate::disk_peaks::AtWork {
             used: domain.live.machine_watch.disk_used(&task),
@@ -1144,7 +1153,7 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
     let waiting = waiting_turns(state);
     let turn_waits: BTreeMap<&TaskId, Millis> = waiting.iter().filter(|task| !inner.turns.contains(*task) && !covered(inner, state, task))
         .map(|task| (task, inner.saved.turn_waits.get(task).copied().unwrap_or(now))).collect();
-    let mut busy = working_tasks(state);
+    let mut busy = working_tasks(domain, state);
     busy.retain(|task| !turn_waits.contains_key(task));
     let paused = |task: &TaskId| crate::pauses::session_of(state, task).is_some_and(|session| inner.saved.pauses.paused.contains_key(&session));
     let waiting_again: BTreeSet<&Key> = queued.iter()
@@ -1352,7 +1361,7 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
         inner.asking.retain(|key, _| still_waits(&state, key));
         crate::pauses::look(domain, &state, &mut inner.saved.pauses, now);
         deliver_owed(domain, &mut inner);
-        note_at_work(&mut inner, &state);
+        note_at_work(domain, &mut inner, &state);
         granted = grant_turns(domain, &state, &mut inner, queued.clone(), now);
         let snapshot = snapshot_locked(domain, &state, &inner, queued, now);
         gate.save_with(domain, &mut inner);

@@ -1018,7 +1018,7 @@ async fn replacing_a_tasks_node_stops_it_keeps_its_folder_and_gives_the_task_to_
     let state = f.domain.state().unwrap();
     assert_eq!(state.agents[&agent].name, "Instance B", "it keeps the old node's name");
     assert_eq!(state.tasks[&TaskId::from("t")].agent_id, Some(agent));
-    assert!(!state.slots().iter().any(|agent| agent.id == old), "the old node is disconnected");
+    assert!(!alondra_core::domain::ReadIndex::build(&state).holds_slot(&old), "the old node is disconnected");
     assert!(f.domain.live.closed_task_ids().is_empty());
 }
 

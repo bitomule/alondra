@@ -4,12 +4,26 @@
   "view": "task",
   "key": "task:t-1",
   "client": "ios",
-  "version": "v1205c16604552c25",
+  "version": "v99b1d01c9cc5c88a",
   "cursor": "cursor-1",
   "title": "Release the daemon with the memory pause fix",
   "status": {
-    "version": "v887807058841bf6a",
-    "summary": "1 to read · 1 node working",
+    "version": "v0077b76685d5cafb",
+    "summary": "1 to read · 1 task working",
+    "summary_parts": [
+      {
+        "id": "to_read",
+        "count": 1,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 1,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
     "badge": 1,
     "counts": [
       {
@@ -35,7 +49,7 @@
       {
         "id": "waiting",
         "label": "waiting",
-        "value": 1
+        "value": 0
       }
     ],
     "gauges": [],
@@ -189,7 +203,7 @@
               "resolves_card": false
             },
             {
-              "id": "pause:a-1@0",
+              "id": "pause:a-1@1",
               "label": "Pause",
               "style": "secondary",
               "role": "neutral",

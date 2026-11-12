@@ -4,12 +4,26 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "va6045912b3bc0e55",
+  "version": "v47121ae35992850d",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
-    "version": "v887807058841bf6a",
-    "summary": "1 to read · 1 node working",
+    "version": "v0077b76685d5cafb",
+    "summary": "1 to read · 1 task working",
+    "summary_parts": [
+      {
+        "id": "to_read",
+        "count": 1,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 1,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
     "badge": 1,
     "counts": [
       {
@@ -35,7 +49,7 @@
       {
         "id": "waiting",
         "label": "waiting",
-        "value": 1
+        "value": 0
       }
     ],
     "gauges": [],
@@ -94,6 +108,13 @@
                 {
                   "text": "Working",
                   "tone": "accent"
+                },
+                {
+                  "text": "since 09:30",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:30:00Z"
+                  }
                 }
               ],
               "trailing": {
@@ -102,18 +123,9 @@
               },
               "depth": 1,
               "struck": false,
-              "children": [
-                {
-                  "id": "activity",
-                  "icon": "notice",
-                  "title": "Turn running since 09:30",
-                  "depth": 0,
-                  "struck": false
-                }
-              ],
               "actions": [
                 {
-                  "id": "pause:a-1@0",
+                  "id": "pause:a-1@1",
                   "label": "Pause",
                   "style": "secondary",
                   "role": "neutral",

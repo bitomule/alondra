@@ -1562,6 +1562,10 @@ impl TaskLifecycle {
         delivered.session.execution().and_then(Execution::worker)
             .or_else(|| self.has_pending().then_some(Worker::Alondra(Step::Delivering)))
     }
+    /// Its delivery stands for the user's review: not held behind another task, not accepted.
+    pub fn in_review(&self) -> bool {
+        matches!(&self.state, State::Delivered(Delivered { gate: DeliveryGate::Review, .. }))
+    }
     pub fn delivery(&self) -> Option<&InteractionId> {
         match &self.state {
             State::Delivered(delivered) => Some(&delivered.delivery),

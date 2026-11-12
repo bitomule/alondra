@@ -4,12 +4,32 @@
   "view": "tasks",
   "key": "tasks?section=finished&after=0",
   "client": "ios",
-  "version": "v6b7eceb53703152d",
+  "version": "v9f197c22d771fa85",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
-    "version": "v241280f956cb5ca1",
-    "summary": "2 preguntas · 3 por leer · 2 nodos trabajando",
+    "version": "v8bf834bde2d182f0",
+    "summary": "2 preguntas · 3 por leer · 2 tareas trabajando",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} pregunta",
+        "other": "{count} preguntas"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} por leer",
+        "other": "{count} por leer"
+      },
+      {
+        "id": "working",
+        "count": 2,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
     "badge": 5,
     "counts": [
       {
@@ -115,10 +135,10 @@
                   "tone": "neutral"
                 },
                 {
-                  "text": "en marcha desde las 08:00",
+                  "text": "desde las 09:30",
                   "tone": "neutral",
                   "elapsed": {
-                    "since": "2026-09-30T08:00:00Z"
+                    "since": "2026-09-30T09:30:00Z"
                   }
                 }
               ],
@@ -133,11 +153,6 @@
                   "id": "activity",
                   "icon": "notice",
                   "title": "5 preguntas abiertas",
-                  "trailing": {
-                    "kind": "time",
-                    "at": "2026-09-30T09:30:00Z",
-                    "format": "relative"
-                  },
                   "depth": 0,
                   "struck": false
                 }
@@ -189,10 +204,10 @@
                   "tone": "neutral"
                 },
                 {
-                  "text": "en marcha desde las 09:20",
+                  "text": "desde las 09:00",
                   "tone": "neutral",
                   "elapsed": {
-                    "since": "2026-09-30T09:20:00.000Z"
+                    "since": "2026-09-30T09:00:00Z"
                   }
                 }
               ],
@@ -206,7 +221,7 @@
                 {
                   "id": "activity",
                   "icon": "notice",
-                  "title": "Turno en marcha desde las 09:00 · Badge accuracy",
+                  "title": "Badge accuracy",
                   "depth": 0,
                   "struck": false
                 }
@@ -256,10 +271,10 @@
                   "tone": "neutral"
                 },
                 {
-                  "text": "en marcha desde las 09:48",
+                  "text": "desde las 09:00",
                   "tone": "neutral",
                   "elapsed": {
-                    "since": "2026-09-30T09:48:00.000Z"
+                    "since": "2026-09-30T09:00:00Z"
                   }
                 }
               ],
@@ -269,15 +284,6 @@
               },
               "depth": 1,
               "struck": false,
-              "children": [
-                {
-                  "id": "activity",
-                  "icon": "notice",
-                  "title": "Turno en marcha desde las 09:00",
-                  "depth": 0,
-                  "struck": false
-                }
-              ],
               "actions": [
                 {
                   "id": "pause:a-lumo@6",
@@ -313,13 +319,6 @@
                 {
                   "text": "Entregada",
                   "tone": "info"
-                },
-                {
-                  "text": "en marcha desde las 17:15",
-                  "tone": "neutral",
-                  "elapsed": {
-                    "since": "2026-09-29T17:15:00.000Z"
-                  }
                 }
               ],
               "trailing": {
@@ -382,7 +381,7 @@
                 {
                   "id": "activity",
                   "icon": "notice",
-                  "title": "1.º de 1",
+                  "title": "Arranca cuando haya sitio",
                   "depth": 0,
                   "struck": false
                 }

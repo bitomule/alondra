@@ -3795,7 +3795,7 @@ fn nodes_waiting_on_the_user_inside_their_turn_leave_their_slots_to_the_queue() 
     for driver in &drivers[..5] {
         assert!(state.node_waits_on_user(driver.agent()), "the log lists it as waiting on the user");
     }
-    assert_eq!(crate::admission::working_tasks(&state), BTreeSet::from([TaskId::from("busy")]), "only busy works");
+    assert_eq!(crate::admission::working_tasks(&slice.domain, &state), BTreeSet::from([TaskId::from("busy")]), "only busy works");
     let now = alondra_core::now_millis();
     assert_eq!(gate.snapshot(&slice.domain, now).unwrap().working, 1);
     assert_eq!(gate.live(&slice.domain, now).unwrap().working, 1, "the apps show the gate's count");
@@ -4810,7 +4810,7 @@ fn an_adopted_host_without_a_process_is_ended_at_adoption() {
     let replaced = slice.take_over(&restarted);
     let journal = restarted.state().unwrap().lifecycle_journal[&TaskId::from(TASK)].clone();
     assert!(journal.iter().any(|record| matches!(record, alondra_core::domain::LifecycleRecord::HostEnded { .. })), "{journal:?}");
-    assert!(!crate::admission::working_tasks(&restarted.state().unwrap()).contains(&TaskId::from(TASK)));
+    assert!(!crate::admission::working_tasks(&restarted, &restarted.state().unwrap()).contains(&TaskId::from(TASK)));
     assert!(processes.iter().all(|process| !alondra_process_group::alive(process).unwrap()), "nothing of the host is left running");
     kill_host_and_daemon(replaced);
 }

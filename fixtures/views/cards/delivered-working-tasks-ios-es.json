@@ -4,12 +4,26 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v6e9260eb8dd470e4",
+  "version": "vb2c55852e8df3883",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
-    "version": "vb7b081b6c72395b1",
-    "summary": "1 por leer · 1 nodo trabajando",
+    "version": "va894ec752de3e5a9",
+    "summary": "1 por leer · 1 tarea trabajando",
+    "summary_parts": [
+      {
+        "id": "to_read",
+        "count": 1,
+        "one": "{count} por leer",
+        "other": "{count} por leer"
+      },
+      {
+        "id": "working",
+        "count": 1,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
     "badge": 1,
     "counts": [
       {
@@ -35,7 +49,7 @@
       {
         "id": "waiting",
         "label": "esperando",
-        "value": 1
+        "value": 0
       }
     ],
     "gauges": [],
@@ -94,6 +108,13 @@
                 {
                   "text": "Trabajando",
                   "tone": "accent"
+                },
+                {
+                  "text": "desde las 09:30",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:30:00Z"
+                  }
                 }
               ],
               "trailing": {
@@ -102,18 +123,9 @@
               },
               "depth": 1,
               "struck": false,
-              "children": [
-                {
-                  "id": "activity",
-                  "icon": "notice",
-                  "title": "Turno en marcha desde las 09:30",
-                  "depth": 0,
-                  "struck": false
-                }
-              ],
               "actions": [
                 {
-                  "id": "pause:a-1@0",
+                  "id": "pause:a-1@1",
                   "label": "Pausar",
                   "style": "secondary",
                   "role": "neutral",

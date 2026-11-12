@@ -4,12 +4,20 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v2e876c60384527b8",
+  "version": "ve457f391be962277",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
-    "version": "vf38984d8a3bb71e1",
-    "summary": "4 nodos trabajando",
+    "version": "vb9c56b5c0232574c",
+    "summary": "4 tareas trabajando",
+    "summary_parts": [
+      {
+        "id": "working",
+        "count": 4,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
     "badge": 0,
     "counts": [
       {
@@ -94,6 +102,13 @@
                 {
                   "text": "Trabajando",
                   "tone": "accent"
+                },
+                {
+                  "text": "desde las 09:30",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:30:00Z"
+                  }
                 }
               ],
               "trailing": {
@@ -102,18 +117,9 @@
               },
               "depth": 1,
               "struck": false,
-              "children": [
-                {
-                  "id": "activity",
-                  "icon": "notice",
-                  "title": "En segundo plano: `Check the links` y 1 más · desde las 09:40 · Dijo: «The checks passed.» 09:31",
-                  "depth": 0,
-                  "struck": false
-                }
-              ],
               "actions": [
                 {
-                  "id": "pause:a-background@0",
+                  "id": "pause:a-background@1",
                   "label": "Pausar",
                   "style": "secondary",
                   "role": "neutral",
@@ -146,6 +152,13 @@
                 {
                   "text": "Trabajando",
                   "tone": "accent"
+                },
+                {
+                  "text": "desde las 09:30",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:30:00Z"
+                  }
                 }
               ],
               "trailing": {
@@ -154,18 +167,9 @@
               },
               "depth": 1,
               "struck": false,
-              "children": [
-                {
-                  "id": "activity",
-                  "icon": "notice",
-                  "title": "Paso 1 de 1 · Check the release · `bazel test //crates/...` · desde las 09:38 · Dijo: «The checks passed.» 09:31",
-                  "depth": 0,
-                  "struck": false
-                }
-              ],
               "actions": [
                 {
-                  "id": "pause:a-command@0",
+                  "id": "pause:a-command@1",
                   "label": "Pausar",
                   "style": "secondary",
                   "role": "neutral",
@@ -198,6 +202,13 @@
                 {
                   "text": "Trabajando",
                   "tone": "accent"
+                },
+                {
+                  "text": "desde las 09:30",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:30:00Z"
+                  }
                 }
               ],
               "trailing": {
@@ -206,18 +217,9 @@
               },
               "depth": 1,
               "struck": false,
-              "children": [
-                {
-                  "id": "activity",
-                  "icon": "notice",
-                  "title": "Espera a la confirmación del despliegue · 2 de 3 · Esperando al servidor · desde las 09:42 · Dijo: «The checks passed.» 09:31",
-                  "depth": 0,
-                  "struck": false
-                }
-              ],
               "actions": [
                 {
-                  "id": "pause:a-reported@0",
+                  "id": "pause:a-reported@1",
                   "label": "Pausar",
                   "style": "secondary",
                   "role": "neutral",
@@ -250,6 +252,13 @@
                 {
                   "text": "Trabajando",
                   "tone": "accent"
+                },
+                {
+                  "text": "desde las 09:30",
+                  "tone": "neutral",
+                  "elapsed": {
+                    "since": "2026-09-30T09:30:00Z"
+                  }
                 }
               ],
               "trailing": {
@@ -258,18 +267,9 @@
               },
               "depth": 1,
               "struck": false,
-              "children": [
-                {
-                  "id": "activity",
-                  "icon": "notice",
-                  "title": "Turno en marcha desde las 09:30 · Dijo: «The checks passed.» 09:31",
-                  "depth": 0,
-                  "struck": false
-                }
-              ],
               "actions": [
                 {
-                  "id": "pause:a-said@0",
+                  "id": "pause:a-said@1",
                   "label": "Pausar",
                   "style": "secondary",
                   "role": "neutral",

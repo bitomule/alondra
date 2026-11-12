@@ -362,8 +362,7 @@ pub(super) fn background_sections(node: &super::LiveNode, context: &RenderContex
 pub(super) fn last_message_section(node: &super::LiveNode, context: &RenderContext<'_>) -> Option<super::Section> {
     let message = node.last_message.as_ref().filter(|text| !text.trim().starts_with("mcp__") && !text.trim().is_empty())?;
     let mut items = vec![Item::Markdown(Markdown { text: message.clone(), truncated: false, more: None, commentable: false })];
-    if context.client == super::Client::Ios
-        && let Some(at) = node.last_message_at.as_ref() {
+    if let Some(at) = node.last_message_at.as_ref() {
         let mut row = common::row("last_message_time", "node", Icon::History,
             t!(context.lang, "Last message", "Último mensaje").into(), None);
         row.link = None;

@@ -4,11 +4,31 @@
   "view": "home",
   "key": "home",
   "client": "ios",
-  "version": "vfcd78aa1501268dc",
+  "version": "v6e92a4268d12b15c",
   "cursor": "cursor-1",
   "status": {
-    "version": "vf84c4996f0984c30",
-    "summary": "2 questions · 3 to read · 0 nodes working",
+    "version": "vec309c5722d410ab",
+    "summary": "2 questions · 3 to read · 0 tasks working",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} question",
+        "other": "{count} questions"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
     "badge": 5,
     "counts": [
       {
@@ -88,12 +108,32 @@
       "view": "card",
       "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
       "client": "ios",
-      "version": "vc3a1c0a6a6cec3cf",
+      "version": "v6a2deb24ecee6e36",
       "cursor": "cursor-1",
       "title": "Choose the welcome copy",
       "status": {
-        "version": "vf84c4996f0984c30",
-        "summary": "2 questions · 3 to read · 0 nodes working",
+        "version": "vec309c5722d410ab",
+        "summary": "2 questions · 3 to read · 0 tasks working",
+        "summary_parts": [
+          {
+            "id": "questions",
+            "count": 2,
+            "one": "{count} question",
+            "other": "{count} questions"
+          },
+          {
+            "id": "to_read",
+            "count": 3,
+            "one": "{count} to read",
+            "other": "{count} to read"
+          },
+          {
+            "id": "working",
+            "count": 0,
+            "one": "{count} task working",
+            "other": "{count} tasks working"
+          }
+        ],
         "badge": 5,
         "counts": [
           {
@@ -288,12 +328,32 @@
       "view": "card",
       "key": "card:8fa4034b-249e-4487-a89b-57de38c26372",
       "client": "ios",
-      "version": "v7a4d882b4bd78e36",
+      "version": "v8b8a855a583d96c7",
       "cursor": "cursor-1",
       "title": "Ship the compact schedule editor with this beta?",
       "status": {
-        "version": "vf84c4996f0984c30",
-        "summary": "2 questions · 3 to read · 0 nodes working",
+        "version": "vec309c5722d410ab",
+        "summary": "2 questions · 3 to read · 0 tasks working",
+        "summary_parts": [
+          {
+            "id": "questions",
+            "count": 2,
+            "one": "{count} question",
+            "other": "{count} questions"
+          },
+          {
+            "id": "to_read",
+            "count": 3,
+            "one": "{count} to read",
+            "other": "{count} to read"
+          },
+          {
+            "id": "working",
+            "count": 0,
+            "one": "{count} task working",
+            "other": "{count} tasks working"
+          }
+        ],
         "badge": 5,
         "counts": [
           {
@@ -470,12 +530,32 @@
       "view": "card",
       "key": "card:hf-weekly-2026-09-30",
       "client": "ios",
-      "version": "v31d53d6f8de64c57",
+      "version": "v4b66eac8484db97d",
       "cursor": "cursor-1",
       "title": "Review the beta candidate",
       "status": {
-        "version": "vf84c4996f0984c30",
-        "summary": "2 questions · 3 to read · 0 nodes working",
+        "version": "vec309c5722d410ab",
+        "summary": "2 questions · 3 to read · 0 tasks working",
+        "summary_parts": [
+          {
+            "id": "questions",
+            "count": 2,
+            "one": "{count} question",
+            "other": "{count} questions"
+          },
+          {
+            "id": "to_read",
+            "count": 3,
+            "one": "{count} to read",
+            "other": "{count} to read"
+          },
+          {
+            "id": "working",
+            "count": 0,
+            "one": "{count} task working",
+            "other": "{count} tasks working"
+          }
+        ],
         "badge": 5,
         "counts": [
           {

@@ -3,6 +3,7 @@
 use super::world::{self, History, Host, MINUTE, history};
 use super::*;
 use alondra_core::domain::{AlondraStep, Delivery, Situation, WaitsFor};
+use alondra_domain::Party;
 use proptest::prelude::*;
 
 /// A rule the code does not apply yet. While its row is listed, the model applies it itself; the
@@ -12,9 +13,13 @@ pub(super) enum Gap {
     /// Phase 7 wrote the deadline of an input the session does not take, but enforces it only
     /// after a day of measurement (`obligation_policy::enforced`): until then the model does.
     HandInput,
+    /// A task the user sent back still owes the user and reads as a step of Alondra's (delivering the hand-back, or answering the node)
+    /// (`handed_back` holds until the node presents again), whether its node already took it and
+    /// asked the orchestrator, or a deferred account move left nothing to start a node for it.
+    HandedBackOwesUser,
 }
 
-pub(super) const KNOWN_GAPS: &[Gap] = &[Gap::HandInput];
+pub(super) const KNOWN_GAPS: &[Gap] = &[Gap::HandInput, Gap::HandedBackOwesUser];
 
 fn listed(gap: Gap) -> bool {
     KNOWN_GAPS.contains(&gap)
@@ -28,9 +33,25 @@ pub(super) fn gap_open(owed: Owed) -> bool {
     }
 }
 
-/// The open tasks whose node holds a slot: what the header and the Live Activity count.
+/// How many times a step may be owed again as the one before it, with nobody acting in between: a
+/// node woken on each empty turn is owed its input three times, and a host that ends starts the count again.
+const MOST_REARMS: u32 = 6;
+
+/// The open tasks whose node holds a slot, as the gate reads them.
 pub(super) fn slot_tasks(state: &DomainState) -> BTreeSet<TaskId> {
-    state.slots().into_iter().filter_map(|agent| state.node_task(&agent.id).filter(|task| !task.over()).map(|task| task.id.clone())).collect()
+    crate::admission::slot_tasks(state, &ReadIndex::build(state))
+}
+
+/// The open tasks that must hold a slot by what every screen reads of them: at work or a step of
+/// Alondra's from it, not ending, their node not paused, and their execution holding a slot.
+fn tasks_shown_on_a_slot(state: &DomainState, index: &ReadIndex) -> BTreeSet<TaskId> {
+    state.tasks.values()
+        .filter(|task| !task.over() && task.state != alondra_core::domain::TaskState::Closing && task.wrap_up.asked_at.is_none())
+        .filter(|task| task.agent_id.as_ref().is_some_and(|agent| state.through_sdk(agent) && state.node_pause(agent).is_none()))
+        .filter(|task| matches!(situation(index, &task.id), Situation::Working(_) | Situation::Waiting(WaitsFor::Step(AlondraStep::Starting | AlondraStep::Delivering | AlondraStep::Waking))))
+        .filter(|task| state.lifecycle_of(&task.id).is_ok_and(|lifecycle| lifecycle.holds_slot()))
+        .map(|task| task.id.clone())
+        .collect()
 }
 
 fn situation(index: &ReadIndex, task: &TaskId) -> Situation {
@@ -45,6 +66,12 @@ fn open_tasks(state: &DomainState) -> Vec<TaskId> {
 fn room_is_scarce(machine: &Machine, state: &DomainState) -> bool {
     let world = &machine.world;
     slot_tasks(state).len() >= world.slots || world.memory_tight || world.disk_full || world.usage_holds()
+}
+
+/// `task` was sent back by the user and the domain still says the user owes the next step.
+fn handed_back_owing_the_user(state: &DomainState, task: &TaskId) -> bool {
+    state.task_handed_back(task).is_some()
+        && state.lifecycle_of(task).ok().and_then(|lifecycle| lifecycle.obligation()).is_some_and(|obligation| obligation.party == Party::User)
 }
 
 /// The host has given the daemon everything it observed of `task`.
@@ -77,6 +104,7 @@ fn ends_well(machine: &Machine, state: &DomainState, index: &ReadIndex, task: &T
         Situation::Waiting(WaitsFor::Step(AlondraStep::Delivering)) if state.waits_for_turn(task) => {
             room_is_scarce(machine, state)
         }
+        Situation::Waiting(WaitsFor::Step(AlondraStep::Delivering | AlondraStep::Answering)) if listed(Gap::HandedBackOwesUser) && handed_back_owing_the_user(state, task) => true,
         Situation::Waiting(WaitsFor::Machine) => world.memory_tight,
         Situation::Waiting(WaitsFor::Disk) => world.disk_full,
         Situation::Waiting(WaitsFor::Usage) => world.usage_holds(),
@@ -99,6 +127,7 @@ struct Verdicts {
     clock_cards: Option<String>,
     answers: Option<String>,
     unlisted: Option<String>,
+    rearms: Option<String>,
 }
 
 fn with_trace(machine: &Machine, why: String) -> String {
@@ -121,9 +150,9 @@ fn counts_differ(state: &DomainState, index: &ReadIndex) -> Option<String> {
     if header != working.len() {
         return Some(format!("the header counts {header} working, the tasks that read working are {working:?}"));
     }
-    let gate = crate::admission::working_tasks(state);
-    let slots = slot_tasks(state);
-    (gate != slots).then(|| format!("the gate counts {gate:?} at work, the nodes holding a slot are {slots:?}"))
+    let gate = crate::admission::slot_tasks(state, index);
+    let shown = tasks_shown_on_a_slot(state, index);
+    (gate != shown).then(|| format!("the gate counts {gate:?} on a slot, the tasks every screen reads on one are {shown:?}"))
 }
 
 fn unlisted_wait(state: &DomainState, index: &ReadIndex) -> Option<String> {
@@ -173,7 +202,10 @@ fn judge(history: &History) -> Verdicts {
         verdicts.close = failed(seen.close_left_running.join("; "));
     }
     if seen.most_wakes > 3 {
-        verdicts.wakes = failed(format!("a node was woken {} times with no progress between", seen.most_wakes));
+        verdicts.wakes = failed(format!("a node was woken {} times with no progress between\n{}", seen.most_wakes, seen.excess.clone().unwrap_or_default()));
+    }
+    if seen.most_rearms > MOST_REARMS {
+        verdicts.rearms = failed(format!("a step was owed again {} times with nobody acting: it re-arms in a loop\n{}", seen.most_rearms, seen.excess.clone().unwrap_or_default()));
     }
     let pending: Vec<&TaskId> = state.tasks.values().filter(|task| task.pending_selection.is_some()).map(|task| &task.id).collect();
     if !pending.is_empty() {
@@ -183,12 +215,13 @@ fn judge(history: &History) -> Verdicts {
         verdicts.clock_cards = failed(format!("a pass of the clock opened cards for the user: {:?}", seen.clock_cards));
     }
     let undelivered: Vec<TaskId> = open_tasks(&state).into_iter()
-        .filter(|task| state.lifecycle_of(task).ok().and_then(|lifecycle| lifecycle.obligation()).is_some_and(|obligation| obligation.owed == Owed::HandDecision))
+        .filter(|task| state.lifecycle_of(task).ok().and_then(|lifecycle| lifecycle.obligation()).is_some_and(|obligation| obligation.owed == Owed::HandDecision)
+            || state.waits_for_turn(task))
         .collect();
     let others_fill_the_slots = |task: &TaskId| slot_tasks(&state).into_iter().filter(|other| other != task).count() >= machine.world.slots;
     let undelivered: Vec<TaskId> = undelivered.into_iter().filter(|task| !others_fill_the_slots(task)).collect();
     if !undelivered.is_empty() {
-        verdicts.answers = failed(format!("an answer never reached the turn of {undelivered:?}, with a slot free"));
+        verdicts.answers = failed(format!("an answer or an input never reached the turn of {undelivered:?}, with a slot free"));
     }
     verdicts
 }
@@ -217,6 +250,20 @@ fn a_host_stopped_on_purpose_while_the_node_worked_on_what_the_user_sent_back_en
         script: vec![world::Turn::Deliver, world::Turn::Background],
         slots: 3,
         actions: vec![world::Action::TurnEnds(0), world::Action::User(world::UserAct::Return, 0), world::Action::Clock(world::PASS * 2), world::Action::StopsHost(0)],
+    };
+    if let Err(failure) = holds(&history, |verdicts| &verdicts.ends) {
+        panic!("{failure}");
+    }
+}
+
+/// A host that dies with its late facts still unread leaves the turn it cut: the host that takes
+/// the task over tells how it ended, so the task never reads as running with nothing running it.
+#[test]
+fn a_host_that_dies_with_late_facts_leaves_a_task_taken_over_that_reports_the_turn_it_cut() {
+    let history = History {
+        script: vec![world::Turn::Deliver],
+        slots: 2,
+        actions: vec![world::Action::User(world::UserAct::Cancel, 0), world::Action::FactsLate(2), world::Action::FactsAgain(2), world::Action::HostDies(2)],
     };
     if let Err(failure) = holds(&history, |verdicts| &verdicts.ends) {
         panic!("{failure}");
@@ -254,6 +301,11 @@ proptest! {
     }
 
     #[test]
+    fn a_step_never_re_arms_in_a_loop(history in history()) {
+        holds(&history, |verdicts| &verdicts.rearms)?;
+    }
+
+    #[test]
     fn no_node_is_woken_more_than_three_times_without_progress(history in history()) {
         holds(&history, |verdicts| &verdicts.wakes)?;
     }
@@ -279,4 +331,51 @@ proptest! {
     }
 }
 
+/// The histories the model found for `Gap::HandedBackOwesUser`: they keep ending well while the gap
+/// is listed, and the row goes once the reading says what the task waits for.
+#[test]
+fn a_task_sent_back_ends_well_whether_its_node_asks_or_its_move_is_deferred() {
+    use super::world::{Action, Turn, UserAct};
+    let asking = History {
+        script: vec![Turn::Deliver, Turn::AskOrchestrator], slots: 1,
+        actions: vec![Action::Slots(3), Action::OrchestratorAnswers(false), Action::TurnEnds(2), Action::User(UserAct::Return, 2)],
+    };
+    let moved = History {
+        script: vec![Turn::Deliver], slots: 3,
+        actions: vec![Action::TurnEnds(2), Action::User(UserAct::Move, 2), Action::User(UserAct::Return, 2)],
+    };
+    for history in [asking, moved] {
+        holds(&history, |verdicts| &verdicts.ends).unwrap();
+    }
+}
 
+/// The shape behind the 11 November permission answered at 00:21 that reached its turn at 03:25: a
+/// permission the user answers while the gate holds the slots of other tasks must reach its turn
+/// once one frees.
+#[test]
+fn a_permission_answered_while_the_gate_is_full_reaches_its_turn() {
+    use super::world::{Action, Turn, UserAct};
+    let history = History {
+        script: vec![Turn::AskPermission], slots: 1,
+        actions: vec![Action::TurnEnds(0), Action::User(UserAct::Answer, 0), Action::Slots(2), Action::Slots(3)],
+    };
+    let mut machine = Machine::new(&history);
+    for action in &history.actions {
+        machine.act(action);
+    }
+    assert!(machine.trace.iter().any(|line| line.contains("AnswerQuestion") && line.ends_with("-> ok")), "the user's answer was never accepted:\n{}", machine.trace.join("\n"));
+    machine.rest(|_| {});
+    let state = machine.state();
+    let task = TaskId::from("t-a");
+    assert!(!state.lifecycle_of(&task).unwrap().answer_goes_on(), "the answer never reached its turn");
+}
+
+/// A node that opened a pull request and then stops with nothing to show is closed by the
+/// orchestrator once it stopped too often: the close delivers the pull request to the user in the
+/// same command, and never leaves the task running.
+#[test]
+fn closing_a_stalled_task_with_its_pull_request_open_delivers_it() {
+    use super::world::{Action, Turn};
+    let history = History { script: vec![Turn::OpenPr], slots: 3, actions: vec![Action::TurnEnds(0)] };
+    holds(&history, |verdicts| &verdicts.close).unwrap();
+}
