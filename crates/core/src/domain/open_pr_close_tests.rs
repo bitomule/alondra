@@ -166,12 +166,15 @@ fn a_cancelled_tasks_pr_is_not_closed_if_its_branch_acquired_a_live_task_since_t
 }
 
 /// The stops of t-musts-validate-ignored-parent: its node registered musts #113 and its turns
-/// ended twice without presenting it, so the second stop became a case for the orchestrator.
+/// kept ending without presenting it, so the stop after its wakes became a case for the orchestrator.
 fn stalled_with_open_pr() -> DomainState {
     let mut s = registered();
     end_empty(&mut s, "turn-1");
-    start(&mut s, "turn-2");
-    end_empty(&mut s, "turn-2");
+    for n in 2..=alondra_domain::EMPTY_TURN_WAKES + 1 {
+        let turn = format!("turn-{n}");
+        start(&mut s, &turn);
+        end_empty(&mut s, &turn);
+    }
     s
 }
 

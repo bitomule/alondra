@@ -4,9 +4,9 @@
 //! no other writer can move them. Every task has a journal; the store keeps it as the events these
 //! records stand for, and `journal_writes`/`records_from_events` are the two ways across.
 use super::*;
-use super::rules::stalled_in_place_of;
+use super::rules::{stalled_before, stalled_in_place_of};
 use alondra_domain::{
-    ActivityView, Await, CLAUDE_BG_HOST, CallbackId, Capacity, LiveState, Owner, Several, Worker, ContinuationId, Control, ConversationId, Decision, DrainObligation, Event,
+    ActivityView, Await, CLAUDE_BG_HOST, EMPTY_TURN_WAKES, CallbackId, Capacity, LiveState, Owner, Several, Worker, ContinuationId, Control, ConversationId, Decision, DrainObligation, Event,
     FinishIntent, HostId, InputId, InstanceId, OperationId, PermissionMode, PlanReviewOutcome as ReviewSettlement,
     PostMergeFact, Refusal, ResourceEvidence, RuntimeFact, TaskLifecycle, TaskPhase, Trigger, TurnId, WaitReason, WorkId,
     decision_callback, decision_continuation, decision_epoch,
@@ -237,7 +237,7 @@ pub enum TurnAwait {
     Tasks { tasks: Vec<TaskId> },
 }
 impl TurnAwait {
-    fn of(awaits: &Await) -> Self {
+    pub(in crate::domain) fn of(awaits: &Await) -> Self {
         match awaits {
             Await::Instruction => Self::Instruction,
             Await::User(card) => Self::User { card: card.clone() },
@@ -1256,14 +1256,12 @@ impl DomainState {
         Ok(())
     }
 
-    /// Records `record` only when it sends `input` to the node: the domain takes a provider fact
-    /// that names an input it has no use for, and ignores that input.
-    fn decide_sending(&mut self, lifecycles: &mut Lifecycles, task: &TaskId, record: LifecycleRecord, input: &str) -> bool {
+    /// Whether `record` would send `input` to the node: the store keeps an input with its text only
+    /// for one that reaches the node, so a record names it only then. Nothing is recorded here.
+    fn sends(&self, lifecycles: &mut Lifecycles, task: &TaskId, record: &LifecycleRecord, input: &str) -> bool {
         let Ok(lifecycle) = self.lifecycle(lifecycles, task) else { return false };
-        let Ok(event) = event(task, &record, lifecycle) else { return false };
-        let sends = lifecycle.advanced(lifecycle.revision(), event)
-            .is_ok_and(|next| next.pending_inputs().iter().any(|pending| pending.as_str() == input));
-        sends && self.decide(lifecycles, task, record).is_ok()
+        let Ok(event) = event(task, record, lifecycle) else { return false };
+        lifecycle.advanced(lifecycle.revision(), event).is_ok_and(|next| next.pending_inputs().iter().any(|pending| pending.as_str() == input))
     }
 
     /// The task's DTO reads the aggregate: node, start, ending and the state its phase stands for.
@@ -1479,9 +1477,10 @@ impl DomainState {
     /// explains what the task does next (no work of its own, no continuation, no input waiting) is
     /// not empty when its node waits on something Alondra recorded (`turn_await`): the task waits
     /// for that. Otherwise the turn is empty, a stop that is Alondra's to fix and never the user's:
-    /// the first one since the task last moved on wakes the node with what happened, and each one
-    /// after it opens a case the orchestrator settles (`open_stall`), created in this same step.
-    /// The lifecycle counts them, by turns, never by time.
+    /// the lifecycle hands the node back its turn at once with what is missing, up to
+    /// `EMPTY_TURN_WAKES` times in a row since the task last moved on, and the next one opens a case
+    /// the orchestrator settles (`open_stall`), created in this same step. The lifecycle counts
+    /// them, by turns, never by time.
     ///
     /// A turn a Claude API error ended is held instead when waiting helps: on the one card that
     /// asks the user to sign in to Claude, or until the API or the usage limit lets it go on; when
@@ -1559,32 +1558,20 @@ impl DomainState {
         } else {
             self.turn_await(task).filter(|_| unexplained)
         };
-        let wake_text = self.empty_turn(task).wake_text();
-        let ended = |wake: Option<String>, awaits: Option<TurnAwait>| LifecycleRecord::TurnEnded {
-            turn: turn.into(),
-            unheard_card: card.clone(),
-            text: wake.as_ref().map(|_| wake_text.clone()),
-            wake,
-            awaits,
-            stalled,
-        };
         let empty = unexplained && awaits.is_none();
-        let wake = self.next_input(task);
-        let woke = empty && !self.stalled_before(task)
-            && self.decide_sending(lifecycles, task, ended(Some(wake.clone()), None), &wake);
-        if !woke {
-            if awaits.is_none() {
-                self.consume_notifications_read(task, generation, lifecycles)?;
-            }
-            self.decide(lifecycles, task, ended(None, awaits))?;
+        let wake = (empty && self.lifecycle(lifecycles, task)?.hands_back_an_empty_turn()).then(|| self.next_input(task));
+        if wake.is_none() && awaits.is_none() {
+            self.consume_notifications_read(task, generation, lifecycles)?;
         }
+        let wakes = self.lifecycle(lifecycles, task)?.empty_turns() + 1;
+        let text = wake.as_ref().map(|_| self.empty_turn(task).wake_text_at(wakes));
+        self.decide(lifecycles, task, LifecycleRecord::TurnEnded { turn: turn.into(), unheard_card: card.clone(), text, wake, awaits, stalled })?;
         let owed = if empty { self.owed_step(task, self.lifecycle(lifecycles, task)?) } else { None };
         if let Some(owed) = &owed {
-            let text = owed.wake_text();
-            let unfinished = |wake: Option<String>| LifecycleRecord::Unfinished { unheard_card: card.clone(), text: wake.as_ref().map(|_| text.clone()), wake };
-            if self.stalled_before(task) || self.decide(lifecycles, task, unfinished(Some(self.next_input(task)))).is_err() {
-                let _ = self.decide(lifecycles, task, unfinished(None));
-            }
+            let wake = self.wake_for(task, lifecycles)?;
+            let wakes = self.lifecycle(lifecycles, task)?.empty_turns() + 1;
+            let text = wake.as_ref().map(|_| owed.wake_text_at(wakes));
+            self.decide(lifecycles, task, LifecycleRecord::Unfinished { unheard_card: card.clone(), text, wake })?;
         }
         let lifecycle = self.lifecycle(lifecycles, task)?;
         if lifecycle.phase() == TaskPhase::Delivered && lifecycle.activity() == ActivityView::Resting
@@ -1605,6 +1592,12 @@ impl DomainState {
             }
         }
         Ok(())
+    }
+
+    /// The input that hands an empty turn of `task` back to its node, while its empty turns in a
+    /// row have not reached `EMPTY_TURN_WAKES`; the lifecycle decides whether it reaches the node.
+    fn wake_for(&self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<Option<String>> {
+        Ok((!stalled_before(self.lifecycle(lifecycles, task)?)).then(|| self.next_input(task)))
     }
 
     /// A turn that ends without waking the node or waiting on anything read the notifications it
@@ -1661,16 +1654,12 @@ impl DomainState {
             if !self.lapsed(&task, &awaits) || self.interactions.contains_key(&card) {
                 continue;
             }
-            let wake_text = self.empty_turn(&task).wake_text();
-            let ended = |wake: Option<String>| LifecycleRecord::AwaitEnded {
-                unheard_card: card.clone(),
-                text: wake.as_ref().map(|_| wake_text.clone()),
-                wake,
-                stalled: true,
-            };
-            if self.stalled_before(&task) || self.decide(lifecycles, &task, ended(Some(self.next_input(&task)))).is_err() {
-                self.decide(lifecycles, &task, ended(None))?;
-            }
+            let lifecycle = self.lifecycle(lifecycles, &task)?;
+            let executing = lifecycle.phase() == TaskPhase::InProgress && lifecycle.cards().is_empty() && lifecycle.dependencies().is_empty();
+            let wake = if executing { self.wake_for(&task, lifecycles)? } else { None };
+            let wakes = self.lifecycle(lifecycles, &task)?.empty_turns() + 1;
+            let text = wake.as_ref().map(|_| self.empty_turn(&task).wake_text_at(wakes));
+            self.decide(lifecycles, &task, LifecycleRecord::AwaitEnded { unheard_card: card.clone(), text, wake, stalled: true })?;
             if self.lifecycle(lifecycles, &task)?.cards().iter().any(|(required, _)| **required == card) {
                 self.open_stall(&task, card, effects);
             }
@@ -1689,7 +1678,8 @@ impl DomainState {
     /// delivery, the work it said runs after the merge. None once Alondra left the case of such a
     /// rest unsettled: the delivery waits for the user.
     pub fn owed_step(&self, task: &TaskId, lifecycle: &TaskLifecycle) -> Option<EmptyTurn> {
-        if lifecycle.phase() != TaskPhase::Delivered || lifecycle.activity() != ActivityView::Resting {
+        if lifecycle.phase() != TaskPhase::Delivered || lifecycle.activity() != ActivityView::Resting
+            || !lifecycle.cards().is_empty() || lifecycle.resource() != Some(ResourceEvidence::Available) {
             return None;
         }
         let since = self.since_delivery(task)?;
@@ -1753,10 +1743,9 @@ impl DomainState {
             return Ok(());
         }
         let card = stalled_card_id(task, lifecycle.generation(), &format!("stranded-{}", self.revision + 1));
-        let unfinished = |wake: Option<String>| LifecycleRecord::Unfinished { unheard_card: card.clone(), text: wake.as_ref().map(|_| STRANDED_INSTRUCTION.to_owned()), wake };
-        if self.stalled_before(task) || self.decide(lifecycles, task, unfinished(Some(self.next_input(task)))).is_err() {
-            self.decide(lifecycles, task, unfinished(None))?;
-        }
+        let wake = self.wake_for(task, lifecycles)?;
+        let text = wake.as_ref().map(|_| STRANDED_INSTRUCTION.to_owned());
+        self.decide(lifecycles, task, LifecycleRecord::Unfinished { unheard_card: card.clone(), text, wake })?;
         if self.lifecycle(lifecycles, task)?.cards().iter().any(|(required, _)| **required == card) {
             self.open_stall(task, card, effects);
         }
@@ -1994,9 +1983,9 @@ impl DomainState {
         let for_the_user = delivered && cut && self.task_handed_back(task).is_some();
         let under_review = delivered && !for_the_user;
         let resume = self.next_input(task);
-        let resumed = resumes && !forced && !looped && available && !under_review && self.decide_sending(lifecycles, task, ended(Some(resume.clone())), &resume);
+        let resumed = resumes && !forced && !looped && available && !under_review && self.sends(lifecycles, task, &ended(Some(resume.clone())), &resume);
+        self.decide(lifecycles, task, ended(resumed.then_some(resume)))?;
         if !resumed {
-            self.decide(lifecycles, task, ended(None))?;
             if let Some(agent) = self.tasks[task].agent_id.clone().filter(|_| for_the_user) {
                 self.return_replied_delivery(&agent);
             }
@@ -2674,12 +2663,20 @@ pub enum EmptyTurn {
     AfterMerge { reason: String },
 }
 impl EmptyTurn {
+    /// What the node is told the first time Alondra hands it back its turn after one that ended empty.
     pub fn wake_text(&self) -> String {
         match self {
             Self::Unexplained => WAKE_INSTRUCTION.to_owned(),
-            Self::UnpresentedPr { number } => format!("Your turn ended and you registered pull request #{number} without presenting it: present it with `present_result` (is_final true, the pull request in targets) and end your turn. If this turn ends the same way, the orchestrator decides how your task goes on, and it may close it."),
-            Self::UnactedAnswer { card, need, said } => format!("You asked “{need}” (card {card}) and the user answered: “{said}”. That answer is final and already yours: act on it now. If your delivery changes, present it again with `present_result`; if it stands as it is, present it again as it is. If this turn ends the same way, the orchestrator decides how your task goes on."),
-            Self::AfterMerge { reason } => format!("{} If this turn ends the same way, the orchestrator decides how your task goes on.", post_merge_carry_on_instruction(reason)),
+            Self::UnpresentedPr { number } => format!("Your turn ended and you registered pull request #{number} without presenting it: present it with `present_result` (is_final true, the pull request in targets) and end your turn. {WAKE_LIMIT}"),
+            Self::UnactedAnswer { card, need, said } => format!("You asked “{need}” (card {card}) and the user answered: “{said}”. That answer is final and already yours: act on it now. If your delivery changes, present it again with `present_result`; if it stands as it is, present it again as it is. {WAKE_LIMIT}"),
+            Self::AfterMerge { reason } => format!("{} {WAKE_LIMIT}", post_merge_carry_on_instruction(reason)),
+        }
+    }
+    /// What the node is told on the `wake`th wake in a row, counted from 1.
+    pub fn wake_text_at(&self, wake: u8) -> String {
+        match wake {
+            0 | 1 => self.wake_text(),
+            wake => format!("{} This is reminder {wake} of {EMPTY_TURN_WAKES}.", self.wake_text()),
         }
     }
     /// What the orchestrator reads of why the node stopped.
@@ -2692,9 +2689,11 @@ impl EmptyTurn {
         }
     }
 }
-/// What a node is told when its turn ended empty: the first time, Alondra wakes it with this.
+/// What a stranded node is told when Alondra hands it back its turn.
 pub const STRANDED_INSTRUCTION: &str = "Nothing is running for your task, and the user still waits for what they sent back on your delivery. Check where you were and go on with it, then present your result again. Whatever you ran in the background ended and will not report back: run again what you still need.";
-pub const WAKE_INSTRUCTION: &str = "Your turn ended without a result, a question or work of your own running, and your task is still open. Deliver your result with `present_result`, ask the user with `ask`, or, if you wait for something, wait on it through its Alondra tool (`wait_for_machine`, `wait_for_tasks`, or `post_merge_work` with `waits_for`) and end your turn. If this turn ends the same way, the orchestrator decides how your task goes on, and it may close it.";
+pub const WAKE_INSTRUCTION: &str = "Your turn ended without a result, a question or work of your own running, and your task is still open. Deliver your result with `present_result`, ask the user with `ask`, or, if you wait for something, wait on it through its Alondra tool (`wait_for_machine`, `wait_for_tasks`, or `post_merge_work` with `waits_for`) and end your turn. If your turns keep ending this way, Alondra reminds you up to 3 times in a row; after that the orchestrator decides how your task goes on, and it may close it.";
+/// What a wake says follows when the node's turns keep ending empty.
+const WAKE_LIMIT: &str = "If your turns keep ending this way, Alondra reminds you up to 3 times in a row; after that the orchestrator decides how your task goes on, and it may close it.";
 
 pub const REFUSED_WHY: &str = "Claude Code cannot use the Claude API until this is fixed outside Alondra. Fix it, then tell the task to go on, or cancel it.";
 pub const INTERRUPTED_WHY: &str = "You stopped its turn. Tell it to carry on, write what to do, or cancel the task.";

@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -453,7 +454,8 @@ for raw in sys.stdin:
             send(dict(type='system', subtype='dev_intent', session_id=session_id, uuid='00000000-0000-4000-8000-000000000104'))
             send(dict(type='system', subtype='future_subtype', session_id=session_id, uuid='00000000-0000-4000-8000-000000000105'))
         if wake:
-            result(message, hold_completion='FIXTURE_COMPLETION_GATE' in os.environ and not resumed)
+            last_wake = re.search(r'reminder (\d+) of \1\.$', text) is not None
+            result(message, hold_completion='FIXTURE_COMPLETION_GATE' in os.environ and not resumed and last_wake)
             continue
         if text.endswith('signed-out'):
             refused = 401

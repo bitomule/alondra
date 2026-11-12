@@ -207,7 +207,7 @@ async fn a_reopened_task_with_unproven_claude_history_starts_codex_from_the_queu
         let lifecycle = state.lifecycle_of(&task).unwrap();
         if lifecycle.execution().is_some_and(|execution| execution.node() == &new_node)
             && lifecycle.activity() == ActivityView::Resting && lifecycle.pending_inputs().is_empty()
-            && state.lifecycle_journal[&task].iter().filter(|record| matches!(record, LifecycleRecord::TurnEnded { .. })).count() == 2 { break; }
+            && state.lifecycle_journal[&task].iter().filter(|record| matches!(record, LifecycleRecord::TurnEnded { .. })).count() == 1 + usize::from(alondra_domain::EMPTY_TURN_WAKES) { break; }
         changed.changed().await.unwrap();
     }
     let state = slice.domain.state().unwrap();
@@ -257,13 +257,13 @@ fn a_codex_node_uses_the_real_owner_store_and_commits_final_public_context_befor
     assert!(!acknowledgements.lock().unwrap().is_empty());
     let native = transcript(&trace);
     let turns: Vec<_> = native.iter().filter(|message| message["method"] == "turn/start").collect();
-    assert_eq!(turns.len(), 2, "the task's original input and its one canonical wake each run once");
+    assert_eq!(turns.len(), 1 + usize::from(alondra_domain::EMPTY_TURN_WAKES), "the task's original input and each of its wakes run once");
     assert_eq!(turns[0]["params"]["input"][0]["text"], "Write the release notes through Codex");
     assert_ne!(turns[0]["params"]["clientUserMessageId"], turns[1]["params"]["clientUserMessageId"]);
     let observer = slice.observer();
     let registered: Vec<(String, serde_json::Value)> = observer.prepare("SELECT input_id,metadata FROM provider_input_metadata WHERE task_id=?1 ORDER BY rowid").unwrap()
         .query_map([TASK], |row| { let bytes: Vec<u8> = row.get(1)?; Ok((row.get(0)?, serde_json::from_slice(&bytes).unwrap())) }).unwrap().map(Result::unwrap).collect();
-    assert_eq!(registered.len(), 2);
+    assert_eq!(registered.len(), 1 + usize::from(alondra_domain::EMPTY_TURN_WAKES));
     let journal = &state.lifecycle_journal[&TaskId::from(TASK)];
     let wake = journal.iter().find_map(|record| match record { alondra_core::domain::LifecycleRecord::TurnEnded { wake: Some(wake), text, .. } => Some((wake, text)), _ => None }).unwrap();
     assert_eq!(&registered[1].0, wake.0, "the second input is the domain's durable wake");
@@ -421,7 +421,7 @@ fn an_accepted_native_request_stays_pending_until_its_exact_native_user_item_is_
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
     assert!(Slice::lifecycle(&slice.domain).pending_inputs().is_empty());
-    assert_eq!(transcript(&trace).iter().filter(|message| message["method"] == "turn/start").count(), 2, "the delayed consumption did not reoffer the original; only its canonical wake follows");
+    assert_eq!(transcript(&trace).iter().filter(|message| message["method"] == "turn/start").count(), 1 + usize::from(alondra_domain::EMPTY_TURN_WAKES), "the delayed consumption did not reoffer the original; only its canonical wakes follow");
     driver.stop().unwrap();
 }
 
@@ -567,7 +567,7 @@ fn codex_native_token_samples_reach_usage_only_through_the_owner_transaction(){
     let path=slice._home.join("codex-backend.json");let mut backend:SdkBackend=serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();backend.native_environment.insert("ALONDRA_FAKE_TOKEN_USAGE".into(),"1".into());std::fs::write(path,serde_json::to_vec(&backend).unwrap()).unwrap();
     let mut driver=launch(&slice);slice.settle(&mut driver);
     let rows:Vec<(String,i64,i64,i64,i64,Option<i64>,bool)>=slice.observer().prepare("SELECT model,input,output,cache_read,cache_write,cost_micros,complete FROM usage_sessions WHERE task_id=?1 AND provider='codex'").unwrap().query_map([TASK],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?))).unwrap().map(Result::unwrap).collect();
-    assert_eq!(rows,vec![("codex/fixture-model".into(),20,10,0,0,None,false)],"the first unknown baseline is skipped and only the second measured delta is attributed, with no invented price");driver.stop().unwrap();
+    let wakes=i64::from(alondra_domain::EMPTY_TURN_WAKES);assert_eq!(rows,vec![("codex/fixture-model".into(),20*wakes,10*wakes,0,0,None,false)],"the first unknown baseline is skipped and only the deltas measured after it, one per wake, are attributed, with no invented price");driver.stop().unwrap();
 }
 
 #[test]
@@ -635,7 +635,7 @@ fn replacing_a_pending_native_plan_keeps_the_owner_and_its_approved_decision_acr
     assert!(open_card(&restarted, HOST_LOST_PREFIX).is_none());
     assert_eq!(transcript(&trace).iter().filter(|message| message["method"] == "initialize").count(), 1, "the native process stayed alive");
     let turns: Vec<_> = transcript(&trace).into_iter().filter(|message| message["method"] == "turn/start").collect();
-    assert_eq!(turns.len(), 4, "two plans, one implementation and the canonical empty-turn wake");
+    assert_eq!(turns.len(), 3 + usize::from(alondra_domain::EMPTY_TURN_WAKES), "two plans, one implementation and the canonical empty-turn wakes");
     assert!(turns.iter().all(|message| !message["params"]["input"][0]["text"].as_str().is_some_and(|text| text.starts_with("Revise the plan using this user feedback:"))), "supersession starts no revision turn");
     let wake = state.lifecycle_journal[&TaskId::from(TASK)].iter().find_map(|record| match record {
         LifecycleRecord::TurnEnded { wake: Some(wake), text, .. } => Some((wake, text)), _ => None,

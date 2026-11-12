@@ -51,6 +51,7 @@ fn shows_waiting(s: &DomainState, waits: &str) {
 /// Starts the turn the last wake opened, `turn-2`, and returns the case its empty end opens.
 fn woken_again(s: &mut DomainState) -> String {
     let LifecycleRecord::TurnEnded { wake: Some(input), .. } = super::lifecycle_tests::last(s, "t") else { panic!("woken") };
+    let input = super::lifecycle_tests::rewoken(s, "t", "turn-woken", input);
     must(s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
         RuntimeObservation::TurnStarted { turn: "turn-2".into(), input },
     ] });
@@ -225,6 +226,7 @@ fn a_message_to_the_orchestrator_withdrawn_unanswered_leaves_the_turn_empty() {
     wakes(&s, &withdrawn, &card);
     assert_aggregate_rules(&s);
     let LifecycleRecord::AwaitEnded { wake: Some(input), .. } = super::lifecycle_tests::last(&s, "t") else { panic!("woken") };
+    let input = super::lifecycle_tests::rewoken(&mut s, "t", "turn-woken", input);
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
         RuntimeObservation::TurnStarted { turn: "turn-2".into(), input },
     ] });

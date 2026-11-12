@@ -187,7 +187,17 @@ fn tasks_in_progress_lists_no_turn_ended_card_while_the_node_waits_and_lists_its
 
     apply(&mut state, Actor::Agent { agent_id: "agent-b".into() }, Command::Withdraw { interaction_id: "q-keyboard".into() });
     assert!(open(&state).is_empty(), "with nothing to wait for, Alondra wakes the node first: {:?}", open(&state));
-    let Some(LifecycleRecord::AwaitEnded { wake: Some(wake), .. }) = state.lifecycle_journal[&TaskId::from("t3")].last().cloned() else { panic!("woken") };
+    let Some(LifecycleRecord::AwaitEnded { wake: Some(mut wake), .. }) = state.lifecycle_journal[&TaskId::from("t3")].last().cloned() else { panic!("woken") };
+    for n in 2..=alondra_domain::EMPTY_TURN_WAKES {
+        let turn = format!("turn-woken-{n}");
+        apply(&mut state, Actor::System, Command::RecordRuntimeFacts { task_id: "t3".into(), generation: 1, facts: vec![
+            RuntimeObservation::TurnStarted { turn: turn.clone(), input: wake },
+        ] });
+        apply(&mut state, Actor::System, Command::RecordTurnBoundary { task_id: "t3".into(), generation: 1, turn, failure: None, failed: None });
+        assert!(open(&state).is_empty(), "wake {n} in a row asks nobody");
+        let Some(LifecycleRecord::TurnEnded { wake: Some(next), .. }) = state.lifecycle_journal[&TaskId::from("t3")].last().cloned() else { panic!("woken again") };
+        wake = next;
+    }
     apply(&mut state, Actor::System, Command::RecordRuntimeFacts { task_id: "t3".into(), generation: 1, facts: vec![
         RuntimeObservation::TurnStarted { turn: "turn-2".into(), input: wake },
     ] });
