@@ -1130,7 +1130,8 @@ fn retake_with_policy(domain: &DomainRuntime, task: TaskId,explicit_account_retr
     retakes.push((task.clone(), std::thread::spawn(move || {
         #[cfg(any(test, feature = "test-hooks"))]
         refusal();
-        take_again(&runtime, &backend, &task, explicit_account_retry)
+        take_again(&runtime, &backend, &task, explicit_account_retry);
+        runtime.wake_subscribers();
     })));
 }
 
@@ -1222,6 +1223,7 @@ pub(crate) fn halt(domain: &DomainRuntime, task: TaskId, agent: AgentId) {
             Some(Err(failed)) => log!("the SDK host of {task} did not stop cleanly for its pause: {failed}"),
         }
         take_again(&runtime, &backend, &task, false);
+        runtime.wake_subscribers();
     })));
 }
 

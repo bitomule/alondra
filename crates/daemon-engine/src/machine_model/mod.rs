@@ -17,7 +17,7 @@ use crate::obligation_watch::{self, Watch};
 use alondra_core::domain::obligation_policy;
 use alondra_core::domain::{
     Actor, AgentId, CardKind, CardSpec, ContentKind, Command, CommandEnvelope, CommandOutcome, DecisionPrompt, DomainEffect, DeliveryTarget, DomainState, Hold,
-    Instruction, InteractionId, InteractionPayload, LaunchPlan, LifecycleRecord, NODE_PAUSE_PREFIX, NODE_PAUSE_RESUME, NodeEnd, NodeEvent,
+    Instruction, InteractionId, InteractionPayload, LaunchPlan, LifecycleRecord, NODE_PAUSE_RESUME, NodeEnd, NodeEvent,
     PROTOCOL_VERSION, Pause, PauseCleanup, PauseReason, PlanReviewOutcome, QuestionOption, ReadIndex, Recipient, RuntimeObservation, STALL_ATTEMPTS, Scope,
     StallOutcome, TaskId, TaskPriority, is_stall_case,
 };
@@ -962,7 +962,7 @@ impl Machine {
             UserAct::Resume => {
                 let state = self.state();
                 let Some(card) = state.lifecycle_of(task).ok().and_then(|lifecycle| lifecycle.cards().into_iter()
-                    .find(|(card, _)| card.0.starts_with(NODE_PAUSE_PREFIX)).map(|(card, _)| card.clone())) else { return };
+                    .find(|(_, reason)| *reason == alondra_domain::WaitReason::Pause).map(|(card, _)| card.clone())) else { return };
                 let _ = self.run(user, Command::AnswerQuestion { attachments: vec![], interaction_id: card, option_id: NODE_PAUSE_RESUME.into(), inputs: BTreeMap::new() });
             }
             UserAct::Cancel => {

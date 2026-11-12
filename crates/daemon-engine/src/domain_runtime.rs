@@ -548,6 +548,12 @@ impl DomainRuntime {
     pub fn subscribe(&self) -> watch::Receiver<Revision> {
         self.changed.subscribe()
     }
+    /// Wakes whoever waits on a change of the domain after something outside it ended, such as the
+    /// thread that stops a host: the waiter looks again at what that end settled.
+    pub(crate) fn wake_subscribers(&self) {
+        let revision = *self.changed.borrow();
+        self.changed.send_replace(revision);
+    }
     pub(crate) fn subscribe_schedules(&self) -> watch::Receiver<Revision> {
         self.schedule_changed.subscribe()
     }
