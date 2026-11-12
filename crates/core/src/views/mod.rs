@@ -116,9 +116,6 @@ impl RenderContext<'_> {
     pub(super) fn attention(&self, task: &Task) -> crate::domain::Attention {
         self.reading(&task.id).map_or(crate::domain::Attention::Idle, |read| read.attention.clone())
     }
-    pub(super) fn waits_for_user(&self, task: &TaskId) -> bool {
-        self.reading(task).is_some_and(|read| read.waits_for_user)
-    }
     pub(super) fn waits_for_review(&self, task: &TaskId) -> bool {
         self.reading(task).is_some_and(|read| read.waits_for_review)
     }

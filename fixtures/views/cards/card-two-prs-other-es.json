@@ -4,12 +4,12 @@
   "view": "card",
   "key": "card:github.com/acme/storefront#6",
   "client": "ios",
-  "version": "v3f213ce626f32c00",
+  "version": "v2a79382730e18e80",
   "cursor": "cursor-1",
   "title": "Review the result · storefront#6",
   "status": {
-    "version": "vc09971552b9c4ff5",
-    "summary": "2 por leer · 0 nodos trabajando",
+    "version": "v90586b4b16aa03f0",
+    "summary": "2 por leer · 1 nodo trabajando",
     "badge": 2,
     "counts": [
       {
@@ -30,7 +30,7 @@
       {
         "id": "working",
         "label": "trabajando",
-        "value": 0
+        "value": 1
       },
       {
         "id": "waiting",
@@ -105,7 +105,7 @@
                 "key": "task:t"
               },
               "state": {
-                "text": "Para revisar",
+                "text": "Entregada",
                 "tone": "info"
               }
             }

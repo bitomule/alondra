@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v523601815620fe30",
+  "version": "v50e57add8041b417",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -206,7 +206,7 @@
                 {
                   "id": "activity",
                   "icon": "notice",
-                  "title": "Badge accuracy",
+                  "title": "Turn running · Badge accuracy",
                   "depth": 0,
                   "struck": false
                 }
@@ -260,7 +260,16 @@
                 "value": 0
               },
               "depth": 1,
-              "struck": false
+              "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "For review",
+                  "depth": 0,
+                  "struck": false
+                }
+              ]
             },
             {
               "id": "t-scheduled-lumo",
@@ -298,6 +307,15 @@
               },
               "depth": 1,
               "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "Turn running",
+                  "depth": 0,
+                  "struck": false
+                }
+              ],
               "actions": [
                 {
                   "id": "pause:a-lumo@6",
@@ -343,10 +361,10 @@
               },
               "icon": "task",
               "title": "Refresh the App Store screenshots",
-              "subtitle": "Queued · 1st of 1",
+              "subtitle": "Waiting",
               "badges": [
                 {
-                  "text": "Queued · 1st of 1",
+                  "text": "Waiting",
                   "tone": "neutral"
                 },
                 {
@@ -360,6 +378,15 @@
               },
               "depth": 1,
               "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "1st of 1",
+                  "depth": 0,
+                  "struck": false
+                }
+              ],
               "actions": [
                 {
                   "id": "pause:t-copy-screens@6",
@@ -389,7 +416,7 @@
               "badges": [
                 {
                   "text": "Waiting",
-                  "tone": "info"
+                  "tone": "neutral"
                 },
                 {
                   "text": "Demo Garden",
@@ -418,13 +445,13 @@
                 "kind": "view",
                 "key": "task:t-hf-registry"
               },
-              "icon": "notice",
+              "icon": "task",
               "title": "Link the website in app.json",
-              "subtitle": "Didn't start",
+              "subtitle": "Waiting",
               "badges": [
                 {
-                  "text": "Didn't start",
-                  "tone": "warning"
+                  "text": "Waiting",
+                  "tone": "neutral"
                 },
                 {
                   "text": "BlurCamera",
@@ -453,7 +480,7 @@
                 "kind": "view",
                 "key": "task:t-hf-share-hint"
               },
-              "icon": "mission",
+              "icon": "task",
               "title": "Photos extension hint after the first blur",
               "subtitle": "Paused",
               "badges": [
@@ -488,13 +515,13 @@
                 "kind": "view",
                 "key": "task:t-legacy-notes"
               },
-              "icon": "notice",
+              "icon": "task",
               "title": "Write the release notes",
-              "subtitle": "Didn't start",
+              "subtitle": "Waiting",
               "badges": [
                 {
-                  "text": "Didn't start",
-                  "tone": "warning"
+                  "text": "Waiting",
+                  "tone": "neutral"
                 }
               ],
               "trailing": {

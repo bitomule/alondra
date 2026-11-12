@@ -928,7 +928,7 @@ async fn the_users_own_message_to_a_paused_sdk_node_waits_for_a_slot_and_then_re
         domain: read.state(), index: read.index(), live: &live, client: alondra_core::views::Client::Tui,
         lang: alondra_core::views::text::Lang::En, transport: alondra_core::views::Transport::Loopback, cursor: "test", rendered_at: "",
     }).unwrap()).unwrap();
-    assert!(tasks.contains("Queued · 1st of 1") && tasks.contains("0 of 0 working") && !tasks.contains("\"text\":\"Paused") && !tasks.contains("\"resume:"),
+    assert!(tasks.contains("1st of 1 · 0 of 0 slots taken") && !tasks.contains("\"text\":\"Paused") && !tasks.contains("\"resume:"),
         "its task shows it queued, with no Resume: {tasks}");
     drop(read);
 
@@ -1529,7 +1529,7 @@ async fn a_turn_waiting_for_a_slot_reads_waiting_for_capacity_and_raises_no_card
         lang: alondra_core::views::text::Lang::En, transport: alondra_core::views::Transport::Loopback, cursor: "test", rendered_at: "",
     }).unwrap();
     let tasks = serde_json::to_string(&tasks).unwrap();
-    assert!(tasks.contains("Waiting for capacity"), "{tasks}");
+    assert!(tasks.contains("Waiting"), "{tasks}");
     drop(read);
 
     node.set_limit(1);

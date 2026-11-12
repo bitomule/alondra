@@ -4,12 +4,12 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v3ac75be98c9b4249",
+  "version": "v9fe76011ddc11e5e",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
-    "version": "v1f87f20b79473ef7",
-    "summary": "2 questions · 3 to read · 2 nodes working",
+    "version": "v1d701d9684ea0a41",
+    "summary": "2 questions · 3 to read · 3 nodes working",
     "badge": 5,
     "counts": [
       {
@@ -30,7 +30,7 @@
       {
         "id": "working",
         "label": "working",
-        "value": 2
+        "value": 3
       },
       {
         "id": "waiting",
@@ -152,46 +152,11 @@
           "title": "In progress",
           "trailing": {
             "kind": "text",
-            "text": "3"
+            "text": "2"
           },
           "depth": 0,
           "struck": false,
           "children": [
-            {
-              "id": "t-alpha-waiting",
-              "link": {
-                "kind": "view",
-                "key": "task:t-alpha-waiting"
-              },
-              "icon": "task",
-              "title": "Plan the migration",
-              "subtitle": "Starting",
-              "badges": [
-                {
-                  "text": "Starting",
-                  "tone": "accent"
-                },
-                {
-                  "text": "Demo Garden",
-                  "tone": "neutral"
-                }
-              ],
-              "trailing": {
-                "kind": "count",
-                "value": 0
-              },
-              "depth": 1,
-              "struck": false,
-              "children": [
-                {
-                  "id": "activity",
-                  "icon": "notice",
-                  "title": "Opening its session",
-                  "depth": 0,
-                  "struck": false
-                }
-              ]
-            },
             {
               "id": "t-release-runner",
               "link": {
@@ -200,10 +165,10 @@
               },
               "icon": "mission",
               "title": "Release the daemon",
-              "subtitle": "In the background",
+              "subtitle": "Working",
               "badges": [
                 {
-                  "text": "In the background",
+                  "text": "Working",
                   "tone": "accent"
                 },
                 {
@@ -221,7 +186,7 @@
                 {
                   "id": "activity",
                   "icon": "notice",
-                  "title": "./deploy/brew/release.sh 0.2.67",
+                  "title": "In the background: ./deploy/brew/release.sh 0.2.67",
                   "depth": 0,
                   "struck": false
                 }
@@ -252,6 +217,15 @@
               },
               "depth": 1,
               "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "Turn running",
+                  "depth": 0,
+                  "struck": false
+                }
+              ],
               "actions": [
                 {
                   "id": "pause:zeta-worker@6",
@@ -283,7 +257,7 @@
           "title": "Waiting",
           "trailing": {
             "kind": "text",
-            "text": "2"
+            "text": "3"
           },
           "depth": 0,
           "struck": false,
@@ -294,13 +268,13 @@
                 "kind": "view",
                 "key": "task:t-queued"
               },
-              "icon": "branch",
+              "icon": "task",
               "title": "Wire the badge after the review",
               "subtitle": "Waiting",
               "badges": [
                 {
                   "text": "Waiting",
-                  "tone": "info"
+                  "tone": "neutral"
                 },
                 {
                   "text": "Demo Garden",
@@ -324,17 +298,52 @@
               ]
             },
             {
+              "id": "t-alpha-waiting",
+              "link": {
+                "kind": "view",
+                "key": "task:t-alpha-waiting"
+              },
+              "icon": "task",
+              "title": "Plan the migration",
+              "subtitle": "Waiting",
+              "badges": [
+                {
+                  "text": "Waiting",
+                  "tone": "neutral"
+                },
+                {
+                  "text": "Demo Garden",
+                  "tone": "neutral"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "Starting",
+                  "depth": 0,
+                  "struck": false
+                }
+              ]
+            },
+            {
               "id": "t-paused-builder",
               "link": {
                 "kind": "view",
                 "key": "task:t-paused-builder"
               },
-              "icon": "mission",
+              "icon": "task",
               "title": "Fix the vanished session",
-              "subtitle": "Paused",
+              "subtitle": "Waiting",
               "badges": [
                 {
-                  "text": "Paused",
+                  "text": "Waiting",
                   "tone": "neutral"
                 },
                 {

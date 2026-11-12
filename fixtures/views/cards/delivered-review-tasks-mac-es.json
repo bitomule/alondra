@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "mac",
-  "version": "v659408e09c26ea7a",
+  "version": "vaad7c2e718919db7",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -89,9 +89,10 @@
               },
               "icon": "pull_request",
               "title": "Release the daemon with the memory pause fix",
+              "subtitle": "Para revisar",
               "badges": [
                 {
-                  "text": "Para revisar",
+                  "text": "Entregada",
                   "tone": "info"
                 }
               ],

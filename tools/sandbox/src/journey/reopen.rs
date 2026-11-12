@@ -24,7 +24,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         busy.tasks[0].on_start = vec![Step::Speak { said: "The tests are running".into(), behind: Some("make test".into()), listed: Some("working".into()) }];
         request(report, fakes, &user, &busy, "Keep the build green")?;
         launched(report, fakes, "t-r1")?;
-        state(report, &user, "t-r1", "In the background")?;
+        state(report, &user, "t-r1", "Working")?;
         request(report, fakes, &user, &task_script("req-r2", "t-r2", "Remove the mailbox"), "Remove the mailbox")?;
         let first = launched(report, fakes, "t-r2")?;
         let first_node = node_id(&first)?.to_owned();
@@ -48,15 +48,15 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         limit(report, &user, &one)?;
         let task = user.view("task:t-r2")?;
         press(report, &user, &task, "reopen:", None, None, "the user reopens it")?;
-        let full = format!("{one} of {one} working");
+        let full = format!("{one} of {one} slots taken");
         let queued = wait(report, "the reopened task waits in the queue behind the working nodes", || {
             let view = user.view("task:t-r2")?;
             let seen = user.task_state("t-r2")?;
-            let waits = seen == "Queued" && super::user::mentions(&view, &full);
+            let waits = seen == "Waiting" && super::user::mentions(&view, &full);
             Ok((waits.then_some(view), seen))
         })?;
         report.snapshot("task-t-r2-queued", &queued)?;
-        if super::user::mentions(&queued, "closed before it delivered") || super::user::mentions(&queued, "Stopped") {
+        if super::user::mentions(&queued, "closed before it delivered") {
             bail!("the queued task still says it stopped: {queued}");
         }
         limit(report, &user, &two)?;

@@ -4,12 +4,12 @@
   "view": "card",
   "key": "card:result-2",
   "client": "ios",
-  "version": "vd25161f3beaca240",
+  "version": "vc226f59c9b3f4174",
   "cursor": "cursor-1",
   "title": "Read why Redraft does not need a widget",
   "status": {
-    "version": "v3ca84408e03b9580",
-    "summary": "1 por leer · 0 nodos trabajando",
+    "version": "vb7b081b6c72395b1",
+    "summary": "1 por leer · 1 nodo trabajando",
     "badge": 1,
     "counts": [
       {
@@ -30,7 +30,7 @@
       {
         "id": "working",
         "label": "trabajando",
-        "value": 0
+        "value": 1
       },
       {
         "id": "waiting",
@@ -98,7 +98,7 @@
                 "key": "task:t-1"
               },
               "state": {
-                "text": "Para revisar",
+                "text": "Entregada",
                 "tone": "info"
               }
             }

@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v1330237f2bb417a9",
+  "version": "va5b17f319d5095e1",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -87,7 +87,7 @@
                 "kind": "view",
                 "key": "task:t-1"
               },
-              "icon": "pull_request",
+              "icon": "mission",
               "title": "Release the daemon with the memory pause fix",
               "subtitle": "Working",
               "badges": [
@@ -102,6 +102,15 @@
               },
               "depth": 1,
               "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "Turn running",
+                  "depth": 0,
+                  "struck": false
+                }
+              ],
               "actions": [
                 {
                   "id": "pause:a-1@0",

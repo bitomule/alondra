@@ -49,7 +49,7 @@ pub fn run(sandbox: &Sandbox) -> Result<()> {
         };
         request(report, &fakes, &user, &script, "Ship Lumen 2.4: release notes, dark mode, offline mode and the Harbor refresh rate")?;
         launched(report, &fakes, "t-notes")?;
-        state(report, &user, "t-notes", "In the background")?;
+        state(report, &user, "t-notes", "Working")?;
         wait(report, "t-release waits for t-notes", || {
             let seen = user.task_state("t-release").unwrap_or_default();
             Ok(((seen == "Waiting").then_some(()), seen))

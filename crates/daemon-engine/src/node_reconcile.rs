@@ -407,7 +407,7 @@ pub mod tests {
         assert!(once(&domain, &claude).await);
         assert!(!domain.live.mods.connected(NODE), "nothing says it is connected");
         let tasks = tasks_view(&domain);
-        assert!(!tasks.contains("Sin conexión") && tasks.contains("Por el límite de uso"), "it says what it waits for: {tasks}");
+        assert!(!tasks.contains("Sin conexión") && tasks.contains("Límite de Claude"), "it says what it waits for: {tasks}");
 
         crate::node_revival::revive(&domain, NODE, &QUICK).await;
         assert!(moves(&domain, NODE).is_empty(), "a paused node comes back through the gate, not revival");

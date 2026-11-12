@@ -171,11 +171,11 @@ fn a_task_closed_for_its_stops_says_so_with_its_result_on_every_client() {
     settle(&mut unsettled, Actor::System, StallOutcome::Unsettled).unwrap();
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         let en = render(&s, client, Lang::En);
-        assert!(en.contains("without a delivery") && en.contains("Half the fix is on branch fix/queue."), "{client:?}: {en}");
+        assert!(en.contains("Cancelled") && en.contains("Half the fix is on branch fix/queue."), "{client:?}: {en}");
         let es = render(&s, client, Lang::Es);
-        assert!(es.contains("sin entrega") && es.contains("Half the fix is on branch fix/queue."), "{client:?}: {es}");
+        assert!(es.contains("Cancelada") && es.contains("Half the fix is on branch fix/queue."), "{client:?}: {es}");
         let es = render(&unsettled, client, Lang::Es);
-        assert!(es.contains("sin entrega") && es.contains("Alondra la cerró"), "{client:?}: {es}");
+        assert!(es.contains("Cancelada") && es.contains("Alondra la cerró"), "{client:?}: {es}");
     }
 }
 

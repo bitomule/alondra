@@ -60,7 +60,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         let (first, view) = review_card(report, &user, &node)?;
         press(report, &user, &view, "changes:", None, Some("Say goodbye in Spanish too"), "the user asks for changes with a comment")?;
         wait(report, "the comment reaches the node", || told(fakes, &node, "Say goodbye in Spanish too"))?;
-        state(report, &user, "t-t3", "Making changes")?;
+        state(report, &user, "t-t3", "Working")?;
         report.step("the first card leaves Inbox", || {
             if user.inbox()?.iter().any(|id| *id == first) {
                 bail!("{first} is still in Inbox");

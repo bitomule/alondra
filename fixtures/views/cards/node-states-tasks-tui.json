@@ -4,12 +4,12 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "v39745994a331a56a",
+  "version": "v3c883f906d860e0f",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
-    "version": "vcaf24a89cb36a3b8",
-    "summary": "2 preguntas · 3 por leer · 2 nodos trabajando",
+    "version": "v41891ae08ceb5ca5",
+    "summary": "2 preguntas · 3 por leer · 3 nodos trabajando",
     "badge": 5,
     "counts": [
       {
@@ -30,7 +30,7 @@
       {
         "id": "working",
         "label": "trabajando",
-        "value": 2
+        "value": 3
       },
       {
         "id": "waiting",
@@ -139,33 +139,11 @@
           "title": "En marcha",
           "trailing": {
             "kind": "text",
-            "text": "3"
+            "text": "2"
           },
           "depth": 0,
           "struck": false,
           "children": [
-            {
-              "id": "t-alpha-waiting",
-              "link": {
-                "kind": "view",
-                "key": "task:t-alpha-waiting"
-              },
-              "icon": "task",
-              "title": "Plan the migration",
-              "subtitle": "Abriendo su sesión",
-              "badges": [
-                {
-                  "text": "Arrancando",
-                  "tone": "accent"
-                },
-                {
-                  "text": "Demo Garden",
-                  "tone": "neutral"
-                }
-              ],
-              "depth": 1,
-              "struck": false
-            },
             {
               "id": "t-release-runner",
               "link": {
@@ -174,10 +152,10 @@
               },
               "icon": "mission",
               "title": "Release the daemon",
-              "subtitle": "./deploy/brew/release.sh 0.2.67",
+              "subtitle": "En segundo plano: ./deploy/brew/release.sh 0.2.67",
               "badges": [
                 {
-                  "text": "En segundo plano",
+                  "text": "Trabajando",
                   "tone": "accent"
                 },
                 {
@@ -196,6 +174,7 @@
               },
               "icon": "mission",
               "title": "Build the importer",
+              "subtitle": "Turno en marcha",
               "badges": [
                 {
                   "text": "Trabajando",
@@ -240,7 +219,7 @@
           "title": "En espera",
           "trailing": {
             "kind": "text",
-            "text": "2"
+            "text": "3"
           },
           "depth": 0,
           "struck": false,
@@ -251,13 +230,35 @@
                 "kind": "view",
                 "key": "task:t-queued"
               },
-              "icon": "branch",
+              "icon": "task",
               "title": "Wire the badge after the review",
               "subtitle": "Espera a «Restore the native review experience» · Polish the Alondra beta",
               "badges": [
                 {
-                  "text": "Esperando",
-                  "tone": "info"
+                  "text": "En espera",
+                  "tone": "neutral"
+                },
+                {
+                  "text": "Demo Garden",
+                  "tone": "neutral"
+                }
+              ],
+              "depth": 1,
+              "struck": false
+            },
+            {
+              "id": "t-alpha-waiting",
+              "link": {
+                "kind": "view",
+                "key": "task:t-alpha-waiting"
+              },
+              "icon": "task",
+              "title": "Plan the migration",
+              "subtitle": "Arrancando",
+              "badges": [
+                {
+                  "text": "En espera",
+                  "tone": "neutral"
                 },
                 {
                   "text": "Demo Garden",
@@ -273,12 +274,12 @@
                 "kind": "view",
                 "key": "task:t-paused-builder"
               },
-              "icon": "mission",
+              "icon": "task",
               "title": "Fix the vanished session",
               "subtitle": "The build queue is full · desde las 09:40",
               "badges": [
                 {
-                  "text": "Pausada",
+                  "text": "En espera",
                   "tone": "neutral"
                 },
                 {

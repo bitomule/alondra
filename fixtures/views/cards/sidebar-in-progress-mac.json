@@ -4,7 +4,7 @@
   "view": "sidebar",
   "key": "sidebar",
   "client": "mac",
-  "version": "v6ddd14c38a14eed2",
+  "version": "vee46f9cf6c323ffb",
   "cursor": "cursor-1",
   "status": {
     "version": "vcc58fbd373b76f9d",
@@ -187,13 +187,13 @@
         },
         {
           "type": "row",
-          "id": "running",
-          "icon": "mission",
-          "title": "In progress",
+          "id": "needs_you",
+          "icon": "action",
+          "title": "Needs you",
           "badges": [
             {
-              "text": "In progress",
-              "tone": "accent"
+              "text": "Needs you",
+              "tone": "warning"
             }
           ],
           "trailing": {
@@ -209,9 +209,9 @@
                 "kind": "view",
                 "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
               },
-              "icon": "mission",
+              "icon": "action",
               "title": "Restore the native review experience",
-              "subtitle": "Demo Garden",
+              "subtitle": "Demo Garden · 5 open questions",
               "badges": [
                 {
                   "text": "Needs you",

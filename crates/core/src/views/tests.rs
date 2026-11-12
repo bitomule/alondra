@@ -942,7 +942,7 @@ fn every_task_shows_its_project_title_and_state_without_a_live_node() {
     state.requests.insert(request.id.clone(), request);
     state.agents.insert("a-working".into(), Agent { id: "a-working".into(), name: "Worker".into(), phase: NodePhase::Working, since: 0 });
     let cases: [(&str, &str, TaskState, Option<&str>, bool, &str, &str); 7] = [
-        ("t-queued", "Queue the import", TaskState::NotStarted, None, false, "Kiosk", "Stopped"),
+        ("t-queued", "Queue the import", TaskState::NotStarted, None, false, "Kiosk", "Waiting"),
         ("t-working", "Parse the lists", TaskState::Running, Some("a-working"), false, "Quill", "Working"),
         ("t-waiting", "Wait for the parser", TaskState::WaitingDependency, None, false, "Lumo", "Waiting"),
         ("t-delivered", "Deliver the export", TaskState::ForYourReview, None, false, "Redraft", "Delivered"),
@@ -1767,6 +1767,7 @@ fn task_line(state: &DomainState, live: &LiveSnapshot, lang: Lang) -> String {
 #[test]
 fn without_a_claude_session_the_banner_and_the_queue_say_so_and_never_that_usage_ran_out() {
     let mut state = fixture();
+    state.interactions.clear();
     state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::NotStarted;
     let waiting = LiveSnapshot { waits_for_session: true, start_waits: [("t-1".into(), LiveStartWait::Room)].into(), ..LiveSnapshot::default() };
     let status = |live: &LiveSnapshot, lang| render(&state, live, Client::Ios, lang, "tasks", "").status;
@@ -1775,17 +1776,18 @@ fn without_a_claude_session_the_banner_and_the_queue_say_so_and_never_that_usage
     assert_eq!(status(&waiting, Lang::En).session_wait.map(|notice| notice.text).as_deref(),
         Some("No provider account is available · check Accounts"));
     assert_eq!(status(&waiting, Lang::Es).usage_exhausted, None, "no quota banner");
-    assert_eq!(task_line(&state, &waiting, Lang::Es), "En cola · Esperando una sesión de proveedor · arranca cuando una cuenta la tenga");
-    assert_eq!(task_line(&state, &waiting, Lang::En), "Queued · Waiting for a provider session · starts once an account has one");
+    assert_eq!(task_line(&state, &waiting, Lang::Es), "En espera · Esperando una sesión de proveedor · arranca cuando una cuenta la tenga");
+    assert_eq!(task_line(&state, &waiting, Lang::En), "Waiting · Waiting for a provider session · starts once an account has one");
     let mut refused = waiting.clone();
     refused.start_waits.clear();
     refused.launch_refusals.insert("t-1".into(), LiveLaunchRefusal { reason: "usage_exhausted".into(), detail: None });
-    assert_eq!(task_line(&state, &refused, Lang::Es), "No arrancó · Esperando una sesión de proveedor");
+    assert_eq!(task_line(&state, &refused, Lang::Es), "En espera · Esperando una sesión de proveedor");
 }
 
 #[test]
 fn with_usage_out_the_banner_and_the_queue_still_name_the_quota_and_its_time() {
     let mut state = fixture();
+    state.interactions.clear();
     state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::NotStarted;
     let out = LiveSnapshot {
         usage_exhausted: Some(live::LiveUsageExhausted { since: "2026-10-24T10:00:00.000+02:00".into(), until: "2026-10-24T14:30:00.000+02:00".into(), paused_by_user: false }),
@@ -1795,7 +1797,7 @@ fn with_usage_out_the_banner_and_the_queue_still_name_the_quota_and_its_time() {
     let status = render(&state, &out, Client::Ios, Lang::Es, "tasks", "").status;
     assert_eq!(status.usage_exhausted.map(|usage| usage.until).as_deref(), Some("2026-10-24T14:30:00.000+02:00"));
     assert_eq!(status.session_wait, None, "usage that ran out is not a missing session");
-    assert_eq!(task_line(&state, &out, Lang::Es), "En cola · Límite de uso alcanzado · arranca cuando vuelva");
+    assert_eq!(task_line(&state, &out, Lang::Es), "En espera · Límite de uso alcanzado · arranca cuando vuelva");
 }
 
 /// A launch plan the start refused is the orchestrator's to fix: the user's inbox never gets a card
@@ -1813,8 +1815,8 @@ fn a_refused_plan_stays_out_of_the_users_inbox_and_its_task_waits_for_the_fix() 
     assert_eq!(card.recipient, Recipient::Orchestrator);
     assert!(state.open_user_card(&"t-1".into()).is_none());
     let live = LiveSnapshot::default();
-    assert_eq!(task_line(&state, &live, Lang::Es), "Esperando a que se corrija su plan · El orquestador corrige su plan de arranque o la cancela");
-    assert_eq!(task_line(&state, &live, Lang::En), "Waiting for its plan to be fixed · The orchestrator fixes its launch plan or cancels it");
+    assert_eq!(task_line(&state, &live, Lang::Es), "En espera · El orquestador corrige su plan de arranque o la cancela");
+    assert_eq!(task_line(&state, &live, Lang::En), "Waiting · The orchestrator fixes its launch plan or cancels it");
     for (client, key) in [(Client::Ios, "home"), (Client::Mac, "sidebar"), (Client::Tui, "home")] {
         let home = format!("{:?}", render(&state, &live, client, Lang::Es, key, ""));
         assert!(!home.contains(&card.id.0) && !home.contains("Corrige el plan"), "{client:?}: {home}");
@@ -1824,19 +1826,20 @@ fn a_refused_plan_stays_out_of_the_users_inbox_and_its_task_waits_for_the_fix() 
 #[test]
 fn a_task_that_has_not_started_says_what_refused_its_launch() {
     let mut state = fixture();
+    state.interactions.clear();
     state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::NotStarted;
     let mut live = LiveSnapshot::default();
-    assert_eq!(task_line(&state, &live, Lang::Es), "Detenida · Su sesión terminó sin que entregara",
+    assert_eq!(task_line(&state, &live, Lang::Es), "En espera · Su sesión terminó sin que entregara",
         "launched before and its session gone: never «Esperando a que el orquestador la lance»");
-    assert_eq!(task_line(&state, &live, Lang::En), "Stopped · Its session ended before it delivered");
+    assert_eq!(task_line(&state, &live, Lang::En), "Waiting · Its session ended before it delivered");
     live.start_waits.insert("t-1".into(), LiveStartWait::Retry { at: "14:05".into() });
     live.launch_refusals.insert("t-1".into(), LiveLaunchRefusal { reason: "launch_failed".into(), detail: Some("claude exited".into()) });
-    assert_eq!(task_line(&state, &live, Lang::Es), "No arrancó · Reintento a las 14:05");
-    assert_eq!(task_line(&state, &live, Lang::En), "Didn't start · Trying again at 14:05");
+    assert_eq!(task_line(&state, &live, Lang::Es), "En espera · Reintento a las 14:05 · claude exited");
+    assert_eq!(task_line(&state, &live, Lang::En), "Waiting · Trying again at 14:05 · claude exited");
     assert_eq!(active_row(&state, &live, Client::Mac, Lang::Es, "t-1").0, "block:waiting", "it tries again by itself");
     live.launch_refusals.clear();
     live.start_waits.insert("t-1".into(), LiveStartWait::Room);
-    assert_eq!(task_line(&state, &live, Lang::Es), "En cola · Arranca cuando haya sitio", "with a plan it is queued, not «Arrancando»");
+    assert_eq!(task_line(&state, &live, Lang::Es), "En espera · Arranca cuando haya sitio", "with a plan it is queued, not «Arrancando»");
     assert_eq!(active_row(&state, &live, Client::Mac, Lang::Es, "t-1").0, "block:waiting");
     live.start_waits.clear();
     let mut base = state.tasks[&"t-1".into()].clone();
@@ -1852,15 +1855,15 @@ fn a_task_that_has_not_started_says_what_refused_its_launch() {
     live.launch_refusals.insert("t-1".into(), LiveLaunchRefusal {
         reason: "workspace_untrusted".into(), detail: Some("~/Projects/indie-apps".into()),
     });
-    assert_eq!(task_line(&state, &live, Lang::Es), "No arrancó · Claude Code no confía en ~/Projects/indie-apps");
-    assert_eq!(task_line(&state, &live, Lang::En), "Didn't start · Claude Code doesn't trust ~/Projects/indie-apps");
+    assert_eq!(task_line(&state, &live, Lang::Es), "En espera · Claude Code no confía en ~/Projects/indie-apps");
+    assert_eq!(task_line(&state, &live, Lang::En), "Waiting · Claude Code doesn't trust ~/Projects/indie-apps");
     assert_eq!(active_row(&state, &live, Client::Mac, Lang::Es, "t-1").0, "block:waiting", "no card asks for it, so it is not «Para ti»");
     live.launch_refusals.insert("t-1".into(), LiveLaunchRefusal { reason: "usage_exhausted".into(), detail: None });
-    assert_eq!(task_line(&state, &live, Lang::Es), "No arrancó · Límite de uso alcanzado");
+    assert_eq!(task_line(&state, &live, Lang::Es), "En espera · Límite de uso alcanzado");
     live.launch_refusals.insert("t-1".into(), LiveLaunchRefusal {
         reason: "launch_failed".into(), detail: Some("claude exited with 1\nmore".into()),
     });
-    assert_eq!(task_line(&state, &live, Lang::Es), "No arrancó · claude exited with 1");
+    assert_eq!(task_line(&state, &live, Lang::Es), "En espera · claude exited with 1");
     assert!(!task_line(&state, &live, Lang::Es).contains("Sin empezar"));
 }
 
@@ -1894,14 +1897,14 @@ fn a_running_task_whose_node_session_closed_says_it_stopped_never_working_nor_no
     task.agent_id = Some("a-1".into());
     let mut live = LiveSnapshot::default();
     live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), disconnected: true, ..LiveNode::default() });
-    assert_eq!(task_state_text(&state, &live, Lang::Es), "Detenida");
-    assert_eq!(task_state_text(&state, &live, Lang::En), "Stopped");
+    assert_eq!(task_state_text(&state, &live, Lang::Es), "En espera");
+    assert_eq!(task_state_text(&state, &live, Lang::En), "Waiting");
     let (block, row) = active_row(&state, &live, Client::Mac, Lang::Es, "t-1");
-    assert_eq!((block.as_str(), row.subtitle.as_deref()), ("block:for-you", Some("Su sesión se cerró sin que entregara")));
+    assert_eq!((block.as_str(), row.subtitle.as_deref()), ("block:waiting", Some("Su sesión terminó sin que entregara")));
     live.nodes[0].disconnected = false;
     let mut reviving = state.clone();
     reviving.agents.insert("a-1".into(), Agent { id: "a-1".into(), name: "Node One".into(), phase: NodePhase::Starting { reviving: true, idle_since: None }, since: 0 });
-    assert_eq!(task_state_text(&reviving, &live, Lang::Es), "Reconectando");
+    assert_eq!(task_state_text(&reviving, &live, Lang::Es), "En espera");
 }
 
 /// 13 October: quill's session ended and its restart waited at the admission gate for memory while
@@ -1917,18 +1920,18 @@ fn a_running_task_whose_node_waits_at_the_gate_to_come_back_says_it_is_queued_no
     state.agents.insert("a-1".into(), Agent { id: "a-1".into(), name: "Node One".into(), phase: NodePhase::Lost, since: 0 });
     let held = pacing_live(vec![LiveQueued { pausable: true, task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Memory { free: Some(12) } }], vec![], None);
     let (block, row) = active_row(&state, &held, Client::Mac, Lang::Es, "t-1");
-    assert_eq!(row.badges[0].text, "En cola · 1.º de 1");
-    assert_eq!(row.subtitle, None, "memory is said once, in the block's header");
+    assert_eq!(row.badges[0].text, "En espera");
+    assert_eq!(row.subtitle.as_deref(), Some("1.º de 1"), "memory is said once, in the block's header");
     assert_eq!(block, "block:waiting");
     let detail = serde_json::to_string(&render(&state, &held, Client::Tui, Lang::Es, "task:t-1", "")).unwrap();
-    assert!(detail.contains("En cola") && !detail.contains("Reconectando"), "{detail}");
-    assert_eq!(task_state_text(&state, &LiveSnapshot::default(), Lang::Es), "Esperando máquina", "before it reaches the gate");
+    assert!(detail.contains("En espera") && !detail.contains("Reconectando"), "{detail}");
+    assert_eq!(task_state_text(&state, &LiveSnapshot::default(), Lang::Es), "En espera", "before it reaches the gate");
 
     state.agents.get_mut(&"a-1".into()).unwrap().phase = NodePhase::Starting { reviving: true, idle_since: None };
     let admitted = pacing_live(vec![], vec![], None);
-    assert_eq!(task_state_text(&state, &admitted, Lang::Es), "Reconectando");
+    assert_eq!(task_state_text(&state, &admitted, Lang::Es), "En espera");
     let detail = serde_json::to_string(&render(&state, &admitted, Client::Tui, Lang::Es, "task:t-1", "")).unwrap();
-    assert!(detail.contains("Reconectando") && !detail.contains("Esperando máquina"), "{detail}");
+    assert!(detail.contains("Arrancando") && !detail.contains("Reconectando"), "{detail}");
 }
 
 /// 15 October: a task reopened after its node closed said «Detenida · Su sesión se cerró sin que
@@ -1945,13 +1948,13 @@ fn a_reopened_task_waiting_in_the_queue_says_its_place_and_why_never_that_it_sto
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         let (block, row) = active_row(&state, &live, client, Lang::Es, "t-1");
         let shown = serde_json::to_string(&row).unwrap();
-        assert!(shown.contains("En cola · 2.º de 5") && shown.contains("Hay 4 de 4 trabajando"), "{client:?}: {shown}");
+        assert!(shown.contains("2.º de 5 · 4 de 4 huecos ocupados"), "{client:?}: {shown}");
         assert!(!shown.contains("Detenida") && !shown.contains("sin que entregara"), "{client:?}: {shown}");
         assert_eq!(block, "block:waiting", "{client:?}");
     }
     let held = pacing_live(vec![LiveQueued { pausable: true, task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Memory { free: Some(9) } }], vec![], None);
     let shown = serde_json::to_string(&active_row(&state, &held, Client::Ios, Lang::Es, "t-1").1).unwrap();
-    assert!(shown.contains("En cola · 1.º de 1") && !shown.contains("memoria"), "{shown}");
+    assert!(shown.contains("1.º de 1") && !shown.contains("memoria"), "{shown}");
 }
 
 fn node_in(state: &mut DomainState, phase: NodePhase) {
@@ -1986,10 +1989,10 @@ fn a_task_whose_node_waits_for_its_own_command_says_so_and_names_it_on_every_scr
     node_in(&mut state, NodePhase::WaitingBackground(work));
     let mut live = LiveSnapshot::default();
     live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), ..LiveNode::default() });
-    assert_eq!(task_state_text(&state, &live, Lang::Es), "En segundo plano");
-    assert_eq!(task_state_text(&state, &live, Lang::En), "In the background");
+    assert_eq!(task_state_text(&state, &live, Lang::Es), "Trabajando");
+    assert_eq!(task_state_text(&state, &live, Lang::En), "Working");
     let (block, row) = active_row(&state, &live, Client::Mac, Lang::Es, "t-1");
-    assert_eq!((block.as_str(), row.subtitle.as_deref()), ("block:in-progress", Some("./deploy/brew/release.sh 0.2.67")));
+    assert_eq!((block.as_str(), row.subtitle.as_deref()), ("block:in-progress", Some("En segundo plano: ./deploy/brew/release.sh 0.2.67")));
     for (screen, text) in every_screen(&state, &live) {
         assert!(text.contains("En segundo plano"), "{screen}: {text}");
         if !screen.ends_with("sidebar") {
@@ -2012,17 +2015,17 @@ fn a_task_whose_node_the_machine_paused_never_says_it_works_on_any_screen() {
     let gate = LivePaused { task_id: "t-1".into(), session: Some("a-1".into()), at: "12:02".into(), reason: LivePauseReason::Memory,
         fine_minutes: None, next: false, waits_for: None, retry: None };
     for (live, fact) in [
-        (pacing_live(vec![], vec![gate], None), "Por memoria desde las 12:02 · se reanuda sola"),
-        (LiveSnapshot::default(), "Por memoria · se reanuda sola"),
+        (pacing_live(vec![], vec![gate], None), "Memoria del Mac desde las 12:02 · se reanuda sola"),
+        (LiveSnapshot::default(), "Memoria del Mac · se reanuda sola"),
     ] {
-        assert_eq!(task_state_text(&state, &live, Lang::Es), "Pausada");
+        assert_eq!(task_state_text(&state, &live, Lang::Es), "En espera");
         let (block, row) = active_row(&state, &live, Client::Mac, Lang::Es, "t-1");
         assert_eq!((block.as_str(), row.subtitle.as_deref()), ("block:waiting", Some(fact)));
         for (screen, text) in every_screen(&state, &live) {
             assert!(!text.contains("Trabajando"), "{screen} says the task works: {text}");
         }
         let sidebar = serde_json::to_string(&render(&state, &live, Client::Mac, Lang::Es, "sidebar", "")).unwrap();
-        assert!(sidebar.contains("Pausada"), "{sidebar}");
+        assert!(sidebar.contains("En espera"), "{sidebar}");
     }
 }
 
@@ -2424,9 +2427,8 @@ fn a_working_task_says_only_working_or_its_own_step_and_no_time() {
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         let (block, row) = active_row(&state, &live, client, Lang::Es, "t-1");
         assert_eq!((block.as_str(), row.badges[0].text.as_str()), ("block:in-progress", "Trabajando"), "{client:?}");
-        assert!(row.children.is_empty(), "{client:?}: no line inferred from the command it runs");
         assert!(!matches!(row.trailing, Some(Trailing::Time { .. })), "{client:?}: a task at work shows no time");
-        assert!(row.subtitle.as_deref().is_none_or(|subtitle| subtitle == "Trabajando"), "{client:?}: {:?}", row.subtitle);
+        assert!(row.subtitle.as_deref().is_none_or(|subtitle| subtitle == "Trabajando" || subtitle == "Turno en marcha"), "{client:?}: {:?}", row.subtitle);
         assert!(every_text(&[row]).iter().all(|text| !text.contains("grep") && !text.contains("Bash")), "{client:?}");
     }
     live.nodes[0].steps = ["Plan", "Build", "Generate iOS screenshots", "Ship"].iter().enumerate().map(|(index, subject)| LiveStep {
@@ -4606,8 +4608,8 @@ fn a_delivery_held_by_a_question_is_grouped_and_counted_as_waiting_never_as_in_r
         Item::Row(row) if row.id == id => Some(row.children.iter().map(|child| child.id.clone()).collect::<Vec<_>>()),
         _ => None,
     }).unwrap_or_default();
-    assert_eq!(group_of("waiting_dependency"), [task.to_owned()], "grouped as waiting");
-    assert!(group_of("in_review").is_empty(), "not as in review");
+    assert_eq!(group_of("needs_you"), [task.to_owned()], "grouped as needing the user");
+    assert!(group_of("delivered").is_empty(), "not as delivered");
     let detail = render(&state, &golden_live(), Client::Ios, Lang::Es, &format!("task:{task}"), "");
     let texts: Vec<String> = detail.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item {
         Item::Row(row) => Some(row.title.clone()), _ => None,
@@ -4628,14 +4630,15 @@ fn a_review_that_ran_out_of_rounds_says_how_many_failures_are_left_and_lists_the
 fn the_sidebar_groups_a_task_waiting_for_its_reviewer() {
     let mut state = golden_fixture();
     let task = "t-651c38484cd2f34e74d5107ba05f7f15";
+    state.interactions.clear();
     state.tasks.get_mut(&task.into()).unwrap().state = TaskState::AwaitingBlocker;
     let live = golden_live();
     let sidebar = render(&state, &live, Client::Mac, Lang::Es, "sidebar", "");
     let group = sidebar.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
-        Item::Row(row) if row.id == "awaiting_blocker" => Some(row),
+        Item::Row(row) if row.id == "delivered" => Some(row),
         _ => None,
     }).expect("the sidebar lists the tasks waiting for a reviewer as a group");
-    assert_eq!((group.badges[0].text.as_str(), group.badges[0].tone), ("Esperando", Tone::Info), "not filed under a made-up state");
+    assert_eq!((group.badges[0].text.as_str(), group.badges[0].tone), ("Entregada", Tone::Success), "filed under one of the seven states");
     assert_eq!(group.children.len(), 1);
 }
 
@@ -5495,8 +5498,8 @@ fn a_task_whose_node_is_paused_says_what_it_owes_the_user_never_no_connection() 
         assert!(render(&state, &live, Client::Ios, Lang::En, "home", "").sections[0].card_ids.is_empty(), "{instruction:?}");
         let task = |lang| serde_json::to_string(&render(&state, &live, Client::Tui, lang, "task:t", "")).unwrap();
         let (en, es) = (task(Lang::En), task(Lang::Es));
-        assert!(en.contains("Paused") && en.contains("For memory") && en.contains(english) && !en.contains("No connection"), "{en}");
-        assert!(es.contains("Pausada") && es.contains(spanish) && !es.contains("Sin conexión"), "{es}");
+        assert!(en.contains("Waiting") && en.contains("Mac memory") && en.contains(english) && !en.contains("No connection"), "{en}");
+        assert!(es.contains("En espera") && es.contains(spanish) && !es.contains("Sin conexión"), "{es}");
     }
 }
 
@@ -5667,24 +5670,26 @@ fn a_task_whose_scheduled_launch_failed_says_so_and_why() {
     let state = failed_launch_fixture("Workspace not trusted.\n");
     let live = LiveSnapshot::default();
     let detail = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::En, "task:t-1", "")).unwrap();
-    assert!(detail.contains("Didn't start"), "{detail}");
+    assert!(detail.contains("Needs you"), "{detail}");
     assert!(detail.contains("the scheduled run could not launch its node: Workspace not trusted."), "{detail}");
     assert!(!detail.contains("Not started"), "{detail}");
     let list = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::Es, "tasks", "")).unwrap();
-    assert!(list.contains("No arrancó"), "{list}");
+    assert!(list.contains("Te necesita"), "{list}");
 }
 
 #[test]
 fn a_task_without_a_failed_launch_is_still_not_started() {
     let mut state = failed_launch_fixture("boom");
     state.schedule.runs.clear();
+    state.interactions.clear();
     let detail = serde_json::to_string(&render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "task:t-1", "")).unwrap();
-    assert!(detail.contains("Stopped") && !detail.contains("Didn't start"), "{detail}");
+    assert!(detail.contains("Its session ended before it delivered") && !detail.contains("Didn't start"), "{detail}");
 }
 
 fn waiting_for_a_relaunch(live: &LiveSnapshot, client: Client, lang: Lang, key: &str) -> (String, Option<Action>) {
     let mut state = failed_launch_fixture("boom");
     state.schedule.runs.clear();
+    state.interactions.clear();
     let view = render(&state, live, client, lang, key, "");
     let relaunch = view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
         Item::Actions(bar) => bar.actions.iter().find(|action| action.id.starts_with("relaunch:")).cloned(),
@@ -5700,10 +5705,10 @@ fn a_task_whose_node_the_user_closed_reads_node_closed_and_offers_relaunch_in_it
     let relaunch = relaunch.expect("the task offers Relaunch");
     assert_eq!((relaunch.label.as_str(), relaunch.key.as_deref(), relaunch.style), ("Relaunch", Some("l"), Style::Primary));
     assert!(relaunch.id.starts_with("relaunch:t-1@"), "{}", relaunch.id);
-    assert!(detail.contains("Stopped") && !detail.contains("Not started") && !detail.contains("Node closed"), "{detail}");
+    assert!(detail.contains("You closed its session before it delivered") && !detail.contains("Not started") && !detail.contains("Node closed"), "{detail}");
     let (spanish, relaunch) = waiting_for_a_relaunch(&live, Client::Ios, Lang::Es, "task:t-1");
     assert_eq!(relaunch.unwrap().label, "Relanzar");
-    assert!(spanish.contains("Detenida") && !spanish.contains("Nodo cerrado"), "{spanish}");
+    assert!(spanish.contains("En espera") && !spanish.contains("Nodo cerrado"), "{spanish}");
     for (client, lang) in [(Client::Ios, Lang::En), (Client::Mac, Lang::Es), (Client::Tui, Lang::En)] {
         let (list, _) = waiting_for_a_relaunch(&live, client, lang, "tasks");
         assert!(list.contains("\"id\":\"relaunch:t-1@"), "{client:?}: the row carries the action: {list}");
@@ -5719,6 +5724,7 @@ fn a_task_is_not_offered_a_relaunch_unless_it_is_not_started_with_no_node_and_it
     let closed = LiveSnapshot { closed_tasks: vec!["t-1".into()], ..LiveSnapshot::default() };
     let mut state = failed_launch_fixture("boom");
     state.schedule.runs.clear();
+    state.interactions.clear();
     state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
     let detail = serde_json::to_string(&render(&state, &closed, Client::Tui, Lang::En, "task:t-1", "")).unwrap();
     assert!(!detail.contains("relaunch:") && !detail.contains("Stopped"), "a task a new node took: {detail}");
@@ -6445,6 +6451,7 @@ fn generate_know_command_goldens() {
 #[test]
 fn a_queued_task_says_its_place_and_why_in_its_task() {
     let mut state = fixture();
+    state.interactions.clear();
     let task = state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
     (task.state, task.final_presentation) = (TaskState::NotStarted, None);
     let live = LiveSnapshot {
@@ -6456,11 +6463,9 @@ fn a_queued_task_says_its_place_and_why_in_its_task() {
         ..LiveSnapshot::default()
     };
     let task = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::En, "task:t-1", "")).unwrap();
-    assert!(task.contains("Queued · 2nd of 3 · 6 of 6 working"), "{task}");
+    assert!(task.contains("2nd of 3 · 6 of 6 slots taken"), "{task}");
     let memory = LiveQueued { pausable: true, task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Memory { free: Some(12) } };
-    assert_eq!(common::queued_label(&memory, Lang::Es), "En cola · 1.º de 1 · el Mac va justo de memoria");
     let load = LiveQueued { hold: LiveHold::Cpu { load: 52, cpus: 11 }, ..memory };
-    assert_eq!(common::queued_label(&load, Lang::En), "Queued · 1st of 1 · the Mac is very busy");
 }
 
 /// 25 October: the disk filled with builds. A task the gate holds for room on the disk reads
@@ -6470,12 +6475,13 @@ fn a_queued_task_says_its_place_and_why_in_its_task() {
 fn a_task_held_for_the_disk_waits_for_capacity_with_the_free_space_and_what_is_needed() {
     let held = LiveQueued { pausable: true, task_id: "t-1".into(), position: 1, of: 2, hold: LiveHold::Disk { free: 3_500_000_000, needed: 13_000_000_000, volume: None } };
     let mut unstarted = fixture();
+    unstarted.interactions.clear();
     let task = unstarted.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
     (task.state, task.final_presentation) = (TaskState::NotStarted, None);
     let live = pacing_live(vec![held.clone()], vec![], None);
     for (state, in_state) in [(&unstarted, None), (&sdk_task(), Some(alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::Machine)))] {
-        for (lang, said, fact) in [(Lang::En, "Waiting for capacity", "Disk · 3.5 GB free of 13.0 GB needed"),
-            (Lang::Es, "Esperando capacidad", "Disco · 3,5 GB libres de 13,0 GB necesarios")] {
+        for (lang, said, fact) in [(Lang::En, "Waiting", "Disk · 3.5 GB free of 13.0 GB needed"),
+            (Lang::Es, "En espera", "Disco · 3,5 GB libres de 13,0 GB necesarios")] {
             for client in [Client::Ios, Client::Mac, Client::Tui] {
                 let list = render_in(state, &live, client, lang, "tasks", "", in_state.as_ref());
                 let row = rows_with_parents(&list).into_iter().map(|(_, row)| row).find(|row| row.id == "t-1").unwrap_or_else(|| panic!("{client:?} lists t-1"));
@@ -6486,11 +6492,7 @@ fn a_task_held_for_the_disk_waits_for_capacity_with_the_free_space_and_what_is_n
             }
         }
     }
-    assert_eq!(common::queued_label(&held, Lang::Es), "Esperando capacidad · Disco · 3,5 GB libres de 13,0 GB necesarios");
     let on_cache = LiveQueued { hold: LiveHold::Disk { free: 659_000_000, needed: 9_000_000_000, volume: Some("BuildCache".into()) }, ..held.clone() };
-    assert_eq!(common::queued_label(&on_cache, Lang::Es), "Esperando capacidad · Disco · 659 MB libres de 9,0 GB necesarios en BuildCache",
-        "a volume builds write to, other than the Mac's own disk, is named");
-    assert_eq!(common::queued_label(&on_cache, Lang::En), "Waiting for capacity · Disk · 659 MB free of 9.0 GB needed on BuildCache");
     let earlier: LiveHold = serde_json::from_str(r#"{"kind":"disk"}"#).unwrap();
     assert_eq!(earlier, LiveHold::Disk { free: 0, needed: 0, volume: None }, "a view of an earlier daemon still reads");
 }
@@ -6526,6 +6528,7 @@ fn the_terminal_shows_only_the_new_plan_after_the_first_was_sent_back() {
 #[test]
 fn a_paused_task_says_since_when_why_and_when_it_comes_back_in_both_languages() {
     let mut state = fixture();
+    state.interactions.clear();
     let task = state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
     (task.state, task.final_presentation, task.agent_id) = (TaskState::Running, None, Some("agent-1".into()));
     let memory = LivePaused { task_id: "t-1".into(), session: Some("agent-1".into()), at: "14:05".into(), reason: LivePauseReason::Memory, fine_minutes: Some(2), next: false, waits_for: None, retry: None };
@@ -6534,28 +6537,21 @@ fn a_paused_task_says_since_when_why_and_when_it_comes_back_in_both_languages() 
         ..LiveSnapshot::default()
     };
     let task = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::En, "task:t-1", "")).unwrap();
-    assert!(task.contains("Paused · For memory since 14:05 · resumes by itself"), "{task}");
+    assert!(task.contains("Waiting · Mac memory since 14:05 · resumes by itself"), "{task}");
     let user = LivePaused { reason: LivePauseReason::User, at: "11:20".into(), ..memory.clone() };
-    assert_eq!(common::paused_label(&user, Lang::En), "Paused · you paused it at 11:20");
-    assert_eq!(common::paused_label(&user, Lang::Es), "Pausado · lo pausaste a las 11:20");
     let declared = LivePaused { reason: LivePauseReason::Machine, waits_for: Some("cola de compilación".into()), fine_minutes: Some(30), ..memory.clone() };
-    assert_eq!(common::paused_label(&declared, Lang::Es), "Esperando: cola de compilación · desde las 14:05", "the node's reason, not the Mac's health");
-    assert_eq!(common::paused_label(&LivePaused { next: true, ..declared }, Lang::Es), "Esperando: cola de compilación · desde las 14:05 · se reanuda el siguiente");
     let unexplained = LivePaused { reason: LivePauseReason::Machine, ..memory };
-    assert_eq!(common::paused_label(&unexplained, Lang::En), "Waiting since 14:05");
 }
 
 #[test]
 fn a_node_an_api_error_stopped_says_when_alondra_sends_it_back_and_an_outage_says_it_waits_for_the_service() {
     let mut state = fixture();
+    state.interactions.clear();
     let task = state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
     (task.state, task.final_presentation, task.agent_id) = (TaskState::Running, None, Some("agent-1".into()));
     let failed = LivePaused { task_id: "t-1".into(), session: Some("agent-1".into()), at: "23:26".into(), reason: LivePauseReason::ApiError,
         fine_minutes: None, next: false, waits_for: None, retry: Some(crate::views::LiveRetry { at: "23:28".into(), attempt: 2 }) };
-    assert_eq!(common::paused_label(&failed, Lang::Es), "Error de la API de Claude a las 23:26 · reintenta a las 23:28 (intento 2 de 3)");
-    assert_eq!(common::paused_label(&failed, Lang::En), "Claude API error at 23:26 · retries at 23:28 (attempt 2 of 3)");
     let outage = LivePaused { reason: LivePauseReason::ApiOutage, retry: Some(crate::views::LiveRetry { at: "23:40".into(), attempt: 3 }), ..failed.clone() };
-    assert_eq!(common::paused_label(&outage, Lang::Es), "Esperando al servicio de Claude desde las 23:26 · vuelve a probar a las 23:40");
     let live = LiveSnapshot {
         pacing: Some(LivePacing { working: 1, limit: 4, fixed: None, auto: 4, most: 12, memory_free: Some(60), tight: false, queued: vec![], paused: vec![failed] }),
         ..LiveSnapshot::default()
@@ -6867,7 +6863,7 @@ fn the_active_list_is_for_you_then_in_progress_then_waiting_each_in_its_own_orde
         ("En espera", Some(Trailing::Text { text: "2".into() })),
     ]);
     let (_, queued) = active_row(&state, &live, Client::Mac, Lang::Es, "t-q2");
-    assert_eq!((queued.badges[0].text.as_str(), queued.subtitle.as_deref()), ("En cola · 2.º de 2", Some("Hay 2 de 2 trabajando")));
+    assert_eq!((queued.badges[0].text.as_str(), queued.subtitle.as_deref()), ("En espera", Some("2.º de 2 · 2 de 2 huecos ocupados")));
     live.pacing.as_mut().unwrap().queued[0].hold = LiveHold::Next;
     assert_eq!(active_row(&state, &live, Client::Mac, Lang::Es, "t-q1").1.subtitle.as_deref(), Some("Arranca en menos de un minuto"));
     state.tasks.retain(|id, _| id.0.starts_with("t-q"));
@@ -6962,8 +6958,8 @@ fn a_working_task_between_turns_still_says_only_working() {
         ..LiveNode::default()
     }], ..LiveSnapshot::default() };
     let (block, row) = active_row(&state, &live, Client::Ios, Lang::Es, "t-1");
-    assert_eq!((block.as_str(), row.badges[0].text.as_str(), row.children.len()), ("block:in-progress", "Trabajando", 0),
-        "what it said last is not what it does now");
+    assert_eq!((block.as_str(), row.badges[0].text.as_str()), ("block:in-progress", "Trabajando"));
+    assert!(!serde_json::to_string(&row).unwrap().contains("Folding"), "what it said last is not what it does now");
 }
 
 /// A task Claude Code would not start in: the card is worded in the viewer's language, its button
@@ -7239,7 +7235,7 @@ fn a_release_whose_published_delivery_is_open_shows_its_card_wherever_it_says_it
         let said = said(&state, client, Lang::Es);
         assert_eq!((said.inbox, said.detail_cards), (1, 1), "{client:?}: the inbox and the task show its one card");
         assert_eq!((said.for_you, said.for_you_count.as_deref()), (vec!["t-1".to_owned()], Some("1")), "{client:?}");
-        assert_eq!(said.row_state, "Para revisar", "{client:?}");
+        assert_eq!(said.row_state, "Entregada", "{client:?}");
         assert_eq!(said.waiting_nodes, 1, "{client:?}");
     }
 }
@@ -7569,14 +7565,14 @@ fn a_task_whose_node_waits_for_the_orchestrator_says_so_and_puts_no_card_in_fron
     assert!(!state.interactions.keys().any(|id| id.0.starts_with(UNHEARD_PREFIX)), "no card with the node's last words");
     assert_eq!(crate::views::inbox_badge(&crate::domain::ReadIndex::build(&state)), 0);
     let live = LiveSnapshot::default();
-    assert_eq!(task_state_text(&state, &live, Lang::Es), "Esperando al orquestador");
+    assert_eq!(task_state_text(&state, &live, Lang::Es), "En espera");
     let detail = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::Es, "task:t-1", "")).unwrap();
-    assert!(detail.contains("Esperando al orquestador"), "{detail}");
+    assert!(detail.contains("Alondra prepara su siguiente paso"), "{detail}");
 
     execute(&mut state, Actor::Orchestrator { generation: 0 }, Command::AnswerQuestion {
         attachments: vec![], interaction_id: "q".into(), option_id: "done".into(), inputs: BTreeMap::new() });
     assert!(!matches!(state.node_phase(&"a-1".into()), Some(NodePhase::WaitingUser { .. })), "the answer sends the node back to work");
-    assert_ne!(task_state_text(&state, &live, Lang::Es), "Esperando al orquestador");
+    assert_ne!(task_state_text(&state, &live, Lang::Es), "En espera");
 }
 
 /// 15 October: the user chose 512 px prints on Redraft's phase B while phases C, D and E waited with
@@ -7607,8 +7603,8 @@ fn a_dependent_held_by_the_users_decision_reads_plan_review_pending_until_it_is_
     assert_ne!(task_state_text(&state, &live, Lang::Es), "Revisión de plan pendiente");
     execute(&mut state, Actor::User { user_id: "u".into() }, Command::AnswerQuestion {
         attachments: vec![], interaction_id: "q".into(), option_id: "plan-512".into(), inputs: BTreeMap::new() });
-    assert!(task_line(&state, &live, Lang::Es).starts_with("Revisión de plan pendiente · Decidiste en «Phase B»; el orquestador revisa su plan"));
-    assert!(task_line(&state, &live, Lang::En).starts_with("Plan review pending · You decided on “Phase B”; the orchestrator reviews its plan"));
+    assert!(task_line(&state, &live, Lang::Es).starts_with("En espera · Decidiste en «Phase B»; Alondra revisa su plan"));
+    assert!(task_line(&state, &live, Lang::En).starts_with("Waiting · You decided on “Phase B”; Alondra reviews its plan"));
     execute(&mut state, Actor::Orchestrator { generation: 0 }, Command::SettlePlanReview {
         review_id: "q".into(), task_id: "t-1".into(), outcome: PlanReviewOutcome::Unchanged { reason: "Phase C does not use the prints".into() } });
     assert_ne!(task_state_text(&state, &live, Lang::Es), "Revisión de plan pendiente");
@@ -7717,8 +7713,8 @@ fn the_task_of_a_node_of_the_sdk_reads_working_only_while_its_lifecycle_runs_som
     state.lifecycle_journal.insert("t-1".into(), answering.clone());
     assert_eq!(task_state_text(&state, &live, Lang::En), "Working", "its turn still runs, after its delivery");
     state.lifecycle_journal.insert("t-1".into(), [answering, vec![LifecycleRecord::TurnEnded { turn: "turn".into(), unheard_card: "unheard".into(), wake: None, text: None, awaits: None, stalled: false }]].concat());
-    assert_eq!(task_state_text(&state, &live, Lang::En), "Ready for review", "its session rests on the delivery");
-    assert_eq!(task_state_text(&state, &live, Lang::Es), "Para revisar");
+    assert_eq!(task_state_text(&state, &live, Lang::En), "Delivered", "its session rests on the delivery");
+    assert_eq!(task_state_text(&state, &live, Lang::Es), "Entregada");
 }
 
 /// 30 October: the user wrote to a node resting on its delivery and Claude never started on it, yet
@@ -7744,8 +7740,8 @@ fn a_message_claude_has_not_started_reads_waiting_for_claude() {
     ];
     let live = LiveSnapshot::default();
     state.lifecycle_journal.insert("t-1".into(), told.clone());
-    assert_eq!(task_state_text(&state, &live, Lang::En), "Waiting for Claude to start");
-    assert_eq!(task_state_text(&state, &live, Lang::Es), "Esperando a que Claude empiece");
+    assert_eq!(task_state_text(&state, &live, Lang::En), "Waiting");
+    assert_eq!(task_state_text(&state, &live, Lang::Es), "En espera");
     for client in [Client::Tui, Client::Ios, Client::Mac] {
         let ids = action_ids(&render(&state, &live, client, Lang::En, "task:t-1", ""));
         assert!(ids.iter().any(|id| id.starts_with("interrupt:a-1")), "{client:?}: a node Claude has not started on offers Interrupt: {ids:?}");
@@ -8495,12 +8491,10 @@ fn each_live_state_reads_one_way_on_every_client() {
         }
     }
     let read = |lang| shown.iter().filter(|(at, _)| *at == lang).map(|(_, text)| text.as_str()).collect::<Vec<_>>();
-    assert_eq!(read(Lang::En), ["Working", "In the background", "Finishing after the merge", "Working", "Waiting for Claude to start", "Working", "Working", "Closing", "Closing",
-        "Ready for review", "Waiting for an answer", "Paused", "Waiting for the machine", "Waiting for the machine", "Waiting for capacity", "Waiting for Claude's usage limit to renew",
-        "Waiting for the Claude API", "Waiting"]);
-    assert_eq!(read(Lang::Es), ["Trabajando", "En segundo plano", "Terminando tras el merge", "Trabajando", "Esperando a que Claude empiece", "Trabajando", "Trabajando", "Cerrando", "Cerrando",
-        "Para revisar", "Esperando respuesta", "Pausada", "Esperando máquina", "Esperando máquina", "Esperando capacidad", "Esperando a que se renueve el límite de Claude",
-        "Esperando a la API de Claude", "Esperando"]);
+    assert_eq!(read(Lang::En), ["Working", "Working", "Working", "Waiting", "Waiting", "Waiting", "Waiting", "Delivered", "Delivered",
+        "Delivered", "Needs you", "Paused", "Waiting", "Waiting", "Waiting", "Waiting", "Waiting", "Waiting"]);
+    assert_eq!(read(Lang::Es), ["Trabajando", "Trabajando", "Trabajando", "En espera", "En espera", "En espera", "En espera", "Entregada", "Entregada",
+        "Entregada", "Te necesita", "Pausada", "En espera", "En espera", "En espera", "En espera", "En espera", "En espera"]);
 }
 
 #[test]
@@ -8512,15 +8506,16 @@ fn a_task_waiting_for_the_usage_limit_says_until_when_on_every_client() {
         let list = render_in(&state, live, client, lang, "tasks", "", Some(&waiting));
         let row = rows_with_parents(&list).into_iter().map(|(_, row)| row).find(|row| row.id == "t-1").expect("t-1 is listed");
         let [badge] = row.badges.as_slice() else { panic!("one state, one badge: {:?}", row.badges) };
-        badge.text.clone()
+        let fact = row.children.iter().find(|child| child.id == "activity").map(|child| child.title.clone()).or(row.subtitle.clone()).unwrap_or_default();
+        format!("{} · {fact}", badge.text)
     };
     for client in [Client::Ios, Client::Mac, Client::Tui] {
-        assert_eq!(badge(&live, client, Lang::En), "Waiting for Claude's usage limit to renew", "no reset known");
+        assert_eq!(badge(&live, client, Lang::En), "Waiting · Claude limit", "no reset known");
     }
     live.task_usage_until.insert("t-1".into(), "2026-09-30T17:40:00.000+02:00".into());
     for client in [Client::Ios, Client::Mac, Client::Tui] {
-        assert_eq!(badge(&live, client, Lang::En), "Waiting for Claude's usage limit to renew · 17:40");
-        assert_eq!(badge(&live, client, Lang::Es), "Esperando a que se renueve el límite de Claude · 17:40");
+        assert_eq!(badge(&live, client, Lang::En), "Waiting · Claude limit until 17:40");
+        assert_eq!(badge(&live, client, Lang::Es), "En espera · Límite de Claude hasta las 17:40");
     }
 }
 
@@ -8533,18 +8528,18 @@ fn a_codex_task_waiting_for_its_usage_limit_names_codex() {
     let badge = |state: &DomainState, live: &LiveSnapshot, lang| {
         let list = render_in(state, live, Client::Tui, lang, "tasks", "", Some(&waiting));
         let row = rows_with_parents(&list).into_iter().map(|(_, row)| row).find(|row| row.id == "t-1").expect("t-1 is listed");
-        row.badges[0].text.clone()
+        format!("{} · {}", row.badges[0].text, row.subtitle.clone().unwrap_or_default())
     };
-    assert_eq!(badge(&state, &live, Lang::En), "Waiting for Codex's usage limit to renew");
+    assert_eq!(badge(&state, &live, Lang::En), "Waiting · Codex limit");
     live.task_usage_until.insert("t-1".into(), "2026-11-11T08:05:08.000+01:00".into());
-    assert_eq!(badge(&state, &live, Lang::En), "Waiting for Codex's usage limit to renew · 08:05");
-    assert_eq!(badge(&state, &live, Lang::Es), "Esperando a que se renueve el límite de Codex · 08:05");
+    assert_eq!(badge(&state, &live, Lang::En), "Waiting · Codex limit until 08:05");
+    assert_eq!(badge(&state, &live, Lang::Es), "En espera · Límite de Codex hasta las 08:05");
     let account = |id: &str, name: &str| crate::accounts::AccountStatus { provider: crate::accounts::Provider::Codex, id: crate::accounts::AccountId::parse(id).unwrap(), name: name.into(),
         state: crate::accounts::AccountState::SignedIn, native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0, profile: None };
     state.accounts = vec![account("default", "Personal"), account("work", "Work")];
     state.tasks.get_mut(&"t-1".into()).unwrap().account = Some(crate::accounts::AccountId::parse("work").unwrap());
-    assert_eq!(badge(&state, &live, Lang::En), "Waiting for Codex (Work)'s usage limit to renew · 08:05", "with two accounts it names the one that ran out");
-    assert_eq!(badge(&state, &live, Lang::Es), "Esperando a que se renueve el límite de Codex (Work) · 08:05");
+    assert_eq!(badge(&state, &live, Lang::En), "Waiting · Codex (Work) limit until 08:05", "with two accounts it names the one that ran out");
+    assert_eq!(badge(&state, &live, Lang::Es), "En espera · Límite de Codex (Work) hasta las 08:05");
 }
 
 /// On 23 October a node ended its turn behind `sleep 5900`, then behind a workflow, and its task
@@ -8584,7 +8579,7 @@ fn a_task_whose_turn_ended_behind_its_own_work_says_so_and_names_what_runs() {
     runs.push(("claude --bg with no readings", &by_bg, None, LiveSnapshot::default(), Some(("sleep 5900 and 1 more", "sleep 5900 y 1 más"))));
     runs.push(("the Agent SDK with no readings", &sdk, Some(&own_work), LiveSnapshot::default(), None));
     for (through, state, in_state, live, named) in &runs {
-        for (lang, waits) in [(Lang::En, "In the background"), (Lang::Es, "En segundo plano")] {
+        for (lang, waits) in [(Lang::En, "Working"), (Lang::Es, "Trabajando")] {
             let named = named.map(|(en, es)| if lang == Lang::En { en } else { es });
             for client in [Client::Ios, Client::Mac, Client::Tui] {
                 let list = render_in(state, live, client, lang, "tasks", "", *in_state);
@@ -8596,8 +8591,8 @@ fn a_task_whose_turn_ended_behind_its_own_work_says_so_and_names_what_runs() {
                 assert!(screen.contains(waits), "{through} {client:?} {lang:?}: the task's screen says {waits}: {screen}");
                 match named {
                     Some(named) => {
-                        assert!(list.contains(&format!("\"{named}\"")), "{through} {client:?} {lang:?}: the list names {named}: {list}");
-                        assert!(screen.contains(&format!("\"{waits} · {named}\"")), "{through} {client:?} {lang:?}: the screen names {named}: {screen}");
+                        assert!(list.contains(named), "{through} {client:?} {lang:?}: the list names {named}: {list}");
+                        assert!(screen.contains(named), "{through} {client:?} {lang:?}: the screen names {named}: {screen}");
                     }
                     None => assert!(!list.contains("sleep 5900"), "{through} {client:?} {lang:?}: nothing is named without readings: {list}"),
                 }
@@ -8778,7 +8773,7 @@ fn a_task_in_review_reads_working_while_its_node_takes_up_a_message_and_in_revie
         assert!(screen.contains(&serde_json::to_string(&row).unwrap()), "{client:?}: the task's screen says {row}: {screen}");
         row
     };
-    for (journal, en, es) in [(delivered, "Ready for review", "Para revisar"), (told, "Working", "Trabajando"), (ended, "Ready for review", "Para revisar")] {
+    for (journal, en, es) in [(delivered, "Delivered", "Entregada"), (told, "Working", "Trabajando"), (ended, "Delivered", "Entregada")] {
         state.lifecycle_journal.insert("t-1".into(), journal);
         state.derive_states();
         assert_eq!(state.tasks[&"t-1".into()].state, TaskState::ForYourReview, "its delivery still waits for the review");
@@ -9393,7 +9388,7 @@ fn a_task_that_presents_and_goes_on_in_the_same_turn_reads_working_until_the_tur
         assert!(screen.contains(&serde_json::to_string(&row).unwrap()), "{client:?}: the task's screen says {row}: {screen}");
         row
     };
-    for (ended, en, es) in [(false, "Working", "Trabajando"), (true, "Ready for review", "Para revisar")] {
+    for (ended, en, es) in [(false, "Working", "Trabajando"), (true, "Delivered", "Entregada")] {
         let state = presented_in_a_turn(ended);
         assert_eq!(state.tasks[&"t-1".into()].state, TaskState::ForYourReview, "its delivery waits for the review");
         for client in [Client::Ios, Client::Mac, Client::Tui] {
@@ -9670,6 +9665,101 @@ fn card_title_contract_details_have_separate_fields_and_no_content_label() {
                 let section = view.sections.iter().find(|section| section.id == "content").unwrap();
                 assert_eq!(section.title, None);
                 assert!(section.items.iter().any(|item| matches!(item, Item::Markdown(markdown) if markdown.text == body)));
+            }
+        }
+    }
+}
+
+const SEVEN_STATES: [(&str, &str); 7] = [
+    ("Working", "Trabajando"), ("Waiting", "En espera"), ("Needs you", "Te necesita"), ("Paused", "Pausada"),
+    ("Delivered", "Entregada"), ("Finished", "Terminada"), ("Cancelled", "Cancelada"),
+];
+
+/// What each state of `live_states()` reads, in the order of that list: the state and the block of the Tasks list.
+const LIVE_STATES_READ: [(usize, &str); 18] = [
+    (0, "block:in-progress"), (0, "block:in-progress"), (0, "block:in-progress"),
+    (1, "block:waiting"), (1, "block:waiting"), (1, "block:waiting"), (1, "block:waiting"),
+    (4, "block:in-progress"), (4, "block:in-progress"),
+    (4, "block:in-progress"), (2, "block:for-you"), (3, "block:waiting"),
+    (1, "block:waiting"), (1, "block:waiting"), (1, "block:waiting"), (1, "block:waiting"), (1, "block:waiting"), (1, "block:waiting"),
+];
+
+fn listed_t1(state: &DomainState, in_state: Option<&alondra_domain::LiveState>, client: Client, lang: Lang) -> (String, Row) {
+    let list = render_in(state, &LiveSnapshot::default(), client, lang, "tasks", "", in_state);
+    let (parents, row) = rows_with_parents(&list).into_iter().find(|(_, row)| row.id == "t-1").unwrap_or_else(|| panic!("{client:?} lists t-1"));
+    (parents.into_iter().find(|parent| parent.starts_with("block:")).unwrap_or_default(), row)
+}
+
+#[test]
+fn every_situation_reads_as_one_of_seven_states_in_both_languages() {
+    let state = sdk_task();
+    for (in_state, (expected, _)) in live_states().iter().zip(LIVE_STATES_READ) {
+        for lang in [Lang::En, Lang::Es] {
+            let name = |(en, es): (&'static str, &'static str)| if lang == Lang::En { en } else { es };
+            for client in [Client::Ios, Client::Mac, Client::Tui] {
+                let (_, row) = listed_t1(&state, Some(in_state), client, lang);
+                let [badge] = row.badges.as_slice() else { panic!("{in_state:?} {client:?}: one badge: {:?}", row.badges) };
+                assert_eq!(badge.text, name(SEVEN_STATES[expected]), "{in_state:?} {client:?} {lang:?}");
+                let screen = serde_json::to_string(&render_in(&state, &LiveSnapshot::default(), client, lang, "task:t-1", "", Some(in_state))).unwrap();
+                assert!(screen.contains(&format!("{} · ", badge.text)), "{in_state:?} {client:?} {lang:?}: the state comes with its reason: {screen}");
+            }
+        }
+    }
+    for (task_state, index) in [(TaskState::Done, 5), (TaskState::Cancelled, 6)] {
+        let mut state = fixture();
+        state.interactions.clear();
+        state.tasks.get_mut(&"t-1".into()).unwrap().state = task_state;
+        for (lang, text) in [(Lang::En, SEVEN_STATES[index].0), (Lang::Es, SEVEN_STATES[index].1)] {
+            let screen = serde_json::to_string(&render(&state, &LiveSnapshot::default(), Client::Tui, lang, "task:t-1", "")).unwrap();
+            assert!(screen.contains(&format!("\"value\":\"{text}")), "{task_state:?} {lang:?}: {screen}");
+        }
+    }
+}
+
+#[test]
+fn the_three_blocks_follow_the_situation() {
+    let state = sdk_task();
+    for (in_state, (_, block)) in live_states().iter().zip(LIVE_STATES_READ) {
+        for client in [Client::Ios, Client::Mac, Client::Tui] {
+            assert_eq!(listed_t1(&state, Some(in_state), client, Lang::En).0, block, "{in_state:?} {client:?}");
+        }
+    }
+}
+
+#[test]
+fn a_task_that_needs_you_shows_its_card_in_the_inbox_view() {
+    let state = golden_fixture();
+    let index = crate::domain::ReadIndex::build(&state);
+    let mut needing = 0;
+    for client in [Client::Ios, Client::Tui] {
+        let list = render(&state, &golden_live(), client, Lang::En, "tasks", "2026-09-30T10:00:00Z");
+        let home = render(&state, &golden_live(), client, Lang::En, "home", "2026-09-30T10:00:00Z");
+        let cards: Vec<String> = home.sections.iter().flat_map(|section| section.card_ids.clone())
+            .chain(home.sections.iter().flat_map(|section| &section.items).filter_map(|item| if let Item::Card(card) = item { Some(card.id.clone()) } else { None })).collect();
+        for (_, row) in rows_with_parents(&list) {
+            let Some(reading) = index.task(&TaskId(row.id.clone())) else { continue };
+            if row.badges.first().is_some_and(|badge| badge.text == "Needs you") {
+                needing += 1;
+                assert!(reading.waiting.iter().any(|card| cards.iter().any(|shown| shown.contains(&card.0))), "{client:?}: {} needs you with no card in the inbox: {cards:?}", row.id);
+            }
+        }
+    }
+    assert!(needing > 0, "the fixture has a task that needs the user");
+}
+
+#[test]
+fn a_task_with_no_card_in_the_inbox_never_reads_needs_you() {
+    for task_state in [TaskState::NotStarted, TaskState::Running, TaskState::WaitingDependency, TaskState::AwaitingBlocker, TaskState::ForYourReview] {
+        let mut state = fixture();
+        state.interactions.clear();
+        state.tasks.get_mut(&"t-1".into()).unwrap().state = task_state;
+        for client in [Client::Ios, Client::Mac, Client::Tui] {
+            for lang in [Lang::En, Lang::Es] {
+                let list = render(&state, &LiveSnapshot::default(), client, lang, "tasks", "");
+                let row = rows_with_parents(&list).into_iter().map(|(_, row)| row).find(|row| row.id == "t-1")
+                    .unwrap_or_else(|| panic!("{client:?}: t-1 is listed as {task_state:?}"));
+                let needs_you = if lang == Lang::En { "Needs you" } else { "Te necesita" };
+                assert!(row.badges.iter().all(|badge| badge.text != needs_you), "{task_state:?} {client:?} {lang:?}: {:?}", row.badges);
             }
         }
     }

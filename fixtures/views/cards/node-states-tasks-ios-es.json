@@ -4,12 +4,12 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "vf376a8af2c48da16",
+  "version": "v4033c4251c7d968f",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
-    "version": "vcaf24a89cb36a3b8",
-    "summary": "2 preguntas · 3 por leer · 2 nodos trabajando",
+    "version": "v41891ae08ceb5ca5",
+    "summary": "2 preguntas · 3 por leer · 3 nodos trabajando",
     "badge": 5,
     "counts": [
       {
@@ -30,7 +30,7 @@
       {
         "id": "working",
         "label": "trabajando",
-        "value": 2
+        "value": 3
       },
       {
         "id": "waiting",
@@ -152,46 +152,11 @@
           "title": "En marcha",
           "trailing": {
             "kind": "text",
-            "text": "3"
+            "text": "2"
           },
           "depth": 0,
           "struck": false,
           "children": [
-            {
-              "id": "t-alpha-waiting",
-              "link": {
-                "kind": "view",
-                "key": "task:t-alpha-waiting"
-              },
-              "icon": "task",
-              "title": "Plan the migration",
-              "subtitle": "Arrancando",
-              "badges": [
-                {
-                  "text": "Arrancando",
-                  "tone": "accent"
-                },
-                {
-                  "text": "Demo Garden",
-                  "tone": "neutral"
-                }
-              ],
-              "trailing": {
-                "kind": "count",
-                "value": 0
-              },
-              "depth": 1,
-              "struck": false,
-              "children": [
-                {
-                  "id": "activity",
-                  "icon": "notice",
-                  "title": "Abriendo su sesión",
-                  "depth": 0,
-                  "struck": false
-                }
-              ]
-            },
             {
               "id": "t-release-runner",
               "link": {
@@ -200,10 +165,10 @@
               },
               "icon": "mission",
               "title": "Release the daemon",
-              "subtitle": "En segundo plano",
+              "subtitle": "Trabajando",
               "badges": [
                 {
-                  "text": "En segundo plano",
+                  "text": "Trabajando",
                   "tone": "accent"
                 },
                 {
@@ -221,7 +186,7 @@
                 {
                   "id": "activity",
                   "icon": "notice",
-                  "title": "./deploy/brew/release.sh 0.2.67",
+                  "title": "En segundo plano: ./deploy/brew/release.sh 0.2.67",
                   "depth": 0,
                   "struck": false
                 }
@@ -252,6 +217,15 @@
               },
               "depth": 1,
               "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "Turno en marcha",
+                  "depth": 0,
+                  "struck": false
+                }
+              ],
               "actions": [
                 {
                   "id": "pause:zeta-worker@6",
@@ -283,7 +257,7 @@
           "title": "En espera",
           "trailing": {
             "kind": "text",
-            "text": "2"
+            "text": "3"
           },
           "depth": 0,
           "struck": false,
@@ -294,13 +268,13 @@
                 "kind": "view",
                 "key": "task:t-queued"
               },
-              "icon": "branch",
+              "icon": "task",
               "title": "Wire the badge after the review",
-              "subtitle": "Esperando",
+              "subtitle": "En espera",
               "badges": [
                 {
-                  "text": "Esperando",
-                  "tone": "info"
+                  "text": "En espera",
+                  "tone": "neutral"
                 },
                 {
                   "text": "Demo Garden",
@@ -324,17 +298,52 @@
               ]
             },
             {
+              "id": "t-alpha-waiting",
+              "link": {
+                "kind": "view",
+                "key": "task:t-alpha-waiting"
+              },
+              "icon": "task",
+              "title": "Plan the migration",
+              "subtitle": "En espera",
+              "badges": [
+                {
+                  "text": "En espera",
+                  "tone": "neutral"
+                },
+                {
+                  "text": "Demo Garden",
+                  "tone": "neutral"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "Arrancando",
+                  "depth": 0,
+                  "struck": false
+                }
+              ]
+            },
+            {
               "id": "t-paused-builder",
               "link": {
                 "kind": "view",
                 "key": "task:t-paused-builder"
               },
-              "icon": "mission",
+              "icon": "task",
               "title": "Fix the vanished session",
-              "subtitle": "Pausada",
+              "subtitle": "En espera",
               "badges": [
                 {
-                  "text": "Pausada",
+                  "text": "En espera",
                   "tone": "neutral"
                 },
                 {

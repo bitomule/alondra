@@ -4,12 +4,12 @@
   "view": "tasks",
   "key": "tasks",
   "client": "mac",
-  "version": "vd1ea8c94b03a1101",
+  "version": "v6369f05d397e70ba",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
-    "version": "v1f87f20b79473ef7",
-    "summary": "2 questions · 3 to read · 2 nodes working",
+    "version": "v1d701d9684ea0a41",
+    "summary": "2 questions · 3 to read · 3 nodes working",
     "badge": 5,
     "counts": [
       {
@@ -30,7 +30,7 @@
       {
         "id": "working",
         "label": "working",
-        "value": 2
+        "value": 3
       },
       {
         "id": "waiting",
@@ -138,33 +138,11 @@
           "title": "In progress",
           "trailing": {
             "kind": "text",
-            "text": "3"
+            "text": "2"
           },
           "depth": 0,
           "struck": false,
           "children": [
-            {
-              "id": "t-alpha-waiting",
-              "link": {
-                "kind": "view",
-                "key": "task:t-alpha-waiting"
-              },
-              "icon": "task",
-              "title": "Plan the migration",
-              "subtitle": "Opening its session",
-              "badges": [
-                {
-                  "text": "Starting",
-                  "tone": "accent"
-                },
-                {
-                  "text": "Demo Garden",
-                  "tone": "neutral"
-                }
-              ],
-              "depth": 1,
-              "struck": false
-            },
             {
               "id": "t-release-runner",
               "link": {
@@ -173,10 +151,10 @@
               },
               "icon": "mission",
               "title": "Release the daemon",
-              "subtitle": "./deploy/brew/release.sh 0.2.67",
+              "subtitle": "In the background: ./deploy/brew/release.sh 0.2.67",
               "badges": [
                 {
-                  "text": "In the background",
+                  "text": "Working",
                   "tone": "accent"
                 },
                 {
@@ -195,6 +173,7 @@
               },
               "icon": "mission",
               "title": "Build the importer",
+              "subtitle": "Turn running",
               "badges": [
                 {
                   "text": "Working",
@@ -238,7 +217,7 @@
           "title": "Waiting",
           "trailing": {
             "kind": "text",
-            "text": "2"
+            "text": "3"
           },
           "depth": 0,
           "struck": false,
@@ -249,13 +228,35 @@
                 "kind": "view",
                 "key": "task:t-queued"
               },
-              "icon": "branch",
+              "icon": "task",
               "title": "Wire the badge after the review",
               "subtitle": "Waits for “Restore the native review experience” · Polish the Alondra beta",
               "badges": [
                 {
                   "text": "Waiting",
-                  "tone": "info"
+                  "tone": "neutral"
+                },
+                {
+                  "text": "Demo Garden",
+                  "tone": "neutral"
+                }
+              ],
+              "depth": 1,
+              "struck": false
+            },
+            {
+              "id": "t-alpha-waiting",
+              "link": {
+                "kind": "view",
+                "key": "task:t-alpha-waiting"
+              },
+              "icon": "task",
+              "title": "Plan the migration",
+              "subtitle": "Starting",
+              "badges": [
+                {
+                  "text": "Waiting",
+                  "tone": "neutral"
                 },
                 {
                   "text": "Demo Garden",
@@ -271,12 +272,12 @@
                 "kind": "view",
                 "key": "task:t-paused-builder"
               },
-              "icon": "mission",
+              "icon": "task",
               "title": "Fix the vanished session",
               "subtitle": "The build queue is full · since 09:40",
               "badges": [
                 {
-                  "text": "Paused",
+                  "text": "Waiting",
                   "tone": "neutral"
                 },
                 {

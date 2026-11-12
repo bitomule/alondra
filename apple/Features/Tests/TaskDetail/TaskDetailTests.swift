@@ -126,7 +126,7 @@ final class TaskDetailTests: XCTestCase {
     func testATaskWhoseNodeTheUserClosedOffersRelaunchBeforeCancel() throws {
         let detail = TaskDetail(document: try Fixtures.document("task-closed-ios"))
 
-        XCTAssertEqual(detail.state, "Stopped · You closed its session before it delivered")
+        XCTAssertEqual(detail.state, "Waiting · You closed its session before it delivered")
         XCTAssertEqual(detail.runTime?.title, "Running for")
         XCTAssertEqual(detail.runTime?.label.elapsed, Elapsed(since: "2026-09-30T08:00:00Z"), "the screen counts from when the task first ran")
         XCTAssertEqual(detail.relaunch?.label, "Relaunch")

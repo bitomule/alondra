@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v32c721d961181ecc",
+  "version": "vb742856cbece01dd",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -89,10 +89,10 @@
               },
               "icon": "pull_request",
               "title": "Release the daemon with the memory pause fix",
-              "subtitle": "Ready for review",
+              "subtitle": "Delivered",
               "badges": [
                 {
-                  "text": "Ready for review",
+                  "text": "Delivered",
                   "tone": "info"
                 }
               ],
@@ -101,7 +101,16 @@
                 "value": 1
               },
               "depth": 1,
-              "struck": false
+              "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "For review",
+                  "depth": 0,
+                  "struck": false
+                }
+              ]
             }
           ]
         }

@@ -31,7 +31,7 @@ const DEFAULT: &str = "default";
 const ACCOUNTS: &str = "/settings/accounts";
 const CHECK: &str = "/settings/accounts/check";
 const USAGE_CARD: &str = "claude-usage-limit-";
-const USAGE_WAIT: &str = "Waiting for Claude's usage limit";
+const USAGE_WAIT: &str = "Waiting · Claude limit";
 const SIGNED_OUT_CARD: &str = "claude-signed-out-";
 const HOUR: u64 = 3_600_000;
 const WEEK_RESETS_IN: u64 = 4 * 24 * HOUR;
@@ -118,7 +118,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             if let Some(session) = started {
                 bail!("node {} started on {} while no account can work", session.short, session.account);
             }
-            Ok(((seen == "Didn't start · Usage limit reached").then_some(view), seen))
+            Ok(((seen == "Waiting · Usage limit reached").then_some(view), seen))
         })?;
         report.snapshot("task-t-acc3-waiting", &waiting)?;
         request(report, fakes, &user, &task_script("req-acc4", "t-acc4", "Rename the module"), "Rename the module")?;

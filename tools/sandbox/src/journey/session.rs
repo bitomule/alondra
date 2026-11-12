@@ -154,7 +154,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             })
         })?;
         act(report, fakes, &node, "Claude's own turn ends and the message that waited runs", &[Step::EndOwnTurn])?;
-        state(report, &user, "t-s5", "In the background")?;
+        state(report, &user, "t-s5", "Working")?;
         report.step("the turn of the message ends on its research too: nobody is asked", || {
             let inbox = user.inbox()?;
             anyhow::ensure!(!inbox.iter().any(|id| ["turn-ended-t-s5-", "stalled-t-s5-", "host-lost-t-s5-"].iter().any(|card| id.starts_with(card))), "{inbox:?}");

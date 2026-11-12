@@ -1169,7 +1169,7 @@ fn the_screens_show_one_sign_in_card_and_name_the_wait_of_the_other_task() {
     assert!(home.contains("\"id\":\"waiting\",\"title\":\"Te espera\",\"count\":1,"), "one card in Waiting for You: {home}");
     assert!(home.contains("La sesión de Claude Code caducó y esperan 2 tareas."), "{home}");
     let other = render("task:u");
-    assert!(other.contains("Espera a que inicies sesión en Claude"), "{other}");
+    assert!(other.contains("Te necesita") && other.contains("Espera a que inicies sesión en Claude"), "{other}");
 }
 
 fn options(s: &DomainState, card: &InteractionId) -> Vec<String> {
@@ -2273,7 +2273,7 @@ fn a_task_of_the_sdk_that_works_after_its_merge_reads_so_on_every_client() {
     let index = ReadIndex::build(&s);
     let live = LiveSnapshot::default();
     for client in [Client::Ios, Client::Mac, Client::Tui] {
-        for (lang, said) in [(Lang::En, "Finishing after the merge"), (Lang::Es, "Terminando tras el merge")] {
+        for (lang, said) in [(Lang::En, "Working · "), (Lang::Es, "Trabajando · ")] {
             let view = build("task:t", RenderContext { domain: &s, index: &index, live: &live, client, lang,
                 transport: Transport::Loopback, cursor: "test", rendered_at: "" }).unwrap();
             let shown = serde_json::to_string(&view).unwrap();

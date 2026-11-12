@@ -103,51 +103,10 @@ pub(super) fn effort_label(effort: &str, lang: super::Lang) -> Option<&'static s
     })
 }
 
-/// A working Task whose delivery Alondra sent back says what it told the node to do.
-pub(super) fn instruction_label(task: &crate::domain::Task, domain: &crate::domain::DomainState, lang: super::Lang) -> Option<&'static str> {
-    use crate::domain::{Instruction, TaskState};
-    if task.state != TaskState::Running { return None; }
-    if domain.task_merge_failure(&task.id).is_some() {
-        return Some(super::text::t!(lang, "Alondra couldn't merge it", "Alondra no pudo hacer el merge"));
-    }
-    Some(match domain.task_handed_back(&task.id)? {
-        Instruction::Changes => super::text::t!(lang, "Changes requested", "Cambios solicitados"),
-        Instruction::Conflicts => super::text::t!(lang, "Resolving conflicts", "Resolviendo conflictos"),
-        Instruction::Question => super::text::t!(lang, "Answering your question", "Respondiendo a tu pregunta"),
-        Instruction::Reply => super::text::t!(lang, "Acting on your reply", "Atendiendo tu respuesta"),
-    })
-}
-
 /// The task's place in the queue of starts waiting for the gate, if it waits there.
 pub(super) fn queued<'a>(task: &crate::domain::Task, context: &'a RenderContext<'_>) -> Option<&'a super::LiveQueued> {
     if task.agent_id.is_some() || task.state.terminal() { return None; }
     context.live.pacing.as_ref()?.queued.iter().find(|queued| queued.task_id == task.id.0)
-}
-
-/// The place in the gate's queue of a task whose node lost its session and waits there to be
-/// restarted. Kept apart from `queued`: such a task is no launch the user can pause or release.
-pub(super) fn coming_back_queued<'a>(task: &crate::domain::Task, context: &'a RenderContext<'_>) -> Option<&'a super::LiveQueued> {
-    let agent = task.agent_id.as_ref()?;
-    (context.domain.node_phase(agent) == Some(&crate::domain::NodePhase::Lost)).then_some(())?;
-    gate_queued(task, context)
-}
-
-/// The place in the gate's queue of a task whose node the user resumed: it stays paused until the
-/// gate has a slot for it.
-pub(super) fn resume_queued<'a>(task: &crate::domain::Task, context: &'a RenderContext<'_>) -> Option<&'a super::LiveQueued> {
-    let agent = task.agent_id.as_ref()?;
-    context.domain.node_pause(agent)?;
-    gate_queued(task, context)
-}
-
-/// The place in the gate's queue of a task whose node has something to go on with and waits for a
-/// slot to start its turn. Its lifecycle reads as delivering: nothing runs until the gate lets it.
-/// A task whose accepted PR could not be merged never reads as queued: it says why it went back.
-pub(super) fn turn_queued<'a>(task: &crate::domain::Task, context: &'a RenderContext<'_>) -> Option<&'a super::LiveQueued> {
-    let agent = task.agent_id.as_ref()?;
-    context.reading(&task.id).is_none_or(|read| read.merge_failure.is_none()).then_some(())?;
-    (context.domain.node_phase(agent) != Some(&crate::domain::NodePhase::Lost) && context.domain.node_pause(agent).is_none()).then_some(())?;
-    gate_queued(task, context)
 }
 
 /// The place in the gate's queue of a task that waits there, whether it has a node or not.
@@ -198,28 +157,6 @@ pub(super) fn ordinal(position: usize, lang: super::Lang) -> String {
     }
 }
 
-/// "Queued · 2nd of 3 · 6 of 6 working", or why the Mac holds every start.
-pub(super) fn queued_label(queued: &super::LiveQueued, lang: super::Lang) -> String {
-    use super::{LiveHold, text::tf};
-    let place = ordinal(queued.position, lang);
-    let of = queued.of;
-    match &queued.hold {
-        LiveHold::Slots { working, limit } => tf!(lang, "Queued · {place} of {of} · {working} of {limit} working",
-            "En cola · {place} de {of} · hay {working} de {limit} trabajando"),
-        LiveHold::Memory { .. } => tf!(lang, "Queued · {place} of {of} · the Mac is short of memory",
-            "En cola · {place} de {of} · el Mac va justo de memoria"),
-        LiveHold::Cpu { .. } => tf!(lang, "Queued · {place} of {of} · the Mac is very busy",
-            "En cola · {place} de {of} · el Mac está muy cargado"),
-        LiveHold::Next if queued.position == 1 => tf!(lang, "Queued · next · starts within a minute",
-            "En cola · la siguiente · arranca en menos de un minuto"),
-        LiveHold::Next => tf!(lang, "Queued · {place} of {of}", "En cola · {place} de {of}"),
-        LiveHold::Disk { free, needed, volume } => {
-            let fact = disk_room_fact(*free, *needed, volume.as_deref(), lang);
-            tf!(lang, "Waiting for capacity · {fact}", "Esperando capacidad · {fact}")
-        }
-    }
-}
-
 /// The node's turn is running, as its task's lifecycle says for a node of the Agent SDK and its
 /// phase for one of `claude --bg`.
 pub(super) fn working(agent: &str, context: &RenderContext<'_>) -> bool {
@@ -259,38 +196,6 @@ pub(super) fn api_wait_label(paused: &super::LivePaused, lang: super::Lang) -> S
         }
         (None, _) => since,
     }
-}
-
-/// "Paused since 14:05 for memory · resumes when the Mac has been fine for 5 min (2 so far)".
-pub(super) fn paused_label(paused: &super::LivePaused, lang: super::Lang) -> String {
-    use super::{LivePauseReason, text::tf};
-    let at = &paused.at;
-    let why = match paused.reason {
-        LivePauseReason::User => return tf!(lang, "Paused · you paused it at {at}", "Pausado · lo pausaste a las {at}"),
-        LivePauseReason::Usage => return tf!(lang, "Paused since {at} for the usage limit · resumes in turn once it resets",
-            "Pausado desde las {at} por el límite de uso · se reanuda por turno cuando se reinicie"),
-        LivePauseReason::Memory => tf!(lang, "Paused since {at} for memory", "Pausado desde las {at} por memoria"),
-        LivePauseReason::ApiError | LivePauseReason::ApiOutage => return api_wait_label(paused, lang),
-        LivePauseReason::Machine => {
-            let reason = paused.waits_for.as_deref().map(|reason| reason.trim().trim_end_matches('.')).filter(|reason| !reason.is_empty());
-            let since = match reason {
-                Some(reason) => tf!(lang, "Waiting: {reason} · since {at}", "Esperando: {reason} · desde las {at}"),
-                None => tf!(lang, "Waiting since {at}", "Esperando desde las {at}"),
-            };
-            return match paused.next {
-                true => format!("{since} · {}", super::text::t!(lang, "resumes next", "se reanuda el siguiente")),
-                false => since,
-            };
-        }
-    };
-    let when = match paused.fine_minutes {
-        _ if paused.next => tf!(lang, "resumes next", "se reanuda el siguiente"),
-        Some(minutes) if minutes >= 5 => tf!(lang, "resumes in turn, within the limit", "se reanuda por turno, sin pasar del límite"),
-        Some(minutes) => tf!(lang, "resumes when the Mac has been fine for 5 min ({minutes} so far)",
-            "se reanuda cuando el Mac lleve 5 min bien ({minutes} hasta ahora)"),
-        None => tf!(lang, "resumes when the Mac has been fine for 5 min", "se reanuda cuando el Mac lleve 5 min bien"),
-    };
-    format!("{why} · {when}")
 }
 
 /// The error of the scheduled launch that should have started this task and did not.
@@ -337,14 +242,6 @@ pub(super) fn elapsed_mark(task: &crate::domain::Task, named: bool, context: &Re
 pub(super) fn node_closed(task: &crate::domain::Task, context: &super::RenderContext<'_>) -> bool {
     task.state == crate::domain::TaskState::NotStarted && task.agent_id.is_none() && !task.archived
         && context.live.closed_tasks.contains(&task.id.0)
-}
-
-pub(super) fn node_closed_label(lang: super::Lang) -> &'static str {
-    super::text::t!(lang, "Stopped", "Detenida")
-}
-
-pub(super) fn launch_failed_label(lang: super::Lang) -> &'static str {
-    super::text::t!(lang, "Didn't start", "No arrancó")
 }
 
 pub(super) fn task_presentation(state: crate::domain::TaskState) -> (super::Icon, super::Tone) {

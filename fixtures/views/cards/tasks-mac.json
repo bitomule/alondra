@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "mac",
-  "version": "vee32a5903e77f4df",
+  "version": "ve627324cea9a73ea",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -164,7 +164,7 @@
               },
               "icon": "mission",
               "title": "Count the retracted pushes",
-              "subtitle": "Badge accuracy",
+              "subtitle": "Turn running · Badge accuracy",
               "badges": [
                 {
                   "text": "Working",
@@ -214,6 +214,7 @@
               },
               "icon": "pull_request",
               "title": "Review the schedule editor",
+              "subtitle": "For review",
               "badges": [
                 {
                   "text": "Delivered",
@@ -238,6 +239,7 @@
               },
               "icon": "mission",
               "title": "Lumo · weekly improvement",
+              "subtitle": "Turn running",
               "badges": [
                 {
                   "text": "Working",
@@ -306,9 +308,10 @@
               },
               "icon": "task",
               "title": "Refresh the App Store screenshots",
+              "subtitle": "1st of 1",
               "badges": [
                 {
-                  "text": "Queued · 1st of 1",
+                  "text": "Waiting",
                   "tone": "neutral"
                 },
                 {
@@ -347,7 +350,7 @@
               "badges": [
                 {
                   "text": "Waiting",
-                  "tone": "info"
+                  "tone": "neutral"
                 },
                 {
                   "text": "Demo Garden",
@@ -363,13 +366,13 @@
                 "kind": "view",
                 "key": "task:t-hf-registry"
               },
-              "icon": "notice",
+              "icon": "task",
               "title": "Link the website in app.json",
               "subtitle": "Claude Code doesn't trust ~/Projects/indie-apps · BlurCamera · weekly improvement",
               "badges": [
                 {
-                  "text": "Didn't start",
-                  "tone": "warning"
+                  "text": "Waiting",
+                  "tone": "neutral"
                 },
                 {
                   "text": "BlurCamera",
@@ -385,7 +388,7 @@
                 "kind": "view",
                 "key": "task:t-hf-share-hint"
               },
-              "icon": "mission",
+              "icon": "task",
               "title": "Photos extension hint after the first blur",
               "subtitle": "You paused it · BlurCamera · weekly improvement",
               "badges": [
@@ -407,13 +410,13 @@
                 "kind": "view",
                 "key": "task:t-legacy-notes"
               },
-              "icon": "notice",
+              "icon": "task",
               "title": "Write the release notes",
               "subtitle": "Trying again at 10:15",
               "badges": [
                 {
-                  "text": "Didn't start",
-                  "tone": "warning"
+                  "text": "Waiting",
+                  "tone": "neutral"
                 }
               ],
               "depth": 1,
