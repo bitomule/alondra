@@ -29,7 +29,7 @@ rust_library(
     name = "daemon_engine",
     srcs = glob(
         ["src/**/*.rs"],
-        exclude = ["src/**/*_tests.rs", "src/**/tests.rs", "src/**/tests/*.rs"],
+        exclude = ["src/**/*_tests.rs", "src/**/tests.rs", "src/**/tests/*.rs", "src/machine_model/**"],
     ),
     compile_data = SQL,
     crate_name = "alondra_daemon_engine",
