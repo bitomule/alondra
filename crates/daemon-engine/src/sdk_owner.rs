@@ -1063,19 +1063,26 @@ const UNOWNED_TAKE_EVERY: alondra_core::Millis = 60_000;
 /// holds on a pause, as when its host was lost, waits for their answer, and one a pause holds
 /// after it was taken over is taken over again when that pause ends.
 pub(crate) fn take_working_unowned(domain: &DomainRuntime, state: &DomainState, now: alondra_core::Millis) {
-    let working: Vec<(TaskId, u64)> = state.tasks.values().filter(|task| !task.over())
-        .filter(|task| state.lifecycle_of(&task.id).is_ok_and(|lifecycle| matches!(lifecycle.activity(),
-            ActivityView::Working | ActivityView::OwnWork | ActivityView::Starting | ActivityView::Continuation)
-            && !lifecycle.cards().into_iter().any(|(card, reason)| reason == alondra_domain::WaitReason::Pause
-                && (lifecycle.card_owner(card) == Some(alondra_domain::Owner::User) || lifecycle.takeover() != alondra_domain::Takeover::None))))
-        .filter(|task| to_take(domain, state, &task.id))
-        .filter_map(|task| Some((task.id.clone(), state.lifecycle_of(&task.id).ok()?.revision())))
+    let working: Vec<(TaskId, u64)> = reads_as_working(state).into_iter()
+        .filter(|task| to_take(domain, state, task))
+        .filter_map(|task| Some((task.clone(), state.lifecycle_of(&task).ok()?.revision())))
         .collect();
     let due = due_unowned(&mut domain.unowned_takes.lock_or_recover("the tasks taken over unowned"), working, now);
     for task in due {
         log!("{task} reads as working with no SDK host of its own: one that resumes its session takes it over");
         retake(domain, task);
     }
+}
+
+/// The open tasks that read as working, starting or woken, but for one a pause holds on the user,
+/// or after a takeover: those a host of their own must run.
+pub(crate) fn reads_as_working(state: &DomainState) -> Vec<TaskId> {
+    state.tasks.values().filter(|task| !task.over())
+        .filter(|task| state.lifecycle_of(&task.id).is_ok_and(|lifecycle| matches!(lifecycle.activity(),
+            ActivityView::Working | ActivityView::OwnWork | ActivityView::Starting | ActivityView::Continuation)
+            && !lifecycle.cards().into_iter().any(|(card, reason)| reason == alondra_domain::WaitReason::Pause
+                && (lifecycle.card_owner(card) == Some(alondra_domain::Owner::User) || lifecycle.takeover() != alondra_domain::Takeover::None))))
+        .map(|task| task.id.clone()).collect()
 }
 
 /// Whether an adopted host's process, named by the group it leads, is gone. A host whose process
@@ -1098,7 +1105,7 @@ thread_local! {
 /// The tasks of `working` to take over now: each at most every `UNOWNED_TAKE_EVERY`, and never
 /// again while its lifecycle stands where the last take over left it, since a take over that
 /// changed nothing would change nothing again.
-fn due_unowned(taken: &mut std::collections::BTreeMap<TaskId, (alondra_core::Millis, u64)>, working: Vec<(TaskId, u64)>, now: alondra_core::Millis) -> Vec<TaskId> {
+pub(crate) fn due_unowned(taken: &mut std::collections::BTreeMap<TaskId, (alondra_core::Millis, u64)>, working: Vec<(TaskId, u64)>, now: alondra_core::Millis) -> Vec<TaskId> {
     taken.retain(|task, _| working.iter().any(|(working, _)| working == task));
     let due: Vec<(TaskId, u64)> = working.into_iter()
         .filter(|(task, revision)| taken.get(task).is_none_or(|(at, seen)| seen != revision && now - at >= UNOWNED_TAKE_EVERY))
@@ -1238,10 +1245,15 @@ fn to_take(domain: &DomainRuntime, state: &DomainState, task: &TaskId) -> bool {
         && !domain.retakes.lock_or_recover("the retakes").iter().any(|(taking, retake)| taking == task && !retake.is_finished())
         && !crate::account_move::holds_execution(domain, task)
         && !crate::provider_transition::holds_execution(domain, task)
-        && state.lifecycle_of(task).ok().is_some_and(|lifecycle| {
-            lifecycle.execution().is_some_and(|stamp| stamp.host().as_str() == HOST)
-                && !matches!(lifecycle.phase(), alondra_domain::TaskPhase::Completed | alondra_domain::TaskPhase::Cancelled)
-        })
+        && runs_on_sdk_host(state, task)
+}
+
+/// Whether `task`'s current execution is one of the Agent SDK host and still open.
+pub(crate) fn runs_on_sdk_host(state: &DomainState, task: &TaskId) -> bool {
+    state.lifecycle_of(task).ok().is_some_and(|lifecycle| {
+        lifecycle.execution().is_some_and(|stamp| stamp.host().as_str() == HOST)
+            && !matches!(lifecycle.phase(), alondra_domain::TaskPhase::Completed | alondra_domain::TaskPhase::Cancelled)
+    })
 }
 
 /// Takes each execution on a thread of its own, so a host that is slow to stop holds back only

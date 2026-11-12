@@ -24,6 +24,10 @@ pub(super) enum Turn {
     AskPermission,
     AskOrchestrator,
     Background,
+    /// The node opens a pull request and ends its turn.
+    OpenPr,
+    /// The node delivers its pull request if it has one, its result otherwise.
+    DeliverPr,
     Empty,
 }
 
@@ -208,6 +212,8 @@ pub(super) fn script() -> impl Strategy<Value = Vec<Turn>> {
         Just(Turn::AskPermission),
         Just(Turn::AskOrchestrator),
         Just(Turn::Background),
+        Just(Turn::OpenPr),
+        Just(Turn::DeliverPr),
         Just(Turn::Empty),
     ];
     prop::collection::vec(turn, 1..6)

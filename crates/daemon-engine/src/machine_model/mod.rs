@@ -14,12 +14,15 @@ mod tests;
 mod world;
 
 use crate::obligation_watch::{self, Watch};
+use crate::admission::{self, Key, Waiting};
+use crate::provider_transition::{self, MoveStart};
+use crate::sdk_owner;
 use alondra_core::domain::obligation_policy;
 use alondra_core::domain::{
     Actor, AgentId, CardKind, CardSpec, ContentKind, Command, CommandEnvelope, CommandOutcome, DecisionPrompt, DomainEffect, DeliveryTarget, DomainState, Hold,
     Instruction, InteractionId, InteractionPayload, LaunchPlan, LifecycleRecord, NODE_PAUSE_PREFIX, NODE_PAUSE_RESUME, NodeEnd, NodeEvent,
     PROTOCOL_VERSION, Pause, PauseCleanup, PauseReason, PlanReviewOutcome, QuestionOption, ReadIndex, Recipient, RuntimeObservation, STALL_ATTEMPTS, Scope,
-    StallOutcome, TaskId, TaskPriority, is_stall_case,
+    StallOutcome, TaskId, TaskPriority, is_stall_case, AuthorizationId, MergeAttemptState, MergeMethod, PrId, PrState,
 };
 use alondra_core::accounts::{AccountBilling, AccountId, AccountKey, AccountState, AccountStatus, Provider};
 use alondra_core::model_selection::{AccountModelCatalog, CatalogModel, MoveRefused};
@@ -28,6 +31,9 @@ use alondra_foundation::{Millis, Revision};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use world::{Action, Fact, History, Host, MINUTE, PASS, Running, TASKS, TURN_LASTS, Turn, UserAct, WORK_LASTS, Work, World};
+
+/// The head of every pull request a node opens.
+const PR_HEAD: &str = "1111111111111111111111111111111111111111";
 
 /// How long the machine rests after a history, at most.
 const REST: Millis = 2 * 60 * MINUTE;
@@ -46,6 +52,11 @@ struct Seen {
     /// The most wake inputs a task got in a row: between two turns that did something, or two
     /// words from the user or the orchestrator.
     most_wakes: u32,
+    /// The most times a task owed the same step again as the one before it, with nobody acting in
+    /// between: a step that re-arms in a loop.
+    most_rearms: u32,
+    /// The commands before the first wake or re-arm past its bound.
+    excess: Option<String>,
 }
 
 struct Machine {
@@ -54,6 +65,8 @@ struct Machine {
     watch: Watch,
     granted: BTreeSet<TaskId>,
     wakes: BTreeMap<TaskId, u32>,
+    /// How many times in a row each task was owed the same step again, with nobody acting.
+    rearms: BTreeMap<TaskId, u32>,
     agents: u64,
     commands: u64,
     /// Commands refused at a revision: the same command at the same revision is refused again.
@@ -64,8 +77,8 @@ struct Machine {
     messages: Vec<Message>,
     /// Since when the clock has seen each task owe what it owes now.
     owing: BTreeMap<TaskId, (Revision, Owed, Millis)>,
-    /// When each task was last taken over for reading as working with no owner.
-    taken: BTreeMap<TaskId, Millis>,
+    /// When each task was last taken over for reading as working with no owner, and at which revision.
+    taken: BTreeMap<TaskId, (Millis, u64)>,
     /// Since when each delivered task has been stranded.
     stranded: BTreeMap<TaskId, Millis>,
     /// The tasks whose move to another account was deferred to their next start, and that account:
@@ -146,7 +159,7 @@ impl Machine {
     fn new(history: &History) -> Self {
         let mut machine = Self {
             domain: Arc::new(DomainState::new("machine")), world: World::new(history.script.clone(), history.slots), watch: Watch::enforcing(enforced),
-            granted: BTreeSet::new(), wakes: BTreeMap::new(), agents: 0, commands: 0, refused: BTreeMap::new(),
+            granted: BTreeSet::new(), wakes: BTreeMap::new(), rearms: BTreeMap::new(), agents: 0, commands: 0, refused: BTreeMap::new(),
             cursors: BTreeMap::new(), messages: Vec::new(), owing: BTreeMap::new(), taken: BTreeMap::new(), stranded: BTreeMap::new(),
             deferred: BTreeMap::new(), unadmitted: BTreeMap::new(), seen: Seen::default(), trace: Vec::new(),
         };
@@ -372,6 +385,7 @@ impl Machine {
             moved |= self.consume_inputs_in_turn();
             moved |= self.take_unowned();
             moved |= self.send_back_stranded();
+            moved |= self.merge_authorized();
             moved |= self.close_ending();
             moved |= self.orchestrate();
             if !moved && self.revision() == revision {
@@ -446,10 +460,8 @@ impl Machine {
     /// Whether no host of this daemon runs the task's current execution: `sdk_owner::to_take`.
     fn unowned(&self, task: &TaskId) -> bool {
         let state = self.state();
-        let Ok(lifecycle) = state.lifecycle_of(task) else { return false };
-        let Some(generation) = lifecycle.execution().map(|stamp| stamp.generation()) else { return false };
-        !matches!(lifecycle.phase(), TaskPhase::Completed | TaskPhase::Cancelled)
-            && self.world.hosts.get(task).is_none_or(|host| !host.alive || host.generation != generation)
+        let Some(generation) = state.lifecycle_of(task).ok().and_then(|lifecycle| lifecycle.execution().map(|stamp| stamp.generation())) else { return false };
+        sdk_owner::runs_on_sdk_host(&state, task) && self.world.hosts.get(task).is_none_or(|host| !host.alive || host.generation != generation)
     }
 
     /// A host that resumes the task's session takes its execution over, as `sdk_owner::take_again` does.
@@ -479,22 +491,15 @@ impl Machine {
         }
     }
 
-    /// A task that reads as working, starting or woken with no host of its own is taken over, at
-    /// most once a minute (`sdk_owner::take_working_unowned`).
+    /// A task that reads as working, starting or woken with no host of its own is taken over,
+    /// through the real choice of which and when (`sdk_owner::take_working_unowned`).
     fn take_unowned(&mut self) -> bool {
         let state = self.state();
-        let now = self.world.now;
-        let due: Vec<TaskId> = TASKS.into_iter().map(TaskId::from).filter(|task| {
-            state.tasks.get(task).is_some_and(|held| !held.over()) && state.lifecycle_of(task).is_ok_and(|lifecycle| {
-                matches!(lifecycle.activity(), alondra_domain::ActivityView::Working | alondra_domain::ActivityView::OwnWork
-                    | alondra_domain::ActivityView::Starting | alondra_domain::ActivityView::Continuation)
-                    && !lifecycle.cards().into_iter().any(|(card, reason)| reason == alondra_domain::WaitReason::Pause
-                        && (lifecycle.card_owner(card) == Some(alondra_domain::Owner::User) || lifecycle.takeover() != alondra_domain::Takeover::None))
-            })
-        }).filter(|task| self.unowned(task) && self.taken.get(task).is_none_or(|at| now - at >= MINUTE)).collect();
+        let working: Vec<(TaskId, u64)> = sdk_owner::reads_as_working(&state).into_iter().filter(|task| self.unowned(task))
+            .filter_map(|task| Some((task.clone(), state.lifecycle_of(&task).ok()?.revision()))).collect();
+        let due = sdk_owner::due_unowned(&mut self.taken, working, self.world.now);
         let mut moved = false;
         for task in due {
-            self.taken.insert(task.clone(), now);
             moved |= self.retake(&task);
         }
         moved
@@ -504,13 +509,10 @@ impl Machine {
     /// minutes, once the gate has room (`admission::send_back_stranded`).
     fn send_back_stranded(&mut self) -> bool {
         let state = self.state();
-        let now = self.world.now;
-        let stranded = state.stranded_tasks();
-        self.stranded.retain(|task, _| stranded.contains(task));
+        let (due, _) = admission::stranded_due(&state, &mut self.stranded, self.world.now);
         let mut moved = false;
-        for task in stranded {
-            let since = *self.stranded.entry(task.clone()).or_insert(now);
-            if now - since < crate::admission::STRANDED_AFTER || self.at_work(&state) >= self.world.slots {
+        for (task, _) in due {
+            if self.at_work(&state) >= self.world.slots {
                 continue;
             }
             if self.run(Actor::System, Command::RecordStranded { task_id: task.clone() }).is_ok() {
@@ -538,11 +540,16 @@ impl Machine {
             let wakes = self.wakes.entry(task.clone()).or_default();
             *wakes += 1;
             self.seen.most_wakes = self.seen.most_wakes.max(*wakes);
+            if *wakes > 3 && self.seen.excess.is_none() {
+                let start = self.trace.len().saturating_sub(60);
+                self.seen.excess = Some(format!("{task} woken {wakes} times:\n{}", self.trace[start..].join("\n")));
+            }
         }
     }
 
     fn progress(&mut self, task: &TaskId) {
         self.wakes.remove(task);
+        self.rearms.remove(task);
     }
 
     /// A host that died: its owner records the end, and while the task lives starts a host that
@@ -560,7 +567,9 @@ impl Machine {
             }
             let live = !state.tasks[&task].over();
             let ended_work = host.work.iter().map(|work| work.id.clone()).collect();
-            let _ = self.run(Actor::System, Command::RecordHostEnded { task_id: task.clone(), generation: host.generation, resumes: live, ended_work, by_alondra: false });
+            if self.run(Actor::System, Command::RecordHostEnded { task_id: task.clone(), generation: host.generation, resumes: live, ended_work, by_alondra: false }).is_ok() {
+                self.progress(&task);
+            }
             if let Some(input) = host.offered.as_ref().filter(|input| self.state().lifecycle_of(&task).is_ok_and(|lifecycle| lifecycle.pending_inputs().iter().any(|pending| pending.as_str() == input.as_str()))) {
                 let _ = self.run(Actor::System, Command::RecordDoubtfulHandoff {
                     task_id: task.clone(), generation: host.generation, input: input.clone(), text: "Model input".into(), resumes: live, by_alondra: false,
@@ -595,24 +604,42 @@ impl Machine {
         moved
     }
 
-    /// The gate starts queued tasks, by priority and then age, while a slot is free and the Mac and the usage limit
-    /// let it.
+    /// What waits at the gate, in the order `admission::ordered` gives: the turns that wait for a
+    /// slot, as `admission::waiting_turns` says, and the queued starts.
+    fn gate_queue(&self, state: &DomainState) -> Vec<Waiting> {
+        let since = |task: &TaskId| state.lifecycle_of(task).ok().and_then(|lifecycle| lifecycle.obligation()).map_or(0, |obligation| obligation.since as Millis);
+        let turns = admission::waiting_turns(state).into_iter().filter(|task| !self.granted.contains(task))
+            .map(|task| Waiting { priority: state.tasks[&task].priority, since: since(&task), key: Key::Turn(task), resuming: false });
+        let starts = state.tasks.values().filter(|task| !task.over() && !self.deferred.contains_key(&task.id))
+            .filter(|task| state.lifecycle_of(&task.id).ok().and_then(|lifecycle| lifecycle.obligation()).is_some_and(|obligation| obligation.owed == Owed::Room(Capacity::Gate))
+                && !state.waits_for_turn(&task.id))
+            .map(|task| Waiting { priority: task.priority, since: since(&task.id), key: Key::Task(task.id.clone()), resuming: false });
+        admission::ordered(turns.chain(starts).collect())
+    }
+
+    /// The gate gives the free slots to the turns and starts that wait, by priority and then age,
+    /// through the real choice (`turns_to_grant`, `decide_pacing`); the Mac and the usage limit hold
+    /// the starts.
     fn admit(&mut self) -> bool {
-        if self.world.memory_tight || self.world.disk_full || self.world.usage_holds() {
-            return false;
-        }
         let state = self.state();
-        let mut queued: Vec<(TaskPriority, Revision, TaskId)> = state.tasks.values().filter(|task| !task.over() && !self.deferred.contains_key(&task.id))
-            .filter_map(|task| {
-                let obligation = state.lifecycle_of(&task.id).ok()?.obligation()?;
-                (obligation.owed == Owed::Room(Capacity::Gate) && !state.waits_for_turn(&task.id)).then(|| (task.priority, obligation.since, task.id.clone()))
-            })
-            .collect();
-        queued.sort();
-        let mut working = self.at_work(&state);
-        let mut moved = false;
-        for (_, _, task) in queued {
-            if working >= self.world.slots {
+        let waiting_turns = admission::waiting_turns(&state);
+        self.granted.retain(|task| waiting_turns.contains(task)
+            || state.lifecycle_of(task).is_ok_and(|lifecycle| lifecycle.resource() == Some(ResourceEvidence::Reserved)));
+        let queue = self.gate_queue(&state);
+        let starts_held = self.world.memory_tight || self.world.disk_full || self.world.usage_holds();
+        let working = self.at_work(&state);
+        let free = self.world.slots.saturating_sub(working);
+        let first_start = queue.iter().find(|waiting| matches!(&waiting.key, Key::Task(task) if self.unadmitted.get(task) != Some(&state.revision)));
+        let turns = admission::turns_to_grant(&queue, free, !starts_held && first_start.is_some());
+        let mut moved = !turns.is_empty();
+        let mut working = working + turns.len();
+        self.granted.extend(turns);
+        if starts_held {
+            return moved;
+        }
+        for waiting in queue {
+            let Key::Task(task) = waiting.key else { continue };
+            if admission::decide_pacing(working, self.world.slots as u32, false, None, 0, self.world.now).is_err() {
                 break;
             }
             if self.unadmitted.get(&task) == Some(&state.revision) {
@@ -622,7 +649,7 @@ impl Machine {
             let admitted = self.run(Actor::System, Command::AdmitExecution {
                 provider: Provider::Claude, task_id: task.clone(), agent_id: agent,
                 conversation: format!("conversation-{task}-{}", self.agents), instance: format!("instance-{task}-{}", self.agents),
-                host: "sdk-host".into(), model: None, account: state.tasks[&task].account.clone(), leaves_limit: None,
+                host: crate::sdk_owner::HOST.into(), model: None, account: state.tasks[&task].account.clone(), leaves_limit: None,
             });
             if admitted.is_err() {
                 self.unadmitted.insert(task, state.revision);
@@ -651,14 +678,8 @@ impl Machine {
         }
         let state = self.state();
         self.deferred.retain(|task, _| state.tasks.get(task).is_some_and(|held| !held.over()));
-        let ready: Vec<(TaskId, AccountKey)> = self.deferred.iter().filter(|(task, _)| state.lifecycle_of(task).is_ok_and(|lifecycle| {
-            let goes_on = match lifecycle.phase() {
-                TaskPhase::InProgress => matches!(lifecycle.live(), Some(alondra_domain::LiveState::Working(_) | alondra_domain::LiveState::WaitingCapacity(Capacity::Gate))),
-                TaskPhase::Delivered => lifecycle.obligation().is_some_and(|obligation| obligation.owed == Owed::Start),
-                _ => false,
-            };
-            !lifecycle.pending_inputs().is_empty() && goes_on
-        })).map(|(task, account)| (task.clone(), account.clone())).collect();
+        let ready: Vec<(TaskId, AccountKey)> = self.deferred.iter().filter(|(task, _)| provider_transition::ready_in(&state, task).unwrap_or(false))
+            .map(|(task, account)| (task.clone(), account.clone())).collect();
         let mut moved = false;
         for (task, account) in ready {
             if self.at_work(&self.state()) >= self.world.slots {
@@ -668,7 +689,7 @@ impl Machine {
             let admitted = self.run(Actor::System, Command::AdmitExecution {
                 provider: Provider::Claude, task_id: task.clone(), agent_id: agent,
                 conversation: format!("conversation-{task}-{}", self.agents), instance: format!("instance-{task}-{}", self.agents),
-                host: "sdk-host".into(), model: None, account: Some(account.account.clone()), leaves_limit: None,
+                host: crate::sdk_owner::HOST.into(), model: None, account: Some(account.account.clone()), leaves_limit: None,
             });
             if admitted.is_err() {
                 continue;
@@ -691,23 +712,16 @@ impl Machine {
     /// unless it ignores it.
     fn hand_inputs(&mut self) -> bool {
         let state = self.state();
-        let mut working = self.at_work(&state);
         let mut waiting: Vec<(TaskPriority, Revision, TaskId)> = state.tasks.values()
             .filter(|task| state.lifecycle_of(&task.id).is_ok_and(|lifecycle| lifecycle.input_starts_turn()
                 || (lifecycle.activity() == alondra_domain::ActivityView::Continuation && lifecycle.resource() == Some(ResourceEvidence::Available)
                     && !lifecycle.pending_inputs().is_empty())))
+            .filter(|task| !state.waits_for_turn(&task.id) || self.granted.contains(&task.id))
             .filter_map(|task| Some((task.priority, state.lifecycle_of(&task.id).ok()?.obligation()?.since, task.id.clone())))
             .collect();
         waiting.sort();
         let mut moved = false;
         for (_, _, task) in waiting {
-            if state.waits_for_turn(&task) && !self.granted.contains(&task) {
-                if working >= self.world.slots {
-                    continue;
-                }
-                self.granted.insert(task.clone());
-                working += 1;
-            }
             let Ok(lifecycle) = state.lifecycle_of(&task) else { continue };
             let Some(input) = lifecycle.pending_inputs().first().map(|input| input.as_str().to_owned()) else { continue };
             let turn = self.world.id("turn");
@@ -723,9 +737,6 @@ impl Machine {
             host.emit(Fact::Runtime(RuntimeObservation::TurnStarted { turn, input }));
             moved = true;
         }
-        let state = self.state();
-        self.granted.retain(|task| state.waits_for_turn(task)
-            || state.lifecycle_of(task).is_ok_and(|lifecycle| lifecycle.resource() == Some(ResourceEvidence::Reserved)));
         moved
     }
 
@@ -737,7 +748,7 @@ impl Machine {
         for name in TASKS {
             let task = TaskId::from(name);
             let Ok(lifecycle) = state.lifecycle_of(&task) else { continue };
-            if !lifecycle.answer_goes_on() || self.at_work(&state) >= self.world.slots {
+            if !lifecycle.answer_goes_on() || (state.waits_for_turn(&task) && !self.granted.contains(&task)) {
                 continue;
             }
             let Some(generation) = lifecycle.execution().map(|stamp| stamp.generation()) else { continue };
@@ -875,12 +886,22 @@ impl Machine {
             self.progress(task);
         }
         match turn {
-            Turn::Deliver => {
+            Turn::Deliver | Turn::DeliverPr => {
                 let id = self.world.id("delivery");
+                let targets = if turn == Turn::DeliverPr { self.pr_targets(task) } else { None }.unwrap_or_else(text_targets);
                 let _ = self.run(node, Command::PresentResult {
                     attachments: vec![], task_id: task.clone(), interaction_id: id.into(), body: "Done".into(), is_final: true, nothing_to_review: false,
-                    targets: text_targets(), checklist: vec![], card: CardSpec::delivery("Review the result", &text_targets(), true),
+                    card: CardSpec::delivery("Review the result", &targets, true), targets, checklist: vec![],
                 });
+            }
+            Turn::OpenPr => {
+                if self.pr_targets(task).is_none() {
+                    let number = self.world.id("pr").trim_start_matches("pr-").parse().expect("a number");
+                    let _ = self.run(node, Command::RegisterPr {
+                        task_id: task.clone(), pr_id: format!("github.com/acme/app#{number}").into(), host: "github.com".into(), repository: "acme/app".into(), number,
+                        head: PR_HEAD.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+                    });
+                }
             }
             Turn::AskUser | Turn::AskOrchestrator => {
                 let recipient = if turn == Turn::AskUser { Recipient::User } else { Recipient::Orchestrator };
@@ -972,16 +993,16 @@ impl Machine {
             }
             UserAct::Move => self.move_task(task),
             UserAct::Accept => {
-                let Some(delivery) = self.state().tasks[task].final_presentation.clone() else { return };
-                let _ = self.run(user, Command::AcceptDelivery { presentation_id: delivery, targets: text_targets() });
+                let Some((delivery, targets)) = self.delivery_of(task) else { return };
+                let _ = self.run(user, Command::AcceptDelivery { presentation_id: delivery, targets });
             }
             UserAct::Prioritize => {
                 let _ = self.run(user, Command::SetPriority { task_id: task.clone(), priority: TaskPriority::High });
             }
             UserAct::Return => {
-                let Some(delivery) = self.state().tasks[task].final_presentation.clone() else { return };
+                let Some((delivery, targets)) = self.delivery_of(task) else { return };
                 let _ = self.run(user, Command::SubmitFeedback {
-                    attachments: vec![], presentation_id: delivery, targets: text_targets(), body: "Do it again".into(),
+                    attachments: vec![], presentation_id: delivery, targets, body: "Do it again".into(),
                     instruction: Instruction::Changes, merge_failure: None,
                 });
             }
@@ -1018,21 +1039,21 @@ impl Machine {
             }
             self.world.retired.push((task.clone(), host));
         }
-        let state = self.state();
-        let ready = state.lifecycle_of(task).is_ok_and(|lifecycle| !lifecycle.pending_inputs().is_empty()
-            && matches!(lifecycle.live(), Some(alondra_domain::LiveState::Working(_) | alondra_domain::LiveState::WaitingCapacity(Capacity::Gate))));
-        let moved = if ready {
+        let start = provider_transition::move_start(&self.state(), task).ok();
+        let moved = if start == Some(MoveStart::Start) {
             let agent = self.new_agent();
             self.run(Actor::System, Command::AdmitExecution {
                 provider: Provider::Claude, task_id: task.clone(), agent_id: agent,
                 conversation: format!("conversation-{task}-{}", self.agents), instance: format!("instance-{task}-{}", self.agents),
-                host: "sdk-host".into(), model: None, account: Some(target.account.clone()), leaves_limit: None,
+                host: crate::sdk_owner::HOST.into(), model: None, account: Some(target.account.clone()), leaves_limit: None,
             })
-        } else {
+        } else if start == Some(MoveStart::Defer) {
             self.run(Actor::System, Command::DeferTaskMove { task_id: task.clone(), account: target.clone() })
+        } else {
+            return;
         };
         match moved {
-            Ok(_) if ready => {
+            Ok(_) if start == Some(MoveStart::Start) => {
                 self.granted.insert(task.clone());
                 if let Some(selection) = self.state().tasks[task].selection.clone() {
                     let _ = self.run(Actor::System, Command::RecordTaskSelection { task_id: task.clone(), selection, pending: None });
@@ -1050,6 +1071,45 @@ impl Machine {
                 let _ = self.run(Actor::System, Command::AbortTaskSelection { task_id: task.clone(), selection, refused: Some(MoveRefused { account: target, reason }) });
             }
         }
+    }
+
+    /// The delivery `task` presents, and the targets it delivers.
+    fn delivery_of(&self, task: &TaskId) -> Option<(InteractionId, Vec<DeliveryTarget>)> {
+        let state = self.state();
+        let delivery = state.tasks[task].final_presentation.clone()?;
+        match &state.interactions.get(&delivery)?.payload {
+            InteractionPayload::Delivery { targets, .. } => Some((delivery, targets.clone())),
+            _ => None,
+        }
+    }
+
+    /// The pull request `task` opened, as a delivery target.
+    fn pr_targets(&self, task: &TaskId) -> Option<Vec<DeliveryTarget>> {
+        let state = self.state();
+        let pr = state.pull_requests.values().find(|pr| pr.task_id == *task && pr.state == PrState::Open)?;
+        Some(vec![DeliveryTarget::PullRequest { pr_id: pr.id.clone(), head: pr.head.clone() }])
+    }
+
+    /// GitHub merges what the user authorized: the merge is claimed, confirmed and observed.
+    fn merge_authorized(&mut self) -> bool {
+        let state = self.state();
+        let due: Vec<(AuthorizationId, PrId, String)> = state.merge_authorizations.values()
+            .filter(|authorization| authorization.valid && authorization.attempt == MergeAttemptState::Unclaimed)
+            .filter(|authorization| state.pull_requests.get(&authorization.pr_id).is_some_and(|pr| pr.state == PrState::Open))
+            .map(|authorization| (authorization.id.clone(), authorization.pr_id.clone(), authorization.head.clone())).collect();
+        let mut moved = false;
+        for (authorization, pr, head) in due {
+            let claimed = self.run(Actor::System, Command::ClaimMergeAuthorization {
+                authorization_id: authorization.clone(), remote_head: head.clone(), remote_base: "main".into(), base_verified: true,
+            });
+            if claimed.is_err() {
+                continue;
+            }
+            let _ = self.run(Actor::System, Command::ObserveMergeAttempt { authorization_id: authorization, state: MergeAttemptState::Confirmed });
+            let _ = self.run(Actor::System, Command::ObservePrState { pr_id: pr, head: head.clone(), base: "main".into(), state: PrState::Merged, merged_head: Some(head) });
+            moved = true;
+        }
+        moved
     }
 
     /// The first card of `task` the inbox lists for the user to answer, and its first option.
@@ -1075,7 +1135,20 @@ impl Machine {
         let obligations: BTreeMap<TaskId, (Revision, Owed)> = state.tasks.keys()
             .filter_map(|task| Some((task.clone(), state.lifecycle_of(task).ok()?.obligation().map(|obligation| (obligation.since, obligation.owed))?)))
             .collect();
+        let rearmed: Vec<TaskId> = self.owing.iter().filter(|(task, (since, owed, _))| {
+            obligations.get(*task).is_some_and(|(now_since, now_owed)| now_since != since && now_owed == owed)
+        }).map(|(task, _)| task.clone()).collect();
         self.owing.retain(|task, (since, owed, _)| obligations.get(task) == Some(&(*since, *owed)));
+        for task in rearmed {
+            let rearms = self.rearms.entry(task.clone()).or_default();
+            *rearms += 1;
+            let rearms = *rearms;
+            self.seen.most_rearms = self.seen.most_rearms.max(rearms);
+            if rearms > 3 && self.seen.excess.is_none() {
+                let start = self.trace.len().saturating_sub(60);
+                self.seen.excess = Some(format!("{task} re-armed {rearms} times:\n{}", self.trace[start..].join("\n")));
+            }
+        }
         for (task, (since, owed)) in obligations {
             self.owing.entry(task).or_insert((since, owed, now));
         }
@@ -1089,7 +1162,8 @@ impl Machine {
     fn by_the_clock(&mut self, act: impl FnOnce(&mut Self)) {
         let before = self.open_user_cards();
         act(self);
-        let opened: Vec<InteractionId> = self.open_user_cards().difference(&before).cloned().collect();
+        let state = self.state();
+        let opened: Vec<InteractionId> = self.open_user_cards().difference(&before).filter(|card| state.interactions[*card].card.kind != CardKind::Review).cloned().collect();
         self.seen.clock_cards.extend(opened);
     }
 
@@ -1114,20 +1188,19 @@ impl Machine {
                 let ended = self.run(Actor::System, Command::RecordHostEnded {
                     task_id: task.clone(), generation, resumes: true, ended_work: vec![], by_alondra: true,
                 });
-                if ended.is_ok() && let Some(old) = self.world.hosts.insert(task.clone(), Host::new(generation)) {
-                    self.world.retired.push((task.clone(), old));
+                if ended.is_ok() {
+                    self.progress(task);
+                    if let Some(old) = self.world.hosts.insert(task.clone(), Host::new(generation)) {
+                        self.world.retired.push((task.clone(), old));
+                    }
                 }
             }
             obligation_watch::Action::Wake => {
                 let state = self.state();
-                let Ok(lifecycle) = state.lifecycle_of(task) else { return };
-                let paused = state.tasks.get(task).and_then(|held| held.agent_id.as_ref()).and_then(|agent| state.node_pause(agent)).is_some_and(|pause| !pause.released);
-                if lifecycle.resource() != Some(ResourceEvidence::Available) || lifecycle.activity() != alondra_domain::ActivityView::Continuation
-                    || !lifecycle.pending_inputs().is_empty() || !lifecycle.cards().is_empty() || lifecycle.awaits().is_some()
-                    || !matches!(lifecycle.phase(), TaskPhase::InProgress | TaskPhase::Delivered) || paused {
-                    return;
+                let Some(agent) = state.tasks.get(task).and_then(|held| held.agent_id.clone()) else { return };
+                if let Some((_, command)) = sdk_owner::untaken::wake_command(&state, task, &agent) {
+                    let _ = self.run(Actor::System, command);
                 }
-                let _ = self.run(Actor::System, Command::TellNode { task_id: task.clone(), text: crate::sdk_owner::untaken::WORK_ENDED.into(), from_user: false, answers: None });
             }
             obligation_watch::Action::Answer => {
                 let state = self.state();
@@ -1139,37 +1212,25 @@ impl Machine {
     }
 
     /// What `orchestrator_inbox::carry_out` does with a step the orchestrator owes past its
-    /// deadline, through the same commands.
+    /// deadline: the command `orchestrator_inbox::command_of` gives it.
     fn carry_out(&mut self, step: &crate::orchestrator_inbox::Step) {
         use crate::orchestrator_inbox::Step;
-        match step {
-            Step::Tell { id, card, text } | Step::Remind { id, card, text, .. } => {
-                if self.state().interactions.contains_key(&InteractionId(id.clone())) {
-                    return;
-                }
-                let _ = self.run(Actor::System, Command::PublishInformation {
-                    attachments: vec![], interaction_id: id.clone().into(), scope: Scope::Orchestrator { request_id: None }, recipient: Recipient::Orchestrator,
-                    card: CardSpec { system: Some(card.clone()), ..CardSpec::new(CardKind::Know, "Task update").content(ContentKind::Report, text) },
-                    body: text.clone(),
-                });
+        let Some(command) = crate::orchestrator_inbox::command_of(step) else {
+            if let Step::Close { .. } | Step::Raise { .. } | Step::RaiseDependencyCancelled { .. } | Step::CancelRefusedPlan { .. } = step {
+                panic!("a step past its deadline ends in a card for the user or outside what the orchestrator owes: {step:?}");
             }
-            Step::Withdraw { question } => {
-                let _ = self.run(Actor::System, Command::Withdraw { interaction_id: question.clone() });
+            return;
+        };
+        if let Step::Tell { id, .. } | Step::Remind { id, .. } = step && self.state().interactions.contains_key(&InteractionId(id.clone())) {
+            return;
+        }
+        let closes = matches!(step, Step::SettleStall { outcome: StallOutcome::Unsettled, .. });
+        let task = if let Step::SettleStall { task, .. } = step { Some(task.clone()) } else { None };
+        if self.run(Actor::System, command).is_ok() && let Some(task) = task {
+            self.progress(&task);
+            if closes {
+                self.judge_close(&task, "Alondra's close of an unsettled stall");
             }
-            Step::SettleStall { case, task, outcome } => {
-                let closes = matches!(outcome, StallOutcome::Unsettled);
-                if self.run(Actor::System, Command::SettleStall { case_id: case.clone(), task_id: task.clone(), outcome: outcome.clone() }).is_ok() && closes {
-                    self.judge_close(task, "Alondra's close of an unsettled stall");
-                }
-            }
-            Step::ReleaseUnreviewed { review, task, note } => {
-                let _ = self.run(Actor::System, Command::SettlePlanReview {
-                    review_id: review.clone(), task_id: task.clone(), outcome: PlanReviewOutcome::Unchanged { reason: note.clone() },
-                });
-            }
-            Step::TellPlanReview { .. } => {}
-            Step::Close { .. } | Step::Raise { .. } | Step::RaiseDependencyCancelled { .. } | Step::CancelRefusedPlan { .. } =>
-                panic!("a step past its deadline ends in a card for the user or outside what the orchestrator owes: {step:?}"),
         }
     }
 }
