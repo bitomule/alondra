@@ -474,9 +474,10 @@ async fn a_host_that_dies_under_a_disk_hold_of_a_delivery_sent_back_goes_on_once
     assert!(domain.read().index().waiting().is_empty(), "nobody is asked anything: {:?}", domain.read().index().waiting());
 }
 
-/// An intentional interruption is not a stranded task for the gate to wake automatically.
+/// An intentional interruption is never woken automatically by the gate, however long it waits.
 #[tokio::test]
 async fn an_interrupted_task_waits_for_instruction_instead_of_being_woken_by_the_gate() {
+    const LONG_WAIT: i64 = 5 * 60_000;
     let mut node = SdkNode::working();
     let domain = Arc::clone(&node.domain);
     domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
@@ -484,21 +485,20 @@ async fn an_interrupted_task_waits_for_instruction_instead_of_being_woken_by_the
     interrupt_sdk_node(&domain, &node.agent());
     node.step_until(SdkNode::turn_ended);
     node.get_it_back();
-    assert!(domain.state().unwrap().stranded_tasks().is_empty());
     assert_eq!(node.lifecycle().awaits(), Some(&alondra_domain::Await::Instruction));
 
     let now = alondra_core::now_millis();
     let look = |at| crate::admission::pass_at(&domain, &node.home, at);
     look(now).await.unwrap();
-    look(now + crate::admission::STRANDED_AFTER - 1).await.unwrap();
+    look(now + LONG_WAIT - 1).await.unwrap();
     assert_eq!(node.pending_inputs(), 0, "not yet");
 
     domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(0)) });
-    look(now + crate::admission::STRANDED_AFTER).await.unwrap();
+    look(now + LONG_WAIT).await.unwrap();
     assert_eq!(node.pending_inputs(), 0, "the Mac has no slot");
 
     domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
-    look(now + crate::admission::STRANDED_AFTER + 1).await.unwrap();
+    look(now + LONG_WAIT + 1).await.unwrap();
     assert_eq!(node.pending_inputs(), 0, "capacity recovery does not undo an intentional interruption");
     run(&domain, Actor::System, Command::TellNode { task_id: SDK_TASK.into(), text: "Continue the release notes".into(), from_user: true, answers: None });
     assert_eq!(node.pending_inputs(), 1);
@@ -744,6 +744,25 @@ async fn a_delivering_task_whose_hosts_end_before_taking_its_input_is_never_take
     assert_eq!(looks[0].iter().filter(|record| matches!(record, alondra_core::domain::LifecycleRecord::TakenOver)).count(), 1, "the first look takes the task over once: {looks:#?}");
     assert!(looks[1..].iter().all(Vec::is_empty), "no later look takes over a task that waits on its owner: {looks:#?}");
     assert!(node.host_lost_card().is_some(), "the user is told its hosts end before they take anything: {looks:#?}");
+    domain.stop_sdk_owners();
+}
+
+/// A retake that records the takeover and then cannot start a host changes the task's revision
+/// itself: the next look must not read that as a new fact and take the task over again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_takeover_that_fails_after_recording_is_not_repeated_by_its_own_revision() {
+    let mut node = SdkNode::resting();
+    let domain = Arc::clone(&node.domain);
+    node.tell(SDK_TASK, "Carry on");
+    node.lose_host();
+    std::fs::remove_file(&node.backend.native).unwrap();
+    let takeovers = || domain.read().state().lifecycle_journal[&TaskId::from(SDK_TASK)].iter()
+        .filter(|record| matches!(record, alondra_core::domain::LifecycleRecord::TakenOver)).count();
+    for look in 0..4 {
+        crate::sdk_owner::take_working_unowned(&domain, &domain.state().unwrap(), alondra_core::now_millis() + look * 2 * MIN);
+        domain.join_retakes();
+    }
+    assert_eq!(takeovers(), 1, "every look after the first took the task over again");
     domain.stop_sdk_owners();
 }
 

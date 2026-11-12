@@ -66,8 +66,6 @@ struct Machine {
     owing: BTreeMap<TaskId, (Revision, Owed, Millis)>,
     /// When each task was last taken over for reading as working with no owner.
     taken: BTreeMap<TaskId, Millis>,
-    /// Since when each delivered task has been stranded.
-    stranded: BTreeMap<TaskId, Millis>,
     /// The tasks whose move to another account was deferred to their next start, and that account:
     /// saved, as the store keeps a deferred move.
     deferred: BTreeMap<TaskId, AccountKey>,
@@ -147,7 +145,7 @@ impl Machine {
         let mut machine = Self {
             domain: Arc::new(DomainState::new("machine")), world: World::new(history.script.clone(), history.slots), watch: Watch::enforcing(enforced),
             granted: BTreeSet::new(), wakes: BTreeMap::new(), agents: 0, commands: 0, refused: BTreeMap::new(),
-            cursors: BTreeMap::new(), messages: Vec::new(), owing: BTreeMap::new(), taken: BTreeMap::new(), stranded: BTreeMap::new(),
+            cursors: BTreeMap::new(), messages: Vec::new(), owing: BTreeMap::new(), taken: BTreeMap::new(),
             deferred: BTreeMap::new(), unadmitted: BTreeMap::new(), seen: Seen::default(), trace: Vec::new(),
         };
         let user = Actor::User { user_id: "u".into() };
@@ -348,7 +346,6 @@ impl Machine {
         self.owing.clear();
         self.refused.clear();
         self.taken.clear();
-        self.stranded.clear();
         self.unadmitted.clear();
         self.granted.clear();
         for host in self.world.hosts.values_mut() {
@@ -371,7 +368,6 @@ impl Machine {
             moved |= self.hand_decisions();
             moved |= self.consume_inputs_in_turn();
             moved |= self.take_unowned();
-            moved |= self.send_back_stranded();
             moved |= self.close_ending();
             moved |= self.orchestrate();
             if !moved && self.revision() == revision {
@@ -496,28 +492,6 @@ impl Machine {
         for task in due {
             self.taken.insert(task.clone(), now);
             moved |= self.retake(&task);
-        }
-        moved
-    }
-
-    /// A delivered task its node owes work for and nothing starts goes back to work after five
-    /// minutes, once the gate has room (`admission::send_back_stranded`).
-    fn send_back_stranded(&mut self) -> bool {
-        let state = self.state();
-        let now = self.world.now;
-        let stranded = state.stranded_tasks();
-        self.stranded.retain(|task, _| stranded.contains(task));
-        let mut moved = false;
-        for task in stranded {
-            let since = *self.stranded.entry(task.clone()).or_insert(now);
-            if now - since < crate::admission::STRANDED_AFTER || self.at_work(&state) >= self.world.slots {
-                continue;
-            }
-            if self.run(Actor::System, Command::RecordStranded { task_id: task.clone() }).is_ok() {
-                self.stranded.remove(&task);
-                self.take_if_unowned(&task);
-                moved = true;
-            }
         }
         moved
     }

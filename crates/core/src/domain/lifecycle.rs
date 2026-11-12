@@ -1714,31 +1714,6 @@ impl DomainState {
         self.task_handed_back(task).is_some() || delivery.is_some_and(|delivery| self.open_reply(delivery))
     }
 
-    /// The open tasks that are `stranded`.
-    pub fn stranded_tasks(&self) -> Vec<TaskId> {
-        self.tasks.values().filter(|t| !t.over() && !t.archived && t.final_presentation.is_some())
-            .filter(|t| self.lifecycle_of(&t.id).is_ok_and(|lifecycle| self.stranded(&t.id, &lifecycle)))
-            .map(|t| t.id.clone())
-            .collect()
-    }
-
-    /// `task` is stranded: its node is told to go on, and if it stops again the orchestrator gets
-    /// the case. Nothing changes for a task that left that state.
-    pub(super) fn record_stranded(&mut self, task: &TaskId, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
-        let lifecycle = self.lifecycle(lifecycles, task)?;
-        if !self.stranded(task, lifecycle) {
-            return Ok(());
-        }
-        let card = stalled_card_id(task, lifecycle.generation(), &format!("stranded-{}", self.revision + 1));
-        let wake = self.wake_for(task, lifecycles)?;
-        let text = wake.as_ref().map(|_| STRANDED_INSTRUCTION.to_owned());
-        self.decide(lifecycles, task, LifecycleRecord::Unfinished { unheard_card: card.clone(), text, wake })?;
-        if self.lifecycle(lifecycles, task)?.cards().iter().any(|(required, _)| **required == card) {
-            self.open_stall(task, card, effects);
-        }
-        Ok(())
-    }
-
     /// The answer to its own card the node of `task` was told last, when a turn took it up after
     /// the last delivery and nothing else was told to the node or opened a case after it. The
     /// answer may have been told before that delivery: a node that presented again without having
@@ -2662,8 +2637,6 @@ impl EmptyTurn {
         }
     }
 }
-/// What a stranded node is told when Alondra hands it back its turn.
-pub const STRANDED_INSTRUCTION: &str = "Nothing is running for your task, and the user still waits for what they sent back on your delivery. Check where you were and go on with it, then present your result again. Whatever you ran in the background ended and will not report back: run again what you still need.";
 pub const WAKE_INSTRUCTION: &str = "Your turn ended without a result, a question or work of your own running, and your task is still open. Deliver your result with `present_result`, ask the user with `ask`, or, if you wait for something, wait on it through its Alondra tool (`wait_for_machine`, `wait_for_tasks`, or `post_merge_work` with `waits_for`) and end your turn. If your turns keep ending this way, Alondra reminds you up to 3 times in a row; after that the orchestrator decides how your task goes on, and it may close it.";
 /// What a wake says follows when the node's turns keep ending empty.
 const WAKE_LIMIT: &str = "If your turns keep ending this way, Alondra reminds you up to 3 times in a row; after that the orchestrator decides how your task goes on, and it may close it.";

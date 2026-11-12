@@ -42,9 +42,6 @@ pub const UNPACED: u32 = 12;
 /// memory, which does not show yet, is reserved before one more starts.
 const IN_FLIGHT: Millis = 3 * 60_000;
 const TICK: Duration = Duration::from_secs(10);
-/// How long a task stays stranded before it goes back to work: a state between two commands of the
-/// same step never reaches it.
-pub(crate) const STRANDED_AFTER: Millis = 5 * 60_000;
 /// How often the log repeats why the queue waits while the reason stays the same.
 const HOLD_LOG_EVERY: Millis = 10 * 60_000;
 
@@ -200,8 +197,6 @@ struct Inner {
     refused: BTreeMap<String, u64>,
     /// A sandbox with fast timing: its fake nodes cost nothing, so the Mac never holds a start.
     ignores_mac: bool,
-    /// The tasks seen stranded, and since when: `STRANDED_AFTER` later they go back through the gate.
-    stranded: BTreeMap<TaskId, Millis>,
 }
 
 /// What holds the queue, without the numbers that change on every sample (free memory, load,
@@ -1401,7 +1396,6 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
     for (session, paused) in to_halt {
         crate::pauses::hold_sdk_turn(domain, &session, &paused);
     }
-    send_back_stranded(domain, &state, now);
     crate::sdk_owner::take_working_unowned(domain, &state, now);
     let Some(Key::Task(task)) = head else { return Ok(()) };
     let Some(row) = domain.store.lock_or_exit("the domain store").launch_queue()?.into_iter().find(|row| row.task_id == task) else {
@@ -1423,47 +1417,6 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
         }
     }
     Ok(())
-}
-
-/// A task only waits for capacity or the user: one stranded past `STRANDED_AFTER` goes back through
-/// the gate like a node that resumes, with no card, and waits there while the Mac has no room.
-fn send_back_stranded(domain: &DomainRuntime, state: &DomainState, now: Millis) {
-    let gate = &domain.live.gate;
-    let stranded = state.stranded_tasks();
-    let due: Vec<(TaskId, Millis)> = {
-        let mut inner = gate.lock_with(domain);
-        let over: Vec<TaskId> = inner.stranded.keys().filter(|task| !stranded.contains(*task)).cloned().collect();
-        for task in over {
-            inner.stranded.remove(&task);
-            if let Some(session) = crate::pauses::session_of(state, &task) {
-                inner.asking.remove(&Key::Resume(session));
-            }
-        }
-        stranded.into_iter().filter_map(|task| {
-            let since = *inner.stranded.entry(task.clone()).or_insert(now);
-            (now - since >= STRANDED_AFTER).then_some((task, since))
-        }).collect()
-    };
-    for (task, since) in due {
-        let Some(session) = crate::pauses::session_of(state, &task) else { continue };
-        let waiting = Waiting { key: Key::Resume(session), priority: priority_of(state, Some(&task)), resuming: true, since };
-        if gate.ask(domain, waiting, now).is_err() {
-            continue;
-        }
-        gate.lock().stranded.remove(&task);
-        log!("{task} has work its node owes and nothing to start a turn: it goes back to work");
-        let envelope = CommandEnvelope {
-            protocol_version: PROTOCOL_VERSION,
-            data_epoch: state.data_epoch.clone(),
-            command_id: format!("stranded-{task}-{}", crate::auth::random_hex(8)).into(),
-            expected_revision: 0,
-            command: Command::RecordStranded { task_id: task.clone() },
-        };
-        match domain.execute_as_system(envelope) {
-            Ok(_) => crate::sdk_owner::take_if_unowned(domain, &task),
-            Err(error) => log!("could not send {task} back to work: {error:?}"),
-        }
-    }
 }
 
 /// A launch the gate let through and that did not start stays in the queue: a refusal that clears

@@ -74,7 +74,7 @@ fn ends_well(machine: &Machine, state: &DomainState, index: &ReadIndex, task: &T
         Situation::Working(_) => runs(machine, task),
         Situation::NeedsYou | Situation::Paused | Situation::Delivered(Delivery::ForReview) => true,
         Situation::Waiting(WaitsFor::Slot) => room_is_scarce(machine, state),
-        Situation::Waiting(WaitsFor::Step(AlondraStep::Delivering)) if state.waits_for_turn(task) || state.stranded_tasks().contains(task) => {
+        Situation::Waiting(WaitsFor::Step(AlondraStep::Delivering)) if state.waits_for_turn(task) => {
             room_is_scarce(machine, state)
         }
         Situation::Waiting(WaitsFor::Machine) => world.memory_tight,

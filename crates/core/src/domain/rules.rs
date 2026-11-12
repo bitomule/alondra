@@ -2625,7 +2625,6 @@ impl DomainState {
             | Command::RecordTurnBoundary { task_id, .. }
             | Command::RecordClaudeHold { task_id, .. }
             | Command::RecordHostEnded { task_id, .. }
-            | Command::RecordStranded { task_id }
             | Command::DeferTaskMove { task_id, .. }
             | Command::AbortTaskSelection { task_id, .. }
             | Command::RecordInterruptAccepted { task_id, .. }
@@ -5245,11 +5244,6 @@ impl DomainState {
                 system(actor)?;
                 self.task(task_id)?;
                 self.record_host_ended(task_id, *generation, *resumes, *by_alondra, ended_work, effects, lifecycles)?;
-            }
-            Command::RecordStranded { task_id } => {
-                system(actor)?;
-                self.task(task_id)?;
-                self.record_stranded(task_id, effects, lifecycles)?;
             }
             Command::DeferTaskMove { task_id, account } => {
                 system(actor)?;

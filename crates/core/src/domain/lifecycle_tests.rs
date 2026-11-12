@@ -1726,62 +1726,6 @@ fn a_pause_a_host_ended_in_while_the_node_worked_on_what_the_user_sent_back_ends
     }
 }
 
-// A host that ends with no session to resume leaves the delivery sent back with nobody on it: the
-// invariant tells the node to go on, with no card, up to three times in a row, and the stop after
-// them is the orchestrator's case.
-#[test]
-fn a_stranded_task_goes_back_to_work_three_times_and_then_to_the_orchestrator_never_to_the_user() {
-    let mut s = world();
-    working_on_what_the_user_sent_back(&mut s, Instruction::Changes);
-    assert_eq!(s.stranded_tasks(), Vec::<TaskId>::new(), "a turn runs");
-    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false, ended_work: vec![], by_alondra: false });
-    assert_eq!(s.stranded_tasks(), [TaskId::from("t")]);
-
-    let told = must(&mut s, Actor::System, Command::RecordStranded { task_id: "t".into() });
-    assert!(told.effects.iter().all(|e| !matches!(e, DomainEffect::NotifyUser { .. })), "no notice");
-    let Some(LifecycleRecord::Unfinished { wake: Some(input), text: Some(text), .. }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("{:?}", s.lifecycle_journal[&TaskId::from("t")].last()) };
-    assert_eq!(text, STRANDED_INSTRUCTION);
-    assert_eq!(s.stranded_tasks(), Vec::<TaskId>::new(), "it has what it goes on with");
-    assert!(s.lifecycle_of(&"t".into()).unwrap().cards().is_empty(), "no card");
-
-    let mut input = input;
-    for n in 1..=alondra_domain::EMPTY_TURN_WAKES {
-        let turn = format!("turn-stranded-{n}");
-        must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![RuntimeObservation::TurnStarted { turn: turn.clone(), input: input.clone() }] });
-        must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn, failure: None, failed: None });
-        assert_eq!(s.stranded_tasks(), [TaskId::from("t")], "its turn ended with nothing delivered");
-        if n == alondra_domain::EMPTY_TURN_WAKES {
-            break;
-        }
-        must(&mut s, Actor::System, Command::RecordStranded { task_id: "t".into() });
-        let Some(LifecycleRecord::Unfinished { wake: Some(next), .. }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("woken again: {:?}", s.lifecycle_journal[&TaskId::from("t")].last()) };
-        input = next;
-    }
-
-    let again = must(&mut s, Actor::System, Command::RecordStranded { task_id: "t".into() });
-    assert!(again.effects.iter().all(|e| !matches!(e, DomainEffect::NotifyUser { .. })), "the user is not asked");
-    let lifecycle = s.lifecycle_of(&"t".into()).unwrap();
-    let cards = lifecycle.cards();
-    let [(case, _)] = cards.as_slice() else { panic!("{cards:?}") };
-    assert!(is_stall_case(&s.interactions[*case]), "the orchestrator settles it");
-    assert_eq!(s.interactions[*case].recipient, Recipient::Orchestrator);
-    assert_eq!(s.stranded_tasks(), Vec::<TaskId>::new(), "a case holds it");
-    assert_aggregate_rules(&s);
-}
-
-// A delivery the user reviews with a resting node is no stranded task: nothing was sent back.
-#[test]
-fn a_delivery_under_review_or_a_task_that_left_that_state_is_not_touched() {
-    let mut s = world();
-    sdk_turn(&mut s, "t", "a");
-    deliver(&mut s, "t", "a", "result");
-    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
-    assert_eq!(s.stranded_tasks(), Vec::<TaskId>::new());
-    let journal = s.lifecycle_journal[&TaskId::from("t")].len();
-    must(&mut s, Actor::System, Command::RecordStranded { task_id: "t".into() });
-    assert_eq!(s.lifecycle_journal[&TaskId::from("t")].len(), journal, "nothing was recorded");
-}
-
 // Found capturing the TUI for t-parcel-open-issues-widget: an SDK node ended its turn on the user's
 // reply without presenting again, and the delivery never came back: the task read «Delivered»
 // with nothing in the user's inbox. Its node phase never moves with its turns; the end of the
