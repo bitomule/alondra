@@ -632,20 +632,22 @@ async fn a_cancelled_dependency_goes_to_the_orchestrator_first_and_then_to_the_u
     assert_eq!(launches(&f), 0);
     assert!(problem(&f, "f1").is_none(), "the orchestrator re-plans it first");
 
-    crate::orchestrator_inbox::settle(&f.domain);
+    at_minute(&f, 0);
+    assert!(told(&f).is_empty(), "nothing before the deadline");
+    at_minute(&f, 10);
     let notices = || told(&f).into_iter().filter(|id| id.starts_with("dependency-cancelled-f1--f0-")).collect::<Vec<_>>();
     assert_eq!(notices(), ["dependency-cancelled-f1--f0-1"]);
     let state = f.domain.state().unwrap();
     let notice = &state.interactions[&"dependency-cancelled-f1--f0-1".into()].body;
     assert!(notice.contains("“Task f1” (f1) waits for “Task f0” (f0), which was cancelled") && notice.contains("set_dependencies")
         && notice.contains("cancel_task"), "{notice}");
-    crate::orchestrator_inbox::settle(&f.domain);
+    at_minute(&f, 20);
     assert_eq!(notices().len(), 2, "one reminder");
     assert!(problem(&f, "f1").is_none());
-    crate::orchestrator_inbox::settle(&f.domain);
+    at_minute(&f, 30);
     let card = problem(&f, "f1").expect("the user decides once the orchestrator left it");
     assert_eq!(card.card.effective_title(), "“Task f0” was cancelled: start “Task f1” without it?");
-    crate::orchestrator_inbox::settle(&f.domain);
+    at_minute(&f, 40);
     assert_eq!(f.domain.state().unwrap().interactions.keys().filter(|id| id.0.starts_with("start-problem-f1")).count(), 1);
     assert_eq!(notices().len(), 2);
 
@@ -663,21 +665,22 @@ async fn a_task_the_orchestrator_re_points_follows_its_replacement_and_its_card_
     open_task(&f, "f2");
     create(&f, "f1", &["f0"], Some(&plan(&f, "app/f1")));
     command(&f.domain, user(), Command::CancelTask { task_id: "f0".into() });
-    for _ in 0..3 {
-        crate::orchestrator_inbox::settle(&f.domain);
+    for minute in [0, 10, 20, 30] {
+        at_minute(&f, minute);
     }
     let card = problem(&f, "f1").expect("the user was asked");
     command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::SetDependencies {
         task_id: "f1".into(), dependencies: ["f2".into()].into(), stack: None,
     });
-    crate::orchestrator_inbox::settle(&f.domain);
+    at_minute(&f, 40);
+    at_minute(&f, 50);
     assert!(f.domain.state().unwrap().interactions[&card.id].withdrawn, "the card no longer asks anything");
     assert!(problem(&f, "f1").is_none());
     pass(&f.domain, &f.home).await.unwrap();
     assert_eq!(launches(&f), 0, "it waits for its replacement");
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("f1")].state, TaskState::WaitingDependency);
     let before = told(&f).len();
-    crate::orchestrator_inbox::settle(&f.domain);
+    at_minute(&f, 70);
     assert_eq!(told(&f).len(), before, "nothing more for the orchestrator or the user");
 }
 
@@ -693,7 +696,9 @@ async fn cancelling_and_re_pointing_in_the_same_batch_tells_nobody() {
     command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::SetDependencies {
         task_id: "f1".into(), dependencies: ["f2".into()].into(), stack: None,
     });
-    crate::orchestrator_inbox::settle(&f.domain);
+    for minute in [0, 10, 20, 30] {
+        at_minute(&f, minute);
+    }
     assert!(!told(&f).iter().any(|id| id.starts_with("dependency-cancelled-")));
     assert!(problem(&f, "f1").is_none());
 }
@@ -707,8 +712,8 @@ async fn a_delivery_dependency_cancelled_goes_to_the_user_once_the_orchestrator_
     command(&f.domain, user(), Command::CancelTask { task_id: "a".into() });
     pass(&f.domain, &f.home).await.unwrap();
     assert!(problem(&f, "after").is_none());
-    for _ in 0..3 {
-        crate::orchestrator_inbox::settle(&f.domain);
+    for minute in [0, 10, 20, 30] {
+        at_minute(&f, minute);
     }
     let card = problem(&f, "after").expect("the user decides");
     answer(&f, &card.id, alondra_core::domain::START_CANCEL);
@@ -773,6 +778,11 @@ async fn a_node_the_user_closes_asks_to_relaunch_and_the_relaunch_starts_a_new_n
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("f1")].account_key(), original_account);
     pass(&f.domain, &f.home).await.unwrap();
     assert!(problem(&f, "f1").is_none(), "nothing more to ask");
+}
+
+/// The orchestrator's clock at `minutes` after the first look: what it owes is judged by it.
+fn at_minute(f: &Fixture, minutes: i64) {
+    crate::orchestrator_inbox::settle_overdue(&f.domain, minutes * 60_000);
 }
 
 fn queued(f: &Fixture) -> Vec<(String, i64)> {

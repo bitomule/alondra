@@ -2152,13 +2152,14 @@ async fn a_refused_plan_the_orchestrator_leaves_is_reminded_once_then_cancelled_
     let f = world();
     refused_plan(&f);
     refuse_its_start(&f).await;
-    crate::orchestrator_inbox::settle(&f.domain);
+    crate::orchestrator_inbox::settle_overdue(&f.domain, 0);
+    crate::orchestrator_inbox::settle_overdue(&f.domain, 10 * 60_000);
     let state = f.domain.state().unwrap();
     let reminder = state.interactions.values().find(|i| i.id.0.starts_with(alondra_core::orchestrator_cards::PLAN_REFUSED_NOTICE_PREFIX))
         .expect("one reminder to the orchestrator");
     assert_eq!(reminder.recipient, alondra_core::domain::Recipient::Orchestrator);
     assert!(!state.tasks[&TaskId::from("t")].cancelled());
-    crate::orchestrator_inbox::settle(&f.domain);
+    crate::orchestrator_inbox::settle_overdue(&f.domain, 20 * 60_000);
     let state = f.domain.state().unwrap();
     assert!(state.tasks[&TaskId::from("t")].cancelled(), "left past its reminder, Alondra cancels it");
     assert!(state.open_plan_refusal(&"t".into()).is_none());

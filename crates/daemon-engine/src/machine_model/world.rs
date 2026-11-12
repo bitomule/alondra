@@ -231,11 +231,20 @@ pub(super) fn script() -> impl Strategy<Value = Vec<Turn>> {
 pub(super) struct History {
     pub script: Vec<Turn>,
     pub slots: usize,
+    /// A task (by index) that waits for an earlier one: the user cancelling the earlier one leaves
+    /// it waiting for a cancelled task.
+    pub depends: Option<(usize, usize)>,
     pub actions: Vec<Action>,
 }
 
 pub(super) fn history() -> impl Strategy<Value = History> {
-    (script(), 1..=3usize, prop::collection::vec(action(), 1..40)).prop_map(|(script, slots, actions)| History { script, slots, actions })
+    (script(), 1..=3usize, prop::collection::vec(action(), 1..40)).prop_map(|(script, slots, actions)| History { script, slots, depends: None, actions })
+}
+
+/// A history where one task waits for an earlier one.
+pub(super) fn history_with_a_dependency() -> impl Strategy<Value = History> {
+    let depends = prop_oneof![Just((0, 1)), Just((0, 2)), Just((1, 2))];
+    (history(), depends).prop_map(|(history, depends)| History { depends: Some(depends), ..history })
 }
 
 /// Histories whose nodes also confirm their cleanup, whatever their session is doing.
