@@ -7,12 +7,14 @@ public extension EnvironmentValues {
 }
 
 /// "2 h ago", or "now" inside the first minute.
-struct RelativeTime: View {
+public struct RelativeTime: View {
     let date: Date
     @Environment(\.referenceDate) private var referenceDate
     @Environment(\.locale) private var locale
 
-    var body: some View {
+    public init(date: Date) { self.date = date }
+
+    public var body: some View {
         let now = referenceDate ?? .now
         if abs(date.timeIntervalSince(now)) < 45 {
             Text("now")
@@ -21,7 +23,7 @@ struct RelativeTime: View {
         }
     }
 
-    static func phrase(for date: Date, relativeTo now: Date, locale: Locale) -> String {
+    public static func phrase(for date: Date, relativeTo now: Date, locale: Locale) -> String {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
         formatter.dateTimeStyle = .named

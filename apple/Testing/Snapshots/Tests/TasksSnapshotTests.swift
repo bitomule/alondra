@@ -55,35 +55,35 @@ final class TasksSnapshotTests: XCTestCase {
 
     func test_tasks_populated() throws {
         let document = try SampleViews.document("tasks-populated")
-        assertScreen { ScreenFrame(height: 1000) { TasksView(store: tasks(document)) } }
+        assertScreen { TasksFrame(height: 1000) { TasksView(store: tasks(document)) } }
     }
 
     func test_tasks_populated_spanish() throws {
         let document = try SampleViews.document("tasks-populated-es")
-        assertScreen(language: .spanish) { ScreenFrame(height: 1000) { TasksView(store: tasks(document)) } }
+        assertScreen(language: .spanish) { TasksFrame(height: 1000) { TasksView(store: tasks(document)) } }
     }
 
     func test_tasks_foldsOpen() throws {
         let document = try SampleViews.document("tasks-populated")
         assertScreen(lightAndDark) {
-            ScreenFrame(height: 1400) { TasksView(store: tasks(document, expanded: ["finished"])) }
+            TasksFrame(height: 1400) { TasksView(store: tasks(document, expanded: ["finished"])) }
         }
     }
 
     func test_tasks_empty() throws {
         let document = try SampleViews.document("tasks-empty")
-        assertScreen(lightAndDark) { ScreenFrame(height: 500) { TasksView(store: tasks(document)) } }
+        assertScreen(lightAndDark) { TasksFrame(height: 500) { TasksView(store: tasks(document)) } }
     }
 
     func test_tasks_empty_spanish() throws {
         let document = try SampleViews.document("tasks-empty-es")
-        assertScreen(lightAndDark, language: .spanish) { ScreenFrame(height: 500) { TasksView(store: tasks(document)) } }
+        assertScreen(lightAndDark, language: .spanish) { TasksFrame(height: 500) { TasksView(store: tasks(document)) } }
     }
 
     func test_tasks_failedToLoad() {
         let failure = String(localized: "Couldn’t load this from your Mac. Try again.")
         assertScreen(lightAndDark) {
-            ScreenFrame(height: 400) {
+            TasksFrame(height: 400) {
                 TasksView(store: tasksUnavailable(.failed(failure), observing: { _ in
                     AsyncThrowingStream { $0.finish(throwing: ViewsClientError.notInstalled) }
                 }))
@@ -94,7 +94,7 @@ final class TasksSnapshotTests: XCTestCase {
     func test_tasks_theMacNotAnsweringWithSavedTasks() throws {
         let document = try SampleViews.document("tasks-empty")
         assertScreen(lightAndDark) {
-            ScreenFrame(height: 500) { TasksView(store: tasks(document)) }
+            TasksFrame(height: 500) { TasksView(store: tasks(document)) }
                 .environment(\.connectionState, .unreachable(.macNotAnswering))
         }
     }
@@ -102,14 +102,14 @@ final class TasksSnapshotTests: XCTestCase {
     func test_tasks_theMacNotAnsweringWithSavedTasks_spanish() throws {
         let document = try SampleViews.document("tasks-empty-es")
         assertScreen(language: .spanish) {
-            ScreenFrame(height: 500) { TasksView(store: tasks(document)) }
+            TasksFrame(height: 500) { TasksView(store: tasks(document)) }
                 .environment(\.connectionState, .unreachable(.macNotAnswering))
         }
     }
 
     func test_tasks_nothingSavedAndTheMacNotAnswering_spanish() {
         assertScreen(language: .spanish) {
-            ScreenFrame(height: 400) {
+            TasksFrame(height: 400) {
                 TasksView(store: tasksUnavailable(.loading, observing: { _ in AsyncThrowingStream { _ in } }))
             }
             .environment(\.connectionState, .unreachable(.macNotAnswering))
@@ -118,9 +118,8 @@ final class TasksSnapshotTests: XCTestCase {
 
     private func daemonsOwnTasks(_ document: ViewDocument, expanded: Set<String> = [], opened: [ViewDocument] = [],
                                  openChains: Set<String> = [], height: CGFloat) -> some View {
-        ScreenFrame(height: height) {
+        TasksFrame(height: height) {
             TasksView(store: tasks(document, expanded: expanded, opened: opened, openChains: openChains))
-                .environment(\.referenceDate, screenReferenceDate)
         }
     }
 
@@ -169,39 +168,39 @@ final class TasksSnapshotTests: XCTestCase {
 
     func test_taskDetail() throws {
         let document = try SampleViews.document("task-detail")
-        assertScreen { ScreenFrame(height: 1100) { TaskDetailView(store: task(document)) } }
+        assertScreen { TasksFrame(height: 1100) { TaskDetailView(store: task(document)) } }
     }
 
     func test_taskDetail_spanish() throws {
         let document = try SampleViews.document("task-detail-es")
-        assertScreen(language: .spanish) { ScreenFrame(height: 1100) { TaskDetailView(store: task(document)) } }
+        assertScreen(language: .spanish) { TasksFrame(height: 1100) { TaskDetailView(store: task(document)) } }
     }
 
     func test_taskDetail_queuedWithItsPriority() throws {
         let document = try ScreenFixtures.document("task-pacing-ios")
-        assertScreen([.light], inWindow: true) { ScreenFrame(height: 1300) { TaskDetailView(store: task(document)) } }
+        assertScreen([.light], inWindow: true) { TasksFrame(height: 1300) { TaskDetailView(store: task(document)) } }
         let spanish = try ScreenFixtures.document("task-pacing-ios-es")
-        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 1300) { TaskDetailView(store: task(spanish)) } }
+        assertScreen([.light], language: .spanish, inWindow: true) { TasksFrame(height: 1300) { TaskDetailView(store: task(spanish)) } }
     }
 
     func test_taskDetail_allowedInTask() throws {
         let document = try ScreenFixtures.document("task-allowed-ios")
-        assertScreen(lightAndDark, inWindow: true) { ScreenFrame(height: 1500) { TaskDetailView(store: task(document)) } }
+        assertScreen(lightAndDark, inWindow: true) { TasksFrame(height: 1500) { TaskDetailView(store: task(document)) } }
     }
 
     func test_taskDetail_allowedInTask_spanish() throws {
         let document = try ScreenFixtures.document("task-allowed-ios-es")
-        assertScreen(lightAndDark, language: .spanish, inWindow: true) { ScreenFrame(height: 1500) { TaskDetailView(store: task(document)) } }
+        assertScreen(lightAndDark, language: .spanish, inWindow: true) { TasksFrame(height: 1500) { TaskDetailView(store: task(document)) } }
     }
 
     func test_taskDetail_finishedShowsTheTimeItTook() throws {
         let document = try ScreenFixtures.document("task-allowed-ios") { finish(&$0, took: "Took") }
-        assertScreen(lightAndDark, inWindow: true) { ScreenFrame(height: 1500) { TaskDetailView(store: task(document)) } }
+        assertScreen(lightAndDark, inWindow: true) { TasksFrame(height: 1500) { TaskDetailView(store: task(document)) } }
     }
 
     func test_taskDetail_finishedShowsTheTimeItTook_spanish() throws {
         let document = try ScreenFixtures.document("task-allowed-ios-es") { finish(&$0, took: "Duró") }
-        assertScreen(lightAndDark, language: .spanish, inWindow: true) { ScreenFrame(height: 1500) { TaskDetailView(store: task(document)) } }
+        assertScreen(lightAndDark, language: .spanish, inWindow: true) { TasksFrame(height: 1500) { TaskDetailView(store: task(document)) } }
     }
 
     /// The task's time row as the daemon sends it once the task ended at 09:05.
@@ -222,67 +221,67 @@ final class TasksSnapshotTests: XCTestCase {
 
     func test_taskDetail_working() throws {
         let document = try SampleViews.document("task-detail-working")
-        assertScreen(lightAndDark, inWindow: true) { ScreenFrame(height: 2500) { TaskDetailView(store: task(document)) } }
+        assertScreen(lightAndDark, inWindow: true) { TasksFrame(height: 2500) { TaskDetailView(store: task(document)) } }
     }
 
     func test_taskDetail_working_spanish() throws {
         let document = try SampleViews.document("task-detail-working-es")
-        assertScreen(lightAndDark, language: .spanish, inWindow: true) { ScreenFrame(height: 2500) { TaskDetailView(store: task(document)) } }
+        assertScreen(lightAndDark, language: .spanish, inWindow: true) { TasksFrame(height: 2500) { TaskDetailView(store: task(document)) } }
     }
 
     func test_tasks_aDeliveryInTheTurnThatPresentedIt() throws {
         let document = try SampleViews.document("delivered-working-tasks-ios")
-        assertScreen(lightAndDark) { ScreenFrame(height: 900) { TasksView(store: tasks(document)) } }
+        assertScreen(lightAndDark) { TasksFrame(height: 900) { TasksView(store: tasks(document)) } }
     }
 
     func test_taskDetail_aDeliveryInTheTurnThatPresentedIt() throws {
         let document = try SampleViews.document("delivered-working-task-ios")
-        assertScreen(lightAndDark, inWindow: true) { ScreenFrame(height: 1500) { TaskDetailView(store: task(document)) } }
+        assertScreen(lightAndDark, inWindow: true) { TasksFrame(height: 1500) { TaskDetailView(store: task(document)) } }
     }
 
     func test_tasks_aDeliveryInTheTurnThatPresentedIt_spanish() throws {
         let document = try SampleViews.document("delivered-working-tasks-ios-es")
-        assertScreen(lightAndDark, language: .spanish) { ScreenFrame(height: 900) { TasksView(store: tasks(document)) } }
+        assertScreen(lightAndDark, language: .spanish) { TasksFrame(height: 900) { TasksView(store: tasks(document)) } }
     }
 
     func test_taskDetail_aDeliveryInTheTurnThatPresentedIt_spanish() throws {
         let document = try SampleViews.document("delivered-working-task-ios-es")
-        assertScreen(lightAndDark, language: .spanish, inWindow: true) { ScreenFrame(height: 1500) { TaskDetailView(store: task(document)) } }
+        assertScreen(lightAndDark, language: .spanish, inWindow: true) { TasksFrame(height: 1500) { TaskDetailView(store: task(document)) } }
     }
 
     func test_tasks_aDeliveryOnceItsTurnEnded() throws {
         let document = try SampleViews.document("delivered-review-tasks-ios")
-        assertScreen(lightAndDark) { ScreenFrame(height: 900) { TasksView(store: tasks(document)) } }
+        assertScreen(lightAndDark) { TasksFrame(height: 900) { TasksView(store: tasks(document)) } }
     }
 
     func test_taskDetail_aDeliveryOnceItsTurnEnded() throws {
         let document = try SampleViews.document("delivered-review-task-ios")
-        assertScreen(lightAndDark, inWindow: true) { ScreenFrame(height: 1500) { TaskDetailView(store: task(document)) } }
+        assertScreen(lightAndDark, inWindow: true) { TasksFrame(height: 1500) { TaskDetailView(store: task(document)) } }
     }
 
     func test_tasks_aDeliveryOnceItsTurnEnded_spanish() throws {
         let document = try SampleViews.document("delivered-review-tasks-ios-es")
-        assertScreen(lightAndDark, language: .spanish) { ScreenFrame(height: 900) { TasksView(store: tasks(document)) } }
+        assertScreen(lightAndDark, language: .spanish) { TasksFrame(height: 900) { TasksView(store: tasks(document)) } }
     }
 
     func test_taskDetail_aDeliveryOnceItsTurnEnded_spanish() throws {
         let document = try SampleViews.document("delivered-review-task-ios-es")
-        assertScreen(lightAndDark, language: .spanish, inWindow: true) { ScreenFrame(height: 1500) { TaskDetailView(store: task(document)) } }
+        assertScreen(lightAndDark, language: .spanish, inWindow: true) { TasksFrame(height: 1500) { TaskDetailView(store: task(document)) } }
     }
 
     func test_taskDetail_theDaemonsOwnFixture() throws {
         let document = try SampleViews.document("task-ios")
-        assertScreen(lightAndDark) { ScreenFrame(height: 1400) { TaskDetailView(store: task(document)) } }
+        assertScreen(lightAndDark) { TasksFrame(height: 1400) { TaskDetailView(store: task(document)) } }
     }
 
     func test_taskDetail_nodeClosed_offersRelaunch() throws {
         let document = try SampleViews.document("task-closed-ios")
-        assertScreen([.light], inWindow: true) { ScreenFrame(height: 1000) { TaskDetailView(store: task(document)) } }
+        assertScreen([.light], inWindow: true) { TasksFrame(height: 1000) { TaskDetailView(store: task(document)) } }
     }
 
     func test_taskDetail_nodeClosed_offersRelaunch_spanish() throws {
         let document = try SampleViews.document("task-closed-ios-es")
-        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 1000) { TaskDetailView(store: task(document)) } }
+        assertScreen([.light], language: .spanish, inWindow: true) { TasksFrame(height: 1000) { TaskDetailView(store: task(document)) } }
     }
 
     func test_taskDetail_gone() {
@@ -291,6 +290,17 @@ final class TasksSnapshotTests: XCTestCase {
         let store = Store(initialState: state) { TaskDetailFeature() } withDependencies: {
             $0.viewsClient.observe = { _ in AsyncThrowingStream { $0.finish(throwing: ViewsClientError.missingView) } }
         }
-        assertScreen(lightAndDark) { ScreenFrame(height: 320) { TaskDetailView(store: store) } }
+        assertScreen(lightAndDark) { TasksFrame(height: 320) { TaskDetailView(store: store) } }
+    }
+}
+
+/// The samples these screens show were taken at the screen reference date, so «8 min ago» reads as past.
+/// The shared frame's own clock sits months earlier and would turn every time into a future one.
+private struct TasksFrame<Content: View>: View {
+    let height: CGFloat
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        ScreenFrame(height: height, referenceDate: screenReferenceDate) { content }
     }
 }

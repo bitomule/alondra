@@ -35,12 +35,13 @@ extension ViewsClient {
 struct ScreenFrame<Content: View>: View {
     let height: CGFloat
     var growsWithText = true
+    var referenceDate = snapshotReferenceDate
     @ViewBuilder let content: Content
     @Environment(\.dynamicTypeSize) private var textSize
 
     var body: some View {
         NavigationStack { content }
-            .environment(\.referenceDate, snapshotReferenceDate)
+            .environment(\.referenceDate, referenceDate)
             .transaction { $0.disablesAnimations = true }
             .frame(height: growsWithText && textSize.isAccessibilitySize ? height * 2.2 : height)
     }
