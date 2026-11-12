@@ -150,7 +150,6 @@ use dropped::{Chip, Upload};
 use input::TextInput;
 use keys::{Cmd, Keymap};
 use md::Block;
-pub use tasks::state_label;
 
 const SETTLE_MS: i64 = 700;
 const FLASH_MS: i64 = 4500;

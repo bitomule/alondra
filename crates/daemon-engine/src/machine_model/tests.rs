@@ -28,9 +28,21 @@ pub(super) fn gap_open(owed: Owed) -> bool {
     }
 }
 
-/// The open tasks whose node holds a slot: what the header and the Live Activity count.
+/// The open tasks whose node holds a slot, as the gate reads them.
 pub(super) fn slot_tasks(state: &DomainState) -> BTreeSet<TaskId> {
-    state.slots().into_iter().filter_map(|agent| state.node_task(&agent.id).filter(|task| !task.over()).map(|task| task.id.clone())).collect()
+    crate::admission::slot_tasks(state, &ReadIndex::build(state))
+}
+
+/// The open tasks that must hold a slot by what every screen reads of them: at work or a step of
+/// Alondra's from it, not ending, their node not paused, and their execution holding a slot.
+fn tasks_shown_on_a_slot(state: &DomainState, index: &ReadIndex) -> BTreeSet<TaskId> {
+    state.tasks.values()
+        .filter(|task| !task.over() && task.state != alondra_core::domain::TaskState::Closing && task.wrap_up.asked_at.is_none())
+        .filter(|task| task.agent_id.as_ref().is_some_and(|agent| state.through_sdk(agent) && state.node_pause(agent).is_none()))
+        .filter(|task| matches!(situation(index, &task.id), Situation::Working(_) | Situation::Waiting(WaitsFor::Step(AlondraStep::Starting | AlondraStep::Delivering | AlondraStep::Waking))))
+        .filter(|task| state.lifecycle_of(&task.id).is_ok_and(|lifecycle| lifecycle.holds_slot()))
+        .map(|task| task.id.clone())
+        .collect()
 }
 
 fn situation(index: &ReadIndex, task: &TaskId) -> Situation {
@@ -121,9 +133,9 @@ fn counts_differ(state: &DomainState, index: &ReadIndex) -> Option<String> {
     if header != working.len() {
         return Some(format!("the header counts {header} working, the tasks that read working are {working:?}"));
     }
-    let gate = crate::admission::working_tasks(state);
-    let slots = slot_tasks(state);
-    (gate != slots).then(|| format!("the gate counts {gate:?} at work, the nodes holding a slot are {slots:?}"))
+    let gate = crate::admission::slot_tasks(state, index);
+    let shown = tasks_shown_on_a_slot(state, index);
+    (gate != shown).then(|| format!("the gate counts {gate:?} on a slot, the tasks every screen reads on one are {shown:?}"))
 }
 
 fn unlisted_wait(state: &DomainState, index: &ReadIndex) -> Option<String> {

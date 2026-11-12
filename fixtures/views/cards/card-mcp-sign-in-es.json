@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:mcp-sign-in-t-18",
   "client": "ios",
-  "version": "vf0c991ed68e93723",
+  "version": "vda09f8054a2a959d",
   "cursor": "cursor-1",
   "title": "Inicia sesión en linear: esperan 2 tareas",
   "status": {
-    "version": "v7d0d626f36194baf",
+    "version": "v4574f460f22252fc",
     "summary": "1 pregunta · 1 nodo trabajando",
     "badge": 1,
     "counts": [
@@ -35,7 +35,7 @@
       {
         "id": "waiting",
         "label": "esperando",
-        "value": 0
+        "value": 2
       }
     ],
     "gauges": [],

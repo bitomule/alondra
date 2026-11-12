@@ -4,11 +4,11 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "vb73239f09732c031",
+  "version": "ve37b803105ecdf0f",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
-    "version": "v887807058841bf6a",
+    "version": "vc0ee4c0d55d59c2a",
     "summary": "1 to read · 1 node working",
     "badge": 1,
     "counts": [
@@ -35,7 +35,7 @@
       {
         "id": "waiting",
         "label": "waiting",
-        "value": 1
+        "value": 0
       }
     ],
     "gauges": [],
