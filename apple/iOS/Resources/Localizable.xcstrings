@@ -465,46 +465,6 @@
         }
       }
     },
-    "%lld nodes working": {
-      "localizations": {
-        "en": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld node working"
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld nodes working"
-                }
-              }
-            }
-          }
-        },
-        "es": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld nodo trabajando"
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld nodos trabajando"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "%lld of %lld": {
       "localizations": {
         "es": {
@@ -546,56 +506,6 @@
       }
     },
     "Shows the first card that arrived while you were reading": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Muestra la primera tarjeta que llegó mientras leías"}}}},
-    "%lld questions": {
-      "localizations": {
-        "en": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld question"
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld questions"
-                }
-              }
-            }
-          }
-        },
-        "es": {
-          "variations": {
-            "plural": {
-              "one": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld pregunta"
-                }
-              },
-              "other": {
-                "stringUnit": {
-                  "state": "translated",
-                  "value": "%lld preguntas"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "%lld to read": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "%lld por leer"
-          }
-        }
-      }
-    },
     "Add comment": {
       "localizations": {
         "es": {

@@ -4,11 +4,31 @@
   "view": "settled_card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "vcb965d0149d59aaa",
+  "version": "v949f4d7836263e50",
   "cursor": "cursor-1",
   "status": {
-    "version": "v8e6d4c39b4a6185d",
-    "summary": "1 question · 3 to read · 0 nodes working",
+    "version": "v6379ab01fca8ddc7",
+    "summary": "1 question · 3 to read · 0 tasks working",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 1,
+        "one": "{count} question",
+        "other": "{count} questions"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
     "badge": 4,
     "counts": [
       {

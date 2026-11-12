@@ -4,12 +4,26 @@
   "view": "card",
   "key": "card:request-done-r-accounts",
   "client": "mac",
-  "version": "v053b04b0abd03139",
+  "version": "v75167cf963943d8d",
   "cursor": "cursor-1",
   "title": "Hecho en parte: se canceló 1 de 3 tareas",
   "status": {
-    "version": "v3f1618d548c7eb72",
-    "summary": "3 por leer · 0 nodos trabajando",
+    "version": "v7aa94fa561e82d65",
+    "summary": "3 por leer · 0 tareas trabajando",
+    "summary_parts": [
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} por leer",
+        "other": "{count} por leer"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
     "badge": 3,
     "counts": [
       {

@@ -4,12 +4,26 @@
   "view": "card",
   "key": "card:unheard-t-651c38484cd2f34e74d5107ba05f7f15-90",
   "client": "ios",
-  "version": "va10d9eb2a819e7aa",
+  "version": "v57170e0f148c1824",
   "cursor": "cursor-1",
   "title": "«Restore the native review experience» se ha parado y te escribe",
   "status": {
-    "version": "vef0bd29f344e185c",
-    "summary": "1 pregunta · 0 nodos trabajando",
+    "version": "vf745e37795faf873",
+    "summary": "1 pregunta · 0 tareas trabajando",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 1,
+        "one": "{count} pregunta",
+        "other": "{count} preguntas"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
     "badge": 1,
     "counts": [
       {

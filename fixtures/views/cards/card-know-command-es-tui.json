@@ -4,12 +4,32 @@
   "view": "card",
   "key": "card:cc2d034b-249e-4487-a89b-57de38c26372",
   "client": "tui",
-  "version": "v8c3e98509872111f",
+  "version": "vcb267c60ad5b839c",
   "cursor": "cursor-1",
   "title": "Pega este comando en el terminal: confía en todos los repos de ~/Projects",
   "status": {
-    "version": "v21e817e49a9c8092",
-    "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+    "version": "vf8bd13a3dc364c4d",
+    "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} pregunta",
+        "other": "{count} preguntas"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} por leer",
+        "other": "{count} por leer"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
     "badge": 5,
     "counts": [
       {

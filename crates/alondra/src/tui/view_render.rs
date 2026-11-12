@@ -1381,6 +1381,7 @@ mod tests {
         assert_eq!(ago("2026-09-12T10:00:00.000+02:00"), "12 sep");
         assert_eq!(ago("2025-12-24T10:00:00.000+02:00"), "24 dic 2025");
         assert_eq!(ago("2026-10-04T09:00:00.000+02:00"), "mañana 09:00");
+        assert_eq!(ago("2026-10-03T19:59:00.000+02:00"), "hoy 19:59", "a time a few minutes ahead is never «hace»");
         crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
         assert_eq!(ago("2026-10-03T19:49:18.945+02:00"), "5 min ago");
         assert_eq!(ago("2026-10-03T05:00:00.861+02:00"), "today 05:00");

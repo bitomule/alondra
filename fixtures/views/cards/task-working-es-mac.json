@@ -4,12 +4,20 @@
   "view": "task",
   "key": "task:t-1",
   "client": "mac",
-  "version": "vc04f7c176d24023c",
+  "version": "v882936334b01d3e8",
   "cursor": "cursor-1",
   "title": "Build a feature",
   "status": {
-    "version": "v73340bacd6f9082e",
-    "summary": "1 nodo trabajando",
+    "version": "v7c751e31bed7af7b",
+    "summary": "1 tarea trabajando",
+    "summary_parts": [
+      {
+        "id": "working",
+        "count": 1,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
     "badge": 0,
     "counts": [
       {

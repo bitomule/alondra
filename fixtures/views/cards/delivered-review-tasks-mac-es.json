@@ -4,12 +4,26 @@
   "view": "tasks",
   "key": "tasks",
   "client": "mac",
-  "version": "vaad7c2e718919db7",
+  "version": "v35de24fe12d861f5",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
-    "version": "v3ca84408e03b9580",
-    "summary": "1 por leer · 0 nodos trabajando",
+    "version": "v3abe8a9de57dd4ff",
+    "summary": "1 por leer · 0 tareas trabajando",
+    "summary_parts": [
+      {
+        "id": "to_read",
+        "count": 1,
+        "one": "{count} por leer",
+        "other": "{count} por leer"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
     "badge": 1,
     "counts": [
       {

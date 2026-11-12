@@ -4,12 +4,32 @@
   "view": "card",
   "key": "card:i-1",
   "client": "ios",
-  "version": "v6e871c086349e4ce",
+  "version": "va18c0692e73d1b19",
   "cursor": "cursor-1",
   "title": "Sign in to the calendar",
   "status": {
-    "version": "v8773ed0163534717",
-    "summary": "2 questions · 2 to read · 0 nodes working",
+    "version": "v717b935435790a16",
+    "summary": "2 questions · 2 to read · 0 tasks working",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} question",
+        "other": "{count} questions"
+      },
+      {
+        "id": "to_read",
+        "count": 2,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
     "badge": 4,
     "counts": [
       {

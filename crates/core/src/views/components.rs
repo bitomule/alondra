@@ -181,6 +181,10 @@ pub struct ProtocolRange {
 pub struct Status {
     pub version: String,
     pub summary: String,
+    /// The pieces of `summary`, each with its wording in the singular and the plural, so a client can recount
+    /// one for a change it has not heard back about and still write it in the daemon's words.
+    #[serde(default)]
+    pub summary_parts: Vec<SummaryPart>,
     pub badge: u32,
     pub counts: Vec<Count>,
     pub gauges: Vec<Gauge>,
@@ -208,6 +212,23 @@ pub struct UsageExhausted {
     #[serde(default)]
     pub paused_by_user: bool,
 }
+/// One count of the header sentence: «2 questions», «1 task working». `one` and `other` hold `{count}` where the
+/// number goes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SummaryPart {
+    pub id: String,
+    pub count: u32,
+    pub one: String,
+    pub other: String,
+}
+
+impl SummaryPart {
+    pub fn text(&self) -> String {
+        let wording = if self.count == 1 { &self.one } else { &self.other };
+        wording.replace("{count}", &self.count.to_string())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Count {
     pub id: String,

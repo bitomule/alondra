@@ -4,12 +4,32 @@
   "view": "tasks",
   "key": "tasks?section=finished&after=0",
   "client": "ios",
-  "version": "v10ecb3c6e1d1f98c",
+  "version": "v9f197c22d771fa85",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
-    "version": "v241280f956cb5ca1",
-    "summary": "2 preguntas · 3 por leer · 2 nodos trabajando",
+    "version": "v8bf834bde2d182f0",
+    "summary": "2 preguntas · 3 por leer · 2 tareas trabajando",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} pregunta",
+        "other": "{count} preguntas"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} por leer",
+        "other": "{count} por leer"
+      },
+      {
+        "id": "working",
+        "count": 2,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
     "badge": 5,
     "counts": [
       {

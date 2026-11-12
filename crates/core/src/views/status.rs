@@ -1,6 +1,6 @@
 use super::{
-    Count, Label, Level, RenderContext, Status, Tone,
-    text::{t, tf},
+    Count, Label, Level, RenderContext, Status, SummaryPart, Tone,
+    text::t,
     version,
 };
 /// What waits for the user is the home queue, its count and the app icon badge. The inbox only
@@ -15,37 +15,26 @@ pub(super) fn build(context: &RenderContext<'_>) -> Status {
         .count() as u32;
     let to_read = pending - questions;
     let working = activity.working;
-    let mut summary = Vec::new();
+    let part = |id: &str, count: u32, one: &str, other: &str| SummaryPart { id: id.into(), count, one: one.into(), other: other.into() };
+    let mut parts = Vec::new();
     if questions > 0 {
-        summary.push(if questions == 1 {
-            tf!(context.lang, "{questions} question", "{questions} pregunta")
-        } else {
-            tf!(
-                context.lang,
-                "{questions} questions",
-                "{questions} preguntas"
-            )
-        });
+        parts.push(part("questions", questions,
+            t!(context.lang, "{count} question", "{count} pregunta"),
+            t!(context.lang, "{count} questions", "{count} preguntas")));
     }
     if to_read > 0 {
-        summary.push(tf!(context.lang, "{to_read} to read", "{to_read} por leer"));
+        parts.push(part("to_read", to_read,
+            t!(context.lang, "{count} to read", "{count} por leer"),
+            t!(context.lang, "{count} to read", "{count} por leer")));
     }
-    summary.push(if working == 1 {
-        tf!(
-            context.lang,
-            "{working} node working",
-            "{working} nodo trabajando"
-        )
-    } else {
-        tf!(
-            context.lang,
-            "{working} nodes working",
-            "{working} nodos trabajando"
-        )
-    });
+    parts.push(part("working", working,
+        t!(context.lang, "{count} task working", "{count} tarea trabajando"),
+        t!(context.lang, "{count} tasks working", "{count} tareas trabajando")));
+    let summary = parts.iter().map(SummaryPart::text).collect::<Vec<_>>().join(" · ");
     let mut status = Status {
         version: String::new(),
-        summary: summary.join(" · "),
+        summary,
+        summary_parts: parts,
         badge: pending,
         counts: vec![
             Count {

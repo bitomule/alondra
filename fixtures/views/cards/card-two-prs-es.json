@@ -4,12 +4,26 @@
   "view": "card",
   "key": "card:github.com/bitomule/alondra#17",
   "client": "ios",
-  "version": "vfc1dba61128cfe15",
+  "version": "v458bf51abb33dadf",
   "cursor": "cursor-1",
   "title": "Review the result · alondra#17",
   "status": {
-    "version": "vc09971552b9c4ff5",
-    "summary": "2 por leer · 0 nodos trabajando",
+    "version": "vca57c0d78d14f9c6",
+    "summary": "2 por leer · 0 tareas trabajando",
+    "summary_parts": [
+      {
+        "id": "to_read",
+        "count": 2,
+        "one": "{count} por leer",
+        "other": "{count} por leer"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
     "badge": 2,
     "counts": [
       {

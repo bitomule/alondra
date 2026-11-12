@@ -4,11 +4,31 @@
   "view": "home",
   "key": "home",
   "client": "ios",
-  "version": "v35c13e9687b544dd",
+  "version": "vd681c665a485c748",
   "cursor": "cursor-1",
   "status": {
-    "version": "v21e817e49a9c8092",
-    "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+    "version": "vf8bd13a3dc364c4d",
+    "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} pregunta",
+        "other": "{count} preguntas"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} por leer",
+        "other": "{count} por leer"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
     "badge": 5,
     "counts": [
       {
@@ -88,12 +108,32 @@
       "view": "card",
       "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
       "client": "ios",
-      "version": "v3ddbe285507e4b76",
+      "version": "vec8492e0a7542d68",
       "cursor": "cursor-1",
       "title": "Choose the welcome copy",
       "status": {
-        "version": "v21e817e49a9c8092",
-        "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+        "version": "vf8bd13a3dc364c4d",
+        "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
+        "summary_parts": [
+          {
+            "id": "questions",
+            "count": 2,
+            "one": "{count} pregunta",
+            "other": "{count} preguntas"
+          },
+          {
+            "id": "to_read",
+            "count": 3,
+            "one": "{count} por leer",
+            "other": "{count} por leer"
+          },
+          {
+            "id": "working",
+            "count": 0,
+            "one": "{count} tarea trabajando",
+            "other": "{count} tareas trabajando"
+          }
+        ],
         "badge": 5,
         "counts": [
           {
@@ -288,12 +328,32 @@
       "view": "card",
       "key": "card:8fa4034b-249e-4487-a89b-57de38c26372",
       "client": "ios",
-      "version": "vb0379b140caac899",
+      "version": "v27081219cc321112",
       "cursor": "cursor-1",
       "title": "Ship the compact schedule editor with this beta?",
       "status": {
-        "version": "v21e817e49a9c8092",
-        "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+        "version": "vf8bd13a3dc364c4d",
+        "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
+        "summary_parts": [
+          {
+            "id": "questions",
+            "count": 2,
+            "one": "{count} pregunta",
+            "other": "{count} preguntas"
+          },
+          {
+            "id": "to_read",
+            "count": 3,
+            "one": "{count} por leer",
+            "other": "{count} por leer"
+          },
+          {
+            "id": "working",
+            "count": 0,
+            "one": "{count} tarea trabajando",
+            "other": "{count} tareas trabajando"
+          }
+        ],
         "badge": 5,
         "counts": [
           {
@@ -470,12 +530,32 @@
       "view": "card",
       "key": "card:hf-weekly-2026-09-30",
       "client": "ios",
-      "version": "v0e2d246650294d91",
+      "version": "v33a9f977ee1b533e",
       "cursor": "cursor-1",
       "title": "Review the beta candidate",
       "status": {
-        "version": "v21e817e49a9c8092",
-        "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
+        "version": "vf8bd13a3dc364c4d",
+        "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
+        "summary_parts": [
+          {
+            "id": "questions",
+            "count": 2,
+            "one": "{count} pregunta",
+            "other": "{count} preguntas"
+          },
+          {
+            "id": "to_read",
+            "count": 3,
+            "one": "{count} por leer",
+            "other": "{count} por leer"
+          },
+          {
+            "id": "working",
+            "count": 0,
+            "one": "{count} tarea trabajando",
+            "other": "{count} tareas trabajando"
+          }
+        ],
         "badge": 5,
         "counts": [
           {

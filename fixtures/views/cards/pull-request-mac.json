@@ -4,12 +4,32 @@
   "view": "pull_request",
   "key": "pull_request:github.com/example/repo#12",
   "client": "mac",
-  "version": "vdff6328977140975",
+  "version": "v1ea5a66160e0f80b",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
-    "version": "vf84c4996f0984c30",
-    "summary": "2 questions · 3 to read · 0 nodes working",
+    "version": "vec309c5722d410ab",
+    "summary": "2 questions · 3 to read · 0 tasks working",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} question",
+        "other": "{count} questions"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
     "badge": 5,
     "counts": [
       {

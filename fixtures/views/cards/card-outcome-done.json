@@ -4,12 +4,26 @@
   "view": "card",
   "key": "card:request-done-r-accounts",
   "client": "ios",
-  "version": "v62cf627add272724",
+  "version": "vede58aa351b11493",
   "cursor": "cursor-1",
   "title": "Done in part: 1 of 3 tasks was cancelled",
   "status": {
-    "version": "v2eb6ac28b67dc787",
-    "summary": "3 to read · 0 nodes working",
+    "version": "v330b229db951a302",
+    "summary": "3 to read · 0 tasks working",
+    "summary_parts": [
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
     "badge": 3,
     "counts": [
       {

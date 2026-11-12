@@ -19,12 +19,12 @@ fn task_groups(context: &RenderContext<'_>) -> super::Section {
         .map(|task| (task, super::task_state::present(task, context))).collect();
     let mut rows = Vec::new();
     for label in StateLabel::ALL {
-        let children: Vec<_> = presented.iter().filter(|(_, presentation)| presentation.label == label)
+        let children: Vec<_> = presented.iter().filter(|(_, presentation)| presentation.label() == label)
             .map(|(task, presentation)| {
-                let mut row = common::row(&task.id.0, &format!("task:{}", task.id), presentation.icon, task.title.clone(),
-                    task_subtitle(task, presentation.reason.as_deref()));
+                let mut row = common::row(&task.id.0, &format!("task:{}", task.id), presentation.icon(), task.title.clone(),
+                    task_subtitle(task, presentation.reason()));
                 row.struck = label == StateLabel::Cancelled;
-                row.badges.push(Label { text: presentation.state.clone(), tone: presentation.tone, elapsed: None });
+                row.badges.push(Label { text: presentation.state().to_owned(), tone: presentation.tone(), elapsed: None });
                 row.badges.extend(common::scheduled_mark(task, context));
                 row.depth = 1;
                 row
@@ -89,11 +89,10 @@ fn project_sections(context: &RenderContext<'_>) -> Vec<super::Section> {
     let mut projects: BTreeMap<String, Vec<super::Row>> = BTreeMap::new();
     for (task, agent) in super::tasks::in_progress(context) {
         let project = task.project.as_deref().unwrap_or(t!(context.lang, "Other", "Otros"));
-        let (icon, _) = common::task_presentation(task.state);
         let presented = super::task_state::present(task, context);
-        let mut row = common::row(&task.id.0, &format!("task:{}", task.id), icon, task.title.clone(), None);
-        row.badges.push(Label { text: presented.state, tone: presented.tone, elapsed: None });
-        row.subtitle = presented.reason;
+        let mut row = common::row(&task.id.0, &format!("task:{}", task.id), presented.icon(), task.title.clone(), None);
+        row.badges.push(Label { text: presented.state().to_owned(), tone: presented.tone(), elapsed: None });
+        row.subtitle = presented.reason().map(str::to_owned);
         let pending = context.index.node(&agent.id).map_or(0, |node| node.waiting.len());
         row.trailing = Some(Trailing::Count { value: pending as u32 });
         projects.entry(project.into()).or_default().push(row);

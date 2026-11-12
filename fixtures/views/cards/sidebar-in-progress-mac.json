@@ -4,11 +4,31 @@
   "view": "sidebar",
   "key": "sidebar",
   "client": "mac",
-  "version": "vd3b8fac9717acee2",
+  "version": "v3fc13757b49c4c91",
   "cursor": "cursor-1",
   "status": {
-    "version": "vcc58fbd373b76f9d",
+    "version": "v54a78d898226a8c1",
     "summary": "5 pending · 1 in progress",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} question",
+        "other": "{count} questions"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
     "badge": 5,
     "counts": [
       {
@@ -238,7 +258,7 @@
             "kind": "view",
             "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
           },
-          "icon": "mission",
+          "icon": "action",
           "title": "Restore the native review experience",
           "subtitle": "5 open questions",
           "badges": [
@@ -292,12 +312,32 @@
       "view": "card",
       "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
       "client": "mac",
-      "version": "veb966660a992873b",
+      "version": "v965a375192b30645",
       "cursor": "cursor-1",
       "title": "Choose the welcome copy",
       "status": {
-        "version": "ve626d8542726ea98",
-        "summary": "2 questions · 3 to read · 0 nodes working",
+        "version": "v802ba46eb9657a9b",
+        "summary": "2 questions · 3 to read · 0 tasks working",
+        "summary_parts": [
+          {
+            "id": "questions",
+            "count": 2,
+            "one": "{count} question",
+            "other": "{count} questions"
+          },
+          {
+            "id": "to_read",
+            "count": 3,
+            "one": "{count} to read",
+            "other": "{count} to read"
+          },
+          {
+            "id": "working",
+            "count": 0,
+            "one": "{count} task working",
+            "other": "{count} tasks working"
+          }
+        ],
         "badge": 5,
         "counts": [
           {
@@ -495,12 +535,32 @@
       "view": "card",
       "key": "card:8fa4034b-249e-4487-a89b-57de38c26372",
       "client": "mac",
-      "version": "vfc7a6bf660df4596",
+      "version": "ve00a2089f8e004e1",
       "cursor": "cursor-1",
       "title": "Ship the compact schedule editor with this beta?",
       "status": {
-        "version": "ve626d8542726ea98",
-        "summary": "2 questions · 3 to read · 0 nodes working",
+        "version": "v802ba46eb9657a9b",
+        "summary": "2 questions · 3 to read · 0 tasks working",
+        "summary_parts": [
+          {
+            "id": "questions",
+            "count": 2,
+            "one": "{count} question",
+            "other": "{count} questions"
+          },
+          {
+            "id": "to_read",
+            "count": 3,
+            "one": "{count} to read",
+            "other": "{count} to read"
+          },
+          {
+            "id": "working",
+            "count": 0,
+            "one": "{count} task working",
+            "other": "{count} tasks working"
+          }
+        ],
         "badge": 5,
         "counts": [
           {
@@ -680,12 +740,32 @@
       "view": "card",
       "key": "card:hf-weekly-2026-09-30",
       "client": "mac",
-      "version": "v9e4c5d7283ae144f",
+      "version": "v73e75c97c6b6e7fe",
       "cursor": "cursor-1",
       "title": "Review the beta candidate",
       "status": {
-        "version": "ve626d8542726ea98",
-        "summary": "2 questions · 3 to read · 0 nodes working",
+        "version": "v802ba46eb9657a9b",
+        "summary": "2 questions · 3 to read · 0 tasks working",
+        "summary_parts": [
+          {
+            "id": "questions",
+            "count": 2,
+            "one": "{count} question",
+            "other": "{count} questions"
+          },
+          {
+            "id": "to_read",
+            "count": 3,
+            "one": "{count} to read",
+            "other": "{count} to read"
+          },
+          {
+            "id": "working",
+            "count": 0,
+            "one": "{count} task working",
+            "other": "{count} tasks working"
+          }
+        ],
         "badge": 5,
         "counts": [
           {

@@ -4,12 +4,26 @@
   "view": "card",
   "key": "card:result-2",
   "client": "ios",
-  "version": "vec10fa9a04f8656e",
+  "version": "ve3e531a0397b9621",
   "cursor": "cursor-1",
   "title": "Read why Redraft does not need a widget",
   "status": {
-    "version": "v63843208edea3b28",
-    "summary": "1 to read · 0 nodes working",
+    "version": "v7f698c7ff5f3d864",
+    "summary": "1 to read · 0 tasks working",
+    "summary_parts": [
+      {
+        "id": "to_read",
+        "count": 1,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
     "badge": 1,
     "counts": [
       {

@@ -4,12 +4,20 @@
   "view": "metrics",
   "key": "metrics?period=7d&compare=previous",
   "client": "ios",
-  "version": "vfcab46408a1e3f93",
+  "version": "v48c2fc85732eff48",
   "cursor": "metrics-cursor",
   "title": "Metrics",
   "status": {
-    "version": "v88a117097b2bb9b9",
-    "summary": "0 nodes working",
+    "version": "v24fcc327657cbf58",
+    "summary": "0 tasks working",
+    "summary_parts": [
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
     "badge": 0,
     "counts": [
       {

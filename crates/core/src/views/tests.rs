@@ -357,8 +357,35 @@ fn orchestrator_questions_to_the_user_wait_in_home() {
     assert_eq!(view.status.badge, view.sections[0].card_ids.len() as u32);
     assert_eq!(
         view.status.summary,
-        "2 questions · 2 to read · 0 nodes working"
+        "2 questions · 2 to read · 0 tasks working"
     );
+}
+/// The header's pieces carry the wording in both numbers, and write the very sentence the summary holds.
+#[test]
+fn the_header_parts_write_the_summary_in_both_languages() {
+    for lang in [Lang::En, Lang::Es] {
+        let status = render(&fixture(), &LiveSnapshot::default(), Client::Ios, lang, "home", "").status;
+        let ids: Vec<&str> = status.summary_parts.iter().map(|part| part.id.as_str()).collect();
+        assert_eq!(ids, ["questions", "to_read", "working"]);
+        let written: Vec<String> = status.summary_parts.iter().map(SummaryPart::text).collect();
+        assert_eq!(written.join(" · "), status.summary);
+        let questions = &status.summary_parts[0];
+        assert!(questions.one.contains("{count}") && questions.other.contains("{count}"));
+        assert_ne!(questions.one, questions.other, "{lang:?}: singular and plural differ");
+    }
+}
+
+/// The header counts tasks that work, and says so in both languages.
+#[test]
+fn the_header_says_tasks_working_never_nodes() {
+    let mut state = fixture();
+    node_in(&mut state, NodePhase::ThroughSdk);
+    state.lifecycle_journal.insert("t-1".into(), sdk_turn("t-1", "a-1"));
+    let summary = |state: &DomainState, lang| render(state, &LiveSnapshot::default(), Client::Ios, lang, "home", "").status.summary;
+    assert_eq!(summary(&state, Lang::En), "1 task working");
+    assert_eq!(summary(&state, Lang::Es), "1 tarea trabajando");
+    assert_eq!(summary(&fixture(), Lang::En), "2 questions · 2 to read · 0 tasks working");
+    assert_eq!(summary(&fixture(), Lang::Es), "2 preguntas · 2 por leer · 0 tareas trabajando");
 }
 #[test]
 fn icon_badge_counts_what_waits_in_home() {
@@ -2050,6 +2077,61 @@ fn a_task_whose_node_the_machine_paused_never_says_it_works_on_any_screen() {
         let sidebar = serde_json::to_string(&render(&state, &live, Client::Mac, Lang::Es, "sidebar", "")).unwrap();
         assert!(sidebar.contains("En espera"), "{sidebar}");
     }
+}
+
+/// A task the domain says needs the user while the inbox lists no card of it is a fault to show, never a
+/// question nobody can answer: its icon, label and detail line all read the same «waiting».
+#[test]
+fn a_task_that_needs_you_with_no_card_the_inbox_lists_has_one_state_in_its_icon_label_and_line() {
+    let mut state = fixture();
+    state.interactions.clear();
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::NeedsYou;
+    for lang in [Lang::En, Lang::Es] {
+        let list = render(&state, &LiveSnapshot::default(), Client::Mac, lang, "tasks", "2026-09-30T10:00:00Z");
+        let rows = all_rows(&list.sections.iter().flat_map(|section| &section.items)
+            .filter_map(|item| if let Item::Row(row) = item { Some(row.clone()) } else { None }).collect::<Vec<_>>());
+        let shown: Vec<&Row> = rows.iter().filter(|row| row.id == "t-1" || row.id == "r-1").collect();
+        assert!(!shown.is_empty(), "{lang:?}: the task is in the list");
+        for row in shown {
+            assert_eq!(row.icon, Icon::Task, "{lang:?} {}: the row draws the waiting icon, not the action one", row.id);
+            assert_eq!(row.badges.first().map(|badge| badge.text.as_str()), Some(if lang == Lang::En { "Waiting" } else { "En espera" }), "{}", row.id);
+        }
+        let detail = render(&state, &LiveSnapshot::default(), Client::Mac, lang, "task:t-1", "");
+        assert!(detail.sections.iter().all(|section| section.id != "now"), "{lang:?}: no «question» line under a waiting task");
+    }
+}
+
+/// The gate queueing a user-paused task is its only hold: the task reads waiting for a slot, in its icon and
+/// label, and says nothing of being paused on its screen.
+#[test]
+fn a_paused_task_the_gate_queues_reads_waiting_for_a_slot_in_icon_label_and_detail() {
+    let mut state = fixture();
+    node_in(&mut state, NodePhase::ThroughSdk);
+    hold_pause(&mut state, "t-1", "a-1", PauseReason::ByUser);
+    let queued = LiveQueued { pausable: true, task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Slots { working: 6, limit: 6 } };
+    let live = pacing_live(vec![queued], vec![], None);
+    let (block, row) = active_row(&state, &live, Client::Mac, Lang::En, "t-1");
+    assert_eq!((block.as_str(), row.icon), ("block:waiting", Icon::Task));
+    assert_eq!(row.badges.first().map(|badge| badge.text.as_str()), Some("Waiting"));
+    let detail = serde_json::to_string(&render(&state, &live, Client::Mac, Lang::En, "task:t-1", "")).unwrap();
+    assert!(!detail.contains("Paused"), "{detail}");
+    let alone = pacing_live(vec![], vec![], None);
+    assert_eq!(task_state_text(&state, &alone, Lang::En), "Paused", "without the queue it is still the user's pause");
+}
+
+/// A task whose node the machine paused waits, whatever the task's old state says: the sidebar row draws the
+/// waiting icon beside the waiting label.
+#[test]
+fn a_task_whose_node_the_machine_paused_draws_the_waiting_icon_in_the_sidebar() {
+    let mut state = fixture();
+    node_in(&mut state, NodePhase::ThroughSdk);
+    hold_pause(&mut state, "t-1", "a-1", PauseReason::Memory);
+    let sidebar = render(&state, &LiveSnapshot::default(), Client::Mac, Lang::En, "sidebar", "");
+    let rows = all_rows(&sidebar.sections.iter().flat_map(|section| &section.items)
+        .filter_map(|item| if let Item::Row(row) = item { Some(row.clone()) } else { None }).collect::<Vec<_>>());
+    let row = rows.iter().find(|row| row.id == "t-1" && row.depth == 0).expect("the task is under its project");
+    assert_eq!(row.badges.first().map(|badge| badge.text.as_str()), Some("Waiting"));
+    assert_eq!(row.icon, Icon::Task);
 }
 
 /// What a node's hooks deduced is never a state: a task whose old node reads stalled or failed
@@ -4055,6 +4137,7 @@ fn no_card_of_any_fixture_carries_an_action_the_domain_says_is_not_available() {
 #[test]
 fn task_detail_has_no_now_line_while_the_node_just_works() {
     let mut state = fixture();
+    state.interactions.clear();
     state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Running;
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "task:t-1", "2026-09-30T10:00:00Z");
     assert!(view.sections.iter().all(|section| section.id != "now"));
@@ -6109,6 +6192,7 @@ fn a_cancelling_task_says_what_alondra_still_removes() {
 #[test]
 fn a_closing_task_says_whether_it_waits_for_its_merge_or_its_nodes_cleanup() {
     let mut state = fixture();
+    state.interactions.clear();
     state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Closing;
     assert_eq!(now_title(&state, Lang::En).unwrap(), "accepted; Alondra merges its pull request");
     assert_eq!(now_title(&state, Lang::Es).unwrap(), "aceptada; Alondra hace merge de su PR");
@@ -6326,7 +6410,7 @@ fn a_settled_card_says_only_why_it_went_in_english_and_spanish() {
 }
 
 /// The number the Waiting for You header states: every segment of its summary but the last, which
-/// counts the nodes working.
+/// counts the tasks working.
 fn header_count(summary: &str) -> usize {
     let segments: Vec<&str> = summary.split(" · ").collect();
     segments[..segments.len() - 1]
@@ -9838,14 +9922,14 @@ proptest::proptest! {
                 let index = crate::domain::ReadIndex::build(&state);
                 let context = RenderContext { domain: &state, index: &index, live: &live, client, lang,
                     transport: Transport::Loopback, cursor: "", rendered_at: "2026-11-11T16:00:00+01:00" };
-                let mut presentation = task_state::working(&state.tasks[&"t-1".into()], doing, &context);
-                presentation.since = Some("2026-11-11T15:00:00+01:00".into());
+                let presentation = task_state::working(&state.tasks[&"t-1".into()], doing, &context)
+                    .since_for_test("2026-11-11T15:00:00+01:00");
                 let row = tasks::presented_row(&state.tasks[&"t-1".into()], &presentation, &context);
-                let state_word = (client == Client::Ios).then_some(presentation.state.as_str());
+                let state_word = (client == Client::Ios).then_some(presentation.state());
                 proptest::prop_assert!(row.children.is_empty() && row.subtitle.as_deref() == state_word, "{row:?}");
                 let elapsed = row.badges.iter().find_map(|badge| badge.elapsed.as_ref()).map(|elapsed| elapsed.since.as_str());
                 proptest::prop_assert_eq!(elapsed, Some("2026-11-11T15:00:00+01:00"));
-                let fact = presentation.fact.as_deref().unwrap();
+                let fact = presentation.fact().unwrap();
                 proptest::prop_assert!(fact.contains("15:"), "{fact}");
                 proptest::prop_assert!(!fact.contains("The checks passed."), "{fact}");
                 if !has_node || (!tool && !background) {

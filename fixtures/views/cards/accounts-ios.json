@@ -4,12 +4,32 @@
   "view": "accounts",
   "key": "accounts",
   "client": "ios",
-  "version": "v263cb9a860cb3674",
+  "version": "v852944e072c97f86",
   "cursor": "cursor-1",
   "title": "Accounts",
   "status": {
-    "version": "ve626d8542726ea98",
-    "summary": "2 questions · 3 to read · 0 nodes working",
+    "version": "v802ba46eb9657a9b",
+    "summary": "2 questions · 3 to read · 0 tasks working",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} question",
+        "other": "{count} questions"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
     "badge": 5,
     "counts": [
       {

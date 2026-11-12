@@ -9,7 +9,7 @@
   "title": "Sign in to the calendar: 1 task waits for it",
   "status": {
     "version": "v6dd91deae398bcb5",
-    "summary": "1 question · 1 node working",
+    "summary": "1 question · 1 task working",
     "badge": 1,
     "counts": [
       { "id": "inbox", "label": "Inbox", "value": 1 },

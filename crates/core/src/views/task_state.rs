@@ -62,37 +62,49 @@ impl StateLabel {
     }
 }
 
+/// Fields are private so the only way to a «Waiting» presentation is `StateFact::Waiting`, which carries its reason.
 pub(super) struct Presentation {
-    pub label: StateLabel,
-    pub state: String,
-    pub tone: Tone,
-    pub icon: Icon,
-    pub fact: Option<String>,
-    /// What the list says beside the state: nothing while it works, and for any other state only words that
-    /// change with that state, never a count, a place or a reading of the Mac.
-    pub reason: Option<String>,
-    pub since: Option<String>,
-    pub block: Block,
-    /// Its place in the queue of starts.
-    pub queue: Option<usize>,
-    /// Its fact belongs beside its state on the task's screen too, though it is in progress.
-    pub fact_in_state: bool,
+    label: StateLabel,
+    state: String,
+    tone: Tone,
+    icon: Icon,
+    fact: Option<String>,
+    reason: Option<String>,
+    since: Option<String>,
+    block: Block,
+    queue: Option<usize>,
+    fact_in_state: bool,
 }
 
 enum StateFact {
     Working(NowFact),
     NeedsYou(String),
     Delivered(String),
-    Waiting(Option<String>),
+    Waiting(String),
     Paused(String),
     Finished(String),
     Cancelled(String),
 }
 
 impl Presentation {
-    /// Where a request the orchestrator has not split yet sorts, as if it were a task.
-    pub(super) fn waiting_request(block: Block, since: Option<String>) -> Self {
-        Self { since, state: String::new(), ..Self::new(StateFact::Waiting(None), Tone::Neutral, block, super::Lang::En) }
+    pub(super) fn label(&self) -> StateLabel { self.label }
+    pub(super) fn state(&self) -> &str { &self.state }
+    pub(super) fn tone(&self) -> Tone { self.tone }
+    pub(super) fn icon(&self) -> Icon { self.icon }
+    pub(super) fn fact(&self) -> Option<&str> { self.fact.as_deref() }
+    pub(super) fn since(&self) -> Option<&str> { self.since.as_deref() }
+    pub(super) fn block(&self) -> Block { self.block }
+    /// Its place in the queue of starts.
+    pub(super) fn queue(&self) -> Option<usize> { self.queue }
+    /// What the list says beside the state.
+    pub(super) fn reason(&self) -> Option<&str> { self.reason.as_deref() }
+    /// Its fact belongs beside its state on the task's screen too, though it is in progress.
+    pub(super) fn fact_in_state(&self) -> bool { self.fact_in_state }
+
+    #[cfg(test)]
+    pub(super) fn since_for_test(mut self, at: &str) -> Self {
+        self.since = Some(at.into());
+        self
     }
 
     fn new(state: StateFact, tone: Tone, block: Block, lang: super::Lang) -> Self {
@@ -100,7 +112,7 @@ impl Presentation {
             StateFact::Working(now) => (StateLabel::Working, Some(now.text(lang))),
             StateFact::NeedsYou(fact) => (StateLabel::NeedsYou, Some(fact)),
             StateFact::Delivered(fact) => (StateLabel::Delivered, Some(fact)),
-            StateFact::Waiting(fact) => (StateLabel::Waiting, fact),
+            StateFact::Waiting(fact) => (StateLabel::Waiting, Some(fact)),
             StateFact::Paused(fact) => (StateLabel::Paused, Some(fact)),
             StateFact::Finished(fact) => (StateLabel::Finished, Some(fact)),
             StateFact::Cancelled(fact) => (StateLabel::Cancelled, Some(fact)),
@@ -118,8 +130,14 @@ impl Presentation {
     }
 }
 
+/// The situation every label of the task reads: the domain's, told whether the gate queues the task.
+pub(super) fn situation(task: &Task, context: &RenderContext<'_>) -> Situation {
+    context.reading(&task.id).map_or(Situation::Waiting(WaitsFor::Slot), |read| read.situation)
+        .queued_at_gate(common::gate_queued(task, context).is_some())
+}
+
 pub(super) fn present(task: &Task, context: &RenderContext<'_>) -> Presentation {
-    let situation = context.reading(&task.id).map_or(Situation::Waiting(WaitsFor::Slot), |read| read.situation);
+    let situation = situation(task, context);
     let mut presentation = classify(task, situation, context);
     if presentation.since.is_none() {
         presentation.since = task_since(task, context);
@@ -154,7 +172,6 @@ fn classify(task: &Task, situation: Situation, context: &RenderContext<'_>) -> P
             ..Presentation::new(StateFact::Cancelled(cancelled_fact(task, context)), Tone::Neutral, Block::Ended, lang) },
         Situation::NeedsYou => Presentation::new(StateFact::NeedsYou(open_questions(task, context).or_else(|| sign_in_fact(task, context))
                 .unwrap_or_else(|| t!(lang, "Waiting for your answer", "Espera tu respuesta").into())), Tone::Warning, Block::ForYou, lang),
-        Situation::Paused if common::gate_queued(task, context).is_some() => waiting(task, WaitsFor::Slot, context),
         Situation::Paused => Presentation::new(StateFact::Paused(paused_fact(task, context)), Tone::Neutral, Block::Waiting, lang),
         Situation::Delivered(delivery) => delivered(task, delivery, context),
         Situation::Working(doing) => failed_merge(task, working(task, doing, context), context),
@@ -283,7 +300,7 @@ fn waiting(task: &Task, waits: WaitsFor, context: &RenderContext<'_>) -> Present
     let pending = matches!(waits, WaitsFor::Slot | WaitsFor::Machine | WaitsFor::Disk | WaitsFor::Usage | WaitsFor::ProviderApi);
     let pending = |text: String| if pending { with_pending(text, task, context) } else { text };
     let reason = pending(listed.unwrap_or_else(|| fact.clone()));
-    Presentation { queue, reason: Some(reason), ..Presentation::new(StateFact::Waiting(Some(pending(fact))), Tone::Neutral, Block::Waiting, lang) }
+    Presentation { queue, reason: Some(reason), ..Presentation::new(StateFact::Waiting(pending(fact)), Tone::Neutral, Block::Waiting, lang) }
 }
 
 fn provider_name(task: &Task) -> &'static str {

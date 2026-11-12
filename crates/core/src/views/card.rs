@@ -465,7 +465,7 @@ fn context_lines(item: &InboxItem, context: &RenderContext<'_>) -> Vec<ContextLi
             text: task.title.clone(),
             link: Some(Link::View { key: format!("task:{}", task.id) }),
             chip: chip(task.project.as_ref()),
-            state: Some(Label { text: presentation.state, tone: presentation.tone, elapsed: None }),
+            state: Some(Label { text: presentation.state().to_owned(), tone: presentation.tone(), elapsed: None }),
         });
     } else if let Some(agent_id) = &item.agent_id {
         let node = context.live.nodes.iter().find(|node| node.agent_id == agent_id.0);

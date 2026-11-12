@@ -4,12 +4,32 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "v209ce9b75af07cfd",
+  "version": "vb7c0232e7f45a2ce",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
-    "version": "v7bd6622d72998685",
-    "summary": "2 questions · 3 to read · 2 nodes working",
+    "version": "vf15e27e74fa727a8",
+    "summary": "2 questions · 3 to read · 2 tasks working",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} question",
+        "other": "{count} questions"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 2,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
     "badge": 5,
     "counts": [
       {
