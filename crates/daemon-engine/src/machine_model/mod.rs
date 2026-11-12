@@ -8,8 +8,8 @@
 //! milliseconds and is deterministic. What is real is everything those commands go through: the
 //! domain and its saved form (a restart reads it again from there and loses all the daemon kept in
 //! memory), the one clock (`obligation_watch`), and what every screen and the gate read
-//! (`ReadIndex`, `Situation`, `admission::working_tasks`). A rule the code does not apply yet is in
-//! `tests::KNOWN_GAPS`, and the model applies it itself while it is listed.
+//! (`ReadIndex`, `Situation`, `admission::working_tasks`). A rule the code does not apply yet would
+//! be in `tests::KNOWN_GAPS`, and the model would apply it itself while it is listed.
 mod tests;
 mod world;
 
@@ -98,18 +98,14 @@ struct Message {
     text: String,
 }
 
-/// What the clock acts on: what `obligation_policy` enforces, and the rows of `KNOWN_GAPS` the
-/// model enforces in its place.
-fn enforced(owed: &Owed) -> bool {
-    obligation_policy::enforced(owed) || (*owed == Owed::HandInput && tests::gap_open(*owed))
-}
-
 /// What the gate tells the clock: a turn waits for a slot until the gate gives it one, and the
 /// usage limit holds the orchestrator.
 struct Turns<'a> {
     state: &'a DomainState,
     granted: &'a BTreeSet<TaskId>,
     usage_holds: bool,
+    /// The tasks whose host process is alive: the model's hosts write nothing on their own.
+    alive: BTreeSet<TaskId>,
 }
 
 impl obligation_watch::World for Turns<'_> {
@@ -119,6 +115,10 @@ impl obligation_watch::World for Turns<'_> {
 
     fn orchestrator_held(&self) -> bool {
         self.usage_holds
+    }
+
+    fn last_output(&self, task: &TaskId) -> Option<Millis> {
+        self.alive.contains(task).then_some(0)
     }
 }
 
@@ -158,7 +158,7 @@ fn scope(task: &TaskId) -> Scope {
 impl Machine {
     fn new(history: &History) -> Self {
         let mut machine = Self {
-            domain: Arc::new(DomainState::new("machine")), world: World::new(history.script.clone(), history.slots), watch: Watch::enforcing(enforced),
+            domain: Arc::new(DomainState::new("machine")), world: World::new(history.script.clone(), history.slots), watch: Watch::default(),
             granted: BTreeSet::new(), wakes: BTreeMap::new(), rearms: BTreeMap::new(), agents: 0, commands: 0, refused: BTreeMap::new(),
             cursors: BTreeMap::new(), messages: Vec::new(), owing: BTreeMap::new(), taken: BTreeMap::new(), stranded: BTreeMap::new(),
             deferred: BTreeMap::new(), unadmitted: BTreeMap::new(), seen: Seen::default(), trace: Vec::new(),
@@ -357,7 +357,7 @@ impl Machine {
     fn restart(&mut self) {
         let saved = serde_json::to_string(&*self.domain).expect("the domain saves");
         self.domain = Arc::new(serde_json::from_str(&saved).expect("the domain reads what it saved"));
-        self.watch = Watch::enforcing(enforced);
+        self.watch = Watch::default();
         self.owing.clear();
         self.refused.clear();
         self.taken.clear();
@@ -1127,8 +1127,7 @@ impl Machine {
         })
     }
 
-    /// One pass of the clock: what is past its deadline, and for the rows in `KNOWN_GAPS`, what
-    /// the model does about it in their place.
+    /// One pass of the clock: what is past its deadline and the real watch enforces.
     fn clock(&mut self) {
         let state = self.state();
         let now = self.world.now;
@@ -1152,7 +1151,7 @@ impl Machine {
         for (task, (since, owed)) in obligations {
             self.owing.entry(task).or_insert((since, owed, now));
         }
-        let late = self.watch.step(&state, &Turns { state: &state, granted: &self.granted, usage_holds: self.world.usage_holds() }, now);
+        let late = self.watch.step(&state, &Turns { state: &state, granted: &self.granted, usage_holds: self.world.usage_holds(), alive: self.world.hosts.iter().filter(|(_, host)| host.alive).map(|(task, _)| task.clone()).collect() }, now);
         for (task, action) in self.watch.enforce(&late, now) {
             self.by_the_clock(|machine| machine.apply(&task, action));
         }
@@ -1172,18 +1171,6 @@ impl Machine {
     fn apply(&mut self, task: &TaskId, action: obligation_watch::Action) {
         let Some(generation) = self.generation(task) else { return };
         match action {
-            obligation_watch::Action::OfferAgain => {
-                let state = self.state();
-                let Ok(lifecycle) = state.lifecycle_of(task) else { return };
-                let doubted: Vec<String> = lifecycle.doubts().into_iter().map(|(_, input)| input.as_str().to_owned()).collect();
-                let offered = self.world.hosts.get(task).and_then(|host| host.offered.clone()).filter(|input| !doubted.contains(input));
-                if let Some(input) = offered {
-                    if let Some(host) = self.world.host(task) { host.offered = None; }
-                    let _ = self.run(Actor::System, Command::RecordDoubtfulHandoff {
-                        task_id: task.clone(), generation, input, text: "Model input".into(), resumes: true, by_alondra: true,
-                    });
-                }
-            }
             obligation_watch::Action::Requeue => {
                 let ended = self.run(Actor::System, Command::RecordHostEnded {
                     task_id: task.clone(), generation, resumes: true, ended_work: vec![], by_alondra: true,

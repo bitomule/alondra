@@ -100,6 +100,7 @@ fn observed(fact: &RuntimeFact) -> std::result::Result<RuntimeObservation, Store
         }
         RuntimeFact::TurnStarted { turn, trigger: Trigger::Unprompted } => RuntimeObservation::TurnUnprompted { turn: turn.as_str().into() },
         RuntimeFact::InputConsumed { input } => RuntimeObservation::InputConsumed { input: input.as_str().into() },
+        RuntimeFact::InputHeld { input } => RuntimeObservation::InputHeld { input: input.as_str().into() },
         RuntimeFact::WorkStarted { turn, work } => RuntimeObservation::WorkStarted { turn: turn.as_str().into(), work: work.as_str().into() },
         RuntimeFact::WorkEnded { work, continuation } => {
             RuntimeObservation::WorkEnded { work: work.as_str().into(), continuation: continuation.as_str().into() }

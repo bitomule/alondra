@@ -519,6 +519,9 @@ pub(super) enum FactRecord {
     InputConsumed {
         input: String,
     },
+    InputHeld {
+        input: String,
+    },
     InputDropped {
         input: String,
         card: String,
@@ -601,6 +604,9 @@ impl From<&RuntimeFact> for FactRecord {
             RuntimeFact::InputConsumed { input } => Self::InputConsumed {
                 input: input.as_str().to_owned(),
             },
+            RuntimeFact::InputHeld { input } => Self::InputHeld {
+                input: input.as_str().to_owned(),
+            },
             RuntimeFact::InputDropped { input, card } => Self::InputDropped {
                 input: input.as_str().to_owned(),
                 card: card.0.clone(),
@@ -674,6 +680,7 @@ impl FactRecord {
             Self::ResourceAvailable => "Runtime::ResourceAvailable",
             Self::TurnStarted { .. } => "Runtime::TurnStarted",
             Self::InputConsumed { .. } => "Runtime::InputConsumed",
+            Self::InputHeld { .. } => "Runtime::InputHeld",
             Self::InputDropped { .. } => "Runtime::InputDropped",
             Self::WorkStarted { .. } => "Runtime::WorkStarted",
             Self::WorkEnded { .. } => "Runtime::WorkEnded",
@@ -712,6 +719,9 @@ impl FactRecord {
                 trigger: trigger.decode()?,
             },
             FactRecord::InputConsumed { input } => RuntimeFact::InputConsumed {
+                input: InputId::new(input).map_err(Error::from)?,
+            },
+            FactRecord::InputHeld { input } => RuntimeFact::InputHeld {
                 input: InputId::new(input).map_err(Error::from)?,
             },
             FactRecord::InputDropped { input, card } => RuntimeFact::InputDropped {

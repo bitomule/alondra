@@ -179,14 +179,13 @@ fn background_work_for_the_users_reply_that_its_replaced_host_ended_is_reported_
 
 // The user replied to a delivery and Claude, busy, never started on the reply: the task read
 // «Answering you» although no turn ran, and then «Waiting for Claude to start» with no end, holding
-// its slot. Until its deadline it reads that Claude has not started; past it the reply is offered
-// again, and past it once more the task gives up its slot and the reply waits in the queue, until
-// the host the gate admits next resumes the same session and Claude starts on it. No card asks.
+// its slot. While Claude holds the reply it reads that Alondra delivers it, in both languages, and
+// no deadline gives the host up.
 #[test]
-fn a_reply_claude_holds_past_its_deadline_is_offered_again_then_waits_in_the_queue() {
+fn a_reply_claude_holds_reads_as_being_delivered_with_no_deadline() {
     use alondra_core::views::{Client, RenderContext, Transport, build, live::LiveSnapshot, text::Lang};
     use alondra_daemon_engine::obligation_watch::pass;
-    use alondra_daemon_engine::sdk_owner::tests::untaken::{assert_waits_for_a_slot, drive_by_hand, enforcing_every_deadline, goes_on_when_the_gate_has_room, replaced_with_the_gate_full, until_prompted};
+    use alondra_daemon_engine::sdk_owner::tests::untaken::{drive_by_hand, enforcing_every_deadline, until_prompted};
     let slice = Slice::new();
     let mut driver = slice.launch_working();
     let node = Actor::Agent { agent_id: driver.agent().clone() };
@@ -219,23 +218,14 @@ fn a_reply_claude_holds_past_its_deadline_is_offered_again_then_waits_in_the_que
     assert!(spanish.contains("Alondra le entrega tu mensaje") && !spanish.contains("Respondiéndote"), "{spanish}");
 
     drive_by_hand(&slice, &driver);
-    let cards = slice.domain.state().unwrap().interactions.len();
     let mut watch = enforcing_every_deadline();
-    pass(&slice.domain, &mut watch, 0);
-    pass(&slice.domain, &mut watch, 121_000);
-    let journal = || slice.domain.state().unwrap().lifecycle_journal[&TaskId::from(TASK)].iter().cloned().collect::<Vec<_>>();
-    assert!(journal().iter().any(|record| matches!(record, LifecycleRecord::DoubtResent { text: Some(text), .. } if text.contains(reply))), "the reply is offered again");
-    while driver.pending_permits() > 0 {
-        driver.step(&|| false).unwrap();
+    for at in [0, 301_000, 24 * 3_600_000] {
+        pass(&slice.domain, &mut watch, at);
     }
-    pass(&slice.domain, &mut watch, 242_000);
-    let mut queued = replaced_with_the_gate_full(&slice, driver);
-    assert_waits_for_a_slot(&slice, &mut queued);
-    let (english, spanish) = (shown(Lang::En), shown(Lang::Es));
-    assert!(!english.contains("Alondra delivers your message to it") && !spanish.contains("Alondra le entrega tu mensaje"), "{english}");
-    assert_eq!(slice.domain.state().unwrap().interactions.len(), cards, "no card asks the user");
-    goes_on_when_the_gate_has_room(&slice, &mut queued, reply, 2);
-    queued.stop().unwrap();
+    driver.step(&|| false).unwrap();
+    assert!(!driver.host_to_replace(), "Claude holds the reply: no deadline gives the host up");
+    assert_eq!(lifecycle(&slice.domain).activity(), ActivityView::Starting);
+    driver.stop().unwrap();
 }
 
 /// The user presses «Interrupt» on the task of `agent`, through the action path the clients use.

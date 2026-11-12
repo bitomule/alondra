@@ -239,6 +239,9 @@ fn fold(batch: &OrderedObservation, state: &mut Checkpoint, method: &str, params
             if state.accepted.len() >= 64 { return invalid(); }
             if state.accepted.get(turn).is_some_and(|previous| previous != client) { return invalid(); }
             state.accepted.insert(turn.into(), client.into());
+            if let Ok(input) = lookup(client) {
+                facts.push(Observation::InputHeld { input });
+            }
             if state.rerouted_turn.as_deref()!=Some(turn){state.model=string(params,"model").filter(|model|!model.is_empty()).map(str::to_owned).or_else(||state.model.clone());}
             if string(params,"model").is_some() || state.rerouted_turn.as_deref()==Some(turn){state.model_turn=Some(turn.into());}
         }
@@ -709,7 +712,8 @@ mod tests {
     fn native_acceptance_without_correlated_user_item_cannot_consume_input() {
         let batch = batch(); let mut state = Checkpoint::default(); let mut facts = Vec::new();
         fold(&batch, &mut state, "alondra/inputAccepted", &json!({"turnId":"turn","inputId":"client-message"}), &mut facts, |_| Ok(InputId::new("input").unwrap())).unwrap();
-        assert!(facts.is_empty(), "turn/start response only proves enqueue acceptance");
+        assert_eq!(facts, vec![Observation::InputHeld { input: InputId::new("input").unwrap() }], "turn/start response proves the provider holds the input, not that it read it");
+        facts.clear();
         fold(&batch, &mut state, "turn/started", &json!({"turn":{"id":"turn"}}), &mut facts, |_| invalid()).unwrap();
         assert!(facts.is_empty(), "a native turn without its identified user item cannot consume this input");
         fold(&batch, &mut state, "item/started", &json!({"turnId":"turn","item":{"id":"user","type":"userMessage","clientId":"wrong-message"}}), &mut facts, |_| panic!("an unrelated native user item is not consumption proof")).unwrap();

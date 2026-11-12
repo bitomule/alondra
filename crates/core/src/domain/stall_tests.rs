@@ -228,8 +228,13 @@ fn a_dropped_input_the_user_lets_go_goes_to_the_orchestrator_when_nothing_else_i
     sdk_turn(&mut s, "t", "a");
     end_empty(&mut s, "turn-1");
     let LifecycleRecord::TurnEnded { wake: Some(wake), .. } = last(&s, "t") else { panic!("woken") };
-    must(&mut s, Actor::System, Command::RecordDroppedInput { task_id: "t".into(), generation: 1, input: wake, text: WAKE_INSTRUCTION.into() });
-    let dropped = s.interactions.keys().find(|id| id.0.starts_with(DROPPED_PREFIX)).unwrap().clone();
+    let task = TaskId::from("t");
+    let dropped = dropped_card_id(&task, 1, wake.as_str());
+    s.decide(&mut Lifecycles::new(), &task, LifecycleRecord::InputDropped { input: wake.clone(), card: dropped.clone() }).unwrap();
+    s.revision += 1;
+    let revision = s.revision;
+    s.interactions.insert(dropped.clone(), dropped_card(dropped.clone(), &task, WAKE_INSTRUCTION, revision));
+    s.derive_states();
     must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: dropped, option_id: DISCARD.into(), inputs: Default::default() });
     assert!(open_case(&s).is_some(), "letting it go leaves nothing to go on with: the orchestrator settles it");
     assert_eq!(user_cards(&s).iter().filter(|id| s.open(&s.interactions[*id])).count(), 0, "no card asks the user how it goes on");

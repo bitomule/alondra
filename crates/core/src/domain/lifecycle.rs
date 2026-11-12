@@ -204,6 +204,7 @@ pub enum RuntimeObservation {
     /// Claude opened a root turn by itself, with nothing the task gave it or knows of.
     TurnUnprompted { turn: String },
     InputConsumed { input: String },
+    InputHeld { input: String },
     WorkStarted { turn: String, work: String },
     WorkEnded { work: String, continuation: String },
     /// Work ended while the root turn that started it was still open: that turn goes on with it.
@@ -305,6 +306,7 @@ pub enum LifecycleRecord {
     /// that asked how it goes on no longer hold.
     TurnUnprompted { turn: String },
     InputConsumed { input: String },
+    InputHeld { input: String },
     WorkStarted { turn: String, work: String },
     WorkEnded { work: String, continuation: String },
     /// The root turn still open when work ended goes on with the work's `continuation`.
@@ -667,6 +669,7 @@ fn event(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle) -> 
             trigger: Trigger::Unprompted,
         })?,
         LifecycleRecord::InputConsumed { input } => runtime(RuntimeFact::InputConsumed { input: input_id(task, input)? })?,
+        LifecycleRecord::InputHeld { input } => runtime(RuntimeFact::InputHeld { input: input_id(task, input)? })?,
         LifecycleRecord::InputDropped { input, card } => runtime(RuntimeFact::InputDropped { input: input_id(task, input)?, card: card.clone() })?,
         LifecycleRecord::TakenOver => runtime(RuntimeFact::TakenOver)?,
         LifecycleRecord::TakeoverUnanswered => runtime(RuntimeFact::TakeoverUnanswered)?,
@@ -958,6 +961,7 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>, li
             LifecycleRecord::TurnUnprompted { turn: turn.as_str().into() }
         }
         Event::Runtime { fact: RuntimeFact::InputConsumed { input }, .. } => LifecycleRecord::InputConsumed { input: input.as_str().into() },
+        Event::Runtime { fact: RuntimeFact::InputHeld { input }, .. } => LifecycleRecord::InputHeld { input: input.as_str().into() },
         Event::Runtime { fact: RuntimeFact::InputDropped { input, card }, .. } => {
             LifecycleRecord::InputDropped { input: input.as_str().into(), card: card.clone() }
         }
@@ -2059,23 +2063,15 @@ impl DomainState {
         Ok(())
     }
 
-    /// Claude will never read `input`, told `text`: it leaves what the task waits on, and a card
-    /// asks the user whether to send it again.
-    pub(super) fn record_dropped_input(&mut self, task: &TaskId, generation: u64, input: &str, text: &str, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+    /// The provider explicitly refused `input`, told `text`: it will never read it, so the same text
+    /// goes again at once as a new input, with no card for anyone.
+    pub(super) fn record_dropped_input(&mut self, task: &TaskId, generation: u64, input: &str, text: &str, lifecycles: &mut Lifecycles) -> Result<()> {
         self.sdk_execution(task, generation, lifecycles)?;
-        let card = dropped_card_id(task, generation, input);
-        if self.interactions.contains_key(&card) {
-            return Err(DomainError::new("conflict", format!("The dropped input {input} of task {task} is already recorded")));
-        }
         if !self.lifecycle(lifecycles, task)?.pending_inputs().iter().any(|pending| pending.as_str() == input) {
-            return Err(DomainError::new("conflict", format!("The input {input} of task {task} is not pending: it cannot be dropped")));
+            return Err(DomainError::new("conflict", format!("The input {input} of task {task} is not pending: it cannot be refused")));
         }
-        self.decide(lifecycles, task, LifecycleRecord::InputDropped { input: input.into(), card: card.clone() })?;
-        if self.lifecycle(lifecycles, task)?.cards().iter().any(|(held, _)| **held == card) {
-            self.interactions.insert(card.clone(), dropped_card(card.clone(), task, text, self.revision + 1));
-            effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
-        }
-        Ok(())
+        let record = LifecycleRecord::HandoffResent { input: input.into(), resent: self.next_input(task), text: Some(text.into()) };
+        self.decide(lifecycles, task, record)
     }
 
     /// The user answered the card of a task whose host was lost: «Try again» lets it go on, told to
@@ -2226,6 +2222,7 @@ impl DomainState {
                     continue;
                 }
                 RuntimeObservation::InputConsumed { input } => LifecycleRecord::InputConsumed { input },
+                RuntimeObservation::InputHeld { input } => LifecycleRecord::InputHeld { input },
                 RuntimeObservation::TakenOver => LifecycleRecord::TakenOver,
                 RuntimeObservation::TakeoverUnanswered => LifecycleRecord::TakeoverUnanswered,
                 RuntimeObservation::WorkStarted { turn, work } => LifecycleRecord::WorkStarted { turn, work },
@@ -2988,12 +2985,16 @@ pub const DISCARD_LABEL: &str = "Discard";
 const DISCARD_MEANS: &str = "The message is not sent and the task goes on";
 pub const DROPPED_WHY: &str = "Claude Code finished or cancelled your message without reading it, so it will not act on it. Nothing is sent until you decide.";
 
-fn dropped_card_id(task: &TaskId, generation: u64, input: &str) -> InteractionId {
+/// The card an older release asked about an input Claude never read, kept so the tests of its
+/// answers still run: cards of that kind stay open until the user answers them.
+#[cfg(test)]
+pub(super) fn dropped_card_id(task: &TaskId, generation: u64, input: &str) -> InteractionId {
     let input: String = input.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '-' }).collect();
     InteractionId(format!("{DROPPED_PREFIX}{task}-{generation}-{input}"))
 }
 
-fn dropped_card(id: InteractionId, task: &TaskId, text: &str, revision: u64) -> Interaction {
+#[cfg(test)]
+pub(super) fn dropped_card(id: InteractionId, task: &TaskId, text: &str, revision: u64) -> Interaction {
     let need = "Claude didn't get to read your message".to_owned();
     Interaction {
         attachments: vec![],

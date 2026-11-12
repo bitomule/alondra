@@ -443,6 +443,14 @@ for raw in sys.stdin:
         if own_turn == 'next' and not wake:
             own_turn_started(message)
             continue
+        if text.endswith('refused-by-claude') and not resumed:
+            # Like Claude Code refusing a prompt before queueing it.
+            pending.remove(message)
+            lifecycle(message, 'refused')
+            continue
+        if text.endswith('hung-silent') and not resumed:
+            # Like a native Claude process that hangs on the prompt: it writes nothing at all.
+            time.sleep(3600)
         # Like the native Claude 2.1.300: each prompt is queued and started, then init comes again.
         for state in ('queued', 'started'):
             lifecycle(message, state)

@@ -18,6 +18,8 @@ pub enum Owed {
     Start,
     /// An input reaches the node.
     HandInput,
+    /// The provider reads an input it holds: its own evidence ends this, never a deadline.
+    ReadInput,
     /// An answer to a permission or a question reaches the turn that asked it.
     HandDecision,
     /// The node hears that work it waited on ended.
@@ -133,6 +135,7 @@ fn by_activity(execution: &Execution) -> (Party, Owed) {
     match &execution.activity {
         Activity::Continuation(_) if !execution.inbox.is_empty() => (Party::Alondra, Owed::HandInput),
         Activity::Launching(_) => (Party::Alondra, Owed::Start),
+        Activity::InputPending(input) if execution.held.contains(input) => (Party::Provider, Owed::ReadInput),
         Activity::InputPending(_) => (Party::Alondra, Owed::HandInput),
         Activity::Turn { .. } => (Party::Provider, Owed::Turn),
         Activity::OwnWork { .. } => (Party::Provider, Owed::OwnWork),
