@@ -2297,6 +2297,16 @@ impl DomainState {
         self.tasks.get_mut(task_id).unwrap().final_presentation = None;
         Ok(through_sdk)
     }
+    /// The node that presents the replacement is the one the notice tells, so the notice is read
+    /// inside that turn and never waits for another.
+    fn consume_replacement_notice(&mut self, task_id: &TaskId, notice: String, lifecycles: &mut Lifecycles) -> Result<()> {
+        let lifecycle = self.lifecycle(lifecycles, task_id)?;
+        let pending = lifecycle.pending_inputs().iter().any(|input| input.as_str() == notice);
+        if pending && matches!(lifecycle.activity(), alondra_domain::ActivityView::Working) {
+            self.decide(lifecycles, task_id, LifecycleRecord::InputConsumed { input: notice })?;
+        }
+        Ok(())
+    }
     /// The cards of a task that ended leave the user's queue. A cancelled task takes them away in
     /// silence: the user stopped the work, so nothing it asked matters any more. A task that ended
     /// with its work done tells the user once about a question it left behind, unless it only
@@ -4683,11 +4693,16 @@ impl DomainState {
                 if *is_final {
                     self.invalidate(task_id);
                     let standing = self.lifecycle(lifecycles, task_id)?.delivery().cloned();
+                    let mut replacement_notice = None;
                     if let Some(previous) = standing.filter(|previous| previous != interaction_id) {
+                        replacement_notice = Some(self.next_input(task_id));
                         self.hand_back(task_id, &previous, delivery_replaced(), lifecycles)?;
                     }
                     self.node_has_run(task_id, lifecycles)?;
                     self.decide(lifecycles, task_id, LifecycleRecord::Presented { delivery: interaction_id.clone() })?;
+                    if let Some(notice) = replacement_notice {
+                        self.consume_replacement_notice(task_id, notice, lifecycles)?;
+                    }
                     let t = self.tasks.get_mut(task_id).unwrap();
                     t.final_presentation = Some(interaction_id.clone());
                     t.verdict = None;
