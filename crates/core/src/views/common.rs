@@ -157,14 +157,10 @@ pub(super) fn ordinal(position: usize, lang: super::Lang) -> String {
     }
 }
 
-/// The node's turn is running, as its task's lifecycle says for a node of the Agent SDK and its
-/// phase for one of `claude --bg`.
+/// The node's turn is running, as its task's lifecycle says.
 pub(super) fn working(agent: &str, context: &RenderContext<'_>) -> bool {
     let agent = crate::domain::AgentId(agent.into());
-    match sdk_live(&agent, context) {
-        Some(live) => matches!(live, Some(alondra_domain::LiveState::Working(alondra_domain::Worker::Turn))),
-        None => context.domain.node_phase(&agent) == Some(&crate::domain::NodePhase::Working),
-    }
+    matches!(sdk_live(&agent, context), Some(Some(alondra_domain::LiveState::Working(alondra_domain::Worker::Turn))))
 }
 
 /// The task's pause, if its node is paused.

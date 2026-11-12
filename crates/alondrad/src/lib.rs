@@ -77,9 +77,7 @@ use alondra_daemon_engine::{
     mcp_waits,
     node_close,
     node_push,
-    node_reconcile,
     node_reports,
-    node_revival,
     node_work,
     obligation_watch,
     options,
@@ -565,7 +563,7 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
         }
     };
     accounts::begin_initial_check(&domain);
-    let recovery = prepare_workers(config, domain.clone(), backend, &node_close::Machine);
+    let recovery = prepare_workers(config, domain.clone(), backend);
     serve_domain(config, state, domain, recovery, service, upgrades).await
 }
 
@@ -576,7 +574,6 @@ async fn prepare_workers(
     config: &Config,
     domain: Arc<domain_runtime::DomainRuntime>,
     backend: Option<sdk_owner::backend::SdkBackend>,
-    sessions: &dyn node_close::Sessions,
 ) -> PreparedWorkers {
     accounts::begin_initial_check(&domain);
     domain.live.sandbox.store(config.sandbox, std::sync::atomic::Ordering::Relaxed);
@@ -588,7 +585,6 @@ async fn prepare_workers(
             sdk_owner::adopt_all(&adopting, &backend);
         }).await.ok();
     }
-    node_reconcile::once(&domain, sessions).await;
     if config.fast_timing {
         domain.live.gate.tune(admission::Tuning { spacing: 1_000, limit: Some(admission::Limit::Fixed(admission::UNPACED)) });
         domain.live.gate.ignore_mac();
@@ -688,15 +684,12 @@ async fn serve_domain(
     }
     let handed = domain.clone();
     tokio::task::spawn_blocking(move || domain_orchestrator::read_handed_notices_in_background(&handed));
-    tokio::spawn(node_reconcile::run(domain.clone(), Arc::new(node_close::Machine)));
     tokio::spawn(retention::run(domain.clone()));
     let gate = tokio::spawn(admission::run(domain.clone(), config.home.clone()));
     let transport = tokio::spawn(domain_transport::run(hooks, domain.clone()));
     if accounts::config(&config.home).is_ok_and(|accounts| accounts.connected_providers().contains(&alondra_core::accounts::Provider::Claude)) {
         tokio::spawn(claude_check::run(plugins::node()));
     }
-    let revival = if config.fast_timing { &node_revival::Timing::SANDBOX } else { &node_revival::Timing::LIVE };
-    tokio::spawn(node_revival::run(state_domain.clone(), revival));
     tokio::spawn(sdk_handover::run(state_domain.clone()));
     tokio::spawn(account_move::run(state_domain.clone()));
     tokio::spawn(provider_transition::run(state_domain.clone()));

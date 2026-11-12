@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v412365fabbb0d3fd",
+  "version": "v05e41f7e417c3c3d",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -189,6 +189,27 @@
                   "title": "In the background: `./deploy/brew/release.sh 0.2.67` · since 09:40",
                   "depth": 0,
                   "struck": false
+                }
+              ],
+              "actions": [
+                {
+                  "id": "pause:release-runner@6",
+                  "label": "Pause",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "confirm": {
+                    "title": "Pause this node?",
+                    "message": "It stops what it is running now and keeps its task. Alondra does not resume it by itself: only you do.",
+                    "button": "Pause"
+                  },
+                  "enabled": true,
+                  "stamp": "Paused",
+                  "resolves_card": false
                 }
               ]
             },

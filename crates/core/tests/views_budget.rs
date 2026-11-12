@@ -3,7 +3,7 @@
 //! once per row.
 use alondra_core::domain::{
     Actor, CardKind, CardSpec, Command, replay, CommandEnvelope, DeliveryTarget, DomainState, InteractionId, LaunchPlan, LifecycleRecord,
-    McpServerState, McpStatus, MergeMethod, NodeEvent, PROTOCOL_VERSION, PrState, QuestionOption, ReadSnapshot, Recipient,
+    McpServerState, McpStatus, MergeMethod, PROTOCOL_VERSION, PrState, QuestionOption, ReadSnapshot, Recipient,
     RuntimeObservation, Schedule, ScheduleFrequency, Scope,
 };
 use alondra_core::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Provider};
@@ -135,7 +135,6 @@ fn unit(shape: Shape) -> DomainState {
         return seed.0;
     }
     seed.run(node.clone(), Command::StartTask { task_id: task.as_str().into() });
-    seed.run(Actor::System, Command::MoveNode { agent_id: agent.as_str().into(), event: NodeEvent::TurnStarted, at: 1 });
     let notices = match shape {
         Shape::Done => 5,
         Shape::Running => 4,

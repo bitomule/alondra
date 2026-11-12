@@ -120,13 +120,13 @@ pub(super) fn perform(s: &mut DomainState, act: &Act, n: usize) {
     let at = 1_000 + n as Millis;
     let _ = match act {
         Act::Task(step) => run(s, step, n).map(drop),
-        Act::Pause { by_user } => exec(s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Paused { pause: pause(*by_user, at) }, at }).map(drop),
-        Act::DiskPause => exec(s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Paused { pause: disk_pause(at) }, at }).map(drop),
+        Act::Pause { by_user } => exec(s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Paused { pause: pause(*by_user, at) } }).map(drop),
+        Act::DiskPause => exec(s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Paused { pause: disk_pause(at) } }).map(drop),
         Act::Resume => {
             let _ = exec(s, Actor::System, Command::TellNode { task_id: SDK.into(), text: format!("Carry on {n}"), from_user: false, answers: None });
-            exec(s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Resumed, at }).map(drop)
+            exec(s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Resumed }).map(drop)
         }
-        Act::ResumeAlone => exec(s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Resumed, at }).map(drop),
+        Act::ResumeAlone => exec(s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Resumed }).map(drop),
         Act::SendBack => {
             let Some(delivery) = s.tasks[&TaskId::from(SDK)].final_presentation.clone() else { return };
             exec(s, user(), Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: delivery,
@@ -240,7 +240,7 @@ fn a_pause_of_a_node_of_the_agent_sdk_lives_in_its_task_s_lifecycle() {
     let agent = AgentId::from(NODE);
     assert_eq!(s.node_phase(&agent), Some(&NodePhase::ThroughSdk));
     assert!(s.slots().iter().any(|a| a.id == agent), "its turn takes a slot");
-    must(&mut s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Paused { pause: pause(true, 5) }, at: 5 });
+    must(&mut s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Paused { pause: pause(true, 5) }});
     assert_eq!(s.node_phase(&agent), Some(&NodePhase::ThroughSdk), "no event moves its phase");
     assert_eq!(s.node_pause(&agent).map(|pause| (pause.reason, pause.since)), Some((PauseReason::ByUser, 5)));
     assert!(matches!(s.live_state(&SDK.into()), Some(LiveState::WaitingUser(cards)) if cards.first().0.starts_with(NODE_PAUSE_PREFIX)));
@@ -249,7 +249,7 @@ fn a_pause_of_a_node_of_the_agent_sdk_lives_in_its_task_s_lifecycle() {
     assert!(matches!(s.live_state(&SDK.into()), Some(LiveState::WaitingUser(cards)) if cards.iter().all(|card| card.0.starts_with(NODE_PAUSE_PREFIX))),
         "its interrupted turn ends on the pause, with no card that asks how it goes on");
     must(&mut s, Actor::System, Command::TellNode { task_id: SDK.into(), text: "Go on".into(), from_user: false, answers: None });
-    must(&mut s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Resumed, at: 7 });
+    must(&mut s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Resumed});
     assert!(matches!(s.lifecycle_journal[&TaskId::from(SDK)].last(), Some(LifecycleRecord::PauseEnded { .. })), "what it was told is what it goes on with");
     assert_eq!(s.node_pause(&agent), None);
     assert_eq!(s.live_state(&SDK.into()), Some(LiveState::Working(alondra_domain::Worker::Alondra(alondra_domain::Step::Delivering))));
@@ -269,7 +269,7 @@ fn a_disk_pause_the_node_rested_through_ends_by_telling_it_to_carry_on_in_the_sa
                 let host_ended = ending != 0;
                 let mut s = three_tasks();
                 let agent = AgentId::from(NODE);
-                must(&mut s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Paused { pause: held_pause.clone() }, at: 5 });
+                must(&mut s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Paused { pause: held_pause.clone() }});
                 if interrupted {
                     must(&mut s, Actor::System, Command::InterruptTurn { agent_id: NODE.into() });
                 }
@@ -300,7 +300,7 @@ fn a_disk_pause_the_node_rested_through_ends_by_telling_it_to_carry_on_in_the_sa
                 assert!(lifecycle.advanced(lifecycle.revision(), alondra_domain::Event::EndPause { card }).is_err(), "nothing waits for the resting node");
                 let session = lifecycle.execution().cloned();
 
-                must(&mut s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Resumed, at: 6 });
+                must(&mut s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Resumed});
                 assert_eq!(s.node_pause(&agent), None, "the pause ended (host ended: {host_ended})");
                 let Some(LifecycleRecord::Resumed { text: Some(text), .. }) = s.lifecycle_journal[&TaskId::from(SDK)].last() else { panic!("{:?}", s.lifecycle_journal[&TaskId::from(SDK)].last()) };
                 assert!(text.to_ascii_lowercase().contains("carry on with your task"), "{text}");
@@ -318,45 +318,11 @@ fn a_disk_pause_the_node_rested_through_ends_by_telling_it_to_carry_on_in_the_sa
 #[test]
 fn a_node_of_the_agent_sdk_that_waits_for_the_machine_waits_on_capacity() {
     let mut s = three_tasks();
-    must(&mut s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Paused { pause: pause(false, 5) }, at: 5 });
+    must(&mut s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Paused { pause: pause(false, 5) }});
     assert_eq!(s.live_state(&SDK.into()), Some(LiveState::WaitingCapacity(Capacity::Machine)));
     assert!(matches!(s.node_pause(&NODE.into()).map(|pause| pause.reason), Some(PauseReason::Declared { .. })));
     assert_eq!(s.waiting_on(&SDK.into()), Some(RecordedWait::Machine), "its task's lifecycle explains what it waits for");
 }
-
-/// An older daemon kept a pause of a node of the Agent SDK in its phase. Opening the domain moves
-/// it to the task's lifecycle: the gate reads the same pause, from the same moment, and counts the
-/// same slots before and after, so the node neither loses its place nor takes a second one.
-#[test]
-fn an_older_daemon_s_pause_of_a_node_of_the_agent_sdk_moves_to_its_task_s_lifecycle_unchanged() {
-    for by_user in [true, false] {
-        let mut s = three_tasks();
-        let agent = AgentId::from(NODE);
-        s.agents.get_mut(&agent).unwrap().phase = NodePhase::Paused(pause(by_user, 42));
-        let before = (s.paused_nodes().into_iter().map(|(agent, pause)| (agent, std::mem::discriminant(&pause.reason), pause.since)).collect::<Vec<_>>(),
-            s.slots().iter().map(|a| a.id.clone()).collect::<Vec<_>>());
-        assert_eq!(before.0.len(), 1, "the older daemon's pause");
-        must(&mut s, Actor::System, Command::AdoptSdkNodes);
-        let after = (s.paused_nodes().into_iter().map(|(agent, pause)| (agent, std::mem::discriminant(&pause.reason), pause.since)).collect::<Vec<_>>(),
-            s.slots().iter().map(|a| a.id.clone()).collect::<Vec<_>>());
-        assert_eq!(after, before, "the same pause and the same slots (by user: {by_user})");
-        assert_eq!(s.node_phase(&agent), Some(&NodePhase::ThroughSdk));
-        assert!(s.lifecycle_journal[&TaskId::from(SDK)].iter().any(|record| matches!(record, LifecycleRecord::Paused { card, .. } if card.0.starts_with(NODE_PAUSE_PREFIX))));
-        assert_eq!(exec(&mut s, Actor::System, Command::AdoptSdkNodes).map(|outcome| outcome.changed), Ok(false), "once moved, nothing moves again");
-    }
-}
-
-/// The phases an older daemon gave a node of the Agent SDK all become `ThroughSdk` at the first
-/// commit, whatever command it is.
-#[test]
-fn any_commit_moves_an_older_phase_of_a_node_of_the_agent_sdk() {
-    let mut s = three_tasks();
-    let agent = AgentId::from(NODE);
-    s.agents.get_mut(&agent).unwrap().phase = NodePhase::WaitingUser { in_turn: true };
-    must(&mut s, Actor::System, Command::TellNode { task_id: SDK.into(), text: "Notice".into(), from_user: false, answers: None });
-    assert_eq!(s.node_phase(&agent), Some(&NodePhase::ThroughSdk));
-}
-
 
 #[test]
 fn a_message_to_a_task_with_no_node_waits_in_order_for_the_node_that_starts_it() {

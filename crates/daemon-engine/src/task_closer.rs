@@ -370,7 +370,7 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
     match outcome {
         CloseOutcome::Closed { .. } => finish_with_worktree(domain, timing, now, task, &agent, row, cleanup, NodeEnd::Closed).await,
         CloseOutcome::NotListed => {
-            crate::node_revival::user_closed(domain, &agent.0)?;
+            crate::node_exit::user_closed(domain, &agent.0)?;
             let end = if interrupted { NodeEnd::Closed } else { NodeEnd::Gone };
             finish_with_worktree(domain, timing, now, task, &agent, row, cleanup, end).await
         }

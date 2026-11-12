@@ -20,7 +20,7 @@ use crate::domain_runtime::DomainRuntime;
 use crate::pauses::{Pauses, Paused, Reason};
 use crate::machine_state::{MacState, NoRoom, WARNING_SPACING};
 use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
-use alondra_core::domain::{AgentId, Command, CommandEnvelope, DomainState, NodeEvent, NodePhase, PROTOCOL_VERSION, Pause, PauseCleanup, PauseReason, TaskId, TaskPriority, TaskState};
+use alondra_core::domain::{AgentId, Command, CommandEnvelope, DomainState, NodeEvent, PROTOCOL_VERSION, Pause, PauseCleanup, PauseReason, TaskId, TaskPriority, TaskState};
 use alondra_core::machine_incident::bytes_text;
 use alondra_core::views::{Lang, LiveHold, LivePacing, LivePaused, LivePauseReason, LiveQueued};
 use alondra_core::Millis;
@@ -558,17 +558,6 @@ impl Admission {
         Ok(())
     }
 
-    /// What the gate still owes a node it let back while it was unreachable, taken so that whoever
-    /// reaches the node first says it once.
-    pub(crate) fn take_owed(&self, session: &str) -> Option<String> {
-        let mut inner = self.lock();
-        let owed = inner.saved.pauses.owed.remove(session);
-        if owed.is_some() {
-            self.save(&inner);
-        }
-        owed
-    }
-
     /// A start that no longer waits: its task ended, or its caller gave up on it.
     pub(crate) fn forget(&self, key: &Key) {
         self.lock().asking.remove(key);
@@ -814,7 +803,6 @@ fn resume_locked(domain: &DomainRuntime, inner: &mut Inner, session: &str, now: 
     let text = crate::pauses::resume_text(&paused, now);
     if !tell_to_go_on(domain, session, &text) {
         inner.saved.pauses.owed.insert(session.to_owned(), text);
-        domain.live.losses.report(session);
     }
 }
 
@@ -1026,7 +1014,7 @@ fn still_waits(state: &DomainState, key: &Key) -> bool {
         Key::Resume(session) => open_task_of(state, session).is_some(),
         Key::Task(task) => state.tasks.get(task).is_some_and(|task| !task.archived && !task.state.terminal()
             && !matches!(task.state, TaskState::Closing)
-            && task.agent_id.as_ref().is_none_or(|agent| !state.agents.get(agent).is_some_and(|agent| agent.phase.live() && !agent.phase.coming_back()))),
+            && task.agent_id.as_ref().is_none_or(|agent| !state.agents.get(agent).is_some_and(|agent| agent.phase.live()))),
         Key::Run(run) => state.scheduled_launch_guard(&run.as_str().into()).is_ok(),
         Key::Turn(task) => state.waits_for_turn(task),
     }

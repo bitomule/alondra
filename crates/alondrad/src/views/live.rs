@@ -390,10 +390,6 @@ async fn gather_inner(
                     Some(alondra_domain::LiveState::WaitingCapacity(_)) => "waiting_machine",
                     _ => "free",
                 },
-                (NodePhase::Working | NodePhase::Starting { .. } | NodePhase::Delivered { in_turn: true }
-                    | NodePhase::WaitingBackground(_) | NodePhase::Resuming { .. }, _) => "busy",
-                (NodePhase::Paused(alondra_core::domain::Pause { reason: alondra_core::domain::PauseReason::ByUser, .. }), _) => "paused",
-                (NodePhase::Paused(_) | NodePhase::Lost, _) => "waiting_machine",
                 _ => "free",
             };
             let state_label = node_label(state_key, lang);
@@ -490,14 +486,8 @@ async fn gather_inner(
                     }).collect(),
                 background_badge,
                 reported_wait,
-                working: match &sdk {
-                    Some(live) => matches!(live, Some(alondra_domain::LiveState::Working(alondra_domain::Worker::Turn))),
-                    None => agent.phase == NodePhase::Working,
-                },
-                waiting: match &sdk {
-                    Some(live) => matches!(live, Some(alondra_domain::LiveState::WaitingUser(_))),
-                    None => matches!(agent.phase, NodePhase::WaitingUser { .. } | NodePhase::Paused(_)),
-                },
+                working: matches!(&sdk, Some(Some(alondra_domain::LiveState::Working(alondra_domain::Worker::Turn)))),
+                waiting: matches!(&sdk, Some(Some(alondra_domain::LiveState::WaitingUser(_)))),
                 state_since: state_since.map(timestamp),
                 last_message: last_message.map(|(text, _)| text.to_owned()),
                 last_message_at: last_message.map(|(_, at)| timestamp(at)),
@@ -1245,8 +1235,7 @@ mod cache_tests {
         for id in ["connected", "reported", "assigned", "hidden"] {
             execute(&domain, Actor::System, id, Command::RegisterAgent { agent_id: id.into(), name: id.into(), at: 0 });
         }
-        execute(&domain, Actor::System, "observe", Command::MoveNode { agent_id: "connected".into(), event: alondra_core::domain::NodeEvent::TurnStarted, at: 0 });
-        execute(&domain, Actor::System, "hide", Command::MoveNode { agent_id: "hidden".into(), event: alondra_core::domain::NodeEvent::SessionClosed, at: 0 });
+        execute(&domain, Actor::System, "hide", Command::MoveNode { agent_id: "hidden".into(), event: alondra_core::domain::NodeEvent::SessionClosed});
         execute(&domain, Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
         });
@@ -1279,7 +1268,6 @@ mod cache_tests {
         let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
         execute(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "known".into(), name: "Known".into(), at: 0 });
         domain.live.observe(&serde_json::json!({"session_id": "known", "hook_event_name": "Stop", "last_assistant_message": "Ready"}));
-        execute(&domain, Actor::System, "stop", Command::MoveNode { agent_id: "known".into(), event: alondra_core::domain::NodeEvent::TurnEnded, at: 0 });
         let since = domain.live.node("known").unwrap().state_since;
         let state = domain.state().unwrap();
         let before = gather_at(&client, &state, Lang::En, &[], false, false, since + 1).await;
@@ -1308,16 +1296,12 @@ mod cache_tests {
         let state = domain.state().unwrap();
         let limit = 2_000 + 48 * 60 * 60_000;
         let working = gather_at(&client, &state, Lang::En, &[], false, false, limit).await;
-        assert_eq!(working.nodes[0].state_key.as_deref(), Some("busy"), "two days in one call is still work");
         assert_eq!(working.nodes[0].tool_since, Some(crate::usage_pause::clock_text(2_000, limit, false)));
         domain.live.mods.set_shell_alive("reported", Some(false), limit);
         domain.live.mods.set_shell_alive("reported", Some(false), limit + 1);
-        let halted = gather_at(&client, &state, Lang::En, &[], false, false, limit + 1).await;
-        assert_eq!(halted.nodes[0].state_key.as_deref(), Some("busy"), "a lost shell brings the node back; it is never a state");
         let working_view = client.views.render("tasks", &alondra_core::domain::ReadSnapshot::build(state.clone()), &working, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         report(&domain, serde_json::json!({"session_id": "reported", "event": "turn.complete", "answer": "Done", "aborted": true}), limit + 2);
         let answer = gather_at(&client, &state, Lang::En, &[], false, false, limit + 2).await;
-        assert_eq!(answer.nodes[0].state_key.as_deref(), Some("busy"), "its state is the node machine's, which still has it starting");
         assert_eq!(answer.nodes[0].last_message.as_deref(), Some("Done"));
         assert_eq!(answer.nodes[0].last_message_at, Some(timestamp(limit + 2)));
         assert!(answer.nodes[0].last_turn_aborted);
@@ -1444,11 +1428,12 @@ mod cache_tests {
                 dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
             });
             execute(&domain, Actor::System, &format!("register-{id}"), Command::RegisterAgent { agent_id: agent.as_str().into(), name: agent.clone(), at: 0 });
-            execute(&domain, Actor::System, &format!("observe-{id}"), Command::MoveNode { agent_id: agent.as_str().into(), event: alondra_core::domain::NodeEvent::TurnStarted, at: 0 });
-            execute(&domain, Actor::User { user_id: "u".into() }, &format!("assign-{id}"), Command::AssignTask {
-                task_id: id.into(), agent_id: agent.as_str().into(), model: None,
-            });
-            execute(&domain, Actor::Agent { agent_id: agent.as_str().into() }, &format!("start-{id}"), Command::StartTask { task_id: id.into() });
+            alondra_daemon_engine::domain_store::admit_through_sdk(&domain, &id.into(), &agent);
+            let input = domain.state().unwrap().lifecycle_of(&id.into()).unwrap().pending_inputs()[0].as_str().to_owned();
+            execute(&domain, Actor::System, &format!("turn-{id}"), Command::RecordRuntimeFacts { task_id: id.into(), generation: 1, facts: vec![
+                alondra_core::domain::RuntimeObservation::ResourceAvailable,
+                alondra_core::domain::RuntimeObservation::TurnStarted { turn: format!("turn-{id}"), input },
+            ] });
             domain.report(Envelope { session_id: agent, report: Report::TurnStart }, now);
         }
         assert!(domain.live.gate.hold_back(&domain, "agent-harness", crate::pauses::Reason::Declared {

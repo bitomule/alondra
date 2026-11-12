@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "mac",
-  "version": "v31f5e89a7ef3d6e2",
+  "version": "v14fa0c7c01f79391",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -97,7 +97,28 @@
                 }
               ],
               "depth": 1,
-              "struck": false
+              "struck": false,
+              "actions": [
+                {
+                  "id": "pause:a-background@0",
+                  "label": "Pausar",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "confirm": {
+                    "title": "¿Pausar este nodo?",
+                    "message": "Deja lo que está ejecutando ahora y conserva su tarea. Alondra no lo reanuda solo: solo tú.",
+                    "button": "Pausar"
+                  },
+                  "enabled": true,
+                  "stamp": "En pausa",
+                  "resolves_card": false
+                }
+              ]
             },
             {
               "id": "t-command",

@@ -154,11 +154,11 @@ impl World {
             Act::Pause(at, by_user) => {
                 let reason = if by_user { PauseReason::ByUser } else { PauseReason::Declared { reason: "The build queue is full".into() } };
                 let pause = Pause { reason, since: n as Millis, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false };
-                let _ = exec(&mut self.s, Actor::System, Command::MoveNode { agent_id: node(at).into(), event: NodeEvent::Paused { pause }, at: n as Millis });
+                let _ = exec(&mut self.s, Actor::System, Command::MoveNode { agent_id: node(at).into(), event: NodeEvent::Paused { pause }});
             }
             Act::Resume(at) => {
                 let _ = exec(&mut self.s, Actor::System, Command::TellNode { task_id: TASKS[at].0.into(), text: format!("Carry on {n}"), from_user: false, answers: None });
-                let _ = exec(&mut self.s, Actor::System, Command::MoveNode { agent_id: node(at).into(), event: NodeEvent::Resumed, at: n as Millis });
+                let _ = exec(&mut self.s, Actor::System, Command::MoveNode { agent_id: node(at).into(), event: NodeEvent::Resumed});
             }
             Act::LimitOut => self.out = true,
             Act::LimitBack => {

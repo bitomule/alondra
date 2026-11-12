@@ -435,7 +435,7 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
     if origin != Origin::Admitted && crate::admission::held_by_user(domain, &task.id) {
         return Err(conflict(format!("The user paused “{}” in the queue: only the user resumes it", task.title)));
     }
-    if replaced.is_none() && task.agent_id.as_ref().and_then(|id| current.agents.get(id)).is_some_and(|a| a.phase.live() && !a.phase.coming_back()) {
+    if replaced.is_none() && task.agent_id.as_ref().and_then(|id| current.agents.get(id)).is_some_and(|a| a.phase.live()) {
         return Err(conflict(format!("{} already has a connected agent; send it what to do", body.task)));
     }
     let choices = choices(&task.request_id);
@@ -602,14 +602,14 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
                     crate::sdk_owner::end_unowned_host(runtime, &backend, task.id.clone())
                 })
                 .map_err(|crate::sdk_owner::Failed { why, .. }| conflict(format!("the node of {} could not be stopped to replace it: {why}", task.id)))?;
-                crate::node_revival::take_out(domain, &old.0, "node replaced by the orchestrator", Some(cwd.clone()), crate::live::Relaunch::ByItself)
+                crate::node_exit::take_out(domain, &old.0, "node replaced by the orchestrator", Some(cwd.clone()), crate::live::Relaunch::ByItself)
                     .map_err(|error| DomainError::new("storage_unavailable", format!(
                         "the Agent SDK node of {} was stopped, but Alondra could not free the task from it: {error:#}", task.id)))?;
             }
             Some(old) => {
                 stop_replaced(domain, old).await.map_err(|reason| DomainError::new("replace_failed", format!(
                     "Alondra could not stop the claude --bg node of {}, so no node was started through the Agent SDK: {reason}. It is still assigned to that node.", task.id)))?;
-                crate::node_revival::take_out(domain, &old.0, "node replaced by the orchestrator", Some(cwd.clone()), crate::live::Relaunch::ByItself)
+                crate::node_exit::take_out(domain, &old.0, "node replaced by the orchestrator", Some(cwd.clone()), crate::live::Relaunch::ByItself)
                     .map_err(|error| DomainError::new("storage_unavailable", format!(
                         "the claude --bg node of {} was stopped, but Alondra could not free the task from it: {error:#}", task.id)))?;
             }
@@ -701,7 +701,7 @@ async fn stop_replaced(domain: &DomainRuntime, old: &AgentId) -> Result<(), Stri
     }
     let watched = domain.live.begin_watch(&old.0);
     let stopped = match domain.handovers.sessions().stop(&old.0).await {
-        Err(_) if crate::node_revival::session_ended(domain, &old.0) => Ok(()),
+        Err(_) if crate::node_exit::session_ended(domain, &old.0) => Ok(()),
         stopped => stopped,
     };
     match &stopped {
@@ -710,9 +710,6 @@ async fn stop_replaced(domain: &DomainRuntime, old: &AgentId) -> Result<(), Stri
     }
     if watched {
         domain.live.end_watch(&old.0);
-    }
-    if stopped.is_err() {
-        domain.live.losses.report(&old.0);
     }
     stopped
 }

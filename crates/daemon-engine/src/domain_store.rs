@@ -7,8 +7,8 @@ mod connection;
 #[cfg(any(test, feature = "test-hooks"))]
 pub mod live_read_trace;
 mod owner;
-#[cfg(test)]
-pub(crate) use owner::tests::admit_through_sdk;
+#[cfg(any(test, feature = "test-hooks"))]
+pub use owner::admit_through_sdk;
 mod discarded_observations;
 pub use discarded_observations::{AdapterRefusal, DiscardReason};
 pub(crate) use owner::{OwnerTransaction, Preparer, StagedOutcome};
@@ -23,7 +23,9 @@ mod account_move;
 pub(crate) mod provider_transition;
 pub(crate) use account_move::{AccountMove, Plan as AccountMovePlan, Step as AccountMoveStep};
 mod handover;
-pub(crate) use handover::{Handover, Plan as HandoverPlan, Process as HandoverProcess, Step as HandoverStep, copy_path as handover_copy_path};
+pub(crate) use handover::{Handover, Process as HandoverProcess, Step as HandoverStep, copy_path as handover_copy_path};
+#[cfg(test)]
+pub(crate) use handover::Plan as HandoverPlan;
 mod repository;
 mod typed_cards;
 mod provider_accounts;

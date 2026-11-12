@@ -10,9 +10,8 @@ use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
 use alondra_core::domain::{
     Actor, AgentId, Command, CommandEnvelope, CommandId, CommandOutcome, DataEpoch, DomainError, DomainState,
-    Millis, NodeEvent, Listed, Revision, PROTOCOL_VERSION,
+    Millis, NodeEvent, Revision, PROTOCOL_VERSION,
 };
-use std::collections::BTreeMap;
 use sha2::{Digest, Sha256};
 
 pub(crate) struct ManagedIdentity {
@@ -78,7 +77,7 @@ pub(crate) fn register_instance(
     )
 }
 
-/// Hand the node machine something that happened to a node. Each distinct happening needs a
+/// Hand the domain something that happened to a node. Each distinct happening needs a
 /// distinct event; reuse the whole event only when retrying an uncertain commit.
 pub fn move_instance(
     domain: &DomainRuntime,
@@ -86,26 +85,18 @@ pub fn move_instance(
     happened: NodeEvent,
     event: &LifecycleEvent,
 ) -> Result<CommandOutcome, StoreError> {
-    submit(domain, "agent-move", event, Command::MoveNode { agent_id: agent_id.clone(), event: happened, at: event.at })
+    submit(domain, "agent-move", event, Command::MoveNode { agent_id: agent_id.clone(), event: happened })
 }
 
-/// Records `happened` when the node machine would move the node for it, and says whether it did.
-/// An event the machine refuses (a late report, a closed node) or that changes nothing is
-/// dropped without a write.
+/// Records `happened` when it would move the node, and says whether it did. An event the domain
+/// refuses (a closed node) or that changes nothing is dropped without a write.
 pub fn node_event(domain: &DomainRuntime, agent_id: &AgentId, happened: NodeEvent) -> Result<bool, StoreError> {
-    node_event_at(domain, agent_id, happened, alondra_core::now_millis())
-}
-
-/// `node_event` for something that happened at `at`, by the reporter's clock.
-pub fn node_event_at(domain: &DomainRuntime, agent_id: &AgentId, happened: NodeEvent, at: Millis) -> Result<bool, StoreError> {
     let state = domain.state().map_err(StoreError::Storage)?;
-    match state.node_next(agent_id, &happened, at) {
-        Ok(Some(_)) => {}
-        Ok(None) if state.post_merge_turn_step(agent_id, &happened).is_some() => {}
-        _ => return Ok(false),
+    if !matches!(state.node_next(agent_id, &happened), Ok(Some(_))) {
+        return Ok(false);
     }
     let id = format!("{}-{}-{}", happened.key(), agent_id.0, crate::auth::random_hex(8));
-    submit_on_current(domain, "agent-move", &id, &state, Command::MoveNode { agent_id: agent_id.clone(), event: happened, at })
+    submit_on_current(domain, "agent-move", &id, &state, Command::MoveNode { agent_id: agent_id.clone(), event: happened })
 }
 
 /// Keeps what a node said as a turn of it ended: what the user reads if that turn ends with
@@ -119,24 +110,7 @@ pub(crate) fn record_last_words(domain: &DomainRuntime, agent_id: &AgentId, text
     submit_on_current(domain, "agent-last-words", &id, &state, Command::RecordLastWords { agent_id: agent_id.clone(), text: text.to_owned() })
 }
 
-/// Hands the node machine the listing of real sessions, when it moves any node.
-#[cfg(any(test, feature = "test-hooks"))]
-pub(crate) fn reconcile(domain: &DomainRuntime, listed: BTreeMap<AgentId, Listed>) -> Result<bool, StoreError> {
-    reconcile_at(domain, listed, alondra_core::now_millis())
-}
-
-/// `reconcile` with the listing stamped `at`, when it was asked for: it says nothing of what
-/// happened after.
-pub(crate) fn reconcile_at(domain: &DomainRuntime, listed: BTreeMap<AgentId, Listed>, at: alondra_core::Millis) -> Result<bool, StoreError> {
-    let state = domain.state().map_err(StoreError::Storage)?;
-    if !state.reconciling_moves(&listed, at) {
-        return Ok(false);
-    }
-    let id = format!("reconcile-{}", crate::auth::random_hex(8));
-    submit_on_current(domain, "agent-reconcile", &id, &state, Command::ReconcileNodes { listed, at })
-}
-
-/// The node machine judges a move on the state it commits against, so the move is never refused
+/// The domain judges a move on the state it commits against, so the move is never refused
 /// as stale because another command committed since `state` was read.
 fn submit_on_current(domain: &DomainRuntime, kind: &str, event_id: &str, state: &DomainState, command: Command) -> Result<bool, StoreError> {
     let envelope = CommandEnvelope {
@@ -193,9 +167,8 @@ mod tests {
         }
     }
 
-    /// The race of 15 October: the SessionEnd hook read the node still closing, the listing of
-    /// sessions closed it, and the hook's event then reached a closed node. Closing it again is
-    /// what was sought, so it goes through.
+    /// The race of 15 October: two paths close the same node, and the second reaches a node already
+    /// closed. Closing it again is what was sought, so it goes through.
     #[test]
     fn an_end_that_reaches_a_node_already_closed_by_another_path_is_not_an_error() {
         let fixture = Fixture::new();
@@ -204,9 +177,9 @@ mod tests {
         submit_on_current(&domain, "agent-register", "a", &domain.state().unwrap(), Command::RegisterAgent { agent_id: agent.clone(), name: "A".into(), at: 0 }).unwrap();
         assert!(node_event(&domain, &agent, NodeEvent::SessionClosed).unwrap());
         let seen_before = domain.state().unwrap();
-        for (n, event) in [NodeEvent::SessionLost, NodeEvent::SessionClosed].into_iter().enumerate() {
+        for (n, event) in [NodeEvent::SessionClosed, NodeEvent::SessionClosed].into_iter().enumerate() {
             let moved = submit_on_current(&domain, "agent-move", &format!("late-{n}"), &seen_before,
-                Command::MoveNode { agent_id: agent.clone(), event, at: alondra_core::now_millis() });
+                Command::MoveNode { agent_id: agent.clone(), event});
             assert_eq!(moved.map_err(|error| error.to_string()), Ok(false), "closing a closed node again changes nothing and is no error");
         }
         assert_eq!(domain.state().unwrap().agents[&agent].phase, NodePhase::Closed);
@@ -223,12 +196,9 @@ mod tests {
         let registered = register_instance(&domain, &identity, "Builder", &register).unwrap();
         assert!(registered.changed);
         assert_eq!(registered.created_ids, vec![id.0.clone()]);
-        assert_eq!(domain.state().unwrap().agents[&id].phase, NodePhase::Starting { reviving: false, idle_since: None });
+        assert_eq!(domain.state().unwrap().agents[&id].phase, NodePhase::ThroughSdk);
         let replay = register_instance(&domain, &identity, "Builder", &register).unwrap();
         assert_eq!(replay.revision, registered.revision);
-        let spawn = prepare_event(&domain, "launch-one-turn").unwrap();
-        let spawned = move_instance(&domain, &id, NodeEvent::TurnStarted, &spawn).unwrap();
-        assert!(spawned.changed);
         let exit = prepare_event(&domain, "launch-one-exit").unwrap();
         let stopped = move_instance(&domain, &id, NodeEvent::SessionClosed, &exit).unwrap();
         assert!(stopped.changed);
@@ -239,7 +209,7 @@ mod tests {
         let replay = move_instance(&reopened, &id, NodeEvent::SessionClosed, &exit).unwrap();
         assert_eq!(replay.revision, stopped.revision);
         let restart = prepare_event(&reopened, "launch-two-turn").unwrap();
-        let refused = move_instance(&reopened, &id, NodeEvent::TurnStarted, &restart).unwrap_err();
+        let refused = move_instance(&reopened, &id, NodeEvent::Resumed, &restart).unwrap_err();
         assert!(matches!(refused, StoreError::Domain(ref value) if value.code == "node_closed"), "a closed node stays closed");
     }
 
@@ -256,8 +226,8 @@ mod tests {
             matches!(error, StoreError::Domain(ref value) if value.code == "idempotency_conflict")
         );
         let status = prepare_event(&domain, "status-one").unwrap();
-        move_instance(&domain, &id, NodeEvent::TurnStarted, &status).unwrap();
-        let error = move_instance(&domain, &id, NodeEvent::TurnEnded, &status).unwrap_err();
+        move_instance(&domain, &id, NodeEvent::SessionClosed, &status).unwrap();
+        let error = move_instance(&domain, &id, NodeEvent::Resumed, &status).unwrap_err();
         assert!(
             matches!(error, StoreError::Domain(ref value) if value.code == "idempotency_conflict")
         );
@@ -274,8 +244,8 @@ mod tests {
         register_instance(&elsewhere, &other, "Other", &prepare_event(&elsewhere, "launch-other").unwrap()).unwrap();
         assert!(gate.state().unwrap().revision < elsewhere.state().unwrap().revision, "the gate's state is older");
 
-        assert_eq!(node_event(&gate, &paused.agent_id, NodeEvent::TurnStarted).unwrap(), true);
-        assert_eq!(gate.state().unwrap().agents[&paused.agent_id].phase, NodePhase::Working);
+        assert_eq!(node_event(&gate, &paused.agent_id, NodeEvent::SessionClosed).unwrap(), true);
+        assert_eq!(gate.state().unwrap().agents[&paused.agent_id].phase, NodePhase::Closed);
     }
 
     #[test]
@@ -285,7 +255,7 @@ mod tests {
         let identity = new_identity().unwrap();
         let id = identity.agent_id.clone();
         let unknown = prepare_event(&domain, "unknown-spawn").unwrap();
-        assert!(move_instance(&domain, &id, NodeEvent::TurnStarted, &unknown).is_err());
+        assert!(move_instance(&domain, &id, NodeEvent::SessionClosed, &unknown).is_err());
         assert!(prepare_event(&domain, "").is_err());
         assert!(domain.state().unwrap().agents.is_empty());
     }

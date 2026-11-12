@@ -56,7 +56,6 @@ pub struct Live {
     /// A sandbox daemon registers the Agent of any session whose mod connects, so a hand-launched
     /// probe node can be sent to.
     pub sandbox: std::sync::atomic::AtomicBool,
-    pub(crate) losses: crate::node_revival::Losses,
     pub usage_pause: crate::usage_pause::UsagePause,
     pub(crate) account_wait: crate::accounts::AccountWait,
     /// Committed orchestrator work only; unrelated domain activity cannot hide a stuck batch.
@@ -414,12 +413,13 @@ mod sdk_node_tests {
     }
 
     /// Agents `sdk-seen` and `sdk-unseen` run through the Agent SDK, each on its own task being
-    /// started; `bg` is a node of `claude --bg`.
+    /// started; `bg` is a node of `claude --bg` an older release stored, which reads as closed.
     fn world() -> DomainState {
         let mut state = DomainState::new("epoch");
         for agent in ["sdk-seen", "sdk-unseen", "bg"] {
             apply(&mut state, Actor::System, Command::RegisterAgent { agent_id: agent.into(), name: agent.into(), at: 0 });
         }
+        state.agents.get_mut(&"bg".into()).unwrap().phase = alondra_core::domain::NodePhase::Closed;
         for agent in ["sdk-seen", "sdk-unseen"] {
             let (request, task) = (format!("r-{agent}"), format!("t-{agent}"));
             apply(&mut state, Actor::User { user_id: "u".into() }, Command::CreateRequest { request_id: request.clone().into(), body: "Notes".into(), auto_merge: false, maintenance: false, message: false });

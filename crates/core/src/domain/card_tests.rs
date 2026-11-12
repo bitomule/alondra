@@ -56,6 +56,26 @@ fn task(s: &mut DomainState, id: &str, agent: &str) {
 fn register_agent(s: &mut DomainState, id: &str) {
     ok(s, Actor::System, Command::RegisterAgent { agent_id: id.into(), name: format!("Instance {id}"), at: 0 });
 }
+/// The same task, its node running a turn through the Agent SDK.
+fn sdk_fixture() -> DomainState {
+    let mut s = DomainState::new("epoch");
+    register_agent(&mut s, "a");
+    ok(&mut s, user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false, maintenance: false, message: false });
+    s.requests.get_mut(&"r".into()).unwrap().title = Some("Build it".into());
+    ok(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
+        task_id: "t".into(), request_id: "r".into(), title: "Task t".into(), agent_id: None,
+        review_prs: true, dependencies: BTreeSet::new(), stack: None,
+        launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")),
+    });
+    ok(&mut s, Actor::System, Command::AdmitExecution { provider: crate::accounts::Provider::Claude, task_id: "t".into(), agent_id: "a".into(),
+        conversation: "conversation".into(), instance: "instance".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None });
+    let LifecycleRecord::Planned { input } = s.lifecycle_journal[&TaskId::from("t")][0].clone() else { panic!("planned first") };
+    ok(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![
+        RuntimeObservation::ResourceAvailable,
+        RuntimeObservation::TurnStarted { turn: "turn-1".into(), input },
+    ] });
+    s
+}
 fn fixture() -> DomainState {
     let mut s = DomainState::new("epoch");
     register_agent(&mut s, "a");
@@ -1608,13 +1628,16 @@ proptest::proptest! {
         times in proptest::collection::vec(101i64..i64::MAX, 1..20),
         kind in 0u8..3,
     ) {
-        let mut s = fixture();
+        let mut s = sdk_fixture();
         match kind {
             0 => { ok(&mut s, agent(), ask("q", "t", true, decide("Choose the name"))); }
             1 => { ok(&mut s, agent(), Command::RequestAction { attachments: vec![], interaction_id: "q".into(), scope: scope("t"),
                 recipient: Recipient::User, body: "Try the build".into(), blocking: true, options: two(),
                 card: CardSpec::new(CardKind::Test, "Try the build").why("The release needs testing") }); }
-            _ => { ok(&mut s, agent(), present("q", text(), true, review())); }
+            _ => {
+                ok(&mut s, agent(), present("q", text(), true, review()));
+                ok(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
+            }
         }
         let attention = s.attention(&s.tasks[&TaskId::from("t")]);
         let live = s.live_state(&"t".into());

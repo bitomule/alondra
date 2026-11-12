@@ -1,6 +1,6 @@
 use super::*;
 use crate::domain::{
-    Background, NodePhase, Pause, PauseCleanup, PauseReason,
+    NodePhase, PauseReason,
     Agent, Author, Document, DocumentRevision, DomainState, Interaction, InteractionPayload,
     InteractionSubject, PrState, PullRequest, QuestionOption, Recipient, Request, RequestOrigin, Scope, Task,
     TaskState, ModelChooser, TaskModel, inbox_items,
@@ -30,7 +30,7 @@ fn fixture() -> DomainState {
         Agent {
             id: "a-1".into(),
             name: "Node One".into(),
-            phase: NodePhase::Working,
+            phase: NodePhase::ThroughSdk,
             since: 0,
         },
     );
@@ -146,7 +146,6 @@ fn with_cards(domain: &DomainState) -> DomainState {
             InteractionPayload::Delivery { targets, is_final, .. } => CardSpec::delivery(&body, targets, *is_final),
         };
     }
-    state.settle_nodes();
     state
 }
 fn render<'a>(
@@ -171,11 +170,26 @@ fn render_in(
     in_state: Option<&alondra_domain::LiveState>,
 ) -> View {
     let mut domain = with_cards(domain);
-    // What older fixtures said with the flags of a live node, as the phase the node machine keeps.
+    // What older fixtures said with the flags of a live node: a node of the Agent SDK whose running
+    // task, with no delivery in front of the user, runs a turn, a pause the gate holds as a pause of its task's lifecycle, and a
+    // disconnected node as a closed one.
     let unregistered: Vec<_> = domain.tasks.values().filter_map(|task| task.agent_id.clone())
         .filter(|agent| !domain.agents.contains_key(agent)).collect();
     for agent in unregistered {
-        domain.agents.insert(agent.clone(), crate::domain::Agent { name: agent.0.clone(), id: agent, phase: NodePhase::Working, since: 0 });
+        domain.agents.insert(agent.clone(), crate::domain::Agent { name: agent.0.clone(), id: agent, phase: NodePhase::ThroughSdk, since: 0 });
+    }
+    for node in live.nodes.iter().filter(|node| node.disconnected) {
+        if let Some(agent) = domain.agents.get_mut(&node.agent_id.as_str().into()) {
+            agent.phase = NodePhase::Closed;
+        }
+    }
+    let at_work: Vec<_> = domain.tasks.values()
+        .filter(|task| task.state == TaskState::Running && !domain.lifecycle_journal.contains_key(&task.id)
+            && task.final_presentation.as_ref().is_none_or(|delivery| !domain.interactions.contains_key(delivery)))
+        .filter_map(|task| task.agent_id.clone().filter(|agent| domain.node_phase(agent) == Some(&NodePhase::ThroughSdk)).map(|agent| (task.id.clone(), agent)))
+        .collect();
+    for (task, agent) in at_work {
+        domain.lifecycle_journal.insert(task.clone(), sdk_turn(&task.0, &agent.0));
     }
     for paused in live.pacing.iter().flat_map(|pacing| &pacing.paused).filter(|paused| paused.session.is_some()) {
         let reason = match paused.reason {
@@ -183,23 +197,15 @@ fn render_in(
             LivePauseReason::Usage => crate::domain::PauseReason::Usage,
             LivePauseReason::Memory => crate::domain::PauseReason::Memory,
             LivePauseReason::Machine => crate::domain::PauseReason::Declared { reason: paused.waits_for.clone().unwrap_or_default() },
-            LivePauseReason::ApiError | LivePauseReason::ApiOutage => crate::domain::PauseReason::ApiError(crate::domain::ApiRetry {
-                error: "server_error".into(), detail: None, attempt: paused.retry.as_ref().map_or(1, |retry| retry.attempt), at: 0,
-                outage: paused.reason == LivePauseReason::ApiOutage,
-            }),
+            LivePauseReason::ApiError | LivePauseReason::ApiOutage => continue,
         };
-        let agent = domain.tasks.get(&paused.task_id.as_str().into()).and_then(|task| task.agent_id.clone());
-        if let Some(agent) = agent.and_then(|agent| domain.agents.get_mut(&agent)) {
-            agent.phase = NodePhase::Paused(crate::domain::Pause { reason, since: 0, cut: None, turn_since: None, cleanup: Default::default(), released: false });
+        let task = crate::domain::TaskId::from(paused.task_id.as_str());
+        let Some(agent) = domain.tasks.get(&task).filter(|task| !task.state.terminal()).and_then(|task| task.agent_id.clone()) else { continue };
+        if domain.node_phase(&agent) != Some(&NodePhase::ThroughSdk) || domain.node_pause(&agent).is_some() {
+            continue;
         }
+        hold_pause(&mut domain, &task.0, &agent.0, reason);
     }
-    for node in &live.nodes {
-        let Some(agent) = domain.agents.get_mut(&node.agent_id.as_str().into()).filter(|agent| agent.phase.live()) else { continue };
-        if node.disconnected {
-            agent.phase = NodePhase::Closed;
-        }
-    }
-    domain.settle_nodes();
     let mut index = crate::domain::ReadIndex::build(&domain);
     if let Some(state) = in_state {
         index.put_live(&"t-1".into(), state.clone());
@@ -541,7 +547,7 @@ fn golden_fixture() -> DomainState {
     if let Some(mut agent) = state.agents.remove(&"a-1".into()) {
         agent.id = agent_id.into();
         agent.name = "Alondra · iOS".into();
-        agent.phase = NodePhase::WaitingUser { in_turn: false };
+        agent.phase = NodePhase::ThroughSdk;
         state.agents.insert(agent.id.clone(), agent);
     }
     if let Some(interaction) = state.interactions.get_mut(&"i-1".into()) {
@@ -730,14 +736,14 @@ fn tasks_fixture() -> (DomainState, LiveSnapshot) {
         ("t-hf-paywall", Some("BlurCamera")), ("t-hf-post", Some("BlurCamera")), ("t-legacy-editor", None), ("t-legacy-notes", None)] {
         state.tasks.get_mut(&task.into()).unwrap().project = project.map(Into::into);
     }
-    let paused = Pause { reason: PauseReason::ByUser, since: 0, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false };
-    state.agents.insert("a-hf".into(), Agent { id: "a-hf".into(), name: "BlurCamera hint".into(), phase: NodePhase::Paused(paused), since: 0 });
+    state.agents.insert("a-hf".into(), Agent { id: "a-hf".into(), name: "BlurCamera hint".into(), phase: NodePhase::ThroughSdk, since: 0 });
     for (task, agent) in [("t-badge-count", "a-badge"), ("t-scheduled-lumo", "a-lumo")] {
-        state.agents.insert(agent.into(), Agent { id: agent.into(), name: agent.into(), phase: NodePhase::Working, since: 0 });
+        state.agents.insert(agent.into(), Agent { id: agent.into(), name: agent.into(), phase: NodePhase::ThroughSdk, since: 0 });
         state.tasks.get_mut(&task.into()).unwrap().agent_id = Some(agent.into());
         live.task_since.insert(task.into(), "2026-09-30T09:00:00Z".into());
     }
     state.tasks.get_mut(&"t-hf-share-hint".into()).unwrap().agent_id = Some("a-hf".into());
+    hold_pause(&mut state, "t-hf-share-hint", "a-hf", PauseReason::ByUser);
     live.nodes.push(LiveNode {
         agent_id: "a-hf".into(), name: "BlurCamera hint".into(),
         state_since: Some("2026-09-30T07:00:00.000Z".into()),
@@ -941,7 +947,7 @@ fn every_task_shows_its_project_title_and_state_without_a_live_node() {
     let mut request = Request::new("r-states".into(), "Work in every state".into());
     request.title = Some("Every state".into());
     state.requests.insert(request.id.clone(), request);
-    state.agents.insert("a-working".into(), Agent { id: "a-working".into(), name: "Worker".into(), phase: NodePhase::Working, since: 0 });
+    state.agents.insert("a-working".into(), Agent { id: "a-working".into(), name: "Worker".into(), phase: NodePhase::ThroughSdk, since: 0 });
     let cases: [(&str, &str, TaskState, Option<&str>, bool, &str, &str); 7] = [
         ("t-queued", "Queue the import", TaskState::NotStarted, None, false, "Kiosk", "Waiting"),
         ("t-working", "Parse the lists", TaskState::Running, Some("a-working"), false, "Quill", "Working"),
@@ -1021,7 +1027,7 @@ fn a_task_shows_the_same_title_folder_cost_model_and_state_with_its_node_gone_cl
     closed_live.nodes.push(node("a-1", true));
     let mut relaunched = base.clone();
     relaunched.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-2".into());
-    relaunched.agents.insert("a-2".into(), Agent { id: "a-2".into(), name: "Node Two".into(), phase: NodePhase::Working, since: 0 });
+    relaunched.agents.insert("a-2".into(), Agent { id: "a-2".into(), name: "Node Two".into(), phase: NodePhase::ThroughSdk, since: 0 });
     let mut relaunched_live = live.clone();
     relaunched_live.nodes.push(node("a-2", false));
 
@@ -1251,7 +1257,7 @@ fn assert_golden(filename: &str, view: &View, expected: &str) {
 #[test]
 fn view_keys_are_addressable_and_bound_to_epoch() {
     let mut state = fixture();
-    state.agents.get_mut(&"a-1".into()).unwrap().phase = NodePhase::Working;
+    state.agents.get_mut(&"a-1".into()).unwrap().phase = NodePhase::ThroughSdk;
     let live = LiveSnapshot::default();
     for (key, client) in [
         ("sidebar", Client::Mac),
@@ -1339,7 +1345,8 @@ fn golden_in_progress() -> DomainState {
     let task = state.tasks.get_mut(&"t-651c38484cd2f34e74d5107ba05f7f15".into()).unwrap();
     task.agent_id = Some(agent.into());
     task.state = TaskState::Running;
-    state.agents.get_mut(&agent.into()).unwrap().phase = NodePhase::Working;
+    state.agents.get_mut(&agent.into()).unwrap().phase = NodePhase::ThroughSdk;
+    state.lifecycle_journal.insert("t-651c38484cd2f34e74d5107ba05f7f15".into(), sdk_turn("t-651c38484cd2f34e74d5107ba05f7f15", agent));
     state
 }
 
@@ -1869,16 +1876,15 @@ fn a_task_that_has_not_started_says_what_refused_its_launch() {
 }
 
 /// 14 October: t-holepunch-iroh-prototype ended its turn with no card and said «Sin actividad» on
-/// every screen. A running task's node works or waits on a card in front of the user: no phase of
-/// it reads as doing nothing, and one at rest is in «For you» with the card that holds its words.
+/// every screen. A running task's node works or waits on a card in front of the user: neither its
+/// turn nor its rest after it reads as doing nothing.
 #[test]
 fn a_running_task_never_says_no_activity_whatever_its_node_does() {
-    let work = Background { work: crate::model::BackgroundKind::Shell, label: "./listen-at-home.sh".into(), since: 0, others: 0, gone: None };
-    for phase in [NodePhase::Working, NodePhase::WaitingBackground(work), NodePhase::Resuming { idle_since: None, after_wait: false },
-        NodePhase::Resuming { idle_since: Some(0), after_wait: false }, NodePhase::WaitingUser { in_turn: false }, NodePhase::WaitingUser { in_turn: true }]
-    {
+    for journal in [sdk_turn("t-1", "a-1"), sdk_turn_ended("t-1", "a-1")] {
         let mut state = fixture();
-        node_in(&mut state, phase.clone());
+        node_in(&mut state, NodePhase::ThroughSdk);
+        let phase = journal.last().cloned();
+        state.lifecycle_journal.insert("t-1".into(), journal);
         let mut live = LiveSnapshot::default();
         live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), ..LiveNode::default() });
         for (screen, text) in every_screen(&state, &live) {
@@ -1902,37 +1908,6 @@ fn a_running_task_whose_node_session_closed_says_it_stopped_never_working_nor_no
     assert_eq!(task_state_text(&state, &live, Lang::En), "Waiting");
     let (block, row) = active_row(&state, &live, Client::Mac, Lang::Es, "t-1");
     assert_eq!((block.as_str(), row.subtitle.as_deref()), ("block:waiting", Some("Su sesión terminó sin que entregara")));
-    live.nodes[0].disconnected = false;
-    let mut reviving = state.clone();
-    reviving.agents.insert("a-1".into(), Agent { id: "a-1".into(), name: "Node One".into(), phase: NodePhase::Starting { reviving: true, idle_since: None }, since: 0 });
-    assert_eq!(task_state_text(&reviving, &live, Lang::Es), "En espera");
-}
-
-/// 13 October: quill's session ended and its restart waited at the admission gate for memory while
-/// its task said «Reconectando». A lost node waits at the gate like any start: queued, with what
-/// holds it, and «Reconectando» only once the gate let it back.
-#[test]
-fn a_running_task_whose_node_waits_at_the_gate_to_come_back_says_it_is_queued_not_reconnecting() {
-    let mut state = fixture();
-    state.interactions.clear();
-    let task = state.tasks.get_mut(&"t-1".into()).unwrap();
-    task.state = TaskState::Running;
-    task.agent_id = Some("a-1".into());
-    state.agents.insert("a-1".into(), Agent { id: "a-1".into(), name: "Node One".into(), phase: NodePhase::Lost, since: 0 });
-    let held = pacing_live(vec![LiveQueued { pausable: true, task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Memory { free: Some(12) } }], vec![], None);
-    let (block, row) = active_row(&state, &held, Client::Mac, Lang::Es, "t-1");
-    assert_eq!(row.badges[0].text, "En espera");
-    assert_eq!(row.subtitle.as_deref(), Some("1.º de 1"), "memory is said once, in the block's header");
-    assert_eq!(block, "block:waiting");
-    let detail = serde_json::to_string(&render(&state, &held, Client::Tui, Lang::Es, "task:t-1", "")).unwrap();
-    assert!(detail.contains("En espera") && !detail.contains("Reconectando"), "{detail}");
-    assert_eq!(task_state_text(&state, &LiveSnapshot::default(), Lang::Es), "En espera", "before it reaches the gate");
-
-    state.agents.get_mut(&"a-1".into()).unwrap().phase = NodePhase::Starting { reviving: true, idle_since: None };
-    let admitted = pacing_live(vec![], vec![], None);
-    assert_eq!(task_state_text(&state, &admitted, Lang::Es), "En espera");
-    let detail = serde_json::to_string(&render(&state, &admitted, Client::Tui, Lang::Es, "task:t-1", "")).unwrap();
-    assert!(detail.contains("Arrancando") && !detail.contains("Reconectando"), "{detail}");
 }
 
 /// 15 October: a task reopened after its node closed said «Detenida · Su sesión se cerró sin que
@@ -1966,6 +1941,68 @@ fn node_in(state: &mut DomainState, phase: NodePhase) {
     state.agents.insert("a-1".into(), Agent { id: "a-1".into(), name: "Node One".into(), phase, since: 0 });
 }
 
+/// The journal of `task` whose node `agent` the gate admitted through the Agent SDK and that runs
+/// its first turn.
+fn sdk_turn(task: &str, agent: &str) -> Vec<crate::domain::LifecycleRecord> {
+    use crate::domain::{ExecutionIdentity, LifecycleRecord};
+    vec![
+        LifecycleRecord::Planned { input: format!("input:{task}:1") },
+        LifecycleRecord::Admitted {
+            node: agent.into(),
+            execution: Some(ExecutionIdentity { conversation: "conversation".into(), instance: "instance".into(), host: "alondra-sdk".into() }),
+        },
+        LifecycleRecord::ResourceAvailable,
+        LifecycleRecord::TurnStarted { turn: "turn".into(), input: format!("input:{task}:1") },
+    ]
+}
+
+/// The gate holds the node `agent` of `task` paused for `reason`, as its task's lifecycle keeps it:
+/// the lifecycle records the pause behind its card, after the turn `sdk_turn` starts when it has
+/// no journal yet.
+fn hold_pause(state: &mut DomainState, task: &str, agent: &str, reason: PauseReason) {
+    use crate::domain::{CardKind, CardSpec, LifecycleRecord, NodePauseKind, PauseOwner, SystemCard};
+    let (kind, owner, pause) = match reason {
+        PauseReason::ByUser => ("user", PauseOwner::User, NodePauseKind::User),
+        PauseReason::Declared { .. } | PauseReason::Memory => ("machine", PauseOwner::Machine, NodePauseKind::Machine),
+        PauseReason::Usage => ("usage", PauseOwner::Usage, NodePauseKind::Usage),
+        PauseReason::Disk => ("disk", PauseOwner::Disk, NodePauseKind::Disk),
+        PauseReason::ApiError(_) => panic!("the lifecycle holds a Claude API error, never the gate"),
+    };
+    let card = crate::domain::InteractionId::from(format!("{}{kind}-0-{task}", crate::domain::NODE_PAUSE_PREFIX));
+    if !state.lifecycle_journal.contains_key(&task.into()) {
+        state.lifecycle_journal.insert(task.into(), sdk_turn(task, agent));
+    }
+    let mut journal = state.lifecycle_journal[&crate::domain::TaskId::from(task)].to_vec();
+    journal.push(LifecycleRecord::Paused { card: card.clone(), owner: Some(owner) });
+    state.lifecycle_journal.insert(task.into(), journal);
+    state.interactions.insert(card.clone(), Interaction { shortened: false,
+        attachments: vec![], id: card, scope: Scope::Task { task_id: task.into() }, author: Author::System, recipient: Recipient::User,
+        body: "Resume".into(), blocking: false, subject: None, payload: InteractionPayload::Question { options: vec![], answer: None },
+        revision: 1, order: 1, withdrawn: false, card: CardSpec::new(CardKind::Decide, "Resume"), clarification: None, snoozed_until: None,
+        resurfaced_at_revision: None, system_card: Some(SystemCard::NodePause { pause, since: 0 }),
+    });
+}
+
+/// `sdk_turn`, once that turn ended behind work of its own that still runs.
+fn sdk_own_work(task: &str, agent: &str) -> Vec<crate::domain::LifecycleRecord> {
+    use crate::domain::LifecycleRecord;
+    let mut journal = sdk_turn(task, agent);
+    journal.extend([
+        LifecycleRecord::WorkStarted { turn: "turn".into(), work: format!("claude-task:{task}") },
+        LifecycleRecord::TurnEnded { turn: "turn".into(), unheard_card: format!("unheard-{task}").into(), wake: None, text: None, awaits: None, stalled: false },
+    ]);
+    journal
+}
+
+/// `sdk_turn`, once that turn ended with nothing left to do.
+fn sdk_turn_ended(task: &str, agent: &str) -> Vec<crate::domain::LifecycleRecord> {
+    let mut journal = sdk_turn(task, agent);
+    journal.push(crate::domain::LifecycleRecord::TurnEnded {
+        turn: "turn".into(), unheard_card: format!("unheard-{task}").into(), wake: None, text: None, awaits: None, stalled: false,
+    });
+    journal
+}
+
 fn every_screen(state: &DomainState, live: &LiveSnapshot) -> Vec<(String, String)> {
     let mut out = vec![];
     for client in [Client::Ios, Client::Mac, Client::Tui] {
@@ -1979,41 +2016,14 @@ fn every_screen(state: &DomainState, live: &LiveSnapshot) -> Vec<(String, String
     out
 }
 
-/// 13 October, the release of 0.2.67: the node ran the release script in the background and ended
-/// its turn to wait for it. Its task says, on every screen, that it waits for that work and which
-/// command it is (23 October: «Trabajando» hid a `sleep 5900` for 26 minutes); it is still in
-/// progress, never stopped or idle.
-#[test]
-fn a_task_whose_node_waits_for_its_own_command_says_so_and_names_it_on_every_screen() {
-    let mut state = fixture();
-    let work = Background { work: crate::model::BackgroundKind::Shell, label: "./deploy/brew/release.sh 0.2.67".into(), since: 0, others: 0, gone: None };
-    node_in(&mut state, NodePhase::WaitingBackground(work));
-    let mut live = LiveSnapshot::default();
-    live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), ..LiveNode::default() });
-    live.task_since.insert("t-1".into(), "2026-09-30T09:40:00Z".into());
-    assert_eq!(task_state_text(&state, &live, Lang::Es), "Trabajando");
-    assert_eq!(task_state_text(&state, &live, Lang::En), "Working");
-    let (block, row) = active_row(&state, &live, Client::Mac, Lang::Es, "t-1");
-    assert_eq!((block.as_str(), row.subtitle.as_deref()), ("block:in-progress", Some("En segundo plano: `./deploy/brew/release.sh 0.2.67` · desde las 09:40")));
-    for (screen, text) in every_screen(&state, &live) {
-        assert!(text.contains("En segundo plano"), "{screen}: {text}");
-        if !screen.ends_with("sidebar") {
-            assert!(text.contains("./deploy/brew/release.sh 0.2.67"), "{screen}: {text}");
-        }
-        for wrong in ["Esperando su comando", "Sin conexión", "Sin actividad", "Detenido"] {
-            assert!(!text.contains(wrong), "{screen} says {wrong}: {text}");
-        }
-    }
-}
-
 /// 13 October: the node of «Sesión desaparecida con nodo “conectado”» sat paused for memory from
 /// 12:02 to 14:53 while its task said it was working. A task whose node the machine paused says it
 /// is paused and why on every screen, with the gate's word or without it.
 #[test]
 fn a_task_whose_node_the_machine_paused_never_says_it_works_on_any_screen() {
     let mut state = fixture();
-    let pause = Pause { reason: PauseReason::Memory, since: 0, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false };
-    node_in(&mut state, NodePhase::Paused(pause));
+    node_in(&mut state, NodePhase::ThroughSdk);
+    hold_pause(&mut state, "t-1", "a-1", PauseReason::Memory);
     let gate = LivePaused { task_id: "t-1".into(), session: Some("a-1".into()), at: "12:02".into(), reason: LivePauseReason::Memory,
         fine_minutes: None, next: false, waits_for: None, retry: None };
     for (live, fact) in [
@@ -2036,7 +2046,7 @@ fn a_task_whose_node_the_machine_paused_never_says_it_works_on_any_screen() {
 #[test]
 fn no_view_says_a_node_stalled_or_failed_whatever_its_hooks_deduced() {
     let mut state = fixture();
-    node_in(&mut state, NodePhase::Working);
+    node_in(&mut state, NodePhase::ThroughSdk);
     for key in ["stalled", "failed"] {
         let mut live = LiveSnapshot::default();
         live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), state_key: Some(key.into()), ..LiveNode::default() });
@@ -2874,7 +2884,7 @@ fn unheard_fixture() -> (DomainState, LiveSnapshot, String) {
     (card.subject, card.blocking) = (None, false);
     state.interactions.retain(|_, i| !(i.recipient == Recipient::User && matches!(i.scope, Scope::Task { ref task_id } if *task_id == task)));
     state.interactions.insert(card.id.clone(), card);
-    state.agents.get_mut(&agent).unwrap().phase = NodePhase::WaitingUser { in_turn: false };
+    state.agents.get_mut(&agent).unwrap().phase = NodePhase::ThroughSdk;
     (state, golden_live(), id)
 }
 
@@ -3700,7 +3710,8 @@ fn node_on_its_task() -> LiveNode {
 
 fn task_working_fixture() -> (DomainState, LiveSnapshot) {
     let mut state = fixture();
-    node_in(&mut state, NodePhase::Working);
+    node_in(&mut state, NodePhase::ThroughSdk);
+    state.lifecycle_journal.insert("t-1".into(), sdk_turn("t-1", "a-1"));
     let mut live = LiveSnapshot::default();
     live.nodes.push(LiveNode { model: Some("claude-opus-5-5".into()), ..node_on_its_task() });
     live.nodes[0].steps = working_node().steps;
@@ -3780,7 +3791,7 @@ fn a_task_detail_shows_what_its_node_does_while_it_works_on_it() {
     let spanish = render(&state, &live, Client::Ios, Lang::Es, "task:t-1", "");
     assert_eq!(section_facts(&spanish, "readings")[3], ("Coste".into(), "1,20 $".into()));
 
-    state.agents.get_mut(&"a-1".into()).unwrap().phase = NodePhase::WaitingUser { in_turn: false };
+    state.lifecycle_journal.insert("t-1".into(), sdk_turn_ended("t-1", "a-1"));
     live.nodes[0].last_turn_aborted = true;
     let resting = render(&state, &live, Client::Ios, Lang::En, "task:t-1", "");
     assert!(section_facts(&resting, "readings").contains(&("Last turn".into(), "Interrupted".into())));
@@ -3836,7 +3847,7 @@ fn a_fact_without_a_known_kind_reads_as_one_without_kind() {
 #[test]
 fn a_task_detail_says_the_model_its_node_runs_on_when_it_is_not_the_one_it_was_launched_with() {
     let mut state = fixture();
-    node_in(&mut state, NodePhase::Working);
+    node_in(&mut state, NodePhase::ThroughSdk);
     let model = |state: &DomainState, running: Option<&str>| {
         let live = LiveSnapshot { nodes: vec![LiveNode { agent_id: "a-1".into(), model: running.map(Into::into), ..Default::default() }], ..Default::default() };
         section_facts(&render(state, &live, Client::Ios, Lang::En, "task:t-1", ""), "options").into_iter()
@@ -3851,7 +3862,7 @@ fn a_task_detail_says_the_model_its_node_runs_on_when_it_is_not_the_one_it_was_l
 #[test]
 fn a_task_detail_says_what_its_node_still_does_after_the_merge() {
     let mut state = fixture();
-    node_in(&mut state, NodePhase::Closing);
+    node_in(&mut state, NodePhase::ThroughSdk);
     state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Closing;
     state.tasks.get_mut(&"t-1".into()).unwrap().wrap_up.post_merge_work =
         Some(crate::domain::PostMergeWork { reason: "release.sh publishes 0.2.54".into(), declared_at: 1, turn_since: false });
@@ -4865,9 +4876,8 @@ fn task_detail_names_its_folder_and_what_its_node_is_doing_right_now() {
     let mut in_turn = golden_in_progress();
     in_turn.tasks.get_mut(&key["task:".len()..].into()).unwrap().worktrees.insert("/demo/Demo Garden/ios".into(),
         crate::domain::TaskWorktree { origin: crate::domain::WorktreeOrigin::Inherited, branch: None, discard: false, end: None });
-    in_turn.agents.get_mut(&agent.into()).unwrap().phase = NodePhase::WaitingUser { in_turn: true };
     let mut stopped = golden_in_progress();
-    stopped.agents.get_mut(&agent.into()).unwrap().phase = NodePhase::WaitingUser { in_turn: false };
+    stopped.lifecycle_journal.insert(key["task:".len()..].into(), sdk_turn_ended(&key["task:".len()..], agent));
     let stopped = render(&stopped, &golden_live(), Client::Ios, Lang::En, key, "");
     assert!(stopped.sections.iter().all(|section| section.id != "activity"), "a node out of its turn does nothing right now");
     let view = render(&in_turn, &golden_live(), Client::Ios, Lang::En, key, "");
@@ -4885,7 +4895,6 @@ fn task_detail_names_its_folder_and_what_its_node_is_doing_right_now() {
 fn right_now_names_another_task_by_its_title_and_not_at_all_the_tasks_own() {
     let agent = "d887a34b-249e-4487-a89b-57de38c26372";
     let mut state = golden_in_progress();
-    state.agents.get_mut(&agent.into()).unwrap().phase = NodePhase::WaitingUser { in_turn: true };
     let task = "t-651c38484cd2f34e74d5107ba05f7f15".to_owned();
     let mut other = state.tasks[&task.as_str().into()].clone();
     (other.id, other.title, other.agent_id) = ("t-other".into(), "Check the Spanish strings".into(), None);
@@ -5328,8 +5337,13 @@ fn presented_pr() -> DomainState {
         (Actor::System, Command::RegisterAgent { agent_id: "a".into(), name: "Node A".into(), at: 0 }),
         (user.clone(), Command::CreateRequest { request_id: "r".into(), body: "Fix it".into(), auto_merge: false, maintenance: false, message: false }),
         (Actor::Orchestrator { generation: 0 }.clone(), Command::CreateTask { plan_items: None, continues: None, task_id: "t".into(), request_id: "r".into(), title: "Fix it".into(),
-            agent_id: Some("a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
+            agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
             launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")), }),
+    ] {
+        execute(&mut state, actor, command);
+    }
+    admit_sdk(&mut state, "t", "a");
+    for (actor, command) in [
         (agent.clone(), Command::RegisterPr { task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(),
             repository: "owner/repo".into(), number: 1, head: "head1".into(), base: "main".into(),
             allowed_methods: vec![MergeMethod::Squash] }),
@@ -5339,6 +5353,7 @@ fn presented_pr() -> DomainState {
     ] {
         execute(&mut state, actor, command);
     }
+    sdk_turn_ends(&mut state, "t");
     state
 }
 
@@ -5348,6 +5363,41 @@ fn execute(state: &mut DomainState, actor: crate::domain::Actor, command: crate:
         command_id: format!("c-{}", state.revision).into(), expected_revision: state.revision, command,
     };
     state.execute(&actor, &envelope).unwrap();
+}
+
+/// The gate admits the node `agent` of `task` through the Agent SDK, which starts its first turn.
+fn admit_sdk(state: &mut DomainState, task: &str, agent: &str) {
+    execute(state, crate::domain::Actor::System, crate::domain::Command::AdmitExecution {
+        provider: Default::default(), task_id: task.into(), agent_id: agent.into(), conversation: format!("conversation-{task}"),
+        instance: format!("instance-{task}"), host: "sdk-host".into(), model: None, account: None, leaves_limit: None,
+    });
+    sdk_turn_starts(state, task);
+}
+
+/// The SDK execution of `task` starts a turn on the first input it was handed.
+/// Alondra tells the SDK execution of `task` `text`, and a turn starts on it.
+fn sdk_told(state: &mut DomainState, task: &str, text: String) {
+    execute(state, crate::domain::Actor::System, crate::domain::Command::TellNode { task_id: task.into(), text, from_user: false, answers: None });
+    sdk_turn_starts(state, task);
+}
+
+fn sdk_turn_starts(state: &mut DomainState, task: &str) {
+    use crate::domain::RuntimeObservation;
+    let lifecycle = state.lifecycle_of(&task.into()).unwrap();
+    let input = lifecycle.pending_inputs()[0].as_str().to_owned();
+    let generation = lifecycle.execution().unwrap().generation();
+    let available = lifecycle.resource() == Some(alondra_domain::ResourceEvidence::Available);
+    let turn = RuntimeObservation::TurnStarted { turn: format!("turn-{}", state.revision), input };
+    let facts = if available { vec![turn] } else { vec![RuntimeObservation::ResourceAvailable, turn] };
+    execute(state, crate::domain::Actor::System, crate::domain::Command::RecordRuntimeFacts { task_id: task.into(), generation, facts });
+}
+
+/// The turn the SDK execution of `task` runs ends.
+fn sdk_turn_ends(state: &mut DomainState, task: &str) {
+    let lifecycle = state.lifecycle_of(&task.into()).unwrap();
+    let turn = lifecycle.turn().unwrap().as_str().to_owned();
+    let generation = lifecycle.execution().unwrap().generation();
+    execute(state, crate::domain::Actor::System, crate::domain::Command::RecordTurnBoundary { task_id: task.into(), generation, turn, failure: None, failed: None });
 }
 
 #[test]
@@ -5370,18 +5420,19 @@ fn a_pr_sent_back_leaves_waiting_for_you_and_its_task_says_what_alondra_asked() 
             attachments: vec![], presentation_id: "d".into(), body: "Back to you".into(), instruction,
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
         });
-        execute(&mut state, Actor::System, Command::MoveNode { agent_id: "a".into(), event: crate::domain::NodeEvent::TurnStarted, at: 1 });
+        sdk_told(&mut state, "t", instruction.message("Back to you"));
         assert!(home(&state).is_empty(), "{instruction:?} takes the card out of Waiting for You");
         assert!(task(&state, Lang::En).contains(english), "{instruction:?}");
         assert!(task(&state, Lang::Es).contains(spanish), "{instruction:?}");
     }
     let mut state = presented.clone();
+    let failed = crate::domain::merge_failed_text(12, "https://github.com/example/repo/pull/12", "main", "its checks failed (lint)");
     execute(&mut state, Actor::System, Command::SubmitFeedback {
         merge_failure: Some(crate::domain::MergeFailure { number: 12, reason: "its checks failed (lint)".into() }),
-        attachments: vec![], presentation_id: "d".into(), instruction: Instruction::Conflicts,
-        body: crate::domain::merge_failed_text(12, "https://github.com/example/repo/pull/12", "main", "its checks failed (lint)"),
+        attachments: vec![], presentation_id: "d".into(), instruction: Instruction::Conflicts, body: failed.clone(),
         targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
     });
+    sdk_told(&mut state, "t", Instruction::Conflicts.message(&failed));
     let english = task(&state, Lang::En);
     assert!(english.contains("Couldn't merge") && english.contains("Resolving conflicts") && english.contains("Turn running since"), "{english}");
     assert!(task(&state, Lang::Es).contains("No se pudo hacer merge"));
@@ -5430,7 +5481,7 @@ fn a_reply_to_a_result_whose_node_is_paused_shows_on_its_card_until_the_node_tak
     ] {
         assert_golden(filename, &render(&state, &live, Client::Mac, lang, "card:d", ""), expected);
     }
-    execute(&mut state, Actor::System, Command::MoveNode { agent_id: "a".into(), event: crate::domain::NodeEvent::Resumed, at: 3 });
+    execute(&mut state, Actor::System, Command::MoveNode { agent_id: "a".into(), event: crate::domain::NodeEvent::Resumed});
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         let view = serde_json::to_string(&render(&state, &live, client, Lang::En, "card:d", "")).unwrap();
         assert!(!view.contains("Your reply arrived"), "{client:?}: the node has the reply now: {view}");
@@ -5440,7 +5491,7 @@ fn a_reply_to_a_result_whose_node_is_paused_shows_on_its_card_until_the_node_tak
 fn pause_for_memory(state: &mut DomainState) {
     let pause = crate::domain::Pause { reason: crate::domain::PauseReason::Memory, since: 2, cut: None, turn_since: Some(1),
         cleanup: Default::default(), released: false };
-    execute(state, crate::domain::Actor::System, crate::domain::Command::MoveNode { agent_id: "a".into(), event: crate::domain::NodeEvent::Paused { pause }, at: 2 });
+    execute(state, crate::domain::Actor::System, crate::domain::Command::MoveNode { agent_id: "a".into(), event: crate::domain::NodeEvent::Paused { pause }});
 }
 
 /// t-redraft-blurry-mode, 14 October: replies on its results reached the node, but the result
@@ -5471,7 +5522,7 @@ fn a_reply_on_a_presented_pr_leaves_waiting_for_you_on_every_client_and_a_pause_
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         assert!(!waiting(&state, client), "{client:?}: the user already answered");
     }
-    execute(&mut state, Actor::System, Command::MoveNode { agent_id: "a".into(), event: crate::domain::NodeEvent::TurnStarted, at: 1 });
+    sdk_told(&mut state, "t", Instruction::Reply.message("te he pedido cambios pero este card no se va"));
     assert!(!waiting(&state, Client::Ios), "the node acts on the reply");
     pause_for_memory(&mut state);
     for client in [Client::Ios, Client::Mac, Client::Tui] {
@@ -5496,7 +5547,7 @@ fn a_task_whose_node_is_paused_says_what_it_owes_the_user_never_no_connection() 
             attachments: vec![], presentation_id: "d".into(), body: "Back to you".into(), instruction,
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
         });
-        execute(&mut state, Actor::System, Command::MoveNode { agent_id: "a".into(), event: crate::domain::NodeEvent::TurnStarted, at: 1 });
+        sdk_told(&mut state, "t", instruction.message("Back to you"));
         pause_for_memory(&mut state);
         assert!(render(&state, &live, Client::Ios, Lang::En, "home", "").sections[0].card_ids.is_empty(), "{instruction:?}");
         let task = |lang| serde_json::to_string(&render(&state, &live, Client::Tui, lang, "task:t", "")).unwrap();
@@ -5514,7 +5565,7 @@ fn a_task_whose_node_works_after_the_merge_says_what_it_does() {
     let held = state.tasks.get_mut(&task).unwrap();
     held.agent_id = Some("a-1".into());
     held.state = TaskState::Closing;
-    state.agents.get_mut(&"a-1".into()).unwrap().phase = crate::domain::NodePhase::Closing;
+    state.agents.get_mut(&"a-1".into()).unwrap().phase = crate::domain::NodePhase::ThroughSdk;
     let detail = |state: &DomainState, lang| serde_json::to_string(&render(state, &LiveSnapshot::default(), Client::Ios, lang, &format!("task:{task}"), "")).unwrap();
     assert!(!detail(&state, Lang::En).contains("finishing after the merge"));
     state.tasks.get_mut(&task).unwrap().wrap_up.post_merge_work = Some(crate::domain::PostMergeWork { reason: "release.sh publishes 0.2.54".into(), declared_at: 1, turn_since: false });
@@ -5907,9 +5958,9 @@ fn nodes_fixture() -> (DomainState, LiveSnapshot) {
     let template = golden_task.clone();
     let golden_request = template.request_id.0.clone();
     for (agent, request, title, task_state, phase) in [
-        ("queued", golden_request.as_str(), "Wire the badge after the review", TaskState::WaitingDependency, NodePhase::WaitingDependency),
-        ("zeta-worker", "r-zeta", "Build the importer", TaskState::Running, NodePhase::Working),
-        ("alpha-waiting", "r-alpha", "Plan the migration", TaskState::NotStarted, NodePhase::Starting { reviving: false, idle_since: None }),
+        ("queued", golden_request.as_str(), "Wire the badge after the review", TaskState::WaitingDependency, NodePhase::ThroughSdk),
+        ("zeta-worker", "r-zeta", "Build the importer", TaskState::Running, NodePhase::ThroughSdk),
+        ("alpha-waiting", "r-alpha", "Plan the migration", TaskState::NotStarted, NodePhase::ThroughSdk),
         ("finished-yesterday", golden_request.as_str(), "Ship the compact editor", TaskState::Done, NodePhase::Closed),
         ("finished-today", golden_request.as_str(), "Trim the push payload", TaskState::Done, NodePhase::Closed),
     ] {
@@ -5930,6 +5981,7 @@ fn nodes_fixture() -> (DomainState, LiveSnapshot) {
         state.tasks.insert(task.id.clone(), task);
     }
     state.tasks.get_mut(&"t-queued".into()).unwrap().dependencies = ["t-651c38484cd2f34e74d5107ba05f7f15".into()].into();
+    state.lifecycle_journal.insert("t-alpha-waiting".into(), sdk_turn("t-alpha-waiting", "alpha-waiting")[..2].to_vec());
     for (agent, project, working, at) in [
         ("zeta-worker", Some("Zeta"), true, "2026-09-30T09:57:00Z"),
         ("alpha-waiting", Some("Alpha"), false, "2026-09-30T09:20:00Z"),
@@ -5951,19 +6003,17 @@ fn node_states_fixture() -> (DomainState, LiveSnapshot) {
     live.task_since.insert("t-zeta-worker".into(), "2026-09-30T09:35:00Z".into());
     live.task_since.insert("t-release-runner".into(), "2026-09-30T09:40:00Z".into());
     let template = state.tasks[&"t-zeta-worker".into()].clone();
-    let declared = Pause { reason: PauseReason::Declared { reason: "The build queue is full".into() }, since: 0, cut: None,
-        turn_since: None, cleanup: PauseCleanup::Done, released: false };
-    let release = Background { work: crate::model::BackgroundKind::Shell, label: "./deploy/brew/release.sh 0.2.67".into(), since: 0, others: 0, gone: None };
-    for (agent, title, phase) in [
-        ("release-runner", "Release the daemon", NodePhase::WaitingBackground(release)),
-        ("paused-builder", "Fix the vanished session", NodePhase::Paused(declared)),
-    ] {
-        state.agents.insert(agent.into(), Agent { id: agent.into(), name: agent.into(), phase, since: 0 });
+    for (agent, title) in [("release-runner", "Release the daemon"), ("paused-builder", "Fix the vanished session")] {
+        state.agents.insert(agent.into(), Agent { id: agent.into(), name: agent.into(), phase: NodePhase::ThroughSdk, since: 0 });
         let mut task = template.clone();
         (task.id, task.agent_id, task.title) = (format!("t-{agent}").into(), Some(agent.into()), title.into());
         state.tasks.insert(task.id.clone(), task);
         live.nodes.push(LiveNode { agent_id: agent.into(), name: agent.into(), project: Some("Zeta".into()), ..LiveNode::default() });
     }
+    state.lifecycle_journal.insert("t-release-runner".into(), sdk_own_work("t-release-runner", "release-runner"));
+    let runner = live.nodes.iter_mut().find(|node| node.agent_id == "release-runner").unwrap();
+    runner.background.push(LiveBackground { kind: "shell".into(), label: "./deploy/brew/release.sh 0.2.67".into(),
+        since: "2026-09-30T09:40:00Z".into(), state: RunState::Running });
     live.pacing = Some(LivePacing { working: 2, limit: 6, fixed: None, auto: 6, most: 12, memory_free: Some(40), tight: false, queued: vec![],
         paused: vec![LivePaused { task_id: "t-paused-builder".into(), session: Some("paused-builder".into()), at: "09:40".into(),
             reason: LivePauseReason::Machine, fine_minutes: None, next: false, waits_for: Some("The build queue is full".into()), retry: None }] });
@@ -5995,26 +6045,23 @@ fn node_state_views_match_goldens() {
 }
 
 /// 9 October: what is in progress is the tasks Alondra's real nodes work on. The task of a node
-/// whose task ended, of one whose session is lost and waits for the gate, of the orchestrator and
-/// of the queue stay out of it; that of one the gate let back and Alondra is restarting is in it.
+/// whose task ended, of the orchestrator and of the queue stay out of it.
 #[test]
 fn the_sidebar_lists_only_tasks_whose_node_has_a_session() {
     let (mut state, mut live) = nodes_fixture();
     let template = state.tasks[&"t-zeta-worker".into()].clone();
-    for (agent, task_state, phase) in [
-        ("reviving", TaskState::Running, NodePhase::Starting { reviving: true, idle_since: None }),
-        ("lost", TaskState::Running, NodePhase::Lost),
-        ("lingering", TaskState::Done, NodePhase::Working),
-        ("cancelled-paused", TaskState::Cancelled, NodePhase::Paused(crate::domain::Pause { reason: crate::domain::PauseReason::ByUser, since: 0, cut: None, turn_since: None, cleanup: Default::default(), released: false })),
-        ("taskless", TaskState::Running, NodePhase::Working),
+    for (agent, task_state) in [
+        ("lingering", TaskState::Done),
+        ("cancelled-paused", TaskState::Cancelled),
+        ("taskless", TaskState::Running),
     ] {
-        state.agents.insert(agent.into(), Agent { id: agent.into(), name: agent.into(), phase, since: 0 });
+        state.agents.insert(agent.into(), Agent { id: agent.into(), name: agent.into(), phase: NodePhase::ThroughSdk, since: 0 });
         if agent == "taskless" { continue; }
         let mut task = template.clone();
         (task.id, task.agent_id, task.state) = (format!("t-{agent}").into(), Some(agent.into()), task_state);
         state.tasks.insert(task.id.clone(), task);
     }
-    state.agents.insert("orchestrator".into(), Agent { id: "orchestrator".into(), name: "orchestrator".into(), phase: NodePhase::Working, since: 0 });
+    state.agents.insert("orchestrator".into(), Agent { id: "orchestrator".into(), name: "orchestrator".into(), phase: NodePhase::ThroughSdk, since: 0 });
     live.pacing = Some(LivePacing {
         working: 1, limit: 2, fixed: None, auto: 2, most: 12, memory_free: Some(40), tight: false,
         queued: vec![LiveQueued { pausable: true, task_id: "t-alpha-waiting".into(), position: 1, of: 1, hold: LiveHold::Slots { working: 1, limit: 2 } }],
@@ -6025,7 +6072,7 @@ fn the_sidebar_lists_only_tasks_whose_node_has_a_session() {
         let rows: Vec<&str> = view.sections.iter().filter(|section| section.id.starts_with("project:")).flat_map(|section| &section.items)
             .filter_map(|item| if let Item::Row(row) = item { Some(row.id.as_str()) } else { None }).collect();
         assert_eq!(rows.iter().copied().collect::<BTreeSet<_>>(),
-            ["t-651c38484cd2f34e74d5107ba05f7f15", "t-queued", "t-zeta-worker", "t-alpha-waiting", "t-reviving"].into_iter().collect::<BTreeSet<_>>());
+            ["t-651c38484cd2f34e74d5107ba05f7f15", "t-queued", "t-zeta-worker", "t-alpha-waiting"].into_iter().collect::<BTreeSet<_>>());
     }
 }
 
@@ -6548,23 +6595,6 @@ fn a_paused_task_says_since_when_why_and_when_it_comes_back_in_both_languages() 
     let unexplained = LivePaused { reason: LivePauseReason::Machine, ..memory };
 }
 
-#[test]
-fn a_node_an_api_error_stopped_says_when_alondra_sends_it_back_and_an_outage_says_it_waits_for_the_service() {
-    let mut state = fixture();
-    state.interactions.clear();
-    let task = state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
-    (task.state, task.final_presentation, task.agent_id) = (TaskState::Running, None, Some("agent-1".into()));
-    let failed = LivePaused { task_id: "t-1".into(), session: Some("agent-1".into()), at: "23:26".into(), reason: LivePauseReason::ApiError,
-        fine_minutes: None, next: false, waits_for: None, retry: Some(crate::views::LiveRetry { at: "23:28".into(), attempt: 2 }) };
-    let outage = LivePaused { reason: LivePauseReason::ApiOutage, retry: Some(crate::views::LiveRetry { at: "23:40".into(), attempt: 3 }), ..failed.clone() };
-    let live = LiveSnapshot {
-        pacing: Some(LivePacing { working: 1, limit: 4, fixed: None, auto: 4, most: 12, memory_free: Some(60), tight: false, queued: vec![], paused: vec![failed] }),
-        ..LiveSnapshot::default()
-    };
-    let task = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::Es, "task:t-1", "")).unwrap();
-    assert!(task.contains("Error de la API de Claude a las 23:26 · reintenta a las 23:28 (intento 2 de 3)"), "{task}");
-}
-
 fn action_ids(view: &View) -> Vec<String> {
     let json = serde_json::to_value(view).unwrap();
     let mut ids = vec![];
@@ -6883,7 +6913,7 @@ fn a_request_has_a_header_only_when_it_is_not_a_message_to_the_orchestrator() {
     for id in ["t-a", "t-b"] {
         task_in(&mut state, id, "r-1", TaskState::Running);
         let agent = crate::domain::AgentId(format!("a-{id}"));
-        state.agents.insert(agent.clone(), Agent { id: agent.clone(), name: id.into(), phase: NodePhase::Working, since: 0 });
+        state.agents.insert(agent.clone(), Agent { id: agent.clone(), name: id.into(), phase: NodePhase::ThroughSdk, since: 0 });
         state.tasks.get_mut(&id.into()).unwrap().agent_id = Some(agent);
     }
     state.requests.get_mut(&"r-1".into()).unwrap().title = Some("Resume the queue and two new bugs".into());
@@ -7127,7 +7157,7 @@ fn the_golden_tasks_list_lists_the_tasks_that_wait_for_another_in_waiting() {
 fn no_screen_shows_the_orchestrator() {
     let mut state = golden_fixture();
     state.orchestrator_session = Some("6f1c2b9e-1111-4a2b-9c3d-0123456789ab".into());
-    state.agents.insert("orchestrator".into(), Agent { id: "orchestrator".into(), name: "orchestrator".into(), phase: NodePhase::Working, since: 0 });
+    state.agents.insert("orchestrator".into(), Agent { id: "orchestrator".into(), name: "orchestrator".into(), phase: NodePhase::ThroughSdk, since: 0 });
     let live = golden_live();
     for (client, lang) in [(Client::Ios, Lang::En), (Client::Ios, Lang::Es), (Client::Mac, Lang::Es), (Client::Tui, Lang::En)] {
         let screens: &[&str] = if client == Client::Mac { &["sidebar", "tasks"] } else { &["tasks", "home"] };
@@ -7163,7 +7193,6 @@ fn release_delivered_twice(published: Option<crate::domain::Acceptance>) -> Doma
         }
         state.interactions.insert(card.id.clone(), card);
     }
-    state.agents.get_mut(&"a-1".into()).unwrap().phase = NodePhase::Delivered { in_turn: false };
     state.derive_states();
     with_cards(&state)
 }
@@ -7302,8 +7331,9 @@ fn proposed_plan_fixture() -> DomainState {
     run(&mut state, Actor::User { user_id: "u".into() }, Command::CreateRequest { request_id: "r-1".into(),
         body: "How do other apps analyse the whole library at once?".into(), auto_merge: false, maintenance: false, message: false });
     run(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: "t-1".into(), request_id: "r-1".into(),
-        title: "Redraft: analyse the whole library at once".into(), agent_id: Some("a-1".into()), review_prs: false,
+        title: "Redraft: analyse the whole library at once".into(), agent_id: None, review_prs: false,
         dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("redraft/library-index", "/tmp/redraft")) });
+    admit_sdk(&mut state, "t-1", "a-1");
     let targets = vec![DeliveryTarget::Text { text: "Report".into() }];
     let mut card = CardSpec::new(CardKind::Review, "Approve the plan to index Redraft's whole library")
         .why("The research found it viable. Approving it creates the tasks that build it; the report is beside it.")
@@ -7313,6 +7343,7 @@ fn proposed_plan_fixture() -> DomainState {
     run(&mut state, Actor::Agent { agent_id: "a-1".into() }, Command::PresentResult { checklist: vec![], attachments: vec![],
         task_id: "t-1".into(), interaction_id: "result-1".into(), body: "Read the report".into(), targets, is_final: true,
         nothing_to_review: false, card });
+    sdk_turn_ends(&mut state, "t-1");
     state
 }
 
@@ -7349,12 +7380,14 @@ fn a_result_that_proposes_a_plan_is_a_plan_card_with_its_report_as_a_document() 
 fn a_report_alone_is_only_marked_seen() {
     use crate::domain::{Actor, CardKind, CardSpec, Command, CommandEnvelope, ContentKind as Content, DeliveryTarget};
     let mut state = proposed_plan_fixture();
+    sdk_told(&mut state, "t-1", "Deliver the report alone".into());
     let envelope = CommandEnvelope { protocol_version: 2, data_epoch: state.data_epoch.clone(), command_id: "report".into(),
         expected_revision: state.revision, command: Command::PresentResult { checklist: vec![], attachments: vec![], task_id: "t-1".into(),
             interaction_id: "result-2".into(), body: "Read the report".into(), targets: vec![DeliveryTarget::Text { text: "Report".into() }],
             is_final: true, nothing_to_review: false,
             card: CardSpec::new(CardKind::Review, "Read why Redraft does not need a widget").content(Content::Report, "Not worth building now.") } };
     state.execute(&Actor::Agent { agent_id: "a-1".into() }, &envelope).unwrap();
+    sdk_turn_ends(&mut state, "t-1");
     let live = LiveSnapshot::default();
     for (lang, labels) in [(Lang::Es, ["Visto", "Pedir cambios"]), (Lang::En, ["Seen", "Request changes"])] {
         let view = render(&state, &live, Client::Tui, lang, "card:result-2", "");
@@ -7385,8 +7418,9 @@ fn documents_fixture() -> DomainState {
     run(&mut state, Actor::User { user_id: "u".into() }, Command::CreateRequest { request_id: "r-1".into(),
         body: "How do other apps analyse the whole library at once?".into(), auto_merge: false, maintenance: false, message: false });
     run(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: "t-1".into(), request_id: "r-1".into(),
-        title: "Redraft: analyse the whole library at once".into(), agent_id: Some("a-1".into()), review_prs: false,
+        title: "Redraft: analyse the whole library at once".into(), agent_id: None, review_prs: false,
         dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("redraft/library-index", "/tmp/redraft")) });
+    admit_sdk(&mut state, "t-1", "a-1");
     run(&mut state, Actor::Agent { agent_id: "a-1".into() }, Command::CreateDocument { task_id: "t-1".into(), document_id: "design".into(),
         title: "Library index design".into(), revision_id: "design-r1".into(), content_digest: "d".repeat(64),
         content_reference: "files/design.md".into(), role: "result".into() });
@@ -7408,6 +7442,7 @@ fn documents_fixture() -> DomainState {
     run(&mut state, Actor::Agent { agent_id: "a-1".into() }, Command::PresentResult { checklist: vec![], attachments: vec![],
         task_id: "t-1".into(), interaction_id: "result-1".into(), body: "Read the report".into(), targets, is_final: true,
         nothing_to_review: false, card });
+    sdk_turn_ends(&mut state, "t-1");
     state
 }
 
@@ -7549,17 +7584,16 @@ fn a_new_cursor_alone_leaves_home_unchanged() {
 /// the orchestrator says so, and never puts its last words in a card for the user.
 #[test]
 fn a_task_whose_node_waits_for_the_orchestrator_says_so_and_puts_no_card_in_front_of_the_user() {
-    use crate::domain::{Actor, CardKind, CardSpec, Command, LaunchPlan, NodeEvent, UNHEARD_PREFIX};
+    use crate::domain::{Actor, CardKind, CardSpec, Command, LaunchPlan, UNHEARD_PREFIX};
     let node = || Actor::Agent { agent_id: "a-1".into() };
     let mut state = DomainState::new("epoch");
     execute(&mut state, Actor::System, Command::RegisterAgent { agent_id: "a-1".into(), name: "Node One".into(), at: 0 });
     execute(&mut state, Actor::User { user_id: "u".into() }, Command::CreateRequest {
         request_id: "r-1".into(), body: "Resume the migration".into(), auto_merge: false, maintenance: false, message: false });
     execute(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
-        task_id: "t-1".into(), request_id: "r-1".into(), title: "Resume the migration".into(), agent_id: Some("a-1".into()),
+        task_id: "t-1".into(), request_id: "r-1".into(), title: "Resume the migration".into(), agent_id: None,
         review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")) });
-    execute(&mut state, node(), Command::StartTask { task_id: "t-1".into() });
-    execute(&mut state, Actor::System, Command::MoveNode { agent_id: "a-1".into(), event: NodeEvent::TurnStarted, at: 1 });
+    admit_sdk(&mut state, "t-1", "a-1");
     execute(&mut state, node(), Command::AskQuestion {
         attachments: vec![], interaction_id: "q".into(), scope: Scope::Task { task_id: "t-1".into() }, recipient: Recipient::Orchestrator,
         body: "Create one task per phase of the migration".into(), blocking: true,
@@ -7567,8 +7601,7 @@ fn a_task_whose_node_waits_for_the_orchestrator_says_so_and_puts_no_card_in_fron
             QuestionOption { id: "no".into(), label: "No".into(), description: None }],
         card: CardSpec::new(CardKind::Decide, "Create the phase tasks").why("The plan needs them"),
     });
-    execute(&mut state, Actor::System, Command::MoveNode { agent_id: "a-1".into(), event: NodeEvent::TurnEnded, at: 2 });
-    assert_eq!(state.node_phase(&"a-1".into()), Some(&NodePhase::WaitingUser { in_turn: false }));
+    sdk_turn_ends(&mut state, "t-1");
     assert!(!state.interactions.keys().any(|id| id.0.starts_with(UNHEARD_PREFIX)), "no card with the node's last words");
     assert_eq!(crate::views::inbox_badge(&crate::domain::ReadIndex::build(&state)), 0);
     let live = LiveSnapshot::default();
@@ -7578,8 +7611,8 @@ fn a_task_whose_node_waits_for_the_orchestrator_says_so_and_puts_no_card_in_fron
 
     execute(&mut state, Actor::Orchestrator { generation: 0 }, Command::AnswerQuestion {
         attachments: vec![], interaction_id: "q".into(), option_id: "done".into(), inputs: BTreeMap::new() });
-    assert!(!matches!(state.node_phase(&"a-1".into()), Some(NodePhase::WaitingUser { .. })), "the answer sends the node back to work");
-    assert_ne!(task_state_text(&state, &live, Lang::Es), "En espera");
+    sdk_told(&mut state, "t-1", "The phase tasks exist".into());
+    assert_ne!(task_state_text(&state, &live, Lang::Es), "En espera", "the answer sends the node back to work");
 }
 
 /// 15 October: the user chose 512 px prints on Redraft's phase B while phases C, D and E waited with
@@ -7626,7 +7659,6 @@ fn a_node_that_runs_through_the_sdk_offers_pause_while_its_execution_works() {
     (task.state, task.final_presentation, task.agent_id) = (TaskState::Running, None, Some("a-1".into()));
     let mut live = pacing_live(vec![], vec![], None);
     live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Node One".into(), working: true, ..LiveNode::default() });
-    assert!(find_action(&render(&state, &live, Client::Tui, Lang::En, "task:t-1", ""), "pause:a-1").is_some(), "the same node through claude --bg offers pause");
     state.lifecycle_journal.insert("t-1".into(), vec![
         LifecycleRecord::Planned { input: "input:t-1:1".into() },
         LifecycleRecord::Admitted {
@@ -7665,20 +7697,19 @@ fn the_screen_of_a_task_whose_node_runs_through_the_sdk_offers_pause_or_resume_b
         LifecycleRecord::ResourceAvailable,
         LifecycleRecord::TurnStarted { turn: "turn".into(), input: "input:t-1:1".into() },
     ]].concat();
-    let by_user = Pause { reason: PauseReason::ByUser, since: 0, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false };
     let paused = LivePaused { task_id: "t-1".into(), session: Some("a-1".into()), at: "16:05".into(), reason: LivePauseReason::User,
         fine_minutes: None, next: false, waits_for: None, retry: None };
     let lost = [working.clone(), vec![LifecycleRecord::Paused { card: "host-lost-t-1-9".into(), owner: Some(crate::domain::PauseOwner::User) }]].concat();
     let cases = [
-        ("working", NodePhase::Working, TaskState::Running, working.clone(), vec![], Some("pause:a-1")),
-        ("held by the card of its lost host", NodePhase::Working, TaskState::Running, lost, vec![], None),
-        ("running nothing", NodePhase::Working, TaskState::Running, admitted, vec![], None),
-        ("paused by the user", NodePhase::Paused(by_user), TaskState::Running, working.clone(), vec![paused], Some("resume:a-1")),
-        ("done", NodePhase::Working, TaskState::Done, working, vec![], None),
+        ("working", TaskState::Running, working.clone(), vec![], Some("pause:a-1")),
+        ("held by the card of its lost host", TaskState::Running, lost, vec![], None),
+        ("running nothing", TaskState::Running, admitted, vec![], None),
+        ("paused by the user", TaskState::Running, working.clone(), vec![paused], Some("resume:a-1")),
+        ("done", TaskState::Done, working, vec![], None),
     ];
-    for (name, phase, task_state, journal, gate, offered) in cases {
+    for (name, task_state, journal, gate, offered) in cases {
         let mut state = fixture();
-        node_in(&mut state, phase);
+        node_in(&mut state, NodePhase::ThroughSdk);
         state.tasks.get_mut(&"t-1".into()).unwrap().state = task_state;
         state.lifecycle_journal.insert("t-1".into(), journal);
         let live = pacing_live(vec![], gate, None);
@@ -7702,7 +7733,7 @@ fn the_screen_of_a_task_whose_node_runs_through_the_sdk_offers_pause_or_resume_b
 fn the_task_of_a_node_of_the_sdk_reads_working_only_while_its_lifecycle_runs_something() {
     use crate::domain::{ExecutionIdentity, LifecycleRecord};
     let mut state = fixture();
-    node_in(&mut state, NodePhase::Working);
+    node_in(&mut state, NodePhase::ThroughSdk);
     let answering = vec![
         LifecycleRecord::Planned { input: "input:t-1:1".into() },
         LifecycleRecord::Admitted {
@@ -7731,7 +7762,7 @@ fn the_task_of_a_node_of_the_sdk_reads_working_only_while_its_lifecycle_runs_som
 fn a_message_claude_has_not_started_reads_waiting_for_claude() {
     use crate::domain::{ExecutionIdentity, LifecycleRecord};
     let mut state = fixture();
-    node_in(&mut state, NodePhase::Working);
+    node_in(&mut state, NodePhase::ThroughSdk);
     state.tasks.get_mut(&"t-1".into()).unwrap().final_presentation = Some("d".into());
     let told = vec![
         LifecycleRecord::Planned { input: "input:t-1:1".into() },
@@ -7821,7 +7852,7 @@ fn the_task_of_an_sdk_node_that_waits_for_its_background_work_or_its_input_offer
         ("resting", resting, false),
     ] {
         let mut state = fixture();
-        node_in(&mut state, NodePhase::Working);
+        node_in(&mut state, NodePhase::ThroughSdk);
         state.lifecycle_journal.insert("t-1".into(), journal);
         for client in [Client::Ios, Client::Mac, Client::Tui] {
             let ids = action_ids(&render(&state, &live, client, Lang::Es, "task:t-1", ""));
@@ -8302,19 +8333,10 @@ fn run_states() -> Vec<RunState> {
 
 /// Every phase of the node machine, each once; the match fails to compile when a phase is added.
 fn node_phases() -> Vec<NodePhase> {
-    let work = Background { work: crate::model::BackgroundKind::Shell, label: "npm run dev".into(), since: 0, others: 0, gone: None };
-    let pause = Pause { reason: PauseReason::Memory, since: 0, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false };
-    let phases = vec![
-        NodePhase::Starting { reviving: false, idle_since: None }, NodePhase::Lost, NodePhase::Working, NodePhase::WaitingBackground(work),
-        NodePhase::WaitingUser { in_turn: false }, NodePhase::Paused(pause), NodePhase::Delivered { in_turn: false },
-        NodePhase::Resuming { idle_since: None, after_wait: false }, NodePhase::WaitingDependency, NodePhase::NoTask, NodePhase::Closing, NodePhase::Closed,
-        NodePhase::ThroughSdk,
-    ];
+    let phases = vec![NodePhase::ThroughSdk, NodePhase::Closed];
     for phase in &phases {
         match phase {
-            NodePhase::Starting { .. } | NodePhase::Lost | NodePhase::Working | NodePhase::WaitingBackground(_) | NodePhase::WaitingUser { .. }
-            | NodePhase::Paused(_) | NodePhase::Delivered { .. } | NodePhase::Resuming { .. } | NodePhase::WaitingDependency | NodePhase::NoTask
-            | NodePhase::Closing | NodePhase::Closed | NodePhase::ThroughSdk => {}
+            NodePhase::ThroughSdk | NodePhase::Closed => {}
         }
     }
     phases
@@ -8348,7 +8370,7 @@ fn node_running_in(state: RunState) -> LiveNode {
 #[test]
 fn background_work_shows_only_that_it_runs_or_how_it_ended() {
     let mut state = fixture();
-    node_in(&mut state, NodePhase::Working);
+    node_in(&mut state, NodePhase::ThroughSdk);
     let mut shown: Vec<(RunState, Lang, String)> = vec![];
     for run in run_states() {
         let live = LiveSnapshot { nodes: vec![node_running_in(run)], ..Default::default() };
@@ -8447,7 +8469,7 @@ fn live_states() -> Vec<alondra_domain::LiveState> {
 fn sdk_task() -> DomainState {
     use crate::domain::{ExecutionIdentity, LifecycleRecord};
     let mut state = fixture();
-    node_in(&mut state, NodePhase::Starting { reviving: false, idle_since: None });
+    node_in(&mut state, NodePhase::ThroughSdk);
     state.tasks.get_mut(&"t-1".into()).unwrap().final_presentation = Some("delivery-t-1".into());
     state.lifecycle_journal.insert("t-1".into(), vec![
         LifecycleRecord::Planned { input: "input:t-1:1".into() },
@@ -8552,8 +8574,7 @@ fn a_codex_task_waiting_for_its_usage_limit_names_codex() {
 /// On 23 October a node ended its turn behind `sleep 5900`, then behind a workflow, and its task
 /// read «Working» for 26 minutes with nothing to explain it. A task whose node's turn ended behind
 /// work of its own says it waits for that work and names what still runs (a command, a Monitor, a
-/// workflow, a subagent), on every client and in both languages, through the Agent SDK and through
-/// `claude --bg`; what already ended is not named.
+/// workflow, a subagent), on every client and in both languages; what already ended is not named.
 #[test]
 fn a_task_whose_turn_ended_behind_its_own_work_says_so_and_names_what_runs() {
     use alondra_domain::{LiveState, Worker};
@@ -8572,18 +8593,13 @@ fn a_task_whose_turn_ended_behind_its_own_work_says_so_and_names_what_runs() {
         (node(vec![], vec![], vec![subagent(RunState::Running)]), "Explore the parser", "Explore the parser"),
         (node(vec![sleep()], vec![workflow(RunState::Running)], vec![subagent(RunState::Running)]), "`sleep 5900` and 2 more", "`sleep 5900` y 2 más"),
     ];
-    let stored = Background { work: crate::model::BackgroundKind::Shell, label: "sleep 5900".into(), since: 0, others: 1, gone: None };
-    let mut by_bg = fixture();
-    node_in(&mut by_bg, NodePhase::WaitingBackground(stored));
     let sdk = sdk_task();
     let own_work = LiveState::Working(Worker::OwnWork);
     let mut runs: Vec<(&str, &DomainState, Option<&LiveState>, LiveSnapshot, Option<(&str, &str)>)> = vec![];
     for (node, en, es) in &cases {
         let live = LiveSnapshot { nodes: vec![node.clone()], ..Default::default() };
-        runs.push(("claude --bg", &by_bg, None, live.clone(), Some((*en, *es))));
         runs.push(("the Agent SDK", &sdk, Some(&own_work), live, Some((*en, *es))));
     }
-    runs.push(("claude --bg with no readings", &by_bg, None, LiveSnapshot::default(), Some(("`sleep 5900` and 1 more", "`sleep 5900` y 1 más"))));
     runs.push(("the Agent SDK with no readings", &sdk, Some(&own_work), LiveSnapshot::default(), None));
     for (through, state, in_state, live, named) in &runs {
         for (lang, waits) in [(Lang::En, "Working"), (Lang::Es, "Trabajando")] {
@@ -8611,8 +8627,9 @@ fn a_task_whose_turn_ended_behind_its_own_work_says_so_and_names_what_runs() {
     }
 }
 
-/// Whatever phase `claude --bg` last left on a node of the Agent SDK (starting, lost, closed…), its
-/// task whose turn runs reads «Working» on every client: never «Stopped», coming back or starting.
+/// Whatever phase a node of the Agent SDK has, closed too as every phase an older release stored
+/// reads, its task whose turn runs reads «Working» on every client: never «Stopped», coming back or
+/// starting.
 #[test]
 fn a_task_of_the_sdk_whose_turn_runs_reads_working_whatever_its_nodes_old_phase_says() {
     let live = LiveSnapshot::default();
@@ -9828,9 +9845,9 @@ fn working_rows_fixture() -> (DomainState, LiveSnapshot) {
         task_in(&mut state, &task, "r-1", TaskState::Running);
         state.tasks.get_mut(&task.clone().into()).unwrap().agent_id = Some(agent.clone().into());
         state.tasks.get_mut(&task.clone().into()).unwrap().title = title.into();
-        let background = Background { work: crate::model::BackgroundKind::Shell, label: "make build".into(), since: 0, others: 1, gone: None };
-        state.agents.insert(agent.clone().into(), Agent { id: agent.clone().into(), name: title.into(),
-            phase: if id == "background" { NodePhase::WaitingBackground(background) } else { NodePhase::Working }, since: 0 });
+        state.agents.insert(agent.clone().into(), Agent { id: agent.clone().into(), name: title.into(), phase: NodePhase::ThroughSdk, since: 0 });
+        let journal = if id == "background" { sdk_own_work(&task, &agent) } else { sdk_turn(&task, &agent) };
+        state.lifecycle_journal.insert(task.clone().into(), journal);
         let mut node = LiveNode { agent_id: agent, name: title.into(), working: true,
             state_since: Some("2026-09-30T09:30:00Z".into()),
             last_message: Some("The checks passed. I am reviewing the diff.".into()),

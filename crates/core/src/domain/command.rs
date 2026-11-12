@@ -74,9 +74,6 @@ pub enum Command {
         finished_at: i64,
     },
     InterruptScheduleRunsOnRestart,
-    /// Every node of the Agent SDK an older daemon left in a phase of its own takes `ThroughSdk`,
-    /// its pause moved to its task's lifecycle: the daemon runs it when it opens its domain.
-    AdoptSdkNodes,
     /// Every task the store keeps waiting whose waits are over goes on, saved and with its node
     /// told: the daemon runs it when it opens its domain, since opening it tells no node.
     ReviewWaits,
@@ -134,17 +131,11 @@ pub enum Command {
     MoveNode {
         agent_id: AgentId,
         event: NodeEvent,
-        at: Millis,
     },
     /// What a node said last as a turn of it ended.
     RecordLastWords {
         agent_id: AgentId,
         text: String,
-    },
-    /// What the listing of real sessions says of each node Alondra launched, absent included.
-    ReconcileNodes {
-        listed: BTreeMap<AgentId, Listed>,
-        at: Millis,
     },
     AdvanceOrchestratorGeneration {
         generation: u64,

@@ -107,12 +107,6 @@ impl UsagePause {
         self.changed.subscribe()
     }
 
-    /// Resolves once nothing is exhausted.
-    pub(crate) async fn until_clear(&self) {
-        let mut changes = self.subscribe();
-        let _ = changes.wait_for(Option::is_none).await;
-    }
-
     /// Claude said usage is out; `until` is the reset it reported, when known. A later reset
     /// extends the standing exhaustion. One that returns right after a resume waits longer
     /// each time.
@@ -486,14 +480,9 @@ fn wake_legacy_nodes(domain: &crate::domain_runtime::DomainRuntime, require_capa
         if !legacy_wake_ready(&state, &alondra_core::domain::AgentId(node.session_id.clone()), now, require_capacity) {
             continue;
         }
-        if !domain.live.gate.hold_back(domain, &node.session_id, crate::pauses::Reason::Usage, now)
-            && crate::sdk_handover::tell(domain, &node.session_id, crate::node_push::ALONDRA, RESUME_MESSAGE, true).is_err()
-        {
-            domain.live.losses.report(&node.session_id);
+        if !domain.live.gate.hold_back(domain, &node.session_id, crate::pauses::Reason::Usage, now) {
+            let _ = crate::sdk_handover::tell(domain, &node.session_id, crate::node_push::ALONDRA, RESUME_MESSAGE, true);
         }
-    }
-    for agent in state.agents.keys().filter(|agent| !domain.live.mods.connected(&agent.0) && legacy_wake_ready(&state, agent, now, require_capacity)) {
-        domain.live.losses.report(&agent.0);
     }
 }
 
@@ -511,10 +500,6 @@ fn legacy_wake_ready(state: &alondra_core::domain::DomainState, agent: &alondra_
         AccountKey { provider: Provider::Claude, account: alondra_core::accounts::AccountId::default_account() }
     };
     account_retry_ready(state, &key, now, now, require_capacity)
-}
-
-pub(crate) fn legacy_session_retry_ready(state: &alondra_core::domain::DomainState, session: &str, now: Millis) -> bool {
-    legacy_wake_ready(state, &alondra_core::domain::AgentId(session.to_owned()), now, true)
 }
 
 pub(crate) fn task_usage_ready(state: &alondra_core::domain::DomainState, task: &alondra_core::domain::TaskId, since: Millis, now: Millis) -> bool {

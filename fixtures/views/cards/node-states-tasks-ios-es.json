@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "va11900f70f578dfd",
+  "version": "vcf89cd4320defa11",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -189,6 +189,27 @@
                   "title": "En segundo plano: `./deploy/brew/release.sh 0.2.67` · desde las 09:40",
                   "depth": 0,
                   "struck": false
+                }
+              ],
+              "actions": [
+                {
+                  "id": "pause:release-runner@6",
+                  "label": "Pausar",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "confirm": {
+                    "title": "¿Pausar este nodo?",
+                    "message": "Deja lo que está ejecutando ahora y conserva su tarea. Alondra no lo reanuda solo: solo tú.",
+                    "button": "Pausar"
+                  },
+                  "enabled": true,
+                  "stamp": "En pausa",
+                  "resolves_card": false
                 }
               ]
             },

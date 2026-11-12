@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:d",
   "client": "mac",
-  "version": "vdd13021d2199aa04",
+  "version": "v499bfd510c06c6ee",
   "cursor": "cursor-1",
   "title": "Review the result",
   "status": {
@@ -64,7 +64,7 @@
             "summary": "1 punto"
           },
           "reply": {
-            "id": "changes:pr@7~head1",
+            "id": "changes:pr@10~head1",
             "label": "Pedir cambios",
             "style": "secondary",
             "role": "neutral",
@@ -120,7 +120,7 @@
           "detail": "included",
           "actions": [
             {
-              "id": "merge:d@7~head1-d",
+              "id": "merge:d@10~head1-d",
               "label": "Squash and merge",
               "style": "primary",
               "role": "advance",
@@ -136,7 +136,7 @@
               "resolves_card": true
             },
             {
-              "id": "close_unmerged:d@7",
+              "id": "close_unmerged:d@10",
               "label": "Cerrar sin hacer merge",
               "style": "destructive",
               "role": "risk",

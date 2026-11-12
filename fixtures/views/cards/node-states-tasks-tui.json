@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "v10064171772f7494",
+  "version": "vf462669d0705e74d",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -164,7 +164,29 @@
                 }
               ],
               "depth": 1,
-              "struck": false
+              "struck": false,
+              "actions": [
+                {
+                  "id": "pause:release-runner@6",
+                  "label": "Pausar",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "confirm": {
+                    "title": "¿Pausar este nodo?",
+                    "message": "Deja lo que está ejecutando ahora y conserva su tarea. Alondra no lo reanuda solo: solo tú.",
+                    "button": "Pausar"
+                  },
+                  "enabled": true,
+                  "stamp": "En pausa",
+                  "key": "p",
+                  "resolves_card": false
+                }
+              ]
             },
             {
               "id": "t-zeta-worker",

@@ -2,7 +2,7 @@ use super::*;
 use crate::machine_watch::step_on;
 use crate::node_reports::{Envelope, Report};
 use alondra_core::Machine;
-use alondra_core::domain::{Actor, AgentId, Command, CommandEnvelope, PROTOCOL_VERSION};
+use alondra_core::domain::{Actor, AgentId, Command, CommandEnvelope, RuntimeObservation, PROTOCOL_VERSION};
 
 const MIN: Millis = 60_000;
 const SAMPLE: Millis = 10_000;
@@ -300,13 +300,23 @@ fn create(domain: &DomainRuntime, id: &str) {
     });
 }
 
-/// The admitted task's node starts and takes its first turn.
+/// The admitted task's node starts through the Agent SDK and takes its first turn.
 fn start(domain: &DomainRuntime, id: &str, now: Millis) {
     let agent = format!("agent-{id}");
     run(domain, Actor::System, Command::RegisterAgent { agent_id: AgentId(agent.clone()), name: agent.clone(), at: 0 });
-    run(domain, Actor::System, Command::MoveNode { agent_id: AgentId(agent.clone()), event: alondra_core::domain::NodeEvent::TurnStarted, at: 0 });
-    run(domain, Actor::User { user_id: "u".into() }, Command::AssignTask { task_id: id.into(), agent_id: AgentId(agent.clone()), model: None });
+    crate::domain_store::admit_through_sdk(domain, &id.into(), &agent);
+    run(domain, Actor::System, Command::RecordRuntimeFacts { task_id: id.into(), generation: 1, facts: vec![
+        RuntimeObservation::ResourceAvailable,
+        RuntimeObservation::TurnStarted { turn: format!("turn-{id}-{now}"), input: next_input(domain, id) },
+    ] });
     domain.report(Envelope { session_id: agent, report: Report::TurnStart }, now);
+}
+
+/// The input the task's node goes on with next.
+fn next_input(domain: &DomainRuntime, id: &str) -> String {
+    let state = domain.state().unwrap();
+    let lifecycle = state.lifecycle_of(&id.into()).unwrap();
+    lifecycle.pending_inputs().first().map(|input| input.as_str().to_owned()).expect("an input waits for the node")
 }
 
 #[test]
@@ -520,9 +530,24 @@ fn sample(domain: &DomainRuntime, free: u32, from: Millis, to: Millis) {
 }
 
 /// The node's turn ends, as its mod and the Stop hook say.
+/// The node's turn ends with nothing for anyone: what it goes on with waits for it.
+fn end_turn(domain: &DomainRuntime, id: &str) {
+    let turn = domain.state().unwrap().lifecycle_of(&id.into()).unwrap().turn().expect("a turn runs").as_str().to_owned();
+    run(domain, Actor::System, Command::RecordTurnBoundary { task_id: id.into(), generation: 1, turn, failure: None, failed: None });
+}
+
+/// The node's turn ends on a question for the user: it rests on the card and takes no slot. A node
+/// with no turn running already rests.
 fn finish(domain: &DomainRuntime, id: &str, now: Millis) {
+    let Some(turn) = domain.state().unwrap().lifecycle_of(&id.into()).unwrap().turn().map(|turn| turn.as_str().to_owned()) else { return };
+    let options = vec![alondra_core::domain::QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }];
+    run(domain, Actor::Agent { agent_id: AgentId(format!("agent-{id}")) }, Command::AskQuestion {
+        attachments: vec![], interaction_id: format!("q-{id}-{now}").into(), scope: alondra_core::domain::Scope::Task { task_id: id.into() },
+        recipient: alondra_core::domain::Recipient::User, body: "Ship it?".into(), blocking: false,
+        card: alondra_core::domain::CardSpec::question("Ship it?", &options), options,
+    });
+    run(domain, Actor::System, Command::RecordTurnBoundary { task_id: id.into(), generation: 1, turn, failure: None, failed: None });
     domain.report(Envelope { session_id: format!("agent-{id}"), report: Report::TurnComplete { answer: "Done".into(), aborted: false } }, now);
-    crate::domain_agent_lifecycle::node_event_at(domain, &AgentId(format!("agent-{id}")), alondra_core::domain::NodeEvent::TurnEnded, now).unwrap();
 }
 
 fn ask(domain: &DomainRuntime, id: &str, now: Millis) -> Result<(), Hold> {
@@ -961,10 +986,15 @@ fn paused_by_user(domain: &DomainRuntime, id: &str, priority: TaskPriority, at: 
     domain.report(Envelope { session_id: format!("agent-{id}"), report: Report::TurnComplete { answer: String::new(), aborted: true } }, at);
 }
 
-/// A node the gate let back takes its turn, as its mod and the node machine say.
+/// A node the gate let back takes its turn with what it was told, if anything waits for it.
 fn goes_on(domain: &DomainRuntime, id: &str, now: Millis) {
+    let waiting = domain.state().unwrap().lifecycle_of(&id.into()).unwrap().pending_inputs().first().map(|input| input.as_str().to_owned());
+    if let Some(input) = waiting {
+        run(domain, Actor::System, Command::RecordRuntimeFacts { task_id: id.into(), generation: 1, facts: vec![
+            RuntimeObservation::TurnStarted { turn: format!("turn-{id}-{now}"), input },
+        ] });
+    }
     domain.report(Envelope { session_id: format!("agent-{id}"), report: Report::TurnStart }, now);
-    crate::domain_agent_lifecycle::node_event_at(domain, &AgentId(format!("agent-{id}")), alondra_core::domain::NodeEvent::TurnStarted, now).unwrap();
 }
 
 fn still_paused(domain: &DomainRuntime, id: &str) -> bool {
@@ -1445,7 +1475,7 @@ fn eighteen_paused_and_forty_four_waiting_with_14_5_gb_free_all_get_to_work() {
         create_in(&domain, id, "app");
         start(&domain, id, base);
         assert!(gate.hold_back(&domain, &format!("agent-{id}"), Reason::Disk, base));
-        finish(&domain, id, base);
+        end_turn(&domain, id);
     }
     let fresh: Vec<String> = (0..26).map(|index| format!("q{index}")).collect();
     for id in &fresh {

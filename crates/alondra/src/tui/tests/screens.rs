@@ -2,7 +2,7 @@
 //! for the terminal, the way the owner sees them.
 
 use super::*;
-use alondra_core::domain::{Agent, DomainState, Request, Task, TaskState};
+use alondra_core::domain::{Agent, DomainState, Request, Task, TaskId, TaskState};
 use alondra_core::views::{self, Client, Lang, LiveNode, LiveSnapshot, RenderContext, Transport};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -88,6 +88,20 @@ fn task(id: &str, request: &str, agent: Option<&str>, title: &str, state: TaskSt
     }
 }
 
+/// The journal of a task whose node runs a turn through the Agent SDK.
+fn turn_runs(domain: &mut DomainState, task: &str, agent: &str) {
+    use alondra_core::domain::{ExecutionIdentity, LifecycleRecord};
+    domain.lifecycle_journal.insert(task.into(), vec![
+        LifecycleRecord::Planned { input: format!("input:{task}:1") },
+        LifecycleRecord::Admitted {
+            node: agent.into(),
+            execution: Some(ExecutionIdentity { conversation: "conversation".into(), instance: format!("instance-{task}"), host: "alondra-sdk".into() }),
+        },
+        LifecycleRecord::ResourceAvailable,
+        LifecycleRecord::TurnStarted { turn: "turn".into(), input: format!("input:{task}:1") },
+    ]);
+}
+
 /// Four nodes with one task each, three finished and one working, plus a scheduled task nobody
 /// has started: the owner's nodes on 2026-10-03.
 pub(super) fn busy() -> (DomainState, LiveSnapshot) {
@@ -110,13 +124,16 @@ pub(super) fn busy() -> (DomainState, LiveSnapshot) {
         domain.agents.insert(
             agent.as_str().into(),
             Agent { id: agent.as_str().into(), name: title.into(), since: 0, phase: match state {
-                TaskState::Done => alondra_core::domain::NodePhase::Closing,
-                _ => alondra_core::domain::NodePhase::Working,
+                TaskState::Done => alondra_core::domain::NodePhase::Closed,
+                _ => alondra_core::domain::NodePhase::ThroughSdk,
             } },
         );
         domain
             .tasks
             .insert(task_id.as_str().into(), task(&task_id, &request, Some(&agent), title, state));
+        if state == TaskState::Running {
+            turn_runs(&mut domain, &task_id, &agent);
+        }
         live.nodes.push(LiveNode {
             agent_id: agent.clone(),
             short_id: Some(format!("n{index}")),
@@ -216,13 +233,17 @@ fn split_group_list() -> (DomainState, LiveSnapshot) {
         domain.tasks.insert(id.as_str().into(), task(&id, &request, None, &id, TaskState::Running));
     }
     let mut live = LiveSnapshot::default();
-    for task in domain.tasks.values_mut().filter(|task| task.state == TaskState::Running) {
-        let id = format!("agent-{}", task.id);
+    let running: Vec<TaskId> = domain.tasks.values().filter(|task| task.state == TaskState::Running).map(|task| task.id.clone()).collect();
+    for task_id in running {
+        let id = format!("agent-{task_id}");
+        let task = domain.tasks.get_mut(&task_id).unwrap();
         task.agent_id = Some(id.as_str().into());
+        let title = task.title.clone();
         domain.agents.insert(id.as_str().into(), Agent {
-            id: id.as_str().into(), name: task.title.clone(), since: 0,
-            phase: alondra_core::domain::NodePhase::Working,
+            id: id.as_str().into(), name: title, since: 0,
+            phase: alondra_core::domain::NodePhase::ThroughSdk,
         });
+        turn_runs(&mut domain, &task_id.0, &id);
         live.nodes.push(LiveNode { agent_id: id, working: true, ..LiveNode::default() });
     }
     (domain, live)
@@ -353,7 +374,7 @@ fn the_tasks_list_is_three_blocks_with_waiting_for_another_in_waiting_and_names_
 fn a_task_in_review_without_a_card_is_not_for_you_in_tasks() {
     let (mut domain, mut live) = busy();
     domain.tasks.get_mut(&"t-3".into()).unwrap().state = TaskState::ForYourReview;
-    domain.agents.get_mut(&"a-3".into()).unwrap().phase = alondra_core::domain::NodePhase::Delivered { in_turn: false };
+    domain.lifecycle_journal.remove(&"t-3".into());
     live.nodes.iter_mut().for_each(|node| node.working = false);
     assert!(alondra_core::domain::ReadIndex::build(&domain).waiting().is_empty(), "no card waits");
     let mut tasks = app_on(Screen::Tasks, build(&domain, &live, "tasks"));
@@ -1485,7 +1506,9 @@ fn split_group_selection_survives_rows_inserted_before_it() {
     inserted.id = "t-000".into();
     inserted.request_id = "r-000".into();
     domain.requests.insert("r-000".into(), Request::new("r-000".into(), "Earlier row".into()));
+    let agent = inserted.agent_id.clone().unwrap();
     domain.tasks.insert(inserted.id.clone(), inserted);
+    turn_runs(&mut domain, "t-000", &agent.0);
     domain.revision += 1;
     app.on_msg(Msg::ViewHome(Ok(build(&domain, &live, "tasks"))));
     assert_eq!(app.sel.as_ref(), Some(&group_ids[1]));

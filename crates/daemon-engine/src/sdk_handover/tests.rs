@@ -52,10 +52,6 @@ impl Drop for Bg {
 }
 
 impl BgSessions for Bg {
-    fn seen(&self, _: &DomainRuntime, session: &str) -> Option<HandoverProcess> {
-        (session == SESSION && self.running()).then_some(self.process)
-    }
-
     fn listed<'a>(&'a self, session: &'a str) -> Answer<'a, Result<Option<HandoverProcess>, String>> {
         Box::pin(async move { Ok((session == SESSION && self.running()).then_some(self.process)) })
     }
@@ -103,10 +99,6 @@ fn user() -> Actor {
 
 fn node() -> Actor {
     Actor::Agent { agent_id: SESSION.into() }
-}
-
-fn event(domain: &DomainRuntime, happened: NodeEvent) {
-    crate::domain_agent_lifecycle::node_event(domain, &AgentId(SESSION.into()), happened).unwrap();
 }
 
 impl World {
@@ -159,7 +151,6 @@ impl World {
         run(&world.domain, &user(), "assign", Command::AssignTask { task_id: TASK.into(), agent_id: SESSION.into(), model: None }).unwrap();
         run(&world.domain, &node(), "start", Command::StartTask { task_id: TASK.into() }).unwrap();
         world.domain.connect_node(serde_json::from_value(serde_json::json!({"session_id": SESSION, "version": "2.1.300", "cwd": world.worktree})).unwrap(), 1);
-        event(&world.domain, NodeEvent::TurnStarted);
         world
     }
 
@@ -171,7 +162,7 @@ impl World {
         domain
     }
 
-    /// The node asks the user which format to use and its turn ends: it rests on its card.
+    /// The node asks the user which format to use.
     fn rest(&self) {
         run(&self.domain, &node(), "ask", Command::AskQuestion {
             attachments: vec![], interaction_id: CARD.into(), scope: Scope::Task { task_id: TASK.into() }, recipient: Recipient::User,
@@ -180,13 +171,25 @@ impl World {
                 QuestionOption { id: "plain".into(), label: "Plain list".into(), description: None }],
             card: CardSpec::new(CardKind::Decide, "Choose the changelog format").why("The release notes follow it"),
         }).unwrap();
-        event(&self.domain, NodeEvent::TurnEnded);
-        assert_eq!(self.domain.state().unwrap().node_phase(&AgentId(SESSION.into())), Some(&NodePhase::WaitingUser { in_turn: false }));
     }
 
     fn answer(&self) {
         run(&self.domain, &user(), "answer", Command::AnswerQuestion { attachments: vec![], interaction_id: CARD.into(), option_id: "plain".into(), inputs: Default::default() }).unwrap();
         assert_eq!(self.waiting_messages(), 1, "the answer waits in the outbox for the node");
+    }
+
+    /// The move an earlier release planned for the node, with the answer waiting for it as its
+    /// input, as it journaled it before this release stopped planning moves.
+    fn plan_move(&self) {
+        let state = self.domain.state().unwrap();
+        let message = self.domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+            .find(|message| message.agent_id.as_deref() == Some(SESSION)).expect("the answer waits for the node");
+        let input = crate::node_push::stamped(crate::node_push::ALONDRA, alondra_core::now_millis(), &crate::domain_transport::render(&state, &message));
+        let plan = crate::domain_store::HandoverPlan {
+            session: SESSION.into(), cwd: self.worktree.to_str().unwrap().into(), name: "release-notes".into(),
+            process: Some(self.bg.process), input, outbox: Some(message.id), returning: false,
+        };
+        assert!(self.domain.store.lock().unwrap().plan_handover(&AgentId(SESSION.into()), &TaskId::from(TASK), &plan).unwrap());
     }
 
     fn waiting_messages(&self) -> usize {
@@ -273,19 +276,21 @@ async fn assert_moved(world: &World) {
     assert_eq!(state.node_phase(&AgentId(SESSION.into())), Some(&NodePhase::Closed), "the claude --bg node is closed");
     assert_eq!(world.waiting_messages(), 0, "the answer it carried is handed");
     assert!(crate::domain_store::handover_copy_path(&world.database.canonicalize().unwrap()).exists(), "the database was copied before the first move");
-    assert!(!crate::node_revival::needed(&world.domain, SESSION), "nothing brings the old node back");
 }
 
-// A node at rest moves with the next input for it: the user's answer to its card stops its
-// claude --bg process, its exit is seen by the process's identity, and the SDK resumes its same
-// session with the answer as the first input.
+// A move an earlier release planned goes on to its end: its claude --bg process is stopped, its
+// exit is seen by the process's identity, and the SDK resumes its same session with the answer as
+// the first input. No new move is planned: a node without one stays.
 #[tokio::test]
-async fn a_resting_node_moves_with_the_answer_to_its_card_and_resumes_the_same_claude_session() {
+async fn a_journaled_move_resumes_the_same_claude_session_with_its_input() {
     let world = World::new();
     world.rest();
-    assert_eq!(world.verdict(), Verdict::Passes(Reason::NextMessage));
     world.answer();
-    assert_eq!(world.verdict(), Verdict::Passes(Reason::MessageWaiting));
+    tick(&world.domain).await;
+    assert_eq!(world.step(), None, "no new move is planned");
+    assert_eq!(world.verdict(), Verdict::Stays(Reason::SessionClosed));
+    world.plan_move();
+    assert_eq!(world.verdict(), Verdict::Passes(Reason::Moving(HandoverStep::Planned)));
     tick(&world.domain).await;
     assert_moved(&world).await;
     assert_eq!(world.bg.stops.load(Ordering::SeqCst), 1);
@@ -300,6 +305,7 @@ async fn a_move_cut_after_its_admission_starts_the_host_and_claude_code_a_releas
     let mut world = World::installed();
     world.rest();
     world.answer();
+    world.plan_move();
     *world.domain.handovers.crash_after.lock().unwrap() = Some(HandoverStep::SdkAdmitted);
     tick(&world.domain).await;
     assert_eq!(world.step(), Some(HandoverStep::SdkAdmitted));
@@ -318,6 +324,7 @@ async fn a_crash_after_each_step_of_the_move_goes_on_from_that_step_and_repeats_
         let mut world = World::new();
         world.rest();
         world.answer();
+        world.plan_move();
         *world.domain.handovers.crash_after.lock().unwrap() = Some(step);
         tick(&world.domain).await;
         assert_eq!(world.step(), Some(step), "the move stopped at {step:?}");
@@ -331,27 +338,6 @@ async fn a_crash_after_each_step_of_the_move_goes_on_from_that_step_and_repeats_
     }
 }
 
-// A node in a turn stays on claude --bg: what it is told reaches its session down its connection,
-// and nothing stops it. Once it rests, the next input moves it.
-#[tokio::test]
-async fn a_node_in_a_turn_stays_on_claude_bg_until_it_rests() {
-    let world = World::new();
-    let connection = crate::node_push::testing::Node::connect(&world.domain, SESSION);
-    assert!(matches!(tell(&world.domain, SESSION, "Alice", "Use the new endpoint", true), Ok(Told::Pushed(_))), "it is told through its connection, not moved");
-    assert_eq!(world.verdict(), Verdict::Waits(Reason::InTurn));
-    while connection.texts().is_empty() {
-        tokio::task::yield_now().await;
-    }
-    assert_eq!(connection.texts(), ["Use the new endpoint"]);
-    tick(&world.domain).await;
-    assert_eq!(world.step(), None, "a working node has no move");
-    assert!(world.bg.running() && world.bg.stops.load(Ordering::SeqCst) == 0, "nothing stopped it");
-    world.rest();
-    world.answer();
-    tick(&world.domain).await;
-    assert_moved(&world).await;
-}
-
 // `claude stop` can answer before the process exited: the SDK takes the session only once the
 // process is seen gone by its identity, never while the claude --bg process still runs.
 #[tokio::test]
@@ -359,6 +345,7 @@ async fn the_sdk_takes_the_session_only_once_the_claude_bg_process_has_exited() 
     let world = World::new();
     world.rest();
     world.answer();
+    world.plan_move();
     world.bg.early_answers.store(1, Ordering::SeqCst);
     tick(&world.domain).await;
     assert!(world.bg.running(), "claude stop answered, the process goes on");
@@ -367,45 +354,6 @@ async fn the_sdk_takes_the_session_only_once_the_claude_bg_process_has_exited() 
     tick(&world.domain).await;
     assert_moved(&world).await;
     assert_eq!(world.bg.stops.load(Ordering::SeqCst), 2);
-}
-
-// A node brought back moves instead of being restarted: a paused node's resume opens its session
-// through the SDK, and nothing calls claude respawn.
-#[tokio::test]
-async fn a_paused_node_moves_to_the_sdk_as_it_comes_back() {
-    let world = World::new();
-    event(&world.domain, NodeEvent::Paused { pause: Pause {
-        reason: PauseReason::Usage, since: alondra_core::now_millis(), cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false,
-    } });
-    assert_eq!(world.verdict(), Verdict::Passes(Reason::BackFromPause));
-    assert!(matches!(tell(&world.domain, SESSION, crate::node_push::ALONDRA, "Your usage is back: carry on with your task", true), Ok(Told::Moving)));
-    assert_eq!(advance(&world.domain, &AgentId(SESSION.into())).await, Ok(HandoverStep::Done));
-    world.until_answered().await;
-    assert!(!world.bg.running());
-    let starts = world.starts();
-    assert_eq!(starts[0]["resume"].as_str(), Some(SESSION), "{starts:?}");
-    assert!(world.prompts()[0].ends_with("Your usage is back: carry on with your task"), "{:?}", world.prompts());
-}
-
-// A node whose connection is lost while its task is open is brought back by the revival: its
-// claude --bg process is stopped and the SDK resumes its same session, told to carry on.
-#[tokio::test]
-async fn a_node_whose_connection_is_lost_comes_back_through_the_sdk_with_its_same_session_told_to_carry_on() {
-    let world = World::new();
-    let connection = world.domain.live.mods.session(SESSION).and_then(|reported| reported.connection).expect("the node is connected");
-    world.domain.live.mods.disconnect(SESSION, connection);
-    crate::node_revival::revive(&world.domain, SESSION, &crate::node_revival::Timing { grace: std::time::Duration::from_millis(30) }).await;
-    world.until_answered().await;
-    assert_eq!(world.step(), Some(HandoverStep::Done));
-    assert!(!world.bg.running(), "the claude --bg process is gone");
-    let starts = world.starts();
-    assert_eq!(starts.len(), 1, "{starts:?}");
-    assert_eq!(starts[0]["resume"].as_str(), Some(SESSION), "the same session: {starts:?}");
-    assert_eq!(starts[0]["cwd"].as_str().map(PathBuf::from), Some(world.worktree.canonicalize().unwrap()), "in the node's folder");
-    let prompts = world.prompts();
-    assert_eq!(prompts.len(), 1, "{prompts:?}");
-    assert!(prompts[0].contains("Alondra restarted it. Check where you were and continue your task."), "{}", prompts[0]);
-    assert!(world.sdk_node().is_some_and(|agent| world.domain.owns_sdk_host(&agent)), "the SDK node holds the task");
 }
 
 proptest::proptest! {
@@ -419,6 +367,7 @@ proptest::proptest! {
             let mut world = World::new();
             world.rest();
             world.answer();
+            world.plan_move();
             world.bg.early_answers.store(early, Ordering::SeqCst);
             *world.domain.handovers.crash_after.lock().unwrap() = crash.map(|at| [HandoverStep::Planned, HandoverStep::BgStopped, HandoverStep::SdkAdmitted][at]);
             for _ in 0..=early {

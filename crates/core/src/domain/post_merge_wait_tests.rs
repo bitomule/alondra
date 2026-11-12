@@ -52,7 +52,6 @@ fn task_with_pr(s: &mut DomainState, task: &str, agent: &str, title: &str, numbe
         dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
     });
     must(s, node(agent), Command::StartTask { task_id: task.into() });
-    must(s, Actor::System, Command::MoveNode { agent_id: agent.into(), event: NodeEvent::TurnStarted, at: 1 });
     must(s, node(agent), Command::RegisterPr {
         task_id: task.into(), pr_id: format!("pr-{task}").into(), host: "github.com".into(), repository: "owner/repo".into(), number,
         head: "head1".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
@@ -114,7 +113,6 @@ fn a_wait_after_the_merge_holds_the_task_on_what_it_names_and_wakes_its_node_onc
     assert_eq!(release.state, TaskState::WaitingDependency);
     assert_eq!(release.dependencies, BTreeSet::from([FIX.into()]));
     assert_eq!(s.holder(release, &StartFacts::default()), Ok(Holder::Task(FIX.into())));
-    assert_eq!(s.task_activity(release), Some(TaskActivity::WaitingDependency));
     assert_eq!(s.waited_tasks(&RELEASE.into()), vec!["Fix the Mac package".to_owned()]);
 
     let landed = deliver_and_merge(&mut s, FIX, "b", "The Mac package no longer ships ._ entries");
@@ -128,7 +126,6 @@ fn a_wait_after_the_merge_holds_the_task_on_what_it_names_and_wakes_its_node_onc
     assert_eq!(told(&landed, "a"), vec![expected]);
     assert_eq!(s.tasks[&RELEASE.into()].wrap_up.post_merge_work.as_ref().unwrap().declared_at, s.revision,
         "the watch on the work after the merge starts over when the node is woken");
-    assert_eq!(s.task_activity(&s.tasks[&RELEASE.into()]), Some(TaskActivity::AfterMerge { reason: "publish beta 59".into() }));
 
     let later = must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: FIX.into(), end: NodeEnd::Closed, agent_id: None });
     assert_eq!(state(&s, FIX), TaskState::Done);
@@ -207,23 +204,6 @@ fn a_node_names_a_task_a_pr_or_its_url() {
     assert_eq!(WaitTarget::parse(" Bitomule/Alondra#1142 "), WaitTarget::PullRequest { repository: "bitomule/alondra".into(), number: 1142 });
     assert_eq!(WaitTarget::parse("https://github.com/bitomule/alondra/pull/1142/"),
         WaitTarget::PullRequest { repository: "bitomule/alondra".into(), number: 1142 });
-}
-
-/// A turn that ends while the work after the merge waits for another task leaves it owed: what it
-/// waits for has not landed. Once it lands, the turn it wakes the node for ends the work if the
-/// node does not declare it again.
-#[test]
-fn a_turn_ending_while_the_work_waits_for_another_task_leaves_it_owed() {
-    let mut s = release_and_fix();
-    must(&mut s, node("a"), declare(Some("publish beta 59"), vec![fix_pr()]));
-    let turn = |s: &mut DomainState, event: NodeEvent, at: Millis| { must(s, Actor::System, Command::MoveNode { agent_id: "a".into(), event, at }); };
-    turn(&mut s, NodeEvent::TurnStarted, 10);
-    turn(&mut s, NodeEvent::TurnEnded, 11);
-    assert!(s.tasks[&RELEASE.into()].wrap_up.post_merge_work.is_some(), "the fix has not landed");
-    deliver_and_merge(&mut s, FIX, "b", "Fixed");
-    turn(&mut s, NodeEvent::TurnStarted, 12);
-    turn(&mut s, NodeEvent::TurnEnded, 13);
-    assert_eq!(s.tasks[&RELEASE.into()].wrap_up.post_merge_work, None, "the turn the landing woke it for ended without declaring it again");
 }
 
 /// A started task of node `c` waiting on the fix, and one without a node waiting on it too.

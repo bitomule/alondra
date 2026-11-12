@@ -931,11 +931,9 @@ mod tests {
         let fixture = FeedFixture::new();
         let (agent, key) = fixture.node_on_task("activity");
         let agent = agent.as_str();
-        let tool = |command: &str| serde_json::json!({
-            "session_id": agent, "hook_event_name": "PreToolUse", "tool_name": "Bash",
-            "tool_input": {"command": command}, "cwd": "/tmp/feed-project"
-        });
-        fixture.client.domain.live.observe(&tool("echo first"));
+        let tool = |command: &str| serde_json::json!({"type": "assistant", "parent_tool_use_id": null, "message": {"role": "assistant",
+            "content": [{"type": "tool_use", "id": format!("toolu-{}", command.len()), "name": "Bash", "input": {"command": command}}]}});
+        fixture.client.domain.live.mods.apply_sdk(agent, &tool("echo first"), alondra_core::now_millis());
         let state = fixture.client.domain.state().unwrap();
         let live = super::super::live::gather(&fixture.client, &state, Lang::En, &[key.clone()], false, false).await;
         let rendered = fixture.client.views.render(&key, &alondra_core::domain::ReadSnapshot::build(state.clone()), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
@@ -945,7 +943,7 @@ mod tests {
         assert_eq!(unchanged["stale"], serde_json::json!([]), "{unchanged}");
         let mut last = None;
         sample_live(&fixture.client, &fixture.client.domain.state().unwrap(), &mut last).await;
-        fixture.client.domain.live.observe(&tool("echo second"));
+        fixture.client.domain.live.mods.apply_sdk(agent, &tool("echo second, again"), alondra_core::now_millis());
         assert!(sample_live(&fixture.client, &fixture.client.domain.state().unwrap(), &mut last).await);
         let reply = response_json(handle(&fixture.client, "device-activity", &query(&first.cursor, 0, &open), Transport::Loopback).await).await;
         assert_eq!(reply["stale"], serde_json::json!([key]), "{reply}");

@@ -2,38 +2,16 @@ use super::*;
 use std::{future::Future, sync::{Mutex, atomic::{AtomicBool, Ordering}}, task::{Context as TaskContext, Waker}};
 use tokio::sync::oneshot;
 
-struct Listing(Mutex<Option<oneshot::Receiver<String>>>);
-impl node_close::Sessions for Listing {
-    fn claude<'a>(&'a self, _: Vec<String>) -> node_close::Answer<'a, std::result::Result<node_close::Ran, String>> {
-        let listing = self.0.lock().unwrap().take().unwrap();
-        Box::pin(async move { Ok(node_close::Ran { success: true, stdout: listing.await.unwrap(), stderr: String::new() }) })
-    }
-    fn leftovers<'a>(&'a self, _: &'a str) -> node_close::Answer<'a, Option<String>> {
-        panic!("initial reconciliation must not close sessions")
-    }
-}
-
 #[tokio::test]
-async fn workers_wait_for_recovery_and_receive_the_configured_admission_gate() {
+async fn workers_receive_the_configured_admission_gate() {
     let home = crate::test_support::Directory::new();
     std::fs::create_dir_all(&home).unwrap();
-    let domain = Arc::new(node_reconcile::tests::open(&home));
-    node_reconcile::tests::launch(&domain, "vanished");
+    let domain = Arc::new(domain_runtime::DomainRuntime::open(&home).unwrap());
     domain.live.gate.tune(admission::Tuning { spacing: 0, limit: Some(admission::Limit::Fixed(1)) });
     let mut config = Config::defaults();
     config.home = home.to_path_buf();
     config.fast_timing = true;
-    let (send, receive) = oneshot::channel();
-    let listing = Listing(Mutex::new(Some(receive)));
-    let mut preparing = std::pin::pin!(prepare_workers(&config, domain.clone(), None, &listing));
-    assert!(preparing.as_mut().poll(&mut TaskContext::from_waker(Waker::noop())).is_pending(),
-        "producers must not receive a prepared domain while recovery is pending");
-    assert_eq!(domain.state().unwrap().slots().len(), 1);
-    assert!(accounts::require_initial_check(&domain).is_err(), "an account check cannot admit a node during recovery");
-    send.send("[]".into()).unwrap();
-    let PreparedWorkers(ready) = preparing.await;
-    assert!(ready.state().unwrap().slots().is_empty());
-    assert_eq!(ready.state().unwrap().agents[&"vanished".into()].phase, alondra_core::domain::NodePhase::Lost);
+    let PreparedWorkers(ready) = prepare_workers(&config, domain.clone(), None).await;
     assert_eq!(ready.live.gate.snapshot(&ready, 0).unwrap().limit, admission::UNPACED);
 }
 

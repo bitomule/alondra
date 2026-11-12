@@ -212,14 +212,6 @@ fn setup_base(store: &mut DomainStore, base: &Value) {
                 name: id.into(), at: 0
             },
         );
-        if field(agent, "phase") == "working" {
-            setup_command(
-                store,
-                &format!("setup-working-{id}"),
-                Actor::System,
-                Command::MoveNode { agent_id: id.into(), event: NodeEvent::TurnStarted, at: 0 },
-            );
-        }
     }
     for task in field(base, "tasks").as_array().unwrap() {
         let id = string(field(task, "id"));

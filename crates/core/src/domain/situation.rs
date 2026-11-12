@@ -86,8 +86,8 @@ impl DomainState {
         if listing.needs_you {
             return Situation::NeedsYou.into();
         }
-        if let Some(activity) = self.task_activity(task).filter(|activity| !matches!(activity, TaskActivity::Live(_))) {
-            return of_an_old_node(&activity).into();
+        if self.task_activity(task) == Some(TaskActivity::NodeClosed) {
+            return Situation::Waiting(WaitsFor::Slot).into();
         }
         let Ok(lifecycle) = self.lifecycle_of(&task.id) else { return without_lifecycle(task).into() };
         let Some(obligation) = lifecycle.obligation() else {
@@ -146,27 +146,6 @@ impl DomainState {
             Owed::Merge | Owed::Close => return Situation::Delivered(Delivery::Closing).into(),
             Owed::Answer | Owed::User | Owed::Turn | Owed::OwnWork => WaitsFor::Step(AlondraStep::Answering),
         }).into()
-    }
-}
-
-fn of_an_old_node(activity: &TaskActivity) -> Situation {
-    match activity {
-        TaskActivity::Starting | TaskActivity::Reconnecting => Situation::Waiting(WaitsFor::Step(AlondraStep::Starting)),
-        TaskActivity::ComingBack | TaskActivity::NodeClosed => Situation::Waiting(WaitsFor::Slot),
-        TaskActivity::Working => Situation::Working(Doing::Turn),
-        TaskActivity::WaitingBackground(_) => Situation::Working(Doing::OwnWork),
-        TaskActivity::WaitingUser => Situation::Waiting(WaitsFor::Step(AlondraStep::Answering)),
-        TaskActivity::WaitingDependency => Situation::Waiting(WaitsFor::Tasks),
-        TaskActivity::Paused(pause) => match pause.reason {
-            PauseReason::ByUser => Situation::Paused,
-            PauseReason::Memory | PauseReason::Declared { .. } => Situation::Waiting(WaitsFor::Machine),
-            PauseReason::Usage => Situation::Waiting(WaitsFor::Usage),
-            PauseReason::ApiError(_) => Situation::Waiting(WaitsFor::ProviderApi),
-            PauseReason::Disk => Situation::Waiting(WaitsFor::Disk),
-        },
-        TaskActivity::Delivered => Situation::Delivered(Delivery::ForReview),
-        TaskActivity::AfterMerge { .. } => Situation::Working(Doing::AfterMerge),
-        TaskActivity::Live(_) => unreachable!("a node of the Agent SDK reads its lifecycle"),
     }
 }
 

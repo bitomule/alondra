@@ -174,26 +174,7 @@ fn launch_with(journal: &mut LifecycleTransaction<'_>, binding: &ProviderBinding
     Ok(execution)
 }
 
-/// Task `task` runs an execution of node `agent` that the SDK host owns, launched and with the
-/// text of its first input given: what a test needs before the provider's facts are recorded.
-pub(crate) fn admit_through_sdk(runtime: &DomainRuntime, task: &TaskId, agent: &str) {
-    let state = runtime.state().unwrap();
-    let admit = Command::AdmitExecution { provider: alondra_core::accounts::Provider::Claude,
-        task_id: task.clone(), agent_id: agent.into(), conversation: format!("conversation-{task}"), instance: format!("resource-{task}"),
-        host: "fixture-service".into(), model: None, account: None, leaves_limit: None,
-    };
-    let admit = CommandEnvelope { expected_revision: state.revision, ..envelope(&state, &format!("admit-{task}"), admit) };
-    runtime.own(scope_of(&state), |owner| {
-        owner.stage_command(&Actor::System, &admit, Attached::None)?;
-        let journal = owner.journal();
-        let pending = journal.load(task)?.pending_inputs()[0].clone();
-        journal.give_input_text(task, InputPayload::new(pending, "Fixture input").unwrap())?;
-        journal.stage_launch(task, &Placement::RemoteWorkspace("fixture/workspace".into()), &binding())?;
-        let execution = journal.load(task)?.execution().unwrap().clone();
-        journal.reserve_owner(&execution, 0)?;
-        Ok(())
-    }).unwrap();
-}
+pub(crate) use super::admit_through_sdk;
 
 /// The Task runs an execution the SDK host owns at generation 1, whose provider has observed
 /// nothing yet: its `claude --bg` node was released and the domain admitted the SDK's.

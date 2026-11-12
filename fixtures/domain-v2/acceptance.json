@@ -1654,7 +1654,7 @@
         {
           "path": "agents.agent-a.phase",
           "op": "eq",
-          "value": "closing"
+          "value": "through_sdk"
         }
       ],
       "cs_evidence": ["domain::tests::explicit_acceptance_completes_the_task_and_feedback_revokes_it_first"],
@@ -1774,7 +1774,7 @@
         {
           "path": "tasks.task-2.status",
           "op": "eq",
-          "value": "running"
+          "value": "not_started"
         },
         {
           "path": "tasks.task-2.agent_id",
@@ -1784,7 +1784,7 @@
         {
           "path": "agents.agent-a.phase",
           "op": "eq",
-          "value": "resuming"
+          "value": "through_sdk"
         }
       ],
       "execution_status": "store_runner"

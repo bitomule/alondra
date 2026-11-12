@@ -1930,7 +1930,7 @@ fn native_recovery_preserves_every_queued_user_input_and_stages_the_whole_new_ge
     }
     driver.stop().unwrap();drop(driver);
     end_unowned_host(Arc::clone(&slice.domain),&slice.backend,TASK.into()).unwrap();
-    crate::node_revival::user_closed(&slice.domain,&original_agent.0).unwrap();
+    crate::node_exit::user_closed(&slice.domain,&original_agent.0).unwrap();
     let pending:Vec<_>=lifecycle(&slice.domain).pending_inputs().into_iter().cloned().collect();
     assert_eq!(pending.len(),2,"the two existing instructions authorize continuation and survive release without an invented third input");
     let expected:Vec<String>=pending.iter().map(|input|slice.observer().query_row(
@@ -2182,7 +2182,6 @@ fn a_dead_host_is_replaced_by_one_that_resumes_the_same_claude_session() {
     assert_eq!(owner_generation(&slice.database), 2, "the replacement owns the execution with the next generation");
     assert_eq!(slice.starts().len(), 1, "no Claude starts before the orchestrator settles the case");
     let node = restarted.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().unwrap();
-    assert!(!crate::node_revival::needed(&restarted, &node.0), "no claude respawn, and no card about it, for a node of the SDK");
     instruct(&restarted, "Add the tests first");
     resumed.step(&|| false).unwrap();
     slice.settle(&mut resumed);

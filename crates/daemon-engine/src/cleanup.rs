@@ -112,8 +112,8 @@ fn free_stopped(domain: &DomainRuntime, state: &DomainState, claude_home: &Path,
         let session = known.id.0.as_str();
         let node = domain.live.node(session);
         if node.as_ref().is_some_and(|node| node.is_orchestrator) || !domain.launched_by_alondra(&known.id).unwrap_or(false)
-            || !crate::node_revival::has_open_task(domain, session) || domain.live.mods.connected(session)
-            || !crate::node_revival::session_ended_in(domain, claude_home, session) || crate::sdk_handover::moved(domain, &known.id)
+            || !crate::node_exit::has_open_task(domain, session) || domain.live.mods.connected(session)
+            || !crate::node_exit::session_ended_in(domain, claude_home, session) || crate::sdk_handover::moved(domain, &known.id)
         {
             continue;
         }
@@ -122,7 +122,7 @@ fn free_stopped(domain: &DomainRuntime, state: &DomainState, claude_home: &Path,
         let titles: Vec<String> = state.tasks.values()
             .filter(|task| task.agent_id.as_ref() == Some(&known.id) && !task.over() && !task.archived)
             .map(|task| task.title.clone()).collect();
-        if !dry_run && let Err(error) = crate::node_revival::user_closed(domain, session) {
+        if !dry_run && let Err(error) = crate::node_exit::user_closed(domain, session) {
             log!("could not free the tasks of {session}, stopped in Claude agents: {error:#}");
             continue;
         }

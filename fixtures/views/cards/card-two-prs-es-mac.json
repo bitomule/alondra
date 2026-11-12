@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:github.com/bitomule/alondra#17",
   "client": "mac",
-  "version": "v537cb9c203430577",
+  "version": "vb59d2de8e303c9bd",
   "cursor": "cursor-1",
   "title": "Review the result · alondra#17",
   "status": {
@@ -63,7 +63,7 @@
             "summary": "1 punto"
           },
           "reply": {
-            "id": "changes:github.com/bitomule/alondra#17@8~11111111",
+            "id": "changes:github.com/bitomule/alondra#17@9~11111111",
             "label": "Pedir cambios",
             "style": "secondary",
             "role": "neutral",

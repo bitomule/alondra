@@ -1,9 +1,6 @@
-//! Once a daemon has an SDK backend, each `claude --bg` node moves to the Agent SDK: the same Claude
-//! session, in the same folder, resumed through the SDK. A node at rest (its turn over, no work of
-//! its own, nothing handed to it it has not taken) moves when the next input for it arrives, and
-//! that input opens its session. A node Alondra brings back (its session lost or stalled, or out of
-//! a pause) moves instead of being restarted, with the words that bring it back. A node in a turn
-//! stays on `claude --bg` until it rests: facts decide, never the time.
+//! The moves of `claude --bg` nodes to the Agent SDK that an earlier release planned: the same Claude
+//! session, in the same folder, resumed through the SDK. No node runs on `claude --bg` any more, so
+//! no new move is planned; a move already journaled goes on to its end.
 //!
 //! Each move is journaled in domain.db: planned with its input, the `claude --bg` process stopped
 //! and its exit seen by the process's identity, the SDK execution admitted in the transaction
@@ -11,7 +8,7 @@
 //! recorded, so no step's effect happens twice, and the task never has two live owners.
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
-use crate::domain_store::{Handover, HandoverPlan, HandoverProcess, HandoverStep};
+use crate::domain_store::{Handover, HandoverProcess, HandoverStep};
 use crate::node_close::Answer;
 use crate::node_push::Unreachable;
 use alondra_core::domain::*;
@@ -25,8 +22,6 @@ const EVERY: Duration = Duration::from_secs(10);
 
 /// What a move asks of Claude Code about a `claude --bg` session, so a test can stand in for it.
 pub(crate) trait BgSessions: Send + Sync + 'static {
-    /// The process that runs `session` as Alondra sees it now, through its node mod's connection.
-    fn seen(&self, domain: &DomainRuntime, session: &str) -> Option<HandoverProcess>;
     /// The process Claude Code lists for `session` now, if one runs.
     fn listed<'a>(&'a self, session: &'a str) -> Answer<'a, Result<Option<HandoverProcess>, String>>;
     /// Asks Claude Code to stop `session` and waits until it no longer lists it running.
@@ -47,11 +42,6 @@ fn identity(member: alondra_process_group::Member) -> HandoverProcess {
 }
 
 impl BgSessions for ClaudeSessions {
-    fn seen(&self, domain: &DomainRuntime, session: &str) -> Option<HandoverProcess> {
-        let connection = domain.live.mods.session(session)?.peer_pid?;
-        alondra_process_group::parent(i32::try_from(connection).ok()?).ok().flatten().map(identity)
-    }
-
     fn listed<'a>(&'a self, session: &'a str) -> Answer<'a, Result<Option<HandoverProcess>, String>> {
         Box::pin(async move {
             use crate::node_close::Sessions;
@@ -164,17 +154,7 @@ pub(crate) enum Verdict {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "code", content = "detail", rename_all = "snake_case")]
 pub(crate) enum Reason {
-    NextMessage,
-    MessageWaiting,
-    BackFromPause,
-    BackFromLostSession,
     Moving(HandoverStep),
-    InTurn,
-    Starting,
-    BackgroundWork(String),
-    AnswerInTurn,
-    TurnAfterDelivery,
-    MessageOnItsWay,
     DeliveryWaiting,
     AfterMerge(String),
     ThroughSdk,
@@ -205,8 +185,9 @@ fn bg_task<'a>(state: &'a DomainState, agent: &AgentId) -> Option<&'a Task> {
     })
 }
 
-/// What the move does with the `claude --bg` node `agent` of `task`, which has no move yet.
-fn judge_node(domain: &DomainRuntime, state: &DomainState, task: &Task, agent: &AgentId, message_waiting: bool) -> Verdict {
+/// What the move does with the `claude --bg` node `agent` of `task`, which has no move yet. No node
+/// runs on `claude --bg` any more: whatever its task waits for, its session is closed.
+fn judge_node(task: &Task) -> Verdict {
     if task.over() {
         return Verdict::Stays(Reason::Closing);
     }
@@ -216,41 +197,7 @@ fn judge_node(domain: &DomainRuntime, state: &DomainState, task: &Task, agent: &
     if task.final_presentation.is_some() {
         return Verdict::Waits(Reason::DeliveryWaiting);
     }
-    let Some(phase) = state.node_phase(agent) else { return Verdict::Stays(Reason::SessionClosed) };
-    match phase {
-        NodePhase::Paused(_) => Verdict::Passes(Reason::BackFromPause),
-        NodePhase::Lost => Verdict::Passes(Reason::BackFromLostSession),
-        NodePhase::WaitingUser { in_turn: false } | NodePhase::Delivered { in_turn: false } | NodePhase::WaitingDependency => {
-            if domain.live.pushes.waiting(&agent.0) {
-                Verdict::Waits(Reason::MessageOnItsWay)
-            } else if message_waiting {
-                Verdict::Passes(Reason::MessageWaiting)
-            } else {
-                Verdict::Passes(Reason::NextMessage)
-            }
-        }
-        NodePhase::Working => Verdict::Waits(Reason::InTurn),
-        NodePhase::Starting { .. } => Verdict::Waits(Reason::Starting),
-        NodePhase::WaitingBackground(work) => Verdict::Waits(Reason::BackgroundWork(work.label.clone())),
-        NodePhase::WaitingUser { in_turn: true } => Verdict::Waits(Reason::AnswerInTurn),
-        NodePhase::Delivered { in_turn: true } => Verdict::Waits(Reason::TurnAfterDelivery),
-        NodePhase::Resuming { .. } if message_waiting && !domain.live.pushes.waiting(&agent.0) => Verdict::Passes(Reason::MessageWaiting),
-        NodePhase::Resuming { .. } => Verdict::Waits(Reason::MessageOnItsWay),
-        NodePhase::Closing => Verdict::Stays(Reason::Closing),
-        NodePhase::NoTask | NodePhase::Closed | NodePhase::ThroughSdk => Verdict::Stays(Reason::SessionClosed),
-    }
-}
-
-/// Whether the facts let `agent`'s node move now, and whether it comes back rather than rests.
-/// `message_waiting`: an outbox message for it waits, which a node resuming for it moves with.
-fn movable(domain: &DomainRuntime, state: &DomainState, agent: &AgentId, message_waiting: bool) -> Option<(TaskId, bool)> {
-    domain.sdk()?;
-    let task = bg_task(state, agent)?;
-    match judge_node(domain, state, task, agent, message_waiting) {
-        Verdict::Passes(Reason::NextMessage | Reason::MessageWaiting) => Some((task.id.clone(), false)),
-        Verdict::Passes(Reason::BackFromPause | Reason::BackFromLostSession) => Some((task.id.clone(), true)),
-        _ => None,
-    }
+    Verdict::Stays(Reason::SessionClosed)
 }
 
 fn handover_of(domain: &DomainRuntime, agent: &AgentId) -> Option<Handover> {
@@ -274,11 +221,9 @@ pub(crate) fn moved(domain: &DomainRuntime, agent: &AgentId) -> bool {
 }
 
 /// Whether the outbox messages for `agent` wait for its move instead of reaching it through its
-/// node mod: it is moving, or it would move with them.
+/// node mod.
 pub(crate) fn holds_messages(domain: &DomainRuntime, agent: &AgentId) -> bool {
-    domain.sdk().is_some()
-        && (moved(domain, agent)
-            || domain.state().is_ok_and(|state| movable(domain, &state, agent, true).is_some_and(|(task, _)| folder(domain, agent, &task).is_ok())))
+    domain.sdk().is_some() && moved(domain, agent)
 }
 
 /// How `tell` reached the node.
@@ -289,8 +234,8 @@ pub(crate) enum Told {
     Moving,
 }
 
-/// Tells the `claude --bg` node `session` `text` from `from`: down its connection as before, or,
-/// once the SDK backend is on and it rests or comes back, as the input that moves it to the SDK.
+/// Tells the `claude --bg` node `session` `text` from `from`: down its connection, or to the SDK
+/// node its move leads to.
 pub(crate) fn tell(domain: &DomainRuntime, session: &str, from: &str, text: &str, as_user: bool) -> Result<Told, Unreachable> {
     let agent = AgentId(session.to_owned());
     if domain.sdk().is_some() {
@@ -298,13 +243,6 @@ pub(crate) fn tell(domain: &DomainRuntime, session: &str, from: &str, text: &str
         if let Some(handover) = handover_of(domain, &agent) {
             follow(domain, handover, stamped);
             return Ok(Told::Moving);
-        }
-        if let Some((task, returning)) = domain.state().ok().and_then(|state| movable(domain, &state, &agent, false)) {
-            match plan(domain, &agent, &task, stamped, None, returning) {
-                Ok(true) => return Ok(Told::Moving),
-                Ok(false) => {}
-                Err(error) => log!("{session} did not move to the Agent SDK and is told through its connection: {error:#}"),
-            }
         }
     }
     domain.live.pushes.message(session, from, text, as_user).map(Told::Pushed)
@@ -336,47 +274,6 @@ fn follow(domain: &DomainRuntime, handover: Handover, text: String) {
     });
 }
 
-/// Records the move of `agent`, whose input is `input`, and runs it in the background. False when
-/// the node already has a move or the SDK backend cannot take it.
-pub(crate) fn plan(domain: &DomainRuntime, agent: &AgentId, task: &TaskId, input: String, outbox: Option<i64>, returning: bool) -> anyhow::Result<bool> {
-    let Some((_, runtime)) = domain.sdk() else { return Ok(false) };
-    if !record(domain, agent, task, input, outbox, returning)? {
-        return Ok(false);
-    }
-    let node = agent.clone();
-    tokio::spawn(async move {
-        if let Err(why) = advance(&runtime, &node).await {
-            log!("the move of {node} to the Agent SDK stopped and goes on later: {why}");
-        }
-    });
-    Ok(true)
-}
-
-/// Records the plan of `agent`'s move: the session, its folder, the process that runs it and the
-/// input that opens it through the SDK.
-fn record(domain: &DomainRuntime, agent: &AgentId, task: &TaskId, input: String, outbox: Option<i64>, returning: bool) -> anyhow::Result<bool> {
-    let cwd = folder(domain, agent, task)?;
-    let state = domain.state()?;
-    let name = state.agents.get(agent).map(|known| known.name.clone()).unwrap_or_else(|| agent.0.clone());
-    let process = domain.handovers.sessions().seen(domain, &agent.0);
-    let plan = HandoverPlan { session: agent.0.clone(), cwd, name, process, input, outbox, returning };
-    if !domain.store.lock_or_exit("the domain store").plan_handover(agent, task, &plan)? {
-        return Ok(false);
-    }
-    log!("{agent} ({task}) moves to the Agent SDK{}", if returning { " as it comes back" } else { " with its next input" });
-    Ok(true)
-}
-
-/// The folder `agent`'s session works in, where the SDK resumes it: the worktree Claude Code made
-/// for it, else the one it reported, else its task's. An error says why the node cannot move.
-fn folder(domain: &DomainRuntime, agent: &AgentId, task: &TaskId) -> anyhow::Result<String> {
-    anyhow::ensure!(crate::plugins::node_in(domain.home()).is_some(), "Alondra's node plugin, which the SDK node loads, was not found");
-    crate::worktree::worktree_of(&agent.0).and_then(|dir| dir.to_str().map(str::to_owned))
-        .or_else(|| domain.live.mods.session(&agent.0).and_then(|reported| reported.cwd))
-        .or_else(|| domain.task_worktree(task).ok().flatten())
-        .ok_or_else(|| anyhow::anyhow!("the folder its session works in is not known"))
-}
-
 /// Takes `agent`'s move as far as the facts let it: from the step recorded to the end, or to a
 /// step that waits for a fact (the node at rest again). An error leaves the move at its step.
 pub(crate) async fn advance(domain: &Arc<DomainRuntime>, agent: &AgentId) -> Result<HandoverStep, String> {
@@ -402,16 +299,9 @@ pub(crate) async fn advance(domain: &Arc<DomainRuntime>, agent: &AgentId) -> Res
 }
 
 /// Stops the `claude --bg` process of the move and records its exit, seen by its identity: the
-/// process seen at the plan and any Claude Code lists now must both be gone. False while a node
-/// that rests is at work again: the move waits for its next rest.
+/// process seen at the plan and any Claude Code lists now must both be gone.
 async fn stop(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<bool, String> {
     let node = &handover.node;
-    if !handover.plan.returning {
-        let state = domain.state().map_err(|error| format!("{error:#}"))?;
-        if !bg_task(&state, node).is_some_and(|task| matches!(judge_node(domain, &state, task, node, true), Verdict::Passes(_))) {
-            return Ok(false);
-        }
-    }
     let sessions = domain.handovers.sessions();
     let mut processes: Vec<HandoverProcess> = handover.plan.process.into_iter().collect();
     processes.extend(sessions.listed(&node.0).await?.filter(|listed| !processes.contains(listed)));
@@ -507,10 +397,7 @@ async fn finish(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<(), 
 /// Every task in progress and what the move does with it, without doing anything.
 pub fn dry_run(domain: &DomainRuntime) -> anyhow::Result<Vec<Row>> {
     let state = domain.state()?;
-    let (handovers, pending) = {
-        let store = domain.store.lock_or_exit("the domain store");
-        (store.handovers()?, store.pending_messages()?)
-    };
+    let handovers = domain.store.lock_or_exit("the domain store").handovers()?;
     let mut rows = vec![];
     for task in state.tasks.values().filter(|task| !task.state.terminal() && !task.archived) {
         let node = task.agent_id.as_ref();
@@ -518,10 +405,7 @@ pub fn dry_run(domain: &DomainRuntime) -> anyhow::Result<Vec<Row>> {
         let verdict = match (node, moving) {
             (None, _) => Verdict::Stays(Reason::NoNode),
             (Some(_), Some(handover)) => Verdict::Passes(Reason::Moving(handover.step)),
-            (Some(agent), None) if bg_task(&state, agent).is_some() => {
-                let waiting = pending.iter().any(|message| message.recipient_kind == "agent" && message.agent_id.as_deref() == Some(agent.0.as_str()));
-                judge_node(domain, &state, task, agent, waiting)
-            }
+            (Some(agent), None) if bg_task(&state, agent).is_some() => judge_node(task),
             (Some(agent), None) if crate::sdk_owner::runs_through_sdk(&state, agent) => Verdict::Stays(Reason::ThroughSdk),
             (Some(_), None) => Verdict::Stays(Reason::NoNode),
         };
@@ -531,9 +415,7 @@ pub fn dry_run(domain: &DomainRuntime) -> anyhow::Result<Vec<Row>> {
     Ok(rows)
 }
 
-/// Goes on with every move a previous daemon left, then, while the daemon runs, moves each node at
-/// rest that an outbox message waits for, with that message, and goes on with the moves that
-/// waited. Runs only with an SDK backend.
+/// Goes on with every move a previous daemon left. Runs only with an SDK backend.
 pub async fn run(domain: Arc<DomainRuntime>) {
     if domain.sdk().is_none() {
         return;
@@ -549,39 +431,11 @@ pub async fn run(domain: Arc<DomainRuntime>) {
 }
 
 async fn tick(domain: &Arc<DomainRuntime>) {
-    plan_waiting(domain);
     let open: Vec<AgentId> = domain.store.lock_or_exit("the domain store").handovers().unwrap_or_default().into_iter()
         .filter(|handover| handover.step != HandoverStep::Done).map(|handover| handover.node).collect();
     for node in open {
         if let Err(why) = advance(domain, &node).await {
             log!("the move of {node} to the Agent SDK waits: {why}");
-        }
-    }
-}
-
-/// Plans the move of each node at rest an outbox message waits for, with that message.
-fn plan_waiting(domain: &DomainRuntime) {
-    let pending = domain.store.lock_or_exit("the domain store").pending_messages().unwrap_or_default();
-    let Ok(state) = domain.state() else { return };
-    let mut planned = std::collections::BTreeSet::new();
-    for message in pending.iter().filter(|message| message.recipient_kind == "agent") {
-        let Some(agent) = message.agent_id.as_deref().map(|agent| AgentId(agent.to_owned())) else { continue };
-        if planned.contains(&agent) || moved(domain, &agent) {
-            continue;
-        }
-        let Some((task, returning)) = movable(domain, &state, &agent, true) else { continue };
-        let text = match crate::domain_transport::node_text(domain, &state, message) {
-            Ok(text) => text,
-            Err(error) => {
-                log!("could not read the message for {agent} that would move it to the Agent SDK: {error:#}");
-                continue;
-            }
-        };
-        match record(domain, &agent, &task, text, Some(message.id), returning) {
-            Ok(_) => {
-                planned.insert(agent);
-            }
-            Err(error) => log!("{agent} did not move to the Agent SDK with the message waiting for it: {error:#}"),
         }
     }
 }

@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:github.com/acme/storefront#6",
   "client": "ios",
-  "version": "v8376bd02d4b436b0",
+  "version": "v0512899c87872726",
   "cursor": "cursor-1",
   "title": "Review the result · storefront#6",
   "status": {
@@ -63,7 +63,7 @@
             "summary": "1 punto"
           },
           "reply": {
-            "id": "changes:github.com/acme/storefront#6@8~66666666",
+            "id": "changes:github.com/acme/storefront#6@9~66666666",
             "label": "Pedir cambios",
             "style": "secondary",
             "role": "neutral",

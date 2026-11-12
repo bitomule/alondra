@@ -72,10 +72,6 @@ pub enum Start {
 pub enum NodeFact {
     #[default]
     Alive,
-    /// Its connection is gone and Alondra is restarting the session.
-    Reviving,
-    /// Restarting failed and a card asks the user what to do.
-    Asking,
     /// Its session is gone and nothing brings it back.
     Gone,
     /// It ended its turn with nothing running that will wake it, neither a result nor a question;
@@ -224,8 +220,7 @@ impl DomainState {
         }
         if t.agent_id.is_some() {
             return match facts.node {
-                NodeFact::Alive | NodeFact::Reviving => Ok(Holder::Node),
-                NodeFact::Asking => ownerless("its node is lost and the card about it is not open"),
+                NodeFact::Alive => Ok(Holder::Node),
                 NodeFact::Gone => ownerless("its node is gone and nothing brings it back"),
                 NodeFact::Stopped { sent_back: true } => Ok(Holder::Node),
                 NodeFact::Stopped { sent_back: false } => ownerless("its node stopped without a result or a question and nobody was told"),

@@ -8,20 +8,15 @@
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::pauses::{Paused, Reason};
-use alondra_core::domain::{
-    AfterApiFailure, AgentId, ApiErrorKind, ApiHealth, FRESH_TURN, OUTAGE_PROBE, InteractionId, InteractionPayload, NodeEvent, NodePhase,
-    START_RETRY, StartProblem, after_api_failure, classify,
-};
+use alondra_core::domain::{AgentId, ApiHealth, OUTAGE_PROBE, InteractionPayload, NodePhase, START_RETRY, StartProblem};
 use alondra_core::Millis;
 use anyhow::Result;
-use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 /// Failures of several nodes this close together, with no answer since, mean the API is down.
 const OUTAGE_WINDOW: Millis = 10 * 60_000;
 
-pub(crate) use alondra_daemon_engine_model::Streak;
 
 /// When the model last answered each node, and when an API error last cut each one's turn.
 #[derive(Default)]
@@ -52,15 +47,6 @@ impl ApiWatch {
     /// A node waiting for the API was sent back to try it.
     pub(crate) fn probed(&self, at: Millis) {
         self.lock().probed = Some(at);
-    }
-
-    fn failed(&self, session: &str, at: Millis) {
-        self.lock().failed.insert(session.to_owned(), at);
-    }
-
-    /// The model answered this node more than `span` after `at`: it got on with its task.
-    fn worked_after(&self, session: &str, at: Millis, span: Millis) -> bool {
-        self.lock().answered.get(session).is_some_and(|answered| *answered - at > span)
     }
 
     /// The model answered some node after `at`.
@@ -121,60 +107,6 @@ pub(crate) fn turn_ended(domain: &DomainRuntime, agent: &AgentId) -> Result<()> 
     Ok(())
 }
 
-/// A Claude API error ended `agent`'s turn: Alondra sends it back later, waits for the usage
-/// limit or the API, or asks the user.
-pub(crate) fn turn_failed(domain: &DomainRuntime, agent: &AgentId, payload: &Value, now: Millis) -> Result<()> {
-    let error = crate::hook_text::str_field(payload, "error_type").unwrap_or_else(|| "unknown".into());
-    let detail = crate::hook_text::str_field(payload, "error_details");
-    let state = domain.state()?;
-    let Some(phase) = state.node_phase(agent).cloned() else { return Ok(()) };
-    let in_turn = matches!(phase, NodePhase::Working | NodePhase::Starting { .. });
-    let task = crate::admission::open_task_of(&state, &agent.0);
-    if !in_turn || task.is_none() {
-        crate::domain_agent_lifecycle::node_event_at(domain, agent, NodeEvent::TurnFailed, now)?;
-        return Ok(());
-    }
-    if classify(&error) == ApiErrorKind::Transient {
-        domain.live.api_watch.failed(&agent.0, now);
-    }
-    let before = {
-        let store = domain.store.lock_or_exit("the domain store");
-        store.api_failures()?.remove(agent)
-            .filter(|streak| streak.card.is_none() && !domain.live.api_watch.worked_after(&agent.0, streak.last_at, FRESH_TURN))
-            .unwrap_or(Streak { first_at: now, ..Streak::default() })
-    };
-    let attempt = before.failures.saturating_add(1);
-    let health = domain.live.api_watch.health(&agent.0, before.first_at, now);
-    let after = after_api_failure(&error, detail.as_deref(), attempt, health, now);
-    log!("a Claude API error ({error}) ended the turn of {}: {after:?}", agent.0);
-    match after {
-        AfterApiFailure::Retry(retry) => {
-            let failures = if retry.outage { before.failures } else { attempt };
-            domain.store.lock_or_exit("the domain store").set_api_failures(agent, Some(&Streak { failures, last_at: now, ..before }))?;
-            hold(domain, agent, Reason::ApiError(retry), now)?;
-        }
-        AfterApiFailure::WaitUsage => hold(domain, agent, Reason::Usage, now)?,
-        AfterApiFailure::Ask => {
-            let task = task.expect("checked above");
-            crate::start_failures::raise(domain, &task, StartProblem::ApiFailed { error, detail, attempts: attempt })?;
-            let card = domain.state()?.open_start_problem(&task).map(|card| card.id.clone());
-            domain.store.lock_or_exit("the domain store").set_api_failures(agent, Some(&Streak { failures: 0, first_at: now, last_at: now, card }))?;
-            crate::domain_agent_lifecycle::node_event_at(domain, agent, NodeEvent::TurnFailed, now)?;
-        }
-    }
-    Ok(())
-}
-
-/// Pauses the node in the gate; a node the machine cannot pause (one waiting on the user) just
-/// ends its turn.
-fn hold(domain: &DomainRuntime, agent: &AgentId, reason: Reason, now: Millis) -> Result<()> {
-    domain.live.gate.hold_back(domain, &agent.0, reason, now);
-    if !matches!(domain.state()?.node_phase(agent), Some(NodePhase::Paused(_))) {
-        crate::domain_agent_lifecycle::node_event_at(domain, agent, NodeEvent::TurnFailed, now)?;
-    }
-    Ok(())
-}
-
 /// Carries out the user's answer on the card of a node Alondra stopped sending back: "try again
 /// now" sends it back at once; any other end of the card (the task cancelled, the card gone)
 /// only forgets the streak.
@@ -194,9 +126,7 @@ pub(crate) fn settle_cards(domain: &DomainRuntime) -> Result<()> {
                 _ => resume_text("unknown", None),
             };
             log!("the user asked to try {} again after its Claude API errors", agent.0);
-            if crate::sdk_handover::tell(domain, &agent.0, crate::node_push::ALONDRA, &text, true).is_err() {
-                domain.live.losses.report(&agent.0);
-            }
+            let _ = crate::sdk_handover::tell(domain, &agent.0, crate::node_push::ALONDRA, &text, true);
         }
         domain.store.lock_or_exit("the domain store").set_api_failures(&agent, None)?;
     }

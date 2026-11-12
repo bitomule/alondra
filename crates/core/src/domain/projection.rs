@@ -197,7 +197,7 @@ impl DomainState {
             return false;
         };
         self.tasks.get(task_id).and_then(|t| t.agent_id.as_ref()).and_then(|id| self.agents.get(id))
-            .is_some_and(|a| !matches!(a.phase, NodePhase::Lost | NodePhase::Closing | NodePhase::Closed) && self.node_pause(&a.id).is_none())
+            .is_some_and(|a| a.phase.live() && self.node_pause(&a.id).is_none())
     }
     /// A node of the Agent SDK holds the reply until it took it and its session rests with nothing
     /// to wait for. That alone gives the delivery back, whatever fact
@@ -772,7 +772,7 @@ pub(super) fn assert_guard_matches_execution(
     envelope: &CommandEnvelope,
     guarded: Option<&DomainError>,
 ) {
-    if state.validate().is_err() || state.validate_nodes().is_err() {
+    if state.validate().is_err() {
         return;
     }
     let mut journaled = state.clone();

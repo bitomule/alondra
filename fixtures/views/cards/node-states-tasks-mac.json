@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "mac",
-  "version": "v37d82c7f71e32386",
+  "version": "v5490899c66c7e023",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -163,7 +163,28 @@
                 }
               ],
               "depth": 1,
-              "struck": false
+              "struck": false,
+              "actions": [
+                {
+                  "id": "pause:release-runner@6",
+                  "label": "Pause",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "confirm": {
+                    "title": "Pause this node?",
+                    "message": "It stops what it is running now and keeps its task. Alondra does not resume it by itself: only you do.",
+                    "button": "Pause"
+                  },
+                  "enabled": true,
+                  "stamp": "Paused",
+                  "resolves_card": false
+                }
+              ]
             },
             {
               "id": "t-zeta-worker",
