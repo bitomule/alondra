@@ -3360,7 +3360,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
             scope: Scope::Task { task_id: ids.task.into() }, body: "Stuck".into(), options: vec![],
             card: CardSpec::derived(CardKind::Problem, "Unblock the node") }, true),
         (Command::AskQuestions { interaction_id: "fresh-group".into(), scope: Scope::Task { task_id: ids.task.into() },
-            recipient: Recipient::User, blocking: false, why: "Why".into(), questions: vec![] }, true),
+            recipient: Recipient::User, blocking: false, why: "Why".into(), questions: vec![], language: None }, true),
         (Command::HoldQuestions { interaction_id: "fresh-hold-group".into(), task_id: ids.task.into(),
             agent_id: "a".into(), questions: vec![] }, true),
         (Command::ReopenAnswer { interaction_id: ids.interaction.into() }, false),

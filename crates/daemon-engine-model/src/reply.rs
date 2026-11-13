@@ -36,7 +36,7 @@ pub fn status_for(error: &DomainError) -> StatusCode {
     match error.code.as_str() {
         "forbidden" | "not_assigned" => StatusCode::FORBIDDEN,
         "not_found" => StatusCode::NOT_FOUND,
-        "invalid_input" | "invalid_action_for_kind" | "launch_plan_required" => StatusCode::UNPROCESSABLE_ENTITY,
+        "invalid_input" | "invalid_action_for_kind" | "launch_plan_required" | "card_language_mismatch" => StatusCode::UNPROCESSABLE_ENTITY,
         "payload_too_large" => StatusCode::PAYLOAD_TOO_LARGE,
         "storage_unavailable" => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::CONFLICT,

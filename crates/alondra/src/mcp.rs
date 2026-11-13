@@ -231,6 +231,10 @@ fn why_schema() -> Value {
     json!({"type":"string","maxLength":alondra_core::domain::CardSpec::WHY_MAX,"description":"Why, and whom it holds back, in one or two sentences (at most 240 characters). Name tasks and PRs by their title or number, never by an internal id such as t-foo. Long text goes in content, never here"})
 }
 
+fn language_schema() -> Value {
+    json!({"type":"string","enum":["en","es"],"description":"The language the text of this card is written in. It must be the user's language, the one the instructions name: Alondra refuses a card that declares another one, and you rewrite it in the user's language and send it again"})
+}
+
 fn replaces_schema() -> Value {
     json!({"type":"string","description":"The id of your own open card this one replaces: it is withdrawn in the same step"})
 }
@@ -252,8 +256,13 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
     let blocking = json!({"type":"boolean","description":"true when you cannot go on until the answer arrives"});
     let rule = self_contained_card(user);
     let mut tools = vec![];
-    let mut add = |name: &str, description: String, extra: Value, required: &[&str]| {
-        let (fields, needed) = place(interaction, extra, required);
+    let mut add = |name: &str, description: String, mut extra: Value, required: &[&str]| {
+        let mut required = required.to_vec();
+        if node {
+            extra["language"] = language_schema();
+            required.push("language");
+        }
+        let (fields, needed) = place(interaction, extra, &required);
         tools.push(domain_tool(name, &description, fields, &needed));
     };
     add(
@@ -300,8 +309,8 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
         tools.push(domain_tool(
             "present_result",
             &format!("Deliver the result to {user}. Finishing is always present_result, never an ask. With is_final true, {user} accepts it; Alondra merges your PRs; a pull_request target, final only, takes all open ones. With is_final false, this is a progress notice. A final result needs content: the report written out in its body, never a path or a pasted document: {user} cannot open files from the app; files go in attachments. Say what the result means for {user} in plain words, never script names, task ids or internal steps. Commit and push everything first: uncommitted, unpushed or unregistered work is refused. Answer or withdraw your pending cards first. Ask any open choices before delivering: acceptance does not answer them. For an approved plan, mark every point done in checklist with evidence. {rule}"),
-            json!({"task_id":{"type":"string"},"interaction_id":interaction["interaction_id"],"need":need_schema(),"why":why_schema(),"content":content_schema(),"targets":target,"is_final":{"type":"boolean"},"nothing_to_review":{"type":"boolean","description":"With is_final true and only text targets: the work found nothing for the user to look at (a scheduled check with nothing open, nothing changed). The task closes in silence, without a card"},"checklist":checklist_schema(),"plan":{"type":"string","description":"Only on a final result without a pull request whose research concludes that something should be built: that plan, in Markdown, with one checklist line (- [ ] ...) per thing the implementation will deliver, and the report in content. title names the plan subject; plan holds only its content, never an opening heading repeating title. The result is then a plan card: the user reads the plan, opens the report as a document beside it, and presses Approve, which creates the tasks that build exactly this plan, or Request changes; its need asks to approve the plan, never to read the report or decide whether to build. Ask every decision the plan leaves open with ask before, never inside the plan. A research that proposes nothing to build leaves plan out: its report alone is marked Seen and creates nothing. Never put a plan only inside the report; a plan the user asked you for in your own task goes through ExitPlanMode instead"},"body":interaction["body"],"files":files_schema(),"attachments":attachments}),
-            &["task_id", "interaction_id", "need", "targets", "is_final"],
+            json!({"task_id":{"type":"string"},"interaction_id":interaction["interaction_id"],"need":need_schema(),"why":why_schema(),"content":content_schema(),"targets":target,"is_final":{"type":"boolean"},"language":language_schema(),"nothing_to_review":{"type":"boolean","description":"With is_final true and only text targets: the work found nothing for the user to look at (a scheduled check with nothing open, nothing changed). The task closes in silence, without a card"},"checklist":checklist_schema(),"plan":{"type":"string","description":"Only on a final result without a pull request whose research concludes that something should be built: that plan, in Markdown, with one checklist line (- [ ] ...) per thing the implementation will deliver, and the report in content. title names the plan subject; plan holds only its content, never an opening heading repeating title. The result is then a plan card: the user reads the plan, opens the report as a document beside it, and presses Approve, which creates the tasks that build exactly this plan, or Request changes; its need asks to approve the plan, never to read the report or decide whether to build. Ask every decision the plan leaves open with ask before, never inside the plan. A research that proposes nothing to build leaves plan out: its report alone is marked Seen and creates nothing. Never put a plan only inside the report; a plan the user asked you for in your own task goes through ExitPlanMode instead"},"body":interaction["body"],"files":files_schema(),"attachments":attachments}),
+            &["task_id", "interaction_id", "need", "targets", "is_final", "language"],
         ));
     }
     let withdraw_fields = json!({"interaction_id":{"type":"string"}});
@@ -1513,6 +1522,7 @@ fn attach_card(name: &str, command: &mut serde_json::Map<String, Value>) -> Resu
     if name == "suggest" {
         suggestion_fields(command)?;
     }
+    let language = command.remove("language").filter(|v| !v.is_null());
     let title = take_text(command, "title");
     let need = take_text(command, "need");
     let mut why = take_text(command, "why");
@@ -1578,6 +1588,9 @@ fn attach_card(name: &str, command: &mut serde_json::Map<String, Value>) -> Resu
     }
     if !files.is_empty() {
         card.insert("files".into(), json!(files));
+    }
+    if let Some(language) = language {
+        card.insert("language".into(), language);
     }
     card.insert("title".into(), json!(title));
     card.insert("kind".into(), json!(kind));
@@ -2686,7 +2699,7 @@ mod card_tool_tests {
             }
         }
         let node = tools(Role::Node, "User");
-        let mut args = with(json!({"title":"Release design","need":"Choose a design","why":"The release needs one",
+        let mut args = with(json!({"title":"Release design","need":"Choose a design","why":"The release needs one","language":"es",
             "blocking":true,"options":[{"id":"a","label":"Atlas"},{"id":"b","label":"Borealis"}],"content":{"kind":"options","body":"# Release design\n\nAtlas or Borealis."}}));
         assert_eq!(check_arguments(&node, "ask", &args), Ok(()));
         assert_eq!(built("ask", args.clone())["card"]["content"]["body"], args["content"]["body"]);
@@ -2743,6 +2756,35 @@ mod card_tool_tests {
         }
         assert!(tool(Role::Node, "request_action")["inputSchema"]["properties"].get("steps").is_some());
         assert_eq!(tool(Role::Node, "request_input")["inputSchema"]["properties"]["kind"]["enum"], json!(["file", "text", "secret"]));
+    }
+
+    #[test]
+    fn every_node_card_tool_requires_the_language_its_card_is_written_in() {
+        for name in ["ask", "request_action", "request_input", "request_test", "present_result"] {
+            let node = tool(Role::Node, name);
+            assert!(required(&node).iter().any(|f| f == "language"), "{name} must require language");
+            assert_eq!(node["inputSchema"]["properties"]["language"]["enum"], json!(["en", "es"]), "{name}");
+        }
+        for name in ["ask", "request_action", "request_input", "publish_information"] {
+            assert!(tool(Role::Orchestrator, name)["inputSchema"]["properties"].get("language").is_none(), "{name}");
+        }
+        let node = tools(Role::Node, "Ana");
+        let without = with(json!({"need":"Choose a design","why":"The release needs one","blocking":true,"options":options()}));
+        let refused = check_arguments(&node, "ask", &without).unwrap_err();
+        assert!(refused.contains("language"), "{refused}");
+    }
+
+    #[test]
+    fn the_declared_language_goes_on_the_card_or_on_the_group() {
+        let single = built("ask", with(json!({"need":"Choose a design","why":"The release needs one","blocking":true,"options":options(),"language":"es"})));
+        assert_eq!(single["card"]["language"], "es");
+        assert!(single.get("language").is_none());
+        let result = built("present_result", json!({"task_id":"t-1","interaction_id":"card-1","title":"Release fix","need":"Review the fix","body":"Done","targets":[{"kind":"text","text":"Done"}],"is_final":false,"language":"es"}));
+        assert_eq!(result["card"]["language"], "es");
+        let question = |title: &str| json!({"title":title,"question":"Which one?","options":options(),"why":"It decides the release"});
+        let group = built("ask", with(json!({"why":"Two things","blocking":true,"questions":[question("Name"), question("Channel")],"language":"en"})));
+        assert_eq!(group["language"], "en");
+        assert!(group.get("card").is_none());
     }
 
     #[test]
@@ -3442,7 +3484,7 @@ mod card_tool_tests {
         let node = tools(Role::Node, "User");
         let ask = json!({"interaction_id":"q-1","scope":{"kind":"task","task_id":"t-1"},"recipient":{"kind":"user"},
             "title":"Release icon","need":"Pick the icon","why":"It ships in the next beta","blocking":true,"options":[{"id":"a","label":"A"},{"id":"b","label":"B"}],
-            "recommended":"a","content":{"kind":"report","body":"Both icons"},"replaces":null});
+            "recommended":"a","content":{"kind":"report","body":"Both icons"},"replaces":null,"language":"es"});
         assert_eq!(check_arguments(&node, "ask", &ask), Ok(()));
         let orchestrator = tools(Role::Orchestrator, "User");
         let stack_cleared = json!({"task_id":"t-1","dependencies":[],"stack":null});

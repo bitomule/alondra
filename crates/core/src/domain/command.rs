@@ -261,6 +261,9 @@ pub enum Command {
         /// Why the questions are asked, for a question that gives no why of its own.
         why: String,
         questions: Vec<GroupQuestion>,
+        /// The language the author declares every question is written in.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        language: Option<alondra_foundation::Lang>,
     },
     /// The same for a Claude Code AskUserQuestion with several questions, held for its answers.
     HoldQuestions {

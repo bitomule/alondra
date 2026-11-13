@@ -3895,8 +3895,9 @@ impl DomainState {
                     });
                 }
             }
-            Command::AskQuestions { interaction_id, scope, recipient, blocking, why, questions } => {
-                for (card_id, card, options) in group_cards(interaction_id, why, questions)? {
+            Command::AskQuestions { interaction_id, scope, recipient, blocking, why, questions, language } => {
+                for (card_id, mut card, options) in group_cards(interaction_id, why, questions)? {
+                    card.language = *language;
                     validate_options(&options)?;
                     self.insert_interaction(
                         actor, &card_id, scope, recipient, &card.need, *blocking, &[],
