@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks?section=finished&after=0",
   "client": "mac",
-  "version": "vde8a2737933f8f6f",
+  "version": "vb0e7744dc6a4f38c",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -380,7 +380,7 @@
               },
               "icon": "task",
               "title": "Link the website in app.json",
-              "subtitle": "Claude Code doesn't trust ~/Projects/indie-apps · BlurCamera · weekly improvement",
+              "subtitle": "Claude Code doesn't trust its folder · BlurCamera · weekly improvement",
               "badges": [
                 {
                   "text": "Waiting",

@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "mac",
-  "version": "v468cd123a6754f4d",
+  "version": "v6e9223fcedcff0fa",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -105,7 +105,7 @@
             {
               "kind": "folder",
               "label": "Carpeta",
-              "value": "/demo/Demo Garden/.claude/worktrees/t-651c38484cd2f34e74d5107ba05f7f15"
+              "value": "t-651c38484cd2f34e74d5107ba05f7f15"
             }
           ]
         }

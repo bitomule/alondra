@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "ios",
-  "version": "vd4760b4c20161f3e",
+  "version": "vb5d83e2e0fde970e",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -101,7 +101,7 @@
             {
               "kind": "folder",
               "label": "Folder",
-              "value": "/demo/Demo Garden/.claude/worktrees/t-651c38484cd2f34e74d5107ba05f7f15"
+              "value": "t-651c38484cd2f34e74d5107ba05f7f15"
             }
           ]
         }

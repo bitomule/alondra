@@ -1083,9 +1083,9 @@ async fn a_task_waits_for_room_on_the_disk_and_starts_once_the_disk_has_it() {
     watch.measure_disk(crate::disk::Space { free: 6 * GB, purgeable: 0, total: 500 * GB });
     assert_eq!(ask(), Err(Hold::Disk { free: 6 * GB, needed: 21 * GB, volume: None }),
         "projects never measured: 8 GB for the build of the node at work and 8 GB for this one, on top of the 5 GB line");
-    assert_eq!(task_shown(&fixture, "task-9", "en").await[0].0, "Waiting · Disk · 6.0 GB free of 21.0 GB needed");
+    assert_eq!(task_shown(&fixture, "task-9", "en").await[0].0, "Waiting · 1st of 1 · Disk · 6.0 GB free of 21.0 GB needed");
     let screen = view_json(&fixture, "task:task-9", "es").await.to_string();
-    assert!(screen.contains("En espera") && screen.contains("Disco · 6,0 GB libres de 21,0 GB necesarios"), "{screen}");
+    assert!(screen.contains("En espera") && screen.contains("1.º de 1 · Disco · 6,0 GB libres de 21,0 GB necesarios"), "{screen}");
 
     watch.measure_disk(crate::disk::Space { free: 22 * GB, purgeable: 0, total: 500 * GB });
     assert!(matches!(ask(), Err(Hold::Disk { .. })), "past the line, not past its margin");
