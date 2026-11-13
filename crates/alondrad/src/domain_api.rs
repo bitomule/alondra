@@ -1441,7 +1441,7 @@ mod tests {
         let state = domain.state().unwrap();
         domain.execute(&user, &CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "cancel-d".into(),
-            expected_revision: state.revision, command: Command::CancelTask { task_id: "d".into() },
+            expected_revision: state.revision, command: Command::CancelTask { task_id: "d".into(), reason: None },
         }, None, || Ok(())).unwrap();
         if !domain.state().unwrap().tasks[&TaskId::from("d")].state.terminal() {
             let state = domain.state().unwrap();

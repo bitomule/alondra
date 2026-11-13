@@ -1844,6 +1844,31 @@ fn with_usage_out_the_banner_and_the_queue_still_name_the_quota_and_its_time() {
     assert_eq!(task_line(&state, &out, Lang::Es), "En espera · Límite de uso alcanzado · arranca cuando vuelva");
 }
 
+/// A task that waits for a cancelled one is the orchestrator's to decide: it says so, not that it
+/// waits for a slot or for Alondra.
+#[test]
+fn a_task_waiting_for_a_cancelled_one_says_the_orchestrator_decides_what_happens_to_it() {
+    use crate::domain::{Actor, Command, LaunchPlan};
+    let mut state = DomainState::new("test-epoch");
+    let orchestrator = Actor::Orchestrator { generation: 0 };
+    execute(&mut state, Actor::User { user_id: "u".into() }, Command::CreateRequest {
+        request_id: "r-1".into(), body: "Two tasks".into(), auto_merge: false, maintenance: false, message: false,
+    });
+    execute(&mut state, orchestrator.clone(), Command::TitleRequest { request_id: "r-1".into(), title: "Two".into() });
+    for (id, title, after) in [("t-2", "Prepare the data", vec![]), ("t-1", "Use the data", vec!["t-2"])] {
+        execute(&mut state, orchestrator.clone(), Command::CreateTask {
+            task_id: id.into(), request_id: "r-1".into(), title: title.into(), agent_id: None, review_prs: false,
+            dependencies: after.into_iter().map(Into::into).collect(), stack: None,
+            launch: Some(LaunchPlan::new("node", "/tmp")), plan_items: None, continues: None,
+        });
+    }
+    let live = LiveSnapshot::default();
+    assert_eq!(task_line(&state, &live, Lang::En), "Waiting · Waits for “Prepare the data” · Two");
+    execute(&mut state, Actor::User { user_id: "u".into() }, Command::CancelTask { task_id: "t-2".into(), reason: None });
+    assert_eq!(task_line(&state, &live, Lang::En), "Waiting · “Prepare the data” was cancelled · the orchestrator decides what happens to it · Two");
+    assert_eq!(task_line(&state, &live, Lang::Es), "En espera · «Prepare the data» se canceló · el orquestador decide qué hacer con ella · Two");
+}
+
 /// A launch plan the start refused is the orchestrator's to fix: the user's inbox never gets a card
 /// for it, and the task says what it waits for.
 #[test]
@@ -9248,7 +9273,7 @@ fn outcome_state() -> DomainState {
         });
         state.tasks.get_mut(&task.into()).unwrap().pr_id = Some(id);
     }
-    run(&mut state, user, Command::CancelTask { task_id: "t-docs".into() });
+    run(&mut state, user, Command::CancelTask { task_id: "t-docs".into(), reason: None });
     run(&mut state, orchestrator, Command::CloseRequest {
         request_id: "r-accounts".into(),
         answer: Some("Ya puedes guardar dos cuentas de Claude y cambiar entre ellas en Ajustes. La documentación se dejó para más adelante.".into()),

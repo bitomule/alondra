@@ -341,7 +341,7 @@ async fn a_launch_is_refused_for_a_closed_or_taken_task() {
     command(&f.domain, actor.clone(), Command::AssignTask { task_id: "t".into(), agent_id: "agent-b".into(), model: None });
     let taken = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap_err();
     assert_eq!(taken.code, "conflict");
-    command(&f.domain, user(), Command::CancelTask { task_id: "t".into() });
+    command(&f.domain, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     let closed = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap_err();
     assert_eq!(closed.code, "conflict");
     assert!(f.sdk().starts().is_empty());
@@ -394,7 +394,7 @@ async fn a_message_about_a_closed_task_is_refused_as_closed() {
     let actor = the_orchestrator(&f.domain);
     let node = Node::connect(&f.domain, "agent-b");
     give(&f, "t", "agent-b");
-    command(&f.domain, user(), Command::CancelTask { task_id: "t".into() });
+    command(&f.domain, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     let body: SendBody = serde_json::from_value(json!({"node": "Instance B", "text": "Carry on after all", "task": "t"})).unwrap();
     let refused = send(&f.domain, &f.home, &actor, body).await.unwrap_err();
     assert_eq!(refused.code, "task_closed");
@@ -418,7 +418,7 @@ async fn a_node_on_a_task_takes_no_other_but_still_gets_plain_messages() {
     send(&f.domain, &f.home, &actor, body(Some("t"))).await.unwrap();
     assert_eq!(node.texts().len(), 2, "the refused task sent nothing");
 
-    command(&f.domain, user(), Command::CancelTask { task_id: "t".into() });
+    command(&f.domain, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     assert_eq!(send(&f.domain, &f.home, &actor, body(Some("t2"))).await.unwrap_err().code, "not_assigned",
         "not even when its own task ended");
 }
@@ -1495,7 +1495,7 @@ fn a_reopened_task_carries_the_plan_approved_in_its_own_previous_native_session(
     let checklist = before.checklists[&TaskId::from("t")].clone();
     assert!(approved_plan(&before, &before.tasks[&TaskId::from("t")]).is_empty(), "the current session already holds its own approved plan");
 
-    command(&f.domain, user(), Command::CancelTask { task_id: "t".into() });
+    command(&f.domain, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     command(&f.domain, Actor::System, Command::RecordNodeEnd {
         task_id: "t".into(), end: NodeEnd::Closed, agent_id: Some("agent-b".into()),
     });
@@ -1516,7 +1516,7 @@ fn decided_on(f: &Fixture) {
         launch: Some(alondra_core::domain::LaunchPlan::new("fonts", "/tmp")), plan_items: None, continues: None });
     command(&f.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::StartTask { task_id: "fonts".into() });
     command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::SetDependencies { task_id: "t".into(),
-        dependencies: [TaskId::from("fonts")].into(), stack: None });
+        dependencies: [TaskId::from("fonts")].into(), stack: None, reason: None});
     command(&f.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::AskQuestion {
         attachments: vec![], interaction_id: "font-choice".into(), scope: alondra_core::domain::Scope::Task { task_id: "fonts".into() },
         recipient: alondra_core::domain::Recipient::User, body: "Which typeface?".into(), blocking: true,
@@ -1543,7 +1543,7 @@ async fn a_task_held_for_a_plan_review_is_not_launched_until_the_orchestrator_se
     assert!(f.sdk().starts().is_empty(), "Claude never runs for a held task");
     command(&f.domain, actor.clone(), Command::SettlePlanReview { review_id: "font-choice".into(), task_id: "t".into(),
         outcome: alondra_core::domain::PlanReviewOutcome::Unchanged { reason: "Colours do not depend on the typeface".into() } });
-    command(&f.domain, actor.clone(), Command::SetDependencies { task_id: "t".into(), dependencies: Default::default(), stack: None });
+    command(&f.domain, actor.clone(), Command::SetDependencies { task_id: "t".into(), dependencies: Default::default(), stack: None, reason: None });
     let answer = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
     assert_eq!(f.task_node(), Some(agent_of(&answer)));
 }
@@ -2148,22 +2148,29 @@ async fn the_orchestrator_cancels_a_refused_plan_with_its_reason() {
 }
 
 #[tokio::test]
-async fn a_refused_plan_the_orchestrator_leaves_is_reminded_once_then_cancelled_saying_why() {
+async fn a_refused_plan_the_orchestrator_leaves_is_handed_back_at_every_rest_and_never_cancelled_for_it() {
     let f = world();
     refused_plan(&f);
     refuse_its_start(&f).await;
-    crate::orchestrator_inbox::settle(&f.domain);
+    let reminders = || f.domain.state().unwrap().interactions.values()
+        .filter(|i| i.id.0.starts_with(alondra_core::orchestrator_cards::PLAN_REFUSED_NOTICE_PREFIX)).count();
+    crate::orchestrator_inbox::hand_replans(&f.domain);
+    crate::orchestrator_inbox::hand_replans(&f.domain);
+    assert_eq!(reminders(), 1, "once per rest");
+    for _ in 0..3 {
+        f.domain.live.orchestrator_rests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        crate::orchestrator_inbox::hand_replans(&f.domain);
+    }
+    assert_eq!(reminders(), 4);
+    for hour in 0..30 {
+        crate::orchestrator_inbox::settle_overdue(&f.domain, hour * 3_600_000);
+    }
     let state = f.domain.state().unwrap();
-    let reminder = state.interactions.values().find(|i| i.id.0.starts_with(alondra_core::orchestrator_cards::PLAN_REFUSED_NOTICE_PREFIX))
-        .expect("one reminder to the orchestrator");
+    assert!(!state.tasks[&TaskId::from("t")].cancelled(), "no clock cancels it for the orchestrator");
+    assert!(state.open_plan_refusal(&"t".into()).is_some(), "it stays open until the orchestrator decides");
+    let reminder = state.interactions.values().find(|i| i.id.0.ends_with("-3") && i.id.0.starts_with(alondra_core::orchestrator_cards::PLAN_REFUSED_NOTICE_PREFIX)).unwrap();
     assert_eq!(reminder.recipient, alondra_core::domain::Recipient::Orchestrator);
-    assert!(!state.tasks[&TaskId::from("t")].cancelled());
-    crate::orchestrator_inbox::settle(&f.domain);
-    let state = f.domain.state().unwrap();
-    assert!(state.tasks[&TaskId::from("t")].cancelled(), "left past its reminder, Alondra cancels it");
-    assert!(state.open_plan_refusal(&"t".into()).is_none());
-    let reason = f.domain.store.lock().unwrap().cancel_reasons().unwrap()[&TaskId::from("t")].clone();
-    assert!(reason.contains("Choose a model before its native reasoning effort"), "{reason}");
+    assert!(reminder.body.starts_with("Still open, reminder 3:"), "{}", reminder.body);
     assert!(state.interactions.values().all(|i| i.recipient != alondra_core::domain::Recipient::User
         || !matches!(&i.scope, alondra_core::domain::Scope::Task { task_id } if task_id.0 == "t")), "the user is never asked");
 }
@@ -2184,7 +2191,7 @@ fn cancelled_launch_plan_with_history(f: &Fixture) -> alondra_daemon_engine_mode
         chosen_by: ModelChooser::Orchestrator, reason: Some("Original launch".into()), title: "Editor colours".into(),
         provider: Some(alondra_core::accounts::Provider::Claude), tags: None,
     });
-    command(&f.domain, user(), Command::CancelTask { task_id: "t".into() });
+    command(&f.domain, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     command(&f.domain, Actor::System, Command::RecordNodeEnd {
         task_id: "t".into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: Some("agent-b".into()),
     });
@@ -2210,7 +2217,7 @@ async fn reopening_a_legacy_task_admits_its_retained_project_policy_after_the_pr
     f.domain.set_task_worktree(&"t".into(), original.to_str().unwrap()).unwrap();
     give(&f, "t", "agent-b");
     command(&f.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::StartTask { task_id: "t".into() });
-    command(&f.domain, user(), Command::CancelTask { task_id: "t".into() });
+    command(&f.domain, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     git_in(&f.project, &["worktree", "remove", original.to_str().unwrap()]);
     command(&f.domain, Actor::System, Command::ReleaseTaskWorktree {
         task_id: "t".into(), path: original.display().to_string(), end: alondra_core::domain::WorktreeEnd::Removed,

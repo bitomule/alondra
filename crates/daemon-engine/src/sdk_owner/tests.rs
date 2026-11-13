@@ -945,7 +945,7 @@ async fn cancelling_an_sdk_task_with_background_work_stops_its_host_and_ends_the
     assert!(processes.len() >= 2, "the host and its native Claude share the host's group: {processes:?}");
     let agent = driver.agent().clone();
     slice.domain.sdk_owners.lock().unwrap().push(Owner::spawn(driver));
-    slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into() });
+    slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into(), reason: None });
     let task = slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].clone();
     assert!(task.ending(), "the cancelled task waits for the receipts of its node's end");
     crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &crate::task_closer::Timing::new(None), alondra_core::now_millis()).await.unwrap();
@@ -969,7 +969,7 @@ async fn cancelling_an_sdk_task_mid_turn_interrupts_the_turn_stops_its_host_and_
     let processes = alondra_process_group::members(group).unwrap();
     let agent = driver.agent().clone();
     slice.domain.sdk_owners.lock().unwrap().push(Owner::spawn(driver));
-    slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into() });
+    slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into(), reason: None });
     crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &crate::task_closer::Timing::new(None), alondra_core::now_millis()).await.unwrap();
     assert_eq!(subtypes(&slice.controls()), ["interrupt"], "Claude's turn was interrupted before its host closed");
     let state = slice.domain.state().unwrap();
@@ -1176,7 +1176,7 @@ async fn cancelling_an_sdk_task_that_waits_on_its_card_stops_its_host_and_ends_t
     let processes = alondra_process_group::members(group).unwrap();
     slice.domain.sdk_owners.lock().unwrap().push(Owner::spawn(driver));
     let state = slice.domain.state().unwrap();
-    let cancelled = slice.domain.execute_with(&user(), &envelope(&state, "client-cancel", Command::CancelTask { task_id: TASK.into() }), None, None, || Ok(()));
+    let cancelled = slice.domain.execute_with(&user(), &envelope(&state, "client-cancel", Command::CancelTask { task_id: TASK.into(), reason: None }), None, None, || Ok(()));
     assert!(cancelled.is_ok(), "the user's cancellation commits: {cancelled:?}");
     crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &crate::task_closer::Timing::new(None), alondra_core::now_millis()).await.unwrap();
     let state = slice.domain.state().unwrap();
@@ -1485,7 +1485,7 @@ fn a_task_cancelled_with_a_turn_end_unread_is_cancelled_and_its_host_is_taken_ov
     let slice = Slice::new();
     let driver = ending_on_a_read_notification(&slice);
     let (_, stranded) = strand_host(&slice, driver);
-    slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into() });
+    slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into(), reason: None });
     assert!(slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].cancelled() || lifecycle(&slice.domain).phase() == alondra_domain::TaskPhase::Finishing, "the cancel applies");
     let mut replaced = slice.take_over(&slice.domain);
     assert!(stranded.iter().all(|process| !alondra_process_group::alive(process).unwrap()), "the stopped host is gone");
@@ -2052,7 +2052,7 @@ async fn a_cancelled_sdk_task_with_unsaved_files_in_a_subagents_worktree_is_clos
     });
     std::fs::write(subagent.join("draft.txt"), "x").unwrap();
     slice.domain.sdk_owners.lock().unwrap().push(Owner::spawn(driver));
-    slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into() });
+    slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into(), reason: None });
     let timing = crate::task_closer::Timing::new(None);
     crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &timing, alondra_core::now_millis()).await.unwrap();
     let state = slice.domain.state().unwrap();
@@ -3083,7 +3083,7 @@ async fn a_cancelled_task_whose_ended_host_left_a_claim_with_no_command_closes_a
     let _abandoned = driver.sealed().attempts.pop().unwrap();
     driver.stop().unwrap();
     drop(driver);
-    slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into() });
+    slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into(), reason: None });
     slice.run(&Actor::System, "told-after", Command::TellNode { task_id: TASK.into(), text: "Settle your worktrees".into(), from_user: false, answers: None });
     slice.domain.enable_sdk(slice.backend.clone());
     close_pass(&slice).await;
@@ -3405,7 +3405,7 @@ fn a_command_allowed_in_the_task_runs_again_only_as_the_same_command_from_the_sa
     slice.rest(&mut driver);
     assert_eq!(allowed_in_task(&slice), [(branch, 0)]);
     driver.stop().unwrap();
-    slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into() });
+    slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into(), reason: None });
     assert!(allowed_in_task(&slice).is_empty(), "nothing stays allowed once the task ends");
     let left: i64 = slice.observer().query_row("SELECT count(*) FROM task_permission_grants", [], |row| row.get(0)).unwrap();
     assert_eq!(left, 0);
@@ -3888,7 +3888,7 @@ async fn closing_a_done_task_ends_its_host_with_no_failure_of_its_owner() {
 async fn cancelling_a_task_ends_its_host_with_no_failure_of_its_owner() {
     let slice = Slice::new();
     let (agent, failures, processes) = owner_reading_when_its_host_ends(&slice);
-    slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into() });
+    slice.run(&user(), "cancel", Command::CancelTask { task_id: TASK.into(), reason: None });
     close_pass(&slice).await;
     let task = slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].clone();
     assert_eq!((task.state, task.wrap_up.node), (TaskState::Cancelled, Some(NodeEnd::Closed)));
@@ -4273,7 +4273,7 @@ fn reopen_without_native_witness(slice: &Slice) -> (AgentId, String) {
     let refusal = require_recoverable_session(&slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
         &AccountId::default_account(), slice.worktree.to_str().unwrap()).unwrap_err();
     assert!(refusal.to_string().contains("The original native session cannot be proven"), "{refusal}");
-    slice.run(&user(), "cancel-original", Command::CancelTask { task_id: TASK.into() });
+    slice.run(&user(), "cancel-original", Command::CancelTask { task_id: TASK.into(), reason: None });
     original.stop().unwrap();
     drop(original);
     slice.run(&Actor::System, "close-original", Command::RecordNodeEnd {
@@ -4344,7 +4344,7 @@ fn stale_reopening_does_not_admit(reopen_again: bool) {
             launch: Some(LaunchPlan::new("remaining-release-work", slice.worktree.to_str().unwrap())),
         });
     }
-    slice.run(&user(), "cancel-after-preparation", Command::CancelTask { task_id: TASK.into() });
+    slice.run(&user(), "cancel-after-preparation", Command::CancelTask { task_id: TASK.into(), reason: None });
     if reopen_again {
         slice.run(&Actor::System, "cleanup-after-preparation", Command::RecordTaskCleanup { task_id: TASK.into() });
         assert_eq!(slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].state, TaskState::Cancelled);
@@ -4379,7 +4379,7 @@ fn reopening_a_session_whose_native_history_disappeared_starts_clean_without_a_r
     let native = slice.starts()[0]["session"].as_str().unwrap().to_owned();
     require_recoverable_session(&slice.domain, &slice.backend, &TASK.into(), Provider::Claude,
         &AccountId::default_account(), slice.worktree.to_str().unwrap()).unwrap();
-    slice.run(&user(), "cancel-history-original", Command::CancelTask { task_id: TASK.into() });
+    slice.run(&user(), "cancel-history-original", Command::CancelTask { task_id: TASK.into(), reason: None });
     original.stop().unwrap();
     drop(original);
     slice.run(&system(), "close-history-original", Command::RecordNodeEnd {
@@ -4417,7 +4417,7 @@ fn a_failed_reopening_workspace_cannot_replace_the_original_admissions_native_di
     slice.settle(&mut original);
     let old_node = original.agent().clone();
     let native = slice.starts()[0]["session"].as_str().unwrap().to_owned();
-    slice.run(&user(), "cancel-directory-original", Command::CancelTask { task_id: TASK.into() });
+    slice.run(&user(), "cancel-directory-original", Command::CancelTask { task_id: TASK.into(), reason: None });
     original.stop().unwrap();
     drop(original);
     slice.run(&system(), "close-directory-original", Command::RecordNodeEnd {

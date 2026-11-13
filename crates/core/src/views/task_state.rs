@@ -295,12 +295,24 @@ fn waiting(task: &Task, waits: WaitsFor, context: &RenderContext<'_>) -> Present
             }
         }
         WaitsFor::Step(Step::Waking) => from(t!(lang, "Alondra tells it its work finished", "Alondra le avisa de que su trabajo acabó").into()),
-        WaitsFor::Step(Step::Answering) => from(t!(lang, "Alondra prepares its next step", "Alondra prepara su siguiente paso").into()),
+        WaitsFor::Step(Step::Answering) => from(answering_fact(task, context)),
     };
     let pending = matches!(waits, WaitsFor::Slot | WaitsFor::Machine | WaitsFor::Disk | WaitsFor::Usage | WaitsFor::ProviderApi);
     let pending = |text: String| if pending { with_pending(text, task, context) } else { text };
     let reason = pending(listed.unwrap_or_else(|| fact.clone()));
     Presentation { queue, reason: Some(reason), ..Presentation::new(StateFact::Waiting(pending(fact)), Tone::Neutral, Block::Waiting, lang) }
+}
+
+/// What the orchestrator has still to decide about the task, or Alondra's own next step.
+fn answering_fact(task: &Task, context: &RenderContext<'_>) -> String {
+    let lang = context.lang;
+    if context.domain.open_plan_refusal(&task.id).is_some() {
+        return t!(lang, "The orchestrator fixes its launch plan or cancels it", "El orquestador corrige su plan de arranque o la cancela").into();
+    }
+    if let Some(title) = context.domain.replanned_for(task).and_then(|dependency| context.domain.tasks.get(&dependency)).map(|dependency| dependency.title.clone()) {
+        return tf!(lang, "“{title}” was cancelled · the orchestrator decides what happens to it", "«{title}» se canceló · el orquestador decide qué hacer con ella");
+    }
+    t!(lang, "Alondra prepares its next step", "Alondra prepara su siguiente paso").into()
 }
 
 fn provider_name(task: &Task) -> &'static str {

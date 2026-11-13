@@ -105,7 +105,7 @@ fn cancelling_a_task_without_a_node_ends_only_with_the_cleanup_receipt() {
     assert_eq!(kinds(&s, "t"), ["planned"]);
     assert_eq!(lifecycle(&s, "t"), (TaskState::NotStarted, false, None, None));
 
-    must(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    must(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     assert_eq!(lifecycle(&s, "t"), (TaskState::Closing, false, None, Some(TaskEnding::Cancelling)));
     assert_eq!(kinds(&s, "t"), ["planned", "finished"]);
     let t = &s.tasks[&"t".into()];
@@ -116,7 +116,7 @@ fn cancelling_a_task_without_a_node_ends_only_with_the_cleanup_receipt() {
     assert_eq!(refused(&mut s, orchestrator(), Command::AssignTask { task_id: "t".into(), agent_id: "a".into(), model: None }), "task_ending");
     assert_eq!(refused(&mut s, user(), Command::ReopenTask { task_id: "t".into() }), "task_not_active");
     assert_eq!(refused(&mut s, user(), Command::ArchiveTask { task_id: "t".into(), archived: true }), "task_not_active");
-    assert_eq!(refused(&mut s, user(), Command::CancelTask { task_id: "t".into() }), "task_not_active");
+    assert_eq!(refused(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None }), "task_not_active");
     assert_eq!(refused(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: None }), "not_closing", "no node ended");
 
     must(&mut s, Actor::System, Command::RecordTaskCleanup { task_id: "t".into() });
@@ -143,7 +143,7 @@ fn cancelling_a_task_with_a_node_is_cancelled_only_with_the_node_end_receipt() {
     assert_eq!(kinds(&s, "t"), ["planned", "admitted", "resource_available", "turn_started"]);
     assert_aggregate_rules(&s);
 
-    let out = must(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    let out = must(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     assert_eq!(lifecycle(&s, "t"), (TaskState::Closing, true, Some("a".into()), Some(TaskEnding::Cancelling)));
     assert!(s.tasks[&"t".into()].wrap_up.close_cancelled);
     assert!(out.effects.iter().any(|e| matches!(e, DomainEffect::NotifyAgent { agent_id, .. } if agent_id.0 == "a")), "the node is told");
@@ -268,7 +268,7 @@ fn a_task_without_a_journal_is_refused_and_moves_nowhere() {
     s.tasks.insert(unjournaled.id.clone(), unjournaled);
     assert_eq!(s.validate_journal().unwrap_err().code, "lifecycle_journal", "a loaded state with a task and no journal is refused");
     let before = s.clone();
-    assert_eq!(exec(&mut s, user(), Command::CancelTask { task_id: "old".into() }).unwrap_err().code, "lifecycle_journal");
+    assert_eq!(exec(&mut s, user(), Command::CancelTask { task_id: "old".into(), reason: None }).unwrap_err().code, "lifecycle_journal");
     assert_eq!(s, before, "no old writer cancels it");
 }
 
@@ -294,7 +294,7 @@ fn an_orphan_reviewer_is_cancelled_through_its_lifecycle() {
     task(&mut s, "review", Some("b"));
     must(&mut s, orchestrator(), Command::SetRelations { task_id: "review".into(), blocks: BTreeSet::from([TaskId::from("work")]), delivered_dependencies: BTreeSet::new() });
     must(&mut s, node("b"), Command::StartTask { task_id: "review".into() });
-    must(&mut s, user(), Command::CancelTask { task_id: "work".into() });
+    must(&mut s, user(), Command::CancelTask { task_id: "work".into(), reason: None });
     assert_eq!(lifecycle(&s, "review"), (TaskState::Closing, true, Some("b".into()), Some(TaskEnding::Cancelling)), "nothing is left to review");
     assert_eq!(kinds(&s, "review").last().map(String::as_str), Some("finished"));
     assert_aggregate_rules(&s);
@@ -1249,7 +1249,7 @@ fn a_host_that_ends_while_its_task_waits_on_the_user_adds_no_card() {
 /// input that message became.
 fn cancelled_mid_turn(s: &mut DomainState) -> String {
     sdk_turn(s, "t", "a");
-    must(s, user(), Command::CancelTask { task_id: "t".into() });
+    must(s, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     must(s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Settle your worktrees".into(), from_user: false, answers: None });
     let LifecycleRecord::Told { input, .. } = last(s, "t") else { panic!("told: {:?}", last(s, "t")) };
     input

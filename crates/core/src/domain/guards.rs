@@ -30,7 +30,7 @@ impl DomainState {
             Command::AuthorizeMerge { authorization_id, presentation_id, pr_id, expected_head, method } => {
                 self.merge_guard(actor, authorization_id, presentation_id, pr_id, expected_head, *method, holds).map(drop)
             }
-            Command::CancelTask { task_id } => self.cancel_guard(actor, task_id),
+            Command::CancelTask { task_id, .. } => self.cancel_guard(actor, task_id),
             Command::SettleStall { case_id, task_id, outcome } => self.settle_stall_guard(actor, case_id, task_id, outcome),
             Command::ReopenTask { task_id } => self.reopen_guard(actor, task_id),
             Command::ArchiveTask { task_id, archived } => self.archive_guard(actor, task_id, *archived),

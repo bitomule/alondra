@@ -105,7 +105,7 @@ impl DomainState {
         if lifecycle.phase() == TaskPhase::Delivered && self.node_closing(task) {
             return Situation::Delivered(Delivery::Closing).into();
         }
-        let Some(obligation) = lifecycle.obligation() else {
+        let Some(obligation) = self.obligation_of(&task.id) else {
             return if lifecycle.phase() == TaskPhase::Cancelled { Situation::Cancelled } else { Situation::Finished }.into();
         };
         match obligation.owed {
@@ -137,9 +137,6 @@ impl DomainState {
         }
         if lifecycle.phase() == TaskPhase::Delivered {
             match obligation.owed {
-                Owed::User if self.task_handed_back(&task.id).is_some() && matches!(lifecycle.awaits(), Some(Await::Orchestrator(_))) => {
-                    return Situation::Waiting(WaitsFor::Step(AlondraStep::Answering)).into();
-                }
                 Owed::User if self.task_handed_back(&task.id).is_some() => return Situation::Waiting(WaitsFor::Step(AlondraStep::Delivering)).into(),
                 Owed::User => return Situation::Delivered(Delivery::ForReview).into(),
                 Owed::Tasks => return Situation::Delivered(Delivery::Blocked).into(),
@@ -162,7 +159,7 @@ impl DomainState {
             Owed::HandInput | Owed::ReadInput | Owed::HandDecision => WaitsFor::Step(AlondraStep::Delivering),
             Owed::Wake => WaitsFor::Step(AlondraStep::Waking),
             Owed::Merge | Owed::Close => return Situation::Delivered(Delivery::Closing).into(),
-            Owed::Answer | Owed::User | Owed::Turn | Owed::OwnWork => WaitsFor::Step(AlondraStep::Answering),
+            Owed::Answer | Owed::Replan | Owed::User | Owed::Turn | Owed::OwnWork => WaitsFor::Step(AlondraStep::Answering),
         }).into()
     }
 }

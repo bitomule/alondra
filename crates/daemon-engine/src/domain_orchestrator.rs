@@ -41,6 +41,10 @@ pub struct Runtime {
     pub failure: Option<Failure>,
     pub retry_at: Option<i64>,
     pub consecutive_failures: u32,
+    /// The turns the orchestrator ended, handled, failed or cut short: each one is a moment it
+    /// rested, when Alondra hands it what it still has to re-plan.
+    #[serde(default)]
+    pub rests: u64,
     pub cancel_requested: bool,
     /// Batches whose execution was interrupted or given up: the next run is
     /// told never to replay them.
@@ -408,8 +412,12 @@ impl Executor {
         if *stop.borrow() { return Ok(()); }
         self.apply_problem_answers()?;
         let mut runtime = load(&self.home)?;
+        self.domain.live.orchestrator_rests.store(runtime.rests, std::sync::atomic::Ordering::Relaxed);
         crate::usage_probe::follow(&self.domain, now);
         if self.domain.live.usage_pause.current().is_some_and(|pause|pause.by_user) { return Ok(()); }
+        if runtime.active_run.is_none() {
+            crate::orchestrator_inbox::hand_replans(&self.domain);
+        }
         if runtime.active_run.is_some() || runtime.retry_at.is_some_and(|at| at > now) {
             return Ok(());
         }
@@ -436,6 +444,7 @@ impl Executor {
                 fits
             }).collect();
         if pending.is_empty() && runtime.pending_resolutions.is_empty() {
+            crate::orchestrator_inbox::hand_replans(&self.domain);
             if runtime.last_error.is_none() {
                 crate::orchestrator_inbox::settle(&self.domain);
             }
@@ -593,6 +602,7 @@ impl Executor {
                 runtime.last_error = None;
                 runtime.failure = None;
                 runtime.retry_at = None;
+                self.rested(&mut runtime);
                 save(&self.home, &runtime)
             }
             BatchEnd::Handled => {
@@ -632,6 +642,7 @@ impl Executor {
         runtime.retry_at = None;
         runtime.consecutive_failures = 0;
         runtime.pending_resolutions.clear();
+        self.rested(&mut runtime);
         let prior_handoffs = std::mem::take(&mut runtime.batch_handoffs);
         if let Some(problem) = runtime.stuck_problem.take() {
             let _ = self.domain.withdraw_problem(&InteractionId(problem));
@@ -642,6 +653,7 @@ impl Executor {
         }
         save(&self.home, &runtime)?;
         self.domain.orchestrator_progress();
+        crate::orchestrator_inbox::hand_replans(&self.domain);
         if !self.pending()?.is_empty() {
             return Ok(());
         }
@@ -680,7 +692,21 @@ impl Executor {
 
     /// A run that changed nothing (`problem` is None) is offered again with a fresh prompt; one
     /// that may have changed something is the user's call.
+    /// A turn of the orchestrator ended, whatever it did: it rests, and what it still has to
+    /// re-plan is handed to it again.
+    fn rested(&self, runtime: &mut Runtime) {
+        runtime.rests = runtime.rests.saturating_add(1);
+        self.domain.live.orchestrator_rests.store(runtime.rests, std::sync::atomic::Ordering::Relaxed);
+    }
+
     fn failed(&self, mut runtime: Runtime, run: &Run, error: String, problem: Option<BatchProblem>) -> Result<()> {
+        self.rested(&mut runtime);
+        let done = self.failed_batch(runtime, run, error, problem);
+        crate::orchestrator_inbox::hand_replans(&self.domain);
+        done
+    }
+
+    fn failed_batch(&self, mut runtime: Runtime, run: &Run, error: String, problem: Option<BatchProblem>) -> Result<()> {
         runtime.consecutive_failures = runtime.consecutive_failures.saturating_add(1);
         runtime.last_error = Some(error);
         let Some(problem) = problem else {
@@ -1738,6 +1764,37 @@ mod tests {
         assert_eq!(announced(&f).len(), 1, "the next turn tells nothing new");
     }
 
+    /// A task waits for a cancelled one and the orchestrator keeps failing: every turn it ends, it
+    /// is handed the open item again, and nobody else is asked.
+    #[tokio::test]
+    async fn a_failing_orchestrator_is_handed_what_it_still_has_to_re_plan_at_every_turn_it_ends() {
+        let f = fixture();
+        f.mark(DIED_BEFORE_ANSWERING);
+        ask_orchestrator(&f, 1);
+        let orchestrator = Actor::Orchestrator { generation: 0 };
+        f.run(Actor::User { user_id: "u".into() }, "pair", Command::CreateRequest {
+            request_id: "pair".into(), body: "Two tasks".into(), auto_merge: false, maintenance: false, message: false,
+        });
+        f.run(orchestrator.clone(), "pair-title", Command::TitleRequest { request_id: "pair".into(), title: "Pair".into() });
+        for (id, after) in [("first", vec![]), ("second", vec!["first"])] {
+            f.run(orchestrator.clone(), id, Command::CreateTask {
+                task_id: id.into(), request_id: "pair".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
+                dependencies: after.into_iter().map(|d: &str| TaskId::from(d)).collect(), stack: None,
+                launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), plan_items: None, continues: None,
+            });
+        }
+        f.run(Actor::User { user_id: "u".into() }, "cancel-first", Command::CancelTask { task_id: "first".into(), reason: None });
+        let notices = || f.cards(alondra_core::orchestrator_cards::DEPENDENCY_CANCELLED_NOTICE_PREFIX).len();
+        for failure in 1..=3 {
+            f.tick().await;
+            assert!(load(&f.executor.home).unwrap().last_error.is_some() || load(&f.executor.home).unwrap().retry_at.is_some(), "the turn failed");
+            assert_eq!(notices(), failure + 1, "handed at the start and again when the turn ended, {failure} turns in");
+            again(&f);
+        }
+        let state = f.executor.domain.state().unwrap();
+        assert!(state.open_start_problem(&"second".into()).is_none(), "the user is never asked");
+    }
+
     #[tokio::test]
     async fn a_turn_that_fails_leaves_its_tasks_for_the_next_turn_to_tell() {
         let f = fixture();
@@ -1995,7 +2052,7 @@ mod tests {
         ask_orchestrator(&f, 1);
         let before = summary(&f.executor.domain.state().unwrap(), &no_ages(), |_| None);
         assert!(!before.contains("every task of it has ended"), "{before}");
-        command(&f.executor.domain, Actor::Orchestrator { generation: 0 }, "cancel", Command::CancelTask { task_id: "t".into() });
+        command(&f.executor.domain, Actor::Orchestrator { generation: 0 }, "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
         let after = summary(&f.executor.domain.state().unwrap(), &no_ages(), |_| None);
         assert!(after.contains("request r (tasks: t closing; every task of it has ended: close it with close_request, or create its next tasks): Work"), "{after}");
     }

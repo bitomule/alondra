@@ -180,7 +180,7 @@ fn delivered_starts_a_task_at_the_final_delivery_and_done_only_when_it_closes() 
     assert_eq!(state_of(&s, "a"), TaskState::ForYourReview, "a plain delivered dependency blocks nothing");
 
     let mut s = pair();
-    ok(&mut s, user(), Command::SetDependencies { task_id: "b".into(), dependencies: BTreeSet::from(["a".into()]), stack: None });
+    ok(&mut s, user(), Command::SetDependencies { task_id: "b".into(), dependencies: BTreeSet::from(["a".into()]), stack: None, reason: None });
     present(&mut s, "wa", "a", "da");
     assert_eq!(state_of(&s, "b"), TaskState::WaitingDependency, "Done still waits for the task to finish");
 }
@@ -199,8 +199,7 @@ fn relations_reject_cycles_and_deadlocks_but_allow_the_review_pair() {
         task_id: "b".into(), delivered_dependencies: BTreeSet::new(), blocks: BTreeSet::from(["b".into()]),
     }), "dependency_cycle");
     assert_eq!(refused(&mut s, user(), Command::SetDependencies {
-        task_id: "b".into(), dependencies: BTreeSet::from(["a".into()]), stack: None,
-    }), "dependency_cycle", "a task cannot wait for `a` to be done while it blocks it");
+        task_id: "b".into(), dependencies: BTreeSet::from(["a".into()]), stack: None, reason: None,}), "dependency_cycle", "a task cannot wait for `a` to be done while it blocks it");
 }
 
 #[test]
@@ -380,7 +379,7 @@ fn a_repeated_verdict_neither_duplicates_the_feedback_nor_spends_another_round()
 fn a_cancelled_reviewer_lets_the_reviewed_task_through_with_one_card_and_one_push() {
     let mut s = pair();
     reviewing(&mut s);
-    let outcome = ok(&mut s, user(), Command::CancelTask { task_id: "b".into() });
+    let outcome = ok(&mut s, user(), Command::CancelTask { task_id: "b".into(), reason: None });
     assert_eq!(notified_user(&outcome), ["da"]);
     assert_eq!(state_of(&s, "a"), TaskState::ForYourReview);
     assert!(s.item(&s.interactions[&"da".into()]).pending);
@@ -390,7 +389,7 @@ fn a_cancelled_reviewer_lets_the_reviewed_task_through_with_one_card_and_one_pus
 fn a_cancelled_reviewed_task_cancels_its_reviewer_and_never_gives_the_user_its_delivery() {
     let mut s = pair();
     reviewing(&mut s);
-    let outcome = ok(&mut s, user(), Command::CancelTask { task_id: "a".into() });
+    let outcome = ok(&mut s, user(), Command::CancelTask { task_id: "a".into(), reason: None });
     assert!(s.tasks[&"b".into()].cancelled() && state_of(&s, "b") == TaskState::Closing, "the reviewer is cancelled with its task");
     assert_eq!(notified_agent(&outcome, "wb"), 1, "the reviewer's node is told");
     assert!(notified_user(&outcome).is_empty());
@@ -495,7 +494,7 @@ fn the_rounds_are_counted_per_reviewed_task_across_all_its_reviewers() {
 #[test]
 fn a_review_of_a_task_that_is_already_over_is_refused_instead_of_cancelling_the_reviewer() {
     let mut s = pair();
-    ok(&mut s, user(), Command::CancelTask { task_id: "a".into() });
+    ok(&mut s, user(), Command::CancelTask { task_id: "a".into(), reason: None });
     assert_eq!(refused(&mut s, user(), Command::SetRelations {
         task_id: "b".into(), delivered_dependencies: BTreeSet::new(), blocks: BTreeSet::from(["a".into()]),
     }), "invalid_input");
@@ -506,7 +505,7 @@ fn a_review_of_a_task_that_is_already_over_is_refused_instead_of_cancelling_the_
 fn reopening_a_reviewer_whose_task_is_over_is_refused_and_does_not_cancel_it_in_the_same_command() {
     let mut s = pair();
     reviewing(&mut s);
-    ok(&mut s, user(), Command::CancelTask { task_id: "a".into() });
+    ok(&mut s, user(), Command::CancelTask { task_id: "a".into(), reason: None });
     ok(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "b".into(), end: NodeEnd::Closed, agent_id: Some("wb".into()) });
     assert_eq!(state_of(&s, "b"), TaskState::Cancelled);
     assert_eq!(refused(&mut s, user(), Command::ReopenTask { task_id: "b".into() }), "invalid_input");

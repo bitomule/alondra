@@ -139,7 +139,7 @@ impl DomainState {
         }
         self.settle_held(review_id, task_id, outcome.clone(), lifecycles)?;
         if matches!(outcome, PlanReviewOutcome::Cancelled { .. }) && !self.task(task_id)?.state.terminal() {
-            self.apply(actor, &Command::CancelTask { task_id: task_id.clone() }, effects, created, lifecycles)?;
+            self.apply(actor, &Command::CancelTask { task_id: task_id.clone(), reason: None }, effects, created, lifecycles)?;
         }
         Ok(())
     }

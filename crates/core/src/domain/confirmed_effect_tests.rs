@@ -54,7 +54,7 @@ fn a_command_that_changes_nothing_is_refused_with_its_reason_and_records_nothing
 #[test]
 fn an_accepted_command_says_what_it_changed() {
     let mut s = two_tasks();
-    let cancelled = must(&mut s, orchestrator(), Command::CancelTask { task_id: "u".into() });
+    let cancelled = must(&mut s, orchestrator(), Command::CancelTask { task_id: "u".into(), reason: None });
     assert!(cancelled.changed);
     assert!(cancelled.effect.iter().any(|line| line.starts_with("Task u went from not started to ")), "{:?}", cancelled.effect);
     let asked = must(&mut s, node("a"), ask("name"));
@@ -70,8 +70,8 @@ fn command() -> impl Strategy<Value = (Actor, Command)> {
     let card = prop_oneof![Just("i1"), Just("i2")];
     let title = prop_oneof![Just("First"), Just("Second")];
     prop_oneof![
-        task.clone().prop_map(|t| (orchestrator(), Command::CancelTask { task_id: t.into() })),
-        task.clone().prop_map(|t| (user(), Command::CancelTask { task_id: t.into() })),
+        task.clone().prop_map(|t| (orchestrator(), Command::CancelTask { task_id: t.into(), reason: None })),
+        task.clone().prop_map(|t| (user(), Command::CancelTask { task_id: t.into(), reason: None })),
         task.clone().prop_map(|t| (user(), Command::ReopenTask { task_id: t.into() })),
         (task.clone(), any::<bool>()).prop_map(|(t, archived)| (user(), Command::ArchiveTask { task_id: t.into(), archived })),
         (task.clone(), prop_oneof![Just(TaskPriority::High), Just(TaskPriority::Normal)])
@@ -84,7 +84,7 @@ fn command() -> impl Strategy<Value = (Actor, Command)> {
         card.clone().prop_map(|id| (node("a"), Command::Withdraw { interaction_id: id.into() })),
         card.prop_map(|id| (user(), Command::MarkRead { interaction_id: format!("note-{id}").into() })),
         Just((node("a"), Command::WaitForTasks { task_id: "t".into(), tasks: ["u".into()].into() })),
-        Just((orchestrator(), Command::SetDependencies { task_id: "u".into(), dependencies: ["t".into()].into(), stack: None })),
+        Just((orchestrator(), Command::SetDependencies { task_id: "u".into(), dependencies: ["t".into()].into(), stack: None, reason: None })),
     ]
 }
 

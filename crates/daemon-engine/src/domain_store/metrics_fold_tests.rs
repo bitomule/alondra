@@ -322,7 +322,7 @@ fn merged_pr_store(fixture: &Fixture) -> DomainStore {
         task_id: "task-1".into(), pr_id: "pr-1".into(), host: "github.com".into(), repository: "owner/repository".into(),
         number: 7, head: "aaa".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
     });
-    run(&mut store, &user(), "cancel", Command::CancelTask { task_id: "task-1".into() });
+    run(&mut store, &user(), "cancel", Command::CancelTask { task_id: "task-1".into(), reason: None });
     run(&mut store, &Actor::System, "end", Command::RecordNodeEnd { task_id: "task-1".into(), end: NodeEnd::Closed, agent_id: Some("agent-1".into()) });
     assert_eq!(store.load().unwrap().tasks[&TaskId::from("task-1")].state, TaskState::Cancelled);
     store.conn.execute("UPDATE pull_requests SET state='merged',merged_head=head", []).unwrap();

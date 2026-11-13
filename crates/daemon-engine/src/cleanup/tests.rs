@@ -134,7 +134,7 @@ impl Rig {
                 self.forget_wrap_up(&id);
             }
             Task::Cancelled => {
-                command(&self.domain, user(), Command::CancelTask { task_id: id.clone().into() });
+                command(&self.domain, user(), Command::CancelTask { task_id: id.clone().into(), reason: None });
                 self.forget_wrap_up(&id);
             }
             Task::None => {
@@ -273,7 +273,7 @@ async fn a_replaced_node_is_not_closed_while_the_node_that_took_its_worktree_wor
     let report = rig.run(false).await;
     assert!(rig.sessions.removals().is_empty(), "claude rm would delete the worktree the successor works in: {report}");
 
-    command(&rig.domain, user(), Command::CancelTask { task_id: "t2".into() });
+    command(&rig.domain, user(), Command::CancelTask { task_id: "t2".into(), reason: None });
     let report = rig.run(false).await;
     assert!(names(&report["closed"]).contains(&"Node 1".to_owned()), "once that task ends the old session goes: {report}");
 }
@@ -324,7 +324,7 @@ impl Rig {
         if let Some(actor) = assign_as {
             command_as(&self.domain, actor, assign_id, Command::AssignTask { task_id: id.clone().into(), agent_id: session.clone().into(), model: None });
         }
-        command(&self.domain, user(), Command::CancelTask { task_id: id.clone().into() });
+        command(&self.domain, user(), Command::CancelTask { task_id: id.clone().into(), reason: None });
         self.forget_wrap_up(&id);
         session
     }

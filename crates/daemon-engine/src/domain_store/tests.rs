@@ -1174,8 +1174,7 @@ fn closed_request_reopen_rejection_survives_sql_restart() {
         &user(),
         "cancel-task",
         Command::CancelTask {
-            task_id: "task-1".into(),
-        },
+            task_id: "task-1".into(), reason: None,},
     );
     execute(&mut store, &Actor::System, "node-end", Command::RecordNodeEnd {
         task_id: "task-1".into(), end: NodeEnd::Closed, agent_id: Some("agent-1".into()),
@@ -1603,7 +1602,7 @@ fn a_store_made_before_wrap_ups_launch_plans_and_closings_opens_in_place() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
-    execute(&mut store, &user(), "cancel", Command::CancelTask { task_id: "task-1".into() });
+    execute(&mut store, &user(), "cancel", Command::CancelTask { task_id: "task-1".into(), reason: None });
     store.begin_task_closing(&"task-1".into(), 5).unwrap();
     store.conn.execute_batch("DROP TABLE task_wrap_ups; DROP TABLE task_waits; DROP TABLE task_relations; DROP TABLE task_closings; DROP TABLE auto_launches; DROP TABLE task_launch_plans; DROP TABLE inherited_worktrees; DROP TABLE maintenance_requests; DROP TABLE cleared_requests; DROP TABLE request_origins").unwrap();
     drop(store);
@@ -1833,7 +1832,7 @@ fn a_tasks_wrap_up_survives_a_restart() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
-    execute(&mut store, &user(), "cancel", Command::CancelTask { task_id: "task-1".into() });
+    execute(&mut store, &user(), "cancel", Command::CancelTask { task_id: "task-1".into(), reason: None });
     execute(&mut store, &Actor::System, "end", Command::RecordNodeEnd { task_id: "task-1".into(), end: NodeEnd::KeptByUser, agent_id: None });
     drop(store);
     let mut store = DomainStore::open(&fixture.path()).unwrap();
@@ -2149,7 +2148,7 @@ fn the_lifecycle_journal_is_persisted_append_only_and_read_back_on_restart() {
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
     execute(&mut store, &agent(), "start", Command::StartTask { task_id: "task-1".into() });
-    execute(&mut store, &user(), "cancel", Command::CancelTask { task_id: "task-1".into() });
+    execute(&mut store, &user(), "cancel", Command::CancelTask { task_id: "task-1".into(), reason: None });
     let state = store.load().unwrap();
     let task = &state.tasks[&TaskId::from("task-1")];
     assert_eq!((task.state, task.ending), (TaskState::Closing, Some(alondra_core::domain::TaskEnding::Cancelling)));
@@ -2361,7 +2360,7 @@ fn a_continuation_and_the_worktree_it_was_handed_survive_a_restart() {
         task_id: "t".into(), path: worktree.into(), origin: WorktreeOrigin::Task, branch: Some("worktree-t".into()),
     });
     execute(&mut store, &orchestrator, "t-claude", create("t-claude", Some("t")));
-    execute(&mut store, &user(), "cancel", Command::CancelTask { task_id: "t".into() });
+    execute(&mut store, &user(), "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
     execute(&mut store, &Actor::System, "handed", Command::ReleaseTaskWorktree { task_id: "t".into(), path: worktree.into(), end: WorktreeEnd::HandedOver });
     drop(store);
     let mut restarted = DomainStore::open(&fixture.path()).unwrap();

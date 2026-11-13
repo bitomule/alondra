@@ -166,7 +166,7 @@ fn cancelling_a_task_owes_its_work_after_the_merge_until_its_node_ends() {
     });
     must(&mut s, node(), Command::StartTask { task_id: TASK.into() });
     must(&mut s, node(), Command::DeclarePostMergeWork { task_id: TASK.into(), reason: Some("publish the release".into()), waits_for: vec![] });
-    must(&mut s, user(), Command::CancelTask { task_id: TASK.into() });
+    must(&mut s, user(), Command::CancelTask { task_id: TASK.into(), reason: None });
     assert!(lifecycle_owes(&s), "the cancelled task's ending owes the work after the merge");
     assert_ne!(s.tasks[&TASK.into()].state, TaskState::Cancelled);
     must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: TASK.into(), end: NodeEnd::Closed, agent_id: Some(AGENT.into()) });

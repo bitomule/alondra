@@ -82,7 +82,7 @@ fn a_new_tasks_plan_is_checked_against_the_disk_and_the_request() {
     let missing = check_launch_plan(&w.domain, &w.home, &create(&[], Some(plan(&w, json!({"cwd": "/no/such/folder"}))))).unwrap_err();
     assert_eq!(missing.message, "directory /no/such/folder does not exist");
     check_launch_plan(&w.domain, &w.home, &create(&["a"], None)).unwrap();
-    check_launch_plan(&w.domain, &w.home, &Command::CancelTask { task_id: "t".into() }).unwrap();
+    check_launch_plan(&w.domain, &w.home, &Command::CancelTask { task_id: "t".into(), reason: None }).unwrap();
 }
 
 #[test]

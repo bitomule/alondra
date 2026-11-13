@@ -68,7 +68,7 @@ fn merged(s: &mut DomainState, task_id: &str, number: u64) {
     s.tasks.get_mut(&task_id.into()).unwrap().pr_id = Some(id);
 }
 fn cancel(s: &mut DomainState, task_id: &str) {
-    ok(s, user(), Command::CancelTask { task_id: task_id.into() });
+    ok(s, user(), Command::CancelTask { task_id: task_id.into(), reason: None });
 }
 fn close(s: &mut DomainState, request: &str, answer: Option<&str>, headline: Option<&str>) -> CommandOutcome {
     ok(s, orchestrator(), Command::CloseRequest {
@@ -250,7 +250,7 @@ fn the_tasks_a_turn_made_reach_the_user_on_one_card_in_the_order_they_run() {
     planned(&mut s, "design", "r", &[]);
     planned(&mut s, "docs", "r", &["design"]);
     planned(&mut s, "build", "r", &["design"]);
-    ok(&mut s, orchestrator(), Command::SetDependencies { task_id: "ship".into(), dependencies: ["build".into(), "docs".into()].into(), stack: None });
+    ok(&mut s, orchestrator(), Command::SetDependencies { task_id: "ship".into(), dependencies: ["build".into(), "docs".into()].into(), stack: None, reason: None });
     ok(&mut s, orchestrator(), Command::SetPriority { task_id: "build".into(), priority: TaskPriority::High });
     ok(&mut s, orchestrator(), Command::SetPriority { task_id: "docs".into(), priority: TaskPriority::Low });
     let out = announce(&mut s);

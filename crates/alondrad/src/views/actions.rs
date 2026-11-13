@@ -1575,7 +1575,7 @@ fn map_action(
         }
         Verb::Cancel => {
             let task = state.tasks.get(&TaskId(action.subject.clone()))?;
-            Some((Command::CancelTask { task_id: task.id.clone() }, stamp("Cancelled", "Cancelada")))
+            Some((Command::CancelTask { task_id: task.id.clone(), reason: None }, stamp("Cancelled", "Cancelada")))
         }
         Verb::Reopen => {
             let task = state.tasks.get(&TaskId(action.subject.clone()))?;
@@ -2998,7 +2998,7 @@ for line in sys.stdin:
         assert!(matches!(unrelated.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)), "a node with the same identifier receives nothing");
         let mut stale = pacing_request(&state, Verb::TaskMsg, "task-a", "", "es");
         stale.input.text = Some("Too late".into());
-        apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "cancel-task", Command::CancelTask { task_id: task.clone() });
+        apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "cancel-task", Command::CancelTask { task_id: task.clone(), reason: None });
         let before = domain.state().unwrap().lifecycle_journal[&task].clone();
         let reply = execute_action(&domain, &client, &home.0, "test-device", stale, None, || Ok(())).await.unwrap();
         assert_eq!(reply["outcome"], "no_longer_available", "{reply}");

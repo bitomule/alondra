@@ -149,7 +149,7 @@ fn only_alondra_compacts_and_only_ended_tasks() {
 #[test]
 fn a_cancelled_tasks_cards_are_compacted_too() {
     let mut s = working();
-    ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    ok(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     ok(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: Some("a".into()) });
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Cancelled);
     assert_eq!(s.compactable_tasks(10), [TaskId::from("t")]);
@@ -199,7 +199,7 @@ fn a_plan_another_task_implements_is_kept_whole() {
         title: "Phase 2".into(), agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(LaunchPlan::new("node", "/tmp/project")),
     });
-    ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    ok(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     ok(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: Some("a".into()) });
     let before = card(&s, "plan").clone();
     compact(&mut s, &["t"]).unwrap();

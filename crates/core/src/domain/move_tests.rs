@@ -28,7 +28,7 @@ fn on_codex() -> DomainState {
     }
     task(&mut s, "t", None);
     task(&mut s, "later", None);
-    must(&mut s, Actor::Orchestrator { generation: 0 }, Command::SetDependencies { task_id: "later".into(), dependencies: BTreeSet::from(["t".into()]), stack: None });
+    must(&mut s, Actor::Orchestrator { generation: 0 }, Command::SetDependencies { task_id: "later".into(), dependencies: BTreeSet::from(["t".into()]), stack: None, reason: None });
     must(&mut s, user(), Command::SetPriority { task_id: "t".into(), priority: TaskPriority::High });
     must(&mut s, Actor::System, Command::AdmitExecution { provider: Provider::Codex, task_id: "t".into(), agent_id: "a".into(), conversation: "conversation".into(),
         instance: "instance".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None });

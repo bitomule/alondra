@@ -126,7 +126,7 @@ fn apply(s: &mut DomainState, disk: &mut Disk, step: &Step) {
             }
         }
         Step::Cancel => {
-            let _ = exec(s, user(), Command::CancelTask { task_id: TASK.into() });
+            let _ = exec(s, user(), Command::CancelTask { task_id: TASK.into(), reason: None });
         }
         Step::CleanedUp(given_up) => {
             let discard = given_up.iter().map(|i| PATHS[*i].to_owned()).collect();

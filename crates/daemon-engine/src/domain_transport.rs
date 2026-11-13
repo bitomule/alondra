@@ -2203,7 +2203,7 @@ pub mod tests {
         let fixture = Fixture::new();
         let domain = fixture.open();
         working_agent(&domain, "agent-a");
-        command(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "task-agent-a".into() });
+        command(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "task-agent-a".into(), reason: None });
         let before = domain.state().unwrap().interactions.len();
         let (mut client, server) = UnixStream::pair().unwrap();
         send(&mut client, &json!({"node_hold": permission("agent-a")})).await;
@@ -2219,7 +2219,7 @@ pub mod tests {
         let fixture = Fixture::new();
         let domain = fixture.open();
         working_agent(&domain, "agent-a");
-        command(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "task-agent-a".into() });
+        command(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "task-agent-a".into(), reason: None });
         let before = domain.state().unwrap().interactions.len();
         let (mut client, server) = UnixStream::pair().unwrap();
         send(&mut client, &json!({"node_hold": plan("agent-a")})).await;
@@ -2282,8 +2282,7 @@ pub mod tests {
         working_agent(&domain, "agent-a");
         working_agent(&domain, "agent-b");
         command(&domain, Actor::Orchestrator { generation: 0 }, "depend", Command::SetDependencies {
-            task_id: "task-agent-a".into(), dependencies: BTreeSet::from(["task-agent-b".into()]), stack: None,
-        });
+            task_id: "task-agent-a".into(), dependencies: BTreeSet::from(["task-agent-b".into()]), stack: None, reason: None,});
         let before = domain.state().unwrap().interactions.len();
         let card = json!({"session_id": "agent-a", "id": "toolu-plan", "kind": "plan", "input": {"plan": "# Step 1\n\n- [ ] Ship the relay"}});
         match crate::domain_holds::post(&domain, &serde_json::from_value(card).unwrap(), true).unwrap() {
@@ -2304,7 +2303,7 @@ pub mod tests {
         send(&mut client, &json!({"node_hold": plan("agent-a")})).await;
         let driver = async {
             let id = open_hold(&domain).await;
-            command(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "task-agent-a".into() });
+            command(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "task-agent-a".into(), reason: None });
             (reply(&mut client).await, id)
         };
         let (result, (reply, id)) = tokio::join!(handle(server, &domain), driver);

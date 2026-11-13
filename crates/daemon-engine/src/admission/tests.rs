@@ -377,7 +377,7 @@ fn a_launch_the_orchestrator_queued_is_kept_across_a_restart_and_leaves_when_its
     assert_eq!(keys(&snapshot.queue), ["t1"]);
     drop(reopened);
 
-    run(&domain, Actor::User { user_id: "u".into() }, Command::CancelTask { task_id: "t1".into() });
+    run(&domain, Actor::User { user_id: "u".into() }, Command::CancelTask { task_id: "t1".into(), reason: None });
     assert!(domain.live.gate.snapshot(&domain, 10).unwrap().queue.is_empty());
 }
 
@@ -809,7 +809,7 @@ fn a_task_cancelled_after_the_gate_let_it_through_is_not_let_through_again_and_l
     create(&domain, "t2");
     let now = alondra_core::now_millis();
     assert_eq!(ask(&domain, "t1", now), Ok(()));
-    run(&domain, Actor::User { user_id: "u".into() }, Command::CancelTask { task_id: "t1".into() });
+    run(&domain, Actor::User { user_id: "u".into() }, Command::CancelTask { task_id: "t1".into(), reason: None });
     assert!(ask(&domain, "t1", now).is_err(), "a cancelled task is never let through");
     assert_eq!(ask(&domain, "t2", now), Ok(()), "its slot goes to the next");
 }

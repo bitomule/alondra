@@ -144,7 +144,7 @@ fn adopt(f: &Fixture, task_id: &str, checks: PrChecks) {
 async fn adopting_a_closed_tasks_open_pr_reopens_and_delivers_it() {
     let f = Fixture::new();
     task(&f.domain, "closed", Some(7));
-    command(&f.domain, user(), Command::CancelTask { task_id: "closed".into() });
+    command(&f.domain, user(), Command::CancelTask { task_id: "closed".into(), reason: None });
     command(&f.domain, Actor::System, Command::RecordNodeEnd { task_id: "closed".into(), end: NodeEnd::Closed, agent_id: None });
     command(&f.domain, Actor::System, Command::ObservePrState { pr_id: hosted_pr_id("github.com", "owner/repo", 7),
         head: "1".repeat(40), base: "main".into(), state: PrState::Closed, merged_head: None });
@@ -165,7 +165,7 @@ async fn the_sweep_closes_the_open_pr_of_a_cancelled_task_once_and_the_close_sur
     let f = Fixture::new();
     let pr_id = hosted_pr_id("github.com", "owner/repo", 7);
     task(&f.domain, "closed", Some(7));
-    command(&f.domain, user(), Command::CancelTask { task_id: "closed".into() });
+    command(&f.domain, user(), Command::CancelTask { task_id: "closed".into(), reason: None });
     command(&f.domain, Actor::System, Command::RecordNodeEnd { task_id: "closed".into(), end: NodeEnd::Closed, agent_id: None });
     command(&f.domain, Actor::System, Command::ObservePrState { pr_id: pr_id.clone(),
         head: "1".repeat(40), base: "main".into(), state: PrState::Closed, merged_head: None });
@@ -200,7 +200,7 @@ async fn a_new_task_can_take_a_closed_tasks_pr_and_keep_the_old_delivery() {
             pr_id: hosted_pr_id("github.com", "owner/repo", 7), head: "1".repeat(40),
         }], checklist: vec![], card: CardSpec::delivery("Review the result", &[], true),
     });
-    command(&f.domain, user(), Command::CancelTask { task_id: "old".into() });
+    command(&f.domain, user(), Command::CancelTask { task_id: "old".into(), reason: None });
     command(&f.domain, Actor::System, Command::RecordNodeEnd { task_id: "old".into(), end: NodeEnd::Closed, agent_id: None });
     command(&f.domain, Actor::System, Command::ObservePrState { pr_id: hosted_pr_id("github.com", "owner/repo", 7),
         head: "1".repeat(40), base: "main".into(), state: PrState::Closed, merged_head: None });
@@ -227,7 +227,7 @@ async fn a_new_task_can_take_a_closed_tasks_pr_and_keep_the_old_delivery() {
 async fn the_users_pending_close_is_not_undone_by_a_sweep() {
     let f = Fixture::new();
     task(&f.domain, "closed", Some(7));
-    command(&f.domain, user(), Command::CancelTask { task_id: "closed".into() });
+    command(&f.domain, user(), Command::CancelTask { task_id: "closed".into(), reason: None });
     command(&f.domain, Actor::System, Command::RecordNodeEnd { task_id: "closed".into(), end: NodeEnd::Closed, agent_id: None });
     f.result(7, "owner/repo", "feature");
     f.sweep().await;
@@ -247,7 +247,7 @@ fn sweep_prefix_defaults_read_old_options_and_allow_an_empty_override() {
 async fn adopting_delivers_pending_checks_without_starting_a_node() {
     let f = Fixture::new();
     task(&f.domain, "closed", Some(7));
-    command(&f.domain, user(), Command::CancelTask { task_id: "closed".into() });
+    command(&f.domain, user(), Command::CancelTask { task_id: "closed".into(), reason: None });
     command(&f.domain, Actor::System, Command::RecordNodeEnd { task_id: "closed".into(), end: NodeEnd::Closed, agent_id: None });
     command(&f.domain, Actor::System, Command::ObservePrState { pr_id: hosted_pr_id("github.com", "owner/repo", 7),
         head: "1".repeat(40), base: "main".into(), state: PrState::Closed, merged_head: None });
@@ -269,7 +269,7 @@ async fn adopting_delivers_pending_checks_without_starting_a_node() {
 async fn an_adopted_pr_returns_to_the_launch_queue_if_its_merge_fails() {
     let f = Fixture::new();
     task(&f.domain, "closed", Some(7));
-    command(&f.domain, user(), Command::CancelTask { task_id: "closed".into() });
+    command(&f.domain, user(), Command::CancelTask { task_id: "closed".into(), reason: None });
     command(&f.domain, Actor::System, Command::RecordNodeEnd { task_id: "closed".into(), end: NodeEnd::Closed, agent_id: None });
     command(&f.domain, Actor::System, Command::ObservePrState { pr_id: hosted_pr_id("github.com", "owner/repo", 7),
         head: "1".repeat(40), base: "main".into(), state: PrState::Closed, merged_head: None });

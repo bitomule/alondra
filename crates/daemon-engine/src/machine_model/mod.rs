@@ -88,6 +88,9 @@ struct Machine {
     deferred: BTreeMap<TaskId, AccountKey>,
     /// The revision at which a task's admission was refused: it is tried again once something changed.
     unadmitted: BTreeMap<TaskId, Revision>,
+    /// The turns the orchestrator ended: it rests every ten minutes, answering or failing.
+    rests: u64,
+    last_rest: Millis,
     seen: Seen,
     trace: Vec<String>,
 }
@@ -163,7 +166,7 @@ impl Machine {
             domain: Arc::new(DomainState::new("machine")), world: World::new(history.script.clone(), history.slots), watch: Watch::default(),
             granted: BTreeSet::new(), wakes: BTreeMap::new(), rearms: BTreeMap::new(), agents: 0, commands: 0, refused: BTreeMap::new(),
             cursors: BTreeMap::new(), messages: Vec::new(), owing: BTreeMap::new(), taken: BTreeMap::new(),
-            deferred: BTreeMap::new(), unadmitted: BTreeMap::new(), seen: Seen::default(), trace: Vec::new(),
+            deferred: BTreeMap::new(), unadmitted: BTreeMap::new(), rests: 0, last_rest: 0, seen: Seen::default(), trace: Vec::new(),
         };
         let user = Actor::User { user_id: "u".into() };
         let orchestrator = Actor::Orchestrator { generation: 0 };
@@ -175,10 +178,11 @@ impl Machine {
         for id in ACCOUNTS {
             machine.must(Actor::System, Command::RecordModelCatalog { catalog: catalog(id) });
         }
-        for task in TASKS {
+        for (index, task) in TASKS.into_iter().enumerate() {
+            let dependencies = history.depends.filter(|(_, dependent)| *dependent == index).map(|(dependency, _)| TaskId::from(TASKS[dependency])).into_iter().collect();
             machine.must(orchestrator.clone(), Command::CreateTask {
                 task_id: task.into(), request_id: "r".into(), title: format!("Task {task}"), agent_id: None, review_prs: false,
-                dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")), plan_items: None, continues: None,
+                dependencies, stack: None, launch: Some(LaunchPlan::new("node", "/tmp")), plan_items: None, continues: None,
             });
         }
         machine.settle();
@@ -338,7 +342,7 @@ impl Machine {
             self.pass();
             each(self);
             let state = self.state();
-            let alondra_owes = state.tasks.keys().any(|task| state.lifecycle_of(task).ok().and_then(|lifecycle| lifecycle.obligation())
+            let alondra_owes = state.tasks.keys().any(|task| state.obligation_of(task)
                 .is_some_and(|obligation| obligation.party == Party::Alondra));
             let busy = self.world.hosts.values().any(|host| host.runs() || host.offered.is_some() || !host.outbox.is_empty())
                 || !self.world.retired.is_empty() || self.world.usage_holds() || alondra_owes;
@@ -665,7 +669,7 @@ impl Machine {
         let since = |task: &TaskId| state.lifecycle_of(task).ok().and_then(|lifecycle| lifecycle.obligation()).map_or(0, |obligation| obligation.since as Millis);
         let turns = admission::waiting_turns(state).into_iter().filter(|task| !self.granted.contains(task))
             .map(|task| Waiting { priority: state.tasks[&task].priority, since: since(&task), key: Key::Turn(task), resuming: false });
-        let starts = state.tasks.values().filter(|task| !task.over() && !self.deferred.contains_key(&task.id))
+        let starts = state.tasks.values().filter(|task| !task.over() && task.state != alondra_core::domain::TaskState::WaitingDependency && !self.deferred.contains_key(&task.id))
             .filter(|task| state.lifecycle_of(&task.id).ok().and_then(|lifecycle| lifecycle.obligation()).is_some_and(|obligation| obligation.owed == Owed::Room(Capacity::Gate))
                 && !state.waits_for_turn(&task.id))
             .map(|task| Waiting { priority: task.priority, since: since(&task.id), key: Key::Task(task.id.clone()), resuming: false });
@@ -865,12 +869,43 @@ impl Machine {
 
     /// The orchestrator, while it answers and the usage limit lets it, settles what it is asked.
     fn orchestrate(&mut self) -> bool {
+        let mut moved = self.hand_replans();
         if !self.world.orchestrator_answers || self.world.usage_holds() {
-            return false;
+            return moved;
         }
-        let mut moved = false;
+        moved |= self.replan();
         for (task, card) in self.orchestrator_cards() {
             moved |= self.answer_for_the_orchestrator(&task, &card, "Go on with your task.");
+        }
+        moved
+    }
+
+    /// What Alondra hands the orchestrator when it rests: what it still has to re-plan.
+    fn hand_replans(&mut self) -> bool {
+        let revision = self.revision();
+        let state = self.state();
+        for step in crate::orchestrator_inbox::replans(&state, self.rests) {
+            self.carry_out(&step);
+        }
+        self.revision() != revision
+    }
+
+    /// The orchestrator re-plans a task that waits for a cancelled one: the first and the last
+    /// task are let start without it, the others cancelled, each with its reason.
+    fn replan(&mut self) -> bool {
+        let state = self.state();
+        let waiting: Vec<TaskId> = state.tasks.keys()
+            .filter(|task| state.obligation_of(task).is_some_and(|obligation| obligation.owed == Owed::Replan)).cloned().collect();
+        let mut moved = false;
+        for task in waiting {
+            let orchestrator = Actor::Orchestrator { generation: 0 };
+            let revision = self.revision();
+            if TASKS.iter().position(|id| *id == task.0).is_some_and(|index| index % 2 == 0) {
+                let _ = self.run(orchestrator, Command::SetDependencies { task_id: task.clone(), dependencies: BTreeSet::new(), stack: None, reason: None });
+            } else {
+                let _ = self.run(orchestrator, Command::CancelTask { task_id: task.clone(), reason: None });
+            }
+            moved |= self.revision() != revision;
         }
         moved
     }
@@ -1042,7 +1077,7 @@ impl Machine {
                 let _ = self.run(user, Command::AnswerQuestion { attachments: vec![], interaction_id: card, option_id: NODE_PAUSE_RESUME.into(), inputs: BTreeMap::new() });
             }
             UserAct::Cancel => {
-                if self.run(user, Command::CancelTask { task_id: task.clone() }).is_ok() {
+                if self.run(user, Command::CancelTask { task_id: task.clone(), reason: None}).is_ok() {
                     self.judge_close(task, "the user's cancel");
                 }
             }
@@ -1186,8 +1221,12 @@ impl Machine {
     fn clock(&mut self) {
         let state = self.state();
         let now = self.world.now;
+        if now - self.last_rest >= 10 * MINUTE {
+            self.last_rest = now;
+            self.rests += 1;
+        }
         let obligations: BTreeMap<TaskId, (Revision, Owed)> = state.tasks.keys()
-            .filter_map(|task| Some((task.clone(), state.lifecycle_of(task).ok()?.obligation().map(|obligation| (obligation.since, obligation.owed))?)))
+            .filter_map(|task| Some((task.clone(), state.obligation_of(task).map(|obligation| (obligation.since, obligation.owed))?)))
             .collect();
         let rearmed: Vec<TaskId> = self.owing.iter().filter(|(task, (since, owed, _))| {
             obligations.get(*task).is_some_and(|(now_since, now_owed)| now_since != since && now_owed == owed)
@@ -1224,6 +1263,13 @@ impl Machine {
     /// What `obligation_watch::apply` does for `action`, through the commands `sdk_owner::untaken`
     /// stages and the owner's requeue.
     fn apply(&mut self, task: &TaskId, action: obligation_watch::Action) {
+        if action == obligation_watch::Action::Answer {
+            let state = self.state();
+            for (step, _) in crate::orchestrator_inbox::overdue(&state, &BTreeSet::from([task.clone()])) {
+                self.carry_out(&step);
+            }
+            return;
+        }
         let Some(generation) = self.generation(task) else { return };
         match action {
             obligation_watch::Action::Requeue => {
@@ -1244,12 +1290,7 @@ impl Machine {
                     let _ = self.run(Actor::System, command);
                 }
             }
-            obligation_watch::Action::Answer => {
-                let state = self.state();
-                for (step, _) in crate::orchestrator_inbox::overdue(&state, &BTreeSet::from([task.clone()])) {
-                    self.carry_out(&step);
-                }
-            }
+            obligation_watch::Action::Answer => {}
         }
     }
 
@@ -1257,8 +1298,15 @@ impl Machine {
     /// deadline: the command `orchestrator_inbox::command_of` gives it.
     fn carry_out(&mut self, step: &crate::orchestrator_inbox::Step) {
         use crate::orchestrator_inbox::Step;
+        if let Step::TellPlanReview { id, card, review, number } = step {
+            if !self.state().interactions.contains_key(&InteractionId(id.clone())) {
+                let text = format!("The plans of {review} are not reviewed yet (reminder {number})");
+                let _ = self.run(Actor::System, crate::domain_runtime::problems::tell_command(id, Some(card.clone()), text));
+            }
+            return;
+        }
         let Some(command) = crate::orchestrator_inbox::command_of(step) else {
-            if let Step::Close { .. } | Step::Raise { .. } | Step::RaiseDependencyCancelled { .. } | Step::CancelRefusedPlan { .. } = step {
+            if let Step::Close { .. } | Step::Raise { .. } = step {
                 panic!("a step past its deadline ends in a card for the user or outside what the orchestrator owes: {step:?}");
             }
             return;

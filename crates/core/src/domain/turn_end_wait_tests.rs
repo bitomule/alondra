@@ -193,7 +193,7 @@ fn a_turn_that_ends_while_the_task_depends_on_another_waits_for_it_and_goes_on_w
     task(&mut s, "d", Some("b"));
     must(&mut s, node("b"), Command::StartTask { task_id: "d".into() });
     let card = InteractionId::from(sdk_turn(&mut s, "t", "a").as_str());
-    must(&mut s, orchestrator(), Command::SetDependencies { task_id: "t".into(), dependencies: BTreeSet::from(["d".into()]), stack: None });
+    must(&mut s, orchestrator(), Command::SetDependencies { task_id: "t".into(), dependencies: BTreeSet::from(["d".into()]), stack: None, reason: None });
     let ended = end_turn(&mut s, "turn-1");
     assert!(!notified(&ended, &card));
     awaits(&s, &card, alondra_domain::Await::Tasks(alondra_domain::Several::new(["d".into()]).unwrap()));
@@ -242,9 +242,9 @@ fn a_dependency_taken_away_while_the_node_waits_for_it_leaves_the_turn_empty() {
     let mut s = world();
     task(&mut s, "d", None);
     let card = InteractionId::from(sdk_turn(&mut s, "t", "a").as_str());
-    must(&mut s, orchestrator(), Command::SetDependencies { task_id: "t".into(), dependencies: BTreeSet::from(["d".into()]), stack: None });
+    must(&mut s, orchestrator(), Command::SetDependencies { task_id: "t".into(), dependencies: BTreeSet::from(["d".into()]), stack: None, reason: None });
     end_turn(&mut s, "turn-1");
-    let cleared = must(&mut s, orchestrator(), Command::SetDependencies { task_id: "t".into(), dependencies: BTreeSet::new(), stack: None });
+    let cleared = must(&mut s, orchestrator(), Command::SetDependencies { task_id: "t".into(), dependencies: BTreeSet::new(), stack: None, reason: None });
     wakes(&s, &cleared, &card);
     assert_aggregate_rules(&s);
 }
@@ -468,7 +468,7 @@ fn the_21_october_turn_that_ended_after_the_orchestrator_made_it_depend_on_a_tas
     let first = InteractionId::from(sdk_turn(&mut s, "t", "a").as_str());
     ask_orchestrator(&mut s, "t-85fa-ask-depend-1", true);
     end_turn(&mut s, "turn-1");
-    must(&mut s, orchestrator(), Command::SetDependencies { task_id: "t".into(), dependencies: BTreeSet::from(["d".into()]), stack: None });
+    must(&mut s, orchestrator(), Command::SetDependencies { task_id: "t".into(), dependencies: BTreeSet::from(["d".into()]), stack: None, reason: None });
     answer_as_orchestrator(&mut s, "t-85fa-ask-depend-1");
     must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "The orchestrator answered: wait for that task.".into(), from_user: false, answers: None });
     assert!(!s.interactions.contains_key(&first), "no card ever said it stopped");
@@ -596,7 +596,7 @@ fn declare_task_wait(s: &mut DomainState, tasks: &[&str]) -> CommandOutcome {
 }
 
 fn cancel_wait_target(s: &mut DomainState, target: &str) -> CommandOutcome {
-    let cancelled = must(s, user(), Command::CancelTask { task_id: target.into() });
+    let cancelled = must(s, user(), Command::CancelTask { task_id: target.into(), reason: None });
     if s.tasks[&TaskId::from(target)].state.terminal() {
         return cancelled;
     }
@@ -651,7 +651,7 @@ fn cancellation_ends_a_declared_wait_and_tells_the_node_once() {
     let card = InteractionId::from(sdk_turn(&mut s, "t", "a").as_str());
     declare_task_wait(&mut s, &["d"]);
     end_turn(&mut s, "turn-1");
-    let cancelled = must(&mut s, user(), Command::CancelTask { task_id: "d".into() });
+    let cancelled = must(&mut s, user(), Command::CancelTask { task_id: "d".into(), reason: None });
     assert!(!told(&cancelled));
     assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::WaitingDependency);
     let ended = must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "d".into(), end: NodeEnd::Closed, agent_id: Some("b".into()) });
@@ -670,7 +670,7 @@ fn already_ended_tasks_do_not_hold_a_declared_wait() {
         task(&mut s, "d", Some("b"));
         must(&mut s, node("b"), Command::StartTask { task_id: "d".into() });
         if cancelled {
-            must(&mut s, user(), Command::CancelTask { task_id: "d".into() });
+            must(&mut s, user(), Command::CancelTask { task_id: "d".into(), reason: None });
         } else {
             super::lifecycle_tests::deliver(&mut s, "d", "b", "d1");
             must(&mut s, user(), Command::AcceptDelivery {
@@ -782,8 +782,7 @@ fn waiting_on_an_ended_target_creates_no_false_dependency_cycle() {
     task(&mut s, "e", None);
     sdk_turn(&mut s, "t", "a");
     must(&mut s, orchestrator(), Command::SetDependencies {
-        task_id: "d".into(), dependencies: BTreeSet::from(["t".into()]), stack: None,
-    });
+        task_id: "d".into(), dependencies: BTreeSet::from(["t".into()]), stack: None, reason: None,});
     cancel_wait_target(&mut s, "d");
     declare_task_wait(&mut s, &["d", "e"]);
     assert_eq!(s.unmet_dependency_ids(&s.tasks[&TaskId::from("t")]), vec![&TaskId::from("e")]);
@@ -796,7 +795,7 @@ fn cancelling_the_waiting_task_never_resumes_it_when_its_targets_end() {
     sdk_turn(&mut s, "t", "a");
     declare_task_wait(&mut s, &["d"]);
     end_turn(&mut s, "turn-1");
-    must(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    must(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     let ended = cancel_wait_target(&mut s, "d");
     assert!(!told(&ended));
     assert!(s.tasks[&TaskId::from("t")].cancelled());

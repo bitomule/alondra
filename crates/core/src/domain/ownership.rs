@@ -269,6 +269,33 @@ impl DomainState {
         self.pending_dependency(t).filter(|d| self.tasks.get(d).is_some_and(Task::cancelled))
     }
 
+    /// The cancelled task `t` waits for, unless a card from before already asks the user about it:
+    /// what the orchestrator has to decide for `t`.
+    pub fn replanned_for(&self, t: &Task) -> Option<TaskId> {
+        let dependency = self.cancelled_dependency(t)?;
+        let asked = self.open_start_problem(&t.id).and_then(|card| crate::start_problem::from_body(&card.body));
+        (asked != Some(StartProblem::DependencyCancelled { dependency: dependency.clone() })).then_some(dependency)
+    }
+
+    /// What the task's lifecycle says it is owed, except that a task the orchestrator has to
+    /// re-plan (it waits for a cancelled task, or its launch plan was refused) owes the
+    /// orchestrator's decision: the lifecycle knows neither, and without it the wait would read
+    /// as a wait for a slot.
+    pub fn obligation_of(&self, task: &TaskId) -> Option<alondra_domain::Obligation> {
+        let lifecycle = self.lifecycle_of(task).ok()?;
+        let obligation = lifecycle.obligation()?;
+        let asks_the_orchestrator = lifecycle.phase() == alondra_domain::TaskPhase::Delivered
+            && matches!(lifecycle.awaits(), Some(alondra_domain::Await::Orchestrator(_)))
+            && (obligation.party, obligation.owed) == (alondra_domain::Party::User, alondra_domain::Owed::User)
+            && self.task_handed_back(task).is_some();
+        if asks_the_orchestrator {
+            return Some(alondra_domain::Obligation { party: alondra_domain::Party::Alondra, owed: alondra_domain::Owed::Answer, ..obligation });
+        }
+        let replans = self.tasks.get(task).is_some_and(|t| !t.over() && !t.archived && !t.started && t.agent_id.is_none()
+            && matches!(t.state, TaskState::NotStarted | TaskState::WaitingDependency) && (self.replanned_for(t).is_some() || self.open_plan_refusal(&t.id).is_some()));
+        Some(if replans { alondra_domain::Obligation { party: alondra_domain::Party::Alondra, owed: alondra_domain::Owed::Replan, ..obligation } } else { obligation })
+    }
+
     /// The user chose "try again" on its last start problem; with `since`, only if nothing happened
     /// to the task after, such as a new node closed again. A blocked start needs no such bound:
     /// the daemon unblocks it when it acts on the answer.

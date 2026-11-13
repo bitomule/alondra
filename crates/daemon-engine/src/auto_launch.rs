@@ -80,7 +80,7 @@ fn cancel_planless(domain: &DomainRuntime, state: &DomainState) -> Result<()> {
         .filter(|task| !planned.contains_key(&task.id) && !state.schedule.runs.values().any(|run| run.task_id.as_ref() == Some(&task.id)))
         .collect();
     for task in planless {
-        let cancelled = crate::domain_github::execute_system(domain, alondra_core::domain::Command::CancelTask { task_id: task.id.clone() });
+        let cancelled = crate::domain_github::execute_system(domain, alondra_core::domain::Command::CancelTask { task_id: task.id.clone(), reason: None });
         if let Err(error) = cancelled {
             log!("could not cancel {}, which has no launch plan: {error:?}", task.id);
             continue;

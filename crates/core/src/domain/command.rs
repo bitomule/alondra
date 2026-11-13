@@ -180,6 +180,10 @@ pub enum Command {
         task_id: TaskId,
         dependencies: BTreeSet<TaskId>,
         stack: Option<StackDependency>,
+        /// Why the dependencies change, when the orchestrator re-plans a task that waited for a
+        /// cancelled one: the task shows it and its node reads it first.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     /// The relations between tasks beyond `SetDependencies`: starts after a final delivery, and
     /// holds back the review of other tasks.
@@ -467,6 +471,9 @@ pub enum Command {
     },
     CancelTask {
         task_id: TaskId,
+        /// Why the task is cancelled, shown beside it and told to its node.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     /// What GitHub reports of the open pull request of a task someone closed without delivering
     /// it: Alondra delivers it, records its merge, or lets the task be cancelled once it is closed.

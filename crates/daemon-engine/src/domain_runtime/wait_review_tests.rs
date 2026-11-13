@@ -79,7 +79,7 @@ fn release_closing(home: &Home) -> DomainRuntime {
     started(&runtime, "release", "a", &[]);
     must(&runtime, Actor::User { user_id: "u".into() }, Command::TitleRequest { request_id: "r".into(), title: "Release".into() });
     started(&runtime, "pebble", "b", &[]);
-    must(&runtime, orchestrator(), Command::SetDependencies { task_id: "pebble".into(), dependencies: BTreeSet::from(["release".into()]), stack: None });
+    must(&runtime, orchestrator(), Command::SetDependencies { task_id: "pebble".into(), dependencies: BTreeSet::from(["release".into()]), stack: None, reason: None });
     let text = vec![DeliveryTarget::Text { text: "Published".into() }];
     must(&runtime, node("a"), Command::PresentResult {
         checklist: Vec::new(), attachments: vec![], task_id: "release".into(), interaction_id: "final".into(), body: "Published".into(),

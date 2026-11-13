@@ -124,7 +124,7 @@ fn a_waiting_task_that_ends_leaves_no_card_behind() {
     let mut s = signed_out();
     must(&mut s, node("a"), wait("t", "linear"));
     must(&mut s, node("b"), wait("u", "linear"));
-    must(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    must(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     assert_eq!(waiting(&s), [("u".into(), "linear".into())]);
     assert_eq!(listed(&s), [s.mcp_waiting()[0].card.0.clone()], "the task still waiting stands for the server");
 }

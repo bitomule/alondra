@@ -108,7 +108,7 @@ impl Watch {
             .tasks
             .iter()
             .filter(|(_, task)| !task.over())
-            .filter_map(|(id, _)| Some((id.clone(), state.lifecycle_of(id).ok()?.obligation()?)))
+            .filter_map(|(id, _)| Some((id.clone(), crate::orchestrator_inbox::obligation_of(state, id)?)))
             .collect();
         self.observe(obligations, world, now)
     }

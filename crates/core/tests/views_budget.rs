@@ -206,7 +206,7 @@ fn unit(shape: Shape) -> DomainState {
             seed.run(Actor::System, Command::CompleteTask { task_id: task.as_str().into(), presentation_id: delivery.as_str().into() });
             seed.run(Actor::System, Command::RecordNodeEnd { task_id: task.as_str().into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: None });
         }
-        Shape::Cancelled => seed.run(user(), Command::CancelTask { task_id: task.as_str().into() }),
+        Shape::Cancelled => seed.run(user(), Command::CancelTask { task_id: task.as_str().into(), reason: None }),
         _ => {}
     }
     seed.0

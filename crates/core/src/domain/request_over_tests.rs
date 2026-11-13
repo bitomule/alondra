@@ -81,7 +81,7 @@ fn a_task_ending_while_another_is_open_tells_nothing_until_that_one_ends() {
     delivered(&mut s, "design", "final");
     assert!(told(&accept(&mut s, "final")).is_empty());
     assert!(told(&node_closed(&mut s, "design")).is_empty());
-    let cancelled = ok(&mut s, user(), Command::CancelTask { task_id: "build".into() });
+    let cancelled = ok(&mut s, user(), Command::CancelTask { task_id: "build".into(), reason: None });
     assert!(cancelled.effects.contains(&DomainEffect::RequestTasksOver { request_id: "r".into(), task_id: "build".into() }),
         "a cancelled task ends it as well, and the message names it: {:?}", cancelled.effects);
 }
@@ -103,14 +103,14 @@ fn a_task_reopened_and_done_again_tells_the_orchestrator_again() {
 fn a_closed_request_tells_nothing() {
     let mut s = request(false);
     ok(&mut s, orchestrator(), task("design", "r"));
-    assert_eq!(told(&ok(&mut s, orchestrator(), Command::CancelTask { task_id: "design".into() })).len(), 1);
+    assert_eq!(told(&ok(&mut s, orchestrator(), Command::CancelTask { task_id: "design".into(), reason: None })).len(), 1);
     let close = ok(&mut s, orchestrator(), Command::CloseRequest { request_id: "r".into(), answer: Some("Not needed after all".into()), withdrawn: false, title: None, headline: None, folded_into: None });
     assert!(told(&close).is_empty());
     assert!(s.requests[&"r".into()].closed);
 
     let mut s = request(true);
     ok(&mut s, orchestrator(), task("launch", "r"));
-    assert!(told(&ok(&mut s, user(), Command::CancelTask { task_id: "launch".into() })).is_empty(),
+    assert!(told(&ok(&mut s, user(), Command::CancelTask { task_id: "launch".into(), reason: None })).is_empty(),
         "a message closes itself when its last task ends");
     assert!(s.requests[&"r".into()].closed);
 }
@@ -122,7 +122,7 @@ fn a_closed_request_tells_nothing() {
 fn the_only_task_the_user_cancels_before_it_starts_withdraws_its_request_without_the_orchestrator() {
     let mut s = request(false);
     ok(&mut s, orchestrator(), task("design", "r"));
-    let cancelled = ok(&mut s, user(), Command::CancelTask { task_id: "design".into() });
+    let cancelled = ok(&mut s, user(), Command::CancelTask { task_id: "design".into(), reason: None });
     assert!(!cancelled.effects.iter().any(|e| matches!(e,
         DomainEffect::RequestTasksOver { .. } | DomainEffect::NotifyOrchestrator { .. } | DomainEffect::NotifyAgent { .. })),
         "nobody is told: {:?}", cancelled.effects);
@@ -141,11 +141,11 @@ fn a_task_cancelled_after_it_started_or_by_the_orchestrator_still_hands_its_requ
     let mut s = request(false);
     ok(&mut s, orchestrator(), task("design", "r"));
     ok(&mut s, orchestrator(), Command::AssignTask { task_id: "design".into(), agent_id: "a".into(), model: None });
-    assert_eq!(told(&ok(&mut s, user(), Command::CancelTask { task_id: "design".into() })), [&RequestId::from("r")]);
+    assert_eq!(told(&ok(&mut s, user(), Command::CancelTask { task_id: "design".into(), reason: None })), [&RequestId::from("r")]);
     assert!(!s.requests[&"r".into()].closed);
 
     let mut s = request(false);
     ok(&mut s, orchestrator(), task("design", "r"));
-    assert_eq!(told(&ok(&mut s, orchestrator(), Command::CancelTask { task_id: "design".into() })), [&RequestId::from("r")]);
+    assert_eq!(told(&ok(&mut s, orchestrator(), Command::CancelTask { task_id: "design".into(), reason: None })), [&RequestId::from("r")]);
     assert!(!s.requests[&"r".into()].closed);
 }

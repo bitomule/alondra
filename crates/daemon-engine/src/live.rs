@@ -60,6 +60,9 @@ pub struct Live {
     pub(crate) account_wait: crate::accounts::AccountWait,
     /// Committed orchestrator work only; unrelated domain activity cannot hide a stuck batch.
     pub(crate) orchestrator_progress: AtomicU64,
+    /// How many turns the orchestrator has ended, as `Runtime::rests` says: the evidence Alondra
+    /// hands it what it still has to re-plan by.
+    pub(crate) orchestrator_rests: AtomicU64,
     /// Recovered after panic: each holder only reads or replaces one complete host lease.
     pub(crate) orchestrator_host: Mutex<Option<(String, alondra_agent_runtime::owned_host::HostStop)>>,
     /// Retain a logical stop while storage is unavailable, until its finalization commits.
