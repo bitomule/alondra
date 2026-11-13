@@ -1250,7 +1250,8 @@ async fn orchestrator_machine(
     };
     let read = state.domain.read();
     let (available, evidence) = available_models(read.state(), &tasks, alondra_core::now_millis());
-    Json(json!({"available_models": available, "model_evidence": evidence, "machine": machine, "usage": usage, "account_order":read.state().account_order,
+    Json(json!({"available_models": available, "model_evidence": evidence, "machine": machine, "usage": usage,
+        "account_usage":read.state().account_usage, "account_order":read.state().account_order,
         "model_profiles":read.state().model_profiles,"model_catalogs":read.state().model_catalogs})).into_response()
 }
 
@@ -1260,14 +1261,19 @@ pub(crate) fn available_models(state: &alondra_core::domain::DomainState, tasks:
     -> (Option<String>, std::collections::BTreeMap<String, String>) {
     use alondra_core::accounts::{AccountKey, AccountState};
     use alondra_core::model_table::AccountRoom;
-    let today = crate::node_reports::local_day(now);
     let rooms: Vec<AccountRoom> = if state.accounts.is_empty() {
         state.model_catalogs.iter().map(|catalog| AccountRoom { account: catalog.account.clone(), name: catalog.account.account.as_str().to_owned(), margin: None }).collect()
     } else {
         state.accounts.iter().filter(|account| account.state != AccountState::Disabled).map(|account| {
             let usage = state.account_usage.iter().find(|usage| usage.provider == account.provider && usage.account == account.id);
-            AccountRoom { account: AccountKey::new(account.provider, account.id.clone()), name: account.name.clone(),
-                margin: alondra_core::usage::own_margin(account.state, usage, state.account_reserve, now, &today) }
+            let unavailable = match account.state {
+                AccountState::SignedOut => Some("signed out"),
+                _ if usage.is_some_and(|usage| usage.plan_exhausted(now)) => Some("provider usage limit"),
+                _ => None,
+            };
+            AccountRoom { account: AccountKey::new(account.provider, account.id.clone()),
+                name: unavailable.map_or_else(|| account.name.clone(), |why| format!("{} ({why})", account.name)),
+                margin: if unavailable.is_some() { Some(0.0) } else { alondra_core::usage::launch_margin(usage, now).map(|share| share.fraction()) } }
         }).collect()
     };
     let table = alondra_core::model_table::available_models(&state.model_catalogs, &rooms, tasks);
@@ -1376,6 +1382,32 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use p256::ecdsa::{Signature, SigningKey, signature::Signer};
     use std::net::SocketAddr;
+
+    #[test]
+    fn account_margin_table_keeps_native_quota_separate_from_availability() {
+        use alondra_core::accounts::*;
+        use alondra_core::model_selection::*;
+        use alondra_core::usage::*;
+        let mut state = alondra_core::domain::DomainState::new("quota-test");
+        state.accounts = vec![AccountStatus { provider: Provider::Codex, id: AccountId::default_account(),
+            name: "Native".into(), state: AccountState::SignedIn, native_identity: None, email: None, plan: None,
+            billing: AccountBilling::default(), sign_ins: 0, profile: None }];
+        state.model_catalogs.push(AccountModelCatalog { account: AccountKey::native(Provider::Codex), revision: "one".into(), measured_at: 1,
+            native_default: Some("gpt".into()), models: vec![CatalogModel { model: "gpt".into(), display_name: "GPT".into(),
+                reasoning_efforts: vec![], default_reasoning_effort: None, context_window: None, input_modalities: vec!["text".into()], is_default: true, hidden: false }] });
+        let reading = alondra_core::codex_account::parse_rate_limits(&json!({"rateLimits":{"primary":{
+            "usedPercent":10,"windowDurationMins":300,"resetsAt":3600}}}), None).unwrap();
+        state.account_usage.push(record(None, Provider::Codex, &AccountId::default_account(), &reading, 1, "2026-01-01"));
+        assert!(available_models(&state, &[], 2).0.unwrap().contains("Native 90%"));
+        state.accounts[0].state = AccountState::SignedOut;
+        assert!(available_models(&state, &[], 2).0.unwrap().contains("Native (signed out) 0%"));
+        state.accounts[0].state = AccountState::SignedIn;
+        let marker = UsageReading { complete: true, plan: None, windows: vec![WindowReading {
+            kind: WindowKind::Other(NATIVE_LIMIT_MARKER.into()), used: Share::NONE, resets_at: None, exhausted: true }] };
+        state.account_usage[0] = record(None, Provider::Codex, &AccountId::default_account(), &marker, 1, "2026-01-01");
+        assert_eq!(launch_margin(Some(&state.account_usage[0]), 2), None, "no percentage was reported");
+        assert!(available_models(&state, &[], 2).0.unwrap().contains("Native (provider usage limit) 0%"));
+    }
 
     #[tokio::test]
     async fn the_device_list_shows_the_recorded_use_and_the_devices_unpaired_lately() {

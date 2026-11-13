@@ -289,10 +289,16 @@ fn native_launch(domain: &DomainRuntime, home: &Path, task: &alondra_core::domai
 {
     use alondra_core::accounts::Provider;
     use alondra_core::model_selection::{ModelKey, ModelProfile, TaskSelection};
+    if requested.selection.is_none() && task.selection.is_none() && requested.effort != alondra_core::options::AUTO {
+        requested.clone().with_orchestrator_model(file, body.model.as_deref(), body.effort.as_deref())
+            .map_err(|why| DomainError::new("invalid_input", why))?;
+        return Ok(None);
+    }
     let unstarted = !prior_native && !reopening && !task.started && task.agent_id.is_none();
     let legacy_reselection = unstarted && task.selection.is_none() && requested.selection.is_none() && !file.accounts.any_enabled(Provider::Claude)
         && (requested.account_key().is_some() || file.accounts.any_enabled(Provider::Codex));
-    let modern = legacy_reselection || task.selection.is_some() || requested.selection.is_some() || body.provider.is_some() || body.model.as_ref().is_some_and(|model| model.starts_with("codex/") || model.starts_with("claude/"));
+    let modern = legacy_reselection || task.selection.is_some() || requested.selection.is_some() || body.provider.is_some()
+        || body.model.as_ref().is_some_and(|model| model.starts_with("codex/") || model.starts_with("claude/") || (unstarted && file.accounts.any_enabled(Provider::Codex)));
     if !modern { return Ok(None); }
     let mut intent = task.selection.clone().or_else(|| requested.selection.clone()).unwrap_or_else(|| TaskSelection::automatic(ModelProfile::Implementation));
     if let Some(profile) = body.profile { intent.profile = profile; }
@@ -302,6 +308,8 @@ fn native_launch(domain: &DomainRuntime, home: &Path, task: &alondra_core::domai
         let offered = if model.starts_with("claude/") || model.starts_with("codex/") {
             ModelKey::parse_wire(model).map_err(|why| DomainError::new("invalid_input", why))?
         } else {
+            let native_model = file.model_flag(model).unwrap_or_else(|| model.to_owned());
+            let model = native_model.as_str();
             let offering = providers_offering(domain, &file.accounts, model);
             let provider = body.provider.or_else(|| intent.requested.as_ref().map(|model| model.provider))
                 .or_else(|| intent.effective.as_ref().map(|model| model.model.provider))
@@ -350,14 +358,50 @@ fn native_launch(domain: &DomainRuntime, home: &Path, task: &alondra_core::domai
     let active = (!reopening && (prior_native || task.selection.as_ref().and_then(|selection| selection.effective.as_ref()).is_some())).then(||task.account_key());
     let denied_tools = domain.schedule_request_tools(&task.request_id).map_err(|why| DomainError::new("storage_unavailable", why.to_string()))?.unwrap_or_default();
     validate_native_requirements(Some(&initial), &denied_tools)?;
-    let decision = crate::accounts::select_for_node_with_tools(domain, home, &initial, active.as_ref(),
-        body.provider.filter(|provider| denied_tools.is_empty() && (!unstarted || file.accounts.any_enabled(*provider))), &denied_tools, alondra_core::now_millis())
+    let family = initial.requested.as_ref().filter(|model| model.provider == Provider::Claude)
+        .map(|model| alondra_core::model_label::model_family(&model.model));
+    let automatic = unstarted && intent.requested.is_none() && intent.account.is_none() && requested.effort == alondra_core::options::AUTO;
+    let provisional = automatic && family.as_deref() == Some("sonnet")
+        && !body.tags.as_ref().is_some_and(|tags| tags.severe() || tags.risks.contains(&alondra_core::task_tags::TaskRisk::UnclearSpec));
+    let select = |selection: &TaskSelection, provider| crate::accounts::select_for_node_with_tools(domain, home, selection,
+        active.as_ref(), provider, &denied_tools, alondra_core::now_millis());
+    let mut decision = if provisional {
+        let mut codex = initial.clone();
+        codex.requested = None; codex.requested_reasoning_effort = None; codex.effective = None;
+        match select(&codex, Some(Provider::Codex)) {
+            Ok(mut decision) => { decision.reason = format!("Provisional Sonnet-level routing to Codex. {}", decision.reason); Ok(decision) }
+            Err(error) if matches!(error.code.as_str(), "account_unavailable" | "model_unavailable") => {
+                select(&initial, Some(Provider::Claude)).map(|mut decision| {
+                    decision.reason = format!("Codex cannot serve this Sonnet-level task: {}. {}", error.message, decision.reason); decision
+                })
+            }
+            Err(error) => Err(error),
+        }
+    } else {
+        let provider = if automatic && matches!(family.as_deref(), Some("opus" | "fable" | "sonnet")) { Some(Provider::Claude) }
+            else if unstarted { None }
+            else { body.provider.filter(|provider| denied_tools.is_empty() && file.accounts.any_enabled(*provider)) };
+        if initial.requested.is_none() && unstarted && let Some(preferred) = body.provider {
+            match select(&initial, Some(preferred)) {
+                Err(error) if matches!(error.code.as_str(), "account_unavailable" | "model_unavailable") => select(&initial, provider),
+                result => result,
+            }
+        } else { select(&initial, provider) }
+    }
         .map_err(|error| if reselecting && error.code == "model_unavailable" { DomainError::new("account_unavailable", error.message) } else { error })?;
+    if !decision.rejected_candidates.is_empty() {
+        decision.reason.push_str(&format!(" Rejected alternatives: {}", decision.rejected_candidates.join("; ")));
+    }
     if !reopening && !unstarted && let Some(current) = task.selection.as_ref().and_then(|selection| selection.effective.as_ref())
         && (task.account_key() != decision.account || current.model != decision.selection.model || current.reasoning_effort != decision.selection.reasoning_effort)
     { return Err(DomainError::new("selection_transition_required", "Continue this task through its durable model or account transition so its retained history is carried safely")); }
     if reselecting { intent.account = Some(decision.account.clone()); }
     intent.effective = Some(decision.selection.clone());
+    intent.reason = Some(decision.reason.clone());
+    let read = domain.read();
+    let snapshot = read.state();
+    decision.reason.push_str(&format!(" Quota: {}", alondra_core::views::accounts::decision_quota_summary(&snapshot.accounts, &snapshot.account_usage, Some(alondra_core::now_millis()), alondra_core::views::Lang::En)));
+    drop(read);
     let mut resolved = requested.clone();
     resolved.flags.model = (decision.account.provider == Provider::Claude).then(|| decision.selection.model.model.clone());
     resolved.flags.effort = decision.selection.reasoning_effort.clone();
@@ -472,6 +516,7 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
         let moved = state(domain)?;
         let mut selection = moved.tasks[&task.id].selection.clone().expect("a move records its selection");
         selection.effective = selected.effective.clone();
+        selection.reason = selected.reason.clone();
         resolved.selection = Some(selection);
     }
     let provider = native.as_ref().map_or(alondra_core::accounts::Provider::Claude, |(_, account, _)| account.provider);
@@ -552,7 +597,11 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
         Some((resolved, _, _)) => resolved.clone(),
         None => requested.with_orchestrator_model(&file, model, body.effort.as_deref()).map_err(|reason| DomainError::new("invalid_input", reason))?,
     };
-    let reason = given(body.reason.as_deref()).or_else(|| native.as_ref().map(|(_, _, reason)| reason.clone()));
+    let reason = match (given(body.reason.as_deref()), native.as_ref().map(|(_, _, reason)| reason)) {
+        (Some(intent), Some(actual)) => Some(format!("{intent}. {actual}")),
+        (Some(intent), None) => Some(intent),
+        (None, actual) => actual.cloned(),
+    };
     if native.is_none() && auto && body.relaunch_model.is_none() && reason.is_none() {
         return Err(DomainError::new("invalid_input", "effort is auto for this request: pass reason, one short line on what the task is and why this model fits it"));
     }

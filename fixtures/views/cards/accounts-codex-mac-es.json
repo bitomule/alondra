@@ -1,34 +1,51 @@
 {
-  "account_configuration": {
-    "version": "54438a7517194c98"
-  },
   "protocol": 1,
-  "data_epoch": "78f6072ee3eccdafc695b1e2728213edd0fee66cdd7b5d25a188044e87ed9098",
+  "data_epoch": "test-epoch",
   "view": "accounts",
   "key": "accounts",
   "client": "mac",
-  "version": "v067bba6bab1ea35c",
-  "cursor": "c1.WyI3OGY2MDcyZWUzZWNjZGFmYzY5NWIxZTI3MjgyMTNlZGQwZmVlNjZjZGQ3YjVkMjVhMTg4MDQ0ZTg3ZWQ5MDk4Iiw2LCJhZTM4NThlMjY1ZmJkNDFhIiwidjM3OWE0Y2VjZDlkMzY3ZGEiXQ",
+  "version": "v5401e49b924e2f7d",
+  "cursor": "cursor-1",
   "title": "Cuentas",
   "status": {
-    "version": "v379a4cecd9d367da",
-    "summary": "0 tareas trabajando",
-    "badge": 0,
+    "version": "vab193903528c25af",
+    "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} pregunta",
+        "other": "{count} preguntas"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} por leer",
+        "other": "{count} por leer"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
+    "badge": 5,
     "counts": [
       {
         "id": "inbox",
         "label": "Bandeja",
-        "value": 0
+        "value": 5
       },
       {
         "id": "tasks",
         "label": "Tareas",
-        "value": 0
+        "value": 1
       },
       {
         "id": "agents",
         "label": "En marcha",
-        "value": 0
+        "value": 1
       },
       {
         "id": "working",
@@ -38,30 +55,23 @@
       {
         "id": "waiting",
         "label": "esperando",
-        "value": 0
+        "value": 1
       }
     ],
     "gauges": [
       {
         "id": "memory",
-        "label": "RAM",
-        "value": 0.43,
-        "text": "43%",
-        "level": "calm"
-      },
-      {
-        "id": "cpu",
-        "label": "CPU",
-        "value": 0.4970399475097656,
-        "text": "50%",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
         "level": "calm"
       },
       {
         "id": "disk",
-        "label": "Disco",
-        "value": 0.9062775882348545,
-        "text": "46 GB libres (15 GB purgables)",
-        "level": "warm"
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
       }
     ],
     "orchestrator": {
@@ -77,51 +87,8 @@
         {
           "type": "row",
           "account": {
-            "model_catalog": {
-              "account": {
-                "provider": "codex",
-                "account": "default"
-              },
-              "revision": "50a2d6b26014df1981c6eab79f46a0d28276c2d708e3cd43f2cfaa8a2b809f16",
-              "models": [
-                {
-                  "model": "fixture-general",
-                  "display_name": "Fixture general",
-                  "reasoning_efforts": [
-                    "low",
-                    "medium",
-                    "high"
-                  ],
-                  "default_reasoning_effort": "medium",
-                  "context_window": 200000,
-                  "input_modalities": [
-                    "text",
-                    "image"
-                  ],
-                  "is_default": true,
-                  "hidden": false
-                },
-                {
-                  "model": "fixture-review",
-                  "display_name": "Fixture review",
-                  "reasoning_efforts": [
-                    "low",
-                    "medium",
-                    "high"
-                  ],
-                  "default_reasoning_effort": "medium",
-                  "context_window": 200000,
-                  "input_modalities": [
-                    "text",
-                    "image"
-                  ],
-                  "is_default": false,
-                  "hidden": false
-                }
-              ],
-              "native_default": "fixture-general",
-              "measured_at": 1792979342098
-            },
+            "usage_summary": "5 h 10 % · semana 20 % · reinicia en 2 h 00 min",
+            "quota_source": "Origen: Codex account/rateLimits/read",
             "key": {
               "provider": "codex",
               "account": "default"
@@ -131,38 +98,29 @@
               "text": "Con sesión",
               "tone": "success"
             },
-            "email": "personal@fixture.invalid",
+            "email": "ana@example.com",
             "plan": "plus",
             "active_nodes": 0,
             "freshness": {
-              "text": "Último uso informado",
+              "text": "Informado ahora",
               "tone": "neutral"
             },
             "windows": [
               {
                 "kind": "codex:account:primary:300",
-                "label": "Cuenta · Principal · 300 min",
-                "used_percent": 42,
-                "measured_at": 1792979342098,
-                "resets_at": 1792982942000,
+                "label": "5 h",
+                "used_percent": 10,
+                "measured_at": 1794536820000,
+                "resets_at": 1794544020000,
                 "stale": false,
                 "exhausted": false
               },
               {
                 "kind": "codex:account:secondary:10080",
-                "label": "Cuenta · Secundaria · 10080 min",
-                "used_percent": 18,
-                "measured_at": 1792979342098,
-                "resets_at": 1793065742000,
-                "stale": false,
-                "exhausted": false
-              },
-              {
-                "kind": "codex:limit:supplemental-fixture:primary:90",
-                "label": "Límite supplemental-fixture · Principal · 90 min",
-                "used_percent": 8,
-                "measured_at": 1792979342098,
-                "resets_at": 1792984742000,
+                "label": "semana",
+                "used_percent": 20,
+                "measured_at": 1794536820000,
+                "resets_at": 1794968820000,
                 "stale": false,
                 "exhausted": false
               }
@@ -171,7 +129,7 @@
           "id": "codex-default",
           "icon": "machine",
           "title": "Principal",
-          "subtitle": "Codex · personal@fixture.invalid · plus\nCuenta · Principal · 300 min 42 % · Cuenta · Secundaria · 10080 min 18 % · Límite supplemental-fixture · Principal · 90 min 8 %",
+          "subtitle": "Codex · ana@example.com · plus\n5 h 10 % · semana 20 % · reinicia en 2 h 00 min",
           "badges": [
             {
               "text": "Con sesión",
@@ -307,44 +265,17 @@
           "struck": false,
           "actions": [
             {
-              "id": "model_profile:codex-implementation@0~44136fa355b3678a",
+              "id": "model_profile:codex-implementation@0",
               "label": "Elegir modelo",
               "style": "secondary",
               "role": "neutral",
               "presentation": "menu",
-              "options": [
-                {
-                  "id": "auto",
-                  "label": "Predeterminado nativo",
-                  "style": "plain",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "model:codex/fixture-general",
-                  "label": "Fixture general",
-                  "description": "fixture-general",
-                  "style": "plain",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "model:codex/fixture-review",
-                  "label": "Fixture review",
-                  "description": "fixture-review",
-                  "style": "plain",
-                  "input": {
-                    "kind": "none"
-                  }
-                }
-              ],
               "input": {
                 "kind": "none"
               },
               "attachments": false,
-              "enabled": true,
+              "enabled": false,
+              "disabled_reason": "Actualiza primero los modelos de este proveedor",
               "resolves_card": false
             },
             {
@@ -376,44 +307,17 @@
           "struck": false,
           "actions": [
             {
-              "id": "model_profile:codex-general@0~44136fa355b3678a",
+              "id": "model_profile:codex-general@0",
               "label": "Elegir modelo",
               "style": "secondary",
               "role": "neutral",
               "presentation": "menu",
-              "options": [
-                {
-                  "id": "auto",
-                  "label": "Predeterminado nativo",
-                  "style": "plain",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "model:codex/fixture-general",
-                  "label": "Fixture general",
-                  "description": "fixture-general",
-                  "style": "plain",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "model:codex/fixture-review",
-                  "label": "Fixture review",
-                  "description": "fixture-review",
-                  "style": "plain",
-                  "input": {
-                    "kind": "none"
-                  }
-                }
-              ],
               "input": {
                 "kind": "none"
               },
               "attachments": false,
-              "enabled": true,
+              "enabled": false,
+              "disabled_reason": "Actualiza primero los modelos de este proveedor",
               "resolves_card": false
             },
             {
@@ -445,44 +349,17 @@
           "struck": false,
           "actions": [
             {
-              "id": "model_profile:codex-design@0~44136fa355b3678a",
+              "id": "model_profile:codex-design@0",
               "label": "Elegir modelo",
               "style": "secondary",
               "role": "neutral",
               "presentation": "menu",
-              "options": [
-                {
-                  "id": "auto",
-                  "label": "Predeterminado nativo",
-                  "style": "plain",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "model:codex/fixture-general",
-                  "label": "Fixture general",
-                  "description": "fixture-general",
-                  "style": "plain",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "model:codex/fixture-review",
-                  "label": "Fixture review",
-                  "description": "fixture-review",
-                  "style": "plain",
-                  "input": {
-                    "kind": "none"
-                  }
-                }
-              ],
               "input": {
                 "kind": "none"
               },
               "attachments": false,
-              "enabled": true,
+              "enabled": false,
+              "disabled_reason": "Actualiza primero los modelos de este proveedor",
               "resolves_card": false
             },
             {
@@ -514,44 +391,17 @@
           "struck": false,
           "actions": [
             {
-              "id": "model_profile:codex-review@0~44136fa355b3678a",
+              "id": "model_profile:codex-review@0",
               "label": "Elegir modelo",
               "style": "secondary",
               "role": "neutral",
               "presentation": "menu",
-              "options": [
-                {
-                  "id": "auto",
-                  "label": "Predeterminado nativo",
-                  "style": "plain",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "model:codex/fixture-general",
-                  "label": "Fixture general",
-                  "description": "fixture-general",
-                  "style": "plain",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "model:codex/fixture-review",
-                  "label": "Fixture review",
-                  "description": "fixture-review",
-                  "style": "plain",
-                  "input": {
-                    "kind": "none"
-                  }
-                }
-              ],
               "input": {
                 "kind": "none"
               },
               "attachments": false,
-              "enabled": true,
+              "enabled": false,
+              "disabled_reason": "Actualiza primero los modelos de este proveedor",
               "resolves_card": false
             },
             {
@@ -583,44 +433,17 @@
           "struck": false,
           "actions": [
             {
-              "id": "model_profile:codex-orchestrator@0~44136fa355b3678a",
+              "id": "model_profile:codex-orchestrator@0",
               "label": "Elegir modelo",
               "style": "secondary",
               "role": "neutral",
               "presentation": "menu",
-              "options": [
-                {
-                  "id": "auto",
-                  "label": "Predeterminado nativo",
-                  "style": "plain",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "model:codex/fixture-general",
-                  "label": "Fixture general",
-                  "description": "fixture-general",
-                  "style": "plain",
-                  "input": {
-                    "kind": "none"
-                  }
-                },
-                {
-                  "id": "model:codex/fixture-review",
-                  "label": "Fixture review",
-                  "description": "fixture-review",
-                  "style": "plain",
-                  "input": {
-                    "kind": "none"
-                  }
-                }
-              ],
               "input": {
                 "kind": "none"
               },
               "attachments": false,
-              "enabled": true,
+              "enabled": false,
+              "disabled_reason": "Actualiza primero los modelos de este proveedor",
               "resolves_card": false
             },
             {
@@ -645,17 +468,5 @@
       ],
       "style": "list"
     }
-  ],
-  "service": {
-    "version": "0.3.7",
-    "views_protocol": {
-      "min": 1,
-      "max": 1
-    },
-    "capabilities": [
-      "account_presentation",
-      "model_selection",
-      "provider_accounts"
-    ]
-  }
+  ]
 }

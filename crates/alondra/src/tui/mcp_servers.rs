@@ -525,6 +525,7 @@ fn account_detail(source: &Row) -> Row {
     let mut lines = vec![format!("{} · {} · {}", provider, account.key.account, account.availability.text), account.freshness.text.clone()];
     if let Some(email) = &account.email { lines.push(email.clone()); }
     if let Some(plan) = &account.plan { lines.push(plan.clone()); }
+    if let Some(source) = &account.quota_source { lines.push(source.clone()); }
     let count = account.active_nodes;
     lines.push(trf!("{count} active nodes", "{count} nodos activos"));
     if account.windows.is_empty() { lines.push(tr!("Usage not reported", "Uso no comunicado").into()); }

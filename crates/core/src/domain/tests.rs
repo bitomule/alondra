@@ -5086,6 +5086,7 @@ fn mixed_account_order_conflicts_only_with_configuration_and_qualified_tasks_do_
         reading: crate::usage::UsageReading::default(), at: 1, day: "2026-10-25".into() }).unwrap();
     exec(&mut s, user(), Command::SetAccountOrder { order: keys.iter().rev().cloned().collect(), expected_config_version: "settings-one".into() }).unwrap();
     assert_eq!(ReadIndex::build(&s).account_order(), &[keys[1].clone(), keys[0].clone()]);
+    assert_eq!(ReadIndex::build(&s).account_policy(), crate::accounts::Policy::Margin);
     let duplicate = Command::SetAccountOrder { order: vec![keys[0].clone(), keys[0].clone()], expected_config_version: "settings-one".into() };
     assert_eq!(exec(&mut s, user(), duplicate).unwrap_err().code, "invalid_input");
     assert_eq!(s.tasks_on_account_key(&keys[0]), 1);

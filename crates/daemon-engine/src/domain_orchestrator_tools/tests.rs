@@ -1,4 +1,128 @@
 use super::*;
+
+#[test]
+fn native_launch_resolves_existing_model_aliases_with_both_providers_connected() {
+    let f = bare_world(); connect_claude_and_codex(&f);
+    let mut file = crate::domain_schedule_runner::options_at(&f.home).unwrap();
+    file.models.insert("large".into(), "opus".into());
+    let requested = file.orchestrator_defaults(None, None);
+    let task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
+    let body = launch_body(&f, json!({"model":"large"}));
+    let (resolved, account, _) = native_launch(&f.domain, &f.home, &task, &requested, &file, &body, false, false).unwrap().unwrap();
+    assert_eq!(account.provider, alondra_core::accounts::Provider::Claude);
+    assert_eq!(resolved.selection.unwrap().effective.unwrap().model.model, "opus");
+}
+
+#[test]
+fn automatic_codex_routing_keeps_legacy_fixed_effort_binding() {
+    let f = bare_world(); connect_claude_and_codex(&f);
+    let file = crate::domain_schedule_runner::options_at(&f.home).unwrap();
+    let mut requested = file.orchestrator_defaults(None, Some("hard"));
+    requested.selection = None;
+    requested.effort = "hard".into();
+    requested.flags.model = Some("opus".into());
+    requested.flags.effort = Some("xhigh".into());
+    let task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
+    let offered = launch_body(&f, json!({"model":"sonnet"}));
+    assert_eq!(native_launch(&f.domain, &f.home, &task, &requested, &file, &offered, false, false).unwrap_err().code, "invalid_input");
+    let default = launch_body(&f, json!({}));
+    assert!(native_launch(&f.domain, &f.home, &task, &requested, &file, &default, false, false).unwrap().is_none(),
+        "the fixed legacy flags keep using their existing launch path");
+    let mut moved = task;
+    let mut selection = alondra_core::model_selection::TaskSelection::automatic(alondra_core::model_selection::ModelProfile::Implementation);
+    selection.request_model(Some(alondra_core::model_selection::ModelKey::parse_wire("codex/gpt-6").unwrap()));
+    moved.selection = Some(selection);
+    let (_, account, _) = native_launch(&f.domain, &f.home, &moved, &requested, &file, &default, false, false).unwrap().unwrap();
+    assert_eq!(account.provider, alondra_core::accounts::Provider::Codex, "a later task selection supersedes the legacy request flags");
+}
+
+#[test]
+fn initial_launch_obeys_codex_plans_and_routes_automatic_sonnet_to_codex() {
+    use alondra_core::accounts::{AccountKey, Provider};
+    let f = bare_world(); connect_claude_and_codex(&f);
+    for mut catalog in f.domain.state().unwrap().model_catalogs.clone() {
+        catalog.native_default = Some(catalog.models[0].model.clone());
+        command(&f.domain, Actor::System, Command::RecordModelCatalog { catalog });
+    }
+    let file = crate::domain_schedule_runner::options_at(&f.home).unwrap();
+    let requested = file.orchestrator_defaults(None, None);
+    let task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
+    for body in [json!({"model":"codex/gpt-6","provider":"codex"}), json!({"model":"sonnet"}), json!({"model":"claude/sonnet"})] {
+        let body = launch_body(&f, body);
+        let (_, account, _) = native_launch(&f.domain, &f.home, &task, &requested, &file, &body, false, false).unwrap().expect("automatic first launches resolve through native accounts");
+        assert_eq!(account, AccountKey::native(Provider::Codex));
+    }
+}
+
+#[test]
+fn an_initial_codex_provider_preference_falls_back_with_a_quota_reason() {
+    use alondra_core::accounts::Provider;
+    let f = bare_world(); connect_claude_and_codex(&f);
+    for mut catalog in f.domain.state().unwrap().model_catalogs.clone() {
+        catalog.native_default = Some(catalog.models[0].model.clone());
+        command(&f.domain, Actor::System, Command::RecordModelCatalog { catalog });
+    }
+    let now = alondra_core::now_millis();
+    command(&f.domain, Actor::System, Command::RecordAccountUsage {
+        provider: Provider::Codex, account: alondra_core::accounts::AccountId::default_account(),
+        reading: alondra_core::codex_account::parse_rate_limits(&json!({"rateLimits":{"primary":{
+            "usedPercent":100,"windowDurationMins":300,"resetsAt":now/1000+3600}}}),None).unwrap(),
+        at: now, day: alondra_daemon_engine_model::local_day(now),
+    });
+    let file = crate::domain_schedule_runner::options_at(&f.home).unwrap();
+    let requested = file.orchestrator_defaults(None, None);
+    let task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
+    let body = launch_body(&f, json!({"model":"codex/gpt-6","provider":"codex"}));
+    let (_, account, reason) = native_launch(&f.domain,&f.home,&task,&requested,&file,&body,false,false).unwrap().unwrap();
+    assert_eq!(account.provider,Provider::Claude);
+    assert!(reason.contains("Codex") && reason.contains("5 h 100 %"),"{reason}");
+    assert!(!reason.contains("account/rateLimits/read") && !reason.contains("300 min"), "{reason}");
+}
+
+#[test]
+fn automatic_sonnet_routing_preserves_user_models_and_accounts() {
+    use alondra_core::accounts::{AccountKey,Provider};
+    use alondra_core::model_selection::{TaskSelection,ModelKey,ModelProfile};
+    let f = bare_world(); connect_claude_and_codex(&f);
+    for mut catalog in f.domain.state().unwrap().model_catalogs.clone() {
+        catalog.native_default = Some(catalog.models[0].model.clone());
+        command(&f.domain,Actor::System,Command::RecordModelCatalog{catalog});
+    }
+    let file = crate::domain_schedule_runner::options_at(&f.home).unwrap();
+    let requested = file.orchestrator_defaults(None,None);
+    for pinned_model in [true,false] {
+        let mut task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
+        let mut intent = TaskSelection::automatic(ModelProfile::Implementation);
+        if pinned_model { intent.request_model(Some(ModelKey::parse_wire("claude/sonnet").unwrap())); }
+        else { intent.account=Some(AccountKey::native(Provider::Claude)); }
+        task.selection=Some(intent);
+        let body=launch_body(&f,json!({"model":"claude/sonnet"}));
+        let (_,account,_)=native_launch(&f.domain,&f.home,&task,&requested,&file,&body,false,false).unwrap().unwrap();
+        assert_eq!(account.provider,Provider::Claude);
+    }
+}
+
+#[test]
+fn automatic_opus_fable_and_risky_sonnet_stay_on_claude() {
+    use alondra_core::accounts::Provider;
+    let f = bare_world(); connect_claude_and_codex(&f);
+    for mut catalog in f.domain.state().unwrap().model_catalogs.clone() {
+        catalog.native_default = Some(catalog.models[0].model.clone());
+        if catalog.account.provider == Provider::Claude {
+            let mut fable = catalog.models[0].clone(); fable.model = "fable".into(); catalog.models.push(fable);
+        }
+        command(&f.domain, Actor::System, Command::RecordModelCatalog { catalog });
+    }
+    let file = crate::domain_schedule_runner::options_at(&f.home).unwrap();
+    let requested = file.orchestrator_defaults(None, None);
+    let task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
+    for body in [json!({"model":"claude/opus"}), json!({"model":"claude/fable"}),
+        json!({"model":"claude/sonnet","tags":{"kind":"fix","risks":["concurrency"]}})] {
+        let body = launch_body(&f, body);
+        let (_, account, _) = native_launch(&f.domain,&f.home,&task,&requested,&file,&body,false,false).unwrap().unwrap();
+        assert_eq!(account.provider, Provider::Claude);
+    }
+}
 use crate::domain_store::HandoverProcess;
 use crate::node_close::Answer;
 use crate::node_push::testing::Node;

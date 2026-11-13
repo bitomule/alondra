@@ -250,7 +250,7 @@ pub struct AccountsConfig {
 
 impl AccountsConfig {
     pub fn fresh() -> Self {
-        Self { connected: Some(vec![]), distribution: Distribution { policy: Policy::Chain, move_when_exhausted: false, ..Default::default() }, ..Default::default() }
+        Self { connected: Some(vec![]), ..Default::default() }
     }
 
     pub fn connected_providers(&self) -> &[Provider] {
@@ -312,7 +312,6 @@ impl AccountsConfig {
             return Err("account order must contain every connected account exactly once".into());
         }
         self.distribution.order = order;
-        self.distribution.policy = Policy::Chain;
         Ok(())
     }
 
@@ -369,7 +368,6 @@ impl AccountsConfig {
         if !self.distribution.order.is_empty() {
             let mut checked = self.clone();
             checked.set_order(self.distribution.order.clone())?;
-            if self.distribution.policy != Policy::Chain { return Err("accounts: an explicit account order uses chain policy".into()); }
         }
         let reserve = self.distribution.reserve;
         if !(reserve > 0.0 && reserve <= 1.0) {

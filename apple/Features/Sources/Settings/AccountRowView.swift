@@ -16,11 +16,19 @@ public struct AccountRowView: View {
                         VStack(alignment: .leading, spacing: 6) { identity(account); ListToneChip(label: account.availability) }
                     }
                     if let email = account.email { Text(verbatim: email).font(.footnote).foregroundStyle(.secondary) }
-                    if let window = account.windows.first { AccountUsageWindowView(window: window, compact: true) }
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(verbatim: account.freshness.text).font(.caption).foregroundStyle(.secondary)
-                        Spacer(minLength: 8)
+                    if let summary = account.usageSummary {
+                        Text(verbatim: summary)
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                         AccountActivityLabel(count: account.activeNodes)
+                    } else {
+                        if let window = account.windows.first { AccountUsageWindowView(window: window, compact: true) }
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(verbatim: account.freshness.text).font(.caption).foregroundStyle(.secondary)
+                            Spacer(minLength: 8)
+                            AccountActivityLabel(count: account.activeNodes)
+                        }
                     }
                     if let reason = account.reason { Text(verbatim: reason).font(.footnote).foregroundStyle(.secondary) }
                 }
@@ -42,6 +50,7 @@ public struct AccountRowView: View {
             Text(verbatim: "\(Int(account.position)). \(account.key.provider.displayName)").font(.caption.weight(.medium)).foregroundStyle(.secondary)
         }
     }
+
 }
 
 struct AccountActivityLabel: View {
@@ -120,6 +129,7 @@ public struct AccountDetailView: View {
                         if account.windows.isEmpty { Text("Usage not reported").foregroundStyle(.secondary) }
                         ForEach(account.windows) { AccountUsageWindowView(window: $0) }
                         Text(verbatim: account.freshness.text).font(.caption).foregroundStyle(.secondary)
+                        if let source = account.quotaSource { Text(verbatim: source).font(.caption).foregroundStyle(.secondary) }
                     }
                     Section("Activity") { AccountActivityLabel(count: account.activeNodes) }
                     Section("Models") {

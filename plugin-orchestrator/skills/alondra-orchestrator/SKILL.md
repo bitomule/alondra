@@ -285,10 +285,11 @@ not guarantee that an account has access; respect a native rejection.
    names ("use Codex"), is the model: pass it, and its effort if they named one.
    Account fallback keeps that model when another eligible account serves it; changing the model
    needs the user's substitution opt-in.
-2. **Severe risks take the strongest.** A task tagged `concurrency`, `security` or
+2. **Provisional Sonnet-level routing.** Bounded work with a concrete plan and low risk that you would assign to Sonnet goes to Codex by default. Use an advertised Codex model and effort from the table. If Codex has no quota, use Sonnet on Claude and say why in `reason`. Opus-level and Fable-level work stays on Claude. The daemon also applies this rule when an automatic first launch names Sonnet; an explicit user model or account takes precedence. Never mark concurrency, security, data migration or an unclear specification as low risk.
+3. **Severe risks take the strongest.** A task tagged `concurrency`, `security` or
    `data_migration` takes the model with the best measured results for its kind (at least 5
    tasks); without such measurements, the one whose sheet evidence is strongest for that kind.
-3. **Otherwise the most account margin that fits.** Start with the models whose sheet lists the
+4. **Otherwise the most account margin that fits.** Start with the models whose sheet lists the
    task's kind. Exclude a model for clearly worse measured quality only when both it and the
    better model have at least 5 tasks of that kind. Among the models left, choose one served by
    the account with the greatest relative remaining margin: the lesser of its weekly and
@@ -298,11 +299,11 @@ not guarantee that an account has access; respect a native rejection.
    remaining margin. A restriction such as "Claude only" applies only to the work the user
    requested it for. A model without a sheet is chosen only when the user named it or no model
    with a sheet lists the kind.
-4. **At equal margin, price breaks the tie.** Prefer the lowest sheet cost only among models
+5. **At equal margin, price breaks the tie.** Prefer the lowest sheet cost only among models
    tied on relative account margin. If both margin and price tie, prefer a model with fewer
    than 5 ended tasks of the task's kind, so every provider gets measured; then use the better
    sheet evidence. Neither a lower price nor a lack of measurements overrides greater margin.
-5. **Never by brand reputation.** "When in doubt, the expensive one" is not a reason. A row with
+6. **Never by brand reputation.** "When in doubt, the expensive one" is not a reason. A row with
    little measurement is not worse; it is unmeasured.
 
 For a task that has not started, read its complete stored plan with

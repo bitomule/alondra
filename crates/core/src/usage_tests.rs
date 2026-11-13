@@ -1,6 +1,41 @@
 use super::*;
 use proptest::prelude::*;
 
+#[test]
+fn margin_ranks_every_provider_by_relative_native_quota_independent_of_order() {
+    let billing = AccountBilling::Subscription { plan: Some("max 20x".into()), weight: Some(10) };
+    let claude = status("default", AccountState::SignedIn, billing);
+    let codex = AccountStatus { provider: Provider::Codex, billing: AccountBilling::Subscription { plan: Some("pro".into()), weight: Some(1) }, ..claude.clone() };
+    let accounts = vec![claude, codex];
+    let keys = [AccountKey::native(Provider::Claude), AccountKey::native(Provider::Codex)];
+    let native = crate::codex_account::parse_rate_limits(&serde_json::json!({"rateLimits": {
+        "primary": {"usedPercent":10,"windowDurationMins":300,"resetsAt":SESSION_RESET/1000},
+        "secondary": {"usedPercent":20,"windowDurationMins":10080,"resetsAt":WEEK_RESET/1000}}}), None).unwrap();
+    let usage = vec![record(None, Provider::Claude, &id("default"), &reading(0.4, 0.5), NOW, TODAY),
+        record(None, Provider::Codex, &id("default"), &native, NOW, TODAY)];
+    for order in [keys.to_vec(), keys.iter().rev().cloned().collect()] {
+        assert_eq!(ranked_for_launch(Policy::Margin, &order, &accounts, &usage, default_reserve(), NOW, TODAY), [keys[1].clone(), keys[0].clone()]);
+        assert_eq!(ranked_for_launch(Policy::Chain, &order, &accounts, &usage, default_reserve(), NOW, TODAY), order);
+    }
+    let busy = crate::codex_account::parse_rate_limits(&serde_json::json!({"rateLimits": {
+        "primary": {"usedPercent":90,"windowDurationMins":300,"resetsAt":SESSION_RESET/1000}}}), None).unwrap();
+    let usage = vec![usage[0].clone(), record(None, Provider::Codex, &id("default"), &busy, NOW, TODAY)];
+    assert_eq!(ranked_for_launch(Policy::Margin, &keys, &accounts, &usage, default_reserve(), NOW, TODAY)[0], keys[0]);
+}
+
+#[test]
+fn an_unmeasured_or_limit_only_account_never_claims_a_native_percentage() {
+    let marker = UsageReading { plan: None, complete: false, windows: vec![WindowReading {
+        kind: WindowKind::Other(NATIVE_LIMIT_MARKER.into()), used: Share::NONE, resets_at: None, exhausted: true,
+    }] };
+    let usage = record(None, Provider::Codex, &id("default"), &marker, NOW, TODAY);
+    assert_eq!(launch_margin(Some(&usage), NOW), None);
+    assert_eq!(quota_evidence(None, NOW), "quota unknown");
+    let evidence = quota_evidence(Some(&usage), NOW);
+    assert!(evidence.contains("provider reported a usage limit without a percentage"));
+    assert!(!evidence.contains('%') && !evidence.contains("account/rateLimits/read"));
+}
+
 const NOW: Millis = 1_790_192_202_000;
 const TODAY: &str = "2026-09-23";
 const SESSION_RESET: Millis = 1_790_202_000_000;
@@ -292,18 +327,17 @@ proptest! {
     }
 
     #[test]
-    fn by_margin_the_most_absolute_margin_weighed_by_its_session_room_wins_and_the_first_of_equals((accounts, usage) in accounts_with_usage(), reserve in 0.5..=1.0f64) {
+    fn margin_is_independent_of_account_order_and_subscription_weight((accounts, usage) in accounts_with_usage(), reserve in 0.5..=1.0f64) {
         let reserve = Share::of(reserve);
-        let Some(chosen) = choose_account(Policy::Margin, Provider::Claude, &accounts, &usage, reserve, NOW, TODAY) else { return Ok(()) };
-        let position = accounts.iter().position(|account| account.id == chosen).unwrap();
-        let best = absolute(&accounts[position], &usage, reserve, NOW);
-        for (n, other) in accounts.iter().enumerate().filter(|(_, other)| usable(other, &usage, NOW)) {
-            let theirs = absolute(other, &usage, reserve, NOW);
-            prop_assert!(theirs <= best, "{} has {theirs}, more than the chosen {best}", other.id);
-            if n < position && best > 0.0 {
-                prop_assert!(theirs < best, "{} comes first with as much margin", other.id);
+        let chosen = choose_account(Policy::Margin, Provider::Claude, &accounts, &usage, reserve, NOW, TODAY);
+        let mut reordered = accounts.clone();
+        reordered.reverse();
+        for account in &mut reordered {
+            if let AccountBilling::Subscription { plan, weight } = &mut account.billing {
+                *plan = Some("pro".into()); *weight = Some(1);
             }
         }
+        prop_assert_eq!(choose_account(Policy::Margin, Provider::Claude, &reordered, &usage, reserve, NOW, TODAY), chosen);
     }
 
     #[test]
@@ -403,7 +437,8 @@ fn new_work_goes_to_the_account_with_the_most_room_in_its_session_window_and_its
         record(None, Provider::Claude, &id("claude-2"), &reading(claude_2_session, 0.63), NOW, TODAY),
     ];
     let choose = |usage: &[AccountUsage]| choose_account(Policy::Margin, Provider::Claude, &accounts, usage, default_reserve(), NOW, TODAY).map(|id| id.to_string());
-    assert_eq!(choose(&usage(0.24, 0.49)), Some("default".into()), "claude-2's session window is twice as used, though its week has more room");
+    assert_eq!(choose(&usage(0.24, 0.49)), Some("claude-2".into()), "the smaller remaining window is 37%, versus default's 30%; do not multiply the windows");
+    assert_eq!(choose(&usage(0.24, 0.80)), Some("default".into()), "the limiting session is now below default's remaining week");
     assert_eq!(choose(&usage(0.24, 0.10)), Some("claude-2".into()), "claude-2 has the room in both");
     assert_eq!(choose(&usage(0.60, 0.40)), Some("claude-2".into()), "default's session window is the one running down");
 }
@@ -423,9 +458,12 @@ fn the_choice_line_names_every_accounts_margin_and_room() {
         record(None, Provider::Claude, &id("claude-2"), &reading(1.0, 0.09), NOW, TODAY),
     ];
     let chosen = AccountKey::new(Provider::Claude, id("default"));
-    assert_eq!(choice_line(&chosen, &accounts, &usage, default_reserve(), NOW, TODAY),
-        "launch on claude/default · default margin 64% ×5 (left: 5 h 82%, week 64%, today 100%) \
-         · claude-2 margin 0% ×5 (left: 5 h 0%, week 91%, today 100%, at its limit) · api paid per use · spare not measured · old off");
+    let line = choice_line(&chosen, &accounts, &usage, default_reserve(), NOW, TODAY);
+    for evidence in ["launch on claude/default", "claude/default quota 64% remaining", "claude/claude-2 quota 0% remaining",
+        "claude/api paid per use", "claude/spare quota unknown", "claude/old off", "Session: 18% used", "Weekly: 36% used",
+        "native usage", "measured 1790192202000", "resets 1790553600000"] {
+        assert!(line.contains(evidence), "{evidence}: {line}");
+    }
 }
 
 fn line(stand: AccountStand, week: Option<f64>, five: Option<f64>, today: Option<(f64, f64)>) -> AccountLine {
@@ -542,8 +580,7 @@ fn a_codex_turn_that_worked_clears_an_earlier_limit_only() {
     assert!(later.windows.iter().any(|window| window.reading.kind.is_native_limit_marker() && window.reading.exhausted), "a limit after the turn still holds");
 }
 
-// By margin, the Claude account with the most room takes the place of the first Claude account,
-// also with Codex in the list; Codex keeps its own place. An account never measured counts as usable.
+// Unknown quota remains eligible as a fallback, after measured quota; its position is stable.
 #[test]
 fn by_margin_the_roomiest_claude_account_leads_the_claude_accounts_with_codex_in_the_list() {
     let subscription = || AccountBilling::Subscription { plan: None, weight: None };
@@ -556,11 +593,11 @@ fn by_margin_the_roomiest_claude_account_leads_the_claude_accounts_with_codex_in
     let usage = vec![busy.clone(), idle];
     let ranked = ranked_for_launch(Policy::Margin, &listed, &accounts, &usage, default_reserve(), NOW, TODAY);
     assert_eq!(ranked, [key(Provider::Claude, "claude-2"), key(Provider::Claude, "default"), key(Provider::Codex, "default")]);
-    assert_eq!(ranked_for_launch(Policy::Margin, &listed, &accounts, &[busy], default_reserve(), NOW, TODAY)[0], key(Provider::Claude, "claude-2"), "never measured");
+    assert_eq!(ranked_for_launch(Policy::Margin, &listed, &accounts, &[busy], default_reserve(), NOW, TODAY)[0], key(Provider::Claude, "default"), "measured quota precedes unknown quota");
     assert_eq!(ranked_for_launch(Policy::Chain, &listed, &accounts, &usage, default_reserve(), NOW, TODAY), listed);
     let codex_first = vec![key(Provider::Codex, "default"), key(Provider::Claude, "default"), key(Provider::Claude, "claude-2")];
     assert_eq!(ranked_for_launch(Policy::Margin, &codex_first, &accounts, &usage, default_reserve(), NOW, TODAY),
-        [key(Provider::Codex, "default"), key(Provider::Claude, "claude-2"), key(Provider::Claude, "default")]);
+        [key(Provider::Claude, "claude-2"), key(Provider::Claude, "default"), key(Provider::Codex, "default")]);
 }
 
 // A Codex account whose ordinary usage the backend did not confirm gets no quota reading, and that

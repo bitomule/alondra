@@ -227,7 +227,7 @@ pub(super) fn option_field(spec: &Spec, lang: super::Lang, client: Client) -> Fi
         }
         if spec.builtin && spec.id == "account" {
             return Some(match value.description.as_deref() {
-                Some("Alondra follows the configured account order") => t!(lang, "Alondra follows the configured account order", "Alondra sigue el orden configurado de las cuentas"),
+                Some("Alondra follows the configured account distribution") => t!(lang, "Alondra follows the configured account distribution", "Alondra sigue el reparto configurado de las cuentas"),
                 Some("Paid per use: used only when explicitly selected") => t!(lang, "Paid per use: used only when explicitly selected", "Pago por uso: solo se utiliza si se selecciona expresamente"),
                 Some("Keep this request's work on this account") => t!(lang, "Keep this request's work on this account", "Mantener el trabajo de esta solicitud en esta cuenta"),
                 _ => return value.description.clone(),
@@ -512,6 +512,12 @@ pub(super) fn enrich_model_fields(fields: &mut Vec<Field>, context: &RenderConte
             Some(super::accounts::provider_name(account.provider).into()), reason,
             Some(super::Condition { field: "model".into(), equals: None, any_of: compatible }));
         if paid { choice.description = Some(t!(lang, "Selecting this account authorizes paid usage for this work", "Seleccionar esta cuenta autoriza el uso de pago para este trabajo").into()); }
+        if account.provider == crate::accounts::Provider::Codex {
+            let measured = context.index.account_usage().iter().find(|usage| usage.provider == account.provider && usage.account == account.id);
+            if let Some(quota) = super::accounts::usage_line(account, measured, context) {
+                choice.description = Some(match choice.description { Some(about) => format!("{about} · {quota}"), None => quota });
+            }
+        }
         accounts.push(choice);
     }
     let choice = |id: &str, label: &str, items: Vec<ChoiceItem>, visible_when: Option<super::Condition>| Field {

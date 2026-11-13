@@ -9010,12 +9010,114 @@ fn provider_accounts_share_one_order_without_aliasing_same_slugs_or_native_windo
     let window = &codex.account.as_ref().unwrap().windows[0];
     assert_eq!((window.used_percent, window.measured_at, window.resets_at, window.stale), (42, 10, Some(1_000), true));
     assert!(window.kind.starts_with("codex:account:"));
-    assert_eq!(window.label, "Account · Primary · 300 min");
+    assert_eq!(window.label, "5 h");
     let spanish = render(&state, &live, Client::Ios, Lang::Es, "accounts", "");
     let metadata = spanish.sections.iter().flat_map(|section| &section.items).find_map(|item| match item { Item::Row(row) if row.account.as_ref().is_some_and(|metadata| metadata.key == key(Provider::Codex)) => row.account.as_ref(), _ => None }).unwrap();
-    assert_eq!(metadata.windows[0].label, "Cuenta · Principal · 300 min");
+    assert_eq!(metadata.windows[0].label, "5 h");
     assert!(!codex.actions.iter().any(|action| action.id.starts_with("account_") && action.id.split('~').next_back() == Some("claude")));
     assert!(codex.actions.iter().filter(|action| !action.id.is_empty()).all(|action| action.id.ends_with("~codex")));
+}
+
+#[test]
+fn codex_quota_is_attributed_in_accounts_and_the_picker_without_hiding_paid_consent() {
+    use crate::accounts::{AccountBilling, AccountKey, Provider};
+    let (mut state, mut live) = accounts_fixture();
+    let mut codex = state.accounts[0].clone();
+    codex.provider = Provider::Codex;
+    codex.billing = AccountBilling::PayPerUse;
+    let key = AccountKey::new(Provider::Codex, codex.id.clone());
+    state.accounts.push(codex);
+    let reading = crate::codex_account::parse_rate_limits(&serde_json::json!({"rateLimits":{"primary":{
+        "usedPercent":13,"windowDurationMins":10080,"resetsAt":1790553600}}}),None).unwrap();
+    state.account_usage.push(crate::usage::record(None,Provider::Codex,&key.account,&reading,1790192202000,"2026-09-23"));
+    live.observed_at = Some(1790192202000);
+    for lang in [Lang::En,Lang::Es] {
+        let accounts = render(&state,&live,Client::Tui,lang,"accounts","");
+        let row = accounts.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
+            Item::Row(row) if row.account.as_ref().is_some_and(|account| account.key == key) => Some(row), _ => None,
+        }).unwrap();
+        let text = row.subtitle.as_deref().unwrap();
+        assert!(text.contains(if lang == Lang::En { "week 13 %" } else { "semana 13 %" }), "{text}");
+        assert!(!text.contains("account/rateLimits/read") && !text.contains("10080") && !text.contains("2026-") && !text.contains("87 %"), "{text}");
+        assert!(!text.contains("min ago") && !text.contains("hace"), "fresh readings need no age: {text}");
+        assert_eq!(row.account.as_ref().unwrap().usage_summary.as_deref(), Some(crate::views::accounts::quota_summary(state.account_usage.last(), live.observed_at, lang).as_str()));
+        assert!(row.account.as_ref().unwrap().quota_source.as_ref().unwrap().contains("account/rateLimits/read"));
+        let request = render(&state,&live,Client::Tui,lang,"new_request","");
+        let form = new_request_form(&request);
+        let FieldKind::Choice { items } = &form.fields.iter().find(|field|field.id=="account").unwrap().kind else { panic!("account picker") };
+        let about = items.iter().find(|item|item.id==key.wire_id()).unwrap().description.as_deref().unwrap();
+        assert!(about.contains("13 %") && !about.contains("account/rateLimits/read") && !about.contains("10080") && !about.contains("2026-"), "{about}");
+        assert!(about.contains(if lang==Lang::Es {"autoriza el uso de pago"} else {"authorizes paid usage"}),"{about}");
+    }
+    let mut later = live.clone();
+    later.observed_at = None;
+    let text = serde_json::to_string(&render(&state, &later, Client::Tui, Lang::En, "accounts", "")).unwrap();
+    assert!(text.contains("Reading age unknown") && !text.contains("2026-09-23T19:36:42.000Z"), "no ISO dates when the live clock is unknown: {text}");
+    later.observed_at = Some(1790192202000 + 300_000);
+    let text = serde_json::to_string(&render(&state, &later, Client::Tui, Lang::Es, "accounts", "")).unwrap();
+    assert!(text.contains("lectura de hace 5 min"));
+    later.observed_at = Some(1790553600001);
+    let text = serde_json::to_string(&render(&state, &later, Client::Tui, Lang::En, "accounts", "")).unwrap();
+    assert!(text.contains("Previous reading · reset has passed"));
+    let marker = crate::usage::UsageReading { complete: true, plan: None, windows: vec![crate::usage::WindowReading {
+        kind: crate::usage::WindowKind::Other(crate::usage::NATIVE_LIMIT_MARKER.into()), used: crate::usage::Share::NONE,
+        resets_at: None, exhausted: true,
+    }] };
+    *state.account_usage.iter_mut().find(|usage| usage.provider == Provider::Codex).unwrap() =
+        crate::usage::record(None, Provider::Codex, &key.account, &marker, 1790192202000, "2026-09-23");
+    for lang in [Lang::En, Lang::Es] {
+        let text = serde_json::to_string(&render(&state, &live, Client::Tui, lang, "accounts", "")).unwrap();
+        assert!(!text.contains("account/rateLimits/read"), "a limit marker has no native quota percentage");
+    }
+    let day = crate::codex_account::parse_rate_limits(&serde_json::json!({"rateLimits":{"primary":{
+        "usedPercent":13,"windowDurationMins":1440,"resetsAt":1790553600}}}),None).unwrap();
+    let usage = crate::usage::record(None, Provider::Codex, &key.account, &day, 1790192202000, "2026-09-23");
+    assert!(super::accounts::quota_summary(Some(&usage), live.observed_at, Lang::En).starts_with("1 day 13 %"));
+    assert!(super::accounts::quota_summary(Some(&usage), live.observed_at, Lang::Es).starts_with("1 día 13 %"));
+}
+
+#[test]
+fn codex_quota_views_match_goldens() {
+    use crate::accounts::{AccountId, AccountKey, Provider};
+    let (mut state, mut live) = accounts_fixture();
+    let mut account = state.accounts[0].clone();
+    account.provider = Provider::Codex;
+    account.email = Some("ana@example.com".into());
+    account.plan = Some("plus".into());
+    state.accounts = vec![account];
+    state.account_order = vec![AccountKey::native(Provider::Codex)];
+    let now = 1_794_536_820_000;
+    live.observed_at = Some(now);
+    let reading = crate::codex_account::parse_rate_limits(&serde_json::json!({"rateLimits":{
+        "primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":now/1000+7200},
+        "secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":now/1000+432000}
+    }}), None).unwrap();
+    state.account_usage = vec![crate::usage::record(None, Provider::Codex, &AccountId::default_account(), &reading, now, "2026-11-13")];
+    for (client, lang, filename, expected) in [
+        (Client::Ios, Lang::En, "accounts-codex-ios.json", include_str!("../../../../fixtures/views/cards/accounts-codex-ios.json")),
+        (Client::Ios, Lang::Es, "accounts-codex-ios-es.json", include_str!("../../../../fixtures/views/cards/accounts-codex-ios-es.json")),
+        (Client::Mac, Lang::En, "accounts-codex-mac.json", include_str!("../../../../fixtures/views/cards/accounts-codex-mac.json")),
+        (Client::Mac, Lang::Es, "accounts-codex-mac-es.json", include_str!("../../../../fixtures/views/cards/accounts-codex-mac-es.json")),
+    ] {
+        assert_golden(filename, &render(&state, &live, client, lang, "accounts", "2026-11-13T02:27:00Z"), expected);
+    }
+    let id = state.tasks.keys().next().unwrap().clone();
+    let mut selection = crate::model_selection::TaskSelection::automatic(crate::model_selection::ModelProfile::Implementation);
+    selection.reason = Some(format!("Automatic account selection. {}", crate::usage::choice_line(&AccountKey::native(Provider::Codex), &state.accounts, &state.account_usage, state.account_reserve, now, "2026-11-13")));
+    state.tasks.get_mut(&id).unwrap().selection = Some(selection);
+    for has_reading in [true, false] {
+        if !has_reading {
+            state.tasks.get_mut(&id).unwrap().selection.as_mut().unwrap().reason = Some(format!("Automatic account selection. {}", crate::usage::choice_line(&AccountKey::native(Provider::Codex), &state.accounts, &[], state.account_reserve, now, "2026-11-13")));
+        }
+        for lang in [Lang::En, Lang::Es] {
+            let view = render(&state, &live, Client::Ios, lang, &format!("task:{id}"), "");
+            let text = serde_json::to_string(&view).unwrap();
+            assert!(text.contains(if lang == Lang::En { "5 h 10 % · week 20 %" } else { "5 h 10 % · semana 20 %" }), "{text}");
+            assert!(!text.contains("account/rateLimits/read") && !text.contains("300 min"), "{text}");
+            assert!(text.contains("Automatic account selection."), "preserve the explanation while replacing its old diagnostic suffix");
+            assert!(!text.contains("launch on codex/default"), "unknown historical quota also loses the diagnostic suffix");
+        }
+    }
 }
 
 #[test]

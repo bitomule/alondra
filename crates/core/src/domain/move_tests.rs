@@ -158,6 +158,30 @@ fn moved_and_deferred(s: &mut DomainState) {
     must(s, Actor::System, Command::DeferTaskMove { task_id: "t".into(), account: claude() });
 }
 
+#[test]
+fn feedback_after_an_accepted_delivery_question_and_deferred_move_is_accepted() {
+    let mut s = on_codex();
+    deliver(&mut s, "t", "a", "result");
+    let targets = vec![DeliveryTarget::Text { text: "Done".into() }];
+    must(&mut s, user(), Command::AcceptDelivery { presentation_id: "result".into(), targets: targets.clone() });
+    let options = vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }];
+    must(&mut s, Actor::Agent { agent_id: "a".into() }, Command::AskQuestion {
+        attachments: vec![], interaction_id: "follow-up".into(), scope: Scope::Task { task_id: "t".into() },
+        recipient: Recipient::User, body: "Which way?".into(), blocking: true,
+        card: CardSpec::question("Choose the way", &options), options,
+    });
+    moved_and_deferred(&mut s);
+    assert!(s.tasks[&TaskId::from("t")].agent_id.is_none());
+    assert!(s.lifecycle_of(&"t".into()).unwrap().execution().is_none());
+    let feedback = exec(&mut s, user(), Command::SubmitFeedback {
+        merge_failure: None, attachments: vec![], presentation_id: "result".into(), targets,
+        body: "Change the wording".into(), instruction: Instruction::Changes,
+    });
+    assert!(feedback.is_ok(), "feedback must be accepted: {feedback:?}");
+    assert_eq!(s.lifecycle_of(&"t".into()).unwrap().pending_inputs().len(), 1);
+    assert!(matches!(last(&s, "t"), LifecycleRecord::HandedBack { text: Some(text), .. } if text == Instruction::Changes.message("Change the wording")));
+}
+
 // Found by the whole-machine model: the user moved a delivery under review to the other account.
 // The notice of the move stayed pending with no execution to take it, so the task read as starting
 // for ever while it waited for the user's review, and once the user sent it back nothing started it.
@@ -172,7 +196,7 @@ fn a_delivery_moved_while_the_user_reviews_it_waits_for_the_review_and_goes_on_o
 
     must(&mut s, user(), Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "result".into(),
         targets: vec![DeliveryTarget::Text { text: "Done".into() }], body: "Name the states".into(), instruction: Instruction::Changes });
-    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: Instruction::Changes.message("Name the states"), from_user: false, answers: None });
+    assert!(matches!(last(&s, "t"), LifecycleRecord::Told { text: Some(text), .. } if text == Instruction::Changes.message("Name the states")), "the feedback alone is durable");
     let lifecycle = s.lifecycle_of(&"t".into()).unwrap();
     assert_eq!(lifecycle.pending_inputs().len(), 1, "what the user sent back waits for the next node");
     assert_eq!(lifecycle.obligation().map(|owed| (owed.party, owed.owed)), Some((alondra_domain::Party::Alondra, alondra_domain::Owed::Start)));

@@ -435,6 +435,11 @@ fn known_native_denials_filter_automatic_codex_before_choosing_a_compatible_clau
         record_account_command(&domain,Command::RecordModelCatalog {catalog:AccountModelCatalog {account:key,revision:"native-fixture".into(),native_default:Some("fixture-model".into()),measured_at:100,
             models:vec![CatalogModel {model:"fixture-model".into(),display_name:"Fixture".into(),reasoning_efforts:vec![],default_reasoning_effort:None,context_window:None,input_modalities:vec!["text".into()],is_default:true,hidden:false}]}});
     }
+    for (provider, used) in [(Provider::Codex, 0.1), (Provider::Claude, 0.5)] {
+        record_account_command(&domain, Command::RecordAccountUsage { provider, account: AccountId::default_account(), at: 100, day: "2026-01-01".into(),
+            reading: alondra_core::usage::UsageReading { plan: None, complete: true, windows: vec![alondra_core::usage::WindowReading {
+                kind: alondra_core::usage::WindowKind::Session, used: Share::of(used), resets_at: Some(1_000), exhausted: false }] } });
+    }
     let mut intent=TaskSelection::automatic(ModelProfile::Implementation);
     assert_eq!(select_for_launch(&domain,&f.home,&intent,100).unwrap().account.provider,Provider::Codex,"unknown initial policy resolves before admission");
     intent.native_tool_denials=Some(vec!["Write".into()]);

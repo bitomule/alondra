@@ -9,30 +9,13 @@ use proptest::prelude::*;
 /// A rule the code does not apply yet. While its row is listed, the model applies it itself; the
 /// PR that makes the code apply it removes the row and drives the real code from the model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Gap {
-    /// A task the user sent back after its account move was deferred has no node and no pending
-    /// input to start one for it: the lifecycle still says the user owes the next step while the
-    /// screens read «delivering». The case of a node that took the hand-back and asked the
-    /// orchestrator is closed: the orchestrator owes the answer, in the obligation and in the reading.
-    HandedBackWithItsMoveDeferred,
-}
+pub(super) enum Gap {}
 
-pub(super) const KNOWN_GAPS: &[Gap] = &[Gap::HandedBackWithItsMoveDeferred];
+pub(super) const KNOWN_GAPS: &[Gap] = &[];
 
-fn listed(gap: Gap) -> bool {
-    KNOWN_GAPS.contains(&gap)
-}
-
-/// What is left of the gap row is the deferred move alone: the orchestrator's answer is closed.
 #[test]
-fn known_gaps_only_lists_the_deferred_move() {
-    assert_eq!(KNOWN_GAPS, [Gap::HandedBackWithItsMoveDeferred]);
-}
-
-/// `task` was sent back by the user, its move is deferred, and the domain still says the user owes the next step.
-fn handed_back_owing_the_user(state: &DomainState, task: &TaskId) -> bool {
-    state.task_handed_back(task).is_some()
-        && state.obligation_of(task).is_some_and(|obligation| obligation.party == Party::User)
+fn known_gaps_is_empty() {
+    assert!(KNOWN_GAPS.is_empty());
 }
 
 /// The delivery deadline is no gap: the model runs the real watch, which enforces it.
@@ -116,10 +99,12 @@ fn ends_well(machine: &Machine, state: &DomainState, index: &ReadIndex, task: &T
         Situation::NeedsYou | Situation::Paused | Situation::Delivered(Delivery::ForReview) => true,
         Situation::Waiting(WaitsFor::Slot) if waits_for_a_task_still_open(state, task) => true,
         Situation::Waiting(WaitsFor::Slot) => room_is_scarce(machine, state),
+        Situation::Waiting(WaitsFor::Step(AlondraStep::Starting)) if machine.deferred.contains_key(task)
+            && state.lifecycle_of(task).is_ok_and(|lifecycle| lifecycle.execution().is_none())
+            && provider_transition::ready_in(state, task).unwrap_or(false) => room_is_scarce(machine, state),
         Situation::Waiting(WaitsFor::Step(AlondraStep::Delivering)) if state.waits_for_turn(task) => {
             room_is_scarce(machine, state)
         }
-        Situation::Waiting(WaitsFor::Step(AlondraStep::Delivering)) if listed(Gap::HandedBackWithItsMoveDeferred) && handed_back_owing_the_user(state, task) => true,
         Situation::Waiting(WaitsFor::Machine) => world.memory_tight,
         Situation::Waiting(WaitsFor::Disk) => world.disk_full,
         Situation::Waiting(WaitsFor::Usage) => world.usage_holds(),
@@ -454,6 +439,30 @@ fn a_task_sent_back_ends_well_whether_its_node_asks_or_its_move_is_deferred() {
     for history in [asking, moved] {
         holds(&history, |verdicts| &verdicts.ends).unwrap();
     }
+}
+
+#[test]
+fn a_deferred_delivery_starts_once_memory_returns() {
+    use super::world::{Action, Turn, UserAct};
+    let history = History {
+        script: vec![Turn::Deliver], slots: 3, depends: None,
+        actions: vec![Action::TurnEnds(2), Action::User(UserAct::Move, 2), Action::MemoryTight(true), Action::User(UserAct::Return, 2)],
+    };
+    holds(&history, |verdicts| &verdicts.ends).unwrap();
+    let mut machine = Machine::new(&history);
+    for action in &history.actions { machine.act(action); }
+    let task = TaskId::from("t-c");
+    machine.rest(|_| {});
+    let state = machine.state();
+    assert!(machine.deferred.contains_key(&task));
+    assert!(state.lifecycle_of(&task).unwrap().execution().is_none());
+    assert_eq!(state.obligation_of(&task).map(|o| (o.party, o.owed)), Some((Party::Alondra, Owed::Start)));
+    assert!(provider_transition::ready_in(&state, &task).unwrap());
+    machine.act(&Action::MemoryTight(false));
+    machine.rest(|_| {});
+    assert!(!machine.deferred.contains_key(&task));
+    let state = machine.state();
+    assert_eq!(state.lifecycle_journal[&task].iter().filter(|r| matches!(r, LifecycleRecord::Admitted { .. })).count(), 2);
 }
 
 /// The shape behind the 11 November permission answered at 00:21 that reached its turn at 03:25: a

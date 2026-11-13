@@ -4,7 +4,7 @@
   "view": "accounts",
   "key": "accounts",
   "client": "mac",
-  "version": "v4df5d085dd2a6274",
+  "version": "v1524e7fef8596848",
   "cursor": "cursor-1",
   "title": "Cuentas",
   "status": {
@@ -947,7 +947,7 @@
           "id": "claude-policy",
           "icon": "node",
           "title": "Primero la de más margen",
-          "subtitle": "Cada tarea nueva de Claude empieza en la cuenta de Claude con más margen, según su plan",
+          "subtitle": "Comparar todos los proveedores por cuota restante; el orden no afecta al reparto por margen",
           "depth": 0,
           "struck": false,
           "actions": [

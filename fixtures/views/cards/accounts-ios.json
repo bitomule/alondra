@@ -4,7 +4,7 @@
   "view": "accounts",
   "key": "accounts",
   "client": "ios",
-  "version": "v852944e072c97f86",
+  "version": "v04105480c1e8c202",
   "cursor": "cursor-1",
   "title": "Accounts",
   "status": {
@@ -947,7 +947,7 @@
           "id": "claude-policy",
           "icon": "node",
           "title": "Most room first",
-          "subtitle": "Each new Claude task starts on the Claude account with the most room left, weighed by its plan",
+          "subtitle": "Compare every provider by remaining quota; account order does not affect margin routing",
           "depth": 0,
           "struck": false,
           "actions": [

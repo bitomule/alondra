@@ -283,7 +283,7 @@ impl AccountUsage {
     }
 
     /// Whether the session or the week ran out and has not reset.
-    fn plan_exhausted(&self, now: Millis) -> bool {
+    pub fn plan_exhausted(&self, now: Millis) -> bool {
         self.plan_ran_out(now).next().is_some()
     }
 
@@ -411,7 +411,7 @@ impl Pace {
 
 /// The account's daily pace on the local `today`, when it has a week that has not reset.
 pub fn pace(usage: &AccountUsage, now: Millis, today: &str) -> Option<Pace> {
-    pace_in(usage, usage.current(&WindowKind::Weekly, now)?, now, today)
+    pace_in(usage, usage.plan_window(true, now)?, now, today)
 }
 
 fn pace_in(usage: &AccountUsage, week: &WindowReading, now: Millis, today: &str) -> Option<Pace> {
@@ -442,8 +442,8 @@ pub struct Room {
 
 impl Room {
     pub fn of(usage: &AccountUsage, now: Millis, today: &str) -> Room {
-        let left = |kind: WindowKind| usage.current(&kind, now).map_or(1.0, |reading| 1.0 - reading.used.fraction());
-        Room { session: left(WindowKind::Session), week: left(WindowKind::Weekly), today: pace(usage, now, today).map_or(1.0, |pace| pace.today_left()) }
+        let left = |week| usage.plan_window(week, now).map_or(1.0, |reading| 1.0 - reading.used.fraction());
+        Room { session: left(false), week: left(true), today: pace(usage, now, today).map_or(1.0, |pace| pace.today_left()) }
     }
 
     pub fn least(self) -> f64 {
@@ -461,10 +461,20 @@ pub fn own_margin(state: AccountState, usage: Option<&AccountUsage>, reserve: Sh
         AccountState::Unchecked | AccountState::SignedIn | AccountState::Unavailable => {}
     }
     let usage = usage?;
-    if usage.exhausted(now) || usage.current(&WindowKind::Session, now).is_some_and(|session| session.used > reserve) {
+    if usage.exhausted(now) || usage.plan_window(false, now).is_some_and(|session| session.used > reserve) {
         return Some(0.0);
     }
     Some(Room::of(usage, now, today).least())
+}
+
+/// Remaining account-wide quota for choosing new work. Missing readings stay unknown; neither
+/// plan price nor today's pacing allocation changes a provider's reported remaining percentage.
+pub fn launch_margin(usage: Option<&AccountUsage>, now: Millis) -> Option<Share> {
+    let usage = usage?;
+    usage.windows.iter().map(|window| &window.reading)
+        .filter(|reading| reading.kind.account_wide(usage.provider) && !reading.kind.is_native_limit_marker()
+            && reading.resets_at.is_none_or(|reset| reset > now))
+        .map(|reading| if reading.exhausted { Share::NONE } else { Share::of(1.0 - reading.used.fraction()) }).min()
 }
 
 /// One account's part in the combined margin.
@@ -552,20 +562,18 @@ pub fn eligible_account_keys(order: &[AccountKey], accounts: &[AccountStatus], u
 struct Candidate<'a> {
     account: &'a AccountStatus,
     absolute: f64,
-    week: f64,
-    session_left: f64,
 }
 
-/// The account a new launch of `provider` runs on, as `policy` spreads the work over the
-/// accounts in the user's order. By margin: the one with the most absolute margin weighed by what
-/// is left of its session window, so that the week's room never sends every launch to one account
-/// while its session window runs down; the first of them when several rank the same. In a chain: the first with margin. Today's slice only ranks
-/// them: when every account that can work has no margin left, the one with the most of its week left (by
-/// margin) or the first (in a chain) is chosen. A session window past the reserve leaves the
-/// account no margin, and so ranks it last, but it is still chosen when no other can work. An account paid per use is never chosen here.
-/// None when no account can work: the launch waits until one can.
+/// Margin compares native remaining percentages with stable ties. Chain fills the first account
+/// whose pacing allocation has room, then the first eligible one. Neither selects paid usage.
 pub fn choose_account(policy: Policy, provider: Provider, accounts: &[AccountStatus], usage: &[AccountUsage], reserve: Share, now: Millis, today: &str) -> Option<AccountId> {
     let accounts = or_implicit(accounts);
+    if policy == Policy::Margin {
+        let eligible: Vec<_> = accounts.iter().filter(|account| account.provider == provider
+            && can_work(account, usage.iter().find(|reading| reading.provider == provider && reading.account == account.id), now))
+            .map(|account| AccountKey::new(provider, account.id.clone())).collect();
+        return ranked_for_launch(policy, &eligible, &accounts, usage, reserve, now, today).first().map(|key| key.account.clone());
+    }
     let candidates: Vec<Candidate> = accounts
         .iter()
         .filter(|account| account.provider == provider)
@@ -576,64 +584,58 @@ pub fn choose_account(policy: Policy, provider: Provider, accounts: &[AccountSta
             }
             let weight = f64::from(weight(&account.billing, measured.and_then(|u| u.plan.as_deref()).or(account.plan.as_deref()))?);
             let own = own_margin(account.state, measured, reserve, now, today).unwrap_or(1.0);
-            let week_left = measured.and_then(|u| u.current(&WindowKind::Weekly, now)).map_or(1.0, |week| 1.0 - week.used.fraction());
-            let session_left = measured.and_then(|u| u.current(&WindowKind::Session, now)).map_or(1.0, |session| 1.0 - session.used.fraction());
-            Some(Candidate { account, absolute: weight * own, week: weight * week_left, session_left })
+            Some(Candidate { account, absolute: weight * own })
         })
         .collect();
-    let chosen = match policy {
-        Policy::Margin => {
-            let rank = |candidate: &Candidate| if candidate.absolute > 0.0 { (candidate.absolute * candidate.session_left, 0.0) } else { (0.0, candidate.week) };
-            candidates.iter().fold(None, |best: Option<&Candidate>, candidate| match best {
-                Some(best) if rank(candidate) <= rank(best) => Some(best),
-                _ => Some(candidate),
-            })
-        }
-        Policy::Chain => candidates.iter().find(|candidate| candidate.absolute > 0.0).or(candidates.first()),
-    };
+    let chosen = candidates.iter().find(|candidate| candidate.absolute > 0.0).or(candidates.first());
     chosen.map(|candidate| candidate.account.id.clone())
 }
 
-/// The account a launch of its provider took and, for every account of that provider, its margin
-/// and what it has left of each window, in percent: how the log shows work spreading over them.
+/// Detailed native quota evidence for the daemon log.
 pub fn choice_line(chosen: &AccountKey, accounts: &[AccountStatus], usage: &[AccountUsage], reserve: Share, now: Millis, today: &str) -> String {
+    let _ = (reserve, today);
     let accounts = or_implicit(accounts);
-    let percent = |share: f64| format!("{:.0}%", 100.0 * share);
     let each: Vec<String> = accounts
         .iter()
-        .filter(|account| account.provider == chosen.provider)
         .map(|account| {
             let measured = usage.iter().find(|u| u.provider == account.provider && u.account == account.id);
-            let weight = weight(&account.billing, measured.and_then(|u| u.plan.as_deref()).or(account.plan.as_deref()));
-            let stand = match (account.state, weight, measured) {
-                (AccountState::Disabled, _, _) => "off".to_owned(),
-                (AccountState::SignedOut, _, _) => "signed out".to_owned(),
-                (_, None, _) => "paid per use".to_owned(),
-                (_, Some(_), None) => "not measured".to_owned(),
-                (state, Some(weight), Some(measured)) => {
-                    let margin = own_margin(state, Some(measured), reserve, now, today).unwrap_or(0.0);
-                    let room = Room::of(measured, now, today);
-                    let limit = if measured.plan_exhausted(now) { ", at its limit" } else { "" };
-                    format!("margin {} ×{weight} (left: 5 h {}, week {}, today {}{limit})", percent(margin), percent(room.session), percent(room.week), percent(room.today))
-                }
+            let stand = match account.state {
+                AccountState::Disabled => "off".to_owned(),
+                AccountState::SignedOut => "signed out".to_owned(),
+                _ if account.billing == AccountBilling::PayPerUse => "paid per use".into(),
+                _ => quota_evidence(measured, now),
             };
-            format!("{} {stand}", account.id)
+            format!("{} {stand}", AccountKey::new(account.provider, account.id.clone()).wire_id())
         })
         .collect();
     format!("launch on {} · {}", chosen.wire_id(), each.join(" · "))
 }
 
-/// `eligible` as `policy` ranks it for a new launch. By margin, the Claude account with the most
-/// room left takes the place of the first Claude account in the list; other providers keep theirs.
+pub fn quota_evidence(usage: Option<&AccountUsage>, now: Millis) -> String {
+    let Some(usage) = usage else { return "quota unknown".into() };
+    let remaining = launch_margin(Some(usage), now).map_or_else(|| "unknown".into(), |share| format!("{:.0}% remaining", share.fraction() * 100.0));
+    let windows = usage.windows.iter().filter(|window| !window.reading.kind.is_native_limit_marker()).map(|window| {
+        let reading = &window.reading;
+        let label = reading.kind.codex_window_label().unwrap_or_else(|| format!("{:?}", reading.kind));
+        let reset = reading.resets_at.map_or_else(|| "unknown".into(), |reset| reset.to_string());
+        format!("{label}: {:.0}% used, resets {reset}, measured {}", reading.used.fraction() * 100.0, window.measured_at)
+    }).collect::<Vec<_>>().join("; ");
+    let limit = if usage.windows.iter().any(|window| window.reading.kind.is_native_limit_marker() && window.reading.exhausted) {
+        "; provider reported a usage limit without a percentage"
+    } else { "" };
+    if windows.is_empty() { return format!("quota unknown{limit}"); }
+    let source = match usage.provider { Provider::Codex => "account/rateLimits/read", Provider::Claude => "native usage" };
+    format!("quota {remaining} ({source}; {windows}){limit}")
+}
+
+/// All eligible providers compete by reported remaining quota. Account order only decides Chain;
+/// a stable key breaks equal margins, including when neither account has a reading.
 pub fn ranked_for_launch(policy: Policy, eligible: &[AccountKey], accounts: &[AccountStatus], usage: &[AccountUsage], reserve: Share, now: Millis, today: &str) -> Vec<AccountKey> {
+    let _ = (accounts, reserve, today);
     let mut ranked = eligible.to_vec();
     if policy != Policy::Margin { return ranked; }
-    let Some(first) = ranked.iter().position(|key| key.provider == Provider::Claude) else { return ranked };
-    let Some(chosen) = choose_account(Policy::Margin, Provider::Claude, accounts, usage, reserve, now, today) else { return ranked };
-    if let Some(at) = ranked.iter().position(|key| key.provider == Provider::Claude && key.account == chosen) {
-        let key = ranked.remove(at);
-        ranked.insert(first, key);
-    }
+    let margin = |key: &AccountKey| launch_margin(usage.iter().find(|reading| reading.provider == key.provider && reading.account == key.account), now);
+    ranked.sort_by(|left, right| margin(right).cmp(&margin(left)).then_with(|| left.cmp(right)));
     ranked
 }
 
