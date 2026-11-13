@@ -194,6 +194,9 @@ pub struct Driver {
     /// This replacement was handed an input and did not take it: its end is watched and its place
     /// taken by another host after `relaunch_wait`.
     untaken: bool,
+    /// The obligation watch gave this owner's process up: a host that resumes the same session
+    /// takes its place, as it does for a first host.
+    requeued: bool,
     /// Earlier replacements in this recovery chain.
     relaunches: usize,
     /// Hosts in a row, before this one, whose Claude never showed it ran: a session that cannot
@@ -800,7 +803,7 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
         let mut driver = Driver::new(domain, worker, scope, task.clone(), agent, Duration::from_secs(backend.io_timeout_seconds));
         if let Some(scope)=live_scope{driver.domain.contexts.forget(&driver.task);driver.domain.live.mods.restore_codex_scope(&driver.agent.0,scope,alondra_core::now_millis());}
         driver.log_host("was adopted");
-        driver.permits.extend(reserved.permits);
+        driver.receive_permits(reserved.permits);
         for command in adoption.commands {
             let handoff = driver.worker.reconcile(&command.command).map_err(adapter("reconciling a dispatch"))?;
             let intent = command.intent_id;
@@ -1443,7 +1446,7 @@ fn node_environment(home: &std::path::Path, agent: &AgentId, capability: &str) -
 
 impl Driver {
     fn new(domain: Arc<DomainRuntime>, worker: Worker, scope: AuthorityScope, task: TaskId, agent: AgentId, opening_timeout: Duration) -> Self {
-        Self { in_hand: Some(InHand::new(&domain, &task)), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, untaken: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout, opening_deadline: None, refused: BTreeSet::new(), #[cfg(any(test, feature = "test-hooks"))] refuse_offers: 0, #[cfg(any(test, feature = "test-hooks"))] fail_next_step: false, #[cfg(any(test, feature = "test-hooks"))] panic_next_step: false }
+        Self { in_hand: Some(InHand::new(&domain, &task)), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout, opening_deadline: None, refused: BTreeSet::new(), #[cfg(any(test, feature = "test-hooks"))] refuse_offers: 0, #[cfg(any(test, feature = "test-hooks"))] fail_next_step: false, #[cfg(any(test, feature = "test-hooks"))] panic_next_step: false }
     }
 
     pub fn agent(&self) -> &AgentId {
@@ -1461,10 +1464,19 @@ impl Driver {
         log!("the SDK host of {} {what} ({}, {pid})", self.task, self.agent);
     }
 
+    /// The store issues a permit with every commit that touches the task, and claims only one of
+    /// the task's current revision and next offer: the last one issued replaces every one before.
+    fn receive_permits(&mut self, permits: Vec<DispatchPermit>) {
+        if let Some(newest) = permits.into_iter().last() {
+            self.permits.clear();
+            self.permits.push_back(newest);
+        }
+    }
+
     /// What the store issued for this task since the last look; its permits wait their turn.
     fn sealed(&mut self) -> Committed {
         let mut sealed = self.domain.seals.take(&self.task);
-        self.permits.extend(std::mem::take(&mut sealed.permits));
+        self.receive_permits(std::mem::take(&mut sealed.permits));
         self.controls.extend(std::mem::take(&mut sealed.control_permits));
         sealed
     }
@@ -1849,6 +1861,7 @@ impl Driver {
             return Err(Failed::new("the host did not open its Claude session in time".into()));
         }
         if self.domain.requeues.lock_or_recover("the requeued tasks").remove(&self.task) {
+            self.requeued = true;
             log!("the process of {} wrote nothing since it was handed an input and no event named it: it is stopped and a host that resumes the same session gets the input again, flagged as possibly received, when the gate gives it a slot", self.task);
             return Err(Failed::new("the process wrote nothing since it was handed an input".into()));
         }
@@ -1880,7 +1893,7 @@ impl Driver {
             return self.observe().map(drop);
         }
         let sealed = self.domain.seals.wait_for(&self.task, WAKE, || stopped() || paused && !self.paused());
-        self.permits.extend(sealed.permits);
+        self.receive_permits(sealed.permits);
         self.controls.extend(sealed.control_permits);
         Ok(())
     }
@@ -1992,7 +2005,7 @@ impl Driver {
     /// replacement stops what is left of the host and waits for its exit before it reads the host's
     /// lock, so whether the host ended is a fact, never a guess.
     pub fn host_to_replace(&self) -> bool {
-        (self.host_closed || self.owner_failed || self.moves_to_this_release) && self.native_account_refusal.is_none() && (!self.replacement || self.untaken || self.host_closed && self.worker.provider() == alondra_core::accounts::Provider::Codex) && !self.gave_up_starting() && !crate::provider_transition::holds_execution(&self.domain,&self.task)
+        (self.host_closed || self.owner_failed || self.moves_to_this_release) && self.native_account_refusal.is_none() && (!self.replacement || self.untaken || self.requeued || self.host_closed && self.worker.provider() == alondra_core::accounts::Provider::Codex) && !self.gave_up_starting() && !crate::provider_transition::holds_execution(&self.domain,&self.task)
     }
 }
 

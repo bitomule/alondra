@@ -192,6 +192,49 @@ fn a_hung_process_that_wrote_nothing_is_given_up_for_a_host_that_resumes_the_ses
     queued.stop().unwrap();
 }
 
+// Production, 2026-11-13 (t-message-delivery-fresh-codex): every commit that touched the task while
+// its input waited issued a permit, and the owner took them oldest first. After a takeover that
+// committed thousands of events it claimed 4,876 stale permits, one owner transaction each, before
+// the input went 46 s later. Only the permit of the last commit can be claimed.
+#[test]
+fn an_owner_claims_only_the_permit_the_last_commit_issued() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("Write the release notes");
+    slice.settle(&mut driver);
+    for (text, id) in [("First waiting message", "tell-first"), ("Second waiting message", "tell-second"), ("Third waiting message", "tell-third")] {
+        tell(&slice, text, id);
+    }
+    assert_eq!(driver.pending_permits(), 1, "the permits of earlier commits are stale");
+    let first = lifecycle(&slice.domain).pending_inputs()[0].as_str().to_owned();
+    driver.step(&|| false).unwrap();
+    assert_eq!(dispatch_status(&slice, &first).as_deref(), Some("handed"), "the first step hands the input that waits first");
+    driver.stop().unwrap();
+}
+
+// Production, 2026-11-13 20:50 (t-message-not-lost-on-close): after a restart, the host that
+// resumed the session was given up by the watch like a first one, but its owner, a replacement,
+// gave the task up as lost and put a card, though two seconds later Alondra took it over again by
+// itself. A replacement the watch gives up is replaced, as a first host is.
+#[test]
+fn a_replacement_the_watch_gives_up_is_replaced_with_no_card() {
+    let slice = Slice::new();
+    let text = "Add the tests first hung-silent";
+    let mut driver = hand(&slice, text);
+    drive_by_hand(&slice, &driver);
+    wrote_at(&slice, 0);
+    let mut watch = enforcing_every_deadline();
+    pass(&slice.domain, &mut watch, 0);
+    pass(&slice.domain, &mut watch, 301 * S);
+    let mut replacement = replaced_with_the_gate_full(&slice, driver);
+    let cards = slice.domain.state().unwrap().interactions.len();
+    slice.domain.requeues.lock().unwrap().insert(TASK.into());
+    assert!(replacement.step(&|| false).is_err(), "the watch gave the replacement's process up");
+    assert!(replacement.host_to_replace(), "a host that resumes the same session takes its place");
+    let mut next = replacement.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
+    assert_eq!(slice.domain.state().unwrap().interactions.len(), cards, "no card asks the user");
+    next.stop().unwrap();
+}
+
 // A process that wrote recently is not hung, whatever the input did not get.
 #[test]
 fn a_process_that_wrote_within_the_deadline_is_not_given_up() {
