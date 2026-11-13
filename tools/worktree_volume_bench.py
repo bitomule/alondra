@@ -2,8 +2,8 @@
 """How fast a task's worktree is where it lives: `make worktree-volume-bench ROOT=<folder>`.
 
 In a throwaway worktree made in ROOT at one commit it times `git worktree add`, a clean build (a new
-Bazel output base with the usual caches, as a new task pays), an incremental build after one change,
-and the bazel/test targets of MUSTS.yml. During each build it samples, once a second, the CPU and
+Bazel output base with the usual caches, as a new task pays), an incremental build after a change no
+cache has seen, and every bazel/test target of that commit's MUSTS.yml with no cached test result. During each build it samples, once a second, the CPU and
 memory of fseventsd and Spotlight (mds, mds_stores, mdworker) and the disk's transfers. macOS has no
 I/O wait figure, so the disk is shown by its transfers per second and MB/s.
 
@@ -205,7 +205,6 @@ class Worktrees:
 
 
 def measure(repo, root, commit, log):
-    targets = test_targets((repo / "MUSTS.yml").read_text())
     with Worktrees(repo, root, commit) as worktrees:
         adds = []
         for index in range(WORKTREE_ADDS):
@@ -214,11 +213,12 @@ def measure(repo, root, commit, log):
             worktrees.remove(path)
         bench, _ = worktrees.add("build")
         worktrees.built.add(bench)
+        targets = test_targets((bench / "MUSTS.yml").read_text())
         clean = bazel(bench, ["build", *BUILD_TARGETS], log)
         with open(bench / CHANGED_FILE, "a") as changed:
-            changed.write("\n// worktree-volume-bench\n")
+            changed.write(f"\n// worktree-volume-bench {worktrees.tag}\n")
         incremental = bazel(bench, ["build", *BUILD_TARGETS], log)
-        tests = bazel(bench, ["test", "--test_output=errors", "--", *targets], log)
+        tests = bazel(bench, ["test", "--nocache_test_results", "--test_output=errors", "--", *targets], log)
     return {
         "root": str(root), "commit": commit, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "worktree_add_seconds": {"median": round(statistics.median(adds), 2), "min": round(min(adds), 2), "max": round(max(adds), 2)},
