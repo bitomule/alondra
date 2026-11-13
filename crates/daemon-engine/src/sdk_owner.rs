@@ -835,6 +835,7 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
         let (normalizer, home) = (worker.normalizer(), domain.home());
         commit_observation(&domain, &scope, &binding, owner_generation, &batch, normalizer, home,identity.as_ref())
             .map_err(failed("committing what the ended host observed"))?;
+        domain.seals.forget_observations(&task);
         feed(worker.provider(), &domain, &agent, &batch);
     }
     let retained = |command: &[u8]| -> Result<DispatchReceipt, Failed> {
