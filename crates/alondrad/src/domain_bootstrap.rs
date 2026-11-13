@@ -133,6 +133,7 @@ pub(crate) fn router(state: Arc<DomainDaemon>) -> Router {
         .route("/metrics", get(metrics))
         .route("/cleanup", post(cleanup))
         .route("/sdk-handover", get(sdk_handover))
+        .route("/files-sweep", get(files_sweep))
         .route("/devices/{id}", axum::routing::delete(revoke_device))
         .route("/service/bootstrap", get(service_bootstrap))
         .route("/service/approve-device", post(service_approve_device))
@@ -669,6 +670,26 @@ async fn sdk_handover(
     match tokio::task::spawn_blocking(move || crate::sdk_handover::dry_run(&domain).map(|rows| (domain.sdk().is_some(), rows))).await {
         Ok(Ok((backend, rows))) => Json(json!({"sdk_backend": backend, "tasks": rows})).into_response(),
         _ => crate::domain_api::domain_error(DomainError::new("storage_unavailable", "the tasks in progress could not be read")),
+    }
+}
+
+/// What the retention rule would remove from the files folder today, for `alondra files sweep`.
+/// It only lists.
+async fn files_sweep(
+    State(state): State<Arc<DomainDaemon>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if let Some(refused) = local_only(&peer, &headers) {
+        return refused;
+    }
+    let (domain, home) = (state.domain(), state.home.clone());
+    match tokio::task::spawn_blocking(move || {
+        let snapshot = domain.state()?;
+        Ok::<_, anyhow::Error>(crate::files_retention::sweep(&home, &snapshot, std::time::SystemTime::now()))
+    }).await {
+        Ok(Ok(report)) => Json(report).into_response(),
+        _ => crate::domain_api::domain_error(DomainError::new("storage_unavailable", "the files folder could not be read")),
     }
 }
 

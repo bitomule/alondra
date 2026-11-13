@@ -12,6 +12,7 @@ mod direct_client;
 mod iroh_client;
 mod claude_auth;
 mod cleanup;
+mod files;
 mod handover;
 mod doctor;
 mod delivery;
@@ -216,6 +217,12 @@ enum Cmd {
         #[arg(long, help = tr!("Only show what it would close", "Solo enseña lo que cerraría"))]
         dry_run: bool,
     },
+    #[command(about = tr!("Who owns the files Alondra keeps and which ones the retention rule would remove", "De quién son los ficheros que guarda Alondra y cuáles quitaría la regla de retención"),
+        after_help = examples(&["alondra files sweep"]))]
+    Files {
+        #[command(subcommand)]
+        command: FilesCmd,
+    },
     #[command(about = tr!("What moving to the Agent SDK does with each task in progress", "Qué hace el paso al Agent SDK con cada tarea en curso"),
         long_about = tr!("List each task in progress and whether its node moves to the Agent SDK now, waits until it stops (and why) or stays as it is. Only a dry run: the daemon moves each node by itself.", "Lista cada tarea en curso y si su nodo pasa al Agent SDK ahora, espera a detenerse (y por qué) o se queda como está. Solo es un ensayo: el daemon pasa cada nodo por sí mismo."),
         after_help = examples(&["alondra handover --dry-run"]))]
@@ -410,6 +417,12 @@ enum AccountsCmd {
 }
 
 #[derive(Subcommand)]
+enum FilesCmd {
+    #[command(about = tr!("List what the retention rule would remove today; it removes nothing", "Lista lo que la regla de retención quitaría hoy; no quita nada"))]
+    Sweep,
+}
+
+#[derive(Subcommand)]
 enum RelayCmd {
     #[command(about = tr!("Whether it is on, and with which account", "Si está activado y con qué cuenta"))]
     Status,
@@ -461,7 +474,7 @@ pub fn main() -> Result<()> {
     }
     let warns = warns_when_older(cli.command.as_ref(), cli.json);
     let talks_to_daemon = matches!(&cli.command, Some(Cmd::Status | Cmd::Answer { .. } | Cmd::Send { .. }
-        | Cmd::Cancel { .. } | Cmd::Move { .. } | Cmd::Device { .. } | Cmd::Orchestrator { .. } | Cmd::Handover { .. }));
+        | Cmd::Cancel { .. } | Cmd::Move { .. } | Cmd::Device { .. } | Cmd::Orchestrator { .. } | Cmd::Handover { .. } | Cmd::Files { .. }));
     let result = run(cli.command, cli.json, cli.no_input);
     if warns && let Some(warning) = version::older_warning() {
         eprintln!("{warning}");
@@ -490,7 +503,7 @@ fn warns_when_older(command: Option<&Cmd>, json: bool) -> bool {
 /// The commands that print a document with `--json`; any other one refuses the flag.
 fn takes_json(command: Option<&Cmd>) -> bool {
     matches!(command, Some(
-        Cmd::Doctor { .. } | Cmd::Metrics { .. } | Cmd::Cleanup { .. } | Cmd::Handover { .. }
+        Cmd::Doctor { .. } | Cmd::Metrics { .. } | Cmd::Cleanup { .. } | Cmd::Handover { .. } | Cmd::Files { .. }
         | Cmd::Report { command: None | Some(ReportCmd::List | ReportCmd::Send { .. }), .. }
         | Cmd::Config { command: ConfigCmd::List | ConfigCmd::Get { .. } }
         | Cmd::Device { command: DeviceCmd::List }
@@ -578,6 +591,7 @@ fn run(command: Option<Cmd>, json: bool, no_input: bool) -> Result<()> {
         },
         Some(Cmd::Cleanup { dry_run }) => cleanup::run(dry_run, json),
         Some(Cmd::Handover { .. }) => handover::run(json),
+        Some(Cmd::Files { command: FilesCmd::Sweep }) => files::sweep(json),
         Some(Cmd::Metrics { period, compare, project, model }) => metrics::run(&metrics::Options {
             period: &period, compare: &compare, project: project.as_deref(), model: model.as_deref(),
         }, json),

@@ -278,8 +278,12 @@ async fn an_answered_leave_survives_a_failed_receipt_and_a_restart_without_askin
 async fn a_node_that_confirms_its_cleanup_is_closed_and_its_task_is_done() {
     let rig = Rig::new(thirty_minutes());
     assert_eq!(rig.task().state, TaskState::Closing);
+    let scratch = rig._home.0.join("files/tasks/t");
+    std::fs::create_dir_all(&scratch).unwrap();
+    std::fs::write(scratch.join("notes.txt"), "scratch").unwrap();
     rig.confirm();
     rig.pass(T0).await;
+    assert!(!scratch.exists(), "the task's scratch folder goes with the task");
     assert_eq!(rig.sessions.calls.lock().unwrap().iter().filter(|call| call[0] == "rm" && call[1] == SHORT).count(), 1);
     rig.assert_done(NodeEnd::Closed);
     assert!(rig.domain.live.begin_watch(SESSION), "the watch is released");
