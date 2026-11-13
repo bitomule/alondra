@@ -103,6 +103,15 @@ low_opt_rust_test(
     "no_sleep_wording",
 ]]
 
+low_opt_rust_test(
+    name = "no_sfltool_test",
+    size = "small",
+    srcs = ["tests/no_sfltool.rs"],
+    data = glob(["src/**/*.rs"]) + REPORT_SOURCES,
+    edition = "2024",
+    rustc_env = {"CARGO_MANIFEST_DIR": "crates/alondra"},
+)
+
 rust_binary(
     name = "fake_daemon",
     testonly = True,

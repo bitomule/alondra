@@ -1,5 +1,6 @@
 mod checks;
 mod devices_wait;
+mod login_item;
 mod projects;
 mod render;
 pub use render::mark;

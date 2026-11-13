@@ -10,7 +10,7 @@ use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 
 use super::checks::*;
-use super::system::{DaemonState, MacInfo, Memory, PluginPass, ServiceView, StartupItem, System, TestPush, startup_item_in};
+use super::system::{DaemonState, MacInfo, Memory, PluginPass, ServiceView, StartupItem, System, TestPush};
 use super::ui::{Plain, Recorded};
 use super::*;
 
@@ -1352,14 +1352,19 @@ fn a_started_service_must_answer_with_the_installed_version_under_launchd() {
 }
 
 #[test]
-fn the_login_item_is_read_from_the_disposition_mask_of_the_services_entry() {
-    let entry = |identifier: &str, disposition: &str| format!("    UUID: A\n    Disposition: {disposition}\n    Identifier: {identifier}\n");
-    let dump = |on: &str| format!("{}{}", entry("8.com.other", "[enabled] (0x1)"), entry("8.dev.alondra.alondrad", on));
-    assert_eq!(startup_item_in(&dump("[enabled, allowed, visible, notified] (0xf)"), "dev.alondra.alondrad"), StartupItem::Allowed);
-    assert_eq!(startup_item_in(&dump("[disabled, allowed, visible, notified] (0xe)"), "dev.alondra.alondrad"), StartupItem::Off);
-    assert_eq!(startup_item_in(&dump("[enabled]"), "dev.alondra.alondrad"), StartupItem::Unknown);
-    assert_eq!(startup_item_in(&dump("[enabled] (0x1)"), "dev.alondra.other"), StartupItem::Unknown);
-    assert_eq!(startup_item_in("", "dev.alondra.alondrad"), StartupItem::Unknown);
+fn the_login_item_is_off_only_when_service_management_says_it_needs_approval() {
+    use super::login_item::startup_item_of;
+    assert_eq!(startup_item_of(Some(1)), StartupItem::Allowed);
+    assert_eq!(startup_item_of(Some(2)), StartupItem::Off);
+    for unclear in [Some(0), Some(3), Some(-1), Some(4), None] {
+        assert_eq!(startup_item_of(unclear), StartupItem::Unknown, "{unclear:?}");
+    }
+}
+
+#[test]
+fn service_management_says_nothing_certain_about_a_plist_that_does_not_exist() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(super::login_item::startup_item(&dir.path().join("dev.alondra.missing.plist")), StartupItem::Unknown);
 }
 
 #[test]
@@ -1370,5 +1375,6 @@ fn only_a_login_item_turned_off_is_reported_and_only_a_person_fixes_it() {
     assert!(startup_item_check(&ServiceView { installed: false, startup_item: StartupItem::Off, ..running() }).is_none());
     let c = startup_item_check(&ServiceView { startup_item: StartupItem::Off, ..running() }).unwrap();
     assert_eq!(c.status, Status::Warn);
-    assert!(matches!(c.fix, Some(Fix::Person(_))));
+    assert!(c.detail.contains("turned off in System Settings > General > Login Items & Extensions"), "{}", c.detail);
+    assert!(matches!(&c.fix, Some(Fix::Person(way)) if way.contains("Allow in the Background")), "{:?}", c.fix);
 }

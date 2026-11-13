@@ -23,10 +23,11 @@ repository hooks and commands can access more files and services.
 | `brew`, `tuicr` | Setup can install missing `tuicr`; the TUI runs it to review diffs. `alondra update` invokes Homebrew and checks the new binaries. The daemon can run `brew upgrade` when `auto_update` is enabled; it defaults to off. | [Setup](../crates/alondra/src/setup.rs), [PTY runner](../crates/alondra/src/pty.rs), [update command](../crates/alondra/src/update.rs), [automatic updates](../crates/daemon-support/src/updates.rs) |
 
 Setup and diagnostics also invoke macOS tools such as `launchctl` (manage the job), `plutil`
-(read plists), `lsof` (locate a daemon), `sfltool dumpbtm` (background-item status), `scutil`
-(Mac name), `defaults` (language) and `open` (browser or settings). Upload processing can run
-`sips` to convert an image. An explicitly configured Seatbelt confinement profile runs hosts or
-probes through `sandbox-exec`; normal agent execution has no such confinement by default.
+(read plists), `lsof` (locate a daemon), `scutil` (Mac name), `defaults` (language) and `open`
+(browser or settings). The background-item status comes from ServiceManagement
+(`SMAppService.statusForLegacyPlist`), which asks for no authorization. Upload processing can
+run `sips` to convert an image. An explicitly configured Seatbelt confinement profile runs hosts
+or probes through `sandbox-exec`; normal agent execution has no such confinement by default.
 See [doctor](../crates/alondra/src/doctor/system.rs), [uploads](../crates/daemon-support/src/uploads.rs),
 [language](../crates/alondra/src/i18n.rs) and [backend configuration](../crates/daemon-engine/src/sdk_owner/backend.rs).
 

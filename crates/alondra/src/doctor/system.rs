@@ -69,39 +69,6 @@ pub enum StartupItem {
     Unknown,
 }
 
-/// The bit of an entry's `Disposition` mask that is set while the item is on in System Settings.
-const BTM_ENABLED: u32 = 0x1;
-
-fn disposition_mask(value: &str) -> Option<u32> {
-    let (_, hex) = value.rsplit_once("(0x")?;
-    u32::from_str_radix(hex.trim_end_matches(')').trim(), 16).ok()
-}
-
-/// Reads the entry `8.<label>` of `sfltool dumpbtm`: only its `Disposition (0x..)` mask decides.
-/// Anything the dump does not show clearly is `Unknown`.
-pub fn startup_item_in(dump: &str, label: &str) -> StartupItem {
-    let wanted = format!("8.{label}");
-    let mut entries: Vec<(Option<&str>, Option<u32>)> = vec![];
-    for line in dump.lines() {
-        let Some((key, value)) = line.split_once(':') else { continue };
-        let value = value.trim();
-        match (key.trim(), entries.last_mut()) {
-            ("UUID", _) => entries.push((None, None)),
-            ("Identifier", Some(entry)) => entry.0 = Some(value),
-            ("Disposition", Some(entry)) => entry.1 = disposition_mask(value),
-            _ => {}
-        }
-    }
-    let masks: Vec<Option<u32>> = entries.iter().filter(|(identifier, _)| *identifier == Some(wanted.as_str())).map(|(_, mask)| *mask).collect();
-    if masks.is_empty() || masks.contains(&None) {
-        StartupItem::Unknown
-    } else if masks.iter().flatten().any(|mask| mask & BTM_ENABLED != 0) {
-        StartupItem::Allowed
-    } else {
-        StartupItem::Off
-    }
-}
-
 impl ServiceView {
     /// The version a daemon runs and the one installed, when they differ.
     pub fn version_behind(&self) -> Option<(&str, &str)> {
@@ -325,15 +292,9 @@ impl Real {
         self.installed_version.borrow_mut().get_or_insert_with(|| crate::update::installed_version(&self.install().paths.daemon())).clone()
     }
 
-    /// `sfltool dumpbtm` can hang on a Mac that does not answer it: a short wait, then unknown.
     fn startup_item(&self, label: &str) -> StartupItem {
         *self.startup_item.borrow_mut().get_or_insert_with(|| {
-            let mut dump = Command::new("sfltool");
-            dump.arg("dumpbtm");
-            match command_output(dump, Duration::from_secs(5)) {
-                Some((true, text)) => startup_item_in(&text, label),
-                _ => StartupItem::Unknown,
-            }
+            super::login_item::startup_item(&self.env_home.join("Library/LaunchAgents").join(format!("{label}.plist")))
         })
     }
 
