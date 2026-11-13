@@ -2235,6 +2235,33 @@ fn an_ended_host_whose_observation_cannot_be_settled_is_taken_over() {
     resumed.stop().unwrap();
 }
 
+// Production, 2026-11-13 (t-message-not-lost-on-close): a takeover committed the journal its ended
+// host left and kept the seal of every observation queued. Each SDK owner scans that queue on every
+// commit, so the takeover slowed down with each event it committed: hours later it had committed
+// 30 thousand of 40 thousand, and the task's inputs waited behind it.
+#[test]
+fn a_takeover_keeps_no_seal_of_what_its_ended_host_observed() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("consume-and-hold");
+    for _ in 0..3 {
+        driver.worker.poll().unwrap().expect("the host reports what its Claude does");
+    }
+    kill_host_and_daemon(driver);
+    let restarted = slice.restart();
+    let most = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (seen, domain) = (Arc::clone(&most), Arc::downgrade(&restarted));
+    restarted.before_owner_publish(move || {
+        if let Some(domain) = domain.upgrade() {
+            seen.fetch_max(domain.seals.observations_of(&TASK.into()), std::sync::atomic::Ordering::SeqCst);
+        }
+    });
+    end_unowned_host(Arc::clone(&restarted), &slice.backend, TASK.into()).unwrap();
+    let committed = slice.observer().query_row("SELECT count(*) FROM provider_observations", [], |row| row.get::<_, i64>(0)).unwrap();
+    assert!(committed >= 2, "the takeover committed what the daemon before it read but never committed: {committed}");
+    assert_eq!(most.load(std::sync::atomic::Ordering::SeqCst), 0, "no commit waits behind the seals of the events committed before it");
+    assert_eq!(restarted.seals.observations_of(&TASK.into()), 0, "no seal of the ended host is left for an owner that never comes");
+}
+
 /// No card asks how the cut task goes on: the session the new host resumed is told to go on, and
 /// it does.
 fn assert_goes_on_by_itself(slice: &Slice, domain: &DomainRuntime, resumed: &mut Driver, session: &str) {

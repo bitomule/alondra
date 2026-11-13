@@ -53,6 +53,23 @@ impl Seals {
         }
     }
 
+    /// The observations of `task` committed from the journal of a host that ended: no host is left
+    /// to acknowledge them, and every owner would scan them on each wake.
+    pub(crate) fn forget_observations(&self, task: &TaskId) {
+        let mut queued = self.queued.lock_or_exit("the SDK seals");
+        for committed in queued.iter_mut() {
+            committed.observations.retain(|observation| observation.execution().task() != task);
+        }
+        queued.retain(|committed| !empty(committed));
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn observations_of(&self, task: &TaskId) -> usize {
+        self.queued.lock_or_exit("the SDK seals").iter()
+            .map(|committed| committed.observations.iter().filter(|observation| observation.execution().task() == task).count())
+            .sum()
+    }
+
     /// Wakes every waiting owner, so one told to stop sees it.
     pub(crate) fn wake(&self) {
         let _queued = self.queued.lock_or_exit("the SDK seals");
