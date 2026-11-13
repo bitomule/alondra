@@ -2,7 +2,7 @@
 use crate::locks::{Poisonable as _, PoisonableRw as _};
 use crate::domain_authority::{Authority, Capability, Principal};
 use crate::runtime_mutex::RuntimeMutex;
-use crate::domain_store::{DomainStore, OwnerTransaction, StagedOutcome, StoreError, TransportIdentity};
+use crate::domain_store::{schedule_command, DomainStore, OwnerTransaction, StagedOutcome, StoreError, TransportIdentity};
 use alondra_core::domain::*;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -129,7 +129,7 @@ impl DomainRuntime {
     }
 
     pub(crate) fn open_at(home: &Path, database: &Path) -> Result<Self> {
-        let mut store = DomainStore::open(database)?;
+        let mut store = DomainStore::open(database)?.with_decisions(Arc::new(crate::domain_holds::HeldCards));
         let reads = DomainStore::open_readonly(database)?;
         crate::domain_store::provider_settings::recover_store(&mut store, home)?;
         let options = crate::domain_schedule_runner::options_at(home).unwrap_or_default();
@@ -1094,16 +1094,6 @@ impl DomainRuntime {
 /// The command's name on the wire, such as `create_task`.
 fn command_kind(command: &Command) -> String {
     serde_json::to_value(command).ok().and_then(|value| value["kind"].as_str().map(str::to_owned)).unwrap_or_default()
-}
-
-pub(crate) fn schedule_command(command: &Command) -> bool {
-    matches!(
-        command,
-        Command::CreateSchedule { .. }
-            | Command::UpdateSchedule { .. }
-            | Command::DeleteSchedule { .. }
-            | Command::ClaimScheduleRun { .. }
-    )
 }
 
 /// Exhaustive scope resolution for delegated producers; unscoped commands are never admitted.

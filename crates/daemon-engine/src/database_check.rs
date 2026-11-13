@@ -4,6 +4,8 @@ use std::{fs::{self, OpenOptions}, os::unix::fs::{DirBuilderExt, OpenOptionsExt}
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OpenFlags};
 
+use crate::domain_store::audit;
+
 pub fn run(path: &Path) -> Result<()> {
     let parent = fs::canonicalize(path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new(".")))?;
     let path = parent.join(path.file_name().context("database filename required")?);
@@ -58,12 +60,4 @@ impl Scratch {
 }
 impl Drop for Scratch {
     fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
-}
-
-pub(crate) fn audit(connection: &Connection) -> Result<()> {
-    let result: String = connection.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
-    ensure!(result == "ok", "database integrity check failed: {result}");
-    let violations: i64 = connection.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| row.get(0))?;
-    ensure!(violations == 0, "database foreign key check failed: {violations} violation(s)");
-    Ok(())
 }
