@@ -2370,6 +2370,124 @@ fn a_continuation_and_the_worktree_it_was_handed_survive_a_restart() {
     assert_eq!(state.tasks[&TaskId::from("t-claude")].worktrees[worktree].origin, WorktreeOrigin::Inherited);
 }
 
+fn continuation_fixture() -> (Fixture, crate::test_support::Directory, DomainStore, CommandEnvelope, Checklist) {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    execute(&mut store, &Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest {
+        request_id: "request-1".into(), title: "The answer".into(),
+    });
+    let root = crate::test_support::Directory::new();
+    let worktree = crate::worktree::testing::task_worktree(&root, "original");
+    let path = worktree.to_str().unwrap();
+    execute(&mut store, &Actor::System, "worktree", Command::RecordTaskWorktree {
+        task_id: "task-1".into(), path: path.into(), origin: WorktreeOrigin::Task, branch: Some("worktree-original".into()),
+    });
+    let plan = "- [ ] Build the answer\n- [ ] Check the answer\n";
+    execute(&mut store, &Actor::System, "plan", Command::HoldHook {
+        interaction_id: "plan".into(), task_id: "task-1".into(), agent_id: "agent-1".into(), hold: Hold::Plan,
+        body: plan.into(), options: Hold::Plan.options(), card: CardSpec::new(CardKind::Review, "Plan").content(ContentKind::Plan, plan),
+    });
+    execute(&mut store, &user(), "approve", Command::AnswerQuestion {
+        attachments: vec![], interaction_id: "plan".into(), option_id: Hold::APPROVE.into(), inputs: Default::default(),
+    });
+    let checklist = store.load().unwrap().checklists[&TaskId::from("task-1")].clone();
+    let command = envelope(&mut store, "continue", Command::CreateTask {
+        task_id: "continued".into(), request_id: "request-1".into(), title: "Continue the answer".into(), agent_id: None,
+        review_prs: false, dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", path)),
+        plan_items: None, continues: Some("task-1".into()),
+    });
+    (fixture, root, store, command, checklist)
+}
+
+#[test]
+fn a_continuation_inherits_the_approved_checklist_and_existing_worktree_after_restart() {
+    let (fixture, _root, mut store, command, checklist) = continuation_fixture();
+    let commit = store.execute_authenticated(&Actor::Orchestrator { generation: 0 }, &command, None).unwrap();
+    assert_eq!(store.load().unwrap(), commit.state);
+    let path = commit.state.tasks[&TaskId::from("continued")].worktrees.keys().next().unwrap().clone();
+    drop(store);
+    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    let state = reopened.load().unwrap();
+    assert_eq!(state.checklists.get(&TaskId::from("continued")), Some(&checklist));
+    assert!(!state.checklists.contains_key(&TaskId::from("task-1")));
+    let inherited = &state.tasks[&TaskId::from("continued")].worktrees[&path];
+    assert_eq!(inherited.origin, WorktreeOrigin::Inherited);
+    assert_eq!(inherited.branch.as_deref(), Some("worktree-original"));
+    assert_eq!(inherited.end, None);
+    reopened.integrity_check().unwrap();
+}
+
+#[test]
+fn a_continuation_storage_failure_rolls_back_the_transfer_and_publication() {
+    for deferred in [false, true] {
+        let (fixture, _root, store, command, _) = continuation_fixture();
+        drop(store);
+        let runtime = crate::domain_runtime::DomainRuntime::open_at(&fixture.0, &fixture.path()).unwrap();
+        let observer = Connection::open(fixture.path()).unwrap();
+        if deferred {
+            observer.execute_batch("CREATE TABLE missing_parent(id INTEGER PRIMARY KEY);
+                CREATE TABLE deferred_child(parent INTEGER REFERENCES missing_parent(id) DEFERRABLE INITIALLY DEFERRED);
+                CREATE TRIGGER fail_continuation AFTER INSERT ON semantic_receipts WHEN NEW.command_id='continue'
+                BEGIN INSERT INTO deferred_child VALUES(404); END;").unwrap();
+        } else {
+            observer.execute_batch("CREATE TRIGGER fail_continuation BEFORE INSERT ON task_checklists WHEN NEW.task_id='continued'
+                BEGIN SELECT RAISE(ABORT,'injected continuation write failure'); END;").unwrap();
+        }
+        let tables = ["tasks", "task_checklists", "task_worktree_records", "task_continuations", "semantic_receipts", "command_audit",
+            "domain_messages", "domain_outbox", "lifecycle_events"];
+        let counts = || tables.map(|table| observer.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row.get::<_, i64>(0)).unwrap());
+        let before_counts = counts();
+        let before = runtime.read();
+        let changes = runtime.subscribe();
+        let error = runtime.execute(&Actor::Orchestrator { generation: 0 }, &command, None, || Ok(())).unwrap_err();
+        let StoreError::Storage(cause) = error else { panic!("expected storage failure: {error:?}") };
+        let sqlite = cause.downcast_ref::<rusqlite::Error>().or_else(|| {
+            match cause.downcast_ref::<alondra_store::Error>() {
+                Some(alondra_store::Error::Database(error)) => Some(error),
+                _ => None,
+            }
+        });
+        assert!(matches!(sqlite, Some(rusqlite::Error::SqliteFailure(code, _))
+            if code.extended_code == if deferred { rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY } else { rusqlite::ffi::SQLITE_CONSTRAINT_TRIGGER }), "{cause:#}");
+        assert_eq!(counts(), before_counts);
+        assert!(Arc::ptr_eq(runtime.read().state(), before.state()), "no partial state is published");
+        assert!(!changes.has_changed().unwrap(), "no failed change is announced");
+        assert!(runtime.take_acknowledgements().is_empty());
+        let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+        assert_eq!(&*reopened.load().unwrap(), &**before.state(), "rollback also survives reopening");
+    }
+}
+
+#[test]
+fn a_checklist_cannot_disappear_without_one_new_matching_continuation() {
+    for invalid in ["missing", "changed", "existing", "other-request", "duplicate"] {
+        let (_fixture, _root, mut store, command, _) = continuation_fixture();
+        let before = store.load().unwrap();
+        let mut after = DomainState::clone(&before);
+        after.execute(&Actor::Orchestrator { generation: 0 }, &command).unwrap();
+        let mut baseline = DomainState::clone(&before);
+        match invalid {
+            "missing" => { after.checklists.remove(&TaskId::from("continued")); }
+            "changed" => { after.checklists.get_mut(&TaskId::from("continued")).unwrap().items.clear(); }
+            "existing" => { baseline.tasks.insert("continued".into(), after.tasks[&TaskId::from("continued")].clone()); }
+            "other-request" => { after.tasks.get_mut(&TaskId::from("continued")).unwrap().request_id = "another-request".into(); }
+            "duplicate" => {
+                let mut duplicate = after.tasks[&TaskId::from("continued")].clone();
+                duplicate.id = "duplicate".into();
+                after.tasks.insert(duplicate.id.clone(), duplicate);
+            }
+            _ => unreachable!(),
+        }
+        let tx = rusqlite::Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate).unwrap();
+        let scope = alondra_store::AuthorityScope::new(epoch_of(&store.conn).unwrap()).unwrap();
+        let mut journal = alondra_store::LifecycleTransaction::attach(tx, scope).unwrap();
+        assert!(repository::save_changes(&store.conn, &mut journal, &baseline, &after).is_err(), "{invalid}");
+        drop(journal);
+        assert_eq!(store.load().unwrap(), before);
+    }
+}
+
 #[test]
 fn worktree_records_kept_before_a_worktree_could_be_handed_over_keep_their_rows_and_take_that_end() {
     let fixture = Fixture::new();

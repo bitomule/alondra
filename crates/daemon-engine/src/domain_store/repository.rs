@@ -703,8 +703,7 @@ fn kept<K: Ord + std::fmt::Debug, V>(
     }
     Ok(())
 }
-/// `save_changes` only inserts and updates. A rule that removed an entry would
-/// leave its row behind, so such a change is refused instead of half-persisted.
+/// Only a continuation can remove its source's checklist; other removals would leave rows behind.
 fn ensure_nothing_removed(before: &DomainState, after: &DomainState) -> Result<()> {
     ensure!(before.orchestrator_session.is_none() || after.orchestrator_session.is_some(),
         "domain persistence cannot forget the orchestrator's session");
@@ -718,7 +717,15 @@ fn ensure_nothing_removed(before: &DomainState, after: &DomainState) -> Result<(
     kept("merge authorization", &before.merge_authorizations, &after.merge_authorizations)?;
     kept("stack readiness", &before.stack_readiness, &after.stack_readiness)?;
     kept("hook hold", &before.holds, &after.holds)?;
-    kept("task checklist", &before.checklists, &after.checklists)?;
+    for (source, checklist) in before.checklists.iter().filter(|(id, _)| !after.checklists.contains_key(*id)) {
+        let mut recipients = after.tasks.values().filter(|task|
+            !before.tasks.contains_key(&task.id) && task.continues.as_ref() == Some(source));
+        let recipient = recipients.next();
+        ensure!(recipients.next().is_none() && recipient.is_some_and(|task|
+            before.tasks.get(source).is_some_and(|original| original.request_id == task.request_id)
+                && after.checklists.get(&task.id) == Some(checklist)),
+            "domain persistence cannot remove task checklist {source:?} without one matching new continuation");
+    }
     kept("delivery checklist", &before.checklist_marks, &after.checklist_marks)?;
     kept("node's last words", &before.last_words, &after.last_words)?;
     kept("approved plan request", &before.request_plans, &after.request_plans)?;
@@ -939,6 +946,9 @@ pub(super) fn save_changes(
             let row = object(&json!({"interaction_id": id, "hold": hold}))?;
             upsert(c, "interaction_holds", &["interaction_id"], row)?;
         }
+    }
+    for task_id in before.checklists.keys().filter(|id| !after.checklists.contains_key(*id)) {
+        exec(c, "DELETE FROM task_checklists WHERE task_id=?1", params![task_id.0])?;
     }
     for (task_id, checklist) in after.checklists.iter().filter(|(id, c)| before.checklists.get(*id) != Some(*c)) {
         let row = object(&json!({"task_id": task_id, "plan_interaction_id": checklist.plan, "items": checklist.items}))?;

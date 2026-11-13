@@ -1600,15 +1600,18 @@ fn a_long_node_keeps_its_host_past_tens_of_mib_and_hundreds_of_inputs() {
     let mut driver = slice.launch_with("bulky:24");
     slice.settle(&mut driver);
     assert_eq!(slice.observations_with(&"x".repeat(900_000)), 24, "every large answer was committed");
-    for turn in 1..=260 {
+    // Each explicit input and its three empty-turn wakes cross the old 256-input limit.
+    for turn in 1..=64 {
         crate::domain_messages::tell_sdk_node(&slice.domain, &TASK.into(), "Alice", &format!("Next step {turn}"), &format!("tell-{turn}"), true).unwrap();
         driver.step(&|| false).unwrap();
         slice.settle(&mut driver);
     }
+    let native_prompts = std::fs::read_to_string(format!("{}.prompts", slice.capture.display())).unwrap();
+    assert_eq!(native_prompts.lines().count(), 260, "the same host served more than 256 native inputs");
     let prompts = slice.prompts();
-    assert_eq!(prompts.len(), 261, "every input reached the same Claude");
-    assert!(prompts[260].ends_with("Next step 260"), "{}", prompts[260]);
-    assert_eq!(Slice::read_cards(&slice.domain).len(), 261, "every stop after its wake ended on its own case");
+    assert_eq!(prompts.len(), 65, "every explicit input reached the same Claude");
+    assert!(prompts[64].ends_with("Next step 64"), "{}", prompts[64]);
+    assert_eq!(Slice::read_cards(&slice.domain).len(), 65, "every stop after its wake ended on its own case");
     driver.stop().unwrap();
 }
 

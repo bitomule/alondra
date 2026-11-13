@@ -124,7 +124,7 @@ pub(super) fn stage(
     let mut next = DomainState::clone(&state);
     let outcome = next.execute(actor, envelope)?;
     if outcome.changed {
-        repository::save_changes(conn, journal, &state, &next)?;
+        repository::save_changes(conn, journal, &state, &next).context("persisting domain state")?;
         if let Command::RecordScheduleRunFailed { run_id, .. } = &envelope.command
             && let Some(request_id) = &next.schedule.runs[run_id].request_id
         {
