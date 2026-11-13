@@ -550,6 +550,8 @@ impl Executor {
         let mut runtime = load(&self.home)?;
         if !runtime.cancel_requested && (output.stream.storage_failure || restarted) && effects_confirmed && !output.stream.denied
             && !output.stream.native_request_rejected {
+            log!("orchestrator: batch {run_id} stopped before its end was recorded (storage failure: {}, restarted: {restarted}): {}",
+                output.stream.storage_failure, output.stream.error.as_deref().unwrap_or("no error was reported"));
             self.repair_incomplete().await?;
             return Ok(());
         }

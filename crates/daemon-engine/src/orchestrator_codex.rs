@@ -30,6 +30,7 @@ fn failed(why: String) -> Output { Output { stream: Stream::default(), diagnosti
 #[derive(Default)]
 struct NativeTurn {
     thread: Option<String>,
+    announced: Option<String>,
     turn: Option<String>,
     consumed: bool,
     process: Option<String>,
@@ -47,6 +48,7 @@ impl NativeTurn {
             anyhow::ensure!(params["logicalConversationId"] == session, "The native thread belongs to a different batch");
             let thread = params["threadId"].as_str().filter(|id| !id.is_empty()).ok_or_else(|| anyhow::anyhow!("The native thread identity is missing"))?;
             anyhow::ensure!(self.thread.as_deref().is_none_or(|current| current == thread), "A batch cannot replace its native thread");
+            anyhow::ensure!(self.announced.as_deref().is_none_or(|announced| announced == thread), "A Codex event before the thread was ready named a different thread");
             if self.thread.is_none() { self.usage_baseline = Some((0, 0, 0)); }
             self.thread = Some(thread.into());
             if let Some(process) = native_label(params,"processGeneration") {
@@ -76,6 +78,11 @@ impl NativeTurn {
             return Ok(report);
         }
         if let Some(thread) = params["threadId"].as_str() {
+            if self.thread.is_none() {
+                anyhow::ensure!(self.announced.as_deref().is_none_or(|announced| announced == thread), "Codex events before the thread was ready named two threads");
+                self.announced = Some(thread.into());
+                return Ok(report);
+            }
             anyhow::ensure!(self.thread.as_deref() == Some(thread), "A Codex event belongs to a different thread");
         }
         match method {
@@ -371,6 +378,34 @@ mod tests {
             assert!(!stream.native_request_rejected && stream.error.is_none());
             assert!(matches!(stream.end(true,""),crate::orchestrator_process::BatchEnd::Handled));
         }
+    }
+
+    // Production, 2026-11-13 15:33: Codex announced the batch's MCP server starting on its thread
+    // before the host read the answer to thread/start, and the batch failed as NotStarted.
+    #[test]
+    fn events_of_the_thread_before_it_is_ready_belong_to_the_batch() {
+        let mut native = NativeTurn::default(); let mut stream = Stream::for_input("input");
+        for method in ["remoteControl/status/changed", "account/updated", "alondra/orchestratorPolicy", "deprecationNotice"] {
+            native.fold(&json!({"method":method,"params":{}}),"input","batch",&mut stream).unwrap();
+        }
+        native.fold(&json!({"method":"thread/started","params":{"thread":{"id":"native"}}}),"input","batch",&mut stream).unwrap();
+        for status in ["starting", "ready"] {
+            native.fold(&json!({"method":"mcpServer/startupStatus/updated","params":{"threadId":"native","name":"alondra-orchestrator","status":status}}),"input","batch",&mut stream).unwrap();
+        }
+        ready(&mut native, &mut stream);
+        native.fold(&json!({"method":"item/started","params":{"threadId":"native","turnId":"turn","item":{"type":"userMessage","clientId":"input"}}}),"input","batch",&mut stream).unwrap();
+        let report = native.fold(&json!({"method":"turn/completed","params":{"threadId":"native","turn":{"id":"turn","status":"completed"}}}),"input","batch",&mut stream).unwrap();
+        assert!(report.turn_completed && stream.success);
+
+        let mut native = NativeTurn::default(); let mut stream = Stream::for_input("input");
+        native.fold(&json!({"method":"mcpServer/startupStatus/updated","params":{"threadId":"other","status":"starting"}}),"input","batch",&mut stream).unwrap();
+        let ready = json!({"method":"alondra/threadReady","params":{"threadId":"native","logicalConversationId":"batch","processGeneration":"process"}});
+        assert!(native.fold(&ready,"input","batch",&mut stream).is_err(), "the thread that becomes ready is the one Codex already named");
+        let mut native = NativeTurn::default();
+        native.fold(&json!({"method":"thread/status/changed","params":{"threadId":"native"}}),"input","batch",&mut stream).unwrap();
+        assert!(native.fold(&json!({"method":"thread/status/changed","params":{"threadId":"other"}}),"input","batch",&mut stream).is_err());
+        native.fold(&ready,"input","batch",&mut stream).unwrap();
+        assert!(native.fold(&json!({"method":"thread/status/changed","params":{"threadId":"other"}}),"input","batch",&mut stream).is_err());
     }
 
     #[test]
