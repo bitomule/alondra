@@ -26,7 +26,7 @@ const COPY_SUFFIX: &str = "before-sdk-handover";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum Step {
+pub enum Step {
     Planned,
     BgStopped,
     SdkAdmitted,
@@ -55,41 +55,41 @@ impl Step {
 
 /// A process named by its PID and the moment it started: a PID alone can be reused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Process {
-    pub(crate) pid: i32,
-    pub(crate) started: (u64, u64),
+pub struct Process {
+    pub pid: i32,
+    pub started: (u64, u64),
 }
 
 /// What the plan of a node's move fixes: the session it resumes, where, the `claude --bg` process
 /// that ran it, and the input that opens it through the SDK.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Plan {
-    pub(crate) session: String,
-    pub(crate) cwd: String,
-    pub(crate) name: String,
-    pub(crate) process: Option<Process>,
-    pub(crate) input: String,
+pub struct Plan {
+    pub session: String,
+    pub cwd: String,
+    pub name: String,
+    pub process: Option<Process>,
+    pub input: String,
     /// The outbox message the input is, handed with the move.
-    pub(crate) outbox: Option<i64>,
+    pub outbox: Option<i64>,
     /// The node was brought back (lost, stalled or paused) rather than found at rest.
-    pub(crate) returning: bool,
+    pub returning: bool,
 }
 
 /// One node's move as far as it went.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Handover {
-    pub(crate) node: AgentId,
-    pub(crate) task: TaskId,
-    pub(crate) plan: Plan,
-    pub(crate) step: Step,
+pub struct Handover {
+    pub node: AgentId,
+    pub task: TaskId,
+    pub plan: Plan,
+    pub step: Step,
     /// The `claude --bg` process seen exiting before the SDK took the session.
-    pub(crate) exited: Option<Process>,
+    pub exited: Option<Process>,
     /// The SDK node that took the task.
-    pub(crate) agent: Option<AgentId>,
+    pub agent: Option<AgentId>,
 }
 
 /// Where the copy of the database kept before the first move is.
-pub(crate) fn copy_path(database: &Path) -> std::path::PathBuf {
+pub fn copy_path(database: &Path) -> std::path::PathBuf {
     let mut name = database.file_name().unwrap_or_default().to_os_string();
     name.push(format!(".{COPY_SUFFIX}"));
     database.with_file_name(name)
@@ -97,14 +97,14 @@ pub(crate) fn copy_path(database: &Path) -> std::path::PathBuf {
 
 impl DomainStore {
     /// Every node's move, as far as each went.
-    pub(crate) fn handovers(&self) -> Result<Vec<Handover>> {
+    pub fn handovers(&self) -> Result<Vec<Handover>> {
         handovers(&self.conn)
     }
 
     /// Records the plan of `node`'s move. The first plan this database records keeps a private
     /// copy of it first, as it was. False when the node already has a move.
-    #[cfg(test)]
-    pub(crate) fn plan_handover(&mut self, node: &AgentId, task: &TaskId, plan: &Plan) -> Result<bool> {
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn plan_handover(&mut self, node: &AgentId, task: &TaskId, plan: &Plan) -> Result<bool> {
         let first: bool = self.conn.query_row("SELECT NOT EXISTS(SELECT 1 FROM sdk_handover_steps)", [], |r| r.get(0))?;
         if first {
             let database = self.conn.path().map(std::path::PathBuf::from).context("the domain database has a path")?;
@@ -118,17 +118,17 @@ impl DomainStore {
     }
 
     /// The `claude --bg` process of `node`'s move exited, seen by its identity.
-    pub(crate) fn record_bg_stopped(&mut self, node: &AgentId, task: &TaskId, exited: Option<Process>) -> Result<()> {
+    pub fn record_bg_stopped(&mut self, node: &AgentId, task: &TaskId, exited: Option<Process>) -> Result<()> {
         insert_step(&self.conn, node, task, Step::BgStopped, &json!({"exited": exited}))
     }
 
     /// The move of `node` is over: the SDK node holds its task and the old node is closed.
-    pub(crate) fn record_handover_done(&mut self, node: &AgentId, task: &TaskId) -> Result<()> {
+    pub fn record_handover_done(&mut self, node: &AgentId, task: &TaskId) -> Result<()> {
         insert_step(&self.conn, node, task, Step::Done, &json!({}))
     }
 
     /// Hands the outbox message the move carried as its first input, once: it went with the move.
-    pub(crate) fn hand_carried_message(&mut self, id: i64) -> Result<()> {
+    pub fn hand_carried_message(&mut self, id: i64) -> Result<()> {
         if !self.pending_messages()?.iter().any(|message| message.id == id) {
             return Ok(());
         }
@@ -142,7 +142,7 @@ impl DomainStore {
 
 impl OwnerTransaction<'_> {
     /// The SDK node `agent` took `node`'s task: recorded in the transaction that admits it.
-    pub(crate) fn record_sdk_admitted(&mut self, node: &AgentId, task: &TaskId, agent: &AgentId) -> std::result::Result<(), StoreError> {
+    pub fn record_sdk_admitted(&mut self, node: &AgentId, task: &TaskId, agent: &AgentId) -> std::result::Result<(), StoreError> {
         self.sql(|conn| insert_step(conn, node, task, Step::SdkAdmitted, &json!({"agent": agent})))
     }
 }

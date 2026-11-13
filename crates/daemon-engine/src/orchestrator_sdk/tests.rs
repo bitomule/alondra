@@ -149,7 +149,7 @@ fn the_host_of_a_batch_takes_one_prompt_and_refuses_another() {
         domain: Arc::clone(&f.executor.domain), selection: fixture_selection(),
     };
     let (configuration, profile) = (configuration(&batch).unwrap(), profile(&batch));
-    let mut host = BatchHost::start(batch.owner, &configuration, session, &profile, "fixture:hold the first batch").unwrap();
+    let mut host = BatchHost::start(ProviderOwner(batch.owner), &configuration, session, &profile, "fixture:hold the first batch").unwrap();
     f.wait_held();
     assert_eq!(host.offer("the second batch").unwrap(), Handoff::RefusedBeforeOffer, "one batch, one turn");
     f.release();

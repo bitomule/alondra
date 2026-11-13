@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::fs::DirBuilderExt;
 
-const CATALOG: &str = include_str!("../../../../fixtures/domain-v2/acceptance.json");
+const CATALOG: &str = include_str!("../../../fixtures/domain-v2/acceptance.json");
 
 struct Fixture {
     directory: crate::test_support::Directory,

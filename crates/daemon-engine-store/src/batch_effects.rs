@@ -18,7 +18,7 @@ const TOOL_REFUSALS: &[&str] = &[
 
 /// The domain's rules refuse before they commit, so such a call is settled and nothing is left to
 /// reconcile, except `delivery_uncertain`. Any code not known here leaves its effects unknown.
-pub(crate) fn refused_before_any_effect(code: Option<&str>) -> bool {
+pub fn refused_before_any_effect(code: Option<&str>) -> bool {
     code.is_some_and(|code| code != "delivery_uncertain" && (alondra_core::domain::INTERNAL_CODES.contains(&code) || TOOL_REFUSALS.contains(&code)))
 }
 
@@ -27,7 +27,7 @@ fn error_code(error: Option<&str>) -> Option<String> {
 }
 
 /// An operation that is neither done nor refused before it changed anything.
-pub(crate) fn is_unconfirmed(operation: &(String, String, String, Option<String>, Option<String>)) -> bool {
+pub fn is_unconfirmed(operation: &(String, String, String, Option<String>, Option<String>)) -> bool {
     match operation.2.as_str() {
         "succeeded" => false,
         "uncertain" => !refused_before_any_effect(error_code(operation.4.as_deref()).as_deref()),
@@ -44,41 +44,41 @@ fn operation_capacity(conn: &Connection, run: &str) -> rusqlite::Result<(i64, i6
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct BatchReceiptRef {
-    pub(crate) actor: String,
-    pub(crate) command_id: String,
-    pub(crate) data_epoch: String,
-    pub(crate) digest: Vec<u8>,
+pub struct BatchReceiptRef {
+    pub actor: String,
+    pub command_id: String,
+    pub data_epoch: String,
+    pub digest: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct BatchEffectRef {
-    pub(crate) run: String,
-    pub(crate) attempt: u64,
-    pub(crate) call: String,
-    pub(crate) command_id: String,
-    pub(crate) receipt_ref: BatchReceiptRef,
-    pub(crate) kind: String,
-    pub(crate) revision: u64,
-    pub(crate) changed: bool,
+pub struct BatchEffectRef {
+    pub run: String,
+    pub attempt: u64,
+    pub call: String,
+    pub command_id: String,
+    pub receipt_ref: BatchReceiptRef,
+    pub kind: String,
+    pub revision: u64,
+    pub changed: bool,
 }
 
-pub(crate) struct BatchCommand<'a> {
-    pub(crate) run: &'a str,
-    pub(crate) attempt: u64,
-    pub(crate) call: &'a str,
+pub struct BatchCommand<'a> {
+    pub run: &'a str,
+    pub attempt: u64,
+    pub call: &'a str,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct BatchReport {
-    pub(crate) kind: String,
-    pub(crate) input_consumed: bool,
-    pub(crate) turn_completed: bool,
-    pub(crate) native_turn: Option<String>,
-    pub(crate) failure: Option<String>,
-    pub(crate) public_result: Option<String>,
+pub struct BatchReport {
+    pub kind: String,
+    pub input_consumed: bool,
+    pub turn_completed: bool,
+    pub native_turn: Option<String>,
+    pub failure: Option<String>,
+    pub public_result: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) stop: Option<alondra_core::orchestrator_batch::BatchStop>,
+    pub stop: Option<alondra_core::orchestrator_batch::BatchStop>,
 }
 
 pub(super) fn record(conn: &Connection, batch: &BatchCommand<'_>, actor: &str, envelope: &CommandEnvelope, digest: &[u8], outcome: &CommandOutcome) -> Result<()> {
@@ -96,25 +96,25 @@ pub(super) fn record(conn: &Connection, batch: &BatchCommand<'_>, actor: &str, e
 }
 
 impl DomainStore {
-    pub(crate) fn batch_completed(&self, run: &str) -> Result<bool> {
+    pub fn batch_completed(&self, run: &str) -> Result<bool> {
         let completed: Option<bool> = self.conn.query_row("SELECT coalesce(json_extract(report,'$.turn_completed')=1 AND json_extract(report,'$.input_consumed')=1 AND json_extract(report,'$.failure') IS NULL,0) FROM orchestrator_batch_reports WHERE run=?1 AND json_extract(report,'$.kind')!='diagnostic' ORDER BY cursor DESC LIMIT 1", [run], |row| row.get(0)).optional()?;
         Ok(completed.unwrap_or(false))
     }
 
-    pub(crate) fn batch_stop(&self, run: &str) -> Result<Option<(alondra_core::orchestrator_batch::BatchStop, String)>> {
+    pub fn batch_stop(&self, run: &str) -> Result<Option<(alondra_core::orchestrator_batch::BatchStop, String)>> {
         let report: Option<String> = self.conn.query_row("SELECT report FROM orchestrator_batch_reports WHERE run=?1 AND json_extract(report,'$.kind')!='diagnostic' ORDER BY cursor DESC LIMIT 1", [run], |row| row.get(0)).optional()?;
         let report = report.as_deref().map(serde_json::from_str::<BatchReport>).transpose()?;
         Ok(report.and_then(|report| report.stop.map(|stop| (stop, report.failure.unwrap_or_else(|| "The interrupted native batch requires reconciliation before retrying".into())))))
     }
 
-    pub(crate) fn bind_batch_effects(&mut self, run: &str, epoch: &DataEpoch) -> Result<()> {
+    pub fn bind_batch_effects(&mut self, run: &str, epoch: &DataEpoch) -> Result<()> {
         let changed = self.conn.execute("INSERT OR IGNORE INTO orchestrator_batch_runs(run,data_epoch) VALUES(?1,?2)", params![run,epoch.0])?;
         let stored: String = self.conn.query_row("SELECT data_epoch FROM orchestrator_batch_runs WHERE run=?1", [run], |row| row.get(0))?;
         ensure!(stored == epoch.0, "an orchestrator run identity cannot cross data epochs");
         if changed > 0 { self.note_side_write(); }
         Ok(())
     }
-    pub(crate) fn execute_from_batch(&mut self, actor: &Actor, envelope: &CommandEnvelope, run: &str) -> std::result::Result<Commit, StoreError> {
+    pub fn execute_from_batch(&mut self, actor: &Actor, envelope: &CommandEnvelope, run: &str) -> std::result::Result<Commit, StoreError> {
         if !matches!(actor, Actor::Orchestrator { .. }) { return Err(DomainError::new("forbidden", "A batch effect requires its orchestrator principal").into()); }
         self.bind_batch_effects(run, &envelope.data_epoch)?;
         let ended: bool = self.conn.query_row("SELECT ended FROM orchestrator_batch_runs WHERE run=?1", [run], |row| row.get(0))
@@ -124,7 +124,7 @@ impl DomainStore {
         self.execute_envelope(actor, envelope, None, true, Attached::Batch(&batch))
     }
 
-    pub(crate) fn batch_effects(&self, run: &str) -> Result<Vec<BatchEffectRef>> {
+    pub fn batch_effects(&self, run: &str) -> Result<Vec<BatchEffectRef>> {
         let mut statement = self.conn.prepare("SELECT attempt,call,actor,command_id,data_epoch,digest,kind,revision,changed FROM orchestrator_batch_effects WHERE run=?1 ORDER BY revision,call")?;
         let rows = statement.query_map([run], |row| Ok((row.get::<_, i64>(0)?,row.get::<_, String>(1)?,row.get::<_, String>(2)?,row.get::<_, String>(3)?,row.get::<_, String>(4)?,row.get::<_, Vec<u8>>(5)?,row.get::<_, String>(6)?,row.get::<_, i64>(7)?,row.get::<_, bool>(8)?)))?;
         let mut effects = vec![];
@@ -135,7 +135,7 @@ impl DomainStore {
         Ok(effects)
     }
 
-    pub(crate) fn batch_run_manifest(&self, epoch: &DataEpoch, after: &str, limit: usize) -> Result<Value> {
+    pub fn batch_run_manifest(&self, epoch: &DataEpoch, after: &str, limit: usize) -> Result<Value> {
         let limit = limit.clamp(1,32);
         let mut statement = self.conn.prepare("SELECT run,ended FROM orchestrator_batch_runs WHERE data_epoch=?1 AND run>?2 ORDER BY run LIMIT ?3")?;
         let rows = statement.query_map(params![epoch.0,after,i64::try_from(limit+1)?],|row|Ok((row.get::<_,String>(0)?,row.get::<_,bool>(1)?)))?;
@@ -149,7 +149,7 @@ impl DomainStore {
         Ok(serde_json::json!({"kind":"runs","entries":entries,"next":next,"instruction":"Use batch_outcomes with run_id to read each batch's durable results; never replay its calls"}))
     }
 
-    pub(crate) fn batch_outcomes(&self, run: &str, epoch: &DataEpoch, after: &str, limit: usize) -> Result<Value> {
+    pub fn batch_outcomes(&self, run: &str, epoch: &DataEpoch, after: &str, limit: usize) -> Result<Value> {
         let actual: String = self.conn.query_row("SELECT data_epoch FROM orchestrator_batch_runs WHERE run=?1",[run],|row| row.get(0))?;
         ensure!(actual==epoch.0,"The batch belongs to a different data epoch");
         let mut query = self.conn.prepare("SELECT identity,kind,status,metadata,result,error,code FROM (SELECT 'command:'||call||':'||command_id AS identity,kind,'succeeded' AS status,json_object('actor',actor,'command_id',command_id,'data_epoch',data_epoch,'digest',hex(digest),'revision',revision,'changed',changed) AS metadata,NULL AS result,NULL AS error,NULL AS code FROM orchestrator_batch_effects WHERE run=?1 UNION ALL SELECT 'tool:'||call,kind,state,json_object('call',call),substr(result,1,2048),substr(error,1,2048),json_extract(error,'$.code') FROM orchestrator_tool_operations WHERE run=?1) WHERE identity>?2 ORDER BY identity LIMIT ?3")?;
@@ -167,19 +167,19 @@ impl DomainStore {
         Ok(serde_json::json!({"run_id":run,"entries":entries,"next":next,"excerpts_only":true,"instruction":"Read current domain state before continuing; an admitted or uncertain operation is not confirmed success"}))
     }
 
-    pub(crate) fn batch_selection(&self, run: &str) -> Result<Option<alondra_daemon_engine_model::BatchSelection>> {
+    pub fn batch_selection(&self, run: &str) -> Result<Option<alondra_daemon_engine_model::BatchSelection>> {
         let encoded: Option<String> = self.conn.query_row("SELECT selection FROM orchestrator_batch_runs WHERE run=?1", [run], |row| row.get(0)).optional()?.flatten();
         encoded.as_deref().map(serde_json::from_str).transpose().map_err(Into::into)
     }
 
-    pub(crate) fn select_batch(&mut self, run: &str, selection: &impl Serialize) -> Result<()> {
+    pub fn select_batch(&mut self, run: &str, selection: &impl Serialize) -> Result<()> {
         let changed = self.conn.execute("UPDATE orchestrator_batch_runs SET selection=?2 WHERE run=?1 AND selection IS NULL", params![run,serde_json::to_string(selection)?])?;
         ensure!(changed == 1, "a batch selection is fixed before offering its prompt");
         self.note_side_write();
         Ok(())
     }
 
-    pub(crate) fn record_batch_report(&mut self, run: &str, cursor: u64, evidence: &[u8], report: &BatchReport) -> Result<()> {
+    pub fn record_batch_report(&mut self, run: &str, cursor: u64, evidence: &[u8], report: &BatchReport) -> Result<()> {
         #[cfg(any(test, feature = "test-hooks"))]
         self.orchestrator_write_fault("report")?;
         use sha2::Digest;
@@ -204,7 +204,7 @@ impl DomainStore {
         Ok(())
     }
 
-    pub(crate) fn begin_tool_operation(&mut self, run: &str, call: &str, kind: &str, request: &Value) -> Result<Option<(String,Option<String>,Option<String>)>> {
+    pub fn begin_tool_operation(&mut self, run: &str, call: &str, kind: &str, request: &Value) -> Result<Option<(String,Option<String>,Option<String>)>> {
         let encoded = serde_json::to_string(request)?;
         ensure!(encoded.len() <= 512 * 1024 && !call.is_empty() && call.len() <= 128, "The tool operation exceeds its capacity");
         let digest = canonical::digest(&(kind,request))?;
@@ -225,7 +225,7 @@ impl DomainStore {
         Ok(None)
     }
 
-    pub(crate) fn complete_tool_operation(&mut self, run: &str, call: &str, answer: &std::result::Result<Value,DomainError>) -> Result<()> {
+    pub fn complete_tool_operation(&mut self, run: &str, call: &str, answer: &std::result::Result<Value,DomainError>) -> Result<()> {
         let (mut state, mut result, mut error) = match answer {
             Ok(result) => ("succeeded", Some(serde_json::to_string(result)?), None),
             Err(error) => ("uncertain", None, Some(serde_json::to_string(error)?)),
@@ -251,13 +251,13 @@ impl DomainStore {
         Ok(())
     }
 
-    pub(crate) fn tool_operations(&self, run: &str) -> Result<Vec<(String,String,String,Option<String>,Option<String>)>> {
+    pub fn tool_operations(&self, run: &str) -> Result<Vec<(String,String,String,Option<String>,Option<String>)>> {
         let mut query = self.conn.prepare("SELECT call,kind,state,result,error FROM orchestrator_tool_operations WHERE run=?1 ORDER BY call")?;
         let rows = query.query_map([run], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)))?;
         Ok(rows.collect::<std::result::Result<Vec<_>,_>>()?)
     }
 
-    pub(crate) fn finish_batch(&mut self, run: &str) -> Result<()> {
+    pub fn finish_batch(&mut self, run: &str) -> Result<()> {
         #[cfg(any(test, feature = "test-hooks"))]
         self.orchestrator_write_fault("finish_batch")?;
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -274,7 +274,7 @@ impl DomainStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain_store::tests::{Fixture, seeded};
+    use crate::tests::{Fixture, seeded};
 
     fn title(store: &mut DomainStore, id: &str, text: &str) -> CommandEnvelope {
         let state = store.load().unwrap();
@@ -391,7 +391,7 @@ mod tests {
         let command = title(&mut store, "pinned-command", "Confirmed title");
         store.execute_from_batch(&Actor::Orchestrator { generation: 0 }, &command, "batch").unwrap();
         store.conn.execute("UPDATE semantic_receipts SET at=0 WHERE command_id='pinned-command'", []).unwrap();
-        let policy = crate::domain_store::retention::POLICIES.iter().find(|policy| policy.name == "receipts").unwrap();
+        let policy = crate::retention::POLICIES.iter().find(|policy| policy.name == "receipts").unwrap();
         let now = 10 * 24 * 60 * 60 * 1000;
         assert_eq!(store.retain(policy, now, 100).unwrap(), 0);
         store.finish_batch("batch").unwrap();

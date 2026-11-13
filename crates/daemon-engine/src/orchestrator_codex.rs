@@ -1,4 +1,5 @@
-use crate::domain_store::{BatchOwner, batch_effects::BatchReport};
+use crate::orchestrator_provider::ProviderOwner;
+use crate::domain_store::batch_effects::BatchReport;
 use crate::orchestrator_process::{Output, ProcessOwner, Stream, bounded};
 use crate::orchestrator_provider::Batch;
 use alondra_agent_runtime::owned_host::VerifiedArtifact;
@@ -241,7 +242,7 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
     let configuration = match configuration(&batch) { Ok(value) => value, Err(error) => return failed(format!("{error:#}")) };
     let profile = match profile(&batch) { Ok(value) => value, Err(error) => return failed(format!("{error:#}")) };
     let run = batch.owner.run().to_owned();
-    let mut host = match BatchHost::start(batch.owner, &configuration, &batch.session, &profile, &batch.prompt) {
+    let mut host = match BatchHost::start(ProviderOwner(batch.owner), &configuration, &batch.session, &profile, &batch.prompt) {
         Ok(value) => value, Err(error) => return failed(format!("The Codex host did not confirm the batch offer: {error:?}")),
     };
     let _host = match crate::domain_orchestrator::HostGuard::attach(Arc::clone(&batch.domain), &run, host.stopper()) {
@@ -305,7 +306,7 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
     stop(host, &batch.directory);
     output
 }
-fn stop(host: BatchHost<BatchOwner>, directory: &Path) {
+fn stop(host: BatchHost<ProviderOwner>, directory: &Path) {
     match host.stop() {
         Ok(())=>{let _=std::fs::remove_file(directory.join("owner.json"));}
         Err(error)=>log!("orchestrator: Codex did not stop cleanly; its process owner record is retained: {error:?}"),

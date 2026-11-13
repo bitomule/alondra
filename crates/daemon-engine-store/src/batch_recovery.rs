@@ -1,14 +1,14 @@
 use super::*;
 
-pub(crate) struct UnfinishedBatch {
-    pub(crate) run: String,
-    pub(crate) ended: bool,
-    pub(crate) decision: Option<String>,
-    pub(crate) attempts: Vec<DeliveryEvidence>,
+pub struct UnfinishedBatch {
+    pub run: String,
+    pub ended: bool,
+    pub decision: Option<String>,
+    pub attempts: Vec<DeliveryEvidence>,
 }
 
 impl DomainStore {
-    pub(crate) fn unfinished_orchestrator_batches(
+    pub fn unfinished_orchestrator_batches(
         &self,
         epoch: &DataEpoch,
         active: Option<&str>,
@@ -51,7 +51,7 @@ impl DomainStore {
 
     /// Settles every outstanding claim together. An old attempt cannot overwrite a newer
     /// delivery of the same message, even if a previous reconciliation only partly completed.
-    pub(crate) fn reconcile_orchestrator_batch(
+    pub fn reconcile_orchestrator_batch(
         &mut self,
         run: &str,
         continuation: bool,
@@ -67,7 +67,7 @@ impl DomainStore {
         Ok(())
     }
 
-    pub(crate) fn settle_orchestrator_batch(
+    pub fn settle_orchestrator_batch(
         &mut self,
         run: &str,
         target: alondra_core::delivery::State,
@@ -113,7 +113,7 @@ impl DomainStore {
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn orchestrator_write_fault(&self, point: &'static str) -> Result<()> {
+    pub fn orchestrator_write_fault(&self, point: &'static str) -> Result<()> {
         if let Some(home) = self.conn.path().map(Path::new).and_then(Path::parent) {
             alondra_daemon_engine_model::faults::write(home, point)?;
         }

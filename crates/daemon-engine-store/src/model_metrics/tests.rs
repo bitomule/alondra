@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain_store::tests::{Fixture, seeded};
+use crate::tests::{Fixture, seeded};
 use alondra_core::domain::*;
 
 fn store() -> (Fixture, DomainStore) {
@@ -59,7 +59,7 @@ fn a_store_made_before_model_metrics_opens_in_place_and_keeps_its_rows() {
 
     let mut reopened = DomainStore::open(&fixture.path()).unwrap();
     assert_eq!(reopened.load().unwrap(), before, "the domain is as it was");
-    assert_eq!(reopened.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), crate::domain_store::SCHEMA_VERSION);
+    assert_eq!(reopened.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), crate::SCHEMA_VERSION);
     assert!(!fixture.0.read_dir().unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains(".old-")), "nothing was moved aside");
     assert!(reopened.model_decision_rows().unwrap().is_empty());
     let node_costs: i64 = reopened.conn.query_row("SELECT count(*) FROM sqlite_master WHERE name='node_costs'", [], |r| r.get(0)).unwrap();

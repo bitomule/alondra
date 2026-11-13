@@ -152,7 +152,7 @@ mod tests {
         let fixture = Fixture::new();
         let path = fixture.path();
         let child = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--ignored", "--exact", "domain_store::connection::tests::crash_schema_fixture"])
+            .args(["--ignored", "--exact", "connection::tests::crash_schema_fixture"])
             .env("ALONDRA_SCHEMA_FIXTURE", &path)
             .env("HOME", &fixture.0)
             .env_remove("CLAUDE_HOME").env_remove("CLAUDE_CONFIG_DIR")

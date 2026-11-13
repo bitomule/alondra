@@ -6,13 +6,13 @@ load("//:version.bzl", "VERSION")
 
 exports_files(
     ["src/domain_store/schema.sql", "src/domain_store/schedule_launch_transition.sql"],
-    visibility = ["//crates/store:__pkg__", "//crates/agent-application:__pkg__", "//crates/provider-claude:__pkg__", "//crates/agent-runtime:__pkg__", "//crates/daemon-engine:__pkg__"],
+    visibility = ["//crates/store:__pkg__", "//crates/agent-application:__pkg__", "//crates/provider-claude:__pkg__", "//crates/agent-runtime:__pkg__", "//crates/daemon-engine:__pkg__", "//crates/daemon-engine-store:__pkg__"],
 )
 
 # The engine's acceptance catalog checks that the scenarios it names have tests here.
 exports_files(
     ["src/domain_api.rs", "src/service/domain_parity_tests.rs"],
-    visibility = ["//crates/daemon-engine:__pkg__"],
+    visibility = ["//crates/daemon-engine:__pkg__", "//crates/daemon-engine-store:__pkg__"],
 )
 
 rust_library(
@@ -153,7 +153,7 @@ low_opt_rust_test(
     name = "lock_policy_test",
     size = "small",
     srcs = ["tests/lock_policy.rs"],
-    data = [":report_sources", "//crates/daemon-engine:report_sources", "//crates/daemon-engine-model:report_sources", "//crates/daemon-support:report_sources"],
+    data = [":report_sources", "//crates/daemon-engine:report_sources", "//crates/daemon-engine-model:report_sources", "//crates/daemon-engine-store:report_sources", "//crates/daemon-support:report_sources"],
     edition = "2024",
 )
 

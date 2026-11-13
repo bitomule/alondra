@@ -16,8 +16,8 @@ pub(super) fn summary(json: &str) -> String {
 
 /// One table's retention: a pass changes at most `limit` rows and says how many it changed; the
 /// owner repeats it until it changes fewer.
-pub(crate) struct Policy {
-    pub(crate) name: &'static str,
+pub struct Policy {
+    pub name: &'static str,
     pass: fn(&Transaction<'_>, i64, i64) -> rusqlite::Result<usize>,
 }
 
@@ -27,7 +27,7 @@ impl Policy {
     }
 }
 
-pub(crate) const POLICIES: [Policy; 8] = [
+pub const POLICIES: [Policy; 8] = [
     Policy { name: "audit rows written with their body", pass: bodies_written_inline },
     Policy { name: "commands older than a week", pass: week_old_commands },
     Policy { name: "undated receipts", pass: undated_receipts },
@@ -139,7 +139,7 @@ fn messages_of_ended_tasks(tx: &Transaction<'_>, _: i64, limit: i64) -> rusqlite
 impl DomainStore {
     /// One pass of `policy` in its own transaction. What it changes is no domain state, so the
     /// cached state stays.
-    pub(crate) fn retain(&mut self, policy: &Policy, now: i64, limit: usize) -> anyhow::Result<usize> {
+    pub fn retain(&mut self, policy: &Policy, now: i64, limit: usize) -> anyhow::Result<usize> {
         let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let changed = policy.pass(&tx, now, i64::try_from(limit)?)?;
         tx.commit()?;
@@ -152,7 +152,7 @@ impl DomainStore {
     }
     /// The first time no ended task is left to compact, the cards it shrank in place are done and
     /// the store is owed its one rebuild.
-    pub(crate) fn ended_tasks_compacted(&self) -> rusqlite::Result<()> {
+    pub fn ended_tasks_compacted(&self) -> rusqlite::Result<()> {
         let first = self.conn.execute("INSERT OR IGNORE INTO retention_marks(policy,revision) VALUES('ended_tasks_compacted',0)", [])? == 1;
         if first {
             self.conn.execute("INSERT OR IGNORE INTO retention_marks(policy,revision) VALUES('rebuild',0)", [])?;
@@ -165,7 +165,7 @@ impl DomainStore {
 }
 
 const AUDIT: &str = "CREATE TABLE command_audit(revision INTEGER PRIMARY KEY,actor TEXT NOT NULL,command_id TEXT NOT NULL,data_epoch TEXT NOT NULL,command TEXT NOT NULL CHECK(json_valid(command)),at INTEGER NOT NULL)";
-const AUDIT_BOUND_TO_RECEIPTS: &str = "CREATE TABLE command_audit(revision INTEGER PRIMARY KEY,actor TEXT NOT NULL,command_id TEXT NOT NULL,data_epoch TEXT NOT NULL,command TEXT NOT NULL CHECK(json_valid(command)),at INTEGER NOT NULL,FOREIGN KEY(actor,command_id,data_epoch) REFERENCES semantic_receipts(actor,command_id,data_epoch) DEFERRABLE INITIALLY DEFERRED)";
+pub(super) const AUDIT_BOUND_TO_RECEIPTS: &str = "CREATE TABLE command_audit(revision INTEGER PRIMARY KEY,actor TEXT NOT NULL,command_id TEXT NOT NULL,data_epoch TEXT NOT NULL,command TEXT NOT NULL CHECK(json_valid(command)),at INTEGER NOT NULL,FOREIGN KEY(actor,command_id,data_epoch) REFERENCES semantic_receipts(actor,command_id,data_epoch) DEFERRABLE INITIALLY DEFERRED)";
 
 /// A store written before retention: its audit rows lose the foreign key to their receipts, which
 /// SQLite allows by editing the table's definition without rewriting it
@@ -196,7 +196,3 @@ pub(super) fn upgrade(tx: &Transaction<'_>) -> anyhow::Result<()> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "retention_tests.rs"]
-pub(crate) mod tests;

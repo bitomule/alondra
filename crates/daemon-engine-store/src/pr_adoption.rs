@@ -67,7 +67,7 @@ mod tests {
     #[test]
     fn old_pr_ownership_migrates_without_losing_a_historical_delivery() {
         let mut c = Connection::open_in_memory().unwrap();
-        let schema = include_str!("../../../alondrad/src/domain_store/schema.sql")
+        let schema = include_str!("../../alondrad/src/domain_store/schema.sql")
             .replace("REFERENCES pull_request_tasks(task_id,pr_id)", "REFERENCES pull_requests(task_id,id)");
         c.execute_batch(&schema).unwrap();
         c.execute_batch("DROP TABLE pull_request_tasks;

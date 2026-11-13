@@ -14,25 +14,25 @@ use alondra_store::{
 };
 
 /// The provider's part of a dispatch: its metadata for an input, and the exact command it sends.
-pub(crate) trait Preparer {
+pub trait Preparer {
     fn stage_input(&mut self, metadata: InputMetadata<'_, '_>) -> std::result::Result<(), AdapterError>;
     fn prepare(&mut self, attempt: &DispatchAttempt, metadata: InputMetadata<'_, '_>) -> std::result::Result<PreparedCommand, AdapterError>;
 }
 
 /// What a daemon takes over: claimed commands to reconcile, and controls whose preparation
 /// recorded no sendable bytes. Only an ended host lets those unrecorded controls be rejected.
-pub(crate) struct Adoption {
-    pub(crate) stamp: ExecutionStamp,
-    pub(crate) directory: String,
-    pub(crate) commands: Vec<UnresolvedCommand>,
-    pub(crate) controls: Vec<UnresolvedControl>,
-    pub(crate) unrecorded_controls: Vec<i64>,
-    pub(crate) unrecorded_commands: Vec<i64>,
+pub struct Adoption {
+    pub stamp: ExecutionStamp,
+    pub directory: String,
+    pub commands: Vec<UnresolvedCommand>,
+    pub controls: Vec<UnresolvedControl>,
+    pub unrecorded_controls: Vec<i64>,
+    pub unrecorded_commands: Vec<i64>,
 }
 
 /// Every step runs inside the journal's guard: an error or a panic in any of them poisons the
 /// whole transaction, even when the caller catches it, so it can only roll back.
-pub(crate) struct OwnerTransaction<'connection> {
+pub struct OwnerTransaction<'connection> {
     conn: &'connection Connection,
     cached: &'connection Option<Cached>,
     protected: &'connection crate::worktree::Protected,
@@ -47,31 +47,31 @@ pub(crate) struct OwnerTransaction<'connection> {
 /// What the commands staged so far add up to. A later replay or no-op never takes back an
 /// earlier change, its notification or the outcome another command got.
 #[derive(Debug)]
-pub(crate) struct OwnerDraft {
-    pub(crate) state: Arc<DomainState>,
-    pub(crate) outcomes: Vec<StagedOutcome>,
-    pub(crate) domain_changed: bool,
-    pub(crate) schedule_changed: bool,
+pub struct OwnerDraft {
+    pub state: Arc<DomainState>,
+    pub outcomes: Vec<StagedOutcome>,
+    pub domain_changed: bool,
+    pub schedule_changed: bool,
     version: i64,
 }
 
 #[derive(Debug)]
-pub(crate) struct StagedOutcome {
-    pub(crate) command_id: CommandId,
-    pub(crate) outcome: CommandOutcome,
-    pub(crate) replayed: bool,
+pub struct StagedOutcome {
+    pub command_id: CommandId,
+    pub outcome: CommandOutcome,
+    pub replayed: bool,
 }
 
 /// Exists only after the real SQL commit returned. Its seals stay inside until the runtime has
 /// published the committed state.
 #[derive(Debug)]
-pub(crate) struct OwnerCommit {
-    pub(crate) draft: OwnerDraft,
+pub struct OwnerCommit {
+    pub draft: OwnerDraft,
     technical: Committed,
 }
 impl OwnerCommit {
     /// Hands out the seals only once readers see exactly the state this transaction committed.
-    pub(crate) fn acknowledge(
+    pub fn acknowledge(
         self,
         published: &ReadSnapshot,
     ) -> std::result::Result<(OwnerDraft, Committed), StoreError> {
@@ -204,7 +204,7 @@ fn application_error(error: alondra_agent_application::Error) -> StoreError {
 /// Why the owner cannot record an observation, kept typed so that whether it is discarded is
 /// decided on its kind.
 #[derive(Debug)]
-pub(crate) enum ObservationRefusal {
+pub enum ObservationRefusal {
     Provider(alondra_agent_application::Error),
     /// A fact the domain has no command for, or one that names what the task does not hold.
     Unrecordable(String),
@@ -225,8 +225,8 @@ impl From<ObservationRefusal> for StoreError {
 }
 
 impl<'connection> OwnerTransaction<'connection> {
-    pub(crate) fn domain_state(&self) -> &DomainState { &self.draft.state }
-    pub(crate) fn record_settings_projection(&mut self, identity: &super::provider_settings::ProjectionIdentity) -> std::result::Result<(),StoreError> {
+    pub fn domain_state(&self) -> &DomainState { &self.draft.state }
+    pub fn record_settings_projection(&mut self, identity: &super::provider_settings::ProjectionIdentity) -> std::result::Result<(),StoreError> {
         let conn = self.conn;
         self.journal.inspect_mut(|_| super::provider_settings::record(conn,identity).map_err(StoreError::Storage))
     }
@@ -262,33 +262,33 @@ impl<'connection> OwnerTransaction<'connection> {
         })
     }
 
-    pub(crate) fn execution_binding(&self, stamp: &ExecutionStamp) -> std::result::Result<ProviderBinding, StoreError> { Ok(self.journal.execution_binding(stamp)?) }
-    pub(crate) fn state(&self) -> &DomainState { &self.draft.state }
+    pub fn execution_binding(&self, stamp: &ExecutionStamp) -> std::result::Result<ProviderBinding, StoreError> { Ok(self.journal.execution_binding(stamp)?) }
+    pub fn state(&self) -> &DomainState { &self.draft.state }
 
-    pub(crate) fn retained_context(&self, task: &TaskId, after: Option<&alondra_store::ContextRef>, limit: usize) -> std::result::Result<alondra_store::ContextPage,StoreError> {
+    pub fn retained_context(&self, task: &TaskId, after: Option<&alondra_store::ContextRef>, limit: usize) -> std::result::Result<alondra_store::ContextPage,StoreError> {
         Ok(self.journal.context_page(task,after,limit)?)
     }
-    pub(crate) fn pin_context(&mut self, transfer: &str, through: &alondra_store::ContextRef) -> std::result::Result<(),StoreError> {
+    pub fn pin_context(&mut self, transfer: &str, through: &alondra_store::ContextRef) -> std::result::Result<(),StoreError> {
         Ok(self.journal.pin_context(transfer,through)?)
     }
-    pub(crate) fn release_context(&mut self, transfer: &str, task: &TaskId) -> std::result::Result<(),StoreError> {
+    pub fn release_context(&mut self, transfer: &str, task: &TaskId) -> std::result::Result<(),StoreError> {
         Ok(self.journal.release_context(transfer,task)?)
     }
 
     /// What this transaction's observations moved in Claude and the domain refused to record.
-    pub(crate) fn unrecorded(&self) -> &[String] {
+    pub fn unrecorded(&self) -> &[String] {
         &self.unrecorded
     }
 
     /// Whether `task` is past its work: delivered, finishing or over.
-    pub(crate) fn work_is_over(&self, task: &alondra_core::domain::TaskId) -> bool {
+    pub fn work_is_over(&self, task: &alondra_core::domain::TaskId) -> bool {
         use alondra_domain::TaskPhase;
         self.draft.state.lifecycle_of(task).is_ok_and(|lifecycle| matches!(lifecycle.phase(), TaskPhase::Delivered | TaskPhase::Finishing | TaskPhase::Completed | TaskPhase::Cancelled))
     }
 
     /// The domain's own guarded command, decided against this transaction's current state.
     /// Documents are refused: their content needs the verified store and lease of `execute_with`.
-    pub(crate) fn stage_command(
+    pub fn stage_command(
         &mut self,
         actor: &Actor,
         envelope: &CommandEnvelope,
@@ -321,7 +321,7 @@ impl<'connection> OwnerTransaction<'connection> {
     /// With `probe`, each command is first decided on a copy and one the domain refuses is left
     /// out, a request for a decision denied to Claude with why: what Alondra cannot record never
     /// stops the node, and `unrecorded` says what of its lifecycle was left out.
-    pub(crate) fn stage_observation<N: ObservationNormalizer>(
+    pub fn stage_observation<N: ObservationNormalizer>(
         &mut self,
         binding: &ProviderBinding,
         owner_generation: u64,
@@ -332,7 +332,7 @@ impl<'connection> OwnerTransaction<'connection> {
     ) -> std::result::Result<ObservationAcceptance, StoreError> {
         self.stage_observation_with_identity(binding,owner_generation,batch,normalizer,home,probe,None)
     }
-    pub(crate) fn stage_observation_with_identity<N:ObservationNormalizer>(&mut self,binding:&ProviderBinding,owner_generation:u64,batch:&OrderedObservation,normalizer:&N,home:&std::path::Path,probe:bool,identity:Option<&alondra_daemon_engine_model::NativeAccountIdentity>)->std::result::Result<ObservationAcceptance,StoreError>{
+    pub fn stage_observation_with_identity<N:ObservationNormalizer>(&mut self,binding:&ProviderBinding,owner_generation:u64,batch:&OrderedObservation,normalizer:&N,home:&std::path::Path,probe:bool,identity:Option<&alondra_daemon_engine_model::NativeAccountIdentity>)->std::result::Result<ObservationAcceptance,StoreError>{
         if let Some(refusal) = observation_refused_for_test() {
             return Err(refusal);
         }
@@ -730,7 +730,7 @@ impl<'connection> OwnerTransaction<'connection> {
 
     /// Stages `batch` discarded for `reason`: its evidence is kept, the provider's checkpoint moves
     /// past it with no fact, and the discard is recorded with why. The task goes on from the next.
-    pub(crate) fn discard_observation<N: ObservationNormalizer>(
+    pub fn discard_observation<N: ObservationNormalizer>(
         &mut self,
         binding: &ProviderBinding,
         owner_generation: u64,
@@ -751,7 +751,7 @@ impl<'connection> OwnerTransaction<'connection> {
     }
 
     /// Why the domain would refuse `envelope` now, decided on a copy of this transaction's state.
-    pub(crate) fn refusal(&self, envelope: &CommandEnvelope) -> Option<DomainError> {
+    pub fn refusal(&self, envelope: &CommandEnvelope) -> Option<DomainError> {
         if let Some(StoreError::Domain(refusal)) = refused_for_test(&envelope.command, true) {
             return Some(refusal);
         }
@@ -790,7 +790,7 @@ impl<'connection> OwnerTransaction<'connection> {
     /// After `AdmitExecution`, what launches it, in the same transaction: the task's worktree,
     /// any unbound launch text, every pending input's provider metadata and FIFO dispatch, and
     /// the owner's reservation. Bound input payloads remain immutable; all are committed before offer.
-    pub(crate) fn launch(
+    pub fn launch(
         &mut self,
         task: &TaskId,
         text: &str,
@@ -841,13 +841,13 @@ impl<'connection> OwnerTransaction<'connection> {
         Ok(execution)
     }
 
-    pub(crate) fn adapter_state(&self, grant: &OwnerGrant) -> std::result::Result<AdapterState, StoreError> {
+    pub fn adapter_state(&self, grant: &OwnerGrant) -> std::result::Result<AdapterState, StoreError> {
         Ok(self.journal.adapter_state(grant)?)
     }
 
     /// Takes the task's current execution with the next owner generation, for a daemon that is
     /// adopting a host a previous one left running. The commit issues the grant.
-    pub(crate) fn adopt(&mut self, task: &TaskId) -> std::result::Result<Adoption, StoreError> {
+    pub fn adopt(&mut self, task: &TaskId) -> std::result::Result<Adoption, StoreError> {
         let stamp = self.journal.load(task)?.execution().cloned().ok_or(alondra_store::Error::MissingIntent)?;
         let current = self.journal.owner_generation(&stamp)?;
         self.journal.reserve_owner(&stamp, current)?;
@@ -865,7 +865,7 @@ impl<'connection> OwnerTransaction<'connection> {
 
     /// Whether the task's current execution still has a dispatch or a control claimed for a host
     /// with no answer recorded: only the end of that host, read from its journal, settles it.
-    pub(crate) fn claims_left(&mut self, task: &TaskId) -> std::result::Result<bool, StoreError> {
+    pub fn claims_left(&mut self, task: &TaskId) -> std::result::Result<bool, StoreError> {
         Ok(!self.journal.unresolved_commands(task)?.is_empty()
             || !self.journal.unrecorded_commands(task)?.is_empty()
             || !self.journal.unresolved_controls(task)?.is_empty()
@@ -873,37 +873,37 @@ impl<'connection> OwnerTransaction<'connection> {
     }
 
     /// The commit issues again the permit of the task's next unclaimed dispatch.
-    pub(crate) fn reissue_permit(&mut self, task: &TaskId) -> std::result::Result<(), StoreError> {
+    pub fn reissue_permit(&mut self, task: &TaskId) -> std::result::Result<(), StoreError> {
         Ok(self.journal.reissue_permit(task)?)
     }
 
     /// Resolves a claimed dispatch with the host's answer, fenced by the generation it was
     /// reconciled under. It never invents consumption.
-    pub(crate) fn resolve(&mut self, stamp: &ExecutionStamp, intent: i64, owner_generation: u64, receipt: DispatchReceipt) -> std::result::Result<(), StoreError> {
+    pub fn resolve(&mut self, stamp: &ExecutionStamp, intent: i64, owner_generation: u64, receipt: DispatchReceipt) -> std::result::Result<(), StoreError> {
         Ok(self.journal.resolve_dispatch(stamp, intent, owner_generation, receipt)?)
     }
 
     /// The task's inputs that left for a host and were not consumed, with how their handoff ended.
-    pub(crate) fn pending_handoffs(&self, task: &TaskId) -> std::result::Result<Vec<(InputPayload, String)>, StoreError> {
+    pub fn pending_handoffs(&self, task: &TaskId) -> std::result::Result<Vec<(InputPayload, String)>, StoreError> {
         Ok(self.journal.pending_handoffs(task)?)
     }
 
-    pub(crate) fn normalization_checkpoint(&self, stamp: &alondra_foundation::ExecutionStamp) -> std::result::Result<Option<alondra_store::NormalizationCheckpoint>, StoreError> {
+    pub fn normalization_checkpoint(&self, stamp: &alondra_foundation::ExecutionStamp) -> std::result::Result<Option<alondra_store::NormalizationCheckpoint>, StoreError> {
         Ok(self.journal.normalization_checkpoint(stamp)?)
     }
 
-    pub(crate) fn lifecycle(&self, task: &TaskId) -> std::result::Result<std::sync::Arc<TaskLifecycle>, StoreError> {
+    pub fn lifecycle(&self, task: &TaskId) -> std::result::Result<std::sync::Arc<TaskLifecycle>, StoreError> {
         Ok(self.journal.load(task)?)
     }
 
     /// The commit hands back the attempt; a permit some later commit made stale is refused.
-    pub(crate) fn claim(&mut self, permit: DispatchPermit) -> std::result::Result<(), StoreError> {
+    pub fn claim(&mut self, permit: DispatchPermit) -> std::result::Result<(), StoreError> {
         Ok(self.journal.claim(permit)?)
     }
 
     /// The provider's metadata for the attempt's input, the command it prepares from it and that
     /// command's evidence, under the owner's generation. The commit hands back the command.
-    pub(crate) fn record_command(
+    pub fn record_command(
         &mut self,
         attempt: DispatchAttempt,
         owner_generation: u64,
@@ -917,13 +917,13 @@ impl<'connection> OwnerTransaction<'connection> {
         Ok(self.journal.record_owned_command(attempt, owner_generation, evidence)?)
     }
 
-    pub(crate) fn record_receipt(&mut self, command: CommittedCommand, receipt: DispatchReceipt) -> std::result::Result<(), StoreError> {
+    pub fn record_receipt(&mut self, command: CommittedCommand, receipt: DispatchReceipt) -> std::result::Result<(), StoreError> {
         Ok(self.journal.record_committed_receipt(command, receipt)?)
     }
 
     /// The commit hands back the attempt; `false` when the control was revoked instead, an
     /// interrupt whose turn or work already ended. A permit some later commit made stale is refused.
-    pub(crate) fn require_native_identity(&self,binding:&ProviderBinding,expected:Option<&alondra_daemon_engine_model::NativeAccountIdentity>)->std::result::Result<(),StoreError>{
+    pub fn require_native_identity(&self,binding:&ProviderBinding,expected:Option<&alondra_daemon_engine_model::NativeAccountIdentity>)->std::result::Result<(),StoreError>{
         let Some(expected)=expected else{return Ok(())};
         let Some(provider)=alondra_core::accounts::Provider::from_driver(binding.driver()) else{return Ok(())};
         let id=alondra_daemon_engine_model::account_of(binding.credential());
@@ -933,7 +933,7 @@ impl<'connection> OwnerTransaction<'connection> {
         }
         Ok(())
     }
-    pub(crate) fn claim_control_for_identity(&mut self,permit:ControlPermit,directory:&std::path::Path)->std::result::Result<bool,StoreError>{
+    pub fn claim_control_for_identity(&mut self,permit:ControlPermit,directory:&std::path::Path)->std::result::Result<bool,StoreError>{
         let kind=self.conn.query_row("SELECT kind,argument FROM lifecycle_controls WHERE id=?1",[permit.id()],|row|Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?))).optional().map_err(|error|StoreError::Storage(error.into()))?;
         let Some((kind,argument))=kind else{return Ok(false)};
         let safe=matches!(kind.as_str(),"interrupt"|"force_stop") || (kind=="respond" && argument.as_deref().and_then(|argument|serde_json::from_str::<serde_json::Value>(argument).ok()).and_then(|value|value.get("kind").and_then(serde_json::Value::as_str).map(str::to_owned)).is_some_and(|kind|matches!(kind.as_str(),"deny"|"decline")));
@@ -943,13 +943,13 @@ impl<'connection> OwnerTransaction<'connection> {
         }
         self.claim_control(permit)
     }
-    pub(crate) fn claim_control(&mut self, permit: ControlPermit) -> std::result::Result<bool, StoreError> {
+    pub fn claim_control(&mut self, permit: ControlPermit) -> std::result::Result<bool, StoreError> {
         Ok(self.journal.claim_control(permit)?)
     }
 
     /// The exact command the provider prepares for a claimed control, recorded under the owner's
     /// generation once the claim still holds. The commit hands back the command.
-    pub(crate) fn record_control(
+    pub fn record_control(
         &mut self,
         attempt: ControlAttempt,
         owner_generation: u64,
@@ -961,23 +961,23 @@ impl<'connection> OwnerTransaction<'connection> {
         Ok(self.journal.record_owned_control(attempt, owner_generation, evidence)?)
     }
 
-    pub(crate) fn record_control_receipt(&mut self, control: CommittedControl, receipt: DispatchReceipt) -> std::result::Result<(), StoreError> {
+    pub fn record_control_receipt(&mut self, control: CommittedControl, receipt: DispatchReceipt) -> std::result::Result<(), StoreError> {
         Ok(self.journal.record_control_receipt(control, receipt)?)
     }
 
     /// Resolves a claimed control with the host's answer, fenced like `resolve`.
-    pub(crate) fn resolve_control(&mut self, stamp: &ExecutionStamp, id: i64, owner_generation: u64, receipt: DispatchReceipt) -> std::result::Result<(), StoreError> {
+    pub fn resolve_control(&mut self, stamp: &ExecutionStamp, id: i64, owner_generation: u64, receipt: DispatchReceipt) -> std::result::Result<(), StoreError> {
         Ok(self.journal.resolve_control(stamp, id, owner_generation, receipt)?)
     }
 
     /// One bounded pass of the raw evidence retention.
-    pub(crate) fn retain_evidence(&mut self, limit: usize) -> std::result::Result<alondra_store::EvidenceRetention, StoreError> {
+    pub fn retain_evidence(&mut self, limit: usize) -> std::result::Result<alondra_store::EvidenceRetention, StoreError> {
         Ok(self.journal.retain_evidence(limit)?)
     }
 
     /// Lifecycle fixtures for states no typed owner step produces yet.
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(super) fn journal(&mut self) -> &mut LifecycleTransaction<'connection> {
+    pub fn journal(&mut self) -> &mut LifecycleTransaction<'connection> {
         &mut self.journal
     }
 
@@ -1009,7 +1009,7 @@ impl OwnerDraft {
 impl DomainStore {
     /// Runs `stage` in one SQL transaction and commits it. Nothing is committed or cached when
     /// `stage` fails, when any step failed even if `stage` caught it, or when the commit fails.
-    pub(crate) fn own<T>(
+    pub fn own<T>(
         &mut self,
         scope: AuthorityScope,
         stage: impl FnOnce(&mut OwnerTransaction<'_>) -> std::result::Result<T, StoreError>,
@@ -1024,7 +1024,7 @@ impl DomainStore {
         Ok((value, committed))
     }
     /// One bounded pass of the raw evidence retention, in its own transaction.
-    pub(crate) fn retain_evidence(&mut self, limit: usize) -> std::result::Result<alondra_store::EvidenceRetention, StoreError> {
+    pub fn retain_evidence(&mut self, limit: usize) -> std::result::Result<alondra_store::EvidenceRetention, StoreError> {
         let scope = AuthorityScope::new(epoch_of(&self.conn)?)?;
         Ok(self.own(scope, |owner| owner.retain_evidence(limit))?.0)
     }
@@ -1032,7 +1032,7 @@ impl DomainStore {
     /// pragma. A database created without incremental vacuum is rebuilt once to get it, and one
     /// whose rows retention shrank in place once they are all done; its write-ahead log is
     /// truncated after the rebuild.
-    pub(crate) fn reclaim_space(&self, pages: u32) -> Result<()> {
+    pub fn reclaim_space(&self, pages: u32) -> Result<()> {
         let before = self.allocated_space();
         let reclaimed = (|| -> Result<()> {
             let mode: i64 = self.conn.pragma_query_value(None, "auto_vacuum", |row| row.get(0))?;
@@ -1067,36 +1067,6 @@ impl DomainStore {
     }
 }
 
-/// Task `task` runs an execution of node `agent` that the SDK host owns, launched and with the
-/// text of its first input given: what a test needs before the provider's facts are recorded.
-#[cfg(any(test, feature = "test-hooks"))]
-pub fn admit_through_sdk(runtime: &crate::domain_runtime::DomainRuntime, task: &TaskId, agent: &str) {
-    let state = runtime.state().unwrap();
-    let admit = CommandEnvelope {
-        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: format!("admit-{task}").into(),
-        expected_revision: state.revision,
-        command: Command::AdmitExecution { provider: alondra_core::accounts::Provider::Claude,
-            task_id: task.clone(), agent_id: agent.into(), conversation: format!("conversation-{task}"), instance: format!("resource-{task}"),
-            host: "fixture-service".into(), model: None, account: None, leaves_limit: None,
-        },
-    };
-    let binding = ProviderBinding::new("composite-binding".into(), "fixture-service".into(), "fixture-instance".into(), "fixture-config".into(),
-        1, 1, std::collections::BTreeSet::from([Capability::OfferInput]), "fixture-credential-reference".into(), 1).unwrap();
-    runtime.own(AuthorityScope::new(state.data_epoch.clone()).unwrap(), |owner| {
-        owner.stage_command(&Actor::System, &admit, Attached::None)?;
-        let journal = owner.journal();
-        let pending = journal.load(task)?.pending_inputs()[0].clone();
-        journal.give_input_text(task, InputPayload::new(pending, "Fixture input").unwrap())?;
-        journal.stage_launch(task, &Placement::RemoteWorkspace("fixture/workspace".into()), &binding)?;
-        let execution = journal.load(task)?.execution().unwrap().clone();
-        journal.reserve_owner(&execution, 0)?;
-        Ok(())
-    }).unwrap();
-}
-
-#[cfg(test)]
-#[path = "owner_tests.rs"]
-pub(super) mod tests;
 
 fn mcp_server(report: &McpServerReport) -> McpServerState {
     McpServerState {

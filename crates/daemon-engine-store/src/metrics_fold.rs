@@ -10,16 +10,16 @@ use anyhow::Result;
 use rusqlite::{OptionalExtension, Transaction, params};
 use std::collections::BTreeMap;
 
-const DAY_MS: i64 = 24 * 60 * 60 * 1_000;
+pub(super) const DAY_MS: i64 = 24 * 60 * 60 * 1_000;
 /// How long the samples of a folded task stay, so a task reopened meanwhile is folded again with
 /// them, and how long a merged PR's size is asked for.
-pub(crate) const SAMPLES_MS: i64 = 7 * DAY_MS;
+pub const SAMPLES_MS: i64 = 7 * DAY_MS;
 /// How long each ended task keeps its own row before it is added into its week.
-pub(crate) const TASKS_MS: i64 = 90 * DAY_MS;
+pub const TASKS_MS: i64 = 90 * DAY_MS;
 
 /// What a session reported as one of its turns ended.
 #[derive(Clone, Debug)]
-pub(crate) struct Spent<'a> {
+pub struct Spent<'a> {
     pub session_id: &'a str,
     /// Fixed by the session's first report: a session without a task (the orchestrator, or a node
     /// no task was known for) is added up by day as it spends instead of folded.
@@ -42,7 +42,7 @@ impl DomainStore {
         Ok((sessions, folded))
     }
 
-    pub(crate) fn record_spend(&mut self, spent: &Spent<'_>) -> Result<()> {
+    pub fn record_spend(&mut self, spent: &Spent<'_>) -> Result<()> {
         let tx = self.conn.transaction()?;
         for usage in spent.usage.iter().filter(|usage| !usage.is_empty()) {
             record_usage(&tx, spent, usage)?;
@@ -61,7 +61,7 @@ impl DomainStore {
         Ok(())
     }
 
-    pub(crate) fn record_release(&mut self, version: &str, at: Millis) -> Result<()> {
+    pub fn record_release(&mut self, version: &str, at: Millis) -> Result<()> {
         self.conn.execute("INSERT OR IGNORE INTO daemon_releases(version,first_seen_at) VALUES(?1,?2)", params![version, at])?;
         self.note_side_write();
         Ok(())
@@ -69,7 +69,7 @@ impl DomainStore {
 
     /// Folds at most `limit` ended tasks that have no row yet, or that changed or spent since
     /// they were folded, and says how many it folded.
-    pub(crate) fn fold_ended_tasks(&mut self, limit: usize) -> Result<usize> {
+    pub fn fold_ended_tasks(&mut self, limit: usize) -> Result<usize> {
         let tx = self.conn.transaction()?;
         let tasks: Vec<String> = {
             let mut statement = tx.prepare(
@@ -97,7 +97,7 @@ impl DomainStore {
 
     /// The merged PRs of tasks folded in the last week whose size is not known yet, with the
     /// address GitHub answers for each.
-    pub(crate) fn prs_without_size(&self, now: Millis, limit: usize) -> Result<Vec<(String, String)>> {
+    pub fn prs_without_size(&self, now: Millis, limit: usize) -> Result<Vec<(String, String)>> {
         let mut statement = self.conn.prepare(
             "SELECT m.task_id,'https://'||p.host||'/'||p.repository||'/pull/'||p.number FROM task_metrics m JOIN pull_requests p ON p.task_id=m.task_id
              WHERE m.pr_merged=1 AND m.pr_lines IS NULL AND m.finished_at>=?1 ORDER BY m.finished_at DESC LIMIT ?2",
@@ -107,7 +107,7 @@ impl DomainStore {
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn usage_row(&self, session: &str, model: &str) -> Option<(Option<String>, Option<i64>, [i64; 4], bool)> {
+    pub fn usage_row(&self, session: &str, model: &str) -> Option<(Option<String>, Option<i64>, [i64; 4], bool)> {
         self.conn.query_row(
             "SELECT task_id,cost_micros,input,output,cache_read,cache_write,complete FROM usage_sessions WHERE session_id=?1 AND model=?2",
             params![session, model],
@@ -116,7 +116,7 @@ impl DomainStore {
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn steps_row(&self, session: &str) -> Option<(Option<String>, StepCounts)> {
+    pub fn steps_row(&self, session: &str) -> Option<(Option<String>, StepCounts)> {
         self.conn.query_row(
             "SELECT task_id,steps,subagent_steps,looks,polls,tool_calls FROM session_steps WHERE session_id=?1",
             [session],
@@ -125,12 +125,12 @@ impl DomainStore {
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn pr_lines(&self, task_id: &str) -> Option<i64> {
+    pub fn pr_lines(&self, task_id: &str) -> Option<i64> {
         self.conn.query_row("SELECT pr_lines FROM task_metrics WHERE task_id=?1", [task_id], |r| r.get(0)).unwrap()
     }
 
     /// The lines a task's merged PR added and deleted, together.
-    pub(crate) fn record_pr_lines(&mut self, task_id: &str, lines: i64) -> Result<()> {
+    pub fn record_pr_lines(&mut self, task_id: &str, lines: i64) -> Result<()> {
         self.conn.execute("UPDATE task_metrics SET pr_lines=?2 WHERE task_id=?1", params![task_id, lines])?;
         self.note_side_write();
         Ok(())
@@ -398,7 +398,3 @@ pub(super) fn tasks_into_weeks(tx: &Transaction<'_>, now: i64, limit: i64) -> ru
     tx.execute("DELETE FROM metric_batch", [])?;
     Ok(batch)
 }
-
-#[cfg(test)]
-#[path = "metrics_fold_tests.rs"]
-pub(crate) mod tests;

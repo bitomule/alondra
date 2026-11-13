@@ -22,7 +22,6 @@ WORKSPACE_DEPS = [
 SQL = [
     "//crates/alondrad:src/domain_store/schema.sql",
     "//crates/alondrad:src/domain_store/schedule_launch_transition.sql",
-    "src/domain_store/model_metrics.sql",
 ]
 
 rust_library(
@@ -38,6 +37,7 @@ rust_library(
     visibility = ["//crates/alondrad:__pkg__"],
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-model:daemon_engine_model",
+        "//crates/daemon-engine-store:daemon_engine_store",
         "//crates/daemon-support:daemon_support",
     ],
 )
@@ -59,6 +59,7 @@ rust_library(
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
         "//crates/codex-protocol:codex_protocol",
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
+        "//crates/daemon-engine-store:daemon_engine_store_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",
     ],
 )
@@ -105,6 +106,7 @@ ENGINE_TEST_COMPILE_DATA = SQL + [
 ENGINE_TEST_DEPS = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
     "//crates/codex-protocol:codex_protocol",
     "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
+    "//crates/daemon-engine-store:daemon_engine_store_test_hooks",
     "//crates/daemon-support:daemon_support_test_hooks",
 ]
 
@@ -168,7 +170,7 @@ low_opt_rust_test(
 rust_inputs_test(
     name = "production_inputs_test",
     size = "small",
-    required_sources = ["crates/daemon-engine/src/lib.rs", "crates/daemon-engine/src/domain_store/owner.rs"],
+    required_sources = ["crates/daemon-engine/src/lib.rs", "crates/daemon-engine/src/domain_runtime.rs"],
     source_dir = "crates/daemon-engine/src/",
     target_under_test = ":daemon_engine",
     test_only_sources = ["crates/daemon-engine/src/domain_store/owner_tests.rs", "crates/test_support.rs"],
@@ -178,7 +180,7 @@ rust_inputs_test(
 rust_inputs_test(
     name = "test_hooks_inputs_test",
     size = "small",
-    required_sources = ["crates/daemon-engine/src/lib.rs", "crates/daemon-engine/src/domain_store/owner.rs"],
+    required_sources = ["crates/daemon-engine/src/lib.rs", "crates/daemon-engine/src/domain_runtime.rs"],
     source_dir = "crates/daemon-engine/src/",
     target_under_test = ":daemon_engine_test_hooks",
     test_only_sources = ["crates/daemon-engine/src/domain_store/owner_tests.rs", "crates/test_support.rs"],

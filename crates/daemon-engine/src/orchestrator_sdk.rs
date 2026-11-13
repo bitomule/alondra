@@ -2,7 +2,8 @@
 //! The batch's claim owns the host; its one prompt is the batch, and the host takes no other, so
 //! a message that arrives during the turn waits for the next batch. What Claude reported goes
 //! through the same parser as `claude -p`, and `domain_orchestrator::tick` decides from its end.
-use crate::domain_store::{BatchOwner,batch_effects::BatchReport};
+use crate::orchestrator_provider::ProviderOwner;
+use crate::domain_store::batch_effects::BatchReport;
 use crate::orchestrator_process::{self as process, Output, ProcessOwner, Stream, bounded};
 use crate::sdk_owner::SdkBackend;
 use alondra_agent_runtime::owned_host::VerifiedArtifact;
@@ -45,7 +46,7 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
     };
     let profile = profile(&batch);
     let run = batch.owner.run().to_owned();
-    let mut host = match BatchHost::start(batch.owner, &configuration, &batch.session, &profile, &batch.prompt) {
+    let mut host = match BatchHost::start(ProviderOwner(batch.owner), &configuration, &batch.session, &profile, &batch.prompt) {
         Ok(host) => host,
         Err(error) => return failed(format!("the SDK host did not take the batch: {error:?}")),
     };
@@ -111,7 +112,7 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
     output
 }
 
-fn stop(host: BatchHost<BatchOwner>, directory: &Path) {
+fn stop(host: BatchHost<ProviderOwner>, directory: &Path) {
     match host.stop(){
         Ok(())=>{let _=std::fs::remove_file(directory.join("owner.json"));},
         Err(error)=>log!("orchestrator: the SDK host did not stop cleanly; its process record is retained: {error:?}"),

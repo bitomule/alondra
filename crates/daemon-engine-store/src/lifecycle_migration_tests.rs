@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain_store::tests::{Fixture, seeded};
+use crate::tests::{Fixture, seeded};
 use std::collections::BTreeSet;
 
 fn node(id: &str) -> Actor {
