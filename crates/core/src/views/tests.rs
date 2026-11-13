@@ -9121,6 +9121,16 @@ fn codex_quota_views_match_goldens() {
 }
 
 #[test]
+fn a_historical_selection_reason_loses_the_launch_diagnostic_of_either_provider_and_nothing_else() {
+    use crate::accounts::Provider;
+    for provider in Provider::ALL {
+        let reason = format!("Automatic account selection. launch on {}/default · {}/default quota unknown", provider.as_str(), provider.as_str());
+        assert_eq!(tasks::without_launch_diagnostic(&reason), "Automatic account selection.");
+    }
+    assert_eq!(tasks::without_launch_diagnostic("Chosen to launch on the fastest machine"), "Chosen to launch on the fastest machine");
+}
+
+#[test]
 fn committed_pending_models_never_replace_effective_models_or_positional_task_header_facts() {
     use crate::accounts::{AccountKey, Provider};
     use crate::model_selection::{ModelKey, ModelProfile, ModelSelection, PendingTaskSelection, TaskSelection};

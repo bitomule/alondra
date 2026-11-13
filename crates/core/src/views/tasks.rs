@@ -1357,6 +1357,13 @@ fn account_text(task: &crate::domain::Task, context: &RenderContext<'_>) -> Opti
 }
 
 
+pub(super) fn without_launch_diagnostic(reason: &str) -> &str {
+    let boundary = crate::accounts::Provider::ALL.iter()
+        .filter_map(|provider| reason.find(&format!(" launch on {}/", provider.as_str())))
+        .min();
+    boundary.map_or(reason, |at| &reason[..at])
+}
+
 fn task_model_presentation(task: &TaskId, context: &RenderContext<'_>) -> Option<super::TaskModelPresentation> {
     let selection = context.index.task_selection(task)?;
     let model_name = |model: &crate::model_selection::ModelKey, effort: Option<&str>| {
@@ -1376,8 +1383,7 @@ fn task_model_presentation(task: &TaskId, context: &RenderContext<'_>) -> Option
         }).or_else(|| selection.reason.as_ref().map(|reason| {
             // Older decisions appended diagnostic quota after this boundary. Keep their
             // explanation; the localized reading below replaces that display-only suffix.
-            let reason = reason.split_once(" launch on ").filter(|(_, suffix)| suffix.starts_with("codex/") || suffix.starts_with("claude/"))
-                .map_or(reason.as_str(), |(reason, _)| reason);
+            let reason = without_launch_diagnostic(reason);
             let quota = super::accounts::decision_quota_summary(context.index.accounts(), context.index.account_usage(), context.live.observed_at, context.lang);
             if quota.is_empty() { reason.into() } else { format!("{reason} · {quota}") }
         })),
