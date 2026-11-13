@@ -9,6 +9,7 @@ use alondra_daemon_support::{
     approval_lease,
     auth,
     blocking_work,
+    card_language,
     classify,
     claude_check,
     device_usage,

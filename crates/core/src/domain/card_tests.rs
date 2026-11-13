@@ -1131,7 +1131,7 @@ fn gq(need: &str, labels: &[&str]) -> GroupQuestion {
 fn asks(questions: Vec<GroupQuestion>) -> Command {
     Command::AskQuestions {
         interaction_id: "g".into(), scope: scope("t"), recipient: Recipient::User, blocking: true,
-        why: "Three things for the release".into(), questions,
+        why: "Three things for the release".into(), questions, language: None,
     }
 }
 fn three() -> Vec<GroupQuestion> {
@@ -1155,6 +1155,29 @@ fn several_questions_are_one_card_each_in_order_and_linked_as_a_group() {
         assert_eq!(card.group, Some(QuestionGroup { id: "g".into(), index: at as u8 + 1, total: 3 }));
     }
     assert_eq!(waiting_ids(&s), ["g-q1", "g-q2", "g-q3"], "adjacent and in question order");
+}
+
+#[test]
+fn a_group_gives_every_question_the_language_its_author_declared() {
+    let mut s = fixture();
+    let mut command = asks(three());
+    if let Command::AskQuestions { language, .. } = &mut command {
+        *language = Some(alondra_foundation::Lang::Es);
+    }
+    ok(&mut s, agent(), command);
+    for card in ["g-q1", "g-q2", "g-q3"] {
+        assert_eq!(s.interactions[&card.into()].card.language, Some(alondra_foundation::Lang::Es));
+    }
+}
+
+#[test]
+fn a_card_stored_before_the_language_field_decodes_without_one_and_keeps_its_bytes() {
+    let old = r#"{"kind":"decide","title":"Release design","need":"Choose a design","why":"The release needs one"}"#;
+    let card: CardSpec = serde_json::from_str(old).unwrap();
+    assert_eq!(card.language, None);
+    assert!(!serde_json::to_string(&card).unwrap().contains("language"));
+    let declared: CardSpec = serde_json::from_str(&old.replace("}", r#","language":"es"}"#)).unwrap();
+    assert_eq!(declared.language, Some(alondra_foundation::Lang::Es));
 }
 
 #[test]

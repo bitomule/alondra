@@ -1047,6 +1047,10 @@ pub struct CardSpec {
     /// content or plan under `## <path>`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<String>,
+    /// The language a node declares the card is written in. Only the declaration is compared with
+    /// the user's language; the text is never read. Cards stored or sent without it still decode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<alondra_foundation::Lang>,
 }
 /// A place that holds one open card at a time: a new card in it replaces the open one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1148,6 +1152,7 @@ impl CardSpec {
             files: Vec::new(),
             form: None,
             system: None,
+            language: None,
         }
     }
     pub fn needing(mut self, need: impl Into<String>) -> Self {

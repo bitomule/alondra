@@ -1165,7 +1165,7 @@ mod tests {
             recommended: None, options: ["Yes", "No"].map(|label| QuestionOption { id: label.to_lowercase(), label: label.into(), description: None }).into() };
         apply_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "questions", Command::AskQuestions {
             interaction_id: "g".into(), scope: Scope::Task { task_id: "task-a".into() }, recipient: Recipient::User, blocking: true,
-            why: "Two things".into(), questions: vec![question("Which name?"), question("Ship it today?")] });
+            why: "Two things".into(), questions: vec![question("Which name?"), question("Ship it today?")], language: None });
         let now = alondra_core::now_millis();
         let deliver = |message: OutboxMessage| {
             let (domain, home, client) = (domain.clone(), home.clone(), &client);

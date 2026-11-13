@@ -43,6 +43,19 @@ The domain validates structure, required fields, types and lengths, never wordin
 It does not compare titles with headings and does not remove or rewrite headings.
 A refusal identifies the field to fix. Old stored cards without title remain readable.
 
+## Card language
+
+Every card tool takes a required `language`: `es` or `en`, the language the card is written in.
+It must be the user's language, the one the MCP instructions name. Declare what you wrote; the
+text is never read, so declaring `es` over an English card does not make it Spanish.
+`ask` with `questions` declares it once for all the questions, and `present_result` declares it
+on every result, final or not.
+
+When Alondra refuses a card as `card_language_mismatch`, the card was not sent. Rewrite the whole
+card in the user's language (title, need, why, content, attachment names) and send it again with
+the same `interaction_id` and the `language` the refusal names. Never change only the declared
+language: the text must really be in it.
+
 
 ## Never deploy
 

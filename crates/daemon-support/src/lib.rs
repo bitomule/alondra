@@ -7,6 +7,7 @@ pub mod log;
 pub mod approval_lease;
 pub mod auth;
 pub mod blocking_work;
+pub mod card_language;
 pub mod classify;
 pub mod claude_check;
 pub mod codex_credentials;

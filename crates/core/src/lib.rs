@@ -57,6 +57,7 @@ pub mod tasks;
 pub mod task_tags;
 pub mod metrics;
 pub mod update;
+pub mod user_language;
 pub mod upkeep;
 pub mod usage;
 pub mod view;

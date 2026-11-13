@@ -1186,6 +1186,12 @@ async fn checked_producer_command<H: DomainHost>(
     host: Arc<H>, principal: Principal, token: String, envelope: CommandEnvelope, steps: &Steps,
 ) -> Result<Value, DomainError> {
     let storage = || DomainError::new("storage_unavailable", "domain transaction could not be completed");
+    if matches!(principal, Principal::Agent { .. }) && crate::card_language::declared(&envelope.command).is_some() {
+        let user = tokio::task::spawn_blocking(alondra_core::user_language::current).await.map_err(|_| storage())?;
+        if let Some(refusal) = crate::card_language::refusal(&envelope.command, user) {
+            return Err(refusal);
+        }
+    }
     let git_within = host.delivery_reviews().limits().git_within;
     if let Some(client) = host.new_work_client() {
         if matches!(principal, Principal::Agent { .. }) {
@@ -2219,6 +2225,46 @@ mod tests {
         assert_eq!(card.title.as_deref(), Some("Release design"));
         assert_eq!(card.need, "Choose an option");
         assert_eq!(card.content.as_ref().unwrap().body, literal);
+        assert_eq!(card.language, None, "a session that started before the field passes without declaring it");
+        server.abort();
+        let _ = server.await;
+        drop(host);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_node_card_in_another_language_than_the_users_is_refused_until_it_is_rewritten() {
+        let (home, host) = fixture();
+        let _directory = host.test_directory.clone();
+        let (base, server, _, _) = server(host.clone()).await;
+        let token = host.domain.issue(Principal::Agent {
+            session_id: "agent-a".into(), task_binding: None, provider_agent_id: None,
+        }).unwrap();
+        let user = alondra_core::user_language::current();
+        let other = if user == alondra_core::views::Lang::Es { "en" } else { "es" };
+        let own = if user == alondra_core::views::Lang::Es { "es" } else { "en" };
+        let send = |language: &'static str| {
+            let state = host.domain.state().unwrap();
+            let request = reqwest::Client::new().post(format!("{base}/questions"))
+                .bearer_auth(token.expose_for_child_environment())
+                .json(&json!({"data_epoch":state.data_epoch,"command_id":format!("language-{language}"),"expected_revision":state.revision,
+                    "interaction_id":"language-card","scope":{"kind":"task","task_id":"task-a"},
+                    "recipient":{"kind":"user"},"body":"Elige un diseño","blocking":false,
+                    "options":[{"id":"atlas","label":"Atlas"},{"id":"borealis","label":"Borealis"}],
+                    "card":{"kind":"decide","title":"Release design","need":"Choose a design","why":"The release needs one design","language":language}}));
+            async move { request.send().await.unwrap() }
+        };
+        let refused = send(other).await;
+        assert_eq!(refused.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+        let body: Value = refused.json().await.unwrap();
+        assert_eq!((body["code"].as_str(), body["subject"].as_str()), (Some("card_language_mismatch"), Some("language")), "{body}");
+        assert!(body["message"].as_str().unwrap().contains(&format!("language \"{own}\"")), "{body}");
+        assert!(!host.domain.state().unwrap().interactions.contains_key(&"language-card".into()), "a refused card is not sent");
+        let accepted = send(own).await;
+        let status = accepted.status();
+        assert_eq!(status, reqwest::StatusCode::OK, "{}", accepted.text().await.unwrap());
+        let card = &host.domain.state().unwrap().interactions[&"language-card".into()].card;
+        assert_eq!(card.language, Some(user));
         server.abort();
         let _ = server.await;
         drop(host);

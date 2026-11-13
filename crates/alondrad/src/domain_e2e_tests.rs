@@ -167,10 +167,18 @@ fn bg_node_with_a_task(daemon: &Daemon, home: &Path, title: &str) -> (String, Ta
     (capability.expose_for_child_environment().to_owned(), TaskId::from("t-1"))
 }
 
+fn user_language() -> &'static str {
+    match alondra_core::user_language::current() {
+        alondra_core::views::Lang::Es => "es",
+        alondra_core::views::Lang::En => "en",
+    }
+}
+
 fn tool_args(epoch: &str, id: &str, expected_revision: u64, command: Value) -> Value {
     let mut command = command.as_object().unwrap().clone();
     command.remove("kind");
     if let Some(need) = command.get("need").cloned() { command.entry("title").or_insert(need); }
+    if command.contains_key("need") || command.contains_key("questions") { command.entry("language").or_insert(json!(user_language())); }
     let mut args = json!({"data_epoch":epoch,"command_id":id,"expected_revision":expected_revision}).as_object().unwrap().clone();
     args.extend(command);
     Value::Object(args)
@@ -647,7 +655,7 @@ async fn every_card_kind_leaves_the_queue_when_its_action_says_so_and_never_retu
         ask("reply", "Name the new settings screen"),
         ("request_input", json!({"data_epoch": epoch, "command_id": "text", "expected_revision": 0, "interaction_id": "text",
             "scope": scope, "recipient": {"kind": "user"}, "title": "Release note", "need": "Write the release note", "why": "The release notes need it.",
-            "kind": "text", "blocking": false})),
+            "kind": "text", "blocking": false, "language": user_language()})),
         ("ask", tool_args(&epoch, "group", 0, json!({"interaction_id": "group", "scope": scope, "recipient": {"kind": "user"},
             "why": "", "blocking": false, "questions": (1..=4).map(|n| json!({"title": format!("Launch decision {n}"), "question": format!("Launch question {n}?"),
                 "why": "The launch plan needs it.", "options": [choice("a"), choice("b")]})).collect::<Vec<_>>()}))),

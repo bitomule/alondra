@@ -277,7 +277,7 @@ fn named_tools_construct_commands_and_publish_separate_catalogs() {
         json!({
             "interaction_id":"question-one", "scope":{"kind":"task", "task_id":"task-one"},
             "recipient":{"kind":"user"}, "title":"Release answer", "need":"Pick the answer", "why":"The task cannot go on without it",
-            "blocking":true, "recommended":"yes",
+            "blocking":true, "recommended":"yes", "language":"es",
             "options":[{"id":"yes", "label":"Yes"}, {"id":"no", "label":"No"}]
         }),
     );
@@ -297,7 +297,7 @@ fn named_tools_construct_commands_and_publish_separate_catalogs() {
         json!({
             "task_id":"task-one", "interaction_id":"answer-delivery", "title":"Release answer", "need":"Review the answer",
             "content":{"kind":"report", "body":"The requested answer"},
-            "targets":[{"kind":"text", "text":"The requested answer"}], "is_final":true
+            "targets":[{"kind":"text", "text":"The requested answer"}], "is_final":true, "language":"es"
         }),
     );
     assert_eq!(forwarded.0, "post /tasks/task-one/results http/1.1");
@@ -410,14 +410,14 @@ fn mcp_session_with(
 fn needy_ask(id: &str) -> Value {
     json!({
         "interaction_id":id, "scope":{"kind":"task", "task_id":"task-one"}, "recipient":{"kind":"user"},
-        "title":"Release answer", "need":"", "why":"It holds the release back", "blocking":true, "options":[{"id":"a", "label":"A"}, {"id":"b", "label":"B"}]
+        "title":"Release answer", "need":"", "why":"It holds the release back", "blocking":true, "language":"es", "options":[{"id":"a", "label":"A"}, {"id":"b", "label":"B"}]
     })
 }
 
 /// What the node of the incident sent on 23 October: its card, as text, under a field
 /// present_result does not have, and no need.
 fn incident_result() -> Value {
-    json!({"task_id":"task-one", "interaction_id":"task-one-result", "is_final":true,
+    json!({"task_id":"task-one", "interaction_id":"task-one-result", "is_final":true, "language":"es",
         "body":"PR #38 adds AGENTS.md", "targets":[{"kind":"pull_request"}],
         "card":"{\"need\":\"Review simpool PR 38\",\"why\":\"Agents finish the rollout themselves\"}"})
 }
