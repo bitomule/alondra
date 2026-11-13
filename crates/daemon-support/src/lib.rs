@@ -17,6 +17,7 @@ pub mod domain_authority;
 pub mod domain_content;
 pub mod domain_cutover;
 pub mod exit;
+pub mod files_retention;
 pub mod hook_socket;
 pub mod hook_text;
 pub mod iroh_terminals;

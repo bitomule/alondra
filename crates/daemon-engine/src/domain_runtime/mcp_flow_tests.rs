@@ -381,3 +381,43 @@ fn a_card_recorded_before_cards_owned_their_files_gets_a_copy_while_the_file_mat
     std::fs::remove_dir_all(&worktree).unwrap();
     assert_eq!(read_back(&fixture, "card-3").unwrap(), report);
 }
+
+fn aged(path: &std::path::Path, days: u64) {
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 24 * 60 * 60);
+    std::fs::File::open(path).unwrap().set_modified(old).unwrap();
+}
+
+fn swept(fixture: &Fixture) -> std::collections::BTreeMap<String, bool> {
+    let state = fixture.runtime.state().unwrap();
+    crate::files_retention::sweep(&fixture.home, &state, std::time::SystemTime::now())
+        .entries.into_iter().map(|entry| (entry.path, entry.remove)).collect()
+}
+
+#[test]
+fn the_sweep_keeps_what_an_open_task_or_card_needs_and_lists_the_rest() {
+    let mut fixture = Fixture::new();
+    fixture.task("sweep-task", false);
+    let files = fixture.home.join("files");
+    for (path, days) in [("results/sweep-task/r.md", 40), ("tasks/sweep-task/s.txt", 40), ("images/shot.png", 40), ("images/orphan.png", 40)] {
+        std::fs::create_dir_all(files.join(path).parent().unwrap()).unwrap();
+        std::fs::write(files.join(path), path).unwrap();
+        aged(&files.join(path), days);
+    }
+    fixture.agent(json!({"kind":"present_result", "task_id":"sweep-task", "interaction_id":"sweep-card",
+        "body":"See ![shot](/files?path=files/images/shot.png)", "targets":[{"kind":"text","text":"x"}], "is_final":false})).unwrap();
+    let open = swept(&fixture);
+    assert_eq!(open["results/sweep-task"], false, "its task is open");
+    assert_eq!(open["tasks/sweep-task"], false, "its task is open");
+    assert_eq!(open["images/shot.png"], false, "its card is in the inbox");
+    assert_eq!(open["images/orphan.png"], true, "nobody names it and it is old");
+
+    fixture.agent(json!({"kind":"present_result", "task_id":"sweep-task", "interaction_id":"sweep-final",
+        "body":"Done", "targets":[{"kind":"text","text":"Done"}], "is_final":true})).unwrap();
+    fixture.user(json!({"kind":"accept_delivery", "presentation_id":"sweep-final", "targets":[{"kind":"text","text":"Done"}]})).unwrap();
+    fixture.end_node("sweep-task");
+    fixture.user(json!({"kind":"accept_delivery", "presentation_id":"sweep-card", "targets":[{"kind":"text","text":"x"}]})).ok();
+    let closed = swept(&fixture);
+    assert_eq!(closed["tasks/sweep-task"], true, "scratch goes with its task");
+    assert_eq!(closed["results/sweep-task"], true, "the saved result is older than two weeks");
+    assert_eq!(closed["images/orphan.png"], true);
+}

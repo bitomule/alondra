@@ -573,6 +573,13 @@ worktree can stop you with a permission card the user has to answer. Create it w
 it goes with the worktree when the task closes. A subagent working in its own worktree uses that
 worktree's `.scratch/`: put this rule in the prompt of every subagent you start.
 
+A file that has to outlive your worktree and is not part of the work (a probe's output, a report
+you cite, an archive) goes in `files/tasks/<your task id>/` inside Alondra's home (`$ALONDRA_HOME`),
+never anywhere else under `files/`: that folder belongs to your task and Alondra removes it when
+the task closes. Files attached to a card are copied by Alondra when the card is presented, so a
+card keeps them after your worktree changes or goes; a file that no longer matches the digest you
+gave refuses the card, so attach it after you finish writing it.
+
 ## Searching the disk
 
 Never search or measure the whole disk or home folder (`find /`, `du -sh ~/*`, `rg … ~`), nor

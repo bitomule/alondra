@@ -19,6 +19,7 @@ use alondra_daemon_support::{
     disk_peaks,
     domain_authority,
     domain_content,
+    files_retention,
     domain_cutover,
     hook_socket,
     hook_text,

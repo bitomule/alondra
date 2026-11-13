@@ -268,6 +268,9 @@ fn finish(domain: &DomainRuntime, row: &TaskClosing, agent: Option<&AgentId>, en
     }
     record_end(domain, &row.task_id, end, agent)?;
     forget_post_merge_check(domain, &row.task_id)?;
+    if let Err(error) = crate::files_retention::remove_task_scratch(domain.home(), &row.task_id.0) {
+        log!("could not remove the scratch files of {}: {error}", row.task_id);
+    }
     if let Some(card) = &row.problem_id {
         let _ = domain.withdraw_problem(&InteractionId(card.clone()));
     }
