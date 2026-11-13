@@ -848,6 +848,8 @@ pub struct Acceptance {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Feedback {
+    #[serde(default, skip_serializing_if = "FeedbackTarget::is_delivery")]
+    pub target: FeedbackTarget,
     #[serde(default)]
     pub attachments: Vec<AttachmentRef>,
     pub user_id: String,
@@ -858,6 +860,24 @@ pub struct Feedback {
     /// The merge Alondra could not make, when this is the hand-back that says so.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merge_failure: Option<MergeFailure>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FeedbackTarget {
+    #[default]
+    Delivery,
+    PullRequest { pr_id: PrId, head: String },
+}
+
+impl FeedbackTarget {
+    pub fn is_delivery(&self) -> bool {
+        matches!(self, Self::Delivery)
+    }
+
+    pub fn affects(&self, target: &Self) -> bool {
+        matches!(self, Self::Delivery) || matches!(target, Self::Delivery) || self == target
+    }
 }
 /// A pull request Alondra could not merge, and GitHub's reason.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

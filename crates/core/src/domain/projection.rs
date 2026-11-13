@@ -184,6 +184,29 @@ impl DomainState {
             .filter(|f| acceptance.as_ref().is_none_or(|a| f.at_revision > a.at_revision))
             .map(|f| f.instruction)
     }
+    /// An unresolved response survives the node consuming its input or ending a turn.
+    pub fn pending_reply(&self, presentation: &Interaction, target: &FeedbackTarget) -> bool {
+        let InteractionPayload::Delivery { acceptance, feedback, targets, .. } = &presentation.payload else { return false };
+        if presentation.clarification.is_some() || feedback.iter().any(|f| {
+            f.target.affects(target)
+                && acceptance.as_ref().is_none_or(|a| f.at_revision > a.at_revision)
+                && (f.instruction != Instruction::Conflicts || targets.iter().any(|pr| {
+                    let DeliveryTarget::PullRequest { pr_id, head } = pr else { return false };
+                    f.target.affects(&FeedbackTarget::PullRequest { pr_id: pr_id.clone(), head: head.clone() })
+                        && self.pull_requests.get(pr_id).is_none_or(|pr| pr.state == PrState::Open)
+                }))
+        }) {
+            return true;
+        }
+        let Scope::Task { task_id } = &presentation.scope else { return false };
+        self.tasks.get(task_id).is_some_and(|task| !task.pending_user_inputs.is_empty())
+            || self.requests.values().filter(|request| !request.closed).filter_map(|request| request.reply_to.as_ref()).any(|reply| {
+                reply.interaction_id == presentation.id || self.interactions.get(&reply.interaction_id).is_some_and(|older| {
+                    older.scope == presentation.scope && matches!(older.payload, InteractionPayload::Delivery { .. })
+                })
+            })
+    }
+
     /// A reply is the last thing that changed the delivery: its node has not ended a turn, been
     /// paused or lost its session since, and nothing else moved the delivery.
     pub fn open_reply(&self, presentation: &Interaction) -> bool {

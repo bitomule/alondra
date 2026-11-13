@@ -155,6 +155,50 @@ fn feedback(store: &mut DomainStore) -> CommandEnvelope {
         },
     )
 }
+
+#[test]
+fn feedback_targets_roundtrip_and_older_databases_default_to_the_whole_delivery() {
+    use alondra_core::domain::{FeedbackTarget, InteractionPayload};
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    let pr = alondra_core::domain::hosted_pr_id("github.com", "acme/widgets", 7);
+    let head = "1".repeat(40);
+    execute(&mut store, &agent(), "register", Command::RegisterPr {
+        task_id: "task-1".into(), pr_id: pr.clone(), host: "github.com".into(), repository: "acme/widgets".into(), number: 7,
+        head: head.clone(), base: "main".into(), allowed_methods: vec![alondra_core::domain::MergeMethod::Squash],
+    });
+    let targets = vec![DeliveryTarget::PullRequest { pr_id: pr.clone(), head: head.clone() }];
+    execute(&mut store, &agent(), "present", Command::PresentResult {
+        checklist: vec![], task_id: "task-1".into(), interaction_id: "delivery-1".into(), body: "Review the change".into(),
+        targets: targets.clone(), is_final: true, nothing_to_review: false, attachments: vec![],
+        card: alondra_core::domain::CardSpec::delivery("Review the change", &[], true),
+    });
+    let command = envelope(&mut store, "feedback", Command::SubmitFeedback { merge_failure: None, attachments: vec![],
+        presentation_id: "delivery-1".into(), targets, body: "Explain the change".into(), instruction: Instruction::Question });
+    store.execute_authenticated(&user(), &command, None).unwrap();
+    let before = store.load().unwrap();
+    let mut after = DomainState::clone(&before);
+    let target = FeedbackTarget::PullRequest { pr_id: pr, head };
+    let InteractionPayload::Delivery { feedback, .. } = &mut after.interactions.get_mut(&"delivery-1".into()).unwrap().payload else { panic!("delivery") };
+    feedback[0].target = target.clone();
+    let tx = rusqlite::Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate).unwrap();
+    let scope = alondra_store::AuthorityScope::new(epoch_of(&store.conn).unwrap()).unwrap();
+    let mut journal = alondra_store::LifecycleTransaction::attach(tx, scope).unwrap();
+    repository::save_changes(&store.conn, &mut journal, &before, &after).unwrap();
+    journal.commit().unwrap();
+    drop(store);
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(*store.load().unwrap(), after);
+    store.conn.execute_batch("ALTER TABLE delivery_feedback DROP COLUMN target;").unwrap();
+    drop(store);
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(store.load().unwrap(), before, "legacy feedback applies to the whole delivery");
+    let column: i64 = store.conn.query_row("SELECT count(*) FROM pragma_table_info('delivery_feedback') WHERE name='target'", [], |r| r.get(0)).unwrap();
+    assert_eq!(column, 1);
+    store.integrity_check().unwrap();
+}
+
 fn count(store: &DomainStore, table: &str) -> i64 {
     store
         .conn

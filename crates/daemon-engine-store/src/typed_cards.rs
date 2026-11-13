@@ -14,6 +14,7 @@ pub(super) fn upgrade(tx: &Transaction<'_>) -> anyhow::Result<()> {
     if add_column(tx, "delivery_feedback", "merge_failure")? {
         mark_merge_failures(tx)?;
     }
+    add_column(tx, "delivery_feedback", "target")?;
     Ok(())
 }
 

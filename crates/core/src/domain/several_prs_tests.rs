@@ -357,6 +357,35 @@ pub(crate) fn two_open_prs() -> DomainState {
 }
 
 #[test]
+fn a_reply_obligation_is_durable_and_scoped_to_the_presented_pr_head() {
+    let mut s = two_open_prs();
+    let target = FeedbackTarget::PullRequest { pr_id: PUBLIC.into(), head: FIRST_HEAD.into() };
+    let feedback_revision = s.revision + 1;
+    let p = s.interactions.get_mut(&"final".into()).unwrap();
+    let InteractionPayload::Delivery { feedback, .. } = &mut p.payload else { panic!("delivery") };
+    feedback.push(Feedback { target: target.clone(), attachments: vec![], user_id: "u".into(), body: "Explain the change".into(),
+        at_revision: feedback_revision, instruction: Instruction::Reply, merge_failure: None });
+    p.revision = feedback_revision;
+    s.revision = feedback_revision;
+    must(&mut s, Actor::System, Command::TellNode {
+        task_id: TASK.into(), text: "Explain the change".into(), from_user: false, answers: None,
+    });
+    let input = s.lifecycle_of(&TASK.into()).unwrap().pending_inputs()[0].as_str().to_owned();
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts {
+        task_id: TASK.into(), generation: 1, facts: vec![RuntimeObservation::TurnStarted { turn: "reply".into(), input }],
+    });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary {
+        task_id: TASK.into(), generation: 1, turn: "reply".into(), failure: None, failed: None,
+    });
+    let p = &s.interactions[&"final".into()];
+    assert_eq!(s.handed_back(p), None, "the temporary visibility predicate no longer holds the reply");
+    assert!(s.pending_reply(p, &target), "a resting node has not answered the user");
+    assert!(s.pending_reply(p, &FeedbackTarget::Delivery));
+    assert!(!s.pending_reply(p, &FeedbackTarget::PullRequest { pr_id: CLOUD.into(), head: CLOUD_HEAD.into() }));
+    assert!(!s.pending_reply(p, &FeedbackTarget::PullRequest { pr_id: PUBLIC.into(), head: CLOUD_HEAD.into() }));
+}
+
+#[test]
 fn a_delivery_of_a_pr_carries_every_open_pr_and_the_task_waits_for_each() {
     let mut s = two_open_prs();
     let InteractionPayload::Delivery { targets, .. } = &s.interactions[&"final".into()].payload else { panic!("a delivery") };

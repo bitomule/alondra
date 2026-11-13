@@ -3770,7 +3770,7 @@ impl DomainState {
                             let revision = self.revision + 1;
                             let p = self.interactions.get_mut(&delivery).unwrap();
                             if let InteractionPayload::Delivery { feedback, .. } = &mut p.payload {
-                                feedback.push(Feedback {
+                                feedback.push(Feedback { target: FeedbackTarget::Delivery,
                                     attachments: vec![],
                                     user_id: Feedback::ALONDRA.to_owned(),
                                     body: text.clone(),
@@ -4807,7 +4807,7 @@ impl DomainState {
                 self.invalidate(&task);
                 let p = self.interactions.get_mut(presentation_id).unwrap();
                 if let InteractionPayload::Delivery { feedback, .. } = &mut p.payload {
-                    feedback.push(Feedback {
+                    feedback.push(Feedback { target: FeedbackTarget::Delivery,
                         attachments: attachments.clone(),
                         user_id: u,
                         body: body.clone(),
@@ -6022,6 +6022,11 @@ impl DomainState {
                     for f in feedback {
                         id(&f.user_id)?;
                         content(&f.body, &f.attachments)?;
+                        if let FeedbackTarget::PullRequest { pr_id, head } = &f.target
+                            && !targets.contains(&DeliveryTarget::PullRequest { pr_id: pr_id.clone(), head: head.clone() })
+                        {
+                            return fail("invalid_input", "Feedback target is not part of its delivery");
+                        }
                         if f.at_revision > self.revision {
                             return fail("invalid_input", "Feedback revision from future");
                         }

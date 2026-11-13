@@ -643,6 +643,7 @@ fn save_interaction_relations(
                 let mut row = object(f)?;
                 row.remove("attachments");
                 row.insert("merge_failure".into(), json!(f.merge_failure));
+                row.insert("target".into(), json!(f.target));
                 row.extend(object(&json!({"interaction_id":i.id,"ordinal":index}))?);
                 upsert(c, "delivery_feedback", &["interaction_id", "ordinal"], row)?;
                 if earlier.is_none_or(|e| e.len() <= index) {
@@ -1319,8 +1320,11 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
             anyhow::bail!("target on non-delivery");
         }
     }
-    for mut row in rows(c, "delivery_feedback", &[], &["merge_failure"])? {
+    for mut row in rows(c, "delivery_feedback", &[], &["merge_failure", "target"])? {
         let id = take(&mut row, "interaction_id");
+        if row.get("target").is_some_and(Value::is_null) {
+            row.as_object_mut().context("feedback must be an object")?.remove("target");
+        }
         let f: Feedback = decode(row)?;
         let i = state
             .interactions

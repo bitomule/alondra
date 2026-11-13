@@ -505,7 +505,7 @@ fn warns_when_older(command: Option<&Cmd>, json: bool) -> bool {
 /// The commands that print a document with `--json`; any other one refuses the flag.
 fn takes_json(command: Option<&Cmd>) -> bool {
     matches!(command, Some(
-        Cmd::Doctor { .. } | Cmd::Metrics { .. } | Cmd::Cleanup { .. } | Cmd::Handover { .. } | Cmd::Files { .. }
+        Cmd::Status | Cmd::Doctor { .. } | Cmd::Metrics { .. } | Cmd::Cleanup { .. } | Cmd::Handover { .. } | Cmd::Files { .. }
         | Cmd::Report { command: None | Some(ReportCmd::List | ReportCmd::Send { .. }), .. }
         | Cmd::Config { command: ConfigCmd::List | ConfigCmd::Get { .. } }
         | Cmd::Device { command: DeviceCmd::List }
@@ -558,7 +558,7 @@ fn run(command: Option<Cmd>, json: bool, no_input: bool) -> Result<()> {
             Some(ReportCmd::Open { target }) => report::open_report(&target),
             Some(ReportCmd::Delete { target }) => report::delete_report(&target),
         },
-        Some(Cmd::Status) => status(),
+        Some(Cmd::Status) => status(json),
         Some(Cmd::Answer { id, option, text }) => cli::answer_cmd(&id, option.as_deref(), &text.join(" ")),
         Some(Cmd::Send { to, reply, text }) => cli::send(&to, &text.join(" "), reply),
         Some(Cmd::Cancel { tasks, reason }) => cli::cancel(&tasks, reason.as_deref()),
@@ -871,11 +871,15 @@ fn compact_hook_payload(payload: &mut serde_json::Value) {
     }
 }
 
-fn status() -> Result<()> {
+fn status(json: bool) -> Result<()> {
     let client = Client::for_user(Duration::from_secs(10));
     let home = client.views("home", None)?;
     let tasks = client.views("tasks", None)?;
-    print!("{}", cli::status_text(&home, &tasks));
+    if json {
+        println!("{}", serde_json::to_string_pretty(&cli::status_json(&home, &tasks))?);
+    } else {
+        print!("{}", cli::status_text(&home, &tasks));
+    }
     Ok(())
 }
 
@@ -1006,10 +1010,10 @@ mod api_tests {
         assert!(cli.json && cli.no_input && takes_json(cli.command.as_ref()));
         let cli = parsed(&["--json", "mac", "list"]);
         assert!(cli.json && takes_json(cli.command.as_ref()));
-        for args in [&["doctor"][..], &["metrics"], &["cleanup"], &["config", "list"], &["config", "get", "port"], &["account", "status"], &["relay", "status"]] {
+        for args in [&["doctor"][..], &["metrics"], &["cleanup"], &["config", "list"], &["config", "get", "port"], &["account", "status"], &["relay", "status"], &["status"]] {
             assert!(takes_json(parsed(args).command.as_ref()), "{args:?}");
         }
-        for args in [&["answer", "q", "--option", "1"][..], &["device", "approve", "r"], &["relay", "on"], &["config", "set", "port", "1"], &["status"]] {
+        for args in [&["answer", "q", "--option", "1"][..], &["device", "approve", "r"], &["relay", "on"], &["config", "set", "port", "1"]] {
             assert!(!takes_json(parsed(args).command.as_ref()), "{args:?}");
         }
         assert!(takes_json(None) == false);

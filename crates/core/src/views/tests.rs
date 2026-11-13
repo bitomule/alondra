@@ -4819,7 +4819,7 @@ fn the_task_whose_node_resolves_conflicts_says_so_with_its_pr_in_both_languages(
     state.tasks.get_mut(&"t-651c38484cd2f34e74d5107ba05f7f15".into()).unwrap().agent_id = Some(agent);
     let delivery = state.interactions.get_mut(&"hf-weekly-2026-09-30".into()).unwrap();
     if let InteractionPayload::Delivery { feedback, .. } = &mut delivery.payload {
-        feedback.push(crate::domain::Feedback { merge_failure: None,
+        feedback.push(crate::domain::Feedback { target: Default::default(), merge_failure: None,
             attachments: vec![], user_id: crate::domain::Feedback::ALONDRA.into(), body: "Conflicts".into(),
             at_revision: 99, instruction: crate::domain::Instruction::Conflicts,
         });
@@ -6463,7 +6463,7 @@ fn a_settled_card_says_only_why_it_went_in_english_and_spanish() {
         targets: vec![crate::domain::DeliveryTarget::Text { text: "No hay reservas acumuladas.".into() }],
         is_final: true,
         acceptance: None,
-        feedback: vec![Feedback { merge_failure: None, attachments: vec![], user_id: "device:1".into(), body: "Falta el caso vacío".into(), at_revision: 9, instruction: Instruction::Changes }],
+        feedback: vec![Feedback { target: Default::default(), merge_failure: None, attachments: vec![], user_id: "device:1".into(), body: "Falta el caso vacío".into(), at_revision: 9, instruction: Instruction::Changes }],
     };
     assert_eq!(notice(&state, "card:i-3", Lang::Es).as_deref(), Some("Ya respondida"));
 

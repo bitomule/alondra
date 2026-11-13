@@ -215,7 +215,40 @@ fn status_row(out: &mut String, row: &alondra_core::views::Row, depth: usize) {
     for child in &row.children { status_row(out, child, depth + 1); }
 }
 
-/// `alondra status`: the summary, what waits for the user, the tasks and the machine.
+const STATUS_SCHEMA: &str = "alondra.status/1";
+
+/// Machine-readable status from the committed home and task views.
+pub fn status_json(home: &View, tasks: &View) -> Value {
+    use alondra_core::views::{Link, Row};
+    fn collect(row: &Row, tasks: &mut Vec<Value>) {
+        if let Some(Link::View { key }) = &row.link
+            && let Some(task_id) = key.strip_prefix("task:")
+        {
+            let mut task = serde_json::to_value(row).expect("a view row serializes");
+            task["task_id"] = task_id.into();
+            tasks.push(task);
+        }
+        for child in &row.children { collect(child, tasks); }
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let cards: Vec<_> = home.sections.iter().filter(|section| section.id != "detail")
+        .flat_map(|section| &section.items).filter_map(|item| match item {
+            Item::Card(card) if seen.insert(&card.id) => Some(card), _ => None,
+        }).collect();
+    let mut blocks = Vec::new();
+    for section in tasks.sections.iter().filter(|section| section.id != "detail") {
+        for item in &section.items {
+            let Item::Row(row) = item else { continue };
+            let mut tasks = Vec::new();
+            collect(row, &mut tasks);
+            if !tasks.is_empty() {
+                blocks.push(serde_json::json!({"id":row.id,"title":row.title,"tasks":tasks}));
+            }
+        }
+    }
+    serde_json::json!({"schema":STATUS_SCHEMA,"header":home.status,"cards":cards,"task_blocks":blocks})
+}
+
 pub fn status_text(home: &View, tasks: &View) -> String {
     use std::fmt::Write;
     let mut out = format!("{}\n", home.status.summary);
