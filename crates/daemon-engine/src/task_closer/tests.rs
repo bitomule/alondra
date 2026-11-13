@@ -771,6 +771,44 @@ async fn closing_the_node_deletes_the_tasks_worktree_that_is_a_link_with_the_fol
     rig.assert_done(NodeEnd::Closed);
 }
 
+#[tokio::test]
+async fn worktrees_root_interrupted_registration_keeps_both_close_paths_waiting_without_a_card() {
+    use alondra_daemon_support::worktrees_root::{self, Repository};
+    let rig = Rig::new(thirty_minutes());
+    let fixture = crate::test_support::Directory::new();
+    let original = crate::worktree::testing::task_worktree(&fixture, "t");
+    let volume = fixture.join("volume");
+    std::fs::create_dir(&volume).unwrap();
+    let root = worktrees_root::capture(&volume).unwrap();
+    let directory = worktrees_root::directory(&root, &fixture.join("repo")).unwrap();
+    let path = directory.join("t");
+    crate::worktree::testing::git(&fixture.join("repo"), &["worktree", "move", original.to_str().unwrap(), path.to_str().unwrap()]);
+    let record_path = directory.join(".alondra-repository.json");
+    let original_record = std::fs::read(&record_path).unwrap();
+    let mut record: Repository = serde_json::from_slice(&original_record).unwrap();
+    record.root.volume_id = "00000000-0000-0000-0000-000000000001".into();
+    std::fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
+    rig.domain.store.lock().unwrap().set_task_worktree(&"t".into(), path.to_str().unwrap(), T0).unwrap();
+    assert!(rig.task().worktrees.is_empty(), "the process stopped before the domain record");
+    std::fs::rename(&volume, fixture.join("unmounted")).unwrap();
+    let mut unattended = rig.task();
+    unattended.agent_id = None;
+    assert!(finish_unattended(&rig.domain, &unattended).await.unwrap_err().downcast_ref::<Unreachable>().is_some());
+    rig.confirm();
+    for minutes in [0, 5, 10, 15, 20] { rig.pass(T0 + minutes * MINUTE).await; }
+    assert_eq!(rig.task().state, TaskState::Closing);
+    assert_eq!(rig.closing().unwrap().failures, 0);
+    assert!(rig.cards().is_empty());
+    assert!(!volume.exists());
+    assert!(fixture.join("repo/.git/worktrees/t").exists());
+    std::fs::rename(fixture.join("unmounted"), &volume).unwrap();
+    std::fs::write(&record_path, original_record).unwrap();
+    rig.domain.store.lock().unwrap().set_task_worktree(&"t".into(), path.to_str().unwrap(), T0).unwrap();
+    rig.pass(T0 + 25 * MINUTE).await;
+    assert!(!path.exists());
+    rig.assert_done(NodeEnd::Gone);
+}
+
 /// A volume that is not mounted holds the close and leaves the worktree as it is, with no card
 /// however long it lasts; the next try, once it is back, deletes it and the task is done.
 #[tokio::test]

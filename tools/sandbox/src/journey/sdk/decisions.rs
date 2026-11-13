@@ -185,6 +185,15 @@ pub(super) fn script_tool(sandbox: &Sandbox, when: &str, id: &str, name: &str, i
     std::fs::write(&path, json!({"when": when, "id": id, "name": name, "input": input}).to_string()).with_context(|| format!("writing {}", path.display()))
 }
 
+pub(super) fn script_tool_after(sandbox: &Sandbox, after: &str, id: &str, name: &str, input: Value) -> Result<()> {
+    script_tool(sandbox, "", id, name, input)?;
+    let path = sandbox.dir.join(format!("sdk/model-tools/{id}.json"));
+    let mut call: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+    call["after_tool_result"] = json!(after);
+    std::fs::write(path, call.to_string())?;
+    Ok(())
+}
+
 /// What the model got back for its tool call `id`.
 pub(super) fn tool_result(sandbox: &Sandbox, id: &str) -> Result<Option<Value>> {
     Ok(model_requests(sandbox)?.into_iter()

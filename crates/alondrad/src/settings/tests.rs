@@ -294,3 +294,25 @@ async fn this_mac_reads_and_changes_the_accounts_and_a_web_page_may_not() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["accounts"][0]["state"], "unavailable", "without Claude Code no sign-in can be checked: {body}");
 }
+
+#[test]
+fn worktrees_root_config_pins_its_volume_and_unset_restores_default_without_losing_options() {
+    let mac = Mac::new();
+    let path = mac.user.join("worktrees");
+    std::fs::create_dir(&path).unwrap();
+    std::fs::write(alondra_core::options::path_in(&mac.alondra), "max_working_nodes = 3\n").unwrap();
+    let reply = write_config(&mac.alondra, &json!({"key": "worktrees_root", "value": path}));
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
+    assert_eq!(reply.body["restart"], false);
+    let file = alondra_core::options::OptionsFile::parse(&mac.options()).unwrap();
+    let storage = file.worktrees_root.unwrap();
+    assert_eq!(storage.path, path);
+    assert!(!storage.volume_id.is_empty());
+    let saved = mac.options();
+    assert_eq!(write_config(&mac.alondra, &json!({"key": "worktrees_root", "value": path.join("missing")})).status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(mac.options(), saved);
+    assert_eq!(write_config(&mac.alondra, &json!({"key": "worktrees_root", "value": null})).status, StatusCode::OK);
+    let file = alondra_core::options::OptionsFile::parse(&mac.options()).unwrap();
+    assert_eq!(file.worktrees_root, None);
+    assert_eq!(file.max_working_nodes, alondra_core::options::NodeLimit::Fixed(3));
+}

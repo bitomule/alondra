@@ -533,17 +533,6 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
     if let Some(exhausted) = domain.live.usage_pause.current().filter(|exhausted| exhausted.by_user || (native.is_none() && pinned.is_none())) {
         return Err(usage_refusal(domain, &task.id, &exhausted));
     }
-    if reopening.is_none() && !Path::new(&cwd).is_dir() {
-        return Err(DomainError::new("invalid_input", format!("directory {cwd} does not exist")));
-    }
-    if let Some(why) = domain.live.machine_watch.refuse_launch(Path::new(&cwd)) {
-        domain.live.gate.not_started(&crate::admission::Key::Task(task.id.clone()));
-        if origin == Origin::Orchestrator && replaced.is_none() {
-            return queue_at_gate(domain, &body, &task.id, &task.title);
-        }
-        remember_refusal(domain, &task.id, Some(("disk_low", None)));
-        return Err(DomainError::new("disk_low", format!("{why}. {} stays as it is and can be launched after that", body.task)));
-    }
     let projects_root = crate::domain_schedule_runner::options_at(home).ok().map(|file| file.projects_root(&crate::options::user_home()));
     let account = account.unwrap_or_else(alondra_core::accounts::AccountId::default_account);
     let key = alondra_core::accounts::AccountKey::new(provider, account.clone());
@@ -553,6 +542,43 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
             .map_err(|error| DomainError::new("storage_unavailable", error.to_string()))?
             .or(domain.task_worktree(&task.id).map_err(plan_storage)?)
     } else { domain.task_worktree(&task.id).map_err(plan_storage)? }.map(PathBuf::from);
+    let recorded = match &known {
+        Some(path) => domain.store.lock_or_exit("the domain store").worktree_storage(&path.to_string_lossy()).map_err(plan_storage)?,
+        None => None,
+    };
+    let worktrees_root = recorded.map(|record| record.root).or_else(|| file.worktrees_root.clone());
+    let slug = crate::launch_worktree::slug(&task.id.0);
+    let pr_head = current.pull_requests.values().filter(|pr| pr.task_id == task.id).map(|pr| pr.head.as_str()).last();
+    let retained = match &known {
+        Some(known) => crate::task_worktrees::ready(domain, &known.to_string_lossy()).await.map_err(|why| crate::launch_worktree::LaunchError::Storage(why.to_string())),
+        None => Ok(()),
+    };
+    let storage = match retained { Ok(()) if worktrees_root.is_none() => Ok(PathBuf::from(&cwd)), Ok(()) => crate::launch_worktree::storage_for(Path::new(&cwd), &slug, known.as_deref(), pr_head, worktrees_root.as_ref()).await, Err(why) => Err(why) };
+    let storage = match storage {
+        Ok(storage) => storage,
+        Err(crate::launch_worktree::LaunchError::Workspace(why)) => {
+            return Err(DomainError::new("main_checkout", format!("{why}. {} stays as it is and was not launched", task.id)));
+        }
+        Err(crate::launch_worktree::LaunchError::Storage(why)) => {
+            domain.live.gate.not_started(&crate::admission::Key::Task(task.id.clone()));
+            remember_refusal(domain, &task.id, Some(("worktrees_unavailable", None)));
+            if origin == Origin::Orchestrator && replaced.is_none() {
+                return queue_at_gate(domain, &body, &task.id, &task.title);
+            }
+            return Err(DomainError::new("worktrees_unavailable", why));
+        }
+    };
+    if reopening.is_none() && !Path::new(&cwd).is_dir() {
+        return Err(DomainError::new("invalid_input", format!("directory {cwd} does not exist")));
+    }
+    if let Some(why) = domain.live.machine_watch.refuse_launch(&storage) {
+        domain.live.gate.not_started(&crate::admission::Key::Task(task.id.clone()));
+        if origin == Origin::Orchestrator && replaced.is_none() {
+            return queue_at_gate(domain, &body, &task.id, &task.title);
+        }
+        remember_refusal(domain, &task.id, Some(("disk_low", None)));
+        return Err(DomainError::new("disk_low", format!("{why}. {} stays as it is and can be launched after that", body.task)));
+    }
     if prior_native {
         let (backend, runtime) = domain.sdk().ok_or_else(|| DomainError::new("unavailable", crate::sdk_owner::NO_HOST))?;
         let original_directory = known.clone().unwrap_or_else(|| PathBuf::from(&cwd));
@@ -568,13 +594,29 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
         remember_refusal(domain, &task.id, Some(("workspace_untrusted", Some(&repository.to_string_lossy()))));
         return Err(DomainError::new("workspace_untrusted", crate::claude_trust::instructions(&repository)));
     }
-    let pr_head = current.pull_requests.values().filter(|pr| pr.task_id == task.id).map(|pr| pr.head.as_str()).last();
-    let slug = crate::launch_worktree::slug(&task.id.0);
-    let (workplace, recover_directory) = if reopening.is_some() {
-        crate::launch_worktree::reopen(Path::new(&cwd), &slug, known.as_deref().unwrap_or_else(|| Path::new(&cwd)), pr_head).await
+    let isolation = if reopening.is_some() {
+        crate::launch_worktree::reopen_in(Path::new(&cwd), &slug, known.as_deref().unwrap_or_else(|| Path::new(&cwd)), pr_head, worktrees_root.as_ref()).await
     } else {
-        crate::launch_worktree::isolate(Path::new(&cwd), &slug, known.as_deref(), pr_head).await.map(|workplace| (workplace, false))
-    }.map_err(|why| DomainError::new("main_checkout", format!("{why}. {} stays as it is and was not launched", task.id)))?;
+        crate::launch_worktree::isolate_in(Path::new(&cwd), &slug, known.as_deref(), pr_head, worktrees_root.as_ref()).await.map(|workplace| (workplace, false))
+    };
+    let (workplace, recover_directory) = match isolation {
+        Ok(workplace) => workplace,
+        Err(crate::launch_worktree::LaunchError::Storage(why)) => {
+            domain.live.gate.not_started(&crate::admission::Key::Task(task.id.clone()));
+            remember_refusal(domain, &task.id, Some(("worktrees_unavailable", None)));
+            return Err(DomainError::new("worktrees_unavailable", why));
+        }
+        Err(why) => {
+            if let Some(known) = &known
+                && let Err(unavailable) = crate::task_worktrees::ready(domain, &known.to_string_lossy()).await {
+                domain.live.gate.not_started(&crate::admission::Key::Task(task.id.clone()));
+                remember_refusal(domain, &task.id, Some(("worktrees_unavailable", None)));
+                return Err(DomainError::new("worktrees_unavailable", unavailable.to_string()));
+            }
+            return Err(DomainError::new("main_checkout", format!("{why}. {} stays as it is and was not launched", task.id)));
+        }
+    };
+
     let reopening = reopening.map(|input| {
         let (backend, _) = domain.sdk().ok_or_else(|| DomainError::new("unavailable", crate::sdk_owner::NO_HOST))?;
         crate::sdk_owner::prepare_reopening(domain, backend, &task.id, provider, &account, workplace.dir(), input, recover_directory)
@@ -706,8 +748,8 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
 /// launch fails. A task that ended while the worktree was being made already had its close, so the
 /// worktree goes at once, unless it holds work not saved.
 pub(crate) async fn own_worktree(domain: &DomainRuntime, task: &TaskId, workplace: &Workplace) -> Result<(), DomainError> {
-    let dir = workplace.dir();
-    if workplace.chosen().is_none() || !dir.join(".git").is_file() {
+    let Some(dir) = workplace.chosen() else { return Ok(()) };
+    if !dir.join(".git").is_file() {
         return Ok(());
     }
     let shown = dir.to_string_lossy();

@@ -8,6 +8,17 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 
 use crate::domain_runtime::DomainRuntime;
+use crate::locks::Poisonable as _;
+
+/// Mounts a recorded worktree's volume from metadata kept on the daemon's own disk.
+pub(crate) async fn ready(domain: &DomainRuntime, path: &str) -> Result<()> {
+    let storage = domain.store.lock_or_exit("the domain store").worktree_storage_at(path)?;
+    if let Some((path, storage)) = storage {
+        tokio::task::spawn_blocking(move || alondra_daemon_support::worktrees_root::restore(&path, &storage))
+            .await?.map_err(Unreachable)?;
+    }
+    Ok(())
+}
 
 /// A worktree a tool result says Claude Code made.
 #[derive(Debug, PartialEq)]
@@ -143,6 +154,10 @@ pub async fn leftovers(domain: &DomainRuntime, task: &Task) -> Vec<(String, Stri
 pub(crate) async fn release_all(domain: &DomainRuntime, task: &Task) -> Result<Vec<(String, String)>> {
     let (mut left, mut unreachable) = (vec![], vec![]);
     for (path, worktree) in task.open_worktrees() {
+        if let Err(why) = ready(domain, path).await {
+            unreachable.push(why.to_string());
+            continue;
+        }
         let end = if let Err(why) = may_handle(domain, path) {
             log!("leaving {path} of {} as it is: {why}", task.id);
             WorktreeEnd::UsersOwn

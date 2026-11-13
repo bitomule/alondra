@@ -45,13 +45,11 @@ pub fn origin_in(claude_home: &Path, session_id: &str) -> Option<WorktreeOrigin>
 /// Where Claude Code puts the worktree of a subagent `agent` that the node working in `own`
 /// launched: `agent-<agent>` in the `.claude/worktrees` of the repository `own` belongs to.
 pub fn subagent_worktree(own: &Path, agent: &str) -> Option<PathBuf> {
-    let worktrees = own.parent().filter(|dir| dir.file_name().is_some_and(|name| name == "worktrees"))?;
-    let repository = worktrees.parent().filter(|dir| dir.file_name().is_some_and(|name| name == ".claude"))?.parent()?;
     let common = std::process::Command::new("git").arg("-C").arg(own)
         .args(["rev-parse", "--path-format=absolute", "--git-common-dir"]).output().ok()
         .filter(|out| out.status.success())
-        .map(|out| PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()));
-    let repository = common.as_deref().and_then(Path::parent).unwrap_or(repository);
+        .map(|out| PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()))?;
+    let repository = common.parent()?;
     Some(repository.join(".claude").join("worktrees").join(format!("agent-{agent}")))
 }
 
@@ -349,13 +347,16 @@ pub async fn release_task_worktree(dir: &Path, slug: &str, remove: bool) -> Resu
 }
 
 /// Deletes a worktree a closing task recorded as its own, its node's or one of its subagents',
-/// all in a repository's `.claude/worktrees`. One the node gave up (`give_up`) goes as it is;
+/// in a repository's `.claude/worktrees` or its recorded storage folder. One given up goes as it is;
 /// any other only with nothing left in it. Its branch stays.
 pub async fn release_recorded_worktree(dir: &Path, give_up: bool) -> Result<TaskWorktree, String> {
     release(dir, |_| true, give_up, true).await
 }
 
 async fn release(dir: &Path, named: impl Fn(&Path) -> bool, give_up: bool, remove: bool) -> Result<TaskWorktree, String> {
+    if let Err(why) = crate::worktrees_root::ready_recorded(dir).await {
+        return Ok(TaskWorktree::Unavailable(why));
+    }
     if let Some(linked) = Linked::holding(dir) {
         return release_linked(linked, &named, give_up, remove).await;
     }
@@ -535,11 +536,15 @@ fn lexical(path: &Path) -> PathBuf {
     folded
 }
 
-/// The root of `dir` when it is a linked worktree in a repository's `.claude/worktrees` that
-/// `named` accepts: the only folders Alondra deletes.
+/// The root of `dir` when it is a managed linked worktree that `named` accepts.
 async fn alondras_top(dir: &Path, named: &impl Fn(&Path) -> bool) -> Option<PathBuf> {
     let top = git(dir, &["rev-parse", "--path-format=absolute", "--show-toplevel"]).await.map(PathBuf::from)?;
-    (top.join(".git").is_file() && named(&top) && top.parent().is_some_and(|parent| parent.ends_with(".claude/worktrees"))).then_some(top)
+    let legacy = top.parent().is_some_and(|parent| parent.ends_with(".claude/worktrees"));
+    let configured = match crate::worktrees_root::repository(&top) {
+        Some(repository) => worktree_of_repository(&top, Some(&repository)).await,
+        None => false,
+    };
+    (top.join(".git").is_file() && named(&top) && (legacy || configured)).then_some(top)
 }
 
 /// How many files a worktree Alondra made holds that no commit has; `None` when `dir` is gone or
@@ -565,7 +570,7 @@ pub async fn uncommitted_files_of_alondras_worktree(dir: &Path) -> Result<Option
 /// with its git metadata, or set aside to go, so a deletion cut halfway is finished on the next
 /// try instead of leaving a folder git no longer knows.
 fn trash_of(top: &Path) -> Option<PathBuf> {
-    top.parent().filter(|parent| parent.ends_with(".claude/worktrees")).and(beside(top))
+    (top.parent().is_some_and(|parent| parent.ends_with(".claude/worktrees")) || crate::worktrees_root::repository(top).is_some()).then(|| beside(top)).flatten()
 }
 
 fn beside(top: &Path) -> Option<PathBuf> {

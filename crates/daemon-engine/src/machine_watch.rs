@@ -328,6 +328,8 @@ fn own_disk() -> &'static Path {
 
 pub struct MachineWatch {
     #[cfg(any(test, feature = "test-hooks"))]
+    launch_space: Mutex<BTreeMap<PathBuf, crate::disk::Space>>,
+    #[cfg(any(test, feature = "test-hooks"))]
     pub sampled: tokio::sync::Notify,
     #[cfg(any(test, feature = "test-hooks"))]
     pub sample_threads: Mutex<Vec<std::thread::ThreadId>>,
@@ -340,7 +342,7 @@ pub struct MachineWatch {
 
 impl Default for MachineWatch {
     fn default() -> Self {
-        Self { record: Mutex::default(), file: None, save_failures: crate::save::Failures::default(), changed: tokio::sync::Notify::new(),
+        Self { #[cfg(any(test, feature = "test-hooks"))] launch_space: Mutex::default(), record: Mutex::default(), file: None, save_failures: crate::save::Failures::default(), changed: tokio::sync::Notify::new(),
             #[cfg(any(test, feature = "test-hooks"))] sampled: tokio::sync::Notify::new(),
             #[cfg(any(test, feature = "test-hooks"))] sample_threads: Mutex::new(vec![]),
         }
@@ -762,8 +764,17 @@ impl MachineWatch {
         self.refuse_launch_on(mount, self.space_where_it_works(cwd))
     }
 
+    #[cfg(test)]
+    pub(crate) fn give_launch_space(&self, path: PathBuf, space: crate::disk::Space) {
+        self.launch_space.lock().unwrap().insert(path, space);
+    }
+
     /// With test hooks a launch sees the space the watch measured, never the free space of the Mac running the tests.
     fn space_where_it_works(&self, cwd: &Path) -> Option<crate::disk::Space> {
+        #[cfg(any(test, feature = "test-hooks"))]
+        if let Some(space) = self.launch_space.lock_or_recover("the launch volume measurements").get(cwd).copied() {
+            return Some(space);
+        }
         #[cfg(any(test, feature = "test-hooks"))]
         if let Some(measured) = self.record().boot_disk {
             return Some(measured);

@@ -239,7 +239,7 @@ pub enum LiveHold {
         volume: Option<String>,
     },
 }
-/// `reason` is `usage_exhausted`, `disk_low`, `workspace_untrusted` (with the folder as `detail`)
+/// `reason` is `usage_exhausted`, `disk_low`, `worktrees_unavailable`, `workspace_untrusted` (with the folder as `detail`)
 /// or `launch_failed` (with the error).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveLaunchRefusal {

@@ -195,7 +195,7 @@ fn settle(domain: &DomainRuntime, task: &TaskId, cwd: Option<&str>, launched: Re
                 domain.live.gate.not_started(&crate::admission::Key::Task(task.clone()));
                 domain.store.lock_or_exit("the domain store").forget_auto_launch(task)?;
             }
-            "disk_low" | "plan_review_pending" => domain.store.lock_or_exit("the domain store").forget_auto_launch(task)?,
+            "worktrees_unavailable" | "disk_low" | "plan_review_pending" => domain.store.lock_or_exit("the domain store").forget_auto_launch(task)?,
             "conflict" => {
                 let taken = domain.state()?.tasks.get(task).is_some_and(|task| task.agent_id.is_some());
                 let mut store = domain.store.lock_or_exit("the domain store");

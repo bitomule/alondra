@@ -86,7 +86,7 @@ pub(crate) fn ended(domain: &DomainRuntime, task: &TaskId) -> Result<bool> {
 /// choices is the same on every try.
 pub(crate) fn problem_of(code: &str, message: &str, cwd: Option<&str>) -> Option<StartProblem> {
     match code {
-        "usage_exhausted" | "disk_low" | "conflict" => None,
+        "usage_exhausted" | "worktrees_unavailable" | "disk_low" | "conflict" => None,
         "invalid_input" | "model_is_binding" | "unsupported_capability" | "selection_transition_required" | "active_account_immutable" =>
             Some(StartProblem::PlanRefused { error: message.trim().to_owned() }),
         "workspace_untrusted" => {
