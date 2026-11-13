@@ -57,6 +57,23 @@ pub fn execute(store: &mut DomainStore, actor: &Actor, id: &str, command: Comman
     );
     committed
 }
+#[test]
+fn worktrees_root_wait_reason_migrates_without_losing_previous_launch_refusals() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    store.conn.execute_batch("DROP TABLE launch_refusals;").unwrap();
+    store.conn.execute_batch(&LAUNCH_REFUSALS.replace(",'worktrees_unavailable'", "")).unwrap();
+    store.set_launch_refusal(&"task-1".into(), Some(("disk_low", Some("retained"))), 12).unwrap();
+    drop(store);
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(store.launch_refusals().unwrap(), vec![("task-1".into(), "disk_low".into(), Some("retained".into()))]);
+    store.set_launch_refusal(&"task-1".into(), Some(("worktrees_unavailable", None)), 13).unwrap();
+    drop(store);
+    let store = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(store.launch_refusals().unwrap(), vec![("task-1".into(), "worktrees_unavailable".into(), None)]);
+}
+
 pub fn seeded(store: &mut DomainStore) {
     execute(
         store,

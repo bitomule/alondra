@@ -20,6 +20,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -60,7 +61,7 @@ def profile(runtime, home, tmp, state, work, port, orchestrator):
         '(version 1)', '(deny default)', '(deny mach-lookup)',
         '(allow process-fork)', '(allow signal (target same-sandbox))',
         '(allow process-info* (target self))', '(allow sysctl-read)',
-        '(allow process-exec (literal ' + quote(runtime / 'node') + ') (literal ' + quote(runtime / 'claude') + ') (literal "/bin/sh") (literal "/bin/bash") (literal "/bin/sleep") (literal "/usr/bin/dirname") (literal ' + quote(GIT) + ') (subpath ' + quote(GIT_CORE) + ') (literal ' + quote(cli) + ') ' + ' '.join('(literal ' + quote(plugin / 'bin' / 'alondra') + ')' for plugin in plugins) + ')',
+        '(allow process-exec (literal ' + quote(runtime / 'node') + ') (literal ' + quote(runtime / 'claude') + ') (literal ' + quote(runtime / 'claude-account-fixture') + ') (literal "/bin/sh") (literal "/bin/bash") (literal "/bin/sleep") (literal "/usr/bin/dirname") (literal ' + quote(GIT) + ') (subpath ' + quote(GIT_CORE) + ') (literal ' + quote(cli) + ') ' + ' '.join('(literal ' + quote(plugin / 'bin' / 'alondra') + ')' for plugin in plugins) + ')',
         '(allow file-read-data (literal "/"))',
         '(allow file-read-metadata ' + ' '.join('(literal ' + quote(parent) + ')' for parent in parents) + ')',
         '(allow file-read* (subpath ' + quote(runtime) + ') (subpath ' + quote(work) + ') (subpath "/System/Library") (subpath "/usr/lib") (subpath "/usr/share/icu") (subpath "/private/var/db/dyld") (literal "/dev/null") (literal "/dev/random") (literal "/dev/urandom") (literal "/bin/sh") (literal "/bin/bash") (literal "/bin/sleep") (literal "/private/var/select/sh") (literal "/usr/bin/dirname") (literal ' + quote(cli) + ') (subpath ' + quote(mac) + ') ' + ' '.join('(subpath ' + quote(plugin) + ')' for plugin in plugins) + ')',
@@ -117,6 +118,15 @@ def main():
     sandbox, mac, node, host, archive = (Path(value).resolve() for value in sys.argv[1:6])
     root, runtime, home, tmp = runtime_of(sandbox, node, host, exist_ok=False)
     native_sha256 = fixture().native_from_archive(archive, runtime / 'claude')
+    (root / 'native.sha256').write_text(native_sha256 + '\n')
+    # Only the account observation is synthetic: an API key is intentionally ineligible for
+    # automatic paid work. Every SDK turn still execs the pinned native against loopback.
+    account = runtime / 'claude-account-fixture'
+    account.write_text('#!/bin/sh\n'
+                       'if [ "$#" = 3 ] && [ "$1" = auth ] && [ "$2" = status ] && [ "$3" = --json ]; then\n'
+                       '  printf \'%s\\n\' \'{"loggedIn":true,"authMethod":"claude.ai","email":"default@sandbox.test","subscriptionType":"max"}\'\n'
+                       '  exit 0\nfi\nexec ' + shlex.quote(str(runtime / 'claude')) + ' "$@"\n')
+    account.chmod(0o700)
     model = subprocess.Popen([sys.executable, '-I', str(REPO / 'tests/native/claude/model_double.py'), str(root / 'model-requests.jsonl'), str(sandbox / 'fakes' / 'scripts')],
                              stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, stderr=open(root / 'model.log', 'ab'), start_new_session=True)
     port = int(model.stdout.readline())
@@ -139,7 +149,7 @@ def main():
     backend = {
         'node': str(runtime / 'node'), 'node_sha256': checksum(runtime / 'node'),
         'host': str(runtime / 'persistent.cjs'), 'host_sha256': checksum(runtime / 'persistent.cjs'),
-        'native': str(runtime / 'claude'), 'native_sha256': native_sha256,
+        'native': str(account), 'native_sha256': checksum(account),
         'host_environment': synthetic, 'native_environment': native,
         'confinement': str(root / 'host.sb'), 'state_root': str(state), 'io_timeout_seconds': 120,
     }

@@ -1936,6 +1936,22 @@ fn a_task_that_has_not_started_says_what_refused_its_launch() {
     assert!(!task_line(&state, &live, Lang::Es).contains("Sin empezar"));
 }
 
+#[test]
+fn worktrees_root_unavailable_explains_waiting_in_both_languages_without_a_user_action() {
+    let mut state = fixture();
+    state.interactions.clear();
+    let task = state.tasks.get_mut(&"t-1".into()).unwrap();
+    task.state = TaskState::NotStarted;
+    task.agent_id = None;
+    task.started = false;
+    let mut live = LiveSnapshot::default();
+    live.start_waits.insert("t-1".into(), LiveStartWait::Room);
+    live.launch_refusals.insert("t-1".into(), LiveLaunchRefusal { reason: "worktrees_unavailable".into(), detail: None });
+    assert_eq!(task_line(&state, &live, Lang::Es), "En espera · Carpeta de worktrees no disponible");
+    assert_eq!(task_line(&state, &live, Lang::En), "Waiting · Worktree folder unavailable");
+    assert_eq!(active_row(&state, &live, Client::Tui, Lang::Es, "t-1").0, "block:waiting");
+}
+
 /// 14 October: t-holepunch-iroh-prototype ended its turn with no card and said «Sin actividad» on
 /// every screen. A running task's node works or waits on a card in front of the user: neither its
 /// turn nor its rest after it reads as doing nothing.

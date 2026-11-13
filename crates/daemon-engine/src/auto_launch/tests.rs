@@ -225,6 +225,38 @@ async fn while_usage_is_exhausted_a_ready_task_waits_and_starts_when_usage_is_ba
 }
 
 #[tokio::test]
+async fn worktrees_root_unavailable_waits_without_cards_or_failed_retries_and_starts_when_available() {
+    let f = world();
+    let git = |args: &[&str]| crate::worktree::testing::git(&f.project, args);
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "test@example.invalid"]);
+    git(&["config", "user.name", "Test"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+    let path = f.root.join("worktrees");
+    let missing = alondra_core::options::WorktreesRoot {
+        path: path.clone(), volume_id: "00000000-0000-0000-0000-000000000001".into(),
+    };
+    let options = alondra_core::options::path_in(&f.home);
+    let original = std::fs::read_to_string(&options).unwrap_or_default();
+    let save = |root| std::fs::write(&options, alondra_core::options::with_worktrees_root(&original, Some(root)).unwrap()).unwrap();
+    save(&missing);
+    create(&f, "waiting-volume", &[], Some(&plan(&f, "app/storage")));
+    let before = f.domain.state().unwrap().interactions.len();
+    for _ in 0..4 { pass(&f.domain, &f.home).await.unwrap(); }
+    assert_eq!(launches(&f), 0);
+    assert!(!path.exists(), "the system disk never substitutes for the missing volume");
+    assert_eq!(f.domain.state().unwrap().interactions.len(), before, "no card asks the user to fix the volume");
+    assert!(f.domain.store.lock().unwrap().start_retries().unwrap().is_empty());
+    assert!(f.domain.store.lock().unwrap().launch_refusals().unwrap().iter().any(|(task, reason, _)| task.0 == "waiting-volume" && reason == "worktrees_unavailable"));
+    std::fs::create_dir(&path).unwrap();
+    let available = alondra_daemon_support::worktrees_root::capture(&path).unwrap();
+    save(&available);
+    pass(&f.domain, &f.home).await.unwrap();
+    assert_eq!(launches(&f), 1);
+    assert!(path.join("App/waiting-volume/.git").is_file());
+}
+
+#[tokio::test]
 async fn while_the_disk_is_nearly_full_a_ready_task_waits_and_starts_once_there_is_space() {
     let f = world();
     done_task(&f, "f0");

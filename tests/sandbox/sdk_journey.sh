@@ -6,7 +6,7 @@ set -eu
 
 dir=$(mktemp -d /private/tmp/alondra-sdk.XXXXXX)
 rmdir "$dir"
-export SANDBOX_DIR="$dir" SANDBOX_PORT="${SANDBOX_PORT:-48130}" MACS=1 FAKES=1 SDK=1 SDK_NODE="$5" SDK_HOST="$6" SDK_ARCHIVE="$7"
+export ALONDRA_LANG=en SANDBOX_DIR="$dir" SANDBOX_PORT="${SANDBOX_PORT:-48130}" MACS=1 FAKES=1 SDK=1 SDK_NODE="$5" SDK_HOST="$6" SDK_ARCHIVE="$7"
 trap 'tools/e2e-sandbox-stop.sh "$dir" >/dev/null' EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT

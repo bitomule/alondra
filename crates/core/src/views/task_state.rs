@@ -330,6 +330,7 @@ fn slot_fact(task: &Task, context: &RenderContext<'_>) -> (String, Option<usize>
         ("workspace_untrusted", None) => t!(lang, "Claude Code doesn't trust its folder", "Claude Code no confía en su carpeta").into(),
         ("usage_exhausted", _) if context.live.waits_for_session => t!(lang, "Waiting for a provider session", "Esperando una sesión de proveedor").into(),
         ("usage_exhausted", _) => t!(lang, "Usage limit reached", "Límite de uso alcanzado").into(),
+        ("worktrees_unavailable", _) => t!(lang, "Worktree folder unavailable", "Carpeta de worktrees no disponible").into(),
         ("disk_low", _) => t!(lang, "The disk is nearly full", "El disco está casi lleno").into(),
         (_, Some(error)) => error.lines().next().unwrap_or(error).to_owned(),
         _ => t!(lang, "Its launch failed", "Su lanzamiento falló").into(),

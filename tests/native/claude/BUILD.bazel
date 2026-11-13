@@ -44,7 +44,7 @@ sh_test(
     name = "client_lifecycle_test",
     srcs = ["run.sh"],
     args = ["$(rootpath :lifecycle_test.py)"],
-    data = ["lifecycle_test.py", "run.py", "//agent-host:descendant-fake-claude.py"],
+    data = ["lifecycle_test.py", "model_double.py", "run.py", "//agent-host:descendant-fake-claude.py"],
     env = {"DESCENDANT_FAKE_CLAUDE": "$(rootpath //agent-host:descendant-fake-claude.py)"},
     tags = ["local", "no-remote"],
     target_compatible_with = ["@platforms//os:macos"],

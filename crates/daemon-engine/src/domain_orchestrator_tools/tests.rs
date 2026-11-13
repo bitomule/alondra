@@ -708,6 +708,190 @@ async fn a_launch_that_finds_no_account_while_usage_is_exhausted_waits_for_usage
 /// 25 October: the disk filled. A launch while the disk is nearly full waits in the queue for room
 /// instead of being refused for the orchestrator to try again, and starts by itself once there is.
 #[tokio::test]
+async fn worktrees_root_subdirectory_launch_records_the_root_for_reopen_and_cancellation() {
+    let f = world();
+    let git = |args: &[&str]| crate::worktree::testing::git(&f.project, args);
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "test@example.invalid"]);
+    git(&["config", "user.name", "Test"]);
+    let source = f.project.join("src");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("README.md"), "fixture\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "base"]);
+    let volume = f.root.join("worktrees");
+    std::fs::create_dir(&volume).unwrap();
+    let root = alondra_daemon_support::worktrees_root::capture(&volume).unwrap();
+    let options = alondra_core::options::path_in(&f.home);
+    let original = std::fs::read_to_string(&options).unwrap_or_default();
+    std::fs::write(&options, alondra_core::options::with_worktrees_root(&original, Some(&root)).unwrap()).unwrap();
+    launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet", "cwd": source})), |_| None).await.unwrap();
+    let owned = volume.join("App/t");
+    let native = owned.join("src");
+    assert_eq!(f.launched(1).await.0, [native.clone()]);
+    assert_eq!(f.domain.task_worktree(&"t".into()).unwrap(), Some(native.to_string_lossy().into_owned()), "native recovery retains the exact SDK working directory");
+    assert!(f.domain.state().unwrap().tasks[&TaskId::from("t")].worktrees.contains_key(owned.to_str().unwrap()));
+    assert_eq!(f.domain.store.lock().unwrap().worktree_storage(native.to_str().unwrap()).unwrap().unwrap().root, root);
+    let inner = native.join("inner");
+    std::fs::create_dir_all(inner.join(".git")).unwrap();
+    assert!(f.domain.store.lock().unwrap().worktree_storage(inner.to_str().unwrap()).unwrap().is_none(), "volume ownership must not cross a nested Git repository");
+    let nested_native = inner.join(".claude/worktrees/nested/src").to_string_lossy().into_owned();
+    f.domain.store.lock().unwrap().set_task_worktree(&"nested".into(), &nested_native, 0).unwrap();
+    std::fs::remove_dir_all(&inner).unwrap();
+    std::fs::write(&options, alondra_core::options::with_worktrees_root(&original, None).unwrap()).unwrap();
+    std::fs::rename(&volume, f.root.join("unmounted")).unwrap();
+    let cleanup_paths = f.domain.store.lock().unwrap().task_worktrees().unwrap();
+    assert!(cleanup_paths.contains(&(TaskId::from("t"), owned.to_string_lossy().into_owned())));
+    assert!(cleanup_paths.contains(&(TaskId::from("nested"), nested_native)), "an absent volume cannot transfer another task's ownership");
+    assert!(crate::task_worktrees::ready(&f.domain, native.to_str().unwrap()).await.unwrap_err().downcast_ref::<crate::task_worktrees::Unreachable>().is_some());
+    assert!(!volume.exists());
+    std::fs::rename(f.root.join("unmounted"), &volume).unwrap();
+    crate::task_worktrees::ready(&f.domain, native.to_str().unwrap()).await.unwrap();
+    let (reopened, recovered) = crate::launch_worktree::reopen_in(&source, "t", &native, None, None).await.unwrap();
+    assert!(recovered);
+    assert_eq!(reopened.dir(), native);
+    assert_eq!(reopened.chosen(), Some(owned.as_path()));
+    f.domain.stop_sdk_owners();
+    command(&f.domain, user(), Command::CancelTask { task_id: "t".into(), reason: None });
+    let task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
+    crate::cancelled_worktrees::release_cancelled(&f.domain, &task).await.unwrap();
+    assert!(!owned.exists(), "cancellation removes the whole worktree, including its subdirectory");
+    let listed = std::process::Command::new("git").arg("-C").arg(&f.project).args(["worktree", "list", "--porcelain"]).output().unwrap();
+    assert!(listed.status.success());
+    assert!(!String::from_utf8_lossy(&listed.stdout).contains(owned.to_str().unwrap()));
+}
+
+#[tokio::test]
+async fn worktrees_root_absent_keeps_git_failures_as_launch_failures() {
+    failed_git_query_with_storage(false).await;
+}
+
+#[tokio::test]
+async fn worktrees_root_configured_keeps_git_failures_as_launch_failures() {
+    failed_git_query_with_storage(true).await;
+}
+
+async fn failed_git_query_with_storage(configured: bool) {
+    let mut f = world();
+    if configured {
+        let storage = f.root.join("worktrees");
+        std::fs::create_dir(&storage).unwrap();
+        let root = alondra_daemon_support::worktrees_root::capture(&storage).unwrap();
+        let options = alondra_core::options::path_in(&f.home);
+        let original = std::fs::read_to_string(&options).unwrap_or_default();
+        std::fs::write(&options, alondra_core::options::with_worktrees_root(&original, Some(&root)).unwrap()).unwrap();
+    }
+    let project = f.project.with_file_name("App\n");
+    std::fs::rename(&f.project, &project).unwrap();
+    f.project = project;
+    let git = |args: &[&str]| crate::worktree::testing::git(&f.project, args);
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "test@example.invalid"]);
+    git(&["config", "user.name", "Test"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+    // Trimming this top-level path makes the subsequent Git worktree query fail.
+    let refused = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap_err();
+    assert_eq!(refused.code, "main_checkout", "a Git error must retain the existing launch failure, not wait for a volume");
+    assert!(f.domain.store.lock().unwrap().launch_queue().unwrap().is_empty());
+    assert!(f.sdk().starts().is_empty());
+}
+
+#[tokio::test]
+async fn worktrees_root_admission_checks_storage_space_before_creating_a_worktree() {
+    let f = world();
+    let git = |args: &[&str]| crate::worktree::testing::git(&f.project, args);
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "test@example.invalid"]);
+    git(&["config", "user.name", "Test"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+    let path = f.root.join("worktrees");
+    std::fs::create_dir(&path).unwrap();
+    let root = alondra_daemon_support::worktrees_root::capture(&path).unwrap();
+    let options = alondra_core::options::path_in(&f.home);
+    let original = std::fs::read_to_string(&options).unwrap_or_default();
+    std::fs::write(&options, alondra_core::options::with_worktrees_root(&original, Some(&root)).unwrap()).unwrap();
+    let space = |free| crate::disk::Space { total: 500_000_000_000, free, purgeable: 0 };
+    f.domain.live.machine_watch.give_launch_space(path.clone(), space(1_000_000_000));
+    let queued = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
+    assert_eq!(queued["queued"], true);
+    assert!(!path.join("App").exists(), "admission happens before creating the repository or task folder");
+    assert!(f.sdk().starts().is_empty(), "the healthy system disk cannot substitute for full worktree storage");
+    f.domain.live.machine_watch.give_launch_space(path.clone(), space(400_000_000_000));
+    crate::admission::pass(&f.domain, &f.home).await.unwrap();
+    assert_eq!(f.launched(1).await.0, [path.join("App/t")]);
+}
+
+#[tokio::test]
+async fn worktrees_root_keeps_an_admitted_launch_queued_until_the_volume_returns() {
+    let f = world();
+    let git = |args: &[&str]| crate::worktree::testing::git(&f.project, args);
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "test@example.invalid"]);
+    git(&["config", "user.name", "Test"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+    let path = f.root.join("worktrees");
+    let missing = alondra_core::options::WorktreesRoot { path: path.clone(), volume_id: "00000000-0000-0000-0000-000000000001".into() };
+    let options = alondra_core::options::path_in(&f.home);
+    let original = std::fs::read_to_string(&options).unwrap_or_default();
+    let save = |root| std::fs::write(&options, alondra_core::options::with_worktrees_root(&original, Some(root)).unwrap()).unwrap();
+    save(&missing);
+    let queued = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
+    assert_eq!(queued["queued"], true);
+    for _ in 0..2 {
+        crate::admission::pass(&f.domain, &f.home).await.unwrap();
+        assert_eq!(f.domain.store.lock().unwrap().launch_queue().unwrap().len(), 1);
+        assert!(f.sdk().starts().is_empty());
+    }
+    assert!(!path.exists());
+    std::fs::create_dir(&path).unwrap();
+    save(&alondra_daemon_support::worktrees_root::capture(&path).unwrap());
+    crate::admission::pass(&f.domain, &f.home).await.unwrap();
+    assert_eq!(f.launched(1).await.0, [path.join("App/t")]);
+}
+
+#[tokio::test]
+async fn worktrees_root_retains_volume_identity_on_the_daemon_disk_after_options_change_and_unmount() {
+    use alondra_daemon_support::worktrees_root::{self, Repository};
+    let f = world();
+    let git = |args: &[&str]| crate::worktree::testing::git(&f.project, args);
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "test@example.invalid"]);
+    git(&["config", "user.name", "Test"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+    let volume = f.root.join("volume");
+    std::fs::create_dir(&volume).unwrap();
+    let root = worktrees_root::capture(&volume).unwrap();
+    let worktree = crate::launch_worktree::isolate_in(&f.project, "t", None, None, Some(&root)).await.unwrap();
+    let path = worktree.dir();
+    let record = path.parent().unwrap().join(".alondra-repository.json");
+    let original = std::fs::read(&record).unwrap();
+    let mut stored: Repository = serde_json::from_slice(&original).unwrap();
+    stored.root.volume_id = "00000000-0000-0000-0000-000000000001".into();
+    std::fs::write(&record, serde_json::to_vec(&stored).unwrap()).unwrap();
+    f.domain.set_task_worktree(&TaskId::from("t"), path.to_str().unwrap()).unwrap();
+    let admin = std::fs::read_to_string(path.join(".git")).unwrap();
+    std::fs::rename(&volume, f.root.join("unmounted")).unwrap();
+    let error = crate::task_worktrees::ready(&f.domain, path.to_str().unwrap()).await.unwrap_err();
+    assert!(error.downcast_ref::<crate::task_worktrees::Unreachable>().is_some());
+    assert!(!volume.exists(), "checking never replaces the missing volume");
+    assert!(Path::new(admin.trim().strip_prefix("gitdir: ").unwrap()).exists());
+    let task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
+    assert!(crate::task_worktrees::release_all(&f.domain, &task).await.unwrap_err().downcast_ref::<crate::task_worktrees::Unreachable>().is_some());
+    assert!(f.domain.state().unwrap().tasks[&TaskId::from("t")].open_worktrees().next().is_some());
+    std::fs::rename(f.root.join("unmounted"), &volume).unwrap();
+    std::fs::write(&record, original).unwrap();
+    f.domain.set_task_worktree(&TaskId::from("t"), path.to_str().unwrap()).unwrap();
+    crate::task_worktrees::ready(&f.domain, path.to_str().unwrap()).await.unwrap();
+    git(&["worktree", "remove", path.to_str().unwrap()]);
+    std::fs::remove_file(&record).unwrap();
+    std::fs::remove_dir(path.parent().unwrap()).unwrap();
+    crate::task_worktrees::ready(&f.domain, path.to_str().unwrap()).await.unwrap();
+    let (reopened, recovered) = crate::launch_worktree::reopen_in(path, "t", path, None, None).await.unwrap();
+    assert!(recovered);
+    assert_eq!(reopened.dir(), path);
+}
+
+#[tokio::test]
 async fn a_launch_while_the_disk_is_nearly_full_waits_in_the_queue_and_starts_once_it_has_space() {
     let f = world();
     f.domain.live.machine_watch.set_disk_low(true);

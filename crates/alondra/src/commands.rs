@@ -345,7 +345,12 @@ fn config_rows() -> Result<Vec<(&'static str, String)>> {
         .and_then(|text| alondra_core::options::OptionsFile::parse(&text).ok())
         .map(|file| file.projects_root(&alondra_core::config::home_dir(&|k| std::env::var(k).ok())).display().to_string())
         .unwrap_or_default();
+    let worktrees = std::fs::read_to_string(alondra_core::options::path_in(&c.home)).ok()
+        .and_then(|text| alondra_core::options::OptionsFile::parse(&text).ok())
+        .and_then(|file| file.worktrees_root);
     Ok(vec![
+        ("worktrees_root", worktrees.as_ref().map(|root| root.path.display().to_string()).unwrap_or_default()),
+        ("worktrees_volume_id", worktrees.map(|root| root.volume_id).unwrap_or_default()),
         ("home", c.home.display().to_string()),
         ("name", c.name.clone()),
         ("projects_root", projects),
@@ -406,13 +411,14 @@ pub fn config_get(key: &str, json: bool) -> Result<()> {
 /// The keys `config set` and `config unset` take, for their messages.
 pub fn settable() -> Vec<&'static str> {
     let mut keys: Vec<&str> = alondra_core::config::SETTABLE.iter().map(|(k, _)| *k).collect();
-    keys.extend(["projects_root", "max_working_nodes"]);
+    keys.extend(["projects_root", "worktrees_root", "max_working_nodes"]);
     keys
 }
 
 /// What a key takes, for the message when a value is refused.
 fn expected(key: &str) -> &'static str {
     match key {
+        "worktrees_root" => tr!("an existing absolute folder", "una carpeta absoluta existente"),
         "name" => tr!("your name, as the nodes address you", "tu nombre, como te llaman los nodos"),
         "public_url" => tr!("a URL that starts with http:// or https://", "una URL que empiece por http:// o https://"),
         "listen" => tr!("an IP address, such as 127.0.0.1 or 0.0.0.0", "una dirección IP, como 127.0.0.1 o 0.0.0.0"),
@@ -430,6 +436,11 @@ pub fn config_set(key: &str, value: Option<&str>) -> Result<()> {
     match (key, value) {
         ("max_working_nodes", Some(value)) => return crate::cli::set_node_limit(value),
         ("max_working_nodes", None) => return crate::cli::set_node_limit(alondra_core::options::AUTO),
+        ("worktrees_root", value) => {
+            daemon().put("/settings/config", &json!({"key": key, "value": value})).map_err(|error| refused(key, error))?;
+            println!("{key} = {}", value.unwrap_or(""));
+            return Ok(());
+        }
         ("projects_root", Some(value)) => return set_projects_root(value),
         ("projects_root", None) => bail!(tr!("projects_root always has a folder: choose another with alondra config set projects_root <folder>", "projects_root siempre tiene una carpeta: elige otra con alondra config set projects_root <carpeta>")),
         _ => {}
@@ -506,10 +517,10 @@ mod tests {
     #[test]
     fn config_set_takes_setups_keys_and_the_node_limit() {
         let keys = settable();
-        for key in ["name", "projects_root", "public_url", "listen", "port", "wake", "retention_hours", "service_label", "report.repo", "node_environment", "max_working_nodes"] {
+        for key in ["name", "projects_root", "worktrees_root", "public_url", "listen", "port", "wake", "retention_hours", "service_label", "report.repo", "node_environment", "max_working_nodes"] {
             assert!(keys.contains(&key), "{key}");
         }
-        assert_eq!(keys.len(), 11);
+        assert_eq!(keys.len(), 12);
         crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
         assert_eq!(invalid("port"), "port takes a port number from 1 to 65535");
     }

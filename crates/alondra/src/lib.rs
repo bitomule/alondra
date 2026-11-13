@@ -317,8 +317,8 @@ enum ConfigCmd {
     #[command(about = tr!("One setting's value", "El valor de un ajuste"))]
     Get { key: String },
     #[command(about = tr!(
-        "Change a setting: name, projects_root, public_url, listen, port, wake, retention_hours, service_label or max_working_nodes",
-        "Cambia un ajuste: name, projects_root, public_url, listen, port, wake, retention_hours, service_label o max_working_nodes"
+        "Change a setting: name, projects_root, worktrees_root, public_url, listen, port, wake, retention_hours, service_label or max_working_nodes",
+        "Cambia un ajuste: name, projects_root, worktrees_root, public_url, listen, port, wake, retention_hours, service_label o max_working_nodes"
     ))]
     Set { key: String, value: String },
     #[command(about = tr!("Put a setting back to its default", "Devuelve un ajuste a su valor por defecto"))]
