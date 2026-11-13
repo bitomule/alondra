@@ -74,6 +74,8 @@ dependencies = [
  "iroh",
  "libc",
  "mmdflux",
+ "objc2",
+ "objc2-foundation",
  "p256 0.14.0",
  "proptest",
  "pulldown-cmark",

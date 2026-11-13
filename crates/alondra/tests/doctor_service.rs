@@ -1,5 +1,5 @@
-//! `alondra doctor --fix` on the service, end to end: the real CLI against a `launchctl` and an
-//! `sfltool` that are scripts on the PATH, and a fake daemon that holds the HOME lock, answers
+//! `alondra doctor --fix` on the service, end to end: the real CLI against a `launchctl` script
+//! on the PATH, an `sfltool` script there that only records being run, and a fake daemon that holds the HOME lock, answers
 //! `/daemon` and, on SIGUSR1, exits with 75 after starting the successor launchd would start.
 //! One test per case; each Mac owns its processes and its folder, removed on success and failure.
 
@@ -36,10 +36,11 @@ case "$1" in
 esac
 "#;
 
+/// `sfltool dumpbtm` asks for an administrator on macOS 26 and later: it reports the item off so
+/// a doctor that still read it would say so.
 const SFLTOOL: &str = r#"
 echo "$*" >> "$STATE/sfltool.log"
-[ -f "$STATE/btm.hang" ] && exec sleep 600
-cat "$STATE/btm.txt" 2>/dev/null
+printf '   UUID: AAAA\n   Disposition: [disabled, allowed, visible, notified] (0xe)\n   Identifier: 8.%s\n' "$LABEL"
 exit 0
 "#;
 
@@ -313,41 +314,13 @@ fn a_disabled_service_under_a_running_daemon_is_enabled_and_nothing_restarts() {
     assert_eq!(mac.launchctl_log().lines().filter(|line| !line.starts_with("print")).collect::<Vec<_>>(), vec![format!("enable gui/{}/{LABEL}", unsafe { libc::getuid() })]);
 }
 
-fn btm(identifier: &str, disposition: &str) -> String {
-    format!("========================\n Records for UID 501\n  #1:\n   UUID: AAAA\n   Disposition: {disposition}\n   Identifier: {identifier}\n")
-}
-
 #[test]
-fn a_login_item_macos_has_off_is_named_with_the_way_back_on() {
+fn the_login_item_is_read_without_running_sfltool() {
     let mac = Mac::new();
     with_a_service_file(&mac);
-    std::fs::write(mac.state().join("btm.txt"), btm(&format!("8.{LABEL}"), "[disabled, allowed, visible, notified] (0xe)")).unwrap();
-    let (_, doc) = mac.doctor(&[]);
-    let item = check(&doc, "login-item");
-    assert_eq!(item["status"], "warn", "{doc}");
-    assert!(item["detail"].as_str().unwrap().contains("turned off in System Settings > General > Login Items & Extensions"), "{doc}");
-    assert!(item["fix"].as_str().unwrap().contains("Allow in the Background"), "{doc}");
-    assert_eq!(item["fixable"], false);
-}
-
-#[test]
-fn a_login_item_macos_has_on_says_nothing() {
-    let mac = Mac::new();
-    with_a_service_file(&mac);
-    std::fs::write(mac.state().join("btm.txt"), btm(&format!("8.{LABEL}"), "[enabled, allowed, visible, notified] (0xf)")).unwrap();
-    let (_, doc) = mac.doctor(&[]);
-    assert!(absent(&doc, "login-item"), "{doc}");
-}
-
-#[test]
-fn a_dump_that_never_finishes_says_nothing_and_does_not_hold_doctor_up() {
-    let mac = Mac::new();
-    with_a_service_file(&mac);
-    std::fs::write(mac.state().join("btm.hang"), "").unwrap();
     let (output, doc) = mac.doctor(&[]);
-    assert!(output.status.success() || output.status.code().is_some(), "{output:?}");
+    assert!(!mac.state().join("sfltool.log").exists(), "the doctor ran sfltool\n{}", stderr(&output));
     assert!(absent(&doc, "login-item"), "{doc}");
-    assert!(mac.state().join("sfltool.log").exists(), "sfltool was asked");
 }
 
 #[test]
