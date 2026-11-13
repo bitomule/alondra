@@ -335,6 +335,9 @@ pub enum TaskWorktree {
     NotAlondras,
     /// It holds files not committed or commits no remote has.
     Unsaved(String),
+    /// It is a link to a folder that cannot be reached now, as on a volume that is not mounted:
+    /// left as it is, to be tried again.
+    Unavailable(String),
 }
 
 /// Deletes the worktree Alondra made for a closed task, `.claude/worktrees/<slug>`, which
@@ -353,6 +356,9 @@ pub async fn release_recorded_worktree(dir: &Path, give_up: bool) -> Result<Task
 }
 
 async fn release(dir: &Path, named: impl Fn(&Path) -> bool, give_up: bool, remove: bool) -> Result<TaskWorktree, String> {
+    if let Some(linked) = Linked::holding(dir) {
+        return release_linked(linked, &named, give_up, remove).await;
+    }
     if !dir.exists() {
         let trash = trash_of(dir).filter(|trash| named(dir) && trash.exists());
         return match trash {
@@ -376,6 +382,159 @@ async fn release(dir: &Path, named: impl Fn(&Path) -> bool, give_up: bool, remov
     Ok(TaskWorktree::Removed { freed })
 }
 
+/// A worktree in a repository's `.claude/worktrees` that is a link to the folder it really is in,
+/// on another volume or anywhere else.
+struct Linked {
+    link: PathBuf,
+    target: PathBuf,
+}
+
+impl Linked {
+    /// The link in a `.claude/worktrees` folder that `dir` is, or lies inside of.
+    fn holding(dir: &Path) -> Option<Linked> {
+        dir.ancestors().find_map(|link| {
+            let parent = link.parent().filter(|parent| parent.ends_with(".claude/worktrees"))?;
+            let target = std::fs::read_link(link).ok()?;
+            Some(Linked { link: link.to_path_buf(), target: parent.join(target) })
+        })
+    }
+
+    /// The main checkout whose `.claude/worktrees` holds the link.
+    fn repository(&self) -> Option<&Path> {
+        self.link.parent()?.parent()?.parent()
+    }
+
+    /// The folder the link points to cannot be reached: not even the folder that holds it exists,
+    /// as when its volume is not mounted.
+    fn unreachable(&self) -> bool {
+        !self.target.parent().is_some_and(Path::is_dir)
+    }
+
+    fn unavailable(&self) -> String {
+        format!("{} is a link to {}, which cannot be reached now", self.link.display(), self.target.display())
+    }
+}
+
+/// Why `dir` cannot be reached now, when it is a worktree of `.claude/worktrees` that is a link to
+/// a folder out of reach, as on a volume that is not mounted.
+pub fn unreachable_link(dir: &Path) -> Option<String> {
+    Linked::holding(dir).filter(|linked| !linked.target.exists() && linked.unreachable()).map(|linked| linked.unavailable())
+}
+
+/// Deletes a worktree of `.claude/worktrees` that is a link: the folder it points to, which must be
+/// a linked worktree of the same repository, git's record of it, and then the link. While the
+/// folder cannot be reached, everything stays as it is.
+async fn release_linked(linked: Linked, named: &impl Fn(&Path) -> bool, give_up: bool, remove: bool) -> Result<TaskWorktree, String> {
+    if !named(&linked.link) {
+        return Ok(TaskWorktree::NotAlondras);
+    }
+    let Ok(target) = linked.target.canonicalize() else {
+        return release_gone_link(&linked, remove).await;
+    };
+    if !worktree_of_repository(&target, linked.repository()).await {
+        return Ok(TaskWorktree::NotAlondras);
+    }
+    if !give_up && let Some(left) = unsaved(&target).await? {
+        return Ok(TaskWorktree::Unsaved(left));
+    }
+    if !remove {
+        return Ok(TaskWorktree::Removed { freed: 0 });
+    }
+    let trash = beside(&target).ok_or_else(|| format!("{} has no folder name", target.display()))?;
+    std::fs::rename(&target, &trash).map_err(|e| format!("could not set {} aside to delete it: {e}", target.display()))?;
+    let freed = empty_trash(target, trash).await?;
+    remove_link(&linked.link)?;
+    Ok(TaskWorktree::Removed { freed })
+}
+
+/// A link whose folder is not there. Where the folder was can be reached, so it is gone: what a
+/// deletion cut halfway set aside goes, then git's record of it and the link.
+async fn release_gone_link(linked: &Linked, remove: bool) -> Result<TaskWorktree, String> {
+    if linked.unreachable() {
+        return Ok(TaskWorktree::Unavailable(linked.unavailable()));
+    }
+    if !remove {
+        return Ok(TaskWorktree::Removed { freed: 0 });
+    }
+    if let Some(trash) = beside(&linked.target).filter(|trash| trash.exists()) {
+        empty_trash(linked.target.clone(), trash).await?;
+    }
+    if let Some(repository) = linked.repository() {
+        let common = git(repository, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await
+            .map_or_else(|| repository.join(".git"), PathBuf::from);
+        forget_missing(&common, &[&linked.link, &linked.target])
+            .map_err(|e| format!("could not delete git's record of {}: {e}", linked.link.display()))?;
+    }
+    remove_link(&linked.link)?;
+    Ok(TaskWorktree::Removed { freed: 0 })
+}
+
+fn remove_link(link: &Path) -> Result<(), String> {
+    match std::fs::remove_file(link) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("could not delete the link {}: {e}", link.display())),
+        _ => Ok(()),
+    }
+}
+
+/// `dir` is the top of a linked worktree whose main checkout is `repository`.
+async fn worktree_of_repository(dir: &Path, repository: Option<&Path>) -> bool {
+    let Some(repository) = repository else { return false };
+    let (Some(top), Some(common)) = (
+        git(dir, &["rev-parse", "--path-format=absolute", "--show-toplevel"]).await,
+        git(dir, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await,
+    ) else { return false };
+    let same = |a: &Path, b: &Path| matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b);
+    dir.join(".git").is_file() && same(Path::new(&top), dir) && same(Path::new(&common), &repository.join(".git"))
+}
+
+/// Forgets git's record of the worktree whose `.git` was in one of `places` and is gone. `git
+/// worktree prune` would forget every such record of the repository, also those of worktrees on a
+/// volume that is not mounted now; this one forgets only that worktree's, and never a locked one.
+pub(crate) fn forget_missing(common: &Path, places: &[&Path]) -> std::io::Result<()> {
+    let records = match std::fs::read_dir(common.join("worktrees")) {
+        Ok(records) => records,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    let wanted: Vec<PathBuf> = places.iter().map(|place| settled(&place.join(".git"))).collect();
+    for record in records {
+        let admin = record?.path();
+        if admin.join("locked").exists() {
+            continue;
+        }
+        let Ok(gitdir) = std::fs::read_to_string(admin.join("gitdir")) else { continue };
+        let pointed = admin.join(gitdir.trim());
+        if std::fs::symlink_metadata(&pointed).is_err() && wanted.contains(&settled(&pointed)) {
+            remove_tree(&admin)?;
+        }
+    }
+    Ok(())
+}
+
+/// `path` with the part of it that exists resolved, as git writes the paths of its records, and
+/// the rest as it is.
+fn settled(path: &Path) -> PathBuf {
+    let path = lexical(path);
+    path.ancestors()
+        .find_map(|known| Some(known.canonicalize().ok()?.join(path.strip_prefix(known).ok()?)))
+        .unwrap_or(path)
+}
+
+/// `path` with its `.` and `..` folded away by name, without asking the disk.
+fn lexical(path: &Path) -> PathBuf {
+    let mut folded = PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                folded.pop();
+            }
+            part => folded.push(part),
+        }
+    }
+    folded
+}
+
 /// The root of `dir` when it is a linked worktree in a repository's `.claude/worktrees` that
 /// `named` accepts: the only folders Alondra deletes.
 async fn alondras_top(dir: &Path, named: &impl Fn(&Path) -> bool) -> Option<PathBuf> {
@@ -386,6 +545,13 @@ async fn alondras_top(dir: &Path, named: &impl Fn(&Path) -> bool) -> Option<Path
 /// How many files a worktree Alondra made holds that no commit has; `None` when `dir` is gone or
 /// is not such a worktree.
 pub async fn uncommitted_files_of_alondras_worktree(dir: &Path) -> Result<Option<usize>, String> {
+    if let Some(linked) = Linked::holding(dir) {
+        return match linked.target.canonicalize() {
+            Ok(target) if worktree_of_repository(&target, linked.repository()).await => uncommitted_files(&target).await.map(Some),
+            Err(_) if linked.unreachable() => Err(linked.unavailable()),
+            _ => Ok(None),
+        };
+    }
     if !dir.exists() {
         return Ok(None);
     }
@@ -399,8 +565,12 @@ pub async fn uncommitted_files_of_alondras_worktree(dir: &Path) -> Result<Option
 /// with its git metadata, or set aside to go, so a deletion cut halfway is finished on the next
 /// try instead of leaving a folder git no longer knows.
 fn trash_of(top: &Path) -> Option<PathBuf> {
+    top.parent().filter(|parent| parent.ends_with(".claude/worktrees")).and(beside(top))
+}
+
+fn beside(top: &Path) -> Option<PathBuf> {
     let name = top.file_name()?.to_str()?;
-    top.parent().filter(|parent| parent.ends_with(".claude/worktrees")).map(|parent| parent.join(format!(".{name}.removing")))
+    Some(top.parent()?.join(format!(".{name}.removing")))
 }
 
 /// Deletes the worktree that was at `top`, already moved to `trash`: git's record of it, then
@@ -540,6 +710,17 @@ pub mod testing {
         git(&dir, &["commit", "-q", "--allow-empty", "-m", "work"]);
         git(&dir, &["push", "-q", "origin", &branch]);
         dir
+    }
+
+    /// The task's worktree moved by hand into `volume` and left as a link in its place: the link
+    /// and the folder it points to.
+    pub fn linked_task_worktree(root: &Path, slug: &str, volume: &Path) -> (PathBuf, PathBuf) {
+        let link = task_worktree(root, slug);
+        std::fs::create_dir_all(volume).unwrap();
+        let moved = volume.canonicalize().unwrap().join(slug);
+        std::fs::rename(&link, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &link).unwrap();
+        (link, moved)
     }
 }
 
@@ -937,6 +1118,122 @@ mod tests {
         assert!(!dir.exists());
         assert!(cache.join("DO_NOT_BUILD_HERE").exists(), "the cache outside the worktree stays");
         assert!(cache.join("execroot/_main/bazel-out/bin").is_dir());
+    }
+
+    fn is_there(path: &Path) -> bool {
+        std::fs::symlink_metadata(path).is_ok()
+    }
+
+    #[tokio::test]
+    async fn a_closed_tasks_worktree_that_is_a_link_goes_whole_with_the_folder_it_points_to_and_gits_record() {
+        let root = crate::test_support::Directory::new();
+        let repo = root.join("repo");
+        let (link, moved) = testing::linked_task_worktree(&root, "t-linked", &root.join("volume/repo"));
+        std::fs::write(moved.join(".gitignore"), "/out/\n").unwrap();
+        testing::git(&link, &["add", ".gitignore"]);
+        testing::git(&link, &["commit", "-q", "-m", "ignore"]);
+        testing::git(&link, &["push", "-q", "origin", "worktree-t-linked"]);
+        std::fs::create_dir(moved.join("out")).unwrap();
+        std::fs::write(moved.join("out/big"), vec![7u8; 100_000]).unwrap();
+        assert_eq!(release_task_worktree(&link, "t-linked", false).await, Ok(TaskWorktree::Removed { freed: 0 }));
+        assert!(moved.exists() && is_there(&link), "a dry run deletes nothing");
+
+        let Ok(TaskWorktree::Removed { freed }) = release_task_worktree(&link, "t-linked", true).await else { panic!("deleted") };
+        assert!(freed > 100_000, "it says the space the folder it points to took: {freed}");
+        assert!(!is_there(&moved), "the folder the link points to goes");
+        assert!(!is_there(&link), "and the link");
+        assert!(!is_there(&root.join("volume/repo/.t-linked.removing")));
+        assert!(!repo.join(".git/worktrees/t-linked").exists(), "and git's record of it");
+        assert!(root.join("volume/repo").is_dir(), "the folder that held it stays");
+        testing::git(&repo, &["rev-parse", "--verify", "--quiet", "refs/heads/worktree-t-linked"]);
+        assert_eq!(release_task_worktree(&link, "t-linked", true).await, Ok(TaskWorktree::Absent));
+    }
+
+    #[tokio::test]
+    async fn a_linked_worktree_with_work_not_saved_is_kept_whole() {
+        let root = crate::test_support::Directory::new();
+        let (link, moved) = testing::linked_task_worktree(&root, "t-dirty", &root.join("volume"));
+        std::fs::write(moved.join("a.txt"), "x").unwrap();
+        let Ok(TaskWorktree::Unsaved(left)) = release_task_worktree(&link, "t-dirty", true).await else { panic!("kept for its file") };
+        assert!(left.contains("1 uncommitted file(s)"), "{left}");
+        assert_eq!(uncommitted_files_of_alondras_worktree(&link).await, Ok(Some(1)));
+        assert!(moved.join("a.txt").exists() && is_there(&link));
+    }
+
+    /// A volume that is not mounted: nothing of the worktree is touched, and the next try, once the
+    /// volume is back, deletes it.
+    #[tokio::test]
+    async fn a_linked_worktree_whose_folder_cannot_be_reached_is_left_as_it_is_and_goes_once_it_can() {
+        let root = crate::test_support::Directory::new();
+        let repo = root.join("repo");
+        let (link, moved) = testing::linked_task_worktree(&root, "t-away", &root.join("volume/repo"));
+        std::fs::rename(root.join("volume"), root.join("unmounted")).unwrap();
+
+        let Ok(TaskWorktree::Unavailable(why)) = release_task_worktree(&link, "t-away", true).await else { panic!("left for later") };
+        assert!(why.contains("cannot be reached now"), "{why}");
+        assert!(matches!(release_recorded_worktree(&link, true).await, Ok(TaskWorktree::Unavailable(_))), "even one the node gave up");
+        assert!(matches!(discard_worktree(&link, false).await, Ok(TaskWorktree::Unavailable(_))));
+        assert!(uncommitted_files_of_alondras_worktree(&link).await.is_err(), "nobody can say it holds nothing");
+        assert!(is_there(&link), "the link stays");
+        assert!(repo.join(".git/worktrees/t-away").exists(), "and git's record of it");
+        assert!(root.join("unmounted/repo/t-away/.git").is_file());
+
+        std::fs::rename(root.join("unmounted"), root.join("volume")).unwrap();
+        assert!(matches!(release_task_worktree(&link, "t-away", true).await, Ok(TaskWorktree::Removed { .. })));
+        assert!(!is_there(&link) && !is_there(&moved) && !repo.join(".git/worktrees/t-away").exists());
+    }
+
+    /// A deletion cut after the folder was set aside, or after its files went, is finished on the
+    /// next try; so is a link whose folder someone else deleted.
+    #[tokio::test]
+    async fn a_linked_worktree_whose_deletion_was_cut_or_whose_folder_is_gone_is_finished_on_the_next_try() {
+        let root = crate::test_support::Directory::new();
+        let repo = root.join("repo");
+        let (link, moved) = testing::linked_task_worktree(&root, "t-cut", &root.join("volume"));
+        let trash = root.join("volume/.t-cut.removing");
+        std::fs::rename(&moved, &trash).unwrap();
+        assert!(matches!(release_task_worktree(&link, "t-cut", true).await, Ok(TaskWorktree::Removed { .. })));
+        assert!(!is_there(&trash) && !is_there(&link) && !repo.join(".git/worktrees/t-cut").exists());
+
+        let other_root = crate::test_support::Directory::new();
+        let other = other_root.join("repo");
+        let (link, moved) = testing::linked_task_worktree(&other_root, "t-gone", &other_root.join("volume"));
+        std::fs::remove_dir_all(&moved).unwrap();
+        assert!(matches!(release_task_worktree(&link, "t-gone", true).await, Ok(TaskWorktree::Removed { .. })));
+        assert!(!is_there(&link) && !other.join(".git/worktrees/t-gone").exists());
+    }
+
+    #[tokio::test]
+    async fn a_link_to_a_folder_that_is_not_a_worktree_of_its_repository_is_never_followed() {
+        let root = crate::test_support::Directory::new();
+        let repo = root.join("repo");
+        testing::task_worktree(&root, "t-own");
+        let plain = root.join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::write(plain.join("keep.txt"), "x").unwrap();
+        let to_plain = repo.join(".claude/worktrees/t-plain");
+        std::os::unix::fs::symlink(&plain, &to_plain).unwrap();
+        assert_eq!(release_task_worktree(&to_plain, "t-plain", true).await, Ok(TaskWorktree::NotAlondras));
+
+        let other_root = crate::test_support::Directory::new();
+        let foreign = testing::task_worktree(&other_root, "t-foreign");
+        let to_foreign = repo.join(".claude/worktrees/t-foreign");
+        std::os::unix::fs::symlink(&foreign, &to_foreign).unwrap();
+        assert_eq!(release_task_worktree(&to_foreign, "t-foreign", true).await, Ok(TaskWorktree::NotAlondras), "another repository's");
+        assert_eq!(discard_worktree(&to_foreign, false).await, Ok(TaskWorktree::NotAlondras));
+        assert!(plain.join("keep.txt").exists() && foreign.join(".git").is_file());
+        assert!(is_there(&to_plain) && is_there(&to_foreign));
+    }
+
+    #[tokio::test]
+    async fn discarding_a_linked_worktree_deletes_the_folder_it_points_to_the_link_and_its_pushed_branch() {
+        let root = crate::test_support::Directory::new();
+        let repo = root.join("repo");
+        let (link, moved) = testing::linked_task_worktree(&root, "t-cancel", &root.join("volume"));
+        assert_eq!(uncommitted_files_of_alondras_worktree(&link).await, Ok(Some(0)));
+        assert!(matches!(discard_worktree(&link, false).await, Ok(TaskWorktree::Removed { .. })));
+        assert!(!is_there(&link) && !is_there(&moved) && !repo.join(".git/worktrees/t-cancel").exists());
+        assert!(!branch_exists(&repo, "worktree-t-cancel"));
     }
 
     #[tokio::test]

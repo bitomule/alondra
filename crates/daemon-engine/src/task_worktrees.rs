@@ -100,6 +100,19 @@ pub(crate) fn heir(domain: &DomainRuntime, task: &Task, path: &str) -> Result<Op
     Ok(Some(heir))
 }
 
+/// Worktrees of a task that are links to folders that cannot be reached now, as on a volume that is
+/// not mounted: the close leaves them as they are and tries again later, without a card.
+#[derive(Debug)]
+pub(crate) struct Unreachable(pub String);
+
+impl std::fmt::Display for Unreachable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}; Alondra leaves it as it is and tries again later", self.0)
+    }
+}
+
+impl std::error::Error for Unreachable {}
+
 /// What each worktree of the task that the node did not give up, and no other open task goes on
 /// in, still holds that no remote has: the work that keeps the task from closing, by path.
 pub async fn leftovers(domain: &DomainRuntime, task: &Task) -> Vec<(String, String)> {
@@ -128,7 +141,7 @@ pub async fn leftovers(domain: &DomainRuntime, task: &Task) -> Vec<(String, Stri
 /// Deletes every worktree of the task that can go, the ones the node gave up as they are, and
 /// records how each ended. What could not go is returned, by path.
 pub(crate) async fn release_all(domain: &DomainRuntime, task: &Task) -> Result<Vec<(String, String)>> {
-    let mut left = vec![];
+    let (mut left, mut unreachable) = (vec![], vec![]);
     for (path, worktree) in task.open_worktrees() {
         let end = if let Err(why) = may_handle(domain, path) {
             log!("leaving {path} of {} as it is: {why}", task.id);
@@ -148,6 +161,10 @@ pub(crate) async fn release_all(domain: &DomainRuntime, task: &Task) -> Result<V
                     left.push((path.clone(), what));
                     continue;
                 }
+                Ok(TaskWorktree::Unavailable(why)) => {
+                    unreachable.push(why);
+                    continue;
+                }
                 Err(why) => {
                     left.push((path.clone(), why));
                     continue;
@@ -156,6 +173,9 @@ pub(crate) async fn release_all(domain: &DomainRuntime, task: &Task) -> Result<V
         };
         let command = Command::ReleaseTaskWorktree { task_id: task.id.clone(), path: path.clone(), end };
         crate::domain_github::execute_system(domain, command).map_err(|error| anyhow::anyhow!("{error}"))?;
+    }
+    if !unreachable.is_empty() {
+        return Err(Unreachable(unreachable.join("; ")).into());
     }
     Ok(left)
 }

@@ -1225,6 +1225,16 @@ checks:
       targets:
         - //crates:cargo_bazel_deps_test
 
+  worktree-volume-bench:
+    uses: bazel/test
+    paths:
+      - "tools/BUILD.bazel"
+      - "tools/worktree_volume_bench.py"
+      - "tools/tests/test_worktree_volume_bench.py"
+    with:
+      targets:
+        - //tools:worktree_volume_bench_test
+
   load-bench-oracles:
     uses: bazel/test
     paths:

@@ -102,7 +102,7 @@ pub async fn reopen(cwd: &Path, slug: &str, original: &Path, pr_head: Option<&st
         } else { None };
         if std::fs::symlink_metadata(worktree).is_err() && without_links(worktree)
             && let Some(branch) = branch {
-            let _ = git(top, &["worktree", "prune"]).await;
+            forget_missing(top, worktree).await;
             if let Some(path) = worktree.to_str()
                 && run(top, &["worktree", "add", "--quiet", path, branch]).await.is_ok() {
                 include_ignored(top, worktree).await;
@@ -280,7 +280,10 @@ async fn make(top: &Path, slug: &str) -> Result<PathBuf, String> {
     if dir.exists() {
         return Err(format!("{} exists but is not a worktree of {}, so Alondra did not start a node in it", dir.display(), top.display()));
     }
-    let _ = git(top, &["worktree", "prune"]).await;
+    if std::fs::symlink_metadata(&dir).is_ok() {
+        return Err(format!("{} is a link to a folder that cannot be reached now, so Alondra did not start a node in it", dir.display()));
+    }
+    forget_missing(top, &dir).await;
     let branch = format!("worktree-{slug}");
     let path = dir.to_str().ok_or("the worktree path is not valid UTF-8")?;
     let exists = git(top, &["show-ref", "--verify", "--quiet", &format!("refs/heads/{branch}")]).await.is_some();
@@ -292,6 +295,16 @@ async fn make(top: &Path, slug: &str) -> Result<PathBuf, String> {
     };
     added.map_err(|why| format!("Alondra could not make the worktree {}: {why}", dir.display()))?;
     Ok(dir)
+}
+
+/// Forgets git's record of a worktree that was at `dir` and is gone, so a new one can be made
+/// there. The records of the repository's other worktrees stay, also those whose folder is not
+/// reachable now.
+async fn forget_missing(top: &Path, dir: &Path) {
+    let Some(common) = git(top, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await else { return };
+    if let Err(why) = crate::worktree::forget_missing(Path::new(&common), &[dir]) {
+        log!("could not delete git's record of the worktree {}: {why}", dir.display());
+    }
 }
 
 /// The remote's default branch as `origin/<name>`, fetched; `None` without a remote that has it.
@@ -771,6 +784,37 @@ mod tests {
         assert_eq!(isolate(&repo, "t-pacing", None, None).await.unwrap(), Workplace::Made(dir.clone()));
         assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), earlier, "the earlier node's commits are there");
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Making a task's worktree forgets git's record of the one gone from its folder, and only that
+    /// one: a worktree whose folder is missing now, as on a volume that is not mounted, keeps its own.
+    #[tokio::test]
+    async fn making_a_worktree_forgets_only_the_record_of_the_one_gone_from_its_folder() {
+        let (root, repo) = repository("records");
+        let dir = repo.join(".claude/worktrees/t-again");
+        sh(&repo, &["worktree", "add", "-q", "-b", "worktree-t-again", dir.to_str().unwrap()]);
+        let away = root.join("volume/t-away");
+        sh(&repo, &["worktree", "add", "-q", "-b", "worktree-t-away", away.to_str().unwrap()]);
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::rename(root.join("volume"), root.join("unmounted")).unwrap();
+
+        assert_eq!(isolate(&repo, "t-again", None, None).await.unwrap(), Workplace::Made(dir.clone()));
+        assert_eq!(sh(&dir, &["rev-parse", "--abbrev-ref", "HEAD"]), "worktree-t-again");
+        let listed = sh(&repo, &["worktree", "list", "--porcelain"]);
+        assert!(listed.contains("branch refs/heads/worktree-t-away"), "the missing worktree keeps its record: {listed}");
+        std::fs::rename(root.join("unmounted"), root.join("volume")).unwrap();
+        assert_eq!(sh(&away, &["rev-parse", "--abbrev-ref", "HEAD"]), "worktree-t-away", "and works again once its folder is back");
+    }
+
+    #[tokio::test]
+    async fn a_task_folder_that_is_a_link_to_a_folder_not_reachable_is_never_replaced() {
+        let (root, repo) = repository("dangling");
+        std::fs::create_dir_all(repo.join(".claude/worktrees")).unwrap();
+        let link = repo.join(".claude/worktrees/t-away");
+        std::os::unix::fs::symlink(root.join("unmounted/t-away"), &link).unwrap();
+        let refused = isolate(&repo, "t-away", None, None).await.unwrap_err();
+        assert!(refused.contains("cannot be reached now"), "{refused}");
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
     }
 
     #[tokio::test]

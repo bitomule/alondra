@@ -20,7 +20,7 @@ BETA_GROUP := Internal Pilot,Private Pilot
 APPLE_VERSION = $(shell sed -n 's/^ *version = "\(.*\)".*/\1/p' tools/shared.bzl)
 APPLE_BUILD = $(shell sed -n 's/^ *build_number = "\(.*\)".*/\1/p' tools/shared.bzl)
 
-.PHONY: action-outcomes connection-measurements musts-scopes reap-test-hosts version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify mermaid-snapshots-record mermaid-fixtures-record no-holds build test install run tui setup launchd unlaunchd restart status doctor mac device device-console e2e-sandbox e2e-sandbox-stop tui-sandbox tui-sandbox-stop demo-captures e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-doc-links e2e-pr-images e2e-doc-mermaid e2e-sandbox-logs e2e-direct-cards e2e-allow-always e2e-turn-end-wait e2e-interrupt-unheard e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-ios-live-activity e2e-plan-card e2e-card-attachments e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure read-index-bench tasks-screen upgrade-rehearsal clean-xcode-test-results e2e-journeys e2e-sdk e2e-explore skill-evals
+.PHONY: action-outcomes worktree-volume-bench connection-measurements musts-scopes reap-test-hosts version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify mermaid-snapshots-record mermaid-fixtures-record no-holds build test install run tui setup launchd unlaunchd restart status doctor mac device device-console e2e-sandbox e2e-sandbox-stop tui-sandbox tui-sandbox-stop demo-captures e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-doc-links e2e-pr-images e2e-doc-mermaid e2e-sandbox-logs e2e-direct-cards e2e-allow-always e2e-turn-end-wait e2e-interrupt-unheard e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-ios-live-activity e2e-plan-card e2e-card-attachments e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure read-index-bench tasks-screen upgrade-rehearsal clean-xcode-test-results e2e-journeys e2e-sdk e2e-explore skill-evals
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -446,6 +446,13 @@ views-measure:
 # Building the read index of a domain the size of the real one; fails over 10 ms.
 read-index-bench:
 	bazelisk run -c opt //crates/core:read_index_cost -- --check-cost
+
+# How fast a task's worktree is in ROOT (tools/worktree_volume_bench.py): `make worktree-volume-bench
+# ROOT=<folder> [COMMIT=<sha>] [BENCH_JSON=<file>]`. It removes only the worktrees it makes.
+COMMIT ?= HEAD
+worktree-volume-bench:
+	@test -n "$(ROOT)" || { echo "ROOT=<folder for the throwaway worktrees> is required"; exit 1; }
+	python3 tools/worktree_volume_bench.py --root "$(ROOT)" --commit "$(COMMIT)" $(if $(BENCH_JSON),--json "$(BENCH_JSON)")
 
 # Latency of /v1/health, views and hooks plus alondrad's CPU under N simulated nodes (tools/load_bench.py).
 load-bench:

@@ -11,6 +11,7 @@ use crate::domain_github::execute_system;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::TaskClosing;
 use crate::node_close::{CloseOutcome, Sessions, close_node};
+use crate::task_worktrees::Unreachable;
 use crate::worktree::TaskWorktree;
 use alondra_core::close_problem::{CLOSE_PROBLEM_PREFIX, CloseProblem, CloseStop};
 use alondra_core::views::Lang;
@@ -151,6 +152,7 @@ async fn finish_unattended(domain: &DomainRuntime, task: &Task) -> Result<()> {
         match crate::worktree::release_task_worktree(Path::new(&dir), &crate::launch_worktree::slug(&task.id.0), true).await {
             Ok(TaskWorktree::Unsaved(left)) => anyhow::bail!("the worktree of {} has work that is not saved: {left}", task.id),
             Ok(TaskWorktree::Removed { freed }) => log!("deleting the worktree {dir} freed {}", alondra_core::machine_incident::bytes_text(freed, alondra_core::views::Lang::En)),
+            Ok(TaskWorktree::Unavailable(why)) => return Err(Unreachable(why).into()),
             Ok(_) => {}
             Err(why) => anyhow::bail!("the worktree of {} could not be released: {why}", task.id),
         }
@@ -193,6 +195,10 @@ pub async fn pass(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Timi
             let state = domain.state()?;
             if let Some(task) = state.tasks.get(&task_id) {
                 let row = domain.store.lock_or_exit("the domain store").begin_task_closing(&task_id, now)?;
+                if error.downcast_ref::<Unreachable>().is_some() {
+                    wait_for_folder(domain, timing, now, task, row, &reason)?;
+                    continue;
+                }
                 let row = retry_later(timing, now, task, row, &reason);
                 count_failure(domain, task, row, CloseStop::Error, &reason, state.in_cleanup(task))?;
             }
@@ -535,6 +541,7 @@ async fn finish_with_worktree(
             let reason = format!("its session is closed, but its worktree has work that is not saved: {left}");
             failure(domain, timing, now, task, agent, row, &reason, (CloseStop::Unsaved, &left), cleanup)
         }
+        Ok(TaskWorktree::Unavailable(why)) => Err(Unreachable(why).into()),
         Ok(released) => {
             if let TaskWorktree::Removed { freed } = released {
                 log!("deleting the worktree {dir} freed {}", alondra_core::machine_incident::bytes_text(freed, alondra_core::views::Lang::En));
@@ -596,6 +603,17 @@ fn retry_later(timing: &Timing, now: i64, task: &Task, mut row: TaskClosing, rea
     row.attempted_cleaned_at = task.wrap_up.cleaned_at.map(|revision| revision as i64);
     row.rm_started_at = None;
     row
+}
+
+/// A worktree of the task is out of reach, as on a volume that is not mounted: the close waits for
+/// it without counting a failure, so no card is raised, and tries again later.
+fn wait_for_folder(domain: &DomainRuntime, timing: &Timing, now: i64, task: &Task, mut row: TaskClosing, reason: &str) -> Result<()> {
+    log!("{reason}");
+    row.last_error = Some(reason.to_owned());
+    row.next_attempt = now + millis(timing.retry);
+    row.attempted_cleaned_at = task.wrap_up.cleaned_at.map(|revision| revision as i64);
+    row.rm_started_at = None;
+    domain.store.lock_or_exit("the domain store").save_task_closing(&row)
 }
 
 /// The task cannot close while one of its worktrees holds work no remote has: its node, which
