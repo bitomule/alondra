@@ -80,6 +80,13 @@ sh_test(
 )
 
 sh_test(
+    name = "worktree_volume_bench_test",
+    srcs = ["tests/test_worktree_volume_bench.py"],
+    data = ["worktree_volume_bench.py"],
+    size = "small",
+)
+
+sh_test(
     name = "musts_scopes_test",
     srcs = ["tests/test_musts_scopes.py"],
     data = [

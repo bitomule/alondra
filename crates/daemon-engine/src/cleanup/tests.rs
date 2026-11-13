@@ -484,3 +484,35 @@ async fn cleanup_deletes_the_worktrees_of_closed_tasks_whose_session_is_gone_and
     let again = rig.run(false).await;
     assert!(again["removed_worktrees"].as_array().unwrap().is_empty(), "a second run finds nothing more");
 }
+
+#[tokio::test]
+async fn cleanup_deletes_a_closed_tasks_worktree_that_is_a_link_and_keeps_one_it_cannot_reach_for_the_next_run() {
+    let mut rig = Rig::new();
+    let worktrees = crate::test_support::Directory::new();
+    let mut linked = |rig: &mut Rig| {
+        let session = rig.session(Task::Done, true);
+        let id = format!("t{}", rig.count);
+        let root = worktrees.join(&id);
+        let (link, moved) = crate::worktree::testing::linked_task_worktree(&root, &id, &root.join("volume"));
+        rig.domain.store.lock().unwrap().set_task_worktree(&id.as_str().into(), link.to_str().unwrap(), 0).unwrap();
+        rig.sessions.listed.lock().unwrap().retain(|short| !session.starts_with(short.as_str()));
+        (root, link, moved)
+    };
+    let (_, reachable, reachable_folder) = linked(&mut rig);
+    let (away_root, away, away_folder) = linked(&mut rig);
+    std::fs::rename(away_root.join("volume"), away_root.join("unmounted")).unwrap();
+    let there = |path: &std::path::Path| std::fs::symlink_metadata(path).is_ok();
+
+    let report = rig.run(false).await;
+    let tasks = |list: &Value| list.as_array().unwrap().iter().map(|row| row["task"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+    assert_eq!(tasks(&report["removed_worktrees"]), ["Task 1"]);
+    assert!(!there(&reachable) && !there(&reachable_folder), "the link and the folder it points to go");
+    assert_eq!(tasks(&report["kept_worktrees"]), ["Task 2"]);
+    assert!(report["kept_worktrees"][0]["detail"].as_str().unwrap().contains("cannot be reached now"));
+    assert!(there(&away), "a link whose folder cannot be reached is left as it is");
+
+    std::fs::rename(away_root.join("unmounted"), away_root.join("volume")).unwrap();
+    let again = rig.run(false).await;
+    assert_eq!(tasks(&again["removed_worktrees"]), ["Task 2"], "the next run deletes it");
+    assert!(!there(&away) && !there(&away_folder));
+}

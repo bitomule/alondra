@@ -30,6 +30,9 @@ fn keeps_branch(state: &DomainState, task: &Task) -> bool {
 
 /// Deletes the worktree at `path` unless it holds unsaved files, which it only counts.
 async fn settle_path(domain: &DomainRuntime, task: &Task, path: &str) -> Result<Settled> {
+    if let Some(why) = crate::worktree::unreachable_link(Path::new(path)) {
+        return Err(crate::task_worktrees::Unreachable(why).into());
+    }
     let unsaved = crate::worktree::uncommitted_files_of_alondras_worktree(Path::new(path)).await.map_err(|why| anyhow!(why))?.unwrap_or(0);
     if unsaved > 0 {
         return Ok(Settled::Unsaved(unsaved));
@@ -43,6 +46,7 @@ async fn settle_path(domain: &DomainRuntime, task: &Task, path: &str) -> Result<
         TaskWorktree::Absent => Ok(Settled::Gone(WorktreeEnd::Removed)),
         TaskWorktree::NotAlondras => Ok(Settled::Gone(WorktreeEnd::UsersOwn)),
         TaskWorktree::Unsaved(left) => Err(anyhow!("the worktree {path} still holds work that is not saved: {left}")),
+        TaskWorktree::Unavailable(why) => Err(crate::task_worktrees::Unreachable(why).into()),
     }
 }
 

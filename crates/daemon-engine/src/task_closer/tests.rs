@@ -755,6 +755,45 @@ async fn closing_the_node_deletes_the_worktree_alondra_made_for_its_task_which_c
 }
 
 #[tokio::test]
+async fn closing_the_node_deletes_the_tasks_worktree_that_is_a_link_with_the_folder_it_points_to() {
+    let rig = Rig::new(thirty_minutes());
+    let root = crate::test_support::Directory::new();
+    let (link, moved) = crate::worktree::testing::linked_task_worktree(&root, "t", &root.join("volume"));
+    rig.domain.set_task_worktree(&"t".into(), link.to_str().unwrap()).unwrap();
+    rig.confirm();
+    rig.pass(T0).await;
+    assert!(std::fs::symlink_metadata(&link).is_err() && !moved.exists(), "the link and the folder it points to are gone");
+    assert!(!root.join("repo/.git/worktrees/t").exists());
+    rig.assert_done(NodeEnd::Closed);
+}
+
+/// A volume that is not mounted holds the close and leaves the worktree as it is, with no card
+/// however long it lasts; the next try, once it is back, deletes it and the task is done.
+#[tokio::test]
+async fn a_linked_worktree_that_cannot_be_reached_keeps_the_task_closing_and_goes_on_the_next_try() {
+    let rig = Rig::new(thirty_minutes());
+    let root = crate::test_support::Directory::new();
+    let (link, moved) = crate::worktree::testing::linked_task_worktree(&root, "t", &root.join("volume"));
+    rig.domain.set_task_worktree(&"t".into(), link.to_str().unwrap()).unwrap();
+    std::fs::rename(root.join("volume"), root.join("unmounted")).unwrap();
+    rig.confirm();
+    for minutes in [0, 5, 10, 15, 20] {
+        rig.pass(T0 + minutes * MINUTE).await;
+    }
+    assert_eq!(rig.task().state, TaskState::Closing, "a close that leaves the worktree behind is not a close");
+    let closing = rig.closing().unwrap();
+    assert!(closing.last_error.unwrap().contains("cannot be reached now"));
+    assert_eq!(closing.failures, 0, "waiting for the folder is not a failure");
+    assert!(rig.cards().is_empty(), "and the user gets no card about it");
+    assert!(std::fs::symlink_metadata(&link).is_ok() && root.join("repo/.git/worktrees/t").exists(), "nothing of it is touched");
+
+    std::fs::rename(root.join("unmounted"), root.join("volume")).unwrap();
+    rig.pass(T0 + 25 * MINUTE).await;
+    assert!(std::fs::symlink_metadata(&link).is_err() && !moved.exists());
+    assert_eq!(rig.task().state, TaskState::Done);
+}
+
+#[tokio::test]
 async fn a_worktree_with_work_not_saved_keeps_the_task_closing_until_it_can_go() {
     let rig = Rig::new(thirty_minutes());
     let root = crate::test_support::Directory::new();
@@ -1172,6 +1211,29 @@ async fn cancelling_a_task_without_unsaved_files_deletes_its_worktree_and_branch
     rig.pass(T0).await;
     rig.pass(T0 + MINUTE).await;
     assert!(!dir.exists());
+    assert!(!branch_exists(&root.join("repo"), "worktree-t"));
+    assert!(rig.discard_cards().is_empty() && rig.cards().is_empty());
+    assert_eq!(rig.task().state, TaskState::Cancelled);
+}
+
+#[tokio::test]
+async fn cancelling_a_task_deletes_its_worktree_that_is_a_link_with_the_folder_it_points_to() {
+    let rig = Rig::new(thirty_minutes());
+    let root = crate::test_support::Directory::new();
+    let (link, moved) = crate::worktree::testing::linked_task_worktree(&root, "t", &root.join("volume"));
+    rig.domain.set_task_worktree(&"t".into(), link.to_str().unwrap()).unwrap();
+    std::fs::rename(root.join("volume"), root.join("unmounted")).unwrap();
+    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
+    for minutes in [0, 5, 10, 15, 20] {
+        rig.pass(T0 + minutes * MINUTE).await;
+    }
+    assert!(std::fs::symlink_metadata(&link).is_ok() && root.join("unmounted/t/.git").is_file(), "out of reach, it is left as it is");
+    assert_ne!(rig.task().state, TaskState::Cancelled);
+    assert!(rig.cards().is_empty() && rig.discard_cards().is_empty(), "with no card");
+
+    std::fs::rename(root.join("unmounted"), root.join("volume")).unwrap();
+    rig.pass(T0 + 25 * MINUTE).await;
+    assert!(std::fs::symlink_metadata(&link).is_err() && !moved.exists());
     assert!(!branch_exists(&root.join("repo"), "worktree-t"));
     assert!(rig.discard_cards().is_empty() && rig.cards().is_empty());
     assert_eq!(rig.task().state, TaskState::Cancelled);
