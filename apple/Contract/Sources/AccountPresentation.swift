@@ -30,6 +30,8 @@ public struct AccountIdentity: Codable, Equatable, Hashable, Sendable {
 }
 
 public struct AccountPresentation: Codable, Equatable, Sendable {
+    public let usageSummary: String?
+    public let quotaSource: String?
     public let modelCatalog: AccountModelCatalogPresentation?
     public let key: AccountIdentity
     public let position: UInt32
@@ -40,7 +42,7 @@ public struct AccountPresentation: Codable, Equatable, Sendable {
     public let activeNodes: UInt32
     public let freshness: Label
     public let windows: [AccountWindowPresentation]
-    enum CodingKeys: String, CodingKey { case key, position, availability, reason, email, plan, freshness, windows; case activeNodes = "active_nodes", modelCatalog = "model_catalog" }
+    enum CodingKeys: String, CodingKey { case key, position, availability, reason, email, plan, freshness, windows; case activeNodes = "active_nodes", modelCatalog = "model_catalog", usageSummary = "usage_summary", quotaSource = "quota_source" }
 }
 
 public struct AccountWindowPresentation: Codable, Equatable, Identifiable, Sendable {

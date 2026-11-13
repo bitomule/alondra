@@ -445,6 +445,10 @@ pub struct AccountConfigurationPresentation {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AccountPresentation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_catalog: Option<crate::model_selection::AccountModelCatalog>,
     pub key: crate::accounts::AccountKey,
     pub position: u32,

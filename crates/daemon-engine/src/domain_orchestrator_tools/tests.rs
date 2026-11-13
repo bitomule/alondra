@@ -75,7 +75,8 @@ fn an_initial_codex_provider_preference_falls_back_with_a_quota_reason() {
     let body = launch_body(&f, json!({"model":"codex/gpt-6","provider":"codex"}));
     let (_, account, reason) = native_launch(&f.domain,&f.home,&task,&requested,&file,&body,false,false).unwrap().unwrap();
     assert_eq!(account.provider,Provider::Claude);
-    assert!(reason.contains("codex/default") && reason.contains("quota"),"{reason}");
+    assert!(reason.contains("Codex") && reason.contains("5 h 100 %"),"{reason}");
+    assert!(!reason.contains("account/rateLimits/read") && !reason.contains("300 min"), "{reason}");
 }
 
 #[test]

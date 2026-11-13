@@ -1373,6 +1373,13 @@ fn task_model_presentation(task: &TaskId, context: &RenderContext<'_>) -> Option
         reason: pending.map(|pending| match pending.reason.as_str() {
             "User changed model selection" | "User requested a selection change" => t!(context.lang, "Model change requested", "Cambio de modelo solicitado").into(),
             _ => pending.reason.clone(),
-        }).or_else(|| selection.reason.clone()),
+        }).or_else(|| selection.reason.as_ref().map(|reason| {
+            // Older decisions appended diagnostic quota after this boundary. Keep their
+            // explanation; the localized reading below replaces that display-only suffix.
+            let reason = reason.split_once(" launch on ").filter(|(_, suffix)| suffix.starts_with("codex/") || suffix.starts_with("claude/"))
+                .map_or(reason.as_str(), |(reason, _)| reason);
+            let quota = super::accounts::decision_quota_summary(context.index.accounts(), context.index.account_usage(), context.live.observed_at, context.lang);
+            if quota.is_empty() { reason.into() } else { format!("{reason} · {quota}") }
+        })),
     })
 }

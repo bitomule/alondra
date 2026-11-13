@@ -36,7 +36,7 @@ final class ClaudeAccountsSnapshotTests: XCTestCase {
 
     func test_codexAccounts_spanish() throws {
         let document = try SampleViews.document("accounts-codex-ios-es")
-        assertScreen([.light], language: .spanish) { ScreenFrame(height: 1200) { settings(document) } }
+        assertScreen([.light, .dark], language: .spanish) { ScreenFrame(height: 1200) { settings(document) } }
     }
 
 }

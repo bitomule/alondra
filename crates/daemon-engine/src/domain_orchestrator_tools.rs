@@ -389,7 +389,6 @@ fn native_launch(domain: &DomainRuntime, home: &Path, task: &alondra_core::domai
         } else { select(&initial, provider) }
     }
         .map_err(|error| if reselecting && error.code == "model_unavailable" { DomainError::new("account_unavailable", error.message) } else { error })?;
-    decision.reason = format!("{} {}", decision.reason, crate::accounts::selection_evidence(domain, &decision.account, alondra_core::now_millis()));
     if !decision.rejected_candidates.is_empty() {
         decision.reason.push_str(&format!(" Rejected alternatives: {}", decision.rejected_candidates.join("; ")));
     }
@@ -399,6 +398,10 @@ fn native_launch(domain: &DomainRuntime, home: &Path, task: &alondra_core::domai
     if reselecting { intent.account = Some(decision.account.clone()); }
     intent.effective = Some(decision.selection.clone());
     intent.reason = Some(decision.reason.clone());
+    let read = domain.read();
+    let snapshot = read.state();
+    decision.reason.push_str(&format!(" Quota: {}", alondra_core::views::accounts::decision_quota_summary(&snapshot.accounts, &snapshot.account_usage, Some(alondra_core::now_millis()), alondra_core::views::Lang::En)));
+    drop(read);
     let mut resolved = requested.clone();
     resolved.flags.model = (decision.account.provider == Provider::Claude).then(|| decision.selection.model.model.clone());
     resolved.flags.effort = decision.selection.reasoning_effort.clone();

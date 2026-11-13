@@ -197,7 +197,7 @@ pub(crate) fn selection_evidence(domain: &DomainRuntime, account: &AccountKey, n
     alondra_core::usage::choice_line(account, &state.accounts, &state.account_usage, state.account_reserve, now, &alondra_daemon_engine_model::local_day(now))
 }
 
-/// The same quota evidence is kept on the task and in the daemon log.
+/// Full provider provenance and timestamps stay in the daemon log.
 pub(crate) fn log_choice(domain: &DomainRuntime, what: &str, account: &AccountKey, now: alondra_core::Millis) {
     let line = selection_evidence(domain, account, now);
     log!("{what}: {line}");

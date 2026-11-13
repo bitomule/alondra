@@ -185,7 +185,18 @@ pub(crate) async fn gather(
     allow_issue_refresh: bool,
     clock_only: bool,
 ) -> LiveSnapshot {
-    let now = alondra_core::now_millis();
+    gather_now(client, state, lang, keys, allow_issue_refresh, clock_only, alondra_core::now_millis()).await
+}
+
+async fn gather_now(
+    client: &crate::client_routes::Client,
+    state: &std::sync::Arc<DomainState>,
+    lang: Lang,
+    keys: &[String],
+    allow_issue_refresh: bool,
+    clock_only: bool,
+    now: Millis,
+) -> LiveSnapshot {
     // The live sampler reads clock-only snapshots to notice what no fact announces; it must
     // always look afresh.
     if clock_only {
@@ -196,7 +207,8 @@ pub(crate) async fn gather(
     let snapshots = &client.live_snapshots;
     let key = format!("{lang:?}|{}", keys.join("\n"));
     let watched = !keys.iter().any(|key| reads_unwatched_sources(key));
-    if watched && let Some(live) = snapshots.get(client, &key, state) {
+    if watched && let Some(mut live) = snapshots.get(client, &key, state) {
+        live.observed_at = quota_clock(state, keys, now);
         return live;
     }
     // GitHub is awaited before the read lane is taken, so a slow issue search never holds it.
@@ -219,10 +231,21 @@ pub(crate) async fn gather(
         return live;
     }
     keyed_at(client, state, keys, issue_data).await.apply(&mut live);
+    live.observed_at = quota_clock(state, keys, now);
     if watched && let Some(facts) = facts {
         snapshots.insert(client, key, facts, live.clone());
     }
     live
+}
+
+fn quota_clock(state: &DomainState, keys: &[String], now: Millis) -> Option<Millis> {
+    (keys.iter().any(|key| {
+        let key = key.split('?').next().unwrap_or(key);
+        matches!(key, "accounts" | "settings" | "new_request" | "tasks") || key.starts_with("account:") || key.starts_with("task:")
+    })
+        && state.accounts.iter().any(|account| state.account_usage.iter().any(|usage|
+            usage.provider == account.provider && usage.account == account.id && usage.measured_at().is_some())))
+        .then_some(now.div_euclid(60_000) * 60_000)
 }
 
 async fn keyed_at(
@@ -622,10 +645,7 @@ async fn gather_inner(
     };
     let keyed = gather_keyed(client, state, keys, issue_data).await;
     LiveSnapshot {
-        observed_at: (keys.iter().any(|key| key == "accounts" || key == "settings" || key.starts_with("account:"))
-            && state.accounts.iter().any(|account| state.account_usage.iter().any(|usage|
-                usage.provider == account.provider && usage.account == account.id && usage.measured_at().is_some())))
-            .then_some(now.div_euclid(60_000) * 60_000),
+        observed_at: quota_clock(state, keys, now),
         closed_nodes: client.domain.live.closed_sessions(),
         closed_tasks: client.domain.live.user_closed_task_ids(),
         nodes,
@@ -1015,6 +1035,33 @@ mod cache_tests {
 
     fn keyed(client: &crate::client_routes::Client) -> usize {
         client.live_snapshots.keyed.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[tokio::test]
+    async fn cached_quota_views_keep_the_reading_clock_for_rows_choices_and_task_reasons() {
+        use alondra_core::accounts::{AccountBilling, AccountId, AccountState, AccountStatus};
+        let (_home, domain, client) = wait_fixture();
+        let mut state = (*domain.state().unwrap()).clone();
+        let account = AccountId::default_account();
+        state.accounts = vec![AccountStatus {
+            provider: Provider::Codex, id: account.clone(), name: "Default".into(), state: AccountState::SignedIn,
+            native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None,
+        }];
+        let now = 1_794_536_820_000;
+        let reading = alondra_core::codex_account::parse_rate_limits(&serde_json::json!({"rateLimits":{"primary":{
+            "usedPercent":10,"windowDurationMins":300,"resetsAt":now/1000+7200}}}), None).unwrap();
+        state.account_usage = vec![alondra_core::usage::record(None, Provider::Codex, &account, &reading, now, "2026-11-13")];
+        let state = Arc::new(state);
+        gather_now(&client, &state, Lang::En, &["home".into()], false, false, now).await;
+        for key in ["accounts", "new_request", "new_request?project=fixture", "task:room"] {
+            let keys = [key.into()];
+            let first = gather_now(&client, &state, Lang::En, &keys, false, false, now).await;
+            assert_eq!(first.observed_at, Some(now), "{key} keeps its clock after shared cache reuse");
+            let later = gather_now(&client, &state, Lang::En, &keys, false, false, now + 360_000).await;
+            assert_eq!(later.observed_at, Some(now + 360_000), "{key} refreshes its clock on a cached read");
+            let quota = alondra_core::views::accounts::quota_summary(state.account_usage.first(), later.observed_at, Lang::En);
+            assert!(quota.contains("reading from 6 min ago") && quota.contains("resets in"), "{quota}");
+        }
     }
 
     #[tokio::test]

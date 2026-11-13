@@ -591,7 +591,7 @@ pub fn choose_account(policy: Policy, provider: Provider, accounts: &[AccountSta
     chosen.map(|candidate| candidate.account.id.clone())
 }
 
-/// Native quota evidence shared by the task's decision and the daemon log.
+/// Detailed native quota evidence for the daemon log.
 pub fn choice_line(chosen: &AccountKey, accounts: &[AccountStatus], usage: &[AccountUsage], reserve: Share, now: Millis, today: &str) -> String {
     let _ = (reserve, today);
     let accounts = or_implicit(accounts);

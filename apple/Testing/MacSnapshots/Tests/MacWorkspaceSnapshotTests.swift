@@ -1009,7 +1009,7 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
             var state = ServerSettingsFeature.State(key: .accounts, client: .mac)
             state.document = try document(spanish ? "accounts-codex-mac-es" : "accounts-codex-mac")
             let store = Store(initialState: state) { ServerSettingsFeature() }
-            assertWindow(size: CGSize(width: 640, height: 900), spanish: spanish, variants: spanish ? [.light] : Appearance.allCases) {
+            assertWindow(size: CGSize(width: 640, height: 900), spanish: spanish, variants: Appearance.allCases) {
                 Form { ServerSettingsSection(store: store) }.formStyle(.grouped)
             }
         }
