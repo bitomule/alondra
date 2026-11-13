@@ -1,16 +1,15 @@
-use crate::locks::Poisonable as _;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-use alondra_core::domain::{Actor, Command, CommandEnvelope, DomainError, PROTOCOL_VERSION};
+use alondra_core::domain::{Actor, CommandEnvelope};
 use anyhow::{Context, Result, ensure};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{Attached, DomainStore, StoreError};
+use super::DomainStore;
 
 pub(super) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS settings_projection_receipts(identity BLOB PRIMARY KEY, actor TEXT NOT NULL, command_id TEXT NOT NULL, data_epoch TEXT NOT NULL, command_digest BLOB NOT NULL, target_digest BLOB NOT NULL);";
 
