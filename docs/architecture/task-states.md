@@ -45,7 +45,8 @@ slots are taken, and both numbers come from the same computation.
 | Owed | Party | The lifecycle is in |
 |---|---|---|
 | `Start` | Alondra | A session that is opening |
-| `HandInput` | Alondra | An input waits for a resting session to take it |
+| `HandInput` | Alondra | An input was handed to a session whose provider has said nothing about it yet |
+| `ReadInput` | Provider | The provider holds the input (Claude Code `queued`, Codex's answer to `turn/start`) and owes its reading |
 | `HandDecision` | Alondra | The user answered a decision an open turn waits on, and the answer has not reached it |
 | `Wake` | Alondra | Work of the node's own ended and no turn took its result |
 | `Turn`, `OwnWork` | Provider | A turn, or background work, runs |
@@ -64,12 +65,11 @@ deadline never ends work by itself: it triggers a closed outcome (the turn goes 
 the input goes back to the queue, or the task reads a factual state). It never opens a card for
 the user. `obligation_policy` (`crates/core/src/domain/obligation_policy.rs`) is the only place a deadline
 may exist, and one clock in the daemon (`obligation_watch`) applies them. `enforced` says which
-deadlines are acted on: `Wake` and `Answer` are; `HandInput` is defined but off (see
-[Status](#status)).
+deadlines are acted on: `HandInput`, `Wake` and `Answer`.
 
 | Step | The event that would make it unnecessary, and why it is not enough | What the deadline triggers | Length |
 |---|---|---|---|
-| `HandInput`: an input offered to an open, resting session (defined, **not enforced yet**) | The provider's «session running» event ends it the moment the input is taken. No event says «I will not take it»: a change that does not happen emits nothing | The same input is offered again once; on a second expiry the task gives up its slot and the input returns to the queue, keeping the session | The larger of 2 minutes and ten times the measured 99th percentile from offer to «running» |
+| `HandInput`: an input written to a session whose provider has named nothing yet, last resort for a **hung process** | Every provider event ends it: the provider holds the input (`ReadInput`, no deadline), starts it, or refuses it. A refusal (Claude `refused`, `discarded`, or `cancelled` without Alondra's stop; a result that does not name the message; Codex's error on `turn/start` or a turn that ends without our message) is resent at once with a new identifier, and a second refusal hands the message to a host that resumes the same session. A hung process emits nothing by definition | Only when the process is alive and has written nothing at all for the whole length: Alondra stops it, a host that resumes the same session takes its place, and the message goes again flagged as possibly received. Nothing is offered again and no card asks the user | 5 minutes since the process's last output (not since the delivery), and never during a turn or once the provider holds the input |
 | `Wake`: the node's own work ended | The turn the provider opens by itself to read that result. Measured over a week on one Mac: it opened in 1,637 of 1,644 cases (median 4.7 s, 99th percentile 49 s); it never does after the host was replaced, because the new process no longer knows that work | Alondra hands the result to the node as an input | 2 minutes: 2.4 times the measured 99th percentile. A false positive only adds an input the open turn reads |
 | `Answer`: what the orchestrator owes | Its own call that settles the case, answers the question or reviews the plan. That call is a model's: nothing guarantees it | A stopped node gets its turn back with a default instruction, up to three times, and then its task closes with a result. An unanswered question goes back to its node, which decides or asks the user. An unreviewed plan is released unchanged and its node is told what was decided since | 10 minutes with the orchestrator available. Measured: every stopped node was settled within 48 s, and 95% of 999 questions within 10 minutes |
 
@@ -104,6 +104,19 @@ Each rule is held by a type or by a property test.
    recorded, or it is refused with the reason.
 6. **Every visible state carries a present fact.** `Working` cannot be rendered without one.
 7. **A task waits for the user only on a card the inbox lists.**
+8. **A closing node only closes.** `DomainState::node_closing` holds once the node confirmed its
+   cleanup, the user chose to close it, its end is recorded or the task ended (the node of a
+   cancelled task still winds down and may ask the user until it is closed). From then on its
+   task reads `Delivered` (closing) even while its last turn is still open, no host takes it over
+   (the domain refuses `TakenOver` with `closing`), and nothing it asks becomes a card: a request
+   of Claude is denied by policy with the reason, and a card it sends is refused. A host still
+   running for a node recorded closed or gone is closed by the gate. A task whose delivery was
+   accepted and that was asked to clean up may still ask the user what its cleanup needs, but a
+   plan is denied.
+9. **A message waits for a paused node.** The orchestrator's `send` to a paused node keeps the
+   message with its task's inputs; the pause holds it and the node reads it when it resumes.
+10. **The orchestrator's cards are announced after its pass.** A card the orchestrator puts for
+    the user during a pass is pushed only once that pass ended, and only if still open.
 
 A model test (`crates/daemon-engine/src/machine_model`) mixes provider facts, user actions, daemon restarts and
 limits, then lets the clock run with nothing else happening, and checks that every open task ends
@@ -144,14 +157,14 @@ request. Where a phase differs from the plan, it is listed below the table.
 | 4 | A move to another account always ends | `crates/daemon-engine` `provider_transition` | #156 | Merged |
 | 5 | Turn start, turn end and work end from the provider's session events | `agent-host`, `crates/provider-claude`, `crates/provider-codex` | #161 | Merged |
 | 6 | An empty turn goes back to its node at once, up to three times in a row | `crates/domain`, `crates/core` | #162 | Merged |
-| 7 | `HandInput` and `Wake` deadlines | `obligation_watch` | #164 | Merged; `HandInput` not enforced |
+| 7 | `HandInput` and `Wake` deadlines | `obligation_watch` | #164 | Merged; `HandInput` became the hung-process last resort in the delivery with certainty phases (#185 and its second phase) |
 | 8 | `Answer` deadline | `orchestrator_inbox` | #167 | Merged |
 | 9 | `Situation` | `crates/core/src/domain/situation.rs` | #157 | Merged |
 | 10 | Seven state labels | `crates/core/src/views/task_state.rs` | #163 | Merged |
 | 11 | One count of work and of slots | `crates/core`, `admission` | #160 | Merged |
 | 12 | A present fact on every working row | `crates/core/src/views` (`NowFact`) | #169 | Merged |
 | 13 | The wait report | `agent-host`, `crates/alondra`, `docs/wait-report.md` | #171 | Merged |
-| 14 | The model test | `crates/daemon-engine/src/machine_model` | #170 | Merged; one known gap |
+| 14 | The model test | `crates/daemon-engine/src/machine_model` | #170 | Merged; no known gaps |
 | 15 | The legacy node machine retired | `crates/core` `node_machine` | #173 | Merged |
 | 16 | An answer always reaches its turn | `admission`, `crates/domain` | #159 | Merged |
 
@@ -163,11 +176,6 @@ you»), #180 (a delivery sent back whose node waits for the orchestrator).
 
 ### Where the result differs from the plan
 
-- **`HandInput` is not enforced.** The deadline exists in `obligation_policy` but `enforced`
-  returns false for it, because the plan requires a day of measured `obligations HandInput` lines
-  first and the daemon log had none. The model test lists it in `KNOWN_GAPS` and enforces it
-  itself. A separate task will design delivering a message with certainty; until then an input the
-  session never takes has no deadline.
 - **A fourth timer remains outside the policy.** `STRANDED_AFTER` (5 minutes, in `admission`)
   sends a task seen stranded back through the gate. It is a deadline outside the policy, so
   «only three deadlines» holds for the policy but not for the daemon; a task will give it an owner

@@ -1,6 +1,7 @@
 //! The one clock over what every live task is owed. It measures how long each step lasts, logs
 //! the steps past their deadline, and acts on those whose deadline `obligation_policy` enforces:
-//! an input the session did not take is offered again and then goes back to the queue, a node
+//! an input handed to a process that then wrote nothing for too long is given to a host that
+//! resumes the same session, flagged as possibly received already, a node
 //! whose work ended with no turn to take up its notice is told, and what the orchestrator owes is
 //! reminded to it and then settled by Alondra. Nothing it does opens a card. The daemon keeps one
 //! clock, in `Live`: its own loop and every pass of the orchestrator step that one.
@@ -33,6 +34,9 @@ pub trait World {
     fn waits_for_slot(&self, task: &TaskId) -> bool;
     /// The usage limit holds the orchestrator: what it owes does not age meanwhile.
     fn orchestrator_held(&self) -> bool;
+    /// When the task's node process last wrote anything, or started if it wrote nothing yet.
+    /// `None` when it has no live process.
+    fn last_output(&self, task: &TaskId) -> Option<Millis>;
 }
 
 struct Seen {
@@ -48,10 +52,8 @@ struct Seen {
 /// What Alondra does with a step past its deadline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
-    /// The input the session holds goes again, flagged as possibly received already.
-    OfferAgain,
-    /// The task gives up its slot: a host that resumes the same session takes the place of its
-    /// own, and the input waits for a slot of the gate like any other.
+    /// The hung process is stopped: a host that resumes the same session takes its place, and the
+    /// input goes again flagged as possibly received, once the gate gives the task a slot.
     Requeue,
     /// The node is told its work ended.
     Wake,
@@ -59,10 +61,9 @@ pub enum Action {
     Answer,
 }
 
-/// The action for the `attempt`-th time the same step went past its deadline.
-pub fn action(owed: &Owed, attempt: u32) -> Option<Action> {
+/// The action for a step past its deadline.
+pub fn action(owed: &Owed) -> Option<Action> {
     match owed {
-        Owed::HandInput if attempt <= 1 => Some(Action::OfferAgain),
         Owed::HandInput => Some(Action::Requeue),
         Owed::Wake => Some(Action::Wake),
         Owed::Answer => Some(Action::Answer),
@@ -78,8 +79,6 @@ struct Finished {
 
 pub struct Watch {
     seen: BTreeMap<TaskId, Seen>,
-    /// How many times the step a task owes since a revision was acted on.
-    tries: BTreeMap<TaskId, (Revision, u32)>,
     finished: BTreeMap<String, Finished>,
     summarized_at: Option<Millis>,
     last_pass: Option<Millis>,
@@ -101,7 +100,7 @@ fn effective(world: &dyn World, task: &TaskId, obligation: &Obligation) -> (Part
 
 impl Watch {
     pub fn enforcing(enforced: fn(&Owed) -> bool) -> Self {
-        Self { seen: BTreeMap::new(), tries: BTreeMap::new(), finished: BTreeMap::new(), summarized_at: None, last_pass: None, enforced }
+        Self { seen: BTreeMap::new(), finished: BTreeMap::new(), summarized_at: None, last_pass: None, enforced }
     }
 
     pub fn step(&mut self, state: &DomainState, world: &dyn World, now: Millis) -> Vec<Overdue> {
@@ -127,7 +126,6 @@ impl Watch {
             if let Some(seen) = self.seen.remove(&task) {
                 self.finish(&seen, now);
             }
-            self.tries.remove(&task);
         }
         for (task, obligation) in &obligations {
             let (party, owed) = effective(world, task, obligation);
@@ -139,8 +137,9 @@ impl Watch {
                 self.seen.insert(task.clone(), Seen { party, owed, since: obligation.since, first_seen: now, clock: now, reported: false });
             }
             let Some(seen) = self.seen.get_mut(task) else { continue };
-            let age = now - seen.clock;
-            let late = party == Party::Alondra && obligation_policy::deadline(&owed).is_some_and(|deadline| age >= deadline);
+            let quiet_since = if owed == Owed::HandInput { world.last_output(task).map(|output| output.max(seen.clock)) } else { Some(seen.clock) };
+            let age = quiet_since.map_or(0, |since| now - since);
+            let late = party == Party::Alondra && quiet_since.is_some() && obligation_policy::deadline(&owed).is_some_and(|deadline| age >= deadline);
             if late && !seen.reported {
                 seen.reported = true;
                 self.finished.entry(format!("{owed:?}")).or_default().overdue += 1;
@@ -151,20 +150,14 @@ impl Watch {
     }
 
     /// What to do now with each step in `late` whose deadline is enforced. Each one acted on
-    /// counts one more attempt at its step and starts its deadline again; a new step starts the
-    /// count from nothing.
+    /// starts its deadline again.
     pub fn enforce(&mut self, late: &[Overdue], now: Millis) -> Vec<(TaskId, Action)> {
         let mut actions = Vec::new();
         for overdue in late.iter().filter(|overdue| (self.enforced)(&overdue.owed)) {
             let Some(seen) = self.seen.get_mut(&overdue.task) else { continue };
             seen.clock = now;
             seen.reported = false;
-            let tries = self.tries.entry(overdue.task.clone()).or_insert((seen.since, 0));
-            if tries.0 != seen.since {
-                *tries = (seen.since, 0);
-            }
-            tries.1 += 1;
-            if let Some(action) = action(&overdue.owed, tries.1) {
+            if let Some(action) = action(&overdue.owed) {
                 actions.push((overdue.task.clone(), action));
             }
         }
@@ -212,6 +205,11 @@ impl World for GateWorld<'_> {
     fn orchestrator_held(&self) -> bool {
         self.domain.live.usage_pause.is_active()
     }
+
+    fn last_output(&self, task: &TaskId) -> Option<Millis> {
+        let agent = self.state.tasks.get(task)?.agent_id.clone()?;
+        self.domain.owns_sdk_host(&agent).then(|| self.domain.live.outputs.lock_or_recover("the node outputs").get(task).copied().unwrap_or_default())
+    }
 }
 
 /// One pass of the clock at `now`: what is past its deadline is logged and, where enforced, acted on.
@@ -248,12 +246,6 @@ pub fn apply(domain: &DomainRuntime, task: &TaskId, action: Action) -> Result<()
             let (told, _) = domain.own(scope, |owner| untaken::wake(owner, task, &agent)).map_err(|error| error.to_string())?;
             if told {
                 log!("the work of {task}'s own ended and no turn took up its notice: Alondra tells its node");
-            }
-        }
-        Action::OfferAgain => {
-            let (offered, _) = domain.own(scope, |owner| untaken::offer_again(owner, task)).map_err(|error| error.to_string())?;
-            if offered {
-                log!("the session of {task} took no turn on its input in time: it is offered again");
             }
         }
         Action::Requeue => {

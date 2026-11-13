@@ -59,6 +59,16 @@ fn said(card: &Interaction) -> Option<String> {
 }
 
 impl DomainState {
+    /// Why a task that is closing answers its node's request itself, with no card: a node that
+    /// only closes now asks nothing, and one whose delivery was accepted plans nothing.
+    fn closing_denial(&self, task: &TaskId, hold: Hold) -> Option<String> {
+        let t = self.tasks.get(task)?;
+        if self.node_closing(t) {
+            return Some(node_closing_notice());
+        }
+        (hold == Hold::Plan && self.in_cleanup(t)).then(plan_after_acceptance_notice)
+    }
+
     /// The SDK execution of `generation` asks for the decision its host persisted at `epoch`.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn record_decision_request(&mut self, actor: &Actor, task: &TaskId, generation: u64, epoch: u64, hold: Hold,
@@ -95,6 +105,9 @@ impl DomainState {
             (Hold::Plan, DecisionPrompt::Card { body, .. }) => Some(body.as_str()),
             _ => None,
         };
+        if let Some(message) = self.closing_denial(task, hold) {
+            return self.decide(lifecycles, task, LifecycleRecord::DecidedByPolicy { epoch, decision: DecisionRecord::Deny { message } });
+        }
         let waiting = (hold == Hold::Plan).then(|| self.plan_while_waiting(task)).flatten()
             .map(|message| DecisionRecord::Deny { message });
         if let Some(decision) = decision_policy(hold, tool, input, mcp_server, plan).or(waiting) {

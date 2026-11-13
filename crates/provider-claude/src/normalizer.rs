@@ -476,6 +476,11 @@ fn fold(
                 Err(AdapterError::UnknownInput) => {}
                 Err(error) => return Err(error),
             },
+            Some("queued") => match lookup(std::slice::from_ref(&command)) {
+                Ok(mut inputs) => facts.push(Observation::InputHeld { input: inputs.remove(0) }),
+                Err(AdapterError::UnknownInput) => {}
+                Err(error) => return Err(error),
+            },
             Some("completed" | "cancelled" | "discarded" | "refused") => {
                 if let Some(index) = state.taken.iter().position(|taken| *taken == command) {
                     state.taken.remove(index);
@@ -619,7 +624,7 @@ fn fold(
                 let task = string(payload, "task_id")?;
                 if !matches!(
                     payload.get("status").and_then(Value::as_str),
-                    Some("completed" | "failed" | "stopped")
+                    Some("completed" | "failed" | "stopped" | "killed")
                 ) || payload.get("reason").is_some()
                 {
                     return Err(AdapterError::Unsupported);
@@ -1199,10 +1204,10 @@ mod tests {
     // and init again as the next prompt starts. Evidence of the inputs, ours or not, with no fact;
     // init again with no prompt of ours started is a turn Claude opens by itself.
     #[test]
-    fn the_native_prompt_lifecycle_records_nothing_and_an_init_no_prompt_of_ours_started_opens_claudes_own_turn() {
+    fn the_native_prompt_lifecycle_records_only_what_it_holds_and_an_init_no_prompt_of_ours_started_opens_claudes_own_turn() {
         let mut state = Checkpoint { format: CHECKPOINT_FORMAT, ..Checkpoint::default() };
         let queued = event(json!({"type":"command_lifecycle","command_uuid":FIRST,"state":"queued","uuid":REPLY}));
-        assert_eq!(fold(&queued, &session(), &mut state, input).unwrap(), vec![]);
+        assert_eq!(fold(&queued, &session(), &mut state, input).unwrap(), vec![Observation::InputHeld { input: InputId::new(FIRST).unwrap() }], "queued is Claude holding the input");
         let foreign = |_: &[MessageUuid]| -> Result<Vec<InputId>, AdapterError> { panic!("a lifecycle needs no input of ours") };
         let native = event(json!({"type":"command_lifecycle","command_uuid":"cli-own-command","state":"completed","uuid":REPLY}));
         assert_eq!(fold(&native, &session(), &mut state, foreign).unwrap(), vec![], "Claude's own command is evidence");
@@ -1600,6 +1605,23 @@ mod tests {
             work: WorkId::new(format!("claude-task:{SECOND}")).unwrap(),
             continuation: ContinuationId::new(format!("claude-notification:{NOTIFIED}")).unwrap(),
         }]);
+    }
+    // Claude Code ends a background command that reached its time limit and says it was killed:
+    // that ends the work like any other end.
+    #[test]
+    fn background_work_killed_at_its_time_limit_ends() {
+        let mut state = state();
+        let assistant = event(json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST]}));
+        fold(&assistant, &session(), &mut state, input).unwrap();
+        let started = event(json!({"type":"system","subtype":"task_started","uuid":SECOND,"task_id":"bash-1","tool_use_id":"toolu_1","task_type":"local_bash","is_backgrounded":true}));
+        fold(&started, &session(), &mut state, input).unwrap();
+        fold(&event(json!({"type":"result","uuid":SECOND,"user_message_uuid":FIRST})), &session(), &mut state, input).unwrap();
+        let killed = event(json!({"type":"system","subtype":"task_notification","uuid":NOTIFIED,"task_id":"bash-1","tool_use_id":"toolu_1","status":"killed"}));
+        assert_eq!(fold(&killed, &session(), &mut state, input).unwrap(), vec![Observation::WorkEnded {
+            work: WorkId::new(format!("claude-task:{SECOND}")).unwrap(),
+            continuation: ContinuationId::new(format!("claude-notification:{NOTIFIED}")).unwrap(),
+        }]);
+        assert!(state.work.is_empty());
     }
     // A Monitor watch is a background task of its own (`local_bash`, per the SDK's
     // SDKTaskStartedMessage): the turn that started it ends behind it, and its end wakes the node.
@@ -2128,8 +2150,9 @@ mod tests {
     fn an_input_claude_finishes_or_cancels_without_taking_it_in_is_dropped() {
         let lifecycle = |command: &str, state: &str| event(json!({"type":"command_lifecycle","command_uuid":command,"state":state,"uuid":REPLY}));
         let dropped = |id: &str| vec![Observation::InputDropped { input: InputId::new(id).unwrap() }];
+        let held = |id: &str| vec![Observation::InputHeld { input: InputId::new(id).unwrap() }];
         let mut state = state();
-        assert_eq!(fold(&lifecycle(FIRST, "queued"), &session(), &mut state, input).unwrap(), vec![]);
+        assert_eq!(fold(&lifecycle(FIRST, "queued"), &session(), &mut state, input).unwrap(), held(FIRST));
         assert_eq!(fold(&lifecycle(FIRST, "completed"), &session(), &mut state, input).unwrap(), dropped(FIRST));
         assert_eq!(fold(&lifecycle(SECOND, "cancelled"), &session(), &mut state, input).unwrap(), dropped(SECOND));
 
@@ -2153,7 +2176,7 @@ mod tests {
         let dropped = |id: &str| vec![Observation::InputDropped { input: InputId::new(id).unwrap() }];
         let mut state = state();
         assert_eq!(fold(&lifecycle(FIRST, "refused"), &session(), &mut state, input).unwrap(), dropped(FIRST));
-        assert_eq!(fold(&lifecycle(SECOND, "queued"), &session(), &mut state, input).unwrap(), vec![]);
+        assert_eq!(fold(&lifecycle(SECOND, "queued"), &session(), &mut state, input).unwrap(), vec![Observation::InputHeld { input: InputId::new(SECOND).unwrap() }]);
         assert_eq!(fold(&lifecycle(SECOND, "discarded"), &session(), &mut state, input).unwrap(), dropped(SECOND));
         assert_eq!(fold(&lifecycle(THIRD, "started"), &session(), &mut state, input).unwrap(), vec![]);
         assert_eq!(fold(&lifecycle(THIRD, "discarded"), &session(), &mut state, input).unwrap(), vec![], "what it started is no drop");

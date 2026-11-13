@@ -102,6 +102,9 @@ impl DomainState {
             return Situation::Waiting(WaitsFor::Slot).into();
         }
         let Ok(lifecycle) = self.lifecycle_of(&task.id) else { return without_lifecycle(task).into() };
+        if lifecycle.phase() == TaskPhase::Delivered && self.node_closing(task) {
+            return Situation::Delivered(Delivery::Closing).into();
+        }
         let Some(obligation) = lifecycle.obligation() else {
             return if lifecycle.phase() == TaskPhase::Cancelled { Situation::Cancelled } else { Situation::Finished }.into();
         };
@@ -156,7 +159,7 @@ impl DomainState {
             Owed::Tasks => WaitsFor::Tasks,
             Owed::Answer if !lifecycle.plan_reviews().is_empty() => WaitsFor::PlanReview,
             Owed::Start => WaitsFor::Step(AlondraStep::Starting),
-            Owed::HandInput | Owed::HandDecision => WaitsFor::Step(AlondraStep::Delivering),
+            Owed::HandInput | Owed::ReadInput | Owed::HandDecision => WaitsFor::Step(AlondraStep::Delivering),
             Owed::Wake => WaitsFor::Step(AlondraStep::Waking),
             Owed::Merge | Owed::Close => return Situation::Delivered(Delivery::Closing).into(),
             Owed::Answer | Owed::User | Owed::Turn | Owed::OwnWork => WaitsFor::Step(AlondraStep::Answering),

@@ -558,6 +558,11 @@ small the step. Your context is not capped; spend it on fewer steps:
 - Long commands (builds, test suites, installs) run in the background, and you wait for their
   completion notification: no polling with `sleep`, `tail`, `until` loops or repeated status
   checks, each of which is a full re-read for nothing. Do other work meanwhile or end your turn.
+- A command that may wait a long time for something shared (a lock, a queue, a busy machine) never
+  runs in the foreground: start it in the background with the longest time limit the tool allows
+  and wait for its notification. If the tool stops it at that limit while you still need it,
+  start it again in the background: never end a turn with nothing of yours running and nothing
+  delivered or asked.
 
 ## Scratch files
 

@@ -137,6 +137,13 @@ impl TaskLifecycle {
                     unprompted = true;
                 }
             }
+            RuntimeFact::InputHeld { input } => {
+                let waits = matches!(&execution.activity, Activity::Launching(pending) | Activity::InputPending(pending) if *pending == input) || execution.inbox.contains(&input);
+                let up = matches!(execution.resource, ResourceEvidence::Reserved | ResourceEvidence::Available);
+                if !up || !waits || !execution.held.insert(input) {
+                    return self.unchanged(cursor);
+                }
+            }
             RuntimeFact::InputDropped { input, card } => {
                 valid_id(&card.0)?;
                 if execution.resource != ResourceEvidence::Available {

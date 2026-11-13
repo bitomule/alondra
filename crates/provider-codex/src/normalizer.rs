@@ -239,6 +239,9 @@ fn fold(batch: &OrderedObservation, state: &mut Checkpoint, method: &str, params
             if state.accepted.len() >= 64 { return invalid(); }
             if state.accepted.get(turn).is_some_and(|previous| previous != client) { return invalid(); }
             state.accepted.insert(turn.into(), client.into());
+            if let Ok(input) = lookup(client) {
+                facts.push(Observation::InputHeld { input });
+            }
             if state.rerouted_turn.as_deref()!=Some(turn){state.model=string(params,"model").filter(|model|!model.is_empty()).map(str::to_owned).or_else(||state.model.clone());}
             if string(params,"model").is_some() || state.rerouted_turn.as_deref()==Some(turn){state.model_turn=Some(turn.into());}
         }
@@ -288,6 +291,15 @@ fn fold(batch: &OrderedObservation, state: &mut Checkpoint, method: &str, params
                 if let Some(outcome) = outcome {
                     end_turn(batch, state, outcome, facts)?;
                 }
+            }
+        }
+        // A command whose call returned while it runs on as a session the model reads and writes
+        // later: its first event may carry no process, and this one names it.
+        "item/commandExecution/terminalInteraction" => {
+            if let (Some(id), Some(_)) = (string(params, "itemId"), string(params, "processId").filter(|process| !process.is_empty()))
+                && let Some(work) = state.work.get_mut(id)
+            {
+                work.background = true;
             }
         }
         "thread/closed" => {
@@ -590,6 +602,23 @@ mod tests {
         fold(&batch,&mut state,"turn/completed",&json!({"threadId":"root","turn":{"id":"turn","status":"failed"}}),&mut facts,input).unwrap();
         assert!(dropped(&facts),"{facts:?}");assert!(state.accepted.is_empty() && state.turn.is_none());
     }
+    // 7 Nov, t-model-spread-by-margin: a long check started with no process named, its call returned
+    // a session that kept running, and the turn ended. The command was taken for a tool its turn
+    // left open: Alondra said no work of the node's own ran, and ignored the command's end.
+    #[test]
+    fn a_command_that_runs_on_as_a_session_outlives_its_turn_and_its_end_wakes_the_node() {
+        let batch=batch();let mut state=Checkpoint{thread:Some("root".into()),process:"process".into(),turn:Some("origin".into()),..Checkpoint::default()};let mut facts=vec![];
+        fold(&batch,&mut state,"item/started",&json!({"threadId":"root","item":{"type":"commandExecution","id":"check","status":"inProgress"}}),&mut facts,|_|invalid()).unwrap();
+        fold(&batch,&mut state,"item/commandExecution/terminalInteraction",&json!({"threadId":"root","turnId":"origin","itemId":"check","processId":"11310","stdin":""}),&mut facts,|_|invalid()).unwrap();
+        facts.clear();
+        fold(&batch,&mut state,"turn/completed",&json!({"threadId":"root","turn":{"id":"origin","status":"completed"}}),&mut facts,|_|invalid()).unwrap();
+        assert!(matches!(&facts[..],[Observation::TurnEnded{..}]),"the session is work of the node's own: {facts:?}");
+        assert_eq!(state.work.keys().map(String::as_str).collect::<Vec<_>>(),["check"]);
+        facts.clear();
+        fold(&batch,&mut state,"item/completed",&json!({"threadId":"root","item":{"type":"commandExecution","id":"check","status":"completed","processId":"11310","exitCode":0}}),&mut facts,|_|invalid()).unwrap();
+        assert!(matches!(&facts[..],[Observation::WorkEnded{work,continuation}] if work.as_str()=="codex:1:process:work:check" && continuation.as_str()=="codex:1:process:continuation:check"),"its end wakes the node: {facts:?}");
+        assert!(state.work.is_empty());
+    }
     #[test]
     fn a_closed_thread_ends_all_its_open_work_without_waking_a_turn() {
         let batch=batch();let mut state=Checkpoint{thread:Some("root".into()),process:"process".into(),turn:Some("origin".into()),..Checkpoint::default()};let mut facts=vec![];
@@ -683,7 +712,8 @@ mod tests {
     fn native_acceptance_without_correlated_user_item_cannot_consume_input() {
         let batch = batch(); let mut state = Checkpoint::default(); let mut facts = Vec::new();
         fold(&batch, &mut state, "alondra/inputAccepted", &json!({"turnId":"turn","inputId":"client-message"}), &mut facts, |_| Ok(InputId::new("input").unwrap())).unwrap();
-        assert!(facts.is_empty(), "turn/start response only proves enqueue acceptance");
+        assert_eq!(facts, vec![Observation::InputHeld { input: InputId::new("input").unwrap() }], "turn/start response proves the provider holds the input, not that it read it");
+        facts.clear();
         fold(&batch, &mut state, "turn/started", &json!({"turn":{"id":"turn"}}), &mut facts, |_| invalid()).unwrap();
         assert!(facts.is_empty(), "a native turn without its identified user item cannot consume this input");
         fold(&batch, &mut state, "item/started", &json!({"turnId":"turn","item":{"id":"user","type":"userMessage","clientId":"wrong-message"}}), &mut facts, |_| panic!("an unrelated native user item is not consumption proof")).unwrap();

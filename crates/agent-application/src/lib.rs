@@ -349,6 +349,9 @@ fn domain_fact(fact: &Observation) -> Result<ObservedFact> {
         Observation::InputConsumed { input } => RuntimeFact::InputConsumed {
             input: input.clone(),
         },
+        Observation::InputHeld { input } => RuntimeFact::InputHeld {
+            input: input.clone(),
+        },
         Observation::WorkStarted { turn, work } => RuntimeFact::WorkStarted {
             turn: turn.clone(),
             work: work.clone(),

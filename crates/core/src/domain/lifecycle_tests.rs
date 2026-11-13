@@ -2111,12 +2111,17 @@ fn told(s: &mut DomainState, text: &str) -> String {
     let Some(LifecycleRecord::Answered { input, .. }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("answered") };
     input
 }
+/// The card an older release opened for an input Claude never read, in the journal as it was recorded.
 fn dropped(s: &mut DomainState) -> (InteractionId, String) {
     let input = told(s, "Add the tests first");
     let Some(LifecycleRecord::Answered { text: Some(text), .. }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("answered") };
-    let outcome = must(s, Actor::System, Command::RecordDroppedInput { task_id: "t".into(), generation: 1, input, text: text.clone() });
-    let card = s.interactions.keys().find(|id| id.0.starts_with(DROPPED_PREFIX)).expect("the drop asks the user").clone();
-    assert!(outcome.effects.iter().any(|e| matches!(e, DomainEffect::NotifyUser { interaction_id, .. } if *interaction_id == card)));
+    let task = TaskId::from("t");
+    let card = dropped_card_id(&task, 1, input.as_str());
+    s.decide(&mut Lifecycles::new(), &task, LifecycleRecord::InputDropped { input: input.as_str().into(), card: card.clone() }).unwrap();
+    s.revision += 1;
+    let revision = s.revision;
+    s.interactions.insert(card.clone(), dropped_card(card.clone(), &task, &text, revision));
+    s.derive_states();
     (card, text)
 }
 
@@ -2144,7 +2149,7 @@ fn a_message_claude_never_reads_leaves_the_queue_and_asks_whether_to_send_it_aga
     };
     assert!(shown.contains("Enviar otra vez") && shown.contains("Descartar") && shown.contains("Add the tests first"), "{shown}");
     assert_eq!(exec(&mut s, Actor::System, Command::RecordDroppedInput { task_id: "t".into(), generation: 1, input: "other".into(), text: "other".into() })
-        .unwrap_err().code, "conflict", "an input that is not pending is never dropped");
+        .unwrap_err().code, "conflict", "an input that is not pending is never refused");
     assert_aggregate_rules(&s);
 
     answer(&mut s, &card, SEND_AGAIN);
@@ -2744,4 +2749,20 @@ fn a_delivery_that_replaces_another_leaves_the_node_nothing_to_be_told() {
     let obligation = replayed.obligation().expect("a delivery is owed a decision");
     assert_eq!(obligation.party, alondra_domain::Party::User, "the delivery waits for the user, not for the node: {obligation:?}");
     assert_eq!(s.tasks[&TaskId::from("t")].final_presentation, Some(InteractionId::from("result-2")));
+}
+
+#[test]
+fn a_message_the_provider_refuses_goes_again_at_once_with_no_card() {
+    let mut s = world();
+    let input = told(&mut s, "Add the tests first");
+    let Some(LifecycleRecord::Answered { text: Some(text), .. }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("answered") };
+    let outcome = must(&mut s, Actor::System, Command::RecordDroppedInput { task_id: "t".into(), generation: 1, input: input.clone(), text: text.clone() });
+    assert!(!s.interactions.keys().any(|id| id.0.starts_with(DROPPED_PREFIX)), "nobody is asked");
+    assert!(!outcome.effects.iter().any(|effect| matches!(effect, DomainEffect::NotifyUser { .. })), "nobody is told");
+    let Some(LifecycleRecord::HandoffResent { input: refused, resent, text: Some(again) }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("resent") };
+    assert_eq!((refused, again), (input, text), "the same words go again");
+    let replayed = replay(&"t".into(), &s.lifecycle_journal[&TaskId::from("t")]).unwrap();
+    assert_eq!(replayed.pending_inputs(), [&alondra_domain::InputId::new(resent).unwrap()]);
+    assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Running, "the task keeps working");
+    assert_aggregate_rules(&s);
 }

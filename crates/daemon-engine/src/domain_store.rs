@@ -1634,6 +1634,14 @@ impl DomainStore {
         })?
         .collect::<rusqlite::Result<_>>()?)
     }
+    /// The user notices of cards the orchestrator put during a pass that has not ended: they wait
+    /// for its end, so a card the same pass settles or withdraws never reaches the phone.
+    pub fn user_notices_in_open_passes(&self) -> Result<std::collections::BTreeSet<i64>> {
+        let mut q = self.conn.prepare("SELECT DISTINCT m.id FROM domain_messages m JOIN domain_message_user_targets u ON u.message_id=m.id
+            JOIN domain_outbox o ON o.message_id=m.id JOIN orchestrator_batch_effects e ON e.revision=m.revision
+            JOIN orchestrator_batch_runs r ON r.run=e.run WHERE o.state IN('pending','retryable') AND r.ended=0")?;
+        Ok(q.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?)
+    }
     /// Whether the user was already pushed any of these cards: its push left (or may have) and
     /// the record outlives a daemon restart.
     pub fn user_push_handed(&self, interaction_ids: &[InteractionId]) -> Result<bool> {

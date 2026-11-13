@@ -341,6 +341,33 @@ mod tests {
         assert_eq!(store.batch_effects("batch").unwrap().len(), 1);
     }
 
+    /// The orchestrator raised a card for the user and withdrew it in the same pass: its notice
+    /// waits for the pass to end, by when the card is gone and no push leaves for it.
+    #[test]
+    fn a_card_the_orchestrator_puts_in_a_pass_is_announced_only_after_that_pass() {
+        let fixture = Fixture::new();
+        let mut store = DomainStore::open(&fixture.path()).unwrap();
+        seeded(&mut store);
+        let epoch = store.load().unwrap().data_epoch.clone();
+        let envelope = |id: &str, command: Command| CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION, data_epoch: epoch.clone(), command_id: id.into(), expected_revision: 0, command,
+        };
+        let options = vec![QuestionOption { id: "resume".into(), label: "Resume the task".into(), description: None }];
+        let raise = envelope("raise", Command::RaiseProblem {
+            attachments: vec![], interaction_id: "message-paused".into(), scope: Scope::Orchestrator { request_id: None },
+            body: "A message waits for a paused task".into(), options,
+            card: CardSpec::new(CardKind::Problem, "A message waits for a paused task").why("Its node is paused").content(ContentKind::Diagnosis, "Paused"),
+        });
+        store.execute_from_batch(&Actor::Orchestrator { generation: 0 }, &raise, "batch").unwrap();
+        let notice: i64 = store.conn.query_row("SELECT m.id FROM domain_messages m JOIN domain_message_user_targets u ON u.message_id=m.id \
+            WHERE m.interaction_id='message-paused'", [], |row| row.get(0)).unwrap();
+        assert!(store.user_notices_in_open_passes().unwrap().contains(&notice), "its notice waits while the pass runs");
+        store.execute_from_batch(&Actor::Orchestrator { generation: 0 }, &envelope("withdraw", Command::Withdraw { interaction_id: "message-paused".into() }), "batch").unwrap();
+        store.finish_batch("batch").unwrap();
+        assert!(store.user_notices_in_open_passes().unwrap().is_empty(), "the notice goes on once the pass ended");
+        assert!(store.load().unwrap().interactions[&InteractionId::from("message-paused")].withdrawn, "by then the card is gone, so the push gate drops it");
+    }
+
     #[test]
     fn failure_to_record_a_batch_effect_rolls_back_the_mutation_and_receipt() {
         let fixture = Fixture::new();

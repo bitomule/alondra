@@ -299,6 +299,28 @@ async fn a_paused_sdk_node_receives_nothing_until_it_is_resumed_and_then_gets_th
     assert_eq!(node.domain.state().unwrap().node_pause(&AgentId(node.agent())), None);
 }
 
+/// The orchestrator's message to a node the user paused is kept for it, not refused: nothing about
+/// it is for the user, and the node reads it once resumed.
+#[tokio::test]
+async fn the_orchestrators_message_to_a_paused_node_waits_for_its_resume_and_asks_the_user_nothing() {
+    let mut node = SdkNode::working();
+    node.pause();
+    let cards = node.domain.state().unwrap().interactions.len();
+    let orchestrator = Actor::Orchestrator { generation: node.domain.state().unwrap().orchestrator_generation };
+    let body: crate::domain_orchestrator_tools::SendBody = serde_json::from_value(serde_json::json!({
+        "node": node.agent(), "text": "Say that a commit's author email is not private", "task": SDK_TASK,
+    })).unwrap();
+    let sent = crate::domain_orchestrator_tools::send(&node.domain, &node.home, &orchestrator, body).await.unwrap();
+    assert_eq!(sent["reaches"], "pause");
+    node.step();
+    assert_eq!(node.dispatched_inputs(), 0, "the message does not wake the paused node");
+    assert_eq!(node.domain.state().unwrap().interactions.len(), cards, "no card asks the user about it");
+
+    assert!(node.domain.live.gate.resume_now(&node.domain, &node.agent(), alondra_core::now_millis()));
+    node.gate_look().await;
+    node.until_told("Say that a commit's author email is not private");
+}
+
 /// Pausing interrupts the turn with what the node goes on with already told: no card asks the user
 /// how it goes on, its task says it is paused, and resuming it is the user's one step.
 #[tokio::test]

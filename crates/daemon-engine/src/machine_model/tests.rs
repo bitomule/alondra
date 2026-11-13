@@ -10,27 +10,29 @@ use proptest::prelude::*;
 /// PR that makes the code apply it removes the row and drives the real code from the model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Gap {
-    /// Phase 7 wrote the deadline of an input the session does not take, but enforces it only
-    /// after a day of measurement (`obligation_policy::enforced`): until then the model does.
-    HandInput,
     /// A task the user sent back still owes the user and reads as a step of Alondra's (delivering the hand-back, or answering the node)
     /// (`handed_back` holds until the node presents again), whether its node already took it and
     /// asked the orchestrator, or a deferred account move left nothing to start a node for it.
     HandedBackOwesUser,
 }
 
-pub(super) const KNOWN_GAPS: &[Gap] = &[Gap::HandInput, Gap::HandedBackOwesUser];
+pub(super) const KNOWN_GAPS: &[Gap] = &[Gap::HandedBackOwesUser];
 
 fn listed(gap: Gap) -> bool {
     KNOWN_GAPS.contains(&gap)
 }
 
-/// Whether the model enforces a deadline in place of the clock.
-pub(super) fn gap_open(owed: Owed) -> bool {
-    match owed {
-        Owed::HandInput => listed(Gap::HandInput),
-        _ => false,
-    }
+/// The delivery deadline is no gap: the model runs the real watch, which enforces it.
+#[test]
+fn the_hand_input_deadline_is_enforced_by_the_real_policy() {
+    assert!(alondra_core::domain::obligation_policy::enforced(&Owed::HandInput));
+    assert!(!alondra_core::domain::obligation_policy::enforced(&Owed::ReadInput));
+}
+
+/// `task` was sent back by the user and the domain still says the user owes the next step.
+fn handed_back_owing_the_user(state: &DomainState, task: &TaskId) -> bool {
+    state.task_handed_back(task).is_some()
+        && state.lifecycle_of(task).ok().and_then(|lifecycle| lifecycle.obligation()).is_some_and(|obligation| obligation.party == Party::User)
 }
 
 /// How many times a step may be owed again as the one before it, with nobody acting in between: a
@@ -66,12 +68,6 @@ fn open_tasks(state: &DomainState) -> Vec<TaskId> {
 fn room_is_scarce(machine: &Machine, state: &DomainState) -> bool {
     let world = &machine.world;
     slot_tasks(state).len() >= world.slots || world.memory_tight || world.disk_full || world.usage_holds()
-}
-
-/// `task` was sent back by the user and the domain still says the user owes the next step.
-fn handed_back_owing_the_user(state: &DomainState, task: &TaskId) -> bool {
-    state.task_handed_back(task).is_some()
-        && state.lifecycle_of(task).ok().and_then(|lifecycle| lifecycle.obligation()).is_some_and(|obligation| obligation.party == Party::User)
 }
 
 /// The host has given the daemon everything it observed of `task`.
@@ -128,6 +124,7 @@ struct Verdicts {
     answers: Option<String>,
     unlisted: Option<String>,
     rearms: Option<String>,
+    closing: Option<String>,
 }
 
 fn with_trace(machine: &Machine, why: String) -> String {
@@ -206,6 +203,12 @@ fn judge(history: &History) -> Verdicts {
     }
     if seen.most_rearms > MOST_REARMS {
         verdicts.rearms = failed(format!("a step was owed again {} times with nobody acting: it re-arms in a loop\n{}", seen.most_rearms, seen.excess.clone().unwrap_or_default()));
+    }
+    let zombies: Vec<TaskId> = crate::sdk_owner::ended_node_tasks(&state).into_iter().filter(|task| machine.world.hosts.contains_key(task)).collect();
+    let closing: Vec<String> = seen.closing_taken.iter().chain(&seen.closing_cards).cloned()
+        .chain(zombies.iter().map(|task| format!("a host still runs for {task}, whose node ended"))).collect();
+    if !closing.is_empty() {
+        verdicts.closing = failed(closing.join("; "));
     }
     let pending: Vec<&TaskId> = state.tasks.values().filter(|task| task.pending_selection.is_some()).map(|task| &task.id).collect();
     if !pending.is_empty() {
@@ -329,6 +332,33 @@ proptest! {
     fn a_task_waits_for_the_user_only_on_a_card_the_inbox_lists(history in history()) {
         holds(&history, |verdicts| &verdicts.unlisted)?;
     }
+
+    #[test]
+    fn a_closing_node_is_never_taken_over_asks_nothing_and_keeps_no_host(history in world::history_with_cleanups()) {
+        holds(&history, |verdicts| &verdicts.closing)?;
+    }
+}
+
+/// The close of 12 November: a node confirmed its cleanup with its turn still open, the closer took
+/// its host from the owner, and a look of the gate found the task working with no host. The task
+/// must read as closing, nobody takes it over, nothing it asks reaches the user, and no host is
+/// left once its node ended.
+#[test]
+fn a_node_that_confirms_its_cleanup_in_an_open_turn_closes_with_its_host() {
+    use super::world::{Action, Turn, UserAct};
+    let history = History {
+        script: vec![Turn::Deliver, Turn::AskPermission], slots: 3,
+        actions: vec![Action::TurnEnds(0), Action::User(UserAct::Accept, 0), Action::ConfirmsCleanup(0), Action::TurnEnds(0)],
+    };
+    let mut machine = Machine::new(&history);
+    for action in &history.actions {
+        machine.act(action);
+    }
+    machine.rest(|_| {});
+    let trace = machine.trace.join("\n");
+    assert!(trace.contains("ConfirmCleanup") && trace.contains("RecordNodeEnd"), "the node cleaned up and closed:\n{trace}");
+    holds(&history, |verdicts| &verdicts.closing).unwrap();
+    holds(&history, |verdicts| &verdicts.working).unwrap();
 }
 
 /// The histories the model found for `Gap::HandedBackOwesUser`: they keep ending well while the gap

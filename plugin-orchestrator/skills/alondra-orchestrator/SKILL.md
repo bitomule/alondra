@@ -229,7 +229,9 @@ user follows tasks, not nodes.
   sent with `--reply` gets an answer. A message about one task in progress goes to that task:
   forward it with `send` and `task`, saying who wrote it, and close the request; if that task has
   not started, put it in its mission with `set_launch_plan`.
-- Later, anything about one task goes with `task` on `send` to the node working on it;
+- Later, anything about one task goes with `task` on `send` to the node working on it. A
+  paused node keeps the message and reads it when its pause ends (`reaches: pause`): that is
+  delivered, not a problem for the user, so never raise a card about it;
   `cancel_task` drops a task that should not go on (Alondra tells its node to stop and closes it).
   A finished task's node is closed: more work on it is a new task with `dependencies` on the
   finished one, so its node starts from that result.

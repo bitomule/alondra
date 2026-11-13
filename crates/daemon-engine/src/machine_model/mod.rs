@@ -8,8 +8,8 @@
 //! milliseconds and is deterministic. What is real is everything those commands go through: the
 //! domain and its saved form (a restart reads it again from there and loses all the daemon kept in
 //! memory), the one clock (`obligation_watch`), and what every screen and the gate read
-//! (`ReadIndex`, `Situation`, `admission::working_tasks`). A rule the code does not apply yet is in
-//! `tests::KNOWN_GAPS`, and the model applies it itself while it is listed.
+//! (`ReadIndex`, `Situation`, `admission::working_tasks`). A rule the code does not apply yet would
+//! be in `tests::KNOWN_GAPS`, and the model would apply it itself while it is listed.
 mod tests;
 mod world;
 
@@ -57,6 +57,10 @@ struct Seen {
     most_rearms: u32,
     /// The commands before the first wake or re-arm past its bound.
     excess: Option<String>,
+    /// A task taken over while its node only closed.
+    closing_taken: Vec<String>,
+    /// A card a node opened for the user after its cleanup was confirmed.
+    closing_cards: Vec<String>,
 }
 
 struct Machine {
@@ -96,18 +100,14 @@ struct Message {
     text: String,
 }
 
-/// What the clock acts on: what `obligation_policy` enforces, and the rows of `KNOWN_GAPS` the
-/// model enforces in its place.
-fn enforced(owed: &Owed) -> bool {
-    obligation_policy::enforced(owed) || (*owed == Owed::HandInput && tests::gap_open(*owed))
-}
-
 /// What the gate tells the clock: a turn waits for a slot until the gate gives it one, and the
 /// usage limit holds the orchestrator.
 struct Turns<'a> {
     state: &'a DomainState,
     granted: &'a BTreeSet<TaskId>,
     usage_holds: bool,
+    /// The tasks whose host process is alive: the model's hosts write nothing on their own.
+    alive: BTreeSet<TaskId>,
 }
 
 impl obligation_watch::World for Turns<'_> {
@@ -117,6 +117,10 @@ impl obligation_watch::World for Turns<'_> {
 
     fn orchestrator_held(&self) -> bool {
         self.usage_holds
+    }
+
+    fn last_output(&self, task: &TaskId) -> Option<Millis> {
+        self.alive.contains(task).then_some(0)
     }
 }
 
@@ -156,7 +160,7 @@ fn scope(task: &TaskId) -> Scope {
 impl Machine {
     fn new(history: &History) -> Self {
         let mut machine = Self {
-            domain: Arc::new(DomainState::new("machine")), world: World::new(history.script.clone(), history.slots), watch: Watch::enforcing(enforced),
+            domain: Arc::new(DomainState::new("machine")), world: World::new(history.script.clone(), history.slots), watch: Watch::default(),
             granted: BTreeSet::new(), wakes: BTreeMap::new(), rearms: BTreeMap::new(), agents: 0, commands: 0, refused: BTreeMap::new(),
             cursors: BTreeMap::new(), messages: Vec::new(), owing: BTreeMap::new(), taken: BTreeMap::new(),
             deferred: BTreeMap::new(), unadmitted: BTreeMap::new(), seen: Seen::default(), trace: Vec::new(),
@@ -210,11 +214,20 @@ impl Machine {
             expected_revision: state.revision, command,
         };
         drop(state);
+        let closing: BTreeSet<TaskId> = self.state().tasks.values().filter(|task| self.state().node_closing(task)).map(|task| task.id.clone()).collect();
         let result = Arc::make_mut(&mut self.domain).execute(&actor, &envelope).map_err(|error| error.code);
         let state_revision = key.0;
         match &result {
             Ok(_) if self.revision() == state_revision => self.seen.unchanged.push(name.clone()),
             Ok(outcome) => {
+                for effect in &outcome.effects {
+                    if let DomainEffect::NotifyUser { task_id: Some(task), interaction_id } = effect
+                        && closing.contains(task)
+                        && self.domain.interactions.get(interaction_id).is_some_and(|card| matches!(card.author, alondra_core::domain::Author::Agent { .. }))
+                    {
+                        self.seen.closing_cards.push(format!("{task}: {interaction_id} by {name}"));
+                    }
+                }
                 for effect in &outcome.effects {
                     if let DomainEffect::NotifyAgent { agent_id, task_id, interaction_id, message } = effect {
                         self.messages.push(Message { agent: agent_id.clone(), task: task_id.clone(), card: interaction_id.clone(), text: message.clone() });
@@ -274,6 +287,11 @@ impl Machine {
                 if let Some(host) = self.world.host(&task(index)) { host.alive = false; }
             }
             Action::StopsHost(index) => self.stop_host(&task(index)),
+            Action::ConfirmsCleanup(index) => {
+                if let Some(agent) = self.agent(&task(index)) {
+                    let _ = self.run(Actor::Agent { agent_id: agent }, Command::ConfirmCleanup { task_id: task(index), discard: vec![] });
+                }
+            }
             Action::FactsLate(index) => {
                 let until = self.world.now + MINUTE;
                 if let Some(host) = self.world.host(&task(index)) { host.late_until = until; }
@@ -356,7 +374,7 @@ impl Machine {
     fn restart(&mut self) {
         let saved = serde_json::to_string(&*self.domain).expect("the domain saves");
         self.domain = Arc::new(serde_json::from_str(&saved).expect("the domain reads what it saved"));
-        self.watch = Watch::enforcing(enforced);
+        self.watch = Watch::default();
         self.owing.clear();
         self.refused.clear();
         self.taken.clear();
@@ -382,8 +400,10 @@ impl Machine {
             moved |= self.hand_decisions();
             moved |= self.consume_inputs_in_turn();
             moved |= self.take_unowned();
+            moved |= self.close_hosts_of_ended_nodes();
             moved |= self.merge_authorized();
             moved |= self.close_ending();
+            moved |= self.close_cleaned();
             moved |= self.orchestrate();
             if !moved && self.revision() == revision {
                 return;
@@ -458,7 +478,7 @@ impl Machine {
     fn unowned(&self, task: &TaskId) -> bool {
         let state = self.state();
         let Some(generation) = state.lifecycle_of(task).ok().and_then(|lifecycle| lifecycle.execution().map(|stamp| stamp.generation())) else { return false };
-        sdk_owner::runs_on_sdk_host(&state, task) && self.world.hosts.get(task).is_none_or(|host| !host.alive || host.generation != generation)
+        sdk_owner::takeable(&state, task) && self.world.hosts.get(task).is_none_or(|host| !host.alive || host.generation != generation)
     }
 
     /// A host that resumes the task's session takes its execution over, as `sdk_owner::take_again` does.
@@ -502,9 +522,52 @@ impl Machine {
         let due = sdk_owner::due_unowned(&mut self.taken, working, self.world.now);
         let mut moved = false;
         for task in due {
-            moved |= self.retake(&task);
+            let closing = state.node_closing(&state.tasks[&task]);
+            let taken = self.retake(&task);
+            if closing && taken {
+                self.seen.closing_taken.push(format!("{task} was taken over while its node only closed"));
+            }
+            moved |= taken;
         }
         moved
+    }
+
+    /// The closer stops the host of a node that confirmed its cleanup, as `task_closer` does: it
+    /// first takes the host from its owner, then waits for the host and its turn to end, and only
+    /// then records the node's end. A look of the gate can fall between the two.
+    fn close_cleaned(&mut self) -> bool {
+        let state = self.state();
+        let mut moved = false;
+        for name in TASKS {
+            let task = TaskId::from(name);
+            let t = &state.tasks[&task];
+            if t.state.terminal() || t.wrap_up.node.is_some() || !state.node_closing(t) {
+                continue;
+            }
+            if let Some(stopping) = self.world.closing.remove(&task) {
+                if self.generation(&task) == Some(stopping.generation) {
+                    let _ = self.run(Actor::System, Command::RecordHostEnded { task_id: task.clone(), generation: stopping.generation, resumes: false, ended_work: vec![], by_alondra: true });
+                }
+                let agent = self.agent(&task);
+                let _ = self.run(Actor::System, Command::RecordNodeEnd { task_id: task.clone(), end: NodeEnd::Closed, agent_id: agent });
+                moved = true;
+            } else if let Some(host) = self.world.hosts.remove(&task) {
+                self.world.closing.insert(task, host);
+                moved = true;
+            }
+        }
+        moved
+    }
+
+    /// The gate closes every host still running for a node whose end is recorded
+    /// (`sdk_owner::close_hosts_of_ended_nodes`).
+    fn close_hosts_of_ended_nodes(&mut self) -> bool {
+        let state = self.state();
+        let ended: Vec<TaskId> = sdk_owner::ended_node_tasks(&state).into_iter().filter(|task| self.world.hosts.contains_key(task)).collect();
+        for task in &ended {
+            self.world.hosts.remove(task);
+        }
+        !ended.is_empty()
     }
 
     fn record_facts(&mut self, task: &TaskId, generation: u64, facts: Vec<RuntimeObservation>) {
@@ -1119,8 +1182,7 @@ impl Machine {
         })
     }
 
-    /// One pass of the clock: what is past its deadline, and for the rows in `KNOWN_GAPS`, what
-    /// the model does about it in their place.
+    /// One pass of the clock: what is past its deadline and the real watch enforces.
     fn clock(&mut self) {
         let state = self.state();
         let now = self.world.now;
@@ -1144,7 +1206,7 @@ impl Machine {
         for (task, (since, owed)) in obligations {
             self.owing.entry(task).or_insert((since, owed, now));
         }
-        let late = self.watch.step(&state, &Turns { state: &state, granted: &self.granted, usage_holds: self.world.usage_holds() }, now);
+        let late = self.watch.step(&state, &Turns { state: &state, granted: &self.granted, usage_holds: self.world.usage_holds(), alive: self.world.hosts.iter().filter(|(_, host)| host.alive).map(|(task, _)| task.clone()).collect() }, now);
         for (task, action) in self.watch.enforce(&late, now) {
             self.by_the_clock(|machine| machine.apply(&task, action));
         }
@@ -1164,18 +1226,6 @@ impl Machine {
     fn apply(&mut self, task: &TaskId, action: obligation_watch::Action) {
         let Some(generation) = self.generation(task) else { return };
         match action {
-            obligation_watch::Action::OfferAgain => {
-                let state = self.state();
-                let Ok(lifecycle) = state.lifecycle_of(task) else { return };
-                let doubted: Vec<String> = lifecycle.doubts().into_iter().map(|(_, input)| input.as_str().to_owned()).collect();
-                let offered = self.world.hosts.get(task).and_then(|host| host.offered.clone()).filter(|input| !doubted.contains(input));
-                if let Some(input) = offered {
-                    if let Some(host) = self.world.host(task) { host.offered = None; }
-                    let _ = self.run(Actor::System, Command::RecordDoubtfulHandoff {
-                        task_id: task.clone(), generation, input, text: "Model input".into(), resumes: true, by_alondra: true,
-                    });
-                }
-            }
             obligation_watch::Action::Requeue => {
                 let ended = self.run(Actor::System, Command::RecordHostEnded {
                     task_id: task.clone(), generation, resumes: true, ended_work: vec![], by_alondra: true,
