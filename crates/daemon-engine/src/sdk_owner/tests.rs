@@ -4575,7 +4575,8 @@ fn a_host_whose_claude_never_opens_the_session_is_replaced_once_its_deadline_pas
 // The host is replaced by itself, however many ended before, and nobody is asked.
 #[test]
 fn a_takeover_whose_first_input_is_uncertain_relaunches_by_itself_without_a_card() {
-    let slice = Slice::new();
+    let mut slice = Slice::new();
+    slice.backend.io_timeout_seconds = 8;
     let fake = hold_prompts(&slice);
     let driver = slice.launch();
     kill_host_and_daemon(driver);
