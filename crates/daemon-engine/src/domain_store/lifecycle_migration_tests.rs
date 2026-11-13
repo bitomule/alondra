@@ -73,11 +73,11 @@ fn every_shape() -> (Fixture, DomainState) {
     });
     end_node(&mut store, "done", "node-done");
     create(&mut store, "cancelled", None, &[]);
-    run(&mut store, &Actor::User { user_id: "user-1".into() }, "cancel-cancelled", Command::CancelTask { task_id: "cancelled".into() });
+    run(&mut store, &Actor::User { user_id: "user-1".into() }, "cancel-cancelled", Command::CancelTask { task_id: "cancelled".into(), reason: None });
     run(&mut store, &Actor::System, "cleanup-cancelled", Command::RecordTaskCleanup { task_id: "cancelled".into() });
     create(&mut store, "cancelled-node", Some("node-cancelled"), &[]);
     run(&mut store, &node("node-cancelled"), "start-cancelled", Command::StartTask { task_id: "cancelled-node".into() });
-    run(&mut store, &Actor::User { user_id: "user-1".into() }, "cancel-node", Command::CancelTask { task_id: "cancelled-node".into() });
+    run(&mut store, &Actor::User { user_id: "user-1".into() }, "cancel-node", Command::CancelTask { task_id: "cancelled-node".into(), reason: None });
     end_node(&mut store, "cancelled-node", "node-cancelled");
     let state = store.load().unwrap();
     let states: BTreeMap<&str, TaskState> = state.tasks.iter().map(|(id, t)| (id.0.as_str(), t.state)).collect();

@@ -70,7 +70,7 @@ fn reopening_codex_with_a_retained_mapping_but_a_missing_rollout_starts_a_clean_
     let native = slice.domain.state().unwrap().lifecycle_journal[&TaskId::from(TASK)].iter().rev().find_map(|record| match record {
         LifecycleRecord::Admitted { execution: Some(execution), .. } => Some(execution.clone()), _ => None,
     }).unwrap();
-    slice.run(&user(), "cancel-codex-rollout", Command::CancelTask { task_id: TASK.into() });
+    slice.run(&user(), "cancel-codex-rollout", Command::CancelTask { task_id: TASK.into(), reason: None });
     original.stop().unwrap();
     drop(original);
     slice.run(&system(), "close-codex-rollout", Command::RecordNodeEnd {
@@ -168,7 +168,7 @@ async fn a_reopened_task_with_unproven_claude_history_starts_codex_from_the_queu
     let refusal = require_recoverable_session(&slice.domain, &slice.backend, &task, Provider::Claude,
         &AccountId::default_account(), slice.worktree.to_str().unwrap()).unwrap_err();
     assert!(refusal.to_string().contains("The original native session cannot be proven"), "{refusal}");
-    slice.run(&user(), "cancel-implementation", Command::CancelTask { task_id: task.clone() });
+    slice.run(&user(), "cancel-implementation", Command::CancelTask { task_id: task.clone(), reason: None });
     original.stop().unwrap();
     drop(original);
     slice.run(&system(), "close-original", Command::RecordNodeEnd {
@@ -596,7 +596,7 @@ async fn codex_transition_cancellation_before_source_drain_aborts_without_a_new_
     let slice=Slice::new();let trace=configured(&slice,"complete");slice.domain.enable_sdk(slice.backend.clone());
     let mut driver=launch(&slice);slice.settle(&mut driver);
     let(intent,target,stamp)=transition_target(&slice,"fixture-second","high");native_transition_request(&slice,intent,target,&stamp);
-    slice.run(&user(),"cancel-during-selection",Command::CancelTask{task_id:TASK.into()});
+    slice.run(&user(),"cancel-during-selection",Command::CancelTask{task_id:TASK.into(), reason: None});
     assert_eq!(crate::provider_transition::advance(&slice.domain,&TASK.into()).await.unwrap(),Phase::Aborted);
     assert_eq!(transcript(&trace).iter().filter(|message|message["method"]=="initialize").count(),1);
     assert!(slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].pending_selection.is_none());driver.stop().unwrap();
@@ -1579,7 +1579,7 @@ fn a_host_left_running_for_a_task_that_ended_is_ended_when_the_daemon_starts() {
     let generation = Slice::lifecycle(&slice.domain).execution().unwrap().generation();
     let agent = driver.agent().clone();
     drop(driver);
-    slice.run(&user(), "cancel-ownerless-codex", Command::CancelTask { task_id: TASK.into() });
+    slice.run(&user(), "cancel-ownerless-codex", Command::CancelTask { task_id: TASK.into(), reason: None });
     slice.run(&system(), "ended-ownerless-codex", Command::RecordHostEnded { task_id: TASK.into(), generation, resumes: false, ended_work: vec![], by_alondra: true });
     slice.run(&system(), "gone-ownerless-codex", Command::RecordNodeEnd { task_id: TASK.into(), end: NodeEnd::Gone, agent_id: Some(agent) });
     assert_eq!(Slice::lifecycle(&slice.domain).phase(), alondra_domain::TaskPhase::Cancelled);

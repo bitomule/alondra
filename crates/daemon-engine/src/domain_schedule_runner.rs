@@ -530,7 +530,7 @@ fn answer_failed_launches(domain: &DomainRuntime, home: &Path) -> Result<()> {
             (true, false)
         };
         let Some(task) = run.task_id.as_ref().filter(|_| retried) else { continue };
-        match execute_system(domain, Command::CancelTask { task_id: task.clone() }) {
+        match execute_system(domain, Command::CancelTask { task_id: task.clone(), reason: None }) {
             Ok(_) if gone => {
                 if let Err(error) = domain.store.lock_or_exit("the domain store").set_cancel_reason(task, "Its schedule no longer exists, so it cannot be launched again") {
                     log!("could not say why {task} was cancelled: {error:#}");
@@ -1402,7 +1402,7 @@ mod tests {
         )
         .unwrap();
         let task = fixture.domain.state().unwrap().schedule.runs[&ScheduleRunId::from("closed")].task_id.clone().unwrap();
-        execute_system(&fixture.domain, Command::CancelTask { task_id: task }).unwrap();
+        execute_system(&fixture.domain, Command::CancelTask { task_id: task, reason: None }).unwrap();
         let restarted = Fixture::open(&fixture.home);
         run_cycle(&restarted, &fixture.home, false).await.unwrap();
 
@@ -1448,7 +1448,7 @@ mod tests {
         fixture.claim("stuck");
         finish_claim(&fixture.domain, &fixture.home, &"stuck".into()).unwrap();
         let task = fixture.domain.state().unwrap().schedule.runs[&ScheduleRunId::from("stuck")].task_id.clone().unwrap();
-        execute_system(&fixture.domain, Command::CancelTask { task_id: task.clone() }).unwrap();
+        execute_system(&fixture.domain, Command::CancelTask { task_id: task.clone(), reason: None }).unwrap();
         leave_launch_waiting(&fixture.domain, "stuck");
 
         let restarted = Fixture::open(&fixture.home);
@@ -1482,7 +1482,7 @@ mod tests {
         fixture.claim("cancelled");
         finish_claim(&fixture.domain, &fixture.home, &"cancelled".into()).unwrap();
         let task = fixture.domain.state().unwrap().schedule.runs[&ScheduleRunId::from("cancelled")].task_id.clone().unwrap();
-        execute_system(&fixture.domain, Command::CancelTask { task_id: task }).unwrap();
+        execute_system(&fixture.domain, Command::CancelTask { task_id: task, reason: None }).unwrap();
 
         let restarted = Fixture::open(&fixture.home);
         let run = &restarted.state().unwrap().schedule.runs[&ScheduleRunId::from("cancelled")];

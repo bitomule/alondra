@@ -135,7 +135,7 @@ fn a_wait_after_the_merge_holds_the_task_on_what_it_names_and_wakes_its_node_onc
 #[test]
 fn a_dependency_the_orchestrator_adds_to_work_after_the_merge_also_holds_it_and_wakes_it() {
     let mut s = release_and_fix();
-    must(&mut s, orchestrator(), Command::SetDependencies { task_id: RELEASE.into(), dependencies: BTreeSet::from([FIX.into()]), stack: None });
+    must(&mut s, orchestrator(), Command::SetDependencies { task_id: RELEASE.into(), dependencies: BTreeSet::from([FIX.into()]), stack: None, reason: None });
     assert_eq!(state(&s, RELEASE), TaskState::WaitingDependency);
     let landed = deliver_and_merge(&mut s, FIX, "b", "Fixed");
     assert_eq!(state(&s, RELEASE), TaskState::Running);
@@ -146,7 +146,7 @@ fn a_dependency_the_orchestrator_adds_to_work_after_the_merge_also_holds_it_and_
 fn a_cancelled_task_ends_the_wait_and_the_node_is_told_nothing_landed() {
     let mut s = release_and_fix();
     must(&mut s, node("a"), declare(Some("publish beta 59"), vec![WaitTarget::Task { task_id: FIX.into() }]));
-    let cancelled = must(&mut s, user(), Command::CancelTask { task_id: FIX.into() });
+    let cancelled = must(&mut s, user(), Command::CancelTask { task_id: FIX.into(), reason: None });
     assert_eq!(state(&s, RELEASE), TaskState::Running);
     let expected = post_merge_wait_over_notice(&RELEASE.into(), "publish beta 59", &[Landed {
         title: "Fix the Mac package".into(), cancelled: true, result: None, merged_pr: None,
@@ -163,7 +163,7 @@ fn a_task_waiting_to_go_on_goes_on_when_the_pr_it_waits_for_merges() {
         dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
     });
     must(&mut s, node("c"), Command::StartTask { task_id: "next".into() });
-    must(&mut s, orchestrator(), Command::SetDependencies { task_id: "next".into(), dependencies: BTreeSet::from([FIX.into()]), stack: None });
+    must(&mut s, orchestrator(), Command::SetDependencies { task_id: "next".into(), dependencies: BTreeSet::from([FIX.into()]), stack: None, reason: None });
     assert_eq!(state(&s, "next"), TaskState::WaitingDependency);
     let landed = deliver_and_merge(&mut s, FIX, "b", "Fixed");
     assert_eq!(state(&s, "next"), TaskState::Running, "its work is on main before the fix's node cleans up");
@@ -194,7 +194,7 @@ fn a_wait_names_work_alondra_can_see_land() {
     let error = refused(&mut s, node("a"), declare(Some("publish"), vec![fix_pr()]));
     assert!(error.message.contains("already landed"), "{error}");
     let mut other = release_and_fix();
-    must(&mut other, user(), Command::CancelTask { task_id: FIX.into() });
+    must(&mut other, user(), Command::CancelTask { task_id: FIX.into(), reason: None });
     assert_eq!(code(refused(&mut other, node("a"), declare(Some("publish"), vec![fix_pr()]))), "invalid_input", "a cancelled task never lands");
 }
 
@@ -215,7 +215,7 @@ fn waiting_on_the_fix() -> DomainState {
         dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
     });
     must(&mut s, node("c"), Command::StartTask { task_id: "next".into() });
-    must(&mut s, orchestrator(), Command::SetDependencies { task_id: "next".into(), dependencies: BTreeSet::from([FIX.into()]), stack: None });
+    must(&mut s, orchestrator(), Command::SetDependencies { task_id: "next".into(), dependencies: BTreeSet::from([FIX.into()]), stack: None, reason: None });
     must(&mut s, orchestrator(), Command::CreateTask { plan_items: None, continues: None,
         task_id: "unowned".into(), request_id: "r".into(), title: "Unowned".into(), agent_id: None, review_prs: false,
         dependencies: BTreeSet::from([FIX.into()]), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),

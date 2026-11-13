@@ -289,7 +289,7 @@ impl World {
             }
             Step::Cancel(n) => {
                 if let Some(task) = self.pick(n, |t, _| t.id.0 != "run" && !t.over()) {
-                    self.must(user(), Command::CancelTask { task_id: task });
+                    self.must(user(), Command::CancelTask { task_id: task, reason: None });
                 }
             }
             Step::Reopen(n) => {
@@ -322,12 +322,12 @@ impl World {
                     0 => {
                         let Some(replacement) = self.pick(onto, |other, _| other.id != task && other.id.0 != "run") else { return };
                         let dependencies = kept.into_iter().chain([replacement]).collect();
-                        let _ = self.exec(orchestrator(), Command::SetDependencies { task_id: task, dependencies, stack: None });
+                        let _ = self.exec(orchestrator(), Command::SetDependencies { task_id: task, dependencies, stack: None, reason: None });
                     }
                     1 => {
-                        let _ = self.exec(orchestrator(), Command::SetDependencies { task_id: task, dependencies: kept, stack: None });
+                        let _ = self.exec(orchestrator(), Command::SetDependencies { task_id: task, dependencies: kept, stack: None, reason: None });
                     }
-                    2 => self.must(orchestrator(), Command::CancelTask { task_id: task }),
+                    2 => self.must(orchestrator(), Command::CancelTask { task_id: task, reason: None }),
                     _ => {
                         if self.s.open_start_problem(&task).is_none() {
                             self.must(Actor::System, Command::RaiseStartProblem { task_id: task, problem: StartProblem::DependencyCancelled { dependency: cancelled } });
@@ -352,7 +352,7 @@ impl World {
                     }
                     1 => self.must(orchestrator(), Command::AnswerQuestion { attachments: vec![], interaction_id: card, option_id: START_CANCEL.into(),
                         inputs: BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text("The editor no longer needs it".into()))]) }),
-                    _ => self.must(Actor::System, Command::CancelTask { task_id: task }),
+                    _ => self.must(Actor::System, Command::CancelTask { task_id: task, reason: None }),
                 }
             }
         }
@@ -529,7 +529,7 @@ fn waiting_for_a_cancelled_task() -> (World, TaskId) {
     w.apply(&Step::Create { scheduled: false, plan: true, deps: vec![1] });
     let waiting: TaskId = "t2".into();
     assert_eq!(w.s.tasks[&waiting].dependencies, BTreeSet::from([TaskId::from("t1")]));
-    w.must(user(), Command::CancelTask { task_id: "t1".into() });
+    w.must(user(), Command::CancelTask { task_id: "t1".into(), reason: None });
     w.react();
     (w, waiting)
 }
@@ -571,7 +571,7 @@ fn a_task_re_pointed_to_a_replacement_waits_for_it_and_nobody_is_asked() {
     let (mut w, waiting) = waiting_for_a_cancelled_task();
     w.apply(&Step::Create { scheduled: false, plan: true, deps: vec![] });
     let replacement: TaskId = "t3".into();
-    w.must(orchestrator(), Command::SetDependencies { task_id: waiting.clone(), dependencies: BTreeSet::from([replacement.clone()]), stack: None });
+    w.must(orchestrator(), Command::SetDependencies { task_id: waiting.clone(), dependencies: BTreeSet::from([replacement.clone()]), stack: None, reason: None });
     w.react();
     let t = &w.s.tasks[&waiting];
     assert_eq!(w.s.cancelled_dependency(t), None);

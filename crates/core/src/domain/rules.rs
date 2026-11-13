@@ -2639,7 +2639,7 @@ impl DomainState {
             | Command::PresentResult { task_id, .. }
             | Command::PublishStackReadiness { task_id, .. }
             | Command::CompleteTask { task_id, .. }
-            | Command::CancelTask { task_id }
+            | Command::CancelTask { task_id, .. }
             | Command::AdoptOpenPr { task_id, .. }
             | Command::ClosePrOfCancelledTask { task_id, .. }
             | Command::SettleOpenPr { task_id, .. }
@@ -3601,6 +3601,7 @@ impl DomainState {
                 task_id,
                 dependencies,
                 stack,
+                ..
             } => {
                 self.manager(actor)?;
                 self.active(task_id)?;
@@ -5028,7 +5029,7 @@ impl DomainState {
                     self.finish_task(task_id, lifecycles)?;
                 }
             }
-            Command::CancelTask { task_id } => {
+            Command::CancelTask { task_id, .. } => {
                 self.cancel_guard(actor, task_id)?;
                 self.close_task(actor, task_id, None, effects, created, lifecycles)?;
             }

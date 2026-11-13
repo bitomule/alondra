@@ -28,6 +28,10 @@ pub enum Owed {
     OwnWork,
     /// The orchestrator settles a stall, answers a node or reviews a plan.
     Answer,
+    /// The orchestrator re-plans a task that waits for a cancelled task or whose launch plan was
+    /// refused: cancel it, re-point it, or let it start without the dependency. Alondra hands it
+    /// the open item each time the orchestrator rests, and never decides it for the orchestrator.
+    Replan,
     Merge,
     Close,
     Room(Capacity),

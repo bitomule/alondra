@@ -9,8 +9,7 @@ const PLAN: &str = "# Offer Pause\n\n- [ ] Show Pause on a running task\n- [ ] T
 
 fn depend(s: &mut DomainState, on: &[&str]) {
     must(s, Actor::Orchestrator { generation: 0 }, Command::SetDependencies {
-        task_id: "t".into(), dependencies: on.iter().map(|id| TaskId::from(*id)).collect::<BTreeSet<_>>(), stack: None,
-    });
+        task_id: "t".into(), dependencies: on.iter().map(|id| TaskId::from(*id)).collect::<BTreeSet<_>>(), stack: None, reason: None,});
 }
 fn sdk_plan(epoch: u64) -> Command {
     Command::RecordDecisionRequest {

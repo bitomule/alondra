@@ -261,7 +261,7 @@ fn only_the_assigned_node_sends_cards() {
 #[test]
 fn a_closed_task_accepts_only_a_closing_notice() {
     let mut s = fixture();
-    ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    ok(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     ok(&mut s, agent(), ask("winding-down", "t", false, decide("Keep or drop the half-done work")));
     ok(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: Some("a".into()) });
     assert_eq!(refused(&mut s, agent(), ask("q", "t", false, decide("Pick a name"))),
@@ -595,7 +595,7 @@ fn closing_a_request_a_node_raised_tells_the_user_nothing() {
     ok(&mut s, agent(), suggest("p"));
     ok(&mut s, orchestrator(), settle("p", new_task("t-readme", "r-readme")));
     assert_eq!(s.requests[&"r-readme".into()].origin, RequestOrigin::Node { agent_id: "a".into() });
-    ok(&mut s, orchestrator(), Command::CancelTask { task_id: "t-readme".into() });
+    ok(&mut s, orchestrator(), Command::CancelTask { task_id: "t-readme".into(), reason: None });
     let out = ok(&mut s, orchestrator(), Command::CloseRequest {
         request_id: "r-readme".into(), answer: Some("Fixed by PR #1153".into()), withdrawn: false, title: None, headline: None, folded_into: None });
     assert_eq!(answer_cards(&s, "r-readme"), 0);
@@ -818,7 +818,7 @@ fn a_new_task_that_cannot_be_created_leaves_the_suggestion_open() {
 fn a_task_that_ended_cannot_take_its_suggestion_in() {
     let mut s = fixture();
     ok(&mut s, agent(), suggest("p"));
-    ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    ok(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     assert_eq!(refused(&mut s, orchestrator(), settle("p", current("Step 3"))).0, "task_not_active");
     ok(&mut s, orchestrator(), settle("p", new_task("t-readme", "r-readme")));
 }
@@ -839,7 +839,7 @@ fn a_suggestion_holds_back_neither_the_delivery_nor_the_end_of_its_task() {
     ok(&mut s, agent(), suggest("p"));
     assert!(!s.unanswered(&"t".into()));
     ok(&mut s, agent(), present("review", text(), true, review()));
-    ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    ok(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     ok(&mut s, orchestrator(), settle("p", discard("Task 12 already covers it")));
 }
 
@@ -860,7 +860,7 @@ fn no_pending_card_is_left_with_nothing_the_user_can_do_once_its_task_ends() {
         body: "Log in".into(), blocking: false, options: two(), card: with_verify(CardKind::Do, "Log in"),
     });
     ok(&mut s, Actor::System, inform("know", scope("t"), "Heads up"));
-    ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    ok(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     let items = inbox_items(&s);
     assert!(items.iter().any(|item| item.pending), "the notice remains");
     for item in items.iter().filter(|item| item.pending) {
@@ -1640,7 +1640,7 @@ fn snooze_cancellation_withdraws_the_card_without_resurfacing_it() {
     let mut s = fixture();
     ok(&mut s, agent(), ask("q", "t", true, decide("Choose the name")));
     ok(&mut s, user(), snooze("q", 200));
-    let ended = ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    let ended = ok(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     assert!(s.interactions[&InteractionId::from("q")].withdrawn);
     assert_eq!(s.interactions[&InteractionId::from("q")].snoozed_until, None);
     assert_eq!(notify_count(&ended, "q"), 0);
@@ -1742,7 +1742,7 @@ fn snooze_cancelling_a_review_retires_it_and_clears_its_return_time() {
     let mut s = fixture();
     ok(&mut s, agent(), present("review", text(), true, review()));
     ok(&mut s, user(), snooze("review", 200));
-    let cancelled = ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    let cancelled = ok(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     assert!(s.interactions[&InteractionId::from("review")].withdrawn);
     assert_eq!(s.interactions[&InteractionId::from("review")].snoozed_until, None);
     assert!(ReadIndex::build(&s).snoozed().is_empty());

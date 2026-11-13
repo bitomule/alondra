@@ -3,8 +3,7 @@
 //! an input handed to a process that then wrote nothing for too long is given to a host that
 //! resumes the same session, flagged as possibly received already, a node
 //! whose work ended with no turn to take up its notice is told, and what the orchestrator owes is
-//! reminded to it and then settled by Alondra. Nothing it does opens a card, but the one for a task
-//! that still waits for a cancelled task after two reminders: that decision is the user's. The daemon keeps one
+//! reminded to it and then settled by Alondra. Nothing it does opens a card. The daemon keeps one
 //! clock, in `Live`: its own loop and every pass of the orchestrator step that one.
 use crate::domain_runtime::DomainRuntime;
 use crate::locks::Poisonable as _;

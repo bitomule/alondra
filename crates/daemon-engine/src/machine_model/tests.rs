@@ -1,6 +1,6 @@
 //! Every task ends at work, or in the user's hands, whatever the provider, the user, the hosts,
 //! the daemon's restarts, the Mac and the clock did before the machine rested.
-use super::world::{self, History, Host, MINUTE, history};
+use super::world::{self, History, Host, MINUTE, history, history_with_a_dependency};
 use super::*;
 use alondra_core::domain::{AlondraStep, Delivery, Situation, WaitsFor};
 use alondra_domain::Party;
@@ -10,16 +10,29 @@ use proptest::prelude::*;
 /// PR that makes the code apply it removes the row and drives the real code from the model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Gap {
-    /// A task the user sent back still owes the user and reads as a step of Alondra's (delivering the hand-back, or answering the node)
-    /// (`handed_back` holds until the node presents again), whether its node already took it and
-    /// asked the orchestrator, or a deferred account move left nothing to start a node for it.
-    HandedBackOwesUser,
+    /// A task the user sent back after its account move was deferred has no node and no pending
+    /// input to start one for it: the lifecycle still says the user owes the next step while the
+    /// screens read «delivering». The case of a node that took the hand-back and asked the
+    /// orchestrator is closed: the orchestrator owes the answer, in the obligation and in the reading.
+    HandedBackWithItsMoveDeferred,
 }
 
-pub(super) const KNOWN_GAPS: &[Gap] = &[Gap::HandedBackOwesUser];
+pub(super) const KNOWN_GAPS: &[Gap] = &[Gap::HandedBackWithItsMoveDeferred];
 
 fn listed(gap: Gap) -> bool {
     KNOWN_GAPS.contains(&gap)
+}
+
+/// What is left of the gap row is the deferred move alone: the orchestrator's answer is closed.
+#[test]
+fn known_gaps_only_lists_the_deferred_move() {
+    assert_eq!(KNOWN_GAPS, [Gap::HandedBackWithItsMoveDeferred]);
+}
+
+/// `task` was sent back by the user, its move is deferred, and the domain still says the user owes the next step.
+fn handed_back_owing_the_user(state: &DomainState, task: &TaskId) -> bool {
+    state.task_handed_back(task).is_some()
+        && state.obligation_of(task).is_some_and(|obligation| obligation.party == Party::User)
 }
 
 /// The delivery deadline is no gap: the model runs the real watch, which enforces it.
@@ -27,12 +40,6 @@ fn listed(gap: Gap) -> bool {
 fn the_hand_input_deadline_is_enforced_by_the_real_policy() {
     assert!(alondra_core::domain::obligation_policy::enforced(&Owed::HandInput));
     assert!(!alondra_core::domain::obligation_policy::enforced(&Owed::ReadInput));
-}
-
-/// `task` was sent back by the user and the domain still says the user owes the next step.
-fn handed_back_owing_the_user(state: &DomainState, task: &TaskId) -> bool {
-    state.task_handed_back(task).is_some()
-        && state.lifecycle_of(task).ok().and_then(|lifecycle| lifecycle.obligation()).is_some_and(|obligation| obligation.party == Party::User)
 }
 
 /// How many times a step may be owed again as the one before it, with nobody acting in between: a
@@ -84,9 +91,20 @@ fn runs(machine: &Machine, task: &TaskId) -> bool {
 /// a world that never goes quiet (a node that asks again as soon as it is answered) ends the two
 /// hours with one under way.
 fn within_its_deadlines(machine: &Machine, state: &DomainState, task: &TaskId) -> bool {
-    let Some(owed) = state.lifecycle_of(task).ok().and_then(|lifecycle| lifecycle.obligation()).map(|obligation| obligation.owed) else { return false };
+    let Some(owed) = state.obligation_of(task).map(|obligation| obligation.owed) else { return false };
     let bound = alondra_core::domain::obligation_policy::deadline(&owed).unwrap_or(MINUTE) * 2 + world::PASS;
     machine.owed_for(task) < bound
+}
+
+/// The task waits for the orchestrator to re-plan it.
+fn replanned(state: &DomainState, task: &TaskId) -> bool {
+    state.obligation_of(task).is_some_and(|obligation| obligation.owed == Owed::Replan)
+}
+
+/// The task waits for another that is not cancelled: it is judged by where that one ends, and a
+/// cancelled one is the orchestrator's to re-plan.
+fn waits_for_a_task_still_open(state: &DomainState, task: &TaskId) -> bool {
+    state.tasks.get(task).and_then(|task| state.pending_dependency(task)).is_some_and(|dependency| state.tasks.get(&dependency).is_some_and(|dependency| !dependency.cancelled()))
 }
 
 /// Where `task` may end once the machine rested: at work with the provider running it, with a card
@@ -96,15 +114,17 @@ fn ends_well(machine: &Machine, state: &DomainState, index: &ReadIndex, task: &T
     match situation(index, task) {
         Situation::Working(_) => runs(machine, task),
         Situation::NeedsYou | Situation::Paused | Situation::Delivered(Delivery::ForReview) => true,
+        Situation::Waiting(WaitsFor::Slot) if waits_for_a_task_still_open(state, task) => true,
         Situation::Waiting(WaitsFor::Slot) => room_is_scarce(machine, state),
         Situation::Waiting(WaitsFor::Step(AlondraStep::Delivering)) if state.waits_for_turn(task) => {
             room_is_scarce(machine, state)
         }
-        Situation::Waiting(WaitsFor::Step(AlondraStep::Delivering | AlondraStep::Answering)) if listed(Gap::HandedBackOwesUser) && handed_back_owing_the_user(state, task) => true,
+        Situation::Waiting(WaitsFor::Step(AlondraStep::Delivering)) if listed(Gap::HandedBackWithItsMoveDeferred) && handed_back_owing_the_user(state, task) => true,
         Situation::Waiting(WaitsFor::Machine) => world.memory_tight,
         Situation::Waiting(WaitsFor::Disk) => world.disk_full,
         Situation::Waiting(WaitsFor::Usage) => world.usage_holds(),
         Situation::Waiting(WaitsFor::Step(AlondraStep::Answering) | WaitsFor::PlanReview) if world.usage_holds() => true,
+        Situation::Waiting(WaitsFor::Step(AlondraStep::Answering)) if replanned(state, task) => !world.orchestrator_answers,
         Situation::Waiting(WaitsFor::Step(_) | WaitsFor::PlanReview) if within_its_deadlines(machine, state, task) => true,
         _ => false,
     }
@@ -125,6 +145,7 @@ struct Verdicts {
     unlisted: Option<String>,
     rearms: Option<String>,
     closing: Option<String>,
+    unhanded: Option<String>,
 }
 
 fn with_trace(machine: &Machine, why: String) -> String {
@@ -190,6 +211,12 @@ fn judge(history: &History) -> Verdicts {
         .collect();
     if !stuck.is_empty() {
         verdicts.ends = failed(stuck.join("; "));
+    }
+    let unhanded: Vec<TaskId> = open_tasks(&state).into_iter().filter(|task| replanned(&state, task))
+        .filter(|task| !state.interactions.values().any(|i| matches!(&i.system_card, Some(alondra_core::domain::SystemCard::Inbox { subject, .. }) if subject.contains(&task.0))))
+        .collect();
+    if !unhanded.is_empty() {
+        verdicts.unhanded = failed(format!("{unhanded:?} wait for the orchestrator to re-plan them and it was never handed them"));
     }
     let seen = &machine.seen;
     if !seen.unchanged.is_empty() {
@@ -337,6 +364,11 @@ proptest! {
     fn a_closing_node_is_never_taken_over_asks_nothing_and_keeps_no_host(history in world::history_with_cleanups()) {
         holds(&history, |verdicts| &verdicts.closing)?;
     }
+
+    #[test]
+    fn a_task_the_orchestrator_has_to_re_plan_was_always_handed_to_it(history in history()) {
+        holds(&history, |verdicts| &verdicts.unhanded)?;
+    }
 }
 
 /// The close of 12 November: a node confirmed its cleanup with its turn still open, the closer took
@@ -361,17 +393,60 @@ fn a_node_that_confirms_its_cleanup_in_an_open_turn_closes_with_its_host() {
     holds(&history, |verdicts| &verdicts.working).unwrap();
 }
 
-/// The histories the model found for `Gap::HandedBackOwesUser`: they keep ending well while the gap
-/// is listed, and the row goes once the reading says what the task waits for.
+proptest! {
+    #![proptest_config(ProptestConfig {
+        cases: 128, failure_persistence: None, rng_seed: proptest::test_runner::RngSeed::Fixed(15), ..ProptestConfig::default()
+    })]
+
+    #[test]
+    fn a_task_waiting_for_another_ends_live_or_in_the_users_hands_with_no_card_by_the_clock(history in history_with_a_dependency()) {
+        holds(&history, |verdicts| &verdicts.ends)?;
+        holds(&history, |verdicts| &verdicts.clock_cards)?;
+        holds(&history, |verdicts| &verdicts.unlisted)?;
+        holds(&history, |verdicts| &verdicts.unhanded)?;
+    }
+}
+
+/// The user cancels the task another one waits for while the orchestrator fails: the task is handed
+/// to it at every rest, never gets a card for the user and is never cancelled by Alondra; once the
+/// orchestrator answers again it decides.
+#[test]
+fn a_task_waiting_for_a_cancelled_one_waits_for_the_orchestrator_and_is_handed_to_it_at_every_rest() {
+    use super::world::{Action, Turn, UserAct};
+    let history = History {
+        script: vec![Turn::Deliver], slots: 3, depends: Some((0, 1)),
+        actions: vec![Action::OrchestratorAnswers(false), Action::User(UserAct::Cancel, 0)],
+    };
+    let mut machine = Machine::new(&history);
+    for action in &history.actions {
+        machine.act(action);
+    }
+    let waiting = TaskId::from("t-b");
+    let owed = machine.state().obligation_of(&waiting).expect("owed");
+    assert_eq!((owed.party, owed.owed), (Party::Alondra, Owed::Replan), "the lifecycle alone says nobody owes it");
+    machine.rest(|_| {});
+    let state = machine.state();
+    let notices = state.interactions.values().filter(|i| i.id.0.starts_with(alondra_core::orchestrator_cards::DEPENDENCY_CANCELLED_NOTICE_PREFIX)).count();
+    assert!(notices >= 10, "one at every rest of the two hours: {notices}");
+    assert!(state.open_start_problem(&waiting).is_none() && machine.seen.clock_cards.is_empty(), "no card for the user");
+    assert!(!state.tasks[&waiting].cancelled(), "Alondra never cancels it");
+    assert!(matches!(situation(&ReadIndex::build(&state), &waiting), Situation::Waiting(WaitsFor::Step(AlondraStep::Answering))));
+
+    machine.act(&Action::OrchestratorAnswers(true));
+    assert!(machine.state().tasks[&waiting].cancelled(), "once it answers, the orchestrator decides");
+}
+
+/// The histories the model found for a task the user sent back: it ends well whether its node asks
+/// the orchestrator, which then owes the answer, or its move is deferred.
 #[test]
 fn a_task_sent_back_ends_well_whether_its_node_asks_or_its_move_is_deferred() {
     use super::world::{Action, Turn, UserAct};
     let asking = History {
-        script: vec![Turn::Deliver, Turn::AskOrchestrator], slots: 1,
+        script: vec![Turn::Deliver, Turn::AskOrchestrator], slots: 1, depends: None,
         actions: vec![Action::Slots(3), Action::OrchestratorAnswers(false), Action::TurnEnds(2), Action::User(UserAct::Return, 2)],
     };
     let moved = History {
-        script: vec![Turn::Deliver], slots: 3,
+        script: vec![Turn::Deliver], slots: 3, depends: None,
         actions: vec![Action::TurnEnds(2), Action::User(UserAct::Move, 2), Action::User(UserAct::Return, 2)],
     };
     for history in [asking, moved] {
@@ -386,7 +461,7 @@ fn a_task_sent_back_ends_well_whether_its_node_asks_or_its_move_is_deferred() {
 fn a_permission_answered_while_the_gate_is_full_reaches_its_turn() {
     use super::world::{Action, Turn, UserAct};
     let history = History {
-        script: vec![Turn::AskPermission], slots: 1,
+        script: vec![Turn::AskPermission], slots: 1, depends: None,
         actions: vec![Action::TurnEnds(0), Action::User(UserAct::Answer, 0), Action::Slots(2), Action::Slots(3)],
     };
     let mut machine = Machine::new(&history);
@@ -406,6 +481,6 @@ fn a_permission_answered_while_the_gate_is_full_reaches_its_turn() {
 #[test]
 fn closing_a_stalled_task_with_its_pull_request_open_delivers_it() {
     use super::world::{Action, Turn};
-    let history = History { script: vec![Turn::OpenPr], slots: 3, actions: vec![Action::TurnEnds(0)] };
+    let history = History { script: vec![Turn::OpenPr], slots: 3, depends: None, actions: vec![Action::TurnEnds(0)] };
     holds(&history, |verdicts| &verdicts.close).unwrap();
 }

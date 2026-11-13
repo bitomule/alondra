@@ -295,7 +295,7 @@ async fn times_are_the_commits_own_and_survive_a_restart() {
     let appeared = informed["inbox_times"]["interaction:info-1"].as_i64().unwrap();
     assert!(appeared >= started, "the inbox row carries the time of the commit that added it");
 
-    fixture.user("cancel", Command::CancelTask { task_id: "task-1".into() });
+    fixture.user("cancel", Command::CancelTask { task_id: "task-1".into(), reason: None });
     fixture.command(Actor::System, "end", Command::RecordNodeEnd { task_id: "task-1".into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: Some("agent-a".into()) });
     let cancelled = fixture.runtime_json().await;
     assert!(cancelled["tasks"]["task-1"]["state_since"].as_i64().unwrap() >= appeared, "a change of state is timed by the commit that made it");
@@ -862,7 +862,7 @@ async fn a_tasks_history_lists_the_states_it_entered_with_the_words_that_moved_i
         options: vec![alondra_core::domain::QuestionOption { id: "blue".into(), label: "Blue".into(), description: None }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
     });
     fixture.user("answer", Command::AnswerQuestion { attachments: vec![], interaction_id: "q-1".into(), option_id: "blue".into(), inputs: Default::default() });
-    fixture.user("cancel", Command::CancelTask { task_id: "task-1".into() });
+    fixture.user("cancel", Command::CancelTask { task_id: "task-1".into(), reason: None });
     fixture.command(Actor::System, "end", Command::RecordNodeEnd { task_id: "task-1".into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: Some("agent-a".into()) });
     let expected = fixture_json("requests.json");
     let request = &expected["history"];
@@ -890,7 +890,7 @@ async fn the_reason_for_cancelling_is_recorded_beside_the_cancelled_task() {
     let path = request["path"].as_str().unwrap();
     let (status, error) = fixture.send("PUT", path, &request["body"]).await;
     assert_eq!((status, error["code"].as_str()), (StatusCode::CONFLICT, Some("task_not_cancelled")), "a running task has no cancel reason");
-    fixture.user("cancel", Command::CancelTask { task_id: "task-1".into() });
+    fixture.user("cancel", Command::CancelTask { task_id: "task-1".into(), reason: None });
     let (status, answer) = fixture.send("PUT", path, &request["body"]).await;
     assert_eq!((status, &answer), (StatusCode::OK, &request["response"]), "{answer}");
     assert_eq!(fixture.runtime_json().await["tasks"]["task-1"]["cancel_reason"], "Superseded");

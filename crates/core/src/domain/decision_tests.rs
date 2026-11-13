@@ -656,7 +656,7 @@ fn a_revoked_grant_asks_again_and_a_task_that_ends_forgets_what_it_allowed() {
     let again = ask(&mut s, 2, reset, WORKTREE).expect("revoked, it asks again");
     decide(&mut s, 2, &again, Hold::FOR_TASK);
     assert_eq!(allowed(&s).len(), 1);
-    must(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    must(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     assert!(s.tasks[&TaskId::from("t")].over());
     assert!(allowed(&s).is_empty(), "nothing stays allowed once the task ends");
     assert_aggregate_rules(&s);

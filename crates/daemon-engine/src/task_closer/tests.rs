@@ -463,7 +463,7 @@ async fn the_wait_is_not_restarted_by_a_daemon_restart() {
 #[tokio::test]
 async fn a_cancelled_tasks_busy_node_has_its_turn_cut_is_closed_once_idle_and_gets_no_message() {
     let rig = Rig::new(thirty_minutes());
-    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into() });
+    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
     let told = rig.told().len();
     rig.domain.live.observe(&hook("UserPromptSubmit"));
     rig.pass(T0).await;
@@ -480,7 +480,7 @@ async fn a_cancelled_tasks_busy_node_has_its_turn_cut_is_closed_once_idle_and_ge
 #[tokio::test]
 async fn a_task_cancelled_before_this_change_is_left_alone() {
     let rig = Rig::new(thirty_minutes());
-    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into() });
+    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
     rig.domain.store.lock().unwrap().conn_for_test().execute("DELETE FROM task_wrap_ups", []).unwrap();
     rig.domain.reload();
     assert!(!rig.task().wrap_up.close_cancelled);
@@ -570,7 +570,7 @@ async fn cancelling_a_task_withdraws_the_card_of_three_failed_closes_and_the_nod
     let rig = Rig::new(thirty_minutes());
     failed_three_times(&rig).await;
     let card = rig.cards()[0].id.clone();
-    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into() });
+    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
     assert!(rig.domain.state().unwrap().interactions[&card].withdrawn, "the card no longer waits for an answer");
     let state = rig.domain.state().unwrap();
     assert_eq!(state.interactions[&card].revision, state.revision, "withdrawing it moves its revision, so clients refresh");
@@ -966,7 +966,7 @@ async fn a_cancelled_task_without_a_node_is_cancelled_by_alondras_cleanup_receip
         review_prs: false, dependencies: Default::default(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
     });
-    command(&rig.domain, user(), "cancel-u", Command::CancelTask { task_id: "u".into() });
+    command(&rig.domain, user(), "cancel-u", Command::CancelTask { task_id: "u".into(), reason: None });
     let task = rig.domain.state().unwrap().tasks[&TaskId::from("u")].clone();
     assert_eq!((task.state, task.ending, task.agent_id), (TaskState::Cancelled, None, None));
     assert!(rig.sessions.calls.lock().unwrap().is_empty(), "no node to close");
@@ -995,7 +995,7 @@ fn moved(continues: Option<&str>) -> (Rig, crate::test_support::Directory, std::
         dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", dir.to_str().unwrap())),
         plan_items: None, continues: continues.map(TaskId::from),
     });
-    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into() });
+    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
     (rig, root, dir)
 }
 
@@ -1030,7 +1030,7 @@ async fn a_task_launched_in_the_worktree_without_naming_the_task_it_carries_on_t
 #[tokio::test]
 async fn a_cancelled_task_whose_continuation_is_already_over_leaves_its_unsaved_worktree_to_the_users_card() {
     let (rig, _root, dir) = moved(Some("t"));
-    command(&rig.domain, user(), "cancel-continuation", Command::CancelTask { task_id: "t-claude".into() });
+    command(&rig.domain, user(), "cancel-continuation", Command::CancelTask { task_id: "t-claude".into(), reason: None });
     for minutes in [0, 5, 10, 20] {
         rig.pass(T0 + minutes * MINUTE).await;
     }
@@ -1049,7 +1049,7 @@ async fn several_continuations_of_one_task_keep_its_worktree_until_the_last_one_
         dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", dir.to_str().unwrap())),
         plan_items: None, continues: Some("t".into()),
     });
-    command(&rig.domain, user(), "cancel-continuation", Command::CancelTask { task_id: "t-claude".into() });
+    command(&rig.domain, user(), "cancel-continuation", Command::CancelTask { task_id: "t-claude".into(), reason: None });
     for minutes in [0, 5, 10, 20] {
         rig.pass(T0 + minutes * MINUTE).await;
     }
@@ -1099,7 +1099,7 @@ impl Rig {
             plan_items: None, continues: None, task_id: id.into(), request_id: format!("r-{id}").into(), title: format!("Task {id}"), agent_id: None,
             review_prs: false, dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
         });
-        command(&self.domain, user(), &format!("cancel-{id}"), Command::CancelTask { task_id: id.into() });
+        command(&self.domain, user(), &format!("cancel-{id}"), Command::CancelTask { task_id: id.into(), reason: None });
         let root = crate::test_support::Directory::new();
         let dir = crate::worktree::testing::task_worktree(&root, id);
         for file in unsaved {
@@ -1118,7 +1118,7 @@ async fn cancelling_a_task_with_unsaved_files_asks_once_and_deletes_nothing_unti
     rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
     std::fs::write(dir.join("a.txt"), "x").unwrap();
     std::fs::write(dir.join("b.txt"), "y").unwrap();
-    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into() });
+    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
     rig.pass(T0).await;
     rig.pass(T0 + MINUTE).await;
 
@@ -1150,7 +1150,7 @@ async fn keeping_the_unsaved_files_of_a_cancelled_task_touches_nothing_and_never
     let dir = crate::worktree::testing::task_worktree(&root, "t");
     rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
     std::fs::write(dir.join("a.txt"), "x").unwrap();
-    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into() });
+    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
     rig.pass(T0).await;
     rig.answer_discard("keep");
     for minutes in [1, 60, 600] {
@@ -1168,7 +1168,7 @@ async fn cancelling_a_task_without_unsaved_files_deletes_its_worktree_and_branch
     let root = crate::test_support::Directory::new();
     let dir = crate::worktree::testing::task_worktree(&root, "t");
     rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
-    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into() });
+    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
     rig.pass(T0).await;
     rig.pass(T0 + MINUTE).await;
     assert!(!dir.exists());
@@ -1187,7 +1187,7 @@ async fn a_cancelled_task_with_an_open_pull_request_keeps_its_branch_when_its_wo
     let root = crate::test_support::Directory::new();
     let dir = crate::worktree::testing::task_worktree(&root, "t");
     rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
-    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into() });
+    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
     rig.pass(T0).await;
     rig.pass(T0 + MINUTE).await;
     assert!(!dir.exists());
@@ -1369,7 +1369,7 @@ async fn cancelling_a_task_whose_stored_worktrees_are_home_and_the_projects_root
     git(&folders.home, &["init", "-q"]);
     folders.stored_as_worktree_of(&rig.domain, "t", &folders.home);
     folders.stored_as_worktree_of(&rig.domain, "t", &folders.projects);
-    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into() });
+    command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
     for minutes in [0, 5, 10] {
         rig.pass(T0 + minutes * MINUTE).await;
     }

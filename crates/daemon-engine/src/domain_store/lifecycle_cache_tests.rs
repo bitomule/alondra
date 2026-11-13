@@ -99,7 +99,7 @@ fn the_daemon_opening_the_database_again_keeps_the_lifecycles_its_journals_repla
     let runtime = DomainRuntime::open(&root).unwrap();
     assert_eq!(records(runtime.read().state()), journal);
     assert_kept(&runtime);
-    run_on(&runtime, &Actor::User { user_id: "device:phone".into() }, Command::CancelTask { task_id: TASK.into() }).unwrap();
+    run_on(&runtime, &Actor::User { user_id: "device:phone".into() }, Command::CancelTask { task_id: TASK.into(), reason: None }).unwrap();
     assert!(records(runtime.read().state()) > journal, "the cancellation is journaled");
     assert_kept(&runtime);
     drop(runtime);

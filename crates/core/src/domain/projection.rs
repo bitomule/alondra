@@ -102,6 +102,7 @@ impl DomainState {
                 "cancel_task",
                 Command::CancelTask {
                     task_id: task_id.clone(),
+                    reason: None,
                 },
                 None,
                 None,

@@ -158,7 +158,7 @@ proptest! {
                     (refused, None)
                 }
                 Step::Withdraw(n) => (exec(&mut s, &node(), Command::Withdraw { interaction_id: slot(*n) }), None),
-                Step::Cancel => (exec(&mut s, &Actor::User { user_id: "u".into() }, Command::CancelTask { task_id: "t".into() }), None),
+                Step::Cancel => (exec(&mut s, &Actor::User { user_id: "u".into() }, Command::CancelTask { task_id: "t".into(), reason: None }), None),
             };
             match &result {
                 Err(_) => prop_assert_eq!(&s, &before, "a refused command changed state"),

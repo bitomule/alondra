@@ -556,8 +556,8 @@ fn orchestrator_domain_tools(user: &str) -> Vec<Value> {
         ),
         (
             "set_dependencies",
-            "Set a Task's dependencies and optional stack relationship. Dependencies are waits: the Task starts, or its node goes on, once they are done, and they never hold back the merge of a PR it presented; a PR built on another Task's open PR uses stack, which merges after it. A node that asks to wait for another Task gets it here, on its running Task, keeping the dependencies it has: Alondra resumes it when they are done.",
-            json!({"task_id":{"type":"string"},"dependencies":{"type":"array","items":{"type":"string"}},"stack":{"type":["object","null"],"properties":{"upstream_task":{"type":"string"},"presentation_id":{"type":"string"},"pr_id":{"type":"string"},"head":{"type":"string"}},"required":["upstream_task","presentation_id","pr_id","head"],"additionalProperties":false}}),
+            "Set a Task's dependencies and optional stack relationship. Dependencies are waits: the Task starts, or its node goes on, once they are done, and they never hold back the merge of a PR it presented; a PR built on another Task's open PR uses stack, which merges after it. A node that asks to wait for another Task gets it here, on its running Task, keeping the dependencies it has: Alondra resumes it when they are done. When you re-plan a Task that waited for a cancelled Task, say why in reason: the task shows it and its node reads it first.",
+            json!({"task_id":{"type":"string"},"dependencies":{"type":"array","items":{"type":"string"}},"stack":{"type":["object","null"],"properties":{"upstream_task":{"type":"string"},"presentation_id":{"type":"string"},"pr_id":{"type":"string"},"head":{"type":"string"}},"required":["upstream_task","presentation_id","pr_id","head"],"additionalProperties":false},"reason":{"type":"string"}}),
             vec!["task_id", "dependencies", "stack"],
         ),
         (
@@ -624,8 +624,8 @@ fn orchestrator_domain_tools(user: &str) -> Vec<Value> {
         ),
         (
             "cancel_task",
-            "Cancel an active Task when its Request no longer needs it.",
-            json!({"task_id":{"type":"string"}}),
+            "Cancel an active Task when its Request no longer needs it. Say why in reason: the task shows it. A Task that waited for a cancelled Task is yours to decide (cancel it, re-point it or let it start without the dependency), never the user's.",
+            json!({"task_id":{"type":"string"},"reason":{"type":"string"}}),
             vec!["task_id"],
         ),
         (

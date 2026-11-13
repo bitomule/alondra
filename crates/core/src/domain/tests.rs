@@ -265,8 +265,7 @@ fn schedule_commands_preserve_claim_and_result_history() {
         task_id: "scheduled-task".into(), agent_id: "a".into(), model: None
     }, "conflict");
     reject_unchanged(&mut state, user(), Command::SetDependencies {
-        task_id: "scheduled-task".into(), dependencies: ["t".into()].into_iter().collect(), stack: None,
-    }, "conflict");
+        task_id: "scheduled-task".into(), dependencies: ["t".into()].into_iter().collect(), stack: None, reason: None,}, "conflict");
     state.tasks.get_mut(&TaskId::from("scheduled-task")).unwrap().agent_id = Some("a".into());
     state.validate().unwrap();
     reject_unchanged(&mut state, Actor::System, Command::ClaimScheduleLaunch {
@@ -329,7 +328,7 @@ fn the_user_cancels_a_task_whose_scheduled_launch_failed() {
     let cancel = state.task_actions(&"scheduled-task".into()).unwrap()
         .into_iter().find(|action| action.kind == "cancel_task").unwrap();
     assert!(cancel.enabled, "{cancel:?}");
-    exec(&mut state, user(), Command::CancelTask { task_id: "scheduled-task".into() }).unwrap();
+    exec(&mut state, user(), Command::CancelTask { task_id: "scheduled-task".into(), reason: None }).unwrap();
     receipt(&mut state, "scheduled-task");
     assert_eq!(state.tasks[&TaskId::from("scheduled-task")].state, TaskState::Cancelled);
     assert_eq!(state.schedule.runs[&ScheduleRunId::from("run-1")].state, ScheduleRunState::Failed);
@@ -354,7 +353,7 @@ fn sent_scheduled_task(state: &mut DomainState) {
 fn cancelling_a_scheduled_task_before_it_launches_ends_its_run() {
     let mut state = fixture();
     sent_scheduled_task(&mut state);
-    exec(&mut state, user(), Command::CancelTask { task_id: "scheduled-task".into() }).unwrap();
+    exec(&mut state, user(), Command::CancelTask { task_id: "scheduled-task".into(), reason: None }).unwrap();
     receipt(&mut state, "scheduled-task");
     let run = &state.schedule.runs[&ScheduleRunId::from("run-1")];
     assert_eq!(run.state, ScheduleRunState::Failed);
@@ -400,7 +399,7 @@ fn a_scheduled_request_tells_the_user_its_answer() {
         run_id: "run-1".into(), request, task, launch: scheduled_launch(), finished_at: 101,
     }).unwrap();
     assert_eq!(state.requests[&RequestId::from("scheduled-request")].origin, RequestOrigin::Schedule);
-    exec(&mut state, user(), Command::CancelTask { task_id: "scheduled-task".into() }).unwrap();
+    exec(&mut state, user(), Command::CancelTask { task_id: "scheduled-task".into(), reason: None }).unwrap();
     receipt(&mut state, "scheduled-task");
     exec(&mut state, Actor::Orchestrator { generation: 0 }, Command::CloseRequest {
         request_id: "scheduled-request".into(), answer: Some("Nothing to review this week".into()), withdrawn: false, title: None, headline: None, folded_into: None }).unwrap();
@@ -1203,8 +1202,7 @@ fn lifetime_pr_survives_cancel_reopen_and_register_is_noop() {
         &mut s,
         user(),
         Command::CancelTask {
-            task_id: "t".into(),
-        },
+            task_id: "t".into(), reason: None,},
     )
     .unwrap();
     exec(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::KeptByUser, agent_id: Some("a".into()) }).unwrap();
@@ -1240,8 +1238,7 @@ fn closed_request_prevents_reopening_its_terminal_task() {
         &mut s,
         user(),
         Command::CancelTask {
-            task_id: "t".into(),
-        },
+            task_id: "t".into(), reason: None,},
     )
     .unwrap();
     receipt(&mut s, "t");
@@ -1761,8 +1758,7 @@ fn cross_task_delivery_and_dependency_cycle_roll_back() {
         Command::SetDependencies {
             task_id: "t".into(),
             dependencies: BTreeSet::from(["t2".into()]),
-            stack: None,
-        },
+            stack: None, reason: None,},
         "dependency_cycle",
     );
     reject_unchanged(
@@ -1804,7 +1800,7 @@ fn an_agent_works_on_one_task_until_it_ends() {
     reject_unchanged(&mut s, user(), take.clone(), "agent_busy");
     assert_eq!(exec(&mut s, user(), Command::AssignTask { task_id: "t".into(), agent_id: "a".into(), model: None }).unwrap_err().code, "no_effect",
         "the node already has its own task");
-    exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
+    exec(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None }).unwrap();
     exec(&mut s, user(), take).unwrap();
     assert_eq!(s.tasks[&"t2".into()].agent_id, Some("a".into()), "a node whose task ended takes the next one");
     receipt(&mut s, "t");
@@ -2475,8 +2471,7 @@ fn cancellation_during_merge_preserves_observation_without_completion() {
         &mut s,
         user(),
         Command::CancelTask {
-            task_id: "t".into(),
-        },
+            task_id: "t".into(), reason: None,},
     )
     .unwrap();
     receipt(&mut s, "t");
@@ -2942,7 +2937,7 @@ fn completed_work() -> DomainState {
             title: task.into(), agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
             launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")) }).unwrap();
     }
-    exec(&mut s, user(), Command::CancelTask { task_id: "c".into() }).unwrap();
+    exec(&mut s, user(), Command::CancelTask { task_id: "c".into(), reason: None }).unwrap();
     receipt(&mut s, "c");
     for (request, message) in [("q", false), ("m", true)] {
         exec(&mut s, user(), Command::CreateRequest { request_id: request.into(), body: "Is main green?".into(),
@@ -2974,7 +2969,7 @@ fn clearing_takes_every_ended_task_and_every_request_closed_without_tasks() {
 fn clearing_leaves_what_ended_after_the_list_was_seen() {
     let mut s = completed_work();
     let seen = s.revision;
-    exec(&mut s, user(), Command::CancelTask { task_id: "w".into() }).unwrap();
+    exec(&mut s, user(), Command::CancelTask { task_id: "w".into(), reason: None }).unwrap();
     receipt(&mut s, "w");
     exec(&mut s, user(), Command::CreateRequest { request_id: "later".into(), body: "Later".into(),
         auto_merge: false, maintenance: false, message: false }).unwrap();
@@ -3302,7 +3297,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::TitleRequest { request_id: ids.request.into(), title: "Named".into() }, false),
         (Command::AssignTask { task_id: ids.task.into(), agent_id: ids.agent.into(), model: None }, false),
         (Command::RetitleTask { task_id: ids.task.into(), title: "Renamed".into() }, false),
-        (Command::SetDependencies { task_id: ids.task.into(), dependencies: BTreeSet::new(), stack: None }, false),
+        (Command::SetDependencies { task_id: ids.task.into(), dependencies: BTreeSet::new(), stack: None, reason: None }, false),
         (Command::StartTask { task_id: ids.task.into() }, false),
         (Command::PublishInformation { attachments: vec![], interaction_id: "fresh-info".into(),
             scope: scope.clone(), recipient: Recipient::User, body: "Info".into(), card: crate::domain::CardSpec::derived(crate::domain::CardKind::Know, "Read the update") }, false),
@@ -3351,7 +3346,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
             presentation_id: ids.interaction.into(), pr_id: ids.pr.into(), head: "head1".into(),
             ready: true }, false),
         (Command::CompleteTask { task_id: ids.task.into(), presentation_id: ids.interaction.into() }, false),
-        (Command::CancelTask { task_id: ids.task.into() }, false),
+        (Command::CancelTask { task_id: ids.task.into(), reason: None }, false),
         (Command::ReopenTask { task_id: ids.task.into() }, false),
         (Command::ArchiveTask { task_id: ids.task.into(), archived: false }, false),
         (Command::RevokeTaskGrant { task_id: ids.task.into(), card: ids.interaction.into() }, false),
@@ -3818,7 +3813,7 @@ fn releasing_a_task_whose_node_the_user_closed_puts_it_back_to_not_started_with_
 #[test]
 fn a_finished_task_is_not_released() {
     let mut s = fixture();
-    exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
+    exec(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None }).unwrap();
     reject_unchanged(&mut s, Actor::System, Command::ReleaseTask { task_id: "t".into(), reason: "node closed by the user".into() }, "task_not_active");
 }
 
@@ -4034,11 +4029,11 @@ fn feedback_on_a_merged_delivery_during_cleanup_is_refused() {
 #[test]
 fn cancelling_a_task_tells_its_node_to_stop_and_marks_it_for_closing() {
     let mut s = fixture();
-    let out = exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
+    let out = exec(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None }).unwrap();
     assert_eq!(sent_to_node(&out), vec![cancelled_notice("Result")]);
     assert!(s.tasks[&"t".into()].wrap_up.close_cancelled);
     second_task(&mut s, "u", None);
-    let out = exec(&mut s, user(), Command::CancelTask { task_id: "u".into() }).unwrap();
+    let out = exec(&mut s, user(), Command::CancelTask { task_id: "u".into(), reason: None }).unwrap();
     assert!(sent_to_node(&out).is_empty());
     assert!(!s.tasks[&"u".into()].wrap_up.close_cancelled);
 }
@@ -4082,7 +4077,7 @@ fn reopening_a_task_whose_node_was_closed_leaves_it_without_a_node() {
 fn a_task_reopened_after_its_node_closed_is_not_started_and_can_be_assigned() {
     let mut s = fixture();
     exec(&mut s, agent(), Command::StartTask { task_id: "t".into() }).unwrap();
-    exec(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into() }).unwrap();
+    exec(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into(), reason: None }).unwrap();
     exec(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: Some("a".into()) }).unwrap();
     exec(&mut s, orchestrator(), Command::ReopenTask { task_id: "t".into() }).unwrap();
     let t = &s.tasks[&"t".into()];
@@ -4098,7 +4093,7 @@ fn a_task_reopened_after_its_node_closed_is_not_started_and_can_be_assigned() {
 fn a_task_whose_node_session_closed_is_reopened_only_once_the_node_end_is_recorded() {
     let mut s = fixture();
     exec(&mut s, agent(), Command::StartTask { task_id: "t".into() }).unwrap();
-    exec(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into() }).unwrap();
+    exec(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into(), reason: None }).unwrap();
     exec(&mut s, Actor::System, Command::MoveNode { agent_id: "a".into(), event: NodeEvent::SessionClosed}).unwrap();
     reject_unchanged(&mut s, orchestrator(), Command::ReopenTask { task_id: "t".into() }, "task_not_active");
     exec(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Gone, agent_id: Some("a".into()) }).unwrap();
@@ -4112,7 +4107,7 @@ fn a_task_whose_node_session_closed_is_reopened_only_once_the_node_end_is_record
 fn a_task_reopened_with_its_node_kept_by_the_user_keeps_working_with_it() {
     let mut s = fixture();
     exec(&mut s, agent(), Command::StartTask { task_id: "t".into() }).unwrap();
-    exec(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into() }).unwrap();
+    exec(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into(), reason: None }).unwrap();
     exec(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::KeptByUser, agent_id: Some("a".into()) }).unwrap();
     exec(&mut s, orchestrator(), Command::ReopenTask { task_id: "t".into() }).unwrap();
     let t = &s.tasks[&"t".into()];
@@ -4162,7 +4157,7 @@ fn a_task_from_before_wrap_ups_decodes_with_none() {
 fn a_task_waiting_on_another_starts_in_the_step_that_finishes_it() {
     let mut s = fixture();
     second_task(&mut s, "u", None);
-    exec(&mut s, user(), Command::SetDependencies { task_id: "u".into(), dependencies: ["t".into()].into(), stack: None }).unwrap();
+    exec(&mut s, user(), Command::SetDependencies { task_id: "u".into(), dependencies: ["t".into()].into(), stack: None, reason: None }).unwrap();
     assert_eq!(s.tasks[&"u".into()].state, TaskState::WaitingDependency);
     accept_text(&mut s);
     end_node(&mut s, "t");
@@ -4375,7 +4370,7 @@ fn cancelling_a_task_with_its_plan_open_takes_its_cards_away_in_silence() {
     let mut s = fixture();
     hold_plan(&mut s, "plan");
     ask_aside(&mut s, "q");
-    let cancelled = exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
+    let cancelled = exec(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None }).unwrap();
     assert!(s.interactions[&"plan".into()].withdrawn && s.interactions[&"q".into()].withdrawn);
     assert!(!pending(&s, "plan") && !pending(&s, "q"));
     assert!(notices(&s).is_empty(), "no notice about cards of a cancelled task");
@@ -4389,7 +4384,7 @@ fn cancelling_a_task_with_its_plan_open_takes_its_cards_away_in_silence() {
 fn a_question_the_node_of_a_cancelled_task_asks_while_it_winds_down_reaches_the_user() {
     let mut s = fixture();
     ask_aside(&mut s, "before");
-    exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
+    exec(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None }).unwrap();
     assert!(s.interactions[&"before".into()].withdrawn, "what it asked about the work the user stopped leaves");
     ask_aside(&mut s, "stuck");
     exec(&mut s, Actor::System, Command::ReviewWaits).unwrap();
@@ -4489,7 +4484,7 @@ fn a_task_that_ends_done_takes_a_question_to_the_orchestrator_with_it() {
 fn a_cancelled_task_takes_a_question_to_the_orchestrator_once_its_node_is_gone() {
     let mut s = fixture();
     ask_orchestrator_aside(&mut s, "orch");
-    exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
+    exec(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None }).unwrap();
     exec(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: Some("a".into()) }).unwrap();
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Cancelled);
     orchestrator_question_is_settled(&s, "orch");
@@ -4540,7 +4535,7 @@ fn a_dependency_holds_back_the_start_but_never_the_merge_of_an_accepted_pr() {
     let mut s = fixture();
     second_task(&mut s, "fix", None);
     exec(&mut s, orchestrator(), Command::SetDependencies {
-        task_id: "t".into(), dependencies: BTreeSet::from(["fix".into()]), stack: None }).unwrap();
+        task_id: "t".into(), dependencies: BTreeSet::from(["fix".into()]), stack: None, reason: None}).unwrap();
     assert_eq!(s.tasks[&"t".into()].state, TaskState::WaitingDependency);
     register(&mut s);
     present(&mut s, "d", pr_targets());
@@ -4559,7 +4554,7 @@ fn a_dependency_still_holds_back_the_start() {
     second_task(&mut s, "fix", None);
     second_task(&mut s, "after", Some("b"));
     exec(&mut s, orchestrator(), Command::SetDependencies {
-        task_id: "after".into(), dependencies: BTreeSet::from(["fix".into()]), stack: None }).unwrap();
+        task_id: "after".into(), dependencies: BTreeSet::from(["fix".into()]), stack: None, reason: None}).unwrap();
     reject_unchanged(&mut s, agent_b(), Command::StartTask { task_id: "after".into() }, "dependency_not_done");
 }
 fn finish_fix(s: &mut DomainState) {
@@ -4583,7 +4578,7 @@ fn a_delivery_sent_back_waits_for_its_dependencies_and_goes_on_when_they_are_don
     hand_back(&mut s, user(), Instruction::Changes).unwrap();
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Running);
     exec(&mut s, orchestrator(), Command::SetDependencies {
-        task_id: "t".into(), dependencies: BTreeSet::from(["fix".into()]), stack: None }).unwrap();
+        task_id: "t".into(), dependencies: BTreeSet::from(["fix".into()]), stack: None, reason: None}).unwrap();
     assert_eq!(s.tasks[&"t".into()].state, TaskState::WaitingDependency);
     assert_eq!(s.task_handed_back(&"t".into()), Some(Instruction::Changes));
     finish_fix(&mut s);
@@ -4598,7 +4593,7 @@ fn a_delivery_waiting_for_review_does_not_wait_for_a_dependency_set_after_it() {
     register(&mut s);
     present(&mut s, "d", pr_targets());
     exec(&mut s, orchestrator(), Command::SetDependencies {
-        task_id: "t".into(), dependencies: BTreeSet::from(["fix".into()]), stack: None }).unwrap();
+        task_id: "t".into(), dependencies: BTreeSet::from(["fix".into()]), stack: None, reason: None}).unwrap();
     assert_eq!(s.tasks[&"t".into()].state, TaskState::ForYourReview);
 }
 /// The node of “Permisos seguros” asked the user to tell it when main passed the snapshot tests:
@@ -4610,7 +4605,7 @@ fn a_node_waiting_on_a_task_is_resumed_once_when_that_task_is_done() {
     second_task(&mut s, "waits", Some("b"));
     exec(&mut s, agent_b(), Command::StartTask { task_id: "waits".into() }).unwrap();
     exec(&mut s, orchestrator(), Command::SetDependencies {
-        task_id: "waits".into(), dependencies: BTreeSet::from(["t".into()]), stack: None }).unwrap();
+        task_id: "waits".into(), dependencies: BTreeSet::from(["t".into()]), stack: None, reason: None}).unwrap();
     assert_eq!(s.tasks[&"waits".into()].state, TaskState::WaitingDependency);
     let accepted = accept_text(&mut s);
     assert!(!accepted.effects.iter().any(|e| matches!(e, DomainEffect::NotifyAgent { agent_id, .. } if agent_id.0 == "b")));
@@ -4656,10 +4651,10 @@ fn a_typed_name_resolves_to_the_orchestrators_current_session_a_node_or_nobody()
 #[test]
 fn preview_matches_execution_without_changing_the_input() {
     let state = fixture();
-    let commands = [Command::CancelTask { task_id: "t".into() },
+    let commands = [Command::CancelTask { task_id: "t".into(), reason: None },
         Command::ReopenTask { task_id: "t".into() },
         Command::ArchiveTask { task_id: "t".into(), archived: true },
-        Command::CancelTask { task_id: "missing".into() }];
+        Command::CancelTask { task_id: "missing".into(), reason: None }];
     for actor in [user(), agent(), Actor::System, Actor::Orchestrator { generation: 0 }] {
         for command in &commands {
             for (protocol, epoch, revision) in [(PROTOCOL_VERSION, state.data_epoch.clone(), state.revision),
@@ -4689,7 +4684,7 @@ fn guards_refuse_what_the_commands_refuse() {
     let mut merged = presented.clone();
     merged_by_someone_else(&mut merged);
     let mut cancelled = presented.clone();
-    exec(&mut cancelled, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
+    exec(&mut cancelled, user(), Command::CancelTask { task_id: "t".into(), reason: None }).unwrap();
     let feedback = |body: &str, instruction| Command::SubmitFeedback { merge_failure: None,
         attachments: vec![], presentation_id: "d".into(), targets: pr_targets(), body: body.into(), instruction,
     };
@@ -4716,8 +4711,8 @@ fn guards_refuse_what_the_commands_refuse() {
         merge("auth-2", "head1", MergeMethod::Merge),
         merge("auth-2", "other", MergeMethod::Squash),
         merge("auth", "head1", MergeMethod::Squash),
-        Command::CancelTask { task_id: "t".into() },
-        Command::CancelTask { task_id: "missing".into() },
+        Command::CancelTask { task_id: "t".into(), reason: None },
+        Command::CancelTask { task_id: "missing".into(), reason: None },
         Command::ReopenTask { task_id: "t".into() },
         Command::ArchiveTask { task_id: "t".into(), archived: true },
         Command::ArchiveTask { task_id: "t".into(), archived: false },
@@ -4933,11 +4928,11 @@ fn a_message_closes_when_its_last_task_ends_and_a_users_request_does_not() {
             dependencies: BTreeSet::new(), stack: None, launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")),
         }).unwrap();
     }
-    exec(&mut s, user(), Command::CancelTask { task_id: "m-1".into() }).unwrap();
+    exec(&mut s, user(), Command::CancelTask { task_id: "m-1".into(), reason: None }).unwrap();
     assert!(!s.requests[&"m".into()].closed, "one of its tasks is still open");
-    exec(&mut s, user(), Command::CancelTask { task_id: "m-2".into() }).unwrap();
+    exec(&mut s, user(), Command::CancelTask { task_id: "m-2".into(), reason: None }).unwrap();
     assert!(s.requests[&"m".into()].closed);
-    exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
+    exec(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None }).unwrap();
     assert!(!s.requests[&"r".into()].closed, "the orchestrator may still add work to a request of the user's");
 }
 
@@ -4946,7 +4941,7 @@ fn alondra_closes_a_request_but_never_one_with_open_tasks() {
     let mut s = fixture();
     let close = |withdrawn| Command::CloseRequest { request_id: "r".into(), answer: None, withdrawn, title: None, headline: None, folded_into: None };
     assert!(exec(&mut s, Actor::System, close(false)).is_err());
-    exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
+    exec(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None }).unwrap();
     exec(&mut s, Actor::System, close(true)).unwrap();
     assert!(s.requests[&"r".into()].closed && s.requests[&"r".into()].withdrawn);
 }
@@ -5236,7 +5231,7 @@ fn a_task_keeps_the_project_it_was_created_with() {
         launch: Some(crate::domain::LaunchPlan { project: Some("quill".into()), ..crate::domain::LaunchPlan::new("quill/login", "/tmp") }) }).unwrap();
     assert_eq!(s.tasks[&"p".into()].project.as_deref(), Some("quill"));
     assert_eq!(s.tasks[&"t".into()].project, None, "a plan that names no project gives the task none");
-    exec(&mut s, user(), Command::CancelTask { task_id: "p".into() }).unwrap();
+    exec(&mut s, user(), Command::CancelTask { task_id: "p".into(), reason: None }).unwrap();
     assert_eq!(s.tasks[&"p".into()].project.as_deref(), Some("quill"), "an ended task keeps it");
     let mut saved = serde_json::to_value(&s.tasks[&"p".into()]).unwrap();
     saved.as_object_mut().unwrap().remove("project");
@@ -5325,7 +5320,7 @@ fn a_user_selection_is_pending_until_admission_and_uses_the_same_action_guard() 
     assert_eq!(state.tasks[&TaskId::from("t")].selection.as_ref().unwrap().effective.as_ref(),Some(&pending.model));
     assert_eq!(state.tasks[&TaskId::from("t")].pending_selection.as_ref(), Some(&pending));
     let mut cancelled=state.clone();let original_selection=cancelled.tasks[&TaskId::from("t")].selection.clone();
-    exec(&mut cancelled,user(),Command::CancelTask {task_id:"t".into()}).unwrap();
+    exec(&mut cancelled,user(),Command::CancelTask {task_id:"t".into(), reason: None}).unwrap();
     assert!(cancelled.tasks[&TaskId::from("t")].pending_selection.is_none(),"a model change cannot remain pending after cancellation starts");
     assert_eq!(cancelled.tasks[&TaskId::from("t")].selection,original_selection,"cancellation preserves requested model, account and grant provenance");
     assert!(!state.task_selection_action(&"t".into(), intent.clone(), pending.clone()).enabled);
@@ -5406,7 +5401,7 @@ fn clearing_takes_a_task_whose_request_closed_while_its_node_was_still_ending() 
     exec(&mut s, orchestrator(), Command::CreateTask { plan_items: None, continues: None, task_id: "c".into(), request_id: "r".into(),
         title: "c".into(), agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(crate::domain::LaunchPlan::new("node", "/tmp")) }).unwrap();
-    exec(&mut s, user(), Command::CancelTask { task_id: "c".into() }).unwrap();
+    exec(&mut s, user(), Command::CancelTask { task_id: "c".into(), reason: None }).unwrap();
     assert!(s.tasks[&"c".into()].ending() && !s.tasks[&"c".into()].state.terminal());
     exec(&mut s, orchestrator(), Command::CloseRequest { request_id: "r".into(), answer: None, withdrawn: false, title: None, headline: None, folded_into: None }).unwrap();
     let seen = s.revision;

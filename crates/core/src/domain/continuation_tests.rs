@@ -75,7 +75,7 @@ fn end_node(s: &mut DomainState, task: &str) {
 }
 /// The original task cancelled and closed, its worktree left to the task that goes on in it.
 fn cancel_original(s: &mut DomainState) {
-    ok(s, user(), Command::CancelTask { task_id: "t".into() });
+    ok(s, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     release(s, "t", WorktreeEnd::HandedOver).unwrap();
     end_node(s, "t");
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Cancelled);
@@ -112,7 +112,7 @@ fn a_continuation_goes_in_the_request_of_the_task_it_carries_on() {
 fn a_continuation_not_started_yet_keeps_the_request_open_once_its_original_is_cancelled() {
     let mut s = working();
     ok(&mut s, orchestrator(), create("t-claude", "r", Some("t")));
-    let cancelled = ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    let cancelled = ok(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     assert!(!tasks_over(&cancelled, "r"));
     release(&mut s, "t", WorktreeEnd::HandedOver).unwrap();
     let ended = ok(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: None });
@@ -152,7 +152,7 @@ fn a_continuation_takes_the_worktree_and_the_plan_of_the_task_it_carries_on() {
 #[test]
 fn a_worktree_is_handed_over_only_to_an_open_task_that_works_in_it() {
     let mut s = working();
-    ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    ok(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     assert_eq!(release(&mut s, "t", WorktreeEnd::HandedOver).unwrap_err().code, "conflict", "nobody else works in it");
     let mut s = working();
     ok(&mut s, orchestrator(), create("t-claude", "r", Some("t")));
@@ -181,7 +181,7 @@ fn a_cancelled_continuation_ends_its_request_as_not_done() {
     ok(&mut s, orchestrator(), create("t-claude", "r", Some("t")));
     cancel_original(&mut s);
     start(&mut s, "t-claude");
-    ok(&mut s, user(), Command::CancelTask { task_id: "t-claude".into() });
+    ok(&mut s, user(), Command::CancelTask { task_id: "t-claude".into(), reason: None });
     release(&mut s, "t-claude", WorktreeEnd::Removed).unwrap();
     end_node(&mut s, "t-claude");
     close(&mut s, "r").unwrap();

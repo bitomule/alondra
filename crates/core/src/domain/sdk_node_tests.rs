@@ -22,7 +22,7 @@ fn only_a_closed_and_reopened_task_can_choose_a_new_native_provider_and_account(
     let mut s = three_tasks();
     let id = TaskId::from(SDK);
     assert_eq!(s.pending_reopening(&id), None, "an active execution cannot use reopening's exception");
-    must(&mut s, user(), Command::CancelTask { task_id: id.clone() });
+    must(&mut s, user(), Command::CancelTask { task_id: id.clone(), reason: None });
     assert_eq!(s.pending_reopening(&id), None);
     must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: id.clone(), end: NodeEnd::Closed, agent_id: Some(NODE.into()) });
     assert_eq!(s.pending_reopening(&id), None, "a closed task has not yet been reopened");
@@ -66,7 +66,7 @@ fn reopening_with_the_original_node_kept_cannot_change_its_native_session_accoun
 
     let mut s = three_tasks();
     let id = TaskId::from(SDK);
-    must(&mut s, user(), Command::CancelTask { task_id: id.clone() });
+    must(&mut s, user(), Command::CancelTask { task_id: id.clone(), reason: None });
     must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: id.clone(), end: NodeEnd::KeptByUser, agent_id: Some(NODE.into()) });
     must(&mut s, user(), Command::ReopenTask { task_id: id.clone() });
     assert_eq!(s.pending_reopening(&id), None);
@@ -359,7 +359,7 @@ fn a_user_message_to_a_closing_task_with_no_node_is_refused_at_commit() {
     let mut s = world();
     task(&mut s, "queued", None);
     let before_cancel = s.revision;
-    must(&mut s, user(), Command::CancelTask { task_id: "queued".into() });
+    must(&mut s, user(), Command::CancelTask { task_id: "queued".into(), reason: None });
     assert!(!s.tasks[&TaskId::from("queued")].state.terminal(), "cleanup has not ended yet");
     let journal = s.lifecycle_journal.clone();
     let envelope = CommandEnvelope {

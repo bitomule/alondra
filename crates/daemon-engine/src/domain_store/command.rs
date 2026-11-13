@@ -176,6 +176,21 @@ pub(super) fn stage(
             let mission = plan.mission.as_deref().map_or_else(|| reason.clone(), |mission| format!("{reason}\n\n{mission}"));
             store_launch_plan(conn, task_id, &LaunchPlan { mission: Some(mission), ..plan })?;
         }
+        if let Command::CancelTask { task_id, reason: Some(reason) } = &envelope.command
+            && !reason.trim().is_empty()
+        {
+            repository::exec(conn,
+                "INSERT INTO task_cancel_reason(task_id,reason) VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET reason=excluded.reason",
+                params![task_id.0, reason.trim().chars().take(4096).collect::<String>()])?;
+        }
+        if let Command::SetDependencies { task_id, reason: Some(reason), .. } = &envelope.command
+            && !reason.trim().is_empty()
+            && let Some(plan) = stored_plan(conn, task_id)?
+        {
+            let why = format!("Why its dependencies changed: {}", reason.trim().chars().take(4096).collect::<String>());
+            let mission = plan.mission.as_deref().map_or_else(|| why.clone(), |mission| format!("{why}\n\n{mission}"));
+            store_launch_plan(conn, task_id, &LaunchPlan { mission: Some(mission), ..plan })?;
+        }
         if let Command::SettlePlanReview { task_id, outcome: PlanReviewOutcome::Cancelled { reason }, .. } = &envelope.command {
             repository::exec(conn,
                 "INSERT INTO task_cancel_reason(task_id,reason) VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET reason=excluded.reason",

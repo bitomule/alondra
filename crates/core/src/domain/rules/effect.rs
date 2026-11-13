@@ -15,7 +15,7 @@ impl DomainState {
         match command {
             Command::StartTask { task_id } => format!("task {task_id} is already started ({}).", state(task_id)),
             Command::AssignTask { task_id, agent_id, .. } => format!("task {task_id} is already assigned to {agent_id}."),
-            Command::CancelTask { task_id } | Command::ReopenTask { task_id } => format!("task {task_id} is already {}.", state(task_id)),
+            Command::CancelTask { task_id, .. } | Command::ReopenTask { task_id } => format!("task {task_id} is already {}.", state(task_id)),
             Command::RegisterPr { pr_id, task_id, .. } => format!("PR {pr_id} is already registered to task {task_id} at this head and base."),
             Command::RecordVerdict { presentation_id, .. } =>
                 format!("the verdict on delivery {presentation_id} is already recorded; a new verdict counts once the task delivers again."),

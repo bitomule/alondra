@@ -85,7 +85,7 @@ fn a_request_whose_tasks_built_every_phase_of_its_plan_closes_with_their_results
 fn a_phase_no_finished_task_delivered_leaves_the_request_to_the_orchestrator() {
     let mut s = planned(false);
     finish(&mut s, "guards", "a", &["1"], "Every command has its guard");
-    let cancelled = ok(&mut s, user(), Command::CancelTask { task_id: "index".into() });
+    let cancelled = ok(&mut s, user(), Command::CancelTask { task_id: "index".into(), reason: None });
     let ended = ok(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "index".into(), end: NodeEnd::Closed, agent_id: None });
     assert_eq!(s.tasks[&"index".into()].state, TaskState::Cancelled);
     assert!(!s.requests[&"r".into()].closed);

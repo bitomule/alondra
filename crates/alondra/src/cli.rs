@@ -317,7 +317,7 @@ mod tests {
     fn a_cancel_the_daemon_applied_without_answering_in_time_counts_as_cancelled() {
         let mut s = world();
         let before = task_view(&s);
-        let cancel = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: s.data_epoch.clone(), command_id: "cancel".into(), expected_revision: s.revision, command: Command::CancelTask { task_id: "t".into() } };
+        let cancel = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: s.data_epoch.clone(), command_id: "cancel".into(), expected_revision: s.revision, command: Command::CancelTask { task_id: "t".into(), reason: None } };
         s.execute(&Actor::User { user_id: "u".into() }, &cancel).unwrap();
         let (client, server) = busy_daemon(before, task_view(&s));
         cancel_task(&client, "t", None).unwrap();
@@ -414,7 +414,7 @@ mod tests {
         assert!(placeholder.contains("reads it when it starts"), "{placeholder}");
         let answer = serde_json::json!({"outcome": "applied", "stamp": "Message kept: the task's node reads it when it starts"});
         assert_eq!(sent_notice(&answer, "t-queued"), "Message kept: the task's node reads it when it starts");
-        let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: s.data_epoch.clone(), command_id: "cancel".into(), expected_revision: s.revision, command: Command::CancelTask { task_id: "t-queued".into() } };
+        let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: s.data_epoch.clone(), command_id: "cancel".into(), expected_revision: s.revision, command: Command::CancelTask { task_id: "t-queued".into(), reason: None } };
         s.execute(&Actor::User { user_id: "u".into() }, &envelope).unwrap();
         assert!(message(&s).is_none(), "an ended task takes none");
     }

@@ -104,7 +104,7 @@ pub(super) fn run(s: &mut DomainState, step: &Step, n: usize) -> Result<CommandO
             exec(s, Actor::System, Command::CompleteTask { task_id: of(at).0.into(), presentation_id })
         }
         Step::Reopen(at) => exec(s, user(), Command::ReopenTask { task_id: of(at).0.into() }),
-        Step::Cancel(at) => exec(s, user(), Command::CancelTask { task_id: of(at).0.into() }),
+        Step::Cancel(at) => exec(s, user(), Command::CancelTask { task_id: of(at).0.into(), reason: None }),
         Step::NodeEnded(at) => exec(s, Actor::System, Command::RecordNodeEnd { task_id: of(at).0.into(), end: NodeEnd::Closed, agent_id: Some(of(at).1.into()) }),
         Step::Tell => exec(s, Actor::System, Command::TellNode { task_id: SDK.into(), text: format!("Notice {n}"), from_user: false, answers: None }),
         Step::TakeInput => {

@@ -174,8 +174,7 @@ async fn a_task_that_waited_on_another_to_start_has_its_accepted_pr_merged() {
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
     });
     command(&domain, Actor::Orchestrator { generation: 0 }, "wait", Command::SetDependencies {
-        task_id: "t".into(), dependencies: BTreeSet::from(["fix".into()]), stack: None,
-    });
+        task_id: "t".into(), dependencies: BTreeSet::from(["fix".into()]), stack: None, reason: None,});
     accept(&domain);
     now().merge_due(&domain, &github).await.unwrap();
     assert_eq!(*github.merged.lock().unwrap(), vec![(7, HEAD.to_owned(), MergeMethod::Squash)]);
@@ -248,7 +247,7 @@ async fn a_cancel_after_alondra_claimed_the_merge_stops_it() {
     assert_eq!(domain.state().unwrap().merge_authorizations.values().next().unwrap().attempt, MergeAttemptState::Claimed);
     github.merges.lock().unwrap().remove(&7);
     let racing = domain.clone();
-    *github.on_read.lock().unwrap() = Some(Box::new(move || command(&racing, user(), "cancel", Command::CancelTask { task_id: "t".into() })));
+    *github.on_read.lock().unwrap() = Some(Box::new(move || command(&racing, user(), "cancel", Command::CancelTask { task_id: "t".into(), reason: None })));
     merger.merge_due(&domain, &github).await.unwrap();
     assert!(github.merged.lock().unwrap().is_empty(), "the delivery is read again right before merging");
 }
@@ -537,7 +536,7 @@ async fn cards_and_state_go_once_the_pr_is_no_longer_due() {
     let mut merger = now();
     merger.merge_due(&domain, &github).await.unwrap();
     assert_eq!(problems(&domain).iter().filter(|card| !card.withdrawn).count(), 1);
-    command(&domain, user(), "cancel", Command::CancelTask { task_id: "t".into() });
+    command(&domain, user(), "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
     merger.merge_due(&domain, &github).await.unwrap();
     assert!(problems(&domain).iter().all(|card| card.withdrawn), "a cancelled task keeps no card");
     assert_eq!(merger.tracked(), 0);

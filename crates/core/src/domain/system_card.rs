@@ -188,12 +188,12 @@ impl SystemCard {
             (inbox::PLAN_REVIEW_NOTICE_PREFIX, InboxCard::PlanReviewNotice),
             (super::PLAN_REVIEW_PROBLEM_PREFIX, InboxCard::PlanReviewProblem),
             (inbox::DEPENDENCY_CANCELLED_NOTICE_PREFIX, InboxCard::DependencyCancelledNotice),
+            (inbox::PLAN_REFUSED_NOTICE_PREFIX, InboxCard::PlanRefusedNotice),
         ];
         if let Some((rest, about)) = counted.into_iter().find_map(|(prefix, about)| Some((after(prefix)?, about))) {
             return numbered(rest, about);
         }
-        let once = [(inbox::UNSETTLED_NOTICE_PREFIX, InboxCard::UnsettledNotice), (inbox::STALL_NOTICE_PREFIX, InboxCard::StallNotice),
-            (inbox::PLAN_REFUSED_NOTICE_PREFIX, InboxCard::PlanRefusedNotice)];
+        let once = [(inbox::UNSETTLED_NOTICE_PREFIX, InboxCard::UnsettledNotice), (inbox::STALL_NOTICE_PREFIX, InboxCard::StallNotice)];
         once.into_iter().find_map(|(prefix, about)| Some(Self::Inbox { about, subject: after(prefix)?.to_owned(), number: 1 }))
     }
 }

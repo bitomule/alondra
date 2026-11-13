@@ -4,12 +4,14 @@
 //! node's suggestion goes back once.
 //!
 //! What a task waits for from the orchestrator has a deadline instead, whatever else it is busy
-//! with: a stopped node's case, a node's question, the review of the plans a decision holds, a
-//! launch plan the start refused and a wait for a cancelled task. The first time it passes the
-//! orchestrator is reminded; the second time Alondra settles it itself, never with a card for the
-//! user. The one card is deliberate: a task that still waits for a cancelled task after two
-//! reminders asks the user whether it starts without it or is cancelled, because that is theirs
-//! to decide.
+//! with: a stopped node's case, a node's question and the review of the plans a decision holds.
+//! The first time it passes the orchestrator is reminded; the second time Alondra settles it
+//! itself, never with a card for the user.
+//!
+//! A task that waits for a cancelled task, and a launch plan the start refused, are the
+//! orchestrator's to decide, so no clock settles them and no card asks the user. Alondra reads the
+//! orchestrator's own state instead: every time it rests (a turn ended, handled or failed, or it
+//! is idle) the open item is handed to it again, once per rest.
 use crate::domain_runtime::DomainRuntime;
 use crate::locks::Poisonable as _;
 use alondra_core::domain::obligation_policy::{ANSWER, Millis};
@@ -22,7 +24,7 @@ use alondra_core::orchestrator_cards::{
     UNSPLIT_PROBLEM_PREFIX, UNSPLIT_RETRY, UNSPLIT_RETRY_LABEL, UnsplitProblem,
     PLAN_REVIEW_NOTICE_PREFIX, PLAN_REFUSED_NOTICE_PREFIX, STALL_NOTICE_PREFIX,
 };
-use alondra_domain::{Obligation, Owed, Party};
+use alondra_domain::Obligation;
 use std::collections::BTreeSet;
 
 const UNSPLIT_CAUSE: &str = "request_unsplit";
@@ -43,13 +45,8 @@ pub(crate) enum Step {
     /// Nobody reviewed the plan of a held task in time: it keeps its plan, and its node reads first
     /// what was decided.
     ReleaseUnreviewed { review: InteractionId, task: TaskId, note: String },
-    /// The orchestrator was told and reminded and the task still waits for a cancelled task: the
-    /// user decides whether it starts without it.
-    RaiseDependencyCancelled { task: TaskId, dependency: TaskId },
     /// The case of a stopped node is still unsettled past its reminder: Alondra settles it.
     SettleStall { case: InteractionId, task: TaskId, outcome: StallOutcome },
-    /// A refused launch plan is still as it was after its reminder: Alondra cancels the task.
-    CancelRefusedPlan { card: InteractionId, task: TaskId, error: String },
 }
 
 /// What is left in the orchestrator's inbox after it handled everything it was handed.
@@ -95,21 +92,32 @@ pub(crate) fn overdue(state: &DomainState, due: &BTreeSet<TaskId>) -> Vec<(Step,
             steps.extend(unreviewed(state, id, held));
         }
     }
-    for task in state.tasks.values().filter(|task| !task.over() && !task.archived && due.contains(&task.id)) {
-        let step = dependency_cancelled(state, task).or_else(|| plan_refused(state, task));
-        steps.extend(step.map(|step| (step, vec![task.id.clone()])));
-    }
     steps
 }
 
-/// What the task's lifecycle says it is owed, except that a task the orchestrator has to re-plan
-/// (it waits for a cancelled task, or its launch plan was refused) owes the orchestrator's answer:
-/// the lifecycle does not know either, and without it nothing would put a deadline on them.
+/// What the orchestrator has still to re-plan when it rests, `rest` being how many turns it has
+/// ended: a task that waits for a cancelled task, and a launch plan the start refused. Each is
+/// handed to it once per rest, with the open item, until it decides; Alondra never decides it,
+/// and no clock counts.
+pub(crate) fn replans(state: &DomainState, rest: u64) -> Vec<Step> {
+    state.tasks.values().filter(|task| !task.over() && !task.archived)
+        .filter_map(|task| dependency_cancelled(state, task, rest).or_else(|| plan_refused(state, task, rest)))
+        .collect()
+}
+
+/// Hands the orchestrator what it has still to re-plan. Called each time it rests, whatever its
+/// last turn did, and whether or not other messages wait for it: it only adds a reminder.
+pub(crate) fn hand_replans(domain: &DomainRuntime) {
+    let Ok(state) = domain.state() else { return };
+    let rest = domain.live.orchestrator_rests.load(std::sync::atomic::Ordering::Relaxed);
+    for step in replans(&state, rest) {
+        carry_out(domain, &state, &step);
+    }
+}
+
+/// What the task is owed, the wait of a task the orchestrator has to re-plan included.
 pub(crate) fn obligation_of(state: &DomainState, task: &TaskId) -> Option<Obligation> {
-    let obligation = state.lifecycle_of(task).ok()?.obligation()?;
-    let replans = state.tasks.get(task).is_some_and(|task| !task.over() && !task.archived
-        && (dependency_cancelled(state, task).is_some() || plan_refused(state, task).is_some()));
-    Some(if replans { Obligation { party: Party::Alondra, owed: Owed::Answer, ..obligation } } else { obligation })
+    state.obligation_of(task)
 }
 
 /// The problems Alondra no longer raises: what they asked the user is settled by time now.
@@ -282,22 +290,20 @@ fn stalled(state: &DomainState, case: &Interaction, task: &Task) -> Step {
     }
 }
 
-fn plan_refused(state: &DomainState, task: &Task) -> Option<Step> {
+/// A launch plan the start refused is the orchestrator's to fix or to cancel with its reason.
+fn plan_refused(state: &DomainState, task: &Task, rest: u64) -> Option<Step> {
     let card = state.open_plan_refusal(&task.id)?;
-    let id = format!("{PLAN_REFUSED_NOTICE_PREFIX}{}", card.id);
+    let (id, notice) = inbox_card(PLAN_REFUSED_NOTICE_PREFIX, InboxCard::PlanRefusedNotice, &card.id.0, rest as u32);
     if state.interactions.contains_key(&InteractionId(id.clone())) {
-        let error = match alondra_core::start_problem::from_body(&card.body) {
-            Some(StartProblem::PlanRefused { error }) => error,
-            _ => String::new(),
-        };
-        return Some(Step::CancelRefusedPlan { card: card.id.clone(), task: task.id.clone(), error });
+        return None;
     }
+    let told = numbered(state, InboxCard::PlanRefusedNotice, &card.id.0).len();
     Some(Step::Tell {
         id,
-        card: SystemCard::Inbox { about: InboxCard::PlanRefusedNotice, subject: card.id.0.clone(), number: 1 },
+        card: notice,
         text: format!(
-            "Reminder: the launch plan of Task “{}” ({}) was refused and is still as it was, and nothing else waits for you. Fix it now with update_launch_plan or set_launch_plan, or answer {} with option cancel and the reason in inputs.text. If you leave it again, Alondra cancels the task itself. Never ask the user about it.\nCard: {}",
-            task.title, task.id, card.id, quoted(card)),
+            "{}The launch plan of Task “{}” ({}) was refused and is still as it was, so the task cannot start. It is yours to decide: fix it with update_launch_plan or set_launch_plan, or answer {} with option cancel and the reason in inputs.text. Never ask the user about it.\nCard: {}",
+            if told == 0 { String::new() } else { format!("Still open, reminder {told}: ") }, task.title, task.id, card.id, quoted(card)),
     })
 }
 
@@ -330,54 +336,38 @@ fn unreviewed(state: &DomainState, id: &InteractionId, held: Vec<TaskId>) -> Vec
     held.into_iter().map(|task| (Step::ReleaseUnreviewed { review: id.clone(), task: task.clone(), note: note.clone() }, vec![task])).collect()
 }
 
-/// A task that waits for a cancelled task goes to the orchestrator twice, then to the user. Once
-/// it no longer waits for it, a card still asking about it is withdrawn.
-fn dependency_cancelled(state: &DomainState, task: &Task) -> Option<Step> {
-    let open = state.open_start_problem(&task.id);
-    let waits_for = state.cancelled_dependency(task);
-    if let Some(card) = open
+/// A task that waits for a cancelled task is the orchestrator's to decide: cancel it, re-point it
+/// or let it start without the dependency. Once it no longer waits for that task, a card from
+/// before still asking the user about it is withdrawn.
+fn dependency_cancelled(state: &DomainState, task: &Task, rest: u64) -> Option<Step> {
+    if let Some(card) = state.open_start_problem(&task.id)
         && let Some(StartProblem::DependencyCancelled { dependency }) = alondra_core::start_problem::from_body(&card.body)
-        && waits_for.as_ref() != Some(&dependency)
+        && state.cancelled_dependency(task).as_ref() != Some(&dependency)
     {
         return Some(Step::Withdraw { question: card.id.clone() });
     }
-    let dependency = waits_for?;
-    if open.is_some() {
+    let dependency = state.replanned_for(task)?;
+    let subject = format!("{}--{dependency}", task.id);
+    let (id, card) = inbox_card(DEPENDENCY_CANCELLED_NOTICE_PREFIX, InboxCard::DependencyCancelledNotice, &subject, rest as u32);
+    if state.interactions.contains_key(&InteractionId(id.clone())) {
         return None;
     }
-    let subject = format!("{}--{dependency}", task.id);
-    let told = numbered(state, InboxCard::DependencyCancelledNotice, &subject).len() as u32;
-    if told >= 2 {
-        return Some(Step::RaiseDependencyCancelled { task: task.id.clone(), dependency });
-    }
+    let told = numbered(state, InboxCard::DependencyCancelledNotice, &subject).len();
     let other = state.tasks.get(&dependency).map_or("", |t| t.title.as_str());
     let kept: Vec<&str> = task.dependencies.iter().filter(|d| **d != dependency).map(|d| d.0.as_str()).collect();
     let kept = if kept.is_empty() { "none".to_owned() } else { kept.join(", ") };
-    let (id, card) = inbox_card(DEPENDENCY_CANCELLED_NOTICE_PREFIX, InboxCard::DependencyCancelledNotice, &subject, told + 1);
     Some(Step::Tell {
         id,
         card,
         text: format!(
-            "{}Task “{}” ({}) waits for “{other}” ({dependency}), which was cancelled, so it does not start. Re-plan it now with one \
-             of these: if another task replaces “{other}”, make it depend on that one with set_dependencies, keeping its other \
-             dependencies ({kept}); if it can go on without it, set_dependencies without {dependency}, and set_launch_plan if its \
-             mission relied on that task's result; if it no longer makes sense, cancel_task. Ask the user only for a decision \
-             that is theirs. If you leave it as it is, the user is asked whether to start it without “{other}” or cancel it.",
-            if told == 0 { "" } else { "Reminder: " }, task.title, task.id),
+            "{}Task “{}” ({}) waits for “{other}” ({dependency}), which was cancelled, so it does not start. Cancelling a task does not \
+             always mean its dependents must be cancelled: it is yours to decide, and nobody else will. Do one of these now, giving \
+             the reason, which the task shows and its node reads: if another task replaces “{other}”, make it depend on that one \
+             with set_dependencies, keeping its other dependencies ({kept}); if it can go on without it, set_dependencies without \
+             {dependency}, and update_launch_plan if its mission relied on that task's result; if it no longer makes sense, cancel_task. \
+             Never ask the user about it.",
+            if told == 0 { String::new() } else { format!("Still open, reminder {told}: ") }, task.title, task.id),
     })
-}
-
-/// The orchestrator left a refused plan past its reminder: the task is cancelled, saying why.
-fn cancel_refused_plan(domain: &DomainRuntime, card: &InteractionId, task: &TaskId, error: &str) -> Result<(), crate::domain_store::StoreError> {
-    crate::domain_github::execute_system(domain, alondra_core::domain::Command::CancelTask { task_id: task.clone() })?;
-    let reason = format!("Its launch plan was refused ({}) and the orchestrator neither fixed it nor cancelled the task", error.trim());
-    if let Err(error) = domain.store.lock_or_exit("the domain store").set_cancel_reason(task, &reason) {
-        log!("could not record why {task} was cancelled: {error:#}");
-    }
-    if domain.state().is_ok_and(|state| state.open_plan_refusal(task).is_some()) {
-        domain.withdraw_problem(card)?;
-    }
-    Ok(())
 }
 
 /// Carries the steps out; one that fails is tried again on the next pass.
@@ -445,13 +435,6 @@ fn carry_out(domain: &DomainRuntime, state: &DomainState, step: &Step) -> bool {
             domain.settle_plan_review_by_system(review, task, PlanReviewOutcome::Unchanged { reason: note.clone() }).map(drop)
         }
         Step::SettleStall { case, task, outcome } => domain.settle_unsettled_stall(case, task, outcome.clone()).map(drop),
-        Step::CancelRefusedPlan { card, task, error } => cancel_refused_plan(domain, card, task, error),
-        Step::RaiseDependencyCancelled { task, dependency } => {
-            if let Err(error) = crate::start_failures::raise(domain, task, StartProblem::DependencyCancelled { dependency: dependency.clone() }) {
-                log!("could not ask the user about {task}, which waits for the cancelled {dependency}: {error:#}");
-            }
-            Ok(())
-        }
     };
     if let Err(error) = &done {
         log!("could not settle the orchestrator's inbox ({step:?}): {error:?}");
@@ -464,6 +447,7 @@ mod tests {
     use super::*;
     use alondra_core::domain::{Actor, Command, CommandEnvelope, InteractionPayload, PROTOCOL_VERSION};
     use alondra_core::orchestrator_cards::UNANSWERED_NOTICE_PREFIX;
+    use alondra_domain::{Owed, Party};
 
     fn run(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
         let state = domain.state().unwrap();
@@ -573,91 +557,100 @@ mod tests {
         run(&domain, Actor::Orchestrator { generation: 0 }, "first", create("first", "pair", &[]));
         run(&domain, Actor::Orchestrator { generation: 0 }, "second", create("second", "pair", &["first"]));
         let before = orchestrator_messages(&domain);
-        run(&domain, Actor::User { user_id: "u".into() }, "cancel-alone", Command::CancelTask { task_id: "alone".into() });
+        run(&domain, Actor::User { user_id: "u".into() }, "cancel-alone", Command::CancelTask { task_id: "alone".into(), reason: None });
         assert_eq!(orchestrator_messages(&domain), before, "the cancel leaves no message for the orchestrator");
         let state = domain.state().unwrap();
         assert!(state.requests[&"solo".into()].closed && state.requests[&"solo".into()].withdrawn);
         assert_eq!(steps(&state), []);
 
-        run(&domain, Actor::User { user_id: "u".into() }, "cancel-first", Command::CancelTask { task_id: "first".into() });
+        run(&domain, Actor::User { user_id: "u".into() }, "cancel-first", Command::CancelTask { task_id: "first".into(), reason: None });
         let state = domain.state().unwrap();
         assert!(!state.requests[&"pair".into()].closed, "its other task still waits");
         assert!(state.open_start_problem(&"second".into()).is_none(), "the user is not asked first");
         let owed = obligation_of(&state, &"second".into()).expect("it is still owed something");
-        assert_eq!((owed.party, owed.owed), (Party::Alondra, Owed::Answer), "the orchestrator re-plans the task that waited for it");
-        let due = BTreeSet::from(["second".into()]);
-        assert!(matches!(&overdue(&state, &due)[..], [(Step::Tell { text, .. }, _)] if text.contains("Re-plan it now")), "{:?}", overdue(&state, &due));
+        assert_eq!((owed.party, owed.owed), (Party::Alondra, Owed::Replan), "the orchestrator re-plans the task that waited for it");
+        assert!(matches!(&replans(&state, 0)[..], [Step::Tell { text, .. }] if text.contains("it is yours to decide")), "{:?}", replans(&state, 0));
+        assert_eq!(overdue(&state, &BTreeSet::from(["second".into()])), [], "no clock acts on it");
     }
 
-    /// A task that waits for a cancelled one, while the orchestrator has messages pending or fails
-    /// for good, is reminded twice by the clock alone, then the user decides: never at once and
-    /// never by counting passes of an idle orchestrator.
-    #[test]
-    fn a_wait_for_a_cancelled_task_is_judged_by_the_clock_not_by_an_idle_orchestrator() {
-        let home = crate::test_support::Directory::new();
-        std::fs::create_dir_all(&home).unwrap();
-        let domain = DomainRuntime::open(&home).unwrap();
-        request(&domain, "pair", false);
+    fn rest(domain: &DomainRuntime) {
+        domain.live.orchestrator_rests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        hand_replans(domain);
+    }
+
+    fn pair_of_tasks(domain: &DomainRuntime, third: bool) {
+        request(domain, "pair", false);
         let create = |id: &str, dependencies: &[&str]| Command::CreateTask { plan_items: None, continues: None,
             task_id: id.into(), request_id: "pair".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
             dependencies: dependencies.iter().map(|d| TaskId::from(*d)).collect(), stack: None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
         };
-        run(&domain, Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "pair".into(), title: "Pair".into() });
-        run(&domain, Actor::Orchestrator { generation: 0 }, "first", create("first", &[]));
-        run(&domain, Actor::Orchestrator { generation: 0 }, "second", create("second", &["first"]));
-        run(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "first".into() });
+        run(domain, Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "pair".into(), title: "Pair".into() });
+        run(domain, Actor::Orchestrator { generation: 0 }, "first", create("first", &[]));
+        if third {
+            run(domain, Actor::Orchestrator { generation: 0 }, "other", create("other", &[]));
+        }
+        run(domain, Actor::Orchestrator { generation: 0 }, "second", create("second", &["first"]));
+        run(domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "first".into(), reason: None });
+    }
+
+    /// The wait is handed to the orchestrator every time it rests, with the open item, however long
+    /// it takes and whatever the clock says: Alondra never asks the user and never cancels it.
+    #[test]
+    fn a_wait_for_a_cancelled_task_is_handed_back_at_every_rest_and_never_decided_for_the_orchestrator() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = DomainRuntime::open(&home).unwrap();
+        pair_of_tasks(&domain, false);
         let task = TaskId::from("second");
         let reminders = || cards(&domain, DEPENDENCY_CANCELLED_NOTICE_PREFIX).len();
-        let users_card = || domain.state().unwrap().open_start_problem(&task).is_some();
 
         for _ in 0..4 {
             settle(&domain);
         }
-        assert_eq!((reminders(), users_card()), (0, false), "idle passes of the orchestrator count nothing");
-
-        settle_overdue(&domain, 0);
-        settle_overdue(&domain, 9 * MINUTE);
-        assert_eq!(reminders(), 0, "nothing before the deadline");
-        settle_overdue(&domain, 10 * MINUTE);
-        assert_eq!((reminders(), users_card()), (1, false));
-        settle_overdue(&domain, 19 * MINUTE);
-        assert_eq!(reminders(), 1, "the deadline starts again after each reminder");
-        settle_overdue(&domain, 20 * MINUTE);
-        assert_eq!((reminders(), users_card()), (2, false), "one more go for the orchestrator");
-        settle_overdue(&domain, 30 * MINUTE);
-        assert_eq!((reminders(), users_card()), (2, true), "then the user decides, deliberately");
+        assert_eq!(reminders(), 0, "a pass of an idle orchestrator is not a rest");
+        hand_replans(&domain);
+        hand_replans(&domain);
+        assert_eq!(reminders(), 1, "told at once, once per rest");
+        for hour in 0..30 {
+            settle_overdue(&domain, hour * 60 * MINUTE);
+        }
+        assert_eq!(reminders(), 1, "no clock hands it again");
+        rest(&domain);
+        assert_eq!(reminders(), 2);
+        rest(&domain);
+        rest(&domain);
+        assert_eq!(reminders(), 4, "one more at each rest");
         let state = domain.state().unwrap();
+        let text = &state.interactions[&"dependency-cancelled-second--first-3".into()].body;
+        assert!(text.contains("Still open, reminder 3: Task “Task second” (second) waits for “Task first” (first), which was cancelled"), "{text}");
+        assert!(state.open_start_problem(&task).is_none(), "the user is never asked");
+        assert!(!state.tasks[&task].cancelled(), "and the task is never cancelled for the orchestrator");
         let owed = obligation_of(&state, &task).expect("still owed");
-        assert_ne!((owed.party, owed.owed), (Party::Alondra, Owed::Answer), "with the card open it waits on the user");
-        settle_overdue(&domain, 90 * MINUTE);
-        assert_eq!(cards(&domain, "start-problem-second").len(), 1, "one card, not one per pass");
+        assert_eq!((owed.party, owed.owed), (Party::Alondra, Owed::Replan));
     }
 
-    /// Once the orchestrator re-points the task, nothing is owed any more.
+    /// Once the orchestrator re-points the task, nothing is owed any more; a card from before that
+    /// still asked the user about the cancelled task is withdrawn.
     #[test]
     fn a_task_waiting_for_a_cancelled_one_that_is_re_pointed_owes_nothing_to_the_orchestrator() {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         let domain = DomainRuntime::open(&home).unwrap();
-        request(&domain, "pair", false);
-        let create = |id: &str, dependencies: &[&str]| Command::CreateTask { plan_items: None, continues: None,
-            task_id: id.into(), request_id: "pair".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
-            dependencies: dependencies.iter().map(|d| TaskId::from(*d)).collect(), stack: None,
-            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
-        };
-        run(&domain, Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "pair".into(), title: "Pair".into() });
-        for (id, after) in [("first", vec![]), ("other", vec![]), ("second", vec!["first"])] {
-            run(&domain, Actor::Orchestrator { generation: 0 }, id, create(id, &after));
-        }
-        run(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "first".into() });
-        run(&domain, Actor::Orchestrator { generation: 0 }, "repoint", Command::SetDependencies {
-            task_id: "second".into(), dependencies: ["other".into()].into(), stack: None,
+        pair_of_tasks(&domain, true);
+        run(&domain, Actor::System, "old-card", Command::RaiseStartProblem {
+            task_id: "second".into(), problem: StartProblem::DependencyCancelled { dependency: "first".into() },
         });
+        run(&domain, Actor::Orchestrator { generation: 0 }, "repoint", Command::SetDependencies {
+            task_id: "second".into(), dependencies: ["other".into()].into(), stack: None, reason: None,});
         let state = domain.state().unwrap();
         let owed = obligation_of(&state, &"second".into()).expect("owed");
-        assert_ne!(owed.owed, Owed::Answer);
-        assert_eq!(overdue(&state, &BTreeSet::from(["second".into()])), []);
+        assert_ne!(owed.owed, Owed::Replan);
+        assert!(matches!(&replans(&state, 0)[..], [Step::Withdraw { .. }]), "{:?}", replans(&state, 0));
+        rest(&domain);
+        let state = domain.state().unwrap();
+        assert!(state.open_start_problem(&"second".into()).is_none(), "the old card no longer asks anything");
+        assert_eq!(replans(&state, 1), []);
     }
 
     fn node_with_task(domain: &DomainRuntime) {
@@ -782,7 +775,7 @@ mod tests {
         answer(&domain, Actor::Orchestrator { generation: 0 }, "answered", "done");
         assert!(!open(&domain, "answered"));
         ask(&domain, "late");
-        run(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "t".into() });
+        run(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
         let everyone: BTreeSet<TaskId> = domain.state().unwrap().tasks.keys().cloned().collect();
         assert!(overdue(&domain.state().unwrap(), &everyone).is_empty(), "{:?}", overdue(&domain.state().unwrap(), &everyone));
     }

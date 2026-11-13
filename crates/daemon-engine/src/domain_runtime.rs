@@ -1125,7 +1125,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::PresentResult { task_id, .. }
         | Command::PublishStackReadiness { task_id, .. }
         | Command::CompleteTask { task_id, .. }
-        | Command::CancelTask { task_id }
+        | Command::CancelTask { task_id, .. }
         | Command::AdoptOpenPr { task_id, .. }
         | Command::ClosePrOfCancelledTask { task_id, .. }
         | Command::SettleOpenPr { task_id, .. }

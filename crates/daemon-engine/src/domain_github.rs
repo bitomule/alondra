@@ -1256,7 +1256,7 @@ pub mod tests {
     async fn the_orchestrators_close_of_a_task_with_its_pr_open_delivers_it_without_github() {
         let (_fixture, domain) = open("open-pr-deliver-now");
         registered(&domain);
-        command(&domain, Actor::Orchestrator { generation: 0 }, "cancel", Command::CancelTask { task_id: "t".into() });
+        command(&domain, Actor::Orchestrator { generation: 0 }, "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
         let state = domain.state().unwrap();
         let t = &state.tasks[&"t".into()];
         assert_eq!((t.state, t.open_pr.clone()), (TaskState::ForYourReview, None), "delivered in the close itself");
@@ -1318,7 +1318,7 @@ pub mod tests {
     async fn the_users_cancel_closes_the_pr_on_github_with_the_reason() {
         let (_fixture, domain) = open("open-pr-close");
         registered(&domain);
-        command(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "t".into() });
+        command(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
         let observer = FakeObserver::new();
         observer.set(7, Ok(facts(HEAD, PrState::Open)));
         reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
@@ -1331,7 +1331,7 @@ pub mod tests {
     async fn a_pr_already_closed_on_github_is_not_closed_again() {
         let (_fixture, domain) = open("open-pr-closed-already");
         registered(&domain);
-        command(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "t".into() });
+        command(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
         let observer = FakeObserver::new();
         observer.set(7, Ok(facts(HEAD, PrState::Closed)));
         reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
@@ -1343,7 +1343,7 @@ pub mod tests {
     async fn a_close_github_keeps_refusing_is_tried_less_and_less_often_and_the_fifth_raises_one_problem() {
         let (_fixture, domain) = open("open-pr-close-refused");
         registered(&domain);
-        command(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "t".into() });
+        command(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
         let observer = FakeObserver::new();
         observer.set(7, Ok(facts(HEAD, PrState::Open)));
         *observer.2.lock().unwrap() = Some("HTTP 502".into());
@@ -1375,7 +1375,7 @@ pub mod tests {
     /// The task `t` the user cancelled, whose PR GitHub closed and later reopened: no close is pending.
     fn cancelled_with_its_pr_reopened(domain: &DomainRuntime) {
         registered(domain);
-        command(domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "t".into() });
+        command(domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
         command(domain, Actor::System, "node-end", Command::RecordNodeEnd { task_id: "t".into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: None });
         command(domain, Actor::System, "closed", Command::ObservePrState { pr_id: "pr".into(), head: HEAD.into(), base: "main".into(), state: PrState::Closed, merged_head: None });
         assert_eq!(domain.state().unwrap().tasks[&"t".into()].open_pr, None);

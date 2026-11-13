@@ -90,7 +90,7 @@ fn only_alondra_can_adopt_or_request_adoption_and_a_live_task_cannot_be_taken() 
 /// The user cancelled `t`, GitHub closed its PR, and GitHub later reopened it: nothing closes it now.
 fn cancelled_with_its_pr_reopened() -> DomainState {
     let mut s = registered();
-    must(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    must(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     must(&mut s, Actor::System, Command::ObservePrState { pr_id: PR.into(), head: HEAD.into(), base: "main".into(), state: PrState::Closed, merged_head: None });
     must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: None });
     assert_eq!((task(&s).state, task(&s).open_pr.clone()), (TaskState::Cancelled, None));
@@ -136,7 +136,7 @@ fn only_alondra_closes_the_pr_of_a_cancelled_task_and_only_while_github_reports_
     assert_eq!(s, before);
     let mut ownership = registered();
     super::lifecycle_tests::task(&mut ownership, "other", Some("b"));
-    must(&mut ownership, user(), Command::CancelTask { task_id: "other".into() });
+    must(&mut ownership, user(), Command::CancelTask { task_id: "other".into(), reason: None });
     must(&mut ownership, Actor::System, Command::RecordNodeEnd { task_id: "other".into(), end: NodeEnd::Closed, agent_id: None });
     assert_eq!(ownership.tasks[&TaskId::from("other")].state, TaskState::Cancelled);
     let before = ownership.clone();
@@ -153,7 +153,7 @@ fn a_cancelled_tasks_pr_is_not_closed_if_its_branch_acquired_a_live_task_since_t
     assert!(!s.branch_has_live_task(branch));
     let github = status(PrState::Open, PrMergeable::Clean, PrChecks::Passed);
     super::lifecycle_tests::task(&mut s, "new", Some("b"));
-    must(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    must(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     must(&mut s, Actor::System, Command::ObservePrState { pr_id: PR.into(), head: HEAD.into(), base: "main".into(), state: PrState::Closed, merged_head: None });
     must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: None });
     assert_eq!((task(&s).state, task(&s).open_pr.clone()), (TaskState::Cancelled, None));
@@ -285,7 +285,7 @@ fn alondra_leaving_the_case_unsettled_also_delivers_the_open_pr() {
 #[test]
 fn the_orchestrators_cancel_of_a_task_with_its_pr_open_delivers_the_pr() {
     let mut s = registered();
-    must(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into() });
+    must(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into(), reason: None });
     assert_eq!((task(&s).state, task(&s).open_pr.clone()), (TaskState::ForYourReview, None));
     assert_eq!(OpenPrDelivery::from_body(&alondras_delivery(&s).body).unwrap().readiness, PrReadiness::Unconfirmed);
 }
@@ -295,7 +295,7 @@ fn the_orchestrators_cancel_of_a_task_with_its_pr_open_delivers_the_pr() {
 #[test]
 fn closing_a_running_task_with_its_pr_open_delivers_the_pr_in_the_same_command_and_refuses_a_repeat() {
     let mut s = registered();
-    must(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into() });
+    must(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into(), reason: None });
     assert_eq!((task(&s).state, task(&s).open_pr.clone()), (TaskState::ForYourReview, None));
     let delivery = alondras_delivery(&s);
     assert_eq!((delivery.author.clone(), delivery.system_card.clone(), delivery.card.kind),
@@ -306,7 +306,7 @@ fn closing_a_running_task_with_its_pr_open_delivers_the_pr_in_the_same_command_a
         "nothing waits for GitHub: what keeps it from merging is read when the user merges it");
     let delivered = s.clone();
     for _ in 0..2 {
-        let refused = exec(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into() }).unwrap_err();
+        let refused = exec(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into(), reason: None }).unwrap_err();
         assert_eq!(refused.code, "open_pr_delivered", "{}", refused.message);
         assert_eq!(s, delivered, "a repeated close is refused and changes nothing");
     }
@@ -316,7 +316,7 @@ fn closing_a_running_task_with_its_pr_open_delivers_the_pr_in_the_same_command_a
 #[test]
 fn the_users_cancel_closes_the_pr_with_the_reason_until_github_reports_it_closed() {
     let mut s = registered();
-    must(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    must(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     assert_eq!(task(&s).ending, Some(TaskEnding::Cancelling));
     assert_eq!(task(&s).open_pr, Some(OpenPrPending::Close { comment: format!("Cancelled in Alondra: {}", task(&s).title) }));
     must(&mut s, Actor::System, Command::ObservePrState { pr_id: PR.into(), head: HEAD.into(), base: "main".into(),
@@ -335,13 +335,13 @@ fn with_a_second_pr(s: &mut DomainState) {
 fn a_task_closed_with_two_prs_open_delivers_both_and_a_cancel_closes_both() {
     let mut delivered = registered();
     with_a_second_pr(&mut delivered);
-    must(&mut delivered, orchestrator(), Command::CancelTask { task_id: "t".into() });
+    must(&mut delivered, orchestrator(), Command::CancelTask { task_id: "t".into(), reason: None });
     let InteractionPayload::Delivery { targets, .. } = &alondras_delivery(&delivered).payload else { panic!("a delivery") };
     assert_eq!(targets.len(), 2, "{targets:?}");
 
     let mut cancelled = registered();
     with_a_second_pr(&mut cancelled);
-    must(&mut cancelled, user(), Command::CancelTask { task_id: "t".into() });
+    must(&mut cancelled, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     let closed = |pr: &str, head: &str| Command::ObservePrState { pr_id: pr.into(), head: head.into(), base: "main".into(), state: PrState::Closed, merged_head: None };
     must(&mut cancelled, Actor::System, closed(PR, HEAD));
     assert!(task(&cancelled).open_pr.is_some(), "the other PR is still to close");
@@ -367,7 +367,7 @@ fn only_alondra_settles_an_open_pr_and_only_one_it_holds() {
     let mut s = registered();
     let refused = settle_pr(&mut s, status(PrState::Open, PrMergeable::Clean, PrChecks::Passed)).unwrap_err();
     assert_eq!(refused.code, "open_pr_settled");
-    must(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into() });
+    must(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into(), reason: None });
     for actor in [user(), orchestrator(), node("a")] {
         let refused = exec(&mut s, actor, Command::SettleOpenPr { task_id: "t".into(),
             status: status(PrState::Open, PrMergeable::Clean, PrChecks::Passed) }).unwrap_err();
@@ -399,8 +399,8 @@ proptest! {
         let _ = match closer {
             Closer::SettleClose => exec(&mut s, orchestrator(), settle(StallOutcome::Close { result: "Done".into() })),
             Closer::SettleUnsettled => exec(&mut s, Actor::System, settle(StallOutcome::Unsettled)),
-            Closer::OrchestratorCancel => exec(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into() }),
-            Closer::UserCancel => exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }),
+            Closer::OrchestratorCancel => exec(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into(), reason: None }),
+            Closer::UserCancel => exec(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None }),
         }.unwrap();
         if matches!(task(&s).open_pr, Some(OpenPrPending::Deliver { .. })) {
             settle_pr(&mut s, OpenPrStatus { state, head: PUSHED.into(), base: "main".into(), mergeable, checks }).unwrap();

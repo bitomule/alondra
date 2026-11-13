@@ -176,11 +176,10 @@ proptest! {
                     exec(&mut s, &actor, Command::AssignTask { task_id: TASKS[*task].into(), agent_id: format!("z{task}").into(), model: None })
                 }
                 Step::Start(task) => exec(&mut s, &Actor::Agent { agent_id: format!("z{task}").into() }, Command::StartTask { task_id: TASKS[*task].into() }),
-                Step::Cancel(task) => exec(&mut s, &user(), Command::CancelTask { task_id: TASKS[*task].into() }),
+                Step::Cancel(task) => exec(&mut s, &user(), Command::CancelTask { task_id: TASKS[*task].into(), reason: None }),
                 Step::Reopen(task) => exec(&mut s, &user(), Command::ReopenTask { task_id: TASKS[*task].into() }),
                 Step::StopWaiting(task) => exec(&mut s, &orchestrator(), Command::SetDependencies {
-                    task_id: TASKS[*task].into(), dependencies: BTreeSet::new(), stack: None,
-                }),
+                    task_id: TASKS[*task].into(), dependencies: BTreeSet::new(), stack: None, reason: None,}),
             };
             let Ok(outcome) = &result else {
                 prop_assert_eq!(&s, &before, "a refused command changed state");
@@ -245,7 +244,7 @@ fn ending_the_wait_does_not_release_the_hold_only_the_settlement_does() {
     let mut s = chain();
     must(&mut s, Actor::Agent { agent_id: "a".into() }, decide("q"));
     must(&mut s, user(), answer("q"));
-    must(&mut s, orchestrator(), Command::SetDependencies { task_id: "c".into(), dependencies: BTreeSet::new(), stack: None });
+    must(&mut s, orchestrator(), Command::SetDependencies { task_id: "c".into(), dependencies: BTreeSet::new(), stack: None, reason: None });
     must(&mut s, orchestrator(), Command::AssignTask { task_id: "x".into(), agent_id: "z3".into(), model: None });
     assert!(s.plan_review_pending(&"c".into()));
     assert_eq!(exec(&mut s, &Actor::System, Command::AssignTask { task_id: "c".into(), agent_id: "z0".into(), model: None }).unwrap_err().code, "plan_review_pending");
@@ -296,7 +295,7 @@ fn cancelling_from_the_review_cancels_the_task_in_the_same_commit() {
 fn a_decision_without_unstarted_dependents_holds_nothing() {
     let mut s = chain();
     for task in ["c", "d", "e"] {
-        must(&mut s, user(), Command::CancelTask { task_id: task.into() });
+        must(&mut s, user(), Command::CancelTask { task_id: task.into(), reason: None });
     }
     must(&mut s, Actor::Agent { agent_id: "a".into() }, decide("q"));
     let outcome = exec(&mut s, &user(), answer("q")).unwrap();
@@ -309,7 +308,7 @@ fn a_held_task_that_is_cancelled_and_reopened_is_still_held() {
     let mut s = chain();
     must(&mut s, Actor::Agent { agent_id: "a".into() }, decide("q"));
     must(&mut s, user(), answer("q"));
-    must(&mut s, user(), Command::CancelTask { task_id: "c".into() });
+    must(&mut s, user(), Command::CancelTask { task_id: "c".into(), reason: None });
     assert!(s.plan_review_waiting(&s.plan_reviews[&InteractionId::from("q")]).all(|t| t.id.0 != "c"), "a closed task asks for no review");
     must(&mut s, Actor::System, Command::RecordTaskCleanup { task_id: "c".into() });
     must(&mut s, user(), Command::ReopenTask { task_id: "c".into() });
