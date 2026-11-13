@@ -52,6 +52,14 @@ impl Timing {
 pub async fn run(domain: Arc<DomainRuntime>, sessions: Arc<dyn Sessions>, timing: Timing) {
     let mut changed = domain.subscribe();
     let mut backoff = FIRST_BACKOFF;
+    match domain.keep_attachments() {
+        Ok((kept, lost)) => {
+            if kept > 0 || !lost.is_empty() {
+                log!("gave {kept} attachments their own copy; {} could not be kept: {}", lost.len(), lost.join("; "));
+            }
+        }
+        Err(error) => log!("could not keep the attachments of old cards: {error:#}"),
+    }
     if let Err(error) = crate::cancelled_worktrees::sweep(&domain).await {
         log!("could not settle the worktrees of cancelled tasks: {error:#}");
     }

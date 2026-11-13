@@ -1412,6 +1412,21 @@ impl DomainStore {
         self.note_side_write();
         Ok(())
     }
+    /// Attachments whose content still sits where a node put it, outside Alondra's files folder:
+    /// (interaction, attachment id, name, digest, reference).
+    pub(crate) fn attachments_kept_elsewhere(&self) -> Result<Vec<(String, String, String, String, String)>> {
+        let mut query = self.conn.prepare(
+            "SELECT interaction_id,id,name,content_digest,content_reference FROM interaction_attachments WHERE content_reference NOT LIKE 'files/%'")?;
+        let rows = query.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+    /// Points an attachment at Alondra's own copy of its content. Cached state reloads.
+    pub(crate) fn keep_attachment_at(&mut self, interaction: &str, id: &str, reference: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE interaction_attachments SET content_reference=?3 WHERE interaction_id=?1 AND id=?2",
+            params![interaction, id, reference])?;
+        Ok(())
+    }
     pub(crate) fn forget_inherited_worktree(&mut self, agent_id: &str) -> Result<()> {
         if self.conn.execute("DELETE FROM inherited_worktrees WHERE agent_id=?1", [agent_id])? > 0 {
             self.note_side_write();
