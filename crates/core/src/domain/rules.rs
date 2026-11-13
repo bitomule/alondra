@@ -2308,7 +2308,12 @@ impl DomainState {
         self.node_has_run(task_id, lifecycles)?;
         let through_sdk = self.lifecycle(lifecycles, task_id)?.execution()
             .is_some_and(|stamp| stamp.host().as_str() != alondra_domain::CLAUDE_BG_HOST);
-        let text = through_sdk.then_some(text);
+        let feedback = self.lifecycle(lifecycles, task_id)?.execution().is_none().then(|| {
+            let InteractionPayload::Delivery { feedback, .. } = &self.interactions[delivery].payload else { return None };
+            feedback.last().filter(|feedback| feedback.at_revision == self.revision + 1)
+                .map(|feedback| feedback.instruction.message(&feedback.body))
+        }).flatten();
+        let text = feedback.or_else(|| through_sdk.then_some(text));
         let held: Vec<InteractionId> = self.lifecycle(lifecycles, task_id)?.cards().into_iter().map(|(card, _)| card.clone()).collect();
         let record = LifecycleRecord::HandedBack { delivery: delivery.clone(), input: self.next_input(task_id), text };
         self.decide(lifecycles, task_id, record)?;
@@ -2787,6 +2792,18 @@ impl DomainState {
         next.withdraw_released_stalls(&mut lifecycles)?;
         next.withdraw_deliveries_asked_after(&mut effects, &mut lifecycles)?;
         next.withdraw_deliveries_behind_their_pr(&mut effects, &mut lifecycles)?;
+        if let Command::SubmitFeedback { presentation_id, body, instruction, .. } = &envelope.command
+            && let Scope::Task { task_id } = next.interactions[presentation_id].scope.clone()
+            && next.task(&task_id)?.agent_id.is_none()
+            && next.lifecycle(&mut lifecycles, &task_id)?.execution().is_none()
+        {
+            let input = next.next_input(&task_id);
+            if !next.lifecycle(&mut lifecycles, &task_id)?.pending_inputs().iter().any(|pending| pending.as_str() == input) {
+                next.decide(&mut lifecycles, &task_id, LifecycleRecord::Told {
+                    input, text: Some(instruction.message(body)), answers: None,
+                })?;
+            }
+        }
         next.adopt_declared_post_merge(&mut lifecycles)?;
         next.finish_settled_deliveries(&mut lifecycles)?;
         next.withdraw_cancelled_requests(self, actor);
@@ -3185,7 +3202,6 @@ impl DomainState {
             Command::SetAccountOrder { order, expected_config_version } => {
                 self.account_order_guard(actor, order, expected_config_version)?;
                 self.account_order.clone_from(order);
-                self.account_policy = crate::accounts::Policy::Chain;
             }
             Command::ReplaceAccountConfiguration { accounts, expected_config_version } => {
                 let accounts = crate::options::OptionsFile::parse(accounts).map_err(|why| DomainError::new("invalid_input", why))?.accounts;

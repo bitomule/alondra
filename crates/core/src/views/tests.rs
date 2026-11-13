@@ -9019,6 +9019,48 @@ fn provider_accounts_share_one_order_without_aliasing_same_slugs_or_native_windo
 }
 
 #[test]
+fn codex_quota_is_attributed_in_accounts_and_the_picker_without_hiding_paid_consent() {
+    use crate::accounts::{AccountBilling, AccountKey, Provider};
+    let (mut state, live) = accounts_fixture();
+    let mut codex = state.accounts[0].clone();
+    codex.provider = Provider::Codex;
+    codex.billing = AccountBilling::PayPerUse;
+    let key = AccountKey::new(Provider::Codex, codex.id.clone());
+    state.accounts.push(codex);
+    let reading = crate::codex_account::parse_rate_limits(&serde_json::json!({"rateLimits":{"primary":{
+        "usedPercent":13,"windowDurationMins":10080,"resetsAt":1790553600}}}),None).unwrap();
+    state.account_usage.push(crate::usage::record(None,Provider::Codex,&key.account,&reading,1790192202000,"2026-09-23"));
+    for lang in [Lang::En,Lang::Es] {
+        let accounts = render(&state,&live,Client::Tui,lang,"accounts","");
+        let text = serde_json::to_string(&accounts).unwrap();
+        assert!(text.contains("account/rateLimits/read") && text.contains("87 %"));
+        let request = render(&state,&live,Client::Tui,lang,"new_request","");
+        let form = new_request_form(&request);
+        let FieldKind::Choice { items } = &form.fields.iter().find(|field|field.id=="account").unwrap().kind else { panic!("account picker") };
+        let about = items.iter().find(|item|item.id==key.wire_id()).unwrap().description.as_deref().unwrap();
+        assert!(about.contains("account/rateLimits/read") && about.contains("87 %"));
+        assert!(about.contains(if lang==Lang::Es {"autoriza el uso de pago"} else {"authorizes paid usage"}),"{about}");
+    }
+    let mut later = live.clone();
+    later.observed_at = None;
+    let text = serde_json::to_string(&render(&state, &later, Client::Tui, Lang::En, "accounts", "")).unwrap();
+    assert!(text.contains("2026-09-23T19:36:42.000Z") && !text.contains("measured 1790192202000"), "quota timing must remain readable without a live clock: {text}");
+    later.observed_at = Some(1790553600001);
+    let text = serde_json::to_string(&render(&state, &later, Client::Tui, Lang::En, "accounts", "")).unwrap();
+    assert!(text.contains("Previous reading: 87 % remaining"));
+    let marker = crate::usage::UsageReading { complete: true, plan: None, windows: vec![crate::usage::WindowReading {
+        kind: crate::usage::WindowKind::Other(crate::usage::NATIVE_LIMIT_MARKER.into()), used: crate::usage::Share::NONE,
+        resets_at: None, exhausted: true,
+    }] };
+    *state.account_usage.iter_mut().find(|usage| usage.provider == Provider::Codex).unwrap() =
+        crate::usage::record(None, Provider::Codex, &key.account, &marker, 1790192202000, "2026-09-23");
+    for lang in [Lang::En, Lang::Es] {
+        let text = serde_json::to_string(&render(&state, &live, Client::Tui, lang, "accounts", "")).unwrap();
+        assert!(!text.contains("account/rateLimits/read"), "a limit marker has no native quota percentage");
+    }
+}
+
+#[test]
 fn committed_pending_models_never_replace_effective_models_or_positional_task_header_facts() {
     use crate::accounts::{AccountKey, Provider};
     use crate::model_selection::{ModelKey, ModelProfile, ModelSelection, PendingTaskSelection, TaskSelection};

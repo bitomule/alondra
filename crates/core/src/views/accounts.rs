@@ -118,7 +118,7 @@ fn percent(share: crate::usage::Share) -> u32 {
 }
 
 /// `5 h 40 % · week 30 % · 2 nodes`, each part when known.
-fn usage_line(account: &AccountStatus, measured: Option<&crate::usage::AccountUsage>, context: &RenderContext<'_>) -> Option<String> {
+pub(super) fn usage_line(account: &AccountStatus, measured: Option<&crate::usage::AccountUsage>, context: &RenderContext<'_>) -> Option<String> {
     let lang = context.lang;
     let mut parts = vec![];
     if native_limit_reported(measured) { parts.push(t!(lang, "Provider reported a usage limit", "El proveedor ha comunicado un límite de uso").into()); }
@@ -126,6 +126,33 @@ fn usage_line(account: &AccountStatus, measured: Option<&crate::usage::AccountUs
         let label = window_label(account.provider, &window.reading.kind, lang);
         let used = percent(window.reading.used);
         parts.push(format!("{label} {used} %"));
+        if account.provider == Provider::Codex {
+            let remaining = 100 - used;
+            let time = |at: crate::Millis| match context.live.observed_at {
+                Some(now) if at > now => {
+                    let duration = super::text::short_duration(at.saturating_sub(now) as u64 / 1000);
+                    tf!(lang, "in {duration}", "en {duration}")
+                }
+                Some(now) => {
+                    let duration = super::text::short_duration(now.saturating_sub(at) as u64 / 1000);
+                    tf!(lang, "{duration} ago", "hace {duration}")
+                }
+                None => super::schedules::instant(at),
+            };
+            let measured = time(window.measured_at);
+            let reset = window.reading.resets_at.map_or_else(|| t!(lang, "unknown", "desconocido").into(), time);
+            if window.reading.resets_at.zip(context.live.observed_at).is_some_and(|(reset, now)| reset <= now) {
+                parts.push(tf!(lang, "Previous reading: {remaining} % remaining · reset {reset} · measured {measured}",
+                    "Lectura anterior: {remaining} % restante · reinicio {reset} · lectura {measured}"));
+            } else {
+                parts.push(tf!(lang, "{remaining} % remaining · resets {reset} · measured {measured}",
+                    "{remaining} % restante · reinicio {reset} · lectura {measured}"));
+            }
+        }
+    }
+    if account.provider == Provider::Codex {
+        parts.push(if measured.is_some_and(|usage| usage.windows.iter().any(|window| !window.reading.kind.is_native_limit_marker())) { t!(lang, "Source: Codex account/rateLimits/read", "Origen: Codex account/rateLimits/read") }
+            else { t!(lang, "Quota not reported by Codex", "Cuota sin informar por Codex") }.into());
     }
     match context.index.nodes_on_account_key(&AccountKey { provider: account.provider, account: account.id.clone() }) {
         0 => {}
@@ -263,8 +290,8 @@ fn connect_row(provider: Provider, context: &RenderContext<'_>) -> Item {
 fn policy_text(policy: Policy, lang: Lang) -> (&'static str, &'static str) {
     match policy {
         Policy::Margin => (t!(lang, "Most room first", "Primero la de más margen"),
-            t!(lang, "Each new Claude task starts on the Claude account with the most room left, weighed by its plan",
-                "Cada tarea nueva de Claude empieza en la cuenta de Claude con más margen, según su plan")),
+            t!(lang, "Compare every provider by remaining quota; account order does not affect margin routing",
+                "Comparar todos los proveedores por cuota restante; el orden no afecta al reparto por margen")),
         Policy::Chain => (t!(lang, "In list order", "En el orden de la lista"),
             t!(lang, "Each new task starts on the first account in the list that has room left",
                 "Cada tarea nueva empieza en la primera cuenta de la lista que tenga margen")),
@@ -415,6 +442,7 @@ fn account_presentation(account: &AccountStatus, position: usize, measured: Opti
         (Some(_), Some(_)) => t!(lang, "Reported just now", "Informado ahora").into(),
         (Some(_), None) => t!(lang, "Last reported usage", "Último uso informado").into(),
     };
+    let text = if account.provider == Provider::Codex && !windows.is_empty() { format!("{text} · account/rateLimits/read") } else { text };
     let freshness = Label { text, tone: if windows.iter().any(|window| window.stale) { Tone::Warning } else { Tone::Neutral }, elapsed: None };
     let reason = if native_limit_reported(measured) { Some(t!(lang, "The provider reported a usage limit. Check accounts again or choose another account; no usage percentage was reported.", "El proveedor ha comunicado un límite de uso. Vuelve a comprobar las cuentas o elige otra; no se ha informado un porcentaje de uso.").into()) } else { match account.state {
         AccountState::SignedOut => Some(account_sign_in_hint(account, lang)),

@@ -27,7 +27,7 @@ fn frequency_label(f: ScheduleFrequency, lang: super::Lang) -> &'static str {
     }
 }
 
-fn instant(millis: i64) -> String {
+pub(super) fn instant(millis: i64) -> String {
     let seconds = millis.div_euclid(1_000);
     let z = seconds.div_euclid(86_400) + 719_468;
     let era = z.div_euclid(146_097);

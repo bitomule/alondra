@@ -191,12 +191,15 @@ pub(crate) fn choose_for_launch(domain: &DomainRuntime, home: &Path, now: alondr
     chosen
 }
 
-/// Writes to the log the Claude account a launch took and every Claude account's margin then.
-pub(crate) fn log_choice(domain: &DomainRuntime, what: &str, account: &AccountKey, now: alondra_core::Millis) {
-    if account.provider != Provider::Claude { return; }
+pub(crate) fn selection_evidence(domain: &DomainRuntime, account: &AccountKey, now: alondra_core::Millis) -> String {
     let read = domain.read();
     let state = read.state();
-    let line = alondra_core::usage::choice_line(account, &state.accounts, &state.account_usage, state.account_reserve, now, &alondra_daemon_engine_model::local_day(now));
+    alondra_core::usage::choice_line(account, &state.accounts, &state.account_usage, state.account_reserve, now, &alondra_daemon_engine_model::local_day(now))
+}
+
+/// The same quota evidence is kept on the task and in the daemon log.
+pub(crate) fn log_choice(domain: &DomainRuntime, what: &str, account: &AccountKey, now: alondra_core::Millis) {
+    let line = selection_evidence(domain, account, now);
     log!("{what}: {line}");
 }
 

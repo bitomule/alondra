@@ -476,7 +476,7 @@ impl OptionsFile {
         if enabled.is_empty() || (enabled.len() == 1 && self.accounts.connected.is_none() && self.accounts.claude.is_empty()) {
             return None;
         }
-        let mut values = vec![SpecValue { id: AUTO.into(), label: "automatic".into(), description: Some("Alondra follows the configured account order".into()) }];
+        let mut values = vec![SpecValue { id: AUTO.into(), label: "automatic".into(), description: Some("Alondra follows the configured account distribution".into()) }];
         values.extend(enabled.into_iter().map(|(key, account)| SpecValue {
             id: key.wire_id(), label: account.name,
             description: Some(if account.billing == crate::accounts::AccountBilling::PayPerUse { "Paid per use: used only when explicitly selected" } else { "Keep this request's work on this account" }.into()),

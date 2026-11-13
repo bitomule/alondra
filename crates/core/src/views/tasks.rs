@@ -1373,6 +1373,6 @@ fn task_model_presentation(task: &TaskId, context: &RenderContext<'_>) -> Option
         reason: pending.map(|pending| match pending.reason.as_str() {
             "User changed model selection" | "User requested a selection change" => t!(context.lang, "Model change requested", "Cambio de modelo solicitado").into(),
             _ => pending.reason.clone(),
-        }),
+        }).or_else(|| selection.reason.clone()),
     })
 }

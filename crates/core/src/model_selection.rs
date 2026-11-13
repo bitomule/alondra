@@ -159,6 +159,8 @@ impl AccountModelCatalog {
 #[serde(deny_unknown_fields)]
 pub struct TaskSelection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paid_account_grant: Option<AccountKey>,
     #[serde(default)]
     pub requested: Option<ModelKey>,
@@ -178,7 +180,7 @@ pub struct TaskSelection {
 
 impl TaskSelection {
     pub fn automatic(profile: ModelProfile) -> Self {
-        Self { paid_account_grant: None, requested: None, requested_reasoning_effort: None, effective: None, profile, allow_model_substitution: true, substitution_was_edited: false, account: None, native_tool_denials: None }
+        Self { reason: None, paid_account_grant: None, requested: None, requested_reasoning_effort: None, effective: None, profile, allow_model_substitution: true, substitution_was_edited: false, account: None, native_tool_denials: None }
     }
 
     pub fn authorize_paid_account(&mut self, accounts: &[crate::accounts::AccountStatus]) {

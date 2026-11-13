@@ -44,6 +44,34 @@ fn selection() -> alondra_core::model_selection::TaskSelection {
     selection
 }
 fn launch(slice: &Slice) -> Driver { launch_selected(slice, selection()) }
+
+#[tokio::test]
+async fn a_task_created_with_a_codex_launch_plan_starts_on_codex() {
+    use alondra_core::accounts::AccountsConfig;
+    let slice = Slice::new();
+    let trace = configured(&slice, "complete");
+    let mut accounts = AccountsConfig::fresh();
+    accounts.connect(Provider::Claude); accounts.connect(Provider::Codex);
+    std::fs::write(alondra_core::options::path_in(&slice._home), accounts.to_toml()).unwrap();
+    let plan = LaunchPlan { model: Some("codex/fixture-model".into()),
+        ..LaunchPlan::new("release-notes", slice.worktree.to_str().unwrap()) };
+    slice.domain.store.lock().unwrap().set_launch_plan(&TASK.into(), &plan, 1).unwrap();
+    slice.domain.enable_sdk(slice.backend.clone());
+    slice.domain.live.gate.ignore_mac();
+    slice.domain.live.gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(4)) });
+    let mut changed = slice.domain.subscribe();
+    crate::auto_launch::pass(&slice.domain, &slice._home).await.unwrap();
+    loop {
+        let state = slice.domain.state().unwrap();
+        if state.lifecycle_journal[&TaskId::from(TASK)].iter().any(|record| matches!(record, LifecycleRecord::TurnStarted { .. })) {
+            assert_eq!(state.tasks[&TaskId::from(TASK)].provider, Provider::Codex);
+            break;
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(60), changed.changed()).await.expect("the Codex plan never started").unwrap();
+    }
+    assert!(transcript(&trace).iter().any(|message| message["method"] == "thread/start"));
+    slice.domain.stop_sdk_owners();
+}
 fn launch_selected(slice: &Slice, selected: alondra_core::model_selection::TaskSelection) -> Driver {
     let effective = selected.effective.as_ref().unwrap();
     let options = LaunchOptions { provider: Provider::Codex, model: Some(effective.model.model.clone()), effort: effective.reasoning_effort.clone(), selection: Some(selected), ..LaunchOptions::default() };
@@ -1995,18 +2023,21 @@ async fn a_delivery_moved_while_reviewed_waits_for_the_user_and_starts_on_the_ne
     slice.domain.live.gate.tune(crate::admission::Tuning{spacing:0,limit:Some(crate::admission::Limit::Fixed(0))});
     slice.run(&user(),"send-back",Command::SubmitFeedback{merge_failure:None,attachments:vec![],presentation_id:"notes".into(),
         targets:targets.clone(),body:"Add the date".into(),instruction:alondra_core::domain::Instruction::Changes});
-    slice.run(&system(),"tell-back",Command::TellNode{task_id:task.clone(),text:alondra_core::domain::Instruction::Changes.message("Add the date"),from_user:false,answers:None});
+    assert_eq!(Slice::lifecycle(&slice.domain).obligation().map(|o|(o.party,o.owed)), Some((alondra_domain::Party::Alondra,alondra_domain::Owed::Start)));
     for _ in 0..3{crate::provider_transition::pass(&slice.domain).await;}
     assert_eq!(admissions(&slice),1,"the gate holds the start while it has no slot");
-    slice.domain.live.gate.tune(crate::admission::Tuning{spacing:0,limit:Some(crate::admission::Limit::Fixed(4))});
-    let mut changed=slice.domain.subscribe();
-    while admissions(&slice)<2{
-        crate::provider_transition::pass(&slice.domain).await;
-        if admissions(&slice)<2{tokio::time::timeout(std::time::Duration::from_secs(60),changed.changed()).await.expect("the delivery sent back never started").unwrap();}
+    let restarted=slice.restart(); restarted.enable_sdk(slice.backend.clone());
+    restarted.live.gate.ignore_mac();
+    restarted.live.gate.tune(crate::admission::Tuning{spacing:0,limit:Some(crate::admission::Limit::Fixed(4))});
+    let mut changed=restarted.subscribe();
+    let admissions=||restarted.read().state().lifecycle_journal[&task].iter().filter(|record|matches!(record,LifecycleRecord::Admitted{..})).count();
+    while admissions()<2{
+        crate::provider_transition::pass(&restarted).await;
+        if admissions()<2{tokio::time::timeout(std::time::Duration::from_secs(60),changed.changed()).await.expect("the delivery sent back never started").unwrap();}
     }
-    assert_eq!(slice.domain.state().unwrap().tasks[&task].account_key(),AccountKey::native(Provider::Claude));
-    assert!(!crate::provider_transition::moving(&slice.domain,&task));
-    slice.domain.stop_sdk_owners();
+    assert_eq!(restarted.state().unwrap().tasks[&task].account_key(),AccountKey::native(Provider::Claude));
+    assert!(!crate::provider_transition::moving(&restarted,&task));
+    restarted.stop_sdk_owners();
 }
 
 #[tokio::test]

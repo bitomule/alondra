@@ -265,3 +265,12 @@ fn absent_native_identity_preserves_legacy_account_bytes() {
     assert_eq!(value["native_identity"], "real-workspace");
     assert_eq!(serde_json::from_value::<AccountStatus>(value).unwrap(), native);
 }
+#[test]
+fn reordering_accounts_preserves_margin_policy() {
+    let mut config = AccountsConfig::fresh();
+    config.connect(Provider::Claude); config.connect(Provider::Codex);
+    assert_eq!(config.distribution.policy, Policy::Margin);
+    config.set_order(vec![AccountKey::native(Provider::Codex), AccountKey::native(Provider::Claude)]).unwrap();
+    assert_eq!(config.distribution.policy, Policy::Margin);
+    assert_eq!(OptionsFile::parse(&config.to_toml()).unwrap().accounts, config);
+}
