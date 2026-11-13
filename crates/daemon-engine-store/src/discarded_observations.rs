@@ -35,7 +35,7 @@ pub enum AdapterRefusal {
 impl DiscardReason {
     /// The reason an observation that failed with `error` is discarded for, or `None` when the
     /// failure is not the observation's own: another owner, a conflict of evidence, the disk.
-    pub(crate) fn of(error: &StoreError) -> Option<Self> {
+    pub fn of(error: &StoreError) -> Option<Self> {
         let StoreError::Storage(error) = error else { return Some(Self::DomainRefused) };
         if matches!(error.downcast_ref::<alondra_store::Error>(), Some(alondra_store::Error::UnsettledObservation)) {
             return Some(Self::Unsettled);

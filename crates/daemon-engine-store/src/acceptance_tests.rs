@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
-const CATALOG: &str = include_str!("../../../../fixtures/domain-v2/acceptance.json");
+const CATALOG: &str = include_str!("../../../fixtures/domain-v2/acceptance.json");
 const CASES: &[&str] = &[
     "V01", "V03", "V06", "V07", "V08", "V09", "V10", "V11", "V16", "V17", "V18", "V20", "V21",
     "V23", "V24", "V25", "V45", "V50", "V52",
@@ -814,11 +814,11 @@ fn catalog_execution_status_is_explicit_and_evidenced() {
     let sources = [
         include_str!("tests.rs"),
         include_str!("schedule_acceptance_tests.rs"),
-        include_str!("../../../daemon-support/src/domain_cutover.rs"),
-        include_str!("../../../daemon-support/src/domain_authority.rs"),
-        include_str!("../../../alondrad/src/domain_api.rs"),
-        include_str!("../../../alondrad/src/service/domain_parity_tests.rs"),
-        include_str!("../../../core/src/domain/tests.rs"),
+        include_str!("../../daemon-support/src/domain_cutover.rs"),
+        include_str!("../../daemon-support/src/domain_authority.rs"),
+        include_str!("../../alondrad/src/domain_api.rs"),
+        include_str!("../../alondrad/src/service/domain_parity_tests.rs"),
+        include_str!("../../core/src/domain/tests.rs"),
     ];
     let mut runner = BTreeSet::new();
     let mut schedule_runner = BTreeSet::new();

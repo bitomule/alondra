@@ -117,7 +117,7 @@ fn day(r: &Row<'_>) -> rusqlite::Result<Option<DayRow>> {
 impl DomainStore {
     /// Everything a metrics report sums, as the store holds it now. Tasks that ended since the last
     /// fold are not in it yet: fold them first.
-    pub(crate) fn metrics_inputs(&self, now: Millis) -> Result<MetricsInputs> {
+    pub fn metrics_inputs(&self, now: Millis) -> Result<MetricsInputs> {
         let tasks = self.conn.prepare(TASKS)?.query_map([], task)?.collect::<rusqlite::Result<_>>()?;
         let weeks = self.conn.prepare(WEEKS)?.query_map([], week)?.filter_map(Result::transpose).collect::<rusqlite::Result<_>>()?;
         let days = self.conn.prepare(DAYS)?.query_map([], day)?.filter_map(Result::transpose).collect::<rusqlite::Result<_>>()?;
@@ -127,7 +127,3 @@ impl DomainStore {
         Ok(MetricsInputs { now, tasks, weeks, days, releases })
     }
 }
-
-#[cfg(test)]
-#[path = "metrics_tests.rs"]
-mod tests;

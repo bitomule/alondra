@@ -72,7 +72,7 @@ fn approach_text(approach: Approach) -> &'static str {
 }
 
 impl DomainStore {
-    pub(crate) fn record_model_decision(&mut self, d: &Decision) -> Result<()> {
+    pub fn record_model_decision(&mut self, d: &Decision) -> Result<()> {
         let chosen_by = match d.chosen_by {
             ModelChooser::Orchestrator => "orchestrator",
             ModelChooser::User => "user",
@@ -89,21 +89,21 @@ impl DomainStore {
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn model_decision_rows(&self) -> Result<Vec<(String, String, Option<String>, Option<String>, Option<String>, Option<String>)>> {
+    pub fn model_decision_rows(&self) -> Result<Vec<(String, String, Option<String>, Option<String>, Option<String>, Option<String>)>> {
         let mut statement = self.conn.prepare("SELECT task_id,kind,model,effort,approach,reason FROM model_decisions ORDER BY id")?;
         let rows = statement.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn model_decision_routing(&self) -> Result<Vec<(Option<String>, Option<String>, Option<String>, Option<String>)>> {
+    pub fn model_decision_routing(&self) -> Result<Vec<(Option<String>, Option<String>, Option<String>, Option<String>)>> {
         let mut statement = self.conn.prepare("SELECT provider,task_kind,areas,risks FROM model_decisions ORDER BY id")?;
         let rows = statement.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn model_decision_meta(&self) -> Result<Vec<(String, String, String)>> {
+    pub fn model_decision_meta(&self) -> Result<Vec<(String, String, String)>> {
         let mut statement = self.conn.prepare("SELECT agent_id,chosen_by,title FROM model_decisions ORDER BY id")?;
         let rows = statement.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)

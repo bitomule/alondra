@@ -5,26 +5,28 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) use alondra_daemon_engine_model::BatchSelection;
 
-impl alondra_provider_claude::HostOwner for BatchOwner {
+pub(crate) struct ProviderOwner(pub(crate) BatchOwner);
+
+impl alondra_provider_claude::HostOwner for ProviderOwner {
     fn owner_generation(&self) -> u64 { 1 }
-    fn epoch(&self) -> &alondra_core::domain::DataEpoch { self.epoch() }
-    fn host(&self) -> &str { self.host_name() }
+    fn epoch(&self) -> &alondra_core::domain::DataEpoch { self.0.epoch() }
+    fn host(&self) -> &str { self.0.host_name() }
     fn wire_execution(&self) -> alondra_provider_claude::Execution {
         alondra_provider_claude::Execution::Orchestrator(alondra_provider_claude::OrchestratorExecution {
             lane: alondra_provider_claude::OrchestratorLane::Orchestrator,
-            run_id: self.run().to_owned(), conversation_id: self.session().to_owned(), generation: 1,
+            run_id: self.0.run().to_owned(), conversation_id: self.0.session().to_owned(), generation: 1,
         })
     }
 }
 
-impl alondra_provider_codex::HostOwner for BatchOwner {
+impl alondra_provider_codex::HostOwner for ProviderOwner {
     fn owner_generation(&self) -> u64 { 1 }
-    fn epoch(&self) -> &alondra_core::domain::DataEpoch { self.epoch() }
-    fn host(&self) -> &str { self.host_name() }
+    fn epoch(&self) -> &alondra_core::domain::DataEpoch { self.0.epoch() }
+    fn host(&self) -> &str { self.0.host_name() }
     fn wire_execution(&self) -> alondra_provider_codex::Execution {
         alondra_provider_codex::Execution::Orchestrator(alondra_provider_codex::OrchestratorExecution {
             lane: alondra_provider_codex::OrchestratorLane::Orchestrator,
-            run_id: self.run().to_owned(), conversation_id: self.session().to_owned(), generation: 1,
+            run_id: self.0.run().to_owned(), conversation_id: self.0.session().to_owned(), generation: 1,
         })
     }
 }

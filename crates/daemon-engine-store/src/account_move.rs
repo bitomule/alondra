@@ -33,7 +33,7 @@ pub(super) const ACCOUNT_MOVE_STEPS: &str = concat!(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum Step {
+pub enum Step {
     Planned,
     HostStopped,
     Admitted,
@@ -62,7 +62,7 @@ impl Step {
         })
     }
     /// The move is over, done or undone: nothing of it is left to do.
-    pub(crate) fn ended(self) -> bool {
+    pub fn ended(self) -> bool {
         matches!(self, Self::Done | Self::Undone)
     }
 }
@@ -71,54 +71,54 @@ impl Step {
 /// card of the limit it leaves, the execution that hit it and its Claude session, which the
 /// execution on the other account resumes in the same folder.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Plan {
-    pub(crate) from: alondra_core::accounts::AccountId,
-    pub(crate) to: alondra_core::accounts::AccountId,
-    pub(crate) card: InteractionId,
-    pub(crate) node: AgentId,
-    pub(crate) instance: String,
-    pub(crate) session: String,
-    pub(crate) cwd: String,
+pub struct Plan {
+    pub from: alondra_core::accounts::AccountId,
+    pub to: alondra_core::accounts::AccountId,
+    pub card: InteractionId,
+    pub node: AgentId,
+    pub instance: String,
+    pub session: String,
+    pub cwd: String,
     /// Until when the task moves no more: the reset of the limit it left.
-    pub(crate) until: i64,
+    pub until: i64,
 }
 
 /// One move as far as it went.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct AccountMove {
-    pub(crate) task: TaskId,
-    pub(crate) number: i64,
-    pub(crate) plan: Plan,
-    pub(crate) step: Step,
+pub struct AccountMove {
+    pub task: TaskId,
+    pub number: i64,
+    pub plan: Plan,
+    pub step: Step,
     /// The node of the execution admitted on the other account.
-    pub(crate) agent: Option<AgentId>,
+    pub agent: Option<AgentId>,
     /// Why a move was undone.
-    pub(crate) undone: Option<String>,
+    pub undone: Option<String>,
 }
 
 impl DomainStore {
     /// Every account move, as far as each went, oldest first.
-    pub(crate) fn account_moves(&self) -> Result<Vec<AccountMove>> {
+    pub fn account_moves(&self) -> Result<Vec<AccountMove>> {
         account_moves(&self.conn)
     }
 
     /// Records the plan of the task's next move; refused while another of its moves is open.
-    pub(crate) fn plan_account_move(&mut self, _task: &TaskId, _plan: &Plan) -> Result<i64> {
+    pub fn plan_account_move(&mut self, _task: &TaskId, _plan: &Plan) -> Result<i64> {
         anyhow::bail!("Accounts and providers are chosen when creating a node. An existing execution cannot move to another account")
     }
 
     /// No host runs the session the move takes any more.
-    pub(crate) fn record_move_host_stopped(&mut self, task: &TaskId, number: i64) -> Result<()> {
+    pub fn record_move_host_stopped(&mut self, task: &TaskId, number: i64) -> Result<()> {
         insert_step(&self.conn, task, number, Step::HostStopped, &json!({}))
     }
 
     /// The move is over: the execution on the other account runs the task.
-    pub(crate) fn record_move_done(&mut self, task: &TaskId, number: i64) -> Result<()> {
+    pub fn record_move_done(&mut self, task: &TaskId, number: i64) -> Result<()> {
         insert_step(&self.conn, task, number, Step::Done, &json!({}))
     }
 
     /// What the provider keeps of the task's conversation `conversation`: for Claude, its session.
-    pub(crate) fn conversation_metadata(&self, task: &TaskId, conversation: &str) -> Result<Option<Vec<u8>>> {
+    pub fn conversation_metadata(&self, task: &TaskId, conversation: &str) -> Result<Option<Vec<u8>>> {
         Ok(self.conn.query_row(
             "SELECT metadata FROM provider_conversation_metadata WHERE task_id=?1 AND conversation_id=?2 ORDER BY rowid DESC LIMIT 1",
             params![task.0, conversation],
@@ -127,7 +127,7 @@ impl DomainStore {
     }
 
     /// The launch placement of this admitted conversation, independent of later worktrees.
-    pub(crate) fn conversation_directory(&self, task: &TaskId, conversation: &str) -> Result<Option<String>> {
+    pub fn conversation_directory(&self, task: &TaskId, conversation: &str) -> Result<Option<String>> {
         Ok(self.conn.query_row(
             "SELECT d.placement FROM lifecycle_dispatches d JOIN lifecycle_executions e ON e.task_id=d.task_id AND e.generation=d.generation WHERE e.task_id=?1 AND e.conversation_id=?2 AND d.kind='launch' AND d.placement_kind='local' ORDER BY d.id DESC LIMIT 1",
             params![task.0, conversation], |row| row.get(0),
@@ -135,7 +135,7 @@ impl DomainStore {
     }
 
     /// The move did not happen: the task stays on its account's limit, for `why`.
-    pub(crate) fn record_move_undone(&mut self, task: &TaskId, number: i64, why: &str) -> Result<()> {
+    pub fn record_move_undone(&mut self, task: &TaskId, number: i64, why: &str) -> Result<()> {
         insert_step(&self.conn, task, number, Step::Undone, &json!({"why": why}))
     }
 }
@@ -143,7 +143,7 @@ impl DomainStore {
 impl OwnerTransaction<'_> {
     /// The execution on the other account was admitted as `agent`: recorded in the transaction
     /// that admits it.
-    pub(crate) fn record_move_admitted(&mut self, task: &TaskId, number: i64, agent: &AgentId) -> std::result::Result<(), StoreError> {
+    pub fn record_move_admitted(&mut self, task: &TaskId, number: i64, agent: &AgentId) -> std::result::Result<(), StoreError> {
         self.sql(|conn| insert_step(conn, task, number, Step::Admitted, &json!({"agent": agent})))
     }
 }

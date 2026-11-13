@@ -14,7 +14,7 @@ thread_local! {
 #[cfg(any(test, feature = "test-hooks"))]
 /// Writing statements and full-table scans issued on this thread so far. Tests
 /// pin a command's cost with these instead of the wall clock.
-pub(crate) fn statement_counts() -> (u64, u64) {
+pub fn statement_counts() -> (u64, u64) {
     (WRITES.with(Cell::get), SCANS.with(Cell::get))
 }
 pub(super) fn exec(c: &Connection, sql: &str, params: impl rusqlite::Params) -> Result<usize> {

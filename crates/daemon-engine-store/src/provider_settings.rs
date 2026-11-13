@@ -15,17 +15,17 @@ pub(super) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS settings_projection_
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ProjectionIdentity {
-    pub(crate) actor: String,
-    pub(crate) command_id: String,
-    pub(crate) data_epoch: String,
-    pub(crate) command_digest: [u8; 32],
-    pub(crate) previous_digest: Option<[u8; 32]>,
-    pub(crate) target_digest: [u8; 32],
+pub struct ProjectionIdentity {
+    pub actor: String,
+    pub command_id: String,
+    pub data_epoch: String,
+    pub command_digest: [u8; 32],
+    pub previous_digest: Option<[u8; 32]>,
+    pub target_digest: [u8; 32],
 }
 
 impl ProjectionIdentity {
-    pub(crate) fn new(actor: &Actor, command: &CommandEnvelope, previous: Option<&str>, target: &str) -> Result<Self> {
+    pub fn new(actor: &Actor, command: &CommandEnvelope, previous: Option<&str>, target: &str) -> Result<Self> {
         let actor = match actor { Actor::Orchestrator { .. } => serde_json::json!({"kind":"orchestrator"}), _ => serde_json::to_value(actor)? };
         Ok(Self { actor: String::from_utf8(super::canonical::bytes(&actor)?)?, command_id: command.command_id.0.clone(),
             data_epoch: command.data_epoch.0.clone(), command_digest: super::canonical::digest(command)?, previous_digest: previous.map(|text| Sha256::digest(text.as_bytes()).into()), target_digest: Sha256::digest(target.as_bytes()).into() })
@@ -35,14 +35,14 @@ impl ProjectionIdentity {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PendingProjection {
-    pub(crate) identity: ProjectionIdentity,
-    pub(crate) previous: Option<String>,
-    pub(crate) target: String,
+pub struct PendingProjection {
+    pub identity: ProjectionIdentity,
+    pub previous: Option<String>,
+    pub target: String,
 }
 
-pub(crate) use alondra_daemon_engine_model::options::{pending, read_options};
-pub(crate) use alondra_daemon_engine_model::options::read_optional;
+pub use alondra_daemon_engine_model::options::{pending, read_options};
+pub use alondra_daemon_engine_model::options::read_optional;
 use alondra_daemon_engine_model::options::{OPTIONS_LIMIT, PENDING};
 
 fn temporary(path: &Path) -> PathBuf {
@@ -63,13 +63,13 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<PathBuf> {
 
 fn sync_parent(path: &Path) -> Result<()> { File::open(path.parent().context("settings parent missing")?)?.sync_all()?; Ok(()) }
 
-pub(crate) fn replace(path: &Path, bytes: &[u8]) -> Result<()> {
+pub fn replace(path: &Path, bytes: &[u8]) -> Result<()> {
     let next = write_private(path, bytes)?;
     if let Err(why) = fs::rename(&next, path) { let _ = fs::remove_file(&next); return Err(why.into()); }
     sync_parent(path)
 }
 
-pub(crate) fn prepare(home: &Path, projection: &PendingProjection) -> Result<()> {
+pub fn prepare(home: &Path, projection: &PendingProjection) -> Result<()> {
     let path = home.join(PENDING);
     let bytes = serde_json::to_vec(projection)?;
     let next = write_private(&path, &bytes)?;
@@ -87,7 +87,7 @@ pub(super) fn record(c: &rusqlite::Connection, identity: &ProjectionIdentity) ->
     Ok(())
 }
 
-pub(crate) fn committed(store: &DomainStore, identity: &ProjectionIdentity) -> Result<bool> {
+pub fn committed(store: &DomainStore, identity: &ProjectionIdentity) -> Result<bool> {
     let epoch: String = store.conn.query_row("SELECT data_epoch FROM domain_meta WHERE singleton=1", [], |row| row.get(0))?;
     ensure!(epoch == identity.data_epoch, "the domain database changed during a settings write; preserve options.toml and options.pending for reconciliation");
     let stored = store.conn.query_row("SELECT actor,command_id,data_epoch,command_digest,target_digest FROM settings_projection_receipts WHERE identity=?1", [identity.key()?], |row| {
@@ -101,7 +101,7 @@ pub(crate) fn committed(store: &DomainStore, identity: &ProjectionIdentity) -> R
     Ok(false)
 }
 
-pub(crate) fn recover_store(store: &mut DomainStore, home: &Path) -> Result<()> {
+pub fn recover_store(store: &mut DomainStore, home: &Path) -> Result<()> {
     let path = home.join(PENDING);
     if !pending(home) {
         store.conn.execute("DELETE FROM settings_projection_receipts", [])?;

@@ -12,7 +12,7 @@ use std::path::PathBuf;
 const COPY_SUFFIX: &str = "before-lifecycle-journal";
 
 /// Where the copy of a database migrated by this build is kept.
-pub(crate) fn copy_path(database: &Path) -> PathBuf {
+pub fn copy_path(database: &Path) -> PathBuf {
     let mut name = database.file_name().unwrap_or_default().to_os_string();
     name.push(format!(".{COPY_SUFFIX}"));
     database.with_file_name(name)

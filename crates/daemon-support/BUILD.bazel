@@ -33,7 +33,7 @@ rust_library(
     crate_root = "src/lib.rs",
     edition = "2024",
     version = VERSION,
-    visibility = ["//crates/alondrad:__pkg__", "//crates/daemon-engine:__pkg__", "//crates/daemon-engine-model:__pkg__"],
+    visibility = ["//crates/alondrad:__pkg__", "//crates/daemon-engine:__pkg__", "//crates/daemon-engine-store:__pkg__", "//crates/daemon-engine-model:__pkg__"],
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS,
 )
 
@@ -78,5 +78,5 @@ exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 filegroup(
     name = "report_sources",
     srcs = glob(["src/**/*.rs"]),
-    visibility = ["//crates/alondra:__pkg__", "//crates/alondrad:__pkg__", "//crates/daemon-engine:__pkg__"],
+    visibility = ["//crates/alondra:__pkg__", "//crates/alondrad:__pkg__", "//crates/daemon-engine:__pkg__", "//crates/daemon-engine-store:__pkg__"],
 )

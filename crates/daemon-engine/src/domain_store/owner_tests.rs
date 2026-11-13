@@ -540,7 +540,7 @@ fn a_deferred_commit_failure_issues_no_seal_publication_or_cache() {
     assert!(Arc::ptr_eq(runtime.read().state(), read_before.state()), "nothing is published");
     assert!(runtime.take_acknowledgements().is_empty(), "no seal leaves a failed commit");
     let store = runtime.store.lock().unwrap();
-    assert!(Arc::ptr_eq(&store.cached.as_ref().unwrap().state, read_before.state()), "the cache keeps the committed state");
+    assert!(Arc::ptr_eq(store.cached_state().unwrap().0, read_before.state()), "the cache keeps the committed state");
     assert!(store.conn.is_autocommit());
 }
 
@@ -836,10 +836,10 @@ fn the_cache_after_an_owner_commit_is_what_a_reload_reads() {
         })
         .unwrap();
     let store = runtime.store.lock().unwrap();
-    let cached = store.cached.as_ref().unwrap();
-    assert!(Arc::ptr_eq(&cached.state, runtime.read().state()), "the cache holds the published state");
-    assert_eq!(cached.total_changes, store.conn.total_changes(), "the cache is current for this connection");
-    assert_eq!(repository::load(&store.conn).unwrap(), *cached.state, "a reload reads the cached state");
+    let (cached_state, total_changes) = store.cached_state().unwrap();
+    assert!(Arc::ptr_eq(cached_state, runtime.read().state()), "the cache holds the published state");
+    assert_eq!(total_changes, store.conn.total_changes(), "the cache is current for this connection");
+    assert_eq!(repository::load(&store.conn).unwrap(), **cached_state, "a reload reads the cached state");
 }
 
 // An accepted observation whose facts the domain never recorded cannot commit: dropping its

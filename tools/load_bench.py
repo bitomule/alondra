@@ -253,7 +253,7 @@ def main():
     try:
         seed_env = dict(os.environ, HOME=home, ALONDRA_LOAD_BENCH_DB=os.path.join(home, "domain.db"),
                         ALONDRA_LOAD_BENCH_NODES=str(args.nodes))
-        subprocess.run([args.seed, "--ignored", "--exact", "domain_store::load_bench::seed_load_bench"],
+        subprocess.run([args.seed, "--ignored", "--exact", "load_bench::seed_load_bench"],
                        env=seed_env, check=True, capture_output=True)
         env = dict(os.environ, HOME=home, ALONDRA_HOME=home, ALONDRA_PORT=str(args.port), ALONDRA_SANDBOX="1",
                    ALONDRA_WAKE="0", CLAUDE_HOME=os.path.join(home, "no-claude"), PATH="/usr/bin:/bin")

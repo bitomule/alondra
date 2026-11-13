@@ -20,7 +20,7 @@ pub(super) const SCHEMA: &str = r#"CREATE TABLE IF NOT EXISTS provider_transitio
  BEGIN SELECT RAISE(ABORT,'a provider transition already holds the task'); END;"#;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct Source {
+pub struct Source {
     pub agent: AgentId,
     pub instance: String,
     pub conversation: String,
@@ -39,10 +39,10 @@ pub(crate) struct Source {
 /// another account, where a new node takes it over from its record.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all="snake_case")]
-pub(crate) enum Kind { #[default] Model, Move }
+pub enum Kind { #[default] Model, Move }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct Plan {
+pub struct Plan {
     pub id: String,
     #[serde(default)]
     pub kind: Kind,
@@ -56,7 +56,7 @@ pub(crate) struct Plan {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all="snake_case")]
-pub(crate) enum Phase { Requested, Draining, SourceFenced, ContextReady, TargetAdmitted, TargetReady, Consumed, Done, Aborted, Uncertain }
+pub enum Phase { Requested, Draining, SourceFenced, ContextReady, TargetAdmitted, TargetReady, Consumed, Done, Aborted, Uncertain }
 impl Phase {
     pub fn key(self) -> &'static str { match self {
         Self::Requested=>"requested",Self::Draining=>"draining",Self::SourceFenced=>"source_fenced",Self::ContextReady=>"context_ready",Self::TargetAdmitted=>"target_admitted",Self::TargetReady=>"target_ready",Self::Consumed=>"consumed",Self::Done=>"done",Self::Aborted=>"aborted",Self::Uncertain=>"uncertain",
@@ -66,7 +66,7 @@ impl Phase {
     })}
 }
 #[derive(Clone, Debug)]
-pub(crate) struct Transition { pub plan:Plan,pub phase:Phase,pub facts:serde_json::Value }
+pub struct Transition { pub plan:Plan,pub phase:Phase,pub facts:serde_json::Value }
 
 fn load(c:&Connection,id:&str)->Result<Option<Transition>> {
     let plan:Option<String>=c.query_row("SELECT facts FROM provider_transition_steps WHERE transition_id=?1 AND phase='requested'",[id],|r|r.get(0)).optional()?;
@@ -80,7 +80,7 @@ fn open(c:&Connection,task:&TaskId)->Result<Option<Transition>> {
 }
 /// The prepared context a move keeps: its facts at `ContextReady`, or under `context` once it
 /// ended waiting for its target to start.
-pub(crate) fn prepared_facts(change:Transition)->serde_json::Value {
+pub fn prepared_facts(change:Transition)->serde_json::Value {
     if change.phase==Phase::Done{change.facts["context"].clone()}else{change.facts}
 }
 fn insert(c:&Connection,plan:&Plan)->Result<()> {
@@ -126,22 +126,22 @@ fn handoff(c:&Connection,task:&TaskId)->Result<Option<Transition>> {
 }
 
 impl DomainStore {
-    pub(crate) fn provider_transition_finished(&self,id:&str)->Result<bool>{Ok(self.conn.query_row("SELECT EXISTS(SELECT 1 FROM provider_transition_steps WHERE transition_id=?1 AND phase IN('done','aborted'))",[id],|row|row.get(0))?)}
-    pub(crate) fn provider_transition(&self,task:&TaskId)->Result<Option<Transition>> {open(&self.conn,task)}
-    pub(crate) fn deferred_move(&self,task:&TaskId)->Result<Option<Transition>> {deferred(&self.conn,task)}
-    pub(crate) fn deferred_moves(&self)->Result<Vec<Transition>> {
+    pub fn provider_transition_finished(&self,id:&str)->Result<bool>{Ok(self.conn.query_row("SELECT EXISTS(SELECT 1 FROM provider_transition_steps WHERE transition_id=?1 AND phase IN('done','aborted'))",[id],|row|row.get(0))?)}
+    pub fn provider_transition(&self,task:&TaskId)->Result<Option<Transition>> {open(&self.conn,task)}
+    pub fn deferred_move(&self,task:&TaskId)->Result<Option<Transition>> {deferred(&self.conn,task)}
+    pub fn deferred_moves(&self)->Result<Vec<Transition>> {
         let mut statement=self.conn.prepare("SELECT DISTINCT task_id FROM provider_transition_steps WHERE phase='done' AND json_extract(facts,'$.deferred_start')=1 ORDER BY task_id")?;
         let ids=statement.query_map([],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         ids.into_iter().map(|id|deferred(&self.conn,&TaskId(id))).collect::<Result<Vec<_>>>().map(|rows|rows.into_iter().flatten().collect())
     }
-    pub(crate) fn provider_transitions(&self)->Result<Vec<Transition>> {
+    pub fn provider_transitions(&self)->Result<Vec<Transition>> {
         let mut statement=self.conn.prepare("SELECT DISTINCT task_id FROM provider_transition_steps WHERE phase='requested' ORDER BY task_id")?;
         let ids=statement.query_map([],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         ids.into_iter().map(|id|open(&self.conn,&TaskId(id))).collect::<Result<Vec<_>>>().map(|rows|rows.into_iter().flatten().collect())
     }
 }
 impl OwnerTransaction<'_> {
-    pub(crate) fn validate_selection_binding(&mut self,plan:&Plan)->std::result::Result<(),StoreError>{
+    pub fn validate_selection_binding(&mut self,plan:&Plan)->std::result::Result<(),StoreError>{
         let lifecycle=self.lifecycle(&plan.task)?;
         let stamp=lifecycle.execution().ok_or_else(||DomainError::new("native_session_required","The source native session is unavailable"))?;
         let same_account=plan.kind==Kind::Move || plan.target_account==plan.source.account;
@@ -153,7 +153,7 @@ impl OwnerTransaction<'_> {
         self.require_native_identity(&binding,identity.as_ref())?;
         Ok(())
     }
-    pub(crate) fn validate_selection_source(&mut self,plan:&Plan)->std::result::Result<(),StoreError>{
+    pub fn validate_selection_source(&mut self,plan:&Plan)->std::result::Result<(),StoreError>{
         self.validate_selection_binding(plan)?;
         let catalog=self.state().model_catalogs.iter().find(|catalog|catalog.account==plan.target_account).ok_or_else(||DomainError::new("model_catalog_unavailable","Refresh this account's model catalog"))?;
         let candidate=alondra_core::model_selection::ModelCandidate{model:plan.target_model.model.model.clone(),reasoning_effort:plan.target_model.reasoning_effort.clone()};
@@ -163,7 +163,7 @@ impl OwnerTransaction<'_> {
         if effective.reasoning_effort!=plan.target_model.reasoning_effort{return Err(DomainError::new("unsupported_live_effort","The verified model control cannot change reasoning effort").into())}
         Ok(())
     }
-    pub(crate) fn transition_launch_text(&mut self,task:&TaskId,fallback:&str)->std::result::Result<String,StoreError>{
+    pub fn transition_launch_text(&mut self,task:&TaskId,fallback:&str)->std::result::Result<String,StoreError>{
         let first=self.lifecycle(task)?.pending_inputs().first().map(|input|input.as_str().to_owned()).context("transition input missing")?;
         let text=self.sql(|c|c.query_row("SELECT body FROM lifecycle_inputs WHERE task_id=?1 AND input_id=?2",params![task.0,first],|r|r.get::<_,Option<String>>(0)).map_err(Into::into))?.unwrap_or_else(||fallback.to_owned());
         let change=self.sql(|c|handoff(c,task))?.context("transfer context missing")?;
@@ -173,7 +173,7 @@ impl OwnerTransaction<'_> {
         if prepared.estimated_context_tokens.saturating_add(alondra_store::estimated_tokens(&text))>available{return Err(DomainError::new("handoff_budget","The exact queued user input and retained context exceed the target's transfer budget").into())}
         Ok(text)
     }
-    pub(crate) fn source_inputs_unoffered(&mut self,task:&TaskId)->std::result::Result<bool,StoreError>{
+    pub fn source_inputs_unoffered(&mut self,task:&TaskId)->std::result::Result<bool,StoreError>{
         let lifecycle=self.lifecycle(task)?;
         let generation=lifecycle.execution().context("source execution missing")?.generation();
         let inputs:Vec<_>=lifecycle.pending_inputs().iter().map(|input|input.as_str().to_owned()).collect();
@@ -185,9 +185,9 @@ impl OwnerTransaction<'_> {
             Ok(true)
         })
     }
-    pub(crate) fn request_provider_transition(&mut self,plan:&Plan)->std::result::Result<(),StoreError>{ self.sql(|c|insert(c,plan)) }
-    pub(crate) fn provider_transition_phase(&mut self,id:&str,expected:Phase,next:Phase,facts:serde_json::Value)->std::result::Result<(),StoreError>{self.sql(|c|append(c,id,expected,next,&facts))}
-    pub(crate) fn source_fenced(&mut self,plan:&Plan,proof:&EndedHost)->std::result::Result<(),StoreError>{
+    pub fn request_provider_transition(&mut self,plan:&Plan)->std::result::Result<(),StoreError>{ self.sql(|c|insert(c,plan)) }
+    pub fn provider_transition_phase(&mut self,id:&str,expected:Phase,next:Phase,facts:serde_json::Value)->std::result::Result<(),StoreError>{self.sql(|c|append(c,id,expected,next,&facts))}
+    pub fn source_fenced(&mut self,plan:&Plan,proof:&EndedHost)->std::result::Result<(),StoreError>{
         self.sql(|c|{
             anyhow::ensure!(proof.state_dir()==plan.source.host_directory,"source fence belongs to another host");
             let bootstrap:serde_json::Value=serde_json::from_slice(proof.bootstrap())?;
@@ -197,7 +197,7 @@ impl OwnerTransaction<'_> {
             append(c,&plan.id,Phase::Draining,Phase::SourceFenced,&serde_json::json!({"bootstrap_digest":sha2::Sha256::digest(proof.bootstrap()).iter().map(|byte|format!("{byte:02x}")).collect::<String>(),"generation":plan.source.generation}))
         })
     }
-    pub(crate) fn selection_source(&mut self,task:&TaskId,host_directory:std::path::PathBuf)->std::result::Result<Source,StoreError>{
+    pub fn selection_source(&mut self,task:&TaskId,host_directory:std::path::PathBuf)->std::result::Result<Source,StoreError>{
         let current=self.state().tasks.get(task).ok_or_else(||DomainError::new("not_found","Task missing"))?;
         let selection=current.selection.clone();let account=current.account_key();
         let stamp=self.lifecycle(task)?.execution().cloned().ok_or_else(||DomainError::new("conflict","Task has no managed execution"))?;
@@ -212,7 +212,7 @@ impl OwnerTransaction<'_> {
 }
 
 impl OwnerTransaction<'_> {
-    pub(crate) fn transition_model_control_status(&mut self, plan: &Plan) -> std::result::Result<Option<String>, StoreError> {
+    pub fn transition_model_control_status(&mut self, plan: &Plan) -> std::result::Result<Option<String>, StoreError> {
         let change = self.sql(|connection| load(connection, &plan.id))?.context("provider transition missing")?;
         let Some(control) = change.facts["control_id"].as_i64() else { return Ok(None) };
         self.sql(|connection| {
@@ -226,7 +226,7 @@ impl OwnerTransaction<'_> {
             }
         })
     }
-    pub(crate) fn configure_transition_model(&mut self,plan:&Plan)->std::result::Result<bool,StoreError>{
+    pub fn configure_transition_model(&mut self,plan:&Plan)->std::result::Result<bool,StoreError>{
         self.validate_selection_source(plan)?;
         if let Some(status) = self.transition_model_control_status(plan)? {
             if status == "rejected" { return Err(DomainError::new("native_model_control_rejected", "The native runtime refused the model change before applying it").into()) }
@@ -241,12 +241,12 @@ impl OwnerTransaction<'_> {
         })
     }
     /// What the task keeps pending while its target starts: nothing once the move already ended.
-    pub(crate) fn pending_transition_selection(&mut self,id:&str)->std::result::Result<Option<alondra_core::model_selection::PendingTaskSelection>,StoreError>{
+    pub fn pending_transition_selection(&mut self,id:&str)->std::result::Result<Option<alondra_core::model_selection::PendingTaskSelection>,StoreError>{
         let change=self.sql(|c|load(c,id))?.context("provider transition missing")?;
         if change.phase==Phase::Done{return Ok(None)}
         Ok(Some(alondra_core::model_selection::PendingTaskSelection{account:change.plan.target_account,model:change.plan.target_model,reason:change.plan.reason}))
     }
-    pub(crate) fn admit_provider_transition(&mut self,id:&str,stamp:&alondra_foundation::ExecutionStamp)->std::result::Result<(),StoreError>{
+    pub fn admit_provider_transition(&mut self,id:&str,stamp:&alondra_foundation::ExecutionStamp)->std::result::Result<(),StoreError>{
         if self.sql(|c|load(c,id))?.is_some_and(|change|change.phase==Phase::Done){return self.release_context(id,stamp.task())}
         let input=self.lifecycle(stamp.task())?.pending_inputs().first().map(|input|input.as_str().to_owned()).context("target admission has no first input")?;
         self.sql(|c|{
@@ -255,7 +255,7 @@ impl OwnerTransaction<'_> {
             append(c,id,Phase::ContextReady,Phase::TargetAdmitted,&serde_json::json!({"agent":stamp.node(),"instance":stamp.instance().as_str(),"generation":stamp.generation(),"input":input,"context":change.facts}))
         })
     }
-    pub(crate) fn observe_provider_transition(&mut self,stamp:&alondra_foundation::ExecutionStamp,cursor:u64)->std::result::Result<(),StoreError>{
+    pub fn observe_provider_transition(&mut self,stamp:&alondra_foundation::ExecutionStamp,cursor:u64)->std::result::Result<(),StoreError>{
         if self.state().tasks.get(stamp.task()).is_none_or(|task|task.pending_selection.is_none()){return Ok(())}
         let Some(mut change)=self.sql(|c|open(c,stamp.task()))? else{return Ok(())};
         if !matches!(change.phase,Phase::TargetAdmitted|Phase::TargetReady) || change.facts["instance"].as_str()!=Some(stamp.instance().as_str()) || change.facts["generation"].as_u64()!=Some(stamp.generation()){return Ok(())}
@@ -274,7 +274,7 @@ impl OwnerTransaction<'_> {
         self.release_context(&change.plan.id,stamp.task())?;
         self.provider_transition_phase(&change.plan.id,Phase::Consumed,Phase::Done,proof)
     }
-    pub(crate) fn provider_transition_blocks(&mut self,stamp:&alondra_foundation::ExecutionStamp)->std::result::Result<bool,StoreError>{
+    pub fn provider_transition_blocks(&mut self,stamp:&alondra_foundation::ExecutionStamp)->std::result::Result<bool,StoreError>{
         if self.state().tasks.get(stamp.task()).is_none_or(|task|task.pending_selection.is_none()){return Ok(false)}
         Ok(self.sql(|c|open(c,stamp.task()))?.is_some_and(|change|change.plan.source.instance==stamp.instance().as_str()))
     }

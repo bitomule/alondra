@@ -7,7 +7,7 @@ use std::path::Path;
 
 /// What the domain is told of a decision Claude asks for through a task's SDK execution: the call
 /// it is about and the card the user would answer, built exactly as a held hook's card.
-pub(crate) struct SdkDecision {
+pub struct SdkDecision {
     pub hold: Hold,
     pub tool: Option<String>,
     pub input: Value,
@@ -16,12 +16,12 @@ pub(crate) struct SdkDecision {
 }
 
 /// How the card of a decision Claude asks for is built, which the store does not know.
-pub(crate) trait SdkDecisions: Send + Sync {
+pub trait SdkDecisions: Send + Sync {
     fn decide(&self, task_title: &str, kind: DecisionKind, payload: &Value, worktree: Option<&str>, worktrees: &[String], home: &Path) -> SdkDecision;
 }
 
 /// What the orchestrator does with a request that holds a plan the user approved from a final result.
-pub(crate) fn approved_plan_work(state: &DomainState, request: &RequestId) -> Option<String> {
+pub fn approved_plan_work(state: &DomainState, request: &RequestId) -> Option<String> {
     let approved = state.request_plans.get(request)?;
     let source = state.tasks.get(&approved.task_id).map_or("", |task| task.title.as_str());
     Some(format!(
@@ -45,7 +45,7 @@ fn decided(state: &DomainState, decisions: &[InteractionId]) -> Vec<String> {
 }
 
 /// The decision and the plan of every dependent it still holds, with how to settle each.
-pub(crate) fn orchestrator_text(state: &DomainState, review_id: &InteractionId, plan_of: &dyn Fn(&TaskId) -> Option<LaunchPlan>) -> String {
+pub fn orchestrator_text(state: &DomainState, review_id: &InteractionId, plan_of: &dyn Fn(&TaskId) -> Option<LaunchPlan>) -> String {
     let Some(review) = state.plan_reviews.get(review_id) else { return String::new() };
     let source = state.tasks.get(&review.task_id).map_or("", |t| t.title.as_str());
     let held: Vec<String> = state.plan_review_waiting(review).map(|t| {

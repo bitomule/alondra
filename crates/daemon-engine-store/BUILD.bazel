@@ -1,0 +1,73 @@
+load("//tools:rust_test.bzl", "LOW_OPT_LEVEL", "low_opt_rust_test")
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//:version.bzl", "VERSION")
+
+WORKSPACE_DEPS = ["//crates/agent-application:agent_application", "//crates/agent-runtime:agent_runtime", "//crates/core:alondra_core", "//crates/domain:domain", "//crates/foundation:foundation", "//crates/provider-codex:provider_codex", "//crates/provider-contract:provider_contract", "//crates/store:store"]
+SQL = [
+    "//crates/alondrad:src/domain_store/schema.sql",
+    "//crates/alondrad:src/domain_store/schedule_launch_transition.sql",
+    "src/model_metrics.sql",
+]
+TEST_DATA = SQL + [
+    "//crates/alondrad:src/domain_api.rs",
+    "//crates/alondrad:src/service/domain_parity_tests.rs",
+    "//crates/core:src/domain/tests.rs",
+    "//crates/daemon-support:report_sources",
+    "//fixtures/domain-v2:acceptance.json",
+]
+
+rust_library(
+    name = "daemon_engine_store",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/**/*_tests.rs", "src/**/tests.rs", "src/**/tests/*.rs", "src/testing.rs"]),
+    compile_data = SQL,
+    crate_name = "alondra_daemon_engine_store",
+    edition = "2024",
+    version = VERSION,
+    visibility = ["//crates:__subpackages__"],
+    deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
+        "//crates/daemon-engine-model:daemon_engine_model",
+        "//crates/daemon-support:daemon_support",
+    ],
+)
+
+rust_library(
+    name = "daemon_engine_store_test_hooks",
+    testonly = True,
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    compile_data = SQL,
+    crate_features = ["test-hooks"],
+    crate_name = "alondra_daemon_engine_store",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    rustc_flags = [LOW_OPT_LEVEL],
+    version = VERSION,
+    visibility = ["//crates/daemon-engine:__pkg__"],
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
+        "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
+        "//crates/daemon-support:daemon_support_test_hooks",
+    ],
+)
+
+low_opt_rust_test(
+    name = "daemon_engine_store_test",
+    size = "medium",
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    compile_data = TEST_DATA,
+    crate_name = "alondra_daemon_engine_store",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    env = {"HOME": "."},
+    version = VERSION,
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
+        "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
+        "//crates/daemon-support:daemon_support_test_hooks",
+    ],
+)
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+filegroup(
+    name = "report_sources",
+    srcs = glob(["src/**/*.rs"]),
+    visibility = ["//crates/alondra:__pkg__", "//crates/alondrad:__pkg__"],
+)

@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain_store::tests::{Fixture, seeded};
+use crate::tests::{Fixture, seeded};
 
 /// The journal over a new transaction on the store's connection, as every write path opens it.
 fn journal(store: &DomainStore) -> alondra_store::LifecycleTransaction<'_> {

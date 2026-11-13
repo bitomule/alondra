@@ -28,7 +28,7 @@ rust_library(
     edition = "2024",
     rustc_flags = [LOW_OPT_LEVEL],
     version = VERSION,
-    visibility = ["//crates/daemon-engine:__pkg__"],
+    visibility = ["//crates/daemon-engine:__pkg__", "//crates/daemon-engine-store:__pkg__"],
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + ["//crates/daemon-support:daemon_support_test_hooks"],
 )
 

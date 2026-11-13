@@ -8,7 +8,7 @@ REPORT_SOURCES = [
     "//crates/alondrad:report_sources",
     "//crates/core:report_sources",
     "//crates/daemon-engine:report_sources",
-    "//crates/daemon-engine-model:report_sources",
+    "//crates/daemon-engine-model:report_sources", "//crates/daemon-engine-store:report_sources",
     "//crates/daemon-support:report_sources",
     "//crates/domain:report_sources",
     "//crates/foundation:report_sources",

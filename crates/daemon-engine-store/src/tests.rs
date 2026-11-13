@@ -9,7 +9,7 @@ impl Fixture {
         fs::DirBuilder::new().mode(0o700).create(&p).unwrap();
         Self(p)
     }
-    pub(super) fn path(&self) -> PathBuf {
+    pub fn path(&self) -> PathBuf {
         self.0.join("domain.sqlite")
     }
 }
@@ -610,7 +610,7 @@ fn crash_recovery_preserves_committed_work_and_receipts_before_schema_admission(
             drop(store);
             let before = fs::metadata(fixture.path()).unwrap();
             let mut child = std::process::Command::new(std::env::current_exe().unwrap());
-            child.args(["--ignored", "--exact", "domain_store::tests::crash_domain_transaction_fixture"])
+            child.args(["--ignored", "--exact", "tests::crash_domain_transaction_fixture"])
                 .env("ALONDRA_CRASH_DOMAIN", fixture.path()).env("HOME", &fixture.0)
                 .env_remove("CLAUDE_HOME").env_remove("CLAUDE_CONFIG_DIR")
                 .env_remove("ALONDRA_UNCOMMITTED_SCHEMA");
@@ -2201,7 +2201,7 @@ fn a_journal_event_edited_behind_the_store_is_refused() {
 #[test]
 fn no_daemon_code_writes_the_journal_tables_but_the_store() {
     for (name, source) in [
-        ("domain_store.rs", include_str!("../domain_store.rs")),
+        ("domain_store.rs", include_str!("lib.rs")),
         ("repository.rs", include_str!("repository.rs")),
         ("command.rs", include_str!("command.rs")),
         ("owner.rs", include_str!("owner.rs")),
@@ -2245,7 +2245,7 @@ fn a_read_transaction_reads_one_commit_while_the_writer_writes_beside_it() {
 
 #[test]
 fn launched_tasks_answers_for_every_task_in_one_statement() {
-    use crate::domain_store::model_metrics::{Decision, DecisionKind};
+    use crate::model_metrics::{Decision, DecisionKind};
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
@@ -2370,7 +2370,7 @@ fn a_continuation_and_the_worktree_it_was_handed_survive_a_restart() {
     assert_eq!(state.tasks[&TaskId::from("t-claude")].worktrees[worktree].origin, WorktreeOrigin::Inherited);
 }
 
-fn continuation_fixture() -> (Fixture, crate::test_support::Directory, DomainStore, CommandEnvelope, Checklist) {
+pub fn continuation_fixture() -> (Fixture, crate::test_support::Directory, DomainStore, CommandEnvelope, Checklist) {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
@@ -2418,46 +2418,6 @@ fn a_continuation_inherits_the_approved_checklist_and_existing_worktree_after_re
     reopened.integrity_check().unwrap();
 }
 
-#[test]
-fn a_continuation_storage_failure_rolls_back_the_transfer_and_publication() {
-    for deferred in [false, true] {
-        let (fixture, _root, store, command, _) = continuation_fixture();
-        drop(store);
-        let runtime = crate::domain_runtime::DomainRuntime::open_at(&fixture.0, &fixture.path()).unwrap();
-        let observer = Connection::open(fixture.path()).unwrap();
-        if deferred {
-            observer.execute_batch("CREATE TABLE missing_parent(id INTEGER PRIMARY KEY);
-                CREATE TABLE deferred_child(parent INTEGER REFERENCES missing_parent(id) DEFERRABLE INITIALLY DEFERRED);
-                CREATE TRIGGER fail_continuation AFTER INSERT ON semantic_receipts WHEN NEW.command_id='continue'
-                BEGIN INSERT INTO deferred_child VALUES(404); END;").unwrap();
-        } else {
-            observer.execute_batch("CREATE TRIGGER fail_continuation BEFORE INSERT ON task_checklists WHEN NEW.task_id='continued'
-                BEGIN SELECT RAISE(ABORT,'injected continuation write failure'); END;").unwrap();
-        }
-        let tables = ["tasks", "task_checklists", "task_worktree_records", "task_continuations", "semantic_receipts", "command_audit",
-            "domain_messages", "domain_outbox", "lifecycle_events"];
-        let counts = || tables.map(|table| observer.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row.get::<_, i64>(0)).unwrap());
-        let before_counts = counts();
-        let before = runtime.read();
-        let changes = runtime.subscribe();
-        let error = runtime.execute(&Actor::Orchestrator { generation: 0 }, &command, None, || Ok(())).unwrap_err();
-        let StoreError::Storage(cause) = error else { panic!("expected storage failure: {error:?}") };
-        let sqlite = cause.downcast_ref::<rusqlite::Error>().or_else(|| {
-            match cause.downcast_ref::<alondra_store::Error>() {
-                Some(alondra_store::Error::Database(error)) => Some(error),
-                _ => None,
-            }
-        });
-        assert!(matches!(sqlite, Some(rusqlite::Error::SqliteFailure(code, _))
-            if code.extended_code == if deferred { rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY } else { rusqlite::ffi::SQLITE_CONSTRAINT_TRIGGER }), "{cause:#}");
-        assert_eq!(counts(), before_counts);
-        assert!(Arc::ptr_eq(runtime.read().state(), before.state()), "no partial state is published");
-        assert!(!changes.has_changed().unwrap(), "no failed change is announced");
-        assert!(runtime.take_acknowledgements().is_empty());
-        let mut reopened = DomainStore::open(&fixture.path()).unwrap();
-        assert_eq!(&*reopened.load().unwrap(), &**before.state(), "rollback also survives reopening");
-    }
-}
 
 #[test]
 fn a_checklist_cannot_disappear_without_one_new_matching_continuation() {
