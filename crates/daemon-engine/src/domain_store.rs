@@ -487,7 +487,28 @@ impl std::fmt::Display for StoreError {
         }
     }
 }
-impl std::error::Error for StoreError {}
+impl std::error::Error for StoreError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Domain(error) => Some(error),
+            Self::Storage(error) => Some(error.as_ref()),
+        }
+    }
+}
+impl StoreError {
+    /// Keeps storage diagnostics in the daemon while the producer receives a stable refusal.
+    pub fn into_domain_error(self, envelope: &CommandEnvelope) -> DomainError {
+        match self {
+            Self::Domain(error) => error,
+            Self::Storage(error) => {
+                let kind = serde_json::to_value(&envelope.command).ok()
+                    .and_then(|value| value["kind"].as_str().map(str::to_owned)).unwrap_or_else(|| "unknown".into());
+                log!("domain storage failure: operation={kind} command_id={} cause={error:#}", envelope.command_id);
+                DomainError::new("storage_unavailable", "domain transaction could not be completed")
+            }
+        }
+    }
+}
 impl From<anyhow::Error> for StoreError {
     fn from(e: anyhow::Error) -> Self {
         Self::Storage(e)

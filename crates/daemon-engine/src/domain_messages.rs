@@ -321,10 +321,7 @@ fn mark_read(domain: &DomainRuntime, user: &Actor, interaction_id: InteractionId
         command_id: format!("mark-read-{}", crate::auth::random_hex(8)).into(), expected_revision: state.revision,
         command: Command::MarkRead { interaction_id },
     };
-    domain.execute(user, &envelope, None, || Ok(())).map(|_| ()).map_err(|error| match error {
-        crate::domain_store::StoreError::Domain(error) => error,
-        crate::domain_store::StoreError::Storage(_) => refused("storage_unavailable", "domain transaction could not be completed"),
-    })
+    domain.execute(user, &envelope, None, || Ok(())).map(|_| ()).map_err(|error| error.into_domain_error(&envelope))
 }
 
 #[cfg(test)]
@@ -365,6 +362,37 @@ mod tests {
 
     fn body(value: Value) -> MessageBody {
         serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn mark_read_storage_diagnostic_is_logged_without_leaking_to_the_client() {
+        const PROBE: &str = "ALONDRA_MARK_READ_LOG_PROBE";
+        if std::env::var_os(PROBE).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "domain_messages::tests::mark_read_storage_diagnostic_is_logged_without_leaking_to_the_client", "--nocapture"])
+                .env(PROBE, "1").output().unwrap();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(output.status.success(), "{}\n{stderr}", String::from_utf8_lossy(&output.stdout));
+            for expected in ["operation=mark_read command_id=mark-read-", "injected mark read cause"] {
+                assert!(stderr.contains(expected), "missing {expected}: {stderr}");
+            }
+            return;
+        }
+        let (fixture, domain) = world();
+        let state = domain.state().unwrap();
+        domain.execute(&Actor::System, &CommandEnvelope {
+            protocol_version: alondra_core::domain::PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
+            command_id: "info".into(), expected_revision: state.revision,
+            command: Command::PublishInformation { interaction_id: "info".into(), scope: alondra_core::domain::Scope::Task { task_id: "t".into() },
+                recipient: alondra_core::domain::Recipient::User, body: "An update".into(), attachments: vec![],
+                card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update") },
+        }, None, || Ok(())).unwrap();
+        let observer = rusqlite::Connection::open(crate::domain_database_migration::active_path(&fixture.0)).unwrap();
+        observer.execute_batch("CREATE TRIGGER fail_mark_read BEFORE INSERT ON semantic_receipts
+            BEGIN SELECT RAISE(ABORT,'injected mark read cause'); END;").unwrap();
+        let error = mark_read(&domain, &user(), "info".into()).unwrap_err();
+        assert_eq!(error.code, "storage_unavailable");
+        assert_eq!(error.message, "domain transaction could not be completed");
     }
 
     #[tokio::test]

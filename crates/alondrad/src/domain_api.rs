@@ -1259,8 +1259,7 @@ async fn checked_producer_command<H: DomainHost>(
                 }
                 Ok(answer)
             }
-            Err(StoreError::Domain(error)) => Err(error),
-            Err(StoreError::Storage(_)) => Err(storage()),
+            Err(error) => Err(error.into_domain_error(&envelope)),
         }
     })).await.unwrap_or_else(|_| Err(storage()))
 }
@@ -1455,6 +1454,70 @@ mod tests {
         let domain = DomainRuntime::open(&home).unwrap();
         assert!(task_wait_notice(&domain, &wait).unwrap().contains("Go on with your task"));
         assert_eq!(domain.state().unwrap().tasks[&TaskId::from("t")].state, TaskState::Running);
+    }
+
+    #[test]
+    fn continuation_storage_diagnostic_keeps_the_cause_in_the_daemon() {
+        const PROBE: &str = "ALONDRA_CONTINUATION_LOG_PROBE";
+        if std::env::var_os(PROBE).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "domain_api::tests::continuation_storage_diagnostic_keeps_the_cause_in_the_daemon", "--nocapture"])
+                .env(PROBE, "1").output().unwrap();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(output.status.success(), "{}\n{stderr}", String::from_utf8_lossy(&output.stdout));
+            for expected in ["domain storage failure: operation=create_task command_id=continue-api",
+                "persisting domain state", "injected continuation cause"] {
+                assert!(stderr.contains(expected), "missing {expected}: {stderr}");
+            }
+            assert!(!stderr.contains("DO_NOT_LOG_COMMAND_BODY"), "{stderr}");
+            return;
+        }
+        let (_home, host) = fixture();
+        let root = crate::test_support::Directory::new();
+        let path = crate::worktree::testing::task_worktree(&root, "original");
+        let path = path.to_str().unwrap();
+        let plan = "- [ ] Build the answer\n";
+        for (actor, id, command) in [
+            (Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "request-a".into(), title: "Answer".into() }),
+            (Actor::System, "worktree", Command::RecordTaskWorktree { task_id: "task-a".into(), path: path.into(),
+                origin: WorktreeOrigin::Task, branch: Some("worktree-original".into()) }),
+            (Actor::System, "plan", Command::HoldHook { interaction_id: "plan".into(), task_id: "task-a".into(), agent_id: "agent-a".into(),
+                hold: Hold::Plan, body: plan.into(), options: Hold::Plan.options(), card: CardSpec::new(CardKind::Review, "Plan").content(ContentKind::Plan, plan) }),
+            (Actor::User { user_id: "local-user".into() }, "approve", Command::AnswerQuestion {
+                attachments: vec![], interaction_id: "plan".into(), option_id: Hold::APPROVE.into(), inputs: Default::default() }),
+        ] {
+            host.domain.execute(&actor, &envelope(&host, id, command), None, || Ok(())).unwrap();
+        }
+        let token = host.domain.issue(Principal::Orchestrator { generation: 0, execution_id: "continuation-probe".into() }).unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", format!("Bearer {}", token.expose_for_child_environment()).parse().unwrap());
+        let command = envelope(&host, "continue-api", Command::CreateTask {
+            task_id: "continued".into(), request_id: "request-a".into(), title: "DO_NOT_LOG_COMMAND_BODY".into(), agent_id: None,
+            review_prs: false, dependencies: Default::default(), stack: None, plan_items: None, continues: Some("task-a".into()),
+            launch: Some(serde_json::from_value(json!({"name":"node", "cwd":path, "model":"sonnet", "reason":"fixture"})).unwrap()),
+        });
+        let observer = rusqlite::Connection::open(crate::domain_database_migration::active_path(&host.home)).unwrap();
+        observer.execute_batch("CREATE TRIGGER fail_continuation BEFORE INSERT ON task_checklists WHEN NEW.task_id='continued'
+            BEGIN SELECT RAISE(ABORT,'injected continuation cause'); END;").unwrap();
+        let before = host.domain.state().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let reply = execute_command(host.daemon.clone(), "127.0.0.1:12345".parse().unwrap(), None, headers.clone(), command.clone()).await;
+            let bytes = axum::body::to_bytes(reply.into_body(), usize::MAX).await.unwrap();
+            let response: Value = serde_json::from_slice(&bytes).unwrap();
+            let text = response.to_string();
+            assert!(text.contains("storage_unavailable"), "{text}");
+            assert!(text.contains("domain transaction could not be completed"), "{text}");
+            assert!(!text.contains("injected continuation cause") && !text.contains("persisting domain state"), "{text}");
+            assert_eq!(host.domain.state().unwrap(), before);
+            observer.execute_batch("DROP TRIGGER fail_continuation").unwrap();
+            let reply = execute_command(host.daemon.clone(), "127.0.0.1:12345".parse().unwrap(), None, headers, command).await;
+            assert_eq!(reply.status(), StatusCode::OK);
+        });
+        let after = host.domain.state().unwrap();
+        assert_eq!(after.checklists.get(&TaskId::from("continued")), before.checklists.get(&TaskId::from("task-a")));
+        assert!(!after.checklists.contains_key(&TaskId::from("task-a")));
+        assert_eq!(after.tasks[&TaskId::from("continued")].worktrees[path].origin, WorktreeOrigin::Inherited);
     }
 
     #[test]
