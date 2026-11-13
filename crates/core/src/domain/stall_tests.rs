@@ -175,7 +175,7 @@ fn a_task_closed_for_its_stops_says_so_with_its_result_on_every_client() {
         let es = render(&s, client, Lang::Es);
         assert!(es.contains("Cancelada") && es.contains("Half the fix is on branch fix/queue."), "{client:?}: {es}");
         let es = render(&unsettled, client, Lang::Es);
-        assert!(es.contains("Cancelada") && es.contains("Alondra la cerró"), "{client:?}: {es}");
+        assert!(es.contains("Cancelada") && es.contains("El encargo quedó sin atender"), "{client:?}: {es}");
     }
 }
 

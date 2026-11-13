@@ -39,7 +39,7 @@ pub mod text;
 pub use components::*;
 pub use capabilities::{ClientCapabilities, InvalidCapabilities};
 pub use card::answer_label;
-pub use messages::{Outcome, OutcomeKind, refusal_text, send_anyway, transport_failure, unknown_outcome};
+pub use messages::{Outcome, OutcomeKind, refusal_text, scheduled_message_stamp, send_anyway, transport_failure, unknown_outcome};
 pub use resolves::{pr_presentation, resolves_card};
 pub use live::*;
 pub use text::Lang;

@@ -28,6 +28,13 @@ impl DomainState {
     /// same command: a task with its PR open ends only with the user's merge or close of it.
     pub(in crate::domain) fn close_task(&mut self, actor: &Actor, task: &TaskId, result: Option<String>,
         effects: &mut Vec<DomainEffect>, created: &mut Vec<String>, lifecycles: &mut Lifecycles) -> Result<()> {
+        let explained = result.is_some() && !self.task(task)?.pending_user_inputs.is_empty();
+        if !matches!(actor, Actor::User { .. }) && !self.task(task)?.pending_user_inputs.is_empty() && !explained {
+            return fail("pending_user_message", "A user message still needs a final delivery before the task can be cancelled");
+        }
+        if matches!(actor, Actor::User { .. }) || explained {
+            self.tasks.get_mut(task).unwrap().pending_user_inputs.clear();
+        }
         let Some(pr) = self.open_pr_of(task).cloned() else {
             return self.cancel(task, effects, lifecycles);
         };
@@ -36,7 +43,9 @@ impl DomainState {
             t.open_pr = Some(OpenPrPending::Close { comment: cancelled_pr_comment(&t.title) });
             return self.cancel(task, effects, lifecycles);
         }
-        self.delivered_pr_stays(actor, task, self.lifecycle(lifecycles, task)?.phase())?;
+        if !explained {
+            self.delivered_pr_stays(actor, task, self.lifecycle(lifecycles, task)?.phase())?;
+        }
         let known = OpenPrStatus { state: pr.state, head: pr.head.clone(), base: pr.base.clone(),
             mergeable: PrMergeable::Computing, checks: PrChecks::None };
         self.deliver_open_pr(task, &pr, &known, result, created, lifecycles)
@@ -131,7 +140,16 @@ impl DomainState {
         self.insert_interaction(&Actor::System, &id, &Scope::Task { task_id: task.clone() }, &Recipient::User, &card.to_body(), false, &[],
             InteractionPayload::Delivery { targets, is_final: true, acceptance: None, feedback: vec![] }, &spec, Source::Delivery)?;
         self.invalidate(task);
+        let standing = self.lifecycle(lifecycles, task)?.delivery().cloned();
+        let mut replacement_notice = None;
+        if let Some(previous) = standing {
+            replacement_notice = Some(self.next_input(task));
+            self.hand_back(task, &previous, delivery_replaced(), lifecycles)?;
+        }
         self.decide(lifecycles, task, LifecycleRecord::Presented { delivery: id.clone() })?;
+        if let Some(notice) = replacement_notice {
+            self.consume_replacement_notice(task, notice, lifecycles)?;
+        }
         let t = self.tasks.get_mut(task).expect("found above");
         t.final_presentation = Some(id.clone());
         t.verdict = None;

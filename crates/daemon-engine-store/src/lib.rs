@@ -70,6 +70,7 @@ const TASK_MODELS: &str = "CREATE TABLE IF NOT EXISTS task_models(task_id TEXT P
 /// The provider account each Task's current execution runs on, when it is not the provider's own
 /// sign-in; created on every open like task_models.
 const TASK_ACCOUNTS: &str = "CREATE TABLE IF NOT EXISTS task_accounts(task_id TEXT PRIMARY KEY REFERENCES tasks(id), account TEXT NOT NULL CHECK(length(account)>0));";
+const TASK_USER_INPUTS: &str = "CREATE TABLE IF NOT EXISTS task_user_inputs(task_id TEXT PRIMARY KEY REFERENCES tasks(id), inputs TEXT NOT NULL CHECK(json_valid(inputs)));";
 /// The project each Task belongs to, set when it was created; created on every open like task_models.
 /// The task each task carries on, in the same request.
 /// The revision that created each Task, kept beside it; a Task without a row was created before
@@ -761,6 +762,7 @@ impl DomainStore {
         tx.execute_batch(TASK_PROJECTS)?;
         tx.execute_batch(TASK_CONTINUATIONS)?;
         tx.execute_batch(TASK_CREATIONS)?;
+        tx.execute_batch(TASK_USER_INPUTS)?;
         tx.execute_batch(NODE_LAST_WORDS)?;
         tx.execute_batch(STOPPED_NODES)?;
         tx.execute_batch(MODEL_METRICS)?;
@@ -971,7 +973,7 @@ impl DomainStore {
         transport: Option<TransportIdentity<'_>>,
         launch: &RequestLaunch,
     ) -> std::result::Result<Commit, StoreError> {
-        if !matches!(envelope.command, Command::CreateRequest { .. } | Command::CreateCardReply { .. }) {
+        if !matches!(envelope.command, Command::CreateRequest { .. } | Command::CreateCardReply { .. } | Command::TellNode { from_user: true, .. }) {
             return Err(DomainError::new("invalid_input", "only a new Request has a launch").into());
         }
         self.execute_envelope(actor, envelope, transport, true, Attached::Request(launch))
@@ -1662,6 +1664,19 @@ impl DomainStore {
             params![row.task_id.0, row.since, row.failures, row.last_error, row.next_attempt, row.attempted_cleaned_at, row.rm_started_at, row.problem_id, row.ready_since])?;
         self.note_side_write();
         Ok(())
+    }
+    /// Serializes removal with user-message admission in the same SQLite writer boundary.
+    pub fn claim_task_removal(&mut self, task_id: &TaskId, now: i64) -> Result<bool> {
+        let tx = self.conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let (state, _, _) = state_in(&self.cached, &tx)?;
+        let Some(task) = state.tasks.get(task_id) else { return Ok(false) };
+        if !task.cancelled() && (!task.pending_user_inputs.is_empty() || !state.finished(task) || !state.in_cleanup(task)) {
+            return Ok(false);
+        }
+        let claimed = tx.execute("UPDATE task_closings SET rm_started_at=?2 WHERE task_id=?1", params![task_id.0, now])? == 1;
+        tx.commit()?;
+        self.note_side_write();
+        Ok(claimed)
     }
     pub fn post_merge_check(&self, task_id: &TaskId) -> Result<Option<PostMergeCheck>> {
         Ok(self.conn.query_row(

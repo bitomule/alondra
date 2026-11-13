@@ -95,6 +95,14 @@ fn matches_stored_copy(home: &Path, reference: &str, digest: &str) -> bool {
     hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>() == digest
 }
 
+fn message_task<'a>(state: &'a alondra_core::domain::DomainState, agent: &AgentId, task: Option<&TaskId>)
+    -> Option<&'a alondra_core::domain::Task> {
+    match task {
+        Some(id) => state.tasks.get(id).filter(|task| task.agent_id.as_ref() == Some(agent)),
+        None => state.tasks.values().find(|task| task.agent_id.as_ref() == Some(agent) && !task.state.terminal() && !task.cancelled()),
+    }
+}
+
 /// Writes the message down the Agent's connection and answers how far it got: `handed` once the
 /// session took it, `dispatching` while it is queued behind a turn in progress (the daemon keeps
 /// writing it until the session takes it). An Agent with no connection is refused, so the user
@@ -109,12 +117,20 @@ pub async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, name: &s
     if !state.agents.contains_key(agent) {
         return Err(refused("not_found", "agent does not exist"));
     }
-    if crate::sdk_owner::runs_through_sdk(&state, agent) {
+    let scheduled = as_user && message_task(&state, agent, body.task_id.as_ref())
+        .is_some_and(|task| state.is_scheduled_task(&task.id));
+    if scheduled || crate::sdk_owner::runs_through_sdk(&state, agent) {
         let told = tell_through_sdk(domain, &state, home, user, name, agent, body, as_user);
-        if as_user && told.is_ok() {
+        if as_user && !scheduled && told.is_ok() {
             domain.live.gate.resume_by_user_message(domain, &agent.0, alondra_core::now_millis());
         }
         return told;
+    }
+    let active_task = state.tasks.values().any(|task| task.agent_id.as_ref() == Some(agent) && !task.state.terminal() && !task.cancelled());
+    if as_user && state.tasks.values().any(|task| task.agent_id.as_ref() == Some(agent)
+        && body.task_id.as_ref().map_or(!active_task, |id| id == &task.id) && (task.state.terminal() || task.cancelled()))
+    {
+        return Err(refused("task_not_active", "the task has ended: nothing was sent. Send the work as a new request"));
     }
     if let Some((_, successor)) = crate::sdk_handover::successor(domain, agent) {
         return tell_through_sdk(domain, &state, home, user, name, &successor, body, as_user);
@@ -139,6 +155,12 @@ pub async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, name: &s
         return Err(refused("session_stalled", format!("{name}'s turn stopped: the command it waited on or its session is gone, so a message would not reach it. Alondra restarts it; send again once it is back. Nothing was sent")));
     }
     let author = if body.from_claude { format!("Claude, for {name}") } else { name.to_owned() };
+    let owed = task.map(|(id, _)| id).or_else(|| state.tasks.values()
+        .find(|task| task.agent_id.as_ref() == Some(agent) && !task.state.terminal()).map(|task| &task.id));
+    if as_user && owed.is_some() {
+        return Err(refused("message_receipt_unavailable", alondra_core::views::refusal_text(
+            &alondra_core::domain::Refusal::UserMessageUnavailable, alondra_core::views::Lang::En)));
+    }
     let told = crate::sdk_handover::tell(domain, &agent.0, &author, &text, as_user)
         .map_err(|_| refused("session_unreachable", "the node is not connected to Alondra: its session is stopped or its Claude Code mod is not running. Nothing was sent"))?;
     if as_user {
@@ -160,19 +182,39 @@ pub async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, name: &s
 /// lifecycle's to follow, so it answers `dispatching`, and `reaches` says where it stands.
 fn tell_through_sdk(domain: &DomainRuntime, state: &alondra_core::domain::DomainState, home: &Path, user: &Actor, name: &str,
     agent: &AgentId, body: MessageBody, as_user: bool) -> Result<Value, DomainError> {
-    let open = state.tasks.values().find(|task| task.agent_id.as_ref() == Some(agent) && !task.state.terminal());
-    let task = match &body.task_id {
-        Some(id) => state.tasks.get(id).filter(|task| task.agent_id.as_ref() == Some(agent))
-            .ok_or_else(|| refused("not_assigned", format!("{id} is not this node's task")))?,
-        None => open.ok_or_else(|| refused("not_assigned", "the node has no open task to tell"))?,
-    };
+    let task = message_task(state, agent, body.task_id.as_ref()).ok_or_else(|| match &body.task_id {
+        Some(id) => refused("not_assigned", format!("{id} is not this node's task")),
+        None => refused("not_assigned", "the node has no open task to tell"),
+    })?;
     let text = wording(&body, Some((&task.id, task.title.as_str())), name, home)?;
     let author = if body.from_claude { format!("Claude, for {name}") } else { name.to_owned() };
     let command_id = format!("tell-{}", crate::auth::random_hex(16));
-    tell_sdk_node(domain, &task.id, &author, &text, &command_id, as_user)?;
+    if as_user && state.is_scheduled_task(&task.id) {
+        return tell_scheduled(domain, user, &body, task, &author, &text, &command_id);
+    }
+    let launch = None;
+    tell_node(domain, &task.id, &author, &text, &command_id, as_user, None, launch)?;
     let lifecycle = domain.read().state().lifecycle_of(&task.id)?;
     let reaches = reaches(&lifecycle);
     Ok(read_after(domain, user, &body, json!({"delivery_state": State::Dispatching, "reaches": reaches})))
+}
+
+fn tell_scheduled(domain: &DomainRuntime, user: &Actor, body: &MessageBody, task: &alondra_core::domain::Task,
+    author: &str, text: &str, command_id: &str) -> Result<Value, DomainError> {
+    let mut launch = domain.request_launch(&task.request_id)
+        .map_err(|error| refused("storage_unavailable", error.to_string()))?;
+    if let Some(launch) = &mut launch {
+        launch.attachments.extend(body.attachments.clone());
+    } else if !body.attachments.is_empty() {
+        return Err(refused("storage_unavailable", "the launch options for the run are unavailable: no message or attachments were sent"));
+    }
+    let outcome = tell_node(domain, &task.id, author, text, command_id, true, None, launch.as_ref())?;
+    let state = domain.state().map_err(|_| refused("storage_unavailable", "domain state unavailable"))?;
+    let followup = outcome.created_ids.iter().find_map(|id| state.tasks.get(&TaskId(id.clone())))
+        .ok_or_else(|| refused("storage_unavailable", "the saved message task could not be read"))?;
+    Ok(read_after(domain, user, body, json!({
+        "delivery_state": State::Dispatching, "reaches": "task", "task_id": followup.id,
+    })))
 }
 
 /// Where an input just told to an SDK task stands, by its lifecycle: `turn` when Claude reads it
@@ -208,6 +250,11 @@ pub fn tell_sdk_node(domain: &DomainRuntime, task: &alondra_core::domain::TaskId
 /// node's own answered card whose answer `text` carries.
 pub fn tell_sdk_node_answering(domain: &DomainRuntime, task: &alondra_core::domain::TaskId, author: &str, text: &str, command_id: &str,
     from_user: bool, answers: Option<alondra_core::domain::InteractionId>) -> Result<(), DomainError> {
+    tell_node(domain, task, author, text, command_id, from_user, answers, None).map(|_| ())
+}
+
+fn tell_node(domain: &DomainRuntime, task: &TaskId, author: &str, text: &str, command_id: &str,
+    from_user: bool, answers: Option<InteractionId>, launch: Option<&crate::domain_store::RequestLaunch>) -> Result<alondra_core::domain::CommandOutcome, DomainError> {
     let state = domain.state().map_err(|_| refused("storage_unavailable", "domain state unavailable"))?;
     let envelope = alondra_core::domain::CommandEnvelope {
         protocol_version: alondra_core::domain::PROTOCOL_VERSION,
@@ -221,7 +268,11 @@ pub fn tell_sdk_node_answering(domain: &DomainRuntime, task: &alondra_core::doma
             answers,
         },
     };
-    domain.execute_as_system(envelope).map(|_| ()).map_err(|error| match error {
+    let result = match launch {
+        Some(launch) => domain.execute_with(&Actor::System, &envelope, None, Some(launch), || Ok(())),
+        None => domain.execute_as_system(envelope),
+    };
+    result.map_err(|error| match error {
         crate::domain_store::StoreError::Domain(error) => error,
         other => refused("storage_unavailable", format!("{other}")),
     })
@@ -290,6 +341,11 @@ fn keep_for_task(domain: &DomainRuntime, home: &Path, user: &Actor, name: &str, 
     }
     let state = domain.state().map_err(|_| refused("storage_unavailable", "domain state unavailable"))?;
     let task = state.tasks.get(task).ok_or_else(|| refused("not_found", "task does not exist"))?;
+    if state.is_scheduled_task(&task.id) {
+        let text = wording(&body, Some((&task.id, task.title.as_str())), name, home)?;
+        let author = if body.from_claude { format!("Claude, for {name}") } else { name.to_owned() };
+        return tell_scheduled(domain, user, &body, task, &author, &text, &format!("tell-{}", crate::auth::random_hex(16)));
+    }
     if task.state.terminal() || task.ending.is_some() {
         return Err(refused("task_not_active", "the task has ended or is closing"));
     }
@@ -365,6 +421,61 @@ mod tests {
     }
 
     #[test]
+    fn a_scheduled_task_without_a_node_keeps_the_message_and_attachment_as_independent_work() {
+        use alondra_core::domain::*;
+        use sha2::Digest as _;
+        let (fixture, domain) = world();
+        let run = |id: &str, command| {
+            domain.execute_fixture(&Actor::System, CommandEnvelope {
+                protocol_version: PROTOCOL_VERSION, data_epoch: domain.state().unwrap().data_epoch.clone(),
+                command_id: id.into(), expected_revision: 0, command,
+            }).unwrap();
+        };
+        run("schedule", Command::CreateSchedule { schedule: Schedule {
+            paid_account_grant: None, id: "weekly".into(), title: "Weekly report".into(), text: "Measure progress".into(),
+            project: None, options: Default::default(), disallowed_tools: vec![], frequency: ScheduleFrequency::Daily,
+            hour: 9, minute: 0, weekday: None, interval: None, start_at: None, enabled: true, next_run: Some(100), revision: 1, deleted_at: None,
+        } });
+        run("claim", Command::ClaimScheduleRun { schedule_id: "weekly".into(), run_id: "weekly-run".into(),
+            origin: ScheduleRunOrigin::Manual, now: 100, next_after_now: Some(200), expected_schedule_revision: None });
+        let mut source = domain.state().unwrap().tasks[&TaskId::from("t")].clone();
+        source.id = "weekly-task".into();
+        source.request_id = "weekly-request".into();
+        source.agent_id = None;
+        source.title = "Weekly report".into();
+        source.created_revision = 0;
+        run("sent", Command::RecordScheduleRunSent {
+            run_id: "weekly-run".into(), request: Request::new("weekly-request".into(), "Measure progress".into()), task: source,
+            launch: ScheduleLaunchIntent { name: "scheduled/weekly".into(), cwd: "/synthetic/project".into(), prompt: "Measure progress".into(),
+                options_json: serde_json::to_string(&alondra_core::options::OptionsFile::default().resolve(None, &Default::default()).unwrap()).unwrap() },
+            finished_at: 101,
+        });
+        std::fs::create_dir_all(fixture.0.join("files")).unwrap();
+        std::fs::write(fixture.0.join("files/brief.txt"), b"brief").unwrap();
+        let digest: String = sha2::Sha256::digest(b"brief").iter().map(|b| format!("{b:02x}")).collect();
+        let attachment = json!({"id":"brief", "name":"brief.txt", "bytes":5, "content_reference":"files/brief.txt", "content_digest":digest});
+        let original = domain.state().unwrap().lifecycle_of(&"weekly-task".into()).unwrap();
+        let answer = relayed_to_task(&domain, &fixture.0, "phone", &"weekly-task".into(), Some(&json!({
+            "text":"Prepare a follow-up", "attachments":[attachment.clone()],
+        })));
+        assert_eq!(answer["status"], 200, "{answer}");
+        assert_eq!(answer["body"]["reaches"], "task");
+        let id: TaskId = serde_json::from_value(answer["body"]["task_id"].clone()).unwrap();
+        let mut reopened = crate::domain_store::DomainStore::open(&fixture.0.join("domain.db")).unwrap();
+        let state = reopened.load().unwrap();
+        let followup = &state.tasks[&id];
+        assert_eq!(followup.title, "Weekly report");
+        assert!(followup.dependencies.is_empty());
+        let request = &state.requests[&followup.request_id];
+        assert_eq!(request.origin, RequestOrigin::User);
+        assert!(request.body.contains("Prepare a follow-up") && request.body.contains("Measure progress"));
+        assert_eq!(state.lifecycle_of(&"weekly-task".into()).unwrap().pending_inputs(), original.pending_inputs());
+        assert_eq!(reopened.launch_plan(&id).unwrap().unwrap().cwd, "/synthetic/project");
+        let launch = reopened.request_launch(&followup.request_id).unwrap().unwrap();
+        assert_eq!(serde_json::to_value(&launch.attachments[0]).unwrap(), attachment);
+    }
+
+    #[test]
     fn mark_read_storage_diagnostic_is_logged_without_leaking_to_the_client() {
         const PROBE: &str = "ALONDRA_MARK_READ_LOG_PROBE";
         if std::env::var_os(PROBE).is_none() {
@@ -428,19 +539,69 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_text_is_written_down_the_agents_connection_and_nothing_is_recorded() {
+    async fn a_lingering_connection_cannot_take_work_for_a_cancelled_task() {
+        let (fixture, domain) = world();
+        let node = Node::connect(&domain, "agent-a");
+        let state = domain.state().unwrap();
+        let envelope = CommandEnvelope { protocol_version: alondra_core::domain::PROTOCOL_VERSION,
+            data_epoch: state.data_epoch.clone(), command_id: "cancel".into(), expected_revision: state.revision,
+            command: Command::CancelTask { task_id: "t".into(), reason: None } };
+        domain.execute(&user(), &envelope, None, || Ok(())).unwrap();
+        for message in [json!({"text": "More work", "task_id": "t"}), json!({"text": "More work"})] {
+            let error = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(message), true)
+                .await.unwrap_err();
+            assert_eq!(error.code, "task_not_active");
+        }
+        assert!(node.texts().is_empty());
+    }
+
+    #[test]
+    fn a_historical_scheduled_task_does_not_capture_the_current_nodes_message() {
+        let (_fixture, domain) = world();
+        let mut state = (*domain.state().unwrap()).clone();
+        let mut request = state.requests[&"r".into()].clone();
+        request.id = "old-schedule".into();
+        request.origin = alondra_core::domain::RequestOrigin::Schedule;
+        let mut historical = state.tasks[&TaskId::from("t")].clone();
+        historical.id = "old-task".into();
+        historical.request_id = request.id.clone();
+        historical.state = alondra_core::domain::TaskState::Done;
+        state.requests.insert(request.id.clone(), request);
+        state.tasks.insert(historical.id.clone(), historical);
+        let current = message_task(&state, &"agent-a".into(), None).unwrap();
+        assert_eq!(current.id, TaskId::from("t"));
+        assert!(!state.is_scheduled_task(&current.id));
+        let explicit = message_task(&state, &"agent-a".into(), Some(&"old-task".into())).unwrap();
+        assert!(state.is_scheduled_task(&explicit.id));
+    }
+
+    #[tokio::test]
+    async fn a_session_without_read_receipts_refuses_user_work_without_claiming_it_was_sent() {
+        let (fixture, domain) = world();
+        let node = Node::connect(&domain, "agent-a");
+        let before = domain.state().unwrap();
+        let error = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
+            body(json!({"text":"Prepare another report", "task_id":"t"})), true).await.unwrap_err();
+        assert_eq!(error.code, "message_receipt_unavailable");
+        assert!(node.texts().is_empty());
+        assert_eq!(domain.state().unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn notices_reach_the_connection_without_claiming_user_work() {
         let (fixture, domain) = world();
         let node = Node::connect(&domain, "agent-a");
         let before = domain.state().unwrap();
         let answer = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
-            body(json!({"text": "Use the new API", "task_id": "t"})), true).await.unwrap();
+            body(json!({"text": "Use the new API", "task_id": "t"})), false).await.unwrap();
         assert_eq!(answer, json!({"delivery_state": "handed"}));
         assert_eq!(node.texts(), ["[Task t “Build it”] Use the new API"]);
-        assert_eq!(node.lines.lock().unwrap()[0]["as_user"], true);
+        assert_eq!(node.lines.lock().unwrap()[0]["as_user"], false);
         deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
-            body(json!({"text": "Push your work", "task_id": "t", "from_claude": true})), true).await.unwrap();
+            body(json!({"text": "Push your work", "task_id": "t", "from_claude": true})), false).await.unwrap();
         assert_eq!(node.authors(), ["Ana", "Claude, for Ana"], "every message says who sent it");
-        assert_eq!(domain.state().unwrap(), before, "a message records nothing in the domain");
+        let after = domain.state().unwrap();
+        assert_eq!(after, before);
     }
 
     #[tokio::test]
@@ -448,7 +609,7 @@ mod tests {
         let (fixture, domain) = world();
         let node = Node::connect(&domain, "agent-a");
         node.silent.store(true, std::sync::atomic::Ordering::Relaxed);
-        let answer = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(json!({"text": "hi"})), true).await.unwrap();
+        let answer = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(json!({"text": "hi"})), false).await.unwrap();
         assert_eq!(answer, json!({"delivery_state": "dispatching"}));
         domain.live.pushes.detach("agent-a", 1);
         let again = Node::connect(&domain, "agent-a");
@@ -464,12 +625,12 @@ mod tests {
         let hello = serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap();
         domain.connect_node(hello, now);
         domain.report(serde_json::from_value(json!({"session_id": "agent-a", "event": "turn.start", "turn_id": "t"})).unwrap(), now);
-        let quiet = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(json!({"text": "quiet"})), true).await;
+        let quiet = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(json!({"text": "quiet"})), false).await;
         assert!(quiet.is_ok(), "a quiet turn takes messages however long it has been quiet");
         domain.report(serde_json::from_value(json!({"session_id": "agent-a", "event": "tool.start", "tool": "Bash", "tool_use_id": "call"})).unwrap(), now + 1);
         domain.live.mods.set_shell_alive("agent-a", Some(false), now + 2);
         domain.live.mods.set_shell_alive("agent-a", Some(false), now + 3);
-        let refused = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(json!({"text": "hi"})), true).await.unwrap_err();
+        let refused = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(json!({"text": "hi"})), false).await.unwrap_err();
         assert_eq!(refused.code, "session_stalled");
         assert_eq!(node.texts(), ["quiet"], "nothing more was written down its connection");
     }
@@ -479,10 +640,10 @@ mod tests {
         let (fixture, domain) = world();
         let node = Node::connect(&domain, "agent-a");
         deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
-            body(json!({"text": "Yes", "kind": "reply", "interaction_id": "q-1"})), true).await.unwrap();
+            body(json!({"text": "Yes", "kind": "reply", "interaction_id": "q-1"})), false).await.unwrap();
         assert_eq!(node.texts()[0], "[Reply to q-1] Yes");
         let refused = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
-            body(json!({"text": "Yes", "kind": "pr_changes"})), true).await.unwrap_err();
+            body(json!({"text": "Yes", "kind": "pr_changes"})), false).await.unwrap_err();
         assert_eq!(refused.code, "invalid_input");
     }
 
@@ -498,7 +659,7 @@ mod tests {
             ("agent-b", json!({"text": "hi"}), "session_unreachable"),
         ];
         for (agent, request, code) in cases {
-            let error = deliver(&domain, &fixture.0, &user(), "Ana", &agent.into(), body(request.clone()), true).await.unwrap_err();
+            let error = deliver(&domain, &fixture.0, &user(), "Ana", &agent.into(), body(request.clone()), false).await.unwrap_err();
             assert_eq!(error.code, code, "{agent} {request}");
         }
         assert!(node.texts().is_empty());
@@ -515,7 +676,7 @@ mod tests {
         }, None, || Ok(())).unwrap();
         let _node = Node::connect(&domain, "agent-a");
         let answer = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
-            body(json!({"text": "Thanks", "kind": "reply", "interaction_id": "info-1", "mark_read": true})), true).await.unwrap();
+            body(json!({"text": "Thanks", "kind": "reply", "interaction_id": "info-1", "mark_read": true})), false).await.unwrap();
         assert_eq!(answer, json!({"delivery_state": "handed"}));
         let read = &domain.state().unwrap().interactions[&InteractionId::from("info-1")].payload;
         assert!(matches!(read, alondra_core::domain::InteractionPayload::Information { read_by } if !read_by.is_empty()), "{read:?}");
@@ -531,13 +692,13 @@ mod tests {
         let attachment = json!({"id": "att-1", "name": "shot.png", "content_digest": digest, "content_reference": "files/shot.png", "bytes": 3});
         let node = Node::connect(&domain, "agent-a");
         deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
-            body(json!({"text": "Look", "attachments": [attachment]})), true).await.unwrap();
+            body(json!({"text": "Look", "attachments": [attachment]})), false).await.unwrap();
         let sent = node.texts()[0].clone();
         assert!(sent.starts_with("Look\n\nAttached files:"), "{sent}");
         assert!(sent.contains(&fixture.0.join("files/shot.png").display().to_string()), "{sent}");
         let forged = json!({"id": "att-1", "name": "shot.png", "content_digest": "0".repeat(64), "content_reference": "files/shot.png", "bytes": 3});
         let error = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
-            body(json!({"text": "Look", "attachments": [forged]})), true).await.unwrap_err();
+            body(json!({"text": "Look", "attachments": [forged]})), false).await.unwrap_err();
         assert_eq!(error.code, "invalid_input");
         assert_eq!(node.texts().len(), 1);
     }

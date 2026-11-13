@@ -1251,6 +1251,12 @@ impl DomainState {
         let lifecycle = self.lifecycle(lifecycles, task)?;
         let event = event(task, &record, lifecycle)?;
         let next = Arc::new(lifecycle.advanced(lifecycle.revision(), event).map_err(|refusal| refused(task, &record, lifecycle, refusal))?);
+        if let LifecycleRecord::HandoffResent { input, resent, .. } | LifecycleRecord::DoubtResent { input, resent, .. } = &record {
+            let pending = &mut self.tasks.get_mut(task).expect("the task exists").pending_user_inputs;
+            if pending.remove(input) {
+                pending.insert(resent.clone());
+            }
+        }
         self.lifecycle_journal.get_mut(task).expect("replayed above").push(record);
         self.materialize(task, &next);
         self.keep(lifecycles, task, next);
@@ -1676,6 +1682,9 @@ impl DomainState {
             return None;
         }
         let since = self.since_delivery(task)?;
+        if !self.tasks.get(task)?.pending_user_inputs.is_empty() {
+            return Some(EmptyTurn::Unexplained);
+        }
         if self.delivery_left_to_the_user(&since) {
             return None;
         }
@@ -1711,11 +1720,15 @@ impl DomainState {
             && lifecycle.cards().is_empty()
             && self.turn_await(task).is_none()
             && self.owes_what_was_sent_back(task)
-            && self.since_delivery(task).is_some_and(|since| !self.delivery_left_to_the_user(&since))
+            && (self.tasks.get(task).is_some_and(|task| !task.pending_user_inputs.is_empty())
+                || self.since_delivery(task).is_some_and(|since| !self.delivery_left_to_the_user(&since)))
     }
 
     /// The user's hand-back of the delivery of `task` still stands, or their reply has no answer.
     fn owes_what_was_sent_back(&self, task: &TaskId) -> bool {
+        if self.tasks.get(task).is_some_and(|task| !task.pending_user_inputs.is_empty()) {
+            return true;
+        }
         let delivery = self.tasks.get(task).and_then(|t| t.final_presentation.as_ref()).and_then(|delivery| self.interactions.get(delivery));
         self.task_handed_back(task).is_some() || delivery.is_some_and(|delivery| self.open_reply(delivery))
     }
@@ -2382,6 +2395,7 @@ impl DomainState {
         loop {
             let lifecycle = self.lifecycle(lifecycles, task)?;
             let Some(input) = lifecycle.pending_inputs().first().map(|input| input.as_str().to_owned()) else { break };
+            if self.tasks[task].pending_user_inputs.contains(&input) { break; }
             let record = match lifecycle.activity() {
                 ActivityView::Starting => LifecycleRecord::TurnStarted { turn: format!("turn:{task}:{}", lifecycle.cursor().unwrap_or(0) + 1), input },
                 ActivityView::Working => LifecycleRecord::InputConsumed { input },
@@ -2397,6 +2411,9 @@ impl DomainState {
     /// one decision, because until the node's end is recorded the user can still take the
     /// delivery back with feedback, and the aggregate records no acceptance that can be undone.
     pub(super) fn finish_task(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
+        if self.tasks.get(task).is_some_and(|task| !task.pending_user_inputs.is_empty()) {
+            return Err(DomainError::new("pending_user_message", "A user message still needs a final delivery"));
+        }
         let lifecycle = self.lifecycle(lifecycles, task)?;
         if lifecycle.phase() != TaskPhase::Delivered {
             return Ok(());

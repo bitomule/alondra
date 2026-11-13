@@ -107,6 +107,66 @@ fn text() -> Vec<DeliveryTarget> {
     vec![DeliveryTarget::Text { text: "The result".into() }]
 }
 
+#[tokio::test]
+async fn a_user_message_saved_before_removal_keeps_the_task_and_session_open() {
+    let rig = Rig::undelivered(Some(Duration::ZERO));
+    command(&rig.domain, agent(), "old-result", Command::PresentResult {
+        checklist: vec![], attachments: vec![], task_id: "t".into(), interaction_id: "old-result".into(),
+        body: "Done".into(), targets: text(), is_final: true, nothing_to_review: false,
+        card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+    });
+    command(&rig.domain, Actor::System, "user-message", Command::TellNode {
+        task_id: "t".into(), text: "Prepare the follow-up report".into(), from_user: true, answers: None,
+    });
+    let state = rig.domain.state().unwrap();
+    let error = rig.domain.execute(&user(), &CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "accept-old".into(),
+        expected_revision: state.revision,
+        command: Command::AcceptDelivery { presentation_id: "old-result".into(), targets: text() },
+    }, None, || Ok(())).unwrap_err();
+    assert!(matches!(error, crate::domain_store::StoreError::Domain(error) if error.code == "pending_user_message"));
+    rig.pass(T0 + MINUTE).await;
+    assert_eq!(rig.sessions.removals(), 0);
+    assert!(!rig.domain.state().unwrap().tasks[&TaskId::from("t")].over());
+    let mut reopened = crate::domain_store::DomainStore::open(&rig._home.0.join("domain.db")).unwrap();
+    let state = reopened.load().unwrap();
+    assert_eq!(state.tasks[&TaskId::from("t")].pending_user_inputs.len(), 1, "the obligation survives reopening SQLite");
+    assert!(!reopened.claim_task_removal(&"t".into(), T0 + MINUTE).unwrap());
+}
+
+#[tokio::test]
+async fn a_user_message_racing_after_removal_begins_is_explicitly_refused() {
+    let rig = Rig::new(Some(Duration::ZERO));
+    rig.confirm();
+    let result = Arc::new(Mutex::new(None));
+    let captured = result.clone();
+    let domain = rig.domain.clone();
+    *rig.sessions.during_rm.lock().unwrap() = Some(Box::new(move || {
+        *captured.lock().unwrap() = Some(crate::domain_messages::tell_sdk_node(
+            &domain, &"t".into(), "User", "Prepare the follow-up report", "racing-message", true,
+        ));
+    }));
+    rig.pass(T0 + MINUTE).await;
+    let error = result.lock().unwrap().take().expect("message attempted during removal").unwrap_err();
+    assert_eq!(error.code, "session_unreachable");
+    assert!(error.message.contains("nothing was sent"));
+    assert_eq!(rig.sessions.removals(), 1);
+}
+
+#[tokio::test]
+async fn another_session_watcher_does_not_leave_a_false_removal_claim() {
+    let rig = Rig::new(Some(Duration::ZERO));
+    rig.confirm();
+    assert!(rig.domain.live.begin_watch(SESSION));
+    rig.pass(T0 + MINUTE).await;
+    rig.domain.live.end_watch(SESSION);
+    assert_eq!(rig.sessions.removals(), 0);
+    let row = rig.domain.store.lock().unwrap().task_closing(&"t".into()).unwrap().unwrap();
+    assert!(row.rm_started_at.is_none());
+    crate::domain_messages::tell_sdk_node(&rig.domain, &"t".into(), "User", "Prepare the report", "message-after-watch", true).unwrap();
+    assert!(!rig.domain.state().unwrap().tasks[&TaskId::from("t")].pending_user_inputs.is_empty());
+}
+
 impl Rig {
     /// A node Alondra launched, with its text delivery accepted: the task is closing and its node
     /// has been asked to clean up.

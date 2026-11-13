@@ -34,6 +34,8 @@ pub enum Refusal {
     PrAlreadyMerged { number: u64 },
     /// A newer result replaced the one the user looked at.
     NewerResult,
+    PendingUserMessage,
+    UserMessageUnavailable,
     AlreadyAnswered,
     Withdrawn,
     ClarificationPending,
@@ -95,6 +97,8 @@ impl Refusal {
         match code {
             "stale_revision" | "conflict" | "stale_generation" | "stale_epoch" | "plan_approve_or_change" => Self::Changed,
             "acceptance_stale" => Self::NewerResult,
+            "pending_user_message" => Self::PendingUserMessage,
+            "message_receipt_unavailable" => Self::UserMessageUnavailable,
             "question_already_answered" | "already_answered" => Self::AlreadyAnswered,
             "withdrawn" | "already_withdrawn" => Self::Withdrawn,
             "clarification_pending" => Self::ClarificationPending,

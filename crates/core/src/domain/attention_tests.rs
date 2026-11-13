@@ -398,6 +398,24 @@ fn a_cancelled_reviewed_task_cancels_its_reviewer_and_never_gives_the_user_its_d
 }
 
 #[test]
+fn a_reviewers_user_message_survives_the_end_of_the_reviewed_task() {
+    let mut s = pair();
+    reviewing(&mut s);
+    ok(&mut s, Actor::System, Command::TellNode {
+        task_id: "b".into(), text: "Explain the remaining review findings".into(), from_user: true, answers: None,
+    });
+    let pending = s.tasks[&TaskId::from("b")].pending_user_inputs.clone();
+    assert_eq!(pending.len(), 1);
+
+    ok(&mut s, user(), Command::CancelTask { task_id: "a".into(), reason: None });
+
+    let reviewer = &s.tasks[&TaskId::from("b")];
+    assert!(!reviewer.cancelled() && !reviewer.over(), "ending the reviewed work does not cancel the user's new request");
+    assert_eq!(reviewer.pending_user_inputs, pending);
+    assert!(!s.finished(reviewer), "the earlier review result cannot settle the new request");
+}
+
+#[test]
 fn a_pr_merged_outside_cancels_the_reviewer_too() {
     let mut s = pair();
     review_relation(&mut s);

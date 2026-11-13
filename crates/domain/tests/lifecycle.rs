@@ -5,6 +5,24 @@ mod support;
 use support::*;
 
 #[test]
+fn historical_completion_after_release_remains_replayable() {
+    let mut task = running();
+    apply(&mut task, Event::Tell { input: input("late-message"), answers: None });
+    apply(&mut task, Event::Present { delivery: "delivery".into() });
+    fact(&mut task, RuntimeFact::TurnEnded {
+        turn: turn("root"), unheard_card: "unused".into(), wake: None, awaits: None, stalled: false,
+    });
+    apply(&mut task, Event::ExecutionReleased { input: input("release") });
+    apply(&mut task, Event::Accept { delivery: "delivery".into(), merge: None });
+    assert_eq!(task.pending_inputs(), [&input("late-message")]);
+    // Existing journals may contain this sequence; new completion decisions are guarded in core.
+    apply(&mut task, Event::Finish {
+        intent: FinishIntent::Complete, cleanup: operation("cleanup"), post_merge: None,
+    });
+    assert!(task.pending_inputs().is_empty());
+}
+
+#[test]
 fn last_child_completion_waits_for_its_correlated_root_continuation() {
     let mut task = running();
     fact(

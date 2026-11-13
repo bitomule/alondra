@@ -145,7 +145,7 @@ fn sent(run: &str, suffix: &str, finished_at: i64) -> Command {
             revision: 1,
             started: false,
             review_prs: false,
-            created_revision: 0, final_presentation: None,
+            created_revision: 0, pending_user_inputs: Default::default(), final_presentation: None,
             pr_id: None,
             later_prs: vec![],
             opened_prs: Default::default(),
@@ -169,6 +169,47 @@ fn sent(run: &str, suffix: &str, finished_at: i64) -> Command {
         },
         finished_at,
     }
+}
+
+#[test]
+fn a_scheduled_message_commits_its_task_and_launch_plan_once_and_survives_restart() {
+    let fixture = Fixture::new();
+    let mut store = fixture.open();
+    create(&mut store, schedule());
+    claim(&mut store, "run", ScheduleRunOrigin::Manual, 100, Some(200)).unwrap();
+    execute(&mut store, "sent", sent("run", "run", 101)).unwrap();
+    let message = envelope(&mut store, "followup", Command::TellNode {
+        task_id: "task-run".into(), text: "Write the follow-up report".into(), from_user: true, answers: None,
+    });
+    let mut launch = store.request_launch(&"request-run".into()).unwrap().unwrap();
+    launch.attachments.push(AttachmentRef {
+        id: "brief".into(), name: "brief.txt".into(), bytes: 5,
+        content_reference: "files/brief.txt".into(), content_digest: "a".repeat(64),
+    });
+    store.conn.execute_batch("CREATE TEMP TRIGGER fail_followup_launch BEFORE INSERT ON task_launch_plans \
+        BEGIN SELECT RAISE(ABORT,'synthetic launch failure'); END;").unwrap();
+    assert!(store.execute_launching(&Actor::System, &message, None, &launch).is_err());
+    assert_eq!(rows(&store, "tasks"), 1, "a launch failure rolls back the new task");
+    assert_eq!(rows(&store, "requests"), 1, "a launch failure rolls back the new request");
+    store.conn.execute_batch("DROP TRIGGER fail_followup_launch;").unwrap();
+    let committed = store.execute_launching(&Actor::System, &message, None, &launch).unwrap();
+    let followup = committed.state.tasks.values().find(|task| task.id != TaskId::from("task-run")).unwrap().clone();
+    assert_eq!(store.execute_launching(&Actor::System, &message, None, &launch).unwrap().outcome, committed.outcome);
+    assert_eq!(rows(&store, "tasks"), 2, "replaying the same message creates no second task");
+    let plan = store.launch_plan(&followup.id).unwrap().expect("launch plan saved atomically");
+    assert_eq!(plan.cwd, "/synthetic/Projects");
+    let saved = store.request_launch(&followup.request_id).unwrap().expect("launch options copied atomically");
+    assert_eq!(saved, launch, "the message attachments and launch options are committed together");
+    let cancel = envelope(&mut store, "cancel-source", Command::CancelTask { task_id: "task-run".into(), reason: None });
+    store.execute_authenticated(&Actor::User { user_id: "u".into() }, &cancel, None).unwrap();
+    drop(store);
+    let mut store = fixture.open();
+    let state = store.load().unwrap();
+    assert_eq!(state.tasks[&followup.id], followup);
+    assert!(state.tasks[&TaskId::from("task-run")].cancelled());
+    assert!(state.requests[&followup.request_id].body.contains("Write the follow-up report"));
+    assert!(store.planned_tasks().unwrap().contains_key(&followup.id));
+    assert_eq!(store.request_launch(&followup.request_id).unwrap().unwrap(), launch);
 }
 
 #[test]

@@ -3,7 +3,7 @@
 //! once in core; nothing here decides it again.
 use super::{
     Icon, LiveHold, LivePauseReason, RenderContext, Tone, common,
-    text::{t, tf},
+    text::{t, t as tr, tf},
     now_fact::{NowFact, now_fact},
 };
 use alondra_domain::LiveState;
@@ -569,8 +569,8 @@ fn with_pending(fact: String, task: &Task, context: &RenderContext<'_>) -> Strin
 fn stall_result(task: &Task, lang: super::Lang) -> Option<String> {
     Some(match task.stall_closing.as_ref()? {
         StallClosing::Settled { result } => result.trim().to_owned(),
-        StallClosing::Unsettled => t!(lang, "Its node kept stopping without a result or a question, and Alondra closed it",
-            "Su nodo se paraba una y otra vez sin entregar ni preguntar, y Alondra la cerró").to_owned(),
+        StallClosing::Unsettled => tr!(lang, "The request was not handled because its node kept stopping without delivering or asking a question",
+            "El encargo quedó sin atender porque su nodo se paraba una y otra vez sin entregar ni preguntar").to_owned(),
     })
 }
 

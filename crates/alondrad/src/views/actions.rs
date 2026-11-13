@@ -1939,6 +1939,8 @@ fn applied(verb: Verb, lang: Lang, stamp: &str, revision: u64, status: u16, body
         json!({"protocol":VIEWS_PROTOCOL,"outcome":"applied","stamp":stamp,"revision":revision,"detail":body})
     } else if code == Some("close_refused") {
         json!({"protocol":VIEWS_PROTOCOL,"outcome":"rejected","code":"close_refused","message":close_refusal(lang, &body)})
+    } else if code == Some("message_receipt_unavailable") {
+        refused_value(&Refusal::UserMessageUnavailable, lang)
     } else if verb == Verb::TaskMsg && code == Some("task_not_active") {
         refused_value(&Refusal::TaskNotActive, lang)
     } else if status == 404 || (status == 409 && !matches!(code, Some("session_unreachable" | "close_failed"))) {
@@ -1952,6 +1954,9 @@ fn applied(verb: Verb, lang: Lang, stamp: &str, revision: u64, status: u16, body
 
 /// Where a message told to a node of the SDK stands, as the stamp says it.
 fn sdk_message_stamp(reaches: Option<&str>, es: bool) -> &'static str {
+    if reaches == Some("task") {
+        return alondra_core::views::scheduled_message_stamp(if es { Lang::Es } else { Lang::En });
+    }
     match (reaches, es) {
         (Some("turn"), false) => "Message sent: the node reads it during its current turn",
         (Some("turn"), true) => "Mensaje enviado: el nodo lo lee durante su turno actual",
@@ -2600,6 +2605,7 @@ for line in sys.stdin:
         assert_eq!(reply(Lang::Es, 200, json!({"delivery_state": "dispatching"}))["stamp"],
             "Mensaje en cola: el nodo está ocupado y lo recibe cuando termine su turno. Si no avanza, Interrumpir termina el turno");
         for (reaches, english, spanish) in [
+            ("task", "Message saved as a separate task", "Mensaje guardado como una tarea independiente"),
             ("now", "Message sent: the node starts on it now", "Mensaje enviado: el nodo se pone con él ahora"),
             ("turn", "Message sent: the node reads it during its current turn", "Mensaje enviado: el nodo lo lee durante su turno actual"),
             ("pause", "Message kept: the node gets it when you resume it", "Mensaje guardado: el nodo lo recibe cuando lo reanudes"),
@@ -3126,8 +3132,6 @@ for line in sys.stdin:
 
     #[tokio::test]
     async fn different_commands_cannot_reply_to_the_same_stale_information_card() {
-        use std::future::Future;
-        use std::task::{Context, Poll, Waker};
         let (home, domain, client) = action_home();
         apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
             agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
@@ -3140,6 +3144,7 @@ for line in sys.stdin:
             review_prs:false, dependencies:Default::default(), stack:None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
         });
+        alondra_daemon_engine::domain_store::admit_through_sdk_with_host(&domain, &"task".into(), "agent-a", "alondra-sdk");
         apply_seed_command(&domain, Actor::System, "info", Command::PublishInformation {
             attachments:vec![], interaction_id:"info".into(), scope:alondra_core::domain::Scope::Task { task_id:"task".into() },
             recipient:alondra_core::domain::Recipient::User, body:"Update".into(),
@@ -3150,20 +3155,16 @@ for line in sys.stdin:
         request.input.text = Some("First reply".into());
         let mut other = pacing_request(&state, Verb::Reply, "info", "", "en");
         other.input.text = Some("Stale reply".into());
-        let mut node = domain.live.pushes.attach("agent-a", 1);
-        let mut first = Box::pin(execute(&domain, &client, &home.0, "test-device", request, None, || Ok(())));
-        let mut second = Box::pin(execute(&domain, &client, &home.0, "test-device", other, None, || Ok(())));
-        let mut context = Context::from_waker(Waker::noop());
-        assert!(first.as_mut().poll(&mut context).is_pending());
-        let sent: Value = serde_json::from_str(&node.try_recv().unwrap()).unwrap();
-        assert!(second.as_mut().poll(&mut context).is_pending());
-        assert!(matches!(node.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)), "a stale card sent a second reply");
-        domain.live.pushes.acknowledged("agent-a", &[sent["id"].as_str().unwrap().to_owned()]);
-        assert!(matches!(first.as_mut().poll(&mut context), Poll::Ready(_)));
-        let Poll::Ready(reply) = second.as_mut().poll(&mut context) else { panic!("stale reply did not finish"); };
+        let reply = execute(&domain, &client, &home.0, "test-device", request, None, || Ok(())).await;
+        let body: Value = serde_json::from_slice(&axum::body::to_bytes(reply.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+        assert_eq!(body["outcome"], "applied", "{body}");
+        let after = domain.state().unwrap();
+        let pending = after.tasks[&alondra_core::domain::TaskId::from("task")].pending_user_inputs.clone();
+        assert_eq!(pending.len(), 1);
+        let reply = execute(&domain, &client, &home.0, "test-device", other, None, || Ok(())).await;
         let body: Value = serde_json::from_slice(&axum::body::to_bytes(reply.into_body(), 1024 * 1024).await.unwrap()).unwrap();
         assert_eq!(body["outcome"], "no_longer_available");
-        assert!(matches!(node.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
+        assert_eq!(domain.state().unwrap().tasks[&alondra_core::domain::TaskId::from("task")].pending_user_inputs, pending);
     }
 
     struct HeldClose {
