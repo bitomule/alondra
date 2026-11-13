@@ -350,6 +350,14 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
     if !domain.live.begin_watch(&agent.0) {
         return Ok(());
     }
+    match domain.store.lock_or_exit("the domain store").claim_task_removal(task_id, now) {
+        Ok(true) => {}
+        claimed => {
+            domain.live.end_watch(&agent.0);
+            claimed?;
+            return Ok(());
+        }
+    }
     let interrupted = row.rm_started_at.is_some();
     row.rm_started_at = Some(now);
     let saved = domain.store.lock_or_exit("the domain store").save_task_closing(&row);
@@ -447,6 +455,9 @@ async fn close_sdk_node(
         return hold_for_worktrees(domain, timing, now, task, agent, row, &left, cleanup);
     }
     forget_post_merge_check(domain, &task.id)?;
+    if !domain.store.lock_or_exit("the domain store").claim_task_removal(&task.id, now)? {
+        return Ok(());
+    }
     if !owned {
         return match end_unowned_host(domain, task) {
             Ok(()) => finish_with_worktree(domain, timing, now, task, agent, row, cleanup, NodeEnd::Gone).await,

@@ -187,6 +187,9 @@ impl DomainState {
     /// needs that document's review.
     pub(super) fn acceptance_guard(&self, presentation: &InteractionId) -> Result<()> {
         let (_, t, targets) = self.presentation(presentation)?;
+        if !t.pending_user_inputs.is_empty() {
+            return fail("pending_user_message", "The user sent new work after this result: a new final delivery must address it or explain why it cannot be done");
+        }
         for target in targets {
             if let DeliveryTarget::DocumentRevision { document_id, .. } = target
                 && !self.document_reviews.iter().any(|r| r.task_id == t.id && &r.document_id == document_id)

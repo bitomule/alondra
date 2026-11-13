@@ -263,6 +263,24 @@ fn a_pr_closed_on_github_lets_the_task_be_cancelled_with_its_result() {
 }
 
 #[test]
+fn a_user_message_received_during_the_pr_read_prevents_automatic_cancellation() {
+    let mut s = stalled_with_open_pr();
+    held(&mut s, "Superseded");
+    must(&mut s, Actor::System, Command::TellNode {
+        task_id: "t".into(), text: "Explain what remains after closing the pull request".into(), from_user: true, answers: None,
+    });
+    assert_eq!(task(&s).pending_user_inputs.len(), 1);
+    let before = s.clone();
+
+    let error = settle_pr(&mut s, status(PrState::Closed, PrMergeable::Clean, PrChecks::None)).unwrap_err();
+
+    assert_eq!(error.code, "pending_user_message");
+    assert_eq!(s, before, "an older close result cannot discard a message received while GitHub was being read");
+    assert!(!task(&s).cancelled());
+    assert_aggregate_rules(&s);
+}
+
+#[test]
 fn a_pr_merged_on_github_finishes_the_task_instead_of_cancelling_it() {
     let mut s = stalled_with_open_pr();
     held(&mut s, "Done");
@@ -413,6 +431,32 @@ proptest! {
             "only the user, or a PR closed on GitHub, cancels it: {:?}", t.state);
         prop_assert!(matches!(closer, Closer::UserCancel) || t.state == TaskState::ForYourReview,
             "anyone else's close delivers the PR in the same command: {:?} {:?}", t.state, t.open_pr);
+        assert_aggregate_rules(&s);
+    }
+}
+
+#[test]
+fn a_stall_explanation_for_a_user_message_is_delivered_with_the_open_pr() {
+    for already_delivered in [false, true] {
+        let mut s = stalled_with_open_pr();
+        if already_delivered {
+            settle_case(&mut s, orchestrator(), StallOutcome::Close { result: "The existing work is ready".into() });
+        }
+        must(&mut s, Actor::System, Command::TellNode {
+            task_id: "t".into(), text: "Prepare an additional report".into(), from_user: true, answers: None,
+        });
+        for n in 0..=alondra_domain::EMPTY_TURN_WAKES {
+            let turn = format!("message-turn-{n}");
+            start(&mut s, &turn);
+            end_empty(&mut s, &turn);
+        }
+        let explanation = "The node kept stopping and could not prepare the additional report";
+        settle_case(&mut s, orchestrator(), StallOutcome::Close { result: explanation.into() });
+        let delivered = OpenPrDelivery::from_body(&alondras_delivery(&s).body).unwrap();
+        assert_eq!(delivered.result.as_deref(), Some(explanation));
+        assert!(task(&s).pending_user_inputs.is_empty());
+        assert!(!task(&s).cancelled());
+        assert_eq!(task(&s).state, TaskState::ForYourReview);
         assert_aggregate_rules(&s);
     }
 }

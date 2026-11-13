@@ -306,6 +306,7 @@ fn changed<'a, K: Ord, V: PartialEq>(
 }
 fn task_row(t: &Task) -> Result<Map<String, Value>> {
     let mut row = object(t)?;
+    row.remove("pending_user_inputs");
     strip(&mut row, &["waiting_for_tasks", "ended_task_waits", "dependencies", "stack", "documents", "model", "wrap_up", "delivered_dependencies", "blocks", "verdict", "review_rounds", "later_prs", "opened_prs", "priority", "ending", "stalls", "stall_closing", "open_pr", "worktrees", "account", "provider", "selection", "pending_selection", "move_refused", "allowed", "project", "continues", "created_revision"]);
     // The column's check predates the two states that split `in_review`; the state is derived
     // from the facts when the store is read, so either of them is kept as the old value.
@@ -907,6 +908,14 @@ pub(super) fn save_changes(
     }
     for (t, prior) in &tasks {
         save_task_links(c, t, *prior)?;
+        if prior.map_or(!t.pending_user_inputs.is_empty(), |before| before.pending_user_inputs != t.pending_user_inputs) {
+            if t.pending_user_inputs.is_empty() {
+                exec(c, "DELETE FROM task_user_inputs WHERE task_id=?1", [&t.id.0])?;
+            } else {
+                exec(c, "INSERT INTO task_user_inputs(task_id,inputs) VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET inputs=excluded.inputs",
+                    params![t.id.0, serde_json::to_string(&t.pending_user_inputs)?])?;
+            }
+        }
     }
     let pull_requests: Vec<_> = changed(&before.pull_requests, &after.pull_requests).collect();
     for (p, prior) in &pull_requests {
@@ -1177,6 +1186,15 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
         let x: Task = decode(row)?;
         state.tasks.insert(x.id.clone(), x);
     }
+    let mut inputs = c.prepare("SELECT task_id,inputs FROM task_user_inputs")?;
+    let mut stored = inputs.query([])?;
+    while let Some(row) = stored.next()? {
+        let id: String = row.get(0)?;
+        let inputs: String = row.get(1)?;
+        state.tasks.get_mut(&TaskId::from(id)).context("user input task missing")?.pending_user_inputs = serde_json::from_str(&inputs)?;
+    }
+    drop(stored);
+    drop(inputs);
     for row in rows(c, "documents", &[], &[])? {
         let x: Document = decode(row)?;
         state.documents.insert(x.id.clone(), x);

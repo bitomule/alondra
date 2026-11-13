@@ -2070,6 +2070,9 @@ impl DomainState {
     /// Ends a task the user, the orchestrator or Alondra stopped: its cards leave in silence and a
     /// node it had is told to stop and is closed.
     pub(super) fn cancel(&mut self, task_id: &TaskId, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+        if !self.task(task_id)?.pending_user_inputs.is_empty() {
+            return fail("pending_user_message", "A user message still needs a final delivery before the task can be cancelled");
+        }
         self.invalidate(task_id);
         let closing_cards: Vec<InteractionId> = self.interactions.values().filter(|i| {
             i.system_card == Some(SystemCard::CloseProblem) && i.scope == (Scope::Task { task_id: task_id.clone() })
@@ -2238,7 +2241,8 @@ impl DomainState {
     }
     /// The final delivery is settled: every PR merged, or accepted with nothing left to merge.
     pub fn finished(&self, t: &Task) -> bool {
-        t.final_presentation.as_ref().and_then(|p| self.interactions.get(p)).is_some_and(|p| self.settled(t, p))
+        t.pending_user_inputs.is_empty()
+            && t.final_presentation.as_ref().and_then(|p| self.interactions.get(p)).is_some_and(|p| self.settled(t, p))
     }
     /// A node that asks the user something after its final delivery takes that delivery back: it
     /// leaves the user's queue, the task is in progress again, and the node presents again once it
@@ -2538,6 +2542,7 @@ impl DomainState {
             .tasks
             .values()
             .filter(|b| !b.over() && !b.blocks.is_empty() && !self.finished(b))
+            .filter(|b| b.pending_user_inputs.is_empty())
             .filter(|b| !b.blocks.iter().any(|a| self.tasks.get(a).is_some_and(|a| !a.over() && !self.finished(a))))
             .map(|b| b.id.clone())
             .collect();
@@ -3502,7 +3507,7 @@ impl DomainState {
                         created_revision: self.revision + 1,
                         started: false,
                         review_prs: *review_prs,
-                        final_presentation: None,
+                        final_presentation: None, pending_user_inputs: Default::default(),
                         pr_id: None,
                         later_prs: vec![],
                         opened_prs: BTreeSet::new(),
@@ -4647,6 +4652,16 @@ impl DomainState {
             } => {
                 self.assigned(actor, task_id)?;
                 let targets = &self.with_open_prs(task_id, targets);
+                self.node_has_run(task_id, lifecycles)?;
+                if *nothing_to_review && !self.task(task_id)?.pending_user_inputs.is_empty() {
+                    return fail("pending_user_message", "A user message requires a visible final result that addresses it or explains why the work cannot be done");
+                }
+                if *is_final && !self.task(task_id)?.pending_user_inputs.is_empty()
+                    && self.lifecycle(lifecycles, task_id)?.pending_inputs().iter()
+                        .any(|input| self.tasks[task_id].pending_user_inputs.contains(input.as_str()))
+                {
+                    return fail("pending_user_message", "Read the pending user messages before delivering; the final result must address them or explain why the work cannot be done");
+                }
                 if *nothing_to_review && (!*is_final || targets.iter().any(|t| !matches!(t, DeliveryTarget::Text { .. }))) {
                     return refuse("invalid_input", "nothing_to_review",
                         "nothing_to_review is only for a final delivery without a pull request or document: it closes the task without a card");
@@ -4732,6 +4747,7 @@ impl DomainState {
                         self.consume_replacement_notice(task_id, notice, lifecycles)?;
                     }
                     let t = self.tasks.get_mut(task_id).unwrap();
+                    t.pending_user_inputs.clear();
                     t.final_presentation = Some(interaction_id.clone());
                     t.verdict = None;
                     t.open_pr = None;
@@ -5131,6 +5147,9 @@ impl DomainState {
             }
             Command::ConfirmCleanup { task_id, discard } => {
                 let t = self.assigned(actor, task_id)?;
+                if !t.pending_user_inputs.is_empty() {
+                    return fail("pending_user_message", "A user message still needs a final delivery before cleanup");
+                }
                 if t.wrap_up.asked_at.is_none() && !(t.ending() && t.open_worktrees().next().is_some()) {
                     return fail("not_closing", &format!(
                         "Task {} is not closing, so there is nothing to clean up yet: deliver your result with present_result first.", task_id.0));
@@ -5403,6 +5422,9 @@ impl DomainState {
             Command::TellNode { task_id, text, from_user, answers } => {
                 system(actor)?;
                 nonempty(text)?;
+                if *from_user && answers.is_none() && self.is_scheduled_task(task_id) {
+                    return self.scheduled_message(task_id, text, effects, created, lifecycles);
+                }
                 let task = self.task(task_id)?;
                 if task.state.terminal() || (*from_user && task.ending.is_some()) {
                     return fail("task_not_active", &format!("Task {task_id} has ended or is closing"));
@@ -5410,17 +5432,23 @@ impl DomainState {
                 if let Some(card) = answers {
                     self.node_answer(task_id, card)?;
                 }
-                if self.lifecycle(lifecycles, task_id)?.execution().is_some_and(|stamp| stamp.host().as_str() == alondra_domain::CLAUDE_BG_HOST) {
+                if (!*from_user || answers.is_some()) && self.lifecycle(lifecycles, task_id)?.execution().is_some_and(|stamp| stamp.host().as_str() == alondra_domain::CLAUDE_BG_HOST) {
                     return fail("conflict", &format!("Task {task_id} has a node that does not run through the Agent SDK"));
                 }
                 let held: Vec<InteractionId> = self.lifecycle(lifecycles, task_id)?.cards().into_iter().map(|(card, _)| card.clone()).collect();
                 // The user writing to a task whose host was lost is their «Try again», with what they wrote.
                 let lost = held.iter().find(|card| *from_user && answers.is_none() && self.interactions.get(*card).is_some_and(retakes)).cloned();
+                let user_input = self.next_input(task_id);
                 if let Some(card) = lost {
                     self.settle_host_lost(&card, RETAKE, Some(text), lifecycles)?;
                 } else {
-                    let record = LifecycleRecord::Told { input: self.next_input(task_id), text: Some(text.clone()), answers: answers.clone() };
+                    let input = self.next_input(task_id);
+                    let record = LifecycleRecord::Told { input: input.clone(), text: Some(text.clone()), answers: answers.clone() };
                     self.decide(lifecycles, task_id, record)?;
+                }
+                if *from_user && answers.is_none() {
+                    self.invalidate(task_id);
+                    self.tasks.get_mut(task_id).unwrap().pending_user_inputs.insert(user_input);
                 }
                 let answered: Vec<InteractionId> = {
                     let still = self.lifecycle(lifecycles, task_id)?.cards();

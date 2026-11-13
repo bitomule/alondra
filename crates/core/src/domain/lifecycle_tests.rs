@@ -261,7 +261,7 @@ fn a_task_without_a_journal_is_refused_and_moves_nowhere() {
     let mut s = world();
     let unjournaled = Task {
         id: "old".into(), request_id: "r".into(), agent_id: Some("a".into()), title: "Old".into(), state: TaskState::Running, revision: 0,
-        started: true, review_prs: false, created_revision: 0, final_presentation: None, pr_id: None, later_prs: vec![], opened_prs: Default::default(), dependencies: BTreeSet::new(), stack: None,
+        started: true, review_prs: false, created_revision: 0, pending_user_inputs: Default::default(), final_presentation: None, pr_id: None, later_prs: vec![], opened_prs: Default::default(), dependencies: BTreeSet::new(), stack: None,
         documents: BTreeMap::new(), archived: false, model: None, waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(),
         verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: None,
     };
@@ -330,6 +330,170 @@ fn an_sdk_execution_is_admitted_by_its_own_command_and_records_only_its_own_fact
 /// An SDK task whose observed turn started: admitted, resource available, the planned input taken.
 pub(super) fn sdk_turn(s: &mut DomainState, id: &str, node: &str) -> String {
     sdk_turn_named(s, id, node, "turn-1")
+}
+
+#[test]
+fn cancelling_the_work_explicitly_releases_pending_user_messages() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    must(&mut s, Actor::System, Command::TellNode {
+        task_id: "t".into(), text: "Prepare the follow-up report".into(), from_user: true, answers: None,
+    });
+    let error = exec(&mut s, orchestrator(), Command::CancelTask { task_id: "t".into(), reason: None }).unwrap_err();
+    assert_eq!(error.code, "pending_user_message");
+    must(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None });
+    assert!(s.tasks[&TaskId::from("t")].cancelled());
+    assert!(s.tasks[&TaskId::from("t")].pending_user_inputs.is_empty());
+    let error = exec(&mut s, Actor::System, Command::TellNode {
+        task_id: "t".into(), text: "More work".into(), from_user: true, answers: None,
+    }).unwrap_err();
+    assert_eq!(error.code, "task_not_active");
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn a_final_result_cannot_discard_an_unconsumed_user_message() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    must(&mut s, Actor::System, Command::TellNode {
+        task_id: "t".into(), text: "Prepare the follow-up report".into(), from_user: true, answers: None,
+    });
+    let result = exec(&mut s, node("a"), Command::PresentResult {
+        attachments: vec![], checklist: vec![], task_id: "t".into(), interaction_id: "empty".into(),
+        body: "No work remains".into(), targets: vec![DeliveryTarget::Text { text: "No work remains".into() }],
+        is_final: true, nothing_to_review: true, card: CardSpec::delivery("Review the result", &[], true),
+    });
+    assert_eq!(result.unwrap_err().code, "pending_user_message");
+    assert!(!s.tasks[&TaskId::from("t")].ending());
+}
+
+#[test]
+fn accepting_an_old_delivery_cannot_close_over_a_user_message() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    deliver(&mut s, "t", "a", "report");
+    must(&mut s, Actor::System, Command::TellNode {
+        task_id: "t".into(), text: "Prepare the follow-up report".into(), from_user: true, answers: None,
+    });
+    let result = exec(&mut s, user(), Command::AcceptDelivery {
+        presentation_id: "report".into(), targets: vec![DeliveryTarget::Text { text: "Done".into() }],
+    });
+    assert_eq!(result.unwrap_err().code, "pending_user_message");
+    assert!(!s.tasks[&TaskId::from("t")].ending());
+}
+
+#[test]
+fn consuming_a_user_message_does_not_make_an_old_delivery_current() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    deliver(&mut s, "t", "a", "report");
+    must(&mut s, Actor::System, Command::TellNode {
+        task_id: "t".into(), text: "Prepare the follow-up report".into(), from_user: true, answers: None,
+    });
+    let input = s.lifecycle_of(&"t".into()).unwrap().pending_inputs()[0].as_str().to_owned();
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts {
+        task_id: "t".into(), generation: 1, facts: vec![RuntimeObservation::InputConsumed { input }],
+    });
+    let mut restored: DomainState = serde_json::from_value(serde_json::to_value(&s).unwrap()).unwrap();
+    let result = exec(&mut restored, user(), Command::AcceptDelivery {
+        presentation_id: "report".into(), targets: vec![DeliveryTarget::Text { text: "Done".into() }],
+    });
+    assert_eq!(result.unwrap_err().code, "pending_user_message");
+    deliver(&mut restored, "t", "a", "follow-up");
+    must(&mut restored, user(), Command::AcceptDelivery {
+        presentation_id: "follow-up".into(), targets: vec![DeliveryTarget::Text { text: "Done".into() }],
+    });
+}
+
+#[test]
+fn a_user_message_during_cleanup_reopens_the_work_before_the_node_closes() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    deliver(&mut s, "t", "a", "report");
+    must(&mut s, user(), Command::AcceptDelivery {
+        presentation_id: "report".into(), targets: vec![DeliveryTarget::Text { text: "Done".into() }],
+    });
+    must(&mut s, Actor::System, Command::TellNode {
+        task_id: "t".into(), text: "Prepare the follow-up report".into(), from_user: true, answers: None,
+    });
+    assert!(!s.finished(&s.tasks[&TaskId::from("t")]), "the old acceptance cannot settle the new work");
+    let result = exec(&mut s, node("a"), Command::ConfirmCleanup { task_id: "t".into(), discard: vec![] });
+    assert_eq!(result.unwrap_err().code, "pending_user_message");
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn a_refused_user_message_must_be_read_after_it_is_resent() {
+    resent_user_message_requires_reading(false);
+}
+
+#[test]
+fn a_doubtful_user_message_must_be_read_after_it_is_resent() {
+    resent_user_message_requires_reading(true);
+}
+
+fn resent_user_message_requires_reading(doubtful: bool) {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    must(&mut s, Actor::System, Command::TellNode {
+        task_id: "t".into(), text: "Prepare the report".into(), from_user: true, answers: None,
+    });
+    let input = s.lifecycle_of(&"t".into()).unwrap().pending_inputs()[0].as_str().to_owned();
+    if doubtful {
+        must(&mut s, Actor::System, Command::RecordHostEnded {
+            task_id: "t".into(), generation: 1, resumes: true, ended_work: vec![], by_alondra: false,
+        });
+        must(&mut s, Actor::System, Command::RecordDoubtfulHandoff {
+            task_id: "t".into(), generation: 1, input, text: "Prepare the report".into(), resumes: true, by_alondra: false,
+        });
+    } else {
+        must(&mut s, Actor::System, Command::RecordDroppedInput {
+            task_id: "t".into(), generation: 1, input, text: "Prepare the report".into(),
+        });
+    }
+    let resent = s.lifecycle_of(&"t".into()).unwrap().pending_inputs()[0].as_str().to_owned();
+    let result = || Command::PresentResult {
+        attachments: vec![], checklist: vec![], task_id: "t".into(), interaction_id: "new-report".into(),
+        body: "The report is ready".into(), targets: vec![DeliveryTarget::Text { text: "The report".into() }],
+        is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the report", &[], true),
+    };
+    assert_eq!(exec(&mut s, node("a"), result()).unwrap_err().code, "pending_user_message");
+    let facts = if doubtful {
+        vec![RuntimeObservation::ResourceAvailable, RuntimeObservation::TurnStarted { turn: "turn-2".into(), input: resent }]
+    } else { vec![RuntimeObservation::InputConsumed { input: resent }] };
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts });
+    must(&mut s, node("a"), result());
+    assert!(s.tasks[&TaskId::from("t")].pending_user_inputs.is_empty());
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn every_user_message_must_be_consumed_before_a_new_visible_result() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    for text in ["Write the report", "Include the measurements"] {
+        must(&mut s, Actor::System, Command::TellNode {
+            task_id: "t".into(), text: text.into(), from_user: true, answers: None,
+        });
+    }
+    let inputs: Vec<String> = s.lifecycle_of(&"t".into()).unwrap().pending_inputs().iter().map(|id| id.as_str().to_owned()).collect();
+    assert_eq!(inputs.len(), 2);
+    for (index, input) in inputs.into_iter().enumerate() {
+        must(&mut s, Actor::System, Command::RecordRuntimeFacts {
+            task_id: "t".into(), generation: 1, facts: vec![RuntimeObservation::InputConsumed { input }],
+        });
+        let outcome = exec(&mut s, node("a"), Command::PresentResult {
+            attachments: vec![], checklist: vec![], task_id: "t".into(), interaction_id: "report".into(),
+            body: "The report includes the measurements".into(), targets: vec![DeliveryTarget::Text { text: "Report".into() }],
+            is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the report", &[], true),
+        });
+        if index == 0 {
+            assert_eq!(outcome.unwrap_err().code, "pending_user_message");
+        } else {
+            outcome.unwrap();
+        }
+    }
+    assert!(s.tasks[&TaskId::from("t")].pending_user_inputs.is_empty());
 }
 fn sdk_turn_named(s: &mut DomainState, id: &str, node: &str, turn: &str) -> String {
     sdk_turn_on(s, id, node, turn, None)
@@ -2765,4 +2929,21 @@ fn a_message_the_provider_refuses_goes_again_at_once_with_no_card() {
     assert_eq!(replayed.pending_inputs(), [&alondra_domain::InputId::new(resent).unwrap()]);
     assert_eq!(s.tasks[&TaskId::from("t")].state, TaskState::Running, "the task keeps working");
     assert_aggregate_rules(&s);
+}
+
+#[test]
+fn a_legacy_tool_call_cannot_claim_it_read_a_new_user_message() {
+    let mut s = world();
+    task(&mut s, "t", Some("a"));
+    must(&mut s, node("a"), Command::StartTask { task_id: "t".into() });
+    must(&mut s, Actor::System, Command::TellNode {
+        task_id: "t".into(), text: "Prepare another report".into(), from_user: true, answers: None,
+    });
+    let result = exec(&mut s, node("a"), Command::PresentResult {
+        attachments: vec![], checklist: vec![], task_id: "t".into(), interaction_id: "old-turn-result".into(),
+        body: "Done".into(), targets: vec![DeliveryTarget::Text { text: "Done".into() }],
+        is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the result", &[], true),
+    });
+    assert_eq!(result.unwrap_err().code, "pending_user_message");
+    assert_eq!(s.lifecycle_of(&"t".into()).unwrap().pending_inputs().len(), 1);
 }

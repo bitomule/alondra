@@ -138,7 +138,7 @@ fn scheduled_request_task(request_id: &str, task_id: &str) -> (Request, Task) {
         revision: 0,
         started: false,
         review_prs: false,
-        created_revision: 0, final_presentation: None,
+        created_revision: 0, pending_user_inputs: Default::default(), final_presentation: None,
         pr_id: None,
         later_prs: vec![],
         opened_prs: Default::default(),

@@ -121,6 +121,13 @@ pub(super) fn stage(
     if let Command::RecordTaskWorktree { path, .. } = &envelope.command {
         crate::worktree::registrable(std::path::Path::new(path), protected).map_err(|why| DomainError::new("invalid_input", why))?;
     }
+    if let Command::TellNode { task_id, from_user: true, .. } = &envelope.command
+        && !state.is_scheduled_task(task_id)
+        && conn.query_row("SELECT EXISTS(SELECT 1 FROM task_closings WHERE task_id=?1 AND rm_started_at IS NOT NULL)",
+            [&task_id.0], |row| row.get::<_, bool>(0))?
+    {
+        return Err(DomainError::new("session_unreachable", "The task's session is being removed: nothing was sent. Send the work as a new request").into());
+    }
     let mut next = DomainState::clone(&state);
     let outcome = next.execute(actor, envelope)?;
     if outcome.changed {
@@ -190,6 +197,24 @@ pub(super) fn stage(
             let why = format!("Why its dependencies changed: {}", reason.trim().chars().take(4096).collect::<String>());
             let mission = plan.mission.as_deref().map_or_else(|| why.clone(), |mission| format!("{why}\n\n{mission}"));
             store_launch_plan(conn, task_id, &LaunchPlan { mission: Some(mission), ..plan })?;
+        }
+        if let Command::TellNode { task_id: source, from_user: true, answers: None, .. } = &envelope.command
+            && state.is_scheduled_task(source)
+        {
+            for task in next.tasks.values().filter(|task| !state.tasks.contains_key(&task.id)) {
+                let plan = next.scheduled_message_plan(source, &task.id)?;
+                store_launch_plan(conn, &task.id, &plan)?;
+                let launch = match &attached {
+                    Attached::Request(launch) => Some((**launch).clone()),
+                    _ => repository::load_request_launch(conn, &state.tasks[source].request_id)?,
+                };
+                if let Some(launch) = launch {
+                    repository::remember_request_launch(conn, &task.request_id, &launch)?;
+                }
+                if let Some(tools) = repository::load_schedule_request_tools(conn, &state.tasks[source].request_id)? {
+                    repository::remember_schedule_request_tools(conn, &task.request_id, &tools)?;
+                }
+            }
         }
         if let Command::SettlePlanReview { task_id, outcome: PlanReviewOutcome::Cancelled { reason }, .. } = &envelope.command {
             repository::exec(conn,

@@ -7,6 +7,21 @@ use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestError, TestRng, TestRunner};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[test]
+fn a_user_message_to_a_scheduled_run_creates_independent_work() {
+    let mut world = World::new();
+    let before = world.s.tasks.len();
+    world.must(Actor::System, Command::TellNode {
+        task_id: "run".into(), text: "Prepare a follow-up report".into(), from_user: true, answers: None,
+    });
+    assert_eq!(world.s.tasks.len(), before + 1);
+    let followup = world.s.tasks.values().find(|task| task.id != TaskId::from("run")).unwrap();
+    assert_ne!(followup.request_id, world.s.tasks[&TaskId::from("run")].request_id);
+    assert_eq!(world.s.requests[&followup.request_id].origin, RequestOrigin::User);
+    assert!(world.s.requests[&followup.request_id].body.contains("Prepare a follow-up report"));
+    assert!(followup.dependencies.is_empty(), "the scheduled run does not hold the new work");
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Failure {
     Launch,
@@ -111,7 +126,7 @@ impl World {
         request.title = Some("BlurCamera · weekly improvement".into());
         let task = Task {
             id: "run".into(), request_id: "weekly".into(), agent_id: None, title: "BlurCamera · weekly improvement".into(), state: TaskState::NotStarted,
-            revision: 0, started: false, review_prs: false, created_revision: 0, final_presentation: None, pr_id: None, later_prs: vec![], opened_prs: Default::default(), dependencies: BTreeSet::new(), stack: None,
+            revision: 0, started: false, review_prs: false, created_revision: 0, pending_user_inputs: Default::default(), final_presentation: None, pr_id: None, later_prs: vec![], opened_prs: Default::default(), dependencies: BTreeSet::new(), stack: None,
             documents: BTreeMap::new(), archived: false, model: None, waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(),
             verdict: None, review_rounds: 0, wrap_up: WrapUp::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, continues: None, worktrees: Default::default(), provider: Default::default(), selection: None, pending_selection: None, move_refused: None, account: None, allowed: Default::default(), project: None,
         };

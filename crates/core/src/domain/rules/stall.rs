@@ -177,7 +177,8 @@ impl DomainState {
         self.settle_stall_guard(actor, case_id, task, outcome)?;
         let text = outcome.written().map(|(_, text)| text.trim().to_owned());
         if !matches!(outcome, StallOutcome::Instruct { .. }) && self.open_pr_of(task).is_some()
-            && self.lifecycle(lifecycles, task)?.phase() != alondra_domain::TaskPhase::Delivered {
+            && (self.lifecycle(lifecycles, task)?.phase() != alondra_domain::TaskPhase::Delivered
+                || (text.is_some() && !self.tasks[task].pending_user_inputs.is_empty())) {
             return self.close_task(actor, task, text, effects, created, lifecycles);
         }
         let at = self.revision + 1;
@@ -209,6 +210,7 @@ impl DomainState {
                     Some(result) => StallClosing::Settled { result },
                     None => StallClosing::Unsettled,
                 });
+                self.tasks.get_mut(task).expect("the guard found it").pending_user_inputs.clear();
                 self.cancel(task, effects, lifecycles)
             }
         }

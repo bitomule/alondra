@@ -46,7 +46,7 @@ fn fixture() -> DomainState {
             created_revision: 0,
             started: true,
             review_prs: false,
-            final_presentation: Some("i-3".into()),
+            final_presentation: Some("i-3".into()), pending_user_inputs: Default::default(),
             pr_id: None,
             later_prs: vec![],
             opened_prs: Default::default(),
@@ -10138,5 +10138,23 @@ fn task_working_rows_match_goldens() {
             wait.detail = Some("Waiting for the server".into());
         }
         assert_golden(filename, &render(&state, &live, client, lang, "tasks", "2026-09-30T10:00:00Z"), expected);
+    }
+}
+
+#[test]
+fn a_session_without_read_receipts_does_not_block_scheduled_followup_messages() {
+    let mut state = fixture();
+    state.requests.get_mut(&"r-1".into()).unwrap().origin = RequestOrigin::Schedule;
+    let task = state.tasks.get_mut(&"t-1".into()).unwrap();
+    task.state = TaskState::Done;
+    task.agent_id = None;
+    for (lang, explanation) in [(Lang::En, "separate task"), (Lang::Es, "tarea independiente")] {
+        let view = render(&state, &LiveSnapshot::default(), Client::Tui, lang, "task:t-1", "");
+        let action = view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
+            let Item::Actions(bar) = item else { return None };
+            bar.actions.iter().find(|action| action.id.starts_with("task_msg:"))
+        }).expect("a completed scheduled run still accepts independent work");
+        let Input::Text { placeholder, .. } = &action.input else { panic!("a message field") };
+        assert!(placeholder.contains(explanation), "{placeholder}");
     }
 }

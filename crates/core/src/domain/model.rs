@@ -153,6 +153,9 @@ pub struct Task {
     pub started: bool,
     pub review_prs: bool,
     pub final_presentation: Option<InteractionId>,
+    /// User inputs requiring a new final delivery, even after the host consumes them.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub pending_user_inputs: BTreeSet<String>,
     /// The first PR the task registered; `later_prs` holds the ones after it.
     pub pr_id: Option<PrId>,
     /// The PRs this task registered after its first, in any repository.

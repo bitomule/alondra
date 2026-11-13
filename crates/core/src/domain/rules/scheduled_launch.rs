@@ -9,6 +9,44 @@ pub const SCHEDULED_TASK_CANCELLED: &str = "Its task was cancelled before it sta
 pub const SCHEDULED_TASK_ENDED: &str = "Its task ended before it started";
 
 impl DomainState {
+    pub fn is_scheduled_task(&self, task: &TaskId) -> bool {
+        self.tasks.get(task).and_then(|task| self.requests.get(&task.request_id))
+            .is_some_and(|request| request.origin == RequestOrigin::Schedule)
+    }
+
+    /// Reuses the run's project folder, never the worktree its completion may delete.
+    pub fn scheduled_message_plan(&self, source: &TaskId, followup: &TaskId) -> Result<LaunchPlan> {
+        let intent = self.schedule.runs.values().find(|run| run.task_id.as_ref() == Some(source))
+            .and_then(|run| run.launch.as_ref()).map(|launch| &launch.intent)
+            .ok_or_else(|| DomainError::new("launch_plan_required", "The scheduled run has no saved launch folder: the message was not sent"))?;
+        let mut plan = LaunchPlan::new(format!("followup/{followup}"), &intent.cwd);
+        plan.project = self.task(source)?.project.clone();
+        Ok(plan)
+    }
+
+    pub(super) fn scheduled_message(&mut self, source: &TaskId, text: &str, effects: &mut Vec<DomainEffect>,
+        created: &mut Vec<String>, lifecycles: &mut Lifecycles) -> Result<()> {
+        let task = self.task(source)?.clone();
+        let request_id: RequestId = format!("r-message-{}", self.revision + 1).into();
+        let task_id: TaskId = format!("t-message-{}", self.revision + 1).into();
+        let launch = self.scheduled_message_plan(source, &task_id)?;
+        let request = &self.requests[&task.request_id];
+        let result = task.final_presentation.as_ref().and_then(|id| self.interactions.get(id))
+            .map(|delivery| delivery.body.as_str()).unwrap_or_default();
+        let body = format!("User message about scheduled task {source} “{}”:\n\n{text}\n\nOriginal request:\n{}\n\nLatest result:\n{result}", task.title, request.body);
+        let auto_merge = request.auto_merge;
+        self.apply(&Actor::Orchestrator { generation: self.orchestrator_generation }, &Command::CreateRequest {
+            request_id: request_id.clone(), body, auto_merge, maintenance: false, message: false,
+        }, effects, created, lifecycles)?;
+        let request = self.requests.get_mut(&request_id).unwrap();
+        request.title = Some(clip(&task.title, REQUEST_TITLE_LIMIT));
+        request.origin = RequestOrigin::User;
+        self.apply(&Actor::Orchestrator { generation: self.orchestrator_generation }, &Command::CreateTask {
+            task_id, request_id, title: task.title, agent_id: None, review_prs: false,
+            dependencies: BTreeSet::new(), stack: None, launch: Some(launch), plan_items: None, continues: None,
+        }, effects, created, lifecycles)
+    }
+
     /// Whether the launch of `run_id` may be claimed now: the run waits to launch and its Task
     /// has not started, has no node, waits for nothing and is not over.
     pub fn scheduled_launch_guard(&self, run_id: &ScheduleRunId) -> Result<&TaskId> {
