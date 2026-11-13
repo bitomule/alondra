@@ -55,6 +55,8 @@ pub(super) enum Action {
     /// The session leaves the next input it is offered untaken.
     IgnoresNextInput(usize),
     HostDies(usize),
+    /// The host is stopped on purpose: no new one takes its place on its own.
+    StopsHost(usize),
     /// The task's node says its cleanup is done (`cleanup_done`), whatever its session is doing.
     ConfirmsCleanup(usize),
     /// What the host observed reaches the daemon only a minute later.
@@ -197,6 +199,7 @@ pub(super) fn action() -> impl Strategy<Value = Action> {
         2 => (task(), any::<bool>()).prop_map(|(task, notifies)| Action::WorkEnds { task, notifies }),
         1 => task().prop_map(Action::IgnoresNextInput),
         2 => task().prop_map(Action::HostDies),
+        2 => task().prop_map(Action::StopsHost),
         1 => task().prop_map(Action::FactsLate),
         1 => task().prop_map(Action::FactsAgain),
         1 => Just(Action::Restart),

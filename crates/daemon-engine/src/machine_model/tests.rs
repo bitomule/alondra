@@ -97,7 +97,7 @@ fn ends_well(machine: &Machine, state: &DomainState, index: &ReadIndex, task: &T
         Situation::Working(_) => runs(machine, task),
         Situation::NeedsYou | Situation::Paused | Situation::Delivered(Delivery::ForReview) => true,
         Situation::Waiting(WaitsFor::Slot) => room_is_scarce(machine, state),
-        Situation::Waiting(WaitsFor::Step(AlondraStep::Delivering)) if state.waits_for_turn(task) || state.stranded_tasks().contains(task) => {
+        Situation::Waiting(WaitsFor::Step(AlondraStep::Delivering)) if state.waits_for_turn(task) => {
             room_is_scarce(machine, state)
         }
         Situation::Waiting(WaitsFor::Step(AlondraStep::Delivering | AlondraStep::Answering)) if listed(Gap::HandedBackOwesUser) && handed_back_owing_the_user(state, task) => true,
@@ -242,6 +242,34 @@ fn holds(history: &History, verdict: impl Fn(&Verdicts) -> &Option<String>) -> R
     match verdict(&verdicts(history)) {
         None => Ok(()),
         Some(why) => Err(TestCaseError::fail(format!("{why}\nin {history:#?}"))),
+    }
+}
+
+/// A host stopped on purpose while the node worked on what the user sent back leaves nothing that
+/// starts a turn: the task still ends at work, never delivered with the user's request unheard.
+#[test]
+fn a_host_stopped_on_purpose_while_the_node_worked_on_what_the_user_sent_back_ends_at_work() {
+    let history = History {
+        script: vec![world::Turn::Deliver, world::Turn::Background],
+        slots: 3,
+        actions: vec![world::Action::TurnEnds(0), world::Action::User(world::UserAct::Return, 0), world::Action::Clock(world::PASS * 2), world::Action::StopsHost(0)],
+    };
+    if let Err(failure) = holds(&history, |verdicts| &verdicts.ends) {
+        panic!("{failure}");
+    }
+}
+
+/// A host that dies with its late facts still unread leaves the turn it cut: the host that takes
+/// the task over tells how it ended, so the task never reads as running with nothing running it.
+#[test]
+fn a_host_that_dies_with_late_facts_leaves_a_task_taken_over_that_reports_the_turn_it_cut() {
+    let history = History {
+        script: vec![world::Turn::Deliver],
+        slots: 2,
+        actions: vec![world::Action::User(world::UserAct::Cancel, 0), world::Action::FactsLate(2), world::Action::FactsAgain(2), world::Action::HostDies(2)],
+    };
+    if let Err(failure) = holds(&history, |verdicts| &verdicts.ends) {
+        panic!("{failure}");
     }
 }
 

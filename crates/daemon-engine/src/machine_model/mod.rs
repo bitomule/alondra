@@ -83,8 +83,6 @@ struct Machine {
     owing: BTreeMap<TaskId, (Revision, Owed, Millis)>,
     /// When each task was last taken over for reading as working with no owner, and at which revision.
     taken: BTreeMap<TaskId, (Millis, u64)>,
-    /// Since when each delivered task has been stranded.
-    stranded: BTreeMap<TaskId, Millis>,
     /// The tasks whose move to another account was deferred to their next start, and that account:
     /// saved, as the store keeps a deferred move.
     deferred: BTreeMap<TaskId, AccountKey>,
@@ -164,7 +162,7 @@ impl Machine {
         let mut machine = Self {
             domain: Arc::new(DomainState::new("machine")), world: World::new(history.script.clone(), history.slots), watch: Watch::default(),
             granted: BTreeSet::new(), wakes: BTreeMap::new(), rearms: BTreeMap::new(), agents: 0, commands: 0, refused: BTreeMap::new(),
-            cursors: BTreeMap::new(), messages: Vec::new(), owing: BTreeMap::new(), taken: BTreeMap::new(), stranded: BTreeMap::new(),
+            cursors: BTreeMap::new(), messages: Vec::new(), owing: BTreeMap::new(), taken: BTreeMap::new(),
             deferred: BTreeMap::new(), unadmitted: BTreeMap::new(), seen: Seen::default(), trace: Vec::new(),
         };
         let user = Actor::User { user_id: "u".into() };
@@ -288,6 +286,7 @@ impl Machine {
             Action::HostDies(index) => {
                 if let Some(host) = self.world.host(&task(index)) { host.alive = false; }
             }
+            Action::StopsHost(index) => self.stop_host(&task(index)),
             Action::ConfirmsCleanup(index) => {
                 if let Some(agent) = self.agent(&task(index)) {
                     let _ = self.run(Actor::Agent { agent_id: agent }, Command::ConfirmCleanup { task_id: task(index), discard: vec![] });
@@ -379,7 +378,6 @@ impl Machine {
         self.owing.clear();
         self.refused.clear();
         self.taken.clear();
-        self.stranded.clear();
         self.unadmitted.clear();
         self.granted.clear();
         for host in self.world.hosts.values_mut() {
@@ -403,7 +401,6 @@ impl Machine {
             moved |= self.consume_inputs_in_turn();
             moved |= self.take_unowned();
             moved |= self.close_hosts_of_ended_nodes();
-            moved |= self.send_back_stranded();
             moved |= self.merge_authorized();
             moved |= self.close_ending();
             moved |= self.close_cleaned();
@@ -498,9 +495,14 @@ impl Machine {
         if taken.is_err() {
             return false;
         }
-        if let Some(old) = self.world.hosts.insert(task.clone(), Host::new(generation)) {
+        let mut taking = Host::new(generation);
+        if let Some(old) = self.world.hosts.remove(task) {
+            if let Some(cut) = old.turn.as_ref().filter(|turn| !old.alive && turn.decision.is_none()) {
+                taking.emit(Fact::TurnEnded(cut.id.clone()));
+            }
             self.world.retired.push((task.clone(), old));
         }
+        self.world.hosts.insert(task.clone(), taking);
         true
     }
 
@@ -568,25 +570,6 @@ impl Machine {
         !ended.is_empty()
     }
 
-    /// A delivered task its node owes work for and nothing starts goes back to work after five
-    /// minutes, once the gate has room (`admission::send_back_stranded`).
-    fn send_back_stranded(&mut self) -> bool {
-        let state = self.state();
-        let (due, _) = admission::stranded_due(&state, &mut self.stranded, self.world.now);
-        let mut moved = false;
-        for (task, _) in due {
-            if self.at_work(&state) >= self.world.slots {
-                continue;
-            }
-            if self.run(Actor::System, Command::RecordStranded { task_id: task.clone() }).is_ok() {
-                self.stranded.remove(&task);
-                self.take_if_unowned(&task);
-                moved = true;
-            }
-        }
-        moved
-    }
-
     fn record_facts(&mut self, task: &TaskId, generation: u64, facts: Vec<RuntimeObservation>) {
         if !facts.is_empty() {
             let _ = self.run(Actor::System, Command::RecordRuntimeFacts { task_id: task.clone(), generation, facts });
@@ -613,6 +596,15 @@ impl Machine {
     fn progress(&mut self, task: &TaskId) {
         self.wakes.remove(task);
         self.rearms.remove(task);
+    }
+
+    /// A host stopped on purpose: its end is recorded without a host that resumes its session.
+    fn stop_host(&mut self, task: &TaskId) {
+        let Some(host) = self.world.hosts.remove(task) else { return };
+        if self.generation(task) == Some(host.generation) && self.state().lifecycle_of(task).is_ok_and(|lifecycle| lifecycle.resource() != Some(ResourceEvidence::Released)) {
+            let _ = self.run(Actor::System, Command::RecordHostEnded { task_id: task.clone(), generation: host.generation, resumes: false, ended_work: vec![], by_alondra: true });
+        }
+        self.world.retired.push((task.clone(), host));
     }
 
     /// A host that died: its owner records the end, and while the task lives starts a host that

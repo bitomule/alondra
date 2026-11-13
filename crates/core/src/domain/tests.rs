@@ -3237,10 +3237,9 @@ fn variant_index(c: &Command) -> usize {
         Command::AnnounceRequestTasks => 122,
         Command::AcknowledgeRequestTasks => 123,
         Command::MoveTask { .. } => 124,
-        Command::DeferTaskMove { .. } => 136,
+        Command::DeferTaskMove { .. } => 126,
         Command::AbortTaskSelection { .. } => 103,
         Command::SettleOpenPr { .. } => 125,
-        Command::RecordStranded { .. } => 126,
         Command::NotePrOpened { .. } => 127,
         Command::RecordOpenedPr { .. } => 128,
         Command::AskToRegisterPr { .. } => 129,
@@ -3250,7 +3249,7 @@ fn variant_index(c: &Command) -> usize {
         Command::RecordClaudeHold { .. } => 135,
     }
 }
-const COMMAND_KINDS: usize = 137;
+const COMMAND_KINDS: usize = 136;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3395,7 +3394,6 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordAccountUsage { provider: crate::accounts::Provider::Claude, account: crate::accounts::AccountId::default_account(),
             reading: crate::usage::UsageReading::default(), at: 1, day: "2026-10-21".into() }, true),
         (Command::RecordHostEnded { task_id: ids.task.into(), generation: 1, resumes: false, ended_work: vec![], by_alondra: false }, false),
-        (Command::RecordStranded { task_id: ids.task.into() }, false),
         (Command::RecordClaudeHold { task_id: ids.task.into(), generation: 1, failure: SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: None } }, false),
         (Command::RecordDoubtfulHandoff { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into(), resumes: false, by_alondra: false }, false),
         (Command::RecordHostLost { task_id: ids.task.into(), reason: "its host did not stop".into(), quiet: false }, false),

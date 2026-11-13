@@ -579,7 +579,7 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
         }
         text
     });
-    let mission = format!("{mission}{}{}{}", prefixed("\n\n", approved_plan(&current, task)), prefixed("\n\n", follow_up_context(&current, task)), prefixed("\n\n", asked_changes(&current, task)));
+    let mission = format!("{mission}{}{}{}", prefixed("\n\n", approved_plan(&current, task)), prefixed("\n\n", follow_up_context(&current, task)), prefixed("\n\n", alondra_core::domain::asked_changes(&current, task)));
     let mission = match (&workplace, &replaced) {
         (Workplace::Made(dir), _) => format!("{mission}\n\n{}", made_for(dir).await),
         (Workplace::Reused(_), _) | (_, Some(_)) => format!("{mission}\n\n{}", continuing_in(Path::new(&cwd)).await),
@@ -830,7 +830,7 @@ pub(crate) fn canonical_task_context(state: &DomainState, task: &alondra_core::d
             None => missing_inputs.push(source),
         }
     }
-    append(format!("task:{}:asked-changes", task.id), asked_changes(state, task));
+    append(format!("task:{}:asked-changes", task.id), alondra_core::domain::asked_changes(state, task));
     let mut public: Vec<_> = state.interactions.values().filter(|interaction| interaction.scope == (Scope::Task { task_id: task.id.clone() }) && interaction.recipient == Recipient::User).collect();
     public.sort_by_key(|interaction| interaction.order);
     for interaction in public {
@@ -943,22 +943,6 @@ fn approved_plan(state: &DomainState, task: &alondra_core::domain::Task) -> Stri
 The user approved this plan to be implemented: it is already this task's approved plan, so do not plan again or send it for approval.{part} Implement it, and mark every point of yours done with its evidence in your final result. If a point turns out wrong or impossible, send a revised plan with ExitPlanMode.
 
 {}", plan.trim())
-}
-
-/// The changes the user asked for on a result the task's earlier node delivered: they go to the
-/// node that takes the task over, since the one they were sent to is gone.
-fn asked_changes(state: &DomainState, task: &alondra_core::domain::Task) -> String {
-    use alondra_core::domain::InteractionPayload;
-    let Some(InteractionPayload::Delivery { feedback, acceptance, .. }) = task.final_presentation.as_ref()
-        .and_then(|id| state.interactions.get(id)).map(|result| &result.payload)
-    else {
-        return String::new();
-    };
-    if feedback.is_empty() || acceptance.as_ref().is_some_and(|accepted| accepted.valid) {
-        return String::new();
-    }
-    let asked: Vec<String> = feedback.iter().map(|change| format!("- {}", change.body.trim())).collect();
-    format!("## Changes the user asked for on the result you take over\n\n{}", asked.join("\n"))
 }
 
 fn given(text: Option<&str>) -> Option<String> {
