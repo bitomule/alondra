@@ -739,7 +739,7 @@ fn a_task_that_ends_takes_the_suggestions_nobody_settled_with_it() {
         ok(&mut s, agent(), suggest("settled"));
         ok(&mut s, orchestrator(), settle("settled", discard("Task 12 already covers it")));
         if cancelled {
-            ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+            ok(&mut s, user(), Command::CancelTask { task_id: "t".into(), reason: None});
         } else {
             ok(&mut s, agent(), present("final", text(), true, review()));
             ok(&mut s, user(), Command::AcceptDelivery { presentation_id: "final".into(), targets: text() });

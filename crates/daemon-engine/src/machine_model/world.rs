@@ -250,5 +250,5 @@ pub(super) fn history_with_a_dependency() -> impl Strategy<Value = History> {
 /// Histories whose nodes also confirm their cleanup, whatever their session is doing.
 pub(super) fn history_with_cleanups() -> impl Strategy<Value = History> {
     let action = prop_oneof![4 => action(), 1 => task().prop_map(Action::ConfirmsCleanup)];
-    (script(), 1..=3usize, prop::collection::vec(action, 1..40)).prop_map(|(script, slots, actions)| History { script, slots, actions })
+    (script(), 1..=3usize, prop::collection::vec(action, 1..40)).prop_map(|(script, slots, actions)| History { script, slots, depends: None, actions })
 }

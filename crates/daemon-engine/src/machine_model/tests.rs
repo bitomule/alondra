@@ -279,6 +279,7 @@ fn a_host_stopped_on_purpose_while_the_node_worked_on_what_the_user_sent_back_en
     let history = History {
         script: vec![world::Turn::Deliver, world::Turn::Background],
         slots: 3,
+        depends: None,
         actions: vec![world::Action::TurnEnds(0), world::Action::User(world::UserAct::Return, 0), world::Action::Clock(world::PASS * 2), world::Action::StopsHost(0)],
     };
     if let Err(failure) = holds(&history, |verdicts| &verdicts.ends) {
@@ -293,6 +294,7 @@ fn a_host_that_dies_with_late_facts_leaves_a_task_taken_over_that_reports_the_tu
     let history = History {
         script: vec![world::Turn::Deliver],
         slots: 2,
+        depends: None,
         actions: vec![world::Action::User(world::UserAct::Cancel, 0), world::Action::FactsLate(2), world::Action::FactsAgain(2), world::Action::HostDies(2)],
     };
     if let Err(failure) = holds(&history, |verdicts| &verdicts.ends) {
@@ -379,7 +381,7 @@ proptest! {
 fn a_node_that_confirms_its_cleanup_in_an_open_turn_closes_with_its_host() {
     use super::world::{Action, Turn, UserAct};
     let history = History {
-        script: vec![Turn::Deliver, Turn::AskPermission], slots: 3,
+        script: vec![Turn::Deliver, Turn::AskPermission], slots: 3, depends: None,
         actions: vec![Action::TurnEnds(0), Action::User(UserAct::Accept, 0), Action::ConfirmsCleanup(0), Action::TurnEnds(0)],
     };
     let mut machine = Machine::new(&history);
