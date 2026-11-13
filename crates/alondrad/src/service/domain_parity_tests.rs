@@ -236,17 +236,25 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
     std::fs::write(home.join("outside-files"), b"private fixture").unwrap();
     std::os::unix::fs::symlink(home.join("outside-files"), home.join("files/escape")).unwrap();
     for (index, reference) in [home.join("outside-files"), home.join("files/escape")].iter().enumerate() {
-        execute(&domain, Actor::System, &format!("unsafe-{index}"), Command::PublishInformation {
-            interaction_id: format!("unsafe-{index}").into(),
-            scope: Scope::Task { task_id: "task-parity".into() }, recipient: Recipient::User,
-            body: format!("Unsafe historical reference {index}"),
-            attachments: vec![alondra_core::domain::AttachmentRef {
-                id: "private".into(), name: "private.txt".into(), bytes: 15,
-                content_reference: reference.to_string_lossy().into_owned(),
-                content_digest: Sha256::digest(b"private fixture").iter().map(|b| format!("{b:02x}")).collect(),
-            }],
-            card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
-        });
+        let state = domain.state().unwrap();
+        let refused = domain.execute(&Actor::System, &CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
+            command_id: format!("unsafe-{index}").into(), expected_revision: state.revision,
+            command: Command::PublishInformation {
+                interaction_id: format!("unsafe-{index}").into(),
+                scope: Scope::Task { task_id: "task-parity".into() }, recipient: Recipient::User,
+                body: format!("Unsafe reference {index}"),
+                attachments: vec![alondra_core::domain::AttachmentRef {
+                    id: "private".into(), name: "private.txt".into(), bytes: 15,
+                    content_reference: reference.to_string_lossy().into_owned(),
+                    content_digest: Sha256::digest(b"private fixture").iter().map(|b| format!("{b:02x}")).collect(),
+                }],
+                card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
+            },
+        }, None, || Ok(()));
+        let error = refused.err().expect("a file outside Alondra's folders is refused when the card is presented");
+        assert!(error.to_string().contains("private.txt"), "{error}");
+        assert!(!domain.state().unwrap().interactions.contains_key(&format!("unsafe-{index}").into()));
     }
 
     let phone_key = SigningKey::from_slice(&[31; 32]).unwrap();
@@ -331,15 +339,6 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
             assert_eq!(local["status"], expected, "{path}");
         }
     }
-    for index in 0..2 {
-        let path = format!("/interactions/unsafe-{index}/attachments/private/content?offset=0");
-        let local = local_get(&client, &base, &phone_key, device_id, &path).await;
-        let remote = encrypted(&service, &phone_key, &phone_agreement, &responses,
-            &format!("unsafe-read-{index}"), json!({"method":"GET","path":path})).await;
-        assert_eq!(local, remote);
-        assert_eq!(remote["status"], 409);
-        assert_eq!(remote["body"]["code"], "content_unavailable");
-    }
     let attachment_path = "/interactions/info-parity/attachments/clip%3A%20%C3%B1%201/content";
     assert_eq!(client.get(format!("{base}{attachment_path}?offset=0")).send().await.unwrap().status(), 403);
     let mut downloaded = Vec::new();
@@ -387,8 +386,7 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
     let remote = encrypted(&service, &phone_key, &phone_agreement, &responses,
         "tampered-video", json!({"method":"GET","path":path})).await;
     assert_eq!(local, remote);
-    assert_eq!(remote["status"], 409);
-    assert_eq!(remote["body"]["code"], "content_unavailable");
+    assert_eq!(remote["status"], 200, "the card reads its own copy, not the file it was presented from");
     let local_schedule = local_get(&client, &base, &phone_key, device_id,
         "/schedules").await;
     let remote_schedule = encrypted(&service, &phone_key, &phone_agreement, &responses,

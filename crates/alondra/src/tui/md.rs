@@ -1641,6 +1641,19 @@ mod tests {
     }
 
     #[test]
+    fn an_image_in_a_table_cell_opens_like_a_loose_one() {
+        let stored = format!("/files?path=files/images/{}.png", "a".repeat(64));
+        let table = format!("| shot |\n|---|\n| ![paywall]({stored}) |");
+        let loose = format!("![paywall]({stored})");
+        let opened = |md: &str| -> Vec<Option<String>> {
+            parse(md).iter().flat_map(|b| b.targets.iter()).map(|t| t.stored().map(str::to_owned)).collect()
+        };
+        assert_eq!(opened(&table), opened(&loose));
+        assert_eq!(opened(&table), vec![Some(stored)]);
+        assert_eq!(rendered(&table, 80).join(" ").split("───────").last().map(str::trim), Some("📷 paywall"));
+    }
+
+    #[test]
     fn html_images_and_links_read_like_markdown_ones() {
         let cases = [
             (r#"<img src="https://x.y/a.png" alt="Logo" width=120>"#, "📷 Logo (x.y)"),

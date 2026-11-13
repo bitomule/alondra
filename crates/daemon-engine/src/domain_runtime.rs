@@ -791,6 +791,23 @@ impl DomainRuntime {
         let protected = self.store.lock_or_exit("the domain store").protected().clone();
         crate::worktree::registrable(path, &protected)
     }
+    /// Gives every card whose attachments still sit in a worktree its own copy of them. A file
+    /// that is gone or no longer matches its digest stays as it was; the names come back.
+    pub fn keep_attachments(&self) -> Result<(usize, Vec<String>)> {
+        let mut store = self.store.lock_or_exit("the domain store");
+        let roots = worktree_roots(&*store.load()?);
+        let (mut kept, mut lost) = (0, vec![]);
+        for (interaction, id, name, digest, reference) in store.attachments_kept_elsewhere()? {
+            match crate::domain_content::keep_attachment(&self.home, &reference, &digest, &roots) {
+                Ok(copy) => {
+                    store.keep_attachment_at(&interaction, &id, &copy)?;
+                    kept += 1;
+                }
+                Err(_) => lost.push(format!("{interaction}: {name}")),
+            }
+        }
+        Ok((kept, lost))
+    }
     pub(crate) fn task_worktree(&self, task: &TaskId) -> Result<Option<String>> {
         self.store.lock_or_exit("the domain store").task_worktree(task)
     }
@@ -902,7 +919,7 @@ impl DomainRuntime {
             None
         };
         authorize()?;
-        let prepared = crate::domain_content::prepare(&self.home, envelope)?;
+        let prepared = crate::domain_content::prepare(&self.home, envelope, &worktree_roots(&*store.load()?))?;
         let commit = match launch {
             Some(launch) => store.execute_launching(actor, &prepared.envelope, transport, launch),
             None if on_current => store.execute_filling_revision(actor, &prepared.envelope),
@@ -1060,7 +1077,7 @@ impl DomainRuntime {
             }
             Principal::Orchestrator { generation, .. } => Actor::Orchestrator { generation },
         };
-        let prepared = crate::domain_content::prepare(&self.home, envelope)?;
+        let prepared = crate::domain_content::prepare(&self.home, envelope, &worktree_roots(&*store.load()?))?;
         let commit = match &principal {
             Principal::Orchestrator { execution_id, .. } => store.execute_from_batch(&actor, &prepared.envelope, execution_id),
             _ => store.execute_filling_revision(&actor, &prepared.envelope),
@@ -1097,6 +1114,11 @@ fn command_kind(command: &Command) -> String {
 }
 
 /// Exhaustive scope resolution for delegated producers; unscoped commands are never admitted.
+/// Where a node's files may be read from besides Alondra's folder: the worktrees of the tasks.
+fn worktree_roots(state: &DomainState) -> Vec<std::path::PathBuf> {
+    state.tasks.values().flat_map(|task| task.worktrees.keys()).map(std::path::PathBuf::from).collect()
+}
+
 fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
     match command {
         Command::CreateTask { task_id, .. }

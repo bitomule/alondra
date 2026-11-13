@@ -1,5 +1,6 @@
 //! Synthetic producer flows through the same DomainRuntime used by the v2 MCP HTTP route.
 use super::*;
+use crate::locks::Poisonable as _;
 use crate::domain_authority::Principal;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -303,4 +304,80 @@ fn a_checked_delivery_rejects_a_changed_pr_without_consuming_its_receipt() {
     assert!(fixture.runtime.state().unwrap().interactions.contains_key(&"privacy-delivery".into()));
     let replayed = fixture.runtime.execute_bearer_checked(&fixture.agent, &envelope, guard).unwrap();
     assert_eq!(replayed, accepted, "the refused attempt must not consume or rewrite the receipt");
+}
+
+fn digest_of(bytes: &[u8]) -> String {
+    Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn attachment_of(name: &str, path: &std::path::Path, bytes: &[u8]) -> Value {
+    json!({"id": name, "name": name, "content_digest": digest_of(bytes),
+        "content_reference": path.display().to_string(), "bytes": bytes.len()})
+}
+
+fn delivery_with(fixture: &mut Fixture, id: &str, attachments: Value) -> Result<CommandOutcome, StoreError> {
+    fixture.agent(json!({"kind":"present_result", "task_id":"files-task", "interaction_id":id,
+        "body":"Report ready", "targets":[{"kind":"text","text":"Report ready"}], "is_final":false,
+        "attachments": attachments}))
+}
+
+fn open_worktree(fixture: &mut Fixture) -> PathBuf {
+    fixture.task("files-task", false);
+    let worktree = fixture.home.join("worktree");
+    std::fs::create_dir_all(&worktree).unwrap();
+    assert!(std::process::Command::new("git").args(["init", "-q"]).arg(&worktree).status().unwrap().success());
+    let envelope = fixture.envelope(json!({"kind":"record_task_worktree", "task_id":"files-task",
+        "path":worktree.display().to_string(), "origin":"task"}));
+    fixture.runtime.execute(&Actor::System, &envelope, None, || Ok(())).unwrap();
+    worktree
+}
+
+fn read_back(fixture: &Fixture, interaction: &str) -> Result<Vec<u8>, anyhow::Error> {
+    let state = fixture.runtime.state().unwrap();
+    let stored = &state.interactions[&interaction.into()].attachments[0];
+    let chunk = fixture.runtime.stored_reads.attachment(&fixture.home, &stored.content_reference, &stored.content_digest, 0, None)?;
+    use base64::Engine as _;
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(chunk["data"].as_str().expect("chunk data")).unwrap())
+}
+
+#[test]
+fn a_card_still_opens_its_attachment_after_the_worktree_file_changes_and_goes() {
+    let mut fixture = Fixture::new();
+    let worktree = open_worktree(&mut fixture);
+    let report = b"The validation report as presented";
+    let source = worktree.join("report.md");
+    std::fs::write(&source, report).unwrap();
+    delivery_with(&mut fixture, "card-1", json!([attachment_of("report.md", &source, report)])).unwrap();
+    std::fs::write(&source, b"Regenerated after presenting").unwrap();
+    assert_eq!(read_back(&fixture, "card-1").unwrap(), report);
+    std::fs::remove_dir_all(&worktree).unwrap();
+    assert_eq!(read_back(&fixture, "card-1").unwrap(), report);
+}
+
+#[test]
+fn a_card_whose_attachment_changed_before_presenting_is_refused_then() {
+    let mut fixture = Fixture::new();
+    let worktree = open_worktree(&mut fixture);
+    let source = worktree.join("report.md");
+    std::fs::write(&source, b"First").unwrap();
+    let described = attachment_of("report.md", &source, b"First");
+    std::fs::write(&source, b"Second").unwrap();
+    let error = delivery_with(&mut fixture, "card-2", json!([described])).unwrap_err();
+    assert_eq!(domain_code(error), "content_unavailable");
+    assert!(!fixture.runtime.state().unwrap().interactions.contains_key(&"card-2".into()));
+}
+
+#[test]
+fn a_card_recorded_before_cards_owned_their_files_gets_a_copy_while_the_file_matches() {
+    let mut fixture = Fixture::new();
+    let worktree = open_worktree(&mut fixture);
+    let report = b"Recorded with a path in the worktree";
+    let source = worktree.join("report.md");
+    std::fs::write(&source, report).unwrap();
+    delivery_with(&mut fixture, "card-3", json!([attachment_of("report.md", &source, report)])).unwrap();
+    fixture.runtime.store.lock_or_exit("the domain store").keep_attachment_at("card-3", "report.md", &source.display().to_string()).unwrap();
+    let (kept, lost) = fixture.runtime.keep_attachments().unwrap();
+    assert_eq!((kept, lost.len()), (1, 0), "{lost:?}");
+    std::fs::remove_dir_all(&worktree).unwrap();
+    assert_eq!(read_back(&fixture, "card-3").unwrap(), report);
 }

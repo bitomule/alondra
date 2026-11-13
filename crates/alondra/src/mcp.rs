@@ -690,7 +690,7 @@ fn call_node(client: &Client, name: &str, args: &Value) -> Result<String> {
         | "wait_for_mcp"
         | "wait_for_machine" => {
             let (args, notice) = match (std::env::current_dir(), name) {
-                (Ok(cwd), "create_document" | "revise_document" | "present_result") => {
+                (Ok(cwd), "create_document" | "revise_document" | "present_result" | "publish_information" | "ask" | "request_action" | "raise_problem") => {
                     with_relative_images(name, args, &cwd, &alondra_core::config::alondra_home(&|k| std::env::var(k).ok()))
                 }
                 _ => (args.clone(), None),
@@ -719,6 +719,9 @@ fn with_relative_images(name: &str, args: &Value, cwd: &std::path::Path, home: &
                 }
             }
         }
+        skipped.extend(carry_attachment_images(&mut args, cwd, home));
+    } else if matches!(name, "publish_information" | "ask" | "request_action" | "raise_problem") {
+        skipped.extend(carry_attachment_images(&mut args, cwd, home));
     } else if let (Some(reference), Some(digest)) = (args["content_reference"].as_str(), args["content_digest"].as_str())
         && let Some((path, digest, left)) = crate::doc_images::carry_document(reference, digest, cwd, home)
     {
@@ -727,6 +730,25 @@ fn with_relative_images(name: &str, args: &Value, cwd: &std::path::Path, home: &
         skipped = left;
     }
     (args, crate::doc_images::notice(&skipped))
+}
+
+/// The Markdown files a card attaches reach the user with the images they cite by a relative
+/// path copied alongside, so a table of screenshots shows them instead of their file names.
+fn carry_attachment_images(args: &mut Value, cwd: &std::path::Path, home: &std::path::Path) -> Vec<(String, crate::doc_images::Skipped)> {
+    let mut skipped = vec![];
+    let Some(attachments) = args.get_mut("attachments").and_then(Value::as_array_mut) else { return skipped };
+    for attachment in attachments.iter_mut().filter(|a| a["name"].as_str().is_some_and(|name| name.ends_with(".md"))) {
+        let (Some(reference), Some(digest)) = (attachment["content_reference"].as_str(), attachment["content_digest"].as_str()) else { continue };
+        let Some(folder) = std::path::Path::new(reference).parent().filter(|folder| folder.starts_with(cwd)) else { continue };
+        let Some((path, digest, left)) = crate::doc_images::carry_document(reference, digest, folder, home) else { continue };
+        skipped.extend(left);
+        if let Ok(meta) = std::fs::metadata(&path) {
+            attachment["bytes"] = json!(meta.len());
+        }
+        attachment["content_reference"] = json!(path.to_string_lossy());
+        attachment["content_digest"] = json!(digest);
+    }
+    skipped
 }
 
 fn call_orchestrator(client: &Client, name: &str, args: &Value) -> Result<String> {
@@ -3348,6 +3370,29 @@ mod card_tool_tests {
         let stored = std::fs::read_to_string(carried["content_reference"].as_str().unwrap()).unwrap();
         assert_eq!(stored, format!("![s]({route})"));
         assert_eq!(carried["content_digest"], hex(stored.as_bytes()));
+        assert_eq!(notice, None);
+    }
+
+    #[test]
+    fn a_markdown_attachment_carries_the_images_its_table_cites() {
+        use sha2::Digest as _;
+        let hex = |bytes: &[u8]| sha2::Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let dir = crate::test_support::Directory::new();
+        let (cwd, home) = (dir.join("worktree"), dir.join("home"));
+        std::fs::create_dir_all(cwd.join(".scratch/probe")).unwrap();
+        std::fs::create_dir_all(home.join("files")).unwrap();
+        std::fs::write(cwd.join(".scratch/probe/duo.png"), b"png").unwrap();
+        let report = "| screen |\n|---|\n| ![duo](probe/duo.png) |";
+        let path = cwd.join(".scratch/report.md");
+        std::fs::write(&path, report).unwrap();
+        let attachment = json!({"id":"report","name":"report.md","content_digest":hex(report.as_bytes()),"content_reference":path.display().to_string(),"bytes":report.len()});
+        let result = json!({"task_id":"t-1","body":"Done","attachments":[attachment]});
+        let (carried, notice) = with_relative_images("present_result", &result, &cwd, &home);
+        let moved = &carried["attachments"][0];
+        let stored = std::fs::read_to_string(moved["content_reference"].as_str().unwrap()).unwrap();
+        assert_eq!(stored, format!("| screen |\n|---|\n| ![duo](/files?path=files/images/{}.png) |", hex(b"png")));
+        assert_eq!(moved["content_digest"], hex(stored.as_bytes()));
+        assert_eq!(moved["bytes"], stored.len());
         assert_eq!(notice, None);
     }
 
