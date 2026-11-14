@@ -219,6 +219,16 @@ final class TasksSnapshotTests: XCTestCase {
         document["sections"] = sections
     }
 
+    func test_taskDetail_modelOtherThanRequested() throws {
+        let document = try ScreenFixtures.document("task-model-ios")
+        assertScreen(lightAndDark, inWindow: true) { TasksFrame(height: 2500) { TaskDetailView(store: task(document)) } }
+    }
+
+    func test_taskDetail_modelOtherThanRequested_spanish() throws {
+        let document = try ScreenFixtures.document("task-model-ios-es")
+        assertScreen(lightAndDark, language: .spanish, inWindow: true) { TasksFrame(height: 2500) { TaskDetailView(store: task(document)) } }
+    }
+
     func test_taskDetail_working() throws {
         let document = try SampleViews.document("task-detail-working")
         assertScreen(lightAndDark, inWindow: true) { TasksFrame(height: 2500) { TaskDetailView(store: task(document)) } }

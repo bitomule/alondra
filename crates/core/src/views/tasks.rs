@@ -906,7 +906,9 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     }];
     let mut model_readings = vec![];
     if let Some(model) = task_model_presentation(&task.id, context) {
-        model_readings.push(Fact { kind: None, label: t!(context.lang, "Requested model", "Modelo solicitado").into(), value: model.requested, tone: None, link: None });
+        let requested_differs = context.index.task_selection(&task.id).is_some_and(|selection| selection.requested.is_some())
+            && model.effective.as_ref() != Some(&model.requested);
+        if requested_differs { model_readings.push(Fact { kind: None, label: t!(context.lang, "Requested model", "Modelo solicitado").into(), value: model.requested, tone: None, link: None }); }
         if let Some(effective) = model.effective { model_readings.push(Fact { kind: None, label: t!(context.lang, "Effective model", "Modelo efectivo").into(), value: effective, tone: None, link: None }); }
         if let Some(pending) = model.pending { model_readings.push(Fact { kind: None, label: t!(context.lang, "Pending model", "Modelo pendiente").into(), value: pending, tone: Some(Tone::Warning), link: None }); }
         if let Some(reason) = model.reason { model_readings.push(Fact { kind: None, label: t!(context.lang, "Reason", "Motivo").into(), value: reason, tone: None, link: None }); }
@@ -1374,27 +1376,55 @@ pub(super) fn without_launch_diagnostic(reason: &str) -> &str {
     boundary.map_or(reason, |at| &reason[..at])
 }
 
-// Match complete system templates, never replace words inside an authored explanation.
-fn selection_diagnostic(reason: &str, lang: super::Lang) -> Option<String> {
-    let text = match reason {
-        "Requested model on the first compatible account" => tr!(lang, "Requested model on the first compatible account", "Modelo solicitado en la primera cuenta compatible"),
-        "Task profile on the first compatible account" => tr!(lang, "Task profile on the first compatible account", "Perfil de la tarea en la primera cuenta compatible"),
-        "Requested model unavailable; authorized model substitution" => tr!(lang, "Requested model unavailable; authorized model substitution", "Modelo solicitado no disponible; sustitución de modelo autorizada"),
+const CODEX_UNAVAILABLE: &str = "Codex cannot serve this Sonnet-level task: No enabled compatible account is signed in with available quota; open Accounts to connect or refresh it. ";
+const CODEX_ROUTING: &str = "Provisional Sonnet-level routing to Codex. ";
+
+enum SystemSelection { AsRequested, Substituted, CodexUnavailable }
+
+// Match complete system templates, never words inside an authored explanation.
+fn system_selection(reason: &str) -> Option<SystemSelection> {
+    match reason {
+        "Requested model on the first compatible account" | "Task profile on the first compatible account" | "Automatic account selection." => Some(SystemSelection::AsRequested),
+        "Requested model unavailable; authorized model substitution" => Some(SystemSelection::Substituted),
         _ => {
-            if let Some(rest) = reason.strip_prefix("Provisional Sonnet-level routing to Codex. ") {
-                let rest = selection_diagnostic(rest, lang)?;
-                return Some(tf!(lang, "Provisional Sonnet-level routing to Codex. {rest}", "Asignación provisional a Codex de una tarea de nivel Sonnet. {rest}"));
-            }
-            if let Some(rest) = reason.strip_prefix("Codex cannot serve this Sonnet-level task: No enabled compatible account is signed in with available quota; open Accounts to connect or refresh it. ") {
-                let rest = selection_diagnostic(rest, lang)?;
-                return Some(tf!(lang,
-                    "Codex cannot serve this Sonnet-level task: No enabled compatible account is signed in with available quota; open Accounts to connect or refresh it. {rest}",
-                    "Codex no puede atender esta tarea de nivel Sonnet: ninguna cuenta compatible habilitada tiene la sesión iniciada y cuota disponible; abre Cuentas para conectarla o actualizarla. {rest}"));
-            }
-            return None;
+            if let Some(rest) = reason.strip_prefix(CODEX_ROUTING) { return system_selection(rest); }
+            let rest = reason.strip_prefix(CODEX_UNAVAILABLE)?;
+            system_selection(rest).map(|_| SystemSelection::CodexUnavailable)
         }
-    };
-    Some(text.into())
+    }
+}
+
+/// One sentence, only when the task runs on something other than what was asked for. The full
+/// diagnostic stays in the stored decision and quota numbers stay in the Accounts view.
+fn selection_sentence(reason: &str, effective: Option<&str>, task: &TaskId, context: &RenderContext<'_>) -> Option<String> {
+    let reason = without_launch_diagnostic(reason);
+    let lang = context.lang;
+    let Some(kind) = system_selection(reason) else { return Some(reason.into()) };
+    let running_on = || context.domain.tasks.get(task).and_then(|task| account_text(task, context)).or_else(|| effective.map(str::to_owned));
+    match kind {
+        SystemSelection::AsRequested => None,
+        SystemSelection::Substituted => Some(match running_on() {
+            Some(place) => tf!(lang, "The requested model is unavailable: running on {place}", "El modelo solicitado no está disponible: va en {place}", place = place),
+            None => t!(lang, "The requested model is unavailable", "El modelo solicitado no está disponible").into(),
+        }),
+        SystemSelection::CodexUnavailable => {
+            let provider = super::accounts::provider_name(crate::accounts::Provider::Codex);
+            let reset = context.live.observed_at.and_then(|now| {
+                let usage = context.index.account_usage();
+                usage.iter().filter(|usage| usage.provider == crate::accounts::Provider::Codex)
+                    .flat_map(|usage| &usage.windows).filter_map(|window| window.reading.resets_at).filter(|reset| *reset > now).min()
+                    .map(|reset| super::text::short_duration(reset.saturating_sub(now) as u64 / 1000))
+            });
+            let head = match reset {
+                Some(duration) => tf!(lang, "{provider} has no quota or session, back in {duration}", "{provider} sin cuota o sin sesión, vuelve en {duration}", provider = provider, duration = duration),
+                None => tf!(lang, "{provider} has no quota or session", "{provider} sin cuota o sin sesión", provider = provider),
+            };
+            Some(match running_on() {
+                Some(place) => tf!(lang, "{head}: running on {place}", "{head}: va en {place}", head = head, place = place),
+                None => head,
+            })
+        }
+    }
 }
 
 fn task_model_presentation(task: &TaskId, context: &RenderContext<'_>) -> Option<super::TaskModelPresentation> {
@@ -1407,19 +1437,16 @@ fn task_model_presentation(task: &TaskId, context: &RenderContext<'_>) -> Option
         .unwrap_or_else(|| t!(context.lang, "Automatic", "Automático").into());
     let effective = selection.effective.as_ref().map(|selection| model_name(&selection.model, selection.reasoning_effort.as_deref()));
     let pending = context.index.pending_task_selection(task);
+    let reason = match pending {
+        Some(pending) => Some(match pending.reason.as_str() {
+            "User changed model selection" | "User requested a selection change" => t!(context.lang, "Model change requested", "Cambio de modelo solicitado").into(),
+            _ => pending.reason.clone(),
+        }),
+        None => selection.reason.as_deref().and_then(|reason| selection_sentence(reason, effective.as_deref(), task, context)),
+    };
     Some(super::TaskModelPresentation {
         requested, effective,
         pending: pending.map(|pending| format!("{} · {}", model_name(&pending.model.model, pending.model.reasoning_effort.as_deref()), pending.account.account)),
-        reason: pending.map(|pending| match pending.reason.as_str() {
-            "User changed model selection" | "User requested a selection change" => t!(context.lang, "Model change requested", "Cambio de modelo solicitado").into(),
-            _ => pending.reason.clone(),
-        }).or_else(|| selection.reason.as_ref().map(|reason| {
-            // Older decisions appended diagnostic quota after this boundary. Keep their
-            // explanation; the localized reading below replaces that display-only suffix.
-            let reason = without_launch_diagnostic(reason);
-            let reason = selection_diagnostic(reason, context.lang).unwrap_or_else(|| reason.into());
-            let quota = super::accounts::decision_quota_summary(context.index.accounts(), context.index.account_usage(), context.live.observed_at, context.lang);
-            if quota.is_empty() { reason } else { format!("{reason} · {quota}") }
-        })),
+        reason,
     })
 }

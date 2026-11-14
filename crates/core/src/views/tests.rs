@@ -6724,6 +6724,44 @@ fn allowed_in_task_screens_match_goldens() {
     assert!(differ.is_empty(), "{differ:?} differ from their goldens");
 }
 
+const MODEL_CASES: [(&str, Client, Lang); 6] = [
+    ("task-model-tui.json", Client::Tui, Lang::En),
+    ("task-model-es-tui.json", Client::Tui, Lang::Es),
+    ("task-model-ios.json", Client::Ios, Lang::En),
+    ("task-model-ios-es.json", Client::Ios, Lang::Es),
+    ("task-model-mac.json", Client::Mac, Lang::En),
+    ("task-model-es-mac.json", Client::Mac, Lang::Es),
+];
+
+/// The demo task asked for a Codex model, Codex has no quota, and it runs on Claude.
+fn model_fallback_state() -> DomainState {
+    use crate::accounts::Provider;
+    use crate::model_selection::{ModelKey, ModelProfile, ModelSelection, TaskSelection};
+    let mut state = golden_fixture();
+    let mut selection = TaskSelection::automatic(ModelProfile::Implementation);
+    selection.requested = Some(ModelKey { provider: Provider::Codex, model: "gpt-demo".into() });
+    selection.effective = Some(ModelSelection { model: ModelKey { provider: Provider::Claude, model: "sonnet".into() }, reasoning_effort: None, catalog_revision: "demo".into() });
+    selection.reason = Some("Codex cannot serve this Sonnet-level task: No enabled compatible account is signed in with available quota; open Accounts to connect or refresh it. Requested model on the first compatible account".into());
+    state.tasks.get_mut(&ALLOWED_TASK.into()).unwrap().selection = Some(selection);
+    state
+}
+
+#[test]
+fn a_task_running_on_another_model_than_requested_matches_goldens() {
+    let state = model_fallback_state();
+    for ((filename, client, lang), expected) in MODEL_CASES.into_iter().zip([
+        include_str!("../../../../fixtures/views/cards/task-model-tui.json"),
+        include_str!("../../../../fixtures/views/cards/task-model-es-tui.json"),
+        include_str!("../../../../fixtures/views/cards/task-model-ios.json"),
+        include_str!("../../../../fixtures/views/cards/task-model-ios-es.json"),
+        include_str!("../../../../fixtures/views/cards/task-model-mac.json"),
+        include_str!("../../../../fixtures/views/cards/task-model-es-mac.json"),
+    ]) {
+        let actual = render(&state, &golden_live(), client, lang, &format!("task:{ALLOWED_TASK}"), "2026-09-30T10:00:00Z");
+        assert_golden(filename, &actual, expected);
+    }
+}
+
 const KNOW_COMMAND_CARD: &str = "cc2d034b-249e-4487-a89b-57de38c26372";
 const KNOW_COMMAND_CASES: [(&str, Client, Lang); 3] = [
     ("card-know-command-es.json", Client::Ios, Lang::Es),
@@ -9313,10 +9351,10 @@ fn codex_quota_views_match_goldens() {
         for lang in [Lang::En, Lang::Es] {
             let view = render(&state, &live, Client::Ios, lang, &format!("task:{id}"), "");
             let text = serde_json::to_string(&view).unwrap();
-            assert!(text.contains(if lang == Lang::En { "5 h 10 % · week 20 %" } else { "5 h 10 % · semana 20 %" }), "{text}");
+            assert!(!text.contains("5 h 10 %") && !text.contains("semana 20 %"), "quota numbers belong to the Accounts view: {text}");
             assert!(!text.contains("account/rateLimits/read") && !text.contains("300 min"), "{text}");
-            assert!(text.contains("Automatic account selection."), "preserve the explanation while replacing its old diagnostic suffix");
-            assert!(!text.contains("launch on codex/default"), "unknown historical quota also loses the diagnostic suffix");
+            assert!(!text.contains("Automatic account selection."), "a routine historical decision shows no reason");
+            assert!(!text.contains("launch on codex/default"), "the historical diagnostic suffix never reaches the task");
         }
     }
 }
@@ -9351,7 +9389,7 @@ fn committed_pending_models_never_replace_effective_models_or_positional_task_he
     assert_eq!(header[1].label, "Request", "native readers rely on this established header shape");
     assert!(!header.iter().any(|fact| matches!(fact.label.as_str(), "Requested model" | "Effective model" | "Pending model")));
     let readings = facts("readings");
-    assert_eq!(readings.iter().find(|fact| fact.label == "Requested model").unwrap().value, "Automatic");
+    assert!(readings.iter().all(|fact| fact.label != "Requested model"), "an automatic request adds no line");
     assert_eq!(readings.iter().find(|fact| fact.label == "Effective model").unwrap().value, "Claude · actual-model");
     assert!(readings.iter().find(|fact| fact.label == "Pending model").unwrap().value.contains("Codex · next-model · high"));
 }
@@ -9489,44 +9527,65 @@ fn a_committed_pending_model_change_localizes_its_app_owned_reason() {
     assert!(!shown.contains("User changed model selection"), "{shown}");
 }
 
+fn task_reading(view: &View, label: &str) -> Option<String> {
+    view.sections.iter().filter(|section| section.id == "readings").flat_map(|section| &section.items).find_map(|item| match item {
+        Item::Facts(facts) => facts.items.iter().find(|fact| fact.label == label).map(|fact| fact.value.clone()),
+        _ => None,
+    })
+}
+
 #[test]
-fn model_selection_diagnostics_are_localized_in_every_client_without_translating_authored_prose() {
-    use crate::model_selection::{ModelProfile, TaskSelection};
-    fn shown_reason(view: &View, lang: Lang) -> &str {
-        view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
-            Item::Facts(facts) => facts.items.iter().find(|fact| fact.label == if lang == Lang::Es { "Motivo" } else { "Reason" }).map(|fact| fact.value.as_str()),
-            _ => None,
-        }).expect("the client receives a visible model-selection reason")
-    }
+fn task_detail_says_one_short_sentence_only_when_the_task_runs_on_something_other_than_requested() {
+    use crate::model_selection::{ModelKey, ModelProfile, ModelSelection, TaskSelection};
+    use crate::accounts::Provider;
     let (mut state, live) = advertised_model_controls_fixture();
     let id = state.tasks.values().find(|task| !task.state.terminal()).unwrap().id.clone();
-    let diagnostic = "Codex cannot serve this Sonnet-level task: No enabled compatible account is signed in with available quota; open Accounts to connect or refresh it. Requested model on the first compatible account";
-    state.requests.get_mut(&state.tasks[&id].request_id).unwrap().body = diagnostic.into();
-    for reason in [diagnostic, "Requested model on the first compatible account", "Task profile on the first compatible account", "Requested model unavailable; authorized model substitution", "Provisional Sonnet-level routing to Codex. Task profile on the first compatible account"] {
+    let running = ModelSelection { model: ModelKey { provider: Provider::Claude, model: "native-large".into() }, reasoning_effort: None, catalog_revision: "catalog-one".into() };
+    let full_diagnostic = "Codex cannot serve this Sonnet-level task: No enabled compatible account is signed in with available quota; open Accounts to connect or refresh it. Requested model on the first compatible account";
+    let selection_with = |requested: Option<ModelKey>, reason: &str| {
         let mut selection = TaskSelection::automatic(ModelProfile::Implementation);
+        selection.requested = requested;
+        selection.effective = Some(running.clone());
         selection.reason = Some(reason.into());
-        state.tasks.get_mut(&id).unwrap().selection = Some(selection);
-        for client in [Client::Tui, Client::Ios, Client::Mac] {
-            let english = render(&state, &live, client, Lang::En, &format!("task:{id}"), "");
-            assert!(shown_reason(&english, Lang::En).contains(reason));
-            let spanish_view = render(&state, &live, client, Lang::Es, &format!("task:{id}"), "");
-            let spanish = shown_reason(&spanish_view, Lang::Es);
-            assert!(!spanish.contains(reason), "{spanish}");
-            assert!(spanish_view.sections.iter().filter(|section| section.id == "request").flat_map(|section| &section.items)
-                .any(|item| matches!(item, Item::Markdown(markdown) if markdown.text == diagnostic)), "the mission retains even quoted system wording");
-            if reason == diagnostic {
-                for words in ["Codex no puede atender esta tarea de nivel Sonnet", "ninguna cuenta compatible habilitada", "abre Cuentas", "Modelo solicitado en la primera cuenta compatible"] {
-                    assert!(spanish.contains(words), "{spanish}");
-                }
+        selection
+    };
+    let reasons = |state: &DomainState, client, lang| {
+        let view = render(state, &live, client, lang, &format!("task:{id}"), "");
+        (task_reading(&view, if lang == Lang::Es { "Motivo" } else { "Reason" }), view)
+    };
+    for client in [Client::Tui, Client::Ios, Client::Mac] {
+        for lang in [Lang::En, Lang::Es] {
+            for routine in ["Requested model on the first compatible account", "Task profile on the first compatible account", "Provisional Sonnet-level routing to Codex. Task profile on the first compatible account"] {
+                state.tasks.get_mut(&id).unwrap().selection = Some(selection_with(None, routine));
+                let (reason, view) = reasons(&state, client, lang);
+                assert_eq!(reason, None, "a task that runs as asked shows no reason");
+                assert_eq!(task_reading(&view, if lang == Lang::Es { "Modelo solicitado" } else { "Requested model" }), None, "an automatic request adds no line");
+            }
+            state.tasks.get_mut(&id).unwrap().selection = Some(selection_with(Some(running.model.clone()), "Requested model on the first compatible account"));
+            let (reason, view) = reasons(&state, client, lang);
+            assert_eq!(reason, None);
+            assert_eq!(task_reading(&view, if lang == Lang::Es { "Modelo solicitado" } else { "Requested model" }), None, "a request equal to what runs adds no line");
+
+            let other = ModelKey { provider: Provider::Codex, model: "asked-model".into() };
+            state.tasks.get_mut(&id).unwrap().selection = Some(selection_with(Some(other), "Requested model unavailable; authorized model substitution"));
+            let (reason, view) = reasons(&state, client, lang);
+            let reason = reason.expect("a substitution is explained");
+            assert!(reason.contains(if lang == Lang::Es { "no está disponible" } else { "unavailable" }), "{reason}");
+            assert!(task_reading(&view, if lang == Lang::Es { "Modelo solicitado" } else { "Requested model" }).is_some_and(|value| value.contains("asked-model")));
+
+            state.tasks.get_mut(&id).unwrap().selection = Some(selection_with(None, full_diagnostic));
+            let (reason, _) = reasons(&state, client, lang);
+            let reason = reason.expect("an unavailable provider is explained");
+            assert!(reason.contains(if lang == Lang::Es { "Codex sin cuota o sin sesión" } else { "Codex has no quota or session" }), "{reason}");
+            for noise in ["%", "Quota", "Cuota", "Accounts", "Cuentas", "first compatible", "primera cuenta"] {
+                assert!(!reason.contains(noise), "{reason}");
             }
         }
     }
     for authored in ["I prefer this account for the launch", "My reason: Requested model on the first compatible account", "Codex cannot serve this Sonnet-level task: my own explanation"] {
-        state.tasks.get_mut(&id).unwrap().selection.as_mut().unwrap().reason = Some(authored.into());
-        state.requests.get_mut(&state.tasks[&id].request_id).unwrap().body = authored.into();
+        state.tasks.get_mut(&id).unwrap().selection = Some(selection_with(None, authored));
         for client in [Client::Tui, Client::Ios, Client::Mac] {
-            let spanish = render(&state, &live, client, Lang::Es, &format!("task:{id}"), "");
-            assert!(shown_reason(&spanish, Lang::Es).starts_with(authored));
+            assert_eq!(reasons(&state, client, Lang::Es).0.as_deref(), Some(authored));
         }
     }
 }
