@@ -172,6 +172,7 @@ dependencies = [
  "alondra-agent-runtime",
  "alondra-codex-protocol",
  "alondra-core",
+ "alondra-daemon-engine-machine",
  "alondra-daemon-engine-model",
  "alondra-daemon-engine-store",
  "alondra-daemon-support",
@@ -199,6 +200,22 @@ dependencies = [
  "tokio",
  "toml",
  "url",
+]
+
+[[package]]
+name = "alondra-daemon-engine-machine"
+version = "0.3.44"
+dependencies = [
+ "alondra-core",
+ "alondra-daemon-engine-model",
+ "alondra-daemon-engine-store",
+ "alondra-daemon-support",
+ "anyhow",
+ "libc",
+ "serde_json",
+ "sysinfo",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

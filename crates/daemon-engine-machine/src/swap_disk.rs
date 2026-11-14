@@ -17,14 +17,14 @@ struct Sample {
 }
 
 #[derive(Default)]
-pub(crate) struct SwapDisk {
+pub struct SwapDisk {
     samples: VecDeque<Sample>,
     /// Net allocated swapfile change between consecutive valid samples, for the build attribution only.
     pub allocated_change: i128,
 }
 
 impl SwapDisk {
-    pub(crate) fn line(&self, now: Millis) -> Option<String> {
+    pub fn line(&self, now: Millis) -> Option<String> {
         let last = self.samples.back()?;
         if now < last.at || now - last.at > MAX_GAP {
             return None;
@@ -37,7 +37,7 @@ impl SwapDisk {
             (last.at - first.at) / 1000, self.reserve(now).unwrap_or(0) as f64 / gb))
     }
 
-    pub(crate) fn sample(&mut self, compressor: Option<MemoryCompressor>, now: Millis) {
+    pub fn sample(&mut self, compressor: Option<MemoryCompressor>, now: Millis) {
         self.allocated_change = 0;
         let Some((used, total)) = compressor.and_then(|c| c.swap_total.map(|total| (c.swap_used, total)))
             .filter(|(used, total)| used <= total) else {
@@ -57,7 +57,7 @@ impl SwapDisk {
         }
     }
 
-    pub(crate) fn reserve(&self, now: Millis) -> Option<u64> {
+    pub fn reserve(&self, now: Millis) -> Option<u64> {
         let last = self.samples.back()?;
         if now < last.at || now - last.at > MAX_GAP {
             return None;

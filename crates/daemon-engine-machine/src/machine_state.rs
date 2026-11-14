@@ -16,9 +16,9 @@ use alondra_core::domain::AgentId;
 use alondra_core::{Machine, MemoryCompressor, MemoryPressure, Millis};
 
 /// How long memory must have had room before one more node starts.
-pub(crate) const ROOM_WINDOW: Millis = 60_000;
+pub const ROOM_WINDOW: Millis = 60_000;
 /// Under macOS's warning, one start every this long, so the memory of each shows before the next.
-pub(crate) const WARNING_SPACING: Millis = 3 * 60_000;
+pub const WARNING_SPACING: Millis = 3 * 60_000;
 const GIB: i64 = 1 << 30;
 const MIB: u64 = 1 << 20;
 /// Free memory no start may take the Mac under.
@@ -103,7 +103,7 @@ pub struct MacState {
 impl MacState {
     /// Missing readings keep the last known budget; they cannot establish recovery. Returns
     /// whether this step took a valid byte budget, which can include newer node footprints.
-    pub(crate) fn step(&mut self, machine: &Machine, now: Millis) -> bool {
+    pub fn step(&mut self, machine: &Machine, now: Millis) -> bool {
         self.step_load(machine);
         let Some(available) = (machine.memory_total > 0 && machine.memory_available <= machine.memory_total)
             .then_some(machine.memory_available) else {
@@ -182,19 +182,19 @@ impl MacState {
     }
 
     /// What one more node is expected to take.
-    pub(crate) fn node_cost(&self) -> i64 {
+    pub fn node_cost(&self) -> i64 {
         i64::try_from(self.node_cost.unwrap_or(crate::node_cost::DEFAULT)).unwrap_or(i64::MAX)
     }
 
     /// Whether macOS reports its warning, which spaces starts out without holding them.
-    pub(crate) fn warned(&self) -> bool {
+    pub fn warned(&self) -> bool {
         self.pressure == Some(MemoryPressure::Warning)
     }
 
     /// Whether one more node may start with `in_flight` nodes admitted in the last 3 minutes, from
     /// the `ROOM_WINDOW` ending at the last valid measurement. A gap in readings cannot age out
     /// a shortage. A system without a valid byte budget waits for its first measurement.
-    pub(crate) fn room(&self, in_flight: usize, _now: Millis) -> Result<(), NoRoom> {
+    pub fn room(&self, in_flight: usize, _now: Millis) -> Result<(), NoRoom> {
         let Some(last) = self.samples.back() else { return Err(NoRoom::Unmeasured) };
         let Some((at, _)) = self.available_samples.back() else { return Err(NoRoom::Unmeasured) };
         let recent: Vec<&Sample> = self.samples.iter().filter(|sample| sample.at > at - ROOM_WINDOW).collect();
@@ -261,7 +261,7 @@ impl MacState {
         }
     }
 
-    pub(crate) fn memory_detail(&self, in_flight: usize) -> String {
+    pub fn memory_detail(&self, in_flight: usize) -> String {
         let pending = (self.node_cost() as u64).saturating_mul(in_flight as u64).saturating_sub(self.observed_in_flight);
         let nodes = self.nodes.values().copied().fold(0u64, u64::saturating_add);
         let available = self.memory_available.map_or_else(|| "unknown".into(), |bytes| bytes.to_string());
@@ -328,7 +328,7 @@ const KEEP_DAYS: Millis = 7 * 24 * 60 * 60_000;
 const SAMPLES_HEADER: &str = "at,memory_free_percent,load_1m,cpus,health,working,memory_pressure,compressor_share,margin_gb,compressor_pages,uncompressed_pages,stored_pages,swap_used_mb,swapins_per_s,swapouts_per_s,node_cost_gb,disk_usable_gb,disk_reserved_gb";
 const GB: f64 = (1u64 << 30) as f64;
 
-pub(crate) fn record(dir: &std::path::Path, now: Millis, mac: &MacState, working: usize, disk: Option<(u64, u64)>) {
+pub fn record(dir: &std::path::Path, now: Millis, mac: &MacState, working: usize, disk: Option<(u64, u64)>) {
     use std::io::Write;
     let day = alondra_daemon_engine_model::local_day(now);
     let file = dir.join(format!("{day}.csv"));

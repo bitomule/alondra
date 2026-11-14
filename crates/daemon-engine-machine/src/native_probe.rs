@@ -3,13 +3,13 @@ use std::future::Future;
 use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Outcome {
+pub enum Outcome {
     Finished,
     Stale,
 }
 
 impl Outcome {
-    pub(crate) fn of(error: &crate::domain_store::StoreError) -> Self {
+    pub fn of(error: &crate::domain_store::StoreError) -> Self {
         match error {
             crate::domain_store::StoreError::Domain(error) if error.code == "stale_probe" => Self::Stale,
             _ => Self::Finished,
@@ -17,7 +17,7 @@ impl Outcome {
     }
 }
 
-pub(crate) async fn retry<F, P>(probe: F)
+pub async fn retry<F, P>(probe: F)
 where
     F: FnMut() -> P,
     P: Future<Output = Outcome>,
@@ -25,7 +25,7 @@ where
     retry_with(probe, tokio::time::sleep).await;
 }
 
-pub(crate) async fn retry_with<F, P, W, S>(mut probe: F, mut wait: W)
+pub async fn retry_with<F, P, W, S>(mut probe: F, mut wait: W)
 where
     F: FnMut() -> P,
     P: Future<Output = Outcome>,
@@ -39,10 +39,10 @@ where
 }
 
 #[derive(Default)]
-pub(crate) struct Backoff(Duration);
+pub struct Backoff(Duration);
 
 impl Backoff {
-    pub(crate) fn next_delay(&mut self) -> Duration {
+    pub fn next_delay(&mut self) -> Duration {
         let delay = self.0;
         self.0 = if delay.is_zero() { Duration::from_secs(1) } else { (delay * 2).min(Duration::from_secs(30)) };
         delay
