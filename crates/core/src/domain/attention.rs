@@ -160,7 +160,7 @@ impl DomainState {
                 None => WaitReason::Closing,
             });
         }
-        if let Some(instruction) = self.handed_back(p) {
+        if let Some(instruction) = self.handed_back(p).filter(|_| !self.has_reviewable_pr(p)) {
             let pr = self.main_pr(t).map_or(0, |pr| pr.number);
             let node = t.agent_id.as_ref().and_then(|id| self.agents.get(id)).map_or_else(|| t.title.clone(), |agent| agent.name.clone());
             return match instruction {

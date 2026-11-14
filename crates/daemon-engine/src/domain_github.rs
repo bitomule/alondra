@@ -1134,8 +1134,18 @@ pub mod tests {
             let state = domain.state().unwrap();
             assert_eq!(state.pull_requests[&"pr".into()].state, remote.state, "{tag}");
             assert_eq!(state.merge_authorizations[&"auth".into()].attempt, MergeAttemptState::Failed, "{tag}");
-            assert_eq!(state.tasks[&"t".into()].wrap_up.asked_at.is_some(), remote.state != PrState::Open,
-                "{tag}: a merge or a close settles the accepted delivery, a newer head does not");
+            let task = &state.tasks[&"t".into()];
+            assert_eq!(task.wrap_up.asked_at.is_some(), remote.state == PrState::Closed,
+                "{tag}: only a close settles this delivery; another head never inherits acceptance");
+            if remote.state != PrState::Closed {
+                assert!(!state.finished(task), "{tag}");
+                assert!(task.final_presentation.is_none(), "{tag}");
+                assert!(state.interactions[&InteractionId::from("d")].withdrawn, "{tag}");
+                assert!(!state.merge_authorizations[&AuthorizationId::from("auth")].valid, "{tag}");
+            }
+            if remote.state == PrState::Merged {
+                assert_eq!(state.pull_requests[&PrId::from("pr")].merged_head.as_deref(), Some(OTHER));
+            }
         }
     }
 

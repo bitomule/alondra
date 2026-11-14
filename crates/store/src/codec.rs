@@ -875,6 +875,7 @@ pub(super) enum EventRecord {
     EndPause {
         card: String,
     },
+    RecoveryEnded { card: String },
     Finish {
         intent: FinishRecord,
         cleanup: String,
@@ -1035,6 +1036,7 @@ impl From<&Event> for EventRecord {
                 input: input.as_str().to_owned(),
             },
             Event::EndPause { card } => Self::EndPause { card: card.0.clone() },
+            Event::RecoveryEnded { card } => Self::RecoveryEnded { card: card.0.clone() },
             Event::Finish {
                 intent,
                 cleanup,
@@ -1148,6 +1150,7 @@ impl EventRecord {
             Self::Pause { .. } => "Pause",
             Self::Resume { .. } => "Resume",
             Self::EndPause { .. } => "EndPause",
+            Self::RecoveryEnded { .. } => "RecoveryEnded",
             Self::Finish { .. } => "Finish",
             Self::DrainObserved { .. } => "DrainObserved",
             Self::PostMergeDeclared { .. } => "PostMergeDeclared",
@@ -1257,6 +1260,7 @@ impl EventRecord {
                 input: InputId::new(input).map_err(Error::from)?,
             },
             EventRecord::EndPause { card } => Event::EndPause { card: InteractionId(card) },
+            EventRecord::RecoveryEnded { card } => Event::RecoveryEnded { card: InteractionId(card) },
             EventRecord::Finish {
                 intent,
                 cleanup,
@@ -1573,6 +1577,7 @@ mod tests {
             },
         );
         roundtrip(&current, Event::EndPause { card: "card".into() });
+        roundtrip(&current, Event::RecoveryEnded { card: "card".into() });
         roundtrip(
             &current,
             Event::Finish {

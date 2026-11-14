@@ -220,30 +220,55 @@ const STATUS_SCHEMA: &str = "alondra.status/1";
 /// Machine-readable status from the committed home and task views.
 pub fn status_json(home: &View, tasks: &View) -> Value {
     use alondra_core::views::{Link, Row};
-    fn collect(row: &Row, tasks: &mut Vec<Value>) {
-        if let Some(Link::View { key }) = &row.link
-            && let Some(task_id) = key.strip_prefix("task:")
-        {
-            let mut task = serde_json::to_value(row).expect("a view row serializes");
-            task["task_id"] = task_id.into();
-            tasks.push(task);
-        }
-        for child in &row.children { collect(child, tasks); }
+    use std::collections::BTreeSet;
+
+    fn linked_task(row: &Row) -> Option<&str> {
+        let Some(Link::View { key }) = &row.link else { return None };
+        key.strip_prefix("task:")
     }
-    let mut seen = std::collections::BTreeSet::new();
+
+    fn collect_identities<'a>(row: &'a Row, identities: &mut BTreeSet<&'a str>) {
+        if let Some(task_id) = linked_task(row).filter(|id| row.id == *id) {
+            identities.insert(task_id);
+        }
+        for child in &row.children { collect_identities(child, identities); }
+    }
+
+    fn contains_task(row: &Row) -> bool {
+        linked_task(row).is_some_and(|id| row.id == id) || row.children.iter().any(contains_task)
+    }
+
+    fn collect(row: &Row, root: bool, identities: &BTreeSet<&str>, seen: &mut BTreeSet<String>, tasks: &mut Vec<Value>) {
+        if let Some(task_id) = linked_task(row) {
+            let own = row.id == task_id;
+            let folded_single = root && !row.id.starts_with("waits:") && !identities.contains(task_id)
+                && !row.children.iter().any(contains_task);
+            if (own || folded_single) && seen.insert(task_id.to_owned()) {
+                let mut task = serde_json::to_value(row).expect("a view row serializes");
+                task.as_object_mut().expect("a view row is an object").remove("children");
+                task["task_id"] = task_id.into();
+                tasks.push(task);
+            }
+        }
+        for child in &row.children { collect(child, false, identities, seen, tasks); }
+    }
+
+    let mut seen = BTreeSet::new();
     let cards: Vec<_> = home.sections.iter().filter(|section| section.id != "detail")
         .flat_map(|section| &section.items).filter_map(|item| match item {
             Item::Card(card) if seen.insert(&card.id) => Some(card), _ => None,
         }).collect();
+    let rows: Vec<_> = tasks.sections.iter().filter(|section| section.id != "detail")
+        .flat_map(|section| &section.items).filter_map(|item| match item { Item::Row(row) => Some(row), _ => None }).collect();
+    let mut identities = BTreeSet::new();
+    for row in &rows { collect_identities(row, &mut identities); }
+    let mut seen_tasks = BTreeSet::new();
     let mut blocks = Vec::new();
-    for section in tasks.sections.iter().filter(|section| section.id != "detail") {
-        for item in &section.items {
-            let Item::Row(row) = item else { continue };
-            let mut tasks = Vec::new();
-            collect(row, &mut tasks);
-            if !tasks.is_empty() {
-                blocks.push(serde_json::json!({"id":row.id,"title":row.title,"tasks":tasks}));
-            }
+    for row in rows {
+        let mut tasks = Vec::new();
+        collect(row, true, &identities, &mut seen_tasks, &mut tasks);
+        if !tasks.is_empty() {
+            blocks.push(serde_json::json!({"id":row.id,"title":row.title,"tasks":tasks}));
         }
     }
     serde_json::json!({"schema":STATUS_SCHEMA,"header":home.status,"cards":cards,"task_blocks":blocks})

@@ -683,6 +683,7 @@ pub enum Command {
     /// The Task's SDK execution could not be taken over and has no host to run on: `reason` says
     /// why. Its card offers to try again or to cancel the Task. `quiet`: the user was already told
     /// of this outage, so the card opens without a push.
+    ReconcileRecoveryCards { task_id: TaskId },
     RecordHostLost {
         task_id: TaskId,
         reason: String,

@@ -855,6 +855,8 @@ pub struct Feedback {
     pub user_id: String,
     pub body: String,
     pub at_revision: Revision,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_window_start: Option<Revision>,
     #[serde(default)]
     pub instruction: Instruction,
     /// The merge Alondra could not make, when this is the hand-back that says so.

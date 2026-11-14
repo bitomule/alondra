@@ -97,7 +97,7 @@ impl Refusal {
         match code {
             "stale_revision" | "conflict" | "stale_generation" | "stale_epoch" | "plan_approve_or_change" => Self::Changed,
             "acceptance_stale" => Self::NewerResult,
-            "pending_user_message" => Self::PendingUserMessage,
+            "pending_user_message" | "pending_user_reply" => Self::PendingUserMessage,
             "message_receipt_unavailable" => Self::UserMessageUnavailable,
             "question_already_answered" | "already_answered" => Self::AlreadyAnswered,
             "withdrawn" | "already_withdrawn" => Self::Withdrawn,

@@ -146,7 +146,8 @@
           },
           "expected_revision": 7,
           "presentation_id": "d",
-          "expected_head": "head1"
+          "expected_head": "head1",
+          "pr_id": "pr"
         },
         {
           "kind": "request_clarification",

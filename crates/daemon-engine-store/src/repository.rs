@@ -644,6 +644,7 @@ fn save_interaction_relations(
                 row.remove("attachments");
                 row.insert("merge_failure".into(), json!(f.merge_failure));
                 row.insert("target".into(), json!(f.target));
+                row.insert("reply_window_start".into(), json!(f.reply_window_start));
                 row.extend(object(&json!({"interaction_id":i.id,"ordinal":index}))?);
                 upsert(c, "delivery_feedback", &["interaction_id", "ordinal"], row)?;
                 if earlier.is_none_or(|e| e.len() <= index) {

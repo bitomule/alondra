@@ -15,6 +15,13 @@ pub(super) fn upgrade(tx: &Transaction<'_>) -> anyhow::Result<()> {
         mark_merge_failures(tx)?;
     }
     add_column(tx, "delivery_feedback", "target")?;
+    let present = tx.query_row(
+        "SELECT count(*) FROM pragma_table_info('delivery_feedback') WHERE name='reply_window_start'",
+        [], |row| row.get::<_, i64>(0),
+    )? == 1;
+    if !present {
+        tx.execute_batch("ALTER TABLE delivery_feedback ADD COLUMN reply_window_start INTEGER CHECK(reply_window_start IS NULL OR reply_window_start BETWEEN 0 AND 9007199254740991)")?;
+    }
     Ok(())
 }
 

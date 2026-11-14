@@ -1545,3 +1545,60 @@ async fn cancelling_a_task_whose_stored_worktrees_are_home_and_the_projects_root
     }
     assert!(folders.untouched());
 }
+
+
+#[tokio::test]
+async fn a_persisted_recovery_card_after_cleanup_is_retired_without_resuming_the_host() {
+    let home = Home(crate::test_support::Directory::new());
+    std::fs::create_dir(&home.0).unwrap();
+    let domain = DomainRuntime::open(&home.0).unwrap();
+    let task_id = TaskId::from("closing");
+    let node = Actor::Agent { agent_id: "node".into() };
+    command(&domain, Actor::System, "register", Command::RegisterAgent { agent_id: "node".into(), name: "Node".into(), at: 0 });
+    command(&domain, user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(),
+        auto_merge: false, maintenance: false, message: false });
+    command(&domain, Actor::Orchestrator { generation: 0 }, "create", Command::CreateTask {
+        task_id: task_id.clone(), request_id: "r".into(), title: "Finish the change".into(), agent_id: None,
+        review_prs: false, dependencies: Default::default(), stack: None, plan_items: None, continues: None,
+        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/synthetic/repository")),
+    });
+    crate::domain_store::admit_through_sdk_with_host(&domain, &task_id, "node", crate::sdk_owner::HOST);
+    let input = domain.state().unwrap().lifecycle_of(&task_id).unwrap().pending_inputs()[0].as_str().to_owned();
+    command(&domain, Actor::System, "turn", Command::RecordRuntimeFacts { task_id: task_id.clone(), generation: 1,
+        facts: vec![alondra_core::domain::RuntimeObservation::ResourceAvailable,
+            alondra_core::domain::RuntimeObservation::TurnStarted { turn: "turn".into(), input }] });
+    command(&domain, node.clone(), "register-pr", Command::RegisterPr { task_id: task_id.clone(), pr_id: "pr".into(),
+        host: "github.com".into(), repository: "acme/widgets".into(), number: 7, head: "1".repeat(40), base: "main".into(),
+        allowed_methods: vec![alondra_core::domain::MergeMethod::Squash] });
+    let targets = vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "1".repeat(40) }];
+    command(&domain, node, "present", Command::PresentResult { task_id: task_id.clone(), interaction_id: "d".into(),
+        body: "Done".into(), targets: targets.clone(), is_final: true, nothing_to_review: false,
+        attachments: vec![], checklist: vec![], card: CardSpec::delivery("Review the change", &[], true) });
+    command(&domain, user(), "accept", Command::AcceptDelivery { presentation_id: "d".into(), targets });
+    command(&domain, Actor::System, "merged", Command::ObservePrState { pr_id: "pr".into(), head: "1".repeat(40),
+        base: "main".into(), state: alondra_core::domain::PrState::Merged, merged_head: Some("1".repeat(40)) });
+    command(&domain, Actor::System, "lost", Command::RecordHostLost { task_id: task_id.clone(),
+        reason: "The host stopped".into(), quiet: false });
+    let state = domain.state().unwrap();
+    let card = state.interactions.values().find(|card| alondra_core::domain::retakes(card)).unwrap().id.clone();
+    domain.store.lock().unwrap().conn_for_test().execute(
+        "UPDATE task_wrap_ups SET cleaned_at=?1 WHERE task_id='closing'", [state.revision as i64]).unwrap();
+    drop(domain);
+    let domain = DomainRuntime::open(&home.0).unwrap();
+    let sessions = FakeSessions::listing(&[]);
+    for index in 0..67 {
+        pass(&domain, sessions.as_ref(), &Timing { wait: None, retry: Duration::from_secs(1), tick: Duration::from_secs(1) },
+            T0 + index * MINUTE).await.unwrap();
+    }
+    let state = domain.state().unwrap();
+    assert!(state.interactions[&card].withdrawn);
+    assert_eq!(state.tasks[&task_id].state, TaskState::Done);
+    assert!(!state.lifecycle_journal[&task_id].iter().any(|record| matches!(record,
+        alondra_core::domain::LifecycleRecord::Told { .. } | alondra_core::domain::LifecycleRecord::Resumed { .. })));
+    assert_eq!(state.tasks[&task_id].wrap_up.node, Some(NodeEnd::Gone));
+    assert!(sessions.calls.lock().unwrap().is_empty(), "closing uses the SDK path with no host to resume");
+    drop(domain);
+    let domain = DomainRuntime::open(&home.0).unwrap();
+    assert!(domain.state().unwrap().interactions[&card].withdrawn);
+    assert_eq!(domain.state().unwrap().tasks[&task_id].state, TaskState::Done);
+}

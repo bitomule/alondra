@@ -189,6 +189,9 @@ fn tell_through_sdk(domain: &DomainRuntime, state: &alondra_core::domain::Domain
     let text = wording(&body, Some((&task.id, task.title.as_str())), name, home)?;
     let author = if body.from_claude { format!("Claude, for {name}") } else { name.to_owned() };
     let command_id = format!("tell-{}", crate::auth::random_hex(16));
+    if as_user && tell_about_pr(domain, state, user, task, &body, &text, &command_id)? {
+        return Ok(read_after(domain, user, &body, json!({"delivery_state":State::Dispatching})));
+    }
     if as_user && state.is_scheduled_task(&task.id) {
         return tell_scheduled(domain, user, &body, task, &author, &text, &command_id);
     }
@@ -197,6 +200,30 @@ fn tell_through_sdk(domain: &DomainRuntime, state: &alondra_core::domain::Domain
     let lifecycle = domain.read().state().lifecycle_of(&task.id)?;
     let reaches = reaches(&lifecycle);
     Ok(read_after(domain, user, &body, json!({"delivery_state": State::Dispatching, "reaches": reaches})))
+}
+
+fn tell_about_pr(domain: &DomainRuntime, state: &alondra_core::domain::DomainState, user: &Actor,
+    task: &alondra_core::domain::Task, body: &MessageBody, text: &str, command_id: &str) -> Result<bool, DomainError> {
+    if matches!(body.kind, Kind::PrQuestion | Kind::PrChanges) {
+        let pr = state.pull_requests.get(body.pr_id.as_ref().ok_or_else(|| refused("invalid_input", "pr_id is required"))?)
+            .filter(|pr| pr.task_id == task.id).ok_or_else(|| refused("not_found", "The PR does not belong to this task"))?;
+        if let Some(presentation) = task.final_presentation.as_ref().and_then(|id| state.interactions.get(id))
+            && let alondra_core::domain::InteractionPayload::Delivery { targets, .. } = &presentation.payload
+            && let Some(target) = targets.iter().find(|target| matches!(target,
+                alondra_core::domain::DeliveryTarget::PullRequest { pr_id, head } if pr_id == &pr.id && head == &pr.head))
+        {
+            let envelope = CommandEnvelope {
+                protocol_version: alondra_core::domain::PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
+                command_id: command_id.into(), expected_revision: state.revision,
+                command: Command::SubmitFeedback { presentation_id: presentation.id.clone(), targets: vec![target.clone()],
+                    body: text.to_owned(), attachments: body.attachments.clone(), merge_failure: None,
+                    instruction: if body.kind == Kind::PrQuestion { alondra_core::domain::Instruction::Question } else { alondra_core::domain::Instruction::Changes } },
+            };
+            domain.execute(user, &envelope, None, || Ok(())).map_err(|error| error.into_domain_error(&envelope))?;
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn tell_scheduled(domain: &DomainRuntime, user: &Actor, body: &MessageBody, task: &alondra_core::domain::Task,
@@ -341,6 +368,10 @@ fn keep_for_task(domain: &DomainRuntime, home: &Path, user: &Actor, name: &str, 
     }
     let state = domain.state().map_err(|_| refused("storage_unavailable", "domain state unavailable"))?;
     let task = state.tasks.get(task).ok_or_else(|| refused("not_found", "task does not exist"))?;
+    let text = wording(&body, Some((&task.id, task.title.as_str())), name, home)?;
+    if tell_about_pr(domain, &state, user, task, &body, &text, &format!("tell-{}", crate::auth::random_hex(16)))? {
+        return Ok(read_after(domain, user, &body, json!({"delivery_state":State::Dispatching})));
+    }
     if state.is_scheduled_task(&task.id) {
         let text = wording(&body, Some((&task.id, task.title.as_str())), name, home)?;
         let author = if body.from_claude { format!("Claude, for {name}") } else { name.to_owned() };
@@ -473,6 +504,86 @@ mod tests {
         assert_eq!(reopened.launch_plan(&id).unwrap().unwrap().cwd, "/synthetic/project");
         let launch = reopened.request_launch(&followup.request_id).unwrap().unwrap();
         assert_eq!(serde_json::to_value(&launch.attachments[0]).unwrap(), attachment);
+    }
+
+    #[test]
+    fn a_question_about_a_scheduled_runs_pr_keeps_its_scope_on_both_message_routes() {
+        use alondra_core::domain::*;
+        for connected in [false, true] {
+            let (fixture, domain) = world();
+            let run = |actor: Actor, id: &str, command| {
+                domain.execute_fixture(&actor, CommandEnvelope {
+                    protocol_version: PROTOCOL_VERSION, data_epoch: domain.state().unwrap().data_epoch.clone(),
+                    command_id: id.into(), expected_revision: 0, command,
+                }).unwrap();
+            };
+            run(Actor::System, "scheduled-agent", Command::RegisterAgent { agent_id: "scheduled-agent".into(), name: "Scheduled".into(), at: 0 });
+            run(Actor::System, "schedule", Command::CreateSchedule { schedule: Schedule {
+                paid_account_grant: None, id: "weekly".into(), title: "Weekly report".into(), text: "Measure progress".into(),
+                project: None, options: Default::default(), disallowed_tools: vec![], frequency: ScheduleFrequency::Daily,
+                hour: 9, minute: 0, weekday: None, interval: None, start_at: None, enabled: true, next_run: Some(100), revision: 1, deleted_at: None,
+            } });
+            run(Actor::System, "claim", Command::ClaimScheduleRun { schedule_id: "weekly".into(), run_id: "weekly-run".into(),
+                origin: ScheduleRunOrigin::Manual, now: 100, next_after_now: Some(200), expected_schedule_revision: None });
+            let mut source = domain.state().unwrap().tasks[&TaskId::from("t")].clone();
+            source.id = "weekly-task".into();
+            source.request_id = "weekly-request".into();
+            source.title = "Weekly report".into();
+            source.agent_id = None;
+            source.review_prs = true;
+            source.created_revision = 0;
+            run(Actor::System, "sent", Command::RecordScheduleRunSent {
+                run_id: "weekly-run".into(), request: Request::new("weekly-request".into(), "Measure progress".into()), task: source,
+                launch: ScheduleLaunchIntent { name: "scheduled/weekly".into(), cwd: "/synthetic/project".into(), prompt: "Measure progress".into(),
+                    options_json: serde_json::to_string(&alondra_core::options::OptionsFile::default().resolve(None, &Default::default()).unwrap()).unwrap() },
+                finished_at: 101,
+            });
+            run(Actor::System, "claim-launch", Command::ClaimScheduleLaunch {
+                run_id: "weekly-run".into(), now: 102,
+            });
+            run(Actor::System, "launch-handed", Command::RecordScheduleLaunchHanded {
+                run_id: "weekly-run".into(), session_id: Some("scheduled-session".into()),
+                agent_id: Some("scheduled-agent".into()), finished_at: 103,
+            });
+            let scheduled = domain.state().unwrap();
+            assert_eq!(scheduled.tasks[&TaskId::from("weekly-task")].agent_id,
+                Some(AgentId::from("scheduled-agent")));
+            assert!(scheduled.is_scheduled_task(&"weekly-task".into()));
+            drop(scheduled);
+            let node = Actor::Agent { agent_id: "scheduled-agent".into() };
+            let head = "1".repeat(40);
+            let targets = ["pr-a", "pr-b"].map(|pr_id| DeliveryTarget::PullRequest { pr_id: pr_id.into(), head: head.clone() }).to_vec();
+            for (number, pr_id) in [(7, "pr-a"), (8, "pr-b")] {
+                run(node.clone(), pr_id, Command::RegisterPr {
+                    task_id: "weekly-task".into(), pr_id: pr_id.into(), host: "github.com".into(), repository: "acme/widgets".into(),
+                    number, head: head.clone(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+                });
+            }
+            run(node, "present", Command::PresentResult {
+                checklist: vec![], attachments: vec![], task_id: "weekly-task".into(), interaction_id: "delivery".into(),
+                body: "Ready".into(), targets, is_final: true, nothing_to_review: false,
+                card: CardSpec::delivery("Review the result", &[], true),
+            });
+            for pr_id in ["pr-a", "pr-b"] {
+                run(user(), &format!("authorize-{pr_id}"), Command::AuthorizeMerge {
+                    authorization_id: format!("auth-{pr_id}").into(), presentation_id: "delivery".into(), pr_id: pr_id.into(),
+                    expected_head: head.clone(), method: MergeMethod::Squash,
+                });
+            }
+            let state = domain.state().unwrap();
+            let task_count = state.tasks.len();
+            let message = body(json!({"kind":"pr_question", "pr_id":"pr-a", "task_id":"weekly-task", "text":"Explain this change"}));
+            if connected {
+                tell_through_sdk(&domain, &state, &fixture.0, &user(), "User", &"scheduled-agent".into(), message, true).unwrap();
+            } else {
+                keep_for_task(&domain, &fixture.0, &user(), "User", &"weekly-task".into(), message).unwrap();
+            }
+            let state = domain.state().unwrap();
+            assert_eq!(state.tasks.len(), task_count, "the PR question belongs to the existing delivery");
+            assert!(!state.merge_authorizations[&AuthorizationId::from("auth-pr-a")].valid);
+            assert!(state.merge_authorizations[&AuthorizationId::from("auth-pr-b")].valid);
+            assert_eq!(crate::domain_merges::due(&state).iter().map(|item| item.pr.id.0.as_str()).collect::<Vec<_>>(), ["pr-b"]);
+        }
     }
 
     #[test]

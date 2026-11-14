@@ -281,6 +281,10 @@ fn finish(domain: &DomainRuntime, row: &TaskClosing, agent: Option<&AgentId>, en
 
 async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Timing, now: i64, task_id: &TaskId, kind: Due) -> Result<()> {
     let state = domain.state()?;
+    if state.tasks.get(task_id).is_some_and(|task| !state.closing_recovery_cards(task).is_empty()) {
+        execute_system(domain, Command::ReconcileRecoveryCards { task_id: task_id.clone() })?;
+    }
+    let state = domain.state()?;
     let Some(task) = state.tasks.get(task_id) else { return Ok(()) };
     let mut row = domain.store.lock_or_exit("the domain store").begin_task_closing(task_id, now)?;
     if let Some(card_id) = row.problem_id.clone() {

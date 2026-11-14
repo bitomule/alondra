@@ -238,6 +238,26 @@ async fn feedback_given_while_alondra_reads_github_stops_the_merge() {
 }
 
 #[tokio::test]
+async fn an_open_reply_request_blocks_auto_merge_before_and_during_github_reads() {
+    for during_read in [false, true] {
+        let (_home, domain, github) = presented("open-reply", true);
+        let reply = |domain: &DomainRuntime| command(domain, user(), "reply", Command::CreateCardReply {
+            request_id: "reply-request".into(), interaction_id: "d".into(), body: "Explain this change before it merges".into(), auto_merge: false,
+        });
+        if during_read {
+            let racing = domain.clone();
+            *github.on_read.lock().unwrap() = Some(Box::new(move || reply(&racing)));
+        } else {
+            reply(&domain);
+        }
+        now().merge_due(&domain, &github).await.unwrap();
+        assert!(github.merged.lock().unwrap().is_empty(), "an unanswered reply prevents an automatic merge");
+        assert!(!accepted(&domain));
+        assert!(!domain.state().unwrap().finished(&domain.state().unwrap().tasks[&TaskId::from("t")]));
+    }
+}
+
+#[tokio::test]
 async fn a_cancel_after_alondra_claimed_the_merge_stops_it() {
     let (_home, domain, github) = presented("cancelled", false);
     github.merges.lock().unwrap().insert(7, Err("Required status check \"build\" is expected.".into()));
@@ -892,6 +912,31 @@ async fn gh_merges_with_the_method_only_at_the_presented_head_and_reads_status_a
     assert!(!calls.contains("--delete-branch") && !calls.contains("--auto"), "{calls}");
 }
 
+#[tokio::test]
+async fn gh_reads_the_structured_default_branch_before_retargeting_a_pr() {
+    let home = Home(crate::test_support::Directory::new());
+    std::fs::create_dir(&home.0).unwrap();
+    let program = home.0.join("gh");
+    let log = home.0.join("calls");
+    let response = home.0.join("default.json");
+    std::fs::write(&response, r#"{"defaultBranchRef":{"name":"develop"}}"#).unwrap();
+    std::fs::write(&program, format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nif [ \"$1 $2\" = 'repo view' ]; then cat '{}'; fi\n", log.display(), response.display())).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let gh = GhCli::at(program);
+    let pr = PullRequest { id: "pr".into(), task_id: "t".into(), host: "github.com".into(), repository: "acme/widgets".into(),
+        number: 7, head: HEAD.into(), base: "feature".into(), state: PrState::Open, merged_head: None,
+        allowed_methods: vec![MergeMethod::Squash], review: None };
+    let base = gh.default_branch(&pr).await.unwrap();
+    assert_eq!(base, "develop");
+    gh.retarget(&pr, &base).await.unwrap();
+    assert_eq!(std::fs::read_to_string(&log).unwrap(),
+        "repo view https://github.com/acme/widgets --json defaultBranchRef\npr edit https://github.com/acme/widgets/pull/7 --base develop\n");
+    for invalid in ["{}", r#"{"defaultBranchRef":{"name":""}}"#, r#"{"defaultBranchRef":null}"#, "not json"] {
+        std::fs::write(&response, invalid).unwrap();
+        assert!(matches!(gh.default_branch(&pr).await, Err(GhFailure::Unreadable(_))));
+    }
+}
+
 const DRAFT_REFUSAL: &str = "PR #7 is a draft: mark it ready with gh pr ready before delivering";
 
 #[tokio::test]
@@ -995,4 +1040,174 @@ async fn work_after_the_merge_that_waits_on_another_tasks_pr_wakes_when_alondra_
     assert_eq!(woken.len(), 1, "{woken:?}");
     assert!(woken[0].contains("publish beta 59") && woken[0].contains("The Mac package no longer ships ._ entries")
         && woken[0].contains("https://github.com/owner/repo/pull/8"), "{}", woken[0]);
+}
+
+
+fn stacked(default: &str) -> (Home, Arc<DomainRuntime>, FakeGithub) {
+    let (home, domain, github) = presented("stack", false);
+    command(&domain, Actor::Orchestrator { generation: 0 }, "title-stack-request", Command::TitleRequest {
+        request_id: "r".into(), title: "Stacked changes".into(),
+    });
+    command(&domain, Actor::System, "parent-base", Command::ObservePrState {
+        pr_id: "pr".into(), head: HEAD.into(), base: default.into(), state: PrState::Open, merged_head: None,
+    });
+    command(&domain, Actor::Agent { agent_id: "a".into() }, "ready-parent", Command::PublishStackReadiness {
+        task_id: "t".into(), presentation_id: "d".into(), pr_id: "pr".into(), head: HEAD.into(), ready: true,
+    });
+    command(&domain, Actor::System, "agent-down", Command::RegisterAgent { agent_id: "b".into(), name: "B".into(), at: 0 });
+    command(&domain, Actor::Orchestrator { generation: 0 }, "task-down", Command::CreateTask {
+        task_id: "down".into(), request_id: "r".into(), title: "Downstream".into(), agent_id: Some("b".into()),
+        review_prs: true, dependencies: BTreeSet::new(), plan_items: None, continues: None,
+        stack: Some(StackDependency { upstream_task: "t".into(), presentation_id: "d".into(), pr_id: "pr".into(), head: HEAD.into() }),
+        launch: Some(LaunchPlan::new("node", "/synthetic/repository")),
+    });
+    let head = "2".repeat(40);
+    command(&domain, Actor::Agent { agent_id: "b".into() }, "pr-down", Command::RegisterPr {
+        task_id: "down".into(), pr_id: "pr-down".into(), host: "github.com".into(), repository: "owner/repo".into(),
+        number: 8, head: head.clone(), base: "parent-feature".into(), allowed_methods: vec![MergeMethod::Squash],
+    });
+    command(&domain, Actor::Agent { agent_id: "b".into() }, "present-down", Command::PresentResult {
+        checklist: vec![], attachments: vec![], task_id: "down".into(), interaction_id: "d-down".into(),
+        body: "Downstream ready".into(), targets: vec![DeliveryTarget::PullRequest { pr_id: "pr-down".into(), head: head.clone() }],
+        is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the change", &[], true),
+    });
+    command(&domain, user(), "authorize-down", Command::AuthorizeMerge {
+        authorization_id: "auth-down".into(), presentation_id: "d-down".into(), pr_id: "pr-down".into(),
+        expected_head: head.clone(), method: MergeMethod::Squash,
+    });
+    command(&domain, Actor::System, "parent-merged", Command::ObservePrState {
+        pr_id: "pr".into(), head: HEAD.into(), base: default.into(), state: PrState::Merged, merged_head: Some(HEAD.into()),
+    });
+    *github.default_base.lock().unwrap() = default.into();
+    if let Some(Ok(parent)) = github.statuses.lock().unwrap().get_mut(&7) {
+        parent.base = default.into();
+        parent.state = PrState::Merged;
+    }
+    github.open(8, &head, Checks::Passed);
+    if let Some(Ok(child)) = github.statuses.lock().unwrap().get_mut(&8) { child.base = "parent-feature".into(); }
+    (home, domain, github)
+}
+
+#[tokio::test]
+async fn an_approved_stack_is_retargeted_to_the_default_branch_before_merging() {
+    for default in ["main", "develop"] {
+        let (_home, domain, github) = stacked(default);
+        let mut merger = now();
+        merger.merge_due(&domain, &github).await.unwrap();
+        assert_eq!(*github.retargets.lock().unwrap(), vec![(8, default.into())]);
+        assert_eq!(*github.merged.lock().unwrap(), vec![(8, "2".repeat(40), MergeMethod::Squash)]);
+        assert_eq!(domain.state().unwrap().pull_requests[&PrId::from("pr-down")].base, default);
+        assert_eq!(*github.calls.lock().unwrap(), vec![format!("retarget 8 {default}"), "merge 8".into()]);
+    }
+}
+
+#[tokio::test]
+async fn a_stack_never_merges_a_changed_head_or_an_unverified_parent() {
+    for changed_child in [false, true] {
+        let (_home, domain, github) = stacked("develop");
+        if changed_child {
+            let mut child = github.statuses.lock().unwrap().get(&8).unwrap().clone().unwrap();
+            child.base = "develop".into();
+            child.head = "3".repeat(40);
+            github.after_retarget.lock().unwrap().insert(8, child);
+        } else if let Some(Ok(parent)) = github.statuses.lock().unwrap().get_mut(&7) {
+            parent.head = "3".repeat(40);
+        }
+        now().merge_due(&domain, &github).await.unwrap();
+        assert!(github.merged.lock().unwrap().is_empty());
+        if changed_child {
+            assert!(!domain.state().unwrap().merge_authorizations[&AuthorizationId::from("auth-down")].valid);
+        } else {
+            assert!(github.retargets.lock().unwrap().is_empty());
+        }
+    }
+}
+
+
+#[tokio::test]
+async fn a_stack_base_changed_during_the_last_github_read_is_never_merged() {
+    let (_home, domain, github) = stacked("develop");
+    let github = Arc::new(github);
+    let changed = github.clone();
+    *github.on_draft.lock().unwrap() = Some(Box::new(move || {
+        if let Some(Ok(status)) = changed.statuses.lock().unwrap().get_mut(&8) { status.base = "stale-feature".into(); }
+    }));
+    now().merge_due(&domain, &github).await.unwrap();
+    assert_eq!(*github.retargets.lock().unwrap(), [(8, "develop".into())]);
+    assert!(github.merged.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_stack_changed_while_reading_its_default_branch_is_not_retargeted() {
+    for change_head in [false, true] {
+        let (_home, domain, github) = stacked("develop");
+        let github = Arc::new(github);
+        let changed = github.clone();
+        *github.on_default.lock().unwrap() = Some(Box::new(move || {
+            if let Some(Ok(status)) = changed.statuses.lock().unwrap().get_mut(&8) {
+                if change_head { status.head = "3".repeat(40); }
+                else { status.base = "another-feature".into(); }
+            }
+        }));
+        now().merge_due(&domain, &github).await.unwrap();
+        assert!(github.retargets.lock().unwrap().is_empty());
+        assert!(github.merged.lock().unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn a_stack_already_retargeted_on_github_is_observed_before_claiming() {
+    let (_home, domain, github) = stacked("develop");
+    if let Some(Ok(status)) = github.statuses.lock().unwrap().get_mut(&8) { status.base = "develop".into(); }
+    now().merge_due(&domain, &github).await.unwrap();
+    assert!(github.retargets.lock().unwrap().is_empty());
+    assert_eq!(*github.merged.lock().unwrap(), [(8, "2".repeat(40), MergeMethod::Squash)]);
+    assert_eq!(domain.state().unwrap().pull_requests[&PrId::from("pr-down")].base, "develop");
+}
+
+#[tokio::test]
+async fn a_claimed_stack_cannot_merge_after_readiness_is_revoked() {
+    let (_home, domain, github) = stacked("develop");
+    github.merges.lock().unwrap().insert(8, Err("HTTP 502: Bad Gateway".into()));
+    let mut merger = now();
+    merger.merge_due(&domain, &github).await.unwrap();
+    let state = domain.state().unwrap();
+    let authorization = &state.merge_authorizations[&AuthorizationId::from("auth-down")];
+    assert!(authorization.valid);
+    assert_eq!(authorization.attempt, MergeAttemptState::Claimed);
+    github.merges.lock().unwrap().remove(&8);
+    let changed = domain.clone();
+    *github.on_draft.lock().unwrap() = Some(Box::new(move || {
+        command(&changed, Actor::Agent { agent_id: "a".into() }, "revoke-readiness", Command::PublishStackReadiness {
+            task_id: "t".into(), presentation_id: "d".into(), pr_id: "pr".into(), head: HEAD.into(), ready: false,
+        });
+    }));
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert!(!domain.state().unwrap().stack_readiness[&TaskId::from("t")].ready);
+    assert!(github.merged.lock().unwrap().is_empty());
+    assert_eq!(github.calls.lock().unwrap().iter().filter(|call| *call == "merge 8").count(), 1);
+}
+
+#[tokio::test]
+async fn a_claimed_stack_is_retargeted_again_if_its_base_changes_before_retry() {
+    let (_home, domain, github) = stacked("main");
+    let head = "2".repeat(40);
+    command(&domain, Actor::System, "child-main", Command::ObservePrState {
+        pr_id: "pr-down".into(), head: head.clone(), base: "main".into(), state: PrState::Open, merged_head: None,
+    });
+    if let Some(Ok(status)) = github.statuses.lock().unwrap().get_mut(&8) { status.base = "main".into(); }
+    github.merges.lock().unwrap().insert(8, Err("HTTP 502: Bad Gateway".into()));
+    let mut merger = now();
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert_eq!(domain.state().unwrap().merge_authorizations[&AuthorizationId::from("auth-down")].attempt, MergeAttemptState::Claimed);
+    command(&domain, Actor::System, "child-stale-base", Command::ObservePrState {
+        pr_id: "pr-down".into(), head, base: "stale-feature".into(), state: PrState::Open, merged_head: None,
+    });
+    if let Some(Ok(status)) = github.statuses.lock().unwrap().get_mut(&8) { status.base = "stale-feature".into(); }
+    github.merges.lock().unwrap().remove(&8);
+    merger.merge_due(&domain, &github).await.unwrap();
+    let state = domain.state().unwrap();
+    let merged = &state.pull_requests[&PrId::from("pr-down")];
+    assert_eq!(merged.state, PrState::Merged);
+    assert_eq!(merged.base, "main", "a claimed retry cannot merge into an obsolete feature branch");
 }

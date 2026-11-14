@@ -474,7 +474,7 @@ impl DomainState {
             fail("forbidden", "User or current orchestrator required")
         }
     }
-    fn task(&self, task: &TaskId) -> Result<&Task> {
+    pub(super) fn task(&self, task: &TaskId) -> Result<&Task> {
         self.tasks
             .get(task)
             .ok_or_else(|| DomainError::new("not_found", "Task does not exist"))
@@ -1646,6 +1646,25 @@ impl DomainState {
             s.ready = false;
         }
     }
+
+    fn invalidate_feedback(&mut self, task: &TaskId, target: &FeedbackTarget) {
+        let FeedbackTarget::PullRequest { pr_id, .. } = target else {
+            self.invalidate(task);
+            return;
+        };
+        if let Some(presentation) = self.tasks[task].final_presentation.clone() {
+            self.decided(&presentation);
+            if let InteractionPayload::Delivery { acceptance: Some(acceptance), .. } = &mut self.interactions.get_mut(&presentation).unwrap().payload {
+                acceptance.valid = false;
+            }
+        }
+        for authorization in self.merge_authorizations.values_mut().filter(|authorization| &authorization.task_id == task && &authorization.pr_id == pr_id) {
+            authorization.valid = false;
+        }
+        if let Some(readiness) = self.stack_readiness.get_mut(task).filter(|readiness| &readiness.pr_id == pr_id) {
+            readiness.ready = false;
+        }
+    }
     fn notify(
         &self,
         task: &TaskId,
@@ -1951,7 +1970,8 @@ impl DomainState {
         refuse("task_waiting", "option_id", &plan_while_waiting_notice(&waited))
             .map_err(|error| error.because(Refusal::WaitsForTask { title: waited.join(", ") }))
     }
-    pub(crate) fn stack_ready(&self, t: &Task) -> Result<()> {
+    /// The dependency still names the upstream delivery and head that were marked ready.
+    pub fn stack_ready(&self, t: &Task) -> Result<()> {
         if let Some(stack) = &t.stack {
             let up = self.task(&stack.upstream_task)?;
             if up.state == TaskState::Cancelled {
@@ -1974,6 +1994,20 @@ impl DomainState {
         }
         Ok(())
     }
+    /// A stacked PR can merge only after its pinned upstream head merged into its current base.
+    pub fn stack_ready_for_merge(&self, pr_id: &PrId) -> Result<()> {
+        let pr = self.pull_requests.get(pr_id).ok_or_else(|| DomainError::new("not_found", "PR missing"))?;
+        let task = self.task(&pr.task_id)?;
+        self.stack_ready(task)?;
+        if let Some(stack) = &task.stack {
+            let upstream = self.pull_requests.get(&stack.pr_id)
+                .ok_or_else(|| DomainError::new("stack_not_ready", "Upstream PR missing"))?;
+            if upstream.state != PrState::Merged || upstream.merged_head.as_ref() != Some(&stack.head) || upstream.base != pr.base {
+                return fail("stack_not_ready", "Upstream merge and retarget must be confirmed");
+            }
+        }
+        Ok(())
+    }
     pub(super) fn accepted(&self, p: &Interaction) -> bool {
         matches!(&p.payload,InteractionPayload::Delivery{acceptance:Some(a),..} if a.valid)
     }
@@ -1983,7 +2017,9 @@ impl DomainState {
     pub fn merged_delivery(&self, p: &Interaction) -> bool {
         let InteractionPayload::Delivery { targets, .. } = &p.payload else { return false };
         let states: Vec<PrState> = targets.iter().filter_map(|t| match t {
-            DeliveryTarget::PullRequest { pr_id, .. } => Some(self.pull_requests.get(pr_id).map(|pr| pr.state)),
+            DeliveryTarget::PullRequest { pr_id, head } => Some(self.pull_requests.get(pr_id)
+                .filter(|pr| pr.state != PrState::Merged || pr.merged_head.as_ref() == Some(head))
+                .map(|pr| pr.state)),
             _ => None,
         }).collect::<Option<_>>().unwrap_or_default();
         states.contains(&PrState::Merged) && !states.contains(&PrState::Open)
@@ -2257,10 +2293,10 @@ impl DomainState {
             && !self.out_of_sight(i)
     }
     pub(super) fn settled(&self, t: &Task, p: &Interaction) -> bool {
-        (self.merged_delivery(p) && self.open_prs(t).next().is_none())
+        !self.pending_reply(p, &FeedbackTarget::Delivery) && ((self.merged_delivery(p) && self.open_prs(t).next().is_none())
             || (self.accepted(p)
                 && matches!(&p.payload, InteractionPayload::Delivery { targets, .. }
-                    if self.completable(t, targets, true).is_ok()))
+                    if self.completable(t, targets, true).is_ok())))
     }
     /// The final delivery is settled: every PR merged, or accepted with nothing left to merge.
     pub fn finished(&self, t: &Task) -> bool {
@@ -2306,7 +2342,7 @@ impl DomainState {
                 }
                 targets.iter().find_map(|target| match target {
                     DeliveryTarget::PullRequest { pr_id, head } => self.pull_requests.get(pr_id)
-                        .filter(|pr| pr.state == PrState::Open && pr.head != *head)
+                        .filter(|pr| pr.state != PrState::Closed && pr.head != *head)
                         .map(|pr| (t.id.clone(), p.id.clone(), pr.number)),
                     _ => None,
                 })
@@ -2697,6 +2733,7 @@ impl DomainState {
             | Command::RecordInterruptAccepted { task_id, .. }
             | Command::RecordDoubtfulHandoff { task_id, .. }
             | Command::RecordHostLost { task_id, .. }
+            | Command::ReconcileRecoveryCards { task_id }
             | Command::ResendUntakenInput { task_id, .. }
             | Command::RecordDroppedInput { task_id, .. }
             | Command::SetModel { task_id, .. }
@@ -3770,7 +3807,9 @@ impl DomainState {
                             let revision = self.revision + 1;
                             let p = self.interactions.get_mut(&delivery).unwrap();
                             if let InteractionPayload::Delivery { feedback, .. } = &mut p.payload {
-                                feedback.push(Feedback { target: FeedbackTarget::Delivery,
+                                feedback.push(Feedback {
+                                    target: FeedbackTarget::Delivery,
+                                    reply_window_start: None,
                                     attachments: vec![],
                                     user_id: Feedback::ALONDRA.to_owned(),
                                     body: text.clone(),
@@ -4804,10 +4843,24 @@ impl DomainState {
                 merge_failure,
             } => {
                 let (u, task) = self.feedback_guard(actor, presentation_id, targets, body, attachments, *instruction, merge_failure.as_ref())?;
-                self.invalidate(&task);
+                let target = Self::feedback_target(self.presentation(presentation_id)?.2, targets)?;
+                let presentation = &self.interactions[presentation_id];
+                let reply_window_start = (*instruction == Instruction::Reply).then(|| {
+                    if self.open_reply(presentation)
+                        && let InteractionPayload::Delivery { feedback, .. } = &presentation.payload
+                        && let Some(last) = feedback.last()
+                    {
+                        last.reply_window_start.unwrap_or(last.at_revision)
+                    } else {
+                        self.revision + 1
+                    }
+                });
+                self.invalidate_feedback(&task, &target);
                 let p = self.interactions.get_mut(presentation_id).unwrap();
                 if let InteractionPayload::Delivery { feedback, .. } = &mut p.payload {
-                    feedback.push(Feedback { target: FeedbackTarget::Delivery,
+                    feedback.push(Feedback {
+                        target,
+                        reply_window_start,
                         attachments: attachments.clone(),
                         user_id: u,
                         body: body.clone(),
@@ -4878,7 +4931,10 @@ impl DomainState {
                 }
                 system(actor)?;
                 self.active(&a.task_id)?;
-                self.presentation(&a.presentation_id)?;
+                let (presentation, _, _) = self.presentation(&a.presentation_id)?;
+                if self.pending_reply(presentation, &FeedbackTarget::PullRequest { pr_id: a.pr_id.clone(), head: a.head.clone() }) {
+                    return fail("pending_user_reply", "The user's reply must be resolved before merging this pull request");
+                }
                 if !a.valid {
                     return fail("acceptance_stale", "Authorization was invalidated");
                 };
@@ -4896,22 +4952,7 @@ impl DomainState {
                 if !base_verified || remote_base != &pr.base {
                     return fail("stack_not_ready", "Remote base must be verified");
                 };
-                let t = self.task(&a.task_id)?;
-                self.stack_ready(t)?;
-                if let Some(s) = &t.stack {
-                    let upstream = self.pull_requests.get(&s.pr_id).ok_or_else(|| {
-                        DomainError::new("stack_not_ready", "Upstream PR missing")
-                    })?;
-                    if upstream.state != PrState::Merged
-                        || upstream.merged_head.as_ref() != Some(&s.head)
-                        || upstream.base != pr.base
-                    {
-                        return fail(
-                            "stack_not_ready",
-                            "Upstream merge and retarget must be confirmed",
-                        );
-                    }
-                }
+                self.stack_ready_for_merge(&a.pr_id)?;
                 let a = self.merge_authorizations.get_mut(authorization_id).unwrap();
                 a.attempt = MergeAttemptState::Claimed;
                 a.claimed_by = None;
@@ -5081,6 +5122,9 @@ impl DomainState {
                         "Current delivery needs valid user acceptance",
                     );
                 };
+                if self.pending_reply(p, &FeedbackTarget::Delivery) {
+                    return fail("pending_user_reply", "A reply still needs a final delivery before completing the task");
+                }
                 self.completable(t, targets, self.accepted(p))?;
                 if !self.wraps_up(t) && !self.unanswered(task_id) {
                     self.finish_task(task_id, lifecycles)?;
@@ -5175,6 +5219,9 @@ impl DomainState {
                 if !t.pending_user_inputs.is_empty() {
                     return fail("pending_user_message", "A user message still needs a final delivery before cleanup");
                 }
+                if t.final_presentation.as_ref().and_then(|id| self.interactions.get(id)).is_some_and(|p| self.pending_reply(p, &FeedbackTarget::Delivery)) {
+                    return fail("pending_user_reply", "A reply still needs a final delivery before cleanup");
+                }
                 if t.wrap_up.asked_at.is_none() && !(t.ending() && t.open_worktrees().next().is_some()) {
                     return fail("not_closing", &format!(
                         "Task {} is not closing, so there is nothing to clean up yet: deliver your result with present_result first.", task_id.0));
@@ -5192,6 +5239,7 @@ impl DomainState {
                 wrap_up.cleaned_at = Some(revision);
                 self.end_post_merge(task_id, PostMergeEnd::Cleanup, lifecycles)?;
                 self.drain(task_id, lifecycles, |owed| matches!(owed, Drained::Cleanup { .. }))?;
+                self.reconcile_recovery_cards(task_id, lifecycles)?;
             }
             Command::DeclarePostMergeWork { task_id, reason, waits_for } => {
                 self.assigned(actor, task_id)?;
@@ -5366,6 +5414,11 @@ impl DomainState {
                 nonempty(input)?;
                 nonempty(text)?;
                 self.record_doubtful_handoff(task_id, *generation, input, text, *resumes, effects, lifecycles)?;
+            }
+            Command::ReconcileRecoveryCards { task_id } => {
+                system(actor)?;
+                self.task(task_id)?;
+                self.reconcile_recovery_cards(task_id, lifecycles)?;
             }
             Command::RecordHostLost { task_id, reason, quiet } => {
                 system(actor)?;
@@ -6029,6 +6082,9 @@ impl DomainState {
                         }
                         if f.at_revision > self.revision {
                             return fail("invalid_input", "Feedback revision from future");
+                        }
+                        if f.reply_window_start.is_some_and(|start| start > f.at_revision || f.instruction != Instruction::Reply) {
+                            return fail("invalid_input", "Feedback reply window mismatch");
                         }
                     }
                 }

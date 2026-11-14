@@ -2556,3 +2556,86 @@ fn a_folded_request_the_batch_base_and_each_tasks_creation_survive_a_restart() {
     let task = &reopened.tasks[&"task-1".into()];
     assert!(task.created_revision > reopened.orchestrator_batch_base.unwrap(), "{}", task.created_revision);
 }
+
+#[test]
+fn reply_windows_roundtrip_and_legacy_rows_keep_the_last_reply_only() {
+    use alondra_core::domain::{FeedbackTarget, InboxSubject, InteractionId, InteractionPayload, ReadIndex};
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    let prs = [
+        alondra_core::domain::hosted_pr_id("github.com", "acme/widgets", 7),
+        alondra_core::domain::hosted_pr_id("github.com", "acme/widgets", 8),
+    ];
+    let heads = ["1".repeat(40), "2".repeat(40)];
+    for (index, (pr, head)) in prs.iter().zip(&heads).enumerate() {
+        execute(&mut store, &agent(), &format!("register-{index}"), Command::RegisterPr {
+            task_id: "task-1".into(), pr_id: pr.clone(), host: "github.com".into(), repository: "acme/widgets".into(),
+            number: 7 + index as u64, head: head.clone(), base: "main".into(),
+            allowed_methods: vec![alondra_core::domain::MergeMethod::Squash],
+        });
+    }
+    execute(&mut store, &agent(), "present", Command::PresentResult {
+        checklist: vec![], task_id: "task-1".into(), interaction_id: "delivery-1".into(), body: "Review both changes".into(),
+        targets: prs.iter().zip(&heads).map(|(pr, head)| DeliveryTarget::PullRequest { pr_id: pr.clone(), head: head.clone() }).collect(),
+        is_final: true, nothing_to_review: false, attachments: vec![],
+        card: alondra_core::domain::CardSpec::delivery("Review both changes", &[], true),
+    });
+    for (index, (pr, head)) in prs.iter().zip(&heads).enumerate() {
+        execute(&mut store, &user(), &format!("reply-{index}"), Command::SubmitFeedback {
+            presentation_id: "delivery-1".into(), targets: vec![DeliveryTarget::PullRequest { pr_id: pr.clone(), head: head.clone() }],
+            body: format!("Explain change {index}"), attachments: vec![], instruction: Instruction::Reply, merge_failure: None,
+        });
+    }
+    let with_window = store.load().unwrap();
+    let InteractionPayload::Delivery { feedback, .. } = &with_window.interactions[&InteractionId::from("delivery-1")].payload else { panic!("delivery") };
+    let start = feedback[0].at_revision;
+    assert_eq!(feedback.len(), 2);
+    assert!(feedback.iter().all(|feedback| feedback.reply_window_start == Some(start)), "both replies belong to the same persisted window");
+    drop(store);
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(store.load().unwrap(), with_window, "the current window survives a restart");
+    let reopened = store.load().unwrap();
+    let p = &reopened.interactions[&InteractionId::from("delivery-1")];
+    for (pr, head) in prs.iter().zip(&heads) {
+        let target = FeedbackTarget::PullRequest { pr_id: pr.clone(), head: head.clone() };
+        assert_eq!(reopened.handed_back_for(p, &target), Some(Instruction::Reply));
+        assert!(reopened.pending_reply(p, &target));
+    }
+    assert!(ReadIndex::build(&reopened).cards().is_empty(), "both scoped replies remain with the node after reopening");
+    store.conn.execute_batch("ALTER TABLE delivery_feedback DROP COLUMN reply_window_start;").unwrap();
+    drop(store);
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let mut legacy = DomainState::clone(&with_window);
+    let InteractionPayload::Delivery { feedback, .. } = &mut legacy.interactions.get_mut(&"delivery-1".into()).unwrap().payload else { panic!("delivery") };
+    for feedback in feedback { feedback.reply_window_start = None; }
+    assert_eq!(*store.load().unwrap(), legacy, "the added legacy column defaults to NULL and None");
+    let column: String = store.conn.query_row(
+        "SELECT type FROM pragma_table_info('delivery_feedback') WHERE name='reply_window_start'",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(column, "INTEGER");
+    let p = &legacy.interactions[&InteractionId::from("delivery-1")];
+    assert_eq!(legacy.handed_back_for(p, &FeedbackTarget::PullRequest { pr_id: prs[0].clone(), head: heads[0].clone() }), None);
+    assert_eq!(legacy.handed_back_for(p, &FeedbackTarget::PullRequest { pr_id: prs[1].clone(), head: heads[1].clone() }), Some(Instruction::Reply));
+    let index = ReadIndex::build(&legacy);
+    assert_eq!(index.cards().iter().map(|card| match &card.subject {
+        InboxSubject::Interaction { pr_id: Some(pr_id), .. } => pr_id.clone(),
+        _ => panic!("a scoped PR card"),
+    }).collect::<Vec<_>>(), vec![prs[0].clone()], "legacy None keeps only the last global reply in hand");
+    for window in [Some(start), None] {
+        let before = store.load().unwrap();
+        let mut after = DomainState::clone(&before);
+        let InteractionPayload::Delivery { feedback, .. } = &mut after.interactions.get_mut(&"delivery-1".into()).unwrap().payload else { panic!("delivery") };
+        for feedback in feedback { feedback.reply_window_start = window; }
+        let tx = rusqlite::Transaction::new_unchecked(&store.conn, TransactionBehavior::Immediate).unwrap();
+        let scope = alondra_store::AuthorityScope::new(epoch_of(&store.conn).unwrap()).unwrap();
+        let mut journal = alondra_store::LifecycleTransaction::attach(tx, scope).unwrap();
+        repository::save_changes(&store.conn, &mut journal, &before, &after).unwrap();
+        journal.commit().unwrap();
+        drop(store);
+        store = DomainStore::open(&fixture.path()).unwrap();
+        assert_eq!(*store.load().unwrap(), after, "saving {window:?} updates or clears the stored window");
+    }
+    store.integrity_check().unwrap();
+}

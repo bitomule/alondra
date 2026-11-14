@@ -326,14 +326,32 @@ fn status_json_lists_each_card_once_and_keeps_grouped_task_ids() {
                 let task = |id: &str| json!({"id":id,"title":id,"icon":"task","depth":2,"struck":false,
                     "link":{"kind":"view","key":format!("task:{id}")},
                     "badges":[{"text":"Working","tone":"neutral"}]});
+                let waits = |id: &str| json!({"id":format!("waits:{id}:dependency"),"title":"Waits for a dependency",
+                    "icon":"branch","depth":3,"struck":false,"link":{"kind":"view","key":format!("task:{id}")}});
                 let sections: Vec<Value> = if empty { vec![] } else if home {
                     vec![json!({"id":"waiting","collapsed":false,"items":[card("first"),card("second")]}),
                         json!({"id":"detail","collapsed":false,"items":[card("first")]})]
                 } else {
+                    let mut first = task("t-first");
+                    first["children"] = json!([waits("t-first")]);
+                    let mut third = task("t-third");
+                    third["children"] = json!([task("t-fourth")]);
                     vec![json!({"id":"active","collapsed":false,"items":[{"type":"row","id":"block:in-progress",
                         "title":"In progress","icon":"task","depth":0,"struck":false,"children":[{
                             "id":"group:request","title":"One request","icon":"request","depth":1,"struck":false,
-                            "children":[task("t-first"),task("t-second")]}]}]})]
+                            "link":{"kind":"view","key":"task:t-second"},
+                            "badges":[{"text":"2 tasks","tone":"neutral"}],"children":[first,task("t-second")]}]}]}),
+                        json!({"id":"finished","collapsed":false,"items":[
+                            {"type":"row","id":"single-request","title":"Finished task","icon":"task","depth":0,"struck":false,
+                                "link":{"kind":"view","key":"task:t-finished"},"badges":[{"text":"Done","tone":"success"}],
+                                "children":[waits("t-finished")]},
+                            {"type":"row","id":"multi-request","title":"Completed request","icon":"request","depth":0,"struck":false,
+                                "link":{"kind":"view","key":"task:t-fourth"},"children":[third]},
+                            {"type":"row","id":"waits:t-first:another","title":"Waits for another dependency","icon":"branch","depth":1,
+                                "struck":false,"link":{"kind":"view","key":"task:t-first"}},
+                            {"type":"row","id":"waits:t-outside:dependency","title":"Waits for an omitted dependency","icon":"branch","depth":1,
+                                "struck":false,"link":{"kind":"view","key":"task:t-outside"}}
+                        ]})]
                 };
                 let response = json!({"protocol":1,"data_epoch":"epoch","view":if home {"home"} else {"tasks"},
                     "key":if home {"home"} else {"tasks"},"client":"tui","version":"v1","cursor":"c1",
@@ -357,9 +375,24 @@ fn status_json_lists_each_card_once_and_keeps_grouped_task_ids() {
             assert!(cards.is_empty() && blocks.is_empty());
         } else {
             assert_eq!(cards.iter().map(|card| card["id"].as_str().unwrap()).collect::<Vec<_>>(), ["first", "second"]);
-            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks.len(), 3);
             assert_eq!(blocks[0]["id"], "block:in-progress");
-            assert_eq!(blocks[0]["tasks"].as_array().unwrap().iter().map(|task| task["task_id"].as_str().unwrap()).collect::<Vec<_>>(), ["t-first", "t-second"]);
+            let first = blocks[0]["tasks"].as_array().unwrap();
+            assert_eq!(first.iter().map(|task| task["task_id"].as_str().unwrap()).collect::<Vec<_>>(), ["t-first", "t-second"]);
+            assert_eq!(first[1]["title"], "t-second");
+            assert_eq!(first[1]["badges"][0]["text"], "Working");
+            let single = blocks[1]["tasks"].as_array().unwrap();
+            assert_eq!(single.len(), 1);
+            assert_eq!(single[0]["task_id"], "t-finished");
+            assert_eq!(single[0]["title"], "Finished task");
+            assert_eq!(single[0]["badges"][0]["text"], "Done");
+            assert_eq!(blocks[2]["tasks"].as_array().unwrap().iter().map(|task| task["task_id"].as_str().unwrap()).collect::<Vec<_>>(),
+                ["t-third", "t-fourth"]);
+            let tasks: Vec<_> = blocks.iter().flat_map(|block| block["tasks"].as_array().unwrap()).collect();
+            let ids: std::collections::BTreeSet<_> = tasks.iter().map(|task| task["task_id"].as_str().unwrap()).collect();
+            assert_eq!(ids.len(), tasks.len());
+            assert_eq!(ids.len(), 5);
+            assert!(tasks.iter().all(|task| task.get("children").is_none()), "task entries contain only their own metadata");
         }
     }
 }

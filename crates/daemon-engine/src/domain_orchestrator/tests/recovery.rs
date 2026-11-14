@@ -234,19 +234,19 @@ async fn non_actionable_confirmed_batch_recovers_a_failed_runtime_write_after_cl
 }
 
 #[tokio::test]
-async fn non_actionable_read_only_batch_interruptions_back_off_and_only_persistent_failure_asks() {
+async fn non_actionable_read_only_batch_interruptions_back_off_without_asking_the_user() {
     let f = fixture();
     f.tell("read-only", "Inspect the current state");
     f.mark("fixture:read-then-exit");
     let (_hold, stop) = tokio::sync::watch::channel(false);
-    for failure in 1..=STUCK_AFTER + 1 {
+    for failure in 1..=4 {
         let next = load(&f.executor.home).unwrap().retry_at;
         f.executor.tick_with_clock(stop.clone(), next).await.unwrap();
         let runtime = load(&f.executor.home).unwrap();
         assert_eq!(runtime.consecutive_failures, failure);
         assert!(runtime.active_run.is_none() && runtime.retry_at.is_some());
         assert!(f.cards(PROBLEM_PREFIX).is_empty());
-        assert_eq!(f.cards(STUCK_PROBLEM_PREFIX).len(), usize::from(failure >= STUCK_AFTER));
+        assert!(f.cards(STUCK_PROBLEM_PREFIX).is_empty(), "recoverable reads need no user action");
         let starts = f.starts().len();
         f.executor.tick_with_clock(stop.clone(), Some(runtime.retry_at.unwrap() - 1)).await.unwrap();
         assert_eq!(f.starts().len(), starts, "no immediate retry loop");

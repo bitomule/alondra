@@ -43,7 +43,6 @@ pub const DEPENDENCY_CANCELLED_NOTICE_PREFIX: &str = "dependency-cancelled-";
 /// Alondra's one reminder to the orchestrator about a refused launch plan it left as it was.
 pub const PLAN_REFUSED_NOTICE_PREFIX: &str = "plan-refused-unsettled-";
 
-const ERROR_SHOWN: usize = 600;
 const QUESTION_SHOWN: usize = 160;
 /// Held tasks a plan-review problem names before it counts the rest.
 const PLAN_REVIEW_NAMED: usize = 3;
@@ -76,12 +75,8 @@ impl StuckProblem {
     }
 
     pub fn detail(&self, lang: Lang) -> String {
-        let error = self.error.trim();
-        if error.is_empty() {
-            return String::new();
-        }
-        let shown: String = error.chars().take(ERROR_SHOWN).collect();
-        format!("{}\n```\n{shown}\n```", t!(lang, "Technical error:", "Error técnico:"))
+        t!(lang, "Alondra will try again automatically. Your requests are kept.",
+            "Alondra volverá a intentarlo automáticamente. Tus peticiones siguen guardadas.").into()
     }
 }
 
@@ -237,7 +232,8 @@ mod tests {
         assert_eq!(StuckProblem::from_body(&stuck.to_body()), Some(stuck.clone()));
         assert_eq!(UnsplitProblem::from_body(&unsplit.to_body()), Some(unsplit));
         assert_eq!(UnansweredProblem::from_body(&unanswered.to_body()), Some(unanswered));
-        assert!(stuck.detail(Lang::Es).contains("Error técnico:\n```\nspawn failed"));
+        assert_eq!(stuck.detail(Lang::Es), "Alondra volverá a intentarlo automáticamente. Tus peticiones siguen guardadas.");
+        assert!(!stuck.detail(Lang::En).contains(&stuck.error));
     }
 
     #[test]

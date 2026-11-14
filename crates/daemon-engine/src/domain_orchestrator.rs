@@ -12,7 +12,8 @@ use alondra_core::delivery::State;
 use alondra_core::domain::{Actor, Author, Command, CommandEnvelope, DomainError, DomainState, InteractionId, InteractionPayload, PROTOCOL_VERSION, QuestionOption, Recipient, RequestId, Scope};
 use alondra_core::now_millis;
 use alondra_core::orchestrator_batch::{BATCH_CONTINUE, BATCH_CONTINUE_LABEL, BATCH_PROBLEM_PREFIX, BATCH_RETRY, BATCH_RETRY_LABEL, BatchProblem, BatchStop};
-use alondra_core::orchestrator_cards::{STUCK_AFTER, STUCK_PROBLEM_PREFIX, STUCK_RETRY, STUCK_RETRY_LABEL, StuckProblem};
+#[cfg(test)]
+use alondra_core::orchestrator_cards::{STUCK_PROBLEM_PREFIX, STUCK_RETRY, STUCK_RETRY_LABEL, StuckProblem};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -146,6 +147,7 @@ const PROBLEM_STOP: &str = "stop";
 const SUBJECT_LINE: usize = 120;
 /// A newer batch card replaces an open one.
 const BATCH_CAUSE: &str = "orchestrator_batch";
+#[cfg(test)]
 const STUCK_CAUSE: &str = "orchestrator_stuck";
 
 pub struct Executor {
@@ -717,9 +719,6 @@ impl Executor {
             let delay = 30_000_i64.saturating_mul(1_i64 << runtime.consecutive_failures.min(5));
             runtime.retry_at = Some(now_millis().saturating_add(delay));
             runtime.failure = Some(Failure::Launch);
-            if runtime.consecutive_failures >= STUCK_AFTER && runtime.stuck_problem.is_none() {
-                runtime.stuck_problem = self.raise_stuck_problem(&run.id, runtime.consecutive_failures, runtime.last_error.as_deref().unwrap_or_default());
-            }
             return save(&self.home, &runtime);
         };
         let mut problem = problem;
@@ -753,7 +752,7 @@ impl Executor {
         Ok(())
     }
 
-    /// Repeated unsuccessful attempts leave one recovery question while automatic retries continue.
+    #[cfg(test)]
     fn raise_stuck_problem(&self, run_id: &str, failures: u32, error: &str) -> Option<String> {
         let id = format!("{STUCK_PROBLEM_PREFIX}{run_id}");
         let problem = StuckProblem { failures, error: error.to_owned() };
@@ -793,16 +792,14 @@ impl Executor {
     pub(crate) fn apply_problem_answers(&self) -> Result<()> {
         let state = self.domain.state()?;
         let mut runtime = load(&self.home)?;
-        if let Some(problem) = runtime.stuck_problem.clone()
-            && let Some(interaction) = state.interactions.get(&InteractionId(problem))
-            && (interaction.withdrawn || matches!(&interaction.payload, InteractionPayload::Question { answer: Some(_), .. }))
+        for interaction in state.interactions.values().filter(|card| card.author == Author::System
+            && matches!(card.system_card, Some(SystemCard::StuckProblem)) && !card.withdrawn)
         {
-            runtime.stuck_problem = None;
-            if !interaction.withdrawn {
-                runtime.retry_at = None;
+            if matches!(interaction.payload, InteractionPayload::Question { answer: None, .. }) {
+                self.domain.withdraw_problem(&interaction.id)?;
             }
-            save(&self.home, &runtime)?;
         }
+        if runtime.stuck_problem.take().is_some() { save(&self.home, &runtime)?; }
         let active = runtime.active_run.map(|run| run.id);
         for (id, interaction) in &state.interactions {
             let Some(SystemCard::BatchProblem { run: run_id }) = &interaction.system_card else { continue };
@@ -1674,53 +1671,86 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claude_failing_to_start_three_times_in_a_row_tells_the_user_once_and_a_good_run_takes_it_back() {
+    async fn repeated_launch_failures_keep_requests_and_recover_without_a_user_card() {
         let f = fixture();
         f.mark(DIED_BEFORE_ANSWERING);
         let domain = &f.executor.domain;
         ask_orchestrator(&f, 1);
-        let stuck = || domain.state().unwrap().interactions.values()
-            .filter(|i| i.id.0.starts_with(STUCK_PROBLEM_PREFIX) && !i.withdrawn).map(|i| i.id.clone()).collect::<Vec<_>>();
         for failure in 1..=4 {
             f.tick().await;
-            assert_eq!(stuck().len(), usize::from(failure >= STUCK_AFTER), "after {failure} failed starts");
+            let state = domain.state().unwrap();
+            assert!(!state.interactions.values().any(|i| !i.withdrawn && matches!(i.system_card, Some(SystemCard::StuckProblem))));
+            let runtime = load(&f.executor.home).unwrap();
+            assert_eq!(runtime.consecutive_failures, failure);
+            assert!(runtime.retry_at.is_some() && runtime.last_error.is_some());
+            assert_eq!(runtime.failure, Some(Failure::Launch));
+            assert!(attempts(domain).iter().all(|(_, state, _)| state == "retryable"));
             again(&f);
         }
-        let problem = stuck().remove(0);
-        let state = domain.state().unwrap();
-        let card = &state.interactions[&problem];
-        assert_eq!(card.card.kind, CardKind::Problem);
-        assert_eq!(card.card.recommended.as_deref(), Some(STUCK_RETRY));
-        assert!(StuckProblem::from_body(&card.body).is_some_and(|body| body.failures == STUCK_AFTER), "{}", card.body);
-
         f.clear_marker();
         f.tick().await;
-        assert!(stuck().is_empty(), "the orchestrator works again: nothing is left for the user");
-        assert!(load(&f.executor.home).unwrap().stuck_problem.is_none());
+        let runtime = load(&f.executor.home).unwrap();
+        assert!(runtime.active_run.is_none() && runtime.last_error.is_none());
+        assert!(unhandled(domain).is_empty(), "kept requests are handled once the provider recovers");
     }
 
     #[tokio::test]
-    async fn trying_again_now_from_the_card_starts_the_orchestrator_without_waiting_for_its_backoff() {
+    async fn reopening_the_database_retires_legacy_automatic_recovery_cards_without_losing_the_retry() {
         let f = fixture();
         f.mark(DIED_BEFORE_ANSWERING);
-        let domain = &f.executor.domain;
         ask_orchestrator(&f, 1);
-        for _ in 0..STUCK_AFTER {
-            again(&f);
-            f.tick().await;
-        }
-        let runtime = load(&f.executor.home).unwrap();
-        assert!(runtime.retry_at.is_some(), "{runtime:?}");
-        let problem = runtime.stuck_problem.clone().expect("the user was told");
-        let state = domain.state().unwrap();
-        domain.execute(&Actor::User { user_id: "u".into() }, &CommandEnvelope {
-            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "retry-now".into(),
-            expected_revision: state.revision,
-            command: Command::AnswerQuestion { attachments: vec![], interaction_id: InteractionId(problem), option_id: STUCK_RETRY.into(), inputs: Default::default() },
-        }, None, || Ok(())).unwrap();
-        f.executor.apply_problem_answers().unwrap();
-        let runtime = load(&f.executor.home).unwrap();
-        assert!(runtime.retry_at.is_none() && runtime.stuck_problem.is_none(), "{runtime:?}");
+        f.tick().await;
+        let first = f.executor.raise_stuck_problem("persisted-legacy", 3, "Synthetic launch failure").unwrap();
+        let orphan = f.executor.raise_stuck_problem("persisted-orphan", 4, "Synthetic launch failure").unwrap();
+        let mut runtime = load(&f.executor.home).unwrap();
+        assert!(runtime.active_run.is_none());
+        assert_eq!(runtime.failure, Some(Failure::Launch));
+        assert!(runtime.retry_at.is_some());
+        runtime.stuck_problem = Some(first.clone());
+        let retry = runtime.retry_at;
+        let error = runtime.last_error.clone();
+        let failures = runtime.consecutive_failures;
+        save(&f.executor.home, &runtime).unwrap();
+        let pending = f.executor.pending().unwrap().into_iter()
+            .map(|message| message.id).collect::<Vec<_>>();
+        assert!(!pending.is_empty());
+
+        let restarted = Executor {
+            domain: Arc::new(DomainRuntime::open(&f.executor.home).unwrap()),
+            home: f.executor.home.clone(),
+            claude_home: f.executor.claude_home.clone(),
+        };
+        let first = InteractionId(first);
+        let orphan = InteractionId(orphan);
+        let before = restarted.domain.state().unwrap();
+        assert!(before.interactions[&first].withdrawn, "the later problem replaced the pointer's older card");
+        assert!(!before.interactions[&orphan].withdrawn);
+        assert_eq!(load(&restarted.home).unwrap().stuck_problem.as_deref(), Some(first.0.as_str()));
+        drop(before);
+        restarted.apply_problem_answers().unwrap();
+        drop(restarted);
+
+        let reopened_again = Executor {
+            domain: Arc::new(DomainRuntime::open(&f.executor.home).unwrap()),
+            home: f.executor.home.clone(),
+            claude_home: f.executor.claude_home.clone(),
+        };
+        let state = reopened_again.domain.state().unwrap();
+        assert!(state.interactions[&first].withdrawn);
+        assert!(state.interactions[&orphan].withdrawn);
+        let revision = state.revision;
+        drop(state);
+        let runtime = load(&reopened_again.home).unwrap();
+        assert!(runtime.stuck_problem.is_none());
+        assert_eq!(runtime.retry_at, retry);
+        assert_eq!(runtime.failure, Some(Failure::Launch));
+        assert_eq!(runtime.last_error, error);
+        assert_eq!(runtime.consecutive_failures, failures);
+        assert_eq!(reopened_again.pending().unwrap().into_iter()
+            .map(|message| message.id).collect::<Vec<_>>(), pending);
+        reopened_again.apply_problem_answers().unwrap();
+        assert_eq!(reopened_again.domain.state().unwrap().revision, revision,
+            "a second reconciliation adds no domain writes");
     }
 
     fn plan_sync(f: &Fixture) {
