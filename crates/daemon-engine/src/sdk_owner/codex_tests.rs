@@ -2057,6 +2057,28 @@ async fn a_task_built_on_an_ended_task_whose_result_was_compacted_moves(){
     slice.domain.stop_sdk_owners();
 }
 
+// Found in use: a task told many things while it worked refused to move once its inputs passed the
+// context limit, «Critical task context is incomplete», naming inputs and work it still had.
+#[tokio::test]
+async fn a_task_told_more_than_its_context_holds_moves_with_its_newest_inputs(){
+    let slice=Slice::new();let task:TaskId=TASK.into();
+    let excerpt=built_on_a_compacted_result(&slice);
+    working_on_codex(&slice);
+    let filler="The Mac has room for one more node again, so the node carries on. ".repeat(14);
+    for n in 0..40{
+        slice.run(&system(),&format!("notice-{n}"),Command::TellNode{task_id:task.clone(),text:format!("Notice {n:02}. {filler}"),from_user:false,answers:None});
+    }
+    slice.run(&system(),"newest",Command::TellNode{task_id:task.clone(),text:"Extend the task: also cover the closing path".into(),from_user:false,answers:None});
+    request_move(&slice);
+    assert_eq!(settled_move(&slice).await,"done","the move ends: {:?}",slice.domain.state().unwrap().tasks[&task].move_refused);
+    let state=slice.domain.state().unwrap();
+    assert_eq!(state.tasks[&task].account_key(),AccountKey::native(Provider::Claude));
+    let prompt=slice.prompts().into_iter().find(|prompt|prompt.starts_with("Alondra task context (public records)")).expect("Claude starts from the task's record");
+    assert!(prompt.contains("Extend the task: also cover the closing path"),"the newest input reaches the new node: {prompt}");
+    assert!(prompt.contains(&excerpt),"the work it builds on reaches the new node: {prompt}");
+    slice.domain.stop_sdk_owners();
+}
+
 // Found by the whole-machine model: a delivery moved while the user reviewed it read as starting
 // for ever, and once the user sent it back nothing started it on the account it moved to.
 #[tokio::test]

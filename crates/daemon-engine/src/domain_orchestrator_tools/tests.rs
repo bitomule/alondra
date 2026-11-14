@@ -1121,6 +1121,27 @@ fn canonical_task_context_keeps_ordered_public_user_inputs_and_refuses_missing_o
 }
 
 #[test]
+fn canonical_task_context_keeps_the_newest_inputs_that_fit_and_stays_complete() {
+    use alondra_core::domain::LifecycleRecord;
+    let f = world();
+    let mut state = f.domain.state().unwrap().as_ref().clone();
+    let task = state.tasks[&TaskId::from("t")].clone();
+    let filler = "A notice the node was sent while it worked. ".repeat(20);
+    for n in 0..60 {
+        state.lifecycle_journal.get_mut(&task.id).unwrap().push(LifecycleRecord::Told { input: format!("input-{n}").into(), text: Some(format!("Input number {n:02}. {filler}")), answers: None });
+    }
+    let context = canonical_task_context(&state, &task);
+    assert!(context.complete, "inputs that do not fit are not lost: {:?}", context.omitted_sources);
+    assert!(context.text.chars().count() <= CANONICAL_CONTEXT_LIMIT);
+    assert!(context.text.contains("Input number 59."), "the newest input is kept");
+    assert!(!context.text.contains("Input number 00."), "the oldest input is left to the public conversation");
+    assert!(context.text.contains("earlier public user inputs are left out here to fit"));
+    let newest = context.text.find("Input number 59.").unwrap();
+    let older = context.text.find("Input number 58.").unwrap();
+    assert!(older < newest, "the inputs kept read in the order they came");
+}
+
+#[test]
 fn a_task_moves_to_another_provider_by_what_is_missing_never_by_a_marker_or_a_compacted_dependency() {
     use alondra_core::domain::{Author, CardKind, CardSpec, Interaction, InteractionPayload, Recipient, Scope};
     let f = world();
