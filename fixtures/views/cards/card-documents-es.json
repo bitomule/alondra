@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:result-1",
   "client": "ios",
-  "version": "v0be4928815bc4cdb",
+  "version": "vef25e10e9293989f",
   "cursor": "cursor-1",
   "title": "Approve the plan to index Redraft's whole library",
   "status": {
@@ -77,7 +77,7 @@
           "type": "card",
           "id": "result-1",
           "kind": "review",
-          "need": "Review the result",
+          "need": "Revisa el plan",
           "title_is_separate": true,
           "why": "The research found it viable. Approving it creates the tasks that build it; the report is beside it.",
           "meta": "Redraft: analyse the whole library at once",

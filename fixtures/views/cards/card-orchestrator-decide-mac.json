@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:memory-pause-livelock-ask",
   "client": "mac",
-  "version": "v3504b3139f582bd7",
+  "version": "v845b1980b86ea269",
   "cursor": "cursor-1",
   "title": "Decide who fixes the memory pauses that cut the same build in a loop",
   "status": {
-    "version": "vb75ee8d969129f42",
+    "version": "v5deb819edf349fa1",
     "summary": "3 questions · 3 to read · 0 tasks working",
     "summary_parts": [
       {
@@ -30,7 +30,7 @@
         "other": "{count} tasks working"
       }
     ],
-    "badge": 6,
+    "badge": 4,
     "counts": [
       {
         "id": "inbox",

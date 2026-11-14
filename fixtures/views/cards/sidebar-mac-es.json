@@ -4,10 +4,10 @@
   "view": "sidebar",
   "key": "sidebar",
   "client": "mac",
-  "version": "va54c495a10e34658",
+  "version": "v088c079a995a554d",
   "cursor": "cursor-1",
   "status": {
-    "version": "vcb9603c5989a3d58",
+    "version": "va7041a1ca8666ecc",
     "summary": "5 pendientes · 0 en marcha",
     "summary_parts": [
       {
@@ -29,7 +29,7 @@
         "other": "{count} tareas trabajando"
       }
     ],
-    "badge": 5,
+    "badge": 3,
     "counts": [
       {
         "id": "inbox",
@@ -291,11 +291,11 @@
       "view": "card",
       "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
       "client": "mac",
-      "version": "v6e3c69acf6aa55fb",
+      "version": "v0beaedbdb388bd38",
       "cursor": "cursor-1",
       "title": "Choose the welcome copy",
       "status": {
-        "version": "v17585113723dfa62",
+        "version": "ve47aaae2024e68d7",
         "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
         "summary_parts": [
           {
@@ -317,7 +317,7 @@
             "other": "{count} tareas trabajando"
           }
         ],
-        "badge": 5,
+        "badge": 3,
         "counts": [
           {
             "id": "inbox",
@@ -524,11 +524,11 @@
       "view": "card",
       "key": "card:8fa4034b-249e-4487-a89b-57de38c26372",
       "client": "mac",
-      "version": "vaabfd90cd7301a22",
+      "version": "vd5b776a549f41b73",
       "cursor": "cursor-1",
       "title": "Ship the compact schedule editor with this beta?",
       "status": {
-        "version": "v17585113723dfa62",
+        "version": "ve47aaae2024e68d7",
         "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
         "summary_parts": [
           {
@@ -550,7 +550,7 @@
             "other": "{count} tareas trabajando"
           }
         ],
-        "badge": 5,
+        "badge": 3,
         "counts": [
           {
             "id": "inbox",
@@ -739,11 +739,11 @@
       "view": "card",
       "key": "card:hf-weekly-2026-09-30",
       "client": "mac",
-      "version": "va5fe811216ba604d",
+      "version": "va1ba34a9bf7dfa91",
       "cursor": "cursor-1",
       "title": "Review the beta candidate",
       "status": {
-        "version": "v17585113723dfa62",
+        "version": "ve47aaae2024e68d7",
         "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
         "summary_parts": [
           {
@@ -765,7 +765,7 @@
             "other": "{count} tareas trabajando"
           }
         ],
-        "badge": 5,
+        "badge": 3,
         "counts": [
           {
             "id": "inbox",

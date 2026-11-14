@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:hf-weekly-2026-09-30",
   "client": "ios",
-  "version": "v6b9d71a1c12310cd",
+  "version": "v51ad44730c998a9f",
   "cursor": "cursor-1",
   "title": "Review the beta candidate",
   "status": {
-    "version": "v17585113723dfa62",
+    "version": "ve47aaae2024e68d7",
     "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
     "summary_parts": [
       {
@@ -30,7 +30,7 @@
         "other": "{count} tareas trabajando"
       }
     ],
-    "badge": 5,
+    "badge": 3,
     "counts": [
       {
         "id": "inbox",

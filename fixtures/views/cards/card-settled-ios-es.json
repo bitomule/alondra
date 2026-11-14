@@ -4,10 +4,10 @@
   "view": "settled_card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "va3c42dba619fe0b7",
+  "version": "v58c81831c02bd8b8",
   "cursor": "cursor-1",
   "status": {
-    "version": "v4f7baec3e91d77a9",
+    "version": "v5026531a89c9c273",
     "summary": "1 pregunta · 3 por leer · 0 tareas trabajando",
     "summary_parts": [
       {
@@ -29,7 +29,7 @@
         "other": "{count} tareas trabajando"
       }
     ],
-    "badge": 4,
+    "badge": 2,
     "counts": [
       {
         "id": "inbox",

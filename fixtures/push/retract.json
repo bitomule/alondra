@@ -2,16 +2,16 @@
   "apns": {
     "alondra": {
       "envelope": {
-        "ciphertext": "j4S7Ik8LHpAJ6bBx5FEJPrPYyri_n-YDzdkliTGbmw6GVAIvcAYCPMGTkCV9ocUL9eK98N65c9bEHpM-B3Y4Oac1ntY5Zht9rXmop74q4xpgIdqYiob6JMqqMR9UsQbBVEKiEfFnLyFCxVtFNQjMed4Yj5AaNlBqtJwK12I_MTWDSGKTf7UjUClv3jxMjD6bjpM_B6ljvgA39J8-Ps5fzisy-cDQGJ3JM_SmuF9q_2B0OPxyYmYcW6KSZ2W1gK9UEmXNAw9m7fJXfMKlu1GqEwoWr7mBXg",
-        "ephemeral_key": "BHNmx8slui8fSiGhcEtG7uT5mk_R3BbgHZSKkHioDGAWCcIw8NULQqrIJlyd5A4lAhWGvaVTJksWWXAhnDJsZCg",
-        "expires_at_ms": 1794610713461,
+        "ciphertext": "t5FfrThylb_yFRcEkH_zMrjJbPSw4y3iiXBsd45tmEMFD5as_Qly4xKl0y3_d-sQDCBdxo5kEjFl4jOeOQgimIL3yurJLeVt39Y7B-Mq0laC1NbUL4sH7Aumfb9al1Pl9ACzdSvEp86bs0MSGoS1aW2ih_vbZRZz-pVlRSuP1pM1ETnvG17o8uf0xe9DwlEsp2EUZwhT6tLFR_j_xWVG9o672S2ngrEwej7bt6v8DqJ5bcK1Ft1HA2_7uk0Rr3os7_GIMZneDGvZIgxh4QdnuoVO4KjEUg",
+        "ephemeral_key": "BODp7DxUr-hLhjWJ6EK0D9oRnAetD4Ps8fF1R7_OdfiJ6nBmcoy62kjYJEvQ06ILMi2y4sRENG2MIEW-zrZ2sqg",
+        "expires_at_ms": 1794651164615,
         "kind": "push",
-        "nonce": "7fSOwHZgInhVk-ci",
+        "nonce": "iuRFaN8O8pMJvbUQ",
         "recipient": "phone-fixture",
-        "request_id": "-1DHAlPxhf_8uABs5KItAA",
+        "request_id": "cgYKDtmq1HiGNcmD3LAsGw",
         "route": "mac-fixture",
         "sender": "mac-fixture",
-        "signature": "MXnf_-Jqh3xCky5aRNYUdiZxsj1VTQFLfMTRyRadMrzShSK3QRohfCywWMsW2Af2pkW6A5xzzRSmQrlS5i981Q",
+        "signature": "Jt3xQD-y0lo8vJf6v3sh68YcZQHvhMlzOLbAfZcWysayz_yj0-O_LR8fZZVEqqyUYp6qcdDa2GQPyF4OSecA_Q",
         "v": 1
       },
       "push_binding": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"

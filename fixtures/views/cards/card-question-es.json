@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "vc49bb92be12686bb",
+  "version": "v821940fbae43af2a",
   "cursor": "cursor-1",
   "title": "Choose the welcome copy",
   "status": {
-    "version": "v17585113723dfa62",
+    "version": "ve47aaae2024e68d7",
     "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
     "summary_parts": [
       {
@@ -30,7 +30,7 @@
         "other": "{count} tareas trabajando"
       }
     ],
-    "badge": 5,
+    "badge": 3,
     "counts": [
       {
         "id": "inbox",

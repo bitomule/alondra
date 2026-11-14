@@ -4,10 +4,10 @@
   "view": "settled_card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "mac",
-  "version": "v83f404f7887bf388",
+  "version": "v1503c83a565a3ae6",
   "cursor": "cursor-1",
   "status": {
-    "version": "vc15784c534027720",
+    "version": "v7e6be28393b67886",
     "summary": "1 question · 3 to read · 0 tasks working",
     "summary_parts": [
       {
@@ -29,7 +29,7 @@
         "other": "{count} tasks working"
       }
     ],
-    "badge": 4,
+    "badge": 2,
     "counts": [
       {
         "id": "inbox",

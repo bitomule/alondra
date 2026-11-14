@@ -4,11 +4,11 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "mac",
-  "version": "ve928fe6d0fac4c9b",
+  "version": "v3d1998428181a3cf",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
-    "version": "vf648b816d46fd466",
+    "version": "v1d3dbaa5a349301c",
     "summary": "3 preguntas · 2 por leer · 0 tareas trabajando",
     "summary_parts": [
       {
@@ -30,7 +30,7 @@
         "other": "{count} tareas trabajando"
       }
     ],
-    "badge": 5,
+    "badge": 4,
     "counts": [
       {
         "id": "inbox",

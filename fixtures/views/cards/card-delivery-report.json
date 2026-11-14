@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:result-2",
   "client": "ios",
-  "version": "v02d608ee599ea45c",
+  "version": "v91e7a436cd1db69e",
   "cursor": "cursor-1",
   "title": "Read why Redraft does not need a widget",
   "status": {
@@ -131,7 +131,7 @@
           "actions": [
             {
               "id": "accept:result-2@10",
-              "label": "Seen",
+              "label": "Mark as done",
               "style": "primary",
               "role": "advance",
               "presentation": "button",
@@ -140,7 +140,7 @@
               },
               "attachments": false,
               "enabled": true,
-              "stamp": "Seen",
+              "stamp": "Done",
               "resolves_card": true
             }
           ]

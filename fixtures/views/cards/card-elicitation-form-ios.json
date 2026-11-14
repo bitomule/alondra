@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:i-1",
   "client": "ios",
-  "version": "va413312996a09524",
+  "version": "v9dc50f368bea4361",
   "cursor": "cursor-1",
   "title": "Sign in to the calendar",
   "status": {
-    "version": "v7185bc5e2ee8267a",
+    "version": "vb48aabc450a206b9",
     "summary": "2 questions · 2 to read · 0 tasks working",
     "summary_parts": [
       {
@@ -30,7 +30,7 @@
         "other": "{count} tasks working"
       }
     ],
-    "badge": 4,
+    "badge": 3,
     "counts": [
       {
         "id": "inbox",

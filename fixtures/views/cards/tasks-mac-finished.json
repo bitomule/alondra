@@ -4,11 +4,11 @@
   "view": "tasks",
   "key": "tasks?section=finished&after=0",
   "client": "mac",
-  "version": "vefdde7af2569abbb",
+  "version": "vd6ea55a035a918d2",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
-    "version": "v690b1fd3d89c858f",
+    "version": "vba3dff056d5e13f1",
     "summary": "2 questions · 3 to read · 2 tasks working",
     "summary_parts": [
       {
@@ -30,7 +30,7 @@
         "other": "{count} tasks working"
       }
     ],
-    "badge": 5,
+    "badge": 3,
     "counts": [
       {
         "id": "inbox",

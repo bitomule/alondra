@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:d",
   "client": "mac",
-  "version": "v57cf50c95d298e71",
+  "version": "v8d1cd2cbed971fee",
   "cursor": "cursor-1",
   "title": "Review the result",
   "status": {
@@ -77,7 +77,7 @@
           "type": "card",
           "id": "d",
           "kind": "review",
-          "need": "Review the result",
+          "need": "Revisa el resultado",
           "title_is_separate": true,
           "why": "Tu respuesta llegó y espera: **Fix it** está en pausa y la leerá cuando se reanude. «the design is poor, the toggles are poor»",
           "meta": "owner/repo · → main",

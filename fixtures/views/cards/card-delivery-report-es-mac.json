@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:result-2",
   "client": "mac",
-  "version": "v782a8f3d6e4dcbb8",
+  "version": "v791b390acda4cdb0",
   "cursor": "cursor-1",
   "title": "Read why Redraft does not need a widget",
   "status": {
@@ -77,7 +77,7 @@
           "type": "card",
           "id": "result-2",
           "kind": "review",
-          "need": "Review the result",
+          "need": "Revisa el resultado",
           "title_is_separate": true,
           "meta": "Redraft: analyse the whole library at once",
           "content_row": {
@@ -132,7 +132,7 @@
           "actions": [
             {
               "id": "accept:result-2@10",
-              "label": "Visto",
+              "label": "Dar por hecha",
               "style": "primary",
               "role": "advance",
               "presentation": "button",
@@ -141,7 +141,7 @@
               },
               "attachments": false,
               "enabled": true,
-              "stamp": "Visto",
+              "stamp": "Hecha",
               "key": "1",
               "resolves_card": true
             }

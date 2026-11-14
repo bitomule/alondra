@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:cc2d034b-249e-4487-a89b-57de38c26372",
   "client": "mac",
-  "version": "v0cecb5dc710615ec",
+  "version": "vb1abec8e191462de",
   "cursor": "cursor-1",
   "title": "Run `git reset --hard origin/main`",
   "status": {
-    "version": "v302dcd3fb8973734",
+    "version": "v20a039a3e8b0ffa4",
     "summary": "3 questions · 2 to read · 0 tasks working",
     "summary_parts": [
       {
@@ -30,7 +30,7 @@
         "other": "{count} tasks working"
       }
     ],
-    "badge": 5,
+    "badge": 4,
     "counts": [
       {
         "id": "inbox",

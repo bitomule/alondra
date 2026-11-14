@@ -4,10 +4,10 @@
   "view": "home",
   "key": "home",
   "client": "ios",
-  "version": "v5d4a136bcc933b7f",
+  "version": "vc133b2c2a37a5b28",
   "cursor": "cursor-1",
   "status": {
-    "version": "ve1b0ea85e0f05cae",
+    "version": "v2449cfcaedc9d3ba",
     "summary": "2 questions · 3 to read · 0 tasks working",
     "summary_parts": [
       {
@@ -29,7 +29,7 @@
         "other": "{count} tasks working"
       }
     ],
-    "badge": 5,
+    "badge": 3,
     "counts": [
       {
         "id": "inbox",
@@ -92,7 +92,7 @@
     {
       "id": "queue",
       "title": "Waiting for You",
-      "count": 5,
+      "count": 3,
       "collapsed": false,
       "items": [],
       "card_ids": [
@@ -105,7 +105,7 @@
       "card_waits": [
         "question",
         "question",
-        "read",
+        "review",
         "read",
         "read"
       ]
@@ -118,11 +118,11 @@
       "view": "card",
       "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
       "client": "ios",
-      "version": "v57ad0c970ad84872",
+      "version": "v08382d52fd719026",
       "cursor": "cursor-1",
       "title": "Choose the welcome copy",
       "status": {
-        "version": "ve1b0ea85e0f05cae",
+        "version": "v2449cfcaedc9d3ba",
         "summary": "2 questions · 3 to read · 0 tasks working",
         "summary_parts": [
           {
@@ -144,7 +144,7 @@
             "other": "{count} tasks working"
           }
         ],
-        "badge": 5,
+        "badge": 3,
         "counts": [
           {
             "id": "inbox",
@@ -348,11 +348,11 @@
       "view": "card",
       "key": "card:8fa4034b-249e-4487-a89b-57de38c26372",
       "client": "ios",
-      "version": "vb212a85f4f14b74b",
+      "version": "v13fdd396dea8152f",
       "cursor": "cursor-1",
       "title": "Ship the compact schedule editor with this beta?",
       "status": {
-        "version": "ve1b0ea85e0f05cae",
+        "version": "v2449cfcaedc9d3ba",
         "summary": "2 questions · 3 to read · 0 tasks working",
         "summary_parts": [
           {
@@ -374,7 +374,7 @@
             "other": "{count} tasks working"
           }
         ],
-        "badge": 5,
+        "badge": 3,
         "counts": [
           {
             "id": "inbox",
@@ -560,11 +560,11 @@
       "view": "card",
       "key": "card:hf-weekly-2026-09-30",
       "client": "ios",
-      "version": "v1692a3c8f9cde3f2",
+      "version": "v75108b0cc2eef6cb",
       "cursor": "cursor-1",
       "title": "Review the beta candidate",
       "status": {
-        "version": "ve1b0ea85e0f05cae",
+        "version": "v2449cfcaedc9d3ba",
         "summary": "2 questions · 3 to read · 0 tasks working",
         "summary_parts": [
           {
@@ -586,7 +586,7 @@
             "other": "{count} tasks working"
           }
         ],
-        "badge": 5,
+        "badge": 3,
         "counts": [
           {
             "id": "inbox",

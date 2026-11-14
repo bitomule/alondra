@@ -4,11 +4,11 @@
   "view": "accounts",
   "key": "accounts",
   "client": "mac",
-  "version": "v52c6898dcdd343b4",
+  "version": "v997c0da0bbd03247",
   "cursor": "cursor-1",
   "title": "Cuentas",
   "status": {
-    "version": "v17585113723dfa62",
+    "version": "ve47aaae2024e68d7",
     "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
     "summary_parts": [
       {
@@ -30,7 +30,7 @@
         "other": "{count} tareas trabajando"
       }
     ],
-    "badge": 5,
+    "badge": 3,
     "counts": [
       {
         "id": "inbox",
