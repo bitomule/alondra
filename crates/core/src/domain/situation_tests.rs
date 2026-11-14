@@ -292,3 +292,34 @@ fn a_paused_task_the_gate_queues_waits_for_a_slot_and_nothing_else_changes() {
         assert_eq!(other.queued_at_gate(true), other);
     }
 }
+
+/// What the header, the Live Activity and the Tasks list count a task as comes from its situation alone, and a
+/// task that ended counts as nothing.
+#[test]
+fn a_situation_counts_as_exactly_one_category() {
+    use super::Tally::*;
+    let waits = |waits| Situation::Waiting(waits);
+    let cases = [
+        (Situation::NeedsYou, Some(NeedsYou)),
+        (Situation::Working(Doing::Turn), Some(Working)),
+        (Situation::Working(Doing::OwnWork), Some(Working)),
+        (Situation::Working(Doing::AfterMerge), Some(Working)),
+        (waits(WaitsFor::Slot), Some(Queued)),
+        (waits(WaitsFor::Machine), Some(Queued)),
+        (waits(WaitsFor::Disk), Some(Queued)),
+        (waits(WaitsFor::Usage), Some(Queued)),
+        (waits(WaitsFor::ProviderApi), Some(Queued)),
+        (Situation::Paused, Some(Paused)),
+        (waits(WaitsFor::Tasks), Some(Waiting)),
+        (waits(WaitsFor::PlanReview), Some(Waiting)),
+        (waits(WaitsFor::Step(AlondraStep::Starting)), Some(Waiting)),
+        (Situation::Delivered(Delivery::ForReview), Some(Waiting)),
+        (Situation::Delivered(Delivery::Blocked), Some(Waiting)),
+        (Situation::Delivered(Delivery::Closing), Some(Waiting)),
+        (Situation::Finished, None),
+        (Situation::Cancelled, None),
+    ];
+    for (situation, tally) in cases {
+        assert_eq!(situation.tally(), tally, "{situation:?}");
+    }
+}
