@@ -1,4 +1,14 @@
-import { expect, mock, test } from 'claude-code/testing'
+import type { ProcessRunResult, ToolCallResult } from 'claude-code'
+import { expect, mock, test, type TestBody } from 'claude-code/testing'
+
+function processResult(stdout = '', exitCode = 0, stderr = ''): ProcessRunResult {
+  return { exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false }
+}
+
+function required<T>(value: T | undefined): T {
+  if (value === undefined) throw new Error('Expected a test fixture value')
+  return value
+}
 
 type Run = { argv: readonly string[]; report: Record<string, unknown> }
 type Spawn = { argv: readonly string[]; hello: Record<string, unknown> }
@@ -16,11 +26,11 @@ test('session.start reports the session and opens the connection to alondrad', a
   on('session.version', () => ({ value: { version: '2.1.287' } }))
   on('env.get', () => ({ value: '/home/runtime/sessions/launch-9f3a.json' }))
   on('process.run', ($, e) => {
-    runs.push({ argv: e.argv, report: JSON.parse(e.init.stdin) })
-    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+    runs.push({ argv: e.argv, report: JSON.parse(required(e.init?.stdin)) })
+    return { value: processResult() }
   })
   on('process.spawn', async function* ($, e) {
-    spawns.push({ argv: e.argv, hello: JSON.parse(e.input) })
+    spawns.push({ argv: e.argv, hello: JSON.parse(required(e.input)) })
     yield { stream: 'stdout', text: 'connected\n' }
     await new Promise(() => {})
   })
@@ -29,9 +39,9 @@ test('session.start reports the session and opens the connection to alondrad', a
   await settle()
 
   expect(runs.length).toBe(1)
-  expect(runs[0].argv.slice(-2)).toEqual(['node', 'event'])
-  expect(runs[0].argv[0]).toMatch(/\/bin\/alondra$/)
-  expect(runs[0].report).toEqual({
+  expect(required(runs[0]).argv.slice(-2)).toEqual(['node', 'event'])
+  expect(required(runs[0]).argv[0]).toMatch(/\/bin\/alondra$/)
+  expect(required(runs[0]).report).toEqual({
     session_id: 'session-1',
     event: 'session.start',
     version: '2.1.287',
@@ -39,8 +49,8 @@ test('session.start reports the session and opens the connection to alondrad', a
     launch_key: 'launch-9f3a',
   })
   expect(spawns.length).toBe(1)
-  expect(spawns[0].argv.slice(-2)).toEqual(['node', 'connect'])
-  expect(spawns[0].hello).toEqual({
+  expect(required(spawns[0]).argv.slice(-2)).toEqual(['node', 'connect'])
+  expect(required(spawns[0]).hello).toEqual({
     session_id: 'session-1',
     version: '2.1.287',
     cwd: '/work',
@@ -57,7 +67,7 @@ test('a dropped connection is opened again with a growing wait, and never after 
   on('session.id', () => ({ value: 'session-1' }))
   on('session.version', () => ({ value: { version: '2.1.287' } }))
   on('env.get', () => ({ value: undefined }))
-  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }))
+  on('process.run', () => ({ value: processResult() }))
   on('ui.log', () => ({ value: undefined }))
   on('process.spawn', async function* () {
     spawns += 1
@@ -80,7 +90,7 @@ test('a dropped connection is opened again with a growing wait, and never after 
   await settle()
   expect(spawns).toBe(3)
 
-  await $.session.end({ reason: 'other', sessionId: 'session-1', resume: { sessionId: 'session-1' } })
+  await $.session.end({ reason: 'other', sessionId: 'session-1', resume: { id: 'session-1' } })
   await clock.advance(60_000)
   await settle()
   expect(spawns).toBe(3)
@@ -93,12 +103,12 @@ test('a reconnection says whether the session is inside a turn, so a restarted d
   on('session.id', () => ({ value: 'session-1' }))
   on('session.version', () => ({ value: { version: '2.1.287' } }))
   on('env.get', () => ({ value: undefined }))
-  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }))
+  on('process.run', () => ({ value: processResult() }))
   on('ui.log', () => ({ value: undefined }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
   on('process.spawn', async function* ($, e) {
-    hellos.push(JSON.parse(e.input))
+    hellos.push(JSON.parse(required(e.input)))
     return { value: { code: 3, signal: null } }
   })
 
@@ -121,7 +131,7 @@ test('a helper killed with SIGTERM is not started again', async ($, on) => {
   on('session.id', () => ({ value: 'session-1' }))
   on('session.version', () => ({ value: { version: '2.1.287' } }))
   on('env.get', () => ({ value: undefined }))
-  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }))
+  on('process.run', () => ({ value: processResult() }))
   on('process.spawn', async function* () {
     spawns += 1
     return { value: { code: null, signal: 'SIGTERM' } }
@@ -141,10 +151,10 @@ test('turns and tool calls of the main loop are reported in order, and measureme
   on('session.version', () => ({ value: { version: '2.1.287' } }))
   on('env.get', () => ({ value: undefined }))
   on('process.run', ($, e) => {
-    const { session_id, ...report } = JSON.parse(e.init.stdin)
+    const { session_id, ...report } = JSON.parse(required(e.init?.stdin))
     expect(session_id).toBe('session-1')
     reports.push(report)
-    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+    return { value: processResult() }
   })
   on('process.spawn', async function* () {
     await new Promise(() => {})
@@ -186,10 +196,10 @@ test('subagents and background shells are reported when they start, and the list
   on('session.version', () => ({ value: { version: '2.1.287' } }))
   on('env.get', () => ({ value: undefined }))
   on('process.run', ($, e) => {
-    const { session_id, ...report } = JSON.parse(e.init.stdin)
+    const { session_id, ...report } = JSON.parse(required(e.init?.stdin))
     expect(session_id).toBe('session-1')
     reports.push(report)
-    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+    return { value: processResult() }
   })
   on('process.spawn', async function* () {
     await new Promise(() => {})
@@ -212,12 +222,11 @@ test('subagents and background shells are reported when they start, and the list
   })
   await $.tool.call({ tool: 'Bash', tool_use_id: 'shell-1', command: 'until false; do sleep 5; done', run_in_background: true })
   await $.tool.call({ tool: 'Bash', tool_use_id: 'shell-2', command: 'ls' })
-  await $.turn.complete({ turnId: 'sub-turn', answer: 'Fixed.', durationMs: 1, isAborted: false, reason: 'answer', agentId: 'agent-1', usage: null })
+  await $.turn.complete({ turnId: 'sub-turn', answer: 'Fixed.', durationMs: 1, isAborted: false, reason: 'answer', agentId: 'agent-1' })
   await $.classic.Stop({
     session_id: 'session-1',
     transcript_path: '/t',
     cwd: '/work',
-    hook_event_name: 'Stop',
     stop_hook_active: false,
     background_tasks: [
       { id: 'b1', type: 'shell', status: 'running', description: 'Wait', command: 'until false; do sleep 5; done' },
@@ -249,9 +258,9 @@ test('the task list, the todo list and a started workflow are reported from the 
   on('session.version', () => ({ value: { version: '2.1.287' } }))
   on('env.get', () => ({ value: undefined }))
   on('process.run', ($, e) => {
-    const { session_id, ...report } = JSON.parse(e.init.stdin)
+    const { session_id, ...report } = JSON.parse(required(e.init?.stdin))
     reports.push(report)
-    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+    return { value: processResult() }
   })
   on('process.spawn', async function* () {
     await new Promise(() => {})
@@ -309,8 +318,8 @@ test('every submitted prompt reports who submitted it, as Claude Code names its 
   on('session.version', () => ({ value: { version: '2.1.291' } }))
   on('env.get', () => ({ value: undefined }))
   on('process.run', ($, e) => {
-    reports.push(JSON.parse(e.init.stdin))
-    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+    reports.push(JSON.parse(required(e.init?.stdin)))
+    return { value: processResult() }
   })
   on('process.spawn', async function* () {
     await new Promise(() => {})
@@ -318,9 +327,9 @@ test('every submitted prompt reports who submitted it, as Claude Code names its 
   on('prompt.submit', ($, e) => ({ text: e.text }))
 
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
-  await $.prompt.submit({ text: '[Alondra] pasted by Alice', origin: { kind: 'composer' } })
-  await $.prompt.submit({ text: 'from the phone', origin: { kind: 'bridge' } })
-  await $.prompt.submit({ text: 'one more thing', origin: { kind: 'plugin', name: 'alondra', asUser: true } })
+  await $.prompt.submit({ text: '[Alondra] pasted by Alice', origin: { kind: 'composer' }, wait: false })
+  await $.prompt.submit({ text: 'from the phone', origin: { kind: 'bridge' }, wait: false })
+  await $.prompt.submit({ text: 'one more thing', origin: { kind: 'plugin', name: 'alondra', asUser: true }, wait: false })
   await settle()
 
   expect(reports.filter((report) => report.event === 'prompt.submit')).toEqual([
@@ -339,17 +348,18 @@ test('a pushed message is submitted to the session and then acknowledged by id',
   on('session.version', () => ({ value: { version: '2.1.287' } }))
   on('env.get', () => ({ value: undefined }))
   on('process.run', ($, e) => {
-    if (e.argv.includes('ack')) acks.push({ argv: e.argv, stdin: e.init.stdin })
-    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+    if (e.argv.includes('ack')) acks.push({ argv: e.argv, stdin: required(e.init?.stdin) })
+    return { value: processResult() }
   })
   on('process.spawn', async function* () {
     yield* pushed(
       { id: 'o-1', text: 'Alice says hi', as_user: true },
       { id: 'd-2', text: 'A notice', as_user: false },
+      { id: 'd-3', text: 'A default notice' },
     )
   })
   on('prompt.submit', ($, e) => {
-    submits.push({ text: e.text, asUser: e.origin.asUser === true })
+    submits.push({ text: e.text, asUser: e.origin.kind === 'plugin' && e.origin.asUser === true })
     return { text: e.text }
   })
 
@@ -359,12 +369,14 @@ test('a pushed message is submitted to the session and then acknowledged by id',
   expect(submits).toEqual([
     { text: 'Alice says hi', asUser: true },
     { text: 'A notice', asUser: false },
+    { text: 'A default notice', asUser: false },
   ])
   expect(acks.map((ack) => ack.argv.slice(-3))).toEqual([
     ['node', 'ack', 'o-1'],
     ['node', 'ack', 'd-2'],
+    ['node', 'ack', 'd-3'],
   ])
-  expect(JSON.parse(acks[0].stdin)).toEqual({ session_id: 'session-1' })
+  expect(JSON.parse(required(acks[0]).stdin)).toEqual({ session_id: 'session-1' })
 })
 
 test('a message waiting for an idle session does not hold up the next one, and a resend is acknowledged without a second submit', async ($, on) => {
@@ -377,8 +389,8 @@ test('a message waiting for an idle session does not hold up the next one, and a
   on('session.version', () => ({ value: { version: '2.1.287' } }))
   on('env.get', () => ({ value: undefined }))
   on('process.run', ($, e) => {
-    if (e.argv.includes('ack')) acks.push(e.argv[e.argv.length - 1])
-    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+    if (e.argv.includes('ack')) acks.push(required(e.argv.at(-1)))
+    return { value: processResult() }
   })
   on('process.spawn', async function* () {
     connections += 1
@@ -414,7 +426,7 @@ test('an interrupt aborts the running turn by its id, and does nothing between t
   on('session.id', () => ({ value: 'session-1' }))
   on('session.version', () => ({ value: { version: '2.1.287' } }))
   on('env.get', () => ({ value: undefined }))
-  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }))
+  on('process.run', () => ({ value: processResult() }))
   on('process.spawn', async function* () {
     yield { stream: 'stdout' as const, text: 'connected\n' }
     yield { stream: 'stdout' as const, text: '{"interrupt":true}\n' }
@@ -440,9 +452,9 @@ test('an interrupt aborts the running turn by its id, and does nothing between t
 type Delivery = { submits: string[]; acks: string[]; push: (line: Record<string, unknown>) => void }
 
 async function startDelivering(
-  $: Parameters<Parameters<typeof test>[1]>[0],
-  on: Parameters<Parameters<typeof test>[1]>[1],
-  tool: (e: { tool: string }) => Record<string, unknown> = () => ({ result: 'ok' }),
+  $: Parameters<TestBody>[0],
+  on: Parameters<TestBody>[1],
+  tool: (e: { tool: string }) => ToolCallResult | Promise<ToolCallResult> = () => ({ result: 'ok' }),
 ): Promise<Delivery> {
   mock.clock(on)
   const delivery: Delivery = { submits: [], acks: [], push: () => {} }
@@ -457,8 +469,8 @@ async function startDelivering(
   on('session.version', () => ({ value: { version: '2.1.287' } }))
   on('env.get', () => ({ value: undefined }))
   on('process.run', ($, e) => {
-    if (e.argv.includes('ack')) delivery.acks.push(e.argv[e.argv.length - 1])
-    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+    if (e.argv.includes('ack')) delivery.acks.push(required(e.argv.at(-1)))
+    return { value: processResult() }
   })
   on('process.spawn', async function* () {
     yield { stream: 'stdout' as const, text: 'connected\n' }
@@ -484,7 +496,7 @@ const ANSWER = '[From Alice · 11:37] funciona, aunque hay que quitar el onboard
 test('an answer that arrives while a long build runs reaches the model with that build result and only then counts as read', async ($, on) => {
   let finishBuild: () => void = () => {}
   const build = new Promise<void>((resolve) => (finishBuild = resolve))
-  const delivery = await startDelivering($, on, (e) => (e.tool === 'Bash' ? build.then(() => ({ result: 'Build finished' })) : { result: 'ok' }) as never)
+  const delivery = await startDelivering($, on, (e) => (e.tool === 'Bash' ? build.then(() => ({ result: 'Build finished' })) : { result: 'ok' }))
   await $.turn.start({ text: 'go', turnId: 'turn-1' })
 
   const running = $.tool.call({ tool: 'Bash', tool_use_id: 'build', command: 'make device', timeout: 600000 } as never)
