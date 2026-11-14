@@ -625,7 +625,8 @@ fn inbox_lists_one_row_per_card_with_its_kind_glyph_and_meta_on_the_right() {
     app.sel = Some(Key("a98d034b-249e-4487-a89b-57de38c26372".into()));
     let screen = rendered(&mut app, 120, 24);
     dump("inbox: one row per card", &screen);
-    assert!(screen.contains("WAITING FOR YOU 5"), "{screen}");
+    assert!(screen.contains("WAITING FOR YOU 3"), "{screen}");
+    assert!(screen.contains("TO READ 2"), "a card that is only read is listed apart: {screen}");
     let welcome = lines_with(&screen, "Choose the welcome copy");
     assert!(welcome[0].contains("▌? Choose the welcome copy"), "{welcome:?}");
     assert!(screen.contains("▌  Restore the native review experience · De…"), "meta that does not fit beside goes whole below: {screen}");

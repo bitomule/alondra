@@ -325,7 +325,7 @@ impl DomainState {
         let generation = self.accounts.iter().find(|account| account.provider == key.provider && account.id == key.account).map_or(1, |account| account.sign_ins + 1);
         let mut card = hold_card(id.clone(), task, key.provider, hold, hold.system_card(resets_at), revision);
         card.card.cause = Some(credential_cause(&key, generation));
-        self.interactions.insert(id.clone(), card);
+        self.insert_system_card(card)?;
         if announce {
             effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: id });
         }

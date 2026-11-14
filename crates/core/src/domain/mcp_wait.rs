@@ -135,7 +135,7 @@ impl DomainState {
         let card = card.clone();
         let announce = self.mcp_waiting_for(&key).is_empty();
         let revision = self.revision + 1;
-        self.interactions.insert(card.clone(), mcp_card(card.clone(), task_id, &key, revision));
+        self.insert_system_card(mcp_card(card.clone(), task_id, &key, revision))?;
         if announce {
             effects.push(DomainEffect::NotifyUser { task_id: Some(task_id.clone()), interaction_id: card });
         }

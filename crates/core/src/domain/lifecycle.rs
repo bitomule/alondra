@@ -1578,11 +1578,11 @@ impl DomainState {
             match end {
                 None => {
                     let why = owed.unwrap_or_else(|| self.empty_turn(task));
-                    self.open_stall_on(task, card, why, effects);
+                    self.open_stall_on(task, card, why, effects)?;
                 }
                 Some(end) => {
                     let title = self.tasks[task].title.clone();
-                    self.interactions.insert(card.clone(), turn_ended_card(card.clone(), task, &title, end, SystemCard::TurnEnded, self.revision + 1));
+                    self.insert_system_card(turn_ended_card(card.clone(), task, &title, end, SystemCard::TurnEnded, self.revision + 1))?;
                     effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
                 }
             }
@@ -1654,7 +1654,7 @@ impl DomainState {
             let text = wake.as_ref().map(|_| self.empty_turn(&task).wake_text_at(wakes));
             self.decide(lifecycles, &task, LifecycleRecord::AwaitEnded { unheard_card: card.clone(), text, wake, stalled: true })?;
             if self.lifecycle(lifecycles, &task)?.cards().iter().any(|(required, _)| **required == card) {
-                self.open_stall(&task, card, effects);
+                self.open_stall(&task, card, effects)?;
             }
         }
         Ok(())
@@ -1978,7 +1978,7 @@ impl DomainState {
             } else {
                 session_ended_card(card.clone(), task, &title, if looped { SESSION_ENDED_AGAIN_WHY } else { SESSION_ENDED_WHY }, self.revision + 1)
             };
-            self.interactions.insert(card.clone(), ended);
+            self.insert_system_card(ended)?;
             effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
         }
         if !resumed {
@@ -2002,7 +2002,7 @@ impl DomainState {
         let text = wake.as_ref().map(|_| told);
         self.decide(lifecycles, task, LifecycleRecord::Unfinished { unheard_card: card.clone(), text, wake })?;
         if self.lifecycle(lifecycles, task)?.cards().iter().any(|(required, _)| **required == card) {
-            self.open_stall(task, card, effects);
+            self.open_stall(task, card, effects)?;
         }
         Ok(())
     }
@@ -2048,7 +2048,7 @@ impl DomainState {
             let mut lost = host_lost_card(card.clone(), task, &title, reason, self.revision + 1);
             lost.order = order;
             lost.system_card = self.interactions[&card].system_card.clone();
-            self.interactions.insert(card.clone(), lost);
+            self.insert_system_card(lost)?;
             if !quiet {
                 effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
             }
@@ -2056,7 +2056,7 @@ impl DomainState {
         }
         let card = InteractionId(format!("{HOST_LOST_PREFIX}{task}-{}", self.revision + 1));
         self.decide(lifecycles, task, LifecycleRecord::Paused { card: card.clone(), owner: Some(PauseOwner::User) })?;
-        self.interactions.insert(card.clone(), host_lost_card(card.clone(), task, &title, reason, self.revision + 1));
+        self.insert_system_card(host_lost_card(card.clone(), task, &title, reason, self.revision + 1))?;
         if !quiet {
             effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
         }
@@ -2125,7 +2125,7 @@ impl DomainState {
         let unheard_card = InteractionId(format!("{STALLED_PREFIX}{}", card.0.trim_start_matches(DROPPED_PREFIX)));
         self.decide(lifecycles, task, LifecycleRecord::DroppedDiscarded { card: card.clone(), unheard_card: unheard_card.clone(), stalled: true })?;
         if self.lifecycle(lifecycles, task)?.cards().iter().any(|(held, _)| **held == unheard_card) {
-            self.open_stall(task, unheard_card, effects);
+            self.open_stall(task, unheard_card, effects)?;
         }
         Ok(())
     }
@@ -2164,7 +2164,7 @@ impl DomainState {
         self.decide(lifecycles, task, record)?;
         if self.lifecycle(lifecycles, task)?.cards().iter().any(|(held, _)| **held == unheard_card) {
             let title = self.tasks[task].title.clone();
-            self.interactions.insert(unheard_card.clone(), session_ended_card(unheard_card, task, &title, SESSION_ENDED_WHY, self.revision + 1));
+            self.insert_system_card(session_ended_card(unheard_card, task, &title, SESSION_ENDED_WHY, self.revision + 1))?;
         }
         Ok(())
     }

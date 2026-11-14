@@ -545,7 +545,7 @@ impl DomainState {
     fn hold_node_pause(&mut self, task: &TaskId, card: InteractionId, owner: alondra_domain::Owner, system: SystemCard, lifecycles: &mut Lifecycles) -> Result<()> {
         self.decide(lifecycles, task, super::LifecycleRecord::Paused { card: card.clone(), owner: Some(owner.into()) })?;
         let title = self.tasks[task].title.clone();
-        self.interactions.insert(card.clone(), node_pause_interaction(card, task, &title, system, self.revision + 1));
+        self.insert_system_card(node_pause_interaction(card, task, &title, system, self.revision + 1))?;
         Ok(())
     }
 

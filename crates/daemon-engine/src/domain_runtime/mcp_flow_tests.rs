@@ -180,42 +180,47 @@ fn problems(fixture: &Fixture) -> Vec<Interaction> {
         .filter(|i| i.card.kind == CardKind::Problem).collect()
 }
 
+fn refused_notices(fixture: &Fixture) -> Vec<Interaction> {
+    fixture.runtime.state().unwrap().interactions.values().cloned()
+        .filter(|i| matches!(i.system_card, Some(SystemCard::RefusedCards { .. }))).collect()
+}
+
+/// Case 4 of the card audit: «… is stuck: Alondra refused its card» reached the user. The
+/// orchestrator hears of it, and tells the node what to change.
 #[test]
-fn three_rejections_of_the_same_card_raise_a_problem() {
+fn three_rejections_of_the_same_card_tell_the_orchestrator_never_the_user() {
     let mut fixture = Fixture::new();
     fixture.task("t1", false);
     let one_option = json!([{"id":"a", "label":"Atlas"}]);
     for _ in 0..2 {
         assert_eq!(domain_code(fixture.agent(decision("stuck", "t1", one_option.clone())).unwrap_err()), "invalid_input");
     }
-    assert!(problems(&fixture).is_empty(), "two rejections are still the node's to fix");
+    assert!(refused_notices(&fixture).is_empty(), "two rejections are still the node's to fix");
     assert_eq!(domain_code(fixture.agent(decision("stuck", "t1", one_option.clone())).unwrap_err()), "invalid_input",
         "a rejection stays a rejection: it never becomes an answer");
-    let raised = problems(&fixture);
-    assert_eq!(raised.len(), 1);
-    let problem = &raised[0];
-    assert_eq!(problem.author, Author::System);
-    assert_eq!(problem.scope, Scope::Task { task_id: "t1".into() });
-    assert!(problem.card.effective_title().contains("Fixture agent"), "{}", problem.card.effective_title());
-    assert!(problem.card.why.contains("options") && problem.card.why.contains("invalid_input"), "{}", problem.card.why);
-    assert!(problem.body.contains("3 times") && problem.body.contains("stuck"), "{}", problem.body);
-    assert!(problem.card.content.as_ref().is_some_and(|c| c.kind == ContentKind::Diagnosis));
+    let told = refused_notices(&fixture);
+    assert_eq!(told.len(), 1);
+    let notice = &told[0];
+    assert_eq!((&notice.author, &notice.recipient), (&Author::System, &Recipient::Orchestrator));
+    assert!(matches!(notice.payload, InteractionPayload::Information { .. }));
+    assert!(notice.body.contains("Fixture agent") && notice.body.contains("3 times") && notice.body.contains("invalid_input"), "{}", notice.body);
+    assert!(problems(&fixture).is_empty(), "the user gets no card for it");
     assert!(!fixture.runtime.state().unwrap().interactions.contains_key(&"stuck".into()), "the refused card was never created");
     fixture.agent(decision("stuck", "t1", one_option)).unwrap_err();
-    assert_eq!(problems(&fixture).len(), 1, "one Problem per stuck card");
+    assert_eq!(refused_notices(&fixture).len(), 1, "one notice per stuck card");
 }
 
 #[test]
-fn the_node_asking_after_a_stuck_problem_withdraws_it() {
+fn the_node_asking_after_it_was_stuck_withdraws_the_notice() {
     let mut fixture = Fixture::new();
     fixture.task("t1", false);
     let one_option = json!([{"id":"a", "label":"Atlas"}]);
     for _ in 0..3 {
         fixture.agent(decision("stuck", "t1", one_option.clone())).unwrap_err();
     }
-    assert!(problems(&fixture).iter().all(|p| !p.withdrawn) && problems(&fixture).len() == 1);
+    assert!(refused_notices(&fixture).iter().all(|p| !p.withdrawn) && refused_notices(&fixture).len() == 1);
     fixture.agent(decision("other-card", "t1", names())).unwrap();
-    assert!(problems(&fixture).iter().all(|p| p.withdrawn), "the node is handling it: the Problem is a duplicate card");
+    assert!(refused_notices(&fixture).iter().all(|p| p.withdrawn), "the node is handling it");
 }
 
 #[test]
@@ -226,7 +231,7 @@ fn rejections_of_different_cards_or_broken_by_a_success_do_not_add_up() {
     for id in ["first", "second", "third"] {
         fixture.agent(decision(id, "t1", one_option.clone())).unwrap_err();
     }
-    assert!(problems(&fixture).is_empty(), "three different cards are three different mistakes");
+    assert!(refused_notices(&fixture).is_empty(), "three different cards are three different mistakes");
     for _ in 0..2 {
         fixture.agent(decision("fixed", "t1", one_option.clone())).unwrap_err();
     }
@@ -234,7 +239,7 @@ fn rejections_of_different_cards_or_broken_by_a_success_do_not_add_up() {
     for _ in 0..2 {
         fixture.agent(decision("fixed", "t1", names())).unwrap_err();
     }
-    assert!(problems(&fixture).is_empty(), "a card that went through starts the count again");
+    assert!(refused_notices(&fixture).is_empty(), "a card that went through starts the count again");
 }
 
 #[test]

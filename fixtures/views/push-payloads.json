@@ -33,7 +33,7 @@
             "body": "The lexer split is ready and its tests pass.",
             "title": "Merge the question parser?"
           },
-          "badge": 4,
+          "badge": 3,
           "category": "ALONDRA_PUSH",
           "interruption-level": "active",
           "mutable-content": 1,
@@ -75,7 +75,7 @@
             "body": "The lexer split is ready and its tests pass.",
             "title": "Merge the action_request parser?"
           },
-          "badge": 4,
+          "badge": 3,
           "category": "ALONDRA_PUSH",
           "interruption-level": "time-sensitive",
           "mutable-content": 1,
@@ -111,7 +111,7 @@
             "body": "The lexer split is ready and its tests pass.",
             "title": "Merge the information parser?"
           },
-          "badge": 4,
+          "badge": 3,
           "category": "ALONDRA_PUSH",
           "interruption-level": "passive",
           "mutable-content": 1,
@@ -142,7 +142,7 @@
             "body": "The lexer split is ready and its tests pass.",
             "title": "Merge the delivery_text parser?"
           },
-          "badge": 4,
+          "badge": 3,
           "category": "ALONDRA_PUSH",
           "interruption-level": "active",
           "mutable-content": 1,
@@ -174,7 +174,7 @@
             "body": "The lexer split is ready and its tests pass.",
             "title": "Merge the delivery_pull_request parser?"
           },
-          "badge": 4,
+          "badge": 3,
           "category": "ALONDRA_PUSH",
           "interruption-level": "active",
           "mutable-content": 1,
@@ -216,7 +216,7 @@
             "body": "It rewrites a few files in core views.",
             "title": "Allow extracting the waiting-items helper"
           },
-          "badge": 4,
+          "badge": 3,
           "category": "ALONDRA_PUSH",
           "interruption-level": "time-sensitive",
           "mutable-content": 1,

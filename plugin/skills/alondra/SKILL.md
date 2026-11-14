@@ -35,7 +35,9 @@ answer_clarification with text, title and need are explicit and text is the cont
 This applies to ask, request_input, request_action, request_test,
 raise_problem, present_result and every other card producer available to your role.
 Each entry in ask.questions has its own title and question (its need), why and options.
-For a result, title names what changed and need asks to review it. For a native plan,
+For a result, title names what changed; Alondra writes its need from its type («Review the
+result», «Review the plan», «Read this update») and ignores one you send, so a result can never
+ask for a decision: a decision is an `ask`. For a native plan,
 the task title provides the card heading: write the plan body without an opening
 heading that repeats that title. Start with the proposal or a section heading.
 
@@ -56,6 +58,15 @@ card in the user's language (title, need, why, content, attachment names) and se
 the same `interaction_id` and the `language` the refusal names. Never change only the declared
 language: the text must really be in it.
 
+
+## Every card has a contract
+
+Each kind of card has a contract the domain checks before the card exists: who sends it, who reads
+it, which fields it carries, and that a card that asks for something offers at least one option
+that changes something (opening a link never counts). A card that breaks it is refused with code
+`card_contract`, the field, and the rule it broke in `contract.rule`: `creator` (not yours to send),
+`reader` (it goes to someone else), `kind`, `no_decision` (add a real option, or make it an `ask`),
+`read_only` (a notice never blocks), `required` (add the field) or `shape` (its length or lines).
 
 ## Never deploy
 
@@ -110,7 +121,8 @@ choose, for example `t-12-result-1`. A retry with the same `interaction_id` neve
 card. When a call fails, nothing was recorded and the reply says why. If it says Alondra could
 not be reached, do not proceed: retry the same call. If Alondra refused it, the reply names the
 field and how to fix it: fix it and send it again. A refusal is never an answer or a permission,
-and sending the same refused card three times raises a Problem for the user instead.
+and sending the same refused card three times tells the orchestrator, which tells you what to
+change: it never reaches the user.
 
 A tool's arguments are exactly its schema: never add a field it does not have (`title`, `need`, `why` and
 `content` go at the top level, there is no `card`), and send an object or a list as JSON itself,

@@ -30,7 +30,7 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
         Client::Ios => {
             let card_ids: Vec<String> = roots.iter().map(|item| public_id(item).to_owned()).collect();
             let card_waits = roots.iter().map(|item| waits_for(item).to_owned()).collect();
-            let count = card_ids.len() as u32;
+            let count = roots.iter().filter(|item| asks(item)).count() as u32;
             (
                 vec![Section {
                     id: "queue".into(),
@@ -55,20 +55,25 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
             )
         }
         Client::Tui => {
-            let mut items = vec![];
+            let (mut waiting, mut to_read) = (vec![], vec![]);
             for item in &roots {
-                items.push(Item::Card(from_item(item, context, false)?));
+                let card = Item::Card(from_item(item, context, false)?);
+                if asks(item) { waiting.push(card) } else { to_read.push(card) }
             }
-            let mut sections = vec![Section {
-                id: "waiting".into(),
-                title: Some(t!(context.lang, "Waiting for You", "Te espera").into()),
+            let section = |id: &str, title: &str, items: Vec<Item>| Section {
+                id: id.into(),
+                title: Some(title.into()),
                 count: Some(items.len() as u32),
                 collapsed: false,
                 items,
                 card_ids: vec![],
                 card_waits: vec![],
                 more: None, style: None, actions: vec![],
-            }];
+            };
+            let mut sections = vec![
+                section("waiting", t!(context.lang, "Waiting for You", "Te espera"), waiting),
+                section("to_read", t!(context.lang, "To read", "Por leer"), to_read),
+            ];
             sections.retain(|section| !section.items.is_empty());
             let detail = match roots.first() {
                 Some(first) => Some(from_item(first, context, true)?),
@@ -121,7 +126,17 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
         summary: None,
     })
 }
-/// What a waiting card asks of the user: an answer ("question") or only to be read ("read").
+/// What a waiting card asks of the user: an answer ("question"), to review a delivery ("review")
+/// or only to be read ("read").
 pub(super) fn waits_for(item: &InboxItem) -> &'static str {
-    if matches!(item.kind.as_str(), "question" | "action_request" | "permission" | "plan") { "question" } else { "read" }
+    match item.kind.as_str() {
+        "question" | "action_request" | "permission" | "plan" => "question",
+        "information" => "read",
+        _ => "review",
+    }
+}
+/// Whether the card asks the user for something, by its type's contract: a card that is only
+/// read is listed apart and never counts on the app's icon.
+pub(super) fn asks(item: &InboxItem) -> bool {
+    waits_for(item) != "read"
 }

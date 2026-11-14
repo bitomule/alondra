@@ -32,6 +32,8 @@ mod task_state;
 mod tasks;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod card_contract_tests;
 pub mod text;
 
 pub use components::*;
@@ -136,9 +138,10 @@ impl RenderContext<'_> {
         !request.closed && self.index.tasks_of_request(&request.id).is_empty()
     }
 }
-/// The app icon badge: the same count as the Waiting for You queue and `Status::badge`.
+/// The app icon badge: the cards of the Waiting for You queue that ask the user for something, as
+/// `Status::badge` counts them; a card that is only read never counts.
 pub fn inbox_badge(index: &crate::domain::ReadIndex) -> u32 {
-    index.cards().len() as u32
+    index.cards().iter().filter(|item| home::asks(item)).count() as u32
 }
 /// The counts the status header and the phone's Live Activity show, so they never differ: the index's, with a paused
 /// task the gate queues counted as queued, as the list says it.

@@ -354,7 +354,8 @@ fn orchestrator_questions_to_the_user_wait_in_home() {
         "2026-09-30T10:00:00Z",
     );
     assert!(view.sections[0].card_ids.contains(&"i-4".to_owned()));
-    assert_eq!(view.status.badge, view.sections[0].card_ids.len() as u32);
+    let asking = view.sections[0].card_waits.iter().filter(|wait| *wait != "read").count();
+    assert_eq!(view.status.badge, asking as u32, "a card that is only read never counts on the icon");
     assert_eq!(
         view.status.summary,
         "2 questions · 2 to read · 0 tasks working"
@@ -391,9 +392,9 @@ fn the_header_says_tasks_working_never_nodes() {
 fn icon_badge_counts_what_waits_in_home() {
     let state = fixture();
     let home = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "home", "2026-09-30T10:00:00Z");
-    assert_eq!(inbox_badge(&state), 4, "the orchestrator's question to the user is the user's");
+    assert_eq!(inbox_badge(&state), 3, "the orchestrator's question to the user is the user's; the notice is only read");
     assert_eq!(inbox_badge(&state), home.status.badge);
-    assert_eq!(inbox_badge(&state), home.sections[0].card_ids.len() as u32);
+    assert_eq!(inbox_badge(&state), home.sections[0].card_waits.iter().filter(|wait| *wait != "read").count() as u32);
     assert_eq!(inbox_badge(&DomainState::new("empty")), 0);
 }
 #[test]
@@ -1619,14 +1620,14 @@ fn attach_document(state: &mut DomainState) {
 }
 
 #[test]
-fn a_report_alone_offers_seen_and_request_changes_with_a_reply_to_the_node() {
+fn a_final_report_alone_offers_mark_as_done_and_request_changes_with_a_reply_to_the_node() {
     let mut state = fixture();
     state.interactions.get_mut(&"i-3".into()).unwrap().author = Author::Agent { agent_id: "a-1".into() };
     let card = decidable_card(&state, Lang::En, "i-3");
     assert_eq!(card.kind, Some(crate::domain::CardKind::Review));
-    let seen = card.actions.iter().find(|action| action.label == "Seen").expect("seen");
-    assert_eq!((seen.style, seen.role), (Style::Primary, Some(Role::Advance)));
-    assert_eq!(seen.stamp.as_deref(), Some("Seen"));
+    let done = card.actions.iter().find(|action| action.label == "Mark as done").expect("accepting it closes the task, and says so");
+    assert_eq!((done.style, done.role), (Style::Primary, Some(Role::Advance)));
+    assert_eq!(done.stamp.as_deref(), Some("Done"));
     assert!(card.actions.iter().all(|action| action.label != "Request changes"), "the field asks for changes");
     let changes = card.reply.as_ref().expect("the card's field");
     assert_eq!(changes.label.as_str(), "Request changes");
@@ -1665,7 +1666,7 @@ fn a_delivery_carrying_a_claude_artifact_asks_for_changes_in_a_sheet_with_commen
     let changes = card.reply.as_ref().filter(|action| action.label == "Request changes").expect("request changes");
     assert!(matches!(&changes.input, Input::Text { placeholder, .. } if placeholder == "Describe the changes"));
     assert!(changes.comments.is_none(), "an artifact on claude.ai has no blocks to comment here");
-    assert!(card.actions.iter().any(|action| action.label == "Seen" && action.style == Style::Primary));
+    assert!(card.actions.iter().any(|action| action.label == "Mark as done" && action.style == Style::Primary));
 }
 
 #[test]
@@ -5986,10 +5987,10 @@ fn an_answer_waits_in_every_inbox_after_its_request_closes() {
     let live = LiveSnapshot::default();
     let ios = render(&state, &live, Client::Ios, Lang::Es, "home", "");
     assert_eq!(ios.sections[0].card_ids, vec!["a7efd99d-answer".to_owned()]);
-    assert_eq!(ios.status.badge, 1);
-    assert_eq!(inbox_badge(&state), 1);
+    assert_eq!(ios.status.badge, 0, "the answer is only read: it never counts on the icon");
+    assert_eq!(inbox_badge(&state), 0);
     let tui = render(&state, &live, Client::Tui, Lang::En, "home", "");
-    let waiting = tui.sections.iter().find(|section| section.id == "waiting").unwrap();
+    let waiting = tui.sections.iter().find(|section| section.id == "to_read").unwrap();
     assert!(matches!(waiting.items.as_slice(), [Item::Card(card)] if card.id == "a7efd99d-answer"));
     let sidebar = render(&state, &live, Client::Mac, Lang::En, "sidebar", "");
     assert!(serde_json::to_string(&sidebar).unwrap().contains("a7efd99d-answer"));
@@ -6507,7 +6508,7 @@ fn the_waiting_header_counts_exactly_the_cards_the_inbox_lists_and_each_one_open
             assert_eq!(queue.card_waits.len(), queue.card_ids.len(), "{name}: every card says what it waits for");
             let questions = queue.card_waits.iter().filter(|wait| *wait == "question").count();
             assert_eq!(home.status.summary.starts_with(&format!("{questions} ")), questions > 0, "{name}: {}", home.status.summary);
-            assert_eq!(home.status.badge as usize, queue.card_ids.len(), "{name}");
+            assert_eq!(home.status.badge as usize, queue.card_waits.iter().filter(|wait| *wait != "read").count(), "{name}");
             for id in &queue.card_ids {
                 let domain = with_cards(state);
                 let index = crate::domain::ReadIndex::build(&domain);
@@ -7540,7 +7541,7 @@ fn a_result_that_proposes_a_plan_is_a_plan_card_with_its_report_as_a_document() 
 }
 
 #[test]
-fn a_report_alone_is_only_marked_seen() {
+fn a_report_alone_closes_its_task_with_mark_as_done() {
     use crate::domain::{Actor, CardKind, CardSpec, Command, CommandEnvelope, ContentKind as Content, DeliveryTarget};
     let mut state = proposed_plan_fixture();
     sdk_told(&mut state, "t-1", "Deliver the report alone".into());
@@ -7552,7 +7553,7 @@ fn a_report_alone_is_only_marked_seen() {
     state.execute(&Actor::Agent { agent_id: "a-1".into() }, &envelope).unwrap();
     sdk_turn_ends(&mut state, "t-1");
     let live = LiveSnapshot::default();
-    for (lang, labels) in [(Lang::Es, ["Visto", "Pedir cambios"]), (Lang::En, ["Seen", "Request changes"])] {
+    for (lang, labels) in [(Lang::Es, ["Dar por hecha", "Pedir cambios"]), (Lang::En, ["Mark as done", "Request changes"])] {
         let view = render(&state, &live, Client::Tui, lang, "card:result-2", "");
         let card = card_of(&view);
         let actual: Vec<&str> = card.actions.iter().chain(&card.reply).map(|action| action.label.as_str()).collect();

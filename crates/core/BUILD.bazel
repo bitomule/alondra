@@ -26,7 +26,7 @@ rust_doc_test(
 low_opt_rust_test(
     name = "alondra_core_test",
     timeout = "moderate",
-    compile_data = glob(["fixtures/*.jsonl", "fixtures/*.json"]) + ["src/model_sheets.toml", "//fixtures/views:all", "//fixtures/views:cards", "//fixtures/views:metrics", "//fixtures/accounts:recorded-rows.json"],
+    compile_data = glob(["fixtures/*.jsonl", "fixtures/*.json"]) + ["src/model_sheets.toml", "//fixtures/views:all", "//fixtures/views:cards", "//fixtures/views:metrics", "//fixtures/accounts:recorded-rows.json", "//:docs/architecture/cards.md"],
     crate = ":alondra_core",
     deps = all_crate_deps(normal_dev = True),
     edition = "2024",

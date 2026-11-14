@@ -208,9 +208,9 @@ mod tests {
                 attachments: vec![], id: id.as_str().into(),
                 scope: Scope::Orchestrator { request_id: None }, author: Author::Orchestrator { generation: 1 },
                 recipient: Recipient::User, body: "Read this".into(), blocking: false, subject: None,
-                payload: InteractionPayload::Information { read_by: BTreeSet::new() },
+                payload: InteractionPayload::Question { options: vec![QuestionOption { id: "go".into(), label: "Go".into(), description: None }], answer: None },
                 revision: 1, order: order as u64 + 1, withdrawn: false,
-                card: CardSpec::new(CardKind::Know, "Read this"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+                card: CardSpec::new(CardKind::Decide, "Choose"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
             });
         }
         ReadIndex::build(&state)

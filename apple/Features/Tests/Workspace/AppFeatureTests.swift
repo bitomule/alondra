@@ -393,7 +393,7 @@ final class AppFeatureTests: XCTestCase {
         let appeared = await store.send(.appeared)
         await store.receive(\.triage.screen.loaded)
         XCTAssertEqual(store.state.triage.orderedIDs, queue)
-        XCTAssertEqual(store.state.triage.badge, 2, "the badge counts the queue without Waiting for You on screen")
+        XCTAssertEqual(store.state.triage.badge, 1, "the badge counts the queue without Waiting for You on screen, never the notice that is only read")
         await appeared.cancel()
     }
 

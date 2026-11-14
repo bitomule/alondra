@@ -286,6 +286,7 @@ checks:
     paths:
       - ".bazelrc"
       - ".bazelversion"
+      - "BUILD.bazel"
       - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
@@ -295,6 +296,7 @@ checks:
       - "crates/domain/**"
       - "crates/foundation/**"
       - "crates/test_support.rs"
+      - "docs/architecture/cards.md"
       - "fixtures/accounts/BUILD.bazel"
       - "fixtures/accounts/recorded-rows.json"
       - "fixtures/views/*.json"

@@ -309,8 +309,8 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
         tools.push(domain_tool(
             "present_result",
             &format!("Deliver the result to {user}. Finishing is always present_result, never an ask. With is_final true, {user} accepts it; Alondra merges your PRs; a pull_request target, final only, takes all open ones. With is_final false, this is a progress notice. A final result needs content: the report written out in its body, never a path or a pasted document: {user} cannot open files from the app; files go in attachments. Say what the result means for {user} in plain words, never script names, task ids or internal steps. Commit and push everything first: uncommitted, unpushed or unregistered work is refused. Answer or withdraw your pending cards first. Ask any open choices before delivering: acceptance does not answer them. For an approved plan, mark every point done in checklist with evidence. {rule}"),
-            json!({"task_id":{"type":"string"},"interaction_id":interaction["interaction_id"],"need":need_schema(),"why":why_schema(),"content":content_schema(),"targets":target,"is_final":{"type":"boolean"},"language":language_schema(),"nothing_to_review":{"type":"boolean","description":"With is_final true and only text targets: the work found nothing for the user to look at (a scheduled check with nothing open, nothing changed). The task closes in silence, without a card"},"checklist":checklist_schema(),"plan":{"type":"string","description":"Only on a final result without a pull request whose research concludes that something should be built: that plan, in Markdown, with one checklist line (- [ ] ...) per thing the implementation will deliver, and the report in content. title names the plan subject; plan holds only its content, never an opening heading repeating title. The result is then a plan card: the user reads the plan, opens the report as a document beside it, and presses Approve, which creates the tasks that build exactly this plan, or Request changes; its need asks to approve the plan, never to read the report or decide whether to build. Ask every decision the plan leaves open with ask before, never inside the plan. A research that proposes nothing to build leaves plan out: its report alone is marked Seen and creates nothing. Never put a plan only inside the report; a plan the user asked you for in your own task goes through ExitPlanMode instead"},"body":interaction["body"],"files":files_schema(),"attachments":attachments}),
-            &["task_id", "interaction_id", "need", "targets", "is_final", "language"],
+            json!({"task_id":{"type":"string"},"interaction_id":interaction["interaction_id"],"need":{"type":"string","description":"Leave it out: Alondra writes what the user does with a result from its kind (review the result, review the plan, read the update) and ignores what you send. A decision is an ask, never a result"},"why":why_schema(),"content":content_schema(),"targets":target,"is_final":{"type":"boolean"},"language":language_schema(),"nothing_to_review":{"type":"boolean","description":"With is_final true and only text targets: the work found nothing for the user to look at (a scheduled check with nothing open, nothing changed). The task closes in silence, without a card"},"checklist":checklist_schema(),"plan":{"type":"string","description":"Only on a final result without a pull request whose research concludes that something should be built: that plan, in Markdown, with one checklist line (- [ ] ...) per thing the implementation will deliver, and the report in content. title names the plan subject; plan holds only its content, never an opening heading repeating title. The result is then a plan card: the user reads the plan, opens the report as a document beside it, and presses Approve, which creates the tasks that build exactly this plan, or Request changes; its need asks to approve the plan, never to read the report or decide whether to build. Ask every decision the plan leaves open with ask before, never inside the plan. A research that proposes nothing to build leaves plan out: its report alone is marked Seen and creates nothing. Never put a plan only inside the report; a plan the user asked you for in your own task goes through ExitPlanMode instead"},"body":interaction["body"],"files":files_schema(),"attachments":attachments}),
+            &["task_id", "interaction_id", "targets", "is_final", "language"],
         ));
     }
     let withdraw_fields = json!({"interaction_id":{"type":"string"}});
@@ -1171,9 +1171,16 @@ fn explain(error: &anyhow::Error) -> String {
             "idempotency_conflict" => "That id already carries a different card: send a new interaction_id for a different card, or replaces to correct one that is still open.",
             "no_effect" => "Alondra already had what this command asks for, so it changed nothing: read the reason, check the task's state, and do not send it again expecting a different answer.",
             "delivery_review_pending" => "This is not a refusal of the card: GitHub or git is slow. Wait a few seconds, then send the same present_result again with the same interaction_id; it joins the check already running and nothing is repeated.",
-            _ => "Fix what it says and send the card again with the same interaction_id. Repeating the same refused card three times raises a Problem for the user.",
+            _ => "Fix what it says and send the card again with the same interaction_id. Repeating the same refused card three times tells the orchestrator, which tells you what to change.",
         };
-        return format!("Alondra refused it [{}]: {} Nothing was sent, and a refusal is never an answer or a permission: do not go on as if it had been granted. {guidance}", refused.code, refused.message);
+        let broke = refused.contract.as_ref().map(|breach| {
+            let rule = serde_json::to_value(breach.rule).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
+            match breach.card_type {
+                Some(card_type) => format!(" It broke the rule {rule} of the contract of a {} card, in {}.", card_type.name(), breach.field),
+                None => format!(" It broke the rule {rule} of the card contracts, in {}.", breach.field),
+            }
+        }).unwrap_or_default();
+        return format!("Alondra refused it [{}]: {}{broke} Nothing was sent, and a refusal is never an answer or a permission: do not go on as if it had been granted. {guidance}", refused.code, refused.message);
     }
     if error.chain().any(|cause| cause.downcast_ref::<ureq::Error>().is_some()) {
         return "don't proceed: could not reach Alondra; the mutation's result is unconfirmed. Inspect its durable outcome and current state before continuing; never blindly send it again or treat the lost reply as permission.".to_owned();
@@ -2731,7 +2738,7 @@ mod card_tool_tests {
             ("request_action", &["need", "why", "verify", "blocking"]),
             ("request_input", &["need", "why", "kind", "blocking"]),
             ("request_test", &["need", "where", "what"]),
-            ("present_result", &["need", "task_id", "targets", "is_final"]),
+            ("present_result", &["task_id", "targets", "is_final"]),
             ("withdraw", &["interaction_id"]),
             ("answer_clarification", &["id"]),
         ];
@@ -2741,7 +2748,8 @@ mod card_tool_tests {
                 assert!(found.iter().any(|f| f == field), "{name} must require {field}: {found:?}");
             }
         }
-        for name in ["ask", "request_action", "request_input", "request_test", "present_result"] {
+        assert!(!required(&tool(Role::Node, "present_result")).iter().any(|f| f == "need"), "Alondra writes a result's need");
+        for name in ["ask", "request_action", "request_input", "request_test"] {
             let properties = &tool(Role::Node, name)["inputSchema"]["properties"];
             assert_eq!(properties["need"]["maxLength"], 90, "{name}");
             assert_eq!(properties["need"]["minLength"], 1, "{name}");
