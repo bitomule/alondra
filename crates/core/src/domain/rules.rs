@@ -2766,6 +2766,8 @@ impl DomainState {
             | Command::RecordHostEnded { task_id, .. }
             | Command::DeferTaskMove { task_id, .. }
             | Command::AbortTaskSelection { task_id, .. }
+            | Command::RecordHostReleased { task_id, .. }
+            | Command::RecordHostRetaken { task_id, .. }
             | Command::RecordInterruptAccepted { task_id, .. }
             | Command::RecordDoubtfulHandoff { task_id, .. }
             | Command::RecordHostLost { task_id, .. }
@@ -5454,6 +5456,16 @@ impl DomainState {
                 }
                 self.end_gate_pause(task_id, lifecycles)?;
                 self.tasks.get_mut(task_id).expect("checked above").pending_selection = None;
+            }
+            Command::RecordHostReleased { task_id, generation } => {
+                system(actor)?;
+                self.task(task_id)?;
+                self.record_host_released(task_id, *generation, lifecycles)?;
+            }
+            Command::RecordHostRetaken { task_id, generation } => {
+                system(actor)?;
+                self.task(task_id)?;
+                self.record_host_retaken(task_id, *generation, lifecycles)?;
             }
             Command::AbortTaskSelection { task_id, selection, refused } => {
                 system(actor)?;

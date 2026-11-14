@@ -397,6 +397,10 @@ pub enum LifecycleRecord {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         text: Option<String>,
     },
+    /// The resting execution's host and native process closed, keeping its session.
+    HostReleased,
+    /// A host that resumes the released session took over.
+    HostRetaken,
     /// Claude accepted the interrupt of the root `turn`, which is still open.
     InterruptAccepted { turn: String },
     /// `input` was handed to a host that ended before it showed the input was read: `card` asks
@@ -624,6 +628,8 @@ fn event(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle) -> 
             unheard_card: unheard_card.clone(),
             resume: resume.as_deref().map(|input| input_id(task, input)).transpose()?,
         })?,
+        LifecycleRecord::HostReleased => Event::HostReleased,
+        LifecycleRecord::HostRetaken => Event::HostRetaken,
         LifecycleRecord::InterruptAccepted { turn } => runtime(RuntimeFact::InterruptAccepted {
             turn: TurnId::new(turn.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
         })?,
@@ -927,6 +933,8 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>, li
             resume: resume.as_ref().map(|input| input.as_str().into()),
             text: resume.as_ref().and_then(|input| texts.get(input).cloned()),
         },
+        Event::HostReleased => LifecycleRecord::HostReleased,
+        Event::HostRetaken => LifecycleRecord::HostRetaken,
         Event::Runtime { fact: RuntimeFact::InterruptAccepted { turn }, .. } => LifecycleRecord::InterruptAccepted { turn: turn.as_str().into() },
         Event::DoubtHandoff { card, input } => LifecycleRecord::HandoffDoubted { card: card.clone(), input: input.as_str().into() },
         Event::ResendUntaken { input, resend } => LifecycleRecord::HandoffResent {
@@ -2022,6 +2030,45 @@ impl DomainState {
             self.open_stall(task, card, effects)?;
         }
         Ok(())
+    }
+
+    /// The task's resting SDK execution of `generation` has no host any more: nothing changes for
+    /// the task, and its next input resumes the session.
+    pub(super) fn record_host_released(&mut self, task: &TaskId, generation: u64, lifecycles: &mut Lifecycles) -> Result<()> {
+        self.sdk_execution(task, generation, lifecycles)?;
+        self.decide(lifecycles, task, LifecycleRecord::HostReleased)
+    }
+
+    /// A host that resumes the released session of `generation` takes over.
+    pub(super) fn record_host_retaken(&mut self, task: &TaskId, generation: u64, lifecycles: &mut Lifecycles) -> Result<()> {
+        self.sdk_execution(task, generation, lifecycles)?;
+        self.decide(lifecycles, task, LifecycleRecord::HostRetaken)
+    }
+
+    /// Whether the host of `task` may close while it rests: its lifecycle keeps nothing in the host,
+    /// no pause or move holds the node, and a plan mode the resumed session would lose is not on.
+    pub fn host_releasable(&self, task: &TaskId) -> bool {
+        let Ok(lifecycle) = self.lifecycle_of(task) else { return false };
+        let paused = self.tasks.get(task).and_then(|task| task.agent_id.as_ref()).is_some_and(|agent| self.node_pause(agent).is_some());
+        lifecycle.can_release_host() && !paused && self.moving_to(task).is_none() && !self.in_plan_mode(task)
+    }
+
+    /// The last model asked of the task's execution, which a host that resumes it opens with.
+    pub fn last_model_asked(&self, task: &TaskId) -> Option<String> {
+        self.lifecycle_journal.get(task)?.iter().rev().find_map(|record| match record {
+            LifecycleRecord::ControlRequested { operation: ControlRecord::SetModel { model }, .. } => Some(Some(model.clone())),
+            LifecycleRecord::Admitted { .. } => Some(None),
+            _ => None,
+        }).flatten()
+    }
+
+    /// Whether the last permission mode asked of the task's execution is plan mode.
+    pub fn in_plan_mode(&self, task: &TaskId) -> bool {
+        self.lifecycle_journal.get(task).and_then(|journal| journal.iter().rev().find_map(|record| match record {
+            LifecycleRecord::ControlRequested { operation: ControlRecord::SetPermissionMode { mode }, .. } => Some(*mode == PermissionModeRecord::Plan),
+            LifecycleRecord::Admitted { .. } => Some(false),
+            _ => None,
+        })).unwrap_or(false)
     }
 
     /// Claude accepted the interrupt of `turn`, which is still open: from now on the user can force

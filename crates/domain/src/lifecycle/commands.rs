@@ -67,6 +67,7 @@ impl TaskLifecycle {
                     effects: BTreeSet::new(),
                     takeover: Takeover::None,
                     held: BTreeSet::new(),
+                    host_released: false,
                     inbox: match &self.state {
                         State::Unstarted { remaining, .. } | State::InProgress(Progress::Queued { remaining, .. }) => remaining.clone(),
                         State::Delivered(Delivered {
@@ -215,6 +216,18 @@ impl TaskLifecycle {
                     return Err(Refusal::CorrelationMismatch);
                 }
                 delivered.gate = DeliveryGate::Review;
+            }
+            Event::HostReleased => {
+                if !self.can_release_host() {
+                    return Err(Refusal::InvalidState);
+                }
+                self.session_mut().ok_or(Refusal::InvalidState)?.host_released = true;
+            }
+            Event::HostRetaken => {
+                if !self.host_released() {
+                    return Err(Refusal::InvalidState);
+                }
+                self.session_mut().ok_or(Refusal::InvalidState)?.host_released = false;
             }
             Event::PlanApproved => {
                 let State::InProgress(progress) = &mut self.state else {

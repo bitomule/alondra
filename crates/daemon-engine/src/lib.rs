@@ -74,6 +74,7 @@ pub mod home_renames;
 pub mod idle_compaction;
 pub mod obligation_watch;
 pub use alondra_daemon_engine_model::issues;
+pub mod idle_release;
 pub mod launch_plans;
 pub mod live;
 pub mod local_actions;

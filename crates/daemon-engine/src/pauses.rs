@@ -1,5 +1,6 @@
 //! Paused nodes and bringing them back through the gate. Memory never pauses a working node: it
-//! only holds new starts, since cutting a build that uses a lot of memory only makes it run again.
+//! only holds what starts or comes back, since cutting a build that uses a lot of memory only makes
+//! it run again.
 //! A node is paused by the user, by its own wait for the machine, for Claude usage or after an API
 //! error. A pause by the user stops it whole. A node of the Agent SDK ends its host, with its turn
 //! and every process under it, since a command left running would wake Claude, which takes that

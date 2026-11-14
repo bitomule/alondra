@@ -137,3 +137,23 @@ hold. A missing available-memory reading likewise cannot age a low byte budget o
 Memory holds open no card and do not interrupt active nodes. Admission and recovery logs include
 system and node memory, pending reserves, swap use and allocation, growth, and the disk budget.
 The existing store retention also logs its allocated bytes before and after space recovery.
+
+## A resting node holds no process
+
+A node that rests for two minutes with nothing in its host loses its host and its native process and
+keeps its session (`crates/daemon-engine/src/idle_release.rs`). The decision reads the task's
+lifecycle alone: no turn, own work, continuation, callback, effect, input or work owed after a merge,
+no pause, no move of account or provider, and no plan mode, which a resumed session would open
+without.
+
+Whatever gives the task something to do resumes the session natively. A host comes back only while
+a node slot is free, and its first turn passes the gate like any other (`may_take_turn`): with every
+slot taken, the node waits for capacity, with no card, no host and no slot of its own.
+
+The prompt cache lives on the provider's servers, so closing the process costs none of it. Measured
+on 44 138 Claude requests, a session resumed within the hour read 98-99 % of its context from the
+cache, and past the hour the cache is gone whether the process lived or not. The wait only spares the
+1 to 4 seconds of a resume to a node answered at once.
+
+A native question or plan the node waits on lives in its process, so that node stays open. A child
+process the provider never reported as work ends with the host.

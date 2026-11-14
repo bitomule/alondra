@@ -819,6 +819,16 @@ pub enum Command {
     },
     /// Claude accepted the interrupt of the root `turn` of the Task's SDK execution of
     /// `generation`, and the turn is still open.
+    /// The Task's resting SDK execution of `generation` closed its host, keeping its session.
+    RecordHostReleased {
+        task_id: TaskId,
+        generation: u64,
+    },
+    /// A host that resumes the released session of `generation` takes over.
+    RecordHostRetaken {
+        task_id: TaskId,
+        generation: u64,
+    },
     RecordInterruptAccepted {
         task_id: TaskId,
         generation: u64,

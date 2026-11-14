@@ -43,7 +43,7 @@ fn selection() -> alondra_core::model_selection::TaskSelection {
     selection.native_tool_denials=Some(vec![]);
     selection
 }
-fn launch(slice: &Slice) -> Driver { launch_selected(slice, selection()) }
+pub(super) fn launch(slice: &Slice) -> Driver { launch_selected(slice, selection()) }
 
 #[tokio::test]
 async fn a_task_created_with_a_codex_launch_plan_starts_on_codex() {
@@ -1123,7 +1123,7 @@ async fn codex_node_after_a_restart(meanwhile: impl FnOnce(&Slice)) -> (Slice, A
     (slice, restarted, owner, trace)
 }
 
-fn resumed_threads(trace: &Path) -> Vec<serde_json::Value> {
+pub(super) fn resumed_threads(trace: &Path) -> Vec<serde_json::Value> {
     transcript(trace).into_iter().filter(|message| message["method"] == "thread/resume").collect()
 }
 
@@ -1698,7 +1698,7 @@ fn stop_codex_host(pid: libc::pid_t) {
 }
 
 /// Claude signed in on its own account, with a model the moved task can run.
-fn claude_ready(slice:&Slice){
+pub(super) fn claude_ready(slice:&Slice){
     use alondra_core::model_selection::{AccountModelCatalog,CatalogModel};
     let state=slice.domain.state().unwrap();
     let mut accounts=state.accounts.clone();
@@ -1710,7 +1710,7 @@ fn claude_ready(slice:&Slice){
         models:vec![CatalogModel{model:"claude-fixture".into(),display_name:"Claude fixture".into(),reasoning_efforts:vec!["high".into()],default_reasoning_effort:Some("high".into()),context_window:Some(200_000),input_modalities:vec!["text".into()],is_default:true,hidden:false}],
     }});
 }
-fn git(worktree:&Path,arguments:&[&str])->String{
+pub(super) fn git(worktree:&Path,arguments:&[&str])->String{
     let output=std::process::Command::new("/usr/bin/git").arg("-C").arg(worktree).args(arguments).output().unwrap();
     assert!(output.status.success(),"git {arguments:?}: {}",String::from_utf8_lossy(&output.stderr));
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
@@ -1736,11 +1736,11 @@ fn working_on_codex(slice:&Slice)->AgentId{
     let source=driver.agent.clone();slice.domain.add_sdk_owner(Owner::spawn(driver));
     source
 }
-fn request_move(slice:&Slice)->serde_json::Value{
+pub(super) fn request_move(slice:&Slice)->serde_json::Value{
     let stamp=slice.domain.state().unwrap().task_selection_stamp(&TASK.into()).unwrap();
     crate::provider_transition::request_move(&slice.domain,&user(),&TASK.into(),AccountKey::native(Provider::Claude),&stamp,||Ok(())).unwrap()
 }
-async fn until_moved(slice:&Slice,changed:&mut tokio::sync::watch::Receiver<u64>){
+pub(super) async fn until_moved(slice:&Slice,changed:&mut tokio::sync::watch::Receiver<u64>){
     while !move_steps(slice).iter().any(|step|step=="done"){changed.changed().await.unwrap();}
 }
 

@@ -831,6 +831,8 @@ pub(super) enum EventRecord {
         card: String,
     },
     PlanApproved,
+    HostReleased,
+    HostRetaken,
     BlockDelivery {
         delivery: String,
         dependencies: Vec<String>,
@@ -993,6 +995,8 @@ impl From<&Event> for EventRecord {
             },
             Event::KeepQuestion { card } => Self::KeepQuestion { card: card.0.clone() },
             Event::PlanApproved => Self::PlanApproved,
+            Event::HostReleased => Self::HostReleased,
+            Event::HostRetaken => Self::HostRetaken,
             Event::BlockDelivery {
                 delivery,
                 dependencies,
@@ -1138,6 +1142,8 @@ impl EventRecord {
             Self::MoveCard { .. } => "MoveCard",
             Self::KeepQuestion { .. } => "KeepQuestion",
             Self::PlanApproved => "PlanApproved",
+            Self::HostReleased => "HostReleased",
+            Self::HostRetaken => "HostRetaken",
             Self::BlockDelivery { .. } => "BlockDelivery",
             Self::DeliveryUnblocked { .. } => "DeliveryUnblocked",
             Self::Present { .. } => "Present",
@@ -1212,6 +1218,8 @@ impl EventRecord {
             },
             EventRecord::KeepQuestion { card } => Event::KeepQuestion { card: InteractionId(card) },
             EventRecord::PlanApproved => Event::PlanApproved,
+            EventRecord::HostReleased => Event::HostReleased,
+            EventRecord::HostRetaken => Event::HostRetaken,
             EventRecord::BlockDelivery {
                 delivery,
                 dependencies,
@@ -1490,6 +1498,8 @@ mod tests {
             },
         );
         roundtrip(&current, Event::PlanApproved);
+        roundtrip(&current, Event::HostReleased);
+        roundtrip(&current, Event::HostRetaken);
         roundtrip(
             &current,
             Event::BlockDelivery {

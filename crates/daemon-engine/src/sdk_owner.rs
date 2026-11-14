@@ -191,6 +191,14 @@ pub struct Driver {
     /// The node rests on a host a daemon of another release launched: a host of this release that
     /// resumes the same session takes its place.
     moves_to_this_release: bool,
+    /// The node rests with nothing in its host: the host closes and no other takes its place until
+    /// the task has something to do.
+    releases: bool,
+    /// This host resumes a released session and has not been handed its work yet: since when.
+    resuming_since: Option<Instant>,
+    /// This host resumes a released session that has not started a turn: what it was handed may
+    /// not have been read.
+    resumes_released: bool,
     /// This replacement was handed an input and did not take it: its end is watched and its place
     /// taken by another host after `relaunch_wait`.
     untaken: bool,
@@ -723,6 +731,7 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
 #[allow(clippy::too_many_arguments)]
 fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: Option<&std::path::Path>, relaunch: bool, end_refused: bool, explicit_account_retry:bool, claimed: &mut Option<alondra_agent_runtime::owned_host::EndedHost>) -> Result<Option<Driver>, Failed> {
     let _in_hand = InHand::new(&domain, &task);
+    let taken_at = Instant::now();
     if relaunch { crate::account_move::require_started_destination(&domain,&task).map_err(Failed::new)?; }
     let base_backend = backend;
     let state = domain.state().map_err(|error| Failed::new(format!("reading the domain: {error:#}")))?;
@@ -745,6 +754,9 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
     let stamp = adoption.stamp;
     let mut options = LaunchOptions::load(&backend.state_root.join(stamp.instance().as_str()))?;
     options.provider = provider;
+    if let Some(model) = state.last_model_asked(&task) {
+        options.model = Some(model);
+    }
     let profile = plugin.map(|plugin| worker_profile(plugin, &options, &adoption.directory)).transpose()?;
     let on_account = &on_account_provider(&domain, backend, Provider::from_driver(grant.binding().driver()).ok_or_else(|| Failed::new("unknown execution provider".into()))?, &account_of(grant.binding()))?;
     let mut worker = Worker::configured(grant.binding().clone(), configuration(on_account, grant.binding(), &adoption.directory, stamp.instance().as_str(), false, profile)?)
@@ -869,6 +881,10 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
         domain.own(scope.clone(), |owner| owner.resolve_control(&stamp, control.id, owner_generation, receipt)).map_err(failed("resolving a control"))?;
     }
     let generation = stamp.generation();
+    let retaken = {
+        let read = domain.read();
+        relaunch && read.state().moving_to(&task).is_none() && read.state().lifecycle_of(&task).is_ok_and(|lifecycle| lifecycle.host_released())
+    };
     let ended_work = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?.0
         .checkpoint().map(|checkpoint| worker.background_left(checkpoint.bytes())).unwrap_or_default();
     domain.own(scope.clone(), |owner| {
@@ -887,7 +903,12 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
             expected_revision: 0,
             command,
         };
-        owner.stage_command(&Actor::System, &envelope("ended".into(), Command::RecordHostEnded { task_id: task.clone(), generation, resumes: relaunch, ended_work: ended_work.clone(), by_alondra }), Attached::None)?;
+        let ended = if retaken {
+            Command::RecordHostRetaken { task_id: task.clone(), generation }
+        } else {
+            Command::RecordHostEnded { task_id: task.clone(), generation, resumes: relaunch, ended_work: ended_work.clone(), by_alondra }
+        };
+        owner.stage_command(&Actor::System, &envelope("ended".into(), ended), Attached::None)?;
         let doubted: Vec<InputId> = owner.lifecycle(&task)?.doubts().into_iter().map(|(_, input)| input.clone()).collect();
         for (input, status) in owner.pending_handoffs(&task)? {
             let (id, text) = (input.id().as_str().to_owned(), input.text().to_owned());
@@ -912,7 +933,10 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
     let capability = domain.bind_agent(&agent.0).map_err(failed("issuing the node's capability"))?;
     let environment = node_environment(domain.home(), &agent, capability.expose_for_child_environment());
     domain.own(scope.clone(),|owner|owner.require_native_identity(grant.binding(),identity.as_ref())).map_err(failed("Alondra cannot resume this session"))?;
-    worker.relaunch(grant, adapter_state, base, resume, environment).map_err(|error| Failed::new(format!("its new host could not start ({error:?})")))?;
+    worker.relaunch(grant, adapter_state, base, resume, retaken, environment).map_err(|error| Failed::new(format!("its new host could not start ({error:?})")))?;
+    if retaken && adoption.receipt_candidates.is_empty() && let Some(archive) = worker.retired_host() && let Err(error) = std::fs::remove_dir_all(&archive) {
+        log!("could not remove the folder of the released host of {task} ({}): {error}", archive.display());
+    }
     // Continued hosts open the native session lazily, on the first input after these files are synced.
     if let Err(failed)=options.save(worker.state_directory()).and_then(|()|identity.as_ref().map_or(Ok(()),|identity|identity.retain(worker.state_directory()))){
         let directory=worker.state_directory().to_path_buf();
@@ -921,6 +945,8 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
     }
     let mut driver = Driver::new(domain, worker, scope, task, agent, Duration::from_secs(backend.io_timeout_seconds));
     driver.replacement = true;
+    driver.resuming_since = retaken.then_some(taken_at);
+    driver.resumes_released = retaken;
     driver.log_host(if resume { "started anew; its Claude resumes the same session on its next input" } else { "started anew; its Claude starts the session on its next input" });
     driver.sealed();
     Ok(Some(driver))
@@ -992,7 +1018,7 @@ pub(crate) fn retake_waiting_for_space(domain: &DomainRuntime) {
         return;
     }
     let Ok(state) = domain.state() else { return };
-    for task in waiting.into_iter().filter(|task| to_take(domain, &state, task)) {
+    for task in waiting.into_iter().filter(|task| unowned(domain, &state, task)) {
         log!("there is disk space again: the SDK execution of {task} is taken over");
         retake(domain, task);
     }
@@ -1168,6 +1194,16 @@ pub(crate) fn due_unowned(taken: &mut std::collections::BTreeMap<TaskId, (alondr
     due.into_iter().map(|(task, _)| task).collect()
 }
 
+/// A control reached a task whose host closed while its node rested: only a host can answer it.
+pub(crate) fn wake_released(domain: &DomainRuntime, task: &TaskId) {
+    let Ok(state) = domain.state() else { return };
+    let released = state.lifecycle_of(task).is_ok_and(|lifecycle| lifecycle.host_released());
+    if released && unowned(domain, &state, task) {
+        log!("a control reached {task}, whose host closed while it rested: one that resumes its session takes it over");
+        retake(domain, task.clone());
+    }
+}
+
 /// The user chose «Try again» on the card of a task whose execution was lost: it is taken over
 /// again, on a thread of its own, as at the daemon's start; another failure puts a new card.
 pub(crate) fn retake(domain:&DomainRuntime,task:TaskId){retake_with_policy(domain,task,false)}
@@ -1297,6 +1333,11 @@ pub(crate) fn being_retaken(domain: &DomainRuntime, task: &TaskId) -> bool {
 /// Whether the task runs through the SDK, has not ended, and no owner of this daemon, launch,
 /// takeover or retake under way, or move to another account holds its execution.
 fn to_take(domain: &DomainRuntime, state: &DomainState, task: &TaskId) -> bool {
+    unowned(domain, state, task) && state.lifecycle_of(task).ok().is_none_or(|lifecycle| !lifecycle.host_released()
+        || !lifecycle.pending_inputs().is_empty() && !domain.live.gate.waits_for_slot(domain, state, task))
+}
+
+fn unowned(domain: &DomainRuntime, state: &DomainState, task: &TaskId) -> bool {
     state.tasks.get(task).and_then(|task| task.agent_id.as_ref()).is_some_and(|agent| !domain.owns_sdk_host(agent))
         && !domain.in_hand.lock_or_recover("the executions in hand").contains_key(task)
         && !domain.retakes.lock_or_recover("the retakes").iter().any(|(taking, retake)| taking == task && !retake.is_finished())
@@ -1458,7 +1499,7 @@ fn node_environment(home: &std::path::Path, agent: &AgentId, capability: &str) -
 
 impl Driver {
     fn new(domain: Arc<DomainRuntime>, worker: Worker, scope: AuthorityScope, task: TaskId, agent: AgentId, opening_timeout: Duration) -> Self {
-        Self { in_hand: Some(InHand::new(&domain, &task)), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout, opening_deadline: None, refused: BTreeSet::new(), #[cfg(any(test, feature = "test-hooks"))] refuse_offers: 0, #[cfg(any(test, feature = "test-hooks"))] fail_next_step: false, #[cfg(any(test, feature = "test-hooks"))] panic_next_step: false }
+        Self { in_hand: Some(InHand::new(&domain, &task)), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout, opening_deadline: None, refused: BTreeSet::new(), #[cfg(any(test, feature = "test-hooks"))] refuse_offers: 0, #[cfg(any(test, feature = "test-hooks"))] fail_next_step: false, #[cfg(any(test, feature = "test-hooks"))] panic_next_step: false }
     }
 
     pub fn agent(&self) -> &AgentId {
@@ -1593,6 +1634,9 @@ impl Driver {
             self.opening_deadline.get_or_insert(Instant::now() + self.opening_timeout);
         }
         if handoff == Handoff::Offered {
+            if let Some(since) = self.resuming_since.take() {
+                log!("{} resumed its released session: its host took the input {} ms after the work arrived", self.task, since.elapsed().as_millis());
+            }
             self.awaiting = Some(input.clone());
             self.replacement = false;
             self.relaunches = 0;
@@ -1666,7 +1710,8 @@ impl Driver {
     fn unopened(&self) -> Result<bool, Failed> {
         let read = self.domain.read();
         let lifecycle = read.state().lifecycle_of(&self.task).map_err(|error| Failed::new(format!("{error:#}")))?;
-        Ok(lifecycle.resource() == Some(alondra_domain::ResourceEvidence::Reserved))
+        Ok(lifecycle.resource() == Some(alondra_domain::ResourceEvidence::Reserved)
+            || self.resumes_released && lifecycle.activity() == ActivityView::Starting)
     }
 
     /// Whether the host was handed an input and its session has not opened by its deadline.
@@ -1674,6 +1719,7 @@ impl Driver {
         let Some(deadline) = self.opening_deadline else { return Ok(false) };
         if !self.unopened()? {
             self.opening_deadline = None;
+            self.resumes_released = false;
             return Ok(false);
         }
         Ok(now >= deadline)
@@ -1828,6 +1874,43 @@ impl Driver {
             self.moves_to_this_release = true;
         }
         Ok(true)
+    }
+
+    /// `idle_release` asked to close this host. What the host said last can move the task on, so
+    /// all of it is read first: `false` until nothing is left to read and the answer is known.
+    fn settle_release(&mut self) -> Result<bool, Failed> {
+        self.sealed();
+        if self.worker.readable(Duration::ZERO).unwrap_or(true) {
+            return self.observe().map(|_| false);
+        }
+        let held = crate::provider_transition::holds_execution(&self.domain, &self.task) || crate::account_move::holds_execution(&self.domain, &self.task);
+        self.releases = !held && self.awaiting.is_none() && self.results.is_empty() && self.permits.is_empty() && self.controls.is_empty()
+            && self.domain.read().state().host_releasable(&self.task);
+        Ok(true)
+    }
+
+    /// Ends the host and every process under it, as a pause does, and records that the session
+    /// waits with no host. Refused because the task moved on meanwhile, the caller replaces it.
+    fn release_host(&mut self) -> Result<(), Failed> {
+        let tree = self.worker.host_group().map_or(Ok(vec![]), alondra_process_group::tree)
+            .map_err(|error| Failed::new(format!("listing the processes of the host: {error}")))?;
+        mark_stopped_by_alondra(self.worker.state_directory());
+        self.stop()?;
+        alondra_process_group::end_tree(&tree, HALT_GRACE).map_err(|error| Failed::new(format!("the processes of the host did not end: {error}")))?;
+        let read = self.domain.read();
+        let state = read.state();
+        let generation = state.lifecycle_of(&self.task).ok().and_then(|lifecycle| lifecycle.execution().map(|stamp| stamp.generation()))
+            .ok_or_else(|| Failed::new("the task has no execution".into()))?;
+        let epoch = state.data_epoch.clone();
+        drop(read);
+        let envelope = CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            data_epoch: epoch,
+            command_id: format!("host-released-{}-{}", self.task, crate::auth::random_hex(8)).into(),
+            expected_revision: 0,
+            command: Command::RecordHostReleased { task_id: self.task.clone(), generation },
+        };
+        self.domain.execute_as_system(envelope).map(drop).map_err(|error| Failed::new(store_text(&error)))
     }
 
     /// Whether all the lifecycle waits for is an input this owner has not handed to its host.
@@ -2024,7 +2107,9 @@ impl Driver {
 impl Drop for Driver {
     fn drop(&mut self) {
         self.domain.live.gate.owner_ended(&self.task);
-        self.domain.contexts.forget(&self.task);
+        if !self.releases {
+            self.domain.contexts.forget(&self.task);
+        }
         self.domain.live.mods.sdk_ended(&self.agent.0, alondra_core::now_millis());
     }
 }
@@ -2140,6 +2225,8 @@ pub struct Owner {
     ended: Arc<AtomicBool>,
     /// The stop it was told is a close: Claude's running turn ends as an interrupted turn first.
     interrupt: Arc<AtomicBool>,
+    /// `idle_release` asks the owner to close its host, which it does between two steps.
+    release: Arc<AtomicBool>,
     domain: Arc<DomainRuntime>,
     /// A holder that panics leaves it whole, so it is recovered: one assignment or a read.
     host: Arc<Mutex<Option<alondra_agent_runtime::owned_host::HostStop>>>,
@@ -2154,6 +2241,8 @@ impl Owner {
         let stopped = Arc::new(AtomicBool::new(false));
         let interrupt = Arc::new(AtomicBool::new(false));
         let interrupting = Arc::clone(&interrupt);
+        let release = Arc::new(AtomicBool::new(false));
+        let releasing = Arc::clone(&release);
         let domain = Arc::clone(&driver.domain);
         let host = Arc::new(Mutex::new(driver.worker.stopper()));
         let current = Arc::clone(&host);
@@ -2169,7 +2258,19 @@ impl Owner {
                 let told = || flag.load(Ordering::SeqCst);
                 let mut lost_because = None;
                 loop {
-                    while !told() && !driver.moves_to_this_release {
+                    while !told() && !driver.moves_to_this_release && !driver.releases {
+                        if releasing.load(Ordering::SeqCst) {
+                            match driver.settle_release() {
+                                Ok(settled) => if settled { releasing.store(false, Ordering::SeqCst) },
+                                Err(error) => {
+                                    releasing.store(false, Ordering::SeqCst);
+                                    log!("could not read what the host of {} said before closing it: {error}", driver.task);
+                                }
+                            }
+                        }
+                        if driver.releases {
+                            break;
+                        }
                         if let Err(error) = driver.step(&told) {
                             // Told to stop, the owner ended its host itself: what the host's end
                             // breaks in the step it was reading is that end, not a failure.
@@ -2181,6 +2282,21 @@ impl Owner {
                     }
                     if told() {
                         break;
+                    }
+                    if driver.releases {
+                        match driver.release_host() {
+                            Ok(()) => {
+                                ending.store(true, Ordering::SeqCst);
+                                log!("{} rests with nothing in its host: the host closed and its session waits for its next input", driver.task);
+                                return Ok(());
+                            }
+                            Err(error) => {
+                                log!("the host of {} closed, but the node did not stay without one: {error}", driver.task);
+                                driver.releases = false;
+                                driver.replacement = false;
+                                driver.host_closed = true;
+                            }
+                        }
                     }
                     let backend = driver.domain.sdk().map(|(backend, _)| backend.clone());
                     let Some(backend) = backend.filter(|_| driver.host_to_replace()) else {
@@ -2253,7 +2369,13 @@ impl Owner {
                 stopped
             })
             .expect("spawning the SDK owner");
-        Self { stopped, ended, interrupt, domain, host, agent, state_directory, thread: Some(thread) }
+        Self { stopped, ended, interrupt, release, domain, host, agent, state_directory, thread: Some(thread) }
+    }
+
+    /// Asks the owner to close its host once its task rests with nothing in it.
+    pub(crate) fn ask_to_release(&self) {
+        self.release.store(true, Ordering::SeqCst);
+        self.domain.seals.wake();
     }
 
     pub(crate) fn agent(&self) -> &AgentId {

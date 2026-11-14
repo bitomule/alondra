@@ -1151,6 +1151,62 @@ fn a_turn_that_ends_without_a_wake_leaves_the_notifications_it_found_waiting() {
     assert_eq!(task.pending_inputs(), vec![&input("resumed")]);
 }
 
+fn resting() -> TaskLifecycle {
+    let mut task = running();
+    ended(&mut task, "root", None, Some(Await::Instruction));
+    task
+}
+
+#[test]
+fn a_resting_execution_closes_its_host_and_nothing_else_of_the_task_changes() {
+    let mut task = resting();
+    let (phase, activity, resource, live) = (task.phase(), task.activity(), task.resource(), task.live());
+    assert!(task.can_release_host());
+    apply(&mut task, Event::HostReleased);
+    assert!(task.host_released());
+    assert!(!task.can_release_host(), "it has no host left to close");
+    assert_eq!((task.phase(), task.activity(), task.resource(), task.live()), (phase, activity, resource, live));
+    assert_eq!(task.cards(), vec![], "a closed host needs nobody's attention");
+}
+
+#[test]
+fn an_input_to_a_released_session_waits_for_the_host_that_resumes_it() {
+    let mut task = resting();
+    apply(&mut task, Event::HostReleased);
+    apply(&mut task, Event::Tell { input: input("told"), answers: None });
+    assert_eq!(task.pending_inputs(), vec![&input("told")]);
+    assert!(task.host_released(), "the input alone brings no host back");
+    assert!(task.waits_for_slot(), "its turn waits for a slot like any other");
+    assert!(task.cards().is_empty());
+    assert!(!task.holds_slot(), "waiting for a slot takes none");
+    apply(&mut task, Event::HostRetaken);
+    assert!(!task.host_released());
+    assert!(task.holds_slot(), "the node at work counts again");
+    assert_eq!(task.pending_inputs(), vec![&input("told")], "the host that resumes takes it");
+    assert_eq!(task.apply(task.revision(), Event::HostRetaken), Err(Refusal::InvalidState), "only a released session is taken back");
+}
+
+#[test]
+fn a_host_with_anything_of_the_task_in_it_stays() {
+    let refused = |mut task: TaskLifecycle, why: &str| {
+        assert!(!task.can_release_host(), "{why}");
+        assert_eq!(task.apply(task.revision(), Event::HostReleased), Err(Refusal::InvalidState), "{why}");
+    };
+    refused(running(), "a turn runs");
+    let mut owned = running();
+    fact(&mut owned, RuntimeFact::WorkStarted { turn: turn("root"), work: work("command") });
+    ended(&mut owned, "root", None, None);
+    assert_eq!(owned.activity(), ActivityView::OwnWork);
+    refused(owned, "its own work runs after its turn");
+    let mut told = resting();
+    apply(&mut told, Event::Tell { input: input("told"), answers: None });
+    refused(told, "an input waits");
+    let mut asked = running();
+    fact(&mut asked, RuntimeFact::Ask { card: InteractionId::from("permission"), callback: CallbackId::new("callback").unwrap(), reason: WaitReason::Permission });
+    ended(&mut asked, "root", None, Some(Await::Instruction));
+    refused(asked, "a callback only its host can answer is open");
+}
+
 
 use proptest::prelude::*;
 proptest! {
@@ -1166,6 +1222,10 @@ proptest! {
         for action in actions {
             let Some(event) = arbitrary_event(&task, action) else { continue };
             let _ = task.apply(task.revision(), event);
+            if task.can_release_host() {
+                prop_assert_eq!(task.activity(), ActivityView::Resting, "only a resting execution closes its host: {:?}", task);
+                prop_assert!(task.pending_inputs().is_empty() && task.post_merge().is_none(), "nothing waits on its host: {:?}", task);
+            }
             let live = task.live();
             if matches!(task.phase(), TaskPhase::Unstarted | TaskPhase::Completed | TaskPhase::Cancelled) {
                 prop_assert_eq!(live, None, "only a live task has a state: {:?}", task);

@@ -504,6 +504,7 @@ impl TaskLifecycle {
                     execution.activity = Activity::Resting;
                 }
                 cut_by_end = cut;
+                execution.host_released = false;
                 if cut || !ended_callbacks.is_empty() {
                     resting_card = Some(unheard_card);
                 }

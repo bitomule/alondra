@@ -194,6 +194,23 @@ for line in sys.stdin:
                 finish()
         elif turn_mode == 'permission' and turn_number == 1:
             send({'id': 88, 'method': 'item/commandExecution/requestApproval', 'params': {'threadId': thread, 'turnId': turn, 'itemId': 'pending-permission', 'command': 'alondra-fixture-needs-consent', 'cwd': os.getcwd(), 'reason': 'The fixture waits for explicit user permission', 'availableDecisions': ['accept', 'decline']}})
+        elif turn_mode == 'session_command' and turn_number == 1:
+            # Like a native exec_command whose call returns a session that runs on: its first event
+            # names no process, the terminal interaction does, and the turn ends while it lives.
+            owned = fixture['ownedCommand']
+            script = 'import os,sys; print(os.getpid(),flush=True); open(sys.argv[1]).read()'
+            child = subprocess.Popen(['/usr/bin/python3', '-c', script, owned['release']], stdout=subprocess.PIPE, text=True)
+            pid = int(child.stdout.readline().strip())
+            with open(owned['pidFile'], 'w') as target: json.dump({'pid': pid}, target)
+            note('item/started', {'threadId': thread, 'turnId': turn, 'item': {'type': 'commandExecution', 'id': 'session-command', 'command': 'fixture session waits on its explicit barrier', 'cwd': os.getcwd(), 'status': 'inProgress', 'aggregatedOutput': '', 'exitCode': None}})
+            note('item/commandExecution/terminalInteraction', {'threadId': thread, 'turnId': turn, 'itemId': 'session-command', 'processId': str(pid), 'stdin': ''})
+            note('turn/completed', {'threadId': thread, 'turn': {'id': turn, 'status': 'completed'}})
+            session_turn = turn
+            def completed_session():
+                code = child.wait()
+                child.stdout.close()
+                note('item/completed', {'threadId': thread, 'turnId': session_turn, 'item': {'type': 'commandExecution', 'id': 'session-command', 'command': 'fixture session waits on its explicit barrier', 'cwd': os.getcwd(), 'processId': str(pid), 'status': 'completed', 'aggregatedOutput': '', 'exitCode': code}})
+            threading.Thread(target=completed_session, daemon=True).start()
         elif turn_mode == 'blocked_command' and turn_number == 1:
             owned = fixture['ownedCommand']
             script = 'import os,sys; print(os.getpid(),flush=True); open(sys.argv[1]).read()'
