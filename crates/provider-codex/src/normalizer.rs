@@ -95,7 +95,7 @@ fn native_turn(batch: &OrderedObservation, process: &str, id: &str) -> Result<Tu
 fn lookup(metadata: &ObservationMetadata<'_, '_>, id: &str) -> Result<InputId, AdapterError> {
     let message_id = MessageUuid::new(id).map_err(|_| AdapterError::InvalidObservation)?;
     let bytes = serde_json::to_vec(&InputRecord { message_id }).map_err(|_| AdapterError::InvalidObservation)?;
-    let records = metadata.lookup_inputs(&[bytes]).map_err(storage)?;
+    let records = metadata.find_inputs(&[bytes]).map_err(storage)?.ok_or(AdapterError::UnknownInput)?;
     if records.len() != 1 { return invalid(); }
     Ok(records[0].input().clone())
 }
@@ -239,8 +239,10 @@ fn fold(batch: &OrderedObservation, state: &mut Checkpoint, method: &str, params
             if state.accepted.len() >= 64 { return invalid(); }
             if state.accepted.get(turn).is_some_and(|previous| previous != client) { return invalid(); }
             state.accepted.insert(turn.into(), client.into());
-            if let Ok(input) = lookup(client) {
-                facts.push(Observation::InputHeld { input });
+            match lookup(client) {
+                Ok(input) => facts.push(Observation::InputHeld { input }),
+                Err(AdapterError::UnknownInput) => {},
+                Err(error) => return Err(error),
             }
             if state.rerouted_turn.as_deref()!=Some(turn){state.model=string(params,"model").filter(|model|!model.is_empty()).map(str::to_owned).or_else(||state.model.clone());}
             if string(params,"model").is_some() || state.rerouted_turn.as_deref()==Some(turn){state.model_turn=Some(turn.into());}
@@ -485,6 +487,85 @@ mod tests {
         OrderedObservation { owner_generation: 1, execution: ExecutionStamp::new(TaskId("task".into()), AgentId("agent".into()), ConversationId::new("conversation").unwrap(), InstanceId::new("instance").unwrap(), HostId::new("alondra-sdk").unwrap(), 1).unwrap(), cursor: 1, evidence: vec![1] }
     }
     #[test]
+    fn input_acceptance_ignores_only_missing_metadata() {
+        for missing in [true, false] {
+            let mut state = Checkpoint { thread: Some("root".into()), ..Default::default() };
+            let mut facts = vec![];
+            let result = fold(&batch(), &mut state, "alondra/inputAccepted", &json!({"threadId":"root","turnId":"turn","inputId":"native"}), &mut facts, |_| {
+                Err(if missing { AdapterError::UnknownInput } else { AdapterError::Storage("metadata read failed".into()) })
+            });
+            if missing {
+                assert!(result.is_ok());
+                assert!(facts.is_empty());
+            } else {
+                assert!(matches!(result, Err(AdapterError::Storage(_))), "storage failures cannot become successful observations");
+            }
+        }
+    }
+
+    #[test]
+    fn native_input_acceptance_without_metadata_commits_and_replays_in_the_store() {
+        use alondra_agent_application::stage_observation;
+        use alondra_codex_protocol::{Event, Frame, NativeCorrelation};
+        use alondra_domain::Event as DomainEvent;
+        use alondra_provider_contract::{Capability, Placement, ProviderBinding};
+        use alondra_store::{AuthorityScope, CommandEvidence, InputPayload, LifecycleTransaction, ObservationAcceptance};
+        use crate::wire::HostOwner;
+        use rusqlite::{Connection, Transaction, TransactionBehavior};
+        let directory = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&*directory).unwrap();
+        let path = directory.join("domain.db");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        connection.execute_batch(include_str!("../../alondrad/src/domain_store/schema.sql")).unwrap();
+        connection.execute_batch("CREATE TABLE task_worktrees(task_id TEXT PRIMARY KEY,dir TEXT NOT NULL,at INTEGER NOT NULL); INSERT INTO domain_meta VALUES(1,'epoch',0,0); INSERT INTO requests(id,body,closed) VALUES('request','Work',0); INSERT INTO agents(id,name) VALUES('node','Worker'); INSERT INTO tasks(id,request_id,title,state,revision,started,review_prs,archived) VALUES('task','request','Task','not_started',0,0,0,0)").unwrap();
+        connection.execute("INSERT INTO task_worktrees VALUES('task',?1,0)", [directory.to_str().unwrap()]).unwrap();
+        let mut sql = Transaction::new_unchecked(&connection, TransactionBehavior::Immediate).unwrap();
+        LifecycleTransaction::install(&mut sql).unwrap();
+        sql.commit().unwrap();
+        let scope = AuthorityScope::new("epoch".into()).unwrap();
+        let binding = ProviderBinding::new("binding".into(), "fixture".into(), "instance".into(), "config".into(), 1, 1, BTreeSet::from([Capability::OfferInput]), "credential".into(), 1).unwrap();
+        let sql = Transaction::new_unchecked(&connection, TransactionBehavior::Immediate).unwrap();
+        let mut tx = LifecycleTransaction::attach(sql, scope.clone()).unwrap();
+        let initial = InputId::new("initial").unwrap();
+        tx.create(&"task".into(), InputPayload::new(initial.clone(), "Initial prompt").unwrap()).unwrap();
+        tx.apply(&"task".into(), 0, "admit", DomainEvent::Admit {
+            node: "node".into(), conversation: ConversationId::new("conversation").unwrap(),
+            instance: InstanceId::new("instance").unwrap(), host: HostId::new("host").unwrap(),
+        }).unwrap();
+        tx.stage_launch(&"task".into(), &Placement::LocalDirectory(directory.to_str().unwrap().into()), &binding).unwrap();
+        let stamp = tx.load(&"task".into()).unwrap().execution().unwrap().clone();
+        tx.reserve_owner(&stamp, 0).unwrap();
+        tx.accept_observation(&stamp, 1, CommandEvidence::new(b"fixture seed".to_vec()).unwrap()).unwrap();
+        let state = Checkpoint { cursor: 1, initialized: true, thread: Some("root".into()), ..Default::default() };
+        tx.put_normalization_checkpoint(&stamp, 1, None, serde_json::to_vec(&state).unwrap()).unwrap();
+        let owner = tx.commit().unwrap().owners.pop().unwrap();
+        let fence = Fence { profile_id: "fixture".into(), account_id: "fixture".into(), data_epoch: "epoch".into(), host_id: "host".into() };
+        let normalizer = Normalizer { session: Some(SessionRecord { session_id: MessageUuid::new("10000000-0000-4000-8000-000000000001").unwrap(), continued: false }), fence: Some(fence.clone()), first_cursor: None, host_ended: false };
+        let frame = Frame::new(Body::Event(Event {
+            fence, execution: owner.wire_execution(), cursor: 2,
+            observation: WireObservation::Sdk {
+                kind: SdkEventKind::Message, native: NativeCorrelation::default(), failures: vec![],
+                payload: json!({"method":"alondra/inputAccepted","params":{"threadId":"root","turnId":"turn","inputId":"20000000-0000-4000-8000-000000000001"}}),
+            },
+        }));
+        let encoded = alondra_codex_protocol::encode(&frame).unwrap();
+        let batch = OrderedObservation { execution: stamp.clone(), owner_generation: owner.generation(), cursor: 2, evidence: encoded[4..].to_vec() };
+        for expected in [ObservationAcceptance::Accepted, ObservationAcceptance::Duplicate] {
+            let reopened = Connection::open(&path).unwrap();
+            reopened.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+            let sql = Transaction::new_unchecked(&reopened, TransactionBehavior::Immediate).unwrap();
+            let mut tx = LifecycleTransaction::attach(sql, scope.clone()).unwrap();
+            let pending = stage_observation(&mut tx, &binding, owner.generation(), &batch, &normalizer).unwrap();
+            assert!(pending.facts().is_empty(), "native acceptance does not confirm our input");
+            assert_eq!(pending.settle(&mut tx).unwrap(), expected);
+            assert_eq!(tx.load(&"task".into()).unwrap().pending_inputs(), [&initial]);
+            tx.commit().unwrap();
+        }
+        assert_eq!(connection.query_row("SELECT count(*) FROM provider_observations WHERE cursor=2", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(connection.query_row("SELECT count(*) FROM provider_input_metadata", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    }
+    #[test]
     fn a_pr_a_command_opened_is_a_fact_of_its_task() {
         let batch=batch();let mut state=Checkpoint{thread:Some("root".into()),process:"process".into(),turn:Some("origin".into()),..Checkpoint::default()};
         let finished=|state:&mut Checkpoint,command:&str,exit:i64,output:&str|{
@@ -593,7 +674,7 @@ mod tests {
         assert!(dropped(&facts),"{facts:?}");assert!(state.input_starts.is_empty());
 
         let mut state=Checkpoint{thread:Some("root".into()),process:"process".into(),initialized:true,..Checkpoint::default()};let mut facts=vec![];
-        fold(&batch,&mut state,"alondra/inputAccepted",&json!({"threadId":"root","turnId":"turn","inputId":"client"}),&mut facts,|_|invalid()).unwrap();
+        fold(&batch,&mut state,"alondra/inputAccepted",&json!({"threadId":"root","turnId":"turn","inputId":"client"}),&mut facts,|_|Err(AdapterError::UnknownInput)).unwrap();
         fold(&batch,&mut state,"thread/status/changed",&json!({"threadId":"root","status":{"type":"active","activeFlags":[]}}),&mut facts,|_|invalid()).unwrap();
         fold(&batch,&mut state,"turn/started",&json!({"threadId":"root","turn":{"id":"turn"}}),&mut facts,|_|invalid()).unwrap();
         assert!(facts.is_empty(),"an accepted input is not taken until Codex records it: {facts:?}");
@@ -757,7 +838,7 @@ mod tests {
     #[test]
     fn a_child_user_item_cannot_consume_its_parents_registered_input(){
         let batch=batch();let mut state=Checkpoint{thread:Some("parent".into()),..Default::default()};let mut facts=vec![];
-        fold(&batch,&mut state,"alondra/inputAccepted",&json!({"threadId":"parent","turnId":"turn","inputId":"registered"}),&mut facts,|_|invalid()).unwrap();
+        fold(&batch,&mut state,"alondra/inputAccepted",&json!({"threadId":"parent","turnId":"turn","inputId":"registered"}),&mut facts,|_|Err(AdapterError::UnknownInput)).unwrap();
         fold(&batch,&mut state,"item/started",&json!({"threadId":"child","turnId":"turn","item":{"type":"userMessage","clientId":"registered"}}),&mut facts,|_|panic!("child cannot look up parent input metadata")).unwrap();assert!(facts.is_empty());assert_eq!(state.accepted.len(),1);
     }
     #[test]
@@ -777,7 +858,7 @@ mod tests {
         state=serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
         let mut next=batch.clone();next.cursor+=1;
         fold(&next,&mut state,"alondra/inputStarting",&json!({"threadId":"parent","inputId":"next-client"}),&mut facts,|_|invalid()).unwrap();
-        fold(&batch,&mut state,"alondra/inputAccepted",&json!({"threadId":"parent","turnId":"next","inputId":"next-client"}),&mut facts,|_|invalid()).unwrap();
+        fold(&batch,&mut state,"alondra/inputAccepted",&json!({"threadId":"parent","turnId":"next","inputId":"next-client"}),&mut facts,|_|Err(AdapterError::UnknownInput)).unwrap();
         fold(&batch,&mut state,"turn/started",&json!({"threadId":"parent","turn":{"id":"next"}}),&mut facts,|_|invalid()).unwrap();assert_eq!(state.continuations.len(),1,"RPC acceptance is not report consumption");
         fold(&batch,&mut state,"item/started",&json!({"threadId":"parent","turnId":"next","item":{"id":"user","type":"userMessage","clientId":"next-client"}}),&mut facts,|_|Ok(InputId::new("next-input").unwrap())).unwrap();
         fold(&batch,&mut state,"item/completed",&json!({"threadId":"parent","turnId":"next","item":{"id":"user","type":"userMessage","clientId":"next-client"}}),&mut facts,|_|panic!("duplicate user echo must not consume twice")).unwrap();
@@ -795,7 +876,7 @@ mod tests {
     #[test]
     fn compacted_live_scope_keeps_root_turn_and_actual_rerouted_model_without_private_content(){
         let batch=batch();let mut state=Checkpoint{thread:Some("root".into()),model:Some("selected".into()),cwd:Some("/workspace".into()),..Default::default()};let mut facts=vec![];
-        fold(&batch,&mut state,"alondra/inputAccepted",&json!({"threadId":"root","turnId":"active","inputId":"client","model":"selected"}),&mut facts,|_|invalid()).unwrap();
+        fold(&batch,&mut state,"alondra/inputAccepted",&json!({"threadId":"root","turnId":"active","inputId":"client","model":"selected"}),&mut facts,|_|Err(AdapterError::UnknownInput)).unwrap();
         fold(&batch,&mut state,"model/rerouted",&json!({"threadId":"root","turnId":"active","fromModel":"selected","toModel":"actual","reason":"highRiskCyberActivity"}),&mut facts,|_|invalid()).unwrap();
         fold(&batch,&mut state,"item/started",&json!({"threadId":"root","turnId":"active","item":{"id":"user","type":"userMessage","clientId":"client"}}),&mut facts,|_|Ok(InputId::new("input").unwrap())).unwrap();
         let bytes=serde_json::to_vec(&state).unwrap();let scope=live_scope(&bytes).unwrap();assert_eq!(scope.thread,"root");assert_eq!(scope.turn.as_deref(),Some("active"));assert_eq!(scope.model.as_deref(),Some("actual"));assert_eq!(scope.model_turn.as_deref(),Some("active"));assert_eq!(scope.rerouted_turn.as_deref(),Some("active"));

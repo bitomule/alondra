@@ -123,6 +123,28 @@ fn a_frame_cut_short_ends_the_journal_and_proves_nothing_beyond_it() {
     outbox(&directory, &[&taken, &receipt(&taken, admitted()), &offered[..offered.len() - 3]]);
     let journal = read(&directory, 0).unwrap();
     assert_eq!(journal.retained(&taken).unwrap(), Retained::AdmittedOnly, "an offer whose receipt never became durable stays uncertain");
+    let original = std::fs::read(directory.join("outbox")).unwrap();
+    assert_eq!(read(&directory, 0).unwrap().retained(&taken).unwrap(), Retained::AdmittedOnly);
+    assert_eq!(std::fs::read(directory.join("outbox")).unwrap(), original, "recovery never truncates the evidence");
+}
+
+#[test]
+fn corrupt_tail_preserves_valid_prefix_and_never_proves_an_absent_command_was_rejected() {
+    let directory = directory();
+    let taken = command("taken", "a");
+    let offered = receipt(&taken, ReceiptOutcome::Accepted { phase: ReceiptPhase::Offered });
+    let first = event(1, 1);
+    outbox(&directory, &[&taken, &receipt(&taken, admitted()), &offered, &first, b"\0\0\0\x01{", &event(2, 1)]);
+    let original = std::fs::read(directory.join("outbox")).unwrap();
+    for committed in [0, 1] {
+        let journal = read(&directory, committed).unwrap();
+        assert_eq!(journal.retained(&taken).unwrap(), Retained::Offered);
+        assert_eq!(journal.retained(&command("unseen", "b")).unwrap(), Retained::AdmittedOnly);
+        assert_eq!(journal.last_cursor(), 1, "no event beyond the corrupt frame is invented");
+        assert_eq!(journal.events().len(), usize::from(committed == 0));
+        if committed == 0 { assert_eq!(journal.events()[0].payload, first[4..]); }
+    }
+    assert_eq!(std::fs::read(directory.join("outbox")).unwrap(), original);
 }
 
 #[test]

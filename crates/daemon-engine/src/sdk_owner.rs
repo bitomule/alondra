@@ -837,7 +837,7 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
         let binding = grant.binding().clone();
         let (normalizer, home) = (worker.normalizer(), domain.home());
         commit_observation(&domain, &scope, &binding, owner_generation, &batch, normalizer, home,identity.as_ref())
-            .map_err(failed("committing what the ended host observed"))?;
+            .map_err(failed(&format!("committing what the ended host observed at cursor {}", batch.cursor)))?;
         domain.seals.forget_observations(&task);
         feed(worker.provider(), &domain, &agent, &batch);
     }
@@ -1698,7 +1698,7 @@ impl Driver {
         self.domain.live.outputs.lock_or_recover("the node outputs").insert(self.task.clone(), alondra_core::now_millis());
         let journaled = self.journal_len();
         let (acceptance, unrecorded) = commit_observation(&self.domain, &self.scope, &binding, generation, &batch, worker.normalizer(), home,identity.as_ref())
-            .map_err(failed("committing the observation"))?;
+            .map_err(failed(&format!("committing the observation at cursor {}", batch.cursor)))?;
         self.provider_refusals_since(journaled)?;
         if let Some(answered) = self.worker.answered_control(&batch) {
             self.results.retain(|awaited| *awaited != answered);

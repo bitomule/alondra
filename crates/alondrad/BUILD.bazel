@@ -6,7 +6,7 @@ load("//:version.bzl", "VERSION")
 
 exports_files(
     ["src/domain_store/schema.sql", "src/domain_store/schedule_launch_transition.sql"],
-    visibility = ["//crates/store:__pkg__", "//crates/agent-application:__pkg__", "//crates/provider-claude:__pkg__", "//crates/agent-runtime:__pkg__", "//crates/daemon-engine:__pkg__", "//crates/daemon-engine-store:__pkg__"],
+    visibility = ["//crates/store:__pkg__", "//crates/agent-application:__pkg__", "//crates/provider-claude:__pkg__", "//crates/provider-codex:__pkg__", "//crates/agent-runtime:__pkg__", "//crates/daemon-engine:__pkg__", "//crates/daemon-engine-store:__pkg__"],
 )
 
 # The engine's acceptance catalog checks that the scenarios it names have tests here.

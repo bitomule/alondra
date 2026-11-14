@@ -260,7 +260,7 @@ impl ObservationNormalizer for Normalizer {
                     .map_err(|_| AdapterError::InvalidObservation)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            let records = metadata.lookup_inputs(&keys).map_err(storage)?;
+            let records = metadata.find_inputs(&keys).map_err(storage)?.ok_or(AdapterError::UnknownInput)?;
             if records.len() != ids.len() {
                 return Err(AdapterError::InvalidObservation);
             }

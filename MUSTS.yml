@@ -577,6 +577,7 @@ checks:
     paths:
       - ".bazelrc"
       - ".bazelversion"
+      - "BUILD.bazel"
       - "Cargo.lock"
       - "Cargo.toml"
       - "MODULE.bazel"
@@ -585,6 +586,9 @@ checks:
       - "crates/agent-application/**"
       - "crates/agent-protocol/**"
       - "crates/agent-runtime/**"
+      - "crates/alondrad/BUILD.bazel"
+      - "crates/alondrad/build_inputs_test.bzl"
+      - "crates/alondrad/src/domain_store/schema.sql"
       - "crates/codex-protocol/**"
       - "crates/domain/**"
       - "crates/foundation/**"
@@ -595,6 +599,7 @@ checks:
       - "crates/test_support.rs"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "version.bzl"
     with:
       targets:
         - //crates/provider-codex/...

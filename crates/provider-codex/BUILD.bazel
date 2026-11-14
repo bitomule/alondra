@@ -25,12 +25,12 @@ low_opt_rust_test(
     name = "provider_codex_test",
     size = "small",
     crate_root = "src/lib.rs",
-    srcs = glob(["src/*.rs"]),
+    srcs = glob(["src/*.rs"]) + ["//crates:test_support.rs"],
     crate_name = "alondra_provider_codex",
     edition = "2024",
     version = "0.1.0",
-    deps = _DEPS + all_crate_deps(normal_dev = True),
-    compile_data = ["//crates/agent-protocol:fixtures/hello.json"] + glob(["fixtures/native/*.jsonl"]),
+    deps = _DEPS + ["//crates/domain:domain"] + all_crate_deps(normal_dev = True),
+    compile_data = ["//crates/agent-protocol:fixtures/hello.json", "//crates/alondrad:src/domain_store/schema.sql"] + glob(["fixtures/native/*.jsonl"]),
     env = {"HOME": "."},
 )
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

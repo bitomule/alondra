@@ -1159,6 +1159,8 @@ pub struct TaskLifecycle {
     task: TaskId,
     revision: Revision,
     generation: u64,
+    /// Replayed from completed cancellations; reopening never makes their uncertain sends live.
+    cancelled_through_generation: u64,
     state: State,
     /// Which launch plan the task would start with; a reviewed new plan moves it on.
     plan_revision: u64,
@@ -1188,6 +1190,7 @@ impl TaskLifecycle {
             task,
             revision: 0,
             generation: 0,
+            cancelled_through_generation: 0,
             state: State::Unstarted { input, remaining: Inputs::new() },
             plan_revision: 0,
             plan_reviews: BTreeMap::new(),
@@ -1240,6 +1243,10 @@ impl TaskLifecycle {
     /// How many executions the task has had: the next one is admitted with the one after.
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+    /// Uncertain sends through this execution belong to a cancellation already drained.
+    pub fn cancelled_through_generation(&self) -> u64 {
+        self.cancelled_through_generation
     }
     pub fn plan_revision(&self) -> u64 {
         self.plan_revision
@@ -1635,6 +1642,7 @@ impl TaskLifecycle {
             task: self.task.clone(),
             revision: self.revision,
             generation: self.generation,
+            cancelled_through_generation: self.cancelled_through_generation,
             state: self.state.clone(),
             plan_revision: self.plan_revision,
             plan_reviews: self.plan_reviews.clone(),

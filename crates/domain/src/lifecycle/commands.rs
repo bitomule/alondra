@@ -994,7 +994,10 @@ impl TaskLifecycle {
         if remaining.is_empty() {
             self.state = match finishing.intent {
                 FinishIntent::Complete => State::Completed,
-                FinishIntent::Cancel => State::Cancelled,
+                FinishIntent::Cancel => {
+                    self.cancelled_through_generation = self.generation;
+                    State::Cancelled
+                }
             };
         } else {
             finishing.remaining = NonEmpty::new(remaining)?;
