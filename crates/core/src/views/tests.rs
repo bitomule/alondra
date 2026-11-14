@@ -9490,6 +9490,48 @@ fn a_committed_pending_model_change_localizes_its_app_owned_reason() {
 }
 
 #[test]
+fn model_selection_diagnostics_are_localized_in_every_client_without_translating_authored_prose() {
+    use crate::model_selection::{ModelProfile, TaskSelection};
+    fn shown_reason(view: &View, lang: Lang) -> &str {
+        view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
+            Item::Facts(facts) => facts.items.iter().find(|fact| fact.label == if lang == Lang::Es { "Motivo" } else { "Reason" }).map(|fact| fact.value.as_str()),
+            _ => None,
+        }).expect("the client receives a visible model-selection reason")
+    }
+    let (mut state, live) = advertised_model_controls_fixture();
+    let id = state.tasks.values().find(|task| !task.state.terminal()).unwrap().id.clone();
+    let diagnostic = "Codex cannot serve this Sonnet-level task: No enabled compatible account is signed in with available quota; open Accounts to connect or refresh it. Requested model on the first compatible account";
+    state.requests.get_mut(&state.tasks[&id].request_id).unwrap().body = diagnostic.into();
+    for reason in [diagnostic, "Requested model on the first compatible account", "Task profile on the first compatible account", "Requested model unavailable; authorized model substitution", "Provisional Sonnet-level routing to Codex. Task profile on the first compatible account"] {
+        let mut selection = TaskSelection::automatic(ModelProfile::Implementation);
+        selection.reason = Some(reason.into());
+        state.tasks.get_mut(&id).unwrap().selection = Some(selection);
+        for client in [Client::Tui, Client::Ios, Client::Mac] {
+            let english = render(&state, &live, client, Lang::En, &format!("task:{id}"), "");
+            assert!(shown_reason(&english, Lang::En).contains(reason));
+            let spanish_view = render(&state, &live, client, Lang::Es, &format!("task:{id}"), "");
+            let spanish = shown_reason(&spanish_view, Lang::Es);
+            assert!(!spanish.contains(reason), "{spanish}");
+            assert!(spanish_view.sections.iter().filter(|section| section.id == "request").flat_map(|section| &section.items)
+                .any(|item| matches!(item, Item::Markdown(markdown) if markdown.text == diagnostic)), "the mission retains even quoted system wording");
+            if reason == diagnostic {
+                for words in ["Codex no puede atender esta tarea de nivel Sonnet", "ninguna cuenta compatible habilitada", "abre Cuentas", "Modelo solicitado en la primera cuenta compatible"] {
+                    assert!(spanish.contains(words), "{spanish}");
+                }
+            }
+        }
+    }
+    for authored in ["I prefer this account for the launch", "My reason: Requested model on the first compatible account", "Codex cannot serve this Sonnet-level task: my own explanation"] {
+        state.tasks.get_mut(&id).unwrap().selection.as_mut().unwrap().reason = Some(authored.into());
+        state.requests.get_mut(&state.tasks[&id].request_id).unwrap().body = authored.into();
+        for client in [Client::Tui, Client::Ios, Client::Mac] {
+            let spanish = render(&state, &live, client, Lang::Es, &format!("task:{id}"), "");
+            assert!(shown_reason(&spanish, Lang::Es).starts_with(authored));
+        }
+    }
+}
+
+#[test]
 fn a_task_account_fact_qualifies_identical_default_slugs_by_provider() {
     use crate::accounts::{AccountId, Provider};
     let (mut state, live) = advertised_model_controls_fixture();

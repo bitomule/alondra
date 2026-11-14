@@ -1374,6 +1374,29 @@ pub(super) fn without_launch_diagnostic(reason: &str) -> &str {
     boundary.map_or(reason, |at| &reason[..at])
 }
 
+// Match complete system templates, never replace words inside an authored explanation.
+fn selection_diagnostic(reason: &str, lang: super::Lang) -> Option<String> {
+    let text = match reason {
+        "Requested model on the first compatible account" => tr!(lang, "Requested model on the first compatible account", "Modelo solicitado en la primera cuenta compatible"),
+        "Task profile on the first compatible account" => tr!(lang, "Task profile on the first compatible account", "Perfil de la tarea en la primera cuenta compatible"),
+        "Requested model unavailable; authorized model substitution" => tr!(lang, "Requested model unavailable; authorized model substitution", "Modelo solicitado no disponible; sustitución de modelo autorizada"),
+        _ => {
+            if let Some(rest) = reason.strip_prefix("Provisional Sonnet-level routing to Codex. ") {
+                let rest = selection_diagnostic(rest, lang)?;
+                return Some(tf!(lang, "Provisional Sonnet-level routing to Codex. {rest}", "Asignación provisional a Codex de una tarea de nivel Sonnet. {rest}"));
+            }
+            if let Some(rest) = reason.strip_prefix("Codex cannot serve this Sonnet-level task: No enabled compatible account is signed in with available quota; open Accounts to connect or refresh it. ") {
+                let rest = selection_diagnostic(rest, lang)?;
+                return Some(tf!(lang,
+                    "Codex cannot serve this Sonnet-level task: No enabled compatible account is signed in with available quota; open Accounts to connect or refresh it. {rest}",
+                    "Codex no puede atender esta tarea de nivel Sonnet: ninguna cuenta compatible habilitada tiene la sesión iniciada y cuota disponible; abre Cuentas para conectarla o actualizarla. {rest}"));
+            }
+            return None;
+        }
+    };
+    Some(text.into())
+}
+
 fn task_model_presentation(task: &TaskId, context: &RenderContext<'_>) -> Option<super::TaskModelPresentation> {
     let selection = context.index.task_selection(task)?;
     let model_name = |model: &crate::model_selection::ModelKey, effort: Option<&str>| {
@@ -1394,8 +1417,9 @@ fn task_model_presentation(task: &TaskId, context: &RenderContext<'_>) -> Option
             // Older decisions appended diagnostic quota after this boundary. Keep their
             // explanation; the localized reading below replaces that display-only suffix.
             let reason = without_launch_diagnostic(reason);
+            let reason = selection_diagnostic(reason, context.lang).unwrap_or_else(|| reason.into());
             let quota = super::accounts::decision_quota_summary(context.index.accounts(), context.index.account_usage(), context.live.observed_at, context.lang);
-            if quota.is_empty() { reason.into() } else { format!("{reason} · {quota}") }
+            if quota.is_empty() { reason } else { format!("{reason} · {quota}") }
         })),
     })
 }
