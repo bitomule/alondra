@@ -516,7 +516,10 @@ impl<'connection> LifecycleTransaction<'connection> {
     ) -> Result<Self> {
         transaction.set_drop_behavior(DropBehavior::Rollback);
         require_foreign_keys(&transaction)?;
-        journal_format::verify(&transaction)?;
+        match cache {
+            Some(cache) => cache.verify_schema(&transaction)?,
+            None => journal_format::verify(&transaction)?,
+        }
         check_epoch(&transaction, &scope)?;
         crate::measure::transaction_attached();
         let aggregates = match cache {
@@ -762,7 +765,7 @@ impl<'connection> LifecycleTransaction<'connection> {
                 .map(|(card, _)| card.clone())
                 .collect();
             aggregate.apply(expected_revision, event)?;
-            if old_execution.as_ref() != aggregate.execution() && (!unresolved(&self.transaction, &aggregate)?.is_empty() || self.claimed_control(task)?) {
+            if old_execution.as_ref() != aggregate.execution() && (dispatch_holds_execution(&self.transaction, &aggregate)? || self.claimed_control(task)?) {
                 return Err(Error::UnresolvedDispatch);
             }
             let cleared: Vec<_> = old_cards
@@ -1171,6 +1174,15 @@ impl<'connection> LifecycleTransaction<'connection> {
         stamp: &ExecutionStamp,
         keys: &[Vec<u8>],
     ) -> Result<Vec<AdapterInputBinding>> {
+        staging!(self, { self.find_adapter_inputs(stamp, keys)?.ok_or(Error::MissingAdapterInput) })
+    }
+    /// Native commands may have no application input. Absence is data; invalid metadata, fences
+    /// and database errors still poison the transaction, including when the caller catches them.
+    pub fn find_adapter_inputs(
+        &self,
+        stamp: &ExecutionStamp,
+        keys: &[Vec<u8>],
+    ) -> Result<Option<Vec<AdapterInputBinding>>> {
         staging!(self, {
             if keys.len() > 64 || keys.iter().any(|key| key.is_empty() || key.len() > 4096) {
                 return Err(Error::MetadataCapacity);
@@ -1190,13 +1202,13 @@ impl<'connection> LifecycleTransaction<'connection> {
                         |row| Ok((row.get(0)?, row.get(1)?)),
                     )
                     .optional()?;
-                let (input, bytes) = row.ok_or(Error::MissingAdapterInput)?;
+                let Some((input, bytes)) = row else { return Ok(None) };
                 inputs.push(AdapterInputBinding {
                     input: InputId::new(input)?,
                     metadata: AdapterInputMetadata::new(bytes)?,
                 });
             }
-            Ok(inputs)
+            Ok(Some(inputs))
         })
     }
     pub fn normalization_checkpoint(
@@ -1529,7 +1541,7 @@ impl<'connection> LifecycleTransaction<'connection> {
                 if matches!(
                     aggregate.phase(),
                     TaskPhase::Completed | TaskPhase::Cancelled
-                ) && (!self.unresolved(task)?.is_empty() || self.claimed_control(task)?)
+                ) && (dispatch_holds_execution(&self.transaction, &aggregate)? || self.claimed_control(task)?)
                 {
                     return Err(Error::UnresolvedDispatch);
                 }
@@ -1632,6 +1644,11 @@ fn unresolved(connection: &Connection, aggregate: &TaskLifecycle) -> Result<Vec<
         holding.push(UnresolvedDispatch { intent_id, generation, input, uncertain_receipt });
     }
     Ok(holding)
+}
+
+fn dispatch_holds_execution(connection: &Connection, aggregate: &TaskLifecycle) -> Result<bool> {
+    Ok(unresolved(connection, aggregate)?.into_iter().any(|dispatch|
+        !dispatch.uncertain_receipt || dispatch.generation > aggregate.cancelled_through_generation()))
 }
 
 fn require_directory(connection: &Connection, task: &TaskId, directory: &str) -> Result<()> {

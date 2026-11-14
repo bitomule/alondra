@@ -151,6 +151,13 @@ impl ObservationMetadata<'_, '_> {
     ) -> alondra_store::Result<Vec<alondra_store::AdapterInputBinding>> {
         self.transaction.lookup_adapter_inputs(self.execution, keys)
     }
+    /// No mapping is an expected result for commands the native provider starts by itself.
+    pub fn find_inputs(
+        &self,
+        keys: &[Vec<u8>],
+    ) -> alondra_store::Result<Option<Vec<alondra_store::AdapterInputBinding>>> {
+        self.transaction.find_adapter_inputs(self.execution, keys)
+    }
 }
 pub struct Normalization {
     facts: Vec<Observation>,

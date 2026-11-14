@@ -515,6 +515,11 @@ for raw in sys.stdin:
             result(message, subtype='error_max_turns')
         elif text == 'consume-and-hold':
             consume(message)
+        elif text == 'consume-and-native-lifecycle':
+            consume(message)
+            native = dict(uuid='30000000-0000-4000-8000-000000000001')
+            for state in ['queued', 'started', 'completed']:
+                lifecycle(native, state)
         elif os.path.exists(capture + '.hold'):
             # Like the native Codex of 2026-10-27, resumed into a long turn: it takes the first prompt
             # and keeps working, and a message that arrives meanwhile waits unread in that turn.

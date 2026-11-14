@@ -2215,6 +2215,59 @@ fn a_turn_cut_by_the_end_of_its_host_goes_on_by_itself_in_the_resumed_session() 
     resumed.stop().unwrap();
 }
 
+#[test]
+fn unknown_native_commands_recover_after_rollback_unacknowledged_commit_and_host_exit() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("consume-and-native-lifecycle");
+    let queued = loop {
+        let batch = driver.worker.poll().unwrap().unwrap();
+        if alondra_provider_claude::sdk_message(&batch).is_some_and(|message|
+            message["command_uuid"] == "30000000-0000-4000-8000-000000000001") {
+            break batch;
+        }
+        driver.observe().unwrap();
+    };
+    let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
+    let observer = slice.observer();
+    let head = || observer.query_row("SELECT cursor FROM provider_observation_heads", [], |row| row.get::<_, i64>(0)).unwrap();
+    let before = head();
+    let checkpoint = || observer.query_row("SELECT cursor,bytes FROM provider_normalization_checkpoints", [], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))).unwrap();
+    let events = || observer.query_row("SELECT count(*) FROM lifecycle_events", [], |row| row.get::<_, i64>(0)).unwrap();
+    let checkpoint_before = checkpoint();
+    let events_before = events();
+    observer.execute_batch("CREATE TRIGGER fixture_checkpoint_abort BEFORE UPDATE ON provider_normalization_checkpoints BEGIN SELECT RAISE(ABORT,'fixture checkpoint write failed'); END").unwrap();
+    let error = driver.observe().unwrap_err();
+    assert!(error.why.contains(&format!("committing the observation at cursor {}", queued.cursor)), "{}", error.why);
+    assert_eq!(head(), before, "a failed checkpoint rolls the observation back");
+    assert_eq!(checkpoint(), checkpoint_before);
+    assert_eq!(events(), events_before);
+    assert_eq!(observer.query_row("SELECT count(*) FROM provider_observations WHERE cursor=?1", [i64::try_from(queued.cursor).unwrap()], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    assert_eq!(driver.worker.poll().unwrap().unwrap().cursor, queued.cursor, "failure sends no ACK");
+    observer.execute_batch("DROP TRIGGER fixture_checkpoint_abort").unwrap();
+
+    slice.domain.before_owner_publish(|| panic!("committed before acknowledgement"));
+    let crash = catch_unwind(AssertUnwindSafe(|| driver.observe())).unwrap_err();
+    assert_eq!(crash.downcast_ref::<&str>(), Some(&"committed before acknowledgement"));
+    assert_eq!(head(), i64::try_from(queued.cursor).unwrap());
+    let restarted = slice.restart();
+    driver.rebind(Arc::clone(&restarted));
+    assert_eq!(driver.observe().unwrap(), alondra_store::ObservationAcceptance::Duplicate);
+    assert_eq!(observer.query_row("SELECT count(*) FROM provider_observations WHERE cursor=?1", [i64::try_from(queued.cursor).unwrap()], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    let started = driver.worker.poll().unwrap().unwrap();
+    assert_eq!(alondra_provider_claude::sdk_message(&started).unwrap()["state"], "started");
+    driver.observe().unwrap();
+    let completed = driver.worker.poll().unwrap().unwrap();
+    assert_eq!(alondra_provider_claude::sdk_message(&completed).unwrap()["state"], "completed");
+    kill_host_and_daemon(driver);
+    let restarted = slice.restart();
+    let mut resumed = slice.take_over(&restarted);
+    assert!(head() >= i64::try_from(completed.cursor).unwrap());
+    assert_eq!(observer.query_row("SELECT count(*) FROM provider_discarded_observations", [], |r| r.get::<_, i64>(0)).unwrap(), 0, "all valid native evidence was normalized without discarding it");
+    assert_eq!(observer.query_row("SELECT count(*) FROM provider_input_metadata WHERE CAST(metadata AS TEXT) LIKE '%30000000-0000-4000-8000-000000000001%'", [], |r| r.get::<_, i64>(0)).unwrap(), 0, "no input mapping is fabricated");
+    assert_goes_on_by_itself(&slice, &restarted, &mut resumed, &session);
+    resumed.stop().unwrap();
+}
+
 // Production, 2026-11-07 (t-idle-node-release-processes): the adapter refused an observation the
 // ended host left, and every takeover stopped on it. The observation is discarded with why, and
 // the resumed session goes on by itself.

@@ -49,7 +49,7 @@ const JOURNAL: [&str; 8] = [
 
 /// The aggregates the last committed transaction on one connection left, kept for the next one.
 #[derive(Default)]
-pub struct AggregateCache(Mutex<Given>);
+pub struct AggregateCache(Mutex<Given>, Mutex<Option<i64>>);
 
 #[derive(Default)]
 struct Given {
@@ -58,6 +58,14 @@ struct Given {
 }
 
 impl AggregateCache {
+    pub(super) fn verify_schema(&self, connection: &Connection) -> Result<()> {
+        let schema = connection.query_row("PRAGMA schema_version", [], |row| row.get::<_, i64>(0))?;
+        if *self.1.lock().unwrap_or_else(PoisonError::into_inner) == Some(schema) {
+            crate::journal_format::verify_marker(connection)
+        } else {
+            crate::journal_format::verify(connection)
+        }
+    }
     fn give(&self, entries: BTreeMap<TaskId, Entry>, version: Version) {
         *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Given { entries, version: Some(version) };
     }
@@ -142,6 +150,10 @@ impl<'cache> Aggregates<'cache> {
     /// Called once the transaction committed, with the version it read before committing.
     pub(super) fn give(&self, version: Option<Version>) {
         if let (Some(inherited), Some(version)) = (&self.inherited, version) {
+            // A rolled-back DDL can reuse its cookie for different SQL. Publish verification
+            // only after commit, and only if the schema stayed as it was verified at attach.
+            *inherited.cache.1.lock().unwrap_or_else(PoisonError::into_inner) =
+                (version.schema == inherited.version.schema).then_some(version.schema);
             inherited.cache.give(self.entries.borrow().clone(), version);
             inherited.given.set(true);
         }

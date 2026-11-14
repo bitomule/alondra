@@ -378,3 +378,57 @@ fn raw_normalizer_commits_initial_trigger_once_and_preserves_followup_fifo() {
     drop(raw);
     drop(controller);
 }
+
+#[test]
+fn native_commands_without_input_metadata_do_not_poison_observation_commits() {
+    let directory = test_support::Directory::new();
+    std::fs::create_dir_all(&*directory).unwrap();
+    let path = directory.join("domain.db");
+    let connection = Connection::open(&path).unwrap();
+    connection.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+    connection
+        .execute_batch(include_str!("../../alondrad/src/domain_store/schema.sql"))
+        .unwrap();
+    connection.execute_batch("CREATE TABLE task_worktrees(task_id TEXT PRIMARY KEY,dir TEXT NOT NULL,at INTEGER NOT NULL); INSERT INTO domain_meta VALUES(1,'epoch',0,0); INSERT INTO requests(id,body,closed) VALUES('request','Work',0); INSERT INTO agents(id,name) VALUES('node','Worker'); INSERT INTO tasks(id,request_id,title,state,revision,started,review_prs,archived) VALUES('task','request','Task','not_started',0,0,0,0)").unwrap();
+    connection
+        .execute(
+            "INSERT INTO task_worktrees VALUES('task',?1,0)",
+            [directory.to_str().unwrap()],
+        )
+        .unwrap();
+    let fixture = Arc::new(Mutex::new(RawFixture::default()));
+    let mut controller = WorkerController::open(
+        connection,
+        AuthorityScope::new("epoch".into()).unwrap(),
+        FixtureAdapter::new(fixture.clone()),
+    )
+    .unwrap();
+    controller
+        .launch(
+            &"task".into(),
+            InputPayload::new(InputId::new("initial").unwrap(), "Initial prompt").unwrap(),
+            Event::Admit {
+                node: "node".into(),
+                conversation: ConversationId::new("conversation").unwrap(),
+                instance: InstanceId::new("instance").unwrap(),
+                host: HostId::new("host").unwrap(),
+            },
+            Placement::LocalDirectory(directory.to_str().unwrap().into()),
+        )
+        .unwrap();
+    fixture.lock().unwrap().events.push_back(json!({"type":"system","subtype":"init"}));
+    assert!(controller.observe().unwrap());
+    for state in ["started", "queued", "completed", "cancelled", "discarded", "refused"] {
+        fixture.lock().unwrap().events.push_back(json!({"type":"command_lifecycle","command_uuid":SECOND,"state":state}));
+        assert!(controller.observe().expect("a native command without our metadata is valid evidence"));
+    }
+    assert_eq!(controller.load(&"task".into()).unwrap().pending_inputs(), vec![&InputId::new("initial").unwrap()]);
+    fixture.lock().unwrap().events.push_back(json!({"type":"assistant","uuid":THIRD,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST]}));
+    assert!(controller.observe().unwrap(), "the following mapped observation still consumes its input");
+    assert!(controller.load(&"task".into()).unwrap().pending_inputs().is_empty());
+    assert_eq!(fixture.lock().unwrap().acknowledgements, (1..=8).collect::<Vec<_>>());
+    drop(controller);
+    let reopened = Connection::open(path).unwrap();
+    assert_eq!(reopened.query_row("SELECT count(*) FROM provider_observations", [], |row| row.get::<_, i64>(0)).unwrap(), 8);
+    assert_eq!(reopened.query_row("SELECT cursor FROM provider_normalization_checkpoints", [], |row| row.get::<_, i64>(0)).unwrap(), 8);
+}

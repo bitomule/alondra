@@ -2949,6 +2949,159 @@ fn uncertain_launch(fixture: &mut Fixture) -> ExecutionStamp {
     tx.commit().unwrap();
     stamp
 }
+
+fn cancel_with_unresolved_send(fixture: &mut Fixture, stamp: &ExecutionStamp) -> (Revision, Event) {
+    let mut tx = fixture.transaction();
+    tell(&mut tx, &"task".into(), "waiting");
+    let revision = tx.load(&"task".into()).unwrap().revision();
+    tx.apply(&"task".into(), revision, "cancel", Event::Finish {
+        intent: FinishIntent::Cancel, cleanup: op("cleanup"), post_merge: None,
+    }).unwrap();
+    tx.apply(&"task".into(), revision + 1, "cleanup-ended", Event::DrainObserved {
+        obligation: DrainObligation::Cleanup(op("cleanup")),
+    }).unwrap();
+    tx.commit().unwrap();
+    (revision + 2, Event::DrainObserved { obligation: DrainObligation::Execution(stamp.instance().clone()) })
+}
+
+#[test]
+fn cancellation_preserves_uncertainty_and_reopens_without_an_old_dispatch_blocking() {
+    let mut fixture = Fixture::new();
+    let stamp = uncertain_launch(&mut fixture);
+    let (revision, ended) = cancel_with_unresolved_send(&mut fixture, &stamp);
+    // Losing this transaction before commit leaves exactly the same ending to retry.
+    {
+        let mut tx = fixture.transaction();
+        tx.apply(&"task".into(), revision, "execution-ended", ended.clone()).unwrap();
+    }
+    fixture.connection = Connection::open(fixture.directory.join("domain.db")).unwrap();
+    fixture.connection.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+    for replay in [false, true] {
+        let mut tx = fixture.transaction();
+        assert_eq!(tx.apply(&"task".into(), revision, "execution-ended", ended.clone()).unwrap().replayed, replay);
+        assert_eq!(tx.load(&"task".into()).unwrap().phase(), TaskPhase::Cancelled);
+        let unresolved = tx.unresolved(&"task".into()).unwrap();
+        assert_eq!(unresolved.len(), 1);
+        assert!(unresolved[0].uncertain_receipt);
+        let committed = tx.commit().unwrap();
+        assert!(committed.permits.is_empty());
+    }
+    fixture.connection = Connection::open(fixture.directory.join("domain.db")).unwrap();
+    fixture.connection.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+    let directory = fixture.directory.join("task");
+    let mut tx = fixture.transaction();
+    tx.put_input(&"task".into(), payload("reopened")).unwrap();
+    let revision = tx.load(&"task".into()).unwrap().revision();
+    tx.apply(&"task".into(), revision, "reopen", Event::Reopen { input: id("reopened") }).unwrap();
+    tx.apply(&"task".into(), revision + 1, "admit-again", admit("node", "next-instance")).unwrap();
+    tx.stage_launch(&"task".into(), &local(&directory), &test_binding()).unwrap();
+    let permit = tx.commit().unwrap().permits.pop().unwrap();
+    assert_eq!(permit.execution().generation(), 2);
+    let mut tx = fixture.transaction();
+    tx.claim(permit).unwrap();
+    let attempt = tx.commit().unwrap().attempts.pop().unwrap();
+    let mut tx = fixture.transaction();
+    tx.record_receipt(attempt, DispatchReceipt::Uncertain).unwrap();
+    assert_eq!(tx.unresolved(&"task".into()).unwrap().len(), 2, "both generations remain auditable");
+    tx.commit().unwrap();
+    fixture.runtime("task", RuntimeFact::ResourceAvailable);
+    fixture.runtime("task", RuntimeFact::TurnStarted { turn: TurnId::new("next-turn").unwrap(), trigger: Trigger::Input(id("reopened")) });
+    fixture.card("task", "recovery");
+    fixture.runtime("task", RuntimeFact::ResourceReleased { problem_card: "recovery".into() });
+    let mut tx = fixture.transaction();
+    tx.put_input(&"task".into(), payload("continuation")).unwrap();
+    let revision = tx.load(&"task".into()).unwrap().revision();
+    assert!(matches!(tx.apply(&"task".into(), revision, "retire", Event::RetireReleasedExecution {
+        problem_card: "recovery".into(), input: id("continuation"),
+    }), Err(Error::UnresolvedDispatch)), "new uncertainty still blocks replacing its execution");
+}
+
+#[test]
+fn cancellation_does_not_bypass_an_unreceipted_claim() {
+    let mut fixture = Fixture::new();
+    let owner = crashed_claim(&mut fixture, b"command still claimed");
+    let (revision, ended) = cancel_with_unresolved_send(&mut fixture, owner.execution());
+    let mut tx = fixture.transaction();
+    assert!(matches!(tx.apply(&"task".into(), revision, "execution-ended", ended), Err(Error::UnresolvedDispatch)));
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+}
+
+#[test]
+fn cancellation_does_not_bypass_a_claimed_control() {
+    let mut fixture = Fixture::new();
+    let stamp = running_sdk(&mut fixture, &control_binding(every_control()));
+    let permit = request(&mut fixture, "status", Control::ReadMcpStatus).unwrap().control_permits.pop().unwrap();
+    let mut tx = fixture.transaction();
+    assert!(tx.claim_control(permit).unwrap());
+    tx.commit().unwrap();
+    let (revision, ended) = cancel_with_unresolved_send(&mut fixture, &stamp);
+    let mut tx = fixture.transaction();
+    assert!(matches!(tx.apply(&"task".into(), revision, "execution-ended", ended), Err(Error::UnresolvedDispatch)));
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+    assert_eq!(control_status(&fixture, "status"), "claimed");
+    assert_eq!(fixture.transaction().load(&"task".into()).unwrap().cancelled_through_generation(), 0);
+}
+
+#[test]
+fn completing_a_task_does_not_hide_an_uncertain_dispatch() {
+    let mut fixture = Fixture::new();
+    let stamp = uncertain_launch(&mut fixture);
+    fixture.runtime("task", RuntimeFact::ResourceAvailable);
+    fixture.runtime("task", RuntimeFact::TurnStarted { turn: TurnId::new("turn").unwrap(), trigger: Trigger::Input(id("initial")) });
+    fixture.connection.execute("INSERT INTO interactions(id,scope_kind,task_id,author_kind,recipient_kind,body,blocking,kind,revision,ordering,is_final,withdrawn,card) VALUES('delivery','task','task','system','user','Result',0,'delivery',0,0,0,0,'{\"kind\":\"provide\",\"need\":\"Review\"}')", []).unwrap();
+    let mut tx = fixture.transaction();
+    let mut revision = tx.load(&"task".into()).unwrap().revision();
+    for (command, event) in [
+        ("present", Event::Present { delivery: "delivery".into() }),
+        ("accept", Event::Accept { delivery: "delivery".into(), merge: None }),
+        ("finish", Event::Finish { intent: FinishIntent::Complete, cleanup: op("cleanup"), post_merge: None }),
+        ("cleaned", Event::DrainObserved { obligation: DrainObligation::Cleanup(op("cleanup")) }),
+    ] {
+        tx.apply(&"task".into(), revision, command, event).unwrap();
+        revision += 1;
+    }
+    assert!(matches!(tx.apply(&"task".into(), revision, "ended", Event::DrainObserved {
+        obligation: DrainObligation::Execution(stamp.instance().clone()),
+    }), Err(Error::UnresolvedDispatch)));
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+}
+
+#[test]
+fn optional_native_metadata_absence_keeps_real_errors_strict() {
+    let mut fixture = Fixture::new();
+    fixture.create("task");
+    let stamp = fixture.launch("task").execution().clone();
+    let tx = fixture.transaction();
+    assert!(tx.find_adapter_inputs(&stamp, &[b"native-command".to_vec()]).unwrap().is_none());
+    tx.commit().unwrap();
+    let tx = fixture.transaction();
+    assert!(matches!(tx.lookup_adapter_inputs(&stamp, &[b"native-command".to_vec()]), Err(Error::MissingAdapterInput)));
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+    let tx = fixture.transaction();
+    assert!(matches!(tx.find_adapter_inputs(&stamp, &vec![b"key".to_vec(); 65]), Err(Error::MetadataCapacity)));
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+    let tx = fixture.transaction();
+    tx.connection.execute_batch("DROP TABLE provider_input_metadata").unwrap();
+    assert!(matches!(tx.find_adapter_inputs(&stamp, &[b"key".to_vec()]), Err(Error::Database(_))));
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+}
+
+#[test]
+fn retention_keeps_the_command_and_input_of_a_cancelled_uncertain_dispatch() {
+    let mut fixture = Fixture::new();
+    let stamp = uncertain_launch(&mut fixture);
+    let (revision, ended) = cancel_with_unresolved_send(&mut fixture, &stamp);
+    let mut tx = fixture.transaction();
+    tx.apply(&"task".into(), revision, "execution-ended", ended).unwrap();
+    tx.commit().unwrap();
+    fixture.connection.execute("UPDATE tasks SET state='cancelled' WHERE id='task'", []).unwrap();
+    let retained = retain(&mut fixture);
+    assert_eq!((retained.commands_removed, retained.texts_released), (0, 1),
+        "the uncertain command and text remain; only the never-claimed input releases its text");
+    assert_eq!(fixture.connection.query_row("SELECT bytes FROM provider_commands", [], |r| r.get::<_, Vec<u8>>(0)).unwrap(), b"framed command");
+    assert_eq!(fixture.connection.query_row("SELECT body FROM lifecycle_inputs WHERE input_id='initial'", [], |r| r.get::<_, String>(0)).unwrap(), "Full prompt for initial");
+    assert_eq!(retain(&mut fixture), EvidenceRetention::default());
+}
 fn decide(fixture: &mut Fixture, command: &str, event: Event) -> Committed {
     let mut tx = fixture.transaction();
     let revision = tx.load(&"task".into()).unwrap().revision();
@@ -3102,8 +3255,8 @@ fn a_transaction_replays_each_task_once_and_reads_its_own_applies() {
     assert_eq!(tx.load(&"task".into()).unwrap().revision(), 2);
     drop(tx);
     assert_eq!(
-        measure::Counts { input_checks: 0, ..measure::counts() - before },
-        measure::Counts { transactions: 1, aggregate_loads: 1, event_decodes: 1, input_checks: 0 },
+        measure::Counts { input_checks: 0, schema_verifications: 0, schema_queries: 0, ..measure::counts() - before },
+        measure::Counts { transactions: 1, aggregate_loads: 1, event_decodes: 1, ..Default::default() },
         "a transaction replays the journal of the task it touches once"
     );
 
@@ -4130,6 +4283,120 @@ fn an_input_lets_go_of_its_text_only_once_its_task_is_done_or_cancelled() {
 fn cached<'connection>(connection: &'connection Connection, cache: &'connection AggregateCache) -> LifecycleTransaction<'connection> {
     let transaction = Transaction::new_unchecked(connection, TransactionBehavior::Immediate).unwrap();
     LifecycleTransaction::attach_cached(transaction, scope(), cache).unwrap()
+}
+
+#[test]
+fn observation_backlog_verifies_schema_once_per_connection() {
+    let mut fixture = Fixture::new();
+    fixture.create("task");
+    let stamp = fixture.launch("task").execution().clone();
+    fixture.connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;").unwrap();
+    let cache = AggregateCache::default();
+    let before = measure::counts();
+    let started = std::time::Instant::now();
+    for cursor in 1..=600 {
+        let mut tx = cached(&fixture.connection, &cache);
+        capture_public_context(&mut tx, &stamp, cursor, &[]);
+        tx.commit().unwrap();
+    }
+    let work = measure::counts() - before;
+    eprintln!("backlog=600 elapsed={:?} work={work:?}", started.elapsed());
+    assert_eq!(work.transactions, 600, "every observation keeps its own durable transaction");
+    assert_eq!(work.schema_verifications, 1, "an unchanged schema is verified once on this connection");
+    let tx = cached(&fixture.connection, &cache);
+    assert_eq!(tx.normalization_checkpoint(&stamp).unwrap().unwrap().cursor(), 600);
+    assert_eq!(fixture.connection.query_row("SELECT count(*) FROM provider_observations", [], |row| row.get::<_, i64>(0)).unwrap(), 600);
+    tx.commit().unwrap();
+}
+
+#[test]
+fn cached_schema_still_checks_marker_foreign_keys_and_changed_guards() {
+    let fixture = Fixture::new();
+    let cache = AggregateCache::default();
+    cached(&fixture.connection, &cache).commit().unwrap();
+    fixture.connection.execute("UPDATE lifecycle_journal_format SET format='unknown'", []).unwrap();
+    let tx = Transaction::new_unchecked(&fixture.connection, TransactionBehavior::Immediate).unwrap();
+    assert!(matches!(LifecycleTransaction::attach_cached(tx, scope(), &cache), Err(Error::UnsupportedJournalFormat)));
+    fixture.connection.execute("UPDATE lifecycle_journal_format SET format='alondra-task-resources-v1'", []).unwrap();
+    fixture.connection.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+    let tx = Transaction::new_unchecked(&fixture.connection, TransactionBehavior::Immediate).unwrap();
+    assert!(LifecycleTransaction::attach_cached(tx, scope(), &cache).is_err());
+    fixture.connection.execute_batch("PRAGMA foreign_keys=ON; DROP TRIGGER lifecycle_event_immutable").unwrap();
+    let tx = Transaction::new_unchecked(&fixture.connection, TransactionBehavior::Immediate).unwrap();
+    assert!(matches!(LifecycleTransaction::attach_cached(tx, scope(), &cache), Err(Error::UnsupportedJournalFormat)));
+}
+
+#[test]
+fn rolled_back_schema_verification_cannot_bless_a_reused_cookie() {
+    let fixture = Fixture::new();
+    let cache = AggregateCache::default();
+    cached(&fixture.connection, &cache).commit().unwrap();
+    let tx = Transaction::new_unchecked(&fixture.connection, TransactionBehavior::Immediate).unwrap();
+    tx.execute_batch("CREATE TABLE harmless(value INTEGER)").unwrap();
+    let rolled_back_cookie: i64 = tx.query_row("PRAGMA schema_version", [], |r| r.get(0)).unwrap();
+    drop(LifecycleTransaction::attach_cached(tx, scope(), &cache).unwrap());
+    fixture.connection.execute_batch("DROP TRIGGER lifecycle_event_immutable").unwrap();
+    assert_eq!(fixture.connection.query_row("PRAGMA schema_version", [], |r| r.get::<_, i64>(0)).unwrap(), rolled_back_cookie);
+    let tx = Transaction::new_unchecked(&fixture.connection, TransactionBehavior::Immediate).unwrap();
+    assert!(matches!(LifecycleTransaction::attach_cached(tx, scope(), &cache), Err(Error::UnsupportedJournalFormat)));
+}
+
+#[test]
+fn a_new_connection_and_a_committed_schema_change_require_full_verification() {
+    let fixture = Fixture::new();
+    let cache = AggregateCache::default();
+    cached(&fixture.connection, &cache).commit().unwrap();
+    fixture.connection.execute_batch("CREATE TABLE unrelated(value INTEGER)").unwrap();
+    let before = measure::counts();
+    cached(&fixture.connection, &cache).commit().unwrap();
+    assert_eq!((measure::counts() - before).schema_verifications, 1);
+    let reopened = Connection::open(fixture.directory.join("domain.db")).unwrap();
+    reopened.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+    let new_cache = AggregateCache::default();
+    let before = measure::counts();
+    cached(&reopened, &new_cache).commit().unwrap();
+    assert_eq!((measure::counts() - before).schema_verifications, 1);
+}
+
+/// Persistence-only lower bound for batching; the host still needs each commit before its ACK.
+#[test]
+#[ignore = "explicit comparison of durable catch-up strategies"]
+fn observation_backlog_strategy_comparison() {
+    for total in [600_u64, 6000] {
+        for (strategy, chunk) in [("per-event", 1), ("laboratory-batch", 64)] {
+            let mut fixture = Fixture::new();
+            fixture.create("task");
+            let stamp = fixture.launch("task").execution().clone();
+            let expected = replayed(&fixture.connection, &"task".into());
+            fixture.connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL").unwrap();
+            let cache = AggregateCache::default();
+            let before = measure::counts();
+            let started = std::time::Instant::now();
+            let mut cursor = 1;
+            while cursor <= total {
+                let sql = Transaction::new_unchecked(&fixture.connection, TransactionBehavior::Immediate).unwrap();
+                let mut tx = LifecycleTransaction::attach_cached(sql, scope(), &cache).unwrap();
+                for next in cursor..(cursor + chunk).min(total + 1) {
+                    capture_public_context(&mut tx, &stamp, next, &[]);
+                }
+                tx.commit().unwrap();
+                cursor += chunk;
+            }
+            let elapsed = started.elapsed();
+            let work = measure::counts() - before;
+            eprintln!("strategy={strategy} backlog={total} elapsed={elapsed:?} work={work:?}");
+            assert_eq!(work.transactions, total.div_ceil(chunk));
+            let tx = cached(&fixture.connection, &cache);
+            let checkpoint = tx.normalization_checkpoint(&stamp).unwrap().unwrap();
+            assert_eq!(checkpoint.cursor(), total);
+            assert_eq!(checkpoint.bytes(), format!("checkpoint {total}").as_bytes());
+            assert_eq!(*tx.load(&"task".into()).unwrap(), *expected);
+            drop(tx);
+            let cursors = fixture.connection.prepare("SELECT cursor FROM provider_observations ORDER BY cursor").unwrap()
+                .query_map([], |row| row.get::<_, i64>(0)).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+            assert_eq!(cursors, (1..=i64::try_from(total).unwrap()).collect::<Vec<_>>());
+        }
+    }
 }
 
 fn tell(tx: &mut LifecycleTransaction<'_>, task: &TaskId, input: &str) {

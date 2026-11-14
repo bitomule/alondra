@@ -121,6 +121,7 @@ fn upgrade_triggers(connection: &Connection) -> Result<()> {
     Ok(())
 }
 fn verify_schema(connection: &Connection) -> Result<()> {
+    crate::measure::schema_verified();
     context(connection, false)?;
     require_object(
         connection,
@@ -128,6 +129,17 @@ fn verify_schema(connection: &Connection) -> Result<()> {
         "lifecycle_journal_format",
         MARKER_SCHEMA,
     )?;
+    verify_marker(connection)?;
+    for source in [SCHEMA, ADDITIONS] {
+        for (kind, name, expected) in objects(source)? {
+            require_object(connection, kind, name, &expected)?;
+        }
+    }
+    Ok(())
+}
+
+/// The marker's value can change without changing SQLite's schema cookie.
+pub(super) fn verify_marker(connection: &Connection) -> Result<()> {
     let format: Option<String> = connection
         .query_row(
             "SELECT format FROM lifecycle_journal_format WHERE singleton=1",
@@ -138,17 +150,13 @@ fn verify_schema(connection: &Connection) -> Result<()> {
     if format.as_deref() != Some(FORMAT) {
         return Err(Error::UnsupportedJournalFormat);
     }
-    for source in [SCHEMA, ADDITIONS] {
-        for (kind, name, expected) in objects(source)? {
-            require_object(connection, kind, name, &expected)?;
-        }
-    }
     Ok(())
 }
 fn context(connection: &Connection, install: bool) -> Result<()> {
     let objects = objects(crate::task_context::SCHEMA)?;
     let mut present = false;
     for (_, name, _) in &objects {
+        crate::measure::schema_queried();
         present |= connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)", [name], |row| row.get::<_, bool>(0))?;
     }
     if !present && !install { return Ok(()); }
@@ -190,6 +198,7 @@ fn objects(source: &str) -> Result<Vec<(&'static str, &str, String)>> {
     Ok(objects)
 }
 fn require_object(connection: &Connection, kind: &str, name: &str, expected: &str) -> Result<()> {
+    crate::measure::schema_queried();
     let object: Option<(String, Option<String>)> = connection
         .query_row(
             "SELECT type,sql FROM sqlite_master WHERE name=?1",
