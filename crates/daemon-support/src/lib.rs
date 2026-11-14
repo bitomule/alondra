@@ -52,3 +52,4 @@ pub mod uploads;
 pub mod watcher;
 pub mod workflow_state;
 pub mod worktree;
+pub mod worktrees_root;

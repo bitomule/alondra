@@ -302,7 +302,7 @@ const START_RETRIES: &str = "CREATE TABLE IF NOT EXISTS start_retries(\
 /// state says it. `detail` is the folder Claude Code does not trust, or the error.
 const LAUNCH_REFUSALS: &str = "CREATE TABLE IF NOT EXISTS launch_refusals(\
  task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
- reason TEXT NOT NULL CHECK(reason IN('usage_exhausted','disk_low','workspace_untrusted','launch_failed')),\
+ reason TEXT NOT NULL CHECK(reason IN('usage_exhausted','disk_low','workspace_untrusted','launch_failed','worktrees_unavailable')),\
  detail TEXT,\
  at INTEGER NOT NULL);";
 /// The worktree a node took over from the node it replaced: Alondra may delete it with the node,
@@ -481,6 +481,17 @@ pub fn audit(connection: &Connection) -> Result<()> {
     ensure!(violations == 0, "database foreign key check failed: {violations} violation(s)");
     Ok(())
 }
+fn recorded_worktree_storage(conn: &Connection, path: &str) -> Result<Option<(std::path::PathBuf, alondra_daemon_support::worktrees_root::Repository)>> {
+    for ancestor in Path::new(path).ancestors() {
+        let json: Option<String> = conn.query_row("SELECT storage FROM worktree_storage WHERE path=?1", [ancestor.to_string_lossy()], |row| row.get(0)).optional()?;
+        if let Some(json) = json {
+            return Ok(Some((ancestor.to_path_buf(), serde_json::from_str(&json)?)));
+        }
+        if ancestor.join(".git").exists() { break; }
+    }
+    Ok(None)
+}
+
 fn data_version(c: &Connection) -> Result<i64> {
     Ok(c.pragma_query_value(None, "data_version", |r| r.get(0))?)
 }
@@ -798,8 +809,15 @@ impl DomainStore {
         tx.execute_batch(AUTO_LAUNCHES)?;
         tx.execute_batch(START_RETRIES)?;
         tx.execute_batch(LAUNCH_REFUSALS)?;
+        let refusals: String = tx.query_row("SELECT sql FROM sqlite_schema WHERE type='table' AND name='launch_refusals'", [], |row| row.get(0))?;
+        if !refusals.contains("'worktrees_unavailable'") {
+            tx.execute_batch("ALTER TABLE launch_refusals RENAME TO launch_refusals_previous;")?;
+            tx.execute_batch(LAUNCH_REFUSALS)?;
+            tx.execute_batch("INSERT INTO launch_refusals SELECT * FROM launch_refusals_previous; DROP TABLE launch_refusals_previous;")?;
+        }
         tx.execute_batch(INHERITED_WORKTREES)?;
         tx.execute_batch(TASK_WORKTREES)?;
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS worktree_storage(path TEXT PRIMARY KEY, storage TEXT NOT NULL CHECK(json_valid(storage)));")?;
         tx.execute_batch(TASK_WORKTREE_RECORDS)?;
         tx.execute_batch(discarded_observations::SCHEMA)?;
         repository::allow_handed_over_worktrees(&tx, TASK_WORKTREE_RECORDS)?;
@@ -1412,9 +1430,27 @@ impl DomainStore {
     pub fn task_worktrees(&self) -> Result<Vec<(TaskId, String)>> {
         let mut query = self.conn.prepare("SELECT task_id,dir FROM task_worktrees ORDER BY task_id")?;
         let rows = query.query_map([], |row| Ok((TaskId(row.get(0)?), row.get(1)?)))?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        let rows = rows.collect::<rusqlite::Result<Vec<(TaskId, String)>>>()?;
+        rows.into_iter().map(|(task, path)| {
+            let owned: Option<String> = self.conn.query_row(
+                "SELECT r.path FROM task_worktree_records r JOIN worktree_storage s ON s.path=r.path \
+                 WHERE r.task_id=?1 AND r.origin IN('task','inherited') AND r.end IS NULL \
+                 AND (?2=r.path OR substr(?2,1,length(r.path)+1)=r.path||'/') ORDER BY length(r.path) DESC LIMIT 1",
+                params![task.0, path], |row| row.get(0)).optional()?;
+            Ok((task, owned.unwrap_or(path)))
+        }).collect()
+    }
+    pub fn worktree_storage(&self, path: &str) -> Result<Option<alondra_daemon_support::worktrees_root::Repository>> {
+        Ok(self.worktree_storage_at(path)?.map(|(_, record)| record))
+    }
+    pub fn worktree_storage_at(&self, path: &str) -> Result<Option<(std::path::PathBuf, alondra_daemon_support::worktrees_root::Repository)>> {
+        recorded_worktree_storage(&self.conn, path)
     }
     pub fn set_task_worktree(&mut self, task_id: &TaskId, dir: &str, now: i64) -> Result<()> {
+        if let Some(storage) = alondra_daemon_support::worktrees_root::stored(Path::new(dir)) {
+            self.conn.execute("INSERT INTO worktree_storage(path,storage) VALUES(?1,?2) ON CONFLICT(path) DO UPDATE SET storage=excluded.storage",
+                params![dir, serde_json::to_string(&storage)?])?;
+        }
         self.conn.execute(
             "INSERT INTO task_worktrees(task_id,dir,at) VALUES(?1,?2,?3) ON CONFLICT(task_id) DO UPDATE SET dir=excluded.dir,at=excluded.at",
             params![task_id.0, dir, now])?;

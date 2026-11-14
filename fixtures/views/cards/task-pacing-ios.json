@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-queued-next",
   "client": "ios",
-  "version": "vea02f36e21d2c13b",
+  "version": "v3d6a37233df5e925",
   "cursor": "cursor-1",
   "title": "Fix the crash when the schedule list is empty",
   "status": {
@@ -100,7 +100,7 @@
             {
               "kind": "state",
               "label": "State",
-              "value": "Waiting · 1st of 2 · High priority",
+              "value": "Waiting · 1st of 2 · the Mac is short of memory · High priority",
               "tone": "neutral"
             },
             {

@@ -160,19 +160,18 @@ pub(crate) fn producer_prompt(
     lines.join("\n")
 }
 
-/// Invoke only after the technical intent has been claimed durably: the scheduled Request's task
-/// starts through the daemon's Agent SDK host, with the Request's denied tools. The node the host
-/// runs is the task's own from its admission.
-async fn launch_through_sdk(
+/// Prepares the workspace without starting a host. Configured storage is prepared before the
+/// launch claim, so a volume disappearing during worktree creation leaves the run pending.
+async fn prepare_sdk(
     domain: &DomainRuntime,
     launch: &ScheduleLaunchIntent,
     task: &TaskId,
     disallowed_tools: &[String],
     home: &Path,
-) -> Result<String, String> {
-    let mut resolved: Resolved = serde_json::from_str(&launch.options_json).map_err(|why| why.to_string())?;
+) -> Result<Prepared, alondra_core::domain::DomainError> {
+    let mut resolved: Resolved = serde_json::from_str(&launch.options_json).map_err(|why| alondra_core::domain::DomainError::new("invalid_input", why.to_string()))?;
     let account = if let Some(intent) = resolved.selection.clone() {
-        let decision = crate::accounts::select_for_launch_with_tools(domain, home, &intent, disallowed_tools, alondra_core::now_millis()).map_err(|why| why.message)?;
+        let decision = crate::accounts::select_for_launch_with_tools(domain, home, &intent, disallowed_tools, alondra_core::now_millis())?;
         let mut intent = intent;
         intent.effective = Some(decision.selection.clone());
         resolved.flags.model = (decision.account.provider == alondra_core::accounts::Provider::Claude).then(|| decision.selection.model.model.clone());
@@ -181,15 +180,37 @@ async fn launch_through_sdk(
         decision.account
     } else {
         let id = crate::accounts::choose_for_launch(domain, home, alondra_core::now_millis())
-            .ok_or_else(|| if domain.live.usage_pause.waits_for_session() { "no Claude account on this Mac has a session" } else { "no Claude account on this Mac has usage left" }.to_owned())?;
+            .ok_or_else(|| alondra_core::domain::DomainError::new("account_unavailable", if domain.live.usage_pause.waits_for_session() { "no Claude account on this Mac has a session" } else { "no Claude account on this Mac has usage left" }))?;
         alondra_core::accounts::AccountKey::new(alondra_core::accounts::Provider::Claude, id)
     };
     crate::accounts::log_choice(domain, "scheduled run", &account, alondra_core::now_millis());
     let profile = alondra_core::accounts::provider_folder(home, &account);
     let mut selected_launch = launch.clone();
-    selected_launch.options_json = serde_json::to_string(&resolved).map_err(|why| why.to_string())?;
-    let (workplace, plugin, resolved) = prepare_claimed(&selected_launch, task, home, profile.as_deref()).await.map_err(|(_, reason)| reason)?;
-    crate::domain_orchestrator_tools::own_worktree(domain, task, &workplace).await.map_err(|error| error.message)?;
+    selected_launch.options_json = serde_json::to_string(&resolved).map_err(|why| alondra_core::domain::DomainError::new("invalid_input", why.to_string()))?;
+    let (workplace, plugin, resolved) = prepare_claimed(domain, &selected_launch, task, home, profile.as_deref()).await?;
+    crate::domain_orchestrator_tools::own_worktree(domain, task, &workplace).await?;
+    Ok(Prepared { workplace, plugin, resolved, account })
+}
+
+struct Prepared {
+    workplace: Workplace,
+    plugin: PathBuf,
+    resolved: Resolved,
+    account: alondra_core::accounts::AccountKey,
+}
+
+async fn launch_through_sdk(
+    domain: &DomainRuntime,
+    launch: &ScheduleLaunchIntent,
+    task: &TaskId,
+    disallowed_tools: &[String],
+    home: &Path,
+    prepared: Option<Prepared>,
+) -> Result<String, String> {
+    let Prepared { workplace, plugin, resolved, account } = match prepared {
+        Some(prepared) => prepared,
+        None => prepare_sdk(domain, launch, task, disallowed_tools, home).await.map_err(|why| why.message)?,
+    };
     let selected = resolved.selection.as_ref().and_then(|selection| selection.effective.as_ref());
     let options = alondra_daemon_engine_model::LaunchOptions {
         provider: account.provider,
@@ -220,33 +241,39 @@ async fn launch_through_sdk(
 }
 
 async fn prepare_claimed(
+    domain: &DomainRuntime,
     launch: &ScheduleLaunchIntent,
     task: &TaskId,
     home: &Path,
     profile: Option<&Path>,
-) -> Result<(Workplace, PathBuf, Resolved), (StatusCode, String)> {
+) -> Result<(Workplace, PathBuf, Resolved), alondra_core::domain::DomainError> {
+    let storage_error = |why: String| alondra_core::domain::DomainError::new("worktrees_unavailable", why);
+    let known = domain.task_worktree(task).map_err(|why| storage_error(why.to_string()))?;
+    let recorded = match &known {
+        Some(path) => {
+            crate::task_worktrees::ready(domain, path).await.map_err(|why| storage_error(why.to_string()))?;
+            domain.store.lock_or_exit("the domain store").worktree_storage(path).map_err(|why| storage_error(why.to_string()))?
+        },
+        None => None,
+    };
     if !Path::new(&launch.cwd).is_dir() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "schedule project directory does not exist".into(),
-        ));
+        return Err(alondra_core::domain::DomainError::new("invalid_input", "schedule project directory does not exist"));
     }
-    let resolved: Resolved = serde_json::from_str(&launch.options_json).map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    let resolved: Resolved = serde_json::from_str(&launch.options_json).map_err(|error| alondra_core::domain::DomainError::new("invalid_input", error.to_string()))?;
     let projects_root = options_at(home).ok().map(|file| file.projects_root(&crate::options::user_home()));
     if let Some(repository) = (resolved.selected_provider() == Some(alondra_core::accounts::Provider::Claude)).then(|| crate::claude_trust::ensure_for(profile, Path::new(&launch.cwd), projects_root.as_deref())).flatten() {
-        return Err((
-            StatusCode::CONFLICT,
-            crate::claude_trust::instructions(&repository),
-        ));
+        return Err(alondra_core::domain::DomainError::new("workspace_untrusted", crate::claude_trust::instructions(&repository)));
     }
-    let workplace = crate::launch_worktree::isolate(Path::new(&launch.cwd), &crate::launch_worktree::slug(&task.0), None, None)
+    let file = options_at(home).map_err(|why| alondra_core::domain::DomainError::new("invalid_input", why.to_string()))?;
+    let root = recorded.map(|record| record.root).or(file.worktrees_root);
+    let workplace = crate::launch_worktree::isolate_in(Path::new(&launch.cwd), &crate::launch_worktree::slug(&task.0), known.as_deref().map(Path::new), None, root.as_ref())
         .await
-        .map_err(|why| (StatusCode::CONFLICT, why))?;
+        .map_err(|why| {
+            let code = match &why { crate::launch_worktree::LaunchError::Storage(_) => "worktrees_unavailable", _ => "main_checkout" };
+            alondra_core::domain::DomainError::new(code, why.to_string())
+        })?;
     let Some(plugin) = crate::plugins::node_in(home) else {
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Alondra's Claude plugin is unavailable".into(),
-        ));
+        return Err(alondra_core::domain::DomainError::new("unavailable", "Alondra's Claude plugin is unavailable"));
     };
     Ok((workplace, plugin, resolved))
 }
@@ -447,8 +474,47 @@ async fn dispatch_pending(
     if domain.live.gate.ask(domain, waiting, now).is_err() {
         return Ok(());
     }
-    let intent = launch.intent.clone();
+    let root = options_at(home)?.worktrees_root;
     let task = run.task_id.clone().context("sent run has no Task")?;
+    let known = domain.task_worktree(&task)?;
+    let retained = match &known {
+        Some(path) => domain.store.lock_or_exit("the domain store").worktree_storage(path)?,
+        None => None,
+    };
+    let root = retained.as_ref().map(|record| record.root.clone()).or(root);
+    let configured = root.is_some() || retained.is_some();
+    if configured {
+        if let Some(path) = &known {
+            if crate::task_worktrees::ready(domain, path).await.is_err() {
+                domain.live.gate.not_started(&key);
+                domain.store.lock_or_exit("the domain store").set_launch_refusal(&task, Some(("worktrees_unavailable", None)), now)?;
+                return Ok(());
+            }
+        }
+        match crate::launch_worktree::storage_for(Path::new(&launch.intent.cwd), &crate::launch_worktree::slug(&task.0), known.as_deref().map(Path::new), None, root.as_ref()).await {
+            Ok(storage) if domain.live.machine_watch.refuse_launch(&storage).is_none() => {},
+            Err(crate::launch_worktree::LaunchError::Workspace(why)) => return fail_run(domain, run_id, why),
+            result => {
+                domain.live.gate.not_started(&key);
+                if result.is_err() {
+                    domain.store.lock_or_exit("the domain store").set_launch_refusal(&task, Some(("worktrees_unavailable", None)), now)?;
+                }
+                return Ok(());
+            }
+        }
+    }
+    let intent = launch.intent.clone();
+    let prepared = if configured {
+        match prepare_sdk(domain, &intent, &task, &policy, home).await {
+            Ok(prepared) => Some(prepared),
+            Err(error) if error.code == "worktrees_unavailable" => {
+                domain.live.gate.not_started(&key);
+                domain.store.lock_or_exit("the domain store").set_launch_refusal(&task, Some(("worktrees_unavailable", None)), now)?;
+                return Ok(());
+            }
+            Err(error) => return fail_run(domain, run_id, error.message),
+        }
+    } else { None };
     match execute_system(
         domain,
         Command::ClaimScheduleLaunch {
@@ -466,7 +532,7 @@ async fn dispatch_pending(
             return Err(error.into());
         }
     }
-    let agent = match launch_through_sdk(domain, &intent, &task, &policy, home).await {
+    let agent = match launch_through_sdk(domain, &intent, &task, &policy, home, prepared).await {
         Ok(agent) => agent,
         Err(reason) => return fail_run(domain, run_id, reason),
     };
@@ -1685,6 +1751,42 @@ mod tests {
         assert_eq!(runs(), 2);
         let state = fixture.domain.state().unwrap();
         assert!(state.schedule.runs.values().all(|run| run.launch.as_ref().is_some_and(|launch| launch.state == ScheduleLaunchState::Handed)));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn worktrees_root_schedule_stays_pending_without_cards_until_storage_returns() {
+        let fixture = Fixture::new();
+        let _sdk = SdkLaunches::enable(&fixture.domain, &fixture.home);
+        let project = fixture.root.join("projects/app");
+        std::fs::create_dir(&project).unwrap();
+        let git = |args: &[&str]| crate::worktree::testing::git(&project, args);
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "test@example.invalid"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+        let mut schedule = fixture.domain.state().unwrap().schedule.schedules[&ScheduleId::from("schedule-1")].clone();
+        schedule.project = Some("app".into());
+        schedule.revision += 1;
+        execute_system(&fixture.domain, Command::UpdateSchedule { schedule }).unwrap();
+        fixture.claim("storage-run");
+        let options = alondra_core::options::path_in(&fixture.home);
+        let original = std::fs::read_to_string(&options).unwrap_or_default();
+        let path = fixture.home.join("worktrees");
+        let root = alondra_core::options::WorktreesRoot { path: path.clone(), volume_id: "00000000-0000-0000-0000-000000000001".into() };
+        std::fs::write(&options, alondra_core::options::with_worktrees_root(&original, Some(&root)).unwrap()).unwrap();
+        let before = fixture.domain.state().unwrap().interactions.len();
+        for _ in 0..2 { run_cycle(&fixture.domain, &fixture.home, false).await.unwrap(); }
+        let state = fixture.domain.state().unwrap();
+        assert_eq!(state.schedule.runs[&ScheduleRunId::from("storage-run")].launch.as_ref().unwrap().state, ScheduleLaunchState::Pending);
+        assert_eq!(state.interactions.len(), before);
+        assert_eq!(fixture.launches(), 0);
+        assert!(!path.exists());
+        std::fs::create_dir(&path).unwrap();
+        let root = alondra_daemon_support::worktrees_root::capture(&path).unwrap();
+        std::fs::write(&options, alondra_core::options::with_worktrees_root(&original, Some(&root)).unwrap()).unwrap();
+        run_cycle(&fixture.domain, &fixture.home, false).await.unwrap();
+        assert_eq!(fixture.launches(), 1);
+        assert_eq!(fixture.domain.state().unwrap().schedule.runs[&ScheduleRunId::from("storage-run")].launch.as_ref().unwrap().state, ScheduleLaunchState::Handed);
     }
 
     #[tokio::test(flavor = "multi_thread")]

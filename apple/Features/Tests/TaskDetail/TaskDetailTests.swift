@@ -189,7 +189,7 @@ final class TaskDetailTests: XCTestCase {
 
         XCTAssertEqual(detail.interrupt?.confirm?.button, "Interrupt")
         XCTAssertNotNil(detail.message)
-        XCTAssertEqual(detail.folder, "/work/alondra/.claude/worktrees/t-1")
+        XCTAssertEqual(detail.folder, "t-1")
         XCTAssertFalse(detail.readings.isEmpty)
         XCTAssertFalse(detail.activity.elements.isEmpty)
         XCTAssertNotNil(detail.lastMessage)

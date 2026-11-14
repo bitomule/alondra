@@ -1,4 +1,4 @@
-"""Owned Python stand-ins test only fixture teardown, never SDK/native behavior."""
+"""Owned Python stand-ins test fixture teardown and scripts, never SDK/native behavior."""
 import fcntl
 import importlib.util
 import json
@@ -16,7 +16,44 @@ spec = importlib.util.spec_from_file_location('native_harness', Path(__file__).w
 harness = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(harness)
 
+spec = importlib.util.spec_from_file_location('model_fixture', Path(__file__).with_name('model_double.py'))
+model = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(model)
+
 DESCENDANT_FAKE_CLAUDE = Path(os.environ['DESCENDANT_FAKE_CLAUDE']).resolve(strict=True)
+
+
+class ModelToolScripts(unittest.TestCase):
+    def test_follow_up_waits_for_success_and_runs_once_across_subagent_notifications(self):
+        with tempfile.TemporaryDirectory(dir=os.environ['TEST_TMPDIR']) as directory:
+            folder = Path(directory) / 'model-tools'
+            folder.mkdir()
+            call = {'when': '', 'after_tool_result': 'agent', 'id': 'ready', 'name': 'ask', 'input': {}}
+            (folder / 'ready.json').write_text(json.dumps(call))
+            body = {'tools': [{'name': 'ask'}], 'messages': []}
+            calls = lambda: model.task_calls(str(Path(directory) / 'requests.jsonl'), body, model.batch_text(body))
+            self.assertEqual(calls(), [], 'A follow-up cannot run before its prerequisite result')
+            result = {'type': 'tool_result', 'tool_use_id': 'agent', 'content': 'returned', 'is_error': True}
+            body['messages'].append({'role': 'user', 'content': [result]})
+            self.assertEqual(calls(), [], 'A refused prerequisite does not release the follow-up')
+            result['is_error'] = False
+            body['messages'].append({'role': 'user', 'content': 'Subagent notification'})
+            self.assertEqual(calls(), [('ready', 'ask', {})])
+            body['messages'].append({'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': 'ready', 'content': 'asked'}]})
+            body['messages'].append({'role': 'user', 'content': 'Deliver the draft now'})
+            self.assertEqual(calls(), [], 'A new prompt cannot repeat an already completed follow-up')
+
+    def test_existing_prompt_scripts_still_match_each_new_prompt(self):
+        with tempfile.TemporaryDirectory(dir=os.environ['TEST_TMPDIR']) as directory:
+            folder = Path(directory) / 'model-tools'
+            folder.mkdir()
+            call = {'when': 'Draft', 'id': 'draft', 'name': 'Write', 'input': {'content': 'draft'}}
+            (folder / 'draft.json').write_text(json.dumps(call))
+            body = {'tools': [{'name': 'Write'}], 'messages': []}
+            log = str(Path(directory) / 'requests.jsonl')
+            self.assertEqual(model.task_calls(log, body, 'Unrelated prompt'), [])
+            body['messages'].append({'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': 'draft', 'content': 'written'}]})
+            self.assertEqual(model.task_calls(log, body, 'Draft again'), [('draft', 'Write', {'content': 'draft'})])
 
 # Stands in for the Node SDK client: its Claude leaves a descendant in the leader's group, then the
 # leader ends without running its finally (crash) or exits cleanly without stopping it (exit).

@@ -87,6 +87,8 @@ pub struct ProjectOptions {
 pub struct OptionsFile {
     pub pr_sweep_ignore_branch_prefixes: Vec<String>,
     pub projects_root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktrees_root: Option<WorktreesRoot>,
     pub effort: BTreeMap<String, EffortFlags>,
     /// Extra model aliases the orchestrator may pick, and what `--model` receives for any alias
     /// (the built-in ones pass themselves).
@@ -107,12 +109,32 @@ impl Default for OptionsFile {
     fn default() -> Self {
         Self {
             pr_sweep_ignore_branch_prefixes: vec!["release-plz-".into()],
-            projects_root: None, effort: Default::default(), models: Default::default(),
+            projects_root: None, worktrees_root: None, effort: Default::default(), models: Default::default(),
             model_profiles: Default::default(), defaults: Default::default(), option: vec![],
             projects: Default::default(), issues: Default::default(), max_working_nodes: Default::default(),
             accounts: Default::default(),
         }
     }
+}
+
+/// A folder pinned to its volume, so an unmounted volume never falls back to another disk.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WorktreesRoot {
+    pub path: PathBuf,
+    pub volume_id: String,
+}
+
+/// Changes the worktree setting and preserves every other setting.
+pub fn with_worktrees_root(text: &str, root: Option<&WorktreesRoot>) -> Result<String, String> {
+    let mut table: toml::Table = toml::from_str(text).map_err(|e| format!("{e}"))?;
+    table.remove("worktrees_root");
+    if let Some(root) = root {
+        table.insert("worktrees_root".into(), toml::Value::try_from(root).map_err(|e| e.to_string())?);
+    }
+    let written = toml::to_string(&table).map_err(|e| e.to_string())?;
+    OptionsFile::parse(&written)?;
+    Ok(written)
 }
 
 /// `max_working_nodes`: a number from 1, or `"auto"`. A number over what this Mac takes
@@ -413,6 +435,13 @@ impl OptionsFile {
 
     fn check(&self) -> Result<(), String> {
         self.accounts.check()?;
+        if let Some(root) = &self.worktrees_root {
+            if !root.path.is_absolute() || root.path.parent().is_none()
+                || root.path.components().any(|part| !matches!(part, std::path::Component::RootDir | std::path::Component::Normal(_)))
+                || root.volume_id.is_empty() || root.volume_id.starts_with('-') || root.volume_id.chars().any(char::is_whitespace) {
+                return Err("worktrees_root needs an absolute folder and its volume_id".into());
+            }
+        }
         crate::model_selection::validate_profiles(&self.model_profiles)?;
         for (level, flags) in &self.effort {
             if !MAPPED.contains(&level.as_str()) {
@@ -615,7 +644,13 @@ impl OptionsFile {
 
 /// The project a directory belongs to: the first folder under the projects root.
 pub fn project_of(root: &Path, cwd: &Path) -> Option<String> {
-    cwd.strip_prefix(root).ok()?.components().next().map(|c| c.as_os_str().to_string_lossy().to_string())
+    let repository = std::process::Command::new("git").arg("-C").arg(cwd)
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"]).output().ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .map(|common| PathBuf::from(common.trim()))
+        .and_then(|common| common.parent().map(Path::to_path_buf));
+    repository.as_deref().unwrap_or(cwd).strip_prefix(root).ok()?.components().next().map(|c| c.as_os_str().to_string_lossy().to_string())
 }
 
 /// Every git checkout directly under the projects root, by name.
@@ -866,6 +901,23 @@ on = "Run /review-loop before the merge."
 
     fn val(s: &str) -> Choice {
         Choice::Value(s.into())
+    }
+
+    #[test]
+    fn worktrees_root_is_optional_and_round_trips_without_changing_other_options() {
+        let old = "projects_root = '/projects'\nmax_working_nodes = 3\n";
+        assert_eq!(OptionsFile::parse(&old).unwrap().worktrees_root, None);
+        let root = WorktreesRoot { path: "/Volumes/Worktrees/tasks".into(), volume_id: "00000000-0000-0000-0000-000000000001".into() };
+        let saved = with_worktrees_root(&old, Some(&root)).unwrap();
+        let file = OptionsFile::parse(&saved).unwrap();
+        assert_eq!(file.worktrees_root, Some(root));
+        assert_eq!(file.projects_root.as_deref(), Some("/projects"));
+        assert_eq!(file.max_working_nodes, NodeLimit::Fixed(3));
+        let unset = with_worktrees_root(&saved, None).unwrap();
+        assert_eq!(OptionsFile::parse(&unset).unwrap(), OptionsFile::parse(&old).unwrap());
+        for text in ["worktrees_root = { path = 'relative', volume_id = 'disk' }", "worktrees_root = { path = '/volume', volume_id = '' }"] {
+            assert!(OptionsFile::parse(text).is_err());
+        }
     }
 
     #[test]

@@ -5,7 +5,7 @@
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 
-use super::decisions::{choose, option_action, script_tool, tool_result};
+use super::decisions::{choose, option_action, script_tool, script_tool_after, tool_result};
 use super::{hold_card, model_requests};
 use crate::journey::{Report, User, steps::*, user::{collect, mentions}};
 use crate::{fake::Fakes, sandbox::Sandbox};
@@ -35,7 +35,11 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes, user: &User) {
     report.case("W1", "A scheduled task starts through the Agent SDK host and its turn ends with one card", |report| {
         report.step("the Mac's projects are the sandbox's folder, whose repository the native Claude may work in", || {
             let root = std::fs::canonicalize(&sandbox.dir)?;
-            std::fs::write(sandbox.dir.join("mac-1/options.toml"), format!("projects_root = {:?}\n", root.display().to_string())).context("writing options.toml")
+            let options = sandbox.dir.join("mac-1/options.toml");
+            let current = std::fs::read_to_string(&options).context("reading options.toml")?;
+            let mut written: toml::Table = toml::from_str(&current)?;
+            written.insert("projects_root".into(), toml::Value::String(root.to_string_lossy().into_owned()));
+            std::fs::write(options, toml::to_string(&written)?).context("writing options.toml")
         })?;
         report.step("the user creates a schedule from the phone", || {
             let (status, body) = user.send("POST", "/schedules", Some(json!({
@@ -136,11 +140,28 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes, user: &User) {
         })
     });
     report.case("W4", "A subagent's isolated worktree with work left holds the close until the node gives it up", |report| {
+        let storage = sandbox.dir.join("sdk/tmp/worktrees");
+        report.step("the local CLI pins a temporary worktree folder outside the repository", || {
+            std::fs::create_dir_all(&storage)?;
+            let output = std::process::Command::new(sandbox.dir.join("bin/alondra"))
+                .env_clear().env("HOME", sandbox.dir.join("sdk/home"))
+                .env("ALONDRA_HOME", sandbox.dir.join("mac-1")).env("ALONDRA_SANDBOX", "1")
+                .args(["config", "set", "worktrees_root"]).arg(&storage).output()?;
+            ensure!(output.status.success(), "config set failed: {}", String::from_utf8_lossy(&output.stderr));
+            Ok(())
+        })?;
         script_tool(sandbox, SPLIT_ASK, "toolu_w4_1_agent", "Agent", json!({
             "description": "Parser draft", "prompt": SUBAGENT, "subagent_type": "general-purpose", "isolation": "worktree",
         }))?;
-        script_tool(sandbox, DELIVER_SPLIT, "toolu_w4_2_deliver", "mcp__plugin_alondra_alondra__present_result", json!({
-            "task_id": "t-w4", "interaction_id": "w4-final", "title": "Parser split", "need": "Review the parser split", "body": "The parser work is split.",
+        script_tool_after(sandbox, "toolu_w4_1_agent", "toolu_w4_1_ready", "AskUserQuestion", json!({"questions": [{
+            "question": "The isolated parser draft is ready. When should it be delivered?", "header": "Delivery", "multiSelect": false,
+            "options": [
+                {"label": DELIVER_SPLIT, "description": "Present the parser split for review."},
+                {"label": "Keep working", "description": "Continue drafting before delivery."},
+            ],
+        }]}))?;
+        script_tool_after(sandbox, "toolu_w4_1_ready", "toolu_w4_2_deliver", "mcp__plugin_alondra_alondra__present_result", json!({
+            "task_id": "t-w4", "interaction_id": "w4-final", "language": "en", "title": "Parser split", "need": "Review the parser split", "body": "The parser work is split.",
             "targets": [{"kind": "text", "text": "The parser split"}], "is_final": true,
         }))?;
         script_tool(sandbox, SUBAGENT, "toolu_w4_sub_write", "Bash", json!({"command": "echo draft > parser-draft.txt", "description": "Save the draft"}))?;
@@ -157,6 +178,11 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes, user: &User) {
             ensure!(result["is_error"] != true && result["text"].as_str().is_some_and(|text| text.contains("worktree")), "{result}");
             Ok(())
         }))?;
+        report.step("the daemon creates the task worktree in the temporary folder", || {
+            ensure!(storage.join("repo/t-w4/.git").is_file(), "the task was not created in the configured folder");
+            ensure!(!sandbox.dir.join("repo/.claude/worktrees/t-w4").exists(), "a legacy task folder was created");
+            Ok(())
+        })?;
         let subagent = wait(report, "the subagent kept its worktree and Alondra records it as the task's", || {
             allow_held(user, "decision-t-w4-")?;
             let listed: Vec<String> = std::fs::read_dir(sandbox.dir.join("repo/.claude/worktrees")).map(|entries| entries.filter_map(|entry| entry.ok())
@@ -166,29 +192,29 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes, user: &User) {
             let worktrees = subagent_worktrees(sandbox)?;
             Ok((worktrees.into_iter().find(|dir| dir.join("parser-draft.txt").exists()), seen))
         })?;
-        let mut allowed = vec![];
-        wait(report, "the node's turn ends once every command it asked for is allowed", || {
-            if let (Some(card), _) = hold_card(user, "decision-t-w4-")? {
-                let view = user.view(&format!("card:{card}"))?;
-                if let Some(allow) = option_action(&view, "allow") {
-                    user.press(allow["id"].as_str().unwrap_or_default(), Some("allow"), None)?;
-                    let mut titles = vec![];
-                    collect(&view, &mut |item| item.get("title").is_some() || item.get("summary").is_some(), &mut titles);
-                    allowed.push(format!("{card}: {:?}", titles.iter().map(|item| format!("{} {}", item["title"].as_str().unwrap_or_default(), item["summary"].as_str().unwrap_or_default())).collect::<Vec<_>>()));
-                }
-            }
-            let inbox = user.inbox()?;
-            Ok((inbox.iter().any(|id| id.starts_with("turn-ended-t-w4-")).then_some(()), format!("allowed: {allowed:?}; observations: {}", observations(sandbox, "t-w4")?)))
-        })?;
-        let node = node_of(user, SPLIT)?.context("the task names no node")?;
-        report.step("the user tells the node to deliver", || {
-            let (status, body) = user.send("POST", &format!("/agents/{node}/messages"), Some(json!({"text": DELIVER_SPLIT})))?;
-            ensure!((200..300).contains(&status), "{status} {body}");
+        report.step("native Claude creates the subagent under the Git repository, outside the task folder", || {
+            let expected = sandbox.dir.join("repo/.claude/worktrees").canonicalize()?;
+            ensure!(subagent.parent().context("subagent has no parent")?.canonicalize()? == expected, "subagent location: {}", subagent.display());
             Ok(())
         })?;
+        report.snapshot("worktree-storage", &json!({
+            "task": "sdk/tmp/worktrees/repo/t-w4",
+            "subagent": format!("repo/.claude/worktrees/{}", subagent.file_name().unwrap().to_string_lossy()),
+            "task_is_git_worktree": storage.join("repo/t-w4/.git").is_file(),
+            "subagent_draft_exists": subagent.join("parser-draft.txt").is_file(),
+        }))?;
+        let ready = wait(report, "the node asks explicitly when to deliver after its subagent returns", || {
+            allow_held(user, "decision-t-w4-")?;
+            let (card, seen) = hold_card(user, "decision-t-w4-")?;
+            let card = card.filter(|id| user.view(&format!("card:{id}")).ok().is_some_and(|view| user.action_labeled(&view, DELIVER_SPLIT).is_some()));
+            Ok((card, format!("{seen}; ready result: {:?}; offered tools: {:?}", tool_result(sandbox, "toolu_w4_1_ready")?, offered_tools(sandbox, SPLIT)?)))
+        })?;
+        let view = user.view(&format!("card:{ready}"))?;
+        let action = user.action_labeled(&view, DELIVER_SPLIT).context("the ready question has no delivery option")?;
+        report.step("the user asks the node to deliver the parser split", || user.press(action["id"].as_str().unwrap_or_default(), action["option_id"].as_str(), None))?;
         wait(report, "the delivery reaches Alondra", || {
             let delivered = tool_result(sandbox, "toolu_w4_2_deliver")?;
-            let seen = format!("{delivered:?}");
+            let seen = format!("{delivered:?}; observations: {}", observations(sandbox, "t-w4")?);
             Ok((delivered.filter(|result| result["is_error"] != true).map(drop), seen))
         })?;
         let card = user.view("card:w4-final")?;
@@ -203,7 +229,15 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes, user: &User) {
         state(report, user, "t-w4", FINISHED)?;
         report.step("nothing of the task is left: its worktree and the subagent's are gone", || {
             ensure!(!subagent.exists(), "{} is still there", subagent.display());
-            ensure!(!sandbox.dir.join("repo/.claude/worktrees/t-w4").exists(), "the task's own worktree is still there");
+            ensure!(!storage.join("repo/t-w4").exists(), "the task's own worktree is still there");
+            Ok(())
+        })?;
+        report.step("the local CLI restores the default worktree location", || {
+            let output = std::process::Command::new(sandbox.dir.join("bin/alondra"))
+                .env_clear().env("HOME", sandbox.dir.join("sdk/home"))
+                .env("ALONDRA_HOME", sandbox.dir.join("mac-1")).env("ALONDRA_SANDBOX", "1")
+                .args(["config", "unset", "worktrees_root"]).output()?;
+            ensure!(output.status.success(), "config unset failed: {}", String::from_utf8_lossy(&output.stderr));
             Ok(())
         })
     });

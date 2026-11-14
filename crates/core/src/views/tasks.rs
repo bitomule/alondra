@@ -948,7 +948,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         .filter(|agent| !task.state.terminal() && common::current_task(context, agent).is_some_and(|current| current.id == task.id))
         .and_then(|agent| context.domain.agents.get(agent));
     let live = agent.and_then(|agent| context.live.nodes.iter().find(|node| node.agent_id == agent.id.0));
-    facts.extend(folder(task).map(|path| Fact { kind: Some(FactKind::Folder), label: t!(context.lang, "Folder", "Carpeta").into(), value: path.clone(), tone: None, link: None }));
+    facts.extend(folder(task).map(|path| Fact { kind: Some(FactKind::Folder), label: t!(context.lang, "Folder", "Carpeta").into(), value: common::folder_name(path), tone: None, link: None }));
     view.sections.push(common::section(
         "header",
         None,

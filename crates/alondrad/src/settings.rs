@@ -103,6 +103,19 @@ pub(crate) fn write_config(home: &Path, body: &serde_json::Value) -> Reply {
         return Reply { status: StatusCode::BAD_REQUEST, body: json!({"error": "invalid_input", "message": "invalid setting"}) };
     };
     let _writing = WRITER.lock_or_recover("the settings writer");
+    if change.key == "worktrees_root" {
+        let result = (|| -> Result<(), String> {
+            let text = crate::options::read_options(home)?.unwrap_or_default();
+            alondra_core::options::OptionsFile::parse(&text)?;
+            let root = change.value.as_deref().map(|value| alondra_daemon_support::worktrees_root::capture(Path::new(value))).transpose()?;
+            let written = alondra_core::options::with_worktrees_root(&text, root.as_ref())?;
+            replace(&alondra_core::options::path_in(home), written.as_bytes()).map_err(|why| why.to_string())
+        })();
+        return match result {
+            Ok(()) => Reply { status: StatusCode::OK, body: json!({"key": change.key, "restart": false}) },
+            Err(why) => Reply { status: StatusCode::UNPROCESSABLE_ENTITY, body: json!({"error": "invalid_value", "message": why}) },
+        };
+    }
     use alondra_core::config::{SetError, restarts_daemon, set_key};
     match set_key(home, &change.key, change.value.as_deref()) {
         Ok(()) => Reply { status: StatusCode::OK, body: json!({"key": change.key, "restart": restarts_daemon(&change.key)}) },

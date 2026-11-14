@@ -237,6 +237,10 @@ async fn closed_task_worktrees(
             continue;
         }
         let row = json!({"task_id": task_id.0, "task": task.title, "dir": dir});
+        if let Err(why) = crate::task_worktrees::ready(domain, &dir).await {
+            kept.push(json!({"task_id": task_id.0, "task": task.title, "dir": dir, "detail": why.to_string()}));
+            continue;
+        }
         match crate::worktree::release_task_worktree(Path::new(&dir), &crate::launch_worktree::slug(&task_id.0), !dry_run).await {
             Ok(TaskWorktree::Removed { .. }) => released.push(row),
             Ok(TaskWorktree::Absent | TaskWorktree::NotAlondras) => {}

@@ -35,10 +35,24 @@ fn a_command_wins_over_background_work_and_missing_times_use_the_turn_start() {
 }
 
 #[test]
-fn labels_fit_sixty_characters_without_splitting_unicode() {
+fn long_words_are_cut_without_splitting_unicode() {
     let node = LiveNode { tool: Some(format!("{}\nignored", "á🦜".repeat(50))), ..Default::default() };
     let fact = now_fact(Some(&node), &Doing::Turn, "15:38", Lang::En);
     let NowDoing::Command { label, .. } = fact.doing else { panic!("command") };
-    assert_eq!(label.chars().count(), 60);
+    assert_eq!(label.chars().count(), 41, "a word is cut at forty characters and says it was cut");
     assert!(!label.contains('\n'));
+}
+
+#[test]
+fn a_command_reads_without_paths_or_secrets_and_a_workflow_or_subagent_by_its_kind() {
+    let node = LiveNode { tool: Some("Bash: cd /Users/example/app && cargo test --token=abc --manifest-path /Users/example/app/Cargo.toml".into()),
+        ..Default::default() };
+    assert_eq!(now_fact(Some(&node), &Doing::Turn, "15:00", Lang::En).text(Lang::En), "`Bash: cargo test --token=… --manifest-path …` · since 15:00");
+    let node = LiveNode { tool: Some("Read /Users/example/app/src/main.rs".into()), ..Default::default() };
+    assert_eq!(now_fact(Some(&node), &Doing::Turn, "15:00", Lang::En).text(Lang::En), "`Read main.rs` · since 15:00");
+    let run = |label: &str| LiveBackground { kind: "shell".into(), label: label.into(), since: "15:10".into(), state: RunState::Running };
+    let node = LiveNode { background: vec![run("musts run bazel-test-root > .scratch/tests.log 2>&1")], ..Default::default() };
+    assert_eq!(now_fact(Some(&node), &Doing::OwnWork, "15:00", Lang::En).text(Lang::En), "In the background: `musts run bazel-test-root` · since 15:10");
+    let subagent = LiveNode { subagents: vec![crate::views::LiveRun { label: "Explore the parser".into(), since: "15:20".into(), state: RunState::Running, ..Default::default() }], ..Default::default() };
+    assert_eq!(now_fact(Some(&subagent), &Doing::OwnWork, "15:00", Lang::Es).text(Lang::Es), "En segundo plano: un subagente · desde las 15:20");
 }

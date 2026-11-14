@@ -1340,6 +1340,7 @@ checks:
       - "agent-host/toolchain.bzl"
       - "tests/native/claude/BUILD.bazel"
       - "tests/native/claude/lifecycle_test.py"
+      - "tests/native/claude/model_double.py"
       - "tests/native/claude/run.py"
       - "tests/native/claude/run.sh"
     with:

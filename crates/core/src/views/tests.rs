@@ -1072,7 +1072,7 @@ fn a_task_shows_the_same_title_folder_cost_model_and_state_with_its_node_gone_cl
     };
     let expected = shown(&no_node, &live);
     assert_eq!(expected.0, BTreeMap::from([
-        ("Folder".into(), "/work/alondra/.claude/worktrees/t-1".into()),
+        ("Folder".into(), "t-1".into()),
         ("Cost".into(), "$42.00".into()),
         ("Model".into(), "Opus · chosen by the orchestrator".into()),
         ("Project".into(), "Alondra".into()),
@@ -1924,8 +1924,8 @@ fn a_task_that_has_not_started_says_what_refused_its_launch() {
     assert_eq!(task_line(&state, &live, Lang::En), "Waiting · Its session ended before it delivered");
     live.start_waits.insert("t-1".into(), LiveStartWait::Retry { at: "14:05".into() });
     live.launch_refusals.insert("t-1".into(), LiveLaunchRefusal { reason: "launch_failed".into(), detail: Some("claude exited".into()) });
-    assert_eq!(task_line(&state, &live, Lang::Es), "En espera · Reintento a las 14:05 · claude exited");
-    assert_eq!(task_line(&state, &live, Lang::En), "Waiting · Trying again at 14:05 · claude exited");
+    assert_eq!(task_line(&state, &live, Lang::Es), "En espera · Reintento a las 14:05 · Su lanzamiento falló");
+    assert_eq!(task_line(&state, &live, Lang::En), "Waiting · Trying again at 14:05 · Its launch failed");
     assert_eq!(active_row(&state, &live, Client::Mac, Lang::Es, "t-1").0, "block:queued", "it tries again by itself");
     live.launch_refusals.clear();
     live.start_waits.insert("t-1".into(), LiveStartWait::Room);
@@ -1945,16 +1945,32 @@ fn a_task_that_has_not_started_says_what_refused_its_launch() {
     live.launch_refusals.insert("t-1".into(), LiveLaunchRefusal {
         reason: "workspace_untrusted".into(), detail: Some("~/Projects/indie-apps".into()),
     });
-    assert_eq!(task_line(&state, &live, Lang::Es), "En espera · Claude Code no confía en ~/Projects/indie-apps");
-    assert_eq!(task_line(&state, &live, Lang::En), "Waiting · Claude Code doesn't trust ~/Projects/indie-apps");
+    assert_eq!(task_line(&state, &live, Lang::Es), "En espera · Claude Code no confía en su carpeta");
+    assert_eq!(task_line(&state, &live, Lang::En), "Waiting · Claude Code doesn't trust its folder");
     assert_eq!(active_row(&state, &live, Client::Mac, Lang::Es, "t-1").0, "block:queued", "no card asks for it, so it is not «Para ti»");
     live.launch_refusals.insert("t-1".into(), LiveLaunchRefusal { reason: "usage_exhausted".into(), detail: None });
     assert_eq!(task_line(&state, &live, Lang::Es), "En espera · Límite de uso alcanzado");
     live.launch_refusals.insert("t-1".into(), LiveLaunchRefusal {
         reason: "launch_failed".into(), detail: Some("claude exited with 1\nmore".into()),
     });
-    assert_eq!(task_line(&state, &live, Lang::Es), "En espera · claude exited with 1");
+    assert_eq!(task_line(&state, &live, Lang::Es), "En espera · Su lanzamiento falló");
     assert!(!task_line(&state, &live, Lang::Es).contains("Sin empezar"));
+}
+
+#[test]
+fn worktrees_root_unavailable_explains_waiting_in_both_languages_without_a_user_action() {
+    let mut state = fixture();
+    state.interactions.clear();
+    let task = state.tasks.get_mut(&"t-1".into()).unwrap();
+    task.state = TaskState::NotStarted;
+    task.agent_id = None;
+    task.started = false;
+    let mut live = LiveSnapshot::default();
+    live.start_waits.insert("t-1".into(), LiveStartWait::Room);
+    live.launch_refusals.insert("t-1".into(), LiveLaunchRefusal { reason: "worktrees_unavailable".into(), detail: None });
+    assert_eq!(task_line(&state, &live, Lang::Es), "En espera · Carpeta de worktrees no disponible");
+    assert_eq!(task_line(&state, &live, Lang::En), "Waiting · Worktree folder unavailable");
+    assert_eq!(active_row(&state, &live, Client::Tui, Lang::Es, "t-1").0, "block:queued");
 }
 
 /// 14 October: t-holepunch-iroh-prototype ended its turn with no card and said «Sin actividad» on
@@ -2014,7 +2030,7 @@ fn a_reopened_task_waiting_in_the_queue_says_its_place_and_why_never_that_it_sto
     }
     let held = pacing_live(vec![LiveQueued { pausable: true, task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Memory { free: Some(9) } }], vec![], None);
     let detail = detail_state_text(&state, &held, Client::Ios, Lang::Es);
-    assert!(detail.contains("1.º de 1") && !detail.contains("memoria"), "{detail}");
+    assert!(detail.contains("1.º de 1") && detail.contains("memoria"), "{detail}");
 }
 
 fn node_in(state: &mut DomainState, phase: NodePhase) {
@@ -3910,7 +3926,7 @@ fn a_task_detail_shows_what_its_node_does_while_it_works_on_it() {
     live.nodes[0].model = None;
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         let view = render(&state, &live, client, Lang::En, "task:t-1", "");
-        assert!(section_facts(&view, "header").contains(&("Folder".into(), "/work/alondra/.claude/worktrees/t-1".into())), "{client:?}");
+        assert!(section_facts(&view, "header").contains(&("Folder".into(), "t-1".into())), "{client:?}");
         assert_eq!(section_facts(&view, "readings"), [
             ("Running".into(), "Bash: cargo test".into()),
             ("In the background".into(), "2 subagents · 1 shell".into()),
@@ -3940,7 +3956,7 @@ fn a_task_detail_shows_what_its_node_does_while_it_works_on_it() {
     let done = render(&state, &live, Client::Ios, Lang::En, "task:t-1", "");
     assert!(done.sections.iter().all(|section| !["needs", "background", "last_message"].contains(&section.id.as_str())));
     assert_eq!(section_facts(&done, "readings"), [("Cost".into(), "$1.20".into())], "an ended task keeps only its cost");
-    assert!(section_facts(&done, "header").contains(&("Folder".into(), "/work/alondra/.claude/worktrees/t-1".into())), "an ended task keeps its folder");
+    assert!(section_facts(&done, "header").contains(&("Folder".into(), "t-1".into())), "an ended task keeps its folder");
 }
 
 /// A client finds the state, request, folder and priority of a task by their kind, never by a
@@ -3957,7 +3973,7 @@ fn a_task_detail_names_the_kind_of_its_state_request_folder_and_priority() {
         };
         let header = kinds("header");
         assert_eq!(header[0].0, Some(FactKind::State), "{client:?}");
-        assert!(header.contains(&(Some(FactKind::Folder), "/work/alondra/.claude/worktrees/t-1".into())), "{client:?}: {header:?}");
+        assert!(header.contains(&(Some(FactKind::Folder), "t-1".into())), "{client:?}: {header:?}");
         if client != Client::Tui {
             assert_eq!(header.iter().filter(|(kind, _)| *kind == Some(FactKind::Request)).count(), 1, "{client:?}: {header:?}");
         }
@@ -5020,14 +5036,14 @@ fn task_detail_names_its_folder_and_what_its_node_is_doing_right_now() {
     let stopped = render(&stopped, &golden_live(), Client::Ios, Lang::En, key, "");
     assert!(stopped.sections.iter().all(|section| section.id != "activity"), "a node out of its turn does nothing right now");
     let view = render(&in_turn, &golden_live(), Client::Ios, Lang::En, key, "");
-    assert!(header_facts(&view).iter().any(|fact| fact.label == "Folder" && fact.value == "/demo/Demo Garden/ios"));
+    assert!(header_facts(&view).iter().any(|fact| fact.label == "Folder" && fact.value == "ios"));
     let now = view.sections.iter().find(|section| section.id == "activity").expect("right now section");
     assert_eq!(now.title.as_deref(), Some("Right now"));
     let Item::Row(row) = &now.items[0] else { panic!("thread row") };
     assert_eq!(row.title, "Reading the localization catalog");
     let idle = render(&in_turn, &LiveSnapshot::default(), Client::Ios, Lang::En, key, "");
     assert!(idle.sections.iter().all(|section| section.id != "activity"));
-    assert!(header_facts(&idle).iter().any(|fact| fact.label == "Folder" && fact.value == "/demo/Demo Garden/ios"), "the folder is the task's");
+    assert!(header_facts(&idle).iter().any(|fact| fact.label == "Folder" && fact.value == "ios"), "the folder is the task's");
 }
 
 #[test]
@@ -8613,6 +8629,60 @@ fn live_states() -> Vec<alondra_domain::LiveState> {
 }
 
 /// Task t-1 whose node runs a turn through the Agent SDK, with `delivery-t-1` as its delivery.
+#[test]
+fn a_command_reads_as_its_program_and_first_arguments() {
+    use super::common::readable_command as read;
+    assert_eq!(read("  "), None);
+    assert_eq!(read("cd /Users/example/x"), None);
+    assert_eq!(read("FOO=bar make test"), Some("make test".into()));
+    assert_eq!(read("echo 'a b' c"), Some("echo a b c".into()));
+    assert_eq!(read("make test | tee /tmp/out.log"), Some("make test".into()));
+    assert_eq!(read("npm publish --password hunter2"), Some("npm publish --password …".into()));
+    assert_eq!(read("sleep 5 &"), Some("sleep 5".into()));
+    assert_eq!(read("./deploy/brew/release.sh 0.2.67"), Some("release.sh 0.2.67".into()));
+    assert_eq!(read("tail -f ~/Library/Logs/app.log"), Some("tail -f app.log".into()));
+    assert_eq!(read(&format!("run {}", "x".repeat(60))), Some(format!("run {}…", "x".repeat(40))));
+}
+
+#[test]
+fn a_waiting_task_says_its_real_place_and_current_reason_whatever_was_refused_before() {
+    let mut state = fixture();
+    state.interactions.clear();
+    let task = state.tasks.get_mut(&"t-1".into()).unwrap();
+    (task.state, task.final_presentation) = (TaskState::NotStarted, None);
+    for (hold, en, es) in [
+        (LiveHold::Disk { free: 3_500_000_000, needed: 13_000_000_000, volume: None }, "Disk · 3.5 GB free of 13.0 GB needed", "Disco · 3,5 GB libres de 13,0 GB necesarios"),
+        (LiveHold::Slots { working: 5, limit: 5 }, "5 of 5 slots taken", "5 de 5 huecos ocupados"),
+        (LiveHold::Memory { free: Some(12) }, "short of memory", "justo de memoria"),
+        (LiveHold::Cpu { load: 52, cpus: 11 }, "very busy", "muy cargado"),
+    ] {
+        let mut live = pacing_live(vec![LiveQueued { task_id: "t-1".into(), position: 3, of: 63, hold, pausable: false }], vec![], None);
+        live.launch_refusals.insert("t-1".into(), LiveLaunchRefusal { reason: "disk_low".into(), detail: None });
+        for (lang, rank, reason) in [(Lang::En, "3rd of 63", en), (Lang::Es, "3.º de 63", es)] {
+            for client in [Client::Ios, Client::Mac, Client::Tui] {
+                let said = detail_state_text(&state, &live, client, lang);
+                assert!(said.contains(rank) && said.contains(reason), "{client:?} {lang:?}: {said}");
+                if !reason.starts_with("Disk") && !reason.starts_with("Disco") {
+                    assert!(!said.contains("Disk") && !said.contains("Disco") && !said.contains("almost full"), "a past refusal must not override the gate: {said}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_task_screen_never_shows_where_the_mac_keeps_its_folder() {
+    let mut state = fixture();
+    state.tasks.get_mut(&"t-1".into()).unwrap().worktrees.insert("/Users/example/Projects/app/.claude/worktrees/t-x".into(),
+        crate::domain::TaskWorktree { origin: crate::domain::WorktreeOrigin::Task, branch: None, discard: false, end: None });
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let view = render(&state, &LiveSnapshot::default(), client, Lang::En, "task:t-1", "");
+        assert!(header_facts(&view).iter().any(|fact| fact.label == "Folder" && fact.value == "t-x"), "{client:?}");
+        let shown = serde_json::to_string(&view).unwrap();
+        assert!(!shown.contains("/Users/"), "{client:?}: {shown}");
+    }
+}
+
 fn sdk_task() -> DomainState {
     use crate::domain::{ExecutionIdentity, LifecycleRecord};
     let mut state = fixture();

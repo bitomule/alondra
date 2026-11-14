@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-1",
   "client": "tui",
-  "version": "v1f6beff4b5a20af1",
+  "version": "v15ca0b235d040863",
   "cursor": "cursor-1",
   "title": "Build a feature",
   "status": {
@@ -79,7 +79,7 @@
             {
               "kind": "folder",
               "label": "Folder",
-              "value": "/work/alondra/.claude/worktrees/t-1"
+              "value": "t-1"
             }
           ]
         }

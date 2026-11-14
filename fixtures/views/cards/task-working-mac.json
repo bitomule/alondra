@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-1",
   "client": "mac",
-  "version": "v8ae0ffa184c3b1d9",
+  "version": "v9b7ba5e7674fb991",
   "cursor": "cursor-1",
   "title": "Build a feature",
   "status": {
@@ -88,7 +88,7 @@
             {
               "kind": "folder",
               "label": "Folder",
-              "value": "/work/alondra/.claude/worktrees/t-1"
+              "value": "t-1"
             }
           ]
         }

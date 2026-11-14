@@ -264,9 +264,13 @@ fn waiting(task: &Task, waits: WaitsFor, context: &RenderContext<'_>) -> Present
         WaitsFor::Machine => machine_fact(task, context),
         WaitsFor::Disk => {
             listed = Some(disk());
-            match common::held_for_disk(task, context) {
-                Some((free, needed, volume)) => common::disk_room_fact(free, needed, volume, lang),
-                None => disk(),
+            match (common::gate_queued(task, context), common::held_for_disk(task, context)) {
+                (Some(queued), Some(_)) => {
+                    queue = Some(queued.position);
+                    queue_fact(task, queued, lang)
+                }
+                (_, Some((free, needed, volume))) => common::disk_room_fact(free, needed, volume, lang),
+                _ => disk(),
             }
         }
         WaitsFor::Usage => usage_wait(task, context),
@@ -338,13 +342,15 @@ fn slot_fact(task: &Task, context: &RenderContext<'_>) -> (String, Option<usize>
     if context.domain.open_plan_refusal(&task.id).is_some() {
         return (t!(lang, "The orchestrator fixes its launch plan or cancels it", "El orquestador corrige su plan de arranque o la cancela").into(), None);
     }
+    if let Some(queued) = common::gate_queued(task, context) {
+        return (queue_fact(task, queued, lang), Some(queued.position));
+    }
     let refusal = context.live.launch_refusals.get(&task.id.0).map(|refusal| match (refusal.reason.as_str(), refusal.detail.as_deref()) {
-        ("workspace_untrusted", Some(folder)) => tf!(lang, "Claude Code doesn't trust {folder}", "Claude Code no confía en {folder}"),
-        ("workspace_untrusted", None) => t!(lang, "Claude Code doesn't trust its folder", "Claude Code no confía en su carpeta").into(),
+        ("workspace_untrusted", _) => t!(lang, "Claude Code doesn't trust its folder", "Claude Code no confía en su carpeta").into(),
         ("usage_exhausted", _) if context.live.waits_for_session => t!(lang, "Waiting for a provider session", "Esperando una sesión de proveedor").into(),
         ("usage_exhausted", _) => t!(lang, "Usage limit reached", "Límite de uso alcanzado").into(),
+        ("worktrees_unavailable", _) => t!(lang, "Worktree folder unavailable", "Carpeta de worktrees no disponible").into(),
         ("disk_low", _) => t!(lang, "The disk is nearly full", "El disco está casi lleno").into(),
-        (_, Some(error)) => error.lines().next().unwrap_or(error).to_owned(),
         _ => t!(lang, "Its launch failed", "Su lanzamiento falló").into(),
     });
     if let Some(super::LiveStartWait::Retry { at }) = context.live.start_waits.get(&task.id.0) {
@@ -361,9 +367,6 @@ fn slot_fact(task: &Task, context: &RenderContext<'_>) -> (String, Option<usize>
         } else {
             error.lines().next().unwrap_or(error).to_owned()
         }, None);
-    }
-    if let Some(queued) = common::gate_queued(task, context) {
-        return (queue_fact(task, queued, lang), Some(queued.position));
     }
     if common::node_closed(task, context) {
         return (t!(lang, "You closed its session before it delivered", "Cerraste su sesión sin que entregara").into(), None);
@@ -389,11 +392,13 @@ fn queue_fact(task: &Task, queued: &super::LiveQueued, lang: super::Lang) -> Str
     match &queued.hold {
         LiveHold::Next if queued.position == 1 => t!(lang, "Starts within a minute", "Arranca en menos de un minuto").into(),
         LiveHold::Slots { working, limit } => tf!(lang, "{place} of {of} · {working} of {limit} slots taken", "{place} de {of} · {working} de {limit} huecos ocupados"),
-        LiveHold::Disk { free, needed, volume } => common::disk_room_fact(*free, *needed, volume.as_deref(), lang),
-        LiveHold::Memory { .. } | LiveHold::Cpu { .. } | LiveHold::Next => match priority(task, lang) {
-            Some(priority) => tf!(lang, "{place} of {of} · {priority}", "{place} de {of} · {priority}"),
-            None => tf!(lang, "{place} of {of}", "{place} de {of}"),
-        },
+        LiveHold::Disk { free, needed, volume } => {
+            let room = common::disk_room_fact(*free, *needed, volume.as_deref(), lang);
+            tf!(lang, "{place} of {of} · {room}", "{place} de {of} · {room}")
+        }
+        LiveHold::Memory { .. } => with_priority(task, tf!(lang, "{place} of {of} · the Mac is short of memory", "{place} de {of} · el Mac va justo de memoria"), lang),
+        LiveHold::Cpu { .. } => with_priority(task, tf!(lang, "{place} of {of} · the Mac is very busy", "{place} de {of} · el Mac está muy cargado"), lang),
+        LiveHold::Next => with_priority(task, tf!(lang, "{place} of {of}", "{place} de {of}"), lang),
     }
 }
 
@@ -641,6 +646,13 @@ fn plan_review_fact(task: &Task, context: &RenderContext<'_>) -> String {
         .and_then(|(_, review)| context.domain.tasks.get(&review.task_id))
         .map(|source| tf!(lang, "You decided on “{title}”; Alondra reviews its plan", "Decidiste en «{title}»; Alondra revisa su plan", title = source.title))
         .unwrap_or_else(|| t!(lang, "Alondra reviews its plan", "Alondra revisa su plan").into())
+}
+
+fn with_priority(task: &Task, fact: String, lang: super::Lang) -> String {
+    match priority(task, lang) {
+        Some(priority) => format!("{fact} · {priority}"),
+        None => fact,
+    }
 }
 
 fn priority(task: &Task, lang: super::Lang) -> Option<String> {

@@ -16,7 +16,7 @@ final class ViewModelsTests: XCTestCase {
                 }
             }
             XCTAssertEqual(facts("header").first?.kind, .state, name)
-            XCTAssertEqual(facts("header").filter { $0.kind == .folder }.map(\.value), ["/work/alondra/.claude/worktrees/t-1"], name)
+            XCTAssertEqual(facts("header").filter { $0.kind == .folder }.map(\.value), ["t-1"], name)
             XCTAssertEqual(facts("options").filter { $0.kind == .priority }.count, 1, name)
             XCTAssertTrue(facts("readings").allSatisfy { $0.kind == nil }, name)
         }
