@@ -213,7 +213,7 @@ fn blocks_schema() -> Value {
 }
 
 fn checklist_schema() -> Value {
-    json!({"type":"array","maxItems":alondra_core::domain::CHECKLIST_MAX_ITEMS,"description":"Only in the final result of a Task whose plan the user approved: every point of that plan's checklist (`- [ ] …` lines, numbered from 1 in order), marked done with what proves it. A point that no longer applies goes out with a revised plan the user approves, never by leaving it out here","items":{"type":"object","properties":{
+    json!({"type":"array","maxItems":alondra_core::domain::CHECKLIST_MAX_ITEMS,"description":"Only in a final result with an approved plan: completed points, numbered from 1 in plan order, each with evidence. When delivering an open PR after declaring post_merge_work, omit points that remain for after the merge: they stay pending. After the merge, present every point with evidence before ending post_merge_work or calling cleanup_done. A point that no longer applies needs a revised plan approved by the user","items":{"type":"object","properties":{
         "item":{"type":"string","description":"The number of the point in the approved plan, from 1"},
         "evidence":{"type":"array","minItems":1,"maxItems":alondra_core::domain::EVIDENCE_MAX_PER_ITEM,"items":{"type":"object","properties":{
             "kind":{"type":"string","enum":alondra_core::domain::EvidenceKind::ALL.map(alondra_core::domain::EvidenceKind::as_str)},
@@ -308,7 +308,7 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
         ]}});
         tools.push(domain_tool(
             "present_result",
-            &format!("Deliver the result to {user}. Finishing is always present_result, never an ask. With is_final true, {user} accepts it; Alondra merges your PRs; a pull_request target, final only, takes all open ones. With is_final false, this is a progress notice. A final result needs content: the report written out in its body, never a path or a pasted document: {user} cannot open files from the app; files go in attachments. Say what the result means for {user} in plain words, never script names, task ids or internal steps. Commit and push everything first: uncommitted, unpushed or unregistered work is refused. Answer or withdraw your pending cards first. Ask any open choices before delivering: acceptance does not answer them. For an approved plan, mark every point done in checklist with evidence. {rule}"),
+            &format!("Finishing is always present_result, never an ask. Use is_final true for final review, false for progress. Final pull_request targets take all open registered PRs; Alondra merges them. A final result needs content: the report written out in its body, never a path or a pasted document: {user} cannot open files from the app. Attach files. Say what the result means for {user} in plain words, never script names, task ids or internal steps. Commit and push first; answer or withdraw pending cards. Ask any open choices before delivering: acceptance does not answer them. Prove all approved checklist points with evidence. With an open PR and declared post_merge_work, omitted points remain pending; prove every point after merge before ending that work or cleanup_done. {rule}"),
             json!({"task_id":{"type":"string"},"interaction_id":interaction["interaction_id"],"need":{"type":"string","description":"Leave it out: Alondra writes what the user does with a result from its kind (review the result, review the plan, read the update) and ignores what you send. A decision is an ask, never a result"},"why":why_schema(),"content":content_schema(),"targets":target,"is_final":{"type":"boolean"},"language":language_schema(),"nothing_to_review":{"type":"boolean","description":"With is_final true and only text targets: the work found nothing for the user to look at (a scheduled check with nothing open, nothing changed). The task closes in silence, without a card"},"checklist":checklist_schema(),"plan":{"type":"string","description":"Only on a final result without a pull request whose research concludes that something should be built: that plan, in Markdown, with one checklist line (- [ ] ...) per thing the implementation will deliver, and the report in content. title names the plan subject; plan holds only its content, never an opening heading repeating title. The result is then a plan card: the user reads the plan, opens the report as a document beside it, and presses Approve, which creates the tasks that build exactly this plan, or Request changes; its need asks to approve the plan, never to read the report or decide whether to build. Ask every decision the plan leaves open with ask before, never inside the plan. A research that proposes nothing to build leaves plan out: its report alone is marked Seen and creates nothing. Never put a plan only inside the report; a plan the user asked you for in your own task goes through ExitPlanMode instead"},"body":interaction["body"],"files":files_schema(),"attachments":attachments}),
             &["task_id", "interaction_id", "targets", "is_final", "language"],
         ));
@@ -378,7 +378,7 @@ fn node_domain_tools(user: &str) -> Vec<Value> {
         (
             "post_merge_work",
             "post_merge_work",
-            "Say that you are still working on something for your task after its PR merged (a deploy, a Homebrew publish, a release script), with its reason. Alondra does not close this session while you say so, even if the task is closing and you look idle. Call it again without reason as soon as that work ends, or call cleanup_done: Alondra's wait to close the session then starts over. Work your task still has to do after the merge (publish, install, deploy, verify) is declared here before you present the PR as final: the task then stays in progress after the merge until you end it. When that work, after your PR merged, has to wait for other work to land (another task's fix on main), name it in waits_for and end your turn: Alondra wakes you with its result and merged PR when it lands. A wait written only in reason has nothing that wakes you.",
+            "Say that you are still working on something for your task after its PR merged (a deploy, a Homebrew publish, a release script), with its reason. Alondra does not close this session while you say so, even if the task is closing and you look idle. Call it again without reason as soon as that work ends, or call cleanup_done: Alondra's wait to close the session then starts over. Work your task still has to do after the merge (publish, install, deploy, verify) is declared here before you present the PR as final: the task then stays in progress after the merge until you end it. When that work, after your PR merged, has to wait for other work to land (another task's fix on main), name it in waits_for and end your turn: Alondra wakes you with its result and merged PR when it lands. A wait written only in reason has nothing that wakes you. With an approved plan, declare reason before presenting an open PR and include only completed checklist points in that delivery; omitted points remain pending. After the merge, call present_result with every point and its evidence before calling post_merge_work without reason or cleanup_done.",
             json!({"task_id":{"type":"string"},"reason":{"type":"string","description":"What you are still doing, in one short line, e.g. \"release.sh publishes 0.2.54\", or what you will do once what you wait for lands. Leave it out when the work has ended."},"waits_for":{"type":"array","items":{"type":"string"},"description":"Only after your PR merged: the work yours waits for, each an Alondra task id (t-…) or a pull request an Alondra task registered (owner/repo#123 or its URL). Needs reason. A pull request no Alondra task registered is refused: ask the orchestrator for a task that delivers it."}}),
             vec!["task_id"],
         ),
@@ -2485,6 +2485,27 @@ mod tests {
         let schema = catalog.as_array().unwrap().iter().find(|tool| tool["name"] == "present_result").unwrap();
         let kinds = &schema["inputSchema"]["properties"]["checklist"]["items"]["properties"]["evidence"]["items"]["properties"]["kind"]["enum"];
         assert_eq!(kinds, &json!(["commit", "test", "command", "screenshot", "pr", "file", "link"]));
+    }
+
+    #[test]
+    fn nodes_can_present_a_release_pr_with_only_the_completed_checklist_points() {
+        let catalog = tools(Role::Node, "Ana");
+        let find = |name: &str| catalog.as_array().unwrap().iter().find(|tool| tool["name"] == name).unwrap();
+        let work = domain_envelope("post_merge_work", &json!({"task_id":"release", "reason":"Publish and install after merge"}), "epoch", "declare").unwrap();
+        assert_eq!(work["command"]["kind"], "declare_post_merge_work");
+        assert_eq!(work["command"]["reason"], "Publish and install after merge");
+        let checklist: Vec<Value> = (1..=3).map(|n| json!({"item":n.to_string(), "evidence":[{"kind":"commit","value":"abcdef0"}]})).collect();
+        let envelope = domain_envelope("present_result", &json!({
+            "task_id":"release", "interaction_id":"release-review", "title":"Release ready for review", "language":"en",
+            "content":{"kind":"report","body":"The PR is ready. Publication and installation follow the merge."},
+            "targets":[{"kind":"pull_request"}], "is_final":true, "checklist":checklist,
+        }), "epoch", "present").unwrap();
+        assert_eq!(envelope["command"]["checklist"].as_array().unwrap().len(), 3);
+        assert_eq!(envelope["command"]["targets"], json!([{"kind":"pull_request"}]));
+        assert!(find("present_result")["description"].as_str().unwrap().contains("omitted points remain pending"));
+        assert!(find("post_merge_work")["description"].as_str().unwrap().contains("every point and its evidence"));
+        assert!(find("present_result")["inputSchema"]["properties"]["checklist"]["description"].as_str().unwrap().contains("After the merge"));
+        assert!(skill_text(Role::Node).contains("with no extra fields"));
     }
 
     #[test]

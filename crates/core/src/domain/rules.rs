@@ -339,8 +339,10 @@ discard and Alondra deletes it as it is.")
 /// settles: the task stays in progress until that work ends.
 pub fn post_merge_reminder(title: &str, task: &TaskId, reason: &str) -> String {
     format!("Your task “{title}” has its delivery accepted and merged, and you said work remains after the \
-merge: {reason}. Do it now: the task stays in progress until you say it ended. When it ends, call \
-post_merge_work with task_id {task} without reason, then remove what you generated for this task outside \
+merge: {reason}. Do it now: the task stays in progress until you say it ended. If your approved plan \
+still has unproved points, call present_result with every point and its evidence first. When the \
+work ends, call post_merge_work \
+with task_id {task} without reason. Then remove what you generated for this task outside \
 the worktree (build caches, temporary files) with the project's own tools, never files or links inside the \
 worktree, and call cleanup_done with task_id {task}. If it cannot be done, say so with ask.", task = task.0)
 }
@@ -593,9 +595,9 @@ impl DomainState {
         self.targets(task_id, targets)?;
         Ok((p, t, targets))
     }
-    /// A final delivery of a task with an approved plan marks every point of it done, each with
-    /// what proves it; a task with no approved plan, or a result that is not final, carries none.
-    fn checklist_marks_cover_the_plan(&self, task_id: &TaskId, is_final: bool, marks: &[ChecklistMark], attachments: &[AttachmentRef]) -> Result<()> {
+    /// An open PR can be reviewed before declared work after its merge is proved. Every mark
+    /// still needs evidence; omitted points remain in the approved plan until a later delivery.
+    fn checklist_marks_cover_the_plan(&self, task_id: &TaskId, is_final: bool, marks: &[ChecklistMark], attachments: &[AttachmentRef], targets: &[DeliveryTarget]) -> Result<()> {
         let plan = self.checklists.get(task_id);
         if marks.is_empty() && (!is_final || plan.is_none()) {
             return Ok(());
@@ -645,12 +647,30 @@ impl DomainState {
             .filter(|item| !marked.contains(item.id.as_str()))
             .map(|item| format!("{} “{}”", item.id, item.text))
             .collect();
-        if !missing.is_empty() {
+        let task = self.task(task_id)?;
+        let after_merge = task.wrap_up.post_merge_work.is_some() && targets.iter().any(|target| match target {
+            DeliveryTarget::PullRequest { pr_id, .. } => self.pull_requests.get(pr_id).is_some_and(|pr| pr.task_id == *task_id && pr.state == PrState::Open),
+            _ => false,
+        });
+        if !missing.is_empty() && !after_merge {
             return refuse("checklist_incomplete", "checklist", &format!(
-                "the approved plan has {} points and these are not marked done: {}. Finish them and add each to checklist with its evidence ({kinds}). If a point no longer applies, send a revised plan with ExitPlanMode; once the user approves it, it replaces this checklist",
+                "the approved plan has {} points and these are not marked done: {}. Finish them and add each to checklist with its evidence ({kinds}). For work that follows an open PR's merge, declare post_merge_work with reason first, then present that PR with only the completed points in checklist; omitted points remain pending. After the merge, present every point with evidence before ending post_merge_work or calling cleanup_done. If a point no longer applies, send a revised plan with ExitPlanMode; once the user approves it, it replaces this checklist",
                 plan.items.len(), missing.join(", ")));
         }
         Ok(())
+    }
+    /// Approved plan points that the latest final delivery has not proved complete.
+    pub fn unproved_checklist(&self, task: &Task) -> Vec<&ChecklistItem> {
+        let marks = task.final_presentation.as_ref().and_then(|id| self.checklist_marks.get(id));
+        self.checklists.get(&task.id).into_iter().flat_map(|plan| &plan.items)
+            .filter(|item| !marks.is_some_and(|marks| marks.iter().any(|mark| mark.item == item.id))).collect()
+    }
+    pub(super) fn require_checklist_proof(&self, task: &Task) -> Result<()> {
+        let pending = self.unproved_checklist(task);
+        if pending.is_empty() { return Ok(()) }
+        refuse("checklist_incomplete", "checklist", &format!(
+            "the approved plan still needs evidence for {}. Finish that work and call present_result with every point and its evidence before ending post_merge_work or calling cleanup_done",
+            pending.iter().map(|item| format!("{} “{}”", item.id, item.text)).collect::<Vec<_>>().join(", ")))
     }
     fn targets(&self, task: &TaskId, targets: &[DeliveryTarget]) -> Result<()> {
         let t = self.task(task)?;
@@ -1238,7 +1258,7 @@ impl DomainState {
         Ok(())
     }
     /// R12: a delivery shows the current head of its own Task's registered PR.
-    fn current_pr_targets(&self, task: &TaskId, targets: &[DeliveryTarget]) -> Result<()> {
+    fn current_pr_targets(&self, task: &TaskId, targets: &[DeliveryTarget], is_final: bool) -> Result<()> {
         for target in targets {
             let DeliveryTarget::PullRequest { pr_id, head } = target else { continue };
             let Some(pr) = self.pull_requests.get(pr_id) else {
@@ -1246,6 +1266,11 @@ impl DomainState {
             };
             if &pr.task_id != task {
                 return refuse("pr_mismatch", "targets.pr_id", &format!("PR {pr_id} belongs to another Task: present only your own Task's PR"));
+            }
+            if pr.state == PrState::Closed {
+                let mut error = DomainError::new("pr_not_open", format!("targets.pr_id: PR {}#{} is closed: deliver the work's open PRs, or a text result for work already finished", pr.repository, pr.number));
+                error.subject = Some("targets.pr_id".into());
+                return Err(error.breaking(Some(if is_final { CardType::Result } else { CardType::Progress }), ContractRule::PrNotOpen));
             }
             if &pr.head != head {
                 return refuse("pr_mismatch", "targets.head", &pr_head_mismatch(pr, head));
@@ -1451,7 +1476,7 @@ impl DomainState {
                 id: t.id.0.clone(),
                 title: t.title.clone(),
                 cancelled: t.cancelled(),
-                pr: t.pr_id.as_ref().and_then(|id| self.pull_requests.get(id)).map(|pr| pr.number),
+                pr: self.merged_pr(t).map(|pr| pr.number),
                 result: t.final_presentation.as_ref().and_then(|id| self.interactions.get(id))
                     .and_then(|delivery| delivery.card.content.as_ref().map(|content| content.body.as_str())
                         .filter(|body| !body.trim().is_empty()).or(Some(delivery.body.as_str())))
@@ -1888,7 +1913,8 @@ impl DomainState {
     /// What a Task waited on is in: it is done, or its PR merged with no work left after the merge.
     pub fn landed(&self, dep: &Task) -> bool {
         dep.state == TaskState::Done
-            || (!dep.cancelled() && dep.wrap_up.post_merge_work.is_none() && self.merged_pr(dep).is_some() && self.open_prs(dep).next().is_none())
+            || (!dep.cancelled() && dep.wrap_up.post_merge_work.is_none() && self.unproved_checklist(dep).is_empty()
+                && self.merged_pr(dep).is_some() && self.open_prs(dep).next().is_none())
     }
     /// The Task's latest merged PR.
     pub fn merged_pr(&self, t: &Task) -> Option<&PullRequest> {
@@ -2183,6 +2209,7 @@ impl DomainState {
         if option != POST_MERGE_CLOSE || self.tasks.get(&task_id).is_none_or(Task::over) {
             return Ok(());
         }
+        self.require_checklist_proof(&self.tasks[&task_id])?;
         self.end_post_merge(&task_id, PostMergeEnd::UserDecision, lifecycles)
     }
     /// What the user chose on a start problem card that the domain does itself: cancel the task, or
@@ -2501,7 +2528,10 @@ impl DomainState {
                 let agent_id = t.agent_id.clone().expect("a task that wraps up has a node");
                 let message = match &t.wrap_up.post_merge_work {
                     Some(work) => post_merge_reminder(&t.title, &t.id, &work.reason),
-                    None => cleanup_request(&t.title, &t.id, &t.open_worktrees().map(|(path, _)| path.as_str()).collect::<Vec<_>>()),
+                    None => match self.require_checklist_proof(t) {
+                        Err(error) => error.message,
+                        Ok(()) => cleanup_request(&t.title, &t.id, &t.open_worktrees().map(|(path, _)| path.as_str()).collect::<Vec<_>>()),
+                    },
                 };
                 self.tasks.get_mut(&id).unwrap().wrap_up.asked_at = Some(revision);
                 effects.push(DomainEffect::NotifyAgent { agent_id, task_id: Some(id), interaction_id: None, message });
@@ -2544,6 +2574,7 @@ impl DomainState {
                 "The Task's registered PR is still open",
             );
         }
+        self.require_checklist_proof(t)?;
         Ok(())
     }
     /// Waiting and activity states are always recomputed from the facts; an
@@ -2721,6 +2752,7 @@ impl DomainState {
             | Command::ConfirmCleanup { task_id, .. }
             | Command::RecordTaskWorktree { task_id, .. }
             | Command::NotePrOpened { task_id, .. }
+            | Command::NotePrChanges { task_id }
             | Command::RecordOpenedPr { task_id, .. }
             | Command::AskToRegisterPr { task_id }
             | Command::ReleaseTaskWorktree { task_id, .. }
@@ -4630,6 +4662,12 @@ impl DomainState {
                 })?;
                 created.push(pr_id.0.clone());
             }
+            Command::NotePrChanges { task_id } => {
+                system(actor)?;
+                let task = self.task(task_id)?;
+                let reading: Vec<_> = self.open_prs(task).map(|pr| OpenedPr { host: pr.host.clone(), repository: pr.repository.clone(), number: pr.number }).collect();
+                self.tasks.get_mut(task_id).unwrap().opened_prs.extend(reading);
+            }
             Command::NotePrOpened { task_id, host, repository, number } => {
                 system(actor)?;
                 let (host, repository) = (normalize_pr_host(host), normalize_pr_repository(repository));
@@ -4646,7 +4684,13 @@ impl DomainState {
                     return Ok(());
                 }
                 self.tasks.get_mut(task_id).unwrap().opened_prs.remove(&opened);
-                if self.pull_requests.values().any(|p| p.host == *host && p.repository == *repository && p.number == *number) {
+                if let Some(pr) = self.pull_requests.values().find(|p| p.host == *host && p.repository == *repository && p.number == *number) {
+                    if pr.task_id != *task_id { return fail("pr_owned_by_other_task", "PR is registered by another task"); }
+                    let pr_id = pr.id.clone();
+                    self.apply(actor, &Command::ObservePrState { pr_id: pr_id.clone(), head: sha.clone(), base: base.clone(), state: *state, merged_head: merged_head.clone() }, effects, created, lifecycles)?;
+                    if !allowed_methods.is_empty() {
+                        self.apply(actor, &Command::ObservePrMergeMethods { pr_id, allowed_methods: allowed_methods.clone() }, effects, created, lifecycles)?;
+                    }
                     return Ok(());
                 }
                 head(sha)?;
@@ -4734,7 +4778,10 @@ impl DomainState {
                     return refuse("invalid_input", "nothing_to_review",
                         "nothing_to_review is only for a final delivery without a pull request or document: it closes the task without a card");
                 }
-                self.current_pr_targets(task_id, targets)?;
+                self.current_pr_targets(task_id, targets, *is_final)?;
+                if *is_final && card.plan.is_none() {
+                    self.cited_pr_targets(task_id, body, targets, card)?;
+                }
                 self.targets(task_id, targets)?;
                 let task = self.task(task_id)?;
                 if let Some(opened) = task.opened_prs.first() {
@@ -4756,7 +4803,7 @@ impl DomainState {
                 if !missing.is_empty() {
                     return refuse("pr_missing", "targets", &prs_missing_from_delivery(&missing));
                 }
-                self.checklist_marks_cover_the_plan(task_id, *is_final, checklist, attachments)?;
+                self.checklist_marks_cover_the_plan(task_id, *is_final, checklist, attachments, targets)?;
                 if let Some(plan) = &card.plan {
                     if !*is_final || *nothing_to_review || targets.iter().any(|t| matches!(t, DeliveryTarget::PullRequest { .. })) {
                         return refuse("invalid_input", "plan",
@@ -4798,7 +4845,7 @@ impl DomainState {
                     return refuse("unanswered_questions", "is_final", &format!(
                         "You have unanswered questions ({open}): wait for the answers before you deliver, or withdraw the ones you no longer need"));
                 }
-                if !checklist.is_empty() {
+                if !checklist.is_empty() || (*is_final && self.checklists.contains_key(task_id)) {
                     self.checklist_marks.insert(interaction_id.clone(), checklist.clone());
                 }
                 if *is_final {
@@ -5230,6 +5277,7 @@ impl DomainState {
                     return fail("not_closing", &format!(
                         "Task {} is not closing, so there is nothing to clean up yet: deliver your result with present_result first.", task_id.0));
                 }
+                if !t.cancelled() && t.ending != Some(TaskEnding::Cancelling) { self.require_checklist_proof(t)?; }
                 if let Some(path) = discard.iter().find(|path| t.worktrees.get(*path).is_none_or(|w| w.end.is_some())) {
                     return fail("not_found", &format!(
                         "{path} is not a worktree of task {} that still exists: discard only the worktrees Alondra named.", task_id.0));
@@ -5246,10 +5294,13 @@ impl DomainState {
                 self.reconcile_recovery_cards(task_id, lifecycles)?;
             }
             Command::DeclarePostMergeWork { task_id, reason, waits_for } => {
-                self.assigned(actor, task_id)?;
+                let task = self.assigned(actor, task_id)?;
                 let declared_at = self.revision + 1;
                 let work = reason.as_deref().map(str::trim).filter(|reason| !reason.is_empty())
                     .map(|reason| PostMergeWork { reason: clip(reason, POST_MERGE_WORK_MAX), declared_at, turn_since: false });
+                if work.is_none() && task.final_presentation.is_some() && !task.cancelled() && task.ending != Some(TaskEnding::Cancelling) {
+                    self.require_checklist_proof(task)?;
+                }
                 let waited = self.wait_targets(task_id, waits_for, work.is_some())?;
                 match work {
                     Some(work) => self.declare_post_merge(task_id, work, lifecycles)?,
@@ -5275,7 +5326,8 @@ impl DomainState {
                 if t.ending() && t.agent_id.is_none() {
                     return fail("not_closing", &format!("Task {} has no node: its cleanup is the receipt", task_id.0));
                 }
-                let closing = self.in_cleanup(t) && self.wraps_up(t);
+                let closing = self.in_cleanup(t) && self.wraps_up(t)
+                    && (t.cancelled() || t.ending == Some(TaskEnding::Cancelling) || self.unproved_checklist(t).is_empty());
                 if !closing && !t.state.terminal() && !t.ending() {
                     if matches!(end, NodeEnd::Closed | NodeEnd::Gone) && t.agent_id.is_some() {
                         self.end_post_merge(task_id, PostMergeEnd::SessionOver, lifecycles)?;

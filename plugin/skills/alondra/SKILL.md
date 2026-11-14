@@ -291,8 +291,10 @@ Pick the tool by what you need:
   When the user approved a plan for the task, send `checklist` with the final result: every point
   of that plan's checklist left to this task, by its number from 1, each with at least one piece of evidence
   (`commit` sha in your branch, `test` or `command` you ran, `screenshot` attachment id, `pr`,
-  `file`, `link`). Alondra refuses the result while a point is missing and names it. A point that
-  no longer applies goes out with a revised plan the user approves, never by leaving it out.
+  `file`, `link`). An open PR with `post_merge_work` declared first may leave points pending for
+  after its merge: send only completed points with evidence, then prove every point in a later
+  final result before ending that work. All other final results are refused while a point is
+  missing. A point that no longer applies needs a revised plan approved by the user.
   When the result needs the user to choose anything (a design's open decisions, a default to
   pick), ask it with `ask` before you deliver: each choice a question with the option you
   recommend, up to 4 together with `questions`. Put the answers into the work, then deliver.
@@ -326,6 +328,13 @@ Pick the tool by what you need:
   before you present the PR as final. Accepting and merging the PR then does not close the task:
   it stays in progress, Alondra tells you to do that work once the PR merges, and the task closes
   only after you call `post_merge_work` without `reason` (or `cleanup_done`) when it is done.
+  With an approved checklist, declare that work before delivering the open PR. Include only
+  completed points with real evidence in that delivery's `checklist`; omitted points stay pending
+  and are shown as work after the merge. Never mark publication or installation done before it
+  happens. After the merge, finish the remaining work and present a new final result with every
+  point and its evidence, including the points already proved. Then end `post_merge_work` without
+  `reason`; `cleanup_done` and task completion are refused while any point still lacks proof.
+  This uses the existing `post_merge_work` and `present_result` arguments, with no extra fields.
 - When that work, after your PR merged, has to wait for other work to land (another task's fix
   on the default branch), call `post_merge_work` with its `reason` (what you will do then) and
   `waits_for` naming what you wait for: an Alondra task id (`t-…`) or a pull request an Alondra

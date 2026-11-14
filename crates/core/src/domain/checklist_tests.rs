@@ -1,5 +1,5 @@
-//! A task's scope is the checklist of the plan the user approved: its final delivery marks every
-//! point done with evidence, or the domain refuses it.
+//! The approved checklist stays owed through PR review, merge and session recovery; only a
+//! final delivery with evidence for every point can complete the task.
 use super::*;
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestError, TestRng, TestRunner};
@@ -78,6 +78,171 @@ fn texts(s: &DomainState) -> Vec<String> {
     s.checklists.get(&"t".into()).map(|c| c.items.iter().map(|i| i.text.clone()).collect()).unwrap_or_default()
 }
 const PLAN: &str = "# Build it\n\n- [ ] Parse the plan\n- [ ] Refuse an incomplete delivery\n- [ ] Show it to the user\n";
+
+const RELEASE_PLAN: &str = "- [ ] Implement the release\n- [ ] Test the release\n- [ ] Prepare the pull request\n- [ ] Publish the release\n- [ ] Install the release\n- [ ] Report the installed version\n";
+
+fn release_pr() -> Vec<DeliveryTarget> {
+    vec![DeliveryTarget::PullRequest { pr_id: "release-pr".into(), head: "abcdef0".into() }]
+}
+
+fn release_task() -> DomainState {
+    let mut s = fixture();
+    approved(&mut s, "release-plan", RELEASE_PLAN);
+    ok(&mut s, agent(), Command::StartTask { task_id: "t".into() });
+    ok(&mut s, agent(), Command::RegisterPr {
+        task_id: "t".into(), pr_id: "release-pr".into(), host: "github.com".into(), repository: "acme/build-tool".into(), number: 49,
+        head: "abcdef0".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+    });
+    s
+}
+
+fn release_delivery() -> Command {
+    let mut ready = deliver("release-review", true, (1..=3).map(|n| mark(&n.to_string(), vec![commit("abcdef0")])).collect(), vec![]);
+    if let Command::PresentResult { targets, .. } = &mut ready { *targets = release_pr(); }
+    ready
+}
+
+fn release_ready_for_review() -> DomainState {
+    let mut s = release_task();
+    ok(&mut s, agent(), Command::DeclarePostMergeWork {
+        task_id: "t".into(), reason: Some("Publish, install and report the release after merge".into()), waits_for: vec![],
+    });
+    ok(&mut s, agent(), release_delivery());
+    s
+}
+
+#[test]
+fn a_release_pr_is_reviewable_before_its_publication_installation_and_report() {
+    let mut s = release_ready_for_review();
+    assert_eq!(s.checklists[&"t".into()].items.len(), 6);
+    assert_eq!(s.checklist_marks[&"release-review".into()].iter().map(|m| m.item.as_str()).collect::<Vec<_>>(), ["1", "2", "3"]);
+    let index = ReadIndex::build(&s);
+    assert_eq!(index.cards_of(&"release-review".into()).len(), 1);
+    let item = index.item(&s, &s.interactions[&"release-review".into()]);
+    assert!(item.available_actions.iter().any(|a| a.kind == "authorize_merge" && a.enabled));
+    ok(&mut s, user(), Command::AcceptDelivery { presentation_id: "release-review".into(), targets: release_pr() });
+    ok(&mut s, Actor::System, Command::ObservePrState {
+        pr_id: "release-pr".into(), head: "abcdef0".into(), base: "main".into(), state: PrState::Merged, merged_head: Some("abcdef0".into()),
+    });
+    assert!(!s.tasks[&"t".into()].over());
+    assert!(s.post_merge_owed(&s.tasks[&"t".into()]));
+    assert_eq!(s.checklist_marks[&"release-review".into()].len(), 3, "the merge proves none of the remaining steps");
+    assert!(ReadIndex::build(&s).cards_of(&"release-review".into()).is_empty());
+    assert_eq!(refused(&mut s, agent(), deliver("still-pending", true, vec![mark("1", vec![commit("abcdef0")])], vec![])).0, "checklist_incomplete");
+    assert_eq!(refused(&mut s, agent(), Command::DeclarePostMergeWork { task_id: "t".into(), reason: None, waits_for: vec![] }).0, "checklist_incomplete");
+    assert_eq!(refused(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into(), discard: vec![] }).0, "checklist_incomplete");
+    let proof = (1..=6).map(|n| mark(&n.to_string(), vec![Evidence {
+        kind: EvidenceKind::Command, value: format!("verified release step {n}"), detail: None,
+    }])).collect();
+    ok(&mut s, agent(), deliver("installed-release", true, proof, vec![]));
+    ok(&mut s, user(), Command::AcceptDelivery { presentation_id: "installed-release".into(), targets: vec![DeliveryTarget::Text { text: "Done".into() }] });
+    ok(&mut s, agent(), Command::DeclarePostMergeWork { task_id: "t".into(), reason: None, waits_for: vec![] });
+    ok(&mut s, agent(), Command::ConfirmCleanup { task_id: "t".into(), discard: vec![] });
+    ok(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Closed, agent_id: Some("a".into()) });
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
+}
+
+#[test]
+fn deferring_checklist_points_requires_an_open_pr_and_declared_work_without_weakening_evidence() {
+    let mut s = release_task();
+    assert_eq!(refused(&mut s, agent(), release_delivery()).0, "checklist_incomplete");
+    ok(&mut s, agent(), Command::DeclarePostMergeWork {
+        task_id: "t".into(), reason: Some("Publish after merge".into()), waits_for: vec![],
+    });
+    let mut unproved = release_delivery();
+    if let Command::PresentResult { checklist, .. } = &mut unproved { checklist[0].evidence.clear(); }
+    assert_eq!(refused(&mut s, agent(), unproved).0, "checklist_without_evidence");
+    ok(&mut s, Actor::System, Command::ObservePrState {
+        pr_id: "release-pr".into(), head: "abcdef0".into(), base: "main".into(), state: PrState::Merged, merged_head: Some("abcdef0".into()),
+    });
+    assert_eq!(refused(&mut s, agent(), release_delivery()).0, "checklist_incomplete");
+}
+
+#[test]
+fn an_unproved_release_remains_recoverable_when_its_session_disappears() {
+    let mut s = release_ready_for_review();
+    ok(&mut s, user(), Command::AcceptDelivery { presentation_id: "release-review".into(), targets: release_pr() });
+    ok(&mut s, Actor::System, Command::ObservePrState {
+        pr_id: "release-pr".into(), head: "abcdef0".into(), base: "main".into(), state: PrState::Merged, merged_head: Some("abcdef0".into()),
+    });
+    ok(&mut s, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: NodeEnd::Gone, agent_id: Some("a".into()) });
+    assert!(!s.tasks[&"t".into()].over(), "a real session end cannot prove publication");
+    assert!(!s.landed(&s.tasks[&"t".into()]), "dependent tasks must still wait for publication");
+    assert_eq!(s.tasks[&"t".into()].wrap_up.node, None, "the task can acquire a working node again");
+    assert_eq!(s.checklist_marks[&"release-review".into()].len(), 3);
+    assert_eq!(refused(&mut s, Actor::System, Command::CompleteTask { task_id: "t".into(), presentation_id: "release-review".into() }).0, "checklist_incomplete");
+    ok(&mut s, Actor::System, Command::RegisterAgent { agent_id: "b".into(), name: "Replacement node".into(), at: 0 });
+    ok(&mut s, Actor::Orchestrator { generation: 0 }, Command::AssignTask { task_id: "t".into(), agent_id: "b".into(), model: None });
+    assert_eq!(s.tasks[&"t".into()].agent_id, Some("b".into()));
+    assert!(!s.node_closing(&s.tasks[&"t".into()]));
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Running);
+}
+
+#[test]
+fn the_pr_review_shows_unproved_points_as_pending_instead_of_completed() {
+    use crate::views::{Client, Lang, LiveSnapshot, RenderContext, Transport};
+    let s = release_ready_for_review();
+    let index = ReadIndex::build(&s);
+    for (lang, subtitle, count) in [(Lang::En, "Pending after merge", "3 of 6 done"), (Lang::Es, "Pendiente tras el merge", "3 de 6 hechos")] {
+        let view = crate::views::build("card:release-review", RenderContext {
+            domain: &s, index: &index, live: &LiveSnapshot::default(), client: Client::Mac, lang,
+            transport: Transport::Loopback, cursor: "", rendered_at: "",
+        }).unwrap();
+        let json = serde_json::to_value(view).unwrap();
+        let plan = json["sections"].as_array().unwrap().iter().find(|section| section["id"] == "plan").unwrap();
+        assert!(plan["title"].as_str().unwrap().contains(count));
+        let rows = plan["items"].as_array().unwrap();
+        assert_eq!(rows.len(), 6);
+        for number in 4..=6 {
+            let pending = rows.iter().find(|row| row["id"] == format!("plan-pending-{number}")).unwrap();
+            assert_eq!(pending["icon"], "schedule");
+            assert_eq!(pending["subtitle"], subtitle);
+        }
+    }
+}
+
+#[test]
+fn ending_post_merge_on_a_card_cannot_block_the_delivery_of_remaining_proof() {
+    for sdk in [false, true] {
+        let mut s = if sdk {
+            let mut state = super::lifecycle_tests::world();
+            super::lifecycle_tests::sdk_turn(&mut state, "t", "a");
+            approved(&mut state, "release-plan", RELEASE_PLAN);
+            ok(&mut state, agent(), Command::RegisterPr {
+                task_id: "t".into(), pr_id: "release-pr".into(), host: "github.com".into(), repository: "acme/build-tool".into(), number: 49,
+                head: "abcdef0".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+            });
+            ok(&mut state, agent(), Command::DeclarePostMergeWork { task_id: "t".into(), reason: Some("Publish after merge".into()), waits_for: vec![] });
+            ok(&mut state, agent(), release_delivery());
+            state
+        } else { release_ready_for_review() };
+        ok(&mut s, user(), Command::AcceptDelivery { presentation_id: "release-review".into(), targets: release_pr() });
+        ok(&mut s, Actor::System, Command::ObservePrState {
+            pr_id: "release-pr".into(), head: "abcdef0".into(), base: "main".into(), state: PrState::Merged, merged_head: Some("abcdef0".into()),
+        });
+        let (card, close, carry_on) = if sdk {
+            ok(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false, ended_work: vec![], by_alondra: false });
+            let card = s.interactions.keys().find(|id| id.0.starts_with(SESSION_ENDED_PREFIX)).unwrap().clone();
+            (card, CLOSE_TASK, CARRY_ON)
+        } else {
+            ok(&mut s, Actor::System, Command::RaiseProblem {
+                attachments: vec![], interaction_id: format!("{POST_MERGE_PROBLEM_PREFIX}t-proof").into(), scope: Scope::Task { task_id: "t".into() }, body: "Work is pending".into(),
+                options: vec![QuestionOption { id: POST_MERGE_CLOSE.into(), label: "Close the node".into(), description: None },
+                    QuestionOption { id: POST_MERGE_LEAVE.into(), label: "Leave it".into(), description: None }],
+                card: CardSpec { system: Some(SystemCard::PostMergeProblem), ..CardSpec::new(CardKind::Problem, "Review the pending work")
+                    .why("Publication remains pending.").content(ContentKind::Diagnosis, "Work is pending") },
+            });
+            (format!("{POST_MERGE_PROBLEM_PREFIX}t-proof").into(), POST_MERGE_CLOSE, POST_MERGE_LEAVE)
+        };
+        let answer = |option: &str| Command::AnswerQuestion { attachments: vec![], interaction_id: card.clone(), option_id: option.into(), inputs: Default::default() };
+        assert_eq!(refused(&mut s, user(), answer(close)).0, "checklist_incomplete");
+        assert!(!s.node_closing(&s.tasks[&"t".into()]));
+        ok(&mut s, user(), answer(carry_on));
+        let proof = (1..=6).map(|n| mark(&n.to_string(), vec![commit("abcdef0")])).collect();
+        ok(&mut s, agent(), deliver("proved-release", true, proof, vec![]));
+        assert!(s.unproved_checklist(&s.tasks[&"t".into()]).is_empty());
+    }
+}
 
 #[test]
 fn a_plan_without_a_checklist_never_reaches_the_user() {

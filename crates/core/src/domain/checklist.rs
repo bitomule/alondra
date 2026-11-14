@@ -1,5 +1,6 @@
 //! A Task's scope: the points of the plan the user approved, written as Markdown checklist lines
-//! (`- [ ] …`). Its final delivery marks every point done with what proves it.
+//! (`- [ ] …`). A PR review can leave declared work after merge unmarked; completing the task
+//! requires a later final delivery proving every point.
 use super::{InteractionId, TaskId};
 use serde::{Deserialize, Serialize};
 

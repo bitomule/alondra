@@ -108,6 +108,27 @@ fn an_answer_without_tasks_reaches_the_user_under_its_headline() {
 }
 
 #[test]
+fn the_done_card_names_the_pr_that_merged_instead_of_the_first_closed_pr() {
+    let mut s = state();
+    asked(&mut s, user(), "r", false);
+    task(&mut s, "design", "r");
+    done(&mut s, "design", Some(65));
+    s.pull_requests.get_mut(&"pr-65".into()).unwrap().state = PrState::Closed;
+    s.pull_requests.get_mut(&"pr-65".into()).unwrap().merged_head = None;
+    let mut landed = s.pull_requests[&"pr-65".into()].clone();
+    landed.id = "pr-14".into();
+    landed.repository = "owner/site".into();
+    landed.number = 14;
+    landed.state = PrState::Merged;
+    landed.merged_head = Some(landed.head.clone());
+    s.tasks.get_mut(&"design".into()).unwrap().later_prs.push(landed.id.clone());
+    s.pull_requests.insert(landed.id.clone(), landed);
+    close(&mut s, "r", None, None);
+    let done = DoneCard::from_body(&the_card(&s, "r").body).unwrap();
+    assert_eq!(done.tasks[0].pr, Some(14));
+}
+
+#[test]
 fn a_long_answer_keeps_its_headline_and_goes_whole_in_the_detail() {
     let mut s = state();
     asked(&mut s, user(), "r", false);

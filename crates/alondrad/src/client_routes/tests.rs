@@ -1370,8 +1370,10 @@ fn marks_page(head: &str) -> String {
 
 async fn diff_body(fixture: &Fixture, gh: &crate::domain_github::GhCli) -> Value {
     let response = crate::domain_api::pull_request_diff_from(&fixture.domain, "pr-1".into(), gh).await;
-    assert_eq!(response.status(), StatusCode::OK);
-    serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1024 * 1024).await.unwrap()).unwrap()
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+    serde_json::from_slice(&body).unwrap()
 }
 
 #[tokio::test]

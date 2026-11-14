@@ -29,6 +29,65 @@ the error: the card type, the rule it broke and the field.
 The type of a card comes from the command and its fields (its system kind, whether a hook holds
 it, its payload and its kind), never from its words.
 
+## Deliveries and pull requests
+
+Before admitting a final delivery, the daemon rereads every unmerged PR registered by its task,
+including a task with only one PR and PRs last seen closed, which GitHub may have reopened.
+If GitHub cannot answer, the delivery waits for a successful read. A successful `gh pr close`
+from either provider also schedules a fresh read; the command's
+output never determines whether GitHub closed the PR.
+
+A closed PR cannot be a delivery target (`pr_not_open`). In a final result, a PR URL or
+`owner/repo#N` naming a PR registered to that same task must also be a typed target
+(`cited_pr_not_target`), whether the PR is open or closed. Unregistered PRs and PRs registered
+to another task can be cited as context. Plan cards and progress cards are exempt from the
+citation check. These refusals name the card contract rule and field. References identify a PR
+by its host, repository and number, so a task can deliver PRs in several repositories without
+confusing equal numbers or equal commit hashes.
+
+Every open PR in a delivery has its own card and its own validated merge action. Closing or
+merging a PR retires its card, including when an old saved delivery still points to it. An old
+link to the whole delivery opens its first remaining open PR, or reports that the card is settled
+when none remains. Closed PRs never count as waiting to merge. Work declared after the merge
+continues to belong to the task until the node finishes that work.
+
+A new report about an already merged PR remains readable and can be acknowledged; it offers
+no merge action and acknowledging it does not finish declared work after the merge.
+
+### A PR review before publication and installation
+
+A task with an approved plan can deliver an open PR while publication, installation or other
+declared work must wait for its merge. The node uses the existing MCP tools and arguments:
+
+1. Call `post_merge_work` with `task_id` and a `reason` describing the work after merge.
+2. Call `present_result` with `is_final: true`, a `pull_request` target and only the completed
+   points in `checklist`, each with real evidence. For a six-point release with the first three
+   points finished, send points 1–3. Points 4–6 stay in the approved plan without completion marks;
+   the review shows them as pending after merge.
+3. After merge, finish that work in the same task. Present a new final result with all six points
+   and their evidence, including the evidence already supplied for points 1–3. Then end
+   `post_merge_work` without `reason` and complete cleanup when Alondra asks.
+
+No new MCP parameter, invented evidence or replacement plan is needed. Partial evidence is
+admitted only with a registered open PR and a prior declaration of work after merge. A merged
+PR or a text result cannot keep deferring the checklist. Ending the declaration, confirming
+cleanup or completing the task while points remain unproved is refused. A session that ends
+is recorded and can be replaced; it never proves the remaining work or completes the task.
+Cancellation keeps its existing cleanup path.
+
+The release review shows completed evidence and pending work separately in the real TUI:
+
+| Dark appearance | Light appearance |
+|---|---|
+| ![Three of six points completed, with three pending after merge](../images/pr-deliveries/partial-checklist-es-dark.png) | ![The partial checklist in the light TUI](../images/pr-deliveries/partial-checklist-es-light.png) |
+
+The TUI renders a separate review for each open PR. In this synthetic sandbox, closing PR #61
+removes its card while PR #62 keeps its merge and feedback actions:
+
+| Two open PRs | After closing PR #61 |
+|---|---|
+| ![Two PR review cards in the Spanish TUI](../images/pr-deliveries/two-open-prs-es.png) | ![Only the open PR remains in the Spanish TUI](../images/pr-deliveries/one-pr-closed-es.png) |
+
 ## Catalog
 
 | Type | Created by | Read by | Kind | Reader can | Carries | About | Need | Goes away when |

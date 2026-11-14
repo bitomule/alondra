@@ -905,6 +905,11 @@ mod tests {
 
     fn push_fixture_state(data_epoch: &str) -> DomainState {
         let mut state = DomainState::new(data_epoch);
+        state.pull_requests.insert("pr-1".into(), alondra_core::domain::PullRequest {
+            id: "pr-1".into(), task_id: "task-a".into(), host: "github.com".into(), repository: "example/parser".into(),
+            number: 1, head: "abc".into(), base: "main".into(), state: PrState::Open,
+            merged_head: None, allowed_methods: vec![], review: None,
+        });
         state.tasks.insert("task-a".into(), Task {
             id: "task-a".into(), request_id: "request-a".into(), agent_id: None,
             title: "Split the parser".into(), state: TaskState::NeedsYou, revision: 1,

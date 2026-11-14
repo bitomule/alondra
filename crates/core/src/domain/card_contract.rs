@@ -243,6 +243,8 @@ pub enum ContractRule {
     Required,
     /// The field breaks its own shape: length, lines, an option it names.
     Shape,
+    PrNotOpen,
+    CitedPrNotTarget,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -475,6 +477,8 @@ impl ContractBreach {
             ContractRule::ReadOnly => format!("{named} is only read: it never blocks and carries no options"),
             ContractRule::Required => format!("{named} carries this field"),
             ContractRule::Shape => format!("{named} breaks the shape of this field"),
+            ContractRule::PrNotOpen => format!("{named} cannot deliver a closed pull request: remove the closed PR target"),
+            ContractRule::CitedPrNotTarget => format!("{named} cites a pull request it does not deliver: include that registered PR in targets, or remove the citation"),
         }
     }
 }

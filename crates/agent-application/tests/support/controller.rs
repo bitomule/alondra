@@ -31,6 +31,7 @@ pub fn record_facts(
             | ObservedFact::SubagentWorktree { .. }
             | ObservedFact::PullRequestOpened(_)
             | ObservedFact::PullRequestNotNamed
+            | ObservedFact::PullRequestsChanged
             | ObservedFact::McpServers { .. }
             | ObservedFact::McpSignIn { .. }
             | ObservedFact::McpToolFailed

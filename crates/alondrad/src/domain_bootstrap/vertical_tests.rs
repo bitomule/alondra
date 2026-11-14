@@ -69,6 +69,7 @@ impl Fixture {
         let state = DomainDaemon::open(&home).unwrap();
         let domain = state.domain();
         let pr_view = Arc::new(crate::client_routes::FakePrView::default());
+        pr_view.answer(Some(github_at(REGISTERED)));
         state.client().use_pr_view(pr_view.clone());
         let work = state.client();
         let registration = CommandEnvelope {
@@ -503,7 +504,7 @@ impl crate::client_routes::PrView for WatcherRecordsPush {
                 state: alondra_core::domain::PrState::Open, merged_head: None,
             }).unwrap();
         }
-        Box::pin(async { None })
+        Box::pin(async { Some(github_at(PUSHED)) })
     }
 }
 
@@ -544,16 +545,38 @@ async fn http_a_head_the_pr_is_not_at_on_github_is_refused_naming_the_commit_git
 }
 
 #[tokio::test]
-async fn http_presenting_a_pr_github_cannot_report_still_creates_the_card() {
+async fn http_presenting_a_pr_github_cannot_report_creates_no_card_or_push() {
     let mut fixture = Fixture::start().await;
     fixture.task("pr-task", true).await;
     fixture.producer(false, json!({"kind":"register_pr", "task_id":"pr-task",
         "pr_id":"pr-1", "host":"github.com", "repository":"example/project",
         "number":7, "head":"0123456789abcdef0123456789abcdef01234567", "base":"main", "allowed_methods":["squash"]})).await;
-    fixture.producer(false, json!({"kind":"present_result", "task_id":"pr-task",
+    fixture.pr_view.answer(None);
+    let pushes_before = user_pushes(&fixture.domain);
+    let envelope = fixture.envelope(json!({"kind":"present_result", "task_id":"pr-task",
         "interaction_id":"pr-delivery", "body":"Code ready", "is_final":true,
-        "targets":[{"kind":"pull_request", "pr_id":"pr-1", "head":"0123456789abcdef0123456789abcdef01234567"}]})).await;
-    assert!(fixture.domain.state().unwrap().interactions.contains_key(&"pr-delivery".into()));
+        "targets":[{"kind":"pull_request", "pr_id":"pr-1", "head":"0123456789abcdef0123456789abcdef01234567"}]}));
+    let (status, refused) = fixture.post(&fixture.agent, &envelope).await;
+    assert_eq!((status, refused["code"].as_str()), (StatusCode::CONFLICT, Some("github_unreachable")), "{refused}");
+    assert!(!fixture.domain.state().unwrap().interactions.contains_key(&"pr-delivery".into()));
+    assert_eq!(user_pushes(&fixture.domain), pushes_before);
+    fixture.finish().await;
+}
+
+#[tokio::test]
+async fn http_a_pr_closed_just_before_delivery_is_refused_without_a_card_or_push() {
+    let mut fixture = Fixture::start().await;
+    fixture.registered_pr().await;
+    let mut closed = github_at(REGISTERED);
+    closed["state"] = json!("CLOSED");
+    fixture.pr_view.answer(Some(closed));
+    let pushes_before = user_pushes(&fixture.domain);
+    let (status, refused) = fixture.present_as_mcp(json!({"kind":"pull_request"})).await;
+    assert_eq!((status, refused["code"].as_str()), (StatusCode::CONFLICT, Some("pr_not_open")), "{refused}");
+    assert_eq!(refused["contract"]["rule"], "pr_not_open");
+    assert_eq!(fixture.domain.state().unwrap().pull_requests[&fixture.pr_id()].state, alondra_core::domain::PrState::Closed);
+    assert!(!fixture.domain.state().unwrap().interactions.contains_key(&"pr-delivery".into()));
+    assert_eq!(user_pushes(&fixture.domain), pushes_before);
     fixture.finish().await;
 }
 
