@@ -1,0 +1,603 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "task",
+  "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
+  "client": "ios",
+  "version": "ve56a9a176c7781ab",
+  "cursor": "cursor-1",
+  "title": "Restore the native review experience",
+  "status": {
+    "version": "v2449cfcaedc9d3ba",
+    "summary": "2 questions · 3 to read · 0 tasks working",
+    "summary_parts": [
+      {
+        "id": "questions",
+        "count": 2,
+        "one": "{count} question",
+        "other": "{count} questions"
+      },
+      {
+        "id": "to_read",
+        "count": 3,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
+    "badge": 3,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 5
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "needs_you",
+        "label": "waiting for you",
+        "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "queued",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "paused",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "waiting",
+        "value": 0
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "header",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "kind": "state",
+              "label": "State",
+              "value": "Needs you · 5 open questions",
+              "tone": "warning"
+            },
+            {
+              "kind": "request",
+              "label": "Request",
+              "value": "Polish the Alondra beta"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "readings",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Requested model",
+              "value": "Codex · gpt-demo"
+            },
+            {
+              "label": "Effective model",
+              "value": "Claude · sonnet"
+            },
+            {
+              "label": "Reason",
+              "value": "Codex has no quota or session: running on Trabajo"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "elapsed",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "elapsed",
+          "icon": "history",
+          "title": "Running for",
+          "badges": [
+            {
+              "text": "since 08:00",
+              "tone": "neutral",
+              "elapsed": {
+                "since": "2026-09-30T08:00:00Z"
+              }
+            }
+          ],
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "since",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "since",
+          "icon": "history",
+          "title": "Since",
+          "trailing": {
+            "kind": "time",
+            "at": "2026-09-30T09:30:00Z",
+            "format": "relative"
+          },
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "now",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "now",
+          "link": {
+            "kind": "view",
+            "key": "card:a98d034b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "history",
+          "title": "question: Restore the native review experience",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "waiting",
+      "title": "Waiting for You",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "a98d034b-249e-4487-a89b-57de38c26372",
+          "kind": "decide",
+          "need": "Choose an option",
+          "title_is_separate": true,
+          "why": "The new empty state is ready; the beta ships with the copy you pick.",
+          "meta": "Restore the native review experience · Demo Garden",
+          "content_row": {
+            "kind": "options",
+            "icon": "notice",
+            "label": "Why each option",
+            "summary": "2 options"
+          },
+          "link": {
+            "kind": "view",
+            "key": "card:a98d034b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "question",
+          "eyebrow": {
+            "text": "Decide",
+            "tone": "accent"
+          },
+          "title": "Choose the welcome copy",
+          "subtitle": "The new empty state is ready; the beta ships with the copy you pick.",
+          "context": [
+            {
+              "icon": "task",
+              "text": "Restore the native review experience",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              },
+              "chip": {
+                "text": "Demo Garden",
+                "tone": "neutral"
+              },
+              "state": {
+                "text": "Needs you",
+                "tone": "warning"
+              }
+            }
+          ],
+          "state": {
+            "text": "Blocks Restore the native review experience",
+            "tone": "warning"
+          },
+          "detail": "reference"
+        },
+        {
+          "type": "card",
+          "id": "8fa4034b-249e-4487-a89b-57de38c26372",
+          "kind": "decide",
+          "need": "Choose an option",
+          "title_is_separate": true,
+          "why": "The review of the pull request waits for your answer.",
+          "meta": "Alondra · Demo Garden",
+          "link": {
+            "kind": "view",
+            "key": "card:8fa4034b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "question",
+          "eyebrow": {
+            "text": "Decide",
+            "tone": "accent"
+          },
+          "title": "Ship the compact schedule editor with this beta?",
+          "subtitle": "The review of the pull request waits for your answer.",
+          "context": [
+            {
+              "icon": "task",
+              "text": "Restore the native review experience",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              },
+              "chip": {
+                "text": "Demo Garden",
+                "tone": "neutral"
+              },
+              "state": {
+                "text": "Needs you",
+                "tone": "warning"
+              }
+            }
+          ],
+          "state": {
+            "text": "Blocks Restore the native review experience",
+            "tone": "warning"
+          },
+          "detail": "reference"
+        },
+        {
+          "type": "card",
+          "id": "hf-weekly-2026-09-30",
+          "kind": "review",
+          "need": "Review the result",
+          "title_is_separate": true,
+          "why": "Two checks passed; one is still running, and the branch is up to date with main.",
+          "meta": "Alondra · Demo Garden",
+          "content_row": {
+            "kind": "diff",
+            "icon": "pull_request",
+            "label": "Changes",
+            "summary": "4 files · +120 −30"
+          },
+          "link": {
+            "kind": "view",
+            "key": "card:hf-weekly-2026-09-30"
+          },
+          "icon": "pull_request",
+          "eyebrow": {
+            "text": "Review · PR #12",
+            "tone": "accent"
+          },
+          "title": "Review the beta candidate",
+          "subtitle": "Two checks passed; one is still running, and the branch is up to date with main.",
+          "context": [
+            {
+              "icon": "task",
+              "text": "Restore the native review experience",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              },
+              "chip": {
+                "text": "Demo Garden",
+                "tone": "neutral"
+              },
+              "state": {
+                "text": "Needs you",
+                "tone": "warning"
+              }
+            }
+          ],
+          "state": {
+            "text": "Checks running",
+            "tone": "info"
+          },
+          "detail": "reference"
+        },
+        {
+          "type": "card",
+          "id": "f12d034b-249e-4487-a89b-57de38c26372",
+          "kind": "know",
+          "need": "Read this update",
+          "title_is_separate": true,
+          "why": "Swipe navigation, inline replies and attachment previews are ready for review.",
+          "meta": "Alondra · Demo Garden",
+          "content_row": {
+            "kind": "report",
+            "icon": "notice",
+            "label": "Report",
+            "summary": "3 points"
+          },
+          "link": {
+            "kind": "view",
+            "key": "card:f12d034b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "notice",
+          "eyebrow": {
+            "text": "FYI",
+            "tone": "neutral"
+          },
+          "title": "The simulator pass is clean",
+          "subtitle": "Swipe navigation, inline replies and attachment previews are ready for review.",
+          "context": [
+            {
+              "icon": "task",
+              "text": "Restore the native review experience",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              },
+              "chip": {
+                "text": "Demo Garden",
+                "tone": "neutral"
+              },
+              "state": {
+                "text": "Needs you",
+                "tone": "warning"
+              }
+            }
+          ],
+          "state": {
+            "text": "Doesn't block",
+            "tone": "neutral"
+          },
+          "detail": "reference"
+        },
+        {
+          "type": "card",
+          "id": "cc2d034b-249e-4487-a89b-57de38c26372",
+          "kind": "know",
+          "need": "Read this update",
+          "title_is_separate": true,
+          "meta": "Restore the native review experience · Demo Garden",
+          "link": {
+            "kind": "view",
+            "key": "card:cc2d034b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "notice",
+          "eyebrow": {
+            "text": "FYI",
+            "tone": "neutral"
+          },
+          "title": "The pull request checks passed",
+          "context": [
+            {
+              "icon": "task",
+              "text": "Restore the native review experience",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              },
+              "chip": {
+                "text": "Demo Garden",
+                "tone": "neutral"
+              },
+              "state": {
+                "text": "Needs you",
+                "tone": "warning"
+              }
+            }
+          ],
+          "state": {
+            "text": "Doesn't block",
+            "tone": "neutral"
+          },
+          "detail": "reference"
+        }
+      ]
+    },
+    {
+      "id": "request",
+      "title": "Request",
+      "collapsed": true,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "Prepare the next Alondra beta: restore the established review experience, verify the simulator build, and keep the release notes concise.",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    },
+    {
+      "id": "pull_requests",
+      "title": "Pull requests",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "github.com/example/repo#12",
+          "link": {
+            "kind": "view",
+            "key": "pull_request:github.com/example/repo#12"
+          },
+          "icon": "pull_request",
+          "title": "1 · Add the compact schedule editor",
+          "subtitle": "feature/compact-schedule-editor → main",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "options",
+      "title": "Options",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "kind": "priority",
+              "label": "Priority",
+              "value": "Normal"
+            },
+            {
+              "label": "PR handling",
+              "value": "Auto-merge: Alondra merges it once its checks pass"
+            },
+            {
+              "label": "Project",
+              "value": "Demo Garden"
+            },
+            {
+              "label": "Claude account",
+              "value": "Trabajo"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "actions",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "actions",
+          "actions": [
+            {
+              "id": "task_msg:t-651c38484cd2f34e74d5107ba05f7f15@6",
+              "label": "Message",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Write to this task: its node reads it when it starts…",
+                "required": true,
+                "multiline": true
+              },
+              "attachments": true,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "set_priority:t-651c38484cd2f34e74d5107ba05f7f15@6",
+              "label": "Priority",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "high",
+                  "label": "High",
+                  "description": "Starts before Normal and Low",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "normal",
+                  "label": "Normal · now",
+                  "description": "The default",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "low",
+                  "label": "Low",
+                  "description": "Starts when nothing else waits",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "cancel:t-651c38484cd2f34e74d5107ba05f7f15@6",
+              "label": "Cancel Task",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Cancel Task",
+                "message": "Cancel this task?",
+                "button": "Cancel Task"
+              },
+              "enabled": true,
+              "resolves_card": false
+            },
+            {
+              "id": "",
+              "label": "Change model",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "view",
+                "key": "task_selection:t-651c38484cd2f34e74d5107ba05f7f15"
+              },
+              "resolves_card": false
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

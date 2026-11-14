@@ -631,6 +631,16 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 900, height: 2900), spanish: true) { MacServiceDetail(presentation: store) }
     }
 
+    func test_task_modelOtherThanRequested() throws {
+        let store = try presentation(detail: "task-model-mac")
+        assertWindow(size: CGSize(width: 900, height: 2900)) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_task_modelOtherThanRequested_spanish() throws {
+        let store = try presentation(detail: "task-model-es-mac", spanish: true)
+        assertWindow(size: CGSize(width: 900, height: 2900), spanish: true) { MacServiceDetail(presentation: store) }
+    }
+
     func test_tasks_workingFacts() throws {
         let store = try presentation(detail: "task-working-rows-mac")
         assertWindow(size: CGSize(width: 1100, height: 1000)) { MacServiceDetail(presentation: store) }
