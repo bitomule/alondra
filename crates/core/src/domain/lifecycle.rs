@@ -384,6 +384,7 @@ pub enum LifecycleRecord {
     },
     /// The hold `card` ended with nothing new to tell: what the task goes on with already waits.
     PauseEnded { card: InteractionId },
+    RecoveryEnded { card: InteractionId },
     /// The user stopped the SDK host; the task retains its place without a decision card.
     HostStopped { unheard_card: InteractionId },
     /// The SDK execution's host ended, and its native Claude with it. When that leaves nothing to
@@ -640,6 +641,7 @@ fn event(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle) -> 
         },
         LifecycleRecord::Resumed { card, input, .. } => Event::Resume { card: card.clone(), input: input_id(task, input)? },
         LifecycleRecord::PauseEnded { card } => Event::EndPause { card: card.clone() },
+        LifecycleRecord::RecoveryEnded { card } => Event::RecoveryEnded { card: card.clone() },
         LifecycleRecord::WorkEnded { work, continuation } => runtime(RuntimeFact::WorkEnded {
             work: WorkId::new(work.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
             continuation: ContinuationId::new(continuation.as_str()).map_err(|e| corrupt(task, format!("{e:?}")))?,
@@ -949,6 +951,7 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>, li
             text: texts.get(input).cloned(),
         },
         Event::EndPause { card } => LifecycleRecord::PauseEnded { card: card.clone() },
+        Event::RecoveryEnded { card } => LifecycleRecord::RecoveryEnded { card: card.clone() },
         Event::Runtime { fact: RuntimeFact::WorkEnded { work, continuation }, .. } => {
             LifecycleRecord::WorkEnded { work: work.as_str().into(), continuation: continuation.as_str().into() }
         }
@@ -1251,6 +1254,12 @@ impl DomainState {
         let lifecycle = self.lifecycle(lifecycles, task)?;
         let event = event(task, &record, lifecycle)?;
         let next = Arc::new(lifecycle.advanced(lifecycle.revision(), event).map_err(|refusal| refused(task, &record, lifecycle, refusal))?);
+        if let LifecycleRecord::HandoffResent { input, resent, .. } | LifecycleRecord::DoubtResent { input, resent, .. } = &record {
+            let pending = &mut self.tasks.get_mut(task).expect("the task exists").pending_user_inputs;
+            if pending.remove(input) {
+                pending.insert(resent.clone());
+            }
+        }
         self.lifecycle_journal.get_mut(task).expect("replayed above").push(record);
         self.materialize(task, &next);
         self.keep(lifecycles, task, next);
@@ -1676,6 +1685,9 @@ impl DomainState {
             return None;
         }
         let since = self.since_delivery(task)?;
+        if !self.tasks.get(task)?.pending_user_inputs.is_empty() {
+            return Some(EmptyTurn::Unexplained);
+        }
         if self.delivery_left_to_the_user(&since) {
             return None;
         }
@@ -1711,11 +1723,15 @@ impl DomainState {
             && lifecycle.cards().is_empty()
             && self.turn_await(task).is_none()
             && self.owes_what_was_sent_back(task)
-            && self.since_delivery(task).is_some_and(|since| !self.delivery_left_to_the_user(&since))
+            && (self.tasks.get(task).is_some_and(|task| !task.pending_user_inputs.is_empty())
+                || self.since_delivery(task).is_some_and(|since| !self.delivery_left_to_the_user(&since)))
     }
 
     /// The user's hand-back of the delivery of `task` still stands, or their reply has no answer.
     fn owes_what_was_sent_back(&self, task: &TaskId) -> bool {
+        if self.tasks.get(task).is_some_and(|task| !task.pending_user_inputs.is_empty()) {
+            return true;
+        }
         let delivery = self.tasks.get(task).and_then(|t| t.final_presentation.as_ref()).and_then(|delivery| self.interactions.get(delivery));
         self.task_handed_back(task).is_some() || delivery.is_some_and(|delivery| self.open_reply(delivery))
     }
@@ -2031,6 +2047,9 @@ impl DomainState {
     /// that says why and offers to try again or to cancel it. Nothing runs it until the user says.
     /// A card that only asked how the task goes on becomes this one, so the task has one card.
     pub(super) fn record_host_lost(&mut self, task: &TaskId, reason: &str, quiet: bool, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+        if self.tasks.get(task).is_some_and(|task| self.node_closing(task)) {
+            return self.reconcile_recovery_cards(task, lifecycles);
+        }
         let generation = self.lifecycle(lifecycles, task)?.execution().map(|stamp| stamp.generation())
             .ok_or_else(|| DomainError::new("conflict", format!("Task {task} has no execution to lose")))?;
         self.sdk_execution(task, generation, lifecycles)?;
@@ -2063,6 +2082,29 @@ impl DomainState {
         Ok(())
     }
 
+    pub fn closing_recovery_cards(&self, task: &Task) -> Vec<InteractionId> {
+        if !self.node_closing(task) || !task.pending_user_inputs.is_empty() || self.post_merge_owed(task) { return vec![]; }
+        let required = self.lifecycle_of(&task.id).map(|lifecycle| lifecycle.cards().into_iter().map(|(id, _)| id.clone()).collect::<Vec<_>>()).unwrap_or_default();
+        self.interactions.values().filter(|card| card.scope == (Scope::Task { task_id: task.id.clone() })
+            && card.author == Author::System && retakes(card)
+            && ((!card.withdrawn && !Self::answered_question(card)) || required.contains(&card.id)))
+            .map(|card| card.id.clone()).collect()
+    }
+
+    pub(super) fn reconcile_recovery_cards(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
+        let cards = self.closing_recovery_cards(self.task(task)?);
+        for card in cards {
+            let lifecycle = self.lifecycle(lifecycles, task)?;
+            if lifecycle.phase() == TaskPhase::Delivered
+                && lifecycle.cards().iter().any(|(id, reason)| **id == card && matches!(reason, WaitReason::Pause | WaitReason::Unheard))
+            {
+                self.decide(lifecycles, task, LifecycleRecord::RecoveryEnded { card: card.clone() })?;
+            }
+            if !Self::answered_question(&self.interactions[&card]) { self.retire(&card); }
+        }
+        Ok(())
+    }
+
     /// The provider explicitly refused `input`, told `text`: it will never read it, so the same text
     /// goes again at once as a new input, with no card for anyone.
     pub(super) fn record_dropped_input(&mut self, task: &TaskId, generation: u64, input: &str, text: &str, lifecycles: &mut Lifecycles) -> Result<()> {
@@ -2085,6 +2127,13 @@ impl DomainState {
         let Some(reason) = self.lifecycle(lifecycles, &task_id)?.cards().into_iter().find(|(held, _)| *held == card).map(|(_, reason)| reason) else {
             return Ok(false);
         };
+        if self.tasks.get(&task_id).is_some_and(|task| self.node_closing(task)) {
+            if written.is_some_and(|text| !text.trim().is_empty()) {
+                return Err(DomainError::new(CLOSING, node_closing_notice()));
+            }
+            self.reconcile_recovery_cards(&task_id, lifecycles)?;
+            return Ok(true);
+        }
         let mut text = HOST_RESUMED_INSTRUCTION.to_owned();
         if let Some(written) = written.map(str::trim).filter(|written| !written.is_empty()) {
             text.push_str("\n\n");
@@ -2382,6 +2431,7 @@ impl DomainState {
         loop {
             let lifecycle = self.lifecycle(lifecycles, task)?;
             let Some(input) = lifecycle.pending_inputs().first().map(|input| input.as_str().to_owned()) else { break };
+            if self.tasks[task].pending_user_inputs.contains(&input) { break; }
             let record = match lifecycle.activity() {
                 ActivityView::Starting => LifecycleRecord::TurnStarted { turn: format!("turn:{task}:{}", lifecycle.cursor().unwrap_or(0) + 1), input },
                 ActivityView::Working => LifecycleRecord::InputConsumed { input },
@@ -2397,6 +2447,14 @@ impl DomainState {
     /// one decision, because until the node's end is recorded the user can still take the
     /// delivery back with feedback, and the aggregate records no acceptance that can be undone.
     pub(super) fn finish_task(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
+        if self.tasks.get(task).is_some_and(|task| !task.pending_user_inputs.is_empty()) {
+            return Err(DomainError::new("pending_user_message", "A user message still needs a final delivery"));
+        }
+        if self.tasks.get(task).and_then(|task| task.final_presentation.as_ref()).and_then(|id| self.interactions.get(id))
+            .is_some_and(|p| self.pending_reply(p, &FeedbackTarget::Delivery))
+        {
+            return Err(DomainError::new("pending_user_reply", "A reply still needs a final delivery"));
+        }
         let lifecycle = self.lifecycle(lifecycles, task)?;
         if lifecycle.phase() != TaskPhase::Delivered {
             return Ok(());

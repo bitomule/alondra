@@ -2,10 +2,14 @@
 //! what a verb did. The `match` over `Refusal` and `OutcomeKind` has no fallback arm, so a new
 //! case without words in both languages does not compile.
 
-use super::text::{t, tf};
+use super::text::{t, t as tr, tf};
 use super::{CardAction, Lang};
 use crate::domain::{MergeMethod, Refusal};
 use serde::{Deserialize, Serialize};
+
+pub fn scheduled_message_stamp(lang: Lang) -> &'static str {
+    tr!(lang, "Message saved as a separate task", "Mensaje guardado como una tarea independiente")
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -87,6 +91,10 @@ pub fn refusal_text(refusal: &Refusal, lang: Lang) -> String {
             "La PR #{number} está cerrada en GitHub y no se puede hacer merge.", number = number),
         Refusal::PrAlreadyMerged { number } => tf!(lang, "PR #{number} was already merged, so it can't be closed without merging.",
             "La PR #{number} ya estaba mergeada, así que no se puede cerrar sin hacer merge.", number = number),
+        Refusal::UserMessageUnavailable => tr!(lang, "This node cannot confirm reading messages. Nothing was sent; send the work as a new request.",
+            "Este nodo no puede confirmar la lectura de mensajes. No se envió nada; envía el encargo como una solicitud nueva.").into(),
+        Refusal::PendingUserMessage => tr!(lang, "A message still needs a reply: wait for a new result.",
+            "Queda un mensaje por responder: espera un nuevo resultado.").into(),
         Refusal::NewerResult => t!(lang, "There is a newer result: review it.",
             "Hay un resultado más nuevo: revísalo.").into(),
         Refusal::AlreadyAnswered => t!(lang, "You already answered this.", "Ya respondiste a esto.").into(),
@@ -212,7 +220,7 @@ mod tests {
             Refusal::BlockedByQuestion { need: "q".into() }, Refusal::BlockedByTask { title: "t".into() }, Refusal::WaitsForTask { title: "t".into() },
             Refusal::UpstreamPrOpen { number: 1 }, Refusal::MethodNotAllowed { method: MergeMethod::Merge, allowed: vec![] },
             Refusal::NoMethodChosen { number: 1 }, Refusal::StaleHead { number: 1 }, Refusal::ResultBehindPr { number: 1 }, Refusal::MergeInProgress { number: 1 },
-            Refusal::PrClosed { number: 1 }, Refusal::PrAlreadyMerged { number: 1 }, Refusal::NewerResult, Refusal::AlreadyAnswered, Refusal::Withdrawn,
+            Refusal::PrClosed { number: 1 }, Refusal::PrAlreadyMerged { number: 1 }, Refusal::NewerResult, Refusal::PendingUserMessage, Refusal::UserMessageUnavailable, Refusal::AlreadyAnswered, Refusal::Withdrawn,
             Refusal::ClarificationPending, Refusal::TaskNotActive, Refusal::TaskClosing, Refusal::Changed, Refusal::NotForYou,
             Refusal::NodeUnreachable { node: "n".into() }, Refusal::NothingToInterrupt, Refusal::DeviceNotApproved, Refusal::StorageUnavailable,
             Refusal::GithubUnreachable, Refusal::NoLongerAvailable, Refusal::DefaultAccountStays { name: "n".into() },

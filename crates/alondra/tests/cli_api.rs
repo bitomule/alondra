@@ -282,3 +282,117 @@ fn send_to_a_task_with_no_node_submits_the_task_action_and_prints_its_receipt() 
     assert_eq!(submitted[0]["input"]["text"], "Keep the old API");
     assert_eq!(submitted[0]["input"]["fields"]["from_cli"], true);
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn status_json_lists_each_card_once_and_keeps_grouped_task_ids() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    use p256::pkcs8::{EncodePrivateKey, LineEnding};
+    use serde_json::{Value, json};
+
+    for (args, empty) in [
+        (vec!["status", "--json"], false),
+        (vec!["--json", "status"], false),
+        (vec!["status", "--json"], true),
+    ] {
+        let mut mac = Mac::new();
+        let key = p256::ecdsa::SigningKey::from_slice(&[9; 32]).unwrap();
+        std::fs::write(mac.root.join("home/tui-key.pem"), key.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes()).unwrap();
+        std::fs::write(mac.root.join("home/tui-device"), "test-terminal").unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        mac.port = address.port();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let done = stopped.clone();
+        let server = std::thread::spawn(move || {
+            let mut paths = Vec::new();
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                if done.load(Ordering::SeqCst) { break; }
+                stream.set_read_timeout(Some(std::time::Duration::from_secs(30))).unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                loop {
+                    let mut line = String::new();
+                    assert!(reader.read_line(&mut line).unwrap() > 0);
+                    if line.trim().is_empty() { break; }
+                }
+                let home = request.starts_with("GET /views/home?");
+                assert!(home || request.starts_with("GET /views/tasks?"), "{request}");
+                paths.push(if home { "home" } else { "tasks" });
+                let card = |id: &str| json!({"type":"card","id":id,"icon":"question","title":id,"detail":"reference"});
+                let task = |id: &str| json!({"id":id,"title":id,"icon":"task","depth":2,"struck":false,
+                    "link":{"kind":"view","key":format!("task:{id}")},
+                    "badges":[{"text":"Working","tone":"neutral"}]});
+                let waits = |id: &str| json!({"id":format!("waits:{id}:dependency"),"title":"Waits for a dependency",
+                    "icon":"branch","depth":3,"struck":false,"link":{"kind":"view","key":format!("task:{id}")}});
+                let sections: Vec<Value> = if empty { vec![] } else if home {
+                    vec![json!({"id":"waiting","collapsed":false,"items":[card("first"),card("second")]}),
+                        json!({"id":"detail","collapsed":false,"items":[card("first")]})]
+                } else {
+                    let mut first = task("t-first");
+                    first["children"] = json!([waits("t-first")]);
+                    let mut third = task("t-third");
+                    third["children"] = json!([task("t-fourth")]);
+                    vec![json!({"id":"active","collapsed":false,"items":[{"type":"row","id":"block:in-progress",
+                        "title":"In progress","icon":"task","depth":0,"struck":false,"children":[{
+                            "id":"group:request","title":"One request","icon":"request","depth":1,"struck":false,
+                            "link":{"kind":"view","key":"task:t-second"},
+                            "badges":[{"text":"2 tasks","tone":"neutral"}],"children":[first,task("t-second")]}]}]}),
+                        json!({"id":"finished","collapsed":false,"items":[
+                            {"type":"row","id":"single-request","title":"Finished task","icon":"task","depth":0,"struck":false,
+                                "link":{"kind":"view","key":"task:t-finished"},"badges":[{"text":"Done","tone":"success"}],
+                                "children":[waits("t-finished")]},
+                            {"type":"row","id":"multi-request","title":"Completed request","icon":"request","depth":0,"struck":false,
+                                "link":{"kind":"view","key":"task:t-fourth"},"children":[third]},
+                            {"type":"row","id":"waits:t-first:another","title":"Waits for another dependency","icon":"branch","depth":1,
+                                "struck":false,"link":{"kind":"view","key":"task:t-first"}},
+                            {"type":"row","id":"waits:t-outside:dependency","title":"Waits for an omitted dependency","icon":"branch","depth":1,
+                                "struck":false,"link":{"kind":"view","key":"task:t-outside"}}
+                        ]})]
+                };
+                let response = json!({"protocol":1,"data_epoch":"epoch","view":if home {"home"} else {"tasks"},
+                    "key":if home {"home"} else {"tasks"},"client":"tui","version":"v1","cursor":"c1",
+                    "status":{"version":"s1","summary":"Two tasks","badge":2,"counts":[],"gauges":[],
+                        "orchestrator":{"text":"Ready","tone":"success"}},"sections":sections}).to_string();
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
+            }
+            paths
+        });
+        let output = mac.run(&args);
+        stopped.store(true, Ordering::SeqCst);
+        let _ = TcpStream::connect(address);
+        let paths = server.join().unwrap();
+        let doc = document(&output);
+        assert_eq!(paths, ["home", "tasks"]);
+        assert_eq!(doc["schema"], "alondra.status/1");
+        assert_eq!(doc["header"]["summary"], "Two tasks");
+        let cards = doc["cards"].as_array().unwrap();
+        let blocks = doc["task_blocks"].as_array().unwrap();
+        if empty {
+            assert!(cards.is_empty() && blocks.is_empty());
+        } else {
+            assert_eq!(cards.iter().map(|card| card["id"].as_str().unwrap()).collect::<Vec<_>>(), ["first", "second"]);
+            assert_eq!(blocks.len(), 3);
+            assert_eq!(blocks[0]["id"], "block:in-progress");
+            let first = blocks[0]["tasks"].as_array().unwrap();
+            assert_eq!(first.iter().map(|task| task["task_id"].as_str().unwrap()).collect::<Vec<_>>(), ["t-first", "t-second"]);
+            assert_eq!(first[1]["title"], "t-second");
+            assert_eq!(first[1]["badges"][0]["text"], "Working");
+            let single = blocks[1]["tasks"].as_array().unwrap();
+            assert_eq!(single.len(), 1);
+            assert_eq!(single[0]["task_id"], "t-finished");
+            assert_eq!(single[0]["title"], "Finished task");
+            assert_eq!(single[0]["badges"][0]["text"], "Done");
+            assert_eq!(blocks[2]["tasks"].as_array().unwrap().iter().map(|task| task["task_id"].as_str().unwrap()).collect::<Vec<_>>(),
+                ["t-third", "t-fourth"]);
+            let tasks: Vec<_> = blocks.iter().flat_map(|block| block["tasks"].as_array().unwrap()).collect();
+            let ids: std::collections::BTreeSet<_> = tasks.iter().map(|task| task["task_id"].as_str().unwrap()).collect();
+            assert_eq!(ids.len(), tasks.len());
+            assert_eq!(ids.len(), 5);
+            assert!(tasks.iter().all(|task| task.get("children").is_none()), "task entries contain only their own metadata");
+        }
+    }
+}

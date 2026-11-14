@@ -169,6 +169,14 @@ impl TaskLifecycle {
             Event::Answer { card, input } => self.answer(card, Reply::Input(input), false)?,
             Event::Resume { card, input } => self.answer(card, Reply::Input(input), true)?,
             Event::EndPause { card } => self.answer(card, Reply::Nothing, true)?,
+            Event::RecoveryEnded { card } => {
+                let State::Delivered(delivered) = &mut self.state else { return Err(Refusal::InvalidState) };
+                let held = delivered.decisions.get(&card).ok_or(Refusal::CorrelationMismatch)?;
+                let recovery = (held.reason == WaitReason::Pause && held.owner == Owner::User)
+                    || (held.reason == WaitReason::Unheard && matches!(held.owner, Owner::User | Owner::Orchestrator));
+                if !recovery || held.callback.is_some() { return Err(Refusal::InvalidState); }
+                delivered.decisions.remove(&card);
+            },
             Event::Decide { card, decision } => {
                 valid_decision(&decision)?;
                 self.answer(card, Reply::Decision(decision), false)?

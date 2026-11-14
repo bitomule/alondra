@@ -25,7 +25,7 @@ low_opt_rust_test(
     name = "provider_codex_test",
     size = "small",
     crate_root = "src/lib.rs",
-    srcs = glob(["src/*.rs"]) + ["//crates:test_support.rs"],
+    srcs = glob(["src/*.rs"]) + ["//crates/provider-claude:src/archive_tests.rs", "//crates:test_support.rs"],
     crate_name = "alondra_provider_codex",
     edition = "2024",
     version = "0.1.0",

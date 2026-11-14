@@ -192,7 +192,7 @@ fn a_post_merge_turn_that_rests_with_its_work_owed_is_woken() {
 }
 
 #[test]
-fn a_delivery_resting_after_presenting_is_left_to_the_user() {
+fn a_message_after_presenting_requires_a_new_result_even_when_the_node_rests() {
     let mut s = world();
     sdk_turn(&mut s, "t", "a");
     present(&mut s);
@@ -200,27 +200,53 @@ fn a_delivery_resting_after_presenting_is_left_to_the_user() {
     must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Looks good, I am reviewing it".into(), from_user: true, answers: None });
     start(&mut s, "turn-2");
     end_empty(&mut s, "turn-2");
-    assert_eq!(unfinished(&s), 0, "{:?}", s.lifecycle_journal[&TaskId::from("t")]);
-    assert!(lifecycle(&s).pending_inputs().is_empty() && open_case(&s).is_none());
-    assert_eq!(pending(&s), ["r"]);
+    assert_eq!(unfinished(&s), 1, "the node must answer the new message");
+    assert!(!lifecycle(&s).pending_inputs().is_empty() && open_case(&s).is_none());
+    let error = exec(&mut s, user(), Command::AcceptDelivery {
+        presentation_id: "r".into(), targets: vec![DeliveryTarget::Text { text: "Beta 61".into() }],
+    }).unwrap_err();
+    assert_eq!(error.code, "pending_user_message");
     assert_aggregate_rules(&s);
 }
 
 #[test]
-fn the_users_word_after_the_answer_ends_the_owed_step() {
+fn the_users_word_settles_the_stall_but_still_requires_a_reply() {
     let mut s = answer_taken();
     end_empty(&mut s, "turn-2");
     rest_through_wakes(&mut s);
     start(&mut s, "turn-3");
     end_empty(&mut s, "turn-3");
     let case = open_case(&s).expect("the rest after the wakes is a case");
+    let before = unfinished(&s);
     must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Never mind, keep it as it is".into(), from_user: true, answers: None });
     assert!(s.interactions[&case].withdrawn, "what the user wrote settles the case");
     start(&mut s, "turn-4");
     end_empty(&mut s, "turn-4");
-    assert_eq!(unfinished(&s), 1 + usize::from(alondra_domain::EMPTY_TURN_WAKES), "nothing is owed after the user's word");
-    assert!(open_case(&s).is_none() && lifecycle(&s).pending_inputs().is_empty());
-    assert_eq!(pending(&s), ["r"]);
+    assert_eq!(unfinished(&s), before + 1, "the new message needs its own reply");
+    assert!(open_case(&s).is_none() && !lifecycle(&s).pending_inputs().is_empty());
+    assert!(!s.tasks[&TaskId::from("t")].pending_user_inputs.is_empty());
+    assert_aggregate_rules(&s);
+}
+
+#[test]
+fn a_new_user_message_reopens_work_after_an_older_unsettled_case() {
+    let mut s = answer_taken();
+    end_empty(&mut s, "turn-2");
+    rest_through_wakes(&mut s);
+    start(&mut s, "turn-3");
+    end_empty(&mut s, "turn-3");
+    let case = open_case(&s).unwrap();
+    must(&mut s, Actor::System, Command::SettleStall { case_id: case, task_id: "t".into(), outcome: StallOutcome::Unsettled });
+    start(&mut s, "turn-4");
+    end_empty(&mut s, "turn-4");
+    must(&mut s, Actor::System, Command::TellNode {
+        task_id: "t".into(), text: "Please prepare a new report".into(), from_user: true, answers: None,
+    });
+    let before = unfinished(&s);
+    start(&mut s, "turn-5");
+    end_empty(&mut s, "turn-5");
+    assert_eq!(unfinished(&s), before + 1, "the new message must wake the node again");
+    assert!(!lifecycle(&s).pending_inputs().is_empty());
     assert_aggregate_rules(&s);
 }
 
@@ -425,12 +451,13 @@ impl Run {
                             "an owed rest is woken or cased: {lifecycle:?}");
                     }
                     let rests = resting_on_delivery && lifecycle.activity() == alondra_domain::ActivityView::Resting && lifecycle.awaits().is_none();
-                    if rests && self.took_an_answer() {
+                    let user_message = !self.s.tasks[&TaskId::from("t")].pending_user_inputs.is_empty();
+                    if rests && (self.took_an_answer() || user_message) {
                         assert!(!lifecycle.pending_inputs().is_empty() || open_case(&self.s).is_some(),
                             "a delivery resting on the answer it took is woken or cased: {lifecycle:?}");
                     }
-                    if self.answered.is_empty() && resting_on_delivery {
-                        assert_eq!(unfinished(&self.s), 0, "a delivery that took no answer owes nothing");
+                    if self.answered.is_empty() && resting_on_delivery && !user_message {
+                        assert_eq!(unfinished(&self.s), owed_before, "without an answer or user message, no new step is owed");
                     }
                 }
             }
@@ -508,4 +535,35 @@ fn the_property_harness_reaches_the_beta_go_rest() {
     assert_eq!(run.answered, [InteractionId::from("ask-1")]);
     assert!(run.outbox.is_empty(), "the answer reached the node");
     assert!(matches!(last(&run.s, "t"), LifecycleRecord::Unfinished { wake: Some(_), .. }), "{:?}", last(&run.s, "t"));
+}
+
+#[test]
+fn a_stopped_node_can_close_with_an_explanation_for_the_unanswered_message() {
+    for outcome in [StallOutcome::Close { result: "The node could not finish the report".into() }, StallOutcome::Unsettled] {
+        let mut s = world();
+        sdk_turn(&mut s, "t", "a");
+        must(&mut s, Actor::System, Command::TellNode {
+            task_id: "t".into(), text: "Prepare the report".into(), from_user: true, answers: None,
+        });
+        end_empty(&mut s, "turn-1");
+        start(&mut s, "turn-2");
+        end_empty(&mut s, "turn-2");
+        for n in 2..=alondra_domain::EMPTY_TURN_WAKES {
+            let turn = format!("retry-{n}");
+            start(&mut s, &turn);
+            end_empty(&mut s, &turn);
+        }
+        start(&mut s, "turn-3");
+        end_empty(&mut s, "turn-3");
+        let case = open_case(&s).unwrap();
+        let actor = if outcome == StallOutcome::Unsettled { Actor::System } else { orchestrator() };
+        must(&mut s, actor, Command::SettleStall { case_id: case, task_id: "t".into(), outcome: outcome.clone() });
+        let task = &s.tasks[&TaskId::from("t")];
+        assert!(task.cancelled() && task.pending_user_inputs.is_empty());
+        assert_eq!(task.stall_closing, Some(match outcome {
+            StallOutcome::Close { result } => StallClosing::Settled { result },
+            _ => StallClosing::Unsettled,
+        }));
+        assert_aggregate_rules(&s);
+    }
 }

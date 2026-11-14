@@ -29,6 +29,8 @@ pub use controls::{
 pub use alondra_domain::{Control, Decision, PermissionMode};
 pub use alondra_provider_contract::DecisionKind;
 mod journal_format;
+mod receipt_proofs;
+pub use receipt_proofs::ReceiptCandidate;
 pub mod measure;
 mod persistence;
 mod provider_binding;
@@ -1391,7 +1393,7 @@ impl<'connection> LifecycleTransaction<'connection> {
             let mut doubtful = vec![];
             for input in aggregate.pending_inputs() {
                 let row: Option<(String, Option<String>)> = self.transaction.query_row(
-                    "SELECT d.status,i.body FROM lifecycle_dispatches d JOIN lifecycle_inputs i ON i.task_id=d.task_id AND i.input_id=d.input_id WHERE d.task_id=?1 AND d.generation=?2 AND d.input_id=?3",
+                    "SELECT d.status,i.body FROM lifecycle_dispatch_certainty d JOIN lifecycle_inputs i ON i.task_id=d.task_id AND i.input_id=d.input_id WHERE d.task_id=?1 AND d.generation=?2 AND d.input_id=?3",
                     params![task.0, sql_number(stamp.generation())?, input.as_str()],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 ).optional()?;
@@ -1421,7 +1423,7 @@ impl<'connection> LifecycleTransaction<'connection> {
                 return Err(Error::OfferOrder);
             }
             let record: Option<(String, Option<String>, Option<String>, Option<String>, String)> = self.transaction.query_row(
-                "SELECT d.kind,d.placement_kind,d.placement,i.body,d.status FROM lifecycle_dispatches d JOIN lifecycle_inputs i USING(task_id,input_id) WHERE d.id=?1 AND d.task_id=?2 AND d.generation=?3 AND d.input_id=?4",
+                "SELECT d.kind,d.placement_kind,d.placement,i.body,d.status FROM lifecycle_dispatch_certainty d JOIN lifecycle_inputs i USING(task_id,input_id) WHERE d.id=?1 AND d.task_id=?2 AND d.generation=?3 AND d.input_id=?4",
                 params![permit.id, permit.stamp.task().0, crate::sql_number(permit.stamp.generation())?, permit.input.as_str()], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))).optional()?;
             let (kind, placement_kind, placement_value, text, status) =
                 record.ok_or(Error::StalePermit)?;
@@ -1433,8 +1435,8 @@ impl<'connection> LifecycleTransaction<'connection> {
             let rejected_restart = kind == "input" && aggregate.resource() == Some(ResourceEvidence::Reserved)
                 && aggregate.pending_inputs().first().is_some_and(|input|input.as_str()==permit.input.as_str())
                 && self.transaction.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM lifecycle_events e JOIN lifecycle_dispatches d ON d.task_id=e.task_id AND d.input_id=json_extract(e.event,'$.data.input') WHERE e.task_id=?1 AND json_extract(e.event,'$.data.resend')=?2 AND d.generation=?3 AND ((json_extract(e.event,'$.kind')='resend_untaken' AND d.status='rejected') OR (json_extract(e.event,'$.kind')='resend_doubtful' AND d.status IN('handed','uncertain'))))
-                     OR EXISTS(SELECT 1 FROM lifecycle_events s JOIN lifecycle_events q ON q.task_id=s.task_id AND json_extract(q.event,'$.kind')='doubt_handoff' AND json_extract(q.event,'$.data.card')=json_extract(s.event,'$.data.card') JOIN lifecycle_dispatches d ON d.task_id=q.task_id AND d.input_id=json_extract(q.event,'$.data.input') WHERE s.task_id=?1 AND json_extract(s.event,'$.kind')='settle_handoff' AND json_extract(s.event,'$.data.resend')=?2 AND d.generation=?3 AND d.status IN('handed','uncertain'))",
+                    "SELECT EXISTS(SELECT 1 FROM lifecycle_events e JOIN lifecycle_dispatch_certainty d ON d.task_id=e.task_id AND d.input_id=json_extract(e.event,'$.data.input') WHERE e.task_id=?1 AND json_extract(e.event,'$.data.resend')=?2 AND d.generation=?3 AND ((json_extract(e.event,'$.kind')='resend_untaken' AND d.status='rejected') OR (json_extract(e.event,'$.kind')='resend_doubtful' AND d.status IN('handed','uncertain'))))
+                     OR EXISTS(SELECT 1 FROM lifecycle_events s JOIN lifecycle_events q ON q.task_id=s.task_id AND json_extract(q.event,'$.kind')='doubt_handoff' AND json_extract(q.event,'$.data.card')=json_extract(s.event,'$.data.card') JOIN lifecycle_dispatch_certainty d ON d.task_id=q.task_id AND d.input_id=json_extract(q.event,'$.data.input') WHERE s.task_id=?1 AND json_extract(s.event,'$.kind')='settle_handoff' AND json_extract(s.event,'$.data.resend')=?2 AND d.generation=?3 AND d.status IN('handed','uncertain'))",
                     params![permit.stamp.task().0,permit.input.as_str(),sql_number(permit.stamp.generation())?],|row|row.get::<_,bool>(0))?;
             if status != "prepared"
                 || (kind == "input" && aggregate.resource() != Some(ResourceEvidence::Available) && !rejected_restart)
@@ -1629,7 +1631,7 @@ fn dispatchable(aggregate: &TaskLifecycle) -> bool {
 }
 
 fn unresolved(connection: &Connection, aggregate: &TaskLifecycle) -> Result<Vec<UnresolvedDispatch>> {
-    let mut statement = connection.prepare("SELECT id,generation,input_id,status FROM lifecycle_dispatches WHERE task_id=?1 AND status IN('claimed','uncertain') ORDER BY id")?;
+    let mut statement = connection.prepare("SELECT id,generation,input_id,status FROM lifecycle_dispatch_certainty WHERE task_id=?1 AND status IN('claimed','uncertain') ORDER BY id")?;
     let rows = statement.query_map(params![aggregate.task().0], |row| {
         Ok((row.get(0)?, read_number(row, 1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?))
     })?;
@@ -1672,7 +1674,7 @@ fn next_offer(
     // or what the user sent again in its place for a host launched after the first one ended.
     let starting = aggregate.resource() == Some(ResourceEvidence::Reserved);
     for (at, input) in aggregate.pending_inputs().into_iter().enumerate() {
-        let row: Option<(i64, String, String)> = connection.query_row("SELECT id,status,kind FROM lifecycle_dispatches WHERE task_id=?1 AND generation=?2 AND input_id=?3", params![aggregate.task().0, crate::sql_number(stamp.generation())?, input.as_str()],
+        let row: Option<(i64, String, String)> = connection.query_row("SELECT id,status,kind FROM lifecycle_dispatch_certainty WHERE task_id=?1 AND generation=?2 AND input_id=?3", params![aggregate.task().0, crate::sql_number(stamp.generation())?, input.as_str()],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).optional()?;
         let (id, status, kind) = row.ok_or(Error::MissingIntent)?;
         match status.as_str() {

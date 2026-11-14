@@ -18,16 +18,21 @@ use alondra_store::{
 pub(super) use alondra_daemon_engine_store::testing::ObservationRefusal;
 #[cfg(any(test, feature = "test-hooks"))]
 pub fn admit_through_sdk(runtime: &crate::domain_runtime::DomainRuntime, task: &TaskId, agent: &str) {
+    admit_through_sdk_with_host(runtime, task, agent, "fixture-service");
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn admit_through_sdk_with_host(runtime: &crate::domain_runtime::DomainRuntime, task: &TaskId, agent: &str, host: &str) {
     let state = runtime.state().unwrap();
     let admit = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: format!("admit-{task}").into(),
         expected_revision: state.revision,
         command: Command::AdmitExecution { provider: alondra_core::accounts::Provider::Claude,
             task_id: task.clone(), agent_id: agent.into(), conversation: format!("conversation-{task}"), instance: format!("resource-{task}"),
-            host: "fixture-service".into(), model: None, account: None, leaves_limit: None,
+            host: host.into(), model: None, account: None, leaves_limit: None,
         },
     };
-    let binding = ProviderBinding::new("composite-binding".into(), "fixture-service".into(), "fixture-instance".into(), "fixture-config".into(),
+    let binding = ProviderBinding::new("composite-binding".into(), host.into(), "fixture-instance".into(), "fixture-config".into(),
         1, 1, std::collections::BTreeSet::from([Capability::OfferInput]), "fixture-credential-reference".into(), 1).unwrap();
     runtime.own(AuthorityScope::new(state.data_epoch.clone()).unwrap(), |owner| {
         owner.stage_command(&Actor::System, &admit, Attached::None)?;

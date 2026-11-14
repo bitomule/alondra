@@ -1,7 +1,7 @@
 //! Domain storage lives in its own crate; runtime-dependent fixtures stay with the engine.
 pub use alondra_daemon_engine_store::*;
 #[cfg(any(test, feature = "test-hooks"))]
-pub use owner::admit_through_sdk;
+pub use owner::{admit_through_sdk, admit_through_sdk_with_host};
 #[cfg(any(test, feature = "test-hooks"))]
 #[path = "domain_store/runtime_owner.rs"]
 mod owner;

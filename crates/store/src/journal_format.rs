@@ -34,6 +34,7 @@ pub(super) fn install(connection: &Connection) -> Result<()> {
     }
     connection.execute_batch(SCHEMA)?;
     connection.execute_batch(ADDITIONS)?;
+    receipts(connection, true)?;
     context(connection, true)?;
     connection.execute_batch(MARKER_SCHEMA)?;
     connection.execute(
@@ -61,6 +62,7 @@ pub(super) fn extend(connection: &Connection) -> Result<bool> {
     if format.as_deref() != Some(FORMAT) {
         return Ok(false);
     }
+    receipts(connection, true)?;
     upgrade_triggers(connection)?;
     for (_, name, _) in objects(ADDITIONS)? {
         let present: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)", [name], |row| row.get(0))?;
@@ -123,6 +125,7 @@ fn upgrade_triggers(connection: &Connection) -> Result<()> {
 fn verify_schema(connection: &Connection) -> Result<()> {
     crate::measure::schema_verified();
     context(connection, false)?;
+    receipts(connection, false)?;
     require_object(
         connection,
         "table",
@@ -150,6 +153,17 @@ pub(super) fn verify_marker(connection: &Connection) -> Result<()> {
     if format.as_deref() != Some(FORMAT) {
         return Err(Error::UnsupportedJournalFormat);
     }
+    Ok(())
+}
+fn receipts(connection: &Connection, install: bool) -> Result<()> {
+    let expected = objects(crate::receipt_proofs::SCHEMA)?;
+    let mut present = false;
+    for (_, name, _) in &expected {
+        crate::measure::schema_queried();
+        present |= connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)", [name], |row| row.get::<_, bool>(0))?;
+    }
+    if !present && install { connection.execute_batch(crate::receipt_proofs::SCHEMA)?; }
+    for (kind, name, sql) in expected { require_object(connection, kind, name, &sql)?; }
     Ok(())
 }
 fn context(connection: &Connection, install: bool) -> Result<()> {
@@ -181,6 +195,8 @@ fn objects(source: &str) -> Result<Vec<(&'static str, &str, String)>> {
         };
         let (kind, remaining) = if let Some(value) = body.strip_prefix("TABLE IF NOT EXISTS ") {
             ("table", value)
+        } else if let Some(value) = body.strip_prefix("VIEW IF NOT EXISTS ") {
+            ("view", value)
         } else if let Some(value) = body.strip_prefix("UNIQUE INDEX IF NOT EXISTS ") {
             ("index", value)
         } else if let Some(value) = body.strip_prefix("TRIGGER IF NOT EXISTS ") {

@@ -118,13 +118,23 @@ impl DomainState {
         };
         content(body, attachments)?;
         let (p, t, current) = self.presentation(presentation_id)?;
-        if current != targets {
-            return fail("acceptance_stale", "Feedback targets changed");
-        };
+        Self::feedback_target(current, targets)?;
         if matches!(actor, Actor::User { .. }) && self.in_cleanup(t) && self.merged_delivery(p) {
             return fail("task_closing", "This task's pull request is already merged and the task is closing, so it takes no more changes: ask for more work as a new request.");
         }
         Ok((u, t.id.clone()))
+    }
+
+    pub(super) fn feedback_target(current: &[DeliveryTarget], submitted: &[DeliveryTarget]) -> Result<FeedbackTarget> {
+        if current == submitted {
+            return Ok(FeedbackTarget::Delivery);
+        }
+        if let [target @ DeliveryTarget::PullRequest { pr_id, head }] = submitted
+            && current.contains(target)
+        {
+            return Ok(FeedbackTarget::PullRequest { pr_id: pr_id.clone(), head: head.clone() });
+        }
+        fail("acceptance_stale", "Feedback targets changed")
     }
 
     /// Who accepts. Every PR the delivery carries that is neither merged at its head nor
@@ -186,7 +196,13 @@ impl DomainState {
     /// Accepting records a decision on every document revision the delivery carries, which
     /// needs that document's review.
     pub(super) fn acceptance_guard(&self, presentation: &InteractionId) -> Result<()> {
-        let (_, t, targets) = self.presentation(presentation)?;
+        let (p, t, targets) = self.presentation(presentation)?;
+        if !t.pending_user_inputs.is_empty() {
+            return fail("pending_user_message", "The user sent new work after this result: a new final delivery must address it or explain why it cannot be done");
+        }
+        if self.pending_reply(p, &FeedbackTarget::Delivery) {
+            return fail("pending_user_reply", "The user's reply must be resolved before accepting this delivery");
+        }
         for target in targets {
             if let DeliveryTarget::DocumentRevision { document_id, .. } = target
                 && !self.document_reviews.iter().any(|r| r.task_id == t.id && &r.document_id == document_id)
@@ -244,7 +260,9 @@ impl DomainState {
         id(&authorization_id.0)?;
         let u = if matches!(actor, Actor::System) {
             let (p, t, _) = self.presentation(presentation_id)?;
-            let untouched = matches!(&p.payload, InteractionPayload::Delivery { acceptance: None, feedback, .. } if feedback.is_empty());
+            let target = FeedbackTarget::PullRequest { pr_id: pr_id.clone(), head: expected_head.to_owned() };
+            let untouched = matches!(&p.payload, InteractionPayload::Delivery { acceptance: None, feedback, .. }
+                if feedback.iter().all(|feedback| !feedback.target.affects(&target))) && !self.pending_reply(p, &target);
             if !self.requests.get(&t.request_id).is_some_and(|r| r.auto_merge) || !untouched {
                 return fail("forbidden", "Alondra merges on its own only an untouched delivery of an auto-merge Request");
             }
@@ -269,7 +287,10 @@ impl DomainState {
         method: MergeMethod,
         holds: &dyn Holds,
     ) -> Result<TaskId> {
-        let (_, t, targets) = self.presentation(presentation_id)?;
+        let (presentation, t, targets) = self.presentation(presentation_id)?;
+        if self.pending_reply(presentation, &FeedbackTarget::PullRequest { pr_id: pr_id.clone(), head: expected_head.to_owned() }) {
+            return fail("pending_user_reply", "The user's reply must be resolved before merging this pull request");
+        }
         self.unblocked(presentation_id, holds)?;
         let number = self.pull_requests[pr_id].number;
         if !targets.contains(&DeliveryTarget::PullRequest {

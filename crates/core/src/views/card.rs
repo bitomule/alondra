@@ -94,7 +94,7 @@ pub(super) fn item_for_pr<'a>(context: &'a RenderContext<'_>, pr_id: &PrId) -> O
     let whole = first_queued(context, context.index.cards_of_pr(pr_id), |i| {
         targets_of(i).iter().any(|target| matches!(target, DeliveryTarget::PullRequest { pr_id: id, .. } if id == pr_id))
     })?;
-    match context.domain.pr_cards(&whole).into_iter().find(|card| own_pr(card) == Some(pr_id)) {
+    match context.domain.card_for_pr(&whole, pr_id) {
         Some(card) => Some(std::borrow::Cow::Owned(card)),
         None => Some(whole),
     }
@@ -121,8 +121,11 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
         Some(PrState::Closed) => return Ok(settled_view(key, Settled::ClosedUnmerged, context)),
         _ => {}
     }
-    let cards = domain.pr_cards(&whole);
-    let item = cards.iter().find(|card| named.is_some_and(|pr| own_pr(card) == Some(&pr.id))).unwrap_or(&cards[0]);
+    let scoped = match named {
+        Some(pr) => domain.card_for_pr(&whole, &pr.id),
+        None => domain.pr_cards(&whole).into_iter().next(),
+    };
+    let item = scoped.as_ref().unwrap_or(&whole);
     let card = from_item(item, context, true)?;
     let title = card.title.clone();
     let mut sections = vec![super::common::section("card", None, vec![Item::Card(card)])];
@@ -767,6 +770,10 @@ fn content_row(item: &InboxItem, interaction: Option<&Interaction>, context: &Re
     let lang = context.lang;
     let domain = context.domain;
     let interaction = interaction?;
+    if let Some(content) = recovery_content(interaction, lang) {
+        return Some(ContentRow { kind: "document".into(), icon: Icon::Document,
+            label: t!(lang, "Details", "Detalle").into(), summary: clip(&content, 60), more_count: 0 });
+    }
     if let Some(destination) = &interaction.card.secret_destination {
         return Some(ContentRow {
             kind: "secret".into(),
@@ -1290,6 +1297,20 @@ fn turn_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lang) 
 
 /// The card of a task whose SDK execution Alondra could not take over, with the reason, in the
 /// viewer's language: the card it waited on becomes this one, so the task has one.
+fn recovery_content(interaction: &Interaction, lang: Lang) -> Option<String> {
+    if interaction.author != Author::System { return None; }
+    let retake = matches!(&interaction.payload, InteractionPayload::Question { options, .. }
+        if options.iter().any(|option| option.id == crate::domain::RETAKE));
+    if retake {
+        return Some(t!(lang,
+            "Alondra could not continue this task. Try again to resume it, or cancel the task.",
+            "Alondra no ha podido continuar esta tarea. Puedes reintentarlo para retomarla o cancelar la tarea.").into());
+    }
+    matches!(interaction.system_card, Some(SystemCard::StuckProblem)).then(||
+        t!(lang, "Alondra will try again automatically. Your requests are kept.",
+            "Alondra volverá a intentarlo automáticamente. Tus peticiones siguen guardadas.").into())
+}
+
 fn host_lost_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
     let retake = matches!(&interaction.payload, InteractionPayload::Question { options, .. } if options.iter().any(|option| option.id == crate::domain::RETAKE));
     if interaction.author != Author::System || !retake {
@@ -1299,8 +1320,8 @@ fn host_lost_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -
     let title = domain.tasks.get(task_id)?.title.as_str();
     let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "“{title}” stopped: Alondra could not resume its session", "«{title}» se paró: Alondra no pudo retomar su sesión"));
     Some((need, t!(lang,
-        "Its session could not be started again; the details say why. Try again once that is fixed, or cancel the task.",
-        "Su sesión no pudo volver a arrancar; el detalle dice por qué. Reinténtalo cuando esté arreglado o cancela la tarea.").into()))
+        "Alondra could not resume this task. Try again, or cancel the task.",
+        "Alondra no pudo retomar esta tarea. Puedes reintentarlo o cancelar la tarea.").into()))
 }
 
 /// The card about a message Claude will never read, in the viewer's language.
@@ -1972,6 +1993,7 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
     let lang = context.lang;
     let domain = context.domain;
     let Some(interaction) = interaction_of(item, domain) else { return vec![] };
+    if let Some(content) = recovery_content(interaction, lang) { return vec![markdown(content)]; }
     let mut out = vec![];
     let shown = front_content(interaction);
     let content = shown.as_deref().filter(|content| !without_included_files(&content.body).trim().is_empty());

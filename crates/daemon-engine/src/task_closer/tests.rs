@@ -107,6 +107,66 @@ fn text() -> Vec<DeliveryTarget> {
     vec![DeliveryTarget::Text { text: "The result".into() }]
 }
 
+#[tokio::test]
+async fn a_user_message_saved_before_removal_keeps_the_task_and_session_open() {
+    let rig = Rig::undelivered(Some(Duration::ZERO));
+    command(&rig.domain, agent(), "old-result", Command::PresentResult {
+        checklist: vec![], attachments: vec![], task_id: "t".into(), interaction_id: "old-result".into(),
+        body: "Done".into(), targets: text(), is_final: true, nothing_to_review: false,
+        card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+    });
+    command(&rig.domain, Actor::System, "user-message", Command::TellNode {
+        task_id: "t".into(), text: "Prepare the follow-up report".into(), from_user: true, answers: None,
+    });
+    let state = rig.domain.state().unwrap();
+    let error = rig.domain.execute(&user(), &CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "accept-old".into(),
+        expected_revision: state.revision,
+        command: Command::AcceptDelivery { presentation_id: "old-result".into(), targets: text() },
+    }, None, || Ok(())).unwrap_err();
+    assert!(matches!(error, crate::domain_store::StoreError::Domain(error) if error.code == "pending_user_message"));
+    rig.pass(T0 + MINUTE).await;
+    assert_eq!(rig.sessions.removals(), 0);
+    assert!(!rig.domain.state().unwrap().tasks[&TaskId::from("t")].over());
+    let mut reopened = crate::domain_store::DomainStore::open(&rig._home.0.join("domain.db")).unwrap();
+    let state = reopened.load().unwrap();
+    assert_eq!(state.tasks[&TaskId::from("t")].pending_user_inputs.len(), 1, "the obligation survives reopening SQLite");
+    assert!(!reopened.claim_task_removal(&"t".into(), T0 + MINUTE).unwrap());
+}
+
+#[tokio::test]
+async fn a_user_message_racing_after_removal_begins_is_explicitly_refused() {
+    let rig = Rig::new(Some(Duration::ZERO));
+    rig.confirm();
+    let result = Arc::new(Mutex::new(None));
+    let captured = result.clone();
+    let domain = rig.domain.clone();
+    *rig.sessions.during_rm.lock().unwrap() = Some(Box::new(move || {
+        *captured.lock().unwrap() = Some(crate::domain_messages::tell_sdk_node(
+            &domain, &"t".into(), "User", "Prepare the follow-up report", "racing-message", true,
+        ));
+    }));
+    rig.pass(T0 + MINUTE).await;
+    let error = result.lock().unwrap().take().expect("message attempted during removal").unwrap_err();
+    assert_eq!(error.code, "session_unreachable");
+    assert!(error.message.contains("nothing was sent"));
+    assert_eq!(rig.sessions.removals(), 1);
+}
+
+#[tokio::test]
+async fn another_session_watcher_does_not_leave_a_false_removal_claim() {
+    let rig = Rig::new(Some(Duration::ZERO));
+    rig.confirm();
+    assert!(rig.domain.live.begin_watch(SESSION));
+    rig.pass(T0 + MINUTE).await;
+    rig.domain.live.end_watch(SESSION);
+    assert_eq!(rig.sessions.removals(), 0);
+    let row = rig.domain.store.lock().unwrap().task_closing(&"t".into()).unwrap().unwrap();
+    assert!(row.rm_started_at.is_none());
+    crate::domain_messages::tell_sdk_node(&rig.domain, &"t".into(), "User", "Prepare the report", "message-after-watch", true).unwrap();
+    assert!(!rig.domain.state().unwrap().tasks[&TaskId::from("t")].pending_user_inputs.is_empty());
+}
+
 impl Rig {
     /// A node Alondra launched, with its text delivery accepted: the task is closing and its node
     /// has been asked to clean up.
@@ -1484,4 +1544,61 @@ async fn cancelling_a_task_whose_stored_worktrees_are_home_and_the_projects_root
         assert_eq!(rig.task().worktrees[dir.to_str().unwrap()].end, Some(alondra_core::domain::WorktreeEnd::UsersOwn));
     }
     assert!(folders.untouched());
+}
+
+
+#[tokio::test]
+async fn a_persisted_recovery_card_after_cleanup_is_retired_without_resuming_the_host() {
+    let home = Home(crate::test_support::Directory::new());
+    std::fs::create_dir(&home.0).unwrap();
+    let domain = DomainRuntime::open(&home.0).unwrap();
+    let task_id = TaskId::from("closing");
+    let node = Actor::Agent { agent_id: "node".into() };
+    command(&domain, Actor::System, "register", Command::RegisterAgent { agent_id: "node".into(), name: "Node".into(), at: 0 });
+    command(&domain, user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(),
+        auto_merge: false, maintenance: false, message: false });
+    command(&domain, Actor::Orchestrator { generation: 0 }, "create", Command::CreateTask {
+        task_id: task_id.clone(), request_id: "r".into(), title: "Finish the change".into(), agent_id: None,
+        review_prs: false, dependencies: Default::default(), stack: None, plan_items: None, continues: None,
+        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/synthetic/repository")),
+    });
+    crate::domain_store::admit_through_sdk_with_host(&domain, &task_id, "node", crate::sdk_owner::HOST);
+    let input = domain.state().unwrap().lifecycle_of(&task_id).unwrap().pending_inputs()[0].as_str().to_owned();
+    command(&domain, Actor::System, "turn", Command::RecordRuntimeFacts { task_id: task_id.clone(), generation: 1,
+        facts: vec![alondra_core::domain::RuntimeObservation::ResourceAvailable,
+            alondra_core::domain::RuntimeObservation::TurnStarted { turn: "turn".into(), input }] });
+    command(&domain, node.clone(), "register-pr", Command::RegisterPr { task_id: task_id.clone(), pr_id: "pr".into(),
+        host: "github.com".into(), repository: "acme/widgets".into(), number: 7, head: "1".repeat(40), base: "main".into(),
+        allowed_methods: vec![alondra_core::domain::MergeMethod::Squash] });
+    let targets = vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "1".repeat(40) }];
+    command(&domain, node, "present", Command::PresentResult { task_id: task_id.clone(), interaction_id: "d".into(),
+        body: "Done".into(), targets: targets.clone(), is_final: true, nothing_to_review: false,
+        attachments: vec![], checklist: vec![], card: CardSpec::delivery("Review the change", &[], true) });
+    command(&domain, user(), "accept", Command::AcceptDelivery { presentation_id: "d".into(), targets });
+    command(&domain, Actor::System, "merged", Command::ObservePrState { pr_id: "pr".into(), head: "1".repeat(40),
+        base: "main".into(), state: alondra_core::domain::PrState::Merged, merged_head: Some("1".repeat(40)) });
+    command(&domain, Actor::System, "lost", Command::RecordHostLost { task_id: task_id.clone(),
+        reason: "The host stopped".into(), quiet: false });
+    let state = domain.state().unwrap();
+    let card = state.interactions.values().find(|card| alondra_core::domain::retakes(card)).unwrap().id.clone();
+    domain.store.lock().unwrap().conn_for_test().execute(
+        "UPDATE task_wrap_ups SET cleaned_at=?1 WHERE task_id='closing'", [state.revision as i64]).unwrap();
+    drop(domain);
+    let domain = DomainRuntime::open(&home.0).unwrap();
+    let sessions = FakeSessions::listing(&[]);
+    for index in 0..67 {
+        pass(&domain, sessions.as_ref(), &Timing { wait: None, retry: Duration::from_secs(1), tick: Duration::from_secs(1) },
+            T0 + index * MINUTE).await.unwrap();
+    }
+    let state = domain.state().unwrap();
+    assert!(state.interactions[&card].withdrawn);
+    assert_eq!(state.tasks[&task_id].state, TaskState::Done);
+    assert!(!state.lifecycle_journal[&task_id].iter().any(|record| matches!(record,
+        alondra_core::domain::LifecycleRecord::Told { .. } | alondra_core::domain::LifecycleRecord::Resumed { .. })));
+    assert_eq!(state.tasks[&task_id].wrap_up.node, Some(NodeEnd::Gone));
+    assert!(sessions.calls.lock().unwrap().is_empty(), "closing uses the SDK path with no host to resume");
+    drop(domain);
+    let domain = DomainRuntime::open(&home.0).unwrap();
+    assert!(domain.state().unwrap().interactions[&card].withdrawn);
+    assert_eq!(domain.state().unwrap().tasks[&task_id].state, TaskState::Done);
 }

@@ -1,7 +1,7 @@
 use super::{
     task_state::{self, Block, StateLabel},
     BuildError, Confirm, Fact, FactKind, Facts, Icon, Item, Markdown, Notice, RenderContext,
-    Style, Tone, Trailing, View, action_id::Verb, common, text::{t, tf},
+    Style, Tone, Trailing, View, action_id::Verb, common, text::{t, t as tr, tf},
 };
 use crate::domain::{DomainState, ModelChooser, NodeEnd, Request, RequestId, Tally, Task, TaskId, TaskState};
 use crate::model_label::model_family;
@@ -1138,13 +1138,16 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     let mut actions = vec![];
     let node = task.agent_id.as_ref().filter(|id| context.domain.agents.contains_key(*id));
     let open = !task.state.terminal() && task.ending.is_none();
-    let addressee = match node {
+    let addressee = if request.is_some_and(|request| request.origin == crate::domain::RequestOrigin::Schedule) {
+        Some((Verb::TaskMsg, task.id.0.as_str(), None,
+            tr!(context.lang, "Write a message: this creates a separate task…", "Escribe un mensaje: se creará una tarea independiente…")))
+    } else { match node {
         Some(agent_id) => Some((Verb::Msg, agent_id.0.as_str(), Some(task.id.0.clone()),
             t!(context.lang, "Write to this task's node…", "Escribe al nodo de esta tarea…"))),
         None if open => Some((Verb::TaskMsg, task.id.0.as_str(), None,
             t!(context.lang, "Write to this task: its node reads it when it starts…", "Escribe a esta tarea: su nodo lo lee al arrancar…"))),
         None => None,
-    };
+    } };
     if let Some((verb, subject, extra, placeholder)) = addressee {
         match super::action_id::ActionId::new(verb, subject, context.domain.revision, extra) {
             Ok(id) => if let Some(mut message) = common::action(

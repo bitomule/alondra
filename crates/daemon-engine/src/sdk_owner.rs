@@ -751,6 +751,18 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
         .map_err(adapter("configuring the SDK worker"))?;
     let (adapter_state, _) = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
     domain.seals.take(&task);
+    let commands: Vec<&[u8]> = adoption.receipt_candidates.iter().map(|candidate| candidate.command.as_slice()).collect();
+    let proofs = worker.archived_handoffs(&grant, &adapter_state, &commands).map_err(adapter("reading archived handoff receipts"))?;
+    if !proofs.is_empty() {
+        domain.own(scope.clone(), |owner| {
+            for proof in &proofs {
+                let candidate = adoption.receipt_candidates.iter().find(|candidate| candidate.command == proof.command())
+                    .ok_or(alondra_store::Error::CommandConflict)?;
+                owner.record_handoff_proof(&grant, candidate.intent_id, proof)?;
+            }
+            Ok(())
+        }).map_err(failed("retaining archived handoff receipts"))?;
+    }
     let stopped_by_alondra = worker.state_directory().join(STOPPED_BY_ALONDRA);
     let journal = match worker.find_host(&grant, &adapter_state).map_err(adapter("finding the SDK host"))? {
         Found::Live => None,

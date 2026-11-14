@@ -9,7 +9,7 @@ use crate::domain_github::{GhCli, GhFailure, execute_system, pr_url};
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
 use alondra_core::domain::{
-    AuthorizationId, CardSpec, Command, DeliveryTarget, DomainError, DomainState, Instruction, InteractionId, InteractionPayload,
+    AuthorizationId, CardSpec, Command, DeliveryTarget, DomainError, DomainState, FeedbackTarget, Instruction, InteractionId, InteractionPayload,
     MergeAttemptState, MergeMethod, PrId, PrState, PullRequest, Scope, clip,
 };
 use anyhow::Result;
@@ -70,6 +70,8 @@ type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, GhFailure>> + Send +
 
 pub trait PrMerger: Send + Sync + 'static {
     fn status<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, Status>;
+    fn default_branch<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, String>;
+    fn retarget<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, ()>;
     /// Merges the PR only while GitHub still has it at `head`. Success may only mean GitHub put
     /// it in its merge queue.
     fn merge<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()>;
@@ -83,6 +85,8 @@ pub trait PrMerger: Send + Sync + 'static {
 }
 
 impl<T: PrMerger> PrMerger for Arc<T> {
+    fn default_branch<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, String> { (**self).default_branch(pr) }
+    fn retarget<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, ()> { (**self).retarget(pr, base) }
     fn status<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, Status> {
         (**self).status(pr)
     }
@@ -107,6 +111,21 @@ impl<T: PrMerger> PrMerger for Arc<T> {
 }
 
 impl PrMerger for GhCli {
+    fn default_branch<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, String> {
+        Box::pin(async move {
+            let url = format!("https://{}/{}", alondra_core::domain::normalize_pr_host(&pr.host), pr.repository);
+            let out = self.run(&["repo", "view", &url, "--json", "defaultBranchRef"], None, Duration::from_secs(30)).await?;
+            let value: Value = serde_json::from_slice(&out).map_err(GhFailure::unreadable)?;
+            value["defaultBranchRef"]["name"].as_str().filter(|name| !name.is_empty()).map(str::to_owned)
+                .ok_or_else(|| GhFailure::Unreadable("GitHub did not provide the repository's default branch".into()))
+        })
+    }
+    fn retarget<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, ()> {
+        Box::pin(async move {
+            let url = pr_url(&pr.host, &pr.repository, pr.number);
+            self.run(&["pr", "edit", &url, "--base", base], None, Duration::from_secs(30)).await.map(|_| ())
+        })
+    }
     fn status<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, Status> {
         Box::pin(async move {
             let url = pr_url(&pr.host, &pr.repository, pr.number);
@@ -276,13 +295,17 @@ pub fn due(state: &DomainState) -> Vec<Due> {
     for task in state.tasks.values().filter(|task| !task.over()) {
         let Some(p) = task.final_presentation.as_ref().and_then(|p| state.interactions.get(p)) else { continue };
         let InteractionPayload::Delivery { targets, acceptance, feedback, .. } = &p.payload else { continue };
-        if state.handed_back(p).is_some() || !state.open_blockers(&task.id).is_empty() {
+        if !state.open_blockers(&task.id).is_empty() || state.stack_ready(task).is_err() {
             continue;
         }
-        let auto = acceptance.is_none() && feedback.is_empty()
-            && state.requests.get(&task.request_id).is_some_and(|r| r.auto_merge);
         for target in targets {
             let DeliveryTarget::PullRequest { pr_id, head } = target else { continue };
+            let feedback_target = FeedbackTarget::PullRequest { pr_id: pr_id.clone(), head: head.clone() };
+            if state.pending_reply(p, &feedback_target) {
+                continue;
+            }
+            let auto = acceptance.is_none() && feedback.iter().all(|feedback| !feedback.target.affects(&feedback_target))
+                && state.requests.get(&task.request_id).is_some_and(|r| r.auto_merge);
             let Some(pr) = state.pull_requests.get(pr_id).filter(|pr| pr.state == PrState::Open && &pr.head == head) else { continue };
             let authorization = state.merge_authorizations.values().find(|a| {
                 a.valid && a.presentation_id == p.id && &a.pr_id == pr_id && &a.head == head
@@ -305,7 +328,8 @@ fn still_due(state: &DomainState, item: &Due, authorization: &AuthorizationId) -
     let Some(p) = task.final_presentation.as_ref().filter(|p| **p == item.presentation).and_then(|p| state.interactions.get(p)) else {
         return false;
     };
-    state.handed_back(p).is_none()
+    state.stack_ready_for_merge(&item.pr.id).is_ok()
+        && !state.pending_reply(p, &FeedbackTarget::PullRequest { pr_id: item.pr.id.clone(), head: item.head.clone() })
         && state.pull_requests.get(&item.pr.id).is_some_and(|pr| pr.state == PrState::Open && pr.head == item.head)
         && state.merge_authorizations.get(authorization).is_some_and(|a| a.valid && a.claimed_by.is_none()
             && matches!(a.attempt, MergeAttemptState::Claimed | MergeAttemptState::Uncertain))
@@ -323,6 +347,12 @@ pub async fn draft_refusal(state: &DomainState, targets: &[DeliveryTarget], gith
         }
     }
     None
+}
+
+fn observe_status(domain: &DomainRuntime, pr_id: &PrId, status: &Status) -> Result<bool> {
+    recorded(execute_system(domain, Command::ObservePrState { pr_id: pr_id.clone(),
+        head: status.head.clone(), base: status.base.clone(), state: status.state,
+        merged_head: (status.state == PrState::Merged).then(|| status.head.clone()) }))
 }
 
 enum Step {
@@ -429,6 +459,48 @@ impl Merger {
         self.transient.values().filter(|retry| retry.at > now).map(|retry| retry.at - now).fold(self.poll, Duration::min)
     }
 
+    async fn retarget_stack(&mut self, domain: &DomainRuntime, github: &impl PrMerger, item: &Due, status: Status) -> Result<Option<Status>> {
+        let state = domain.state()?;
+        let Some(stack) = state.tasks.get(&item.pr.task_id).and_then(|task| task.stack.as_ref()).cloned() else { return Ok(Some(status)) };
+        if state.stack_ready(&state.tasks[&item.pr.task_id]).is_err() { return Ok(None); }
+        let Some(upstream) = state.pull_requests.get(&stack.pr_id) else { return Ok(None) };
+        if upstream.host != item.pr.host || upstream.repository != item.pr.repository { return Ok(None); }
+        let remote = match github.status(upstream).await {
+            Ok(remote) => remote,
+            Err(error) => { self.troubled(domain, &item.pr, &error); return Ok(None); }
+        };
+        if remote.state != PrState::Merged || remote.head != stack.head { return Ok(None); }
+        let default = match github.default_branch(&item.pr).await {
+            Ok(base) => base,
+            Err(error) => { self.troubled(domain, &item.pr, &error); return Ok(None); }
+        };
+        if remote.base != default { return Ok(None); }
+        record_merged(domain, upstream, &remote)?;
+        let mut current = match github.status(&item.pr).await {
+            Ok(current) => current,
+            Err(error) => { self.troubled(domain, &item.pr, &error); return Ok(None); }
+        };
+        if !observe_status(domain, &item.pr.id, &current)? { return Ok(None); }
+        if current.state != PrState::Open || current.head != item.head || current.base != status.base { return Ok(None); }
+        let state = domain.state()?;
+        if state.tasks.get(&item.pr.task_id).and_then(|task| task.stack.as_ref()) != Some(&stack)
+            || !due(&state).iter().any(|now| now.pr.id == item.pr.id && now.head == item.head
+                && now.presentation == item.presentation && now.authorization == item.authorization)
+        { return Ok(None); }
+        if current.base != default {
+            if let Err(error) = github.retarget(&item.pr, &default).await {
+                self.troubled(domain, &item.pr, &error);
+                return Ok(None);
+            }
+            current = match github.status(&item.pr).await {
+                Ok(current) => current,
+                Err(error) => { self.troubled(domain, &item.pr, &error); return Ok(None); }
+            };
+            if !observe_status(domain, &item.pr.id, &current)? { return Ok(None); }
+        }
+        Ok((current.state == PrState::Open && current.head == item.head && current.base == default).then_some(current))
+    }
+
     async fn step(&mut self, domain: &DomainRuntime, github: &impl PrMerger, item: &Due) -> Result<Step> {
         let pr = &item.pr;
         let status = match github.status(pr).await {
@@ -451,6 +523,7 @@ impl Merger {
             PrState::Open if status.head != item.head => return Ok(Step::Settled),
             PrState::Open => {}
         }
+        let Some(status) = self.retarget_stack(domain, github, item, status).await? else { return Ok(Step::Wait) };
         if self.queued.contains(&pr.id) {
             return match github.in_queue(pr).await {
                 Ok(true) => Ok(Step::Wait),
@@ -544,6 +617,21 @@ impl Merger {
         if let Err(failure) = marked {
             return self.not_ready(domain, item, &failure);
         }
+        if !still_due(&*domain.state()?, item, &authorization) {
+            return Ok(Step::Settled);
+        }
+        if domain.state()?.tasks.get(&pr.task_id).is_some_and(|task| task.stack.is_some()) {
+            match github.status(pr).await {
+                Ok(current) if current == status => {}
+                Ok(current) if current.state == PrState::Merged => {
+                    record_merged(domain, pr, &current)?;
+                    return Ok(Step::Settled);
+                }
+                Ok(_) => return Ok(Step::Wait),
+                Err(error) => { self.troubled(domain, pr, &error); return Ok(Step::Wait); }
+            }
+        }
+        if !still_due(&*domain.state()?, item, &authorization) { return Ok(Step::Settled); }
         match github.merge(pr, &item.head, item.method).await {
             Ok(()) => {
                 self.transient.remove(&pr.id);
@@ -776,7 +864,8 @@ fn hand_back(domain: &DomainRuntime, item: &Due, reason: &str) -> Result<()> {
     let pr = &item.pr;
     let body = alondra_core::domain::merge_failed_text(pr.number, &pr_url(&pr.host, &pr.repository, pr.number), &pr.base, reason);
     recorded(execute_system(domain, Command::SubmitFeedback {
-        attachments: vec![], presentation_id: item.presentation.clone(), targets: item.targets.clone(),
+        attachments: vec![], presentation_id: item.presentation.clone(),
+        targets: vec![DeliveryTarget::PullRequest { pr_id: pr.id.clone(), head: item.head.clone() }],
         body, instruction: Instruction::Conflicts,
         merge_failure: Some(alondra_core::domain::MergeFailure { number: pr.number, reason: reason.trim().trim_end_matches('.').to_owned() }),
     })).map(|_| ())
@@ -842,6 +931,11 @@ pub struct FakeGithub {
     pub merged_anyway: std::sync::Mutex<BTreeSet<u64>>,
     /// PRs the signed-in account may not merge into.
     pub no_access: std::sync::Mutex<BTreeSet<u64>>,
+    pub default_base: std::sync::Mutex<String>,
+    pub retargets: std::sync::Mutex<Vec<(u64, String)>>,
+    pub after_retarget: std::sync::Mutex<BTreeMap<u64, Status>>,
+    pub on_draft: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    pub on_default: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 #[cfg(any(test, feature = "test-hooks"))]
@@ -851,7 +945,8 @@ impl FakeGithub {
             merged: Default::default(), reads: Default::default(), on_read: Default::default(), merged_by_queue: Default::default(),
             drafts: Default::default(), readies: Default::default(), calls: Default::default(),
             required: Default::default(), refused_as: Default::default(), merged_anyway: Default::default(),
-            no_access: Default::default() }
+            no_access: Default::default(), default_base: std::sync::Mutex::new("main".into()),
+            retargets: Default::default(), after_retarget: Default::default(), on_draft: Default::default(), on_default: Default::default() }
     }
     pub fn open(&self, number: u64, head: &str, checks: Checks) {
         self.statuses.lock().unwrap().insert(number, Ok(Status { state: PrState::Open, head: head.into(), base: "main".into(), checks,
@@ -868,6 +963,21 @@ impl FakeGithub {
 
 #[cfg(any(test, feature = "test-hooks"))]
 impl PrMerger for FakeGithub {
+    fn default_branch<'a>(&'a self, _pr: &'a PullRequest) -> Pending<'a, String> {
+        let hook = self.on_default.lock().unwrap().take();
+        if let Some(hook) = hook { hook(); }
+        let base = self.default_base.lock().unwrap().clone();
+        Box::pin(async move { Ok(base) })
+    }
+    fn retarget<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, ()> {
+        self.retargets.lock().unwrap().push((pr.number, base.to_owned()));
+        self.calls.lock().unwrap().push(format!("retarget {} {base}", pr.number));
+        if let Some(Ok(status)) = self.statuses.lock().unwrap().get_mut(&pr.number) {
+            status.base = base.to_owned();
+            if let Some(next) = self.after_retarget.lock().unwrap().remove(&pr.number) { *status = next; }
+        }
+        Box::pin(async { Ok(()) })
+    }
     fn status<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, Status> {
         self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if let Some(hook) = self.on_read.lock().unwrap().take() {
@@ -902,6 +1012,8 @@ impl PrMerger for FakeGithub {
         Box::pin(async move { result })
     }
     fn is_draft<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
+        let hook = self.on_draft.lock().unwrap().take();
+        if let Some(hook) = hook { hook(); }
         let draft = self.drafts.lock().unwrap().get(&pr.number).cloned().unwrap_or(Ok(false));
         Box::pin(async move { draft })
     }

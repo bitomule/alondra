@@ -63,6 +63,10 @@ proptest! {
             };
             let answer = answer_on_its_way(&task);
             match task.live() {
+                Some(LiveState::WaitingUser(_)) if matches!(task.awaits(), Some(Await::Tasks(_)))
+                    && task.resource() != Some(ResourceEvidence::Released) && task.cards().is_empty() && !answer =>
+                    prop_assert_eq!(owed(Some(obligation)), Some((Party::Tasks, Owed::Tasks)),
+                        "the idle delivered task owes its typed dependency: {:?}", task),
                 Some(LiveState::WaitingUser(_)) if told_with_no_execution(&task) => prop_assert_eq!(owed(Some(obligation)), Some((Party::Alondra, Owed::Start)),
                     "a delivery told something with no execution to take it owes a start: {:?}", task),
                 Some(LiveState::WaitingUser(_)) if !something_runs(&task) && !answer && !held_by_capacity(&task) => prop_assert_eq!(obligation.party, Party::User,
@@ -200,4 +204,48 @@ fn an_input_held_before_its_turn_is_owed_by_the_provider_when_it_comes_up() {
     fact(&mut task, RuntimeFact::InputHeld { input: input("queued") });
     fact(&mut task, RuntimeFact::TurnEnded { turn: turn("root"), unheard_card: "unheard".into(), wake: None, awaits: None, stalled: false });
     assert_eq!(owed(task.obligation()), Some((Party::Provider, Owed::ReadInput)));
+}
+
+#[test]
+fn a_delivered_task_owes_its_dependency_after_the_turn_ends_and_keeps_decision_priorities() {
+    fn waiting_delivery() -> TaskLifecycle {
+        let mut task = running();
+        apply(&mut task, Event::Present { delivery: "result".into() });
+        assert_eq!(owed(task.obligation()), Some((Party::Provider, Owed::Turn)));
+        fact(&mut task, RuntimeFact::TurnEnded {
+            turn: turn("root"), unheard_card: "unheard".into(), wake: None,
+            awaits: Some(Await::Tasks(Several::new([TaskId::from("dependency")]).unwrap())), stalled: false,
+        });
+        assert_eq!(owed(task.obligation()), Some((Party::Tasks, Owed::Tasks)));
+        task
+    }
+    for (owner, expected) in [
+        (Owner::User, (Party::User, Owed::User)),
+        (Owner::Orchestrator, (Party::Alondra, Owed::Answer)),
+        (Owner::Capacity(Capacity::Disk), (Party::Capacity(Capacity::Disk), Owed::Room(Capacity::Disk))),
+    ] {
+        let mut held = waiting_delivery();
+        apply(&mut held, Event::Pause { card: "held".into(), owner });
+        assert_eq!(owed(held.obligation()), Some(expected));
+        apply(&mut held, Event::EndPause { card: "held".into() });
+        assert_eq!(owed(held.obligation()), Some((Party::Tasks, Owed::Tasks)));
+    }
+    let mut asked = waiting_delivery();
+    apply(&mut asked, Event::Ask { card: "question".into() });
+    assert_eq!(owed(asked.obligation()), Some((Party::User, Owed::User)));
+}
+
+#[test]
+fn an_answer_on_its_way_keeps_priority_over_a_delivered_tasks_dependency() {
+    let mut task = running();
+    apply(&mut task, Event::Present { delivery: "result".into() });
+    fact(&mut task, RuntimeFact::Ask {
+        card: "permission".into(), callback: CallbackId::new("permission").unwrap(), reason: WaitReason::Permission,
+    });
+    apply(&mut task, Event::Decide { card: "permission".into(), decision: Decision::Allow });
+    fact(&mut task, RuntimeFact::TurnEnded {
+        turn: turn("root"), unheard_card: "unheard".into(), wake: None,
+        awaits: Some(Await::Tasks(Several::new([TaskId::from("dependency")]).unwrap())), stalled: false,
+    });
+    assert_eq!(owed(task.obligation()), Some((Party::Alondra, Owed::HandDecision)));
 }

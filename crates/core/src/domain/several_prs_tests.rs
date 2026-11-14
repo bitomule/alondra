@@ -200,6 +200,71 @@ fn a_delivery_of_several_prs_is_one_card_per_pr_each_with_only_its_merge() {
 }
 
 #[test]
+fn a_question_about_one_pr_keeps_the_other_card_and_the_working_task_visible() {
+    let mut s = two_open_prs();
+    must(&mut s, user(), Command::AuthorizeMerge {
+        authorization_id: "other-pr".into(), presentation_id: "final".into(), pr_id: CLOUD.into(),
+        expected_head: CLOUD_HEAD.into(), method: MergeMethod::Squash,
+    });
+    must(&mut s, user(), Command::SubmitFeedback {
+        presentation_id: "final".into(), targets: vec![pr(PUBLIC, FIRST_HEAD)],
+        body: "Explain the menu change".into(), attachments: vec![], instruction: Instruction::Question, merge_failure: None,
+    });
+    assert_eq!(cards(&s), [CLOUD], "the other PR still needs its own decision");
+    assert!(s.merge_authorizations[&AuthorizationId::from("other-pr")].valid);
+    assert_eq!(card_actions(&s, CLOUD).len(), 1);
+    let index = ReadIndex::build(&s);
+    for key in [format!("card:{PUBLIC}"), format!("pull_request:{PUBLIC}")] {
+        let view = crate::views::build(&key, RenderContext {
+            domain: &s, index: &index, live: &LiveSnapshot::default(), client: Client::Tui, lang: Lang::Es,
+            transport: Transport::Loopback, cursor: "cursor", rendered_at: "2026-11-01T10:00:00Z",
+        }).unwrap();
+        let actions: Vec<_> = view.sections.iter().flat_map(|section| &section.items).flat_map(|item| match item {
+            crate::views::Item::Card(card) => card.actions.iter().chain(&card.more).map(|action| action.id.as_str()).collect::<Vec<_>>(),
+            crate::views::Item::Actions(bar) => bar.actions.iter().map(|action| action.id.as_str()).collect(),
+            _ => vec![],
+        }).collect();
+        assert!(!actions.iter().any(|action| action.contains(CLOUD)), "a detail never offers another PR's action: {actions:?}");
+    }
+
+    must(&mut s, Actor::System, Command::TellNode {
+        task_id: TASK.into(), text: "Explain the menu change".into(), from_user: false, answers: None,
+    });
+    let input = s.lifecycle_of(&TASK.into()).unwrap().pending_inputs()[0].as_str().to_owned();
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts {
+        task_id: TASK.into(), generation: 1, facts: vec![RuntimeObservation::TurnStarted { turn: "answer".into(), input }],
+    });
+    must(&mut s, Actor::Orchestrator { generation: 0 }, Command::TitleRequest {
+        request_id: "r".into(), title: "Update the phone menu".into(),
+    });
+    for id in ["queued-one", "queued-two"] {
+        must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
+            task_id: id.into(), request_id: "r".into(), title: id.into(), agent_id: None, review_prs: false,
+            plan_items: None, continues: None, dependencies: Default::default(), stack: None,
+            launch: Some(LaunchPlan::new("node", "/synthetic/repository")),
+        });
+    }
+    let index = ReadIndex::build(&s);
+    assert_eq!(index.task(&TASK.into()).unwrap().situation, Situation::Working(Doing::Turn));
+    for client in [Client::Tui, Client::Mac, Client::Ios] {
+        let view = crate::views::build("tasks", RenderContext {
+            domain: &s, index: &index, live: &LiveSnapshot::default(), client, lang: Lang::Es,
+            transport: Transport::Loopback, cursor: "cursor", rendered_at: "2026-11-01T10:00:00Z",
+        }).unwrap();
+        fn visits(rows: &[crate::views::Item], id: &str) -> usize {
+            fn row_visits(row: &crate::views::Row, id: &str) -> usize {
+                usize::from(row.id == id) + row.children.iter().map(|child| row_visits(child, id)).sum::<usize>()
+            }
+            rows.iter().map(|item| match item { crate::views::Item::Row(row) => row_visits(row, id), _ => 0 }).sum()
+        }
+        let active = view.sections.iter().find(|section| section.id == "active").unwrap();
+        for task in s.tasks.values().filter(|task| !task.over() && !task.archived) {
+            assert_eq!(visits(&active.items, &task.id.0), 1, "{client:?}: {} belongs to exactly one block", task.id);
+        }
+    }
+}
+
+#[test]
 fn a_delivery_of_three_prs_is_three_cards_and_the_task_closes_with_the_last() {
     let mut s = two_open_prs();
     let docs = "github.com/bitomule/docs#3";
@@ -290,6 +355,81 @@ fn a_pr_with_new_commits_takes_every_card_back_until_the_node_presents_again() {
 }
 
 #[test]
+fn a_rebase_preserves_the_acceptance_record_and_requires_approval_of_the_new_head() {
+    let mut s = at_work();
+    register(&mut s, "bitomule/alondra", 17, FIRST_HEAD);
+    must(&mut s, node(), result("before-rebase", vec![pr(PUBLIC, FIRST_HEAD)], true));
+    let targets = vec![pr(PUBLIC, FIRST_HEAD)];
+    must(&mut s, user(), Command::AcceptDelivery { presentation_id: "before-rebase".into(), targets: targets.clone() });
+    let accepted_at = match &s.interactions[&InteractionId::from("before-rebase")].payload {
+        InteractionPayload::Delivery { acceptance: Some(acceptance), .. } => acceptance.at_revision,
+        _ => panic!("the acceptance was recorded"),
+    };
+    must(&mut s, Actor::System, Command::ObservePrState {
+        pr_id: PUBLIC.into(), head: FIRST_HEAD.into(), base: "develop".into(), state: PrState::Open, merged_head: None,
+    });
+    assert!(s.merge_authorizations.values().any(|authorization| authorization.valid), "retargeting without changing the head preserves approval");
+    let rebased = "4".repeat(40);
+    let outcome = exec(&mut s, Actor::System, Command::ObservePrState {
+        pr_id: PUBLIC.into(), head: rebased.clone(), base: "develop".into(), state: PrState::Open, merged_head: None,
+    }).unwrap();
+    assert_eq!(outcome.superseded_acceptances.len(), 1);
+    assert_eq!(outcome.superseded_acceptances[0].accepted_at, accepted_at);
+    assert!(s.merge_authorizations.values().all(|authorization| !authorization.valid));
+    let before = s.clone();
+    assert!(exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "before-rebase".into(), targets }).is_err());
+    assert_eq!(s, before);
+    must(&mut s, node(), result("after-rebase", vec![pr(PUBLIC, &rebased)], true));
+    assert_eq!(cards(&s), ["after-rebase"]);
+    assert_eq!(card_actions(&s, "after-rebase").len(), 1);
+    must(&mut s, user(), Command::AcceptDelivery { presentation_id: "after-rebase".into(), targets: vec![pr(PUBLIC, &rebased)] });
+    assert!(s.merge_authorizations.values().any(|authorization| authorization.valid && authorization.head == rebased));
+    let InteractionPayload::Delivery { acceptance: Some(earlier), .. } = &s.interactions[&InteractionId::from("before-rebase")].payload else { panic!("the earlier acceptance remains in history") };
+    assert_eq!(earlier.at_revision, accepted_at);
+    assert!(!earlier.valid);
+}
+
+#[test]
+fn an_external_merge_of_another_head_does_not_settle_the_old_delivery() {
+    let mut s = at_work();
+    register(&mut s, "bitomule/alondra", 17, FIRST_HEAD);
+    must(&mut s, node(), result("final", vec![pr(PUBLIC, FIRST_HEAD)], true));
+    must(&mut s, user(), Command::AcceptDelivery { presentation_id: "final".into(), targets: vec![pr(PUBLIC, FIRST_HEAD)] });
+    let changed = "2222222222222222222222222222222222222222";
+    observe(&mut s, PUBLIC, changed, PrState::Merged);
+    assert!(!s.finished(&s.tasks[&TaskId::from(TASK)]), "a different merged head does not answer the delivery the user reviewed");
+    assert!(s.interactions[&InteractionId::from("final")].withdrawn);
+    assert!(cards(&s).is_empty(), "the old card cannot authorize the merged code");
+    assert!(s.merge_authorizations.values().all(|authorization| !authorization.valid));
+}
+
+#[test]
+fn a_merged_pr_card_stays_settled_when_a_late_push_is_observed() {
+    let mut s = two_open_prs();
+    merged(&mut s, PUBLIC, FIRST_HEAD);
+    let before = cards(&s);
+    let late = exec(&mut s, Actor::System, observed(PUBLIC, "2222222222222222222222222222222222222222", PrState::Open));
+    assert_eq!(late.unwrap_err().code, "invalid_input");
+    assert_eq!(cards(&s), before);
+    assert_eq!(cards(&s), [CLOUD]);
+}
+
+#[test]
+fn an_external_merge_resolves_the_conflicts_the_merger_reported() {
+    let mut s = at_work();
+    register(&mut s, "bitomule/alondra", 17, FIRST_HEAD);
+    must(&mut s, node(), result("final", vec![pr(PUBLIC, FIRST_HEAD)], true));
+    must(&mut s, Actor::System, Command::SubmitFeedback {
+        presentation_id: "final".into(), targets: vec![pr(PUBLIC, FIRST_HEAD)], body: "The base could not be merged".into(),
+        attachments: vec![], instruction: Instruction::Conflicts,
+        merge_failure: Some(MergeFailure { number: 17, reason: "conflicts".into() }),
+    });
+    merged(&mut s, PUBLIC, FIRST_HEAD);
+    assert!(s.finished(&s.tasks[&TaskId::from(TASK)]), "resolved merge trouble is not an unanswered user reply");
+    assert!(cards(&s).is_empty());
+}
+
+#[test]
 fn a_split_card_says_which_pr_it_is_and_an_old_card_reads_as_before() {
     let old: InboxSubject = serde_json::from_value(serde_json::json!({"kind": "interaction", "interaction_id": "final"})).unwrap();
     assert_eq!(old, InboxSubject::Interaction { interaction_id: "final".into(), pr_id: None });
@@ -354,6 +494,35 @@ pub(crate) fn two_open_prs() -> DomainState {
     must(&mut s, node(), result("final", vec![pr(PUBLIC, "")], true));
     turn_ends(&mut s);
     s
+}
+
+#[test]
+fn a_reply_obligation_is_durable_and_scoped_to_the_presented_pr_head() {
+    let mut s = two_open_prs();
+    let target = FeedbackTarget::PullRequest { pr_id: PUBLIC.into(), head: FIRST_HEAD.into() };
+    let feedback_revision = s.revision + 1;
+    let p = s.interactions.get_mut(&"final".into()).unwrap();
+    let InteractionPayload::Delivery { feedback, .. } = &mut p.payload else { panic!("delivery") };
+    feedback.push(Feedback { target: target.clone(), reply_window_start: None, attachments: vec![], user_id: "u".into(), body: "Explain the change".into(),
+        at_revision: feedback_revision, instruction: Instruction::Reply, merge_failure: None });
+    p.revision = feedback_revision;
+    s.revision = feedback_revision;
+    must(&mut s, Actor::System, Command::TellNode {
+        task_id: TASK.into(), text: "Explain the change".into(), from_user: false, answers: None,
+    });
+    let input = s.lifecycle_of(&TASK.into()).unwrap().pending_inputs()[0].as_str().to_owned();
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts {
+        task_id: TASK.into(), generation: 1, facts: vec![RuntimeObservation::TurnStarted { turn: "reply".into(), input }],
+    });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary {
+        task_id: TASK.into(), generation: 1, turn: "reply".into(), failure: None, failed: None,
+    });
+    let p = &s.interactions[&"final".into()];
+    assert_eq!(s.handed_back(p), None, "the temporary visibility predicate no longer holds the reply");
+    assert!(s.pending_reply(p, &target), "a resting node has not answered the user");
+    assert!(s.pending_reply(p, &FeedbackTarget::Delivery));
+    assert!(!s.pending_reply(p, &FeedbackTarget::PullRequest { pr_id: CLOUD.into(), head: CLOUD_HEAD.into() }));
+    assert!(!s.pending_reply(p, &FeedbackTarget::PullRequest { pr_id: PUBLIC.into(), head: CLOUD_HEAD.into() }));
 }
 
 #[test]
@@ -447,6 +616,114 @@ fn a_pr_merged_by_hand_on_github_counts_as_merged_wherever_the_task_is() {
 }
 
 #[test]
+fn work_waiting_after_a_merge_reads_waiting_on_every_client_and_in_the_header() {
+    use crate::views::{Item, Row};
+    let mut s = at_work();
+    must(&mut s, Actor::Orchestrator { generation: 0 }, Command::TitleRequest {
+        request_id: "r".into(), title: "Update the package".into(),
+    });
+    must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
+        task_id: "package".into(), request_id: "r".into(), title: "Publish the package".into(), agent_id: None,
+        review_prs: false, plan_items: None, continues: None, dependencies: BTreeSet::new(), stack: None,
+        launch: Some(LaunchPlan::new("node", "/synthetic/repository")),
+    });
+    register(&mut s, "bitomule/alondra", 17, FIRST_HEAD);
+    must(&mut s, node(), Command::DeclarePostMergeWork {
+        task_id: TASK.into(), reason: Some("Check the installed package".into()), waits_for: vec![],
+    });
+    must(&mut s, node(), result("final", vec![pr(PUBLIC, FIRST_HEAD)], true));
+    merged(&mut s, PUBLIC, FIRST_HEAD);
+    must(&mut s, node(), Command::DeclarePostMergeWork {
+        task_id: TASK.into(), reason: Some("Check the installed package".into()),
+        waits_for: vec![WaitTarget::Task { task_id: "package".into() }],
+    });
+    assert!(s.lifecycle_of(&TASK.into()).unwrap().turn().is_some());
+    assert_eq!(ReadIndex::build(&s).task(&TASK.into()).unwrap().situation, Situation::Working(Doing::AfterMerge),
+        "the provider's real turn is still running");
+    turn_ends(&mut s);
+    assert!(matches!(s.lifecycle_of(&TASK.into()).unwrap().awaits(), Some(alondra_domain::Await::Tasks(_))),
+        "the SDK boundary records what the idle task waits for");
+    fn collect<'a>(row: &'a Row, id: &str, found: &mut Vec<&'a Row>) {
+        if row.id == id { found.push(row); }
+        for child in &row.children { collect(child, id, found); }
+    }
+    let reopened: DomainState = serde_json::from_slice(&serde_json::to_vec(&s).unwrap()).unwrap();
+    for state in [&s, &reopened] {
+        let index = ReadIndex::build(state);
+        assert_eq!(index.task(&TASK.into()).unwrap().situation, Situation::Waiting(WaitsFor::Tasks));
+        assert_eq!(index.activity().working, 0);
+        assert_eq!(index.activity().tasks(), 2);
+        let live = LiveSnapshot::default();
+        for client in [Client::Ios, Client::Mac, Client::Tui] {
+            for lang in [Lang::En, Lang::Es] {
+                let view = crate::views::build("tasks", RenderContext {
+                    domain: state, index: &index, live: &live, client, lang, transport: Transport::Loopback,
+                    cursor: "cursor", rendered_at: "",
+                }).unwrap();
+                let active = view.sections.iter().find(|section| section.id == "active").unwrap();
+                for task in state.tasks.values().filter(|task| !task.over()) {
+                    let mut found = Vec::new();
+                    for item in &active.items { if let Item::Row(row) = item { collect(row, &task.id.0, &mut found); } }
+                    assert_eq!(found.len(), 1, "{client:?}/{lang:?}: {} appears once", task.id);
+                }
+                let block = active.items.iter().find_map(|item| match item {
+                    Item::Row(row) if row.id == "block:waiting" => Some(row), _ => None,
+                }).unwrap();
+                let mut found = Vec::new();
+                collect(block, TASK, &mut found);
+                assert_eq!(found.len(), 1, "{client:?}/{lang:?}: the dependency belongs in Waiting");
+                let shown = serde_json::to_string(found[0]).unwrap();
+                assert!(shown.contains("Publish the package"), "{shown}");
+                assert_eq!(found[0].badges[0].text, if lang == Lang::Es { "En espera" } else { "Waiting" });
+                assert_eq!(view.status.counts.iter().find(|count| count.id == "working").unwrap().value, 0);
+            }
+        }
+    }
+    let ended = exec(&mut s, user(), Command::CancelTask { task_id: "package".into(), reason: None }).unwrap();
+    let notice = ended.effects.iter().find_map(|effect| match effect {
+        DomainEffect::NotifyAgent { task_id: Some(task), message, .. } if task.0 == TASK => Some(message.clone()),
+        _ => None,
+    }).expect("ending the dependency notifies its waiting node");
+    must(&mut s, Actor::System, Command::TellNode {
+        task_id: TASK.into(), text: notice, from_user: false, answers: None,
+    });
+    assert!(!matches!(ReadIndex::build(&s).task(&TASK.into()).unwrap().situation, Situation::Waiting(WaitsFor::Tasks)),
+        "a dependency that ended no longer holds the task");
+}
+
+#[test]
+fn a_confirmed_merge_retires_the_review_card_and_its_for_you_label_on_every_client() {
+    let mut s = at_work();
+    register(&mut s, "bitomule/alondra", 17, FIRST_HEAD);
+    must(&mut s, node(), result("final", vec![pr(PUBLIC, FIRST_HEAD)], true));
+    turn_ends(&mut s);
+    assert_eq!(cards(&s), ["final"]);
+    merged(&mut s, PUBLIC, FIRST_HEAD);
+    let index = ReadIndex::build(&s);
+    assert!(!index.task(&TASK.into()).unwrap().for_you());
+    assert_eq!(index.activity().needs_you, 0);
+    assert!(cards(&s).is_empty(), "GitHub already confirmed the reviewed head merged");
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        for lang in [Lang::En, Lang::Es] {
+            for key in ["home", "tasks", "task:t"] {
+                if client == Client::Mac && key == "home" { continue; }
+                let view = crate::views::build(key, RenderContext {
+                    domain: &s, index: &index, live: &LiveSnapshot::default(), client, lang,
+                    transport: Transport::Loopback, cursor: "cursor", rendered_at: "",
+                }).unwrap();
+                assert_eq!(view.status.counts.iter().find(|count| count.id == "needs_you").unwrap().value, 0);
+                assert!(view.sections.iter().all(|section| section.card_ids.is_empty()), "{client:?}/{lang:?}/{key}: no review card remains");
+                if key == "tasks" {
+                    let shown = serde_json::to_value(&view).unwrap();
+                    let active = find_section(&shown, "active").unwrap();
+                    assert!(!active.to_string().contains("block:for-you"), "{active}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn a_noted_pr_is_read_once_and_a_pr_of_another_task_stays_there() {
     let mut s = at_work();
     opened(&mut s);
@@ -495,4 +772,152 @@ fn nothing_to_review_and_a_plan_cannot_stand_in_for_an_open_pr() {
     let Command::PresentResult { checklist, attachments, task_id, interaction_id, body, targets, is_final, card, .. } = result("final", text(), true) else { unreachable!() };
     let silent = Command::PresentResult { checklist, attachments, task_id, interaction_id, body, targets, is_final, nothing_to_review: true, card };
     assert_eq!(refusal(&mut s, silent), "pr_missing");
+}
+
+#[test]
+fn replying_to_a_second_pr_keeps_both_replies_with_the_working_node() {
+    fn target(pr_id: &str, head: &str) -> FeedbackTarget {
+        FeedbackTarget::PullRequest { pr_id: pr_id.into(), head: head.into() }
+    }
+    fn submit(s: &mut DomainState, pr_id: &str, head: &str, body: &str) {
+        must(s, user(), Command::SubmitFeedback {
+            presentation_id: "final".into(), targets: vec![pr(pr_id, head)], body: body.into(),
+            attachments: vec![], instruction: Instruction::Reply, merge_failure: None,
+        });
+        must(s, Actor::System, Command::TellNode {
+            task_id: TASK.into(), text: body.into(), from_user: false, answers: None,
+        });
+    }
+    fn assert_pending(s: &DomainState) {
+        let p = &s.interactions[&InteractionId::from("final")];
+        for (pr_id, head) in [(PUBLIC, FIRST_HEAD), (CLOUD, CLOUD_HEAD)] {
+            assert!(s.pending_reply(p, &target(pr_id, head)), "{pr_id} is still unanswered");
+            let action = s.card_for_pr(&s.item(p), &pr_id.into()).unwrap().available_actions.into_iter()
+                .find(|action| action.kind == "authorize_merge").unwrap();
+            assert!(!action.enabled);
+            assert_eq!(action.disabled_reason.as_deref(), Some("pending_user_reply"));
+        }
+    }
+    fn assert_returned(s: &DomainState) {
+        let p = &s.interactions[&InteractionId::from("final")];
+        for (pr_id, head) in [(PUBLIC, FIRST_HEAD), (CLOUD, CLOUD_HEAD)] {
+            assert_eq!(s.handed_back_for(p, &target(pr_id, head)), None, "{pr_id} is no longer in hand");
+        }
+        assert_eq!(cards(s), [PUBLIC, CLOUD], "a pause or rest returns both cards");
+        assert_pending(s);
+    }
+
+    let mut s = two_open_prs();
+    submit(&mut s, PUBLIC, FIRST_HEAD, "Explain the menu change");
+    let input = s.lifecycle_of(&TASK.into()).unwrap().pending_inputs()[0].as_str().to_owned();
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts {
+        task_id: TASK.into(), generation: 1,
+        facts: vec![RuntimeObservation::TurnStarted { turn: "answer-both".into(), input }],
+    });
+    assert_eq!(cards(&s), [CLOUD], "replying to the first PR leaves the other card");
+    let index = ReadIndex::build(&s);
+    let other = index.cards().iter().find(|item| matches!(&item.subject,
+        InboxSubject::Interaction { pr_id: Some(pr_id), .. } if pr_id.0 == CLOUD)).unwrap();
+    let merge = other.available_actions.iter().find(|action| action.kind == "authorize_merge").unwrap();
+    assert!(merge.enabled, "the untouched PR retains its merge action");
+    assert_eq!(merge.pr_id.as_ref().map(|pr| pr.0.as_str()), Some(CLOUD));
+    assert_eq!(merge.expected_head.as_deref(), Some(CLOUD_HEAD));
+
+    let mut later = s.clone();
+    must(&mut later, Actor::System, Command::RecordTurnBoundary {
+        task_id: TASK.into(), generation: 1, turn: "answer-both".into(), failure: None, failed: None,
+    });
+    assert_eq!(cards(&later), [PUBLIC, CLOUD], "A returns before there is any reply about B");
+    assert!(!later.open_reply(&later.interactions[&InteractionId::from("final")]));
+    submit(&mut later, CLOUD, CLOUD_HEAD, "A new reply about the storefront");
+    let input = later.lifecycle_of(&TASK.into()).unwrap().pending_inputs()[0].as_str().to_owned();
+    must(&mut later, Actor::System, Command::RecordRuntimeFacts {
+        task_id: TASK.into(), generation: 1,
+        facts: vec![RuntimeObservation::TurnStarted { turn: "answer-later".into(), input }],
+    });
+    let p = &later.interactions[&InteractionId::from("final")];
+    let InteractionPayload::Delivery { feedback, .. } = &p.payload else { panic!("delivery") };
+    let last = feedback.last().unwrap();
+    assert_eq!(last.reply_window_start, Some(last.at_revision), "a reply after the prior return starts its own window");
+    assert!(last.at_revision > feedback[0].at_revision);
+    assert!(later.open_reply(p));
+    assert_eq!(later.handed_back_for(p, &target(PUBLIC, FIRST_HEAD)), None, "the new B turn must not hide the returned A card");
+    assert_eq!(later.handed_back_for(p, &target(CLOUD, CLOUD_HEAD)), Some(Instruction::Reply));
+    assert_eq!(cards(&later), [PUBLIC]);
+    assert_pending(&later);
+    assert_eq!(ReadIndex::build(&later).task(&TASK.into()).unwrap().situation, Situation::Working(Doing::Turn));
+
+    submit(&mut s, CLOUD, CLOUD_HEAD, "Explain the storefront change");
+    let input = s.lifecycle_of(&TASK.into()).unwrap().pending_inputs()[0].as_str().to_owned();
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts {
+        task_id: TASK.into(), generation: 1, facts: vec![RuntimeObservation::InputConsumed { input }],
+    });
+    let p = &s.interactions[&InteractionId::from("final")];
+    assert!(s.open_reply(p));
+    assert_eq!(s.handed_back(p), Some(Instruction::Reply), "the global lifecycle obligation is unchanged");
+    let InteractionPayload::Delivery { feedback, .. } = &p.payload else { panic!("delivery") };
+    let first_window = feedback[0].at_revision;
+    assert!(feedback.iter().all(|reply| reply.reply_window_start == Some(first_window)), "consecutive replies share the same visibility window");
+    assert!(feedback.iter().all(|reply| s.told_since(&TASK.into(), reply.at_revision)), "both inputs have real lifecycle stamps");
+    assert!(s.lifecycle_of(&TASK.into()).unwrap().pending_inputs().is_empty(), "the turn has consumed both replies");
+    for (pr_id, head) in [(PUBLIC, FIRST_HEAD), (CLOUD, CLOUD_HEAD)] {
+        assert_eq!(s.handed_back_for(p, &target(pr_id, head)), Some(Instruction::Reply), "{pr_id} remains in hand");
+    }
+    assert!(cards(&s).is_empty(), "both PR replies belong to the current turn");
+    assert_pending(&s);
+    let mut legacy_json = serde_json::to_value(&s).unwrap();
+    for feedback in legacy_json["interactions"]["final"]["payload"]["feedback"].as_array_mut().unwrap() {
+        feedback.as_object_mut().unwrap().remove("reply_window_start");
+    }
+    let legacy: DomainState = serde_json::from_value(legacy_json).unwrap();
+    let p = &legacy.interactions[&InteractionId::from("final")];
+    assert_eq!(legacy.handed_back_for(p, &target(PUBLIC, FIRST_HEAD)), None, "legacy feedback never revives an older scoped reply");
+    assert_eq!(legacy.handed_back_for(p, &target(CLOUD, CLOUD_HEAD)), Some(Instruction::Reply));
+    assert_eq!(cards(&legacy), [PUBLIC]);
+    assert_pending(&legacy);
+    let index = ReadIndex::build(&s);
+    assert_eq!(index.task(&TASK.into()).unwrap().situation, Situation::Working(Doing::Turn));
+    for client in [Client::Tui, Client::Mac, Client::Ios] {
+        let view = crate::views::build("tasks", RenderContext {
+            domain: &s, index: &index, live: &LiveSnapshot::default(), client, lang: Lang::Es,
+            transport: Transport::Loopback, cursor: "cursor", rendered_at: "2026-11-01T10:00:00Z",
+        }).unwrap();
+        fn count(row: &crate::views::Row) -> usize {
+            usize::from(row.id == TASK) + row.children.iter().map(count).sum::<usize>()
+        }
+        let active = view.sections.iter().find(|section| section.id == "active").unwrap();
+        let places: Vec<_> = active.items.iter().filter_map(|item| match item {
+            crate::views::Item::Row(row) => Some(row), _ => None,
+        }).flat_map(|block| std::iter::repeat(block.id.as_str()).take(count(block))).collect();
+        assert_eq!(places, ["block:working"], "{client:?}: the task belongs to exactly one working block");
+        assert_eq!(active.count, Some(1));
+    }
+
+    let mut paused = s.clone();
+    must(&mut paused, Actor::System, Command::MoveNode {
+        agent_id: AGENT.into(), event: NodeEvent::Paused { pause: Pause {
+            reason: PauseReason::Memory, since: 2, cut: None, turn_since: None,
+            cleanup: PauseCleanup::Done, released: false,
+        } },
+    });
+    assert!(paused.open_reply(&paused.interactions[&InteractionId::from("final")]), "a pause uses node_attends without rewriting the delivery's decision");
+    assert_returned(&paused);
+
+    must(&mut s, Actor::System, Command::RecordTurnBoundary {
+        task_id: TASK.into(), generation: 1, turn: "answer-both".into(), failure: None, failed: None,
+    });
+    assert!(s.lifecycle_of(&TASK.into()).unwrap().working_on_reply().is_none());
+    assert!(!s.open_reply(&s.interactions[&InteractionId::from("final")]), "return_replied_delivery closes the visibility window at TurnEnded");
+    assert_returned(&s);
+
+    must(&mut s, Actor::System, Command::TellNode {
+        task_id: TASK.into(), text: "An unrelated instruction".into(), from_user: false, answers: None,
+    });
+    let input = s.lifecycle_of(&TASK.into()).unwrap().pending_inputs()[0].as_str().to_owned();
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts {
+        task_id: TASK.into(), generation: 1,
+        facts: vec![RuntimeObservation::TurnStarted { turn: "unrelated".into(), input }],
+    });
+    assert!(!s.open_reply(&s.interactions[&InteractionId::from("final")]), "a later input cannot reopen the reply window");
+    assert_returned(&s);
 }

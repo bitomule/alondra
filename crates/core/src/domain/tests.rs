@@ -138,7 +138,7 @@ fn scheduled_request_task(request_id: &str, task_id: &str) -> (Request, Task) {
         revision: 0,
         started: false,
         review_prs: false,
-        created_revision: 0, final_presentation: None,
+        created_revision: 0, pending_user_inputs: Default::default(), final_presentation: None,
         pr_id: None,
         later_prs: vec![],
         opened_prs: Default::default(),
@@ -3199,6 +3199,7 @@ fn variant_index(c: &Command) -> usize {
         Command::WaitForTasks { .. } => 132,
         Command::ForceStopTurn { .. } => 89,
         Command::RecordInterruptAccepted { .. } => 90,
+        Command::ReconcileRecoveryCards { .. } => 136,
         Command::RecordHostLost { .. } => 91,
         Command::RecordDroppedInput { .. } => 92,
         Command::RecordAccounts { .. } => 93,
@@ -3244,7 +3245,7 @@ fn variant_index(c: &Command) -> usize {
         Command::RecordClaudeHold { .. } => 135,
     }
 }
-const COMMAND_KINDS: usize = 136;
+const COMMAND_KINDS: usize = 137;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3391,6 +3392,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordHostEnded { task_id: ids.task.into(), generation: 1, resumes: false, ended_work: vec![], by_alondra: false }, false),
         (Command::RecordClaudeHold { task_id: ids.task.into(), generation: 1, failure: SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: None } }, false),
         (Command::RecordDoubtfulHandoff { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into(), resumes: false, by_alondra: false }, false),
+        (Command::ReconcileRecoveryCards { task_id: ids.task.into() }, false),
         (Command::RecordHostLost { task_id: ids.task.into(), reason: "its host did not stop".into(), quiet: false }, false),
         (Command::ResendUntakenInput { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into() }, false),
         (Command::RecordDroppedInput { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into() }, false),

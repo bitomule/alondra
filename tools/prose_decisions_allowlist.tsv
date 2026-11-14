@@ -159,6 +159,7 @@ crates/foundation/src/lib.rs	Ok(Self(value.to_ascii_lowercase()))	own-grammar	id
 crates/provider-codex/src/normalizer.rs	let legacy:Vec<String>=state.work.keys().filter(|key|key.starts_with(LEGACY_CELL_WORK)).cloned().collect();	own-grammar	keys of our own state map
 crates/store/src/journal_format.rs	part.strip_prefix("CREATE ")	own-grammar	migration by equality with our own DDL (G-10)
 crates/store/src/journal_format.rs	let (kind, remaining) = if let Some(value) = body.strip_prefix("TABLE IF NOT EXISTS ") {	own-grammar	migration by equality with our own DDL (G-10)
+crates/store/src/journal_format.rs	} else if let Some(value) = body.strip_prefix("VIEW IF NOT EXISTS ") {	own-grammar	migration by equality with our own DDL (G-10)
 crates/store/src/journal_format.rs	} else if let Some(value) = body.strip_prefix("UNIQUE INDEX IF NOT EXISTS ") {	own-grammar	migration by equality with our own DDL (G-10)
 crates/store/src/journal_format.rs	} else if let Some(value) = body.strip_prefix("TRIGGER IF NOT EXISTS ") {	own-grammar	migration by equality with our own DDL (G-10)
 crates/daemon-engine/src/mcp_waits.rs	Some(if id.starts_with(MCP_SERVER_PREFIX) { Self::Server(id.to_owned()) } else { Self::Card(InteractionId::from(id)) })	own-grammar	McpServerKey id grammar; a card target is checked by its system_card
@@ -220,3 +221,6 @@ crates/alondrad/src/public_content.rs	if let Some(header) = line.strip_prefix("d
 crates/alondrad/src/public_content.rs	} else if line.starts_with("@@ ") {	format	Git unified diff hunk header
 apple/Data/Transport/Sources/Errors/RegistrationFailure.swift	if status == 410, decoded?.kind == "outcome_unknown", decoded?.reason == "expired" {	own-grammar	HTTP 410 and documented JSON kind/reason tokens identify an expired registration outcome
 crates/daemon-support/src/worktree.rs	if !listed.lines().filter_map(|line| line.strip_prefix("worktree ")).any(|dir| Path::new(dir).canonicalize().ok().as_ref() == Some(&canonical)) {	format	git worktree list --porcelain
+crates/core/src/claude_update.rs	if text.contains("/.local/share/claude/versions/") {	format	installation pathname components select the existing updater; no provider prose is read
+crates/core/src/claude_update.rs	if text.contains("/node_modules/@anthropic-ai/claude-code") {	format	installation pathname components select the existing updater; no provider prose is read
+crates/core/src/claude_update.rs	let mut command = Command::new("/bin/ps");	format	ps comm column compared as an exact executable path; failures conservatively keep the updater waiting

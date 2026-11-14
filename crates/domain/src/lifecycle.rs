@@ -597,6 +597,7 @@ pub enum Event {
     EndPause {
         card: InteractionId,
     },
+    RecoveryEnded { card: InteractionId },
     Finish {
         intent: FinishIntent,
         cleanup: OperationId,
@@ -747,6 +748,7 @@ impl Event {
             | Self::WaitForDependencies { .. }
             | Self::Pause { .. }
             | Self::EndPause { .. }
+            | Self::RecoveryEnded { .. }
             | Self::Finish { .. }
             | Self::DrainObserved { .. }
             | Self::PostMergeDeclared { .. }

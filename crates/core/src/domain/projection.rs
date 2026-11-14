@@ -50,6 +50,8 @@ pub struct AvailableAction {
     pub expected_revision: Revision,
     pub presentation_id: Option<InteractionId>,
     pub expected_head: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_id: Option<PrId>,
 }
 pub(super) struct InboxOrderFacts<'a> {
     pub(super) resurfaced: Option<Revision>,
@@ -150,6 +152,7 @@ impl DomainState {
         head: Option<String>,
         holds: &dyn Holds,
     ) -> AvailableAction {
+        let pr_id = match &command { Command::AuthorizeMerge { pr_id, .. } => Some(pr_id.clone()), _ => None };
         let actor = Actor::User { user_id: "projection-user".into() };
         let envelope = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
@@ -169,20 +172,61 @@ impl DomainState {
             expected_revision: self.revision,
             presentation_id: presentation,
             expected_head: head,
+            pr_id,
         }
     }
     /// The instruction a delivery went back to its Agent with, since its acceptance. Only the
     /// Agent presenting again puts it back in front of the user, except after a reply: that one
     /// holds it only while its node attends to it (`open_reply`).
     pub fn handed_back(&self, presentation: &Interaction) -> Option<Instruction> {
+        self.handed_back_for(presentation, &FeedbackTarget::Delivery)
+    }
+
+    pub fn handed_back_for(&self, presentation: &Interaction, target: &FeedbackTarget) -> Option<Instruction> {
         let InteractionPayload::Delivery { acceptance, feedback, .. } = &presentation.payload else {
             return None;
         };
-        let reply = feedback.last().filter(|reply| self.open_reply(presentation) && self.node_attends(presentation) && self.reply_in_hand(presentation, reply));
+        let reply = feedback.last().and_then(|last| {
+            let start = last.reply_window_start.unwrap_or(last.at_revision);
+            feedback.iter().rev().find(|reply| reply.at_revision >= start && reply.target.affects(target))
+        }).filter(|reply| reply.instruction == Instruction::Reply
+            && self.open_reply(presentation) && self.node_attends(presentation) && self.reply_in_hand(presentation, reply));
         reply
-            .or_else(|| last_hand_back(feedback))
+            .or_else(|| feedback.iter().rev().find(|feedback| feedback.target.affects(target) && feedback.instruction != Instruction::Reply))
             .filter(|f| acceptance.as_ref().is_none_or(|a| f.at_revision > a.at_revision))
             .map(|f| f.instruction)
+    }
+
+    /// An unresolved response survives the node consuming its input or ending a turn.
+    pub fn pending_reply(&self, presentation: &Interaction, target: &FeedbackTarget) -> bool {
+        let InteractionPayload::Delivery { acceptance, feedback, targets, .. } = &presentation.payload else { return false };
+        if presentation.clarification.is_some() || feedback.iter().any(|f| {
+            f.instruction != Instruction::Changes && f.target.affects(target)
+                && acceptance.as_ref().is_none_or(|a| f.at_revision > a.at_revision)
+                && (f.instruction != Instruction::Conflicts || targets.iter().any(|pr| {
+                    let DeliveryTarget::PullRequest { pr_id, head } = pr else { return false };
+                    f.target.affects(&FeedbackTarget::PullRequest { pr_id: pr_id.clone(), head: head.clone() })
+                        && self.pull_requests.get(pr_id).is_none_or(|pr| pr.state == PrState::Open)
+                }))
+        }) {
+            return true;
+        }
+        let Scope::Task { task_id } = &presentation.scope else { return false };
+        self.tasks.get(task_id).is_some_and(|task| !task.pending_user_inputs.is_empty())
+            || self.requests.values().filter(|request| !request.closed).filter_map(|request| request.reply_to.as_ref()).any(|reply| {
+                reply.interaction_id == presentation.id || self.interactions.get(&reply.interaction_id).is_some_and(|older| {
+                    older.scope == presentation.scope && matches!(older.payload, InteractionPayload::Delivery { .. })
+                })
+            })
+    }
+
+    pub(super) fn has_reviewable_pr(&self, presentation: &Interaction) -> bool {
+        let InteractionPayload::Delivery { targets, .. } = &presentation.payload else { return false };
+        targets.iter().any(|target| {
+            let DeliveryTarget::PullRequest { pr_id, head } = target else { return false };
+            self.pull_requests.get(pr_id).is_some_and(|pr| pr.state == PrState::Open && &pr.head == head)
+                && self.handed_back_for(presentation, &FeedbackTarget::PullRequest { pr_id: pr_id.clone(), head: head.clone() }).is_none()
+        })
     }
     /// A reply is the last thing that changed the delivery: its node has not ended a turn, been
     /// paused or lost its session since, and nothing else moved the delivery.
@@ -242,19 +286,35 @@ impl DomainState {
             _ => None,
         }).collect();
         let open: Vec<(&PrId, &str)> = prs.iter().copied()
-            .filter(|(id, _)| self.pull_requests.get(*id).is_some_and(|pr| pr.state == PrState::Open))
+            .filter(|(id, head)| self.pull_requests.get(*id).is_some_and(|pr| pr.state == PrState::Open && pr.head == *head)
+                && self.interactions.get(interaction_id).is_some_and(|presentation|
+                    self.handed_back_for(presentation, &FeedbackTarget::PullRequest { pr_id: (*id).clone(), head: (*head).to_owned() }).is_none()))
             .collect();
         if prs.len() < 2 || open.is_empty() {
             return whole();
         }
-        open.into_iter().map(|(pr_id, head)| {
-            let mut card = item.clone();
-            card.subject = InboxSubject::Interaction { interaction_id: interaction_id.clone(), pr_id: Some(pr_id.clone()) };
-            card.available_actions.retain(|action| action.kind != "accept_delivery"
-                && (action.kind != "authorize_merge" || action.expected_head.as_deref() == Some(head)));
-            card
-        }).collect()
+        open.into_iter().filter_map(|(pr_id, _)| self.card_for_pr(item, pr_id)).collect()
     }
+
+    pub fn card_for_pr(&self, item: &InboxItem, pr_id: &PrId) -> Option<InboxItem> {
+        let InboxSubject::Interaction { interaction_id, .. } = &item.subject;
+        let presentation = self.interactions.get(interaction_id)?;
+        let InteractionPayload::Delivery { targets, .. } = &presentation.payload else { return None };
+        let head = targets.iter().find_map(|target| match target {
+            DeliveryTarget::PullRequest { pr_id: id, head } if id == pr_id => Some(head),
+            _ => None,
+        })?;
+        if targets.iter().filter(|target| matches!(target, DeliveryTarget::PullRequest { .. })).count() == 1 {
+            return Some(item.clone());
+        }
+        let mut card = item.clone();
+        card.subject = InboxSubject::Interaction { interaction_id: interaction_id.clone(), pr_id: Some(pr_id.clone()) };
+        card.pending &= self.handed_back_for(presentation, &FeedbackTarget::PullRequest { pr_id: pr_id.clone(), head: head.clone() }).is_none();
+        card.available_actions.retain(|action| action.kind != "accept_delivery"
+            && (action.kind != "authorize_merge" || action.pr_id.as_ref() == Some(pr_id)));
+        Some(card)
+    }
+
     /// The card decided from the state alone: what the index must agree with.
     #[cfg(test)]
     pub(crate) fn item(&self, i: &Interaction) -> InboxItem {
@@ -287,7 +347,7 @@ impl DomainState {
                 task.is_some_and(|t| t.final_presentation.as_ref() == Some(&i.id))
                     && active
                     && !acceptance.as_ref().is_some_and(|a| a.valid)
-                    && self.handed_back(i).is_none()
+                    && (self.handed_back(i).is_none() || self.has_reviewable_pr(i))
                     && task.is_some_and(|t| matches!(attention(t), Attention::Act(card) if card.interaction == i.id))
             }
         }
@@ -328,7 +388,7 @@ impl DomainState {
                     refusal: None,
                     expected_revision: self.revision,
                     presentation_id: None,
-                    expected_head: None,
+                    expected_head: None, pr_id: None,
                 }],
             ),
             InteractionPayload::Question { answer, .. }
@@ -361,7 +421,7 @@ impl DomainState {
                         refusal: None,
                         expected_revision: self.revision,
                         presentation_id: None,
-                        expected_head: None,
+                        expected_head: None, pr_id: None,
                     }],
                 )
             }
@@ -478,7 +538,7 @@ impl DomainState {
             refusal: None,
             expected_revision: self.revision,
             presentation_id: None,
-            expected_head: None,
+            expected_head: None, pr_id: None,
         })
     }
     /// What holds a delivery back: the open cards that block it, then the delivery of the PR
@@ -756,10 +816,6 @@ mod inbox_order_tests {
         }
     }
 
-}
-
-fn last_hand_back(feedback: &[Feedback]) -> Option<&Feedback> {
-    feedback.iter().rev().find(|f| f.instruction != Instruction::Reply)
 }
 
 /// Every button any test projects on a valid state is also judged by running its command on a

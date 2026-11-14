@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:d",
   "client": "mac",
-  "version": "v8d1cd2cbed971fee",
+  "version": "v5106c7430eb0388a",
   "cursor": "cursor-1",
   "title": "Review the result",
   "status": {
@@ -135,6 +135,10 @@
                 "text": "En espera",
                 "tone": "neutral"
               }
+            },
+            {
+              "icon": "warning",
+              "text": "Queda un mensaje por responder: espera un nuevo resultado."
             }
           ],
           "state": {
@@ -143,22 +147,6 @@
           },
           "detail": "included",
           "actions": [
-            {
-              "id": "merge:d@10~head1-d",
-              "label": "Squash and merge",
-              "style": "primary",
-              "role": "advance",
-              "option_id": "squash",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "enabled": true,
-              "stamp": "Haciendo merge…",
-              "key": "1",
-              "resolves_card": true
-            },
             {
               "id": "close_unmerged:d@10",
               "label": "Cerrar sin hacer merge",

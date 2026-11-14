@@ -277,7 +277,7 @@ fn sent_run_request_task_policy_and_receipt_commit_together() {
             revision: 1,
             started: false,
             review_prs: false,
-            created_revision: 0, final_presentation: None,
+            created_revision: 0, pending_user_inputs: Default::default(), final_presentation: None,
             pr_id: None,
             later_prs: vec![],
             opened_prs: Default::default(),

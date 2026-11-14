@@ -5,6 +5,24 @@ mod support;
 use support::*;
 
 #[test]
+fn historical_completion_after_release_remains_replayable() {
+    let mut task = running();
+    apply(&mut task, Event::Tell { input: input("late-message"), answers: None });
+    apply(&mut task, Event::Present { delivery: "delivery".into() });
+    fact(&mut task, RuntimeFact::TurnEnded {
+        turn: turn("root"), unheard_card: "unused".into(), wake: None, awaits: None, stalled: false,
+    });
+    apply(&mut task, Event::ExecutionReleased { input: input("release") });
+    apply(&mut task, Event::Accept { delivery: "delivery".into(), merge: None });
+    assert_eq!(task.pending_inputs(), [&input("late-message")]);
+    // Existing journals may contain this sequence; new completion decisions are guarded in core.
+    apply(&mut task, Event::Finish {
+        intent: FinishIntent::Complete, cleanup: operation("cleanup"), post_merge: None,
+    });
+    assert!(task.pending_inputs().is_empty());
+}
+
+#[test]
 fn last_child_completion_waits_for_its_correlated_root_continuation() {
     let mut task = running();
     fact(
@@ -3630,4 +3648,78 @@ fn a_turn_whose_answer_has_not_reached_it_takes_no_slot() {
     fact(&mut task, RuntimeFact::CallbackSettled { callback, continuation: continuation("allowed") });
     assert!(task.holds_slot(), "the answer reached its turn, which works again");
     assert!(!task.waits_for_slot());
+}
+
+
+#[test]
+fn retiring_recovery_preserves_the_session_inputs_and_other_decisions() {
+    let mut task = resting_delivery();
+    apply(&mut task, Event::Pause { card: "recovery".into(), owner: Owner::User });
+    apply(&mut task, Event::Tell { input: input("queued"), answers: None });
+    apply(&mut task, Event::Ask { card: "question".into() });
+    let pending = task.pending_inputs().into_iter().cloned().collect::<Vec<_>>();
+    let activity = task.activity();
+    let execution = task.execution().cloned();
+    let delivery = task.delivery().cloned();
+    apply(&mut task, Event::RecoveryEnded { card: "recovery".into() });
+    assert_eq!(task.pending_inputs().into_iter().cloned().collect::<Vec<_>>(), pending);
+    assert_eq!(task.activity(), activity);
+    assert_eq!(task.execution(), execution.as_ref());
+    assert_eq!(task.delivery(), delivery.as_ref());
+    assert_eq!(held(&task), [InteractionId::from("question")]);
+    let revision = task.revision();
+    assert_eq!(task.apply(revision, Event::RecoveryEnded { card: "recovery".into() }), Err(Refusal::CorrelationMismatch));
+    assert_eq!(task.revision(), revision);
+
+}
+
+#[test]
+fn recovery_retirement_cannot_end_a_question_capacity_pause_or_callback() {
+    let mut tasks = vec![];
+    let mut question = running();
+    apply(&mut question, Event::Present { delivery: "result".into() });
+    apply(&mut question, Event::Ask { card: "held".into() });
+    tasks.push(question);
+    let mut capacity = running();
+    apply(&mut capacity, Event::Present { delivery: "result".into() });
+    apply(&mut capacity, Event::Pause { card: "held".into(), owner: Owner::Capacity(Capacity::Usage) });
+    tasks.push(capacity);
+    let mut callback = running();
+    apply(&mut callback, Event::Present { delivery: "result".into() });
+    fact(&mut callback, RuntimeFact::Ask { card: "held".into(), callback: CallbackId::new("permission").unwrap(), reason: WaitReason::Permission });
+    tasks.push(callback);
+    let mut unfinished = running();
+    apply(&mut unfinished, Event::Pause { card: "held".into(), owner: Owner::User });
+    tasks.push(unfinished);
+    for mut task in tasks {
+        let cards = task.cards().into_iter().map(|(id, reason)| (id.clone(), reason)).collect::<Vec<_>>();
+        let revision = task.revision();
+        assert_eq!(task.apply(revision, Event::RecoveryEnded { card: "held".into() }), Err(Refusal::InvalidState));
+        assert_eq!(task.revision(), revision);
+        assert_eq!(task.cards().into_iter().map(|(id, reason)| (id.clone(), reason)).collect::<Vec<_>>(), cards);
+    }
+}
+
+#[test]
+fn retiring_an_orchestrators_unheard_decision_preserves_the_other_decisions() {
+    let mut task = resting_delivery();
+    apply(&mut task, Event::Unfinished {
+        unheard_card: "unheard".into(), wake: None,
+    });
+    apply(&mut task, Event::Ask { card: "question".into() });
+    assert_eq!(task.card_owner(&"unheard".into()), Some(Owner::Orchestrator));
+    assert_eq!(task.cards(), [
+        (&InteractionId::from("question"), WaitReason::Question),
+        (&InteractionId::from("unheard"), WaitReason::Unheard),
+    ]);
+    let pending = task.pending_inputs().into_iter().cloned().collect::<Vec<_>>();
+    let activity = task.activity();
+    let execution = task.execution().cloned();
+    let delivery = task.delivery().cloned();
+    apply(&mut task, Event::RecoveryEnded { card: "unheard".into() });
+    assert_eq!(held(&task), [InteractionId::from("question")]);
+    assert_eq!(task.pending_inputs().into_iter().cloned().collect::<Vec<_>>(), pending);
+    assert_eq!(task.activity(), activity);
+    assert_eq!(task.execution(), execution.as_ref());
+    assert_eq!(task.delivery(), delivery.as_ref());
 }

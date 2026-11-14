@@ -28,6 +28,7 @@ pub struct Adoption {
     pub controls: Vec<UnresolvedControl>,
     pub unrecorded_controls: Vec<i64>,
     pub unrecorded_commands: Vec<i64>,
+    pub receipt_candidates: Vec<alondra_store::ReceiptCandidate>,
 }
 
 /// Every step runs inside the journal's guard: an error or a panic in any of them poisons the
@@ -855,12 +856,13 @@ impl<'connection> OwnerTransaction<'connection> {
         let controls = self.journal.unresolved_controls(task)?;
         let unrecorded_controls = self.journal.unrecorded_controls(task)?;
         let unrecorded_commands = self.journal.unrecorded_commands(task)?;
+        let receipt_candidates = self.journal.receipt_candidates(task)?;
         let conn = self.conn;
         let directory = self.journal.inspect(|| {
             conn.query_row("SELECT dir FROM task_worktrees WHERE task_id=?1", rusqlite::params![task.0], |row| row.get::<_, String>(0))
                 .map_err(|error| StoreError::Storage(error.into()))
         })?;
-        Ok(Adoption { stamp, directory, commands, controls, unrecorded_controls, unrecorded_commands })
+        Ok(Adoption { stamp, directory, commands, controls, unrecorded_controls, unrecorded_commands, receipt_candidates })
     }
 
     /// Whether the task's current execution still has a dispatch or a control claimed for a host
@@ -881,6 +883,10 @@ impl<'connection> OwnerTransaction<'connection> {
     /// reconciled under. It never invents consumption.
     pub fn resolve(&mut self, stamp: &ExecutionStamp, intent: i64, owner_generation: u64, receipt: DispatchReceipt) -> std::result::Result<(), StoreError> {
         Ok(self.journal.resolve_dispatch(stamp, intent, owner_generation, receipt)?)
+    }
+
+    pub fn record_handoff_proof(&mut self, grant: &OwnerGrant, intent: i64, proof: &alondra_provider_contract::HandoffProof) -> std::result::Result<bool, StoreError> {
+        Ok(self.journal.record_handoff_proof(grant, intent, proof)?)
     }
 
     /// The task's inputs that left for a host and were not consumed, with how their handoff ended.

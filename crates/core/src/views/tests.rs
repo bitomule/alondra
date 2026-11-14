@@ -46,7 +46,7 @@ fn fixture() -> DomainState {
             created_revision: 0,
             started: true,
             review_prs: false,
-            final_presentation: Some("i-3".into()),
+            final_presentation: Some("i-3".into()), pending_user_inputs: Default::default(),
             pr_id: None,
             later_prs: vec![],
             opened_prs: Default::default(),
@@ -4803,13 +4803,19 @@ fn the_sidebar_groups_a_task_waiting_for_its_reviewer() {
     state.interactions.clear();
     state.tasks.get_mut(&task.into()).unwrap().state = TaskState::AwaitingBlocker;
     let live = golden_live();
-    let sidebar = render(&state, &live, Client::Mac, Lang::Es, "sidebar", "");
-    let group = sidebar.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
-        Item::Row(row) if row.id == "delivered" => Some(row),
-        _ => None,
-    }).expect("the sidebar lists the tasks waiting for a reviewer as a group");
-    assert_eq!((group.badges[0].text.as_str(), group.badges[0].tone), ("Entregada", Tone::Success), "filed under one of the seven states");
-    assert_eq!(group.children.len(), 1);
+    for (lang, label) in [(Lang::En, "Waiting"), (Lang::Es, "En espera")] {
+        let sidebar = render(&state, &live, Client::Mac, lang, "sidebar", "");
+        let groups = sidebar.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item {
+            Item::Row(row) => Some(row), _ => None,
+        }).collect::<Vec<_>>();
+        let group = groups.iter().find(|row| row.id == "waiting")
+            .expect("the sidebar groups a task waiting for its reviewer as Waiting");
+        assert_eq!((group.badges[0].text.as_str(), group.badges[0].tone), (label, Tone::Neutral));
+        assert_eq!(group.children.len(), 1);
+        assert_eq!(group.children[0].id, task);
+        assert!(!groups.iter().any(|row| row.id == "delivered" && row.children.iter().any(|child| child.id == task)),
+            "waiting for another task never reads as Delivered");
+    }
 }
 
 #[test]
@@ -4819,7 +4825,7 @@ fn the_task_whose_node_resolves_conflicts_says_so_with_its_pr_in_both_languages(
     state.tasks.get_mut(&"t-651c38484cd2f34e74d5107ba05f7f15".into()).unwrap().agent_id = Some(agent);
     let delivery = state.interactions.get_mut(&"hf-weekly-2026-09-30".into()).unwrap();
     if let InteractionPayload::Delivery { feedback, .. } = &mut delivery.payload {
-        feedback.push(crate::domain::Feedback { merge_failure: None,
+        feedback.push(crate::domain::Feedback { target: Default::default(), reply_window_start: None, merge_failure: None,
             attachments: vec![], user_id: crate::domain::Feedback::ALONDRA.into(), body: "Conflicts".into(),
             at_revision: 99, instruction: crate::domain::Instruction::Conflicts,
         });
@@ -5638,6 +5644,8 @@ fn a_reply_to_a_result_whose_node_is_paused_shows_on_its_card_until_the_node_tak
         assert_golden(filename, &render(&state, &live, Client::Mac, lang, "card:d", ""), expected);
     }
     execute(&mut state, Actor::System, Command::MoveNode { agent_id: "a".into(), event: crate::domain::NodeEvent::Resumed});
+    assert!(state.pending_reply(&state.interactions[&crate::domain::InteractionId::from("d")],
+        &crate::domain::FeedbackTarget::Delivery), "resuming alone does not answer the user");
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         let view = serde_json::to_string(&render(&state, &live, client, Lang::En, "card:d", "")).unwrap();
         assert!(!view.contains("Your reply arrived"), "{client:?}: the node has the reply now: {view}");
@@ -5684,10 +5692,38 @@ fn a_reply_on_a_presented_pr_leaves_waiting_for_you_on_every_client_and_a_pause_
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         assert!(waiting(&state, client), "{client:?}: the result waits for the user again");
     }
-    let card = render(&state, &live, Client::Ios, Lang::Es, "card:d", "");
-    assert_eq!(card.view, "card", "never a settled card with nothing to press");
-    let merge = card_of(&card).actions.clone().into_iter().find(|action| action.id.starts_with("merge:")).expect("the card offers the merge");
-    assert!(merge.enabled, "{merge:?}");
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let view = render(&state, &live, client, Lang::Es, "card:d", "");
+        assert_eq!(view.view, "card", "the pending reply keeps its card available");
+        let card = card_of(&view);
+        assert!(card.actions.iter().chain(&card.more).all(|action| !action.id.starts_with("merge:")),
+            "{client:?}: an unanswered reply never offers a merge");
+        assert!(serde_json::to_string(card).unwrap().contains("Queda un mensaje por responder"));
+        assert!(card.reply.as_ref().is_some_and(|reply| reply.enabled && reply.id.starts_with("changes:")),
+            "{client:?}: the user can still write to the result");
+    }
+    let index = crate::domain::ReadIndex::build(&state);
+    let authorization = index.cards().iter().flat_map(|card| &card.available_actions)
+        .find(|action| action.kind == "authorize_merge").expect("merge availability is decided by the domain");
+    assert!(!authorization.enabled);
+    assert_eq!(authorization.disabled_reason.as_deref(), Some("pending_user_reply"));
+    assert_eq!(authorization.refusal, Some(crate::domain::Refusal::PendingUserMessage));
+    let presentation = &state.interactions[&crate::domain::InteractionId::from("d")];
+    let crate::domain::InteractionPayload::Delivery { feedback, .. } = &presentation.payload else { panic!("a delivery") };
+    assert_eq!(feedback.len(), 1);
+    assert_eq!(feedback[0].body, "te he pedido cambios pero este card no se va");
+    let mut attempted = state.clone();
+    let error = attempted.execute(&Actor::User { user_id: "u".into() }, &crate::domain::CommandEnvelope {
+        protocol_version: crate::domain::PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
+        command_id: "pending-reply-merge".into(), expected_revision: state.revision,
+        command: Command::AuthorizeMerge {
+            authorization_id: "pending-reply-authorization".into(), presentation_id: "d".into(), pr_id: "pr".into(),
+            expected_head: "head1".into(), method: crate::domain::MergeMethod::Squash,
+        },
+    }).unwrap_err();
+    assert_eq!(error.code, "pending_user_reply");
+    assert_eq!(error.why(), crate::domain::Refusal::PendingUserMessage);
+    assert_eq!(attempted, state, "a refused merge leaves the pending reply intact");
 }
 
 #[test]
@@ -6463,7 +6499,7 @@ fn a_settled_card_says_only_why_it_went_in_english_and_spanish() {
         targets: vec![crate::domain::DeliveryTarget::Text { text: "No hay reservas acumuladas.".into() }],
         is_final: true,
         acceptance: None,
-        feedback: vec![Feedback { merge_failure: None, attachments: vec![], user_id: "device:1".into(), body: "Falta el caso vacío".into(), at_revision: 9, instruction: Instruction::Changes }],
+        feedback: vec![Feedback { target: Default::default(), reply_window_start: None, merge_failure: None, attachments: vec![], user_id: "device:1".into(), body: "Falta el caso vacío".into(), at_revision: 9, instruction: Instruction::Changes }],
     };
     assert_eq!(notice(&state, "card:i-3", Lang::Es).as_deref(), Some("Ya respondida"));
 
@@ -10230,5 +10266,59 @@ fn task_working_rows_match_goldens() {
             wait.detail = Some("Waiting for the server".into());
         }
         assert_golden(filename, &render(&state, &live, client, lang, "tasks", "2026-09-30T10:00:00Z"), expected);
+    }
+}
+
+#[test]
+fn a_session_without_read_receipts_does_not_block_scheduled_followup_messages() {
+    let mut state = fixture();
+    state.requests.get_mut(&"r-1".into()).unwrap().origin = RequestOrigin::Schedule;
+    let task = state.tasks.get_mut(&"t-1".into()).unwrap();
+    task.state = TaskState::Done;
+    task.agent_id = None;
+    for (lang, explanation) in [(Lang::En, "separate task"), (Lang::Es, "tarea independiente")] {
+        let view = render(&state, &LiveSnapshot::default(), Client::Tui, lang, "task:t-1", "");
+        let action = view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
+            let Item::Actions(bar) = item else { return None };
+            bar.actions.iter().find(|action| action.id.starts_with("task_msg:"))
+        }).expect("a completed scheduled run still accepts independent work");
+        let Input::Text { placeholder, .. } = &action.input else { panic!("a message field") };
+        assert!(placeholder.contains(explanation), "{placeholder}");
+    }
+}
+
+
+#[test]
+fn host_recovery_cards_use_plain_localized_content_in_the_list_and_detail() {
+    use crate::domain::{Actor, Command, SystemCard};
+    for legacy in [false, true] {
+        let mut state = presented_pr();
+        if legacy {
+            execute(&mut state, Actor::Agent { agent_id: "a".into() }, Command::DeclarePostMergeWork {
+                task_id: "t".into(), reason: Some("Publish the release".into()), waits_for: vec![],
+            });
+            execute(&mut state, Actor::System, Command::RecordHostEnded {
+                task_id: "t".into(), generation: 1, resumes: false, ended_work: vec![], by_alondra: false,
+            });
+        }
+        execute(&mut state, Actor::System, Command::RecordHostLost {
+            task_id: "t".into(), reason: "StaleOwner: the provider rejected the execution token".into(), quiet: false,
+        });
+        let id = state.interactions.values().find(|i| crate::domain::retakes(i)).unwrap().id.clone();
+        assert_eq!(state.interactions[&id].system_card, Some(if legacy { SystemCard::SessionEnded } else { SystemCard::HostLost }));
+        let live = LiveSnapshot::default();
+        for client in [Client::Tui, Client::Mac, Client::Ios] {
+            for lang in [Lang::En, Lang::Es] {
+                let list = if client == Client::Mac { "sidebar" } else { "home" };
+                for key in [list.to_owned(), format!("card:{id}")] {
+                    let view = render(&state, &live, client, lang, &key, "");
+                    let shown = serde_json::to_string(&view).unwrap();
+                    assert!(!shown.contains("StaleOwner") && !shown.contains("execution token"), "{client:?} {key}: {shown}");
+                    let localized = if lang == Lang::Es { "Alondra no ha podido continuar" } else { "Alondra could not continue" };
+                    assert!(shown.contains(localized), "{client:?} {key}: {shown}");
+                }
+            }
+        }
+        assert!(state.interactions[&id].body.contains("StaleOwner"), "the diagnostic is retained");
     }
 }

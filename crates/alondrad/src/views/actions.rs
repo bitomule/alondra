@@ -1465,7 +1465,7 @@ fn map_action(
         Verb::AskPr | Verb::Conflicts => {
             let pr = state.pull_requests.get(&alondra_core::domain::PrId(action.subject.clone()))?;
             let presentation = pr_presentation(state, pr)?;
-            let InteractionPayload::Delivery { targets, .. } = &presentation.payload else { return None; };
+            let InteractionPayload::Delivery { .. } = &presentation.payload else { return None; };
             let (body, attachments, instruction, stamp) = if action.verb == Verb::AskPr {
                 let text = request.input.text.as_deref().unwrap_or_default().trim();
                 if text.is_empty() { return None; }
@@ -1474,7 +1474,8 @@ fn map_action(
                 (crate::domain_messages::conflicts_text(&crate::domain_messages::user_name(), pr, state.branch_update), vec![],
                     Instruction::Conflicts, stamp("Conflicts requested", "Conflictos comunicados"))
             };
-            Some((Command::SubmitFeedback { presentation_id: presentation.id.clone(), targets: targets.clone(),
+            Some((Command::SubmitFeedback { presentation_id: presentation.id.clone(),
+                targets: vec![alondra_core::domain::DeliveryTarget::PullRequest { pr_id: pr.id.clone(), head: pr.head.clone() }],
                 body, attachments, instruction, merge_failure: None }, stamp))
         }
         Verb::Retake => {
@@ -1542,12 +1543,12 @@ fn map_action(
                     inputs, attachments: attachments.to_vec() }, stamp("Changes requested", "Cambios solicitados")));
             }
             let InteractionPayload::Delivery { targets, .. } = &interaction.payload else { return None; };
-            if let Some(head) = pr_head.as_deref() {
-                if !targets.iter().any(|target| matches!(target, alondra_core::domain::DeliveryTarget::PullRequest { head: target_head, .. } if target_head == head)) {
-                    return None;
-                }
-            }
-            Some((Command::SubmitFeedback { presentation_id: interaction.id.clone(), targets: targets.clone(), body,
+            let submitted = if let Some(head) = pr_head {
+                let target = alondra_core::domain::DeliveryTarget::PullRequest { pr_id: action.subject.clone().into(), head };
+                if !targets.contains(&target) { return None; }
+                vec![target]
+            } else { targets.clone() };
+            Some((Command::SubmitFeedback { presentation_id: interaction.id.clone(), targets: submitted, body,
                 attachments: attachments.to_vec(), instruction: Instruction::Changes, merge_failure: None }, stamp("Changes requested", "Cambios solicitados")))
         }
         Verb::Withdraw => {
@@ -1939,6 +1940,8 @@ fn applied(verb: Verb, lang: Lang, stamp: &str, revision: u64, status: u16, body
         json!({"protocol":VIEWS_PROTOCOL,"outcome":"applied","stamp":stamp,"revision":revision,"detail":body})
     } else if code == Some("close_refused") {
         json!({"protocol":VIEWS_PROTOCOL,"outcome":"rejected","code":"close_refused","message":close_refusal(lang, &body)})
+    } else if code == Some("message_receipt_unavailable") {
+        refused_value(&Refusal::UserMessageUnavailable, lang)
     } else if verb == Verb::TaskMsg && code == Some("task_not_active") {
         refused_value(&Refusal::TaskNotActive, lang)
     } else if status == 404 || (status == 409 && !matches!(code, Some("session_unreachable" | "close_failed"))) {
@@ -1952,6 +1955,9 @@ fn applied(verb: Verb, lang: Lang, stamp: &str, revision: u64, status: u16, body
 
 /// Where a message told to a node of the SDK stands, as the stamp says it.
 fn sdk_message_stamp(reaches: Option<&str>, es: bool) -> &'static str {
+    if reaches == Some("task") {
+        return alondra_core::views::scheduled_message_stamp(if es { Lang::Es } else { Lang::En });
+    }
     match (reaches, es) {
         (Some("turn"), false) => "Message sent: the node reads it during its current turn",
         (Some("turn"), true) => "Mensaje enviado: el nodo lo lee durante su turno actual",
@@ -2600,6 +2606,7 @@ for line in sys.stdin:
         assert_eq!(reply(Lang::Es, 200, json!({"delivery_state": "dispatching"}))["stamp"],
             "Mensaje en cola: el nodo está ocupado y lo recibe cuando termine su turno. Si no avanza, Interrumpir termina el turno");
         for (reaches, english, spanish) in [
+            ("task", "Message saved as a separate task", "Mensaje guardado como una tarea independiente"),
             ("now", "Message sent: the node starts on it now", "Mensaje enviado: el nodo se pone con él ahora"),
             ("turn", "Message sent: the node reads it during its current turn", "Mensaje enviado: el nodo lo lee durante su turno actual"),
             ("pause", "Message kept: the node gets it when you resume it", "Mensaje guardado: el nodo lo recibe cuando lo reanudes"),
@@ -3126,8 +3133,6 @@ for line in sys.stdin:
 
     #[tokio::test]
     async fn different_commands_cannot_reply_to_the_same_stale_information_card() {
-        use std::future::Future;
-        use std::task::{Context, Poll, Waker};
         let (home, domain, client) = action_home();
         apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
             agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
@@ -3140,6 +3145,7 @@ for line in sys.stdin:
             review_prs:false, dependencies:Default::default(), stack:None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
         });
+        alondra_daemon_engine::domain_store::admit_through_sdk_with_host(&domain, &"task".into(), "agent-a", "alondra-sdk");
         apply_seed_command(&domain, Actor::System, "info", Command::PublishInformation {
             attachments:vec![], interaction_id:"info".into(), scope:alondra_core::domain::Scope::Task { task_id:"task".into() },
             recipient:alondra_core::domain::Recipient::User, body:"Update".into(),
@@ -3150,20 +3156,16 @@ for line in sys.stdin:
         request.input.text = Some("First reply".into());
         let mut other = pacing_request(&state, Verb::Reply, "info", "", "en");
         other.input.text = Some("Stale reply".into());
-        let mut node = domain.live.pushes.attach("agent-a", 1);
-        let mut first = Box::pin(execute(&domain, &client, &home.0, "test-device", request, None, || Ok(())));
-        let mut second = Box::pin(execute(&domain, &client, &home.0, "test-device", other, None, || Ok(())));
-        let mut context = Context::from_waker(Waker::noop());
-        assert!(first.as_mut().poll(&mut context).is_pending());
-        let sent: Value = serde_json::from_str(&node.try_recv().unwrap()).unwrap();
-        assert!(second.as_mut().poll(&mut context).is_pending());
-        assert!(matches!(node.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)), "a stale card sent a second reply");
-        domain.live.pushes.acknowledged("agent-a", &[sent["id"].as_str().unwrap().to_owned()]);
-        assert!(matches!(first.as_mut().poll(&mut context), Poll::Ready(_)));
-        let Poll::Ready(reply) = second.as_mut().poll(&mut context) else { panic!("stale reply did not finish"); };
+        let reply = execute(&domain, &client, &home.0, "test-device", request, None, || Ok(())).await;
+        let body: Value = serde_json::from_slice(&axum::body::to_bytes(reply.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+        assert_eq!(body["outcome"], "applied", "{body}");
+        let after = domain.state().unwrap();
+        let pending = after.tasks[&alondra_core::domain::TaskId::from("task")].pending_user_inputs.clone();
+        assert_eq!(pending.len(), 1);
+        let reply = execute(&domain, &client, &home.0, "test-device", other, None, || Ok(())).await;
         let body: Value = serde_json::from_slice(&axum::body::to_bytes(reply.into_body(), 1024 * 1024).await.unwrap()).unwrap();
         assert_eq!(body["outcome"], "no_longer_available");
-        assert!(matches!(node.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
+        assert_eq!(domain.state().unwrap().tasks[&alondra_core::domain::TaskId::from("task")].pending_user_inputs, pending);
     }
 
     struct HeldClose {
@@ -3448,6 +3450,51 @@ for line in sys.stdin:
         let stale = execute_action(&domain, &client, &home.0, "test-device", second, None, || Ok(())).await.unwrap();
         assert_eq!(stale["outcome"], "no_longer_available", "{stale}");
         assert_eq!(domain.state().unwrap().revision, revision_after_answer, "the second answer changes nothing");
+    }
+
+    #[tokio::test]
+    async fn a_superseded_question_ends_repeated_answers_without_new_work_or_duplicate_cards() {
+        use alondra_core::domain::{Recipient, Scope, QuestionOption, CardSpec, CardKind, ReadIndex};
+        let (home, domain, client) = action_home();
+        apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
+            agent_id: "agent-a".into(), name: "Agent A".into(), at: 0,
+        });
+        apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "request", Command::CreateRequest {
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
+        });
+        apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
+            task_id: "task".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("agent-a".into()),
+            review_prs: false, dependencies: Default::default(), stack: None, plan_items: None, continues: None,
+            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/synthetic/repository")),
+        });
+        let ask = |id: &str, replaces: Option<&str>| {
+            let mut card = CardSpec::new(CardKind::Decide, "Choose the name").why("The release needs a name");
+            card.replaces = replaces.map(Into::into);
+            Command::AskQuestion { attachments: vec![], interaction_id: id.into(),
+                scope: Scope::Task { task_id: "task".into() }, recipient: Recipient::User, body: "Choose the name".into(),
+                blocking: true, options: vec![
+                    QuestionOption { id: "atlas".into(), label: "Atlas".into(), description: Some("Use Atlas".into()) },
+                    QuestionOption { id: "borealis".into(), label: "Borealis".into(), description: Some("Use Borealis".into()) },
+                ], card }
+        };
+        apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "ask-old", ask("old", None));
+        let revision = domain.state().unwrap().interactions[&InteractionId::from("old")].revision;
+        let action = ActionId::new(Verb::Ans, "old", revision, None).unwrap().to_string();
+        apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "ask-new", ask("new", Some("old")));
+        let before = domain.state().unwrap().revision;
+        for index in 1..=67 {
+            let request = action_request(&domain, &format!("10000000-0000-4000-8000-{index:012}"), "es",
+                action.clone(), Some("atlas"), json!({}));
+            let reply = execute_action(&domain, &client, &home.0, "test-device", request, None, || Ok(())).await.unwrap();
+            assert_eq!(reply["outcome"], "no_longer_available", "{reply}");
+            assert_eq!(domain.state().unwrap().revision, before);
+        }
+        let state = domain.state().unwrap();
+        let index = ReadIndex::build(&state);
+        assert_eq!(index.waiting().iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), ["interaction:new"]);
+        assert!(state.interactions[&InteractionId::from("old")].withdrawn);
+        assert!(!domain.store.lock().unwrap().pending_messages().unwrap().iter()
+            .any(|message| message.recipient_kind == "agent" && message.interaction_id.as_deref() == Some("old")));
     }
 
     fn presented_pr(domain: &crate::domain_runtime::DomainRuntime) {
@@ -4214,4 +4261,117 @@ for line in sys.stdin:
             assert_eq!(stamp("es", interaction, choice), spanish);
         }
     }
+
+// Insert inside crates/alondrad/src/views/actions.rs::tests.
+#[tokio::test]
+async fn replaying_changes_from_an_older_pr_card_applies_once_to_the_current_delivery() {
+    use alondra_core::domain::{CardSpec, DeliveryTarget, InboxSubject, ReadIndex};
+    use alondra_core::views::{Client, Input, Item, LiveSnapshot, Outcome, OutcomeKind, RenderContext, Transport};
+
+    fn painted_reply(domain: &crate::domain_runtime::DomainRuntime, interaction: &str) -> String {
+        let state = domain.state().unwrap();
+        let index = ReadIndex::build(&state);
+        let live = LiveSnapshot::default();
+        let view = alondra_core::views::build(&format!("card:{interaction}"), RenderContext {
+            domain: &state, index: &index, live: &live, client: Client::Ios, lang: Lang::Es,
+            transport: Transport::Loopback, cursor: "cursor", rendered_at: "2026-11-01T10:00:00Z",
+        }).unwrap();
+        let card = view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
+            let Item::Card(card) = item else { return None };
+            Some(card)
+        }).expect("the open PR delivery is painted as a card");
+        let action = card.reply.as_ref().expect("the PR card offers its feedback field");
+        assert!(matches!(action.input, Input::Text { .. }));
+        action.id.clone()
+    }
+
+    let (home, domain, client) = action_home();
+    let node = Actor::Agent { agent_id: "agent-a".into() };
+    apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
+        agent_id: "agent-a".into(), name: "Agent A".into(), at: 0,
+    });
+    apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "request", Command::CreateRequest {
+        request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
+    });
+    apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask {
+        task_id: "task".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("agent-a".into()),
+        review_prs: false, dependencies: Default::default(), stack: None, plan_items: None, continues: None,
+        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/synthetic/repository")),
+    });
+    let head = "1".repeat(40);
+    apply_seed_command(&domain, node.clone(), "register-pr", Command::RegisterPr {
+        task_id: "task".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "acme/widgets".into(),
+        number: 7, head: head.clone(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+    });
+    let present = |interaction: &str, text: &str| Command::PresentResult {
+        checklist: vec![], attachments: vec![], task_id: "task".into(), interaction_id: interaction.into(), body: text.into(),
+        targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: head.clone() }],
+        is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the result", &[], true),
+    };
+    apply_seed_command(&domain, node.clone(), "present-old", present("old-delivery", "The first explanation"));
+    let old_action = painted_reply(&domain, "old-delivery");
+    let parsed_old = ActionId::parse(&old_action).unwrap();
+    assert_eq!(parsed_old.verb, Verb::Changes);
+    assert_eq!(parsed_old.subject, "pr");
+    assert_eq!(parsed_old.extra.as_deref(), Some(&head[..8]));
+
+    apply_seed_command(&domain, node, "present-new", present("new-delivery", "The revised explanation"));
+    let parsed_new = ActionId::parse(&painted_reply(&domain, "new-delivery")).unwrap();
+    assert_eq!((parsed_new.verb, &parsed_new.subject, &parsed_new.extra),
+        (parsed_old.verb, &parsed_old.subject, &parsed_old.extra));
+    assert!(parsed_new.revision > parsed_old.revision);
+    let before = domain.state().unwrap();
+    assert!(before.interactions[&InteractionId::from("old-delivery")].withdrawn);
+    assert!(!before.interactions[&InteractionId::from("new-delivery")].withdrawn);
+    let index = ReadIndex::build(&before);
+    assert_eq!(index.cards().len(), 1, "the PR has one current card after redelivery");
+    assert!(matches!(&index.cards()[0].subject, InboxSubject::Interaction { interaction_id, .. }
+        if *interaction_id == InteractionId::from("new-delivery")));
+    assert_eq!(before.pull_requests[&PrId::from("pr")].head, head);
+    let old_agent_messages = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+        .filter(|message| message.recipient_kind == "agent").count();
+
+    let mut request = action_request(&domain, "20000000-0000-4000-8000-000000000001", "es",
+        old_action, None, json!({}));
+    request.input.text = Some("Rename the table".into());
+    let first = execute(&domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let first: Value = serde_json::from_slice(&axum::body::to_bytes(first.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+    assert_eq!(first["outcome"], "applied", "the older action applies to the current delivery: {first}");
+    let applied = domain.state().unwrap();
+    let InteractionPayload::Delivery { feedback, .. } = &applied.interactions[&InteractionId::from("new-delivery")].payload else {
+        panic!("the current presentation remains a delivery")
+    };
+    assert_eq!(feedback.len(), 1);
+    assert_eq!(feedback[0].instruction, Instruction::Changes);
+    assert_eq!(feedback[0].body, "Rename the table");
+    let InteractionPayload::Delivery { feedback: older, .. } = &applied.interactions[&InteractionId::from("old-delivery")].payload else {
+        panic!("the withdrawn presentation remains in history")
+    };
+    assert!(older.is_empty());
+    assert_eq!(applied.tasks[&TaskId::from("task")].final_presentation, Some("new-delivery".into()));
+    let inputs = applied.lifecycle_of(&"task".into()).unwrap().pending_inputs().into_iter().cloned().collect::<Vec<_>>();
+    let pending = domain.store.lock().unwrap().pending_messages().unwrap();
+    let agent_messages: Vec<_> = pending.iter().filter(|message| message.recipient_kind == "agent").collect();
+    assert_eq!(agent_messages.len(), old_agent_messages + 1, "the new user message is kept for the node once");
+    assert_eq!(agent_messages.last().unwrap().interaction_id.as_deref(), Some("new-delivery"));
+    let outbox: Vec<_> = pending.into_iter().map(|message| message.id).collect();
+
+    for attempt in 1..=67 {
+        let replay = execute(&domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())).await;
+        assert_eq!(replay.status(), StatusCode::OK, "replay {attempt}");
+        let replay: Value = serde_json::from_slice(&axum::body::to_bytes(replay.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+        let result: Outcome = serde_json::from_value(replay["result"].clone()).unwrap();
+        assert!(matches!(result.kind, OutcomeKind::Done | OutcomeKind::Refused) && result.next.is_none(),
+            "replay {attempt} finishes without asking to send again: {replay}");
+        assert!(replay["outcome"] == "applied" || replay["outcome"] == "no_longer_available", "{replay}");
+        assert!(replay.get("confirm").is_none());
+        let after = domain.state().unwrap();
+        assert_eq!(after, applied, "replay {attempt} changed the domain instead of replaying the first result");
+        assert_eq!(after.lifecycle_of(&"task".into()).unwrap().pending_inputs().into_iter().cloned().collect::<Vec<_>>(), inputs);
+        assert_eq!(domain.store.lock().unwrap().pending_messages().unwrap().into_iter().map(|message| message.id).collect::<Vec<_>>(),
+            outbox, "replay {attempt} duplicated an outbox message");
+    }
+}
+
 }

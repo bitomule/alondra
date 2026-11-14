@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:d",
   "client": "mac",
-  "version": "v0b5c1f503e85b2af",
+  "version": "vdf492d5d6ff246c0",
   "cursor": "cursor-1",
   "title": "Review the result",
   "status": {
@@ -135,6 +135,10 @@
                 "text": "Waiting",
                 "tone": "neutral"
               }
+            },
+            {
+              "icon": "warning",
+              "text": "A message still needs a reply: wait for a new result."
             }
           ],
           "state": {
@@ -143,22 +147,6 @@
           },
           "detail": "included",
           "actions": [
-            {
-              "id": "merge:d@10~head1-d",
-              "label": "Squash and merge",
-              "style": "primary",
-              "role": "advance",
-              "option_id": "squash",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "enabled": true,
-              "stamp": "Merging…",
-              "key": "1",
-              "resolves_card": true
-            },
             {
               "id": "close_unmerged:d@10",
               "label": "Close without merging",
