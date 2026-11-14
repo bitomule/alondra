@@ -20,3 +20,8 @@ pub use normalizer::{background_left,live_scope,blocked_policy,LiveScope};
 pub use records::conversation_session;
 pub use wire::HostOwner;
 pub use alondra_codex_protocol::{Execution, OrchestratorExecution, OrchestratorLane};
+#[cfg(test)]
+use alondra_codex_protocol as archive_protocol;
+#[cfg(test)]
+#[path = "../../provider-claude/src/archive_tests.rs"]
+mod archive_tests;

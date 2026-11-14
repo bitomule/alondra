@@ -1590,6 +1590,67 @@ fn a_send_the_host_offered_is_not_offered_again_when_its_receipt_was_lost() {
     adopted.stop().unwrap();
 }
 
+fn archived_receipt_after_an_empty_successor(slice: &Slice, mut driver: Driver) -> Driver {
+    slice.settle(&mut driver);
+    instruct(&driver.domain, "Keep the archived receipt");
+    assert!(driver.claim_record_and_offer_without_receipt());
+    let (intent, input): (i64, String) = slice.observer().query_row(
+        "SELECT id,input_id FROM lifecycle_dispatches WHERE task_id=?1 AND status='claimed' ORDER BY id DESC LIMIT 1",
+        [TASK], |row| Ok((row.get(0)?, row.get(1)?)),
+    ).unwrap();
+    let stamp = lifecycle(&driver.domain).execution().unwrap().clone();
+    let generation = driver.worker.owner_generation().unwrap();
+    driver.domain.own(driver.scope.clone(), |owner| owner.resolve(&stamp, intent, generation, DispatchReceipt::Uncertain)).unwrap();
+    while lifecycle(&driver.domain).pending_inputs().iter().any(|pending| pending.as_str() == input) {
+        driver.observe().unwrap();
+    }
+    slice.settle(&mut driver);
+    assert!(Slice::read_cards(&driver.domain).iter().any(|(card, settled)| !settled && card.starts_with(STALLED_PREFIX)),
+        "the original turn reached its case before its host is stopped");
+    driver.stop().unwrap();
+    drop(driver);
+    let restarted = slice.restart();
+    let mut successor = slice.take_over(&restarted);
+    assert_eq!(slice.observer().query_row("SELECT status FROM lifecycle_dispatches WHERE id=?1", [intent], |row| row.get::<_, String>(0)).unwrap(), "uncertain");
+    let mut journal = alondra_codex_protocol::FramedReader::new(std::fs::File::open(successor.worker.state_directory().join("outbox")).unwrap());
+    let mut attached = 0;
+    while let Some(frame) = journal.read().unwrap() {
+        match frame.body {
+            alondra_codex_protocol::Body::Attached(_) => attached += 1,
+            alondra_codex_protocol::Body::Command(_) => panic!("the successor has not received a command"),
+            _ => {}
+        }
+    }
+    assert_eq!(attached, 1);
+    successor.stop().unwrap();
+    drop(successor);
+    let restarted = slice.restart();
+    let mut resumed = slice.take_over(&restarted);
+    let observer = slice.observer();
+    assert_eq!(observer.query_row("SELECT count(*) FROM provider_receipt_proofs WHERE intent_id=?1 AND outcome='handed'", [intent], |row| row.get::<_, i64>(0)).unwrap(), 1,
+        "the current host cannot answer for the original, but its complete archive can");
+    assert_eq!(observer.query_row("SELECT status FROM lifecycle_dispatches WHERE id=?1", [intent], |row| row.get::<_, String>(0)).unwrap(), "uncertain");
+    assert_eq!(observer.query_row("SELECT status FROM lifecycle_dispatch_certainty WHERE id=?1", [intent], |row| row.get::<_, String>(0)).unwrap(), "handed");
+    instruct(&restarted, "Continue after the archived receipt");
+    assert!(lifecycle(&restarted).pending_inputs().iter().any(|input|
+        observer.query_row("SELECT body FROM lifecycle_inputs WHERE task_id=?1 AND input_id=?2", rusqlite::params![TASK, input.as_str()], |row| row.get::<_, String>(0)).unwrap() == "Continue after the archived receipt"),
+        "the later message waits for actual provider consumption");
+    resumed.step(&|| false).unwrap();
+    resumed
+}
+
+#[test]
+fn an_archived_claude_receipt_reconciles_after_a_successor_that_only_attached() {
+    let slice = Slice::new();
+    let mut resumed = archived_receipt_after_an_empty_successor(&slice, slice.launch());
+    slice.settle(&mut resumed);
+    let prompts = slice.prompts();
+    for text in ["Keep the archived receipt", "Continue after the archived receipt"] {
+        assert_eq!(prompts.iter().filter(|prompt| prompt.ends_with(text)).count(), 1, "{prompts:?}");
+    }
+    resumed.stop().unwrap();
+}
+
 // 21 Oct: an SDK node stopped within hours. Its host's journal had a 16 MiB lifetime limit and
 // took 256 commands at most, and each daemon connection tracked 256 commands for good: a long node
 // crossed them and its host stopped serving. Now a turn writes over 20 MiB and the node then takes

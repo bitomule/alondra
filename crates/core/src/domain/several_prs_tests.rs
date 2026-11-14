@@ -616,6 +616,114 @@ fn a_pr_merged_by_hand_on_github_counts_as_merged_wherever_the_task_is() {
 }
 
 #[test]
+fn work_waiting_after_a_merge_reads_waiting_on_every_client_and_in_the_header() {
+    use crate::views::{Item, Row};
+    let mut s = at_work();
+    must(&mut s, Actor::Orchestrator { generation: 0 }, Command::TitleRequest {
+        request_id: "r".into(), title: "Update the package".into(),
+    });
+    must(&mut s, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
+        task_id: "package".into(), request_id: "r".into(), title: "Publish the package".into(), agent_id: None,
+        review_prs: false, plan_items: None, continues: None, dependencies: BTreeSet::new(), stack: None,
+        launch: Some(LaunchPlan::new("node", "/synthetic/repository")),
+    });
+    register(&mut s, "bitomule/alondra", 17, FIRST_HEAD);
+    must(&mut s, node(), Command::DeclarePostMergeWork {
+        task_id: TASK.into(), reason: Some("Check the installed package".into()), waits_for: vec![],
+    });
+    must(&mut s, node(), result("final", vec![pr(PUBLIC, FIRST_HEAD)], true));
+    merged(&mut s, PUBLIC, FIRST_HEAD);
+    must(&mut s, node(), Command::DeclarePostMergeWork {
+        task_id: TASK.into(), reason: Some("Check the installed package".into()),
+        waits_for: vec![WaitTarget::Task { task_id: "package".into() }],
+    });
+    assert!(s.lifecycle_of(&TASK.into()).unwrap().turn().is_some());
+    assert_eq!(ReadIndex::build(&s).task(&TASK.into()).unwrap().situation, Situation::Working(Doing::AfterMerge),
+        "the provider's real turn is still running");
+    turn_ends(&mut s);
+    assert!(matches!(s.lifecycle_of(&TASK.into()).unwrap().awaits(), Some(alondra_domain::Await::Tasks(_))),
+        "the SDK boundary records what the idle task waits for");
+    fn collect<'a>(row: &'a Row, id: &str, found: &mut Vec<&'a Row>) {
+        if row.id == id { found.push(row); }
+        for child in &row.children { collect(child, id, found); }
+    }
+    let reopened: DomainState = serde_json::from_slice(&serde_json::to_vec(&s).unwrap()).unwrap();
+    for state in [&s, &reopened] {
+        let index = ReadIndex::build(state);
+        assert_eq!(index.task(&TASK.into()).unwrap().situation, Situation::Waiting(WaitsFor::Tasks));
+        assert_eq!(index.activity().working, 0);
+        assert_eq!(index.activity().tasks(), 2);
+        let live = LiveSnapshot::default();
+        for client in [Client::Ios, Client::Mac, Client::Tui] {
+            for lang in [Lang::En, Lang::Es] {
+                let view = crate::views::build("tasks", RenderContext {
+                    domain: state, index: &index, live: &live, client, lang, transport: Transport::Loopback,
+                    cursor: "cursor", rendered_at: "",
+                }).unwrap();
+                let active = view.sections.iter().find(|section| section.id == "active").unwrap();
+                for task in state.tasks.values().filter(|task| !task.over()) {
+                    let mut found = Vec::new();
+                    for item in &active.items { if let Item::Row(row) = item { collect(row, &task.id.0, &mut found); } }
+                    assert_eq!(found.len(), 1, "{client:?}/{lang:?}: {} appears once", task.id);
+                }
+                let block = active.items.iter().find_map(|item| match item {
+                    Item::Row(row) if row.id == "block:waiting" => Some(row), _ => None,
+                }).unwrap();
+                let mut found = Vec::new();
+                collect(block, TASK, &mut found);
+                assert_eq!(found.len(), 1, "{client:?}/{lang:?}: the dependency belongs in Waiting");
+                let shown = serde_json::to_string(found[0]).unwrap();
+                assert!(shown.contains("Publish the package"), "{shown}");
+                assert_eq!(found[0].badges[0].text, if lang == Lang::Es { "En espera" } else { "Waiting" });
+                assert_eq!(view.status.counts.iter().find(|count| count.id == "working").unwrap().value, 0);
+            }
+        }
+    }
+    let ended = exec(&mut s, user(), Command::CancelTask { task_id: "package".into(), reason: None }).unwrap();
+    let notice = ended.effects.iter().find_map(|effect| match effect {
+        DomainEffect::NotifyAgent { task_id: Some(task), message, .. } if task.0 == TASK => Some(message.clone()),
+        _ => None,
+    }).expect("ending the dependency notifies its waiting node");
+    must(&mut s, Actor::System, Command::TellNode {
+        task_id: TASK.into(), text: notice, from_user: false, answers: None,
+    });
+    assert!(!matches!(ReadIndex::build(&s).task(&TASK.into()).unwrap().situation, Situation::Waiting(WaitsFor::Tasks)),
+        "a dependency that ended no longer holds the task");
+}
+
+#[test]
+fn a_confirmed_merge_retires_the_review_card_and_its_for_you_label_on_every_client() {
+    let mut s = at_work();
+    register(&mut s, "bitomule/alondra", 17, FIRST_HEAD);
+    must(&mut s, node(), result("final", vec![pr(PUBLIC, FIRST_HEAD)], true));
+    turn_ends(&mut s);
+    assert_eq!(cards(&s), ["final"]);
+    merged(&mut s, PUBLIC, FIRST_HEAD);
+    let index = ReadIndex::build(&s);
+    assert!(!index.task(&TASK.into()).unwrap().for_you());
+    assert_eq!(index.activity().needs_you, 0);
+    assert!(cards(&s).is_empty(), "GitHub already confirmed the reviewed head merged");
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        for lang in [Lang::En, Lang::Es] {
+            for key in ["home", "tasks", "task:t"] {
+                if client == Client::Mac && key == "home" { continue; }
+                let view = crate::views::build(key, RenderContext {
+                    domain: &s, index: &index, live: &LiveSnapshot::default(), client, lang,
+                    transport: Transport::Loopback, cursor: "cursor", rendered_at: "",
+                }).unwrap();
+                assert_eq!(view.status.counts.iter().find(|count| count.id == "needs_you").unwrap().value, 0);
+                assert!(view.sections.iter().all(|section| section.card_ids.is_empty()), "{client:?}/{lang:?}/{key}: no review card remains");
+                if key == "tasks" {
+                    let shown = serde_json::to_value(&view).unwrap();
+                    let active = find_section(&shown, "active").unwrap();
+                    assert!(!active.to_string().contains("block:for-you"), "{active}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn a_noted_pr_is_read_once_and_a_pr_of_another_task_stays_there() {
     let mut s = at_work();
     opened(&mut s);
@@ -781,7 +889,7 @@ fn replying_to_a_second_pr_keeps_both_replies_with_the_working_node() {
         let places: Vec<_> = active.items.iter().filter_map(|item| match item {
             crate::views::Item::Row(row) => Some(row), _ => None,
         }).flat_map(|block| std::iter::repeat(block.id.as_str()).take(count(block))).collect();
-        assert_eq!(places, ["block:in-progress"], "{client:?}: the task belongs to exactly one working block");
+        assert_eq!(places, ["block:working"], "{client:?}: the task belongs to exactly one working block");
         assert_eq!(active.count, Some(1));
     }
 

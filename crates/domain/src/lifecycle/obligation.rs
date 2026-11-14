@@ -83,8 +83,14 @@ fn delivered_owes(delivered: &Delivered) -> (Party, Owed) {
     let session = || {
         execution.and_then(answer_on_its_way).or_else(|| {
             execution
-                .filter(|execution| matches!(execution.activity, Activity::Launching(_) | Activity::InputPending(_) | Activity::Turn { .. } | Activity::Continuation(_)))
-                .map(by_activity)
+                .filter(|execution| matches!(execution.activity, Activity::Launching(_) | Activity::InputPending(_) | Activity::Turn { .. } | Activity::Continuation(_) | Activity::Awaiting(Await::Tasks(_))))
+                .map(|execution| {
+                    if matches!(execution.activity, Activity::Awaiting(Await::Tasks(_))) {
+                        cards_owe(delivered.decisions.values()).unwrap_or_else(|| by_activity(execution))
+                    } else {
+                        by_activity(execution)
+                    }
+                })
         })
     };
     let gate = || match &delivered.gate {

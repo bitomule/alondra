@@ -95,7 +95,7 @@ fn as_previous_schema(path: &Path, kept: &BTreeMap<TaskId, Vec<LifecycleRecord>>
     let conn = Connection::open(path).unwrap();
     conn.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
     let objects: Vec<(String, String)> = conn
-        .prepare("SELECT type,name FROM sqlite_schema WHERE (name GLOB 'lifecycle_*' OR name GLOB 'provider_*') AND type IN('trigger','index','table') ORDER BY type='table'")
+        .prepare("SELECT type,name FROM sqlite_schema WHERE (name GLOB 'lifecycle_*' OR name GLOB 'provider_*') AND type IN('trigger','index','view','table') ORDER BY type='table'")
         .unwrap()
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
         .unwrap()
@@ -106,6 +106,8 @@ fn as_previous_schema(path: &Path, kept: &BTreeMap<TaskId, Vec<LifecycleRecord>>
             conn.execute_batch(&format!("DROP {} IF EXISTS \"{name}\"", kind.to_uppercase())).unwrap();
         }
     }
+    let remaining: i64 = conn.query_row("SELECT count(*) FROM sqlite_schema WHERE name GLOB 'lifecycle_*' OR name GLOB 'provider_*'", [], |row| row.get(0)).unwrap();
+    assert_eq!(remaining, 0, "the previous schema has no store journal objects");
     if !kept.is_empty() {
         conn.execute_batch("CREATE TABLE task_lifecycle_journal(task_id TEXT NOT NULL REFERENCES tasks(id), seq INTEGER NOT NULL CHECK(seq>=0), record TEXT NOT NULL CHECK(json_valid(record)), PRIMARY KEY(task_id, seq));").unwrap();
         for (task, records) in kept {

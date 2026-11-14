@@ -453,6 +453,20 @@ fn an_accepted_native_request_stays_pending_until_its_exact_native_user_item_is_
     driver.stop().unwrap();
 }
 
+#[test]
+fn an_archived_codex_receipt_reconciles_after_a_successor_that_only_attached() {
+    let slice = Slice::new();
+    let trace = configured(&slice, "complete");
+    let mut resumed = archived_receipt_after_an_empty_successor(&slice, launch(&slice));
+    slice.settle(&mut resumed);
+    let native = transcript(&trace);
+    for text in ["Keep the archived receipt", "Continue after the archived receipt"] {
+        assert_eq!(native.iter().filter(|message| message["method"] == "turn/start"
+            && message["params"]["input"][0]["text"].as_str().is_some_and(|prompt| prompt.ends_with(text))).count(), 1, "{native:?}");
+    }
+    resumed.stop().unwrap();
+}
+
 fn transition_target(slice:&Slice,model:&str,effort:&str)->(alondra_core::model_selection::TaskSelection,alondra_core::model_selection::ModelSelection,String){
     let state=slice.domain.state().unwrap();
     let mut catalog=state.model_catalogs.iter().find(|catalog|catalog.account.provider==Provider::Codex).unwrap().clone();

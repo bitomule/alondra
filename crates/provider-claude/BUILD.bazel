@@ -8,6 +8,7 @@ _PROVIDER_TEST_SOURCES = _PROVIDER_SOURCES + [
     "src/controller_tests.rs",
     "src/facade_tests.rs",
     "src/ended_tests.rs",
+    "src/archive_tests.rs",
     "//crates:test_support.rs",
     "//crates/agent-application:tests/support/controller.rs",
 ]
@@ -99,6 +100,7 @@ rust_inputs_test(
 )
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+exports_files(["src/archive_tests.rs"], visibility = ["//crates/provider-codex:__pkg__"])
 
 # Read by the crash report's build script for its log catalog and the words of the code.
 filegroup(

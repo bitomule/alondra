@@ -1,12 +1,14 @@
 //! Claude adapter private daemon ↔ SDK host wire contract.
 //! This is not the provider-neutral execution port and grants no domain authority.
 mod codec;
+mod archived_receipts;
 mod correlation;
 mod json;
 mod ownership;
 mod schema;
 
 pub use codec::{FramedReader, FramedWriter, ReceivedFrame, command_digest, encode};
+pub use archived_receipts::{ArchivedReceipt, archived_receipts};
 pub use correlation::{CommandRegistry, CommandStatus, EventSequence, SequenceStatus};
 pub use schema::*;
 pub use ownership::{host_proof, owner_proof, verify_host_proof, verify_owner_proof};

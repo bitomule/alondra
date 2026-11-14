@@ -303,6 +303,26 @@ impl ClaudeWorker {
     pub fn find_host(&mut self, grant: &OwnerGrant, state: &AdapterState) -> Result<Found, AdapterError> {
         self.adapter.find_host(grant, state)
     }
+    /// Reads definitive receipts from completed archives without sending or touching a host lock.
+    pub fn archived_handoffs(&self, grant: &OwnerGrant, state: &AdapterState, commands: &[&[u8]]) -> Result<Vec<alondra_provider_contract::HandoffProof>, AdapterError> {
+        if grant.binding() != &self.adapter.binding || state.validate_owner(grant).is_err() {
+            return Err(AdapterError::InvalidObservation);
+        }
+        if commands.is_empty() { return Ok(Vec::new()); }
+        let stored: SessionRecord = serde_json::from_slice(state.conversation()).map_err(|_| AdapterError::InvalidObservation)?;
+        let proofs = alondra_agent_protocol::archived_receipts(
+            &self.adapter.configuration.state_directory, &fence(grant, &self.adapter.control), &execution(grant), commands,
+            |bytes| self.adapter.retained(grant, bytes, &stored).map(|retained| retained.control.host_instance_id)
+                .map_err(|_| alondra_agent_protocol::Error::Invalid("archive bootstrap scope")),
+        ).map_err(|_| AdapterError::InvalidObservation)?;
+        proofs.into_iter().map(|proof| {
+            let handoff = match proof.outcome {
+                alondra_agent_protocol::ReceiptOutcome::Accepted { .. } => Handoff::Offered,
+                alondra_agent_protocol::ReceiptOutcome::Rejected { .. } => Handoff::RefusedBeforeOffer,
+            };
+            alondra_provider_contract::HandoffProof::new(proof.command, handoff, proof.receipt)
+        }).collect()
+    }
     /// The ended host `find_host` claimed, still locked: a claim released and taken again can find
     /// the lock held by a child forked meanwhile that has not yet exec'd.
     pub fn take_ended(&mut self) -> Option<EndedHost> {

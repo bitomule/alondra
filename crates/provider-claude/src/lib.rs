@@ -28,3 +28,7 @@ pub use normalizer::background_left;
 
 #[cfg(test)]
 mod controller_tests;
+#[cfg(test)]
+use alondra_agent_protocol as archive_protocol;
+#[cfg(test)]
+mod archive_tests;

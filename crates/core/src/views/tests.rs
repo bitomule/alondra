@@ -4803,13 +4803,19 @@ fn the_sidebar_groups_a_task_waiting_for_its_reviewer() {
     state.interactions.clear();
     state.tasks.get_mut(&task.into()).unwrap().state = TaskState::AwaitingBlocker;
     let live = golden_live();
-    let sidebar = render(&state, &live, Client::Mac, Lang::Es, "sidebar", "");
-    let group = sidebar.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
-        Item::Row(row) if row.id == "delivered" => Some(row),
-        _ => None,
-    }).expect("the sidebar lists the tasks waiting for a reviewer as a group");
-    assert_eq!((group.badges[0].text.as_str(), group.badges[0].tone), ("Entregada", Tone::Success), "filed under one of the seven states");
-    assert_eq!(group.children.len(), 1);
+    for (lang, label) in [(Lang::En, "Waiting"), (Lang::Es, "En espera")] {
+        let sidebar = render(&state, &live, Client::Mac, lang, "sidebar", "");
+        let groups = sidebar.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item {
+            Item::Row(row) => Some(row), _ => None,
+        }).collect::<Vec<_>>();
+        let group = groups.iter().find(|row| row.id == "waiting")
+            .expect("the sidebar groups a task waiting for its reviewer as Waiting");
+        assert_eq!((group.badges[0].text.as_str(), group.badges[0].tone), (label, Tone::Neutral));
+        assert_eq!(group.children.len(), 1);
+        assert_eq!(group.children[0].id, task);
+        assert!(!groups.iter().any(|row| row.id == "delivered" && row.children.iter().any(|child| child.id == task)),
+            "waiting for another task never reads as Delivered");
+    }
 }
 
 #[test]

@@ -166,7 +166,7 @@ impl DomainState {
             match obligation.owed {
                 Owed::User if self.task_handed_back(&task.id).is_some() => return Situation::Waiting(WaitsFor::Step(AlondraStep::Delivering)).into(),
                 Owed::User => return Situation::Delivered(Delivery::ForReview).into(),
-                Owed::Tasks => return Situation::Delivered(Delivery::Blocked).into(),
+                Owed::Tasks => return Situation::Waiting(WaitsFor::Tasks).into(),
                 Owed::Merge | Owed::Close => return Situation::Delivered(Delivery::Closing).into(),
                 _ => {}
             }
@@ -196,7 +196,7 @@ fn without_lifecycle(task: &Task) -> Situation {
         TaskState::NotStarted => Situation::Waiting(WaitsFor::Slot),
         TaskState::Running => Situation::Waiting(WaitsFor::Step(AlondraStep::Starting)),
         TaskState::NeedsYou => Situation::Waiting(WaitsFor::Step(AlondraStep::Answering)),
-        TaskState::AwaitingBlocker => Situation::Delivered(Delivery::Blocked),
+        TaskState::AwaitingBlocker => Situation::Waiting(WaitsFor::Tasks),
         TaskState::ForYourReview => Situation::Delivered(Delivery::ForReview),
         TaskState::WaitingDependency => Situation::Waiting(WaitsFor::Tasks),
         TaskState::Closing if task.cancelled() => Situation::Cancelled,

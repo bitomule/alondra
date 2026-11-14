@@ -141,6 +141,28 @@ pub enum Handoff {
     RefusedBeforeOffer,
     Uncertain,
 }
+
+/// A definitive receipt an adapter verified against the exact command and its execution.
+/// Reaching the provider proves neither consumption nor completion.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HandoffProof {
+    command: Vec<u8>,
+    receipt: Handoff,
+    evidence: Vec<u8>,
+}
+impl HandoffProof {
+    pub fn new(command: Vec<u8>, receipt: Handoff, evidence: Vec<u8>) -> Result<Self, AdapterError> {
+        if command.is_empty() || command.len() > 1_048_576 || evidence.is_empty() || evidence.len() > 1_048_576
+            || receipt == Handoff::Uncertain
+        {
+            return Err(AdapterError::InvalidObservation);
+        }
+        Ok(Self { command, receipt, evidence })
+    }
+    pub fn command(&self) -> &[u8] { &self.command }
+    pub fn receipt(&self) -> Handoff { self.receipt }
+    pub fn evidence(&self) -> &[u8] { &self.evidence }
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Observation {
     Available,

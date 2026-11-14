@@ -2001,6 +2001,168 @@ fn crashed_claim(fixture: &mut Fixture, bytes: &[u8]) -> OwnerGrant {
     owner
 }
 
+fn uncertain_receipt(fixture: &mut Fixture) -> (OwnerGrant, ReceiptCandidate) {
+    let owner = crashed_claim(fixture, b"the exact framed command");
+    let intent = fixture.transaction().unresolved_commands(&"task".into()).unwrap()[0].intent_id;
+    let mut tx = fixture.transaction();
+    tx.resolve_dispatch(owner.execution(), intent, owner.generation(), DispatchReceipt::Uncertain).unwrap();
+    tx.commit().unwrap();
+    let mut candidates = fixture.transaction().receipt_candidates(&"task".into()).unwrap();
+    assert_eq!(candidates.len(), 1);
+    (owner, candidates.remove(0))
+}
+
+fn receipt_proof(candidate: &ReceiptCandidate, receipt: alondra_provider_contract::Handoff, witness: &[u8]) -> alondra_provider_contract::HandoffProof {
+    alondra_provider_contract::HandoffProof::new(candidate.command.clone(), receipt, witness.to_vec()).unwrap()
+}
+
+#[test]
+fn an_archived_receipt_supplements_uncertainty_without_consuming_the_input_and_survives_reopen() {
+    let mut fixture = Fixture::new();
+    let (owner, candidate) = uncertain_receipt(&mut fixture);
+    let proof = receipt_proof(&candidate, alondra_provider_contract::Handoff::Offered, b"verified archived receipt");
+    let pending = fixture.transaction().load(&"task".into()).unwrap().pending_inputs().into_iter().cloned().collect::<Vec<_>>();
+    {
+        let mut tx = fixture.transaction();
+        assert!(tx.record_handoff_proof(&owner, candidate.intent_id, &proof).unwrap());
+    }
+    assert_eq!(fixture.connection.query_row("SELECT count(*) FROM provider_receipt_proofs", [], |row| row.get::<_, i64>(0)).unwrap(), 0,
+        "a crash before commit retains only the original uncertainty");
+    let mut tx = fixture.transaction();
+    assert!(tx.record_handoff_proof(&owner, candidate.intent_id, &proof).unwrap());
+    assert!(!tx.record_handoff_proof(&owner, candidate.intent_id, &proof).unwrap(), "replayed evidence is idempotent");
+    tx.commit().unwrap();
+    let reopened = Connection::open(fixture.directory.join("domain.db")).unwrap();
+    reopened.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+    let tx = LifecycleTransaction::attach(Transaction::new_unchecked(&reopened, TransactionBehavior::Immediate).unwrap(), scope()).unwrap();
+    assert!(tx.receipt_candidates(&"task".into()).unwrap().is_empty());
+    assert!(tx.unresolved(&"task".into()).unwrap().is_empty());
+    assert_eq!(tx.pending_handoffs(&"task".into()).unwrap()[0].1, "handed");
+    assert_eq!(tx.load(&"task".into()).unwrap().pending_inputs().into_iter().cloned().collect::<Vec<_>>(), pending,
+        "Offered is not consumption or an answer");
+    tx.commit().unwrap();
+    assert_eq!(reopened.query_row("SELECT status FROM lifecycle_dispatches WHERE id=?1", [candidate.intent_id], |row| row.get::<_, String>(0)).unwrap(), "uncertain",
+        "the original dispatch evidence never changes");
+    assert!(reopened.execute("UPDATE provider_receipt_proofs SET outcome='rejected'", []).is_err());
+    assert!(reopened.execute("DELETE FROM provider_receipt_proofs", []).is_err());
+}
+
+#[test]
+fn conflicting_archived_receipts_are_retained_and_leave_the_input_uncertain() {
+    let mut fixture = Fixture::new();
+    let (owner, candidate) = uncertain_receipt(&mut fixture);
+    let offered = receipt_proof(&candidate, alondra_provider_contract::Handoff::Offered, b"complete receipt bytes");
+    let rejected = receipt_proof(&candidate, alondra_provider_contract::Handoff::RefusedBeforeOffer, b"complete receipt bytes");
+    let mut tx = fixture.transaction();
+    tx.record_handoff_proof(&owner, candidate.intent_id, &offered).unwrap();
+    tx.record_handoff_proof(&owner, candidate.intent_id, &rejected).unwrap();
+    tx.commit().unwrap();
+    let tx = fixture.transaction();
+    assert_eq!(tx.receipt_candidates(&"task".into()).unwrap().len(), 1);
+    assert_eq!(tx.unresolved(&"task".into()).unwrap().len(), 1);
+    assert_eq!(tx.pending_handoffs(&"task".into()).unwrap()[0].1, "uncertain");
+    assert_eq!(tx.load(&"task".into()).unwrap().pending_inputs(), [&candidate.input]);
+    tx.commit().unwrap();
+    assert_eq!(fixture.connection.query_row("SELECT count(*) FROM provider_receipt_proofs", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
+}
+
+#[test]
+fn a_verified_archived_receipt_releases_the_later_input_in_fifo_order_without_resending_or_consuming_the_first() {
+    let mut fixture = Fixture::new();
+    let (owner, candidate) = uncertain_receipt(&mut fixture);
+    fixture.runtime("task", RuntimeFact::ResourceAvailable);
+    let mut tx = fixture.transaction();
+    let task = TaskId::from("task");
+    tx.put_input(&task, payload("later")).unwrap();
+    let revision = tx.load(&task).unwrap().revision();
+    tx.apply(&task, revision, "later", Event::Tell { input: id("later"), answers: None }).unwrap();
+    tx.stage_input(&task, &id("later")).unwrap();
+    assert!(tx.commit().unwrap().permits.is_empty(), "historical uncertainty holds the later input");
+    let proof = receipt_proof(&candidate, alondra_provider_contract::Handoff::Offered, b"verified offered receipt");
+    let mut tx = fixture.transaction();
+    tx.record_handoff_proof(&owner, candidate.intent_id, &proof).unwrap();
+    let mut committed = tx.commit().unwrap();
+    assert_eq!(committed.permits.len(), 1, "the explicit receipt releases exactly the next input");
+    let next = committed.permits.pop().unwrap();
+    assert_eq!(next.input(), &id("later"));
+    let mut tx = fixture.transaction();
+    assert_eq!(tx.load(&task).unwrap().pending_inputs(), [&candidate.input, &id("later")],
+        "a handoff receipt is neither consumption nor a response");
+    tx.claim(next).unwrap();
+    let claimed = tx.commit().unwrap().attempts.pop().unwrap();
+    assert_eq!(claimed.input().id(), &id("later"));
+    assert_eq!(claimed.input().text(), "Full prompt for later");
+    assert_eq!(fixture.connection.query_row("SELECT status FROM lifecycle_dispatches WHERE id=?1", [candidate.intent_id], |row| row.get::<_, String>(0)).unwrap(), "uncertain");
+}
+
+#[test]
+fn incomplete_or_uncertain_receipt_proofs_cannot_be_constructed() {
+    use alondra_provider_contract::{Handoff, HandoffProof};
+    assert!(HandoffProof::new(b"command".to_vec(), Handoff::Uncertain, b"evidence".to_vec()).is_err());
+    assert!(HandoffProof::new(vec![], Handoff::Offered, b"evidence".to_vec()).is_err());
+    assert!(HandoffProof::new(b"command".to_vec(), Handoff::Offered, vec![]).is_err());
+    assert!(HandoffProof::new(b"command".to_vec(), Handoff::Offered, vec![0; 1_048_577]).is_err());
+}
+
+#[test]
+fn an_archived_receipt_requires_the_current_owner_and_exact_recorded_command() {
+    for stale in [true, false] {
+        let mut fixture = Fixture::new();
+        let (owner, candidate) = uncertain_receipt(&mut fixture);
+        let proof = if stale {
+            let mut tx = fixture.transaction();
+            tx.reserve_owner(owner.execution(), owner.generation()).unwrap();
+            tx.commit().unwrap();
+            receipt_proof(&candidate, alondra_provider_contract::Handoff::Offered, b"verified receipt")
+        } else {
+            alondra_provider_contract::HandoffProof::new(b"a different command".to_vec(), alondra_provider_contract::Handoff::Offered, b"verified receipt".to_vec()).unwrap()
+        };
+        let mut tx = fixture.transaction();
+        let error = tx.record_handoff_proof(&owner, candidate.intent_id, &proof).unwrap_err();
+        assert!(if stale { matches!(error, Error::StaleOwner) } else { matches!(error, Error::CommandConflict) });
+        assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+        assert_eq!(fixture.connection.query_row("SELECT count(*) FROM provider_receipt_proofs", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(fixture.transaction().unresolved(&"task".into()).unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn a_prepared_input_without_command_bytes_is_not_an_archived_receipt_candidate() {
+    let mut fixture = Fixture::new();
+    fixture.create("task");
+    let permit = fixture.launch("task");
+    let mut tx = fixture.transaction();
+    tx.reserve_owner(permit.execution(), 0).unwrap();
+    let owner = tx.commit().unwrap().owners.pop().unwrap();
+    assert!(fixture.transaction().receipt_candidates(&"task".into()).unwrap().is_empty());
+    let intent = fixture.connection.query_row("SELECT id FROM lifecycle_dispatches", [], |row| row.get::<_, i64>(0)).unwrap();
+    let proof = alondra_provider_contract::HandoffProof::new(b"unrecorded command".to_vec(), alondra_provider_contract::Handoff::Offered, b"unrelated receipt".to_vec()).unwrap();
+    let mut tx = fixture.transaction();
+    assert!(matches!(tx.record_handoff_proof(&owner, intent, &proof), Err(Error::MissingCommand)));
+    assert!(matches!(tx.commit(), Err(Error::Poisoned)));
+    assert_eq!(fixture.connection.query_row("SELECT status FROM lifecycle_dispatches", [], |row| row.get::<_, String>(0)).unwrap(), "prepared");
+}
+
+#[test]
+fn a_journal_without_receipt_proofs_upgrades_without_inventing_a_receipt() {
+    let mut fixture = Fixture::new();
+    let (_owner, candidate) = uncertain_receipt(&mut fixture);
+    fixture.connection.execute_batch("DROP VIEW lifecycle_dispatch_certainty; DROP TABLE provider_receipt_proofs;").unwrap();
+    let mut sql = Transaction::new_unchecked(&fixture.connection, TransactionBehavior::Immediate).unwrap();
+    LifecycleTransaction::upgrade(&mut sql).unwrap();
+    sql.commit().unwrap();
+    let tx = fixture.transaction();
+    assert_eq!(tx.receipt_candidates(&"task".into()).unwrap()[0].command, candidate.command);
+    assert_eq!(tx.pending_handoffs(&"task".into()).unwrap()[0].1, "uncertain");
+    tx.commit().unwrap();
+    fixture.connection.execute_batch("DROP VIEW lifecycle_dispatch_certainty;").unwrap();
+    let mut sql = Transaction::new_unchecked(&fixture.connection, TransactionBehavior::Immediate).unwrap();
+    assert!(matches!(LifecycleTransaction::upgrade(&mut sql), Err(Error::UnsupportedJournalFormat)),
+        "a partially changed proof schema is refused");
+    drop(sql);
+    assert!(!fixture.connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='lifecycle_dispatch_certainty')", [], |row| row.get::<_, bool>(0)).unwrap());
+}
+
 #[test]
 fn an_adopting_owner_reserves_the_generation_over_the_current_one() {
     let mut fixture = Fixture::new();

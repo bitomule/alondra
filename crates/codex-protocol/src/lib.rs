@@ -2,6 +2,8 @@
 //! This is not the provider-neutral execution port and grants no domain authority.
 #[path = "../../agent-protocol/src/codec.rs"]
 mod codec;
+#[path = "../../agent-protocol/src/archived_receipts.rs"]
+mod archived_receipts;
 #[path = "../../agent-protocol/src/correlation.rs"]
 mod correlation;
 #[path = "../../agent-protocol/src/json.rs"]
@@ -12,6 +14,7 @@ mod ownership;
 mod schema;
 
 pub use codec::{FramedReader, FramedWriter, ReceivedFrame, command_digest, encode};
+pub use archived_receipts::{ArchivedReceipt, archived_receipts};
 pub use correlation::{CommandRegistry, CommandStatus, EventSequence, SequenceStatus};
 pub use schema::*;
 pub use ownership::{host_proof, owner_proof, verify_host_proof, verify_owner_proof};

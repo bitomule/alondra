@@ -70,6 +70,9 @@ impl Worker {
     pub fn take_ended(&mut self) -> Option<alondra_agent_runtime::owned_host::EndedHost> { dispatch!(self, take_ended) }
     pub fn relaunch(&mut self, grant: OwnerGrant, state: AdapterState, base: u64, resume: bool, environment: BTreeMap<String, String>) -> Result<(), AdapterError> { dispatch!(self, relaunch, grant, state, base, resume, environment) }
     pub fn reconcile(&mut self, bytes: &[u8]) -> Result<Handoff, AdapterError> { dispatch!(self, reconcile, bytes) }
+    pub fn archived_handoffs(&self, grant: &OwnerGrant, state: &AdapterState, commands: &[&[u8]]) -> Result<Vec<alondra_provider_contract::HandoffProof>, AdapterError> {
+        dispatch!(self, archived_handoffs, grant, state, commands)
+    }
     pub fn continue_session(&mut self, session: &str) -> Result<(), AdapterError> { dispatch!(self, continue_session, session) }
     pub fn stage_input(&mut self, metadata: InputMetadata<'_, '_>) -> Result<(), AdapterError> { dispatch!(self, stage_input, metadata) }
     pub fn prepare(&mut self, attempt: &DispatchAttempt, metadata: InputMetadata<'_, '_>) -> Result<PreparedCommand, AdapterError> { dispatch!(self, prepare, attempt, metadata) }
