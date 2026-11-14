@@ -533,11 +533,17 @@ impl DomainState {
         Ok(super::LifecycleRecord::Resumed { card: card.clone(), input: self.next_input(task), text: Some(go_on_after(kind, self.host_ended_since_pause(task))) })
     }
 
-    /// The task ends while the gate holds its node of the Agent SDK paused: nothing is left to resume.
-    pub(super) fn end_node_pause(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
-        let Some(card) = self.held_pause(task) else { return Ok(()) };
-        self.decide(lifecycles, task, super::LifecycleRecord::PauseEnded { card: card.clone() })?;
-        self.retire(&card);
+    /// The task ends while a pause of Alondra's own that nobody answers holds it (the gate's, or
+    /// the wait for a usage limit): nothing is left to resume.
+    pub(super) fn end_unseen_pauses(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
+        let unseen: Vec<InteractionId> = self.lifecycle(lifecycles, task)?.cards().into_iter()
+            .filter(|(card, reason)| *reason == alondra_domain::WaitReason::Pause && self.interactions.get(*card).is_some_and(|card| self.out_of_sight(card)))
+            .map(|(card, _)| card.clone())
+            .collect();
+        for card in unseen {
+            self.decide(lifecycles, task, super::LifecycleRecord::PauseEnded { card: card.clone() })?;
+            self.retire(&card);
+        }
         Ok(())
     }
 

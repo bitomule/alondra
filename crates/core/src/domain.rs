@@ -101,6 +101,8 @@ mod transition_cost_tests;
 #[cfg(test)]
 mod move_tests;
 #[cfg(test)]
+mod settled_delivery_tests;
+#[cfg(test)]
 mod confirmed_effect_tests;
 #[cfg(test)]
 mod situation_tests;

@@ -2509,7 +2509,7 @@ impl DomainState {
         }
         self.require_checklist_proof(&self.tasks[task])?;
         let delivery = lifecycle.delivery().cloned().expect("a delivered task has its delivery");
-        self.end_node_pause(task, lifecycles)?;
+        self.end_unseen_pauses(task, lifecycles)?;
         if !self.lifecycle(lifecycles, task)?.accepted() {
             self.decide(lifecycles, task, LifecycleRecord::Accepted { delivery })?;
         }
@@ -2523,11 +2523,12 @@ impl DomainState {
     }
 
     /// Every task whose final delivery settled with nothing left for the user, and whose
-    /// node is over, is done now. One whose node still winds up stays delivered and closing.
+    /// node is over, is done now. One whose node still winds up stays delivered and closing, and
+    /// so does one that still owes work after its merge, even while a move leaves it without a node.
     pub(super) fn finish_settled_deliveries(&mut self, lifecycles: &mut Lifecycles) -> Result<()> {
         let settled: Vec<TaskId> = self.tasks.values()
             .filter(|t| !t.over() && !t.archived)
-            .filter(|t| self.finished(t) && !self.unanswered(&t.id) && !self.blockers(&t.id) && !self.wraps_up(t))
+            .filter(|t| self.finished(t) && !self.unanswered(&t.id) && !self.blockers(&t.id) && !self.wraps_up(t) && !self.works_after_merge(t))
             .filter(|t| self.unproved_checklist(t).is_empty())
             .map(|t| t.id.clone())
             .collect();
