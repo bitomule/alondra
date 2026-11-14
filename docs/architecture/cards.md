@@ -29,6 +29,35 @@ the error: the card type, the rule it broke and the field.
 The type of a card comes from the command and its fields (its system kind, whether a hook holds
 it, its payload and its kind), never from its words.
 
+## Deliveries and pull requests
+
+Before admitting a final delivery, the daemon rereads every unmerged PR registered by its task,
+including a task with only one PR and PRs last seen closed, which GitHub may have reopened.
+If GitHub cannot answer, the delivery waits for a successful read. A successful `gh pr close`
+from either provider also schedules a fresh read; the command's
+output never determines whether GitHub closed the PR.
+
+A closed PR cannot be a delivery target (`pr_not_open`). A PR URL or `owner/repo#N` cited in the
+delivery's text must also be a typed target (`cited_pr_not_target`). These refusals name the card
+contract rule and field. References identify a PR by its host, repository and number, so a task
+can deliver PRs in several repositories without confusing equal numbers or equal commit hashes.
+
+Every open PR in a delivery has its own card and its own validated merge action. Closing or
+merging a PR retires its card, including when an old saved delivery still points to it. An old
+link to the whole delivery opens its first remaining open PR, or reports that the card is settled
+when none remains. Closed PRs never count as waiting to merge. Work declared after the merge
+continues to belong to the task until the node finishes that work.
+
+A new report about an already merged PR remains readable and can be acknowledged; it offers
+no merge action and acknowledging it does not finish declared work after the merge.
+
+The TUI renders a separate review for each open PR. In this synthetic sandbox, closing PR #61
+removes its card while PR #62 keeps its merge and feedback actions:
+
+| Two open PRs | After closing PR #61 |
+|---|---|
+| ![Two PR review cards in the Spanish TUI](../images/pr-deliveries/two-open-prs-es.png) | ![Only the open PR remains in the Spanish TUI](../images/pr-deliveries/one-pr-closed-es.png) |
+
 ## Catalog
 
 | Type | Created by | Read by | Kind | Reader can | Carries | About | Need | Goes away when |

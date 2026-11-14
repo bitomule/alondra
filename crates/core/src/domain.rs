@@ -3,6 +3,7 @@ mod attention;
 mod card_contract;
 mod checklist;
 mod cited_files;
+mod cited_prs;
 mod command;
 mod crash_report;
 mod model;

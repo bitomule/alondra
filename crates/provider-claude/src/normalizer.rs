@@ -6,7 +6,7 @@ use alondra_agent_protocol::{
 };
 use alondra_foundation::{ContinuationId, MessageUuid, TurnId, WorkId};
 use alondra_provider_contract::{
-    pull_requests_named, runs_gh_pr_create, reconciled_continuation, ENDED_WITHOUT_RESULT,
+    pull_requests_named, runs_gh_pr_create, runs_gh_pr_close, reconciled_continuation, ENDED_WITHOUT_RESULT,
     AdapterError, ApiFailure, McpServerReport, McpSignInReport, Observation, OrderedObservation, TurnOutcome, UsageReport, UsageWindow,
     UsageWindowKind,
 };
@@ -58,6 +58,8 @@ struct Checkpoint {
     /// The commands running `gh pr create` whose result is still to come, by tool use id.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pr_commands: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pr_close_commands: BTreeSet<String>,
     /// Work that ended after its turn, oldest first: its notification wakes a root turn of
     /// Claude's own, which takes up every notification waiting, and whose result comes from a
     /// notification, naming the run it took up when the work had one.
@@ -975,13 +977,19 @@ fn note_isolated_agents(payload: &Value, state: &mut Checkpoint) {
         state.isolated.push(id.to_owned());
     }
 }
-/// Most `gh pr create` commands that can wait on their result at once.
+/// Most PR commands that can wait on their result at once.
 const MAX_PR_COMMANDS: usize = 64;
 /// Remembers each shell command, of the node or of a subagent, that runs `gh pr create`.
 fn note_pr_commands(payload: &Value, state: &mut Checkpoint) {
     for block in payload.pointer("/message/content").and_then(Value::as_array).into_iter().flatten() {
         let is_shell = block.get("type").and_then(Value::as_str) == Some("tool_use") && block.get("name").and_then(Value::as_str) == Some("Bash");
         let creates = block.pointer("/input/command").and_then(Value::as_str).is_some_and(runs_gh_pr_create);
+        let closes = block.pointer("/input/command").and_then(Value::as_str).is_some_and(runs_gh_pr_close);
+        if let Some(id) = block.get("id").and_then(Value::as_str).filter(|id| is_shell && closes && id.len() <= 256) {
+            if state.pr_close_commands.len() < MAX_PR_COMMANDS {
+                state.pr_close_commands.insert(id.to_owned());
+            }
+        }
         if let Some(id) = block.get("id").and_then(Value::as_str).filter(|id| is_shell && creates && id.len() <= 256) {
             if state.pr_commands.len() < MAX_PR_COMMANDS {
                 state.pr_commands.insert(id.to_owned());
@@ -995,9 +1003,13 @@ fn pull_request_facts(payload: &Value, state: &mut Checkpoint) -> Vec<Observatio
     for block in payload.pointer("/message/content").and_then(Value::as_array).into_iter().flatten() {
         let is_result = block.get("type").and_then(Value::as_str) == Some("tool_result");
         let Some(id) = block.get("tool_use_id").and_then(Value::as_str).filter(|_| is_result) else { continue };
-        if !state.pr_commands.remove(id) || block.get("is_error").and_then(Value::as_bool) == Some(true) {
+        let creates = state.pr_commands.remove(id);
+        let closes = state.pr_close_commands.remove(id);
+        if block.get("is_error").and_then(Value::as_bool) == Some(true) {
             continue;
         }
+        if closes { facts.push(Observation::PullRequestsChanged); }
+        if !creates { continue; }
         let output = match block.get("content") {
             Some(Value::String(text)) => text.clone(),
             Some(Value::Array(parts)) => parts.iter().filter_map(|part| part.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("\n"),
@@ -1350,6 +1362,21 @@ mod tests {
         fold(&shell_call("toolu_view", "gh pr view 12 --json url"), &session(), &mut state, input).unwrap();
         let viewed = fold(&shell_result("toolu_view", "https://github.com/o/r/pull/12", false), &session(), &mut state, input).unwrap();
         assert_eq!(viewed, vec![], "naming a PR is not opening it");
+    }
+
+    #[test]
+    fn a_successful_close_requests_github_facts_without_reading_its_prose() {
+        for output in ["", "Closed pull request acme/app#65", "already closed"] {
+            let mut state = state();
+            fold(&shell_call("close", "gh pr close 65 --repo acme/app"), &session(), &mut state, input).unwrap();
+            let saved = serde_json::to_value(&state).unwrap();
+            let mut state = serde_json::from_value(saved).unwrap();
+            assert_eq!(fold(&shell_result("close", output, false), &session(), &mut state, input).unwrap(), vec![Observation::PullRequestsChanged]);
+            assert!(fold(&shell_result("close", output, false), &session(), &mut state, input).unwrap().is_empty());
+        }
+        let mut state = state();
+        fold(&shell_call("close", "gh pr close 65"), &session(), &mut state, input).unwrap();
+        assert!(fold(&shell_result("close", "Closed", true), &session(), &mut state, input).unwrap().is_empty());
     }
 
     // The shapes Claude Code's own tools give their results (2.1.291 and the SDK reference): a

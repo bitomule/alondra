@@ -373,6 +373,10 @@ pub enum Command {
         repository: String,
         number: u64,
     },
+    /// A successful close command makes the task's registered PRs await a fresh GitHub read.
+    NotePrChanges {
+        task_id: TaskId,
+    },
     /// What GitHub reports of a PR the task's node was seen opening: the PR is now the task's.
     RecordOpenedPr {
         task_id: TaskId,
