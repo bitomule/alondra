@@ -4,10 +4,10 @@
   "view": "home",
   "key": "home",
   "client": "ios",
-  "version": "vd681c665a485c748",
+  "version": "vcf24d929ba93d62b",
   "cursor": "cursor-1",
   "status": {
-    "version": "vf8bd13a3dc364c4d",
+    "version": "v17585113723dfa62",
     "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
     "summary_parts": [
       {
@@ -42,19 +42,29 @@
         "value": 1
       },
       {
-        "id": "agents",
-        "label": "En marcha",
-        "value": 0
-      },
-      {
         "id": "working",
         "label": "trabajando",
         "value": 0
       },
       {
-        "id": "waiting",
-        "label": "esperando",
+        "id": "needs_you",
+        "label": "esperando por ti",
         "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
+        "value": 0
       }
     ],
     "gauges": [
@@ -108,11 +118,11 @@
       "view": "card",
       "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
       "client": "ios",
-      "version": "vec8492e0a7542d68",
+      "version": "vc49bb92be12686bb",
       "cursor": "cursor-1",
       "title": "Choose the welcome copy",
       "status": {
-        "version": "vf8bd13a3dc364c4d",
+        "version": "v17585113723dfa62",
         "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
         "summary_parts": [
           {
@@ -147,19 +157,29 @@
             "value": 1
           },
           {
-            "id": "agents",
-            "label": "En marcha",
-            "value": 0
-          },
-          {
             "id": "working",
             "label": "trabajando",
             "value": 0
           },
           {
-            "id": "waiting",
-            "label": "esperando",
+            "id": "needs_you",
+            "label": "esperando por ti",
             "value": 1
+          },
+          {
+            "id": "queued",
+            "label": "en cola",
+            "value": 0
+          },
+          {
+            "id": "paused",
+            "label": "en pausa",
+            "value": 0
+          },
+          {
+            "id": "other_waiting",
+            "label": "en espera",
+            "value": 0
           }
         ],
         "gauges": [
@@ -328,11 +348,11 @@
       "view": "card",
       "key": "card:8fa4034b-249e-4487-a89b-57de38c26372",
       "client": "ios",
-      "version": "v27081219cc321112",
+      "version": "vea0fefdeab1231bb",
       "cursor": "cursor-1",
       "title": "Ship the compact schedule editor with this beta?",
       "status": {
-        "version": "vf8bd13a3dc364c4d",
+        "version": "v17585113723dfa62",
         "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
         "summary_parts": [
           {
@@ -367,19 +387,29 @@
             "value": 1
           },
           {
-            "id": "agents",
-            "label": "En marcha",
-            "value": 0
-          },
-          {
             "id": "working",
             "label": "trabajando",
             "value": 0
           },
           {
-            "id": "waiting",
-            "label": "esperando",
+            "id": "needs_you",
+            "label": "esperando por ti",
             "value": 1
+          },
+          {
+            "id": "queued",
+            "label": "en cola",
+            "value": 0
+          },
+          {
+            "id": "paused",
+            "label": "en pausa",
+            "value": 0
+          },
+          {
+            "id": "other_waiting",
+            "label": "en espera",
+            "value": 0
           }
         ],
         "gauges": [
@@ -530,11 +560,11 @@
       "view": "card",
       "key": "card:hf-weekly-2026-09-30",
       "client": "ios",
-      "version": "v33a9f977ee1b533e",
+      "version": "v6b9d71a1c12310cd",
       "cursor": "cursor-1",
       "title": "Review the beta candidate",
       "status": {
-        "version": "vf8bd13a3dc364c4d",
+        "version": "v17585113723dfa62",
         "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
         "summary_parts": [
           {
@@ -569,19 +599,29 @@
             "value": 1
           },
           {
-            "id": "agents",
-            "label": "En marcha",
-            "value": 0
-          },
-          {
             "id": "working",
             "label": "trabajando",
             "value": 0
           },
           {
-            "id": "waiting",
-            "label": "esperando",
+            "id": "needs_you",
+            "label": "esperando por ti",
             "value": 1
+          },
+          {
+            "id": "queued",
+            "label": "en cola",
+            "value": 0
+          },
+          {
+            "id": "paused",
+            "label": "en pausa",
+            "value": 0
+          },
+          {
+            "id": "other_waiting",
+            "label": "en espera",
+            "value": 0
           }
         ],
         "gauges": [

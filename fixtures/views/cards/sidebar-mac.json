@@ -4,10 +4,10 @@
   "view": "sidebar",
   "key": "sidebar",
   "client": "mac",
-  "version": "va1bc22635526f484",
+  "version": "vbd64f0d1f94bf265",
   "cursor": "cursor-1",
   "status": {
-    "version": "vad1df51584fb0530",
+    "version": "vddccbe234537f5da",
     "summary": "5 pending · 0 in progress",
     "summary_parts": [
       {
@@ -42,19 +42,29 @@
         "value": 1
       },
       {
-        "id": "agents",
-        "label": "In progress",
-        "value": 0
-      },
-      {
         "id": "working",
         "label": "working",
         "value": 0
       },
       {
-        "id": "waiting",
-        "label": "waiting",
+        "id": "needs_you",
+        "label": "waiting for you",
         "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "queued",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "paused",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "waiting",
+        "value": 0
       }
     ],
     "gauges": [
@@ -281,11 +291,11 @@
       "view": "card",
       "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
       "client": "mac",
-      "version": "vaaec1a530861b210",
+      "version": "vc4aa7c8a8f67b19e",
       "cursor": "cursor-1",
       "title": "Choose the welcome copy",
       "status": {
-        "version": "vec309c5722d410ab",
+        "version": "ve1b0ea85e0f05cae",
         "summary": "2 questions · 3 to read · 0 tasks working",
         "summary_parts": [
           {
@@ -320,19 +330,29 @@
             "value": 1
           },
           {
-            "id": "agents",
-            "label": "In progress",
-            "value": 0
-          },
-          {
             "id": "working",
             "label": "working",
             "value": 0
           },
           {
-            "id": "waiting",
-            "label": "waiting",
+            "id": "needs_you",
+            "label": "waiting for you",
             "value": 1
+          },
+          {
+            "id": "queued",
+            "label": "queued",
+            "value": 0
+          },
+          {
+            "id": "paused",
+            "label": "paused",
+            "value": 0
+          },
+          {
+            "id": "other_waiting",
+            "label": "waiting",
+            "value": 0
           }
         ],
         "gauges": [
@@ -504,11 +524,11 @@
       "view": "card",
       "key": "card:8fa4034b-249e-4487-a89b-57de38c26372",
       "client": "mac",
-      "version": "vdaf82dd87ab26611",
+      "version": "vebdffc0575af9a9c",
       "cursor": "cursor-1",
       "title": "Ship the compact schedule editor with this beta?",
       "status": {
-        "version": "vec309c5722d410ab",
+        "version": "ve1b0ea85e0f05cae",
         "summary": "2 questions · 3 to read · 0 tasks working",
         "summary_parts": [
           {
@@ -543,19 +563,29 @@
             "value": 1
           },
           {
-            "id": "agents",
-            "label": "In progress",
-            "value": 0
-          },
-          {
             "id": "working",
             "label": "working",
             "value": 0
           },
           {
-            "id": "waiting",
-            "label": "waiting",
+            "id": "needs_you",
+            "label": "waiting for you",
             "value": 1
+          },
+          {
+            "id": "queued",
+            "label": "queued",
+            "value": 0
+          },
+          {
+            "id": "paused",
+            "label": "paused",
+            "value": 0
+          },
+          {
+            "id": "other_waiting",
+            "label": "waiting",
+            "value": 0
           }
         ],
         "gauges": [
@@ -709,11 +739,11 @@
       "view": "card",
       "key": "card:hf-weekly-2026-09-30",
       "client": "mac",
-      "version": "v760e7a081aafe8c7",
+      "version": "v85677400c35c32ec",
       "cursor": "cursor-1",
       "title": "Review the beta candidate",
       "status": {
-        "version": "vec309c5722d410ab",
+        "version": "ve1b0ea85e0f05cae",
         "summary": "2 questions · 3 to read · 0 tasks working",
         "summary_parts": [
           {
@@ -748,19 +778,29 @@
             "value": 1
           },
           {
-            "id": "agents",
-            "label": "In progress",
-            "value": 0
-          },
-          {
             "id": "working",
             "label": "working",
             "value": 0
           },
           {
-            "id": "waiting",
-            "label": "waiting",
+            "id": "needs_you",
+            "label": "waiting for you",
             "value": 1
+          },
+          {
+            "id": "queued",
+            "label": "queued",
+            "value": 0
+          },
+          {
+            "id": "paused",
+            "label": "paused",
+            "value": 0
+          },
+          {
+            "id": "other_waiting",
+            "label": "waiting",
+            "value": 0
           }
         ],
         "gauges": [

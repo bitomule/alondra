@@ -4,11 +4,11 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v27e0853abef8c1c2",
+  "version": "vdb0e9abf9b9a22a6",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
-    "version": "ved1b85e6b71380d2",
+    "version": "v7fcaa809e4d35d07",
     "summary": "4 tasks working",
     "summary_parts": [
       {
@@ -31,17 +31,27 @@
         "value": 4
       },
       {
-        "id": "agents",
-        "label": "In progress",
-        "value": 4
-      },
-      {
         "id": "working",
         "label": "working",
         "value": 4
       },
       {
-        "id": "waiting",
+        "id": "needs_you",
+        "label": "waiting for you",
+        "value": 0
+      },
+      {
+        "id": "queued",
+        "label": "queued",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "paused",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
         "label": "waiting",
         "value": 0
       }
@@ -79,9 +89,9 @@
       "items": [
         {
           "type": "row",
-          "id": "block:in-progress",
+          "id": "block:working",
           "icon": "task",
-          "title": "In progress",
+          "title": "Working",
           "trailing": {
             "kind": "text",
             "text": "4"

@@ -4,12 +4,12 @@
   "view": "mcp_servers",
   "key": "mcp_servers",
   "client": "ios",
-  "version": "v4a74e18fba5590f1",
+  "version": "vc10e224cbe182a62",
   "cursor": "cursor-1",
   "title": "Servidores MCP",
   "summary": "9 servidores · 3 piden iniciar sesión",
   "status": {
-    "version": "vb1a46f5165d38baa",
+    "version": "v26d1fdc46da84b0f",
     "summary": "2 preguntas · 3 por leer · 1 tarea trabajando",
     "summary_parts": [
       {
@@ -44,19 +44,29 @@
         "value": 4
       },
       {
-        "id": "agents",
-        "label": "En marcha",
-        "value": 4
-      },
-      {
         "id": "working",
         "label": "trabajando",
         "value": 1
       },
       {
-        "id": "waiting",
-        "label": "esperando",
+        "id": "needs_you",
+        "label": "esperando por ti",
         "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
+        "value": 2
       }
     ],
     "gauges": [

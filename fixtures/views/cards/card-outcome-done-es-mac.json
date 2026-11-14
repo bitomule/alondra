@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:request-done-r-accounts",
   "client": "mac",
-  "version": "v75167cf963943d8d",
+  "version": "ve373cbe5efce6ade",
   "cursor": "cursor-1",
   "title": "Hecho en parte: se canceló 1 de 3 tareas",
   "status": {
-    "version": "v7aa94fa561e82d65",
+    "version": "vd502e676db377532",
     "summary": "3 por leer · 0 tareas trabajando",
     "summary_parts": [
       {
@@ -37,18 +37,28 @@
         "value": 3
       },
       {
-        "id": "agents",
-        "label": "En marcha",
-        "value": 0
-      },
-      {
         "id": "working",
         "label": "trabajando",
         "value": 0
       },
       {
-        "id": "waiting",
-        "label": "esperando",
+        "id": "needs_you",
+        "label": "esperando por ti",
+        "value": 0
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 3
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
         "value": 0
       }
     ],

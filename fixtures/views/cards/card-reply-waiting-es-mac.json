@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:d",
   "client": "mac",
-  "version": "v6e416369decfcbc5",
+  "version": "v57cf50c95d298e71",
   "cursor": "cursor-1",
   "title": "Review the result",
   "status": {
-    "version": "vf7e60f126391afec",
+    "version": "vbee01b96d7e40406",
     "summary": "1 por leer · 0 tareas trabajando",
     "summary_parts": [
       {
@@ -37,18 +37,28 @@
         "value": 1
       },
       {
-        "id": "agents",
-        "label": "En marcha",
-        "value": 1
-      },
-      {
         "id": "working",
         "label": "trabajando",
         "value": 0
       },
       {
-        "id": "waiting",
-        "label": "esperando",
+        "id": "needs_you",
+        "label": "esperando por ti",
+        "value": 0
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 1
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
         "value": 0
       }
     ],

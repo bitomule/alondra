@@ -148,7 +148,7 @@ fn working_without_a_run(machine: &Machine, state: &DomainState, index: &ReadInd
 /// The header and the Live Activity count the tasks that read working; the gate counts the tasks
 /// whose node holds a slot, which are the slots the domain gives.
 fn counts_differ(state: &DomainState, index: &ReadIndex) -> Option<String> {
-    let header = alondra_core::views::activity_counts(index).working as usize;
+    let header = index.activity().working as usize;
     let working: BTreeSet<TaskId> = state.tasks.keys().filter(|task| matches!(situation(index, task), Situation::Working(_))).cloned().collect();
     if header != working.len() {
         return Some(format!("the header counts {header} working, the tasks that read working are {working:?}"));

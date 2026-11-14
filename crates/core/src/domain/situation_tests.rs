@@ -188,8 +188,8 @@ proptest! {
                 Situation::Delivered(crate::domain::Delivery::ForReview) => index.task(&task.id).is_some_and(|reading| reading.for_you()),
                 Situation::Working(_) | Situation::Waiting(_) | Situation::Paused | Situation::Delivered(_) | Situation::Finished | Situation::Cancelled => false,
             }).count() as u32;
-            if index.activity().waiting != for_you {
-                return Err(format!("the header counts {} waiting, {for_you} tasks need the user or have their delivery in front of them", index.activity().waiting));
+            if index.activity().needs_you != for_you {
+                return Err(format!("the header counts {} waiting for you, {for_you} tasks need the user or have their delivery in front of them", index.activity().needs_you));
             }
             Ok(())
         })?;

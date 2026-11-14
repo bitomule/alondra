@@ -674,7 +674,7 @@ async fn serve_domain(
     ));
     if let Some(service) = &service {
         tokio::spawn(push_retract::run(domain.clone(), service.clone()));
-        tokio::spawn(activity_push::run(domain.clone(), service.clone()));
+        tokio::spawn(activity_push::run(domain.clone(), service.clone(), client.clone()));
     }
     let scheduler = tokio::spawn(domain_schedule_runner::run(
         domain.clone(),

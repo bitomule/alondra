@@ -1228,36 +1228,6 @@
         }
       }
     },
-    "total": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "total"
-          }
-        }
-      }
-    },
-    "waiting": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "esperando"
-          }
-        }
-      }
-    },
-    "working": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "trabajando"
-          }
-        }
-      }
-    },
     "Dismiss": {
       "localizations": {
         "es": {

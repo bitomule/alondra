@@ -4,11 +4,11 @@
   "view": "task",
   "key": "task:t-1",
   "client": "ios",
-  "version": "v99b1d01c9cc5c88a",
+  "version": "v7e2f461614f78c11",
   "cursor": "cursor-1",
   "title": "Release the daemon with the memory pause fix",
   "status": {
-    "version": "v0077b76685d5cafb",
+    "version": "vd17f808710eaa254",
     "summary": "1 to read · 1 task working",
     "summary_parts": [
       {
@@ -37,17 +37,27 @@
         "value": 1
       },
       {
-        "id": "agents",
-        "label": "In progress",
-        "value": 1
-      },
-      {
         "id": "working",
         "label": "working",
         "value": 1
       },
       {
-        "id": "waiting",
+        "id": "needs_you",
+        "label": "waiting for you",
+        "value": 0
+      },
+      {
+        "id": "queued",
+        "label": "queued",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "paused",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
         "label": "waiting",
         "value": 0
       }

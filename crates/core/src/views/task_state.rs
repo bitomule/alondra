@@ -8,7 +8,7 @@ use super::{
 };
 use alondra_domain::LiveState;
 use crate::domain::{
-    Attention, Delivery, Doing, Instruction, InteractionId, PrState, Situation, StallClosing, Task,
+    Attention, Delivery, Doing, Tally, TaskReading, Instruction, InteractionId, PrState, Situation, StallClosing, Task,
     TaskEnding, TaskPriority, WaitReason, WaitsFor,
 };
 use crate::domain::AlondraStep as Step;
@@ -72,6 +72,7 @@ pub(super) struct Presentation {
     reason: Option<String>,
     since: Option<String>,
     block: Block,
+    tally: Tally,
     queue: Option<usize>,
     fact_in_state: bool,
 }
@@ -94,6 +95,8 @@ impl Presentation {
     pub(super) fn fact(&self) -> Option<&str> { self.fact.as_deref() }
     pub(super) fn since(&self) -> Option<&str> { self.since.as_deref() }
     pub(super) fn block(&self) -> Block { self.block }
+    /// What the header counts it as.
+    pub(super) fn tally(&self) -> Tally { self.tally }
     /// Its place in the queue of starts.
     pub(super) fn queue(&self) -> Option<usize> { self.queue }
     /// What the list says beside the state.
@@ -126,7 +129,7 @@ impl Presentation {
             StateLabel::Waiting | StateLabel::Paused => Icon::Task,
         };
         let reason = (label != StateLabel::Working).then(|| fact.clone()).flatten();
-        Self { label, state: label.text(lang).into(), tone, icon, fact, reason, since: None, block, queue: None, fact_in_state: false }
+        Self { label, state: label.text(lang).into(), tone, icon, fact, reason, since: None, block, tally: Tally::Waiting, queue: None, fact_in_state: false }
     }
 }
 
@@ -136,9 +139,19 @@ pub(super) fn situation(task: &Task, context: &RenderContext<'_>) -> Situation {
         .queued_at_gate(common::gate_queued(task, context).is_some())
 }
 
+/// What the header, the Live Activity and the list count the task as: its reading's, except that a paused task
+/// whose next start already waits in the gate's queue is queued, as its situation says.
+pub(super) fn tally(task: &Task, context: &RenderContext<'_>) -> Option<Tally> {
+    match context.reading(&task.id).and_then(TaskReading::tally) {
+        Some(Tally::Paused) if common::gate_queued(task, context).is_some() => Some(Tally::Queued),
+        other => other,
+    }
+}
+
 pub(super) fn present(task: &Task, context: &RenderContext<'_>) -> Presentation {
     let situation = situation(task, context);
     let mut presentation = classify(task, situation, context);
+    presentation.tally = tally(task, context).unwrap_or(Tally::Waiting);
     if presentation.since.is_none() {
         presentation.since = task_since(task, context);
     }

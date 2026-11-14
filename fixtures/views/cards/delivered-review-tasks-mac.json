@@ -4,11 +4,11 @@
   "view": "tasks",
   "key": "tasks",
   "client": "mac",
-  "version": "v4d49c038c20f9a0a",
+  "version": "v1603f4028173d2c2",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
-    "version": "v7f698c7ff5f3d864",
+    "version": "vfe310d335443dd8b",
     "summary": "1 to read · 0 tasks working",
     "summary_parts": [
       {
@@ -37,19 +37,29 @@
         "value": 1
       },
       {
-        "id": "agents",
-        "label": "In progress",
-        "value": 1
-      },
-      {
         "id": "working",
         "label": "working",
         "value": 0
       },
       {
-        "id": "waiting",
-        "label": "waiting",
+        "id": "needs_you",
+        "label": "waiting for you",
         "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "queued",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "paused",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "waiting",
+        "value": 0
       }
     ],
     "gauges": [],
@@ -87,7 +97,7 @@
           "type": "row",
           "id": "block:for-you",
           "icon": "task",
-          "title": "For you",
+          "title": "Waiting for you",
           "trailing": {
             "kind": "text",
             "text": "1"

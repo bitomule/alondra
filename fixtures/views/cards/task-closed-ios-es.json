@@ -4,11 +4,11 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "ios",
-  "version": "v6c8fdb3549a96506",
+  "version": "v493f338508623309",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
-    "version": "v8c107e22c1754195",
+    "version": "vfd8101d3dccab81b",
     "summary": "0 tareas trabajando",
     "summary_parts": [
       {
@@ -31,18 +31,28 @@
         "value": 1
       },
       {
-        "id": "agents",
-        "label": "En marcha",
-        "value": 0
-      },
-      {
         "id": "working",
         "label": "trabajando",
         "value": 0
       },
       {
-        "id": "waiting",
-        "label": "esperando",
+        "id": "needs_you",
+        "label": "esperando por ti",
+        "value": 0
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 1
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
         "value": 0
       }
     ],

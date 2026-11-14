@@ -279,7 +279,7 @@ fn split_group_navigation_reaches_waiting_in_both_directions() {
                 "one contiguous selected row at {index}: {screen}");
             assert!(selected[0].1.contains(&titles[index]), "selected row at {index}: {screen}");
             if index == keys.len() - 1 {
-                assert!(screen.contains("EN ESPERA") && screen.contains("t-waiting"), "{screen}");
+                assert!(screen.contains("EN COLA") && screen.contains("t-waiting"), "{screen}");
                 assert!(app.list_scroll > 0);
             }
             let selected = app.sel.clone();
@@ -348,16 +348,19 @@ fn tasks_list_one_row_per_single_task_request_with_people_times() {
 #[test]
 fn the_tasks_list_is_three_blocks_with_waiting_for_another_in_waiting_and_names_a_new_request_by_its_first_sentence() {
     let mut app = app_on(Screen::Tasks, fixture_view("tasks-tui.json"));
-    let screen = rendered(&mut app, 120, 34);
+    let screen = rendered(&mut app, 120, 44);
     dump("tasks (blocks)", &screen);
     let lines: Vec<&str> = screen.lines().collect();
     let at = |needle: &str| lines.iter().position(|line| line.contains(needle)).unwrap_or_else(|| panic!("{needle}: {screen}"));
-    assert!(at("FOR YOU 1") < at("IN PROGRESS 3") && at("IN PROGRESS 3") < at("WAITING 5"), "{screen}");
+    let blocks = ["WAITING FOR YOU 1", "WORKING 2", "QUEUED 3", "PAUSED 1", "WAITING 2"];
+    assert!(blocks.windows(2).all(|pair| at(pair[0]) < at(pair[1])), "{screen}");
+    assert!(!screen.contains("IN PROGRESS"), "only what works is called by that name: {screen}");
+    assert!(lines[0].contains("2 working · 1 waiting for you · 3 queued · 1 paused · 2 waiting"), "the header says the same as the blocks: {screen}");
     assert!(!screen.contains("ACTIVE"), "the blocks replace the Active title: {screen}");
-    assert_eq!(at("New starts wait: the Mac is short of memory"), at("WAITING 5") + 1, "said once, under the header: {screen}");
+    assert_eq!(at("New starts wait: the Mac is short of memory"), at("QUEUED 3") + 1, "said once, under the header: {screen}");
     assert!(!screen.contains("% free") && screen.matches("memory").count() == 1, "{screen}");
     let waiting = at("Decrement the badge on retraction");
-    assert!(waiting > at("WAITING 5"), "{screen}");
+    assert!(waiting > at("WAITING 2"), "{screen}");
     assert!(lines[waiting..waiting + 2].iter().any(|line| line.contains("Waits for")), "it says what it waits for: {screen}");
     assert!(!screen.contains("waiting for this") && !screen.contains("from: "), "{screen}");
     for loose in ["Review the schedule editor", "Write the release notes"] {
@@ -380,7 +383,7 @@ fn a_task_in_review_without_a_card_is_not_for_you_in_tasks() {
     let mut tasks = app_on(Screen::Tasks, build(&domain, &live, "tasks"));
     let screen = rendered(&mut tasks, 120, 30);
     dump("tasks (in review, no card)", &screen);
-    assert!(!screen.contains("PARA TI"), "{screen}");
+    assert!(!screen.contains("ESPERANDO POR TI"), "{screen}");
     assert!(screen.contains(ODD_STATE) && screen.contains("Entregada"), "{screen}");
 }
 

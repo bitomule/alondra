@@ -3,7 +3,7 @@ use super::{
     BuildError, Confirm, Fact, FactKind, Facts, Icon, Item, Markdown, Notice, RenderContext,
     Style, Tone, Trailing, View, action_id::Verb, common, text::{t, tf},
 };
-use crate::domain::{DomainState, ModelChooser, NodeEnd, Request, RequestId, Task, TaskId, TaskState};
+use crate::domain::{DomainState, ModelChooser, NodeEnd, Request, RequestId, Tally, Task, TaskId, TaskState};
 use crate::model_label::model_family;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -489,34 +489,34 @@ fn active_items(buckets: &BTreeMap<&RequestId, Bucket>, context: &RenderContext<
         .filter(|request| buckets.get(&request.id) == Some(&Bucket::Active) && with_tasks.insert(&request.id)) {
         entries.push(Entry::Request(request));
     }
-    let lead = |entry: &Entry<'_>| -> (Block, Order) {
+    let lead = |entry: &Entry<'_>| -> (Tally, Order) {
         let tasks = match entry {
             Entry::Task(task) => vec![*task],
             Entry::Group(_, tasks) => tasks.clone(),
             Entry::Request(request) => {
                 let since = context.live.request_times.get(&request.id.0).cloned();
-                let block = if orchestrator_asks(context) { Block::ForYou } else { Block::InProgress };
-                return (block, order(block, None, since));
+                let (block, tally) = if orchestrator_asks(context) { (Block::ForYou, Tally::NeedsYou) } else { (Block::InProgress, Tally::Working) };
+                return (tally, order(block, None, since));
             }
         };
         tasks.iter().map(|task| {
             let presentation = &shown[&task.id];
-            (presentation.block(), order_of(presentation))
+            (presentation.tally(), order_of(presentation))
         }).min().expect("an entry has a task")
     };
-    let mut blocks: BTreeMap<Block, Vec<(Entry<'_>, Order)>> = BTreeMap::new();
+    let mut blocks: BTreeMap<Tally, Vec<(Entry<'_>, Order)>> = BTreeMap::new();
     for entry in entries {
         let Entry::Group(request, tasks) = entry else {
             let (block, key) = lead(&entry);
             blocks.entry(block).or_default().push((entry, key));
             continue;
         };
-        let mut by_block: BTreeMap<Block, Vec<&Task>> = BTreeMap::new();
+        let mut by_block: BTreeMap<Tally, Vec<&Task>> = BTreeMap::new();
         for task in tasks {
-            by_block.entry(shown[&task.id].block()).or_default().push(task);
+            by_block.entry(shown[&task.id].tally()).or_default().push(task);
         }
         for (block, tasks) in by_block {
-            if tasks.len() > 1 && block != Block::Waiting {
+            if tasks.len() > 1 && matches!(block, Tally::NeedsYou | Tally::Working) {
                 let entry = Entry::Group(request, tasks);
                 let (_, key) = lead(&entry);
                 blocks.entry(block).or_default().push((entry, key));
@@ -529,13 +529,15 @@ fn active_items(buckets: &BTreeMap<&RequestId, Bucket>, context: &RenderContext<
     for (block, mut entries) in blocks {
         entries.sort_by(|(_, left), (_, right)| left.cmp(right));
         let (id, title) = match block {
-            Block::ForYou => ("block:for-you", t!(context.lang, "For you", "Para ti")),
-            Block::InProgress => ("block:in-progress", t!(context.lang, "In progress", "En marcha")),
-            Block::Waiting | Block::Ended => ("block:waiting", t!(context.lang, "Waiting", "En espera")),
+            Tally::NeedsYou => ("block:for-you", t!(context.lang, "Waiting for you", "Esperando por ti")),
+            Tally::Working => ("block:working", t!(context.lang, "Working", "Trabajando")),
+            Tally::Queued => ("block:queued", t!(context.lang, "Queued", "En cola")),
+            Tally::Paused => ("block:paused", t!(context.lang, "Paused", "En pausa")),
+            Tally::Waiting => ("block:waiting", t!(context.lang, "Waiting", "En espera")),
         };
         let mut row = common::row(id, "", Icon::Task, title.into(), None);
         row.link = None;
-        if block == Block::Waiting {
+        if block == Tally::Queued {
             row.subtitle = task_state::start_hold(&listed, context);
         }
         let mut count = 0;
@@ -578,11 +580,6 @@ fn listed_active<'a>(domain: &'a DomainState, buckets: &BTreeMap<&RequestId, Buc
     domain.tasks.values()
         .filter(|task| buckets.get(&task.request_id).is_some_and(|whole| task_bucket(task, *whole) == Bucket::Active))
         .collect()
-}
-
-/// How many tasks Active lists: the Tasks tab's count, and the sum of its blocks' counts.
-pub(super) fn active_count(domain: &DomainState) -> u32 {
-    listed_active(domain, &request_buckets(domain)).len() as u32
 }
 
 /// A request not split yet waits for the user while the orchestrator stopped and its card asking

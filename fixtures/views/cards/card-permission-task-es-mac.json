@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:cc2d034b-249e-4487-a89b-57de38c26372",
   "client": "mac",
-  "version": "vf3e7dc5286d509a6",
+  "version": "va7264c4a49caf4ad",
   "cursor": "cursor-1",
   "title": "Run `git reset --hard origin/main`",
   "status": {
-    "version": "v6e709b02b9fbc907",
+    "version": "vf648b816d46fd466",
     "summary": "3 preguntas · 2 por leer · 0 tareas trabajando",
     "summary_parts": [
       {
@@ -43,19 +43,29 @@
         "value": 1
       },
       {
-        "id": "agents",
-        "label": "En marcha",
-        "value": 0
-      },
-      {
         "id": "working",
         "label": "trabajando",
         "value": 0
       },
       {
-        "id": "waiting",
-        "label": "esperando",
+        "id": "needs_you",
+        "label": "esperando por ti",
         "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
+        "value": 0
       }
     ],
     "gauges": [

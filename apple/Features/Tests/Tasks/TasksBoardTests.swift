@@ -94,7 +94,7 @@ final class TasksBoardTests: XCTestCase {
 
     func testAScheduledRunInProgressIsAnActiveRequestMarkedScheduled() throws {
         let board = TasksBoard(document: try Fixtures.document("tasks-ios"))
-        XCTAssertEqual(board.active.blocks.map(\.id), ["block:for-you", "block:in-progress", "block:waiting"])
+        XCTAssertEqual(board.active.blocks.map(\.id), ["block:for-you", "block:working", "block:queued", "block:paused", "block:waiting"])
         let request = try XCTUnwrap(board.active.requests.first { $0.id == "t-scheduled-lumo" })
         let task = try XCTUnwrap(request.tasks.first)
 
@@ -112,12 +112,12 @@ final class TasksBoardTests: XCTestCase {
         XCTAssertEqual(board.active.requests.first { $0.id == "t-legacy-editor" }?.tasks.first?.marks, [], "a task saved before projects has none")
     }
 
-    func testTheActiveWorkComesInBlocksWithTheirTitleAndCount() throws {
+    func testTheActiveWorkComesInBlocksByWhatEachTaskIsDoing() throws {
         let board = TasksBoard(document: try Fixtures.document("tasks-ios"))
 
-        XCTAssertEqual(board.active.blocks.map(\.title), ["For you", "In progress", "Waiting"])
-        XCTAssertEqual(board.active.blocks.map(\.count), [1, 3, 5], "a block counts its tasks, the ones that wait for another too")
-        XCTAssertEqual(board.active.blocks.map(\.isCompact), [false, false, true], "only waiting work reads as short lines")
+        XCTAssertEqual(board.active.blocks.map(\.title), ["Waiting for you", "Working", "Queued", "Paused", "Waiting"])
+        XCTAssertEqual(board.active.blocks.map(\.count), [1, 2, 3, 1, 2], "a block counts its tasks, the ones that wait for another too")
+        XCTAssertEqual(board.active.blocks.map(\.isCompact), [false, false, false, false, true], "only waiting work reads as short lines")
         let forYou = try XCTUnwrap(board.active.blocks.first)
         XCTAssertEqual(forYou.requests.flatMap(\.tasks).filter { $0.depth == 0 }.map(\.state), ["Needs you"],
                        "only a task with a card waiting for you is For you")
@@ -134,19 +134,19 @@ final class TasksBoardTests: XCTestCase {
                       "no «waits for» rows and no «from:» lines")
     }
 
-    func testTheWaitingBlockSaysOnceWhatHoldsNewStarts() throws {
+    func testTheQueuedBlockSaysOnceWhatHoldsNewStarts() throws {
         let board = TasksBoard(document: try Fixtures.document("tasks-ios-es"))
 
-        XCTAssertEqual(board.active.blocks.map(\.note), [nil, nil, "Los arranques nuevos esperan: el Mac va justo de memoria"])
+        XCTAssertEqual(board.active.blocks.map(\.note), [nil, nil, "Los arranques nuevos esperan: el Mac va justo de memoria", nil, nil])
     }
 
     func testTheTasksOfAnUntitledRequestWithSeveralTasksStandLooseWithoutAHeader() throws {
         let board = TasksBoard(document: try Fixtures.document("tasks-ios"))
         let loose = board.active.requests.filter { $0.id.hasPrefix("t-legacy") }
 
-        XCTAssertEqual(loose.map(\.id), ["t-legacy-editor", "t-legacy-notes"])
+        XCTAssertEqual(loose.map(\.id), ["t-legacy-notes", "t-legacy-editor"])
         XCTAssertEqual(loose.map(\.isLoose), [true, true])
-        XCTAssertEqual(loose.map { $0.tasks.map(\.title) }, [["Review the schedule editor"], ["Write the release notes"]])
+        XCTAssertEqual(loose.map { $0.tasks.map(\.title) }, [["Write the release notes"], ["Review the schedule editor"]])
         XCTAssertEqual(loose.map(\.title), ["", ""])
     }
 

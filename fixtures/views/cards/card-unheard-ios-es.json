@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:unheard-t-651c38484cd2f34e74d5107ba05f7f15-90",
   "client": "ios",
-  "version": "v57170e0f148c1824",
+  "version": "v0e51c86e62c0f1b9",
   "cursor": "cursor-1",
   "title": "«Restore the native review experience» se ha parado y te escribe",
   "status": {
-    "version": "vf745e37795faf873",
+    "version": "v0239b247745c0359",
     "summary": "1 pregunta · 0 tareas trabajando",
     "summary_parts": [
       {
@@ -37,19 +37,29 @@
         "value": 1
       },
       {
-        "id": "agents",
-        "label": "En marcha",
-        "value": 1
-      },
-      {
         "id": "working",
         "label": "trabajando",
         "value": 0
       },
       {
-        "id": "waiting",
-        "label": "esperando",
+        "id": "needs_you",
+        "label": "esperando por ti",
         "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
+        "value": 0
       }
     ],
     "gauges": [

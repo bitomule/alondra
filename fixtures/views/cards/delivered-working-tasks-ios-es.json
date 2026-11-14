@@ -4,11 +4,11 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "vb2c55852e8df3883",
+  "version": "ve51bac6d5c24fe7d",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
-    "version": "va894ec752de3e5a9",
+    "version": "v4be82b11694afbb8",
     "summary": "1 por leer · 1 tarea trabajando",
     "summary_parts": [
       {
@@ -37,18 +37,28 @@
         "value": 1
       },
       {
-        "id": "agents",
-        "label": "En marcha",
-        "value": 1
-      },
-      {
         "id": "working",
         "label": "trabajando",
         "value": 1
       },
       {
-        "id": "waiting",
-        "label": "esperando",
+        "id": "needs_you",
+        "label": "esperando por ti",
+        "value": 0
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
         "value": 0
       }
     ],
@@ -85,9 +95,9 @@
       "items": [
         {
           "type": "row",
-          "id": "block:in-progress",
+          "id": "block:working",
           "icon": "task",
-          "title": "En marcha",
+          "title": "Trabajando",
           "trailing": {
             "kind": "text",
             "text": "1"

@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:f12d034b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "v6116eafcfacfc09e",
+  "version": "v4244d7a2e018b565",
   "cursor": "cursor-1",
   "title": "The simulator pass is clean",
   "status": {
-    "version": "vec309c5722d410ab",
+    "version": "ve1b0ea85e0f05cae",
     "summary": "2 questions · 3 to read · 0 tasks working",
     "summary_parts": [
       {
@@ -43,19 +43,29 @@
         "value": 1
       },
       {
-        "id": "agents",
-        "label": "In progress",
-        "value": 0
-      },
-      {
         "id": "working",
         "label": "working",
         "value": 0
       },
       {
-        "id": "waiting",
-        "label": "waiting",
+        "id": "needs_you",
+        "label": "waiting for you",
         "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "queued",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "paused",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "waiting",
+        "value": 0
       }
     ],
     "gauges": [

@@ -4,11 +4,11 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "vd32618ef482606a1",
+  "version": "vc17acb66e0408051",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
-    "version": "v8bf834bde2d182f0",
+    "version": "ve974f638539eff21",
     "summary": "2 preguntas · 3 por leer · 2 tareas trabajando",
     "summary_parts": [
       {
@@ -43,19 +43,29 @@
         "value": 9
       },
       {
-        "id": "agents",
-        "label": "En marcha",
-        "value": 3
-      },
-      {
         "id": "working",
         "label": "trabajando",
         "value": 2
       },
       {
-        "id": "waiting",
-        "label": "esperando",
+        "id": "needs_you",
+        "label": "esperando por ti",
         "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 3
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 1
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
+        "value": 2
       }
     ],
     "gauges": [
@@ -108,7 +118,7 @@
           "type": "row",
           "id": "block:for-you",
           "icon": "task",
-          "title": "Para ti",
+          "title": "Esperando por ti",
           "trailing": {
             "kind": "text",
             "text": "1"
@@ -162,12 +172,12 @@
         },
         {
           "type": "row",
-          "id": "block:in-progress",
+          "id": "block:working",
           "icon": "task",
-          "title": "En marcha",
+          "title": "Trabajando",
           "trailing": {
             "kind": "text",
-            "text": "3"
+            "text": "2"
           },
           "depth": 0,
           "struck": false,
@@ -305,49 +315,18 @@
                   "resolves_card": false
                 }
               ]
-            },
-            {
-              "id": "t-legacy-editor",
-              "link": {
-                "kind": "view",
-                "key": "task:t-legacy-editor"
-              },
-              "icon": "pull_request",
-              "title": "Review the schedule editor",
-              "subtitle": "Entregada",
-              "badges": [
-                {
-                  "text": "Entregada",
-                  "tone": "info"
-                }
-              ],
-              "trailing": {
-                "kind": "count",
-                "value": 0
-              },
-              "depth": 1,
-              "struck": false,
-              "children": [
-                {
-                  "id": "activity",
-                  "icon": "notice",
-                  "title": "Para revisar",
-                  "depth": 0,
-                  "struck": false
-                }
-              ]
             }
           ]
         },
         {
           "type": "row",
-          "id": "block:waiting",
+          "id": "block:queued",
           "icon": "task",
-          "title": "En espera",
+          "title": "En cola",
           "subtitle": "Los arranques nuevos esperan: el Mac va justo de memoria",
           "trailing": {
             "kind": "text",
-            "text": "5"
+            "text": "3"
           },
           "depth": 0,
           "struck": false,
@@ -404,41 +383,6 @@
               ]
             },
             {
-              "id": "t-badge-decrement",
-              "link": {
-                "kind": "view",
-                "key": "task:t-badge-decrement"
-              },
-              "icon": "task",
-              "title": "Decrement the badge on retraction",
-              "subtitle": "En espera",
-              "badges": [
-                {
-                  "text": "En espera",
-                  "tone": "neutral"
-                },
-                {
-                  "text": "Demo Garden",
-                  "tone": "neutral"
-                }
-              ],
-              "trailing": {
-                "kind": "count",
-                "value": 0
-              },
-              "depth": 1,
-              "struck": false,
-              "children": [
-                {
-                  "id": "activity",
-                  "icon": "notice",
-                  "title": "Espera a «Restore the native review experience» · Badge accuracy",
-                  "depth": 0,
-                  "struck": false
-                }
-              ]
-            },
-            {
               "id": "t-hf-registry",
               "link": {
                 "kind": "view",
@@ -474,6 +418,51 @@
               ]
             },
             {
+              "id": "t-legacy-notes",
+              "link": {
+                "kind": "view",
+                "key": "task:t-legacy-notes"
+              },
+              "icon": "task",
+              "title": "Write the release notes",
+              "subtitle": "En espera",
+              "badges": [
+                {
+                  "text": "En espera",
+                  "tone": "neutral"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "Reintento a las 10:15",
+                  "depth": 0,
+                  "struck": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "block:paused",
+          "icon": "task",
+          "title": "En pausa",
+          "trailing": {
+            "kind": "text",
+            "text": "1"
+          },
+          "depth": 0,
+          "struck": false,
+          "children": [
+            {
               "id": "t-hf-share-hint",
               "link": {
                 "kind": "view",
@@ -507,19 +496,37 @@
                   "struck": false
                 }
               ]
-            },
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "block:waiting",
+          "icon": "task",
+          "title": "En espera",
+          "trailing": {
+            "kind": "text",
+            "text": "2"
+          },
+          "depth": 0,
+          "struck": false,
+          "children": [
             {
-              "id": "t-legacy-notes",
+              "id": "t-badge-decrement",
               "link": {
                 "kind": "view",
-                "key": "task:t-legacy-notes"
+                "key": "task:t-badge-decrement"
               },
               "icon": "task",
-              "title": "Write the release notes",
+              "title": "Decrement the badge on retraction",
               "subtitle": "En espera",
               "badges": [
                 {
                   "text": "En espera",
+                  "tone": "neutral"
+                },
+                {
+                  "text": "Demo Garden",
                   "tone": "neutral"
                 }
               ],
@@ -533,7 +540,38 @@
                 {
                   "id": "activity",
                   "icon": "notice",
-                  "title": "Reintento a las 10:15",
+                  "title": "Espera a «Restore the native review experience» · Badge accuracy",
+                  "depth": 0,
+                  "struck": false
+                }
+              ]
+            },
+            {
+              "id": "t-legacy-editor",
+              "link": {
+                "kind": "view",
+                "key": "task:t-legacy-editor"
+              },
+              "icon": "pull_request",
+              "title": "Review the schedule editor",
+              "subtitle": "Entregada",
+              "badges": [
+                {
+                  "text": "Entregada",
+                  "tone": "info"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "Para revisar",
                   "depth": 0,
                   "struck": false
                 }

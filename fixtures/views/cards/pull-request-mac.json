@@ -4,11 +4,11 @@
   "view": "pull_request",
   "key": "pull_request:github.com/example/repo#12",
   "client": "mac",
-  "version": "v1ea5a66160e0f80b",
+  "version": "vd6ac18ba82605b19",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
-    "version": "vec309c5722d410ab",
+    "version": "ve1b0ea85e0f05cae",
     "summary": "2 questions · 3 to read · 0 tasks working",
     "summary_parts": [
       {
@@ -43,19 +43,29 @@
         "value": 1
       },
       {
-        "id": "agents",
-        "label": "In progress",
-        "value": 0
-      },
-      {
         "id": "working",
         "label": "working",
         "value": 0
       },
       {
-        "id": "waiting",
-        "label": "waiting",
+        "id": "needs_you",
+        "label": "waiting for you",
         "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "queued",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "paused",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "waiting",
+        "value": 0
       }
     ],
     "gauges": [

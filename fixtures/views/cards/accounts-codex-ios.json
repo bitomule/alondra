@@ -4,11 +4,11 @@
   "view": "accounts",
   "key": "accounts",
   "client": "ios",
-  "version": "v75fe80529773f04f",
+  "version": "vff877ba683bb1d5a",
   "cursor": "cursor-1",
   "title": "Accounts",
   "status": {
-    "version": "v802ba46eb9657a9b",
+    "version": "ve1b0ea85e0f05cae",
     "summary": "2 questions · 3 to read · 0 tasks working",
     "summary_parts": [
       {
@@ -43,19 +43,29 @@
         "value": 1
       },
       {
-        "id": "agents",
-        "label": "In progress",
-        "value": 1
-      },
-      {
         "id": "working",
         "label": "working",
         "value": 0
       },
       {
-        "id": "waiting",
-        "label": "waiting",
+        "id": "needs_you",
+        "label": "waiting for you",
         "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "queued",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "paused",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "waiting",
+        "value": 0
       }
     ],
     "gauges": [

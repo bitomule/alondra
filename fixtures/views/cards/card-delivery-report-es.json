@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:result-2",
   "client": "ios",
-  "version": "vb43710d640d1ff52",
+  "version": "vfaf52d4394333fed",
   "cursor": "cursor-1",
   "title": "Read why Redraft does not need a widget",
   "status": {
-    "version": "v3abe8a9de57dd4ff",
+    "version": "vbe6c4aedadfecf35",
     "summary": "1 por leer · 0 tareas trabajando",
     "summary_parts": [
       {
@@ -37,19 +37,29 @@
         "value": 1
       },
       {
-        "id": "agents",
-        "label": "En marcha",
-        "value": 1
-      },
-      {
         "id": "working",
         "label": "trabajando",
         "value": 0
       },
       {
-        "id": "waiting",
-        "label": "esperando",
+        "id": "needs_you",
+        "label": "esperando por ti",
         "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
+        "value": 0
       }
     ],
     "gauges": [],

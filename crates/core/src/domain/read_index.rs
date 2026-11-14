@@ -61,18 +61,39 @@ pub struct NodeReading {
     pub sdk_turn_stop: Option<alondra_domain::TurnStop>,
 }
 
-/// What the status header counts and the phone's Live Activity shows: the cards in Waiting for
-/// You, the nodes that wait for an answer of the user, and the nodes that hold a working slot.
+/// What the status header counts and the phone's Live Activity shows: the cards in Waiting for You, and the open
+/// tasks by what each one is doing, which add up to every open task.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ActivityCounts {
     pub inbox: u32,
-    pub waiting: u32,
+    pub needs_you: u32,
     pub working: u32,
+    pub queued: u32,
+    pub paused: u32,
+    pub waiting: u32,
 }
 
 impl ActivityCounts {
     pub fn any(&self) -> bool {
-        self.inbox > 0 || self.waiting > 0 || self.working > 0
+        self.inbox > 0 || self.tasks() > 0
+    }
+
+    pub fn tasks(&self) -> u32 {
+        self.needs_you + self.working + self.queued + self.paused + self.waiting
+    }
+
+    fn of_tasks<'a>(inbox: u32, readings: impl Iterator<Item = &'a TaskReading>) -> Self {
+        let mut counts = Self { inbox, ..Self::default() };
+        for tally in readings.filter_map(TaskReading::tally) {
+            *match tally {
+                Tally::NeedsYou => &mut counts.needs_you,
+                Tally::Working => &mut counts.working,
+                Tally::Queued => &mut counts.queued,
+                Tally::Paused => &mut counts.paused,
+                Tally::Waiting => &mut counts.waiting,
+            } += 1;
+        }
+        counts
     }
 }
 
@@ -444,6 +465,11 @@ impl ReadSnapshot {
 impl TaskReading {
     /// The task belongs in «For you»: a card of it the inbox lists asks the user, or its delivery
     /// is in front of them for review and nothing it asked the orchestrator holds it.
+    /// What the task counts as, once it is known whether it waits for the user.
+    pub fn tally(&self) -> Option<Tally> {
+        if self.for_you() { Some(Tally::NeedsYou) } else { self.situation.tally() }
+    }
+
     pub fn for_you(&self) -> bool {
         match self.situation {
             Situation::NeedsYou => true,
@@ -591,11 +617,7 @@ impl<'a> Builder<'a> {
         index.tasks.extend(readings);
         index.slots = slots;
         self.nodes(&mut index, waiting_of_node);
-        index.activity = ActivityCounts {
-            inbox: index.cards.len() as u32,
-            waiting: index.tasks.values().filter(|reading| reading.for_you()).count() as u32,
-            working: index.tasks.values().filter(|reading| matches!(reading.situation, Situation::Working(_))).count() as u32,
-        };
+        index.activity = ActivityCounts::of_tasks(index.cards.len() as u32, index.tasks.values());
         index.cards_before = self.cards_before.into_iter().map(|(delivery, cards)| (delivery.clone(), cards)).collect();
         index.blocks = self.blocks;
         index
@@ -939,8 +961,7 @@ pub(super) fn assert_index_matches(state: &DomainState) {
         let InboxSubject::Interaction { interaction_id, .. } = &item.subject;
         state.card_waits_for_user(&state.interactions[interaction_id], |task| state.attention(task))
     }).cloned().collect();
-    let for_you = state.tasks.values().filter(|task| index.task(&task.id).is_some_and(TaskReading::for_you)).count() as u32;
-    let activity = ActivityCounts { inbox: cards.len() as u32, waiting: for_you, working: state.tasks.values().filter(|task| index.task(&task.id).is_some_and(|reading| matches!(reading.situation, Situation::Working(_)))).count() as u32 };
+    let activity = ActivityCounts::of_tasks(cards.len() as u32, state.tasks.values().filter_map(|task| index.task(&task.id)));
     assert_eq!(index.activity(), activity, "the activity counts");
     assert_eq!(index.mcp_waiting(), state.mcp_waiting().as_slice(), "the tasks that wait for an MCP server");
     let reported: Vec<(TaskId, Vec<McpServerState>)> = state.tasks.values().filter(|task| !task.over())

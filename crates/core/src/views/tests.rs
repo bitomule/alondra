@@ -736,7 +736,7 @@ fn tasks_fixture() -> (DomainState, LiveSnapshot) {
     };
     add_request(&mut state, "r-badge", Some("Badge accuracy"), "The badge keeps counting a push the daemon retracted.");
     add_task(&mut state, "t-badge-count", "r-badge", "Count the retracted pushes", TaskState::Running, &[]);
-    add_task(&mut state, "t-badge-decrement", "r-badge", "Decrement the badge on retraction", TaskState::NotStarted, &[parent]);
+    add_task(&mut state, "t-badge-decrement", "r-badge", "Decrement the badge on retraction", TaskState::WaitingDependency, &[parent]);
     add_request(&mut state, "r-legacy", None, "Look at the schedule editor and write the notes for the beta.");
     add_task(&mut state, "t-legacy-editor", "r-legacy", "Review the schedule editor", TaskState::ForYourReview, &[]);
     add_task(&mut state, "t-legacy-notes", "r-legacy", "Write the release notes", TaskState::NotStarted, &[]);
@@ -1396,21 +1396,42 @@ fn the_mac_sidebar_lists_the_tasks_in_progress_by_project() {
     assert!(view.status.summary.ends_with(" · 1 in progress"), "{}", view.status.summary);
 }
 
-#[test]
-fn the_status_counts_the_tasks_in_progress() {
-    let state = golden_in_progress();
-    let live = golden_live();
-    for (lang, label) in [(Lang::En, "In progress"), (Lang::Es, "En marcha")] {
-        let view = render(&state, &live, Client::Tui, lang, "home", "");
-        let count = view.status.counts.iter().find(|count| count.id == "agents").unwrap();
-        assert_eq!((count.label.as_str(), count.value), (label, 1));
-        assert!(view.status.counts.iter().all(|count| !count.label.to_lowercase().contains("agent")));
+const TASK_TALLIES: [(&str, &str); 5] = [
+    ("needs_you", "block:for-you"), ("working", "block:working"), ("queued", "block:queued"), ("paused", "block:paused"),
+    ("other_waiting", "block:waiting"),
+];
+
+fn tally(view: &View, id: &str) -> u32 {
+    view.status.counts.iter().find(|count| count.id == id).unwrap_or_else(|| panic!("count {id}")).value
+}
+
+fn block_count(state: &DomainState, live: &LiveSnapshot, client: Client, lang: Lang, block: &str) -> u32 {
+    match active_blocks(state, live, client, lang).iter().find(|row| row.id == block).and_then(|row| row.trailing.clone()) {
+        Some(Trailing::Text { text }) => text.parse().unwrap(),
+        _ => 0,
     }
-    let mut done = state.clone();
-    for task in done.tasks.values_mut() { task.state = TaskState::Done; }
-    let view = render(&done, &live, Client::Tui, Lang::En, "home", "");
-    assert_eq!(view.status.counts.iter().find(|count| count.id == "agents").unwrap().value, 0,
-        "a node whose task finished is not a task in progress");
+}
+
+/// The header and the Tasks list name the same categories and count the same tasks, on every
+/// client and in both languages, and nothing is called «in progress» that is not working.
+#[test]
+fn every_surface_counts_each_task_category_alike() {
+    let (mut state, live) = tasks_fixture();
+    state.tasks.get_mut(&"t-legacy-editor".into()).unwrap().state = TaskState::Done;
+    for client in [Client::Ios, Client::Tui] {
+        for lang in [Lang::En, Lang::Es] {
+            let home = render(&state, &live, client, lang, "home", "");
+            let listed: u32 = TASK_TALLIES.iter().map(|(id, _)| tally(&home, id)).sum();
+            assert_eq!(listed, tally(&home, "tasks"), "{client:?} {lang:?}: the categories add up to the open tasks");
+            for (id, block) in TASK_TALLIES {
+                assert_eq!(block_count(&state, &live, client, lang, block), tally(&home, id), "{client:?} {lang:?}: {id} in the list and the header");
+            }
+            assert!(home.status.counts.iter().all(|count| count.label != "En marcha" && count.label != "In progress"));
+        }
+    }
+    let home = render(&state, &live, Client::Tui, Lang::En, "home", "");
+    let filled = TASK_TALLIES.iter().filter(|(id, _)| tally(&home, id) > 0).count();
+    assert!(filled >= 4, "the fixture reaches most categories: {:?}", home.status.counts);
 }
 
 #[test]
@@ -1905,11 +1926,11 @@ fn a_task_that_has_not_started_says_what_refused_its_launch() {
     live.launch_refusals.insert("t-1".into(), LiveLaunchRefusal { reason: "launch_failed".into(), detail: Some("claude exited".into()) });
     assert_eq!(task_line(&state, &live, Lang::Es), "En espera · Reintento a las 14:05 · claude exited");
     assert_eq!(task_line(&state, &live, Lang::En), "Waiting · Trying again at 14:05 · claude exited");
-    assert_eq!(active_row(&state, &live, Client::Mac, Lang::Es, "t-1").0, "block:waiting", "it tries again by itself");
+    assert_eq!(active_row(&state, &live, Client::Mac, Lang::Es, "t-1").0, "block:queued", "it tries again by itself");
     live.launch_refusals.clear();
     live.start_waits.insert("t-1".into(), LiveStartWait::Room);
     assert_eq!(task_line(&state, &live, Lang::Es), "En espera · Arranca cuando haya sitio", "with a plan it is queued, not «Arrancando»");
-    assert_eq!(active_row(&state, &live, Client::Mac, Lang::Es, "t-1").0, "block:waiting");
+    assert_eq!(active_row(&state, &live, Client::Mac, Lang::Es, "t-1").0, "block:queued");
     live.start_waits.clear();
     let mut base = state.tasks[&"t-1".into()].clone();
     base.id = "t-base".into();
@@ -1926,7 +1947,7 @@ fn a_task_that_has_not_started_says_what_refused_its_launch() {
     });
     assert_eq!(task_line(&state, &live, Lang::Es), "En espera · Claude Code no confía en ~/Projects/indie-apps");
     assert_eq!(task_line(&state, &live, Lang::En), "Waiting · Claude Code doesn't trust ~/Projects/indie-apps");
-    assert_eq!(active_row(&state, &live, Client::Mac, Lang::Es, "t-1").0, "block:waiting", "no card asks for it, so it is not «Para ti»");
+    assert_eq!(active_row(&state, &live, Client::Mac, Lang::Es, "t-1").0, "block:queued", "no card asks for it, so it is not «Para ti»");
     live.launch_refusals.insert("t-1".into(), LiveLaunchRefusal { reason: "usage_exhausted".into(), detail: None });
     assert_eq!(task_line(&state, &live, Lang::Es), "En espera · Límite de uso alcanzado");
     live.launch_refusals.insert("t-1".into(), LiveLaunchRefusal {
@@ -1968,7 +1989,7 @@ fn a_running_task_whose_node_session_closed_says_it_stopped_never_working_nor_no
     assert_eq!(task_state_text(&state, &live, Lang::Es), "En espera");
     assert_eq!(task_state_text(&state, &live, Lang::En), "Waiting");
     let (block, row) = active_row(&state, &live, Client::Mac, Lang::Es, "t-1");
-    assert_eq!((block.as_str(), row.subtitle.as_deref()), ("block:waiting", Some("Su sesión terminó sin que entregara")));
+    assert_eq!((block.as_str(), row.subtitle.as_deref()), ("block:queued", Some("Su sesión terminó sin que entregara")));
 }
 
 /// 15 October: a task reopened after its node closed said «Detenida · Su sesión se cerró sin que
@@ -1987,7 +2008,7 @@ fn a_reopened_task_waiting_in_the_queue_says_its_place_and_why_never_that_it_sto
         let shown = serde_json::to_string(&row).unwrap();
         assert!(shown.contains("Arranca cuando haya sitio") && !shown.contains("2.º de 5"), "{client:?}: {shown}");
         assert!(!shown.contains("Detenida") && !shown.contains("sin que entregara"), "{client:?}: {shown}");
-        assert_eq!(block, "block:waiting", "{client:?}");
+        assert_eq!(block, "block:queued", "{client:?}");
         let detail = detail_state_text(&state, &live, client, Lang::Es);
         assert!(detail.contains("2.º de 5 · 4 de 4 huecos ocupados"), "{client:?}: {detail}");
     }
@@ -2095,7 +2116,7 @@ fn a_task_whose_node_the_machine_paused_never_says_it_works_on_any_screen() {
     ] {
         assert_eq!(task_state_text(&state, &live, Lang::Es), "En espera");
         let (block, row) = active_row(&state, &live, Client::Mac, Lang::Es, "t-1");
-        assert_eq!((block.as_str(), row.subtitle.as_deref()), ("block:waiting", Some(fact)));
+        assert_eq!((block.as_str(), row.subtitle.as_deref()), ("block:queued", Some(fact)));
         for (screen, text) in every_screen(&state, &live) {
             assert!(!text.contains("Trabajando"), "{screen} says the task works: {text}");
         }
@@ -2136,7 +2157,7 @@ fn a_paused_task_the_gate_queues_reads_waiting_for_a_slot_in_icon_label_and_deta
     let queued = LiveQueued { pausable: true, task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Slots { working: 6, limit: 6 } };
     let live = pacing_live(vec![queued], vec![], None);
     let (block, row) = active_row(&state, &live, Client::Mac, Lang::En, "t-1");
-    assert_eq!((block.as_str(), row.icon), ("block:waiting", Icon::Task));
+    assert_eq!((block.as_str(), row.icon), ("block:queued", Icon::Task));
     assert_eq!(row.badges.first().map(|badge| badge.text.as_str()), Some("Waiting"));
     let detail = serde_json::to_string(&render(&state, &live, Client::Mac, Lang::En, "task:t-1", "")).unwrap();
     assert!(!detail.contains("Paused"), "{detail}");
@@ -2556,7 +2577,7 @@ fn a_working_task_shows_its_command_and_time_after_its_own_step() {
     });
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         let (block, row) = active_row(&state, &live, client, Lang::Es, "t-1");
-        assert_eq!((block.as_str(), row.badges[0].text.as_str()), ("block:in-progress", "Trabajando"), "{client:?}");
+        assert_eq!((block.as_str(), row.badges[0].text.as_str()), ("block:working", "Trabajando"), "{client:?}");
         assert!(row.children.is_empty() && !serde_json::to_string(&row).unwrap().contains("bazel test"), "{client:?}: the list never names the command");
         assert_eq!(detail_state_text(&state, &live, client, Lang::Es), "Trabajando · `Bash: bazel test //crates/...` · desde las 06:58", "{client:?}");
     }
@@ -3195,7 +3216,7 @@ fn across_requests() -> DomainState {
         task.id = id.into();
         task.request_id = "r-2".into();
         task.title = title.into();
-        task.state = TaskState::NotStarted;
+        task.state = if dependencies.is_empty() { TaskState::NotStarted } else { TaskState::WaitingDependency };
         task.dependencies = dependencies.iter().map(|id| (*id).into()).collect();
         state.tasks.insert(task.id.clone(), task);
     }
@@ -3325,7 +3346,7 @@ fn free_memory_that_does_not_change_admission_does_not_change_the_tasks_list() {
             let twelve = render(&state, &with_free(12), client, lang, "tasks", "");
             assert_eq!(twelve.version, render(&state, &with_free(9), client, lang, "tasks", "").version, "{client:?} {lang:?}");
             let blocks = active_blocks(&state, &with_free(12), client, lang);
-            let waiting = find(&blocks, "block:waiting");
+            let waiting = find(&blocks, "block:queued");
             let line = if lang == Lang::Es { "Los arranques nuevos esperan: el Mac va justo de memoria" } else { "New starts wait: the Mac is short of memory" };
             assert_eq!(waiting.subtitle.as_deref(), Some(line), "{client:?} {lang:?}: said once, in the header");
             for queued in ["t-queued-next", "t-queued-later"] {
@@ -3337,7 +3358,7 @@ fn free_memory_that_does_not_change_admission_does_not_change_the_tasks_list() {
     let mut slots = live.clone();
     slots.pacing.as_mut().unwrap().queued.iter_mut().for_each(|queued| queued.hold = LiveHold::Slots { working: 6, limit: 6 });
     let blocks = active_blocks(&state, &slots, Client::Ios, Lang::Es);
-    assert_eq!(find(&blocks, "block:waiting").subtitle, None, "the Mac lets them start: nothing to say about it");
+    assert_eq!(find(&blocks, "block:queued").subtitle, None, "the Mac lets them start: nothing to say about it");
 }
 
 fn orchestrator_waiting(can_retry: bool) -> LiveSnapshot {
@@ -3465,7 +3486,7 @@ fn a_request_not_split_yet_says_it_waits_for_the_users_decision() {
         (block, row.subtitle.unwrap())
     };
     assert_eq!(subtitle(&orchestrator_waiting(true)), ("block:for-you".into(), "Esperando tu decisión".into()));
-    assert_eq!(subtitle(&orchestrator_waiting(false)), ("block:in-progress".into(), "Preparando sus tareas".into()));
+    assert_eq!(subtitle(&orchestrator_waiting(false)), ("block:working".into(), "Preparando sus tareas".into()));
 }
 
 #[test]
@@ -7008,21 +7029,21 @@ fn the_active_list_is_for_you_then_in_progress_then_waiting_each_in_its_own_orde
             pausable: true, task_id: (*id).into(), position: index + 1, of: 2, hold: LiveHold::Slots { working: 2, limit: 2 } }).collect() });
     assert_eq!(block_ids(&state, &live), [
         ("block:for-you".to_owned(), vec!["t-old".to_owned(), "t-new".to_owned()]),
-        ("block:in-progress".to_owned(), vec!["t-busy".to_owned(), "t-run2".to_owned()]),
-        ("block:waiting".to_owned(), vec!["t-q1".to_owned(), "t-q2".to_owned()]),
+        ("block:working".to_owned(), vec!["t-busy".to_owned(), "t-run2".to_owned()]),
+        ("block:queued".to_owned(), vec!["t-q1".to_owned(), "t-q2".to_owned()]),
     ], "longest waiting first, the latest to start working first, the queue by its place");
     let blocks = active_blocks(&state, &live, Client::Ios, Lang::Es);
     assert_eq!(blocks.iter().map(|block| (block.title.as_str(), block.trailing.clone())).collect::<Vec<_>>(), [
-        ("Para ti", Some(Trailing::Text { text: "2".into() })),
-        ("En marcha", Some(Trailing::Text { text: "2".into() })),
-        ("En espera", Some(Trailing::Text { text: "2".into() })),
+        ("Esperando por ti", Some(Trailing::Text { text: "2".into() })),
+        ("Trabajando", Some(Trailing::Text { text: "2".into() })),
+        ("En cola", Some(Trailing::Text { text: "2".into() })),
     ]);
     let (_, queued) = active_row(&state, &live, Client::Mac, Lang::Es, "t-q2");
     assert_eq!((queued.badges[0].text.as_str(), queued.subtitle.as_deref()), ("En espera", Some("Arranca cuando haya sitio")));
     live.pacing.as_mut().unwrap().queued[0].hold = LiveHold::Next;
     assert_eq!(active_row(&state, &live, Client::Mac, Lang::Es, "t-q1").1.subtitle.as_deref(), Some("Arranca cuando haya sitio"));
     state.tasks.retain(|id, _| id.0.starts_with("t-q"));
-    assert_eq!(block_ids(&state, &live).iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["block:waiting"], "an empty block is not shown");
+    assert_eq!(block_ids(&state, &live).iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["block:queued"], "an empty block is not shown");
 }
 
 #[test]
@@ -7114,7 +7135,7 @@ fn what_a_working_task_said_last_is_only_on_its_own_screen_with_its_time() {
     }], ..LiveSnapshot::default() };
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         let (block, row) = active_row(&state, &live, client, Lang::Es, "t-1");
-        assert_eq!((block.as_str(), row.badges[0].text.as_str()), ("block:in-progress", "Trabajando"));
+        assert_eq!((block.as_str(), row.badges[0].text.as_str()), ("block:working", "Trabajando"));
         let list = serde_json::to_string(&render(&state, &live, client, Lang::Es, "tasks", "")).unwrap();
         assert!(!list.contains("Folding") && !list.contains("Dijo"), "{client:?}: {list}");
         let view = render(&state, &live, client, Lang::Es, "task:t-1", "");
@@ -7345,7 +7366,7 @@ fn said(state: &DomainState, client: Client, lang: Lang) -> Said {
     let row_state = active_row(state, &live, client, lang, "t-1").1.badges[0].text.clone();
     let detail = render(state, &live, client, lang, "task:t-1", "");
     let detail_cards = detail.sections.iter().filter(|section| section.id == "waiting").map(|section| section.items.len()).sum();
-    let waiting_nodes = detail.status.counts.iter().find(|count| count.id == "waiting").map_or(0, |count| count.value);
+    let waiting_nodes = detail.status.counts.iter().find(|count| count.id == "needs_you").map_or(0, |count| count.value);
     Said { inbox: inbox_badge(state), for_you, for_you_count, row_state, detail_cards, waiting_nodes }
 }
 
@@ -9944,11 +9965,11 @@ const SEVEN_STATES: [(&str, &str); 7] = [
 
 /// What each state of `live_states()` reads, in the order of that list: the state and the block of the Tasks list.
 const LIVE_STATES_READ: [(usize, &str); 18] = [
-    (0, "block:in-progress"), (0, "block:in-progress"), (0, "block:in-progress"),
+    (0, "block:working"), (0, "block:working"), (0, "block:working"),
     (1, "block:waiting"), (1, "block:waiting"), (1, "block:waiting"), (1, "block:waiting"),
-    (4, "block:in-progress"), (4, "block:in-progress"),
-    (4, "block:in-progress"), (2, "block:for-you"), (3, "block:waiting"),
-    (1, "block:waiting"), (1, "block:waiting"), (1, "block:waiting"), (1, "block:waiting"), (1, "block:waiting"), (1, "block:waiting"),
+    (4, "block:waiting"), (4, "block:waiting"),
+    (4, "block:waiting"), (2, "block:for-you"), (3, "block:paused"),
+    (1, "block:queued"), (1, "block:queued"), (1, "block:queued"), (1, "block:queued"), (1, "block:queued"), (1, "block:waiting"),
 ];
 
 fn listed_t1(state: &DomainState, in_state: Option<&alondra_domain::LiveState>, client: Client, lang: Lang) -> (String, Row) {

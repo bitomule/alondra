@@ -278,24 +278,22 @@ public struct TriageView: View {
             Text("Your tasks carry on by themselves. When one needs you, it will show up here.")
                 .font(.body).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 300)
             HStack(spacing: 10) {
-                emptyStat("working", count: statusCount("working"), tint: Palette.sky)
-                emptyStat("waiting", count: statusCount("waiting"), tint: Palette.dawn)
-                emptyStat("total", count: statusCount("agents"), tint: Palette.sage)
+                emptyStat("working", tint: Palette.sky)
+                emptyStat("needs_you", tint: Palette.dawn)
+                emptyStat("tasks", tint: Palette.sage)
             }.padding(.top, 8)
             Spacer(); Spacer()
         }
         .padding(.horizontal, 24).frame(maxWidth: .infinity)
     }
 
-    private func statusCount(_ id: String) -> Int {
-        Int(store.status?.counts.first(where: { $0.id == id })?.value ?? 0)
-    }
-
-    private func emptyStat(_ label: LocalizedStringKey, count: Int, tint: Color) -> some View {
-        VStack(spacing: 2) {
-            Text(count, format: .number).font(.display(.title2, weight: .bold))
+    /// A count as the Mac reports it, with the name the Mac gives it, so every screen calls it the same.
+    private func emptyStat(_ id: String, tint: Color) -> some View {
+        let reported = store.status?.counts.first(where: { $0.id == id })
+        return VStack(spacing: 2) {
+            Text(Int(reported?.value ?? 0), format: .number).font(.display(.title2, weight: .bold))
                 .foregroundStyle(tint).contentTransition(.numericText())
-            Text(label).font(.caption).foregroundStyle(.secondary)
+            Text(verbatim: reported?.label ?? "").font(.caption).foregroundStyle(.secondary)
         }
         .frame(minWidth: 88).padding(.vertical, 12)
         .background(Palette.card.opacity(0.7), in: .rect(cornerRadius: 18))

@@ -4,10 +4,10 @@
   "view": "settled_card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "mac",
-  "version": "v56babbc9f9762fb2",
+  "version": "v83f404f7887bf388",
   "cursor": "cursor-1",
   "status": {
-    "version": "v6379ab01fca8ddc7",
+    "version": "vc15784c534027720",
     "summary": "1 question · 3 to read · 0 tasks working",
     "summary_parts": [
       {
@@ -42,19 +42,29 @@
         "value": 1
       },
       {
-        "id": "agents",
-        "label": "In progress",
-        "value": 0
-      },
-      {
         "id": "working",
         "label": "working",
         "value": 0
       },
       {
-        "id": "waiting",
-        "label": "waiting",
+        "id": "needs_you",
+        "label": "waiting for you",
         "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "queued",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "paused",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "waiting",
+        "value": 0
       }
     ],
     "gauges": [

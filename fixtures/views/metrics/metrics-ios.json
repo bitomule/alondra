@@ -4,11 +4,11 @@
   "view": "metrics",
   "key": "metrics?period=7d&compare=previous",
   "client": "ios",
-  "version": "v48c2fc85732eff48",
+  "version": "va60ca77c3b87d7a6",
   "cursor": "metrics-cursor",
   "title": "Metrics",
   "status": {
-    "version": "v24fcc327657cbf58",
+    "version": "vf29c56a46b1940df",
     "summary": "0 tasks working",
     "summary_parts": [
       {
@@ -31,17 +31,27 @@
         "value": 0
       },
       {
-        "id": "agents",
-        "label": "In progress",
-        "value": 0
-      },
-      {
         "id": "working",
         "label": "working",
         "value": 0
       },
       {
-        "id": "waiting",
+        "id": "needs_you",
+        "label": "waiting for you",
+        "value": 0
+      },
+      {
+        "id": "queued",
+        "label": "queued",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "paused",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
         "label": "waiting",
         "value": 0
       }
