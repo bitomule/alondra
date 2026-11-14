@@ -942,9 +942,6 @@ pub(crate) fn canonical_task_context(state: &DomainState, task: &alondra_core::d
                 let mut text = format!("## Earlier work {}: {}", earlier.id, earlier.title);
                 if let Some(result) = earlier.final_presentation.as_ref().and_then(|id| state.interactions.get(id)) {
                     text.push_str(&format!("\n{}", result.body));
-                    if result.shortened {
-                        missing_inputs.push(format!("interaction:{}", result.id));
-                    }
                 }
                 for pr in state.task_prs(earlier) {
                     text.push_str(&format!("\nPull request: https://{}/{}/pull/{}", pr.host, pr.repository, pr.number));
