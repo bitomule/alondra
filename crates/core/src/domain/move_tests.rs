@@ -14,11 +14,11 @@ fn catalog(provider: Provider, id: &str, model: &str) -> AccountModelCatalog {
         model: model.into(), display_name: model.into(), reasoning_efforts: vec!["high".into()], default_reasoning_effort: Some("high".into()), context_window: Some(100_000), input_modalities: vec!["text".into()], is_default: true, hidden: false,
     }] }
 }
-fn claude() -> AccountKey { AccountKey::native(Provider::Claude) }
+pub(super) fn claude() -> AccountKey { AccountKey::native(Provider::Claude) }
 fn codex() -> AccountKey { AccountKey::native(Provider::Codex) }
 
 /// Task `t`, its turn running on Codex, with Claude signed in and a Claude account turned off.
-fn on_codex() -> DomainState {
+pub(super) fn on_codex() -> DomainState {
     let mut s = world();
     must(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![
         account(Provider::Claude, "default", AccountState::SignedIn), account(Provider::Codex, "default", AccountState::SignedIn), account(Provider::Claude, "off", AccountState::Disabled),
@@ -152,7 +152,7 @@ fn situation(s: &DomainState) -> Situation {
     super::read_index::ReadIndex::build(s).task(&"t".into()).expect("a reading").situation
 }
 /// The source's host ends into the move and the move is deferred: nothing has to start yet.
-fn moved_and_deferred(s: &mut DomainState) {
+pub(super) fn moved_and_deferred(s: &mut DomainState) {
     move_to(s, claude()).unwrap();
     must(s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false, by_alondra: true, ended_work: vec![] });
     must(s, Actor::System, Command::DeferTaskMove { task_id: "t".into(), account: claude() });
