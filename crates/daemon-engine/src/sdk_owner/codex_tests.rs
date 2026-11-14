@@ -2015,6 +2015,48 @@ async fn a_resting_task_moves_at_once(){
     slice.domain.stop_sdk_owners();
 }
 
+/// An earlier task this one built on ended, and Alondra compacted its long final result to the
+/// excerpt every task that builds on it reads.
+fn built_on_a_compacted_result(slice:&Slice)->String{
+    let earlier:TaskId="journal-robustness".into();
+    slice.run(&Actor::Orchestrator{generation:0},"earlier-task",Command::CreateTask{
+        plan_items:None,continues:None,task_id:earlier.clone(),request_id:"sdk-slice-request".into(),title:"Make the journal robust".into(),
+        agent_id:None,review_prs:false,dependencies:BTreeSet::new(),stack:None,launch:Some(LaunchPlan::new("journal",slice.worktree.to_str().unwrap())),
+    });
+    slice.run(&system(),"earlier-node",Command::RegisterAgent{agent_id:"journal-node".into(),name:"Journal".into(),at:0});
+    slice.run(&user(),"assign-earlier",Command::AssignTask{task_id:earlier.clone(),agent_id:"journal-node".into(),model:None});
+    let targets=vec![DeliveryTarget::Text{text:"The journal batches its writes".into()}];
+    let body=format!("The journal batches its writes.\n\n{}","Every step the node measured is listed here. ".repeat(200));
+    slice.run(&Actor::Agent{agent_id:"journal-node".into()},"earlier-result",Command::PresentResult{
+        checklist:vec![],attachments:vec![],task_id:earlier.clone(),interaction_id:"journal-final".into(),body,targets:targets.clone(),
+        is_final:true,nothing_to_review:false,card:CardSpec::delivery("Review the journal changes",&targets,true),
+    });
+    slice.run(&user(),"accept-earlier",Command::AcceptDelivery{presentation_id:"journal-final".into(),targets});
+    slice.run(&system(),"end-earlier",Command::RecordNodeEnd{task_id:earlier.clone(),end:NodeEnd::Closed,agent_id:None});
+    slice.run(&Actor::Orchestrator{generation:0},"depend-on-earlier",Command::SetDependencies{task_id:TASK.into(),dependencies:BTreeSet::from([earlier]),stack:None,reason:None});
+    slice.domain.retain(alondra_core::now_millis()).unwrap();
+    let state=slice.domain.state().unwrap();let result=&state.interactions[&alondra_core::domain::InteractionId::from("journal-final")];
+    assert!(result.shortened,"the earlier result is compacted to its excerpt");
+    result.body.lines().next().unwrap().to_owned()
+}
+
+// Found in use: every task that built on an ended task with a long result refused to move,
+// «Critical task context is incomplete», naming that other task's settled result.
+#[tokio::test]
+async fn a_task_built_on_an_ended_task_whose_result_was_compacted_moves(){
+    let slice=Slice::new();let task:TaskId=TASK.into();
+    let excerpt=built_on_a_compacted_result(&slice);
+    working_on_codex(&slice);
+    request_move(&slice);
+    assert_eq!(settled_move(&slice).await,"done","the move ends: {:?}",slice.domain.state().unwrap().tasks[&task].move_refused);
+    let state=slice.domain.state().unwrap();
+    assert!(state.tasks[&task].move_refused.is_none());
+    assert_eq!(state.tasks[&task].account_key(),AccountKey::native(Provider::Claude));
+    let prompt=slice.prompts().into_iter().find(|prompt|prompt.contains("The user moved this task to claude/default")).expect("Claude is told about the move");
+    assert!(prompt.contains(&excerpt),"the new node reads the earlier result's excerpt: {prompt}");
+    slice.domain.stop_sdk_owners();
+}
+
 // Found by the whole-machine model: a delivery moved while the user reviewed it read as starting
 // for ever, and once the user sent it back nothing started it on the account it moved to.
 #[tokio::test]

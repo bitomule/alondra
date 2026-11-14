@@ -1121,7 +1121,7 @@ fn canonical_task_context_keeps_ordered_public_user_inputs_and_refuses_missing_o
 }
 
 #[test]
-fn a_task_moves_to_another_provider_by_what_compaction_cut_never_by_a_marker_in_its_text() {
+fn a_task_moves_to_another_provider_by_what_is_missing_never_by_a_marker_or_a_compacted_dependency() {
     use alondra_core::domain::{Author, CardKind, CardSpec, Interaction, InteractionPayload, Recipient, Scope};
     let f = world();
     let mut state = f.domain.state().unwrap().as_ref().clone();
@@ -1144,8 +1144,11 @@ fn a_task_moves_to_another_provider_by_what_compaction_cut_never_by_a_marker_in_
     assert!(crate::provider_transition::critical_context(&state, &task).is_ok());
     state.interactions.insert("earlier-result".into(), result(true));
     let context = canonical_task_context(&state, &task);
-    assert!(!context.complete);
-    assert!(context.omitted_sources.contains(&"interaction:earlier-result".to_owned()), "{:?}", context.omitted_sources);
+    assert!(context.complete, "a dependency's compacted result is the excerpt a task that builds on it reads: {:?}", context.omitted_sources);
+    assert!(context.text.contains("The colours live in one file now."));
+    state.tasks.remove(&TaskId::from("earlier"));
+    let context = canonical_task_context(&state, &task);
+    assert!(context.omitted_sources.contains(&"dependency:earlier".to_owned()), "{:?}", context.omitted_sources);
     assert!(crate::provider_transition::critical_context(&state, &task).is_err());
 }
 
