@@ -197,6 +197,22 @@ class LocalReleaseTests(unittest.TestCase):
         self.assertFalse((output / 'manifest.json').exists())
         self.assertFalse(any(c[0] in ('git', 'codesign') for c in calls))
 
+    def test_prepare_runs_every_check_through_bazel_before_signing(self):
+        patch.object(l.platform, 'system', return_value='Darwin').start()
+        patch.object(l.platform, 'machine', return_value='arm64').start()
+        patch.object(l, 'require_disk_space').start()
+        calls = []
+        def fake(*args, **kwargs):
+            calls.append(args)
+            if args[:2] == ('bazelisk', 'test'):
+                raise subprocess.CalledProcessError(1, args)
+            if args[0] == 'security':
+                return f'1) {l.IDENTITY} "local identity"'
+            self.fail(f'Unexpected command before release validation: {args}')
+        with patch.object(l, 'run', side_effect=fake), self.assertRaises(subprocess.CalledProcessError):
+            l.prepare('0.1.2', 'source', self.root / 'artifacts')
+        self.assertEqual(calls[-1], ('bazelisk', 'test', '//crates/...', '//deploy/brew/...'))
+
     def test_disk_guard_accepts_threshold_and_rejects_below_it(self):
         sufficient = type('Usage', (), {'free': l.LOW_FREE})()
         insufficient = type('Usage', (), {'free': l.LOW_FREE - 1})()
