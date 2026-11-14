@@ -61,7 +61,8 @@ apple/Mermaid/Sources/Parse/Sequence.swift	if let alias = text.range(of: " as ")
 apple/Mermaid/Sources/Parse/State.swift	if line == "end note" {	format	Mermaid diagram syntax
 crates/alondra/src/account_native_smoke.rs	.to_ascii_lowercase()	format	environment variable names compare without case
 crates/alondra/src/cli.rs	let value = value.trim().to_ascii_lowercase();	format	flag or setting value
-crates/alondra/src/i18n.rs	let v = v.trim().to_ascii_lowercase();	format	flag or setting value
+crates/core/src/user_language.rs	let v = v.trim().to_ascii_lowercase();	format	locale identifier
+crates/core/src/views/common.rs	let name = name.to_lowercase();	display	redact secret argument values for display
 crates/alondra/src/report/extract.rs	while let Some(at) = rest.find("enum ") {	format	enum names read from Rust sources for the report's vocabulary
 crates/alondra/src/report/extract.rs	parts.last_mut().expect("a part").extend(c.to_lowercase());	format	enum names read from Rust sources for the report's vocabulary
 crates/alondra/src/report/extract.rs	let mut out = vec![variant.to_owned(), variant.to_lowercase(), parts.join("_"), parts.join("-")];	format	enum names read from Rust sources for the report's vocabulary
