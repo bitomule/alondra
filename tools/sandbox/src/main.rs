@@ -1,4 +1,6 @@
 //! Throwaway Macs, relay and phone for `make e2e-sandbox`. Never points at a real Alondra.
+#[cfg(test)]
+mod card_language;
 mod fake;
 mod iroh_check;
 mod iroh_cli;

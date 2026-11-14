@@ -122,3 +122,12 @@ pub fn wait_for<T>(what: &str, limit: Duration, mut attempt: impl FnMut() -> Res
         std::thread::sleep(Duration::from_millis(250));
     }
 }
+
+/// The language the sandbox daemon reads cards in. `SANDBOX_LANG` pins it for the journey itself;
+/// a node, which inherits no such variable, finds it in the `lang` file its Mac's start wrote.
+pub fn card_language() -> String {
+    std::env::var("SANDBOX_LANG")
+        .ok()
+        .or_else(|| std::fs::read_to_string(Path::new(&std::env::var("ALONDRA_HOME").ok()?).join("lang")).ok())
+        .map_or_else(|| "en".into(), |language| language.trim().to_owned())
+}

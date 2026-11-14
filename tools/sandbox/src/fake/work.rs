@@ -85,7 +85,7 @@ pub fn perform(fakes: &Fakes, worker: &Worker, step: &Step) -> Option<Result<mcp
                 None => json!([{"kind": "text", "text": need}]),
             };
             let arguments = json!({
-                "task_id": task()?, "interaction_id": format!("result-{}-{}", worker.short, hex(&random::<3>()?)),
+                "task_id": task()?, "interaction_id": format!("result-{}-{}", worker.short, hex(&random::<3>()?)), "language": crate::sandbox::card_language(),
                 "title": need, "need": if *is_final { "Review the result" } else { "Read the update" }, "body": "The sandbox changes are ready.", "targets": targets, "is_final": is_final,
                 "content": {"kind": "report", "body": "The sandbox node completed the scripted work."},
             });
@@ -108,7 +108,7 @@ pub fn perform(fakes: &Fakes, worker: &Worker, step: &Step) -> Option<Result<mcp
                 .map(|label| json!({"id": label.to_lowercase().replace(' ', "-"), "label": label, "description": format!("Choose {label}")}))
                 .collect();
             worker.tool(fakes, "ask", json!({
-                "interaction_id": id, "scope": {"kind": "task", "task_id": task()?}, "recipient": {"kind": "user"},
+                "interaction_id": id, "language": crate::sandbox::card_language(), "scope": {"kind": "task", "task_id": task()?}, "recipient": {"kind": "user"},
                 "title": need, "need": "Choose an option", "why": "The sandbox node needs this decision to go on.", "blocking": true, "options": options,
             }))
         })(),

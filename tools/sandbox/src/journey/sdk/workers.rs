@@ -103,7 +103,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes, user: &User) {
         script_tool(sandbox, DELIVER_ASK, "toolu_w3_2_write", "Write", json!({"file_path": "{plan_file}", "content": PLAN_TEXT}))?;
         script_tool(sandbox, DELIVER_ASK, "toolu_w3_3_exit", "ExitPlanMode", json!({}))?;
         script_tool(sandbox, DELIVER_ASK, "toolu_w3_4_deliver", "mcp__plugin_alondra_alondra__present_result", json!({
-            "task_id": "t-w3", "interaction_id": "w3-final", "title": "Plain text notes", "need": "Review the notes format", "body": "The notes are plain text and render.",
+            "task_id": "t-w3", "interaction_id": "w3-final", "language": crate::sandbox::card_language(), "title": "Plain text notes", "need": "Review the notes format", "body": "The notes are plain text and render.",
             "targets": [{"kind": "text", "text": "The notes format"}], "is_final": true,
             "checklist": [
                 {"item": "1", "evidence": [{"kind": "command", "value": "make notes"}]},
@@ -161,7 +161,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes, user: &User) {
             ],
         }]}))?;
         script_tool_after(sandbox, "toolu_w4_1_ready", "toolu_w4_2_deliver", "mcp__plugin_alondra_alondra__present_result", json!({
-            "task_id": "t-w4", "interaction_id": "w4-final", "language": "en", "title": "Parser split", "need": "Review the parser split", "body": "The parser work is split.",
+            "task_id": "t-w4", "interaction_id": "w4-final", "language": crate::sandbox::card_language(), "title": "Parser split", "need": "Review the parser split", "body": "The parser work is split.",
             "targets": [{"kind": "text", "text": "The parser split"}], "is_final": true,
         }))?;
         script_tool(sandbox, SUBAGENT, "toolu_w4_sub_write", "Bash", json!({"command": "echo draft > parser-draft.txt", "description": "Save the draft"}))?;

@@ -200,12 +200,13 @@ while [ "$i" -le "$macs" ]; do
 		python3 -I "$repo/tools/e2e_sdk_backend.py" --fake "$dir" "$home" "$SDK_NODE" "$SDK_HOST" "$dir/fakes/claude"
 	fi
 	# start runs this Mac's daemon with its environment; a journey restarts the daemon with it too.
+	printf '%s\n' "${SANDBOX_LANG:-en}" >"$home/lang"
 	{
 		printf '#!/bin/sh\n'
 		if [ "$fakes" = 1 ]; then
 			printf 'export PATH="%s" CLAUDE_HOME="%s" CLAUDE_CONFIG_DIR="%s" ALONDRA_SANDBOX_TIMING=fast\n' "$daemon_path" "$claude_home" "$claude_home"
 		fi
-		printf 'export ALONDRA_HOME="%s" ALONDRA_PORT="%s" ALONDRA_SANDBOX=1 ALONDRA_WAKE=%s ALONDRA_PLUGIN_SOURCE="%s"\n' "$home" "$port" "$wake" "$repo/plugin"
+		printf 'export ALONDRA_HOME="%s" ALONDRA_PORT="%s" ALONDRA_SANDBOX=1 ALONDRA_WAKE=%s ALONDRA_PLUGIN_SOURCE="%s" ALONDRA_LANG="%s"\n' "$home" "$port" "$wake" "$repo/plugin" "${SANDBOX_LANG:-en}"
 		printf 'exec "%s"\n' "$dir/bin/alondrad"
 	} >"$home/start"
 	chmod 755 "$home/start"
@@ -241,7 +242,7 @@ if [ -f "$home/alondrad.pid" ]; then
 	kill "\$pid" 2>/dev/null || true
 	while kill -0 "\$pid" 2>/dev/null; do sleep 0.2; done
 fi
-ALONDRA_HOME="$home" ALONDRA_PORT="$port" ALONDRA_SANDBOX=1 ALONDRA_WAKE=0 ALONDRA_PLUGIN_SOURCE="$repo/plugin" \
+ALONDRA_LANG="${SANDBOX_LANG:-en}" ALONDRA_HOME="$home" ALONDRA_PORT="$port" ALONDRA_SANDBOX=1 ALONDRA_WAKE=0 ALONDRA_PLUGIN_SOURCE="$repo/plugin" \
 	nohup "$dir/bin/alondrad" >>"$home/alondrad.log" 2>&1 &
 echo \$! >"$home/alondrad.pid"
 SCRIPT
