@@ -2,16 +2,16 @@
   "apns": {
     "alondra": {
       "envelope": {
-        "ciphertext": "foTf2v-NcW85BbNoOrI9HFNk1reukRgXbpmd38LYqQKqQ-1RoEN5H33RRCa0vI7E2omlmz4XU1jA2KWqwzsITTRetdwb1jWw0oRCkc58hoUHvdfVzWfzZmMjQFN5TjKxgwPJg5EXsiTlNueG_bY5YoAR_3UXqm1EMYHe2bjm8J7vaPK3M2jFPvk1R8wsNxwFwMEAOdB37uOf37qgIqocizwdVmqjJZlYlcnLimU-TFUAQco-or2s9lQ5kw2WsxlSmUOWwtASv0L7Gt4_oDjer5t28iUHGQ_pJbgxHDRz58vn24zUXYLLlqn7u9UItwq4H94nGLa9ocSEBC4yYTa_AcTduFoRC1jRSq8xWJU23AmK8G48DjN9zTHp57S4ImJ3B4Sk578dWybWQKqGaXf6fVx-r64OMxaSTGwO5MiEgT1LOFHaUpgHQGg7OlByu6eM86bSvaHiCchWbzyg2_IK55cSYus73x59fPye-76buofW-Xp0z_93xO-UXPBjoO8PZK6tVk0iTHVN23xnG4fRH4XA2Oq6Od27PNRlP1rTqZaaGECuFv5Eo-cM27L8wee9Vo4KSNXUX1WWFX3L72zg6DXaKaKik3cOOvS1KfI1Ljgmr7ZEkZ18vWoB5zDhUS2RQGJJYG_ja4QDXPDG9vsON9Ycm3T4aDFFC09X_ev_UZKt-Z5YbvrDifJrlzmWHSc1LeTP5xbCsq5ZknDA-fOeU_pF_zUDATBIAQjSRfiN6GKLrBNnnpjg7gEtEBpGaX224sAH9L1w424ewf4KPrZLF_AzJfHmifXIENvD2VltsZIsmARtp8WRvTQtU7IALIUx75knUMJ50uFn8oX2BvY4wMq4EXgVvQWAH4dJrTzlJEa7a1oemy48uLDdDjxzcSAF4_ZZrEeGyPmKR2ihr-_cEmjFI4L003huKBY_DwrdpGq2w2NtLDTBNIB27ZhSjbC40aI8PIb1bayKFqEtJ4umALfWhUlMU4jKzDl8fReWLaVvyDPf3IRU-D7nhsN44Tc99JZQX7Ju2jhI0GNHGp0ztUQ0SQSE",
-        "ephemeral_key": "BPC5_1syxuzzWn0BOJcr9QlhDUApJ_Z9skPkA8yeXwzuh7KCs-9NyDcyTkVecWK_0vXQQ-nKDyqJsqUjCAqKQmc",
-        "expires_at_ms": 1793253926164,
+        "ciphertext": "tzRz3Lj5AZrOsaYnO6Wq7GIqcH5lVZ5rMiWX2C7PRwbC0cTKmd25xa1JWfUiGNCODN--loMhNqSRllfK-vC1SwjYxgDDgj_76LrU6-qkpMbCdzMxbG81eZbYyxP9IwIV8CBGOzQyK4Xrua4Bl0uoShRCcK7cfWJfDiZqVp1UBA32p0_eHPaxvXADhE9jktkCc4G6a4Z7zWSwDqM8krheMz9vvQfCJ-OpKjVCOYaImistDduYT5FXMjd5naSGatizPJLAf727iEKhJLvS-iLB2TYaNbC7jcvjJyMUim5YakKZ0NO3ORnbXFND0dfhwzrfm-rsVmEuAfv7ePNN8yR-Y8fwAh3fr-uhiRIZJ5Zi4hKd0mS0NElHpnVnd076G9ZUIHw5GFFG2FmKGS5qHHgab7T6rjGu7ZSHdrw1Xy3SlOI_xPDP0cNNU71ZOa4SBkoBgkOjvRGshvreXViLvnl3qNMUzhvBtSn4mOnvqJMdvnoiBZuXlp1baOGPYwev8u3lsf1BYtTm2RMtzvmZ2YFsI0lyGKnOad56rp66QOM4KxRYkgHuYey0C89VXqjEEyI9s4rRkLfBD0SIVa_7kIXSfHmMfVmZaOW1uQISSW9Ch75BxyzJ0OS9sNJYTwD1mTYa4xTXjmClUcluUROoVfiKHT3CFa2KcKxKW-j4oAEnHJMRRtnatisWDJOhfuqZWglSA3jAgtfeIASzXKPabiRREP5ApyZtwpQ8T1ZBWuK8Sri9MhCm9Wbm7e8r0CRixXXu77uRVLKEpUI8gCGYx22E6t2OzqNZ_JkQsGmq5fGzlV1DipNPc1YLr67_thvANkOO5boJzM97Kj9OHuQeHVzYyx6GXgTtOdOhbxAguFUoKCnE7d7wBHiCO1I1JLsfFfH-qBKu1ojKjCNTNU4_ABhMmmSBli_0DtoZeI_I1mvYqvSOxOV6k31i6JCmPSeWSW4dFihhwqLwT--PI-WzrrIuszmmB7MB234yp7gbmdSG56_Qd4YzZFKmoo1iTvFfyWn_FetGMLnJPjvdFlycg8RCTRtIEJxZ",
+        "ephemeral_key": "BBBqhyxSy-vw_Sm_o8HzlcP1Nx8n4KKYFswf4VMPJRHZf-C3sRuXybsGdrt1aKLex-wah3k4HtB3CfUpk3VpSes",
+        "expires_at_ms": 1794651164615,
         "kind": "push",
-        "nonce": "bB7ySMj7UFc8ezrH",
+        "nonce": "oZ7v5QlAYkRM7v8X",
         "recipient": "phone-fixture",
-        "request_id": "IFRpFAuNMv1KBS37RaX_Wg",
+        "request_id": "SosV-k0wZrB6NZkxHYmoqw",
         "route": "mac-fixture",
         "sender": "mac-fixture",
-        "signature": "vbe2r2ODN7kJuYhkj0yigVq3kbMyEDecwk3ym6o0MjVyYinJzNP-1o5Q2JpsPTqI25kvm_19huz81nxpuLugrw",
+        "signature": "N-3OODYdTVka_jSPgDEGiA92mHvNUnp9oIlCL4foqOAWtvTgWuVkL_sL_p5L-nLYG4Ahak-nsXEieUgOo-1fUA",
         "v": 1
       },
       "push_binding": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
@@ -58,7 +58,7 @@
         "body": "The lexer split is ready and its tests pass.",
         "title": "Merge the question parser?"
       },
-      "badge": 4,
+      "badge": 3,
       "category": "ALONDRA_PUSH",
       "interruption-level": "active",
       "mutable-content": 1,

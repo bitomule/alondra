@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:request-tasks-r-sync-1",
   "client": "mac",
-  "version": "v356e08c70373c07e",
+  "version": "v8a52da24d733f306",
   "cursor": "cursor-1",
   "title": "He creado 3 tareas",
   "status": {
-    "version": "vd502e676db377532",
+    "version": "vc89e147b4ac4dfd0",
     "summary": "3 por leer · 0 tareas trabajando",
     "summary_parts": [
       {
@@ -24,7 +24,7 @@
         "other": "{count} tareas trabajando"
       }
     ],
-    "badge": 3,
+    "badge": 0,
     "counts": [
       {
         "id": "inbox",

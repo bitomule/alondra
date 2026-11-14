@@ -735,7 +735,17 @@ impl DomainState {
             InteractionPayload::Question { options, .. } | InteractionPayload::ActionRequest { options, .. } => options.as_slice(),
             _ => &[],
         };
-        validate_card(card, options, source, blocking)?;
+        let held = source == Source::Hold;
+        let card_type = CardType::of(card, card.system.as_ref(), &payload, held);
+        let worded;
+        let card = match card_type.map(|t| t.contract().need) {
+            Some(Need::Alondra(need)) => {
+                worded = CardSpec { need: need.into(), ..card.clone() };
+                &worded
+            }
+            _ => card,
+        };
+        validate_card(card, options, source, blocking).map_err(|e| e.breaking(card_type, ContractRule::Shape))?;
         if card.secret_destination.is_some() && !matches!((scope, actor), (Scope::Task { .. }, Actor::Agent { .. })) {
             return refuse("invalid_input", "card.secret_destination", "Only a task's node asks for a secret written to a file of its repository");
         }
@@ -765,6 +775,9 @@ impl DomainState {
             }
         }
         self.recipient(to)?;
+        NewCard { card, system: card.system.as_ref(), payload: &payload, author: &author, to, blocking, held }
+            .check()
+            .map_err(DomainError::of_breach)?;
         if card.kind == CardKind::Propose {
             self.suggestion(&author, scope, to, options)?;
         }
@@ -815,6 +828,16 @@ impl DomainState {
         );
         self.blocks_acyclic(i)?;
         Ok(None)
+    }
+    /// One of Alondra's own cards, made whole by its code, after its type's contract holds.
+    pub(super) fn insert_system_card(&mut self, card: Interaction) -> Result<()> {
+        let held = self.holds.contains_key(&card.id);
+        NewCard {
+            card: &card.card, system: card.system_card.as_ref(), payload: &card.payload, author: &card.author,
+            to: &card.recipient, blocking: card.blocking, held,
+        }.check().map_err(DomainError::of_breach)?;
+        self.interactions.insert(card.id.clone(), card);
+        Ok(())
     }
     /// A suggestion is something a node saw outside its task: it goes to the orchestrator, never
     /// to the user, carries the orchestrator's fixed answers, and a task keeps only a few waiting.
@@ -1409,8 +1432,7 @@ impl DomainState {
                 CardSpec::new(CardKind::Know, clip(title, CardSpec::TITLE_MAX)).content(ContentKind::Report, answer)
             }
         };
-        self.tell_the_user(format!("{request}-answer"), request, answer.into(), card, None, created, effects);
-        Ok(())
+        self.tell_the_user(format!("{request}-answer"), request, answer.into(), card, None, created, effects)
     }
     /// A request of the user closed once all its tasks are over tells them how it ended.
     fn tell_it_is_done(&mut self, request: &RequestId, summary: Option<&str>,
@@ -1435,8 +1457,7 @@ impl DomainState {
         let (need, why) = done.text(crate::views::Lang::En);
         let card = CardSpec::new(CardKind::Know, need).why(why);
         self.retire_unread_tasks_cards(request);
-        self.tell_the_user(crate::request_outcome::DoneCard::id(&request.0), request, done.to_body(), card, Some(SystemCard::RequestDone), created, effects);
-        Ok(())
+        self.tell_the_user(crate::request_outcome::DoneCard::id(&request.0), request, done.to_body(), card, Some(SystemCard::RequestDone), created, effects)
     }
     /// The cards that named the tasks of a request, oldest first.
     fn tasks_cards(&self, request: &RequestId) -> Vec<(&Interaction, crate::request_outcome::TasksCard)> {
@@ -1468,7 +1489,7 @@ impl DomainState {
     }
     /// `quiet` records the tasks as announced on a withdrawn card nobody sees: what the daemon
     /// does with the tasks it finds when it opens its domain, which the user already knows.
-    fn announce_request_tasks(&mut self, quiet: bool, created: &mut Vec<String>, effects: &mut Vec<DomainEffect>) {
+    fn announce_request_tasks(&mut self, quiet: bool, created: &mut Vec<String>, effects: &mut Vec<DomainEffect>) -> Result<()> {
         for (request, tasks) in self.unannounced_tasks() {
             let earlier = self.tasks_cards(&request).len();
             let card = crate::request_outcome::TasksCard {
@@ -1491,11 +1512,12 @@ impl DomainState {
             let spec = CardSpec::new(CardKind::Know, need).why(why);
             let id = crate::request_outcome::TasksCard::id(&request.0, earlier + 1);
             if quiet {
-                self.write_system_card(id, &request, card.to_body(), spec, Some(SystemCard::RequestTasks), true);
+                self.write_system_card(id, &request, card.to_body(), spec, Some(SystemCard::RequestTasks), true)?;
             } else {
-                self.tell_the_user(id, &request, card.to_body(), spec, Some(SystemCard::RequestTasks), created, effects);
+                self.tell_the_user(id, &request, card.to_body(), spec, Some(SystemCard::RequestTasks), created, effects)?;
             }
         }
+        Ok(())
     }
     /// «Done» takes the place of the cards that named the request's tasks and nobody read.
     fn retire_unread_tasks_cards(&mut self, request: &RequestId) {
@@ -1509,19 +1531,20 @@ impl DomainState {
     }
     #[allow(clippy::too_many_arguments)]
     fn tell_the_user(&mut self, id: String, request: &RequestId, body: String, card: CardSpec, system_card: Option<SystemCard>,
-        created: &mut Vec<String>, effects: &mut Vec<DomainEffect>) {
-        let id = self.write_system_card(id, request, body, card, system_card, false);
+        created: &mut Vec<String>, effects: &mut Vec<DomainEffect>) -> Result<()> {
+        let id = self.write_system_card(id, request, body, card, system_card, false)?;
         created.push(id.0.clone());
         effects.push(DomainEffect::NotifyUser { task_id: None, interaction_id: id });
+        Ok(())
     }
     /// A card of Alondra about a request; a `withdrawn` one only keeps what it records.
     fn write_system_card(&mut self, id: String, request: &RequestId, body: String, card: CardSpec, system_card: Option<SystemCard>,
-        withdrawn: bool) -> InteractionId {
+        withdrawn: bool) -> Result<InteractionId> {
         let mut id = InteractionId(id);
         while self.interactions.contains_key(&id) {
             id.0.push('-');
         }
-        self.interactions.insert(id.clone(), Interaction {
+        self.insert_system_card(Interaction {
             attachments: vec![],
             id: id.clone(),
             scope: Scope::Orchestrator { request_id: Some(request.clone()) },
@@ -1536,8 +1559,8 @@ impl DomainState {
             withdrawn,
             card,
             clarification: None, snoozed_until: None, resurfaced_at_revision: None, system_card, shortened: false,
-        });
-        id
+        })?;
+        Ok(id)
     }
     /// R16: the open cards that hold back this delivery, oldest first.
     pub fn blocked_by(&self, delivery: &InteractionId) -> Vec<InteractionId> {
@@ -2346,7 +2369,7 @@ impl DomainState {
             task.allowed.clear();
         }
     }
-    fn retire_cards_of_ended_tasks(&mut self, effects: &mut Vec<DomainEffect>) {
+    fn retire_cards_of_ended_tasks(&mut self, effects: &mut Vec<DomainEffect>) -> Result<()> {
         let left: Vec<(TaskId, InteractionId)> = self.tasks.values()
             .filter(|t| t.state.terminal() && !Self::winding_down(t))
             .flat_map(|t| self.interactions.values().filter(|i| self.left_open(i, &t.id)).map(|i| (t.id.clone(), i.id.clone())))
@@ -2390,9 +2413,10 @@ impl DomainState {
                 clarification: None, snoozed_until: None, resurfaced_at_revision: None,
                 system_card: Some(SystemCard::EndedUnanswered { question: question.clone() }), shortened: false,
             };
-            self.interactions.insert(id.clone(), interaction);
+            self.insert_system_card(interaction)?;
             effects.push(DomainEffect::NotifyUser { task_id: Some(task_id), interaction_id: id });
         }
+        Ok(())
     }
     /// The task has a node whose end Alondra has not recorded.
     pub fn wraps_up(&self, t: &Task) -> bool {
@@ -2811,7 +2835,7 @@ impl DomainState {
         if next.cancel_orphan_reviewers(&mut effects, &mut lifecycles)? {
             next.derive_states();
         }
-        next.retire_cards_of_ended_tasks(&mut effects);
+        next.retire_cards_of_ended_tasks(&mut effects)?;
         next.reconcile_snoozed_cards(self, &mut effects);
         next.forget_what_ended_tasks_allowed();
         next.close_finished_messages();
@@ -3171,11 +3195,11 @@ impl DomainState {
             Command::RecordAccountLogin { login } => self.record_account_login(actor, login)?,
             Command::AnnounceRequestTasks => {
                 self.announce_guard(actor)?;
-                self.announce_request_tasks(false, created, effects);
+                self.announce_request_tasks(false, created, effects)?;
             }
             Command::AcknowledgeRequestTasks => {
                 self.announce_guard(actor)?;
-                self.announce_request_tasks(true, created, effects);
+                self.announce_request_tasks(true, created, effects)?;
             }
             Command::RecordAccounts { accounts, reserve } => {
                 system(actor)?;

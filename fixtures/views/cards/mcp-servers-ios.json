@@ -4,12 +4,12 @@
   "view": "mcp_servers",
   "key": "mcp_servers",
   "client": "ios",
-  "version": "vae5ebf1e68b7438a",
+  "version": "ved7c0bdc88ccba88",
   "cursor": "cursor-1",
   "title": "MCP servers",
   "summary": "9 servers · 3 need sign-in",
   "status": {
-    "version": "va13e8608ad85955f",
+    "version": "vf69c6fb3445f3047",
     "summary": "2 questions · 3 to read · 1 task working",
     "summary_parts": [
       {
@@ -31,7 +31,7 @@
         "other": "{count} tasks working"
       }
     ],
-    "badge": 5,
+    "badge": 3,
     "counts": [
       {
         "id": "inbox",

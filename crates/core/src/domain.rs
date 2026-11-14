@@ -1,5 +1,6 @@
 //! Pure business domain. Authenticated adapters construct Actors; SQL owns persistence.
 mod attention;
+mod card_contract;
 mod checklist;
 mod cited_files;
 mod command;
@@ -24,6 +25,8 @@ mod situation;
 mod system_card;
 #[cfg(test)]
 mod attention_tests;
+#[cfg(test)]
+mod card_contract_tests;
 #[cfg(test)]
 mod card_tests;
 #[cfg(test)]
@@ -101,6 +104,7 @@ mod confirmed_effect_tests;
 #[cfg(test)]
 mod situation_tests;
 pub use attention::*;
+pub use card_contract::*;
 pub use checklist::*;
 pub use cited_files::*;
 pub use command::*;

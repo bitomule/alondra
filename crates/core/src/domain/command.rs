@@ -1072,6 +1072,9 @@ pub struct DomainError {
     /// Why, for a person: what the user's action ran into. Absent when only a node can get here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refusal: Option<Refusal>,
+    /// The rule of a card's contract the card broke, and in which field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contract: Option<ContractBreach>,
 }
 impl DomainError {
     pub fn new(code: &str, message: impl Into<String>) -> Self {
@@ -1081,7 +1084,23 @@ impl DomainError {
             current_revision: None,
             subject: None,
             refusal: None,
+            contract: None,
         }
+    }
+    /// The refusal of a card that broke its type's contract.
+    pub fn of_breach(breach: ContractBreach) -> Self {
+        let mut error = Self::new("card_contract", format!("{}: {}", breach.field, breach.fix()));
+        error.subject = Some(breach.field.clone());
+        error.contract = Some(breach);
+        error
+    }
+    /// The same refusal, naming the rule of the card's contract it applied.
+    pub fn breaking(mut self, card_type: Option<CardType>, rule: ContractRule) -> Self {
+        if self.contract.is_none() {
+            let field = self.subject.clone().unwrap_or_else(|| "card".into());
+            self.contract = Some(ContractBreach { card_type, rule, field });
+        }
+        self
     }
     pub fn because(mut self, refusal: Refusal) -> Self {
         self.refusal = Some(refusal);

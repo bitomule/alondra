@@ -41,7 +41,7 @@ final class TriageFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.cards.ids, [ids.question, ids.information, ids.delivery])
         XCTAssertEqual(store.state.currentCard?.title, "Choose the welcome copy")
         XCTAssertNotNil(store.state.cards[id: ids.information]?.card)
-        XCTAssertEqual(store.state.badge, 4)
+        XCTAssertEqual(store.state.badge, 3, "the notice is only read: it never counts on the icon")
         XCTAssertEqual(store.state.queueTitle, "Waiting for You")
     }
 
@@ -77,7 +77,19 @@ final class TriageFeatureTests: XCTestCase {
         await store.send(.task)
         await store.skipReceivedActions()
 
-        XCTAssertEqual(store.state.iconBadge, 4)
+        XCTAssertEqual(store.state.iconBadge, 3)
+    }
+
+    /// Seven «I created the task…» notices counted on the icon as if each asked for something.
+    @MainActor
+    func testACardThatIsOnlyReadStaysInTheQueueAndNeverCountsOnTheIcon() async throws {
+        let store = store(FeedStub([try Fixtures.home(queue: [ids.information])] + [try Fixtures.card(ids.information)]))
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        XCTAssertEqual(store.state.orderedIDs, [ids.information])
+        XCTAssertEqual(store.state.badge, 0)
+        XCTAssertEqual(store.state.iconBadge, 0)
     }
 
     /// The user saw "Waiting for You" badged 1 over an empty queue: the badge read the server's count
@@ -1037,7 +1049,7 @@ final class TriageFeatureTests: XCTestCase {
         let store = store(try fullFeed())
         await store.send(.task)
         await store.skipReceivedActions()
-        XCTAssertEqual(store.state.badge, 4)
+        XCTAssertEqual(store.state.badge, 3, "the notice is only read: it never counts on the icon")
 
         let reply = ActionRequest(commandId: "c-reply", dataEpoch: try XCTUnwrap(store.state.screen.document).dataEpoch, client: .ios, lang: "en", actionId: "msg:view@7")
         await store.send(.handedOff(reply, cardID: ids.question))
@@ -1047,7 +1059,7 @@ final class TriageFeatureTests: XCTestCase {
         let read = ActionRequest(commandId: "c-read", dataEpoch: try XCTUnwrap(store.state.screen.document).dataEpoch, client: .ios, lang: "en", actionId: "read:x@1")
         await store.send(.handedOff(read, cardID: ids.information))
         XCTAssertEqual(store.state.orderedIDs, [ids.question, ids.delivery, ids.pullRequest])
-        XCTAssertEqual(store.state.badge, 3, "the queue drops the card it hides")
+        XCTAssertEqual(store.state.badge, 3, "the queue drops the card it hides, which never counted on the icon")
     }
 
     /// The user wrote their answer to a question in its reply field: the daemon took the text as the

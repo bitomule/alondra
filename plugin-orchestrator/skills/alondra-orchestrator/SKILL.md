@@ -542,8 +542,11 @@ Choose the tool by what you need.
   correct a card with `replaces`, or `withdraw` it. After the user asks for a clarification of a
   card, `answer_clarification` settles it.
 - A refused card was not sent and never stands for an answer or permission. Fix the field the
-  refusal names and send it again with the same `interaction_id`; sending the same refused card
-  three times raises a Problem for the user. If a call says Alondra could not be reached, do not
+  refusal names and send it again with the same `interaction_id`. A refusal with code
+  `card_contract` names in `contract.rule` the rule of the card's type it broke; a Problem, like
+  any card that asks the user, carries at least one
+  option. When a node's card is refused three times in a row Alondra tells you, never the user:
+  tell the node with `send` what to change. If a call says Alondra could not be reached, do not
   go on as if it had worked: retry it.
 - Your terminal does not reach the user.
 

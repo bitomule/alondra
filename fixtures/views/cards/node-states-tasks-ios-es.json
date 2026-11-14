@@ -4,11 +4,11 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "vbcf1027e505cff7d",
+  "version": "v46e1d710155a69f4",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
-    "version": "ve35261c1952f6b73",
+    "version": "v7d5f48f52968bf38",
     "summary": "2 preguntas · 3 por leer · 2 tareas trabajando",
     "summary_parts": [
       {
@@ -30,7 +30,7 @@
         "other": "{count} tareas trabajando"
       }
     ],
-    "badge": 5,
+    "badge": 3,
     "counts": [
       {
         "id": "inbox",

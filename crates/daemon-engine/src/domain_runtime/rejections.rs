@@ -1,5 +1,6 @@
 //! A node that keeps sending the same rejected card is stuck: after three rejections in a row
-//! Alondra puts a Problem in front of the user with the last error.
+//! Alondra tells the orchestrator, with the last error, so it tells the node what to fix. A refused
+//! card is never a card for the user.
 use super::*;
 use std::collections::BTreeMap;
 
@@ -72,7 +73,11 @@ impl DomainRuntime {
         let Ok(state) = self.state() else { return };
         let open: Vec<InteractionId> = state.interactions.values()
             .filter(|card| matches!(&card.system_card, Some(SystemCard::RefusedCards { owner: of }) if of == owner) && !card.withdrawn)
-            .filter(|card| matches!(card.payload, InteractionPayload::Question { answer: None, .. }))
+            .filter(|card| match &card.payload {
+                InteractionPayload::Information { read_by } => read_by.is_empty(),
+                InteractionPayload::Question { answer, .. } => answer.is_none(),
+                _ => false,
+            })
             .map(|card| card.id.clone())
             .collect();
         for id in open {
@@ -83,16 +88,15 @@ impl DomainRuntime {
     fn raise_stuck_problem(&self, owner: &str, card: &InteractionId, scope: Scope, last: &DomainError) {
         let Ok(state) = self.state() else { return };
         let name = state.agents.get(&AgentId(owner.to_owned())).map_or(owner, |agent| agent.name.as_str()).to_owned();
-        let scope = match &scope {
-            Scope::Task { task_id } if state.tasks.contains_key(task_id) => scope,
-            _ => Scope::Orchestrator { request_id: None },
-        };
-        let detail = format!(
-            "{name} sent card {card} and Alondra refused it {REJECTIONS_BEFORE_PROBLEM} times in a row. Last refusal ({}): {}",
+        let task = match &scope {
+            Scope::Task { task_id } => state.tasks.get(task_id).map(|t| format!(" of task “{}” ({task_id})", t.title)),
+            Scope::Orchestrator { .. } => None,
+        }.unwrap_or_default();
+        let body = format!(
+            "{name}{task} sent card {card} and Alondra refused it {REJECTIONS_BEFORE_PROBLEM} times in a row. Last refusal ({}): {}. \
+             This is never a card for the user: tell the node with send what to change so its card keeps its contract.",
             last.code, last.message
         );
-        let need = clip(&format!("{name} is stuck: Alondra refused its card"), CardSpec::NEED_MAX);
-        let why = clip(&format!("{} ({})", last.message, last.code), CardSpec::WHY_MAX);
-        let _ = self.raise_problem(&format!("problem-{owner}-{card}"), Some(SystemCard::RefusedCards { owner: owner.to_owned() }), Some(&format!("refused-cards:{owner}")), scope, need, why, detail, vec![]);
+        let _ = self.tell_orchestrator(&format!("refused-{owner}-{card}"), Some(SystemCard::RefusedCards { owner: owner.to_owned() }), body);
     }
 }

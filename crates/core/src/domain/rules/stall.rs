@@ -98,14 +98,14 @@ fn stall_options(only_close: bool) -> Vec<QuestionOption> {
 
 impl DomainState {
     /// The case the lifecycle of `task` now waits on, `card`, goes to the orchestrator.
-    pub(in crate::domain) fn open_stall(&mut self, task: &TaskId, card: InteractionId, effects: &mut Vec<DomainEffect>) {
+    pub(in crate::domain) fn open_stall(&mut self, task: &TaskId, card: InteractionId, effects: &mut Vec<DomainEffect>) -> Result<()> {
         let why = self.empty_turn(task);
-        self.open_stall_on(task, card, why, effects);
+        self.open_stall_on(task, card, why, effects)
     }
 
     /// The case `card` of `task`, whose node stopped for `why`, goes to the orchestrator.
-    pub(in crate::domain) fn open_stall_on(&mut self, task: &TaskId, card: InteractionId, why: EmptyTurn, effects: &mut Vec<DomainEffect>) {
-        let Some(t) = self.tasks.get_mut(task) else { return };
+    pub(in crate::domain) fn open_stall_on(&mut self, task: &TaskId, card: InteractionId, why: EmptyTurn, effects: &mut Vec<DomainEffect>) -> Result<()> {
+        let Some(t) = self.tasks.get_mut(task) else { return Ok(()) };
         t.stalls += 1;
         let (number, title) = (t.stalls, t.title.clone());
         let only_close = number > STALL_ATTEMPTS;
@@ -125,7 +125,7 @@ impl DomainState {
             "The node of Task “{title}” ({task}) stopped with nothing that explains its next step: no result, no question, no work of its own running and nothing it waits for. {why} Alondra already handed it back its turn {EMPTY_TURN_WAKES} times in a row with what happened. \
              This is never a question for the user: read its mission, its last words and its worktree below, and settle it with settle_stall(case_id: \"{card}\", task_id: \"{task}\", outcome). {outcomes}{delivery}");
         let need = fit_title(&title, CardSpec::TITLED_NEED_MAX, |title| format!("“{title}” stopped without a result or a question: settle how it goes on"));
-        self.interactions.insert(card.clone(), Interaction {
+        self.insert_system_card(Interaction {
             attachments: vec![],
             id: card.clone(),
             scope: Scope::Task { task_id: task.clone() },
@@ -140,8 +140,9 @@ impl DomainState {
             withdrawn: false,
             card: CardSpec::new(CardKind::Decide, clip(&need, CardSpec::NEED_MAX)),
             clarification: None, snoozed_until: None, resurfaced_at_revision: None, system_card: Some(SystemCard::Stalled), shortened: false,
-        });
+        })?;
         effects.push(DomainEffect::NotifyOrchestrator { interaction_id: Some(card), request_id: None });
+        Ok(())
     }
 
     /// The case `case_id` of `task` the orchestrator, or Alondra once nobody settled it in time, may settle with `outcome` now.

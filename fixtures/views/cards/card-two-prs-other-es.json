@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:github.com/acme/storefront#6",
   "client": "ios",
-  "version": "v02446727b16f2bd7",
+  "version": "v20187a2e87eefcbc",
   "cursor": "cursor-1",
   "title": "Review the result · storefront#6",
   "status": {
@@ -77,7 +77,7 @@
           "type": "card",
           "id": "github.com/acme/storefront#6",
           "kind": "review",
-          "need": "Review the result",
+          "need": "Revisa el resultado",
           "title_is_separate": true,
           "meta": "acme/storefront · → main",
           "content_row": {

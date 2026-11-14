@@ -4,11 +4,11 @@
   "view": "machine",
   "key": "machine",
   "client": "ios",
-  "version": "v63f99ec8d6601f7a",
+  "version": "vef77f3d49bc50fea",
   "cursor": "cursor-1",
   "title": "Machine",
   "status": {
-    "version": "vb16fcb5f0a8af2a5",
+    "version": "v9fcaff624875d67d",
     "summary": "2 questions · 3 to read · 0 tasks working",
     "summary_parts": [
       {
@@ -30,7 +30,7 @@
         "other": "{count} tasks working"
       }
     ],
-    "badge": 5,
+    "badge": 3,
     "counts": [
       {
         "id": "inbox",

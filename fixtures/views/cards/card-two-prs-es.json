@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:github.com/bitomule/alondra#17",
   "client": "ios",
-  "version": "vc8b5f7bbe0b94e3c",
+  "version": "va5a647598ddba3b3",
   "cursor": "cursor-1",
   "title": "Review the result · alondra#17",
   "status": {
@@ -77,7 +77,7 @@
           "type": "card",
           "id": "github.com/bitomule/alondra#17",
           "kind": "review",
-          "need": "Review the result",
+          "need": "Revisa el resultado",
           "title_is_separate": true,
           "meta": "bitomule/alondra · → main",
           "content_row": {

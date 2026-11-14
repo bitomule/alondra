@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:g-q2",
   "client": "ios",
-  "version": "v3e0700f6f8aa2780",
+  "version": "v3d0bbad70714e727",
   "cursor": "cursor-1",
   "title": "Ship it today?",
   "status": {
-    "version": "vff0d0e5f38e10729",
+    "version": "v2b5ab63e6dd6bbf3",
     "summary": "3 preguntas · 2 por leer · 0 tareas trabajando",
     "summary_parts": [
       {
@@ -30,7 +30,7 @@
         "other": "{count} tareas trabajando"
       }
     ],
-    "badge": 5,
+    "badge": 4,
     "counts": [
       {
         "id": "inbox",

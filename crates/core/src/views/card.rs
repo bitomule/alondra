@@ -11,7 +11,7 @@ use super::{
     summary,
     text::{t, tf},
 };
-use crate::domain::{InboxCard, SystemCard,
+use crate::domain::{CardType, InboxCard, Need, SystemCard,
     AvailableAction, Author, CardKind, CardSpec, ContentKind as DomainContent,
     DeliveryTarget, DocumentRevisionId, DomainState, EvidenceKind, Hold, InboxItem, InboxSubject, Instruction, Interaction, InteractionId,
     InteractionPayload, InteractionSubject, PrId, PrState, PullRequest, QuestionGroup, QuestionOption, Recipient, Scope, Task, clip, fit_title,
@@ -529,6 +529,21 @@ fn short_request(kind: CardKind, lang: Lang) -> &'static str {
     }
 }
 
+/// The request Alondra writes for a card whose type's contract gives it, never its author: a
+/// result asks to review it, whatever its author wrote.
+fn need_of_type(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<&'static str> {
+    let held = domain.holds.contains_key(&interaction.id);
+    let card_type = CardType::of(&interaction.card, interaction.system_card.as_ref(), &interaction.payload, held)?;
+    if !matches!(card_type.contract().need, Need::Alondra(_)) {
+        return None;
+    }
+    Some(match card_type {
+        CardType::ProposedPlan => t!(lang, "Review the plan", "Revisa el plan"),
+        CardType::Progress => t!(lang, "Read this update", "Lee esta novedad"),
+        _ => t!(lang, "Review the result", "Revisa el resultado"),
+    })
+}
+
 pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included: bool) -> Result<Card, BuildError> {
     let lang = context.lang;
     let domain = context.domain;
@@ -576,6 +591,9 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
         Some(reply) => Some(why.map_or_else(|| reply.clone(), |why| format!("{reply}\n\n{why}"))),
         None => why,
     };
+    if let Some(worded) = interaction.and_then(|interaction| need_of_type(interaction, domain, lang)) {
+        need = worded.into();
+    }
     if spec.title.is_some()
         && let Some(hold) = interaction.and_then(|interaction| domain.holds.get(&interaction.id))
     {
@@ -1706,7 +1724,10 @@ fn delivery_actions(
     let live = pr.and_then(|pr| context.live.pull_requests.iter().find(|detail| detail.id == pr.id.0));
     let document = is_document_review(interaction);
     let read_only = item.card.kind == CardKind::Know || (pr.is_none() && !document);
-    let accept_label = if read_only {
+    let closes_task = matches!(&interaction.payload, InteractionPayload::Delivery { is_final: true, .. });
+    let accept_label = if read_only && closes_task {
+        t!(lang, "Mark as done", "Dar por hecha")
+    } else if read_only {
         t!(lang, "Seen", "Visto")
     } else if document {
         t!(lang, "Approve", "Aprobar")
@@ -1722,6 +1743,8 @@ fn delivery_actions(
         let mut action = button(id.to_string(), label, role);
         action.stamp = Some(if document {
             t!(lang, "Approved", "Aprobada")
+        } else if read_only && closes_task {
+            t!(lang, "Done", "Hecha")
         } else if read_only {
             t!(lang, "Seen", "Visto")
         } else {

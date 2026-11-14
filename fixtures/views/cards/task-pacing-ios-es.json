@@ -4,11 +4,11 @@
   "view": "task",
   "key": "task:t-queued-next",
   "client": "ios",
-  "version": "v431d21196419c7aa",
+  "version": "v0cf355b089a79bec",
   "cursor": "cursor-1",
   "title": "Fix the crash when the schedule list is empty",
   "status": {
-    "version": "v9c97734b8040bb4a",
+    "version": "v9a5cdd5dddc61664",
     "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
     "summary_parts": [
       {
@@ -30,7 +30,7 @@
         "other": "{count} tareas trabajando"
       }
     ],
-    "badge": 5,
+    "badge": 3,
     "counts": [
       {
         "id": "inbox",

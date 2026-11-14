@@ -49,8 +49,14 @@ public struct TriageFeature: Sendable {
             return (0 ..< min(TriageFeature.depth, orderedIDs.count)).map { orderedIDs[(index + $0) % orderedIDs.count] }
         }
         public var status: ViewStatus? { screen.document?.status }
-        /// The cards the queue shows, so the tab and the app icon never count one the queue hides.
-        public var badge: Int { orderedIDs.count }
+        /// The cards the queue shows that ask for something, so the tab and the app icon never count
+        /// one the queue hides nor one that is only read.
+        public var badge: Int {
+            guard let queue = screen.document?.sections.first(where: { $0.id == "queue" }),
+                  let ids = queue.cardIds, let waits = queue.cardWaits, waits.count == ids.count else { return orderedIDs.count }
+            let waiting = Dictionary(zip(ids, waits), uniquingKeysWith: { first, _ in first })
+            return orderedIDs.filter { waiting[$0] != "read" }.count
+        }
         /// Nil until the first queue arrives, so a fresh launch keeps the number a push set.
         public var iconBadge: Int? { screen.document == nil ? nil : badge }
         public var queueTitle: String? { screen.document?.sections.first { $0.id == "queue" }?.title }

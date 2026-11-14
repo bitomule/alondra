@@ -4,11 +4,11 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "v5744bcab1d032841",
+  "version": "vdb34688e8ccb78b9",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
-    "version": "ve35261c1952f6b73",
+    "version": "v7d5f48f52968bf38",
     "summary": "2 preguntas · 3 por leer · 2 tareas trabajando",
     "summary_parts": [
       {
@@ -30,7 +30,7 @@
         "other": "{count} tareas trabajando"
       }
     ],
-    "badge": 5,
+    "badge": 3,
     "counts": [
       {
         "id": "inbox",

@@ -1069,14 +1069,12 @@ mod tests {
             state.interactions.insert(id.into(), Interaction { system_card: None,
                 attachments: vec![], id: id.into(), scope, author: Author::System,
                 recipient: Recipient::User, body: "Hecho".into(), blocking: false, subject: None,
-                payload: InteractionPayload::Information { read_by: Default::default() },
-                revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+                payload: InteractionPayload::Question { options: vec![QuestionOption { id: "go".into(), label: "Go".into(), description: None }], answer: None },
+                revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Decide, "Choose"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
             });
         }
         assert_eq!(user_push_payload(&state, Some("info-2"), Lang::En)["aps"]["badge"], 3);
-        let InteractionPayload::Information { read_by } =
-            &mut state.interactions.get_mut(&InteractionId::from("info-1")).unwrap().payload else { unreachable!() };
-        read_by.insert("mac".into());
+        state.interactions.get_mut(&InteractionId::from("info-1")).unwrap().withdrawn = true;
         assert_eq!(user_push_payload(&state, Some("info-2"), Lang::En)["aps"]["badge"], 2,
             "an item resolved elsewhere leaves the badge");
         assert_eq!(user_push_payload(&state, None, Lang::En)["aps"]["badge"], views::inbox_badge(&ReadIndex::build(&state)));
@@ -1111,7 +1109,7 @@ mod tests {
         assert_eq!(payload["aps"]["alert"]["body"], "Sí: se cifran en el cliente antes de subirlas a R2");
         assert_eq!(payload["aps"]["interruption-level"], "passive");
         assert_eq!(payload["aps"]["thread-id"], "a7efd99d", "the answer groups with its Request");
-        assert_eq!(payload["aps"]["badge"], 1, "the answer waits in the inbox the badge counts");
+        assert_eq!(payload["aps"]["badge"], 0, "the answer waits in the inbox to read, and a card only read never counts on the icon");
         let push = Push::open(&home).unwrap();
         deliver_from_runtime(&domain, &home, &push, None, &client, user[0].clone(), Duration::ZERO).await.unwrap();
         assert!(domain.store.lock().unwrap().delivery_evidence_page(0).unwrap()

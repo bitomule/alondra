@@ -245,7 +245,7 @@ impl DomainState {
         }
         if let Some(card) = unheard {
             let title = self.tasks[task].title.clone();
-            self.interactions.insert(card.clone(), decision_cancelled_card(card.clone(), task, &title, self.revision + 1));
+            self.insert_system_card(decision_cancelled_card(card.clone(), task, &title, self.revision + 1))?;
             effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
         }
         Ok(())

@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:github.com/example/repo#12",
   "client": "ios",
-  "version": "vb1f8f42733ca0560",
+  "version": "v1ba18533f0e10ecb",
   "cursor": "cursor-1",
   "title": "Review the beta candidate",
   "status": {
-    "version": "ve1b0ea85e0f05cae",
+    "version": "v2449cfcaedc9d3ba",
     "summary": "2 questions · 3 to read · 0 tasks working",
     "summary_parts": [
       {
@@ -30,7 +30,7 @@
         "other": "{count} tasks working"
       }
     ],
-    "badge": 5,
+    "badge": 3,
     "counts": [
       {
         "id": "inbox",

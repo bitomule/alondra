@@ -44,6 +44,11 @@ exports_files(
     visibility = ["//crates/relay:__pkg__"],
 )
 
+exports_files(
+    ["docs/architecture/cards.md"],
+    visibility = ["//crates/core:__pkg__"],
+)
+
 # What Claude Code writes beside a mod it loads with --plugin-dir: never part of the plugin.
 MOD_TYPES = [
     "plugin/.gitignore",

@@ -35,7 +35,7 @@ pub(super) fn build(context: &RenderContext<'_>) -> Status {
         version: String::new(),
         summary,
         summary_parts: parts,
-        badge: pending,
+        badge: super::inbox_badge(context.index),
         counts: vec![
             Count {
                 id: "inbox".into(),

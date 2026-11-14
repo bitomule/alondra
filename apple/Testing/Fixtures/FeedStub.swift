@@ -75,7 +75,7 @@ extension Fixtures {
         if let focus { object["key"] = "home?focus=\(focus)" }
         var sections = try XCTUnwrap(object["sections"] as? [[String: Any]])
         sections[0]["card_ids"] = queue
-        sections[0]["card_waits"] = queue.map { [informationID, deliveryID, pullRequestID].contains($0) ? "read" : "question" }
+        sections[0]["card_waits"] = queue.map { $0 == informationID ? "read" : [deliveryID, pullRequestID].contains($0) ? "review" : "question" }
         object["sections"] = sections
         var status = try XCTUnwrap(object["status"] as? [String: Any])
         let questions = queue.filter { ![informationID, deliveryID, pullRequestID].contains($0) }.count

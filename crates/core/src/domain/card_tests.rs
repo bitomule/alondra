@@ -690,8 +690,8 @@ fn only_a_node_suggests_and_only_to_the_orchestrator_with_its_answers() {
         attachments: vec![], interaction_id: "u".into(), scope: scope("t"), recipient: Recipient::User,
         body: "Update the README".into(), blocking: false, card: card.clone(), options: suggestion_options(),
     };
-    assert_eq!(refused(&mut s, agent(), to_user.clone()), ("forbidden".into(), Some("card.kind".into())));
-    assert_eq!(refused(&mut s, orchestrator(), to_user), ("forbidden".into(), Some("card.kind".into())));
+    assert_eq!(refused(&mut s, agent(), to_user.clone()), ("card_contract".into(), Some("recipient".into())));
+    assert_eq!(refused(&mut s, orchestrator(), to_user), ("card_contract".into(), Some("author".into())));
     let mut own_answers = suggest("o");
     if let Command::AskQuestion { options, .. } = &mut own_answers {
         *options = vec![option("do_it", "Do it"), option("not_now", "Not now")];
