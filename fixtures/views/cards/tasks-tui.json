@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "tui",
-  "version": "vb7c0232e7f45a2ce",
+  "version": "ve3a1a83839c22896",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
@@ -379,7 +379,7 @@
               },
               "icon": "task",
               "title": "Link the website in app.json",
-              "subtitle": "Claude Code doesn't trust ~/Projects/indie-apps · BlurCamera · weekly improvement",
+              "subtitle": "Claude Code doesn't trust its folder · BlurCamera · weekly improvement",
               "badges": [
                 {
                   "text": "Waiting",

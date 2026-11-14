@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-1",
   "client": "ios",
-  "version": "v7bfccf8ad8aad4dd",
+  "version": "va5663d7ecd38df46",
   "cursor": "cursor-1",
   "title": "Build a feature",
   "status": {
@@ -74,7 +74,7 @@
             {
               "kind": "folder",
               "label": "Carpeta",
-              "value": "/work/alondra/.claude/worktrees/t-1"
+              "value": "t-1"
             }
           ]
         }

@@ -4,7 +4,7 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "vd32618ef482606a1",
+  "version": "vf5052eec44d2351c",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
@@ -467,7 +467,7 @@
                 {
                   "id": "activity",
                   "icon": "notice",
-                  "title": "Claude Code no confía en ~/Projects/indie-apps · BlurCamera · weekly improvement",
+                  "title": "Claude Code no confía en su carpeta · BlurCamera · weekly improvement",
                   "depth": 0,
                   "struck": false
                 }
