@@ -158,7 +158,7 @@ pub struct Task {
     /// The PRs this task registered after its first, in any repository.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub later_prs: Vec<PrId>,
-    /// PRs its node was seen opening that Alondra has not read from GitHub yet.
+    /// PRs awaiting a GitHub read after the node opened one or ran a close command.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub opened_prs: BTreeSet<OpenedPr>,
     pub dependencies: BTreeSet<TaskId>,

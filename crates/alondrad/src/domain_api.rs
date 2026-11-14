@@ -1196,9 +1196,10 @@ async fn checked_producer_command<H: DomainHost>(
     if let Some(client) = host.new_work_client() {
         if matches!(principal, Principal::Agent { .. }) {
             steps.step("reading the task's pull requests on GitHub", async {
-                client.catch_up_task(&envelope.command).await;
+                client.catch_up_task(&envelope.command).await?;
                 client.catch_up_heads(&envelope.command).await;
-            }).await;
+                Ok::<(), DomainError>(())
+            }).await?;
         }
         steps.step("checking the presented pull requests on GitHub", client.verify_presentation(&envelope.command)).await?;
     }

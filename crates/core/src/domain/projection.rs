@@ -50,6 +50,9 @@ pub struct AvailableAction {
     pub expected_revision: Revision,
     pub presentation_id: Option<InteractionId>,
     pub expected_head: Option<String>,
+    /// Projection identity, kept off the inbox wire; two PRs can share their expected head.
+    #[serde(skip)]
+    pub pr_id: Option<PrId>,
 }
 pub(super) struct InboxOrderFacts<'a> {
     pub(super) resurfaced: Option<Revision>,
@@ -151,6 +154,7 @@ impl DomainState {
         holds: &dyn Holds,
     ) -> AvailableAction {
         let actor = Actor::User { user_id: "projection-user".into() };
+        let pr_id = match &command { Command::AuthorizeMerge { pr_id, .. } => Some(pr_id.clone()), _ => None };
         let envelope = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
             data_epoch: self.data_epoch.clone(),
@@ -169,6 +173,7 @@ impl DomainState {
             expected_revision: self.revision,
             presentation_id: presentation,
             expected_head: head,
+            pr_id,
         }
     }
     /// The instruction a delivery went back to its Agent with, since its acceptance. Only the
@@ -234,7 +239,8 @@ impl DomainState {
     pub fn pr_cards(&self, item: &InboxItem) -> Vec<InboxItem> {
         let whole = || vec![item.clone()];
         let InboxSubject::Interaction { interaction_id, pr_id: None } = &item.subject else { return whole() };
-        let Some(InteractionPayload::Delivery { targets, .. }) = self.interactions.get(interaction_id).map(|i| &i.payload) else {
+        let Some(interaction) = self.interactions.get(interaction_id) else { return whole() };
+        let InteractionPayload::Delivery { targets, .. } = &interaction.payload else {
             return whole();
         };
         let prs: Vec<(&PrId, &str)> = targets.iter().filter_map(|target| match target {
@@ -244,14 +250,16 @@ impl DomainState {
         let open: Vec<(&PrId, &str)> = prs.iter().copied()
             .filter(|(id, _)| self.pull_requests.get(*id).is_some_and(|pr| pr.state == PrState::Open))
             .collect();
-        if prs.len() < 2 || open.is_empty() {
+        if prs.is_empty() {
             return whole();
         }
-        open.into_iter().map(|(pr_id, head)| {
+        if open.is_empty() { return if self.is_merged_pr_report(interaction) { whole() } else { vec![] }; }
+        if prs.len() == 1 { return whole(); }
+        open.into_iter().map(|(pr_id, _)| {
             let mut card = item.clone();
             card.subject = InboxSubject::Interaction { interaction_id: interaction_id.clone(), pr_id: Some(pr_id.clone()) };
             card.available_actions.retain(|action| action.kind != "accept_delivery"
-                && (action.kind != "authorize_merge" || action.expected_head.as_deref() == Some(head)));
+                && (action.kind != "authorize_merge" || action.pr_id.as_ref() == Some(pr_id)));
             card
         }).collect()
     }
@@ -285,12 +293,30 @@ impl DomainState {
             }
             InteractionPayload::Delivery { acceptance, .. } => {
                 task.is_some_and(|t| t.final_presentation.as_ref() == Some(&i.id))
+                    && !self.pr_targets_resolved(i)
                     && active
                     && !acceptance.as_ref().is_some_and(|a| a.valid)
                     && self.handed_back(i).is_none()
                     && task.is_some_and(|t| matches!(attention(t), Attention::Act(card) if card.interaction == i.id))
             }
         }
+    }
+    pub(super) fn pr_targets_resolved(&self, i: &Interaction) -> bool {
+        let InteractionPayload::Delivery { targets, .. } = &i.payload else { return false };
+        let mut prs = targets.iter().filter_map(|target| match target {
+            DeliveryTarget::PullRequest { pr_id, .. } => Some(self.pull_requests.get(pr_id)),
+            _ => None,
+        }).peekable();
+        prs.peek().is_some() && prs.all(|pr| pr.is_none_or(|pr| pr.state != PrState::Open))
+    }
+    /// A new report about merged work still has content to read, unlike its former PR review.
+    pub(crate) fn is_merged_pr_report(&self, i: &Interaction) -> bool {
+        let InteractionPayload::Delivery { targets, .. } = &i.payload else { return false };
+        let mut prs = targets.iter().filter_map(|target| match target {
+            DeliveryTarget::PullRequest { pr_id, .. } => Some(self.pull_requests.get(pr_id)),
+            _ => None,
+        }).peekable();
+        i.card.kind == CardKind::Know && prs.peek().is_some() && prs.all(|pr| pr.is_some_and(|pr| pr.state == PrState::Merged))
     }
     /// The card with its buttons, given whether it waits for the user and what it holds back or
     /// is held back by.
@@ -329,6 +355,7 @@ impl DomainState {
                     expected_revision: self.revision,
                     presentation_id: None,
                     expected_head: None,
+                    pr_id: None,
                 }],
             ),
             InteractionPayload::Question { answer, .. }
@@ -362,6 +389,7 @@ impl DomainState {
                         expected_revision: self.revision,
                         presentation_id: None,
                         expected_head: None,
+                        pr_id: None,
                     }],
                 )
             }
@@ -479,6 +507,7 @@ impl DomainState {
             expected_revision: self.revision,
             presentation_id: None,
             expected_head: None,
+            pr_id: None,
         })
     }
     /// What holds a delivery back: the open cards that block it, then the delivery of the PR

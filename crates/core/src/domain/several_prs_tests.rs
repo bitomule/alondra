@@ -54,6 +54,157 @@ fn at_work() -> DomainState {
     s
 }
 
+#[test]
+fn a_closed_pr_is_never_a_delivery_target() {
+    let mut s = at_work();
+    register(&mut s, "bitomule/alondra", 17, FIRST_HEAD);
+    observe(&mut s, PUBLIC, FIRST_HEAD, PrState::Closed);
+    let error = exec(&mut s, node(), result("closed-result", vec![pr(PUBLIC, FIRST_HEAD)], true)).unwrap_err();
+    assert_eq!(error.code, "pr_not_open");
+    assert_eq!(error.contract.unwrap().rule, ContractRule::PrNotOpen);
+    assert!(s.open_prs(&s.tasks[&TASK.into()]).next().is_none());
+}
+
+#[test]
+fn audit_case_5_a_stored_delivery_of_a_closed_pr_has_no_card_or_button() {
+    let mut s = at_work();
+    register(&mut s, "bitomule/alondra", 17, FIRST_HEAD);
+    must(&mut s, node(), result("final", vec![pr(PUBLIC, FIRST_HEAD)], true));
+    // Old snapshots can contain a final delivery whose PR closed before it was recorded.
+    s.pull_requests.get_mut(&PUBLIC.into()).unwrap().state = PrState::Closed;
+    assert!(cards(&s).is_empty());
+    assert!(settled_notice(&s, "card:final").is_some());
+}
+
+#[test]
+fn a_pr_cited_in_a_delivery_must_be_one_of_its_targets() {
+    for citation in ["https://github.com/acme/storefront/pull/14", "acme/storefront#14", "**https://github.com/acme/storefront/pull/14**", "_acme/storefront#14_"] {
+        let mut s = at_work();
+        let mut command = result("cited-result", vec![DeliveryTarget::Text { text: "Report".into() }], true);
+        if let Command::PresentResult { body, .. } = &mut command { *body = format!("Finished: {citation}"); }
+        let error = exec(&mut s, node(), command).unwrap_err();
+        assert_eq!(error.code, "cited_pr_not_target", "{citation}");
+        assert_eq!(error.contract.unwrap().rule, ContractRule::CitedPrNotTarget);
+    }
+}
+
+#[test]
+fn the_two_repository_incident_delivers_the_registered_pr_after_the_first_closes() {
+    let mut s = at_work();
+    register(&mut s, "acme/app", 65, FIRST_HEAD);
+    register(&mut s, "acme/site", 14, CLOUD_HEAD);
+    let old = hosted_pr_id("github.com", "acme/app", 65);
+    let site = hosted_pr_id("github.com", "acme/site", 14);
+    observe(&mut s, &old.0, FIRST_HEAD, PrState::Closed);
+    let mut command = result("two-repositories", vec![pr(&site.0, CLOUD_HEAD)], true);
+    if let Command::PresentResult { body, .. } = &mut command {
+        *body = "Documentation: https://github.com/acme/site/pull/14 (acme/site#14).".into();
+    }
+    must(&mut s, node(), command);
+    assert_eq!(cards(&s), ["two-repositories"]);
+    let actions = card_actions(&s, "two-repositories");
+    assert_eq!(actions.len(), 1);
+    assert!(actions[0].0.starts_with("merge:two-repositories@"), "only the current delivery's merge is offered");
+    assert_eq!(s.open_prs(&s.tasks[&TASK.into()]).count(), 1);
+}
+
+#[test]
+fn citations_in_each_displayed_delivery_field_are_checked_and_targets_in_other_repositories_match() {
+    for field in ["body", "title", "need", "why", "content", "summary", "text"] {
+        let mut s = at_work();
+        let mut command = result("citation", vec![DeliveryTarget::Text { text: "Report".into() }], true);
+        if let Command::PresentResult { body, card, targets, .. } = &mut command {
+            let citation = "https://github.com/acme/site/pull/14/files#diff-x".to_owned();
+            match field {
+                "body" => *body = citation,
+                "title" => card.title = Some(citation),
+                "need" => card.need = citation,
+                "why" => card.why = citation,
+                "content" => card.content.as_mut().unwrap().body = citation,
+                "summary" => card.content.as_mut().unwrap().summary = Some(citation),
+                "text" => targets[0] = DeliveryTarget::Text { text: citation },
+                _ => unreachable!(),
+            }
+        }
+        assert_eq!(refusal(&mut s, command), "cited_pr_not_target", "{field}");
+    }
+}
+
+#[test]
+fn two_prs_at_the_same_commit_each_have_only_their_own_validated_merge() {
+    let mut s = at_work();
+    register(&mut s, "bitomule/alondra", 17, FIRST_HEAD);
+    register(&mut s, "acme/storefront", 6, FIRST_HEAD);
+    must(&mut s, node(), result("final", vec![pr(PUBLIC, FIRST_HEAD)], true));
+    let index = ReadIndex::build(&s);
+    for item in index.cards() {
+        let InboxSubject::Interaction { pr_id: Some(pr), .. } = &item.subject else { panic!("one card per PR") };
+        let merges: Vec<_> = item.available_actions.iter().filter(|a| a.kind == "authorize_merge").collect();
+        assert_eq!(merges.len(), 1);
+        assert_eq!(merges[0].pr_id.as_ref(), Some(pr));
+        assert!(merges[0].enabled);
+        assert_eq!(card_actions(&s, &pr.0).len(), 1);
+    }
+}
+
+#[test]
+fn commit_evidence_links_use_the_repository_of_the_pr_being_reviewed() {
+    let mut s = two_open_prs();
+    s.checklist_marks.insert("final".into(), vec![ChecklistMark { item: "1".into(), evidence: vec![Evidence {
+        kind: EvidenceKind::Commit, value: CLOUD_HEAD.into(), detail: None,
+    }] }]);
+    let view = view_json(&s, &format!("card:{CLOUD}"));
+    let plan = find_section(&view, "plan").unwrap().to_string();
+    assert!(plan.contains(&format!("https://github.com/acme/storefront/commit/{CLOUD_HEAD}")), "{plan}");
+    assert!(!plan.contains("https://github.com/bitomule/alondra/commit/"));
+}
+
+#[test]
+fn the_release_still_owes_its_declared_publication_after_its_pr_card_retires() {
+    let mut s = at_work();
+    register(&mut s, "bitomule/alondra", 17, FIRST_HEAD);
+    must(&mut s, node(), Command::DeclarePostMergeWork { task_id: TASK.into(), reason: Some("Publish and verify the release".into()), waits_for: vec![] });
+    must(&mut s, node(), result("release", vec![pr(PUBLIC, FIRST_HEAD)], true));
+    merged(&mut s, PUBLIC, FIRST_HEAD);
+    assert!(cards(&s).is_empty());
+    let task = &s.tasks[&TASK.into()];
+    assert!(!task.over(), "retiring the review does not finish publication");
+    assert!(task.wrap_up.post_merge_work.is_some());
+    assert!(s.lifecycle_of(&TASK.into()).unwrap().post_merge().is_some());
+    must(&mut s, node(), Command::DeclarePostMergeWork { task_id: TASK.into(), reason: None, waits_for: vec![] });
+    assert!(s.tasks[&TASK.into()].wrap_up.post_merge_work.is_none());
+}
+
+#[test]
+fn a_new_report_after_merge_remains_readable_without_finishing_publication() {
+    let mut s = at_work();
+    register(&mut s, "bitomule/alondra", 17, FIRST_HEAD);
+    register(&mut s, "acme/storefront", 6, CLOUD_HEAD);
+    observe(&mut s, PUBLIC, FIRST_HEAD, PrState::Closed);
+    must(&mut s, node(), Command::DeclarePostMergeWork { task_id: TASK.into(), reason: Some("Publish and verify the release".into()), waits_for: vec![] });
+    merged(&mut s, CLOUD, CLOUD_HEAD);
+    let mut report = result("publication-report", vec![pr(CLOUD, CLOUD_HEAD)], true);
+    if let Command::PresentResult { body, card, .. } = &mut report {
+        *body = "The release archive is ready for publication.".into();
+        card.content.as_mut().unwrap().body = body.clone();
+    }
+    must(&mut s, node(), report);
+    s.checklist_marks.insert("publication-report".into(), vec![ChecklistMark { item: "1".into(), evidence: vec![Evidence {
+        kind: EvidenceKind::Commit, value: CLOUD_HEAD.into(), detail: None,
+    }] }]);
+    let view = view_json(&s, "card:publication-report");
+    assert_eq!(view["view"], "card");
+    assert!(find_section(&view, "content").unwrap().to_string().contains("The release archive is ready for publication."));
+    assert!(view.to_string().contains("accept:publication-report@"));
+    assert!(!view.to_string().contains("merge:publication-report@"));
+    let index = ReadIndex::build(&s);
+    let item = index.item(&s, &s.interactions[&"publication-report".into()]);
+    assert!(item.available_actions.iter().any(|action| action.kind == "accept_delivery" && action.enabled));
+    assert!(find_section(&view, "plan").unwrap().to_string().contains(&format!("https://github.com/acme/storefront/commit/{CLOUD_HEAD}")));
+    must(&mut s, user(), Command::AcceptDelivery { presentation_id: "publication-report".into(), targets: vec![pr(CLOUD, CLOUD_HEAD)] });
+    assert!(s.tasks[&TASK.into()].wrap_up.post_merge_work.is_some());
+}
+
 const TURN: &str = "turn-1";
 
 /// The node's turn ends after what it did in it.
@@ -174,6 +325,15 @@ fn merging_a_pr_takes_its_own_card_away_and_the_others_stay() {
     assert_eq!(settled_notice(&s, &format!("card:{PUBLIC}")), Some("Ya tiene merge".into()), "a phone still showing it closes it");
     assert_eq!(card_actions(&s, CLOUD).len(), 1);
     assert_eq!(card_actions(&s, "final").len(), 1, "an old link to the delivery opens the card of the PR still open");
+}
+
+#[test]
+fn a_closed_pr_link_says_closed_even_when_another_pr_of_the_delivery_merged() {
+    let mut s = two_open_prs();
+    merged(&mut s, PUBLIC, FIRST_HEAD);
+    observe(&mut s, CLOUD, CLOUD_HEAD, PrState::Closed);
+    assert_eq!(settled_notice(&s, &format!("card:{CLOUD}")), Some("Cerrada sin hacer merge".into()));
+    assert_eq!(settled_notice(&s, &format!("card:{PUBLIC}")), Some("Ya tiene merge".into()));
 }
 
 #[test]

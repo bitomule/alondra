@@ -3242,9 +3242,10 @@ fn variant_index(c: &Command) -> usize {
         Command::RequestPrAdoption { .. } => 131,
         Command::ClosePrOfCancelledTask { .. } => 133,
         Command::RecordClaudeHold { .. } => 135,
+        Command::NotePrChanges { .. } => 136,
     }
 }
-const COMMAND_KINDS: usize = 136;
+const COMMAND_KINDS: usize = 137;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3425,6 +3426,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordOpenedPr { task_id: ids.task.into(), host: "github.com".into(), repository: "me/app".into(), number: 1, head: "abc".into(),
             base: "main".into(), state: PrState::Open, merged_head: None, allowed_methods: vec![MergeMethod::Squash] }, false),
         (Command::AskToRegisterPr { task_id: ids.task.into() }, false),
+        (Command::NotePrChanges { task_id: ids.task.into() }, false),
         (Command::RecordDistribution { policy: crate::accounts::Policy::Chain, move_when_exhausted: true }, true),
         (Command::ChangeAccounts { provider: crate::accounts::Provider::Claude,
             change: crate::accounts::AccountChange::Remove { account: crate::accounts::AccountId::default_account() } }, false),

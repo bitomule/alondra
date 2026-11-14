@@ -2,7 +2,7 @@ use crate::records::{InputRecord, SessionRecord};
 use alondra_agent_application::{Normalization, ObservationMetadata, ObservationNormalizer};
 use alondra_codex_protocol::{Body, ControlResult, DecisionKind, DecisionOutcome, Fence, FramedReader, Observation as WireObservation, SdkEventKind, SignIn};
 use alondra_foundation::{ContinuationId, InputId, MessageUuid, TurnId, WorkId};
-use alondra_provider_contract::{pull_requests_named, runs_gh_pr_create, ENDED_WITHOUT_RESULT, AdapterError, ApiFailure, McpServerReport, McpSignInReport, Observation, OrderedObservation, TurnOutcome};
+use alondra_provider_contract::{pull_requests_named, runs_gh_pr_create, runs_gh_pr_close, ENDED_WITHOUT_RESULT, AdapterError, ApiFailure, McpServerReport, McpSignInReport, Observation, OrderedObservation, TurnOutcome};
 use alondra_store::{ContextSource, TaskContextItem};
 use serde::{de::IgnoredAny, Deserialize, Serialize};
 use serde_json::Value;
@@ -354,6 +354,11 @@ fn fold(batch: &OrderedObservation, state: &mut Checkpoint, method: &str, params
             }
             if method == "item/completed" && item_type == "agentMessage" && string(item, "text").is_some() { facts.push(Observation::ModelAnswered); }
             if method == "item/completed" && item_type == "commandExecution" && item.get("exitCode").and_then(Value::as_i64) == Some(0)
+                && string(item, "command").is_some_and(runs_gh_pr_close)
+            {
+                facts.push(Observation::PullRequestsChanged);
+            }
+            if method == "item/completed" && item_type == "commandExecution" && item.get("exitCode").and_then(Value::as_i64) == Some(0)
                 && string(item, "command").is_some_and(runs_gh_pr_create)
             {
                 let named = pull_requests_named(string(item, "aggregatedOutput").unwrap_or(""));
@@ -571,7 +576,7 @@ mod tests {
         let finished=|state:&mut Checkpoint,command:&str,exit:i64,output:&str|{
             let mut facts=vec![];
             fold(&batch,state,"item/completed",&json!({"threadId":"root","item":{"type":"commandExecution","id":"pr","status":"completed","command":command,"exitCode":exit,"aggregatedOutput":output}}),&mut facts,|_|invalid()).unwrap();
-            facts.retain(|fact|matches!(fact,Observation::PullRequestOpened(_)|Observation::PullRequestNotNamed));
+            facts.retain(|fact|matches!(fact,Observation::PullRequestOpened(_)|Observation::PullRequestNotNamed|Observation::PullRequestsChanged));
             facts
         };
         assert_eq!(finished(&mut state,"bash -lc 'gh pr create --fill'",0,"https://github.com/acme/storefront/pull/6\n"),
@@ -579,6 +584,10 @@ mod tests {
         assert_eq!(finished(&mut state,"gh pr create --fill",0,""),vec![Observation::PullRequestNotNamed]);
         assert_eq!(finished(&mut state,"gh pr create --fill",1,"https://github.com/o/r/pull/1"),vec![],"a command that failed opened nothing");
         assert_eq!(finished(&mut state,"gh pr view 1",0,"https://github.com/o/r/pull/1"),vec![],"naming a PR is not opening it");
+        for output in ["", "Closed pull request acme/app#65", "already closed"] {
+            assert_eq!(finished(&mut state,"gh pr close 65 --repo acme/app",0,output),vec![Observation::PullRequestsChanged]);
+        }
+        assert_eq!(finished(&mut state,"gh pr close 65",1,"Closed"),vec![]);
     }
 
     #[test]

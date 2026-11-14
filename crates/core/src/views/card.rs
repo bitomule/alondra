@@ -53,15 +53,14 @@ fn pr_targets<'a>(interaction: &'a Interaction, domain: &'a DomainState) -> Vec<
         _ => None,
     }).collect()
 }
-/// The PR a card is about: the first still open, else its first.
+/// The first PR of a delivery that can still receive an action.
 fn pr_target<'a>(interaction: &'a Interaction, domain: &'a DomainState) -> Option<&'a PullRequest> {
-    let prs = pr_targets(interaction, domain);
-    prs.iter().find(|(pr, _)| pr.state == PrState::Open).or(prs.first()).map(|(pr, _)| *pr)
+    pr_targets(interaction, domain).into_iter().find(|(pr, _)| pr.state == PrState::Open).map(|(pr, _)| pr)
 }
 /// The PR a card is about: the one it stands for, else its delivery's (`pr_target`).
 fn card_pr<'a>(item: &InboxItem, interaction: &'a Interaction, domain: &'a DomainState) -> Option<&'a PullRequest> {
     match own_pr(item) {
-        Some(pr_id) => pr_targets(interaction, domain).into_iter().map(|(pr, _)| pr).find(|pr| pr.id == *pr_id),
+        Some(pr_id) => pr_targets(interaction, domain).into_iter().map(|(pr, _)| pr).find(|pr| pr.id == *pr_id && pr.state == PrState::Open),
         None => pr_target(interaction, domain),
     }
 }
@@ -112,17 +111,19 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
     let direct = domain.interactions.get(&InteractionId(id.into())).filter(|i| i.recipient == Recipient::User);
     let found = direct.or_else(|| alias(context, id)).ok_or(BuildError::NotFound)?;
     let whole = context.index.item(domain, found);
-    if let Some(settled) = settled(&whole, found, domain) {
-        return Ok(settled_view(key, settled, context));
-    }
     let named = direct.is_none().then(|| domain.pull_requests.get(&PrId(id.into()))).flatten();
     match named.map(|pr| pr.state) {
         Some(PrState::Merged) => return Ok(settled_view(key, Settled::Merged, context)),
         Some(PrState::Closed) => return Ok(settled_view(key, Settled::ClosedUnmerged, context)),
         _ => {}
     }
+    if let Some(settled) = settled(&whole, found, domain) {
+        return Ok(settled_view(key, settled, context));
+    }
     let cards = domain.pr_cards(&whole);
-    let item = cards.iter().find(|card| named.is_some_and(|pr| own_pr(card) == Some(&pr.id))).unwrap_or(&cards[0]);
+    let Some(item) = cards.iter().find(|card| named.is_some_and(|pr| own_pr(card) == Some(&pr.id))).or_else(|| cards.first()) else {
+        return Ok(settled_view(key, Settled::Withdrawn, context));
+    };
     let card = from_item(item, context, true)?;
     let title = card.title.clone();
     let mut sections = vec![super::common::section("card", None, vec![Item::Card(card)])];
@@ -214,6 +215,10 @@ fn settled_view(key: String, settled: Settled, context: &RenderContext<'_>) -> V
 /// Why a card no longer waits for the user: answered, withdrawn, accepted, read, or its task is
 /// over. A card that still waits, or that went quiet another way, is none of these.
 fn settled(item: &InboxItem, interaction: &Interaction, domain: &DomainState) -> Option<Settled> {
+    let prs = pr_targets(interaction, domain);
+    if !domain.is_merged_pr_report(interaction) && !prs.is_empty() && prs.iter().all(|(pr, _)| pr.state != PrState::Open) {
+        return Some(if prs.iter().any(|(pr, _)| pr.state == PrState::Merged) { Settled::Merged } else { Settled::ClosedUnmerged });
+    }
     if item.pending {
         return None;
     }
@@ -891,10 +896,8 @@ pub(super) fn button(id: String, label: &str, role: Role) -> Action {
     }
 }
 
-fn with_availability(mut action: Action, available: Option<&AvailableAction>, lang: Lang) -> Action {
-    if let Some(available) = available {
-        action.enabled = available.enabled;
-    }
+fn with_availability(mut action: Action, available: Option<&AvailableAction>, _lang: Lang) -> Action {
+    action.enabled = available.is_some_and(|available| available.enabled);
     action
 }
 
@@ -1681,14 +1684,14 @@ fn merge_extra(head: &str, presentation_id: &str) -> String {
     format!("{}-{presentation_id}", head.chars().take(8).collect::<String>())
 }
 
-fn merge_available<'a>(item: &'a InboxItem, head: &str) -> Option<&'a AvailableAction> {
-    item.available_actions.iter().find(|action| action.kind == "authorize_merge" && action.expected_head.as_deref() == Some(head))
+fn merge_available<'a>(item: &'a InboxItem, pr: &PullRequest, head: &str) -> Option<&'a AvailableAction> {
+    item.available_actions.iter().find(|action| action.kind == "authorize_merge" && action.pr_id.as_ref() == Some(&pr.id) && action.expected_head.as_deref() == Some(head))
 }
 
 /// The merge on the card of one PR of a delivery that carries several: it names that PR as its
 /// subject, so only that PR merges.
 fn merge_of(item: &InboxItem, interaction: &Interaction, pr: &PullRequest, head: &str, context: &RenderContext<'_>) -> Option<Action> {
-    merge_available(item, head).filter(|available| available.enabled)?;
+    merge_available(item, pr, head).filter(|available| available.enabled)?;
     let id = action_id(Verb::Merge, &pr.id.0, interaction.revision, Some(merge_extra(head, &interaction.id.0)))?;
     super::merge_method::pr_action(id.to_string(), pr, context)
 }
@@ -1721,6 +1724,10 @@ fn delivery_actions(
     let find = |kind: &str| item.available_actions.iter().find(|action| action.kind == kind);
     let held = blocked_reason(item, context).is_some();
     let pr = card_pr(item, interaction, domain);
+    if pr.is_none() && !domain.is_merged_pr_report(interaction)
+        && targets_of(interaction).iter().any(|target| matches!(target, DeliveryTarget::PullRequest { .. })) {
+        return (vec![], vec![]);
+    }
     let live = pr.and_then(|pr| context.live.pull_requests.iter().find(|detail| detail.id == pr.id.0));
     let document = is_document_review(interaction);
     let read_only = item.card.kind == CardKind::Know || (pr.is_none() && !document);
@@ -1787,7 +1794,7 @@ fn delivery_actions(
         // The task shows what it waits for; the card has nothing to press until that is over.
     } else if own_pr(item).is_some() {
         visible.extend(open.first().and_then(|(pr, head)| merge_of(item, interaction, pr, head, context)));
-    } else if let Some(available) = open.first().and_then(|(_, head)| merge_available(item, head)).filter(|available| available.enabled) {
+    } else if let Some(available) = open.first().and_then(|(pr, head)| merge_available(item, pr, head)).filter(|available| available.enabled) {
         let head = available.expected_head.as_ref().map(|head| merge_extra(head, &interaction.id.0));
         if let Some(id) = action_id(Verb::Merge, &interaction.id.0, interaction.revision, head)
             && let Some(merge) = super::merge_method::pr_action(id.to_string(), pr, context)
@@ -2298,7 +2305,9 @@ fn plan_points(item: &InboxItem, context: &RenderContext<'_>) -> Option<(String,
     let marks = domain.checklist_marks.get(&interaction.id)?;
     let Scope::Task { task_id } = &interaction.scope else { return None };
     let items = domain.checklists.get(task_id).map(|checklist| checklist.items.as_slice()).unwrap_or_default();
-    let repository = domain.tasks.get(task_id).and_then(|task| task.pr_id.as_ref()).and_then(|pr| domain.pull_requests.get(pr)).map(|pr| {
+    let repository = card_pr(item, interaction, domain)
+        .or_else(|| pr_targets(interaction, domain).into_iter().next().map(|(pr, _)| pr))
+        .or_else(|| domain.tasks.get(task_id).and_then(|task| domain.main_pr(task))).map(|pr| {
         context.live.pull_requests.iter().find(|detail| detail.id == pr.id.0).and_then(|detail| detail.url.as_deref())
             .and_then(|url| url.rsplit_once("/pull/")).map(|(base, _)| base.to_owned())
             .unwrap_or_else(|| format!("https://{}/{}", pr.host, pr.repository))
@@ -2445,6 +2454,27 @@ pub(super) fn pr_overview(pr: &PullRequest, context: &RenderContext<'_>) -> (Fac
         })
     });
     (Facts { items: facts }, checks)
+}
+
+#[cfg(test)]
+mod delivery_action_tests {
+    use super::*;
+
+    #[test]
+    fn a_delivery_does_not_offer_merge_or_feedback_without_a_validated_action() {
+        let domain = crate::domain::several_prs_tests::two_open_prs();
+        let index = crate::domain::ReadIndex::build(&domain);
+        let live = super::super::LiveSnapshot::default();
+        let context = RenderContext { domain: &domain, index: &index, live: &live, client: Client::Tui, lang: Lang::En,
+            transport: super::super::Transport::Loopback, cursor: "", rendered_at: "" };
+        let mut item = index.cards()[0].clone();
+        item.available_actions.clear();
+        let card = from_item(&item, &context, true).unwrap();
+        for action in card.actions.into_iter().chain(card.more).chain(card.reply).map(Action::from) {
+            assert!(!["merge:", "changes:", "accept:"].iter().any(|prefix| action.id.starts_with(prefix)),
+                "an absent guard result must not enable a button: {action:?}");
+        }
+    }
 }
 
 #[cfg(test)]

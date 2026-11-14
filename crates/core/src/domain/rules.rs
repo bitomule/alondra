@@ -1238,7 +1238,7 @@ impl DomainState {
         Ok(())
     }
     /// R12: a delivery shows the current head of its own Task's registered PR.
-    fn current_pr_targets(&self, task: &TaskId, targets: &[DeliveryTarget]) -> Result<()> {
+    fn current_pr_targets(&self, task: &TaskId, targets: &[DeliveryTarget], is_final: bool) -> Result<()> {
         for target in targets {
             let DeliveryTarget::PullRequest { pr_id, head } = target else { continue };
             let Some(pr) = self.pull_requests.get(pr_id) else {
@@ -1246,6 +1246,11 @@ impl DomainState {
             };
             if &pr.task_id != task {
                 return refuse("pr_mismatch", "targets.pr_id", &format!("PR {pr_id} belongs to another Task: present only your own Task's PR"));
+            }
+            if pr.state == PrState::Closed {
+                let mut error = DomainError::new("pr_not_open", format!("targets.pr_id: PR {}#{} is closed: deliver the work's open PRs, or a text result for work already finished", pr.repository, pr.number));
+                error.subject = Some("targets.pr_id".into());
+                return Err(error.breaking(Some(if is_final { CardType::Result } else { CardType::Progress }), ContractRule::PrNotOpen));
             }
             if &pr.head != head {
                 return refuse("pr_mismatch", "targets.head", &pr_head_mismatch(pr, head));
@@ -1451,7 +1456,7 @@ impl DomainState {
                 id: t.id.0.clone(),
                 title: t.title.clone(),
                 cancelled: t.cancelled(),
-                pr: t.pr_id.as_ref().and_then(|id| self.pull_requests.get(id)).map(|pr| pr.number),
+                pr: self.merged_pr(t).map(|pr| pr.number),
             }).collect(),
         };
         let (need, why) = done.text(crate::views::Lang::En);
@@ -2676,6 +2681,7 @@ impl DomainState {
             | Command::ConfirmCleanup { task_id, .. }
             | Command::RecordTaskWorktree { task_id, .. }
             | Command::NotePrOpened { task_id, .. }
+            | Command::NotePrChanges { task_id }
             | Command::RecordOpenedPr { task_id, .. }
             | Command::AskToRegisterPr { task_id }
             | Command::ReleaseTaskWorktree { task_id, .. }
@@ -4582,6 +4588,12 @@ impl DomainState {
                 })?;
                 created.push(pr_id.0.clone());
             }
+            Command::NotePrChanges { task_id } => {
+                system(actor)?;
+                let task = self.task(task_id)?;
+                let reading: Vec<_> = self.open_prs(task).map(|pr| OpenedPr { host: pr.host.clone(), repository: pr.repository.clone(), number: pr.number }).collect();
+                self.tasks.get_mut(task_id).unwrap().opened_prs.extend(reading);
+            }
             Command::NotePrOpened { task_id, host, repository, number } => {
                 system(actor)?;
                 let (host, repository) = (normalize_pr_host(host), normalize_pr_repository(repository));
@@ -4598,7 +4610,13 @@ impl DomainState {
                     return Ok(());
                 }
                 self.tasks.get_mut(task_id).unwrap().opened_prs.remove(&opened);
-                if self.pull_requests.values().any(|p| p.host == *host && p.repository == *repository && p.number == *number) {
+                if let Some(pr) = self.pull_requests.values().find(|p| p.host == *host && p.repository == *repository && p.number == *number) {
+                    if pr.task_id != *task_id { return fail("pr_owned_by_other_task", "PR is registered by another task"); }
+                    let pr_id = pr.id.clone();
+                    self.apply(actor, &Command::ObservePrState { pr_id: pr_id.clone(), head: sha.clone(), base: base.clone(), state: *state, merged_head: merged_head.clone() }, effects, created, lifecycles)?;
+                    if !allowed_methods.is_empty() {
+                        self.apply(actor, &Command::ObservePrMergeMethods { pr_id, allowed_methods: allowed_methods.clone() }, effects, created, lifecycles)?;
+                    }
                     return Ok(());
                 }
                 head(sha)?;
@@ -4676,7 +4694,8 @@ impl DomainState {
                     return refuse("invalid_input", "nothing_to_review",
                         "nothing_to_review is only for a final delivery without a pull request or document: it closes the task without a card");
                 }
-                self.current_pr_targets(task_id, targets)?;
+                self.current_pr_targets(task_id, targets, *is_final)?;
+                self.cited_pr_targets(body, targets, card, *is_final)?;
                 self.targets(task_id, targets)?;
                 let task = self.task(task_id)?;
                 if let Some(opened) = task.opened_prs.first() {

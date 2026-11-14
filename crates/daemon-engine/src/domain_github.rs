@@ -366,6 +366,10 @@ fn awaited(state: &DomainState) -> BTreeSet<PrId> {
     watched(state).into_iter().map(|pr| pr.id).chain(opened).collect()
 }
 
+fn reading_prs(state: &DomainState) -> BTreeSet<(TaskId, OpenedPr)> {
+    state.tasks.values().flat_map(|task| task.opened_prs.iter().cloned().map(|pr| (task.id.clone(), pr))).collect()
+}
+
 /// Reads from GitHub each PR a node was seen opening, of `task` or of every task, and makes it its
 /// task's. One GitHub cannot report stays noted: its delivery waits, and the next round tries again.
 pub(crate) async fn read_opened(domain: &DomainRuntime, observer: &impl PrObserver, task: Option<&TaskId>) -> Result<()> {
@@ -374,7 +378,8 @@ pub(crate) async fn read_opened(domain: &DomainRuntime, observer: &impl PrObserv
         .flat_map(|t| t.opened_prs.iter().map(|pr| (t.id.clone(), pr.clone()))).collect();
     for (task_id, pr) in opened {
         let facts = match observer.observe(&pr.host, &pr.repository, pr.number).await {
-            Ok(facts) if !facts.allowed_methods.is_empty() => facts,
+            Ok(facts) if !facts.allowed_methods.is_empty() || state.task_prs(&state.tasks[&task_id])
+                .any(|known| known.host == pr.host && known.repository == pr.repository && known.number == pr.number) => facts,
             Ok(_) => {
                 log!("GitHub does not say how {}#{} merges yet: its task keeps waiting for it", pr.repository, pr.number);
                 continue;
@@ -398,8 +403,13 @@ pub(crate) async fn read_opened(domain: &DomainRuntime, observer: &impl PrObserv
 
 /// What a node's delivery is judged on, read when it presents: the open PR of each branch the task
 /// works on (a final delivery only, for a PR no command showed), what the node was seen opening,
-/// and where each open PR is when there are several to tell apart by their heads.
+/// and where its registered PRs are now. A closed PR can have reopened; a merged PR cannot.
 pub async fn catch_up_task(domain: &DomainRuntime, gh: &GhCli, task_id: &TaskId, is_final: bool) -> Result<()> {
+    catch_up_task_using(domain, gh, gh, task_id, is_final).await
+}
+
+/// Branch discovery needs the GitHub CLI; registered PRs use the caller's source of current facts.
+pub async fn catch_up_task_using(domain: &DomainRuntime, gh: &GhCli, source: &impl PrObserver, task_id: &TaskId, is_final: bool) -> Result<()> {
     let state = domain.state()?;
     let Some(task) = state.tasks.get(task_id) else { return Ok(()) };
     if is_final {
@@ -415,11 +425,14 @@ pub async fn catch_up_task(domain: &DomainRuntime, gh: &GhCli, task_id: &TaskId,
     read_opened(domain, gh, Some(task_id)).await?;
     let state = domain.state()?;
     let Some(task) = state.tasks.get(task_id) else { return Ok(()) };
-    let open: Vec<&PullRequest> = state.open_prs(task).collect();
-    if open.len() > 1 {
-        for pr in open {
-            if let Ok(facts) = gh.observe(&pr.host, &pr.repository, pr.number).await {
-                apply(domain, &state, pr, &facts)?;
+    let prs: Vec<&PullRequest> = state.task_prs(task)
+        .filter(|pr| pr.state == PrState::Open || (is_final && pr.state == PrState::Closed)).collect();
+    if is_final || prs.len() > 1 {
+        for pr in prs {
+            match source.observe(&pr.host, &pr.repository, pr.number).await {
+                Ok(facts) => { apply(domain, &state, pr, &facts)?; }
+                Err(reason) if is_final => anyhow::bail!("Could not read {}#{} before the final delivery: {reason}", pr.repository, pr.number),
+                Err(_) => (),
             }
         }
     }
@@ -674,6 +687,7 @@ pub async fn run(domain: Arc<DomainRuntime>, observer: Arc<impl PrObserver>, pol
         let mut known = open;
         let mut known_pending = pending_prs(&*domain.state()?);
         reconcile(&domain, &*observer, &mut failures).await?;
+        let mut known_reading = reading_prs(&*domain.state()?);
         open = awaited(&*domain.state()?);
         if open.is_empty() {
             continue;
@@ -691,11 +705,13 @@ pub async fn run(domain: Arc<DomainRuntime>, observer: Arc<impl PrObserver>, pol
                 break;
             }
             let current_pending = pending_prs(&*domain.state()?);
-            if !open.is_subset(&known) || !current_pending.is_subset(&known_pending) {
+            let current_reading = reading_prs(&*domain.state()?);
+            if !open.is_subset(&known) || !current_pending.is_subset(&known_pending) || !current_reading.is_subset(&known_reading) {
                 // A node opened a PR, a new one was registered, or a task closed while its PR is open.
                 reconcile(&domain, &*observer, &mut failures).await?;
             }
             known = open.clone();
+            known_reading = reading_prs(&*domain.state()?);
             known_pending = pending_prs(&*domain.state()?);
         }
     }
@@ -921,6 +937,64 @@ pub mod tests {
         assert_eq!(domain.state().unwrap().tasks[&"t".into()].later_prs.len(), 0, "only a final delivery looks at the branches");
         catch_up_task(&domain, &gh, &"t".into(), true).await.unwrap();
         assert_eq!(domain.state().unwrap().tasks[&"t".into()].later_prs, vec![hosted_pr_id("github.com", "owner/site", 6)]);
+    }
+
+    #[tokio::test]
+    async fn a_final_delivery_rereads_even_its_only_registered_pr() {
+        let (fixture, domain) = open("closed-before-result");
+        authorized(&domain);
+        let program = fixture.0.join("gh");
+        std::fs::write(&program, format!("#!/bin/sh\nprintf '%s' '{{\"state\":\"CLOSED\",\"headRefOid\":\"{HEAD}\",\"baseRefName\":\"main\"}}'\n")).unwrap();
+        std::fs::set_permissions(&program, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        catch_up_task(&domain, &GhCli::at(program), &"t".into(), true).await.unwrap();
+        assert_eq!(domain.state().unwrap().pull_requests[&"pr".into()].state, PrState::Closed);
+        assert!(alondra_core::domain::ReadIndex::build(&domain.state().unwrap()).cards_of(&"d".into()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_final_delivery_rereads_even_its_only_registered_pr_after_it_reopens() {
+        let (_fixture, domain) = open("reopened-before-result");
+        registered(&domain);
+        command(&domain, Actor::System, "closed", Command::ObservePrState {
+            pr_id: "pr".into(), head: HEAD.into(), base: "main".into(), state: PrState::Closed, merged_head: None,
+        });
+        let source = FakeObserver::new();
+        source.set(7, Ok(facts(HEAD, PrState::Open)));
+        catch_up_task_using(&domain, &GhCli::new(), &source, &"t".into(), true).await.unwrap();
+        assert_eq!(domain.state().unwrap().pull_requests[&"pr".into()].state, PrState::Open);
+        command(&domain, Actor::Agent { agent_id: "a".into() }, "reopened-result", Command::PresentResult {
+            checklist: vec![], attachments: vec![], task_id: "t".into(), interaction_id: "reopened-result".into(), body: "Ready".into(),
+            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEAD.into() }], is_final: true, nothing_to_review: false,
+            card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+        });
+        assert_eq!(alondra_core::domain::ReadIndex::build(&domain.state().unwrap()).cards_of(&"reopened-result".into()).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_final_delivery_cannot_use_cached_pr_facts_when_github_fails() {
+        let (fixture, domain) = open("unread-before-result");
+        authorized(&domain);
+        let program = fixture.0.join("gh");
+        std::fs::write(&program, "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(&program, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        assert!(catch_up_task(&domain, &GhCli::at(program), &"t".into(), true).await.is_err());
+        assert_eq!(domain.state().unwrap().pull_requests[&"pr".into()].state, PrState::Open);
+    }
+
+    #[tokio::test]
+    async fn a_close_command_rechecks_its_registered_pr_even_without_merge_methods() {
+        let (_fixture, domain) = open("close-command");
+        authorized(&domain);
+        let before = reading_prs(&domain.state().unwrap());
+        command(&domain, Actor::System, "changed", Command::NotePrChanges { task_id: "t".into() });
+        assert_eq!(reading_prs(&domain.state().unwrap()).len(), 1);
+        assert!(!reading_prs(&domain.state().unwrap()).is_subset(&before), "the watcher wakes even though the set of PR ids has not changed");
+        let observer = FakeObserver::new();
+        observer.set(7, Ok(facts(HEAD, PrState::Closed)));
+        read_opened(&domain, &observer, Some(&"t".into())).await.unwrap();
+        let state = domain.state().unwrap();
+        assert_eq!(state.pull_requests[&"pr".into()].state, PrState::Closed);
+        assert!(state.tasks[&"t".into()].opened_prs.is_empty());
     }
 
     #[tokio::test]
