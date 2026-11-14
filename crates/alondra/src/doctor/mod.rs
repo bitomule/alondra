@@ -1,4 +1,5 @@
 mod checks;
+mod claude_update;
 mod devices_wait;
 mod login_item;
 mod projects;
@@ -59,6 +60,7 @@ pub enum Action {
     EnableService,
     PrepareIdentity,
     RepairPlugin,
+    UpdateClaude,
     SetProjects,
     EnableRelay,
 }
@@ -80,6 +82,7 @@ impl Action {
             Action::EnableService => Some(tr!("Letting launchd start the service again…", "Dejando que launchd vuelva a arrancar el servicio…")),
             Action::PrepareIdentity => Some(tr!("Preparing this Mac for your devices…", "Preparando este Mac para tus dispositivos…")),
             Action::RepairPlugin => Some(tr!("Setting up the Claude plugin…", "Configurando el plugin de Claude…")),
+            Action::UpdateClaude => Some(tr!("Updating Claude Code…", "Actualizando Claude Code…")),
             Action::EnableRelay => Some(tr!("Turning on notifications and access away from home…", "Activando las notificaciones y el acceso desde fuera de casa…")),
             Action::SetProjects => None,
         }
@@ -488,6 +491,8 @@ fn check(options: Options) -> Result<i32> {
     }
     Ok(exit_code(&outcomes))
 }
+
+pub use claude_update::report as update_claude;
 
 /// The checks `alondra update` ends with, in its own style; returns doctor's exit code.
 pub fn after_update() -> i32 {

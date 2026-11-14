@@ -36,6 +36,7 @@ pub mod model_table;
 pub mod selection_transition;
 pub mod claude_account;
 pub mod claude_code;
+pub mod claude_update;
 pub mod node_guard;
 pub mod options;
 pub mod projects_folder;

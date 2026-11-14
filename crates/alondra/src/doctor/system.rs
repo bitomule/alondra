@@ -126,6 +126,7 @@ pub trait System {
     fn codex_version(&self) -> Option<String> { None }
     fn native_accounts(&self) -> Option<Value> { None }
     fn claude(&self, args: &[&str], timeout: Duration) -> Option<(bool, String)>;
+    fn update_claude(&self) -> alondra_core::claude_update::Outcome;
     fn signed_in(&self) -> Result<bool>;
     fn profile(&self) -> Result<Option<String>, String>;
     fn plugins(&self) -> Option<Value>;
@@ -531,6 +532,16 @@ impl System for Real {
         command_output(command, timeout)
     }
 
+    fn update_claude(&self) -> alondra_core::claude_update::Outcome {
+        use alondra_core::claude_update::{Failure, Outcome, ProcessHost};
+        let Ok(command) = self.context().and_then(|context| context.command().map_err(|e| e.to_string())) else {
+            return Outcome::Failed(Failure::NoAnswer);
+        };
+        let environment = command.get_envs()
+            .filter_map(|(key, value)| Some((key.to_string_lossy().into_owned(), value?.to_string_lossy().into_owned()))).collect();
+        alondra_core::claude_update::update(&ProcessHost { launcher: command.get_program().into(), environment: Some(environment) })
+    }
+
     fn signed_in(&self) -> Result<bool> {
         self.context().map_err(anyhow::Error::msg)?.status()
     }
@@ -609,6 +620,10 @@ impl System for Real {
             Action::PrepareIdentity => crate::service_setup::prepare_local_quietly(&self.home).map(|_| ()),
             Action::RepairPlugin if self.sandbox.is_some() => Ok(()),
             Action::RepairPlugin => self.install().repair_plugin(),
+            Action::UpdateClaude => match self.update_claude() {
+                alondra_core::claude_update::Outcome::Current(_) | alondra_core::claude_update::Outcome::Updated { .. } => Ok(()),
+                outcome => Err(anyhow::anyhow!(super::claude_update::describe(&outcome))),
+            },
             Action::EnableRelay => self.enable_relay(),
             Action::SetProjects => Ok(()),
         };
