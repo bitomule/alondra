@@ -2379,7 +2379,7 @@ fn plan_points(item: &InboxItem, context: &RenderContext<'_>) -> Option<(String,
         row.link = None;
         row
     };
-    let points = marks.iter().map(|mark| {
+    let mut points = marks.iter().map(|mark| {
         let text = items.iter().find(|point| point.id == mark.item).map(|point| point.text.clone())
             .unwrap_or_else(|| tf!(lang, "Point {n}", "Punto {n}", n = mark.item));
         let mut row = bare(format!("plan-{}", mark.item), Icon::Check, text, None);
@@ -2406,6 +2406,10 @@ fn plan_points(item: &InboxItem, context: &RenderContext<'_>) -> Option<(String,
         }).collect();
         Item::Row(row)
     }).collect::<Vec<_>>();
+    points.extend(items.iter().filter(|item| !marks.iter().any(|mark| mark.item == item.id)).map(|item| {
+        Item::Row(bare(format!("plan-pending-{}", item.id), Icon::Schedule, item.text.clone(),
+            Some(t!(lang, "Pending after merge", "Pendiente tras el merge").into())))
+    }));
     let total = items.len().max(marks.len());
     let title = tf!(lang, "Approved plan · {done} of {total} done", "Plan aprobado · {done} de {total} hechos", done = marks.len(), total = total);
     Some((title, points))

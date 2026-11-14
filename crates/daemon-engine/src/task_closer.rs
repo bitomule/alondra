@@ -269,8 +269,10 @@ fn finish(domain: &DomainRuntime, row: &TaskClosing, agent: Option<&AgentId>, en
     }
     record_end(domain, &row.task_id, end, agent)?;
     forget_post_merge_check(domain, &row.task_id)?;
-    if let Err(error) = crate::files_retention::remove_task_scratch(domain.home(), &row.task_id.0) {
-        log!("could not remove the scratch files of {}: {error}", row.task_id);
+    if domain.state()?.tasks.get(&row.task_id).is_some_and(Task::over) {
+        if let Err(error) = crate::files_retention::remove_task_scratch(domain.home(), &row.task_id.0) {
+            log!("could not remove the scratch files of {}: {error}", row.task_id);
+        }
     }
     if let Some(card) = &row.problem_id {
         let _ = domain.withdraw_problem(&InteractionId(card.clone()));
@@ -287,6 +289,15 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
     let state = domain.state()?;
     let Some(task) = state.tasks.get(task_id) else { return Ok(()) };
     let mut row = domain.store.lock_or_exit("the domain store").begin_task_closing(task_id, now)?;
+    if matches!(kind, Due::Cleanup) && !task.cancelled()
+        && task.ending != Some(alondra_core::domain::TaskEnding::Cancelling)
+        && !state.unproved_checklist(task).is_empty()
+    {
+        if state.node_session_closed(task) {
+            return finish(domain, &row, task.agent_id.as_ref(), NodeEnd::Gone);
+        }
+        return hold_while_working_after_merge(domain, now, row);
+    }
     if let Some(card_id) = row.problem_id.clone() {
         match card(&state, &card_id) {
             // The user's answer stays the answer. It is recorded at once; a receipt that failed after

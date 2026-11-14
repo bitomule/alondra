@@ -1890,6 +1890,7 @@ impl DomainState {
         }
         let after_merge = self.work_after_merge(&task_id, self.lifecycle(lifecycles, &task_id)?);
         if option == CLOSE_TASK && after_merge.is_some() {
+            self.require_checklist_proof(&self.tasks[&task_id])?;
             self.end_post_merge(&task_id, PostMergeEnd::UserDecision, lifecycles)?;
             return Ok(true);
         }
@@ -2459,6 +2460,7 @@ impl DomainState {
         if lifecycle.phase() != TaskPhase::Delivered {
             return Ok(());
         }
+        self.require_checklist_proof(&self.tasks[task])?;
         let delivery = lifecycle.delivery().cloned().expect("a delivered task has its delivery");
         self.end_node_pause(task, lifecycles)?;
         if !self.lifecycle(lifecycles, task)?.accepted() {
@@ -2479,6 +2481,7 @@ impl DomainState {
         let settled: Vec<TaskId> = self.tasks.values()
             .filter(|t| !t.over() && !t.archived)
             .filter(|t| self.finished(t) && !self.unanswered(&t.id) && !self.blockers(&t.id) && !self.wraps_up(t))
+            .filter(|t| self.unproved_checklist(t).is_empty())
             .map(|t| t.id.clone())
             .collect();
         for task in settled {
@@ -2490,7 +2493,7 @@ impl DomainState {
     /// A task whose PR merged: its node still works on what comes after, or waits for what that
     /// work needs from other Tasks, until its session is over.
     fn after_merge_state(&self, t: &Task) -> TaskState {
-        if t.wrap_up.post_merge_work.is_none() || self.node_session_closed(t) {
+        if (t.wrap_up.post_merge_work.is_none() && self.unproved_checklist(t).is_empty()) || self.node_session_closed(t) {
             TaskState::Closing
         } else if self.waiting_after_merge(t).is_some() {
             TaskState::WaitingDependency

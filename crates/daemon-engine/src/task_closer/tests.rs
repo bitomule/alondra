@@ -564,6 +564,63 @@ async fn a_session_alondra_did_not_launch_is_never_closed() {
 }
 
 #[tokio::test]
+async fn a_users_session_with_unproved_release_work_stays_available_after_merge() {
+    use alondra_core::domain::{ChecklistMark, Evidence, EvidenceKind, Hold, MergeMethod, PrState};
+    let rig = Rig::undelivered(thirty_minutes());
+    let plan = "- [ ] Prepare the release\n- [ ] Publish the release\n";
+    command(&rig.domain, Actor::System, "plan", Command::HoldHook {
+        interaction_id: "plan".into(), task_id: "t".into(), agent_id: SESSION.into(), hold: Hold::Plan,
+        body: plan.into(), options: Hold::Plan.options(),
+        card: CardSpec::new(alondra_core::domain::CardKind::Review, "Review the release plan")
+            .content(alondra_core::domain::ContentKind::Plan, plan),
+    });
+    command(&rig.domain, user(), "approve", Command::AnswerQuestion {
+        attachments: vec![], interaction_id: "plan".into(), option_id: Hold::APPROVE.into(), inputs: Default::default(),
+    });
+    command(&rig.domain, agent(), "register", Command::RegisterPr {
+        task_id: "t".into(), pr_id: "release".into(), host: "github.com".into(), repository: "acme/tool".into(), number: 49,
+        head: "abcdef0".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+    });
+    rig.declare_post_merge_work(Some("Publish the release after merge"));
+    let targets = vec![DeliveryTarget::PullRequest { pr_id: "release".into(), head: "abcdef0".into() }];
+    command(&rig.domain, agent(), "review", Command::PresentResult {
+        checklist: vec![ChecklistMark { item: "1".into(), evidence: vec![Evidence { kind: EvidenceKind::Commit, value: "abcdef0".into(), detail: None }] }],
+        attachments: vec![], task_id: "t".into(), interaction_id: "review".into(), body: "The release is ready for review".into(),
+        targets: targets.clone(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the release", &targets, true),
+    });
+    command(&rig.domain, user(), "accept", Command::AcceptDelivery { presentation_id: "review".into(), targets });
+    command(&rig.domain, Actor::System, "merged", Command::ObservePrState {
+        pr_id: "release".into(), head: "abcdef0".into(), base: "main".into(), state: PrState::Merged, merged_head: Some("abcdef0".into()),
+    });
+    rig.pass(T0).await;
+    let problem = raise_card(&rig.domain, &rig.task(), CloseStop::Unsaved, "An older close attempt", true).unwrap();
+    let mut row = rig.closing().unwrap();
+    row.problem_id = Some(problem);
+    row.failures = MAX_FAILURES;
+    rig.domain.store.lock().unwrap().save_task_closing(&row).unwrap();
+    answer(&rig, "leave");
+    rig.pass(T0 + 600 * MINUTE).await;
+    assert_eq!(rig.task().agent_id, Some(SESSION.into()));
+    assert_eq!(rig.task().wrap_up.node, None);
+    assert_eq!(rig.task().state, TaskState::Running);
+    assert!(rig.sessions.calls.lock().unwrap().is_empty());
+    assert!(rig.cards().iter().all(|card| !rig.domain.state().unwrap().open(card)));
+    assert_eq!(rig.closing().unwrap().failures, 0);
+    let scratch = rig._home.0.join("files/tasks/t");
+    std::fs::create_dir_all(&scratch).unwrap();
+    std::fs::write(scratch.join("release-proof.txt"), "Publication remains pending").unwrap();
+    rig.session_ends();
+    rig.pass(T0 + 601 * MINUTE).await;
+    assert_eq!(rig.task().agent_id, None, "the ended session can be replaced");
+    let state = rig.domain.state().unwrap();
+    assert!(!rig.task().over());
+    assert!(!state.landed(&rig.task()));
+    assert_eq!(state.unproved_checklist(&rig.task()).len(), 1);
+    assert!(scratch.join("release-proof.txt").exists(), "a replacement node keeps the task's working evidence");
+    assert!(rig.cards().iter().all(|card| !state.open(card)));
+}
+
+#[tokio::test]
 async fn the_orchestrator_is_never_closed() {
     let rig = Rig::new(thirty_minutes());
     rig.domain.live.apply(&Event::MarkedOrchestrator { session_id: SESSION.into() });

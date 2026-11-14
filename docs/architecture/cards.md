@@ -51,6 +51,33 @@ continues to belong to the task until the node finishes that work.
 A new report about an already merged PR remains readable and can be acknowledged; it offers
 no merge action and acknowledging it does not finish declared work after the merge.
 
+### A PR review before publication and installation
+
+A task with an approved plan can deliver an open PR while publication, installation or other
+declared work must wait for its merge. The node uses the existing MCP tools and arguments:
+
+1. Call `post_merge_work` with `task_id` and a `reason` describing the work after merge.
+2. Call `present_result` with `is_final: true`, a `pull_request` target and only the completed
+   points in `checklist`, each with real evidence. For a six-point release with the first three
+   points finished, send points 1–3. Points 4–6 stay in the approved plan without completion marks;
+   the review shows them as pending after merge.
+3. After merge, finish that work in the same task. Present a new final result with all six points
+   and their evidence, including the evidence already supplied for points 1–3. Then end
+   `post_merge_work` without `reason` and complete cleanup when Alondra asks.
+
+No new MCP parameter, invented evidence or replacement plan is needed. Partial evidence is
+admitted only with a registered open PR and a prior declaration of work after merge. A merged
+PR or a text result cannot keep deferring the checklist. Ending the declaration, confirming
+cleanup or completing the task while points remain unproved is refused. A session that ends
+is recorded and can be replaced; it never proves the remaining work or completes the task.
+Cancellation keeps its existing cleanup path.
+
+The release review shows completed evidence and pending work separately in the real TUI:
+
+| Dark appearance | Light appearance |
+|---|---|
+| ![Three of six points completed, with three pending after merge](../images/pr-deliveries/partial-checklist-es-dark.png) | ![The partial checklist in the light TUI](../images/pr-deliveries/partial-checklist-es-light.png) |
+
 The TUI renders a separate review for each open PR. In this synthetic sandbox, closing PR #61
 removes its card while PR #62 keeps its merge and feedback actions:
 
