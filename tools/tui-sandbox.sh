@@ -28,7 +28,7 @@ fi
 for name in $(env | sed -n 's/^\(ALONDRA_[A-Za-z0-9_]*\)=.*/\1/p'); do
 	unset "$name"
 done
-export SANDBOX_DIR="$dir" SANDBOX_PORT="${SANDBOX_PORT:-48210}" MACS=1 FAKES=1
+export SANDBOX_DIR="$dir" SANDBOX_PORT="${SANDBOX_PORT:-48210}" SANDBOX_LANG="${TUI_LANG:-es}" MACS=1 FAKES=1
 
 "$repo/tools/e2e-sandbox.sh" "$@" >/dev/null
 trap '"$repo/tools/e2e-sandbox-stop.sh" "$dir" >&2' EXIT
