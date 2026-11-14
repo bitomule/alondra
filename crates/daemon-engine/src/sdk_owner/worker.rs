@@ -68,7 +68,7 @@ impl Worker {
         })
     }
     pub fn take_ended(&mut self) -> Option<alondra_agent_runtime::owned_host::EndedHost> { dispatch!(self, take_ended) }
-    pub fn relaunch(&mut self, grant: OwnerGrant, state: AdapterState, base: u64, resume: bool, environment: BTreeMap<String, String>) -> Result<(), AdapterError> { dispatch!(self, relaunch, grant, state, base, resume, environment) }
+    pub fn relaunch(&mut self, grant: OwnerGrant, state: AdapterState, base: u64, resume: bool, opens_on_control: bool, environment: BTreeMap<String, String>) -> Result<(), AdapterError> { dispatch!(self, relaunch, grant, state, base, resume, opens_on_control, environment) }
     pub fn reconcile(&mut self, bytes: &[u8]) -> Result<Handoff, AdapterError> { dispatch!(self, reconcile, bytes) }
     pub fn archived_handoffs(&self, grant: &OwnerGrant, state: &AdapterState, commands: &[&[u8]]) -> Result<Vec<alondra_provider_contract::HandoffProof>, AdapterError> {
         dispatch!(self, archived_handoffs, grant, state, commands)
@@ -82,6 +82,7 @@ impl Worker {
         if let Self::Claude(worker) = self { worker.discard_prepared() }
     }
     pub fn stopper(&self) -> Option<HostStop> { dispatch!(self, stopper) }
+    pub fn retired_host(&mut self) -> Option<std::path::PathBuf> { dispatch!(self, retired_host) }
     pub fn host_group(&self) -> Option<i32> { dispatch!(self, host_group) }
     pub fn supports_plan_supersession(&self) -> bool {
         match self { Self::Claude(_) => true, Self::Codex(worker) => worker.supports_plan_supersession() }

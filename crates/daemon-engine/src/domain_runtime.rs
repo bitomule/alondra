@@ -307,6 +307,12 @@ impl DomainRuntime {
         };
         drop(ended);
     }
+    /// Asks the owner of `agent`'s host, if it holds one, to close it.
+    pub(crate) fn ask_to_release_host(&self, agent: &AgentId) {
+        if let Some(owner) = self.sdk_owners.lock_or_recover("the SDK owners").iter().find(|owner| owner.agent() == agent && !owner.ended()) {
+            owner.ask_to_release();
+        }
+    }
     /// Stops the SDK host of `agent` and waits until it and its whole process group exited. `Ok`
     /// with nothing to stop when this daemon owns no host for it.
     pub(crate) fn stop_sdk_host(&self, agent: &AgentId) -> Result<(), crate::sdk_owner::Failed> {
@@ -683,11 +689,7 @@ impl DomainRuntime {
                 return Err(DomainError::new("not_assigned","Only the current assigned node requests plan mode").into());
             }
             let before_revision = state.revision;
-            let already_requested = state.lifecycle_journal.get(task).and_then(|journal| journal.iter().rev().find_map(|record| match record {
-                LifecycleRecord::ControlRequested { operation: ControlRecord::SetPermissionMode { mode }, .. } => Some(*mode == PermissionModeRecord::Plan),
-                LifecycleRecord::Admitted { .. } => Some(false),
-                _ => None,
-            })).unwrap_or(false);
+            let already_requested = state.in_plan_mode(task);
             let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION,data_epoch:epoch,
                 command_id:format!("plan-mode-{operation}").into(),expected_revision:0,
                 command:Command::SetPermissionMode { task_id:task.clone(),mode:PermissionModeRecord::Plan } };
@@ -988,6 +990,10 @@ impl DomainRuntime {
         if let Command::TellNode { task_id, .. } = command {
             crate::sdk_owner::take_if_unowned(self, task_id);
         }
+        if let Command::SetModel { task_id, .. } | Command::SetPermissionMode { task_id, .. } | Command::ReadMcpStatus { task_id }
+            | Command::ReconnectMcp { task_id, .. } | Command::StartMcpSignIn { task_id, .. } | Command::ClearMcpSignIn { task_id, .. } = command {
+            crate::sdk_owner::wake_released(self, task_id);
+        }
     }
 
     /// «Allow always», chosen on the card of a decision Claude asked for through the SDK and
@@ -1157,6 +1163,8 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RecordTurnBoundary { task_id, .. }
         | Command::RecordClaudeHold { task_id, .. }
         | Command::RecordHostEnded { task_id, .. }
+        | Command::RecordHostReleased { task_id, .. }
+        | Command::RecordHostRetaken { task_id, .. }
         | Command::RecordInterruptAccepted { task_id, .. }
         | Command::RecordDoubtfulHandoff { task_id, .. }
         | Command::ReconcileRecoveryCards { task_id }

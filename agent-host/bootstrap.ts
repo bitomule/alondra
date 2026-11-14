@@ -13,6 +13,7 @@ const shape = z.strictObject({
   manifest: z.strictObject({ mode: z.literal('node_bundle'), artifact_path: absolute, host_release: z.string().min(1).max(256), host_sha256: digest, executable_sha256: digest, sdk_version: z.string().min(1).max(128) }),
   native: z.strictObject({ session_id: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/), executable: absolute, cwd: absolute, env: z.record(z.string(), z.string()), resume: z.boolean().optional() }),
   journal_base: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+  opens_on_control: z.boolean().optional(),
   orchestrator: z.strictObject({
     model: z.string().min(1).max(64),
     reasoning_effort: z.string().min(1).max(32).optional(),

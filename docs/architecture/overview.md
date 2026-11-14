@@ -47,7 +47,8 @@ accounts of each provider can be configured.
 
 The daemon and a host speak a versioned protocol. A new action names a new capability; changing
 an existing frame takes a new protocol version that the daemon speaks beside the old one, so an
-upgrade never strands a running host.
+upgrade never strands a running host. A node that rests closes its host and native process and
+resumes its session when it has work (`docs/architecture/admission.md`).
 
 ## The read side
 

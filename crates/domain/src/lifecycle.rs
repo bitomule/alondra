@@ -548,6 +548,11 @@ pub enum Event {
         card: InteractionId,
     },
     PlanApproved,
+    /// The resting execution's host and native process closed. The session stays, and nothing else
+    /// of the task changes: a host that resumes it takes over when the task has something to do.
+    HostReleased,
+    /// A host that resumes the released session takes over.
+    HostRetaken,
     BlockDelivery {
         delivery: InteractionId,
         dependencies: Vec<TaskId>,
@@ -740,6 +745,8 @@ impl Event {
             | Self::MoveCard { .. }
             | Self::KeepQuestion { .. }
             | Self::PlanApproved
+            | Self::HostReleased
+            | Self::HostRetaken
             | Self::BlockDelivery { .. }
             | Self::DeliveryUnblocked { .. }
             | Self::Present { .. }
@@ -990,13 +997,15 @@ struct Execution {
     /// The inputs the provider named as held, whose reading it owes.
     held: BTreeSet<InputId>,
     takeover: Takeover,
+    /// No host runs this execution: its session waits to be resumed.
+    host_released: bool,
 }
 impl Execution {
     /// A node whose turn ended on work of its own keeps its process and its memory while that
     /// work runs, and goes on without passing the gate, so it keeps its slot. A turn whose answer
     /// has not reached it yet does not work: it waits for a slot instead of holding one.
     fn holds_slot(&self) -> bool {
-        !self.answer_waits()
+        !self.host_released && !self.answer_waits()
             && (matches!(self.resource, ResourceEvidence::Reserved | ResourceEvidence::ObservationPending)
                 || self.activity.turn_runs_work()
                 || (self.resource == ResourceEvidence::Available && !self.activity.rests()))
@@ -1377,6 +1386,23 @@ impl TaskLifecycle {
             && matches!(&execution.activity, Activity::Continuation(pending)
                 if pending.iter().all(|wake| matches!(wake, Wake::Callback(callback) if allowed.contains(callback))))
     }
+    /// Nothing of the execution lives in its host: no turn, work, callback, effect or input, and no
+    /// work after the merge that only the running session can report.
+    pub fn can_release_host(&self) -> bool {
+        let Some(execution) = self.session() else { return false };
+        matches!(self.state, State::InProgress(_) | State::Delivered(_))
+            && execution.resource == ResourceEvidence::Available
+            && execution.activity.rests()
+            && !execution.host_released
+            && execution.callbacks.is_empty()
+            && execution.effects.is_empty()
+            && !self.has_pending()
+            && self.post_merge().is_none()
+    }
+    /// Whether no host runs the execution and its session waits to be resumed.
+    pub fn host_released(&self) -> bool {
+        self.session().is_some_and(|execution| execution.host_released)
+    }
     /// The callback a card the task holds decides, if it decides one.
     pub fn card_callback(&self, card: &InteractionId) -> Option<&CallbackId> {
         let held = match &self.state {
@@ -1673,7 +1699,7 @@ impl TaskLifecycle {
 /// Any card, delivery, work of the node's own, input or new execution starts the count again.
 fn keeps_wake(event: &Event, woken: Option<&InputId>) -> bool {
     let Event::Runtime { fact, .. } = event else {
-        return matches!(event, Event::RequestControl { .. } | Event::DrainObserved { .. } | Event::AwaitEnded { .. } | Event::Unfinished { .. });
+        return matches!(event, Event::RequestControl { .. } | Event::DrainObserved { .. } | Event::AwaitEnded { .. } | Event::Unfinished { .. } | Event::HostReleased | Event::HostRetaken);
     };
     match fact {
         RuntimeFact::TurnStarted { trigger: Trigger::Input(input), .. } | RuntimeFact::InputConsumed { input } => Some(input) == woken,

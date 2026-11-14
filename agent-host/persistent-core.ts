@@ -226,7 +226,7 @@ export class PersistentHost {
           this.current(lane); await this.session.interrupt();
           this.receipt(record, { status: 'accepted', phase: 'applied' }); break;
         case 'force_stop': {
-          const session = this.controlled(record); if (!session) break;
+          const session = this.controlled(record, lane); if (!session) break;
           this.current(lane); await session.forceStop();
           this.receipt(record, { status: 'accepted', phase: 'applied' }); break;
         }
@@ -235,7 +235,7 @@ export class PersistentHost {
           this.current(lane); this.session.close(); await this.session.finished;
           this.receipt(record, { status: 'accepted', phase: 'applied' }); break;
         case 'set_model': {
-          const session = this.controlled(record); if (!session) break;
+          const session = this.controlled(record, lane); if (!session) break;
           const model = command.action.model;
           const offered = await session.supportedModels();
           this.current(lane);
@@ -246,19 +246,19 @@ export class PersistentHost {
           this.receipt(record, { status: 'accepted', phase: 'applied' }); break;
         }
         case 'set_permission_mode': {
-          const session = this.controlled(record); if (!session) break;
+          const session = this.controlled(record, lane); if (!session) break;
           this.current(lane); await session.setPermissionMode(NATIVE_MODES[command.action.mode]);
           this.receipt(record, { status: 'accepted', phase: 'applied' }); break;
         }
         case 'mcp_status': {
-          const session = this.controlled(record); if (!session) break;
+          const session = this.controlled(record, lane); if (!session) break;
           this.current(lane);
           const servers = listed(await session.mcpServerStatus());
           this.current(lane);
           this.answer(record, { control: 'mcp_status', command_id: command.command_id, servers }); break;
         }
         case 'mcp_reconnect': {
-          const session = this.controlled(record); if (!session) break;
+          const session = this.controlled(record, lane); if (!session) break;
           this.current(lane);
           const server = command.action.server;
           const error = await session.reconnectMcpServer(server).then(() => undefined, failure);
@@ -268,7 +268,7 @@ export class PersistentHost {
           this.answer(record, { control: 'mcp_reconnect', command_id: command.command_id, server, ...(error ? { error } : {}), servers }); break;
         }
         case 'mcp_authenticate': {
-          const session = this.controlled(record); if (!session) break;
+          const session = this.controlled(record, lane); if (!session) break;
           this.current(lane);
           const server = command.action.server;
           const sign_in = await session.mcpAuthenticate(server).then(signIn, (error): SignIn => ({ outcome: 'refused', error: failure(error) }));
@@ -276,7 +276,7 @@ export class PersistentHost {
           this.answer(record, { control: 'mcp_authenticate', command_id: command.command_id, server, sign_in }); break;
         }
         case 'mcp_clear_auth': {
-          const session = this.controlled(record); if (!session) break;
+          const session = this.controlled(record, lane); if (!session) break;
           this.current(lane);
           const server = command.action.server;
           const error = await session.mcpClearAuth(server).then(() => undefined, failure);
@@ -347,7 +347,9 @@ export class PersistentHost {
     if (this.unavailable) throw new Error('Control result not durable');
     this.receipt(record, { status: 'accepted', phase: 'applied' });
   }
-  private controlled(record: CommandRecord): HostSession | undefined {
+  /** A host that resumes a released session opens it for a control too: nothing else would. */
+  private controlled(record: CommandRecord, lane: Lane): HostSession | undefined {
+    if (!this.session && this.config.opens_on_control) this.session = this.open(lane);
     if (!this.session) this.receipt(record, { status: 'rejected', code: 'session_absent', message: 'No Claude session is running on this host' });
     return this.session;
   }

@@ -330,9 +330,9 @@ impl ClaudeWorker {
     }
     /// Launches a fresh host for the same execution once the evidence of the ended one is
     /// committed; its first input resumes the stored native session when `resume`.
-    pub fn relaunch(&mut self, grant: OwnerGrant, state: AdapterState, base: u64, resume: bool, environment: BTreeMap<String, String>) -> Result<(), AdapterError> {
+    pub fn relaunch(&mut self, grant: OwnerGrant, state: AdapterState, base: u64, resume: bool, opens_on_control: bool, environment: BTreeMap<String, String>) -> Result<(), AdapterError> {
         self.adapter.configuration.native_environment.extend(environment);
-        self.adapter.relaunch(grant, state, base, resume)
+        self.adapter.relaunch(grant, state, base, resume, opens_on_control)
     }
     /// Re-sends the exact recorded bytes of a dispatch whose receipt a crash lost, and returns the
     /// host's definitive answer.
@@ -406,6 +406,10 @@ impl ClaudeWorker {
             .ok_or(AdapterError::InvalidObservation)?;
         self.adapter
             .submit(invocation(committed.attempt()), &prepared.command)
+    }
+    /// Where the last relaunch kept the folder of the host it replaced, once.
+    pub fn retired_host(&mut self) -> Option<std::path::PathBuf> {
+        self.adapter.retired.take()
     }
     /// Asks this worker's host to stop from another thread; `None` before it has a host.
     pub fn stopper(&self) -> Option<HostStop> {
@@ -601,6 +605,8 @@ struct ClaudeAdapter {
     connection: Option<Connection>,
     normalizer: Normalizer,
     ended: Option<(EndedHost, String)>,
+    /// Where the folder of the host the last relaunch replaced was kept.
+    retired: Option<std::path::PathBuf>,
     /// The existing native session the conversation this worker stages continues.
     continuing: Option<MessageUuid>,
 }
@@ -648,6 +654,7 @@ impl ClaudeAdapter {
                 host_ended: false,
             },
             ended: None,
+            retired: None,
             continuing: None,
         })
     }
@@ -787,7 +794,7 @@ impl ClaudeAdapter {
     /// Launches a fresh host for the same execution after its host ended: the ended host's folder
     /// is kept as evidence, the new host's journal continues from `base`, and its first input
     /// resumes the stored native session when `resume`, or starts it with the same id.
-    fn relaunch(&mut self, owner: OwnerGrant, state: AdapterState, base: u64, resume: bool) -> Result<(), AdapterError> {
+    fn relaunch(&mut self, owner: OwnerGrant, state: AdapterState, base: u64, resume: bool, opens_on_control: bool) -> Result<(), AdapterError> {
         if owner.binding() != &self.binding || state.validate_owner(&owner).is_err() || self.host.is_some() || !self.normalizer.host_ended {
             return Err(AdapterError::InvalidObservation);
         }
@@ -799,14 +806,16 @@ impl ClaudeAdapter {
         if let Some((ended, instance)) = self.ended.take() {
             let mut archive = directory.clone().into_os_string();
             archive.push(format!(".ended-{instance}"));
-            ended.retire(std::path::Path::new(&archive)).map_err(|_| AdapterError::Disconnected)?;
+            let archive = std::path::PathBuf::from(archive);
+            ended.retire(&archive).map_err(|_| AdapterError::Disconnected)?;
+            self.retired = Some(archive);
         }
         if !directory.try_exists().map_err(|_| AdapterError::Disconnected)? {
             use std::os::unix::fs::DirBuilderExt;
             std::fs::DirBuilder::new().mode(0o700).create(&directory).map_err(|_| AdapterError::Disconnected)?;
         }
         let expected = fence(&owner, &self.control);
-        let continued = Continued { journal_base: base, resume };
+        let continued = Continued { journal_base: base, resume, opens_on_control };
         let host = OwnedHost::launch_confined(
             owner,
             self.configuration.artifact.clone(),
@@ -843,6 +852,8 @@ struct Retained {
 pub(super) struct Continued {
     journal_base: u64,
     resume: bool,
+    /// The host resumes a released session, which a control opens too: nothing else will.
+    opens_on_control: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -1089,6 +1100,9 @@ pub(super) fn bootstrap(
     });
     if let Some(continued) = continued {
         bootstrap["journal_base"] = continued.journal_base.into();
+        if continued.opens_on_control {
+            bootstrap["opens_on_control"] = true.into();
+        }
         bootstrap["native"]["resume"] = continued.resume.into();
     }
     if session.continued {

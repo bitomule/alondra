@@ -552,6 +552,7 @@ fn open_questions(task: &Task, context: &RenderContext<'_>) -> Option<String> {
     }
 }
 
+
 /// What a paused task's node still owes the user, when its delivery went back to it.
 fn with_pending(fact: String, task: &Task, context: &RenderContext<'_>) -> String {
     let lang = context.lang;

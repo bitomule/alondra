@@ -224,3 +224,6 @@ crates/daemon-support/src/worktree.rs	if !listed.lines().filter_map(|line| line.
 crates/core/src/claude_update.rs	if text.contains("/.local/share/claude/versions/") {	format	installation pathname components select the existing updater; no provider prose is read
 crates/core/src/claude_update.rs	if text.contains("/node_modules/@anthropic-ai/claude-code") {	format	installation pathname components select the existing updater; no provider prose is read
 crates/core/src/claude_update.rs	let mut command = Command::new("/bin/ps");	format	ps comm column compared as an exact executable path; failures conservatively keep the updater waiting
+crates/core/src/views/now_fact.rs	let label = label.strip_prefix("Bash: ").unwrap_or(label);	display	the label of a running tool only picks the words a node row shows
+crates/core/src/views/tasks.rs	if let Some(rest) = reason.strip_prefix(CODEX_ROUTING) { return system_selection(rest); }	format	parses the selection reason Alondra itself writes, to show it localized
+crates/core/src/views/tasks.rs	let rest = reason.strip_prefix(CODEX_UNAVAILABLE)?;	format	parses the selection reason Alondra itself writes, to show it localized

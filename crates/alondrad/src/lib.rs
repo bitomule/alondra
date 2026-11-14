@@ -69,6 +69,7 @@ use alondra_daemon_engine::{
     domain_transport,
     home_renames,
     idle_compaction,
+    idle_release,
     issues,
     launch_plans,
     local_network_card,
@@ -698,6 +699,8 @@ async fn serve_domain(
     tokio::spawn(obligation_watch::run(state_domain.clone()));
     let compaction = if config.fast_timing { &idle_compaction::Timing::SANDBOX } else { &idle_compaction::Timing::LIVE };
     tokio::spawn(idle_compaction::run(state_domain.clone(), compaction));
+    let release = if config.fast_timing { &idle_release::Timing::SANDBOX } else { &idle_release::Timing::LIVE };
+    tokio::spawn(idle_release::run(state_domain.clone(), release));
     let closer = if config.fast_timing { task_closer::Timing::sandbox(config.close_free_nodes_after) } else { task_closer::Timing::new(config.close_free_nodes_after) };
     tokio::spawn(task_closer::run(state_domain.clone(), client.sessions(), closer));
     let merges_domain = domain.clone();
