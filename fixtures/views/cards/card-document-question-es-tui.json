@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "tui",
-  "version": "v0e9616d6cf0d7f95",
+  "version": "v3f55fcfadc255023",
   "cursor": "cursor-1",
   "title": "Choose the welcome copy",
   "status": {
-    "version": "vf8bd13a3dc364c4d",
+    "version": "v17585113723dfa62",
     "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
     "summary_parts": [
       {
@@ -43,19 +43,29 @@
         "value": 1
       },
       {
-        "id": "agents",
-        "label": "En marcha",
-        "value": 0
-      },
-      {
         "id": "working",
         "label": "trabajando",
         "value": 0
       },
       {
-        "id": "waiting",
-        "label": "esperando",
+        "id": "needs_you",
+        "label": "esperando por ti",
         "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
+        "value": 0
       }
     ],
     "gauges": [

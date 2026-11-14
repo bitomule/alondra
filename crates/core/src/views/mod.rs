@@ -140,9 +140,17 @@ impl RenderContext<'_> {
 pub fn inbox_badge(index: &crate::domain::ReadIndex) -> u32 {
     index.cards().len() as u32
 }
-/// The counts the status header and the phone's Live Activity show, so they never differ.
-pub fn activity_counts(index: &crate::domain::ReadIndex) -> crate::domain::ActivityCounts {
-    index.activity()
+/// The counts the status header and the phone's Live Activity show, so they never differ: the index's, with a paused
+/// task the gate queues counted as queued, as the list says it.
+pub fn activity_counts(context: &RenderContext<'_>) -> crate::domain::ActivityCounts {
+    let mut counts = context.index.activity();
+    let queued = context.domain.tasks.values()
+        .filter(|task| task_state::tally(task, context) == Some(crate::domain::Tally::Queued)
+            && context.reading(&task.id).and_then(crate::domain::TaskReading::tally) == Some(crate::domain::Tally::Paused))
+        .count() as u32;
+    counts.paused -= queued;
+    counts.queued += queued;
+    counts
 }
 /// The cards of the Waiting for You queue, by the id a push names them with (`alondra.card`).
 pub fn waiting_cards(index: &crate::domain::ReadIndex) -> Vec<String> {

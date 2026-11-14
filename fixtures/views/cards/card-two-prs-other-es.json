@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:github.com/acme/storefront#6",
   "client": "ios",
-  "version": "vbce20a2c0bc8428e",
+  "version": "v02446727b16f2bd7",
   "cursor": "cursor-1",
   "title": "Review the result · storefront#6",
   "status": {
-    "version": "vca57c0d78d14f9c6",
+    "version": "v303a602a6e13c2d9",
     "summary": "2 por leer · 0 tareas trabajando",
     "summary_parts": [
       {
@@ -37,19 +37,29 @@
         "value": 1
       },
       {
-        "id": "agents",
-        "label": "En marcha",
-        "value": 1
-      },
-      {
         "id": "working",
         "label": "trabajando",
         "value": 0
       },
       {
-        "id": "waiting",
-        "label": "esperando",
+        "id": "needs_you",
+        "label": "esperando por ti",
         "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
+        "value": 0
       }
     ],
     "gauges": [],

@@ -4,11 +4,11 @@
   "view": "machine",
   "key": "machine",
   "client": "ios",
-  "version": "v51f130fd234ad211",
+  "version": "va9050acd0cb2a415",
   "cursor": "cursor-1",
   "title": "Máquina",
   "status": {
-    "version": "v4f9fcb57c8481e97",
+    "version": "v9c97734b8040bb4a",
     "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
     "summary_parts": [
       {
@@ -43,19 +43,29 @@
         "value": 7
       },
       {
-        "id": "agents",
-        "label": "En marcha",
-        "value": 4
-      },
-      {
         "id": "working",
         "label": "trabajando",
         "value": 0
       },
       {
-        "id": "waiting",
-        "label": "esperando",
+        "id": "needs_you",
+        "label": "esperando por ti",
         "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 4
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
+        "value": 2
       }
     ],
     "gauges": [

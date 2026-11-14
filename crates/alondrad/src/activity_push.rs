@@ -1,5 +1,6 @@
-//! Keeps the phone's Live Activity up to date with this Mac's three counts: the cards in Waiting
-//! for You, the nodes that wait for an answer and the nodes at work. Each phone gets them sealed
+//! Keeps the phone's Live Activity up to date with this Mac's counts, the ones the status header
+//! shows: the cards in Waiting for You, and the tasks waiting for you, working, queued, paused and
+//! waiting for something else. Each phone gets them sealed
 //! with its own key, so neither the relay nor Apple reads this copy: the relay keeps the latest
 //! envelope of every Mac for the phone and hands them, unopened, to the Live Activity, whose
 //! widget extension opens and adds them up. The first count also reaches the phone's icon badge
@@ -18,7 +19,7 @@
 use crate::domain_runtime::DomainRuntime;
 use crate::service::Service;
 use alondra_core::domain::ActivityCounts;
-use alondra_core::views;
+use alondra_core::views::{self, Client, Lang, RenderContext, Transport};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -244,8 +245,12 @@ fn backoff(failures: u32) -> Duration {
 fn payload(counts: ActivityCounts, mac_name: &str, measured_at_ms: u64, seq: u64) -> Value {
     json!({
         "inbox": counts.inbox,
-        "waiting": counts.waiting,
+        "waiting": counts.needs_you,
+        "needs_you": counts.needs_you,
         "working": counts.working,
+        "queued": counts.queued,
+        "paused": counts.paused,
+        "other_waiting": counts.waiting,
         "mac_name": mac_name,
         "measured_at_ms": measured_at_ms,
         "seq": seq,
@@ -267,15 +272,25 @@ fn mac_name() -> String {
     name.chars().take(MAC_NAME_LIMIT).collect()
 }
 
-pub async fn run(domain: Arc<DomainRuntime>, service: Arc<Service>) {
+/// What the status header says right now: the counts the phone's Live Activity shows.
+async fn current(domain: &DomainRuntime, client: &crate::client_routes::Client) -> ActivityCounts {
+    let read = domain.read();
+    let live = crate::views::live::gather(client, read.state(), Lang::En, &[], false, false).await;
+    views::activity_counts(&RenderContext {
+        domain: read.state(), index: read.index(), live: &live, client: Client::Mac, lang: Lang::En,
+        transport: Transport::Loopback, cursor: "", rendered_at: "",
+    })
+}
+
+pub async fn run(domain: Arc<DomainRuntime>, service: Arc<Service>, client: Arc<crate::client_routes::Client>) {
     let mac_name = mac_name();
     let mut changed = domain.subscribe();
-    let mut schedule = Schedule::new(views::activity_counts(domain.read().index()), Instant::now());
+    let mut schedule = Schedule::new(current(&domain, &client).await, Instant::now());
     let mut seq = now_ms();
     let mut failing = false;
     loop {
         let now = Instant::now();
-        schedule.observe(views::activity_counts(domain.read().index()), now);
+        schedule.observe(current(&domain, &client).await, now);
         match service.activity_phones() {
             Ok(phones) => schedule.phones(phones),
             Err(error) => log!("could not list the phones for the Live Activity: {error:#}"),
@@ -321,8 +336,8 @@ pub async fn run(domain: Arc<DomainRuntime>, service: Arc<Service>) {
 mod tests {
     use super::*;
 
-    fn counts(inbox: u32, waiting: u32, working: u32) -> ActivityCounts {
-        ActivityCounts { inbox, waiting, working }
+    fn counts(inbox: u32, needs_you: u32, working: u32) -> ActivityCounts {
+        ActivityCounts { inbox, needs_you, working, ..ActivityCounts::default() }
     }
 
     fn phone() -> Vec<(String, String, String)> {

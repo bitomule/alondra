@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:memory-pause-livelock-ask",
   "client": "ios",
-  "version": "v92289b13a54def92",
+  "version": "v2500552206f3ea70",
   "cursor": "cursor-1",
   "title": "Decide who fixes the memory pauses that cut the same build in a loop",
   "status": {
-    "version": "v87c1dd922441b053",
+    "version": "vb75ee8d969129f42",
     "summary": "3 questions · 3 to read · 0 tasks working",
     "summary_parts": [
       {
@@ -43,19 +43,29 @@
         "value": 1
       },
       {
-        "id": "agents",
-        "label": "In progress",
-        "value": 0
-      },
-      {
         "id": "working",
         "label": "working",
         "value": 0
       },
       {
-        "id": "waiting",
-        "label": "waiting",
+        "id": "needs_you",
+        "label": "waiting for you",
         "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "queued",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "paused",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "waiting",
+        "value": 0
       }
     ],
     "gauges": [

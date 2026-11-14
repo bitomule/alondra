@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:github.com/bitomule/alondra#17",
   "client": "ios",
-  "version": "v8b77fa4dd56ea381",
+  "version": "v4d216fbf71f71187",
   "cursor": "cursor-1",
   "title": "Review the result · alondra#17",
   "status": {
-    "version": "v3975fd21ebb462fd",
+    "version": "v6b5ae49fe320973e",
     "summary": "2 to read · 0 tasks working",
     "summary_parts": [
       {
@@ -37,19 +37,29 @@
         "value": 1
       },
       {
-        "id": "agents",
-        "label": "In progress",
-        "value": 1
-      },
-      {
         "id": "working",
         "label": "working",
         "value": 0
       },
       {
-        "id": "waiting",
-        "label": "waiting",
+        "id": "needs_you",
+        "label": "waiting for you",
         "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "queued",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "paused",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "waiting",
+        "value": 0
       }
     ],
     "gauges": [],

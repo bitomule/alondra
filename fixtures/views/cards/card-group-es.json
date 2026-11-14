@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:g-q2",
   "client": "ios",
-  "version": "vde2c01fac19863be",
+  "version": "v3e0700f6f8aa2780",
   "cursor": "cursor-1",
   "title": "Ship it today?",
   "status": {
-    "version": "v54c00398e5bdc99b",
+    "version": "vff0d0e5f38e10729",
     "summary": "3 preguntas · 2 por leer · 0 tareas trabajando",
     "summary_parts": [
       {
@@ -43,19 +43,29 @@
         "value": 1
       },
       {
-        "id": "agents",
-        "label": "En marcha",
-        "value": 0
-      },
-      {
         "id": "working",
         "label": "trabajando",
         "value": 0
       },
       {
-        "id": "waiting",
-        "label": "esperando",
+        "id": "needs_you",
+        "label": "esperando por ti",
         "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
+        "value": 0
       }
     ],
     "gauges": [],

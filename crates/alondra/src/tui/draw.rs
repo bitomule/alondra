@@ -390,11 +390,15 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
     let Some(status) = &app.view_status else {
         return;
     };
-    let working = status
-        .counts
-        .iter()
-        .find(|count| count.id == "working")
-        .map(|count| (count.value, count.label.clone()));
+    let tallies = |ids: &[&str]| -> Vec<(u32, String)> {
+        ids.iter()
+            .filter_map(|id| status.counts.iter().find(|count| count.id == *id))
+            .filter(|count| count.value > 0 || count.id == "working")
+            .map(|count| (count.value, count.label.clone()))
+            .collect()
+    };
+    let working = tallies(&["working"]);
+    let tasks = tallies(&["working", "needs_you", "queued", "paused", "other_waiting"]);
     let fits = |spans: &[Span]| {
         lw + spans.iter().map(Span::width).sum::<usize>() + 2 <= area.width as usize
     };
@@ -410,10 +414,14 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
     };
     let usage_only: Vec<_> = status.gauges.iter().filter(|gauge| gauge.id == USAGE).cloned().collect();
     let right = [
-        with_notice(bars(&status.gauges, working.as_ref(), true)),
-        with_notice(bars(&status.gauges, working.as_ref(), false)),
-        with_notice(bars(&usage_only, None, false)),
-        bars(&usage_only, None, false),
+        with_notice(bars(&status.gauges, &tasks, true)),
+        with_notice(bars(&status.gauges, &tasks, false)),
+        with_notice(bars(&usage_only, &tasks, false)),
+        with_notice(bars(&[], &tasks, false)),
+        with_notice(bars(&status.gauges, &working, true)),
+        with_notice(bars(&status.gauges, &working, false)),
+        with_notice(bars(&usage_only, &[], false)),
+        bars(&usage_only, &[], false),
         notice.clone(),
     ]
     .into_iter()
@@ -445,12 +453,13 @@ fn update_notice(update: &alondra_core::update::Status) -> Option<Span<'static>>
 /// The header bars, named when there is room (`Claude week ▰▰▱▱ 53%`) and bare when not.
 fn bars(
     gauges: &[alondra_core::views::Gauge],
-    working: Option<&(u32, String)>,
+    tallies: &[(u32, String)],
     named: bool,
 ) -> Vec<Span<'static>> {
     let mut out = Vec::new();
-    if let Some((value, label)) = working {
-        out.push(Span::styled(format!("{value} {label}"), Style::new().fg(DIM)));
+    let tallies: Vec<_> = tallies.iter().map(|(value, label)| format!("{value} {label}")).collect();
+    if !tallies.is_empty() {
+        out.push(Span::styled(tallies.join(" · "), Style::new().fg(DIM)));
     }
     for gauge in gauges {
         if gauge.id == USAGE {

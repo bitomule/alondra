@@ -4,10 +4,10 @@
   "view": "settled_card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "mac",
-  "version": "vc25acf540d2be93f",
+  "version": "v2428c4226cb3175a",
   "cursor": "cursor-1",
   "status": {
-    "version": "v570a6e608a3c7c5b",
+    "version": "v4f7baec3e91d77a9",
     "summary": "1 pregunta · 3 por leer · 0 tareas trabajando",
     "summary_parts": [
       {
@@ -42,19 +42,29 @@
         "value": 1
       },
       {
-        "id": "agents",
-        "label": "En marcha",
-        "value": 0
-      },
-      {
         "id": "working",
         "label": "trabajando",
         "value": 0
       },
       {
-        "id": "waiting",
-        "label": "esperando",
+        "id": "needs_you",
+        "label": "esperando por ti",
         "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
+        "value": 0
       }
     ],
     "gauges": [

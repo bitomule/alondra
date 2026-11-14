@@ -4,11 +4,11 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "vbf271a9539b1ce3e",
+  "version": "v5fc08ed83194f437",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
-    "version": "vab90e959b686570a",
+    "version": "vfb2ba92eb7a6ea6d",
     "summary": "2 questions · 3 to read · 2 tasks working",
     "summary_parts": [
       {
@@ -43,19 +43,29 @@
         "value": 6
       },
       {
-        "id": "agents",
-        "label": "In progress",
-        "value": 6
-      },
-      {
         "id": "working",
         "label": "working",
         "value": 2
       },
       {
-        "id": "waiting",
-        "label": "waiting",
+        "id": "needs_you",
+        "label": "waiting for you",
         "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "queued",
+        "value": 1
+      },
+      {
+        "id": "paused",
+        "label": "paused",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "waiting",
+        "value": 2
       }
     ],
     "gauges": [
@@ -108,7 +118,7 @@
           "type": "row",
           "id": "block:for-you",
           "icon": "task",
-          "title": "For you",
+          "title": "Waiting for you",
           "trailing": {
             "kind": "text",
             "text": "1"
@@ -162,9 +172,9 @@
         },
         {
           "type": "row",
-          "id": "block:in-progress",
+          "id": "block:working",
           "icon": "task",
-          "title": "In progress",
+          "title": "Working",
           "trailing": {
             "kind": "text",
             "text": "2"
@@ -284,12 +294,78 @@
         },
         {
           "type": "row",
+          "id": "block:queued",
+          "icon": "task",
+          "title": "Queued",
+          "trailing": {
+            "kind": "text",
+            "text": "1"
+          },
+          "depth": 0,
+          "struck": false,
+          "children": [
+            {
+              "id": "t-paused-builder",
+              "link": {
+                "kind": "view",
+                "key": "task:t-paused-builder"
+              },
+              "icon": "task",
+              "title": "Fix the vanished session",
+              "subtitle": "Waiting",
+              "badges": [
+                {
+                  "text": "Waiting",
+                  "tone": "neutral"
+                },
+                {
+                  "text": "Demo Garden",
+                  "tone": "neutral"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "The build queue is full · since 09:40",
+                  "depth": 0,
+                  "struck": false
+                }
+              ],
+              "actions": [
+                {
+                  "id": "resume:paused-builder@6",
+                  "label": "Resume",
+                  "style": "primary",
+                  "role": "advance",
+                  "description": "As soon as a slot is free",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "enabled": true,
+                  "stamp": "Resuming…",
+                  "resolves_card": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "row",
           "id": "block:waiting",
           "icon": "task",
           "title": "Waiting",
           "trailing": {
             "kind": "text",
-            "text": "3"
+            "text": "2"
           },
           "depth": 0,
           "struck": false,
@@ -361,58 +437,6 @@
                   "title": "Starting",
                   "depth": 0,
                   "struck": false
-                }
-              ]
-            },
-            {
-              "id": "t-paused-builder",
-              "link": {
-                "kind": "view",
-                "key": "task:t-paused-builder"
-              },
-              "icon": "task",
-              "title": "Fix the vanished session",
-              "subtitle": "Waiting",
-              "badges": [
-                {
-                  "text": "Waiting",
-                  "tone": "neutral"
-                },
-                {
-                  "text": "Demo Garden",
-                  "tone": "neutral"
-                }
-              ],
-              "trailing": {
-                "kind": "count",
-                "value": 0
-              },
-              "depth": 1,
-              "struck": false,
-              "children": [
-                {
-                  "id": "activity",
-                  "icon": "notice",
-                  "title": "The build queue is full · since 09:40",
-                  "depth": 0,
-                  "struck": false
-                }
-              ],
-              "actions": [
-                {
-                  "id": "resume:paused-builder@6",
-                  "label": "Resume",
-                  "style": "primary",
-                  "role": "advance",
-                  "description": "As soon as a slot is free",
-                  "presentation": "button",
-                  "input": {
-                    "kind": "none"
-                  },
-                  "attachments": false,
-                  "enabled": true,
-                  "stamp": "Resuming…",
-                  "resolves_card": false
                 }
               ]
             }

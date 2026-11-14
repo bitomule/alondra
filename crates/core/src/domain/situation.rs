@@ -54,6 +54,33 @@ pub enum Delivery {
     Closing,
 }
 
+/// What an open task counts as in the status header, the Live Activity and the Tasks list. The categories are
+/// disjoint, so they add up to the open tasks, and they are declared in the order the list shows them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Tally {
+    NeedsYou,
+    Working,
+    /// It waits for the room to start: a slot, the machine, the disk, a usage limit or the provider's API.
+    Queued,
+    Paused,
+    /// It waits for something else: other tasks, a plan review, a step Alondra owes it, or its delivery.
+    Waiting,
+}
+
+impl Situation {
+    /// The category of a task that is not waiting for the user to look at its delivery; none once it ended.
+    pub fn tally(self) -> Option<Tally> {
+        Some(match self {
+            Self::NeedsYou => Tally::NeedsYou,
+            Self::Working(_) => Tally::Working,
+            Self::Waiting(WaitsFor::Slot | WaitsFor::Machine | WaitsFor::Disk | WaitsFor::Usage | WaitsFor::ProviderApi) => Tally::Queued,
+            Self::Paused => Tally::Paused,
+            Self::Waiting(WaitsFor::Tasks | WaitsFor::PlanReview | WaitsFor::Step(_)) | Self::Delivered(_) => Tally::Waiting,
+            Self::Finished | Self::Cancelled => return None,
+        })
+    }
+}
+
 /// What the inbox lists of a task: whether a card of it other than its delivery asks the user to
 /// answer or act, and whether a given card, or the one it is grouped under, is listed.
 pub struct Listing<'a> {

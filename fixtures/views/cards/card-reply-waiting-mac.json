@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:d",
   "client": "mac",
-  "version": "vb54d02c32cbd3061",
+  "version": "v0b5c1f503e85b2af",
   "cursor": "cursor-1",
   "title": "Review the result",
   "status": {
-    "version": "ve369301004b9cb46",
+    "version": "v60776f9f70069ba5",
     "summary": "1 to read · 0 tasks working",
     "summary_parts": [
       {
@@ -37,17 +37,27 @@
         "value": 1
       },
       {
-        "id": "agents",
-        "label": "In progress",
-        "value": 1
-      },
-      {
         "id": "working",
         "label": "working",
         "value": 0
       },
       {
-        "id": "waiting",
+        "id": "needs_you",
+        "label": "waiting for you",
+        "value": 0
+      },
+      {
+        "id": "queued",
+        "label": "queued",
+        "value": 1
+      },
+      {
+        "id": "paused",
+        "label": "paused",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
         "label": "waiting",
         "value": 0
       }

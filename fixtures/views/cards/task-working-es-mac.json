@@ -4,11 +4,11 @@
   "view": "task",
   "key": "task:t-1",
   "client": "mac",
-  "version": "v12b78cc2c8671f1d",
+  "version": "vae08fc5eb5ccbaa8",
   "cursor": "cursor-1",
   "title": "Build a feature",
   "status": {
-    "version": "v7c751e31bed7af7b",
+    "version": "v6809c2c411cc96a7",
     "summary": "1 tarea trabajando",
     "summary_parts": [
       {
@@ -31,18 +31,28 @@
         "value": 1
       },
       {
-        "id": "agents",
-        "label": "En marcha",
-        "value": 1
-      },
-      {
         "id": "working",
         "label": "trabajando",
         "value": 1
       },
       {
-        "id": "waiting",
-        "label": "esperando",
+        "id": "needs_you",
+        "label": "esperando por ti",
+        "value": 0
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
         "value": 0
       }
     ],

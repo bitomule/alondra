@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:request-done-r-accounts",
   "client": "mac",
-  "version": "vafb5306d9dee19ad",
+  "version": "v6b0c4a1dc87b4c7d",
   "cursor": "cursor-1",
   "title": "Done in part: 1 of 3 tasks was cancelled",
   "status": {
-    "version": "v330b229db951a302",
+    "version": "v93664025a30f7d2e",
     "summary": "3 to read · 0 tasks working",
     "summary_parts": [
       {
@@ -37,17 +37,27 @@
         "value": 3
       },
       {
-        "id": "agents",
-        "label": "In progress",
-        "value": 0
-      },
-      {
         "id": "working",
         "label": "working",
         "value": 0
       },
       {
-        "id": "waiting",
+        "id": "needs_you",
+        "label": "waiting for you",
+        "value": 0
+      },
+      {
+        "id": "queued",
+        "label": "queued",
+        "value": 3
+      },
+      {
+        "id": "paused",
+        "label": "paused",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
         "label": "waiting",
         "value": 0
       }

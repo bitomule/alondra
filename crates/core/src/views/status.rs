@@ -7,7 +7,7 @@ use super::{
 /// holds what is addressed to the user, the orchestrator's answers and questions included.
 pub(super) fn build(context: &RenderContext<'_>) -> Status {
     let roots = context.waiting();
-    let activity = super::activity_counts(context.index);
+    let activity = super::activity_counts(context);
     let pending = activity.inbox;
     let questions = roots
         .iter()
@@ -45,12 +45,7 @@ pub(super) fn build(context: &RenderContext<'_>) -> Status {
             Count {
                 id: "tasks".into(),
                 label: t!(context.lang, "Tasks", "Tareas").into(),
-                value: super::tasks::active_count(context.domain),
-            },
-            Count {
-                id: "agents".into(),
-                label: t!(context.lang, "In progress", "En marcha").into(),
-                value: super::tasks::in_progress(context).count() as u32,
+                value: activity.tasks(),
             },
             Count {
                 id: "working".into(),
@@ -58,8 +53,23 @@ pub(super) fn build(context: &RenderContext<'_>) -> Status {
                 value: working,
             },
             Count {
-                id: "waiting".into(),
-                label: t!(context.lang, "waiting", "esperando").into(),
+                id: "needs_you".into(),
+                label: t!(context.lang, "waiting for you", "esperando por ti").into(),
+                value: activity.needs_you,
+            },
+            Count {
+                id: "queued".into(),
+                label: t!(context.lang, "queued", "en cola").into(),
+                value: activity.queued,
+            },
+            Count {
+                id: "paused".into(),
+                label: t!(context.lang, "paused", "en pausa").into(),
+                value: activity.paused,
+            },
+            Count {
+                id: "other_waiting".into(),
+                label: t!(context.lang, "waiting", "en espera").into(),
                 value: activity.waiting,
             },
         ],

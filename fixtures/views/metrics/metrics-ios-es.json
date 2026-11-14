@@ -4,11 +4,11 @@
   "view": "metrics",
   "key": "metrics?period=7d&compare=previous",
   "client": "ios",
-  "version": "v3ebce51fba574aec",
+  "version": "vca2b7bc8a517ea2b",
   "cursor": "metrics-cursor",
   "title": "Métricas",
   "status": {
-    "version": "v7166fa23ed219a9e",
+    "version": "v1d91f73a21efb865",
     "summary": "0 tareas trabajando",
     "summary_parts": [
       {
@@ -31,18 +31,28 @@
         "value": 0
       },
       {
-        "id": "agents",
-        "label": "En marcha",
-        "value": 0
-      },
-      {
         "id": "working",
         "label": "trabajando",
         "value": 0
       },
       {
-        "id": "waiting",
-        "label": "esperando",
+        "id": "needs_you",
+        "label": "esperando por ti",
+        "value": 0
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
         "value": 0
       }
     ],

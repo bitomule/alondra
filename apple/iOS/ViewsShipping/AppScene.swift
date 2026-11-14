@@ -209,7 +209,7 @@ private struct ApprovedServiceScene: View {
     private var activityCounts: ReportedCounts? {
         guard let triage = context.store?.triage, let inbox = triage.iconBadge else { return nil }
         let count = { (id: String) in Int(triage.status?.counts.first { $0.id == id }?.value ?? 0) }
-        return ReportedCounts(counts: ActivityCounts(inbox: inbox, waiting: count("waiting"), working: count("working")),
+        return ReportedCounts(counts: ActivityCounts(inbox: inbox, waiting: count("needs_you"), working: count("working")),
                               live: context.store?.connection.isConnected == true)
     }
 

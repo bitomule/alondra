@@ -4,11 +4,11 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v32c2faecbe0f1d04",
+  "version": "vd2884766e94b1eda",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
-    "version": "vf15e27e74fa727a8",
+    "version": "v690b1fd3d89c858f",
     "summary": "2 questions · 3 to read · 2 tasks working",
     "summary_parts": [
       {
@@ -43,19 +43,29 @@
         "value": 9
       },
       {
-        "id": "agents",
-        "label": "In progress",
-        "value": 3
-      },
-      {
         "id": "working",
         "label": "working",
         "value": 2
       },
       {
-        "id": "waiting",
-        "label": "waiting",
+        "id": "needs_you",
+        "label": "waiting for you",
         "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "queued",
+        "value": 3
+      },
+      {
+        "id": "paused",
+        "label": "paused",
+        "value": 1
+      },
+      {
+        "id": "other_waiting",
+        "label": "waiting",
+        "value": 2
       }
     ],
     "gauges": [
@@ -108,7 +118,7 @@
           "type": "row",
           "id": "block:for-you",
           "icon": "task",
-          "title": "For you",
+          "title": "Waiting for you",
           "trailing": {
             "kind": "text",
             "text": "1"
@@ -162,12 +172,12 @@
         },
         {
           "type": "row",
-          "id": "block:in-progress",
+          "id": "block:working",
           "icon": "task",
-          "title": "In progress",
+          "title": "Working",
           "trailing": {
             "kind": "text",
-            "text": "3"
+            "text": "2"
           },
           "depth": 0,
           "struck": false,
@@ -305,49 +315,18 @@
                   "resolves_card": false
                 }
               ]
-            },
-            {
-              "id": "t-legacy-editor",
-              "link": {
-                "kind": "view",
-                "key": "task:t-legacy-editor"
-              },
-              "icon": "pull_request",
-              "title": "Review the schedule editor",
-              "subtitle": "Delivered",
-              "badges": [
-                {
-                  "text": "Delivered",
-                  "tone": "info"
-                }
-              ],
-              "trailing": {
-                "kind": "count",
-                "value": 0
-              },
-              "depth": 1,
-              "struck": false,
-              "children": [
-                {
-                  "id": "activity",
-                  "icon": "notice",
-                  "title": "For review",
-                  "depth": 0,
-                  "struck": false
-                }
-              ]
             }
           ]
         },
         {
           "type": "row",
-          "id": "block:waiting",
+          "id": "block:queued",
           "icon": "task",
-          "title": "Waiting",
+          "title": "Queued",
           "subtitle": "New starts wait: the Mac is short of memory",
           "trailing": {
             "kind": "text",
-            "text": "5"
+            "text": "3"
           },
           "depth": 0,
           "struck": false,
@@ -404,41 +383,6 @@
               ]
             },
             {
-              "id": "t-badge-decrement",
-              "link": {
-                "kind": "view",
-                "key": "task:t-badge-decrement"
-              },
-              "icon": "task",
-              "title": "Decrement the badge on retraction",
-              "subtitle": "Waiting",
-              "badges": [
-                {
-                  "text": "Waiting",
-                  "tone": "neutral"
-                },
-                {
-                  "text": "Demo Garden",
-                  "tone": "neutral"
-                }
-              ],
-              "trailing": {
-                "kind": "count",
-                "value": 0
-              },
-              "depth": 1,
-              "struck": false,
-              "children": [
-                {
-                  "id": "activity",
-                  "icon": "notice",
-                  "title": "Waits for “Restore the native review experience” · Badge accuracy",
-                  "depth": 0,
-                  "struck": false
-                }
-              ]
-            },
-            {
               "id": "t-hf-registry",
               "link": {
                 "kind": "view",
@@ -474,6 +418,51 @@
               ]
             },
             {
+              "id": "t-legacy-notes",
+              "link": {
+                "kind": "view",
+                "key": "task:t-legacy-notes"
+              },
+              "icon": "task",
+              "title": "Write the release notes",
+              "subtitle": "Waiting",
+              "badges": [
+                {
+                  "text": "Waiting",
+                  "tone": "neutral"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "Trying again at 10:15",
+                  "depth": 0,
+                  "struck": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "block:paused",
+          "icon": "task",
+          "title": "Paused",
+          "trailing": {
+            "kind": "text",
+            "text": "1"
+          },
+          "depth": 0,
+          "struck": false,
+          "children": [
+            {
               "id": "t-hf-share-hint",
               "link": {
                 "kind": "view",
@@ -507,19 +496,37 @@
                   "struck": false
                 }
               ]
-            },
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "block:waiting",
+          "icon": "task",
+          "title": "Waiting",
+          "trailing": {
+            "kind": "text",
+            "text": "2"
+          },
+          "depth": 0,
+          "struck": false,
+          "children": [
             {
-              "id": "t-legacy-notes",
+              "id": "t-badge-decrement",
               "link": {
                 "kind": "view",
-                "key": "task:t-legacy-notes"
+                "key": "task:t-badge-decrement"
               },
               "icon": "task",
-              "title": "Write the release notes",
+              "title": "Decrement the badge on retraction",
               "subtitle": "Waiting",
               "badges": [
                 {
                   "text": "Waiting",
+                  "tone": "neutral"
+                },
+                {
+                  "text": "Demo Garden",
                   "tone": "neutral"
                 }
               ],
@@ -533,7 +540,38 @@
                 {
                   "id": "activity",
                   "icon": "notice",
-                  "title": "Trying again at 10:15",
+                  "title": "Waits for “Restore the native review experience” · Badge accuracy",
+                  "depth": 0,
+                  "struck": false
+                }
+              ]
+            },
+            {
+              "id": "t-legacy-editor",
+              "link": {
+                "kind": "view",
+                "key": "task:t-legacy-editor"
+              },
+              "icon": "pull_request",
+              "title": "Review the schedule editor",
+              "subtitle": "Delivered",
+              "badges": [
+                {
+                  "text": "Delivered",
+                  "tone": "info"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false,
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "For review",
                   "depth": 0,
                   "struck": false
                 }

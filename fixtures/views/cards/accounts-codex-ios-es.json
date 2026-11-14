@@ -4,11 +4,11 @@
   "view": "accounts",
   "key": "accounts",
   "client": "ios",
-  "version": "v1307837fcf4a027f",
+  "version": "v08bd8c1e15b7bf02",
   "cursor": "cursor-1",
   "title": "Cuentas",
   "status": {
-    "version": "vab193903528c25af",
+    "version": "v17585113723dfa62",
     "summary": "2 preguntas · 3 por leer · 0 tareas trabajando",
     "summary_parts": [
       {
@@ -43,19 +43,29 @@
         "value": 1
       },
       {
-        "id": "agents",
-        "label": "En marcha",
-        "value": 1
-      },
-      {
         "id": "working",
         "label": "trabajando",
         "value": 0
       },
       {
-        "id": "waiting",
-        "label": "esperando",
+        "id": "needs_you",
+        "label": "esperando por ti",
         "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
+        "value": 0
       }
     ],
     "gauges": [

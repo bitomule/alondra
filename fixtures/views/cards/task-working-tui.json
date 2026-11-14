@@ -4,11 +4,11 @@
   "view": "task",
   "key": "task:t-1",
   "client": "tui",
-  "version": "v4bcba5e716b01335",
+  "version": "v15ca0b235d040863",
   "cursor": "cursor-1",
   "title": "Build a feature",
   "status": {
-    "version": "v77643952a52f7d16",
+    "version": "vfadb6b70886b1166",
     "summary": "1 task working",
     "summary_parts": [
       {
@@ -31,17 +31,27 @@
         "value": 1
       },
       {
-        "id": "agents",
-        "label": "In progress",
-        "value": 1
-      },
-      {
         "id": "working",
         "label": "working",
         "value": 1
       },
       {
-        "id": "waiting",
+        "id": "needs_you",
+        "label": "waiting for you",
+        "value": 0
+      },
+      {
+        "id": "queued",
+        "label": "queued",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "paused",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
         "label": "waiting",
         "value": 0
       }
