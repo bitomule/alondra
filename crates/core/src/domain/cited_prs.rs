@@ -1,5 +1,5 @@
-//! PR references in a delivery are checked against its typed targets, by address rather than
-//! local ids: numbers repeat across repositories and a task can deliver work in several of them.
+//! A final result cannot cite one of its task's registered PRs without delivering it. Other
+//! PRs remain context; addresses include repository and host because numbers repeat.
 use super::*;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -30,24 +30,24 @@ fn citations(text: &str) -> impl Iterator<Item = Citation> + '_ {
 }
 
 impl DomainState {
-    pub(super) fn cited_pr_targets(&self, body: &str, targets: &[DeliveryTarget], card: &CardSpec, is_final: bool) -> Result<(), DomainError> {
-        let card_type = if !is_final { CardType::Progress } else if card.plan.is_some() { CardType::ProposedPlan } else { CardType::Result };
+    pub(super) fn cited_pr_targets(&self, task_id: &TaskId, body: &str, targets: &[DeliveryTarget], card: &CardSpec) -> Result<(), DomainError> {
         let fields = [("body", Some(body)), ("card.title", card.title.as_deref()), ("card.need", Some(card.need.as_str())),
             ("card.why", Some(card.why.as_str())), ("card.content.body", card.content.as_ref().map(|c| c.body.as_str())),
-            ("card.content.summary", card.content.as_ref().and_then(|c| c.summary.as_deref())), ("card.plan", card.plan.as_deref())];
+            ("card.content.summary", card.content.as_ref().and_then(|c| c.summary.as_deref()))];
         let texts = targets.iter().filter_map(|t| match t { DeliveryTarget::Text { text } => Some(("targets.text", Some(text.as_str()))), _ => None });
         for (field, text) in fields.into_iter().chain(texts) {
             for citation in citations(text.unwrap_or_default()) {
+                let matches = |pr: &PullRequest| normalize_pr_repository(&pr.repository) == citation.repository && pr.number == citation.number
+                    && citation.host.as_ref().is_none_or(|host| normalize_pr_host(&pr.host) == *host);
+                if !self.pull_requests.values().any(|pr| pr.task_id == *task_id && matches(pr)) { continue; }
                 let carried = targets.iter().any(|t| match t {
-                    DeliveryTarget::PullRequest { pr_id, .. } => self.pull_requests.get(pr_id).is_some_and(|pr|
-                        normalize_pr_repository(&pr.repository) == citation.repository && pr.number == citation.number
-                            && citation.host.as_ref().is_none_or(|host| normalize_pr_host(&pr.host) == *host)),
+                    DeliveryTarget::PullRequest { pr_id, .. } => self.pull_requests.get(pr_id).is_some_and(matches),
                     _ => false,
                 });
                 if !carried {
-                    let mut error = DomainError::new("cited_pr_not_target", format!("{field}: cites {}#{}, which is not a delivery target: include the registered PR in targets or remove the citation", citation.repository, citation.number));
+                    let mut error = DomainError::new("cited_pr_not_target", format!("{field}: cites {}#{}, registered to this task but not a final delivery target: include the registered PR in targets or remove the citation", citation.repository, citation.number));
                     error.subject = Some(field.into());
-                    return Err(error.breaking(Some(card_type), ContractRule::CitedPrNotTarget));
+                    return Err(error.breaking(Some(CardType::Result), ContractRule::CitedPrNotTarget));
                 }
             }
         }

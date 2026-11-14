@@ -37,10 +37,13 @@ If GitHub cannot answer, the delivery waits for a successful read. A successful 
 from either provider also schedules a fresh read; the command's
 output never determines whether GitHub closed the PR.
 
-A closed PR cannot be a delivery target (`pr_not_open`). A PR URL or `owner/repo#N` cited in the
-delivery's text must also be a typed target (`cited_pr_not_target`). These refusals name the card
-contract rule and field. References identify a PR by its host, repository and number, so a task
-can deliver PRs in several repositories without confusing equal numbers or equal commit hashes.
+A closed PR cannot be a delivery target (`pr_not_open`). In a final result, a PR URL or
+`owner/repo#N` naming a PR registered to that same task must also be a typed target
+(`cited_pr_not_target`), whether the PR is open or closed. Unregistered PRs and PRs registered
+to another task can be cited as context. Plan cards and progress cards are exempt from the
+citation check. These refusals name the card contract rule and field. References identify a PR
+by its host, repository and number, so a task can deliver PRs in several repositories without
+confusing equal numbers or equal commit hashes.
 
 Every open PR in a delivery has its own card and its own validated merge action. Closing or
 merging a PR retires its card, including when an old saved delivery still points to it. An old

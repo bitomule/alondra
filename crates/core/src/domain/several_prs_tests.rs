@@ -77,14 +77,123 @@ fn audit_case_5_a_stored_delivery_of_a_closed_pr_has_no_card_or_button() {
 }
 
 #[test]
-fn a_pr_cited_in_a_delivery_must_be_one_of_its_targets() {
+fn a_tasks_own_pr_cited_in_a_final_result_must_be_one_of_its_targets() {
     for citation in ["https://github.com/acme/storefront/pull/14", "acme/storefront#14", "**https://github.com/acme/storefront/pull/14**", "_acme/storefront#14_"] {
         let mut s = at_work();
+        register(&mut s, "acme/storefront", 14, CLOUD_HEAD);
         let mut command = result("cited-result", vec![DeliveryTarget::Text { text: "Report".into() }], true);
         if let Command::PresentResult { body, .. } = &mut command { *body = format!("Finished: {citation}"); }
         let error = exec(&mut s, node(), command).unwrap_err();
         assert_eq!(error.code, "cited_pr_not_target", "{citation}");
         assert_eq!(error.contract.unwrap().rule, ContractRule::CitedPrNotTarget);
+    }
+}
+
+#[test]
+fn an_unregistered_pr_is_allowed_as_context_in_a_final_result() {
+    for citation in ["https://github.com/acme/app/pull/143", "acme/app#143"] {
+        let mut s = at_work();
+        let mut command = result("context", text(), true);
+        if let Command::PresentResult { body, card, .. } = &mut command {
+            *body = format!("Keeps the changes from {citation}.");
+            card.content.as_mut().unwrap().body = body.clone();
+        }
+        must(&mut s, node(), command);
+        assert!(s.interactions.contains_key(&"context".into()));
+    }
+}
+
+fn register_context_pr(s: &mut DomainState) {
+    must(s, Actor::Orchestrator { generation: 0 }, Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
+    must(s, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
+        task_id: "other".into(), request_id: "r".into(), title: "Fix permissions".into(), agent_id: None,
+        review_prs: false, plan_items: None, continues: None, dependencies: BTreeSet::new(), stack: None,
+        launch: Some(LaunchPlan::new("node", "/synthetic/repository")),
+    });
+    must(s, Actor::System, Command::NotePrOpened {
+        task_id: "other".into(), host: "github.com".into(), repository: "acme/app".into(), number: 143,
+    });
+    must(s, Actor::System, Command::RecordOpenedPr {
+        task_id: "other".into(), host: "github.com".into(), repository: "acme/app".into(), number: 143,
+        head: FIRST_HEAD.into(), base: "main".into(), state: PrState::Open, merged_head: None, allowed_methods: vec![MergeMethod::Squash],
+    });
+    assert_eq!(s.pull_requests[&hosted_pr_id("github.com", "acme/app", 143)].task_id, TaskId::from("other"));
+}
+
+#[test]
+fn another_tasks_pr_is_allowed_as_context_in_a_final_result() {
+    let mut s = at_work();
+    register_context_pr(&mut s);
+    let mut command = result("context", text(), true);
+    if let Command::PresentResult { body, card, .. } = &mut command {
+        *body = "Keeps the permissions fix from https://github.com/acme/app/pull/143 (acme/app#143).".into();
+        card.content.as_mut().unwrap().body = body.clone();
+    }
+    must(&mut s, node(), command);
+}
+
+#[test]
+fn a_proposed_plan_can_cite_another_tasks_pr_in_its_text_and_plan() {
+    let mut s = at_work();
+    register_context_pr(&mut s);
+    let mut command = result("plan", text(), true);
+    if let Command::PresentResult { body, card, .. } = &mut command {
+        *body = "The permissions fix in https://github.com/acme/app/pull/143 is preserved.".into();
+        card.content.as_mut().unwrap().body = body.clone();
+        card.plan = Some("- [ ] Preserve the permissions fix in acme/app#143.".into());
+    }
+    must(&mut s, node(), command);
+    assert!(s.interactions[&InteractionId::from("plan")].card.plan.is_some());
+}
+
+#[test]
+fn a_proposed_plan_can_cite_its_own_closed_pr_in_its_plan() {
+    let mut s = at_work();
+    register(&mut s, "acme/app", 65, FIRST_HEAD);
+    let old = hosted_pr_id("github.com", "acme/app", 65);
+    observe(&mut s, &old.0, FIRST_HEAD, PrState::Closed);
+    let mut command = result("plan", text(), true);
+    if let Command::PresentResult { body, card, .. } = &mut command {
+        *body = "The replacement follows the closed PR https://github.com/acme/app/pull/65 (acme/app#65).".into();
+        card.content.as_mut().unwrap().body = body.clone();
+        card.plan = Some("- [ ] Replace the closed PR https://github.com/acme/app/pull/65 (acme/app#65).".into());
+    }
+    must(&mut s, node(), command);
+}
+
+#[test]
+fn progress_can_cite_its_own_closed_pr_without_delivering_it() {
+    let mut s = at_work();
+    register(&mut s, "acme/app", 65, FIRST_HEAD);
+    let old = hosted_pr_id("github.com", "acme/app", 65);
+    observe(&mut s, &old.0, FIRST_HEAD, PrState::Closed);
+    let mut command = result("progress", text(), false);
+    if let Command::PresentResult { body, card, .. } = &mut command {
+        *body = "Closed https://github.com/acme/app/pull/65 (acme/app#65); the replacement is still being prepared.".into();
+        card.content.as_mut().unwrap().body = body.clone();
+    }
+    must(&mut s, node(), command);
+    assert!(s.tasks[&TaskId::from(TASK)].final_presentation.is_none());
+}
+
+#[test]
+fn a_final_result_cannot_cite_its_own_closed_pr_while_delivering_another() {
+    for citation in ["https://github.com/acme/app/pull/65", "acme/app#65"] {
+        let mut s = at_work();
+        register(&mut s, "acme/app", 65, FIRST_HEAD);
+        register(&mut s, "acme/site", 14, CLOUD_HEAD);
+        let old = hosted_pr_id("github.com", "acme/app", 65);
+        let site = hosted_pr_id("github.com", "acme/site", 14);
+        observe(&mut s, &old.0, FIRST_HEAD, PrState::Closed);
+        let mut command = result("misdirected", vec![pr(&site.0, CLOUD_HEAD)], true);
+        if let Command::PresentResult { body, card, .. } = &mut command {
+            *body = format!("Finished: {citation}.");
+            card.content.as_mut().unwrap().body = body.clone();
+        }
+        let error = exec(&mut s, node(), command).unwrap_err();
+        assert_eq!(error.code, "cited_pr_not_target");
+        assert_eq!(error.contract.unwrap().rule, ContractRule::CitedPrNotTarget);
+        assert!(!s.interactions.contains_key(&"misdirected".into()));
     }
 }
 
@@ -112,6 +221,7 @@ fn the_two_repository_incident_delivers_the_registered_pr_after_the_first_closes
 fn citations_in_each_displayed_delivery_field_are_checked_and_targets_in_other_repositories_match() {
     for field in ["body", "title", "need", "why", "content", "summary", "text"] {
         let mut s = at_work();
+        register(&mut s, "acme/site", 14, CLOUD_HEAD);
         let mut command = result("citation", vec![DeliveryTarget::Text { text: "Report".into() }], true);
         if let Command::PresentResult { body, card, targets, .. } = &mut command {
             let citation = "https://github.com/acme/site/pull/14/files#diff-x".to_owned();

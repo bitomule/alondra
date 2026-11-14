@@ -4779,7 +4779,9 @@ impl DomainState {
                         "nothing_to_review is only for a final delivery without a pull request or document: it closes the task without a card");
                 }
                 self.current_pr_targets(task_id, targets, *is_final)?;
-                self.cited_pr_targets(body, targets, card, *is_final)?;
+                if *is_final && card.plan.is_none() {
+                    self.cited_pr_targets(task_id, body, targets, card)?;
+                }
                 self.targets(task_id, targets)?;
                 let task = self.task(task_id)?;
                 if let Some(opened) = task.opened_prs.first() {
