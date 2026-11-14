@@ -110,7 +110,7 @@ async function submit($: EngineInterface, id: string, text: string, asUser: bool
   if (submitting.has(id)) return
   submitting.add(id)
   try {
-    await $.prompt.submit({ text, asUser })
+    await $.prompt.submit(asUser ? { text, asUser: true } : { text })
     submitted.add(id)
   } catch (error) {
     $.ui.log(`Alondra message ${id} was not submitted: ${error}`, { to: 'debug' })
@@ -240,7 +240,7 @@ function step(id: unknown, fields: Fields): Fields | undefined {
 
 function steps(list: unknown, id: (entry: Fields, index: number) => unknown): Fields[] {
   if (!Array.isArray(list)) return []
-  return list.flatMap((entry: Fields, index) => step(id(entry, index), entry) ?? [])
+  return list.flatMap<Fields>((entry: Fields, index) => step(id(entry, index), entry) ?? [])
 }
 
 function progress(call: Fields, result: Fields): Fields | undefined {
@@ -397,7 +397,7 @@ export const register: Register = (on) => {
   })
 
   for (const tool of PROGRESS_TOOLS) {
-    on('tool.call', { tool }, async ($, e, next) => {
+    on('tool.call', { tool: [tool] }, async ($, e, next) => {
       const done = await next(e)
       if (done.deny === undefined && !done.isError && typeof done.result === 'object' && done.result !== null) {
         const report = progress(e as Fields, done.result as Fields)
@@ -416,7 +416,7 @@ export const register: Register = (on) => {
 
   on('tool.call', { tool: 'ExitPlanMode' }, async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
-    const reply = await hold($, next, { id: e.tool_use_id, kind: 'plan', cwd: session?.cwd, input: { plan: e.plan } })
+    const reply = await hold($, next, { id: e.tool_use_id, kind: 'plan', cwd: session?.cwd, input: { plan: 'plan' in e ? e.plan : undefined } })
     if (!reply.held) return next(e)
     if (!reply.approved) return { deny: reply.feedback ?? 'The user requests changes to the plan' }
     approvedPlans.add(e.tool_use_id)
@@ -424,7 +424,7 @@ export const register: Register = (on) => {
   }).catch(async (_$, _e, next) => ({ deny: `The plan could not be put to the user: ${next.error.kind}` }))
 
   on('tool.check', async ($, e, next) => {
-    if (e.tool === 'ExitPlanMode' && approvedPlans.delete(e.tool_use_id)) {
+    if (e.tool === 'ExitPlanMode' && e.tool_use_id !== undefined && approvedPlans.delete(e.tool_use_id)) {
       return { decision: 'allow', reason: 'The user approved this plan' }
     }
     return next(e)
