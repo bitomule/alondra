@@ -168,7 +168,7 @@ fn interaction_fields() -> Value {
         ]},
         "body":{"type":"string","description":"Legacy alias for content.body on a notice or result: complete content only, without an opening heading repeating title"},"blocking":{"type":"boolean"},
         "options":{"type":"array","description":"Each option is a button: pressing it answers. Each label says what will be done (\"Fix the bug\", not \"Fix it\"). The user can always write on the card too, alone or with the option; to ask for a value, use request_input.","items":{"type":"object","properties":{
-            "id":{"type":"string"},"label":{"type":"string"},"description":{"type":"string"}
+            "id":{"type":"string"},"label":{"type":"string","maxLength":40,"description":"Short button text; put the explanation in description, which appears in the card body"},"description":{"type":"string"}
         },"required":["id","label"],"additionalProperties":false}},
         "attachments":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"name":{"type":"string"},"content_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"content_reference":{"type":"string"},"bytes":{"type":"integer","minimum":0}},"required":["id","name","content_digest","content_reference","bytes"],"additionalProperties":false}}
     })
@@ -3508,6 +3508,21 @@ mod card_tool_tests {
             with_metadata[key] = json!(1);
         }
         assert_eq!(check_arguments(&node, "ask", &with_metadata), Ok(()), "what Alondra supplies itself is dropped, never refused");
+    }
+
+    #[test]
+    fn question_buttons_keep_long_explanations_out_of_short_labels() {
+        for role in [Role::Node, Role::Orchestrator] {
+            let tools = tools(role, "User");
+            let mut ask = json!({"interaction_id":"q","scope":{"kind":"task","task_id":"t"},"recipient":{"kind":"user"},
+                "title":"Release icon","need":"Choose the icon","why":"It ships in the next beta","blocking":true,"language":"es",
+                "options":[{"id":"a","label":"á".repeat(40),"description":"The explanation belongs in the body. ".repeat(10)},
+                    {"id":"b","label":"Keep the icon"}]});
+            if role == Role::Orchestrator { ask.as_object_mut().unwrap().remove("language"); }
+            assert_eq!(check_arguments(&tools, "ask", &ask), Ok(()), "short labels and long explanations remain separate fields");
+            let ask_schema = tools.as_array().unwrap().iter().find(|tool| tool["name"] == "ask").unwrap();
+            assert_eq!(ask_schema.pointer("/inputSchema/properties/options/items/properties/label/maxLength"), Some(&json!(40)));
+        }
     }
 
     #[test]

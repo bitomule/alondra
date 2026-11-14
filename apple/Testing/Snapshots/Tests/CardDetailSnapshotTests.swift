@@ -127,6 +127,21 @@ final class CardDetailSnapshotTests: XCTestCase {
         assertDetail(store)
     }
 
+    func test_aPermissionShowsItsCommandWhileAQuestionKeepsItsOptionExplanations() throws {
+        func content(_ document: ViewDocument) throws -> [String] {
+            let store = ScreenStores.cardDetail(document)
+            let subject = try XCTUnwrap(store.subject)
+            return subject.sections.filter { $0.id == "content" }.flatMap(\.items).compactMap {
+                if case .markdown(let markdown) = $0 { markdown.text } else { nil }
+            }
+        }
+        XCTAssertEqual(try content(Fixtures.authorizeCard()), ["```\nalondra update --channel brew\n```"])
+        XCTAssertEqual(try content(Fixtures.markdownCard()), [], "a card with only its need and why inherits no question content")
+        let question = try content(Fixtures.card(Fixtures.questionID))
+        XCTAssertTrue(question.contains("Ship the concise copy\n\nUse a short title and one explanatory sentence."))
+        XCTAssertTrue(question.contains("Keep the warmer copy\n\nPreserve the more conversational explanation."))
+    }
+
     func test_problem() throws {
         let store = ScreenStores.cardDetail(try Fixtures.problemCard())
         assertDetail(store)

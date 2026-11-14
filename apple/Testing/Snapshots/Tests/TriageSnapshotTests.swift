@@ -313,6 +313,32 @@ final class TriageSnapshotTests: XCTestCase {
         assertScreen(inWindow: true) { Harness(store: store) }
     }
 
+    func test_systemNoticesKeepTheirTitlesInEachLanguage() throws {
+        for spanish in [false, true] {
+            for kind in ["done", "tasks"] {
+                let name = "card-outcome-\(kind)\(spanish ? "-es" : "")"
+                let document = try Fixtures.document(name)
+                let id = document.key.replacingOccurrences(of: "card:", with: "")
+                let home = try Fixtures.document(spanish ? "home-ios-es" : "home-ios") { object in
+                    var sections = try XCTUnwrap(object["sections"] as? [[String: Any]])
+                    sections[0]["card_ids"] = [id]
+                    sections[0]["card_waits"] = ["read"]
+                    sections[0]["count"] = 0
+                    object["sections"] = sections
+                    var status = try XCTUnwrap(object["status"] as? [String: Any])
+                    status["badge"] = 0
+                    status["summary"] = spanish ? "1 por leer · 0 tareas trabajando" : "1 to read · 0 tasks working"
+                    status["summary_parts"] = nil
+                    object["status"] = status
+                }
+                let store = try ScreenStores.triage(queue: [id], cards: [document], home: home)
+                XCTAssertEqual(store.withState(\.badge), 0)
+                assertScreen([.light, .dark], language: spanish ? .spanish : .english, inWindow: true,
+                             testName: "\(#function)_\(name)") { Harness(store: store) }
+            }
+        }
+    }
+
     func test_reviewAPlan() throws {
         let store = try single(try Fixtures.planCard())
         assertScreen(inWindow: true) { Harness(store: store) }

@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:mcp-sign-in-t-18",
   "client": "mac",
-  "version": "vb64cd72e19040492",
+  "version": "v910317b797b91440",
   "cursor": "cursor-1",
   "title": "Sign in to linear: 2 tasks wait for it",
   "status": {
@@ -172,6 +172,18 @@
               "resolves_card": false
             }
           ]
+        }
+      ]
+    },
+    {
+      "id": "content",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "Go on without linear\n\nEvery task that waits for it goes on without it",
+          "truncated": false,
+          "commentable": false
         }
       ]
     },

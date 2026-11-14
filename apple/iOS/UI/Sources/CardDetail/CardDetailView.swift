@@ -138,6 +138,10 @@ public struct CardDetailView: View {
             if let card = subject.card { KindBadge(kind: kind, title: card.eyebrow?.text) }
             Text(MarkdownBlock.line(subject.title)).font(.display(.title2, weight: .bold))
                 .foregroundStyle(Palette.ink).fixedSize(horizontal: false, vertical: true)
+            if let card = subject.card, let need = card.need, need != subject.title {
+                Text(MarkdownBlock.line(need)).font(.body.weight(.medium)).foregroundStyle(Palette.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let why = subject.card?.why {
                 MarkdownView(markdown: Markdown(text: why), secondary: true).fixedSize(horizontal: false, vertical: true)
             }

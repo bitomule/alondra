@@ -25,7 +25,7 @@ extension Fixtures {
         _ name: String = "card-question", id: String, kind: String, need: String, why: String,
         content: String? = nil, edit: (inout [String: Any]) throws -> Void = { _ in }
     ) throws -> ViewDocument {
-        let document = try card(name) { item in
+        var document = try card(name) { item in
             item["id"] = id
             item["link"] = ["kind": "view", "key": "card:\(id)"]
             item["kind"] = kind
@@ -43,6 +43,10 @@ extension Fixtures {
             try edit(&item)
         }
         .rekeyed("card:\(id)")
+        if name == "card-question" {
+            document = try document.withoutCopiedQuestionContent(content)
+            return document
+        }
         guard let content else { return document }
         return try document.replacingMarkdown(of: "content", with: content)
     }
@@ -205,6 +209,19 @@ extension Fixtures {
 }
 
 extension ViewDocument {
+    fileprivate func withoutCopiedQuestionContent(_ content: String?) throws -> ViewDocument {
+        var object = try json()
+        var sections = try XCTUnwrap(object["sections"] as? [[String: Any]])
+        let index = try XCTUnwrap(sections.firstIndex { $0["id"] as? String == "content" })
+        if let content {
+            sections[index]["items"] = [["type": "markdown", "text": content, "truncated": false, "commentable": false]]
+        } else {
+            sections.remove(at: index)
+        }
+        object["sections"] = sections
+        return try ContractCodec.decode(ViewDocument.self, from: JSONSerialization.data(withJSONObject: object))
+    }
+
     fileprivate func json() throws -> [String: Any] {
         try XCTUnwrap(JSONSerialization.jsonObject(with: ContractCodec.encode(self)) as? [String: Any])
     }

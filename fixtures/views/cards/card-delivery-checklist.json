@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:hf-weekly-2026-09-30",
   "client": "ios",
-  "version": "v8c7601f036c7bcbc",
+  "version": "v16785cf1ce8ce741",
   "cursor": "cursor-1",
   "title": "Review the beta candidate",
   "status": {
@@ -100,7 +100,7 @@
           "kind": "review",
           "need": "Review the result",
           "title_is_separate": true,
-          "why": "All required checks passed and the branch is up to date with main.",
+          "why": "Two checks passed; one is still running, and the branch is up to date with main.",
           "meta": "example/repo · feature/compact-schedule-editor → main · 4 files · +120 −30 · 2 of 3 passed, 1 running",
           "content_row": {
             "kind": "diff",
@@ -180,7 +180,7 @@
             "tone": "accent"
           },
           "title": "Review the beta candidate",
-          "subtitle": "All required checks passed and the branch is up to date with main.",
+          "subtitle": "Two checks passed; one is still running, and the branch is up to date with main.",
           "context": [
             {
               "icon": "task",

@@ -819,7 +819,15 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         items[0]["need"] = need
         items[0]["title"] = need
         items[0]["why"] = "## Done\n\n- Diagrams draw in **both** apps\n- `make snapshots` passes\n\nOne golden changed: the plan card."
+        items[0]["content_row"] = nil
+        var actions = try XCTUnwrap(items[0]["actions"] as? [[String: Any]])
+        actions[0]["label"] = "Ship **now**"
+        actions[0]["option_id"] = "ship"
+        actions[1]["label"] = "Hold it"
+        actions[1]["option_id"] = "hold"
+        items[0]["actions"] = actions
         sections[index]["items"] = items
+        sections.removeAll { $0["id"] as? String == "content" }
         object["sections"] = sections
         return try ContractCodec.decode(ViewDocument.self, from: JSONSerialization.data(withJSONObject: object))
     }

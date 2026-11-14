@@ -685,10 +685,9 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
             action.key = Some(n.to_string());
         }
     }
-    let worded = interaction.map(|interaction| claudes_worded_options(interaction, context.domain)).unwrap_or_default();
     let settles = |mut action: Action| {
         action.resolves_card = ActionId::parse(&action.id).is_ok_and(|id| super::resolves_card(context.domain, &id));
-        painted(action, &worded)
+        painted(action, item.card.kind == CardKind::Authorize)
     };
     card.reply = reply.map(settles).and_then(CardAction::usable);
     card.actions = visible.into_iter().map(settles).filter_map(CardAction::usable).collect();
@@ -696,29 +695,17 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
     Ok(card)
 }
 
-/// The ids of the options Claude explained in the question it asked.
-fn claudes_worded_options(interaction: &Interaction, domain: &DomainState) -> Vec<String> {
-    match (&interaction.payload, domain.holds.get(&interaction.id)) {
-        (InteractionPayload::Question { options, .. }, Some(Hold::Question)) => options.iter()
-            .filter(|option| option.description.is_some())
-            .map(|option| option.id.clone())
-            .collect(),
-        _ => vec![],
-    }
-}
-
 /// How a card's button reads is settled here, once, for every client: red only when its style is
 /// destructive, and words under it only for «Allow always» and «Allow in this task», which say
-/// exactly what stops asking, for the options of Claude's question that Claude explained, and for
-/// a merge whose repository does not allow the method set in Settings.
-fn painted(mut action: Action, worded: &[String]) -> Action {
+/// exactly what stops asking, and for a merge whose repository does not allow the method set in Settings.
+fn painted(mut action: Action, authorization: bool) -> Action {
     action.role = Some(match (action.style, action.role) {
         (Style::Destructive, _) => Role::Risk,
         (_, Some(Role::Advance)) | (Style::Primary, _) => Role::Advance,
         _ => Role::Neutral,
     });
     let merge = ActionId::parse(&action.id).is_ok_and(|id| id.verb == Verb::Merge);
-    if !merge && !action.option_id.as_deref().is_some_and(|id| id == Hold::ALWAYS || id == Hold::FOR_TASK || worded.iter().any(|worded| worded == id)) {
+    if !merge && !(authorization && action.option_id.as_deref().is_some_and(|id| id == Hold::ALWAYS || id == Hold::FOR_TASK)) {
         action.description = None;
     }
     action
@@ -1007,7 +994,8 @@ fn start_problem_text(interaction: &Interaction, domain: &DomainState, lang: Lan
 /// What one of Alondra's own cards asks and why, in the viewer's language; `None` for a card
 /// someone worded.
 pub(super) fn own_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
-    model_change_not_applied_text(interaction, lang)
+    recovery_text(interaction, domain, lang)
+        .or_else(|| model_change_not_applied_text(interaction, lang))
         .or_else(|| host_lost_text(interaction, domain, lang))
         .or_else(|| start_problem_text(interaction, domain, lang))
         .or_else(|| pace_text(interaction, domain, lang))
@@ -1018,6 +1006,24 @@ pub(super) fn own_text(interaction: &Interaction, domain: &DomainState, lang: La
         .or_else(|| decision_cancelled_text(interaction, domain, lang))
         .or_else(|| claude_hold_text(interaction, domain, lang))
         .or_else(|| mcp_wait_text(interaction, domain, lang))
+}
+
+fn recovery_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
+    if interaction.author != Author::System { return None; }
+    let Scope::Task { task_id } = &interaction.scope else { return None };
+    let title = domain.tasks.get(task_id)?.title.as_str();
+    match interaction.system_card.as_ref()? {
+        SystemCard::LaunchProblem { .. } => Some((
+            fit_title(title, CardSpec::TITLE_MAX, |title| tf!(lang, "Scheduled task “{title}” could not start", "La tarea programada «{title}» no pudo arrancar")),
+            t!(lang, "Try again, or skip this run and keep the next scheduled time.", "Vuelve a intentarlo, o salta esta ejecución y conserva la próxima fecha programada.").into(),
+        )),
+        SystemCard::PostMergeProblem => Some((
+            fit_title(title, CardSpec::TITLE_MAX, |title| tf!(lang, "Confirm whether “{title}” finished its work after the merge", "Confirma si «{title}» terminó su trabajo tras el merge")),
+            t!(lang, "Its PR is merged. Decide whether its remaining work is finished before closing the task.",
+                "Su PR ya tiene el merge hecho. Decide si ha terminado el trabajo pendiente antes de cerrar la tarea.").into(),
+        )),
+        _ => None,
+    }
 }
 
 fn model_change_not_applied_text(interaction: &Interaction, lang: Lang) -> Option<(String, String)> {
@@ -1470,6 +1476,20 @@ fn pace_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Opt
 /// The words of an option the system writes itself, keyed by the id and English text it was
 /// built with, in the viewer's language. An option someone worded keeps its own label.
 fn fixed_option_text(interaction: &Interaction, option: &QuestionOption, lang: Lang) -> (String, Option<String>) {
+    if interaction.author == Author::System {
+        let own = match (interaction.system_card.as_ref(), option.id.as_str()) {
+            (Some(SystemCard::LaunchProblem { .. }), crate::domain::LAUNCH_RETRY_OPTION) => Some((
+                t!(lang, "Try again", "Reintentar"), t!(lang, "Launch this schedule once more", "Arranca otra vez esta tarea programada"))),
+            (Some(SystemCard::LaunchProblem { .. }), "seen") => Some((
+                t!(lang, "Skip it", "Saltar esta vez"), t!(lang, "Its task is cancelled; the schedule runs again at its next time", "Se cancela esta tarea; la programación vuelve a ejecutarse en su próxima fecha"))),
+            (Some(SystemCard::PostMergeProblem), crate::domain::POST_MERGE_CLOSE) => Some((
+                t!(lang, "Close the task", "Cerrar la tarea"), t!(lang, "The work after the merge is finished and its session closes", "El trabajo tras el merge se da por terminado y se cierra su sesión"))),
+            (Some(SystemCard::PostMergeProblem), crate::domain::POST_MERGE_LEAVE) => Some((
+                t!(lang, "Keep waiting", "Seguir esperando"), t!(lang, "The task stays open for its remaining work", "La tarea sigue abierta para terminar el trabajo pendiente"))),
+            _ => None,
+        };
+        if let Some((label, description)) = own { return (label.into(), Some(description.into())); }
+    }
     if let Some(problem) = start_problem_of(interaction)
         && let Some(own) = crate::start_problem::options(&problem, lang).into_iter().find(|own| own.id == option.id)
     {
@@ -1619,8 +1639,9 @@ fn answer_actions(
         let Some(id) = action_id(Verb::Ans, &interaction.id.0, revision, None) else { continue };
         let recommended = interaction.card.recommended.as_deref() == Some(option.id.as_str());
         let (fixed_label, fixed_description) = fixed_option_text(interaction, option, lang);
+        let fixed_label = if matches!(interaction.payload, InteractionPayload::Question { .. }) { clip(&fixed_label, 40) } else { fixed_label };
         let label = match hold.filter(|hold| *hold != Hold::Question) {
-            Some(hold) => held_option(hold, option, lang),
+            Some(hold) => clip(&held_option(hold, option, lang), 40),
             None if recommended => format!("★ {fixed_label}"),
             None => fixed_label,
         };
@@ -1993,6 +2014,26 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
     let lang = context.lang;
     let domain = context.domain;
     let Some(interaction) = interaction_of(item, domain) else { return vec![] };
+    let mut out = main_content_items(item, context);
+    if domain.holds.get(&interaction.id).is_none_or(|hold| *hold == Hold::Question)
+        && let InteractionPayload::Question { options, .. } = &interaction.payload
+    {
+        for option in options {
+            let (label, description) = fixed_option_text(interaction, option, lang);
+            if let Some(description) = description.filter(|text| !text.trim().is_empty()) {
+                out.push(markdown(format!("{label}\n\n{description}")));
+            } else if label.chars().count() > 40 {
+                out.push(markdown(label));
+            }
+        }
+    }
+    out
+}
+
+fn main_content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
+    let lang = context.lang;
+    let domain = context.domain;
+    let Some(interaction) = interaction_of(item, domain) else { return vec![] };
     if let Some(content) = recovery_content(interaction, lang) { return vec![markdown(content)]; }
     let mut out = vec![];
     let shown = front_content(interaction);
@@ -2046,6 +2087,7 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
             let (label, value) = crate::request_outcome::DoneCard::task_line(task, lang);
             Fact { kind: None, label, value, tone: (!task.cancelled).then_some(Tone::Success), link: Some(Link::View { key: format!("task:{}", task.id) }) }
         }).collect() }));
+        out.extend(card.tasks.iter().filter_map(|task| task.result.as_ref()).map(|result| markdown(result.clone())));
         return out;
     }
     if interaction.author == Author::System

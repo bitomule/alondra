@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:mcp-sign-in-t-18",
   "client": "ios",
-  "version": "v5a5f9c5a0d3c1191",
+  "version": "v8e57319510eb0667",
   "cursor": "cursor-1",
   "title": "Inicia sesión en linear: esperan 2 tareas",
   "status": {
@@ -171,6 +171,18 @@
               "resolves_card": false
             }
           ]
+        }
+      ]
+    },
+    {
+      "id": "content",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "Seguir sin linear\n\nLas tareas que lo esperan siguen sin él",
+          "truncated": false,
+          "commentable": false
         }
       ]
     },

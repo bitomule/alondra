@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:request-done-r-accounts",
   "client": "tui",
-  "version": "va3074392223e548d",
+  "version": "va8123fa67d6aa4ed",
   "cursor": "cursor-1",
   "title": "Hecho en parte: se canceló 1 de 3 tareas",
   "status": {
@@ -169,6 +169,18 @@
               }
             }
           ]
+        },
+        {
+          "type": "markdown",
+          "text": "Puedes guardar varias cuentas de Claude desde Ajustes.",
+          "truncated": false,
+          "commentable": false
+        },
+        {
+          "type": "markdown",
+          "text": "El selector de cuenta está disponible en Ajustes.",
+          "truncated": false,
+          "commentable": false
         }
       ]
     }

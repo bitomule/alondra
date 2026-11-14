@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "ios",
-  "version": "v08d7b91bc2ec3f93",
+  "version": "v97dfaf0b80d2e2ae",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -327,7 +327,7 @@
           "kind": "review",
           "need": "Revisa el resultado",
           "title_is_separate": true,
-          "why": "All required checks passed and the branch is up to date with main.",
+          "why": "Two checks passed; one is still running, and the branch is up to date with main.",
           "meta": "Alondra · Demo Garden",
           "content_row": {
             "kind": "diff",
@@ -345,7 +345,7 @@
             "tone": "accent"
           },
           "title": "Review the beta candidate",
-          "subtitle": "All required checks passed and the branch is up to date with main.",
+          "subtitle": "Two checks passed; one is still running, and the branch is up to date with main.",
           "context": [
             {
               "icon": "task",

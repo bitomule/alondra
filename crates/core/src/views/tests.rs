@@ -7,6 +7,9 @@ use crate::domain::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
+#[path = "client_language_tests.rs"]
+mod client_language_tests;
+
 fn inbox_badge(state: &DomainState) -> u32 {
     super::inbox_badge(&crate::domain::ReadIndex::build(state))
 }
@@ -681,7 +684,7 @@ fn golden_fixture() -> DomainState {
             "Swipe navigation, inline replies and attachment previews are ready for review.")
             .content(Content::Report, "- Swipe navigation\n- Inline replies\n- Attachment previews"));
         card("hf-weekly-2026-09-30", spec(CardKind::Review, "Review the beta candidate",
-            "All required checks passed and the branch is up to date with main.")
+            "Two checks passed; one is still running, and the branch is up to date with main.")
             .content(Content::Diff, "## Beta candidate ready\n\n- Restored the native review layouts\n- Verified the ARM simulator build"));
         let mut schedule = spec(CardKind::Decide, "Ship the compact schedule editor with this beta?",
             "The review of the pull request waits for your answer.");
@@ -2579,7 +2582,7 @@ fn a_request_row_links_to_its_most_recently_changed_task() {
 }
 
 #[test]
-fn a_working_task_shows_its_command_and_time_after_its_own_step() {
+fn a_working_task_shows_its_activity_and_time_after_its_own_step() {
     let mut state = fixture();
     state.interactions.clear();
     let task = state.tasks.get_mut(&"t-1".into()).unwrap();
@@ -2596,14 +2599,14 @@ fn a_working_task_shows_its_command_and_time_after_its_own_step() {
         let (block, row) = active_row(&state, &live, client, Lang::Es, "t-1");
         assert_eq!((block.as_str(), row.badges[0].text.as_str()), ("block:working", "Trabajando"), "{client:?}");
         assert!(row.children.is_empty() && !serde_json::to_string(&row).unwrap().contains("bazel test"), "{client:?}: the list never names the command");
-        assert_eq!(detail_state_text(&state, &live, client, Lang::Es), "Trabajando · `Bash: bazel test //crates/...` · desde las 06:58", "{client:?}");
+        assert_eq!(detail_state_text(&state, &live, client, Lang::Es), "Trabajando · Pasando los tests · desde las 06:58", "{client:?}");
     }
     live.nodes[0].steps = ["Plan", "Build", "Generate iOS screenshots", "Ship"].iter().enumerate().map(|(index, subject)| LiveStep {
         subject: (*subject).into(), active_form: None,
         state: match index { 0 | 1 => StepState::Completed, 2 => StepState::InProgress, _ => StepState::Pending },
     }).collect();
     assert_eq!(detail_state_text(&state, &live, Client::Ios, Lang::Es),
-        "Trabajando · Paso 3 de 4 · Generate iOS screenshots · `Bash: bazel test //crates/...` · desde las 06:58", "the step comes before the command and its time");
+        "Trabajando · Paso 3 de 4 · Generate iOS screenshots · Pasando los tests · desde las 06:58", "the step comes before the activity and its time");
     assert!(active_row(&state, &live, Client::Ios, Lang::Es, "t-1").1.children.is_empty(), "the step stays on the task's screen");
 }
 #[test]
@@ -4484,7 +4487,7 @@ fn every_builder_string_has_spanish() {
         "Reading the localization catalog", "API", "Principal", "Trabajo", "Claude · Principal", "Claude · Trabajo",
     ];
     const FIXTURE_TEXT_PREFIXES: &[&str] = &[
-        "## Beta candidate ready", "All required checks passed", "Prepare the next Alondra beta",
+        "## Beta candidate ready", "Two checks passed", "Prepare the next Alondra beta",
         "The iPhone simulator pass", "The new empty state is ready", "The pull request is ready",
         "Add the compact schedule editor", "1 · Add the compact schedule editor",
         "Replaces the long schedule form", "feature/compact-schedule-editor",
@@ -4492,6 +4495,7 @@ fn every_builder_string_has_spanish() {
         "Swipe navigation, inline", "The pull request checks passed", "The review of the pull request",
         "The simulator pass is clean", "★ Ship the concise copy", "Beta candidate ready",
         "Restore the native review experience",
+        "Ship the concise copy\n\n", "Keep the warmer copy\n\n",
     ];
     let state = golden_fixture();
     let live = golden_live();
@@ -5429,13 +5433,82 @@ fn described_question_fixture() -> DomainState {
 }
 
 #[test]
-fn a_held_ask_user_question_card_shows_the_words_claude_put_under_each_option() {
+fn client_text_contracts_question_explanations_are_content_not_button_text() {
+    for held in [true, false] {
+        let mut state = described_question_fixture();
+        if !held { state.holds.clear(); }
+        if let InteractionPayload::Question { options, .. } = &mut state.interactions.get_mut(&"i-1".into()).unwrap().payload {
+            options[0].id = "always".into();
+        }
+        for client in [Client::Tui, Client::Ios, Client::Mac] {
+            let view = render(&state, &LiveSnapshot::default(), client, Lang::Es, "card:i-1", "");
+            let buttons = answers(card_of(&view));
+            assert_eq!(buttons.iter().map(|a| a.label.as_str()).collect::<Vec<_>>(), ["Markdown", "Plain text"]);
+            assert!(buttons.iter().all(|a| a.description.is_none()), "{client:?}: explanations belong in the body");
+            let body = markdown_items(&view).iter().map(|m| m.text.as_str()).collect::<Vec<_>>().join("\n");
+            for explanation in ["Markdown", "Headings and lists", "Plain text", "No markup at all"] {
+                assert!(body.contains(explanation), "{client:?}, held={held}: {body}");
+            }
+        }
+    }
+    let full_label = "Use Markdown headings and lists for every release note in the next beta";
+    for held in [true, false] {
+        let mut state = described_question_fixture();
+        if !held { state.holds.clear(); }
+        if let InteractionPayload::Question { options, .. } = &mut state.interactions.get_mut(&"i-1".into()).unwrap().payload {
+            options[0].label = full_label.into();
+            options[0].description = None;
+        }
+        for client in [Client::Tui, Client::Ios, Client::Mac] {
+            let view = render(&state, &LiveSnapshot::default(), client, Lang::Es, "card:i-1", "");
+            let option = answers(card_of(&view))[0];
+            assert!(option.label.chars().count() <= 40, "{client:?}: {}", option.label);
+            assert_eq!(option.option_id.as_deref(), Some("o0"));
+            assert!(markdown_items(&view).iter().any(|item| item.text.contains(full_label)), "{client:?}: the full choice stays readable");
+        }
+    }
+    let mut state = described_question_fixture();
+    state.holds.clear();
+    let card = state.interactions.get_mut(&"i-1".into()).unwrap();
+    card.payload = InteractionPayload::ActionRequest { options: vec![QuestionOption { id: "do".into(), label: full_label.into(), description: None }], answer: None };
+    for client in [Client::Tui, Client::Ios, Client::Mac] {
+        let view = render(&state, &LiveSnapshot::default(), client, Lang::Es, "card:i-1", "");
+        assert!(answers(card_of(&view)).iter().any(|action| action.label == full_label), "{client:?}: an action request must not lose its existing wording");
+    }
+}
+
+/// Audit case 10b: shell syntax is never a task status.
+#[test]
+fn client_text_contracts_status_names_work_in_words() {
+    let (state, live) = working_rows_fixture();
+    for client in [Client::Tui, Client::Ios, Client::Mac] {
+        let view = render(&state, &live, client, Lang::Es, "tasks", "");
+        let shown = serde_json::to_string(&view).unwrap();
+        for command in ["bazel test", "make build", "//crates/", "Bash:"] {
+            assert!(!shown.contains(command), "{client:?}: {shown}");
+        }
+        for (task, activity) in [("t-command", "Pasando los tests"), ("t-background", "Compilando")] {
+            let detail = render(&state, &live, client, Lang::Es, &format!("task:{task}"), "");
+            let status = detail.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
+                Item::Facts(facts) => facts.items.iter().find(|fact| fact.kind == Some(FactKind::State)).map(|fact| fact.value.as_str()),
+                _ => None,
+            }).unwrap();
+            assert!(status.contains(activity), "{client:?}: {status}");
+            for command in ["bazel test", "make build", "//crates/", "Bash:"] {
+                assert!(!status.contains(command), "{client:?}: {status}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_held_question_keeps_its_authors_labels_in_both_viewer_languages() {
     let state = described_question_fixture();
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         for lang in [Lang::En, Lang::Es] {
             let view = render(&state, &LiveSnapshot::default(), client, lang, "card:i-1", "");
             assert_eq!(answers(card_of(&view)).iter().map(|a| (a.label.as_str(), a.description.as_deref())).collect::<Vec<_>>(),
-                [("Markdown", Some("Headings and lists")), ("Plain text", Some("No markup at all"))], "{client:?} {lang:?}");
+                [("Markdown", None), ("Plain text", None)], "{client:?} {lang:?}");
         }
     }
 }
@@ -7150,7 +7223,7 @@ fn a_node_that_stopped_says_what_it_said_and_only_in_prose() {
     assert_eq!(doing(&node("> 1. Shipped it. Then more."), Lang::En).as_deref(), Some("Said: “Shipped it.”"));
     assert_eq!(doing(&node("---\n2) Merged the fix."), Lang::En).as_deref(), Some("Said: “Merged the fix.”"));
     let working = LiveNode { tool: Some("Bash: cargo test".into()), ..node("Earlier") };
-    assert!(task_node::doing(&working, true, Lang::En).unwrap().0.contains("`Bash: cargo test` · since"));
+    assert!(task_node::doing(&working, true, Lang::En).unwrap().0.contains("Running tests · since"));
 }
 #[test]
 fn a_task_that_needs_you_says_its_question_never_its_own_title() {
@@ -8845,7 +8918,7 @@ fn a_task_whose_turn_ended_behind_its_own_work_says_so_and_names_what_runs() {
             "Monitor: tail -f build.log", "Monitor: tail -f build.log"),
         (node(vec![], vec![workflow(RunState::Running)], vec![subagent(ended)]), "Mide con git y PRs la velocidad", "Mide con git y PRs la velocidad"),
         (node(vec![], vec![], vec![subagent(RunState::Running)]), "Explore the parser", "Explore the parser"),
-        (node(vec![sleep()], vec![workflow(RunState::Running)], vec![subagent(RunState::Running)]), "`sleep 5900` and 2 more", "`sleep 5900` y 2 más"),
+        (node(vec![sleep()], vec![workflow(RunState::Running)], vec![subagent(RunState::Running)]), "Running a command and 2 more", "Ejecutando una orden y 2 más"),
     ];
     let sdk = sdk_task();
     let own_work = LiveState::Working(Worker::OwnWork);
@@ -9494,14 +9567,17 @@ fn outcome_state() -> DomainState {
         });
     }
     let text = vec![DeliveryTarget::Text { text: "Hecho".into() }];
-    for (task, number) in [("t-store", 1290), ("t-switch", 1291)] {
+    for (task, number, result_text) in [
+        ("t-store", 1290, "Puedes guardar varias cuentas de Claude desde Ajustes."),
+        ("t-switch", 1291, "El selector de cuenta está disponible en Ajustes."),
+    ] {
         let node = Actor::Agent { agent_id: format!("node-{task}").into() };
         run(&mut state, Actor::System, Command::RegisterAgent { agent_id: format!("node-{task}").into(), name: "Node".into(), at: 0 });
         run(&mut state, orchestrator.clone(), Command::AssignTask { task_id: task.into(), agent_id: format!("node-{task}").into(), model: None });
         let result = format!("final-{task}");
         run(&mut state, node, Command::PresentResult {
             checklist: vec![], attachments: vec![], task_id: task.into(), interaction_id: result.as_str().into(), body: "Hecho".into(),
-            targets: text.clone(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Revisa el resultado", &text, true),
+            targets: text.clone(), is_final: true, nothing_to_review: false, card: CardSpec::delivery(result_text, &text, true),
         });
         run(&mut state, user.clone(), Command::AcceptDelivery { presentation_id: result.as_str().into(), targets: text.clone() });
         run(&mut state, Actor::System, Command::RecordNodeEnd { task_id: task.into(), end: NodeEnd::Closed, agent_id: None });
@@ -10010,7 +10086,7 @@ fn every_card_numbers_its_options_from_its_main_one_and_keeps_each_letter_for_on
 }
 
 #[test]
-fn a_task_detail_offers_to_move_it_to_each_account_its_rule_accepts() {
+fn client_text_contracts_account_move_is_only_offered_to_rescue_a_stuck_task() {
     use crate::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Provider};
     use crate::model_selection::{AccountModelCatalog, CatalogModel};
     let mut state = fixture();
@@ -10020,6 +10096,13 @@ fn a_task_detail_offers_to_move_it_to_each_account_its_rule_accepts() {
         models: vec![CatalogModel { model: "model".into(), display_name: "Model".into(), reasoning_efforts: vec![], default_reasoning_effort: None, context_window: None, input_modalities: vec![], is_default: true, hidden: false }] }).collect();
     let task = state.tasks.get_mut(&crate::domain::TaskId::from("t-1")).unwrap();
     task.selection = Some({ let mut pinned = crate::model_selection::TaskSelection::automatic(crate::model_selection::ModelProfile::Implementation); pinned.account = Some(crate::accounts::AccountKey::native(Provider::Claude)); pinned.native_tool_denials = Some(vec![]); pinned });
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        let detail = render(&state, &LiveSnapshot::default(), client, Lang::Es, "task:t-1", "");
+        assert!(find_action(&detail, "move_task:").is_none(), "{client:?}: an ordinary task does not move accounts");
+    }
+    let recovery = state.interactions.get_mut(&"i-1".into()).unwrap();
+    recovery.author = Author::System;
+    recovery.system_card = Some(crate::domain::SystemCard::HostLost);
     let detail = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "task:t-1", "");
     let moving = find_action(&detail, "move_task:t-1").expect("the task's detail offers to move it");
     assert_eq!(moving.label, "Mover a Codex · Work", "a single destination is named on the button");
@@ -10029,7 +10112,7 @@ fn a_task_detail_offers_to_move_it_to_each_account_its_rule_accepts() {
     assert_eq!(options, [("codex/default", "Codex · Work")], "neither the account it is on nor one turned off");
     assert_eq!(moving.confirm.as_ref().unwrap().title, "¿Mover esta tarea?");
     let tui = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::Es, "task:t-1", "");
-    assert_eq!(find_action(&tui, "move_task:t-1").and_then(|action| action.key.as_deref()), Some("V"), "the TUI shows only the actions it has a key for");
+    assert_eq!(find_action(&tui, "move_task:t-1").and_then(|action| action.key.as_deref()), Some("V"), "only a stuck task offers this shortcut");
     state.accounts.push(account(Provider::Claude, "work", "Trabajo", AccountState::SignedIn));
     state.model_catalogs.push(AccountModelCatalog { account: crate::accounts::AccountKey::new(Provider::Claude, AccountId::parse("work").unwrap()), ..state.model_catalogs[0].clone() });
     let several = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "task:t-1", "");

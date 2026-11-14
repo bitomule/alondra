@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:github.com/example/repo#12",
   "client": "mac",
-  "version": "vc6aa5ab25fd44678",
+  "version": "va3e8ef1f10dbd960",
   "cursor": "cursor-1",
   "title": "Review the beta candidate",
   "status": {
@@ -100,7 +100,7 @@
           "kind": "review",
           "need": "Revisa el resultado",
           "title_is_separate": true,
-          "why": "All required checks passed and the branch is up to date with main.",
+          "why": "Two checks passed; one is still running, and the branch is up to date with main.",
           "meta": "example/repo · feature/compact-schedule-editor → main · 4 archivos · +120 −30 · 2 de 3 correctos, 1 en marcha",
           "content_row": {
             "kind": "diff",
@@ -183,7 +183,7 @@
             "tone": "accent"
           },
           "title": "Review the beta candidate",
-          "subtitle": "All required checks passed and the branch is up to date with main.",
+          "subtitle": "Two checks passed; one is still running, and the branch is up to date with main.",
           "context": [
             {
               "icon": "task",

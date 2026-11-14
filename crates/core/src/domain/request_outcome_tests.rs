@@ -147,6 +147,32 @@ fn a_request_whose_tasks_are_done_tells_the_user_it_is_done() {
     assert!(notified(&out, &card));
 }
 
+/// Case 9: retain the beta's version, build and destination when closing does not repeat them.
+#[test]
+fn client_text_contracts_done_carries_the_published_result() {
+    let mut s = state();
+    asked(&mut s, user(), "r", false);
+    task(&mut s, "beta", "r");
+    done(&mut s, "beta", None);
+    let published = "Garden 2.4 (build 181) is available to internal testers in TestFlight.";
+    let delivery = s.interactions.get_mut(&"final-beta".into()).unwrap();
+    delivery.body = "The beta is ready".into();
+    delivery.card.content.as_mut().unwrap().body = published.into();
+    close(&mut s, "r", None, None);
+    let card = the_card(&s, "r");
+    let body = DoneCard::from_body(&card.body).unwrap();
+    assert!(body.to_body().contains(published), "{}", body.to_body());
+    let index = ReadIndex::build(&s);
+    let live = crate::views::LiveSnapshot::default();
+    for client in [crate::views::Client::Tui, crate::views::Client::Ios, crate::views::Client::Mac] {
+        let view = crate::views::build(&format!("card:{}", card.id), crate::views::RenderContext {
+            domain: &s, index: &index, live: &live, client, lang: crate::views::Lang::Es,
+            transport: crate::views::Transport::Loopback, cursor: "cursor", rendered_at: "",
+        }).unwrap();
+        assert!(serde_json::to_string(&view).unwrap().contains(published), "{client:?}: {view:?}");
+    }
+}
+
 #[test]
 fn a_request_with_cancelled_tasks_says_how_much_was_done() {
     let mut s = state();
@@ -157,7 +183,7 @@ fn a_request_with_cancelled_tasks_says_how_much_was_done() {
     cancel(&mut s, "build");
     close(&mut s, "r", None, None);
     let card = the_card(&s, "r");
-    assert_eq!((card.card.effective_title(), card.card.why.as_str()), ("Done in part: 1 of 2 tasks was cancelled", "All its work is finished."));
+    assert_eq!((card.card.effective_title(), card.card.why.as_str()), ("Done in part: 1 of 2 tasks was cancelled", "Review the design"));
 
     let mut s = state();
     asked(&mut s, user(), "r", false);

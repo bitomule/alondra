@@ -36,7 +36,7 @@ struct CardButtons: View {
     private func button(_ action: AlondraContract.Action) -> some View {
         VStack(spacing: 4) {
             if action.presentation == .menu, !action.options.isEmpty {
-                Button { choosing = action } label: { GlassBarLabel(action.label) }
+                Button { choosing = action } label: { GlassBarLabel(action.label).fixedSize(horizontal: false, vertical: true) }
                     .glassRole(action.cardRole)
                     .disabled(!action.enabled)
                     .accessibilityIdentifier(identifier(action))
@@ -50,7 +50,9 @@ struct CardButtons: View {
                         }
                     }
             } else {
-                Button { store.perform(action, openURL: openURL, mcpLinks: mcpLinks) } label: { GlassBarLabel(action.label).multilineTextAlignment(.center) }
+                Button { store.perform(action, openURL: openURL, mcpLinks: mcpLinks) } label: {
+                    GlassBarLabel(action.label).multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                }
                     .glassRole(action.cardRole)
                     .disabled(!action.enabled)
                     .accessibilityIdentifier(identifier(action))

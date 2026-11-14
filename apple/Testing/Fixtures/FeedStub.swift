@@ -80,9 +80,9 @@ extension Fixtures {
         var status = try XCTUnwrap(object["status"] as? [String: Any])
         let questions = queue.filter { ![informationID, deliveryID, pullRequestID].contains($0) }.count
         let parts: [[String: Any]] = [
-            ["id": "questions", "count": questions, "one": "{count} question", "other": "{count} questions"],
-            ["id": "to_read", "count": queue.count - questions, "one": "{count} to read", "other": "{count} to read"],
-            ["id": "working", "count": 0, "one": "{count} task working", "other": "{count} tasks working"],
+            ["id": "questions", "count": questions, "one": spanish ? "{count} pregunta" : "{count} question", "other": spanish ? "{count} preguntas" : "{count} questions"],
+            ["id": "to_read", "count": queue.count - questions, "one": spanish ? "{count} por leer" : "{count} to read", "other": spanish ? "{count} por leer" : "{count} to read"],
+            ["id": "working", "count": 0, "one": spanish ? "{count} tarea trabajando" : "{count} task working", "other": spanish ? "{count} tareas trabajando" : "{count} tasks working"],
         ].filter { ($0["count"] as? Int ?? 0) > 0 || $0["id"] as? String == "working" }
         status["summary_parts"] = parts
         status["summary"] = parts.map { part in

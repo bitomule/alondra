@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-1",
   "client": "mac",
-  "version": "vae08fc5eb5ccbaa8",
+  "version": "vceb4e7246d6cbee3",
   "cursor": "cursor-1",
   "title": "Build a feature",
   "status": {
@@ -73,7 +73,7 @@
             {
               "kind": "state",
               "label": "Estado",
-              "value": "Trabajando · Paso 3 de 5 · Run the tests · `Bash: cargo test` · desde las 09:30",
+              "value": "Trabajando · Paso 3 de 5 · Run the tests · Pasando los tests · desde las 09:30",
               "tone": "accent"
             },
             {

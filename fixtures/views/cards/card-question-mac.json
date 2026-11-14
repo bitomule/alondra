@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "mac",
-  "version": "vac6195550f4a611b",
+  "version": "v408d1877711fd99f",
   "cursor": "cursor-1",
   "title": "Choose the welcome copy",
   "status": {
@@ -204,6 +204,18 @@
         {
           "type": "markdown",
           "text": "Concise: a short title and one explanatory sentence.\nWarm: the more conversational explanation.",
+          "truncated": false,
+          "commentable": false
+        },
+        {
+          "type": "markdown",
+          "text": "Ship the concise copy\n\nUse a short title and one explanatory sentence.",
+          "truncated": false,
+          "commentable": false
+        },
+        {
+          "type": "markdown",
+          "text": "Keep the warmer copy\n\nPreserve the more conversational explanation.",
           "truncated": false,
           "commentable": false
         }

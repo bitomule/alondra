@@ -1213,9 +1213,19 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     Ok(view)
 }
 
-/// «Move to…»: the accounts the task can go on on, each offered only when the rule the move runs
-/// accepts it there.
+/// Account rescue is offered only for a provider hold or a failed execution, with each
+/// destination checked by the rule that runs the move.
 fn move_action(task: &Task, context: &RenderContext<'_>) -> Option<super::Action> {
+    let read = context.reading(&task.id)?;
+    let recovery = matches!(read.situation, crate::domain::Situation::Waiting(crate::domain::WaitsFor::Usage | crate::domain::WaitsFor::ProviderApi))
+        || read.waiting.iter().filter_map(|id| context.domain.interactions.get(id)).any(|card| {
+            card.author == crate::domain::Author::System && matches!(card.system_card,
+                Some(crate::domain::SystemCard::HostLost | crate::domain::SystemCard::SessionEnded
+                    | crate::domain::SystemCard::StartProblem | crate::domain::SystemCard::Stalled
+                    | crate::domain::SystemCard::ClaudeUsage { .. } | crate::domain::SystemCard::ClaudeSignedOut
+                    | crate::domain::SystemCard::ClaudeOutage))
+        });
+    if !recovery { return None; }
     let lang = context.lang;
     let options: Vec<super::ActionOption> = context.domain.accounts.iter().filter_map(|account| {
         let key = crate::accounts::AccountKey::new(account.provider, account.id.clone());
