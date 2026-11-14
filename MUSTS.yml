@@ -18,6 +18,7 @@ checks:
       - "docs/on-your-mac.md"
       - "Makefile"
       - "deploy/brew/alondra.rb.in"
+      - "deploy/brew/local-release.py"
       - "deploy/brew/release.py"
       - "deploy/brew/package-cli.sh"
       - "deploy/brew/sign-package.sh"
@@ -994,10 +995,32 @@ checks:
       - ".bazelversion"
       - ".claude-plugin/**"
       - "BUILD.bazel"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "LICENSE.md"
       - "MODULE.bazel"
+      - "THIRD_PARTY_NOTICES.md"
+      - "version.bzl"
+      - "agent-host/BUILD.bazel"
+      - "agent-host/codex-main.ts"
+      - "agent-host/host-entitlements.plist"
+      - "agent-host/persistent-main.ts"
+      - "agent-host/toolchain.bzl"
+      - "crates/BUILD.bazel"
+      - "crates/*/BUILD.bazel"
+      - "crates/*/Cargo.toml"
+      - "crates/alondrad/Info.plist"
+      - "crates/alondrad/build_inputs_test.bzl"
+      - "crates/provider-claude/build_inputs_test.bzl"
       - "deploy/brew/BUILD.bazel"
+      - "deploy/brew/alondra.rb.in"
+      - "deploy/brew/local-release.py"
+      - "deploy/brew/node/LICENSE"
       - "deploy/brew/plugin_payload_test.py"
       - "deploy/brew/release.py"
+      - "deploy/brew/tests/run-release-tests.sh"
+      - "deploy/brew/tests/test_local_release.py"
+      - "deploy/brew/tests/test_release.py"
       - "deploy/brew/tests/test_upgrade_rehearsal.py"
       - "deploy/brew/upgrade-rehearsal.py"
       - "launchd/**"
@@ -1010,9 +1033,13 @@ checks:
       - "plugin/hooks/**"
       - "plugin/skills/**"
       - "plugin/tests/**"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
     with:
       targets:
+        - //deploy/brew:local_release_test
         - //deploy/brew:plugin_payload_test
+        - //deploy/brew:release_test
         - //deploy/brew:upgrade_rehearsal_test
 
   deploy-apple:

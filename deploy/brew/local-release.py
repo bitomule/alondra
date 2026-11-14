@@ -278,8 +278,7 @@ def prepare(ver, source, output):
     # Never overwrite prior archives, including partially prepared artifacts.
     output.mkdir(parents=True, exist_ok=False)
     output.chmod(0o700)
-    run(sys.executable, '-m', 'unittest', 'discover', '-s', 'deploy/brew/tests', '-v')
-    run('bazelisk', 'test', '//crates/...')
+    run('bazelisk', 'test', '//crates/...', '//deploy/brew/...')
     built = release_build(ver)
     for target in release.TARGETS:
         with tempfile.TemporaryDirectory(prefix='alondra-local-sign-') as temp:

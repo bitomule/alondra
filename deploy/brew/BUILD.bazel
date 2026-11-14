@@ -33,3 +33,44 @@ sh_test(
         "//:plugin_files",
     ],
 )
+
+sh_test(
+    name = "local_release_test",
+    size = "small",
+    env_inherit = ["PATH"],
+    srcs = ["tests/run-release-tests.sh"],
+    args = ["$(rootpath tests/test_local_release.py)"],
+    data = [
+        "local-release.py",
+        "release.py",
+        "tests/test_local_release.py",
+        "//:Cargo.lock",
+        "//:Cargo.toml",
+        "//agent-host:codex-main.ts",
+        "//agent-host:host-entitlements.plist",
+        "//agent-host:persistent-main.ts",
+        "//crates:workspace_manifests",
+        "//crates/alondrad:Info.plist",
+    ],
+    tags = ["no-sandbox"],
+)
+
+sh_test(
+    name = "release_test",
+    size = "small",
+    env_inherit = ["PATH"],
+    srcs = ["tests/run-release-tests.sh"],
+    args = ["$(rootpath tests/test_release.py)"],
+    data = [
+        "alondra.rb.in",
+        "node/LICENSE",
+        "release.py",
+        "tests/test_release.py",
+        "//:Cargo.toml",
+        "//:LICENSE.md",
+        "//:THIRD_PARTY_NOTICES.md",
+        "//:plugin_files",
+        "//:version.bzl",
+    ],
+    tags = ["no-sandbox"],
+)
