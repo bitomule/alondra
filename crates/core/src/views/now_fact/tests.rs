@@ -2,13 +2,13 @@ use super::*;
 use crate::views::{LiveBackground, RunOutcome};
 
 #[test]
-fn the_command_is_shown_with_its_start_and_never_what_it_said() {
+fn the_activity_is_shown_with_its_start_and_never_the_command_or_what_it_said() {
     let node = LiveNode { tool: Some("bazel test //…\nsecond line".into()), tool_since: Some("15:38".into()),
         last_message: Some("The checks passed. I am opening the PR.".into()), last_message_at: Some("2026-11-11T15:31:00+01:00".into()),
         ..Default::default() };
     let fact = now_fact(Some(&node), &Doing::Turn, "15:00", Lang::Es);
-    assert_eq!(fact.text(Lang::Es), "`bazel test //…` · desde las 15:38");
-    assert_eq!(fact.text(Lang::En), "`bazel test //…` · since 15:38");
+    assert_eq!(fact.text(Lang::Es), "Pasando los tests · desde las 15:38");
+    assert_eq!(fact.text(Lang::En), "Running tests · since 15:38");
 }
 
 #[test]
@@ -20,8 +20,8 @@ fn work_in_the_background_names_what_runs_and_since_when() {
         run("bazel test //…", "2026-11-11T15:38:00+01:00", RunState::Running),
     ], ..Default::default() };
     let fact = now_fact(Some(&node), &Doing::OwnWork, "15:00", Lang::Es);
-    assert_eq!(fact.text(Lang::Es), "En segundo plano: `bazel test //…` y 1 más · desde las 15:38");
-    assert_eq!(fact.text(Lang::En), "In the background: `bazel test //…` and 1 more · since 15:38");
+    assert_eq!(fact.text(Lang::Es), "En segundo plano: Pasando los tests y 1 más · desde las 15:38");
+    assert_eq!(fact.text(Lang::En), "In the background: Running tests and 1 more · since 15:38");
 }
 
 #[test]
@@ -47,12 +47,12 @@ fn long_words_are_cut_without_splitting_unicode() {
 fn a_command_reads_without_paths_or_secrets_and_a_workflow_or_subagent_by_its_kind() {
     let node = LiveNode { tool: Some("Bash: cd /Users/example/app && cargo test --token=abc --manifest-path /Users/example/app/Cargo.toml".into()),
         ..Default::default() };
-    assert_eq!(now_fact(Some(&node), &Doing::Turn, "15:00", Lang::En).text(Lang::En), "`Bash: cargo test --token=… --manifest-path …` · since 15:00");
+    assert_eq!(now_fact(Some(&node), &Doing::Turn, "15:00", Lang::En).text(Lang::En), "Running tests · since 15:00");
     let node = LiveNode { tool: Some("Read /Users/example/app/src/main.rs".into()), ..Default::default() };
-    assert_eq!(now_fact(Some(&node), &Doing::Turn, "15:00", Lang::En).text(Lang::En), "`Read main.rs` · since 15:00");
+    assert_eq!(now_fact(Some(&node), &Doing::Turn, "15:00", Lang::En).text(Lang::En), "Reading files · since 15:00");
     let run = |label: &str| LiveBackground { kind: "shell".into(), label: label.into(), since: "15:10".into(), state: RunState::Running };
     let node = LiveNode { background: vec![run("musts run bazel-test-root > .scratch/tests.log 2>&1")], ..Default::default() };
-    assert_eq!(now_fact(Some(&node), &Doing::OwnWork, "15:00", Lang::En).text(Lang::En), "In the background: `musts run bazel-test-root` · since 15:10");
+    assert_eq!(now_fact(Some(&node), &Doing::OwnWork, "15:00", Lang::En).text(Lang::En), "In the background: Running tests · since 15:10");
     let subagent = LiveNode { subagents: vec![crate::views::LiveRun { label: "Explore the parser".into(), since: "15:20".into(), state: RunState::Running, ..Default::default() }], ..Default::default() };
     assert_eq!(now_fact(Some(&subagent), &Doing::OwnWork, "15:00", Lang::Es).text(Lang::Es), "En segundo plano: un subagente · desde las 15:20");
 }

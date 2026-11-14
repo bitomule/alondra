@@ -60,16 +60,28 @@ struct TriageCard: View {
     }
 
     private var content: some View {
+        // A ForEach is one fitting candidate; each fallback must be a direct child.
         ViewThatFits(in: .vertical) {
-            ForEach(CardFit.ladder) { fit in
-                CardBody(store: store, card: card, fit: fit, tint: tint, onSkip: onSkip, room: $room, roomFocus: $roomFocused)
-            }
+            fittedBody(0)
+            fittedBody(1)
+            fittedBody(2)
+            fittedBody(3)
+            fittedBody(4)
+            fittedBody(5)
+            fittedBody(6)
+            fittedBody(7)
+            fittedBody(8)
+            fittedBody(9)
         }
         .coordinateSpace(.named(ComposerRoom.space))
         .overlay(alignment: room == nil ? .bottomLeading : .topLeading) {
             if let reply = store.replyAction { placedComposer(reply) }
         }
         .disabled(store.actions.inFlight && store.actions.stamp == nil)
+    }
+
+    private func fittedBody(_ index: Int) -> some View {
+        CardBody(store: store, card: card, fit: CardFit.ladder[index], tint: tint, onSkip: onSkip, room: $room, roomFocus: $roomFocused)
     }
 
     /// With no room in the picked layout the field stays over the bottom of the card while it has

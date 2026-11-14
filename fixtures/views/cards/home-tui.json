@@ -4,7 +4,7 @@
   "view": "home",
   "key": "home",
   "client": "tui",
-  "version": "v9804220e5e3cb364",
+  "version": "v962ceb1dda5884f2",
   "cursor": "cursor-1",
   "status": {
     "version": "v2449cfcaedc9d3ba",
@@ -193,7 +193,7 @@
           "kind": "review",
           "need": "Review the result",
           "title_is_separate": true,
-          "why": "All required checks passed and the branch is up to date with main.",
+          "why": "Two checks passed; one is still running, and the branch is up to date with main.",
           "meta": "Alondra · Demo Garden",
           "content_row": {
             "kind": "diff",
@@ -211,7 +211,7 @@
             "tone": "accent"
           },
           "title": "Review the beta candidate",
-          "subtitle": "All required checks passed and the branch is up to date with main.",
+          "subtitle": "Two checks passed; one is still running, and the branch is up to date with main.",
           "context": [
             {
               "icon": "task",

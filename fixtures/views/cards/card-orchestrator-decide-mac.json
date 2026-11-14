@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:memory-pause-livelock-ask",
   "client": "mac",
-  "version": "v845b1980b86ea269",
+  "version": "vca47846c00b1ce72",
   "cursor": "cursor-1",
   "title": "Decide who fixes the memory pauses that cut the same build in a loop",
   "status": {
@@ -186,6 +186,18 @@
         {
           "type": "markdown",
           "text": "Resumed, the node relaunches the build; memory turns Tight in 50 s and it is paused again.",
+          "truncated": false,
+          "commentable": false
+        },
+        {
+          "type": "markdown",
+          "text": "I'll fold it into my change\n\nNo task is created.",
+          "truncated": false,
+          "commentable": false
+        },
+        {
+          "type": "markdown",
+          "text": "Create a task\n\nA node measures the loop and changes the pause rule.",
           "truncated": false,
           "commentable": false
         }

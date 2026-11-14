@@ -1452,6 +1452,10 @@ impl DomainState {
                 title: t.title.clone(),
                 cancelled: t.cancelled(),
                 pr: t.pr_id.as_ref().and_then(|id| self.pull_requests.get(id)).map(|pr| pr.number),
+                result: t.final_presentation.as_ref().and_then(|id| self.interactions.get(id))
+                    .and_then(|delivery| delivery.card.content.as_ref().map(|content| content.body.as_str())
+                        .filter(|body| !body.trim().is_empty()).or(Some(delivery.body.as_str())))
+                    .map(str::trim).filter(|body| !body.is_empty()).map(String::from),
             }).collect(),
         };
         let (need, why) = done.text(crate::views::Lang::En);

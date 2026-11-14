@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:unheard-t-651c38484cd2f34e74d5107ba05f7f15-90",
   "client": "mac",
-  "version": "vdbb818e1859e77e1",
+  "version": "v7a9f92fa41cb1866",
   "cursor": "cursor-1",
   "title": "«Restore the native review experience» se ha parado y te escribe",
   "status": {
@@ -166,6 +166,18 @@
               "resolves_card": true
             }
           ]
+        }
+      ]
+    },
+    {
+      "id": "content",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "Que siga\n\nSigue con su tarea y te pregunta con una tarjeta cuando te necesite",
+          "truncated": false,
+          "commentable": false
         }
       ]
     },

@@ -19,7 +19,7 @@ struct CardBody: View {
     @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: fit.spacing) {
             CardHeader(card: card, showsState: fit.state, onSkip: onSkip)
             CardSummary(card: card, why: fit.why, meta: fit.meta, large: typeSize.isAccessibilitySize) { store.openDetail(card) }
             if fit.row, let row = card.contentRow {
@@ -34,6 +34,7 @@ struct CardBody: View {
             Spacer(minLength: 0)
             if let error = store.actions.error { Text(error).font(.caption).foregroundStyle(Palette.rose) }
             CardButtons(store: store, cardID: card.id)
+                .fixedSize(horizontal: false, vertical: true)
             if fit.reply, let reply = store.replyAction {
                 AttachmentStrip(store: store.scope(state: \.attachments, action: \.attachments))
                 ComposerRoom.Placeholder(fit: fit, room: $room) {

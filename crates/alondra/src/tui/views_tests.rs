@@ -397,6 +397,7 @@ fn a_button_shows_the_words_the_server_puts_under_it() {
     app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(super::parity::view_fixture("home-tui.json")).unwrap())));
     app.reconcile();
     let mut card = super::parity::view_fixture("card-question.json");
+    card["sections"].as_array_mut().unwrap().retain(|section| section["id"] != "content");
     let key = card["key"].as_str().unwrap().to_owned();
     let buttons = &mut card["sections"][0]["items"][0]["actions"];
     buttons[0]["label"] = json!("Allow always");

@@ -2338,28 +2338,9 @@ pub mod tests {
         assert!(question.group.is_none(), "one question is an ordinary card");
     }
 
-    /// What each client shows under the answer buttons of card `id`, by option.
-    fn option_words(domain: &DomainRuntime, id: &InteractionId) -> Vec<(alondra_core::views::Client, Vec<(String, Option<String>)>)> {
-        use alondra_core::views::{Client, Item, RenderContext, Transport, build, live::LiveSnapshot, text::Lang};
-        let read = domain.read();
-        let live = LiveSnapshot::default();
-        [Client::Ios, Client::Mac, Client::Tui].into_iter().map(|client| {
-            let view = build(&format!("card:{}", id.0), RenderContext {
-                domain: read.state(), index: read.index(), live: &live, client, lang: Lang::En,
-                transport: Transport::Loopback, cursor: "test", rendered_at: "",
-            }).unwrap();
-            let words = view.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item {
-                Item::Card(card) => Some(card),
-                _ => None,
-            }).flat_map(|card| card.actions.iter().chain(&card.more))
-                .filter(|action| action.option_id.is_some())
-                .map(|action| (action.option_id.clone().unwrap(), action.description.clone())).collect();
-            (client, words)
-        }).collect()
-    }
-
     #[test]
-    fn claudes_question_reaches_every_client_with_the_words_under_each_option() {
+    fn claudes_question_reaches_every_client_with_explanations_in_the_body() {
+        use alondra_core::views::{Client, Item, RenderContext, Transport, build, live::LiveSnapshot, text::Lang};
         let fixture = Fixture::new();
         let domain = fixture.open();
         working_agent(&domain, "agent-a");
@@ -2368,15 +2349,27 @@ pub mod tests {
             {"label": "Markdown", "description": "Headings and lists"}, {"label": "Plain text", "description": "No markup at all"}]);
         let crate::domain_holds::Posted::Held(id) = crate::domain_holds::post(&domain, &serde_json::from_value(single).unwrap(), true).unwrap()
         else { panic!("not held") };
-        let expected = vec![("o0".to_owned(), Some("Headings and lists".to_owned())), ("o1".to_owned(), Some("No markup at all".to_owned()))];
-        for (client, words) in option_words(&domain, &id) {
-            assert_eq!(words, expected, "{client:?}");
-        }
         let crate::domain_holds::Posted::Held(first) = crate::domain_holds::post(&domain, &serde_json::from_value(three_questions("agent-a")).unwrap(), true).unwrap()
         else { panic!("not held") };
-        for (client, words) in option_words(&domain, &first) {
-            assert_eq!(words, [("o0".to_owned(), Some("Works at home and away".to_owned())), ("o1".to_owned(), Some("Only at home".to_owned()))],
-                "{client:?}: a question asked with others keeps its words too");
+        let read = domain.read();
+        let live = LiveSnapshot::default();
+        for (id, explanations) in [(id, ["Headings and lists", "No markup at all"]),
+            (first, ["Works at home and away", "Only at home"])] {
+            for client in [Client::Ios, Client::Mac, Client::Tui] {
+                let view = build(&format!("card:{}", id.0), RenderContext {
+                    domain: read.state(), index: read.index(), live: &live, client, lang: Lang::En,
+                    transport: Transport::Loopback, cursor: "test", rendered_at: "",
+                }).unwrap();
+                let actions: Vec<_> = view.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item {
+                    Item::Card(card) => Some(card), _ => None,
+                }).flat_map(|card| card.actions.iter().chain(&card.more)).filter(|action| action.option_id.is_some()).collect();
+                assert_eq!(actions.iter().map(|action| action.option_id.as_deref()).collect::<Vec<_>>(), [Some("o0"), Some("o1")], "{client:?}");
+                assert!(actions.iter().all(|action| action.description.is_none() && action.label.chars().count() <= 40), "{client:?}: {actions:?}");
+                let body = view.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item {
+                    Item::Markdown(markdown) => Some(markdown.text.as_str()), _ => None,
+                }).collect::<Vec<_>>().join("\n");
+                for explanation in explanations { assert!(body.contains(explanation), "{client:?}: {body}"); }
+            }
         }
     }
 

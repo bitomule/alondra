@@ -11,6 +11,7 @@ struct CardFit: Equatable, Identifiable {
     var state = true
     var reply = true
     var largestType = DynamicTypeSize.accessibility5
+    var spacing: CGFloat = 14
 
     static let ladder: [CardFit] = [
         CardFit(id: 0),
@@ -22,9 +23,10 @@ struct CardFit: Equatable, Identifiable {
         compact(id: 6, largestType: .accessibility5),
         compact(id: 7, largestType: .accessibility2),
         compact(id: 8, largestType: .xxxLarge),
+        compact(id: 9, largestType: .large, spacing: 8),
     ]
 
-    private static func compact(id: Int, largestType: DynamicTypeSize) -> CardFit {
-        CardFit(id: id, why: false, meta: false, chips: false, row: false, state: false, reply: false, largestType: largestType)
+    private static func compact(id: Int, largestType: DynamicTypeSize, spacing: CGFloat = 14) -> CardFit {
+        CardFit(id: id, why: false, meta: false, chips: false, row: false, state: false, reply: false, largestType: largestType, spacing: spacing)
     }
 }

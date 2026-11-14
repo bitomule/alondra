@@ -30,7 +30,10 @@ struct MacCardView: View {
         VStack(alignment: .leading, spacing: 14) {
             MacCardHeader(card: card)
             VStack(alignment: .leading, spacing: 6) {
-                Text(MarkdownBlock.line(card.need ?? card.title)).font(.title3.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+                Text(MarkdownBlock.line(card.title)).font(.title3.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+                if let need = card.need, need != card.title {
+                    Text(MarkdownBlock.line(need)).font(.body.weight(.medium)).fixedSize(horizontal: false, vertical: true)
+                }
                 if let why = card.why {
                     if card.detail == .included {
                         MarkdownView(markdown: Markdown(text: why), secondary: true).fixedSize(horizontal: false, vertical: true)

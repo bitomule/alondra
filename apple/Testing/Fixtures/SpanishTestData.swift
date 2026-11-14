@@ -42,6 +42,7 @@ enum SpanishTestData {
     private static let spanishWords = [
         "Reply": "Responder", "Sent": "Enviado", "Answered": "Respondida", "Content": "Contenido", "Context": "Contexto",
         "Task": "Tarea", "Seen": "Visto", "Read": "Leída", "Report": "Informe", "3 points": "3 puntos",
+        "Review the result": "Revisa el resultado",
         "Changes": "Cambios", "Diff": "Diferencias", "Description": "Descripción", "Request changes": "Pedir cambios",
         "Describe the changes": "Describe los cambios", "Changes requested": "Cambios solicitados",
         "Approve": "Aprobar", "Approved": "Aprobado", "6 steps": "6 pasos", "Command": "Comando", "Yes": "Sí",
@@ -82,6 +83,8 @@ enum SpanishTestData {
          "La navegación con gestos, las respuestas en línea y la vista previa de adjuntos están listas para revisar."),
         ("All required checks passed and the branch is up to date with main.",
          "Pasaron todas las comprobaciones obligatorias y la rama está al día con main."),
+        ("Two checks passed; one is still running, and the branch is up to date with main.",
+         "Pasaron dos comprobaciones; una sigue en marcha y la rama está al día con main."),
         ("It restarts the daemon for a few seconds. You can go back to 0.2.35.",
          "Reinicia el daemon unos segundos. Puedes volver a la 0.2.35."),
         ("Two files change and nothing starts until you approve.", "Cambian dos archivos y nada empieza hasta que lo apruebes."),

@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-1",
   "client": "tui",
-  "version": "v15ca0b235d040863",
+  "version": "v4a9ef3599e717a3b",
   "cursor": "cursor-1",
   "title": "Build a feature",
   "status": {
@@ -73,7 +73,7 @@
             {
               "kind": "state",
               "label": "State",
-              "value": "Working · Step 3 of 5 · Run the tests · `Bash: cargo test` · since 09:30",
+              "value": "Working · Step 3 of 5 · Run the tests · Running tests · since 09:30",
               "tone": "accent"
             },
             {

@@ -17,6 +17,9 @@ pub struct DoneTask {
     pub cancelled: bool,
     #[serde(default)]
     pub pr: Option<u64>,
+    /// The final delivery, including publication versions, build numbers and destinations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -58,7 +61,14 @@ impl DoneCard {
         let why = match self.summary.as_deref().map(str::trim).filter(|summary| !summary.is_empty()) {
             Some(summary) => clip(summary, CardSpec::WHY_MAX),
             None if cancelled == total => t!(lang, "Nothing of it was finished.", "No se terminó nada de ella.").into(),
-            None => t!(lang, "All its work is finished.", "Todo su trabajo está terminado.").into(),
+            None => {
+                let results = self.tasks.iter().filter_map(|task| task.result.as_deref()).collect::<Vec<_>>().join("\n\n");
+                if results.is_empty() {
+                    t!(lang, "All its work is finished.", "Todo su trabajo está terminado.").into()
+                } else {
+                    clip(&results, CardSpec::WHY_MAX)
+                }
+            }
         };
         (need, why)
     }

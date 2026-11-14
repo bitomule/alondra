@@ -71,13 +71,22 @@ fn safe_line(text: &str) -> Option<String> {
     }
 }
 
-fn code_label(label: &str) -> String {
-    let width = label.split(|c| c != '`').map(str::len).max().unwrap_or(0) + 1;
-    let mark = "`".repeat(width);
-    if label.starts_with('`') || label.ends_with('`') {
-        format!("{mark} {label} {mark}")
-    } else {
-        format!("{mark}{label}{mark}")
+/// A display label only: command arguments never become a task's state or its next action.
+fn activity(label: &str, lang: Lang) -> &'static str {
+    let label = label.strip_prefix("Bash: ").unwrap_or(label);
+    let words: Vec<_> = label.split_whitespace().collect();
+    match words.as_slice() {
+        ["Read" | "Read:" | "cat" | "head" | "tail", ..] => t!(lang, "Reading files", "Leyendo archivos"),
+        ["Edit" | "Edit:" | "Write" | "Write:" | "apply_patch", ..] => t!(lang, "Writing code", "Escribiendo código"),
+        ["Grep" | "Glob" | "rg" | "grep" | "find", ..] => t!(lang, "Searching files", "Buscando en los archivos"),
+        ["bazel" | "bazelisk" | "cargo" | "npm" | "swift", "test", ..]
+            | ["npm", "run", "test" | "test:e2e" | "typecheck", ..]
+            | ["make", "test", ..]
+            | ["musts", "run" | "validate", ..] => t!(lang, "Running tests", "Pasando los tests"),
+        ["bazel" | "bazelisk" | "cargo" | "npm" | "swift" | "make", "build", ..]
+            | ["npm", "run", "build", ..] => t!(lang, "Building", "Compilando"),
+        ["git", ..] => t!(lang, "Checking changes", "Revisando los cambios"),
+        _ => t!(lang, "Running a command", "Ejecutando una orden"),
     }
 }
 
@@ -91,11 +100,11 @@ impl NowFact {
                 parts.join(" · ")
             }
             NowDoing::Command { label, since } => {
-                let label = code_label(label);
+                let label = activity(label, lang);
                 tf!(lang, "{label} · since {since}", "{label} · desde las {since}")
             },
             NowDoing::Background { label, code, more, since } => {
-                let label = if *code { code_label(label) } else { label.clone() };
+                let label = if *code { activity(label, lang).to_owned() } else { label.clone() };
                 let label = if *more == 0 { label } else { tf!(lang, "{label} and {more} more", "{label} y {more} más") };
                 tf!(lang, "In the background: {label} · since {since}", "En segundo plano: {label} · desde las {since}")
             }

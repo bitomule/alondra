@@ -4,7 +4,7 @@
   "view": "sidebar",
   "key": "sidebar",
   "client": "mac",
-  "version": "vbd59b48706a8c81d",
+  "version": "vc7ee7ac7679d03ea",
   "cursor": "cursor-1",
   "status": {
     "version": "vdcd879576919bf33",
@@ -322,7 +322,7 @@
       "view": "card",
       "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
       "client": "mac",
-      "version": "vac6195550f4a611b",
+      "version": "v408d1877711fd99f",
       "cursor": "cursor-1",
       "title": "Choose the welcome copy",
       "status": {
@@ -522,6 +522,18 @@
             {
               "type": "markdown",
               "text": "Concise: a short title and one explanatory sentence.\nWarm: the more conversational explanation.",
+              "truncated": false,
+              "commentable": false
+            },
+            {
+              "type": "markdown",
+              "text": "Ship the concise copy\n\nUse a short title and one explanatory sentence.",
+              "truncated": false,
+              "commentable": false
+            },
+            {
+              "type": "markdown",
+              "text": "Keep the warmer copy\n\nPreserve the more conversational explanation.",
               "truncated": false,
               "commentable": false
             }
@@ -770,7 +782,7 @@
       "view": "card",
       "key": "card:hf-weekly-2026-09-30",
       "client": "mac",
-      "version": "v4933d8753806a3ac",
+      "version": "ved406eb676a3577b",
       "cursor": "cursor-1",
       "title": "Review the beta candidate",
       "status": {
@@ -866,7 +878,7 @@
               "kind": "review",
               "need": "Review the result",
               "title_is_separate": true,
-              "why": "All required checks passed and the branch is up to date with main.",
+              "why": "Two checks passed; one is still running, and the branch is up to date with main.",
               "meta": "example/repo · feature/compact-schedule-editor → main · 4 files · +120 −30 · 2 of 3 passed, 1 running",
               "content_row": {
                 "kind": "diff",
@@ -949,7 +961,7 @@
                 "tone": "accent"
               },
               "title": "Review the beta candidate",
-              "subtitle": "All required checks passed and the branch is up to date with main.",
+              "subtitle": "Two checks passed; one is still running, and the branch is up to date with main.",
               "context": [
                 {
                   "icon": "task",
