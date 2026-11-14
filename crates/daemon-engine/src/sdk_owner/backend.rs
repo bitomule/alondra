@@ -116,10 +116,7 @@ fn installed(home: &Path, user_home: &Path, daemon: &Path, environment: &BTreeMa
 }
 
 fn on_path(path: &str, name: &str) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
-    path.split(':').filter(|folder| Path::new(folder).is_absolute())
-        .map(|folder| Path::new(folder).join(name))
-        .find(|candidate| std::fs::metadata(candidate).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0))
+    alondra_core::claude_update::find_on_path(path, name)
 }
 
 /// The configuration in `home`, checked: `None` without one. `user_home` is the HOME the native

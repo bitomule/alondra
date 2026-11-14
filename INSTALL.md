@@ -13,7 +13,7 @@ alondra
 notifications, the background service and the Claude Code plugin. Run it again any time; it only
 changes what is missing.
 
-Needs a Mac on Apple Silicon with macOS 26 or later and Claude Code 2.1.321 or later, signed in.
+Needs a Mac on Apple Silicon with macOS 26 or later and Claude Code 2.1.321 or later, signed in (Alondra updates an older Claude Code itself when its updater allows it).
 Alondra brings everything else it runs, Node and the Agent SDK included.
 
 ## The apps

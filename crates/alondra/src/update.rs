@@ -49,6 +49,11 @@ pub fn run(check: bool) -> Result<()> {
     } else {
         out.pass(&trf!("Installed alondra {installed}", "Instalada alondra {installed}"));
     }
+    out.start(tr!("Bringing Claude Code up to date", "Poniendo al día Claude Code"));
+    match claude_code_update(&prefix) {
+        (true, line) => out.pass(&line),
+        (false, line) => out.fail(&line),
+    }
     out.start(tr!("Bringing the service up to date", "Poniendo al día el servicio"));
     match apply_service(&prefix) {
         Ok(()) => out.pass(tr!("Service up to date", "Servicio al día")),
@@ -210,6 +215,21 @@ fn service_repair(prefix: &Path) -> (std::path::PathBuf, [&'static str; 5]) {
     (prefix.join("opt/alondra/bin/alondra"), ["doctor", "--fix", "--yes", "--only", "service"])
 }
 
+/// Claude Code at the minimum the new release needs, brought there by that release before the
+/// service changes. A Claude Code that cannot be updated never stops the update of Alondra: the
+/// line says why, and the nodes wait with that same reason.
+fn claude_code_update(prefix: &Path) -> (bool, String) {
+    let cli = prefix.join("opt/alondra/bin/alondra");
+    match Command::new(&cli).args(["doctor", "--update-claude"]).output() {
+        Ok(out) => {
+            let said = String::from_utf8_lossy(&out.stdout);
+            let line = said.lines().map(str::trim).rfind(|line| !line.is_empty()).unwrap_or_default().to_owned();
+            (out.status.success(), line)
+        }
+        Err(error) => (false, format!("{}: {error}", cli.display())),
+    }
+}
+
 fn after_update(prefix: &Path) -> Result<i32> {
     let cli = prefix.join("opt/alondra/bin/alondra");
     let status = Command::new(&cli).args(["doctor", "--after-update"]).status()
@@ -319,6 +339,23 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::cell::{Cell, RefCell};
+
+    #[test]
+    fn claude_code_is_updated_by_the_new_release_and_what_it_said_is_shown() {
+        let prefix = tempfile::tempdir().unwrap();
+        let cli = prefix.path().join("opt/alondra/bin/alondra");
+        std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        let script = |body: &str| {
+            std::fs::write(&cli, format!("#!/bin/sh\n[ \"$1 $2\" = \"doctor --update-claude\" ] || exit 99\n{body}")).unwrap();
+            std::fs::set_permissions(&cli, <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755)).unwrap();
+        };
+        script("echo 'Claude Code updated from 2.1.291 to 2.1.322'\n");
+        assert_eq!(claude_code_update(prefix.path()), (true, "Claude Code updated from 2.1.291 to 2.1.322".into()));
+        script("echo 'The Claude Code updater refused: DISABLE_UPDATES'\nexit 1\n");
+        assert_eq!(claude_code_update(prefix.path()), (false, "The Claude Code updater refused: DISABLE_UPDATES".into()));
+        std::fs::remove_file(&cli).unwrap();
+        assert!(!claude_code_update(prefix.path()).0);
+    }
 
     #[test]
     fn a_daemon_outside_launchd_is_said_at_once_instead_of_waited_for() {

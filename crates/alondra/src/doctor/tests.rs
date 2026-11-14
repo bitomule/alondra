@@ -54,7 +54,8 @@ struct Fake {
     options: RefCell<Option<String>>,
     cwd: PathBuf,
     apns: Option<String>,
-    claude: BTreeMap<String, (bool, String)>,
+    claude: RefCell<BTreeMap<String, (bool, String)>>,
+    claude_update: RefCell<alondra_core::claude_update::Outcome>,
     signed_in: RefCell<Result<bool, String>>,
     profile: Result<Option<String>, String>,
     plugins: RefCell<Option<Value>>,
@@ -92,7 +93,8 @@ impl Fake {
             options: RefCell::new(Some("projects_root = \"/\"\n".into())),
             cwd: "/".into(),
             apns: None,
-            claude: claude.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+            claude: RefCell::new(claude.into_iter().map(|(k, v)| (k.to_string(), v)).collect()),
+            claude_update: RefCell::new(alondra_core::claude_update::Outcome::Failed(alondra_core::claude_update::Failure::NoAnswer)),
             signed_in: RefCell::new(Ok(true)),
             profile: Ok(None),
             plugins: RefCell::new(Some(json!([]))),
@@ -188,7 +190,10 @@ impl System for Fake {
     fn claude(&self, args: &[&str], _timeout: Duration) -> Option<(bool, String)> {
         let key = args.join(" ");
         self.claude_calls.borrow_mut().push(key.clone());
-        self.claude.get(&key).cloned()
+        self.claude.borrow().get(&key).cloned()
+    }
+    fn update_claude(&self) -> alondra_core::claude_update::Outcome {
+        self.claude_update.borrow().clone()
     }
     fn signed_in(&self) -> Result<bool> {
         self.signed_in.borrow().clone().map_err(|e| anyhow!(e))
@@ -253,6 +258,12 @@ impl System for Fake {
                 *self.plugins.borrow_mut() = Some(json!([]));
                 self.service.borrow_mut().marketplace_elsewhere = None;
             }
+            Action::UpdateClaude => match self.claude_update.borrow().clone() {
+                alondra_core::claude_update::Outcome::Updated { to, .. } => {
+                    self.claude.borrow_mut().insert("--version".into(), (true, to));
+                }
+                outcome => return Err(anyhow!(super::claude_update::describe(&outcome))),
+            },
             Action::EnableRelay => *self.relay.borrow_mut() = true,
             Action::SetProjects => {}
         }
@@ -500,9 +511,38 @@ fn claude_must_be_new_enough_for_the_agent_sdk() {
     english();
     assert_eq!(claude_version_check(Some("2.1.321 (Claude Code)\n")).detail, "2.1.321 (Claude Code)");
     let old = claude_version_check(Some("2.1.280 (Claude Code)\n"));
-    assert_eq!((old.status, old.fix), (Status::Fail, Some(Fix::Manual("claude update".into()))), "the SDK host needs a newer Claude Code");
+    assert_eq!((old.status, old.fix), (Status::Fail, Some(Fix::Auto(Action::UpdateClaude))), "the SDK host needs a newer Claude Code, which Alondra updates");
     assert!(old.detail.contains("2.1.321"), "{}", old.detail);
     assert_eq!(claude_version_check(None).status, Status::Fail);
+}
+
+#[test]
+fn fix_updates_a_claude_below_the_minimum_and_says_why_when_it_cannot() {
+    use alondra_core::claude_update::{Failure, Outcome};
+    english();
+    let old = || {
+        let sys = Fake::healthy();
+        sys.claude.borrow_mut().insert("--version".into(), (true, "2.1.291 (Claude Code)".into()));
+        sys
+    };
+    fn only(sys: &Fake) -> Env<'_> {
+        Env { select: Selection::Only(vec!["claude".into()]), ..env(sys) }
+    }
+
+    let sys = old();
+    *sys.claude_update.borrow_mut() = Outcome::Updated { from: "2.1.291 (Claude Code)".into(), to: "2.1.322 (Claude Code)".into() };
+    let mut ui = Recorded::default();
+    let repaired = repair(&only(&sys), &mut ui).unwrap();
+    assert_eq!(repaired.applied, vec![Action::UpdateClaude], "{:?}", ui.lines);
+    assert_eq!(find(&repaired.outcomes, "claude").status, Status::Pass);
+    assert!(ui.lines.iter().any(|l| l == "progress Updating Claude Code…"), "{:?}", ui.lines);
+
+    let refused = old();
+    *refused.claude_update.borrow_mut() = Outcome::Failed(Failure::Refused("Updates are disabled by your organization (DISABLE_UPDATES)".into()));
+    let mut ui = Recorded::default();
+    let repaired = repair(&only(&refused), &mut ui).unwrap();
+    assert_eq!(find(&repaired.outcomes, "claude").status, Status::Fail);
+    assert!(ui.lines.iter().any(|l| l.contains("DISABLE_UPDATES")), "the exact reason reaches the person: {:?}", ui.lines);
 }
 
 #[test]
@@ -539,7 +579,7 @@ fn the_slow_plugin_check_runs_only_with_deep_or_a_changed_plugin() {
 
     let mut failing = Fake::healthy();
     failing.fingerprint = Some("fp-3".into());
-    failing.claude.insert("plugin validate --strict /m/plugin".into(), (false, "boom".into()));
+    failing.claude.borrow_mut().insert("plugin validate --strict /m/plugin".into(), (false, "boom".into()));
     assert_eq!(find(&diagnose(&env(&failing)), "validate").status, Status::Fail);
     assert!(failing.remembered.borrow().is_empty(), "a failure is never remembered as a pass");
 }
@@ -1277,7 +1317,7 @@ fn the_direct_connection_check_speaks_spanish() {
 fn codex_only_diagnostics_do_not_probe_claude_or_require_its_plugin() {
     english(); let mut sys = Fake::healthy();
     *sys.options.borrow_mut() = Some("[accounts]\nconnected = [\"codex\"]\n".into());
-    sys.claude.clear(); *sys.signed_in.borrow_mut() = Err("Claude absent".into()); *sys.marketplace.borrow_mut() = false;
+    sys.claude.borrow_mut().clear();*sys.signed_in.borrow_mut() = Err("Claude absent".into()); *sys.marketplace.borrow_mut() = false;
     sys.tools.insert("codex".into(), "codex-cli 0.163.0".into());
     sys.health.borrow_mut().as_mut().unwrap()["provider_accounts"] = json!([{"provider":"codex","enabled":true,"state":"signed_in"}]);
     let env = Env { sys: &sys, deep: false, first_run: false, yes: false, select: Selection::All };

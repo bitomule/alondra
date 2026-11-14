@@ -493,7 +493,7 @@ pub fn claude_version_check(out: Option<&str>) -> Outcome {
         Some(v) => outcome("claude", "claude", Group::Claude, Status::Fail,
             trf!("{v} is older than {min}, the release Alondra needs",
                 "{v} es anterior a {min}, la versión que necesita Alondra"),
-            manual("claude update")),
+            auto(Action::UpdateClaude)),
         None => outcome("claude", "claude", Group::Claude, Status::Fail,
             tr!("Claude Code isn't installed. Install it, then run alondra doctor --fix again.",
                 "Claude Code no está instalado. Instálalo y vuelve a ejecutar alondra doctor --fix."),

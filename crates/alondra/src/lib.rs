@@ -91,6 +91,8 @@ enum Cmd {
     Doctor {
         #[arg(long, hide = true, conflicts_with_all = ["fix", "yes", "only", "skip", "deep", "test_push", "json"])]
         after_update: bool,
+        #[arg(long, hide = true, conflicts_with_all = ["after_update", "fix", "yes", "only", "skip", "deep", "test_push", "json"])]
+        update_claude: bool,
         #[arg(long, help = tr!("Repair what it can, asking what it needs", "Arregla lo que puede y pregunta lo que necesita"))]
         fix: bool,
         #[arg(long, requires = "fix", help = tr!("Accept every repair that would ask, and the proposed projects folder", "Acepta cada arreglo que preguntaría, y la carpeta de proyectos propuesta"))]
@@ -524,6 +526,10 @@ fn run(command: Option<Cmd>, json: bool, no_input: bool) -> Result<()> {
                 code => std::process::exit(code),
             }
         }
+        Some(Cmd::Doctor { update_claude: true, .. }) => match doctor::update_claude() {
+            0 => Ok(()),
+            code => std::process::exit(code),
+        },
         Some(Cmd::Doctor { fix, yes, only, skip, deep, test_push, .. }) => {
             let select = match (only.is_empty(), skip.is_empty()) {
                 (false, _) => doctor::Selection::Only(only),
@@ -1016,6 +1022,8 @@ mod api_tests {
         for mode in ["--fix", "--json", "--deep", "--test-push"] {
             assert!(Cli::try_parse_from(["alondra", "doctor", "--after-update", mode]).is_err());
         }
+        assert!(matches!(parsed(&["doctor", "--update-claude"]).command, Some(Cmd::Doctor { update_claude: true, .. })));
+        assert!(Cli::try_parse_from(["alondra", "doctor", "--update-claude", "--fix"]).is_err());
     }
 
     #[test]
