@@ -52,6 +52,18 @@ impl PrView for GhView {
     }
 }
 
+struct PrViewObserver(Arc<dyn PrView>);
+
+impl crate::domain_github::PrObserver for PrViewObserver {
+    fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Pin<Box<dyn Future<Output = Result<crate::domain_github::PrFacts, String>> + Send + 'a>> {
+        Box::pin(async move {
+            let url = crate::domain_github::pr_url(host, repository, number);
+            let answer = self.0.view(&url).await.ok_or_else(|| "GitHub did not report the pull request".to_owned())?;
+            crate::domain_github::parse(&answer)
+        })
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub(crate) struct Details {
     pub title: Option<String>,
@@ -349,14 +361,17 @@ impl super::Client {
     }
 
     /// A node presenting a result is judged on every PR of its task, the ones it just opened too.
-    pub(crate) async fn catch_up_task(&self, command: &Command) {
-        let Command::PresentResult { task_id, interaction_id, is_final, .. } = command else { return };
+    pub(crate) async fn catch_up_task(&self, command: &Command) -> Result<(), DomainError> {
+        let Command::PresentResult { task_id, interaction_id, is_final, .. } = command else { return Ok(()) };
         if self.domain.state().is_ok_and(|state| state.interactions.contains_key(interaction_id)) {
-            return;
+            return Ok(());
         }
-        if let Err(error) = crate::domain_github::catch_up_task(&self.domain, &crate::domain_github::GhCli::new(), task_id, *is_final).await {
+        let source = PrViewObserver(self.pr_view.lock_or_recover("the pull request view").clone());
+        if let Err(error) = crate::domain_github::catch_up_task_using(&self.domain, &crate::domain_github::GhCli::new(), &source, task_id, *is_final).await {
             log!("could not read the PRs of {task_id} from GitHub: {error:#}");
+            return Err(DomainError::new("github_unreachable", "GitHub could not confirm the task's pull requests: present the result again when it answers"));
         }
+        Ok(())
     }
 
     /// A node presenting a head Alondra has not seen has usually just pushed it, before the

@@ -584,6 +584,10 @@ impl<'connection> OwnerTransaction<'connection> {
                     flush(&mut commands, &mut technical);
                     commands.push(Command::AskToRegisterPr { task_id: task_id.clone() });
                 }
+                ObservedFact::PullRequestsChanged => {
+                    flush(&mut commands, &mut technical);
+                    commands.push(Command::NotePrChanges { task_id: task_id.clone() });
+                }
                 ObservedFact::McpToolFailed => {
                     flush(&mut commands, &mut technical);
                     if binding.permits(Capability::McpStatus) {

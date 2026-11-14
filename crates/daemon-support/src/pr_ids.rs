@@ -1,7 +1,8 @@
 //! A PR is the same PR for everyone only by its host, repository and number: two repositories
 //! reuse the same numbers, so an id a node makes up (`pr-163`) names another task's PR as soon as
 //! a second repository reaches #163. Alondra gives the id when the PR is registered, and a node
-//! that later names "its PR" always gets the one its task owns, whatever id it writes.
+//! that later names "its PR" gets a registered PR of its own task. Explicit registered targets
+//! keep their identity so the domain can validate their ownership and state.
 
 use alondra_core::domain::{hosted_pr_id, normalize_pr_host, normalize_pr_repository, DomainError, DomainState, InteractionId, PrId, PullRequest, Scope, TaskId};
 use serde_json::Value;
@@ -25,7 +26,7 @@ pub fn assign(state: &DomainState, method: &str, path: &str, id: Option<&str>, b
                 }
                 return Ok(());
             };
-            name_targets(body, &open_prs(state, &task), &own);
+            name_targets(body, &open_prs(state, &task), &own, state);
             for mark in array(body, "checklist") {
                 for evidence in mark.get_mut("evidence").and_then(Value::as_array_mut).into_iter().flatten() {
                     let named = evidence["value"].as_str().is_some_and(|value| state.pull_requests.get(&PrId(value.to_owned())).is_some_and(|pr| pr.task_id == task));
@@ -68,7 +69,7 @@ fn register(body: &mut Value) {
 }
 
 fn owned(state: &DomainState, task: &TaskId) -> Option<PrId> {
-    state.tasks.get(task)?.pr_id.clone()
+    state.open_prs(state.tasks.get(task)?).next().map(|pr| pr.id.clone())
 }
 
 /// The PR a delivery of the task means when it says "my PR": an open one, else its first.
@@ -83,8 +84,12 @@ fn open_prs<'a>(state: &'a DomainState, task: &TaskId) -> Vec<&'a PullRequest> {
 /// Which PR of the task each PR target means: the open one at the head it gives, else the one a
 /// delivery means by "my PR". With several open a head none is at is left out: the domain presents
 /// the commit each is at, and it adds the open PRs no target names.
-fn name_targets(body: &mut Value, open: &[&PullRequest], own: &PrId) {
+fn name_targets(body: &mut Value, open: &[&PullRequest], own: &PrId, state: &DomainState) {
     for target in array(body, "targets").filter(|t| t["kind"] == "pull_request") {
+        // A named registered target of this task is intentional, even when closed: the domain must reject it,
+        // rather than silently deliver a different PR.
+        if target.get("pr_id").and_then(Value::as_str).and_then(|id| state.pull_requests.get(&PrId(id.into())))
+            .is_some_and(|pr| pr.task_id == state.pull_requests[own].task_id) { continue; }
         let head = target.get("head").and_then(Value::as_str).map(str::to_owned);
         let at = open.iter().find(|pr| head.as_deref() == Some(pr.head.as_str()));
         target["pr_id"] = Value::String(at.map_or(&own.0, |pr| &pr.id.0).clone());
@@ -159,5 +164,20 @@ mod tests {
         assert!(error.message.contains("call register_pr first"), "{}", error.message);
         let mut text = json!({"targets":[{"kind":"text","text":"Done"}]});
         assign(&DomainState::new("epoch"), "POST", "/tasks/lumo/results", Some("lumo"), &mut text).unwrap();
+    }
+
+    #[test]
+    fn a_closed_first_pr_never_owns_a_new_subject_or_changes_an_explicit_target() {
+        let mut state = task_with_two_open_prs();
+        state.pull_requests.get_mut(&"github.com/me/app#1".into()).unwrap().state = alondra_core::domain::PrState::Closed;
+        let mut subject = json!({});
+        assign(&state, "POST", "/tasks/t/stack-readiness", Some("t"), &mut subject).unwrap();
+        assert_eq!(subject["pr_id"], "github.com/me/site#2");
+        let mut result = json!({"targets":[{"kind":"pull_request"}]});
+        assign(&state, "POST", "/tasks/t/results", Some("t"), &mut result).unwrap();
+        assert_eq!(result["targets"][0]["pr_id"], "github.com/me/site#2");
+        let mut closed = json!({"targets":[{"kind":"pull_request","pr_id":"github.com/me/app#1"}]});
+        assign(&state, "POST", "/tasks/t/results", Some("t"), &mut closed).unwrap();
+        assert_eq!(closed["targets"][0]["pr_id"], "github.com/me/app#1", "the domain must see and reject the closed target");
     }
 }

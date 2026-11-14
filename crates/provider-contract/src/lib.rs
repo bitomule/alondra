@@ -228,6 +228,8 @@ pub enum Observation {
     PullRequestOpened(OpenedPullRequest),
     /// A command ran `gh pr create` and finished well, and its output named no pull request.
     PullRequestNotNamed,
+    /// A successful `gh pr close` needs a fresh read from GitHub, regardless of its output.
+    PullRequestsChanged,
     /// The request at `epoch` is over: `answered` when a decision resolved it, otherwise it was
     /// aborted, closed or its decision could not be delivered. `continued` when the root turn that
     /// asked is still open, so an answered request lets that same turn go on.
@@ -392,10 +394,18 @@ pub struct OpenedPullRequest {
 /// Whether a shell command line runs `gh pr create`, also inside `sh -c '...'`. It only says that
 /// the output deserves a look: the pull request itself is what GitHub says of the address printed.
 pub fn runs_gh_pr_create(command: &str) -> bool {
+    runs_gh_pr(command, "create")
+}
+
+pub fn runs_gh_pr_close(command: &str) -> bool {
+    runs_gh_pr(command, "close")
+}
+
+fn runs_gh_pr(command: &str, verb: &str) -> bool {
     let words: Vec<&str> = command.split(|c: char| c.is_whitespace() || "'\"`()".contains(c)).filter(|word| !word.is_empty()).collect();
     words.iter().enumerate().filter(|(_, word)| **word == "gh").any(|(at, _)| {
         let call: Vec<&str> = words[at + 1..].iter().copied().take_while(|word| !word.contains([';', '|', '&'])).collect();
-        call.windows(2).any(|pair| pair == ["pr", "create"])
+        call.windows(2).any(|pair| pair == ["pr", verb])
     })
 }
 
@@ -424,6 +434,16 @@ fn pull_request_at(address: &str) -> Option<OpenedPullRequest> {
 #[cfg(test)]
 mod pull_request_tests {
     use super::*;
+
+    #[test]
+    fn closing_a_pr_is_detected_independently_of_its_output() {
+        for command in ["gh pr close 65", "gh --repo acme/app pr close 65", "bash -lc 'gh pr close https://github.com/acme/app/pull/65'", "cd ../site && gh pr close 14 > close.log"] {
+            assert!(runs_gh_pr_close(command), "{command}");
+        }
+        for command in ["gh pr view 65", "gh issue close 65", "gh pr create --title close", "gh pr list; echo pr close"] {
+            assert!(!runs_gh_pr_close(command), "{command}");
+        }
+    }
 
     #[test]
     fn a_command_line_runs_gh_pr_create_however_it_is_written() {
