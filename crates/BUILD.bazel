@@ -24,6 +24,7 @@ WORKSPACE_MEMBERS = [
     "daemon-engine",
     "daemon-engine-model",
     "daemon-engine-store",
+    "daemon-engine-machine",
     "daemon-support",
     "domain",
     "e2e",

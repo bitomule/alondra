@@ -46,6 +46,7 @@ checks:
       - "crates/alondrad/Info.plist"
       - "crates/daemon-engine/src/**"
       - "crates/daemon-engine-store/src/**"
+      - "crates/daemon-engine-machine/src/**"
       - "crates/daemon-engine-model/src/**"
       - "crates/daemon-support/src/**"
       - "crates/agent-runtime/src/**"
@@ -177,6 +178,7 @@ checks:
       - "crates/core/**"
       - "crates/daemon-engine/**"
       - "crates/daemon-engine-store/**"
+      - "crates/daemon-engine-machine/**"
       - "crates/daemon-engine-model/**"
       - "crates/daemon-support/**"
       - "crates/domain/**"
@@ -241,6 +243,7 @@ checks:
       - "crates/core/**"
       - "crates/daemon-engine/**"
       - "crates/daemon-engine-store/**"
+      - "crates/daemon-engine-machine/**"
       - "crates/daemon-engine-model/**"
       - "crates/daemon-support/**"
       - "crates/domain/**"
@@ -343,6 +346,7 @@ checks:
       - "crates/core/**"
       - "crates/daemon-engine/**"
       - "crates/daemon-engine-store/**"
+      - "crates/daemon-engine-machine/**"
       - "crates/daemon-engine-model/**"
       - "crates/daemon-support/**"
       - "crates/domain/**"
@@ -366,6 +370,42 @@ checks:
     with:
       targets:
         - //crates/daemon-engine/...
+
+  crate-daemon-engine-machine:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "BUILD.bazel"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "crates/BUILD.bazel"
+      - "crates/agent-application/**"
+      - "crates/agent-protocol/**"
+      - "crates/agent-runtime/**"
+      - "crates/alondrad/**"
+      - "crates/codex-protocol/**"
+      - "crates/core/**"
+      - "crates/daemon-engine-machine/**"
+      - "crates/daemon-engine-model/**"
+      - "crates/daemon-engine-store/**"
+      - "crates/daemon-support/**"
+      - "crates/domain/**"
+      - "crates/e2e/**"
+      - "crates/foundation/**"
+      - "crates/process-group/**"
+      - "crates/provider-claude/**"
+      - "crates/provider-codex/**"
+      - "crates/provider-contract/**"
+      - "crates/store/**"
+      - "crates/test_support.rs"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+      - "version.bzl"
+    with:
+      targets:
+        - //crates/daemon-engine-machine/...
 
   crate-daemon-engine-store:
     uses: bazel/test
@@ -826,6 +866,7 @@ checks:
       - "crates/core/**"
       - "crates/daemon-engine/**"
       - "crates/daemon-engine-store/**"
+      - "crates/daemon-engine-machine/**"
       - "crates/daemon-engine-model/**"
       - "crates/daemon-support/**"
       - "crates/domain/**"
@@ -1105,6 +1146,7 @@ checks:
       - "crates/core/**"
       - "crates/daemon-engine/**"
       - "crates/daemon-engine-store/**"
+      - "crates/daemon-engine-machine/**"
       - "crates/daemon-engine-model/**"
       - "crates/daemon-support/**"
       - "crates/domain/**"

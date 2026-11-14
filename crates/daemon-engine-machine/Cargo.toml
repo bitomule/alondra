@@ -1,0 +1,27 @@
+[package]
+name = "alondra-daemon-engine-machine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+test-hooks = ["dep:tempfile", "alondra-daemon-engine-model/test-hooks", "alondra-daemon-engine-store/test-hooks", "alondra-daemon-support/test-hooks"]
+
+[dependencies]
+alondra-core.workspace = true
+alondra-daemon-engine-model.workspace = true
+alondra-daemon-engine-store.workspace = true
+alondra-daemon-support.workspace = true
+libc.workspace = true
+serde_json.workspace = true
+sysinfo.workspace = true
+tokio.workspace = true
+tempfile = { workspace = true, optional = true }
+
+[dev-dependencies]
+anyhow.workspace = true
+alondra-daemon-engine-model = { workspace = true, features = ["test-hooks"] }
+alondra-daemon-engine-store = { workspace = true, features = ["test-hooks"] }
+alondra-daemon-support = { workspace = true, features = ["test-hooks"] }
+tempfile.workspace = true

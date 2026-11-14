@@ -38,6 +38,7 @@ rust_library(
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-engine-store:daemon_engine_store",
+        "//crates/daemon-engine-machine:daemon_engine_machine",
         "//crates/daemon-support:daemon_support",
     ],
 )
@@ -60,6 +61,7 @@ rust_library(
         "//crates/codex-protocol:codex_protocol",
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
         "//crates/daemon-engine-store:daemon_engine_store_test_hooks",
+        "//crates/daemon-engine-machine:daemon_engine_machine_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",
     ],
 )
@@ -107,6 +109,7 @@ ENGINE_TEST_DEPS = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_
     "//crates/codex-protocol:codex_protocol",
     "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
     "//crates/daemon-engine-store:daemon_engine_store_test_hooks",
+    "//crates/daemon-engine-machine:daemon_engine_machine_test_hooks",
     "//crates/daemon-support:daemon_support_test_hooks",
 ]
 
