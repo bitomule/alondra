@@ -54,8 +54,9 @@ or in the private repository that keeps it, never here.
   `--config=release`, without it.
 - When the task closes, run `make clean-output-base` before `cleanup_done`: this checkout's Bazel
   output base (about 5 GB) lives outside the worktree, on the internal or the external disk, and
-  deleting the worktree does not remove it. `bazelqueue output-bases <volume>` lists the bases on a
-  volume that no checkout uses and `--delete` removes them.
+  deleting the worktree does not remove it. `tools/bazel-output-bases <volume> [--delete]` in the
+  bazel-setup repository lists the bases on a volume that no checkout uses and, with `--delete`,
+  removes them.
 - Web (`web/`): `npm ci --include=dev`, `npm run typecheck`, `npm run build`, `npm run test:e2e`.
 - `musts validate` is the done-check before committing, when `musts` is installed. It asks only for
   the checks whose `paths` a change touches (`MUSTS.yml`); a change that only touches prose or images
