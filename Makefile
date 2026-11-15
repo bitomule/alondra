@@ -20,7 +20,7 @@ BETA_GROUP := Internal Pilot,Private Pilot
 APPLE_VERSION = $(shell sed -n 's/^ *version = "\(.*\)".*/\1/p' tools/shared.bzl)
 APPLE_BUILD = $(shell sed -n 's/^ *build_number = "\(.*\)".*/\1/p' tools/shared.bzl)
 
-.PHONY: action-outcomes worktree-volume-bench connection-measurements musts-scopes reap-test-hosts version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify mermaid-snapshots-record mermaid-fixtures-record no-holds build test install run tui setup launchd unlaunchd restart status doctor mac device device-console e2e-sandbox e2e-sandbox-stop tui-sandbox tui-sandbox-stop demo-captures e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-doc-links e2e-pr-images e2e-doc-mermaid e2e-sandbox-logs e2e-direct-cards e2e-allow-always e2e-turn-end-wait e2e-interrupt-unheard e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-ios-live-activity e2e-plan-card e2e-card-attachments e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure read-index-bench tasks-screen upgrade-rehearsal clean-incremental clean-xcode-test-resultse2e-journeys e2e-sdk e2e-explore skill-evals
+.PHONY: action-outcomes worktree-volume-bench connection-measurements musts-scopes reap-test-hosts version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify mermaid-snapshots-record mermaid-fixtures-record no-holds build test install run tui setup launchd unlaunchd restart status doctor mac device device-console e2e-sandbox e2e-sandbox-stop tui-sandbox tui-sandbox-stop demo-captures e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-doc-links e2e-pr-images e2e-doc-mermaid e2e-sandbox-logs e2e-direct-cards e2e-allow-always e2e-turn-end-wait e2e-interrupt-unheard e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-ios-live-activity e2e-plan-card e2e-card-attachments e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure read-index-bench tasks-screen upgrade-rehearsal clean-incremental clean-output-base clean-xcode-test-resultse2e-journeys e2e-sdk e2e-explore skill-evals
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -85,6 +85,11 @@ clean-incremental:
 	@base=$$(bazelisk info output_base 2>/dev/null); test -d "$$base/execroot" || { echo "No Bazel output base for this checkout"; exit 1; }; \
 	rm -rf "$${base:?}/rustc-incremental" "$${base:?}/rustc-incremental-clippy"; \
 	echo "Deleted the incremental state in $$base"
+
+# Gives back this checkout's whole Bazel output base, about 5 GB on whichever disk it lives. It is
+# outside the worktree, so deleting the worktree leaves it behind.
+clean-output-base:
+	bazelisk clean --expunge
 
 # Result bundles `xcodebuild` left in DerivedData before the iOS test runner kept them in Bazel's
 # own outputs: logs only, nothing builds from them.
