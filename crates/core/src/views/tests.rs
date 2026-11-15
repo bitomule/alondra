@@ -1275,16 +1275,53 @@ fn invalid_generated_pr_action_id_is_omitted_while_the_card_renders() {
     assert!(result.is_ok());
 }
 
-/// `ALONDRA_GOLDEN_OUT=<dir>` writes what the views render now there, to review and copy over the
-/// goldens, and compares nothing, so one run writes every golden.
+/// Writes `view` as `dir/filename` unless that file already holds the same view, so generating into
+/// the fixtures folder rewrites only the goldens whose content really changed. Tells whether it wrote.
+pub(super) fn write_golden_if_changed(dir: &str, filename: &str, view: &View) -> bool {
+    let path = std::path::Path::new(dir).join(filename);
+    let rendered = serde_json::to_value(view).unwrap();
+    let stored = std::fs::read_to_string(&path).ok().and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+    if stored.as_ref() == Some(&rendered) {
+        return false;
+    }
+    std::fs::write(path, format!("{}\n", serde_json::to_string_pretty(view).unwrap())).unwrap();
+    true
+}
+
+/// `ALONDRA_GOLDEN_OUT=<dir>` writes there what the views render now when it differs from the golden
+/// (and from the file already in `<dir>`), to review and copy over the goldens, and compares nothing.
 fn assert_golden(filename: &str, view: &View, expected: &str) {
     if let Ok(dir) = std::env::var("ALONDRA_GOLDEN_OUT") {
-        std::fs::write(format!("{dir}/{filename}"), format!("{}\n", serde_json::to_string_pretty(view).unwrap())).unwrap();
+        let committed: serde_json::Value = serde_json::from_str(expected).unwrap();
+        if serde_json::to_value(view).unwrap() != committed {
+            write_golden_if_changed(&dir, filename, view);
+        }
         return;
     }
     let actual = serde_json::to_value(view).unwrap();
     let expected: serde_json::Value = serde_json::from_str(expected).unwrap();
     assert_eq!(actual, expected, "{filename}");
+}
+
+#[test]
+fn generating_goldens_rewrites_only_the_files_whose_content_changed() {
+    let folder = crate::test_support::Directory::new();
+    std::fs::create_dir_all(&*folder).unwrap();
+    let dir = folder.to_str().unwrap();
+    let state = fixture();
+    let live = LiveSnapshot::default();
+    let tasks = render(&state, &live, Client::Ios, Lang::En, "tasks", "2026-09-30T10:00:00Z");
+    let sidebar = render(&state, &live, Client::Mac, Lang::En, "sidebar", "2026-09-30T10:00:00Z");
+    assert!(write_golden_if_changed(dir, "golden.json", &tasks), "a missing golden is written");
+
+    let reformatted = serde_json::to_string(&tasks).unwrap();
+    std::fs::write(folder.join("golden.json"), &reformatted).unwrap();
+    assert!(!write_golden_if_changed(dir, "golden.json", &tasks), "the same view is not written again");
+    assert_eq!(std::fs::read_to_string(folder.join("golden.json")).unwrap(), reformatted);
+
+    assert!(write_golden_if_changed(dir, "golden.json", &sidebar), "a different view replaces it");
+    let stored: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(folder.join("golden.json")).unwrap()).unwrap();
+    assert_eq!(stored, serde_json::to_value(&sidebar).unwrap());
 }
 
 #[test]
@@ -3143,25 +3180,17 @@ fn generate_goldens() {
     let (tasks_state, tasks_live) = tasks_fixture();
     for (filename, client, lang) in TASKS_GOLDENS {
         let view = render(&tasks_state, &tasks_live, client, lang, "tasks", "2026-09-30T10:00:00Z");
-        std::fs::write(
-            format!("{dir}/{filename}"),
-            format!("{}\n", serde_json::to_string_pretty(&view).unwrap()),
-        )
-        .unwrap();
+        write_golden_if_changed(&dir, filename, &view);
     }
     let (closed_state, closed_live) = node_closed_fixture();
     for (filename, lang) in NODE_CLOSED_GOLDENS {
         let view = render(&closed_state, &closed_live, Client::Ios, lang, &format!("task:{NODE_CLOSED_TASK}"), "2026-09-30T10:00:00Z");
-        std::fs::write(
-            format!("{dir}/{filename}"),
-            format!("{}\n", serde_json::to_string_pretty(&view).unwrap()),
-        )
-        .unwrap();
+        write_golden_if_changed(&dir, filename, &view);
     }
     let (working_state, working_live) = task_working_fixture();
     for (filename, client, lang) in TASK_WORKING_GOLDENS {
         let view = render(&working_state, &working_live, client, lang, "task:t-1", "2026-09-30T10:00:00Z");
-        std::fs::write(format!("{dir}/{filename}"), format!("{}\n", serde_json::to_string_pretty(&view).unwrap())).unwrap();
+        write_golden_if_changed(&dir, filename, &view);
     }
     for (filename, key, client, lang) in cases {
         let state = match (key, lang) {
@@ -3170,11 +3199,7 @@ fn generate_goldens() {
             _ => &state,
         };
         let view = render(state, &live, client, lang, key, "2026-09-30T10:00:00Z");
-        std::fs::write(
-            format!("{dir}/{filename}"),
-            format!("{}\n", serde_json::to_string_pretty(&view).unwrap()),
-        )
-        .unwrap();
+        write_golden_if_changed(&dir, filename, &view);
     }
 }
 #[test]
@@ -6210,7 +6235,7 @@ fn generate_group_goldens() {
     let state = group_state(&[0]);
     for (filename, client, lang) in GROUP_CASES {
         let view = render(&state, &LiveSnapshot::default(), client, lang, "card:g-q2", "2026-09-30T10:00:00Z");
-        std::fs::write(format!("{dir}/{filename}"), format!("{}\n", serde_json::to_string_pretty(&view).unwrap())).unwrap();
+        write_golden_if_changed(&dir, filename, &view);
     }
 }
 
@@ -6801,7 +6826,7 @@ fn generate_know_command_goldens() {
     let state = know_command_state();
     for (filename, client, lang) in KNOW_COMMAND_CASES {
         let view = render(&state, &golden_live(), client, lang, &format!("card:{KNOW_COMMAND_CARD}"), "2026-09-30T10:00:00Z");
-        std::fs::write(format!("{dir}/{filename}"), format!("{}\n", serde_json::to_string_pretty(&view).unwrap())).unwrap();
+        write_golden_if_changed(&dir, filename, &view);
     }
 }
 
@@ -7112,7 +7137,7 @@ fn generate_pacing_goldens() {
     let (state, live) = pacing_fixture();
     for (filename, key, client, lang) in PACING_GOLDENS {
         let view = render(&state, &live, client, lang, key, "2026-09-30T10:00:00Z");
-        std::fs::write(format!("{dir}/{filename}"), format!("{}\n", serde_json::to_string_pretty(&view).unwrap())).unwrap();
+        write_golden_if_changed(&dir, filename, &view);
     }
 }
 
@@ -8474,7 +8499,7 @@ fn accounts_views_match_goldens() {
     if let Ok(dir) = std::env::var("ALONDRA_GOLDEN_OUT") {
         for (filename, client, lang) in ACCOUNTS_GOLDENS {
             let view = render(&state, &live, client, lang, "accounts", "2026-09-30T10:00:00Z");
-            std::fs::write(format!("{dir}/{filename}"), format!("{}\n", serde_json::to_string_pretty(&view).unwrap())).unwrap();
+            write_golden_if_changed(&dir, filename, &view);
         }
     }
     for (filename, client, lang) in ACCOUNTS_GOLDENS {

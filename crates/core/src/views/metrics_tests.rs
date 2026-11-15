@@ -45,7 +45,7 @@ fn render(key: &str, live: &LiveSnapshot, lang: Lang) -> View {
 
 fn write_golden(filename: &str, view: &View) {
     if let Ok(dir) = std::env::var("ALONDRA_GOLDEN_OUT") {
-        std::fs::write(format!("{dir}/{filename}"), format!("{}\n", serde_json::to_string_pretty(view).unwrap())).unwrap();
+        crate::views::tests::write_golden_if_changed(&dir, filename, view);
     }
 }
 
