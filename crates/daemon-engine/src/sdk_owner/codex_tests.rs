@@ -1743,6 +1743,22 @@ pub(super) fn request_move(slice:&Slice)->serde_json::Value{
 pub(super) async fn until_moved(slice:&Slice,changed:&mut tokio::sync::watch::Receiver<u64>){
     while !move_steps(slice).iter().any(|step|step=="done"){changed.changed().await.unwrap();}
 }
+/// Advances the move after every owner commit, as the daemon's transition loop does, until it is
+/// done. A step that fails or aborts the move fails the test with the steps it reached.
+async fn advance_until_moved(slice:&Slice,domain:&Arc<DomainRuntime>,task:&TaskId,changed:&mut tokio::sync::watch::Receiver<u64>){
+    use crate::domain_store::provider_transition::Phase;
+    let done=||move_steps(slice).iter().any(|step|step=="done");
+    while !done(){
+        let advanced=crate::provider_transition::advance(domain,task).await;
+        if done(){return}
+        match advanced{
+            Ok(Phase::Aborted)=>panic!("the move was aborted after {:?}",move_steps(slice)),
+            Ok(_)=>{}
+            Err(error)=>panic!("the move stopped after {:?}: {}",move_steps(slice),error.message),
+        }
+        changed.changed().await.unwrap();
+    }
+}
 
 #[tokio::test]
 async fn a_codex_task_moves_to_claude_as_itself_in_its_worktree_with_one_writer_at_a_time(){
@@ -1792,8 +1808,7 @@ async fn a_move_survives_a_daemon_restart_after_every_step_without_a_second_node
         slice.domain.stop_sdk_owners();slice.domain.selection_changes.die();
         let domain=slice.restart();domain.enable_sdk(slice.backend.clone());
         let(pulse,mut changed)=tokio::sync::watch::channel(0_u64);domain.before_owner_publish(move||pulse.send_modify(|count|*count+=1));
-        crate::provider_transition::advance(&domain,&task).await.unwrap();
-        while !move_steps(&slice).iter().any(|step|step=="done"){changed.changed().await.unwrap();}
+        advance_until_moved(&slice,&domain,&task,&mut changed).await;
         let state=domain.state().unwrap();
         let admitted=state.lifecycle_journal[&task].iter().filter(|record|matches!(record,LifecycleRecord::Admitted{..})).count();
         assert_eq!(admitted,2,"a restart after {died:?} starts no second node for the move");
@@ -1888,7 +1903,7 @@ fn a_test_process_holding_a_codex_host() {
     let slice = Slice::new();
     configured(&slice, "complete");
     let driver = launch(&slice);
-    println!("holding {} {}", driver.worker.host_group().unwrap(), slice._state.display());
+    println!("\nholding {} {}", driver.worker.host_group().unwrap(), slice._state.display());
     loop {
         std::thread::park();
     }
@@ -1896,17 +1911,10 @@ fn a_test_process_holding_a_codex_host() {
 
 #[test]
 fn a_test_process_killed_mid_test_leaves_no_codex_host_and_no_folder() {
-    use std::io::{BufRead, Read};
-    let mut owner = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--ignored", "--exact", "--nocapture", "sdk_owner::tests::codex_tests::a_test_process_holding_a_codex_host"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
+    use std::io::Read;
+    let mut owner = super::test_process_holding("sdk_owner::tests::codex_tests::a_test_process_holding_a_codex_host");
     let mut errors = owner.stderr.take().unwrap();
-    let holding = std::io::BufReader::new(owner.stdout.take().unwrap()).lines().map(Result::unwrap)
-        .find_map(|line| line.strip_prefix("holding ").map(str::to_owned)).expect("the test process launched its Codex host");
+    let holding = super::host_announcement(&mut owner);
     let (group, root) = holding.split_once(' ').unwrap();
     let processes = alondra_process_group::members(group.parse().unwrap()).unwrap();
     assert!(!processes.is_empty(), "the Codex host runs");
