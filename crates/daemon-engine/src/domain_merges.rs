@@ -4,14 +4,15 @@
 //! and the stack (dependencies only hold back a start), and the delivery is read again right
 //! before `gh pr merge`. A
 //! merge counts only when GitHub reports the PR merged. A merge GitHub refuses goes back to the
-//! node with GitHub's reason, as feedback on that delivery.
+//! node with GitHub's reason, as feedback on that delivery. A merge the user authorized does not
+//! wait for required checks the rulesets let the signed-in account bypass: it merges past them.
 use alondra_core::clock;
 use alondra_core::clock::Instant;
 use crate::domain_github::{GhCli, GhFailure, execute_system, pr_url};
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
 use alondra_core::domain::{
-    AuthorizationId, CardSpec, Command, DeliveryTarget, DomainError, DomainState, FeedbackTarget, Instruction, InteractionId, InteractionPayload,
+    AuthorizationId, CardSpec, Command, DeliveryTarget, DomainError, DomainState, Feedback, FeedbackTarget, Instruction, InteractionId, InteractionPayload,
     MergeAttemptState, MergeMethod, PrId, PrState, PullRequest, Scope, clip,
 };
 use anyhow::Result;
@@ -77,11 +78,16 @@ pub trait PrMerger: Send + Sync + 'static {
     /// Merges the PR only while GitHub still has it at `head`. Success may only mean GitHub put
     /// it in its merge queue.
     fn merge<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()>;
+    /// `merge` using the signed-in account's bypass of the base's rules (`gh pr merge --admin`).
+    fn merge_bypassing<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()>;
     fn in_queue<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool>;
     fn is_draft<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool>;
     fn ready<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, ()>;
     /// The checks the PR's base branch requires, from its rulesets and its classic branch protection.
     fn required_checks<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, Vec<String>>;
+    /// The required checks of `base` the signed-in account may bypass: every ruleset that requires
+    /// them lets it bypass, and classic branch protection does not require them.
+    fn bypassable_checks<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, Vec<String>>;
     /// Whether the signed-in account may merge into the PR's repository (`viewerPermission` WRITE or above).
     fn can_merge<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool>;
 }
@@ -91,10 +97,16 @@ impl PrMerger for Arc<dyn PrMerger> {
     fn retarget<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, ()> { (**self).retarget(pr, base) }
     fn status<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, Status> { (**self).status(pr) }
     fn merge<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()> { (**self).merge(pr, head, method) }
+    fn merge_bypassing<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
+        (**self).merge_bypassing(pr, head, method)
+    }
     fn in_queue<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> { (**self).in_queue(pr) }
     fn is_draft<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> { (**self).is_draft(pr) }
     fn ready<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, ()> { (**self).ready(pr) }
     fn required_checks<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, Vec<String>> { (**self).required_checks(pr, base) }
+    fn bypassable_checks<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, Vec<String>> {
+        (**self).bypassable_checks(pr, base)
+    }
     fn can_merge<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> { (**self).can_merge(pr) }
 }
 
@@ -106,6 +118,9 @@ impl<T: PrMerger> PrMerger for Arc<T> {
     }
     fn merge<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
         (**self).merge(pr, head, method)
+    }
+    fn merge_bypassing<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
+        (**self).merge_bypassing(pr, head, method)
     }
     fn in_queue<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
         (**self).in_queue(pr)
@@ -119,8 +134,25 @@ impl<T: PrMerger> PrMerger for Arc<T> {
     fn required_checks<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, Vec<String>> {
         (**self).required_checks(pr, base)
     }
+    fn bypassable_checks<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, Vec<String>> {
+        (**self).bypassable_checks(pr, base)
+    }
     fn can_merge<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
         (**self).can_merge(pr)
+    }
+}
+
+impl GhCli {
+    async fn gh_merge(&self, pr: &PullRequest, head: &str, method: MergeMethod, bypass: bool) -> Result<(), GhFailure> {
+        let url = pr_url(&pr.host, &pr.repository, pr.number);
+        let flag = match method {
+            MergeMethod::Merge => "--merge",
+            MergeMethod::Squash => "--squash",
+            MergeMethod::Rebase => "--rebase",
+        };
+        let mut args = vec!["pr", "merge", &url, flag, "--match-head-commit", head];
+        if bypass { args.push("--admin"); }
+        self.run(&args, None, Duration::from_secs(120)).await.map(|_| ())
     }
 }
 
@@ -152,15 +184,10 @@ impl PrMerger for GhCli {
         })
     }
     fn merge<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
-        Box::pin(async move {
-            let url = pr_url(&pr.host, &pr.repository, pr.number);
-            let flag = match method {
-                MergeMethod::Merge => "--merge",
-                MergeMethod::Squash => "--squash",
-                MergeMethod::Rebase => "--rebase",
-            };
-            self.run(&["pr", "merge", &url, flag, "--match-head-commit", head], None, Duration::from_secs(120)).await.map(|_| ())
-        })
+        Box::pin(self.gh_merge(pr, head, method, false))
+    }
+    fn merge_bypassing<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
+        Box::pin(self.gh_merge(pr, head, method, true))
     }
     fn is_draft<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
         Box::pin(async move {
@@ -196,6 +223,24 @@ impl PrMerger for GhCli {
             required.sort();
             required.dedup();
             Ok(required)
+        })
+    }
+    fn bypassable_checks<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, Vec<String>> {
+        Box::pin(async move {
+            let host = alondra_core::domain::normalize_pr_host(&pr.host);
+            let repo = format!("repos/{}", pr.repository);
+            let rules = self.api(&["--hostname", &host, &format!("{repo}/rules/branches/{base}?per_page=100")], Duration::from_secs(30)).await?;
+            let Some(rules) = rules_read(&rules)? else { return Ok(vec![]) };
+            let mut can_bypass = BTreeMap::new();
+            for id in check_rulesets(&rules) {
+                let ruleset = self.api(&["--hostname", &host, &format!("{repo}/rulesets/{id}")], Duration::from_secs(30)).await?;
+                let ruleset = rules_read(&ruleset)?;
+                can_bypass.insert(id, ruleset.is_some_and(|ruleset| viewer_bypasses(&ruleset)));
+            }
+            let classic = self.api(&["--hostname", &host, &format!("{repo}/branches/{base}/protection/required_status_checks")],
+                Duration::from_secs(30)).await?;
+            let classic = rules_read(&classic)?.map(|classic| classic_checks(&classic)).unwrap_or_default();
+            Ok(bypassable(&rules, &can_bypass, &classic))
         })
     }
     fn can_merge<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
@@ -234,6 +279,32 @@ pub(crate) fn ruleset_checks(rules: &Value) -> Vec<String> {
     rules.as_array().into_iter().flatten().filter(|rule| rule["type"].as_str() == Some("required_status_checks"))
         .flat_map(|rule| rule["parameters"]["required_status_checks"].as_array().into_iter().flatten())
         .filter_map(|check| check["context"].as_str().map(str::to_owned)).collect()
+}
+
+/// The rulesets whose `required_status_checks` rules apply to the branch.
+pub(crate) fn check_rulesets(rules: &Value) -> BTreeSet<u64> {
+    rules.as_array().into_iter().flatten().filter(|rule| rule["type"].as_str() == Some("required_status_checks"))
+        .filter_map(|rule| rule["ruleset_id"].as_u64()).collect()
+}
+
+/// A ruleset's `current_user_can_bypass` lets the signed-in account merge a PR past it.
+pub(crate) fn viewer_bypasses(ruleset: &Value) -> bool {
+    matches!(ruleset["current_user_can_bypass"].as_str(), Some("always" | "pull_requests_only" | "exempt"))
+}
+
+/// The required checks every requiring ruleset lets the account bypass and classic protection does not require.
+pub(crate) fn bypassable(rules: &Value, can_bypass: &BTreeMap<u64, bool>, classic: &[String]) -> Vec<String> {
+    let mut held = BTreeSet::new();
+    let mut bypassed = BTreeSet::new();
+    for rule in rules.as_array().into_iter().flatten().filter(|rule| rule["type"].as_str() == Some("required_status_checks")) {
+        let bypasses = rule["ruleset_id"].as_u64().and_then(|id| can_bypass.get(&id).copied()).unwrap_or(false);
+        let names = rule["parameters"]["required_status_checks"].as_array().into_iter().flatten().filter_map(|check| check["context"].as_str());
+        for name in names {
+            if bypasses { bypassed.insert(name.to_owned()); } else { held.insert(name.to_owned()); }
+        }
+    }
+    held.extend(classic.iter().cloned());
+    bypassed.difference(&held).cloned().collect()
 }
 
 /// The rules GitHub answered, or `None` when it has none to show: none set (404), or a private
@@ -416,6 +487,8 @@ pub struct Merger {
     action: BTreeMap<PrId, InteractionId>,
     /// The authorization each PR was last looked at with: a new one is the user pressing again.
     pressed: BTreeMap<PrId, AuthorizationId>,
+    /// PRs whose merge past their required checks GitHub refused: they wait for the checks.
+    bypass_refused: BTreeSet<PrId>,
 }
 
 impl Default for Merger {
@@ -428,7 +501,7 @@ impl Merger {
     pub fn with(poll: Duration, give_up: Duration) -> Self {
         Self { poll, give_up, first_retry: FIRST_MERGE_RETRY, waited: BTreeMap::new(), transient: BTreeMap::new(),
             trouble: BTreeMap::new(), merge_trouble: BTreeMap::new(), queued: BTreeSet::new(), action: BTreeMap::new(),
-            pressed: BTreeMap::new() }
+            pressed: BTreeMap::new(), bypass_refused: BTreeSet::new() }
     }
 
     /// Merges what is due. `true` while something waits, so the caller looks again.
@@ -572,6 +645,7 @@ impl Merger {
             hand_back(domain, item, &format!("it has conflicts with {base}: {how}", base = status.base, how = update.summary(&status.base)))?;
             return Ok(Step::Settled);
         }
+        let mut bypass = false;
         match &status.checks {
             Checks::Failed(names) => {
                 self.clear_action(domain, pr);
@@ -584,7 +658,11 @@ impl Merger {
             }
             Checks::None if status.merge_state == MergeState::Computing => return Ok(Step::Wait),
             Checks::None if status.merge_state != MergeState::Clean => match github.required_checks(pr, &status.base).await {
-                Ok(required) if !required.is_empty() => return Ok(Step::Wait),
+                Ok(required) if !required.is_empty() => {
+                    if !self.may_bypass(domain, github, item, &status.base, &required).await? { return Ok(Step::Wait) }
+                    bypass = true;
+                    self.clear_action(domain, pr);
+                }
                 Ok(_) => self.clear_action(domain, pr),
                 Err(reason) => {
                     log!("cannot read the checks {} requires of {}: {reason}", status.base, pr.id);
@@ -592,7 +670,12 @@ impl Merger {
                 }
             },
             Checks::Pending => match github.required_checks(pr, &status.base).await {
-                Ok(required) if required.iter().any(|check| !status.passed.contains(check)) => return Ok(Step::Wait),
+                Ok(required) if required.iter().any(|check| !status.passed.contains(check)) => {
+                    let missing: Vec<String> = required.into_iter().filter(|check| !status.passed.contains(check)).collect();
+                    if !self.may_bypass(domain, github, item, &status.base, &missing).await? { return Ok(Step::Wait) }
+                    bypass = true;
+                    self.clear_action(domain, pr);
+                }
                 Ok(_) => self.clear_action(domain, pr),
                 Err(reason) => {
                     log!("cannot read the checks {} requires of {}: {reason}", status.base, pr.id);
@@ -648,16 +731,47 @@ impl Merger {
             }
         }
         if !still_due(&*domain.state()?, item, &authorization) { return Ok(Step::Settled); }
-        match github.merge(pr, &item.head, item.method).await {
+        let merged = if bypass {
+            github.merge_bypassing(pr, &item.head, item.method).await
+        } else {
+            github.merge(pr, &item.head, item.method).await
+        };
+        match merged {
             Ok(()) => {
                 self.transient.remove(&pr.id);
                 if let Some(Trouble { card: Some(card), .. }) = self.merge_trouble.remove(&pr.id) {
                     let _ = domain.withdraw_problem(&card);
                 }
-                log!("asked GitHub to merge {} at {}", pr_url(&pr.host, &pr.repository, pr.number), item.head);
+                let past = if bypass { ", past its required checks" } else { "" };
+                log!("asked GitHub to merge {} at {}{past}", pr_url(&pr.host, &pr.repository, pr.number), item.head);
                 self.confirm(domain, github, pr).await
             }
-            Err(failure) => self.merge_failed(domain, github, item, &failure).await,
+            Err(failure) => {
+                if bypass {
+                    log!("GitHub refused to merge {} past its required checks, waiting for them: {failure}", pr.id);
+                    self.bypass_refused.insert(pr.id.clone());
+                }
+                self.merge_failed(domain, github, item, &failure).await
+            }
+        }
+    }
+
+    /// The user authorized the merge and every required check still missing is one GitHub lets
+    /// the signed-in account bypass. An auto-merge always waits for its checks.
+    async fn may_bypass(&self, domain: &DomainRuntime, github: &impl PrMerger, item: &Due, base: &str, missing: &[String]) -> Result<bool> {
+        let by_user = match &item.authorization {
+            Some(authorization) => domain.state()?.merge_authorizations.get(authorization).is_some_and(|a| a.user_id != Feedback::ALONDRA),
+            None => false,
+        };
+        if !by_user || self.bypass_refused.contains(&item.pr.id) {
+            return Ok(false);
+        }
+        match github.bypassable_checks(&item.pr, base).await {
+            Ok(bypassable) => Ok(missing.iter().all(|check| bypassable.contains(check))),
+            Err(reason) => {
+                log!("cannot read which checks {base} lets {} merge past: {reason}", item.pr.id);
+                Ok(false)
+            }
         }
     }
 
@@ -779,6 +893,7 @@ impl Merger {
         self.pressed.remove(pr);
         self.transient.remove(pr);
         self.queued.remove(pr);
+        self.bypass_refused.remove(pr);
         let cards = [self.trouble.remove(pr).and_then(|t| t.card), self.merge_trouble.remove(pr).and_then(|t| t.card),
             self.action.remove(pr)];
         for card in cards.into_iter().flatten() {
@@ -788,7 +903,7 @@ impl Merger {
 
     fn forget_all_but(&mut self, domain: &DomainRuntime, due: &BTreeSet<PrId>) {
         let known: BTreeSet<PrId> = self.waited.keys().chain(self.pressed.keys()).chain(self.transient.keys()).chain(self.queued.iter())
-            .chain(self.trouble.keys()).chain(self.merge_trouble.keys())
+            .chain(self.bypass_refused.iter()).chain(self.trouble.keys()).chain(self.merge_trouble.keys())
             .chain(self.action.keys()).cloned().collect();
         for pr in known.difference(due) {
             self.forget(domain, pr);
@@ -797,7 +912,7 @@ impl Merger {
 
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn tracked(&self) -> usize {
-        self.waited.len() + self.pressed.len() + self.transient.len() + self.queued.len() + self.trouble.len()
+        self.waited.len() + self.pressed.len() + self.transient.len() + self.queued.len() + self.bypass_refused.len() + self.trouble.len()
             + self.merge_trouble.len() + self.action.len()
     }
 }
@@ -941,6 +1056,8 @@ pub struct FakeGithub {
     pub calls: std::sync::Mutex<Vec<String>>,
     /// The checks each PR's base requires; unlisted PRs require none.
     pub required: std::sync::Mutex<BTreeMap<u64, Result<Vec<String>, GhFailure>>>,
+    /// The required checks the signed-in account may bypass on each PR's base; unlisted PRs none.
+    pub bypassable: std::sync::Mutex<BTreeMap<u64, Result<Vec<String>, GhFailure>>>,
     /// What a failed merge leaves GitHub reporting of the PR's merge state.
     pub refused_as: std::sync::Mutex<BTreeMap<u64, MergeState>>,
     /// PRs GitHub merges although `gh pr merge` reports a failure.
@@ -960,7 +1077,7 @@ impl FakeGithub {
         Self { statuses: Default::default(), merges: Default::default(), queue: Default::default(),
             merged: Default::default(), reads: Default::default(), on_read: Default::default(), merged_by_queue: Default::default(),
             drafts: Default::default(), readies: Default::default(), calls: Default::default(),
-            required: Default::default(), refused_as: Default::default(), merged_anyway: Default::default(),
+            required: Default::default(), bypassable: Default::default(), refused_as: Default::default(), merged_anyway: Default::default(),
             no_access: Default::default(), default_base: std::sync::Mutex::new("main".into()),
             retargets: Default::default(), after_retarget: Default::default(), on_draft: Default::default(), on_default: Default::default() }
     }
@@ -974,6 +1091,36 @@ impl FakeGithub {
         if let Some(Ok(status)) = self.statuses.lock().unwrap().get_mut(&number) {
             status.merge_state = MergeState::Other;
         }
+    }
+}
+
+
+#[cfg(any(test, feature = "test-hooks"))]
+impl FakeGithub {
+    fn fake_merge<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod, call: String) -> Pending<'a, ()> {
+        let result = self.merges.lock().unwrap().get(&pr.number).cloned().unwrap_or(Ok(()));
+        self.calls.lock().unwrap().push(call);
+        if result.is_err()
+            && let Some(merge_state) = self.refused_as.lock().unwrap().get(&pr.number)
+            && let Some(Ok(status)) = self.statuses.lock().unwrap().get_mut(&pr.number)
+        {
+            status.merge_state = *merge_state;
+        }
+        if result.is_err()
+            && self.merged_anyway.lock().unwrap().contains(&pr.number)
+            && let Some(Ok(status)) = self.statuses.lock().unwrap().get_mut(&pr.number)
+        {
+            status.state = PrState::Merged;
+        }
+        if result.is_ok() {
+            self.merged.lock().unwrap().push((pr.number, head.to_owned(), method));
+            if !self.queue.lock().unwrap().contains_key(&pr.number)
+                && let Some(Ok(status)) = self.statuses.lock().unwrap().get_mut(&pr.number)
+            {
+                status.state = PrState::Merged;
+            }
+        }
+        Box::pin(async move { result })
     }
 }
 
@@ -1003,29 +1150,15 @@ impl PrMerger for FakeGithub {
         Box::pin(async move { status })
     }
     fn merge<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
-        let result = self.merges.lock().unwrap().get(&pr.number).cloned().unwrap_or(Ok(()));
-        self.calls.lock().unwrap().push(format!("merge {}", pr.number));
-        if result.is_err()
-            && let Some(merge_state) = self.refused_as.lock().unwrap().get(&pr.number)
-            && let Some(Ok(status)) = self.statuses.lock().unwrap().get_mut(&pr.number)
-        {
-            status.merge_state = *merge_state;
-        }
-        if result.is_err()
-            && self.merged_anyway.lock().unwrap().contains(&pr.number)
-            && let Some(Ok(status)) = self.statuses.lock().unwrap().get_mut(&pr.number)
-        {
-            status.state = PrState::Merged;
-        }
-        if result.is_ok() {
-            self.merged.lock().unwrap().push((pr.number, head.to_owned(), method));
-            if !self.queue.lock().unwrap().contains_key(&pr.number)
-                && let Some(Ok(status)) = self.statuses.lock().unwrap().get_mut(&pr.number)
-            {
-                status.state = PrState::Merged;
-            }
-        }
-        Box::pin(async move { result })
+        self.fake_merge(pr, head, method, format!("merge {}", pr.number))
+    }
+    fn merge_bypassing<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
+        self.fake_merge(pr, head, method, format!("merge {} --admin", pr.number))
+    }
+    fn bypassable_checks<'a>(&'a self, pr: &'a PullRequest, _base: &'a str) -> Pending<'a, Vec<String>> {
+        self.calls.lock().unwrap().push(format!("bypassable {}", pr.number));
+        let bypassable = self.bypassable.lock().unwrap().get(&pr.number).cloned().unwrap_or(Ok(vec![]));
+        Box::pin(async move { bypassable })
     }
     fn is_draft<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
         let hook = self.on_draft.lock().unwrap().take();

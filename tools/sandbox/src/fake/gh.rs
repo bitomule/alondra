@@ -96,6 +96,7 @@ pub fn run(fakes: &Fakes, args: &[String]) -> Result<i32> {
         ["pr", "view", url, "--json", fields, rest @ ..] if url.starts_with("https://") => view(fakes, url, fields, rest),
         ["pr", "view", "--json", fields, ..] => view_branch(fakes, fields),
         ["pr", "merge", url, method, "--match-head-commit", head] => merge(fakes, url, method, head),
+        ["pr", "merge", url, method, "--match-head-commit", head, "--admin"] => merge(fakes, url, method, head),
         ["pr", "diff", url] => diff(fakes, url),
         ["pr", "ready", url] => change(fakes, url, |pr| pr.draft = false),
         ["pr", "close", url, ..] => change(fakes, url, |pr| pr.state = "CLOSED".into()),
