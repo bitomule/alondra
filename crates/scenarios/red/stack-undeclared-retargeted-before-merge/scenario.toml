@@ -1,0 +1,76 @@
+name = "two pull requests of one delivery, the second on the branch of the first, are retargeted before the second merges"
+max_virtual = "1h"
+
+[[step]]
+do = "request"
+text = "Export the report as CSV and then as PDF"
+task = "t1"
+title = "Add the CSV and PDF exports"
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "github"
+event = "open_pr"
+number = 7
+head = "csv-export"
+base = "main"
+
+[[step]]
+do = "github"
+event = "open_pr"
+number = 8
+head = "pdf-export"
+base = "csv-export"
+
+[[step]]
+do = "register_pr"
+task = "t1"
+number = 7
+
+[[step]]
+do = "register_pr"
+task = "t1"
+number = 8
+
+[[step]]
+do = "present"
+task = "t1"
+id = "d1"
+prs = [7, 8]
+body = "Both exports are ready"
+
+[[step]]
+do = "checkpoint"
+name = "two-prs"
+screens = ["home", "task:t1"]
+
+[[step]]
+do = "press"
+presentation = "pr7"
+action = "merge"
+
+[[step]]
+do = "press"
+presentation = "pr8"
+action = "merge"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "both-merged"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "gh_calls"
+calls = ["merge 7", "edit 8 --base main", "merge 8"]
+
+[[step.expect]]
+check = "pr_merged_into"
+pr = 8
+branch = "main"
