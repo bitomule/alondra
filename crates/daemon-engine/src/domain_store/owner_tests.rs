@@ -1248,6 +1248,17 @@ fn the_retention_gives_the_disk_back_what_normalized_observations_held() {
 // kept anywhere under Alondra's HOME.
 #[test]
 fn a_task_waiting_for_an_mcp_server_goes_on_after_the_sign_in_and_its_return_is_kept_nowhere() {
+    a_returned_sign_in_has_the_node_connect_the_server_again(false);
+}
+
+// Handing the sign-in back ends it in the state at once. A watcher that never saw it open, because
+// its task started late, still has the node connect the server again.
+#[test]
+fn a_sign_in_returned_before_the_watcher_saw_it_open_still_has_the_node_connect_the_server_again() {
+    a_returned_sign_in_has_the_node_connect_the_server_again(true);
+}
+
+fn a_returned_sign_in_has_the_node_connect_the_server_again(watcher_starts_after_the_return: bool) {
     use crate::mcp_waits::{Opened, connect, give_back, reconnect};
     use alondra_provider_contract::McpSignInReport;
     use std::io::{BufRead, BufReader, Write};
@@ -1303,18 +1314,18 @@ fn a_task_waiting_for_an_mcp_server_goes_on_after_the_sign_in_and_its_return_is_
         stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").unwrap();
         return line.trim_end().to_owned();
     });
-    let watching = tokio.spawn(crate::mcp_waits::run(runtime.clone()));
+    let watcher = || tokio.spawn(crate::mcp_waits::run(runtime.clone()));
+    let early = (!watcher_starts_after_the_return).then(watcher);
+    let mut changes = runtime.subscribe();
     tokio.block_on(give_back(&runtime, &card, address.clone())).unwrap();
     assert_eq!(claude.join().unwrap(), format!("GET /callback?code={CODE}&state=s1 HTTP/1.1"));
-    let mut changes = runtime.subscribe();
-    let asked = tokio.block_on(async {
-        tokio::time::timeout(std::time::Duration::from_secs(30), async {
-            while controls("ReconnectMcp") == 0 {
-                changes.changed().await.unwrap();
-            }
-        }).await
+    let watching = early.unwrap_or_else(watcher);
+    // Claude connects the server only after it answered the browser: the node must connect it again.
+    tokio.block_on(async {
+        while controls("ReconnectMcp") == 0 {
+            changes.changed().await.unwrap();
+        }
     });
-    assert!(asked.is_ok(), "Claude connects the server only after it answered the browser: the node must connect it again");
     watching.abort();
     assert_eq!(runtime.read().state().mcp_waiting().len(), 1, "a return is no fact that the server connected");
     observe(vec![mcp_report("connected")]);

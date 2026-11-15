@@ -87,6 +87,8 @@ pub struct DomainRuntime {
     /// Each move of an SDK task to another account when its own reaches its usage limit.
     pub(crate) moves: crate::account_move::Moves,
     pub(crate) selection_changes: crate::provider_transition::Transitions,
+    /// The MCP sign-ins handed back to Claude that the MCP watcher has not taken yet.
+    pub(crate) mcp_returns: crate::mcp_waits::Returns,
     /// What each SDK task's conversation measured, to compact it while it rests.
     pub contexts: crate::idle_compaction::Contexts,
     #[cfg(any(test, feature = "test-hooks"))]
@@ -179,6 +181,7 @@ impl DomainRuntime {
             handovers: Default::default(),
             moves: Default::default(),
             selection_changes: Default::default(),
+            mcp_returns: Default::default(),
             contexts: Default::default(),
             #[cfg(any(test, feature = "test-hooks"))]
             before_owner_publish: Default::default(),
