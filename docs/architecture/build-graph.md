@@ -90,4 +90,11 @@ declare the files they read (they now count as dependents, which they always wer
 | `crates/daemon-engine/src/sdk_owner/codex_tests.rs` | 7 | 27 | - | - |
 | `crates/core/src/views/task_state.rs` | 20 | 41 | - | - |
 
-EDIT_BENCH_TIMED
+One edit timed end to end (`--edit crates/daemon-engine/src/sdk_owner/tests.rs`): a `#[used]`
+static added to the engine's most edited test file rebuilds 7 crates and reruns all 27 test targets
+it reaches, including the CLI's and the daemon's, because the CLI's log catalog reads the engine's
+sources. Bazel's own time, without the queue's wait:
+
+| Edit | Crates reopened | Test targets reopened | Actions run (rustc / clippy / tests) | Edit + test |
+|---|---:|---:|---|---:|
+| `crates/daemon-engine/src/sdk_owner/tests.rs` | 7 | 27 | 42 (7 / 3 / 31) | 374 s |

@@ -30,6 +30,9 @@ reason in `tools/uncacheable_tests.tsv`.
 `bazel run //tools:edit_bench` measures what one-line edits cost: the crates and test targets each
 reopens, the actions Bazel really runs, and the time to edit and test. `--edit <path>` picks the
 files; without it, the files edited most often in the last two weeks. `--query-only` only counts.
+On a shared Mac, where bazelqueue keeps a `bazel run` in its build slot until the program ends,
+build the script and run it outside Bazel:
+`bazelisk run --script_path=.scratch/edit_bench //tools:edit_bench && .scratch/edit_bench --edit <path>`.
 
 ## Invalid cached executables
 

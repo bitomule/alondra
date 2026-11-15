@@ -3,13 +3,20 @@
 
 `bazel run //tools:edit_bench -- [--edit PATH ...] [--query-only]`. Without --edit it measures the
 source files edited most often in the last two weeks. For each edit it tests the affected targets
-once so the cache is warm, appends a comment line, times `bazel test` over the same targets with an
-execution log, and puts the file back exactly as it was, also when interrupted.
+once so the cache is warm, makes a one-line change that reaches the binaries (a `#[used]` static in
+Rust, a comment elsewhere), times `bazel test` over the same targets with an execution log, and puts
+the file back exactly as it was, also when interrupted.
+
+Under bazelqueue a `bazel run` holds its build slot while the bench runs, so on a shared Mac build
+the script and run it outside Bazel:
+`bazel run --script_path=.scratch/edit_bench //tools:edit_bench && .scratch/edit_bench [args]`.
+The time reported is what Bazel ran, from bazelqueue's summary when there is one, never the wait.
 """
 import argparse
 import collections
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -19,6 +26,9 @@ from pathlib import Path
 BAZEL = os.environ.get("BAZEL", "bazelisk")
 LIBRARIES = "rust_library|rust_binary|rust_proc_macro"
 COMMENT = {".rs": "// edit-bench\n", ".py": "# edit-bench\n", ".swift": "// edit-bench\n", ".ts": "// edit-bench\n"}
+EDIT = {".rs": "\n#[used]\nstatic EDIT_BENCH: u8 = 0;\n"}
+QUEUE_RAN = re.compile(r"^bazelqueue: finished \S+ exit=\d+ queued=\S+ ran=(\S+)", re.M)
+DURATION = re.compile(r"(\d+(?:\.\d+)?)(h|ms|m|s)")
 
 
 def label_of(root, relative):
@@ -56,6 +66,22 @@ def executed(log_text):
     return found
 
 
+def seconds_of(text):
+    """`1m03s`, `25m53s`, `11.7s` or `850ms` in seconds."""
+    scale = {"h": 3600, "m": 60, "s": 1, "ms": 0.001}
+    return sum(float(number) * scale[unit] for number, unit in DURATION.findall(text))
+
+
+def bazel_seconds(output, wall):
+    """What Bazel ran according to bazelqueue's summaries, without the queue's wait; else the wall time."""
+    ran = QUEUE_RAN.findall(output)
+    return sum(seconds_of(value) for value in ran) if ran else wall
+
+
+def attempts(output):
+    return max(1, output.count("INFO: Elapsed time:"))
+
+
 def query(root, expression):
     result = subprocess.run([BAZEL, "query", expression], cwd=root, capture_output=True, text=True)
     if result.returncode != 0:
@@ -71,8 +97,12 @@ def reopened(root, label):
 
 def bazel_test(root, targets, *extra):
     started = time.monotonic()
-    result = subprocess.run([BAZEL, "test", "--test_output=errors", *extra, "--", *targets], cwd=root)
-    return result.returncode, time.monotonic() - started
+    result = subprocess.run(
+        [BAZEL, "test", "--test_output=errors", *extra, "--", *targets],
+        cwd=root, capture_output=True, text=True,
+    )
+    output = result.stdout + result.stderr
+    return result.returncode, bazel_seconds(output, time.monotonic() - started), attempts(output)
 
 
 def measure(root, relative, query_only):
@@ -87,14 +117,15 @@ def measure(root, relative, query_only):
     with tempfile.TemporaryDirectory() as directory:
         log = Path(directory) / "execution.json"
         try:
-            path.write_bytes(original + COMMENT[path.suffix].encode())
-            code, seconds = bazel_test(root, tests, f"--execution_log_json_file={log}")
+            path.write_bytes(original + EDIT.get(path.suffix, COMMENT[path.suffix]).encode())
+            code, seconds, tries = bazel_test(root, tests, f"--execution_log_json_file={log}")
         finally:
             path.write_bytes(original)
         ran = executed(log.read_text()) if log.exists() else collections.Counter()
     row.update(
         seconds=round(seconds),
         passed=code == 0,
+        retried=tries > 1,
         rustc=ran.get("Rustc", 0),
         clippy=ran.get("Clippy", 0),
         test_runs=ran.get("TestRunner", 0),
@@ -112,6 +143,7 @@ def table(rows):
         if "seconds" in row:
             ran = f"{row['actions']} ({row['rustc']} / {row['clippy']} / {row['test_runs']})"
             took = f"{row['seconds']} s" + ("" if row["passed"] else " (failed)")
+            took += " (retried: actions count only the last attempt)" if row["retried"] else ""
         else:
             ran = took = "-"
         lines.append(f"| `{row['edit']}` | {row['crates']} | {row['tests']} | {ran} | {took} |")

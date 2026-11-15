@@ -41,6 +41,18 @@ class EditBenchTest(unittest.TestCase):
         log = "\n".join(json.dumps(spawn, indent=1) for spawn in spawns)
         self.assertEqual(dict(bench.executed(log)), {"Rustc": 1, "TestRunner": 1})
 
+    def test_the_time_is_what_bazel_ran_never_the_queue_wait(self):
+        output = (
+            "bazelqueue: finished 1-2 exit=0 queued=15m34s ran=2m49s failed=unreported\n"
+            "bazelqueue: finished 3-4 exit=0 queued=1m ran=850ms failed=unreported\n"
+        )
+        self.assertAlmostEqual(bench.bazel_seconds(output, 1104), 169.85)
+        self.assertEqual(bench.bazel_seconds("INFO: Elapsed time: 3.0s", 42), 42)
+
+    def test_a_retried_invocation_is_told_apart(self):
+        self.assertEqual(bench.attempts("INFO: Elapsed time: 1s\nINFO: Elapsed time: 2s\n"), 2)
+        self.assertEqual(bench.attempts(""), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
