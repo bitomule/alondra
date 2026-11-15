@@ -94,10 +94,6 @@ DETAIL_SUITES = [
 
 TRIAGE_SUITE = "TriageSnapshotTests"
 
-# Text on the cards drawn in a process's first seconds comes out a few levels off its baseline, and
-# only under load. Every target draws this suite first, as the baselines were recorded.
-FIRST_SUITE = "AccountSnapshotTests"
-
 # The suites take about 200 seconds in one simulator, so three targets run them side by side, each
 # on its own simulator slot. The last one skips what the others run: a new suite always runs.
 [
@@ -127,9 +123,9 @@ FIRST_SUITE = "AccountSnapshotTests"
         deps = [":AlondraSnapshotTestsLib"],
     )
     for name, test_filter in {
-        "AlondraDetailSnapshotTests": ",".join([FIRST_SUITE] + DETAIL_SUITES),
+        "AlondraDetailSnapshotTests": ",".join(DETAIL_SUITES),
         "AlondraScreenSnapshotTests": ",".join(["-" + suite for suite in DETAIL_SUITES + [TRIAGE_SUITE]]),
-        "AlondraTriageSnapshotTests": ",".join([FIRST_SUITE, TRIAGE_SUITE]),
+        "AlondraTriageSnapshotTests": TRIAGE_SUITE,
     }.items()
 ]
 

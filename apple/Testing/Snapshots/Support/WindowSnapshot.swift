@@ -10,12 +10,11 @@ extension Snapshotting where Value == AnyView, Format == UIImage {
         precision: Float = 1,
         perceptualPrecision: Float = 1,
         size: CGSize? = nil,
-        settleCompositing: Bool = false,
         traits: UITraitCollection
     ) -> Self {
         Snapshotting<UIImage, UIImage>.image(precision: precision, perceptualPrecision: perceptualPrecision, scale: traits.displayScale)
             .pullback { view in MainActor.assumeIsolated {
-                drawInKeyWindow(view, size: size, traits: traits, settleCompositing: settleCompositing)
+                drawInKeyWindow(view, size: size, traits: traits)
             } }
     }
 }
@@ -26,7 +25,7 @@ extension Snapshotting where Value == AnyView, Format == UIImage {
 @MainActor
 func drawInKeyWindow(
     _ view: AnyView, size fixedSize: CGSize?, traits: UITraitCollection,
-    settleCompositing: Bool = false, placed: () -> Void = {}
+    placed: () -> Void = {}
 ) -> UIImage {
     let host = UIHostingController(rootView: view)
     let size: CGSize
@@ -84,12 +83,11 @@ func drawInKeyWindow(
     }
 
     let renderer = UIGraphicsImageRenderer(bounds: host.view.bounds, format: UIGraphicsImageRendererFormat(for: traits))
-    // The first composition after boot can quantize shadows and native button labels differently.
-    // Complete that pass on this host before capturing it, without advancing time or recreating it.
-    if settleCompositing {
-        _ = renderer.image { _ in
-            host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
-        }
+    // The first compositions after boot quantize shadows and native button labels a few levels off
+    // their baseline. Whichever screen is drawn first would carry that, so every capture completes
+    // that pass on its own host before it is drawn, without advancing time or recreating it.
+    _ = renderer.image { _ in
+        host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
     }
     return renderer.image { _ in
         host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
