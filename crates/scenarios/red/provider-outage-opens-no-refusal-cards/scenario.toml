@@ -1,0 +1,83 @@
+name = "a general outage of Claude opens no card saying the account refuses the request, and the tasks go on when it ends"
+max_virtual = "4h"
+
+[[step]]
+do = "request"
+text = "Export the report as CSV"
+task = "t1"
+title = "Add the CSV export"
+
+[[step]]
+do = "task"
+id = "t2"
+title = "Add the PDF export"
+
+[[step]]
+do = "task"
+id = "t3"
+title = "Add the JSON export"
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "node"
+task = "t2"
+
+[[step]]
+do = "node"
+task = "t3"
+
+[[step]]
+do = "provider_down"
+error = "authentication_failed"
+status = 403
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "turn_end"
+task = "t2"
+
+[[step]]
+do = "turn_end"
+task = "t3"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "during-the-outage"
+screens = ["home", "tasks"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "refuses this request"
+present = false
+
+[[step]]
+do = "provider_up"
+
+[[step]]
+do = "advance"
+by = "3m"
+
+[[step]]
+do = "rest"
+max = "1h"
+
+[[step]]
+do = "checkpoint"
+name = "after-the-outage"
+screens = ["home", "tasks"]
+
+[[step.expect]]
+check = "task_state"
+task = "t1"
+state = "running"
