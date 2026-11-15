@@ -531,10 +531,8 @@ fn take_over(domain: &DomainRuntime, task: &Task) -> Result<(), String> {
     let (backend, runtime) = domain.sdk().ok_or("this daemon runs no Agent SDK host")?;
     let backend = backend.clone();
     let plugin = crate::plugins::node_in(domain.home());
-    let driver = blocking(|| crate::sdk_owner::adopt(Arc::clone(&runtime), &backend, task.id.clone(), plugin.as_deref()))
-        .map_err(|crate::sdk_owner::Failed { why, .. }| why)?;
-    domain.add_sdk_owner(crate::sdk_owner::Owner::spawn(driver));
-    Ok(())
+    blocking(|| crate::sdk_owner::take_over_unowned(&runtime, &backend, &task.id, plugin.as_deref()))
+        .map_err(|crate::sdk_owner::Failed { why, .. }| why)
 }
 
 /// Runs `wait`, which waits for processes to exit, without stalling the runtime's other tasks.
