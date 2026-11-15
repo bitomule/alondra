@@ -37,7 +37,7 @@ device-console: device
 	xcrun devicectl device process launch --console --terminate-existing --device "$(DEVICE)" com.bitomule.alondra
 
 test:
-	bazelisk test //crates/...
+	bazelisk test //crates/... --run_under=//tools:test_tmpdir
 
 
 SNAPSHOT_TARGET := //apple/Testing/Snapshots:AlondraSnapshotTests

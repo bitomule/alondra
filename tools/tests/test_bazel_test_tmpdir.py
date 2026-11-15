@@ -55,6 +55,50 @@ class BazelTestTmpdirTest(unittest.TestCase):
         env = dict(os.environ, BAZEL_TEST_TMPDIR_ROOT=str(self.root))
         return subprocess.run([str(wrapper), "/bin/sh", "-c", script], env=env).returncode
 
+    def run_executable(self, contents, *arguments, input=None):
+        executable = self.root / "test-executable"
+        executable.write_bytes(contents)
+        executable.chmod(0o755)
+        return subprocess.run(
+            [str(wrapper), str(executable), *arguments],
+            env=dict(os.environ, BAZEL_TEST_TMPDIR_ROOT=str(self.root)),
+            capture_output=True,
+            input=input,
+        )
+
+    def test_unrecognized_bytes_are_never_interpreted_as_shell(self):
+        marker = self.root / "shell-fallback-ran"
+        payload = f'touch "{marker}"\n'.encode().ljust(4016, b" ")
+        result = self.run_executable(payload)
+        self.assertEqual(result.returncode, 126)
+        self.assertFalse(marker.exists())
+        self.assertIn(b"Invalid test executable", result.stderr)
+        self.assertIn(b"--noremote_accept_cached --disk_cache=", result.stderr)
+
+    def test_a_truncated_native_executable_is_rejected(self):
+        result = self.run_executable(Path("/bin/ls").read_bytes()[:16])
+        self.assertEqual(result.returncode, 126)
+        self.assertIn(b"Invalid test executable", result.stderr)
+
+    def test_a_script_with_an_interpreter_keeps_its_arguments_and_exit_code(self):
+        result = self.run_executable(b'#!/bin/sh\nprintf "%s" "$1"\nexit 7\n', "argument with spaces")
+        self.assertEqual(result.returncode, 7)
+        self.assertEqual(result.stdout, b"argument with spaces")
+
+    def test_a_script_keeps_standard_input(self):
+        result = self.run_executable(b"#!/bin/sh\nexec cat\n", input=b"test input\n")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, b"test input\n")
+
+    def test_a_native_executable_keeps_its_arguments_and_exit_code(self):
+        result = subprocess.run(
+            [str(wrapper), "test", "one", "=", "two"],
+            env=dict(os.environ, BAZEL_TEST_TMPDIR_ROOT=str(self.root)),
+            capture_output=True,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr, b"")
+
     def test_a_passing_test_leaves_nothing_even_read_only_folders(self):
         self.assertEqual(self.run_wrapped(READ_ONLY_TREE), 0)
         self.assertEqual(list(self.root.iterdir()), [])
