@@ -244,10 +244,67 @@ fn judge(history: &History) -> Verdicts {
 /// The ten properties generate the same histories from the same seed: each history runs once, and
 /// every property reads its own verdict of that run.
 fn verdicts(history: &History) -> std::sync::Arc<Verdicts> {
-    type Cell = std::sync::Arc<std::sync::OnceLock<std::sync::Arc<Verdicts>>>;
-    static RUNS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Cell>>> = std::sync::LazyLock::new(Default::default);
     let cell = RUNS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry(format!("{history:?}")).or_default().clone();
     cell.get_or_init(|| std::sync::Arc::new(judge(history))).clone()
+}
+
+type Run = std::sync::Arc<std::sync::OnceLock<std::sync::Arc<Verdicts>>>;
+static RUNS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Run>>> = std::sync::LazyLock::new(Default::default);
+
+fn already_judged(history: &History) -> bool {
+    RUNS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&format!("{history:?}")).is_some_and(|run| run.get().is_some())
+}
+
+/// The histories the properties generate. The properties of one kind run the same histories from the
+/// same seed, and each waited for another to judge every history it reached second, so they ran
+/// nearly one at a time. The first to start generates them all through proptest's own runner and
+/// judges them on every core; each property then only reads its verdicts.
+#[derive(Clone, Copy)]
+enum Histories {
+    Plain,
+    WithCleanups,
+    WithADependency,
+}
+
+impl Histories {
+    fn config(self) -> ProptestConfig {
+        let (cases, seed) = match self {
+            Self::Plain | Self::WithCleanups => (256, 14),
+            Self::WithADependency => (128, 15),
+        };
+        ProptestConfig { cases, failure_persistence: None, rng_seed: proptest::test_runner::RngSeed::Fixed(seed), ..ProptestConfig::default() }
+    }
+
+    fn judged_beforehand(self) {
+        static JUDGED: [std::sync::Once; 3] = [const { std::sync::Once::new() }; 3];
+        JUDGED[self as usize].call_once(|| match self {
+            Self::Plain => judge_all(history(), self.config()),
+            Self::WithCleanups => judge_all(world::history_with_cleanups(), self.config()),
+            Self::WithADependency => judge_all(history_with_a_dependency(), self.config()),
+        });
+    }
+}
+
+fn judge_all(strategy: impl Strategy<Value = History>, config: ProptestConfig) {
+    let generated = std::sync::Mutex::new(Vec::new());
+    proptest::test_runner::TestRunner::new(config)
+        .run(&strategy, |history| {
+            generated.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(history);
+            Ok(())
+        })
+        .expect("the strategy generates its histories");
+    let histories = generated.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let workers = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                while let Some(history) = histories.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) {
+                    verdicts(history);
+                }
+            });
+        }
+    });
 }
 
 fn holds(history: &History, verdict: impl Fn(&Verdicts) -> &Option<String>) -> Result<(), TestCaseError> {
@@ -288,72 +345,83 @@ fn a_host_that_dies_with_late_facts_leaves_a_task_taken_over_that_reports_the_tu
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig {
-        cases: 256, failure_persistence: None, rng_seed: proptest::test_runner::RngSeed::Fixed(14), ..ProptestConfig::default()
-    })]
+    #![proptest_config(Histories::Plain.config())]
 
     #[test]
     fn every_task_ends_live_or_in_the_users_hands(history in history()) {
+        Histories::Plain.judged_beforehand();
         holds(&history, |verdicts| &verdicts.ends)?;
     }
 
     #[test]
     fn nothing_reads_as_working_without_a_live_session_or_process(history in history()) {
+        Histories::Plain.judged_beforehand();
         holds(&history, |verdicts| &verdicts.working)?;
     }
 
     #[test]
     fn the_counts_agree_at_every_step(history in history()) {
+        Histories::Plain.judged_beforehand();
         holds(&history, |verdicts| &verdicts.counts)?;
     }
 
     #[test]
     fn an_acknowledged_command_changed_the_state_or_was_a_repeat(history in history()) {
+        Histories::Plain.judged_beforehand();
         holds(&history, |verdicts| &verdicts.unchanged)?;
     }
 
     #[test]
     fn a_close_always_leaves_running(history in history()) {
+        Histories::Plain.judged_beforehand();
         holds(&history, |verdicts| &verdicts.close)?;
     }
 
     #[test]
     fn a_step_never_re_arms_in_a_loop(history in history()) {
+        Histories::Plain.judged_beforehand();
         holds(&history, |verdicts| &verdicts.rearms)?;
     }
 
     #[test]
     fn no_node_is_woken_more_than_three_times_without_progress(history in history()) {
+        Histories::Plain.judged_beforehand();
         holds(&history, |verdicts| &verdicts.wakes)?;
     }
 
     #[test]
     fn a_move_ends_moved_or_refused(history in history()) {
+        Histories::Plain.judged_beforehand();
         holds(&history, |verdicts| &verdicts.moves)?;
     }
 
     #[test]
     fn no_deadline_ends_in_a_card_for_the_user(history in history()) {
+        Histories::Plain.judged_beforehand();
         holds(&history, |verdicts| &verdicts.clock_cards)?;
     }
 
     #[test]
     fn an_answer_always_reaches_its_turn(history in history()) {
+        Histories::Plain.judged_beforehand();
         holds(&history, |verdicts| &verdicts.answers)?;
     }
 
     #[test]
     fn a_task_waits_for_the_user_only_on_a_card_the_inbox_lists(history in history()) {
+        Histories::Plain.judged_beforehand();
         holds(&history, |verdicts| &verdicts.unlisted)?;
     }
 
     #[test]
     fn a_closing_node_is_never_taken_over_asks_nothing_and_keeps_no_host(history in world::history_with_cleanups()) {
+        Histories::WithCleanups.judged_beforehand();
         holds(&history, |verdicts| &verdicts.closing)?;
     }
 
     #[test]
     fn a_task_the_orchestrator_has_to_re_plan_was_always_handed_to_it(history in history()) {
+        Histories::Plain.judged_beforehand();
         holds(&history, |verdicts| &verdicts.unhanded)?;
     }
 }
@@ -381,12 +449,23 @@ fn a_node_that_confirms_its_cleanup_in_an_open_turn_closes_with_its_host() {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig {
-        cases: 128, failure_persistence: None, rng_seed: proptest::test_runner::RngSeed::Fixed(15), ..ProptestConfig::default()
-    })]
+    #![proptest_config(Histories::WithADependency.config())]
+
+    /// The histories judged beforehand are the ones the properties run: otherwise each property
+    /// judges its own again, one at a time, and the run is as slow as before.
+    #[test]
+    fn the_histories_judged_beforehand_are_the_ones_the_properties_run(history in history_with_a_dependency()) {
+        Histories::WithADependency.judged_beforehand();
+        prop_assert!(already_judged(&history), "not judged beforehand: {history:#?}");
+    }
+}
+
+proptest! {
+    #![proptest_config(Histories::WithADependency.config())]
 
     #[test]
     fn a_task_waiting_for_another_ends_live_or_in_the_users_hands_with_no_card_by_the_clock(history in history_with_a_dependency()) {
+        Histories::WithADependency.judged_beforehand();
         holds(&history, |verdicts| &verdicts.ends)?;
         holds(&history, |verdicts| &verdicts.clock_cards)?;
         holds(&history, |verdicts| &verdicts.unlisted)?;
