@@ -69,12 +69,12 @@ pushes = true
 
 [[step]]
 do = "press"
-pr = 7
+presentation = "d1"
 action = "merge"
 
 [[step]]
 do = "press"
-pr = 8
+presentation = "d2"
 action = "merge"
 
 [[step]]

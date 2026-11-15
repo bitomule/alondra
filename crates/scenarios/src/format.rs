@@ -75,8 +75,9 @@ pub enum Step {
     StackReady { task: String, presentation: String, pr: u64 },
     /// Something happens on GitHub.
     Github(GithubChange),
-    /// The user presses `action` on the card of a pull request, as the app does it from the view.
-    Press { pr: u64, action: String },
+    /// The user presses `action` (a verb of the action ids: `merge`, `accept`, `changes`...) on the
+    /// card of the presentation, as the app does it from the view.
+    Press { presentation: String, action: String },
     /// Virtual time passes.
     Advance { by: String },
     /// The daemon runs until nothing changes for a while.
@@ -113,7 +114,7 @@ pub enum Expect {
     /// The calls Alondra made to GitHub that change something, in order, as `gh` is typed.
     GhCalls { calls: Vec<String> },
     PrMergedInto { pr: u64, branch: String },
-    TaskState { task: String, state: String },
+    TaskState { task: String, state: alondra_core::domain::TaskState },
 }
 
 pub fn parse_duration(text: &str) -> Result<Duration, ScenarioError> {

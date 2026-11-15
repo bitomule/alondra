@@ -9,6 +9,7 @@ use alondra_agent_runtime::owned_host::{HostLauncher, HostSpawn, Launcher};
 use alondra_core::domain::{
     Actor, CardSpec, Command, CommandEnvelope, DeliveryTarget, LaunchPlan, MergeMethod, PROTOCOL_VERSION, StackDependency,
 };
+use alondra_core::views::action_id::ActionId;
 use alondra_daemon_engine::github_world::GithubWorld;
 use alondra_daemon_engine::machine::MachineSampler;
 use alondrad::assemble::{self, Assembled, Backend, GithubSeams, Pushes, Seams};
@@ -270,7 +271,7 @@ impl Context<'_> {
                 GithubChange::MergeExternally { number } => self.github.merge_externally(*number),
                 GithubChange::CloseExternally { number } => self.github.close_externally(*number),
             },
-            Step::Press { pr, action } => self.press(index, *pr, action).await?,
+            Step::Press { presentation, action } => self.press(index, presentation, action).await?,
             Step::Advance { by } => self.pass(parse_duration(by)?, index).await?,
             Step::Rest { max } => self.rest(parse_duration(max)?, index).await?,
             Step::Checkpoint(checkpoint) => self.checkpoint(index, checkpoint).await?,
@@ -338,12 +339,12 @@ impl Context<'_> {
         Ok(response.json())
     }
 
-    async fn press(&mut self, index: usize, pr: u64, verb: &str) -> Result<(), ScenarioError> {
+    async fn press(&mut self, index: usize, presentation: &str, verb: &str) -> Result<(), ScenarioError> {
         let (client, lang) = ("ios", "en");
         let view = self.view("home", client, lang).await?;
-        let found = find_action(&view, pr, verb);
+        let found = find_action(&view, presentation, verb);
         let Some(action) = found else {
-            return Err(ScenarioError::ActionMissing { pr, action: verb.to_owned(), view: checkpoint::render(&view) });
+            return Err(ScenarioError::ActionMissing { presentation: presentation.to_owned(), action: verb.to_owned(), view: checkpoint::render(&view) });
         };
         self.commands += 1;
         let body = json!({
@@ -413,10 +414,9 @@ impl Context<'_> {
             }
             Expect::TaskState { task, state } => {
                 let domain_state = self.daemon.domain.state().map_err(|e| ScenarioError::Invalid(e.to_string()))?;
-                let tasks = &domain_state.tasks;
-                let actual = tasks.get(&task.clone().into()).map(|task| format!("{:?}", task.state).to_lowercase());
-                if actual.as_deref() != Some(state.to_lowercase().as_str()) {
-                    return Err(failed(format!("task {task} {state}"), format!("{actual:?}")));
+                let actual = domain_state.tasks.get(&task.clone().into()).map(|task| task.state);
+                if actual != Some(*state) {
+                    return Err(failed(format!("task {task} {state:?}"), format!("{actual:?}")));
                 }
             }
         }
@@ -424,14 +424,13 @@ impl Context<'_> {
     }
 }
 
-/// The action `verb` of the card of pull request `pr`, as the view serves it.
-fn find_action(view: &Value, pr: u64, verb: &str) -> Option<Value> {
-    let marker = format!("PR #{pr}");
-    let prefix = format!("{verb}:");
+/// The action `verb` of the card of `presentation`, as the view serves it: the action whose id
+/// reads as that verb on that presentation.
+fn find_action(view: &Value, presentation: &str, verb: &str) -> Option<Value> {
     fn walk<'a>(value: &'a Value, found: &mut Vec<&'a Value>) {
         match value {
             Value::Object(map) => {
-                if map.get("type").and_then(Value::as_str) == Some("card") {
+                if map.get("id").and_then(Value::as_str).is_some() {
                     found.push(value);
                 }
                 map.values().for_each(|inner| walk(inner, found));
@@ -440,17 +439,15 @@ fn find_action(view: &Value, pr: u64, verb: &str) -> Option<Value> {
             _ => {}
         }
     }
-    let mut cards = Vec::new();
-    walk(view, &mut cards);
-    cards
+    let mut candidates = Vec::new();
+    walk(view, &mut candidates);
+    candidates
         .into_iter()
-        .filter(|card| card["eyebrow"]["text"].as_str().is_some_and(|text| text.contains(&marker)))
-        .find_map(|card| {
-            let mut candidates: Vec<&Value> = Vec::new();
-            for key in ["actions", "more"] {
-                candidates.extend(card[key].as_array().into_iter().flatten());
-            }
-            candidates.extend(card.get("reply").filter(|reply| reply.is_object()));
-            candidates.into_iter().find(|action| action["id"].as_str().is_some_and(|id| id.starts_with(&prefix))).cloned()
+        .find(|candidate| {
+            candidate["id"]
+                .as_str()
+                .and_then(|id| ActionId::parse(id).ok())
+                .is_some_and(|id| id.verb.as_str() == verb && id.subject == presentation)
         })
+        .cloned()
 }

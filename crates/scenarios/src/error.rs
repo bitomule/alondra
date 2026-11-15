@@ -10,8 +10,8 @@ pub enum ScenarioError {
     Step { index: usize, reason: String },
     /// The daemon did not settle within the virtual time the scenario allows.
     NoRest { at_step: usize, spent_secs: u64 },
-    /// `press` found no such card or action in the view the daemon served.
-    ActionMissing { pr: u64, action: String, view: String },
+    /// `press` found no such action of that presentation in the view the daemon served.
+    ActionMissing { presentation: String, action: String, view: String },
     /// The daemon refused an action.
     ActionRefused { action: String, code: u16, body: String },
     /// What a checkpoint read differs from what the case accepted: per screen, client and language.
@@ -32,8 +32,8 @@ impl std::fmt::Display for ScenarioError {
             Self::NoRest { at_step, spent_secs } => {
                 write!(f, "step {at_step}: the daemon kept changing for {spent_secs} virtual seconds")
             }
-            Self::ActionMissing { pr, action, view } => {
-                write!(f, "no action `{action}` on the card of PR {pr} in the view:\n{view}")
+            Self::ActionMissing { presentation, action, view } => {
+                write!(f, "no action `{action}` on the card of {presentation} in the view:\n{view}")
             }
             Self::ActionRefused { action, code, body } => write!(f, "the daemon refused `{action}` with {code}: {body}"),
             Self::CheckpointDiff { checkpoint, differences } => {

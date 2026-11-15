@@ -73,7 +73,10 @@ fn parse(raw: &[u8]) -> std::io::Result<Response> {
     let head = String::from_utf8_lossy(&raw[..split]).to_string();
     let status = head.split_whitespace().nth(1).and_then(|code| code.parse().ok()).ok_or_else(malformed)?;
     let body = &raw[split + 4..];
-    let chunked = head.lines().any(|line| line.to_ascii_lowercase().starts_with("transfer-encoding") && line.to_ascii_lowercase().contains("chunked"));
+    let chunked = head
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .any(|(name, value)| name.trim().eq_ignore_ascii_case("transfer-encoding") && value.trim().eq_ignore_ascii_case("chunked"));
     let body = if chunked { unchunk(body).ok_or_else(malformed)? } else { body.to_vec() };
     Ok(Response { status, body: String::from_utf8_lossy(&body).to_string() })
 }

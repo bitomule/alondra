@@ -94,10 +94,10 @@ fn a_daemon_that_does_not_settle_inside_the_time_given_is_no_rest() {
 
 #[test]
 fn a_press_on_a_card_that_is_not_there_names_the_view_it_looked_in() {
-    let text = SMALL.replace("[[step]]\ndo = \"checkpoint\"", "[[step]]\ndo = \"press\"\npr = 7\naction = \"merge\"\n\n[[step]]\ndo = \"checkpoint\"");
+    let text = SMALL.replace("[[step]]\ndo = \"checkpoint\"", "[[step]]\ndo = \"press\"\npresentation = \"d1\"\naction = \"merge\"\n\n[[step]]\ndo = \"checkpoint\"");
     match run(&scenario(&text), None) {
-        Err(ScenarioError::ActionMissing { pr: 7, action, view }) => {
-            assert_eq!(action, "merge");
+        Err(ScenarioError::ActionMissing { presentation, action, view }) => {
+            assert_eq!((presentation.as_str(), action.as_str()), ("d1", "merge"));
             assert!(view.contains("\"view\": \"home\""), "{view}");
         }
         other => panic!("expected a missing action, found {:?}", other.map(|_| ())),
