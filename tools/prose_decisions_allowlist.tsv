@@ -227,3 +227,4 @@ crates/core/src/claude_update.rs	let mut command = Command::new("/bin/ps");	form
 crates/core/src/views/now_fact.rs	let label = label.strip_prefix("Bash: ").unwrap_or(label);	display	the label of a running tool only picks the words a node row shows
 crates/core/src/views/tasks.rs	if let Some(rest) = reason.strip_prefix(CODEX_ROUTING) { return system_selection(rest); }	own-grammar	parses the selection reason Alondra itself writes, to show it localized
 crates/core/src/views/tasks.rs	let rest = reason.strip_prefix(CODEX_UNAVAILABLE)?;	own-grammar	parses the selection reason Alondra itself writes, to show it localized
+crates/alondrad/src/views/actions.rs	despite_pending_message: action.extra.as_deref().is_some_and(|extra| extra.starts_with(alondra_core::views::action_id::MERGE_ANYWAY)),	own-grammar	the merge button's own action id carries the marker; only Alondra writes it

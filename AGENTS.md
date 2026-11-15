@@ -109,8 +109,16 @@ or in the private repository that keeps it, never here.
 
 ## Release
 
-- No GitHub Actions: releases run on the maintainer's Mac, and the release refuses to run while
-  workflow files exist. Never add `.github/workflows`.
+- GitHub Actions runs the repository's checks on every pull request to `main`, the owner's and
+  Alondra's included, as an additional check that stops broken code entering `main`. It does not
+  replace local validation with musts and Bazel, and does not change Alondra's merge behavior.
+  Whether the check is required is a branch-protection setting the maintainer decides.
+- CI has no secrets, distribution signing or publishing, and never uses `pull_request_target`.
+  Keep token permissions read-only, pin actions by full commit SHA and preserve GitHub's manual
+  approval for first-time fork contributors. Ad hoc signatures for test executables are allowed.
+- Releases run on the maintainer's Mac. Check workflows may exist; the publisher refuses to run
+  inside GitHub Actions.
+- A maintainer may manually dispatch the same read-only checks to probe runners and timings.
 - Tags are never moved and published bytes are never rebuilt or replaced; release a new version.
 - Never export signing keys or copy signing credentials anywhere.
 

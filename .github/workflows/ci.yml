@@ -1,0 +1,95 @@
+{
+  "name": "Pull request checks",
+  "on": {
+    "pull_request": {
+      "branches": [
+        "main"
+      ]
+    },
+    "workflow_dispatch": {
+      "inputs": {
+        "check": {
+          "description": "MUSTS check to diagnose (blank runs every check)",
+          "type": "string",
+          "default": "",
+          "required": false
+        }
+      }
+    }
+  },
+  "permissions": {
+    "contents": "read"
+  },
+  "concurrency": {
+    "group": "pr-ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}",
+    "cancel-in-progress": true
+  },
+  "jobs": {
+    "select": {
+      "if": "${{ github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' }}",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 5,
+      "outputs": {
+        "matrix": "${{ steps.plan.outputs.matrix }}",
+        "has_checks": "${{ steps.plan.outputs.has_checks }}"
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "fetch-depth": 0,
+            "persist-credentials": false
+          }
+        },
+        {
+          "id": "plan",
+          "name": "Select MUSTS target sets",
+          "run": "python3 tools/ci.py plan"
+        }
+      ]
+    },
+    "validate": {
+      "needs": "select",
+      "if": "${{ needs.select.outputs.has_checks == 'true' }}",
+      "name": "${{ matrix.check }}",
+      "runs-on": "${{ matrix.runner }}",
+      "timeout-minutes": "${{ matrix.timeout }}",
+      "strategy": {
+        "fail-fast": false,
+        "max-parallel": 4,
+        "matrix": "${{ fromJSON(needs.select.outputs.matrix) }}"
+      },
+      "env": {
+        "ALONDRA_SIGNING_DIR": "${{ github.workspace }}/.scratch/unsigned-signing",
+        "DISABLE_AUTOUPDATER": "1",
+        "DEVELOPER_DIR": "${{ matrix.runner == 'xcode-27' && '/Applications/Xcode_27.1.app/Contents/Developer' || '' }}"
+      },
+      "steps": [
+        {
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+          "with": {
+            "fetch-depth": 0,
+            "persist-credentials": false
+          }
+        },
+        {
+          "name": "Show toolchain inventory",
+          "if": "${{ runner.os == 'macOS' }}",
+          "run": "xcodebuild -version"
+        },
+        {
+          "name": "Install the pinned offline plugin test CLI",
+          "if": "${{ matrix.check == 'plugin-mod' }}",
+          "run": "npm ci --prefix .github/ci-tools --no-audit --no-fund\necho \"$GITHUB_WORKSPACE/.github/ci-tools/node_modules/.bin\" >> \"$GITHUB_PATH\""
+        },
+        {
+          "name": "Build and test affected targets",
+          "env": {
+            "CI_TARGETS": "${{ toJSON(matrix.targets) }}"
+          },
+          "run": "python3 tools/ci.py run --targets \"$CI_TARGETS\""
+        }
+      ]
+    }
+  }
+}

@@ -89,6 +89,24 @@ checks:
       facts:
         - "Read the changed installation/runtime sources against docs/on-your-mac.md. Update that inventory for every changed installed or launched program, file read/write/delete, network connection/listener, macOS permission, credential or environment handoff; check README.md and INSTALL.md agree. Record source paths and what changed, or why the inventory remains accurate."
         - "Review the paths of mac-inventory-review in MUSTS.yml against the changed sources, including new files, so every installation/runtime surface still requires inventory review."
+  ci:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - ".github/workflows/BUILD.bazel"
+      - ".github/workflows/ci.yml"
+      - ".github/ci-tools/**"
+      - "BUILD.bazel"
+      - "MODULE.bazel"
+      - "MUSTS.yml"
+      - "tools/BUILD.bazel"
+      - "tools/ci.py"
+      - "tools/musts_scopes.py"
+      - "tools/tests/test_ci.py"
+    with:
+      targets:
+        - //tools:ci_test
 
   crate-agent-application:
     uses: bazel/test

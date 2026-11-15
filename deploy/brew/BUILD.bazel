@@ -43,6 +43,7 @@ sh_test(
     data = [
         "local-release.py",
         "release.py",
+        "release.sh",
         "tests/test_local_release.py",
         "//:Cargo.lock",
         "//:Cargo.toml",
