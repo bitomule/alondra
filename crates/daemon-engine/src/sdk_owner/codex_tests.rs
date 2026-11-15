@@ -383,7 +383,7 @@ pub fn native_model_fixture(slice:&Slice,journey:Option<(&Path,u16)>)->(NativeMo
     let plugin_bin = slice.plugin.join("bin");
     std::fs::create_dir_all(&plugin_bin).unwrap();
     let mcp = plugin_bin.join("alondra");
-    let mcp_source=if journey.is_some(){std::fs::canonicalize(option_env!("CARGO_BIN_EXE_alondra").expect("the test names the CLI")).unwrap()}else{runfile("FIXTURE_CODEX_MCP_NATIVE")};
+    let mcp_source=if journey.is_some(){runfile("FIXTURE_CLI")}else{runfile("FIXTURE_CODEX_MCP_NATIVE")};
     std::fs::copy(mcp_source,&mcp).unwrap();
     std::fs::set_permissions(&mcp, std::fs::Permissions::from_mode(0o700)).unwrap();
     let backend_path = slice._home.join("codex-backend.json");

@@ -69,9 +69,8 @@ fn daemon_sandbox(slice: &Slice) -> PathBuf {
     let protected = protected_user_home();
     let mut profile = format!("(version 1)\n(allow default)\n(deny file-read* file-write* (subpath {}))\n(allow file-read* file-write* (subpath {}))\n(allow file-read* file-write* (subpath {}))\n(deny file-read* file-write* (subpath \"/Library/Keychains\"))\n(deny network-outbound)\n(allow network-outbound (remote ip \"localhost:*\"))\n(allow network-outbound (remote unix-socket (subpath {})))\n(allow network-outbound (remote unix-socket (subpath {})))\n(deny signal)\n(allow signal (target same-sandbox))\n(deny mach-lookup (global-name \"com.apple.securityd\") (global-name \"com.apple.securityd.xpc\"))\n(deny process-exec (literal \"/usr/bin/security\") (literal \"/bin/launchctl\"))\n",
         quote(&protected), quote(&slice._home), quote(&slice.backend.state_root), quote(&slice._home), quote(&slice.backend.state_root));
-    for key in ["FIXTURE_DAEMON", "FIXTURE_NODE", "FIXTURE_HOST", "FIXTURE_CODEX_HOST", "CARGO_BIN_EXE_alondra"] {
-        let asset = if key == "CARGO_BIN_EXE_alondra" { std::fs::canonicalize(option_env!("CARGO_BIN_EXE_alondra").expect("the test names the CLI")).unwrap() } else { runfile(key) };
-        profile.push_str(&format!("(allow file-read* (literal {}))\n", quote(&asset)));
+    for key in ["FIXTURE_DAEMON", "FIXTURE_NODE", "FIXTURE_HOST", "FIXTURE_CODEX_HOST", "FIXTURE_CLI"] {
+        profile.push_str(&format!("(allow file-read* (literal {}))\n", quote(&runfile(key))));
     }
     let path = slice._home.join("daemon.sb"); std::fs::write(&path, profile).unwrap(); path
 }
