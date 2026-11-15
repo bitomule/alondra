@@ -1951,6 +1951,17 @@ async fn settled_move(slice:&Slice)->String{
         }
     }).await.unwrap_or_else(|_|panic!("the move stopped short of an outcome at {:?}",move_steps(slice).last()))
 }
+/// Waits, passing as the daemon does, until a node of the task runs on the account it moved to: a
+/// move whose node rested by then defers its start to a later pass.
+async fn started_on_the_new_account(slice:&Slice){
+    let mut changed=slice.domain.subscribe();
+    tokio::time::timeout(std::time::Duration::from_secs(60),async{
+        while admissions(slice)<2{
+            crate::provider_transition::pass(&slice.domain).await;
+            if admissions(slice)<2{changed.changed().await.unwrap();}
+        }
+    }).await.expect("no node started on the account the task moved to");
+}
 fn paused_by_the_user(slice:&Slice)->bool{
     Slice::lifecycle(&slice.domain).cards().iter().any(|(_,reason)|*reason==alondra_domain::WaitReason::Pause)
 }
@@ -2069,6 +2080,7 @@ async fn a_task_built_on_an_ended_task_whose_result_was_compacted_moves(){
     working_on_codex(&slice);
     request_move(&slice);
     assert_eq!(settled_move(&slice).await,"done","the move ends: {:?}",slice.domain.state().unwrap().tasks[&task].move_refused);
+    started_on_the_new_account(&slice).await;
     let state=slice.domain.state().unwrap();
     assert!(state.tasks[&task].move_refused.is_none());
     assert_eq!(state.tasks[&task].account_key(),AccountKey::native(Provider::Claude));
@@ -2116,6 +2128,7 @@ async fn a_task_built_on_four_tasks_and_told_a_long_brief_moves_with_every_input
     }
     request_move(&slice);
     assert_eq!(settled_move(&slice).await,"done","the move ends: {:?}",slice.domain.state().unwrap().tasks[&task].move_refused);
+    started_on_the_new_account(&slice).await;
     assert_eq!(slice.domain.state().unwrap().tasks[&task].account_key(),AccountKey::native(Provider::Claude));
     let prompt=slice.prompts().into_iter().find(|prompt|prompt.starts_with("Alondra task context (public records)")).expect("Claude starts from the task's record");
     for text in &inputs{assert!(prompt.contains(text.as_str()),"every input reaches the new node whole: {}",&text[..20]);}
@@ -2137,6 +2150,7 @@ async fn a_task_told_more_than_its_context_held_moves_with_every_input(){
     slice.run(&system(),"newest",Command::TellNode{task_id:task.clone(),text:"Extend the task: also cover the closing path".into(),from_user:false,answers:None});
     request_move(&slice);
     assert_eq!(settled_move(&slice).await,"done","the move ends: {:?}",slice.domain.state().unwrap().tasks[&task].move_refused);
+    started_on_the_new_account(&slice).await;
     let state=slice.domain.state().unwrap();
     assert_eq!(state.tasks[&task].account_key(),AccountKey::native(Provider::Claude));
     let prompt=slice.prompts().into_iter().find(|prompt|prompt.starts_with("Alondra task context (public records)")).expect("Claude starts from the task's record");
