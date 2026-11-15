@@ -133,7 +133,7 @@ that its working task has a native session and positive simulated tokens recorde
   - S3: a daemon restart keeps the card, the task and the node, whose host it adopts.
   - S4: a crashed session's bearer is refused once it resumes with a new one.
   - S5: from a turn Claude started by itself, with the user's message waiting behind it, a plan of 41 points is refused and Claude gets why; its shorter plan reaches the user's Review card and the message then runs.
-  - S6: a node force-stopped while it runs its work after the merge leaves a card that names that work and offers «Carry on» and «Close the task»; closing finishes the task.
+  - S6: a node force-stopped while it runs its work after the merge pauses without a card; the user's message resumes it, and the task closes only after a final result answers that message and the user accepts it.
 - `report` (before `local`: the Macs learn the report repository from the relay, which announces
   the fake `gh`'s `sandbox/reports`):
   - C1: `alondra report` on Mac 1 builds a report and `alondra report send` puts it in a secret

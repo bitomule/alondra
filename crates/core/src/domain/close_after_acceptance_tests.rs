@@ -257,3 +257,45 @@ fn confirming_cleanup_retires_a_host_loss_that_reused_an_unheard_card() {
         matches!(record, LifecycleRecord::PostMergeEnded { fact: PostMergeEnd::Cleanup, .. })));
     super::lifecycle_tests::assert_aggregate_rules(&s);
 }
+
+/// The sandbox's S6: the user's PR merged and its node, force-stopped while it published the
+/// release, is told by the user to finish it. Finishing the release does not answer the message:
+/// the cleanup is refused while the message is unanswered, the node's final result answers it,
+/// and once the user accepts that answer the cleanup closes the task.
+#[test]
+fn a_message_after_the_merge_holds_the_cleanup_until_a_final_result_answers_it() {
+    const TASK: &str = "release";
+    const NODE: &str = "a";
+    let mut s = world();
+    sdk_turn(&mut s, TASK, NODE);
+    let pr = vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }];
+    must(&mut s, node(NODE), Command::RegisterPr { task_id: TASK.into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(),
+        number: 26, head: "head1".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash] });
+    must(&mut s, node(NODE), Command::DeclarePostMergeWork { task_id: TASK.into(), reason: Some("release.sh publishes 0.3.0".into()), waits_for: vec![] });
+    must(&mut s, node(NODE), Command::PresentResult { checklist: vec![], attachments: vec![], task_id: TASK.into(), interaction_id: "pr-result".into(),
+        body: "Release 0.3.0".into(), targets: pr.clone(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review release.txt", &[], true) });
+    must(&mut s, user(), Command::AcceptDelivery { presentation_id: "pr-result".into(), targets: pr });
+    must(&mut s, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: "head1".into(), base: "main".into(), state: PrState::Merged, merged_head: Some("head1".into()) });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: TASK.into(), generation: 1, turn: "turn-1".into(), failure: None, failed: None });
+
+    must(&mut s, Actor::System, Command::TellNode { task_id: TASK.into(), text: "Finish the release".into(), from_user: true, answers: None });
+    let message = replay(&TASK.into(), &s.lifecycle_journal[&TASK.into()]).unwrap().pending_inputs()[0].as_str().to_owned();
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: TASK.into(), generation: 1, facts: vec![
+        RuntimeObservation::TurnStarted { turn: "turn-2".into(), input: message.clone() },
+    ] });
+    must(&mut s, node(NODE), Command::DeclarePostMergeWork { task_id: TASK.into(), reason: None, waits_for: vec![] });
+    let refused = exec(&mut s, node(NODE), Command::ConfirmCleanup { task_id: TASK.into(), discard: vec![] }).unwrap_err();
+    assert_eq!(refused.code, "pending_user_message", "{refused}");
+    assert!(s.tasks[&TASK.into()].pending_user_inputs.contains(&message), "the user's message is still owed an answer");
+    assert!(!s.tasks[&TASK.into()].state.terminal());
+
+    let answer = vec![DeliveryTarget::Text { text: "Release 0.3.0 published".into() }];
+    must(&mut s, node(NODE), Command::PresentResult { checklist: vec![], attachments: vec![], task_id: TASK.into(), interaction_id: "answer".into(),
+        body: "Release 0.3.0 published".into(), targets: answer.clone(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Release 0.3.0 published", &[], true) });
+    assert!(s.tasks[&TASK.into()].pending_user_inputs.is_empty(), "the final result answers the message");
+    must(&mut s, user(), Command::AcceptDelivery { presentation_id: "answer".into(), targets: answer });
+    must(&mut s, node(NODE), Command::ConfirmCleanup { task_id: TASK.into(), discard: vec![] });
+    must(&mut s, Actor::System, Command::RecordNodeEnd { task_id: TASK.into(), end: NodeEnd::Closed, agent_id: Some(NODE.into()) });
+    assert_eq!(s.tasks[&TASK.into()].state, TaskState::Done);
+    super::lifecycle_tests::assert_aggregate_rules(&s);
+}
