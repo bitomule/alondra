@@ -171,24 +171,10 @@ pub fn run_preflight(path: &Path) -> Outcome {
     Outcome { version, passed }
 }
 
-/// A binary just written can still be held open for writing by a sibling process forked at
-/// that moment; exec then fails with ETXTBSY until the sibling execs away.
-fn spawn_when_not_being_written(path: &Path, arg: &str) -> Option<std::process::Child> {
-    const TEXT_FILE_BUSY: i32 = 26;
-    for _ in 0..100 {
-        match std::process::Command::new(path).arg(arg)
-            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
-            .spawn()
-        {
-            Err(error) if error.raw_os_error() == Some(TEXT_FILE_BUSY) => std::thread::sleep(Duration::from_millis(50)),
-            spawned => return spawned.ok(),
-        }
-    }
-    None
-}
-
 fn output(path: &Path, arg: &str, timeout: Duration) -> Option<(bool, String)> {
-    let child = spawn_when_not_being_written(path, arg)?;
+    let child = std::process::Command::new(path).arg(arg)
+        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
+        .spawn().ok()?;
     let pid = child.id();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || { let _ = tx.send(child.wait_with_output()); });
@@ -339,6 +325,47 @@ mod tests {
         let mut watcher = Watcher::new(bin.clone()).unwrap();
         std::fs::remove_file(&bin).unwrap();
         assert_eq!(watcher.check(|_| panic!("nothing to preflight")), Check::Unchanged);
+    }
+
+    /// A child another thread forks holds a copy of every descriptor this process had open, the
+    /// write descriptor of a binary just written included, until its `exec`. macOS still runs the
+    /// binary meanwhile: its preflight needs no wait for that child.
+    #[test]
+    fn a_binary_a_paused_fork_holds_open_for_writing_runs_its_preflight() {
+        use std::io::{Read, Write};
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::process::CommandExt;
+        let scratch_directory = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&*scratch_directory).unwrap();
+        let bin = scratch_directory.join("alondrad");
+        let mut written = std::fs::File::create(&bin).unwrap();
+        let (mut forked, announce) = std::os::unix::net::UnixStream::pair().unwrap();
+        let (mut release, held) = std::os::unix::net::UnixStream::pair().unwrap();
+        let child = std::thread::spawn(move || {
+            let (announcing, holding) = (announce.as_raw_fd(), held.as_raw_fd());
+            let mut command = std::process::Command::new("/usr/bin/true");
+            // SAFETY: the closure runs in the forked child before its exec and calls only write and
+            // read, which are async-signal-safe.
+            unsafe {
+                command.pre_exec(move || {
+                    let mut byte = 0_u8;
+                    libc::write(announcing, (&raw const byte).cast(), 1);
+                    libc::read(holding, (&raw mut byte).cast(), 1);
+                    Ok(())
+                });
+            }
+            assert!(command.status().unwrap().success());
+            drop((announce, held));
+        });
+        forked.read_exact(&mut [0_u8]).unwrap();
+        written.write_all(&std::fs::read("/usr/bin/true").unwrap()).unwrap();
+        drop(written);
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let outcome = run_preflight(&bin);
+        release.write_all(&[0]).unwrap();
+        child.join().unwrap();
+        assert_eq!(outcome.passed, Ok(()));
     }
 
     #[test]
