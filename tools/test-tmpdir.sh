@@ -9,8 +9,26 @@ root=${BAZEL_TEST_TMPDIR_ROOT:-/tmp}
 # Python's execvpe reports invalid formats instead of interpreting them as shell commands.
 launcher='
 import errno
+import hashlib
 import os
 import sys
+
+
+def describe(path):
+    try:
+        resolved = os.path.realpath(path)
+        status = os.stat(resolved)
+        with open(resolved, "rb") as file:
+            head = file.read(16)
+            digest = hashlib.sha256(head + file.read()).hexdigest()
+        volume = "boot volume" if status.st_dev == os.stat("/").st_dev else "another volume"
+        return (
+            f"Evidence: {resolved} on the {volume}, {status.st_size} bytes, sha256 {digest}, "
+            f"first bytes {head.hex()}, modified {int(status.st_mtime)}"
+        )
+    except OSError as problem:
+        return f"Evidence unavailable: {problem}"
+
 
 try:
     os.execvpe(sys.argv[1], sys.argv[1:], os.environ)
@@ -30,6 +48,7 @@ except OSError as error:
             "--noremote_upload_local_results --run_under=//tools:test_tmpdir",
             file=sys.stderr,
         )
+        print(describe(sys.argv[1]), file=sys.stderr)
     else:
         print(f"Cannot execute test {sys.argv[1]}: {error}", file=sys.stderr)
     sys.exit(126 if error.errno != errno.ENOENT else 127)

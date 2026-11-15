@@ -22,7 +22,7 @@ execute the test without Bash's fallback that interprets unrecognized executable
 commands. Invalid executables fail with status 126 and a recovery command; valid native binaries
 and scripts with a shebang keep their arguments and exit status.
 
-To investigate a suspect output, preserve its size, digest and initial bytes before rebuilding.
+When the wrapper rejects an executable it prints its size, SHA-256, first bytes, modification time and whether it sits on the boot volume or another one: keep that line from the test log before rebuilding.
 Rebuild only the affected target in a new output base, without accepting or uploading cached
 results:
 
