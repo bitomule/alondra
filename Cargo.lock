@@ -420,6 +420,7 @@ dependencies = [
 name = "alondrad"
 version = "0.3.45"
 dependencies = [
+ "alondra-agent-runtime",
  "alondra-core",
  "alondra-daemon-engine",
  "alondra-daemon-support",

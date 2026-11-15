@@ -115,6 +115,8 @@ mod notices;
 mod preflight;
 mod public_content;
 mod push_gate;
+pub mod push_transport;
+pub mod assemble;
 mod activity_push;
 mod push_alerts;
 mod push_retract;
@@ -519,55 +521,8 @@ async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> R
         use domain_api::DomainHost as _;
         state.delivery_reviews().limit(delivery_review::Limits::SANDBOX);
     }
-    let auth = state.auth();
-    let service = service::Service::open(&config.home, config.port, auth.clone())?.map(|service| {
-        Arc::new(
-            service
-                .with_domain(state.domain())
-                .with_client(state.client()),
-        )
-    });
-    if let Some(service) = &service {
-        service.recover_interrupted()?;
-        state.attach_service(service.clone());
-    }
-    let actions = views::action_results::recover_interrupted(&config.home)?;
-    if actions > 0 {
-        log!("the previous daemon stopped in the middle of {actions} local action(s); they are marked interrupted");
-    }
-    let domain = state.domain();
-    // Before any SDK execution is taken over: a host that replaces one that ended loads this plugin.
-    match plugins::node_source(&watcher::claude_home()).zip(plugins::own_cli()) {
-        Some((source, cli)) => match plugins::install_node(&config.home, &source, &cli) {
-            Ok(dir) => log!("node plugin {} brought up to date from {}", dir.display(), source.display()),
-            Err(error) => log!("could not bring the node plugin up to date from {}: {error:#}", source.display()),
-        },
-        None => log!("Alondra's node plugin was not found: run `alondra doctor --fix`"),
-    }
-    match plugins::orchestrator_source(&watcher::claude_home()).zip(plugins::own_cli()) {
-        Some((source,cli)) => {
-            if let Err(error) = plugins::install_orchestrator(&config.home,&source,&cli) {
-                log!("Could not update Alondra's orchestrator integration assets: {error:#}");
-            }
-        }
-        None => log!("Alondra's orchestrator assets are missing; run alondra doctor --fix"),
-    }
-    let environment: std::collections::BTreeMap<String, String> = std::env::vars().collect();
-    let daemon = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("alondrad"));
-    let backend = match sdk_owner::backend::resolve(&config.home, config.sandbox, &options::user_home(), &daemon, &environment) {
-        Ok(mut backend) => {
-            backend.native_environment.insert("ALONDRA_PORT".into(), config.port.to_string());
-            log!("the Agent SDK host is {} (configuration {})", backend.host.display(), backend.configuration_digest());
-            Some(backend)
-        }
-        Err(error) => {
-            log!("no task or orchestrator batch starts: {error:#}");
-            None
-        }
-    };
-    accounts::begin_initial_check(&domain);
-    let recovery = prepare_workers(config, domain.clone(), backend);
-    serve_domain(config, state, domain, recovery, service, upgrades).await
+    let assembled = assemble::assemble(config, state, assemble::Seams::production()).await?;
+    supervise(assembled, upgrades).await
 }
 
 /// Only a recovered domain may activate the workers that claim deliveries, launch or resume nodes.
@@ -601,136 +556,9 @@ async fn prepare_workers(
     PreparedWorkers(domain)
 }
 
-async fn serve_domain(
-    config: &Config,
-    state: Arc<domain_bootstrap::DomainDaemon>,
-    domain: Arc<domain_runtime::DomainRuntime>,
-    recovery: impl std::future::Future<Output = PreparedWorkers>,
-    service: Option<Arc<service::Service>>,
-    upgrades: Option<relaunch::Watcher>,
-) -> Result<()> {
-    let auth = state.auth();
-    let state_domain = domain.clone();
-    let gauges = state.gauges();
-    let client = state.client();
-    let push = Arc::new(push::Push::open(&config.home)?);
-    let addr = SocketAddr::new(config.listen, config.port);
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .with_context(|| format!("cannot listen on {addr}"))?;
-    // The producer transport owns the per-home hook socket before any outbox
-    // message can be claimed for a session.
-    let hooks = hook_socket::bind(&config.home).await?;
-    if let Some(service) = service.clone().filter(|service| service.direct_config().enabled) {
-        let direct = Arc::new(direct::Direct::new(
-            service.clone(),
-            Arc::new(direct::pairing::PairingBook::new(&config.home)),
-            config.name.clone(),
-            direct_approval(config.home.clone(), auth.clone(), service),
-        ));
-        state.attach_direct(direct.clone());
-        tokio::spawn(direct::run(direct, config.sandbox));
-    }
-    if let Some(service) = service.clone().filter(|service| service.iroh_config().enabled) {
-        tokio::spawn(iroh_endpoint::run(service));
-        tokio::spawn(local_network::watch());
-        tokio::spawn(local_network_card::run(domain.clone()));
-    }
-    tokio::spawn(device_expiry::run(state.clone(), config.home.clone(), config.device_expiry_days));
-    let app = domain_bootstrap::router(state)
-        .layer(axum::middleware::from_fn_with_state(auth, auth::guard))
-        .layer(axum::middleware::from_fn(views::stamp_version));
-    log!(
-        "domain listener on http://{addr}, data in {}",
-        config.home.display()
-    );
-    let server = axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .into_future();
-    let serving = tokio::spawn(server);
-    let server = async move { serving.await.unwrap_or_else(|error| Err(std::io::Error::other(error))) };
-    let PreparedWorkers(domain) = recovery.await;
-    accounts::end_abandoned_sign_ins(&domain);
-    tokio::spawn(usage_pause::run(
-        domain.clone(),
-        push_alerts::PushAlerts { domain: domain.clone(), push: push.clone(), service: service.clone(), client: client.clone() },
-    ));
-    tokio::spawn(claude_access::run(domain.clone()));
-    tokio::spawn(accounts::run(domain.clone(), config.home.clone()));
-    tokio::spawn(usage_probe::run(domain.clone(), config.home.clone()));
-    tokio::spawn(mcp_waits::run(domain.clone()));
-    let machine_watch = tokio::spawn(machine_watch::run(
-        domain.clone(),
-        gauges.clone(),
-        push_alerts::PushAlerts { domain: domain.clone(), push: push.clone(), service: service.clone(), client: client.clone() },
-    ));
-    let outbox = tokio::spawn(domain_delivery::run(
-        domain.clone(),
-        config.home.clone(),
-        push,
-        service.clone(),
-        client.clone(),
-    ));
-    if let Some(service) = &service {
-        tokio::spawn(push_retract::run(domain.clone(), service.clone()));
-        tokio::spawn(activity_push::run(domain.clone(), service.clone(), client.clone()));
-    }
-    let scheduler = tokio::spawn(domain_schedule_runner::run(
-        domain.clone(),
-        config.home.clone(),
-        config.wake,
-    ));
-    if config.wake {
-        tokio::spawn(auto_launch::run(domain.clone(), config.home.clone()));
-    }
-    let handed = domain.clone();
-    tokio::task::spawn_blocking(move || domain_orchestrator::read_handed_notices_in_background(&handed));
-    tokio::spawn(retention::run(domain.clone()));
-    let gate = tokio::spawn(admission::run(domain.clone(), config.home.clone()));
-    let transport = tokio::spawn(domain_transport::run(hooks, domain.clone()));
-    if accounts::config(&config.home).is_ok_and(|accounts| accounts.connected_providers().contains(&alondra_core::accounts::Provider::Claude)) {
-        tokio::spawn(claude_check::run(plugins::node()));
-    }
-    tokio::spawn(sdk_handover::run(state_domain.clone()));
-    tokio::spawn(account_move::run(state_domain.clone()));
-    tokio::spawn(provider_transition::run(state_domain.clone()));
-    tokio::spawn(obligation_watch::run(state_domain.clone()));
-    let compaction = if config.fast_timing { &idle_compaction::Timing::SANDBOX } else { &idle_compaction::Timing::LIVE };
-    tokio::spawn(idle_compaction::run(state_domain.clone(), compaction));
-    let release = if config.fast_timing { &idle_release::Timing::SANDBOX } else { &idle_release::Timing::LIVE };
-    tokio::spawn(idle_release::run(state_domain.clone(), release));
-    let closer = if config.fast_timing { task_closer::Timing::sandbox(config.close_free_nodes_after) } else { task_closer::Timing::new(config.close_free_nodes_after) };
-    tokio::spawn(task_closer::run(state_domain.clone(), client.sessions(), closer));
-    let merges_domain = domain.clone();
-    let (merger, pr_poll) = if config.fast_timing {
-        (domain_merges::Merger::with(std::time::Duration::from_secs(2), std::time::Duration::from_secs(15 * 60)), std::time::Duration::from_secs(2))
-    } else {
-        (domain_merges::Merger::default(), std::time::Duration::from_secs(60))
-    };
-    tokio::spawn(domain_merges::run(merges_domain, Arc::new(domain_github::GhCli::new()), merger));
-    tokio::spawn(alondra_daemon_engine::open_pr_sweep::run(domain.clone(), config.home.clone()));
-    let github = tokio::spawn(domain_github::run(
-        domain,
-        Arc::new(domain_github::GhCli::new()),
-        pr_poll,
-    ));
-    tokio::spawn(machine::run(gauges, state_domain.clone()));
-    let owners = state_domain.clone();
-    tokio::spawn(client.run(Arc::new(client_routes::GhView)));
-    let orchestrator = config.wake.then(|| {
-        tokio::spawn(domain_orchestrator::run(
-            state_domain,
-            config.home.clone(),
-            watcher::claude_home(),
-        ))
-    });
-    let connector = service
-        .filter(|service| service.has_relay())
-        .map(|service| tokio::spawn(async move { service.run().await }));
-    tokio::spawn(updates::updater(config).run());
-    tokio::spawn(reports::retry_pending(config.home.clone(), plugins::own_cli(), config.fast_timing));
+/// Watches the assembled daemon until it has to stop, relaunch or hand over its hosts.
+async fn supervise(assembled: assemble::Assembled, upgrades: Option<relaunch::Watcher>) -> Result<()> {
+    let assemble::Assembled { domain: owners, server, outbox, scheduler, transport, github, orchestrator, connector, machine_watch, gate, .. } = assembled;
     start_guard::served();
     let maintenance = owners.clone();
     let stopped = tokio::select! {

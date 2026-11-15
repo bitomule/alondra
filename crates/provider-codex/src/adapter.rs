@@ -35,6 +35,8 @@ pub struct CodexConfiguration {
     pub io_timeout: Duration,
     /// A Seatbelt profile the whole host runs under, the native process included.
     pub confinement: Option<PathBuf>,
+    /// Starts the host process; a scenario swaps it.
+    pub launcher: alondra_agent_runtime::owned_host::Launcher,
     /// What a task's native Codex loads besides the user's own settings, skills, plugins and MCP.
     pub worker: Option<WorkerProfile>,
 }
@@ -862,7 +864,8 @@ impl CodexAdapter {
         }
         let expected = fence(&owner, &self.control);
         let continued = Continued { journal_base: base, resume, opens_on_control };
-        let host = OwnedHost::launch_confined(
+        let host = OwnedHost::launch_through(
+            self.configuration.launcher.get(),
             owner,
             self.configuration.artifact.clone(),
             &directory,
@@ -1081,7 +1084,8 @@ impl DurableAdapter for CodexAdapter {
         let session: SessionRecord = serde_json::from_slice(state.conversation())
             .map_err(|_| AdapterError::InvalidObservation)?;
         let expected = fence(&owner, &self.control);
-        let host = OwnedHost::launch_confined(
+        let host = OwnedHost::launch_through(
+            self.configuration.launcher.get(),
             owner,
             self.configuration.artifact.clone(),
             &self.configuration.state_directory,

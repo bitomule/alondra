@@ -45,7 +45,7 @@ echo "Removed MCP server $6"
             node: PathBuf::new(), node_sha256: String::new(), host: PathBuf::new(), host_sha256: String::new(),
             native, native_sha256: String::new(), host_environment: BTreeMap::new(),
             native_environment: BTreeMap::from([("HOME".into(), home.display().to_string()), ("PATH".into(), "/usr/bin:/bin".into())]),
-            confinement: None, state_root: home.join("sdk"), io_timeout_seconds: 1, installed_native: false,
+            confinement: None, state_root: home.join("sdk"), io_timeout_seconds: 1, installed_native: false, launcher: Default::default(),
         };
         let projects = vec![ProjectEntry { name: "quill".into(), path: project, last_used: None, nodes: 0 }];
         Self { home, backend, projects }

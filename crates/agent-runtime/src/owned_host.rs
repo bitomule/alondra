@@ -20,6 +20,70 @@ const TAIL_LIMIT: usize = 16_384;
 const CONNECT_LIMIT: usize = 8;
 const SWEEP_ROUNDS: usize = 16;
 
+/// Everything that starts a host process, handed to a [`HostLauncher`] once the lock file and the
+/// bootstrap are ready; `stdin` is the bootstrap file the host reads.
+pub struct HostSpawn<'a> {
+    pub executable: &'a Path,
+    pub artifact: &'a Path,
+    pub state_dir: &'a Path,
+    pub environment: &'a BTreeMap<String, String>,
+    pub confinement: Option<&'a Path>,
+    pub stdin: File,
+}
+
+/// The one place a host process comes into existence: production starts the real host, a
+/// scenario starts a stand-in that speaks the same protocol.
+pub trait HostLauncher: Send + Sync + 'static {
+    fn spawn(&self, spawn: HostSpawn<'_>) -> io::Result<Child>;
+}
+
+/// Starts the host executable as a child in its own process group, under Seatbelt when asked.
+pub struct ProcessLauncher;
+impl HostLauncher for ProcessLauncher {
+    fn spawn(&self, spawn: HostSpawn<'_>) -> io::Result<Child> {
+        let mut command = match spawn.confinement {
+            Some(profile) => {
+                let mut command = Command::new("/usr/bin/sandbox-exec");
+                command.arg("-f").arg(profile).arg(spawn.executable);
+                command
+            }
+            None => Command::new(spawn.executable),
+        };
+        command
+            .arg(spawn.artifact)
+            .current_dir(spawn.state_dir)
+            .env_clear()
+            .envs(spawn.environment)
+            .stdin(Stdio::from(spawn.stdin))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0);
+        command.spawn()
+    }
+}
+
+/// The launcher a configuration carries; the real one unless a scenario swaps it.
+#[derive(Clone)]
+pub struct Launcher(Arc<dyn HostLauncher>);
+impl Launcher {
+    pub fn new(launcher: impl HostLauncher) -> Self {
+        Self(Arc::new(launcher))
+    }
+    pub fn get(&self) -> &dyn HostLauncher {
+        &*self.0
+    }
+}
+impl Default for Launcher {
+    fn default() -> Self {
+        Self::new(ProcessLauncher)
+    }
+}
+impl std::fmt::Debug for Launcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Launcher")
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct VerifiedArtifact {
     executable: PathBuf,
@@ -188,6 +252,18 @@ impl<O> OwnedHost<O> {
         confinement: Option<&Path>,
         build: impl FnOnce(&O, &LaunchIdentity) -> io::Result<Vec<u8>>,
     ) -> io::Result<Self> {
+        Self::launch_through(&ProcessLauncher, owner, artifact, state_dir, environment, confinement, build)
+    }
+    /// `launch_confined`, with `launcher` starting the process.
+    pub fn launch_through(
+        launcher: &dyn HostLauncher,
+        owner: O,
+        artifact: VerifiedArtifact,
+        state_dir: &Path,
+        environment: &BTreeMap<String, String>,
+        confinement: Option<&Path>,
+        build: impl FnOnce(&O, &LaunchIdentity) -> io::Result<Vec<u8>>,
+    ) -> io::Result<Self> {
         private_directory(state_dir)?;
         let state_dir = state_dir.canonicalize()?;
         let identity = LaunchIdentity { folder: HostFolder::at(state_dir), artifact };
@@ -257,26 +333,14 @@ impl<O> OwnedHost<O> {
                     return Err(error);
                 }
             };
-            let spawned = {
-                let mut command = match confinement {
-                    Some(profile) => {
-                        let mut command = Command::new("/usr/bin/sandbox-exec");
-                        command.arg("-f").arg(profile).arg(identity.artifact.executable());
-                        command
-                    }
-                    None => Command::new(identity.artifact.executable()),
-                };
-                command
-                    .arg(identity.artifact.artifact())
-                    .current_dir(identity.state_dir())
-                    .env_clear()
-                    .envs(environment)
-                    .stdin(Stdio::from(file))
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .process_group(0);
-                command.spawn()
-            };
+            let spawned = launcher.spawn(HostSpawn {
+                executable: identity.artifact.executable(),
+                artifact: identity.artifact.artifact(),
+                state_dir: identity.state_dir(),
+                environment,
+                confinement,
+                stdin: file,
+            });
             let mut child = match spawned {
                 Ok(child) => child,
                 Err(error) => {

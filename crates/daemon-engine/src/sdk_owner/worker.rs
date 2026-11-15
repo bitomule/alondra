@@ -47,7 +47,7 @@ impl Worker {
                     host_environment: configuration.host_environment, native_executable: configuration.native_executable,
                     native_directory: configuration.native_directory, native_environment: configuration.native_environment,
                     profile_id: configuration.profile_id, account_id: configuration.account_id,
-                    host_release: configuration.host_release, io_timeout: configuration.io_timeout, confinement: configuration.confinement,
+                    host_release: configuration.host_release, io_timeout: configuration.io_timeout, confinement: configuration.confinement, launcher: configuration.launcher,
                     worker: configuration.worker.map(|profile| alondra_provider_codex::WorkerProfile { plugins: profile.plugins, settings: profile.settings, model: profile.model, effort: profile.effort, disallowed_tools: profile.disallowed_tools, handoff_context: profile.handoff_context }),
                 };
                 CodexWorker::configured(binding, configuration).map(Self::Codex)

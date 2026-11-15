@@ -68,7 +68,7 @@ impl MergeState {
     }
 }
 
-type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, GhFailure>> + Send + 'a>>;
+pub(crate) type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, GhFailure>> + Send + 'a>>;
 
 pub trait PrMerger: Send + Sync + 'static {
     fn status<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, Status>;
@@ -84,6 +84,18 @@ pub trait PrMerger: Send + Sync + 'static {
     fn required_checks<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, Vec<String>>;
     /// Whether the signed-in account may merge into the PR's repository (`viewerPermission` WRITE or above).
     fn can_merge<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool>;
+}
+
+impl PrMerger for Arc<dyn PrMerger> {
+    fn default_branch<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, String> { (**self).default_branch(pr) }
+    fn retarget<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, ()> { (**self).retarget(pr, base) }
+    fn status<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, Status> { (**self).status(pr) }
+    fn merge<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()> { (**self).merge(pr, head, method) }
+    fn in_queue<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> { (**self).in_queue(pr) }
+    fn is_draft<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> { (**self).is_draft(pr) }
+    fn ready<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, ()> { (**self).ready(pr) }
+    fn required_checks<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, Vec<String>> { (**self).required_checks(pr, base) }
+    fn can_merge<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> { (**self).can_merge(pr) }
 }
 
 impl<T: PrMerger> PrMerger for Arc<T> {

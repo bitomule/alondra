@@ -1197,7 +1197,7 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
                 confinement: None,
                 state_root: state.join("h"),
                 io_timeout_seconds: 30,
-                installed_native: false,
+                installed_native: false, launcher: Default::default(),
             provider: alondra_core::accounts::Provider::Claude, origin: None,
             };
             domain.enable_sdk(backend);

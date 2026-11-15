@@ -42,14 +42,23 @@ impl PrFacts {
     }
 }
 
-type Observed<'a> = Pin<Box<dyn Future<Output = Result<PrFacts, String>> + Send + 'a>>;
-type Closed<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+pub(crate) type Observed<'a> = Pin<Box<dyn Future<Output = Result<PrFacts, String>> + Send + 'a>>;
+pub(crate) type Closed<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 
 pub trait PrObserver: Send + Sync + 'static {
     fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Observed<'a>;
     /// Closes the PR on GitHub with `comment`.
     fn close<'a>(&'a self, _host: &'a str, _repository: &'a str, _number: u64, _comment: &'a str) -> Closed<'a> {
         Box::pin(async { Err("this observer cannot close pull requests".to_owned()) })
+    }
+}
+
+impl PrObserver for Arc<dyn PrObserver> {
+    fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Observed<'a> {
+        (**self).observe(host, repository, number)
+    }
+    fn close<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, comment: &'a str) -> Closed<'a> {
+        (**self).close(host, repository, number, comment)
     }
 }
 

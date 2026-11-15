@@ -75,7 +75,7 @@ async fn the_port_answers_while_hosts_are_still_being_taken_over() {
         let _ = held.await;
         PreparedWorkers(recovering)
     };
-    let daemon = tokio::spawn(async move { serve_domain(&config, state, domain, recovery, None, None).await });
+    let daemon = tokio::spawn(async move { assemble::assemble_with(&config, state, domain, recovery, None, &assemble::Seams::production()).await.map(|_| ()) });
     let connecting = async {
         loop {
             match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {

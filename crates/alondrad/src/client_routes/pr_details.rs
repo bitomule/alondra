@@ -20,7 +20,7 @@ use std::time::Duration;
 pub(crate) type Viewed<'a> = Pin<Box<dyn Future<Output = Option<Value>> + Send + 'a>>;
 
 /// `gh pr view --json`, behind a pointer so a test can answer for GitHub.
-pub(crate) trait PrView: Send + Sync + 'static {
+pub trait PrView: Send + Sync + 'static {
     fn view<'a>(&'a self, url: &'a str) -> Viewed<'a>;
 }
 
@@ -43,6 +43,15 @@ impl PrView for FakePrView {
     fn view<'a>(&'a self, _: &'a str) -> Viewed<'a> {
         let view = self.0.lock().unwrap().clone();
         Box::pin(async move { view })
+    }
+}
+
+/// Any `Gh` as the view of pull requests: a scenario's whole GitHub stands for `gh`.
+pub struct ViaGh<G>(pub Arc<G>);
+
+impl<G: crate::prs::Gh + Send + Sync + 'static> PrView for ViaGh<G> {
+    fn view<'a>(&'a self, url: &'a str) -> Viewed<'a> {
+        Box::pin(self.0.view(url))
     }
 }
 
@@ -273,7 +282,6 @@ impl super::Client {
         *self.pr_view.lock_or_recover("the pull request view") = view;
     }
 
-    #[cfg(test)]
     pub(crate) fn use_pr_images(&self, github: Arc<dyn GitHubImages>) {
         *self.pr_images.lock_or_recover("the pull request images") = github;
     }

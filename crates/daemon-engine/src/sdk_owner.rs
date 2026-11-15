@@ -1427,6 +1427,7 @@ fn configuration(backend: &SdkBackend, binding: &ProviderBinding, directory: &st
         host_release: env!("CARGO_PKG_VERSION").into(),
         io_timeout: Duration::from_secs(backend.io_timeout_seconds),
         confinement: backend.confinement.clone(),
+        launcher: backend.launcher.clone(),
         worker,
     })
 }

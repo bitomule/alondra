@@ -68,6 +68,9 @@ pub struct SdkBackend {
     /// then.
     #[serde(skip)]
     pub installed_native: bool,
+    /// Starts the host process; a scenario swaps it.
+    #[serde(skip)]
+    pub launcher: alondra_agent_runtime::owned_host::Launcher,
 }
 
 /// The backend a daemon runs: the configuration in `home` when there is one, else the host the
@@ -112,6 +115,7 @@ fn installed(home: &Path, user_home: &Path, daemon: &Path, environment: &BTreeMa
         host_environment: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
         native_environment,
         confinement: None, state_root, io_timeout_seconds: 120, installed_native: true,
+        launcher: Default::default(),
     })
 }
 
@@ -619,6 +623,7 @@ impl SdkBackend {
             native, native_sha256, host_environment: self.host_environment.clone(), native_environment,
             confinement: self.confinement.clone(), state_root, io_timeout_seconds: self.io_timeout_seconds,
             installed_native: true,
+            launcher: self.launcher.clone(),
         })
     }
 

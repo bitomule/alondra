@@ -113,7 +113,8 @@ impl<O: HostOwner> BatchHost<O> {
             session_id: MessageUuid::new(session).map_err(|_| AdapterError::InvalidObservation)?,
             continued: false,
         };
-        let mut host = OwnedHost::launch_confined(
+        let mut host = OwnedHost::launch_through(
+            configuration.launcher.get(),
             owner,
             configuration.artifact.clone(),
             &configuration.state_directory,
