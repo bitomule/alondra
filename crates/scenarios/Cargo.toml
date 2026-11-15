@@ -1,0 +1,35 @@
+[package]
+name = "alondra-scenarios"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+alondrad = { path = "../alondrad" }
+alondra-agent-protocol.workspace = true
+alondra-agent-runtime.workspace = true
+alondra-core.workspace = true
+alondra-daemon-engine = { workspace = true, features = ["test-hooks"] }
+alondra-daemon-support = { workspace = true, features = ["test-hooks"] }
+alondra-scenarios-transcript.workspace = true
+base64 = "0.23.1"
+p256 = { version = "0.14.0", features = ["ecdsa", "pem", "pkcs8"] }
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+toml.workspace = true
+
+[[bin]]
+name = "accept"
+path = "src/bin/accept.rs"
+
+[[bin]]
+name = "ablate"
+path = "src/bin/ablate.rs"
+
+[[test]]
+name = "scenarios_test"
+path = "tests/scenarios_test.rs"
+harness = false

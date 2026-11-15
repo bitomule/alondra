@@ -105,6 +105,7 @@ type Serving = Pin<Box<dyn Future<Output = std::io::Result<()>> + Send>>;
 pub struct Assembled {
     pub addr: SocketAddr,
     pub domain: Arc<domain_runtime::DomainRuntime>,
+    pub auth: Arc<auth::Auth>,
     pub tasks: Tasks,
     pub(crate) server: Serving,
     pub(crate) outbox: tokio::task::JoinHandle<Result<()>>,
@@ -115,6 +116,13 @@ pub struct Assembled {
     pub(crate) connector: Option<tokio::task::JoinHandle<()>>,
     pub(crate) machine_watch: tokio::task::JoinHandle<()>,
     pub(crate) gate: tokio::task::JoinHandle<()>,
+}
+
+/// Opens the domain at `config.home` and assembles the daemon over it: what a scenario starts.
+pub async fn start(config: &Config, seams: Seams) -> Result<Assembled> {
+    let domain = domain_runtime::DomainRuntime::open(&config.home)?;
+    let state = domain_bootstrap::DomainDaemon::over(&config.home, domain)?;
+    assemble(config, state, seams).await
 }
 
 /// Opens the service, takes the SDK hosts over and starts the daemon on `config`'s port, with
@@ -196,6 +204,7 @@ pub(crate) async fn assemble_with(
     let tasks = Tasks::default();
     let auth = state.auth();
     let state_domain = domain.clone();
+    let state_auth = auth.clone();
     let gauges = state.gauges();
     let client = state.client();
     let push = Arc::new(push::Push::open(&config.home)?);
@@ -324,6 +333,7 @@ pub(crate) async fn assemble_with(
     Ok(Assembled {
         addr,
         domain: owners,
+        auth: state_auth,
         tasks,
         server: Box::pin(server),
         outbox,

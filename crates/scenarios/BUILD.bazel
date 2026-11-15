@@ -1,0 +1,100 @@
+load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
+load("//:version.bzl", "VERSION")
+
+DEPS = all_crate_deps(normal = True) + [
+    "//crates/agent-protocol:agent_protocol",
+    "//crates/agent-runtime:agent_runtime",
+    "//crates/alondrad:alondrad_scenarios_lib",
+    "//crates/core:alondra_core",
+    "//crates/daemon-engine:daemon_engine_test_hooks",
+    "//crates/daemon-support:daemon_support_test_hooks",
+    "//crates/scenarios-transcript:scenarios_transcript",
+]
+
+# The runner: the daemon assembled over fake edges, the format of a scenario and its checkpoints.
+rust_library(
+    name = "scenarios",
+    testonly = True,
+    srcs = glob(["src/**/*.rs"], exclude = ["src/bin/*.rs", "src/**/*_tests.rs"]),
+    crate_name = "alondra_scenarios",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    rustc_flags = ["-Copt-level=0"],
+    version = VERSION,
+    visibility = ["//visibility:private"],
+    deps = DEPS,
+)
+
+# The tests of the harness itself: it sees a failure with its own error, runs a scenario twice to
+# the same bytes and lets nothing out to a real service.
+low_opt_rust_test(
+    name = "scenarios_harness_test",
+    size = "medium",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/bin/*.rs"]),
+    crate_name = "alondra_scenarios",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    env = {"HOME": ".", "TZ": "UTC"},
+    version = VERSION,
+    deps = all_crate_deps(normal = True, normal_dev = True) + [
+        "//crates/agent-protocol:agent_protocol",
+        "//crates/agent-runtime:agent_runtime",
+        "//crates/alondrad:alondrad_scenarios_lib",
+        "//crates/core:alondra_core",
+        "//crates/daemon-engine:daemon_engine_test_hooks",
+        "//crates/daemon-support:daemon_support_test_hooks",
+        "//crates/scenarios-transcript:scenarios_transcript",
+    ],
+)
+
+# Every case of `cases/`, one after another, each with its name. Bazel's rust_test always runs the
+# libtest harness, so the runner is a binary and `scenarios_test` runs it: `--test_arg=<name>` runs
+# the cases whose name contains it, and the shards split the rest.
+rust_binary(
+    name = "scenarios_runner",
+    testonly = True,
+    srcs = ["tests/scenarios_test.rs"],
+    crate_root = "tests/scenarios_test.rs",
+    edition = "2024",
+    rustc_env = {"SCENARIO_CASES": "crates/scenarios/cases"},
+    rustc_flags = ["-Copt-level=0"],
+    version = VERSION,
+    deps = DEPS + [":scenarios"],
+)
+
+sh_test(
+    name = "scenarios_test",
+    size = "medium",
+    srcs = ["run_scenarios.sh"],
+    data = [":scenarios_runner"] + glob(["cases/**"]),
+    env = {"HOME": ".", "TZ": "UTC"},
+)
+
+# `bazel run //crates/scenarios:accept -- <case>` writes the checkpoints of the case into the tree.
+rust_binary(
+    name = "accept",
+    testonly = True,
+    srcs = ["src/bin/accept.rs"],
+    crate_root = "src/bin/accept.rs",
+    data = glob(["cases/**"]),
+    edition = "2024",
+    rustc_flags = ["-Copt-level=0"],
+    version = VERSION,
+    deps = DEPS + [":scenarios"],
+)
+
+# `bazel run //crates/scenarios:ablate -- <case> --revert <files>` shows the case failing without
+# the fix and passing with it.
+rust_binary(
+    name = "ablate",
+    testonly = True,
+    srcs = ["src/bin/ablate.rs"],
+    crate_root = "src/bin/ablate.rs",
+    edition = "2024",
+    version = VERSION,
+    deps = all_crate_deps(normal = True),
+)
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

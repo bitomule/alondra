@@ -38,6 +38,31 @@ rust_library(
     ],
 )
 
+# The daemon as a scenario assembles it: the same sources, built against the engine's test hooks
+# (the one fake GitHub), so a conversation runs the production loops over fake edges.
+rust_library(
+    name = "alondrad_scenarios_lib",
+    testonly = True,
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = ["src/main.rs", "src/**/*_tests.rs", "src/**/tests.rs", "src/**/tests/*.rs"],
+    ),
+    crate_name = "alondrad",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    version = VERSION,
+    visibility = ["//crates/scenarios:__pkg__"],
+    deps = all_crate_deps(normal = True) + [
+        "//crates/agent-runtime:agent_runtime",
+        "//crates/core:alondra_core",
+        "//crates/daemon-engine:daemon_engine_test_hooks",
+        "//crates/daemon-support:daemon_support_test_hooks",
+        "//crates/domain:domain",
+        "//crates/e2e:alondra_e2e",
+        "//crates/process-group:process_group",
+    ],
+)
+
 rust_binary(
     name = "alondrad",
     srcs = ["src/main.rs"],

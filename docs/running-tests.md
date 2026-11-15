@@ -107,6 +107,29 @@ crate, and the two Apple tests that start the daemon are `apple-daemon-process`.
 `AlondraSnapshotTests` is a suite of three targets that run side by side. To record its baselines,
 `make snapshots-record` runs all three.
 
+## Conversation scenarios
+
+`crates/scenarios` runs the real daemon, with every loop it runs, over fake edges: GitHub (one
+fake world), the clock (virtual: time moves only when a step says so), the push transport, the
+Mac's load and the provider's process. A case is a folder, `crates/scenarios/cases/<name>/`, with
+a `scenario.toml` (a world, steps, checkpoints) and the accepted checkpoints. At a checkpoint the
+runner reads the views of the daemon by client and language (the same `GET /views/...` the apps
+read) and the pushes sent since the last one, and compares them with the accepted files. An
+action is pressed on the card the view serves, through `POST /actions`.
+
+- `bazel test //crates/scenarios:scenarios_test` runs every case; `--test_arg=<name>` runs the
+  cases whose name contains it. `//crates/scenarios:scenarios_harness_test` tests the harness
+  itself: it names each failure with its own error, runs a scenario twice to the same bytes, and
+  refuses anything that reaches a real process.
+- `bazel run //crates/scenarios:accept -- <case>` writes what the checkpoints read into the case's
+  folder; the pull request shows that diff for a reviewer to read.
+- `bazel run //crates/scenarios:ablate -- <case> --revert <file>...` runs only that case without
+  the fix (those files as they were on the base of the branch) and with it, and prints the block
+  the pull request shows.
+- Views show local time: the runner needs `TZ=UTC`, which the Bazel targets and `accept` set.
+- `crates/scenarios-transcript` reads the transcript of a provider's process, one reader for
+  every user of one.
+
 ## End to end
 
 `make e2e-sandbox` starts a throwaway daemon in a temporary home with fake `claude` and `gh`, and

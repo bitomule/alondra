@@ -1,0 +1,27 @@
+load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//:version.bzl", "VERSION")
+
+rust_library(
+    name = "scenarios_transcript",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/**/*_tests.rs"]),
+    crate_name = "alondra_scenarios_transcript",
+    edition = "2024",
+    version = VERSION,
+    visibility = ["//crates:__subpackages__", "//tools:__subpackages__"],
+    deps = all_crate_deps(normal = True),
+)
+
+low_opt_rust_test(
+    name = "scenarios_transcript_test",
+    size = "small",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "alondra_scenarios_transcript",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    version = VERSION,
+    deps = all_crate_deps(normal = True, normal_dev = True),
+)
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

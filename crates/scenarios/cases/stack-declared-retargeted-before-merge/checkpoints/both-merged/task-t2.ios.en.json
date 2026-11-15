@@ -1,0 +1,254 @@
+{
+  "client": "ios",
+  "cursor": "<cursor>",
+  "data_epoch": "<data_epoch>",
+  "key": "task:t2",
+  "protocol": 1,
+  "sections": [
+    {
+      "collapsed": false,
+      "id": "header",
+      "items": [
+        {
+          "items": [
+            {
+              "kind": "state",
+              "label": "State",
+              "tone": "success",
+              "value": "Finished"
+            },
+            {
+              "kind": "request",
+              "label": "Request",
+              "value": "Add the CSV export"
+            }
+          ],
+          "type": "facts"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "id": "since",
+      "items": [
+        {
+          "depth": 0,
+          "icon": "history",
+          "id": "since",
+          "struck": false,
+          "title": "Since",
+          "trailing": {
+            "at": "<instant>",
+            "format": "relative",
+            "kind": "time"
+          },
+          "type": "row"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "id": "now",
+      "items": [
+        {
+          "depth": 0,
+          "icon": "history",
+          "id": "now",
+          "struck": false,
+          "title": "node left open: it is your own session",
+          "type": "row"
+        }
+      ]
+    },
+    {
+      "collapsed": true,
+      "id": "request",
+      "items": [
+        {
+          "commentable": false,
+          "text": "Export the report as CSV and then as PDF",
+          "truncated": false,
+          "type": "markdown"
+        }
+      ],
+      "title": "Request"
+    },
+    {
+      "collapsed": false,
+      "id": "pull_requests",
+      "items": [
+        {
+          "depth": 0,
+          "icon": "pull_request",
+          "id": "pr8",
+          "link": {
+            "key": "pull_request:pr8",
+            "kind": "view"
+          },
+          "struck": false,
+          "subtitle": "pdf-export → csv-export",
+          "title": "1 · Pull request 8",
+          "type": "row"
+        }
+      ],
+      "title": "Pull requests"
+    },
+    {
+      "collapsed": false,
+      "id": "options",
+      "items": [
+        {
+          "items": [
+            {
+              "kind": "priority",
+              "label": "Priority",
+              "value": "Normal"
+            },
+            {
+              "label": "PR handling",
+              "value": "You review it; accepting it merges it"
+            }
+          ],
+          "type": "facts"
+        }
+      ],
+      "title": "Options"
+    },
+    {
+      "collapsed": false,
+      "id": "actions",
+      "items": [
+        {
+          "actions": [
+            {
+              "attachments": true,
+              "enabled": true,
+              "id": "msg:agent-t2@25~t2",
+              "input": {
+                "kind": "text",
+                "multiline": true,
+                "placeholder": "Write to this task's node…",
+                "required": true
+              },
+              "label": "Message",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "neutral",
+              "style": "secondary"
+            },
+            {
+              "attachments": false,
+              "enabled": true,
+              "id": "reopen:t2@25",
+              "input": {
+                "kind": "none"
+              },
+              "label": "Reopen",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "neutral",
+              "style": "secondary"
+            }
+          ],
+          "type": "actions"
+        }
+      ]
+    }
+  ],
+  "service": {
+    "capabilities": [
+      "account_presentation",
+      "model_selection",
+      "provider_accounts"
+    ],
+    "version": "<version>",
+    "views_protocol": {
+      "max": 1,
+      "min": 1
+    }
+  },
+  "status": {
+    "badge": 0,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 0
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 0
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "needs_you",
+        "label": "waiting for you",
+        "value": 0
+      },
+      {
+        "id": "queued",
+        "label": "queued",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "paused",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "waiting",
+        "value": 0
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "RAM",
+        "level": "calm",
+        "text": "25%",
+        "value": 0.25
+      },
+      {
+        "id": "cpu",
+        "label": "CPU",
+        "level": "calm",
+        "text": "5%",
+        "value": 0.05
+      },
+      {
+        "id": "disk",
+        "label": "Disk",
+        "level": "calm",
+        "text": "550 GB free",
+        "value": 0.5
+      }
+    ],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    },
+    "session_wait": {
+      "text": "No provider account is available · check Accounts",
+      "tone": "warning"
+    },
+    "summary": "0 tasks working",
+    "summary_parts": [
+      {
+        "count": 0,
+        "id": "working",
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
+    "version": "<version>"
+  },
+  "title": "Add the PDF export",
+  "version": "<version>",
+  "view": "task"
+}

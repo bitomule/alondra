@@ -55,3 +55,44 @@ impl Default for Pushes {
         Self::new(RelayPush)
     }
 }
+
+/// One push a [`RecordedPushes`] was asked to send.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SentPush {
+    pub device: String,
+    pub delivery: &'static str,
+    pub with_sound: bool,
+    pub payload: Value,
+}
+
+/// A transport that keeps every push instead of sending it: the phone of a scenario.
+#[derive(Clone, Default)]
+pub struct RecordedPushes(Arc<std::sync::Mutex<Vec<SentPush>>>);
+
+impl RecordedPushes {
+    /// The pushes sent since the last call.
+    pub fn take(&self) -> Vec<SentPush> {
+        std::mem::take(&mut *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+    }
+}
+
+impl PushTransport for RecordedPushes {
+    fn reaches_devices(&self, _service: &Service) -> bool {
+        true
+    }
+
+    fn send<'a>(&'a self, _service: &'a Service, push: DevicePush<'a>, _epoch: &'a mut Option<[u8; 16]>) -> Sent<'a> {
+        let delivery = match push.delivery {
+            PushDelivery::Alert => "alert",
+            PushDelivery::Background => "background",
+            PushDelivery::Badge => "badge",
+        };
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(SentPush {
+            device: push.device.to_owned(),
+            delivery,
+            with_sound: push.with_sound,
+            payload: push.payload.clone(),
+        });
+        Box::pin(async { Ok(()) })
+    }
+}

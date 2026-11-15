@@ -403,6 +403,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "alondra-scenarios"
+version = "0.3.45"
+dependencies = [
+ "alondra-agent-protocol",
+ "alondra-agent-runtime",
+ "alondra-core",
+ "alondra-daemon-engine",
+ "alondra-daemon-support",
+ "alondra-scenarios-transcript",
+ "alondrad",
+ "base64 0.23.1",
+ "p256 0.14.0",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+]
+
+[[package]]
+name = "alondra-scenarios-transcript"
+version = "0.3.45"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "alondra-store"
 version = "0.3.45"
 dependencies = [
