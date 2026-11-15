@@ -1,0 +1,75 @@
+name = "a delivery whose pull request merged closes when its node ends, though the usage limit holds the task"
+fixes = "#227"
+max_virtual = "2h"
+
+[[step]]
+do = "request"
+text = "Export the report as CSV"
+task = "t1"
+title = "Add the CSV export"
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "github"
+event = "open_pr"
+number = 7
+head = "csv-export"
+base = "main"
+
+[[step]]
+do = "register_pr"
+task = "t1"
+number = 7
+
+[[step]]
+do = "present"
+task = "t1"
+id = "d1"
+prs = [7]
+body = "The CSV export is ready"
+
+[[step]]
+do = "api_error"
+task = "t1"
+error = "rate_limit"
+status = 429
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "held-by-the-limit"
+screens = ["home", "task:t1"]
+
+[[step]]
+do = "press"
+presentation = "d1"
+action = "merge"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "closed"
+screens = ["home"]
+
+[[step.expect]]
+check = "pr_merged_into"
+pr = 7
+branch = "main"
+
+[[step.expect]]
+check = "task_state"
+task = "t1"
+state = "done"
