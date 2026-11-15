@@ -5484,6 +5484,7 @@ impl DomainState {
                     self.leave_for_the_move(task_id, lifecycles)?;
                 }
                 self.end_gate_pause(task_id, lifecycles)?;
+                self.leave_hold_for_the_move(task_id, account, lifecycles)?;
                 self.tasks.get_mut(task_id).expect("checked above").pending_selection = None;
             }
             Command::RecordHostReleased { task_id, generation } => {

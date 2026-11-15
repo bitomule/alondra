@@ -414,19 +414,47 @@ impl DomainState {
         if AccountKey::new(held.provider,held.account.clone()) == target {
             return Err(DomainError::new("invalid_input", "A task leaves its account's usage limit only for another account"));
         }
-        let paid_granted = self.tasks.get(task).and_then(|task| task.selection.as_ref()).is_some_and(|selection| selection.account.as_ref() == Some(&target) && selection.paid_account_grant.as_ref() == Some(&target));
-        match self.accounts.iter().find(|status| status.provider == provider && status.id == *to) {
-            Some(status) if matches!(status.state, AccountState::Disabled | AccountState::SignedOut) || (status.billing == crate::accounts::AccountBilling::PayPerUse && !paid_granted) => {
-                return Err(DomainError::new("conflict", "That account cannot take the task's work now"));
-            }
-            None if provider != Provider::Claude || !to.is_default() || !self.accounts.is_empty() => {
-                return Err(DomainError::new("not_found", "That account is not one of the accounts Alondra knows"));
-            }
-            _ => {}
+        if let Some(refusal) = self.refuses_work_off_a_hold(task, &target) {
+            return Err(refusal);
         }
         self.withdraw_hold(&held.card);
         let record = LifecycleRecord::Resumed { card: held.card.clone(), input: self.next_input(task), text: None };
         self.decide(lifecycles, task, record)
+    }
+
+    /// A task that moves to `to` leaves the hold the account it leaves puts on it: that account's
+    /// usage limit or expired sign-in, or its provider's outage when it moves to another provider.
+    /// The card is withdrawn and the next node, on `to`, starts with what already waits for it, or
+    /// with an input of its own when nothing does. A hold `to` would share, or an account that
+    /// cannot take the work, keeps the task where it is.
+    pub(super) fn leave_hold_for_the_move(&mut self, task: &TaskId, to: &AccountKey, lifecycles: &mut Lifecycles) -> Result<(), DomainError> {
+        let Some(held) = self.claude_held().into_iter().find(|held| held.task == *task) else { return Ok(()) };
+        let from = AccountKey::new(held.provider, held.account.clone());
+        let left = match held.hold {
+            ClaudeHold::Outage => from.provider != to.provider,
+            ClaudeHold::Usage | ClaudeHold::SignedOut => from != *to,
+        };
+        if !left || self.refuses_work_off_a_hold(task, to).is_some() {
+            return Ok(());
+        }
+        self.withdraw_hold(&held.card);
+        if self.lifecycle(lifecycles, task)?.pending_inputs().is_empty() {
+            return self.resume_held(&held, lifecycles);
+        }
+        self.decide(lifecycles, task, LifecycleRecord::PauseEnded { card: held.card.clone() })
+    }
+
+    fn refuses_work_off_a_hold(&self, task: &TaskId, target: &AccountKey) -> Option<DomainError> {
+        let paid_granted = self.tasks.get(task).and_then(|task| task.selection.as_ref()).is_some_and(|selection| selection.account.as_ref() == Some(target) && selection.paid_account_grant.as_ref() == Some(target));
+        match self.accounts.iter().find(|status| status.provider == target.provider && status.id == target.account) {
+            Some(status) if matches!(status.state, AccountState::Disabled | AccountState::SignedOut) || (status.billing == crate::accounts::AccountBilling::PayPerUse && !paid_granted) => {
+                Some(DomainError::new("conflict", "That account cannot take the task's work now"))
+            }
+            None if target.provider != Provider::Claude || !target.account.is_default() || !self.accounts.is_empty() => {
+                Some(DomainError::new("not_found", "That account is not one of the accounts Alondra knows"))
+            }
+            _ => None,
+        }
     }
 
     fn account_signed_out(&mut self, account: &AccountKey) {

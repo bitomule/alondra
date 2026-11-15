@@ -4,6 +4,7 @@ use super::lifecycle_tests::{deliver, exec, last, must, task, user, world};
 use super::*;
 use crate::accounts::{AccountBilling, AccountId, AccountKey, AccountState, AccountStatus, Provider};
 use crate::model_selection::*;
+use alondra_domain::{Capacity, LiveState};
 use std::collections::{BTreeMap, BTreeSet};
 
 fn account(provider: Provider, id: &str, state: AccountState) -> AccountStatus {
@@ -219,4 +220,93 @@ fn a_disk_pause_ends_with_the_move_of_the_task_it_paused() {
     assert_eq!(s.node_pause(&"a".into()), None, "the pause ended with the node it paused");
     assert_eq!(situation(&s), Situation::Waiting(WaitsFor::Slot), "it goes on on the account it moved to");
     assert_eq!(s.lifecycle_of(&"t".into()).unwrap().pending_inputs().len(), 1);
+}
+
+fn usage_limit() -> SdkApiFailure {
+    SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: None }
+}
+fn usage_holds(s: &DomainState) -> Vec<ClaudeHeld> {
+    s.claude_held().into_iter().filter(|held| held.task == TaskId::from("t") && held.hold == ClaudeHold::Usage).collect()
+}
+/// Task `t` on Codex, its turn ended by Codex's usage limit: the task waits for the reset.
+fn held_by_the_codex_limit(s: &mut DomainState, turn: &str) -> InteractionId {
+    must(s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: turn.into(), failure: Some(usage_limit()), failed: None });
+    let held = usage_holds(s);
+    assert_eq!(held.iter().map(|held| (held.provider, &held.account)).collect::<Vec<_>>(), [(Provider::Codex, &codex().account)]);
+    held[0].card.clone()
+}
+fn left_the_limit_for_the_account_it_moved_to(s: &DomainState, card: &InteractionId) {
+    assert!(usage_holds(s).is_empty(), "Codex's limit holds a task that left Codex: {:?}", usage_holds(s));
+    assert!(s.interactions[card].withdrawn, "the card of a limit the task left stays in the inbox");
+    let lifecycle = s.lifecycle_of(&"t".into()).unwrap();
+    assert_eq!(lifecycle.pending_inputs().len(), 1, "the next node has something to start with");
+    assert!(lifecycle.cards().iter().all(|(id, _)| **id != *card), "the task no longer waits on the card");
+}
+
+// 2026-11-15: Codex ran out until Wednesday and its limit
+// held the task. The user moved it to a Claude account with margin and the move finished, but the
+// task kept waiting for Codex's reset and no node started on the account it moved to.
+#[test]
+fn a_move_to_another_account_ends_the_usage_limit_of_the_account_the_task_left() {
+    let mut s = on_codex();
+    let card = held_by_the_codex_limit(&mut s, "turn");
+    assert_eq!(s.live_state(&"t".into()), Some(LiveState::WaitingCapacity(Capacity::Usage)));
+    moved_and_deferred(&mut s);
+    left_the_limit_for_the_account_it_moved_to(&s, &card);
+    assert_eq!(situation(&s), Situation::Waiting(WaitsFor::Slot), "it starts on the account it moved to");
+    must(&mut s, Actor::System, Command::AdmitExecution { provider: Provider::Claude, task_id: "t".into(), agent_id: "b".into(), conversation: "next".into(),
+        instance: "next".into(), host: "sdk-host".into(), model: None, account: None, leaves_limit: None });
+    assert_eq!(s.tasks[&TaskId::from("t")].account_key(), claude());
+}
+
+// The same task, as it really was: its pull request merged and its node owed the release when
+// Codex's limit held it.
+#[test]
+fn a_task_owing_work_after_its_merge_starts_on_the_account_it_moved_to_off_a_usage_limit() {
+    let mut s = on_codex();
+    let targets = || vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }];
+    must(&mut s, Actor::Agent { agent_id: "a".into() }, Command::RegisterPr {
+        task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(), number: 1,
+        head: "head1".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+    });
+    must(&mut s, Actor::Agent { agent_id: "a".into() }, Command::DeclarePostMergeWork { task_id: "t".into(), reason: Some("publish the release".into()), waits_for: vec![] });
+    must(&mut s, Actor::Agent { agent_id: "a".into() }, Command::PresentResult {
+        checklist: Vec::new(), attachments: vec![], task_id: "t".into(), interaction_id: "final".into(), body: "Done".into(),
+        targets: targets(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the result", &[], true),
+    });
+    must(&mut s, user(), Command::AcceptDelivery { presentation_id: "final".into(), targets: targets() });
+    must(&mut s, Actor::System, Command::ObservePrState {
+        pr_id: "pr".into(), head: "head1".into(), base: "main".into(), state: PrState::Merged, merged_head: Some("head1".into()),
+    });
+    must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn".into(), failure: None, failed: None });
+    must(&mut s, Actor::System, Command::TellNode { task_id: "t".into(), text: "Your PR merged: publish the release.".into(), from_user: false, answers: None });
+    let input = s.lifecycle_of(&"t".into()).unwrap().pending_inputs().first().map(|input| input.as_str().to_owned()).expect("the merge notice");
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![RuntimeObservation::TurnStarted { turn: "release".into(), input }] });
+    let card = held_by_the_codex_limit(&mut s, "release");
+    moved_and_deferred(&mut s);
+    left_the_limit_for_the_account_it_moved_to(&s, &card);
+    let lifecycle = s.lifecycle_of(&"t".into()).unwrap();
+    let goes_on = match lifecycle.phase() {
+        alondra_domain::TaskPhase::InProgress => matches!(lifecycle.live(), Some(LiveState::Working(_) | LiveState::WaitingCapacity(Capacity::Gate))),
+        alondra_domain::TaskPhase::Delivered => lifecycle.obligation().is_some_and(|owed| owed.owed == alondra_domain::Owed::Start),
+        _ => false,
+    };
+    assert!(goes_on, "the release it owes starts on the account it moved to: {:?} {:?}", lifecycle.phase(), lifecycle.live());
+}
+
+#[test]
+fn a_usage_limit_stays_when_the_account_the_task_moves_to_cannot_take_it() {
+    let mut s = on_codex();
+    let card = held_by_the_codex_limit(&mut s, "turn");
+    must(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![
+        account(Provider::Claude, "default", AccountState::SignedIn), account(Provider::Codex, "default", AccountState::SignedIn), account(Provider::Claude, "off", AccountState::Disabled),
+    ], reserve: crate::usage::default_reserve() });
+    move_to(&mut s, claude()).unwrap();
+    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false, by_alondra: true, ended_work: vec![] });
+    must(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![
+        account(Provider::Claude, "default", AccountState::SignedOut), account(Provider::Codex, "default", AccountState::SignedIn),
+    ], reserve: crate::usage::default_reserve() });
+    must(&mut s, Actor::System, Command::DeferTaskMove { task_id: "t".into(), account: claude() });
+    assert_eq!(usage_holds(&s).len(), 1, "a signed-out account takes no work off a limit");
+    assert!(!s.interactions[&card].withdrawn);
 }

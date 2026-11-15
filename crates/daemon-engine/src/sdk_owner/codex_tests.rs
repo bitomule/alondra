@@ -1989,6 +1989,32 @@ async fn a_paused_task_moves_at_once_and_starts_on_the_new_account_when_resumed(
     slice.domain.stop_sdk_owners();
 }
 
+// 2026-11-15: Codex ran out until Wednesday and its limit
+// held the task. The user moved it to Claude and the move finished, but the task kept waiting for
+// Codex's reset and no node started on Claude.
+#[tokio::test]
+async fn a_task_held_by_the_codex_limit_starts_on_the_account_it_moved_to(){
+    let slice=Slice::new();let task:TaskId=TASK.into();
+    configured(&slice,"quota");claude_ready(&slice);
+    git(&slice.worktree,&["init","-q","-b","release-notes"]);
+    slice.domain.enable_sdk(slice.backend.clone());
+    let mut driver=launch(&slice);
+    slice.settle(&mut driver);
+    let held=|slice:&Slice|slice.domain.state().unwrap().claude_held().iter().filter(|held|held.task==task&&held.hold==alondra_core::domain::ClaudeHold::Usage).count();
+    assert_eq!(held(&slice),1,"Codex's limit holds the task");
+    slice.domain.add_sdk_owner(Owner::spawn(driver));
+    request_move(&slice);
+    assert_eq!(settled_move(&slice).await,"done");
+    assert_eq!(held(&slice),0,"the task no longer waits for Codex's reset");
+    let mut changed=slice.domain.subscribe();
+    while admissions(&slice)<2{
+        crate::provider_transition::pass(&slice.domain).await;
+        if admissions(&slice)<2{tokio::time::timeout(std::time::Duration::from_secs(60),changed.changed()).await.expect("no node started on the account it moved to").unwrap();}
+    }
+    assert_eq!(slice.domain.state().unwrap().tasks[&task].account_key(),AccountKey::native(Provider::Claude));
+    slice.domain.stop_sdk_owners();
+}
+
 #[tokio::test]
 async fn a_resting_task_moves_at_once(){
     let slice=Slice::new();let task:TaskId=TASK.into();
