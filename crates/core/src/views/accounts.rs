@@ -260,7 +260,7 @@ fn remove_action(account: &AccountStatus, shown: &str, context: &RenderContext<'
         return Some(remove);
     }
     let provider = provider_name(account.provider);
-    remove.confirm = Some(Confirm {
+    remove.confirm = Some(Confirm { cancel: None,
         title: tf!(lang, "Remove {shown}?", "¿Quitar {shown}?"),
         message: tf!(lang,
             "Alondra signs {shown} out of {provider} on this Mac and forgets it. Your provider account itself stays as it is.",

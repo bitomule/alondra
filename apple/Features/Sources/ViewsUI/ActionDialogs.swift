@@ -27,7 +27,11 @@ private struct ActionDialogs: ViewModifier {
                 Button(store.confirmation?.button ?? "", role: store.confirmationIsDestructive ? .destructive : nil) {
                     store.send(.confirm)
                 }
-                Button("Cancel", role: .cancel) { store.send(.cancelConfirmation) }
+                if let cancel = store.confirmation?.cancel {
+                    Button(cancel, role: .cancel) { store.send(.cancelConfirmation) }
+                } else {
+                    Button("Cancel", role: .cancel) { store.send(.cancelConfirmation) }
+                }
             } message: {
                 Text(verbatim: store.confirmation?.message ?? "")
             }

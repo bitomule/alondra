@@ -303,6 +303,7 @@ fn states() -> Vec<State> {
         ("a confirmation", false, Box::new(|| {
             let mut app = tasks();
             app.modal = Some(Modal {
+                cancel: None,
                 title: "Close it?".into(),
                 body: String::new(),
                 button: "Close".into(),

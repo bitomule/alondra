@@ -251,7 +251,7 @@ impl App {
         }
         if let Some(modal) = &self.modal {
             t.add(vec![plain(KeyCode::Enter)], "⏎", modal.button.clone(), Act::ModalConfirm);
-            t.add(vec![plain(KeyCode::Esc)], "Esc", tr!("cancel", "cancelar"), Act::ModalCancel);
+            t.add(vec![plain(KeyCode::Esc)], "Esc", modal.cancel.clone().unwrap_or_else(|| tr!("cancel", "cancelar").into()), Act::ModalCancel);
             return t;
         }
         if let Some(form) = &self.elicitation {

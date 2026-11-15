@@ -45,6 +45,9 @@ pub struct LiveSnapshot {
     pub task_history: BTreeMap<String, Vec<LiveHistoryStep>>,
     #[serde(default)]
     pub task_options: BTreeMap<String, LiveTaskOptions>,
+    /// When the newest unanswered message of the user arrived, by the delivery it waits on.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub message_times: BTreeMap<String, String>,
     /// When each open task last changed state, by task id: the Tasks list says since when its fact holds.
     #[serde(default)]
     pub task_since: BTreeMap<String, String>,

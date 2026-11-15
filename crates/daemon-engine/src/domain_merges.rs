@@ -301,9 +301,6 @@ pub fn due(state: &DomainState) -> Vec<Due> {
         for target in targets {
             let DeliveryTarget::PullRequest { pr_id, head } = target else { continue };
             let feedback_target = FeedbackTarget::PullRequest { pr_id: pr_id.clone(), head: head.clone() };
-            if state.pending_reply(p, &feedback_target) {
-                continue;
-            }
             let auto = acceptance.is_none() && feedback.iter().all(|feedback| !feedback.target.affects(&feedback_target))
                 && state.requests.get(&task.request_id).is_some_and(|r| r.auto_merge);
             let Some(pr) = state.pull_requests.get(pr_id).filter(|pr| pr.state == PrState::Open && &pr.head == head) else { continue };
@@ -311,6 +308,10 @@ pub fn due(state: &DomainState) -> Vec<Due> {
                 a.valid && a.presentation_id == p.id && &a.pr_id == pr_id && &a.head == head
                     && matches!(a.attempt, MergeAttemptState::Unclaimed | MergeAttemptState::Claimed | MergeAttemptState::Uncertain)
             });
+            let authorized_by = authorization.map_or(alondra_core::domain::Feedback::ALONDRA, |a| a.user_id.as_str());
+            if state.authorized_merge_held(p, authorized_by, &feedback_target) {
+                continue;
+            }
             let (method, authorization) = match (authorization, MergeMethod::for_pr(state.merge_method, &pr.allowed_methods)) {
                 (Some(a), _) => (a.method, Some(a.id.clone())),
                 (None, Some(method)) if auto => (method, None),
@@ -328,8 +329,9 @@ fn still_due(state: &DomainState, item: &Due, authorization: &AuthorizationId) -
     let Some(p) = task.final_presentation.as_ref().filter(|p| **p == item.presentation).and_then(|p| state.interactions.get(p)) else {
         return false;
     };
+    let authorized_by = state.merge_authorizations.get(authorization).map_or(alondra_core::domain::Feedback::ALONDRA, |a| a.user_id.as_str());
     state.stack_ready_for_merge(&item.pr.id).is_ok()
-        && !state.pending_reply(p, &FeedbackTarget::PullRequest { pr_id: item.pr.id.clone(), head: item.head.clone() })
+        && !state.authorized_merge_held(p, authorized_by, &FeedbackTarget::PullRequest { pr_id: item.pr.id.clone(), head: item.head.clone() })
         && state.pull_requests.get(&item.pr.id).is_some_and(|pr| pr.state == PrState::Open && pr.head == item.head)
         && state.merge_authorizations.get(authorization).is_some_and(|a| a.valid && a.claimed_by.is_none()
             && matches!(a.attempt, MergeAttemptState::Claimed | MergeAttemptState::Uncertain))
@@ -591,7 +593,7 @@ impl Merger {
                 let revision = domain.state()?.revision;
                 let authorization = AuthorizationId(format!("auto-{}-{}-{revision}", item.presentation, pr.id));
                 let authorize = Command::AuthorizeMerge { authorization_id: authorization.clone(), presentation_id: item.presentation.clone(),
-                    pr_id: pr.id.clone(), expected_head: item.head.clone(), method: item.method };
+                    pr_id: pr.id.clone(), expected_head: item.head.clone(), method: item.method, despite_pending_message: false };
                 if !recorded(execute_system(domain, authorize))? {
                     return Ok(Step::Wait);
                 }

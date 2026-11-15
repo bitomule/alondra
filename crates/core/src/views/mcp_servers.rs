@@ -103,7 +103,7 @@ fn remove_action(server: &McpServerState, project: Option<&str>, context: &Rende
     };
     let mut remove = common::action(Verb::McpRemove, &subject, context.domain.revision, t!(lang, "Delete", "Borrar"), Style::Destructive)?;
     let name = &server.name;
-    remove.confirm = Some(super::Confirm {
+    remove.confirm = Some(super::Confirm { cancel: None,
         title: tf!(lang, "Delete {name}?", "¿Borrar {name}?"),
         message,
         button: t!(lang, "Delete", "Borrar").into(),
@@ -155,7 +155,7 @@ fn server_row(used: &Used<'_>, waiting: usize, project: Option<&str>, context: &
                 && let Some(mut sign_out) = common::action(Verb::McpSignOut, &target, context.domain.revision, t!(lang, "Sign out", "Cerrar sesión"), Style::Destructive)
             {
                 let name = &server.name;
-                sign_out.confirm = Some(super::Confirm {
+                sign_out.confirm = Some(super::Confirm { cancel: None,
                     title: tf!(lang, "Sign out of {name}?", "¿Cerrar sesión en {name}?"),
                     message: tf!(lang,
                         "The agent forgets and revokes its sign-in to {name}. Every task that uses it loses it until you connect again.",

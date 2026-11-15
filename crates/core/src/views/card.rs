@@ -13,7 +13,7 @@ use super::{
 };
 use crate::domain::{CardType, InboxCard, Need, SystemCard,
     AvailableAction, Author, CardKind, CardSpec, ContentKind as DomainContent,
-    DeliveryTarget, DocumentRevisionId, DomainState, EvidenceKind, Hold, InboxItem, InboxSubject, Instruction, Interaction, InteractionId,
+    DeliveryTarget, DocumentRevisionId, FeedbackTarget, DomainState, EvidenceKind, Hold, InboxItem, InboxSubject, Instruction, Interaction, InteractionId,
     InteractionPayload, InteractionSubject, PrId, PrState, PullRequest, QuestionGroup, QuestionOption, Recipient, Scope, Task, clip, fit_title,
     included_files, without_included_files,
 };
@@ -593,7 +593,7 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
             Some(humanize_task_ids(spec.why.trim(), domain)).filter(|why| !why.is_empty()),
         ),
     };
-    let why = match interaction.and_then(|i| waiting_reply(item, i, context)) {
+    let why = match interaction.and_then(|i| waiting_reply(item, i, context)).or_else(|| unanswered_message_line(item, context)) {
         Some(reply) => Some(why.map_or_else(|| reply.clone(), |why| format!("{reply}\n\n{why}"))),
         None => why,
     };
@@ -1732,8 +1732,50 @@ fn merge_available<'a>(item: &'a InboxItem, pr: &PullRequest, head: &str) -> Opt
 /// subject, so only that PR merges.
 fn merge_of(item: &InboxItem, interaction: &Interaction, pr: &PullRequest, head: &str, context: &RenderContext<'_>) -> Option<Action> {
     merge_available(item, pr, head).filter(|available| available.enabled)?;
-    let id = action_id(Verb::Merge, &pr.id.0, interaction.revision, Some(merge_extra(head, &interaction.id.0)))?;
-    super::merge_method::pr_action(id.to_string(), pr, context)
+    merge_button(&pr.id.0, interaction, pr, head, context)
+}
+
+/// The merge of `pr` at `head`. While the task has not answered a message of the user, the
+/// button asks first and, confirmed, merges anyway: its id is the user's word that they knew.
+fn merge_button(subject: &str, interaction: &Interaction, pr: &PullRequest, head: &str, context: &RenderContext<'_>) -> Option<Action> {
+    let lang = context.lang;
+    let unanswered = context.domain.pending_user_message(interaction, &FeedbackTarget::PullRequest { pr_id: pr.id.clone(), head: head.to_owned() });
+    let extra = merge_extra(head, &interaction.id.0);
+    let extra = if unanswered { format!("{}{extra}", super::action_id::MERGE_ANYWAY) } else { extra };
+    let id = action_id(Verb::Merge, subject, interaction.revision, Some(extra))?;
+    let mut merge = super::merge_method::pr_action(id.to_string(), pr, context)?;
+    if unanswered {
+        merge.confirm = Some(super::Confirm {
+            title: t!(lang, "Merge without waiting for your message?", "¿Hacer merge sin esperar a tu mensaje?").into(),
+            message: t!(lang, "This task got a message from you after opening the PR and is still working on it. If you merge now, the PR may not include what you asked for and another PR may be needed.",
+                "Esta tarea recibió un mensaje tuyo después de abrir el PR y aún lo está atendiendo. Si haces merge, puede que no incluya lo que pediste y haga falta otro PR.").into(),
+            button: t!(lang, "Merge anyway", "Hacer merge igualmente").into(),
+            cancel: Some(t!(lang, "Wait", "Esperar").into()),
+        });
+    }
+    Some(merge)
+}
+
+/// The short line beside a merge the user can still press while the task works on a message of
+/// theirs: what it is doing, and since when.
+fn unanswered_message_line(item: &InboxItem, context: &RenderContext<'_>) -> Option<String> {
+    let interaction = interaction_of(item, context.domain)?;
+    let pr = card_pr(item, interaction, context.domain).filter(|pr| pr.state == PrState::Open)?;
+    let (_, head) = pr_targets(interaction, context.domain).into_iter().find(|(target, _)| target.id == pr.id)?;
+    merge_available(item, pr, head).filter(|available| available.enabled)?;
+    let domain = context.domain;
+    if !domain.pending_user_message(interaction, &FeedbackTarget::PullRequest { pr_id: pr.id.clone(), head: head.to_owned() })
+        || waiting_reply(item, interaction, context).is_some() {
+        return None;
+    }
+    let at = context.live.message_times.get(&interaction.id.0).map(|at| super::task_state::clock(at).to_owned());
+    let lang = context.lang;
+    Some(match (domain.node_attends(interaction), at) {
+        (true, Some(at)) => tf!(lang, "Working on your message from {at}", "Atendiendo tu mensaje de las {at}", at = at),
+        (true, None) => t!(lang, "Working on your message", "Atendiendo tu mensaje").into(),
+        (false, Some(at)) => tf!(lang, "Your message from {at} waits for the task to resume", "Tu mensaje de las {at} espera a que la tarea se reanude", at = at),
+        (false, None) => t!(lang, "Your message waits for the task to resume", "Tu mensaje espera a que la tarea se reanude").into(),
+    })
 }
 
 /// A PR by its repository's name and number, told apart from the others of its task.
@@ -1834,13 +1876,10 @@ fn delivery_actions(
         // The task shows what it waits for; the card has nothing to press until that is over.
     } else if own_pr(item).is_some() {
         visible.extend(open.first().and_then(|(pr, head)| merge_of(item, interaction, pr, head, context)));
-    } else if let Some(available) = open.first().and_then(|(pr, head)| merge_available(item, pr, head)).filter(|available| available.enabled) {
-        let head = available.expected_head.as_ref().map(|head| merge_extra(head, &interaction.id.0));
-        if let Some(id) = action_id(Verb::Merge, &interaction.id.0, interaction.revision, head)
-            && let Some(merge) = super::merge_method::pr_action(id.to_string(), pr, context)
-        {
-            visible.push(merge);
-        }
+    } else if let Some(available) = open.first().and_then(|(pr, head)| merge_available(item, pr, head)).filter(|available| available.enabled)
+        && let Some(head) = available.expected_head.as_deref()
+    {
+        visible.extend(merge_button(&interaction.id.0, interaction, pr, head, context));
     } else if find("authorize_merge").is_none() {
         visible.extend(accept(Role::Advance, accept_label));
     }
@@ -1866,7 +1905,7 @@ fn close_unmerged_action(pr: &PullRequest, subject: &str, revision: u64, context
     let mut action = button(id.to_string(), t!(lang, "Close without merging", "Cerrar sin hacer merge"), Role::Risk);
     action.stamp = Some(t!(lang, "Closing…", "Cerrando…").into());
     action.key = (context.client != Client::Ios).then(|| "k".into());
-    action.confirm = Some(super::Confirm {
+    action.confirm = Some(super::Confirm { cancel: None,
         title: tf!(lang, "Close PR #{number} without merging?", "¿Cerrar la PR #{number} sin hacer merge?", number = pr.number),
         message: closing_message(pr, context).into(),
         button: t!(lang, "Close PR", "Cerrar la PR").into(),

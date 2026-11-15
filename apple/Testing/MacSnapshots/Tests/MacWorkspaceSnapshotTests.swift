@@ -320,6 +320,16 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 900, height: 720), spanish: true) { MacServiceDetail(presentation: store) }
     }
 
+    func test_card_aPullRequestWithAnUnansweredMessageKeepsItsMerge() throws {
+        let store = try presentation(detail: "card-merge-unanswered-mac")
+        assertWindow(size: CGSize(width: 900, height: 720)) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_card_aPullRequestWithAnUnansweredMessageKeepsItsMerge_spanish() throws {
+        let store = try presentation(detail: "card-merge-unanswered-es-mac", spanish: true)
+        assertWindow(size: CGSize(width: 900, height: 720), spanish: true) { MacServiceDetail(presentation: store) }
+    }
+
     // MARK: What an action asks first, and what it says after
 
     /// The alert the system draws for a question an action asks: the view goes into a real window,
@@ -363,10 +373,10 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         true: #"{"protocol":1,"outcome":"applied","stamp":"Haciendo merge…","result":{"kind":"started","title":"Se está haciendo merge de la PR","body":"La verás terminada en su tarea cuando GitHub lo confirme."}}"#,
     ]
 
-    private func pullRequest(spanish: Bool, _ edit: @escaping (inout ActionFeature.State, Card) throws -> Void) throws
+    private func pullRequest(spanish: Bool, detail: String? = nil, _ edit: @escaping (inout ActionFeature.State, Card) throws -> Void) throws
         -> StoreOf<MacPresentationFeature> {
         var failure: (any Error)?
-        let store = try presentation(detail: spanish ? "card-pr-es-mac" : "card-pr-mac", spanish: spanish) { state in
+        let store = try presentation(detail: detail ?? (spanish ? "card-pr-es-mac" : "card-pr-mac"), spanish: spanish) { state in
             guard let card = state.detailDocument?.sections.flatMap(\.items).compactMap({ item -> Card? in
                 if case let .card(card) = item { card } else { nil }
             }).first else { return }
@@ -383,6 +393,17 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
                 let close = try XCTUnwrap(card.more.first { $0.id?.hasPrefix("close_unmerged:") == true })
                 actions.action = close
                 actions.confirmation = close.confirm
+            }
+            await assertAlert(spanish: spanish) { MacViewActionSheet(presentation: store) }
+        }
+    }
+
+    func test_mergingOverAnUnansweredMessageAsksFirst() async throws {
+        for spanish in [false, true] {
+            let store = try pullRequest(spanish: spanish, detail: spanish ? "card-merge-unanswered-es-mac" : "card-merge-unanswered-mac") { actions, card in
+                let merge = try XCTUnwrap(card.actions.first { $0.id?.hasPrefix("merge:") == true })
+                actions.action = merge
+                actions.confirmation = merge.confirm
             }
             await assertAlert(spanish: spanish) { MacViewActionSheet(presentation: store) }
         }

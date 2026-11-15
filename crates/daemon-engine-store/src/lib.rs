@@ -768,6 +768,7 @@ impl DomainStore {
         tx.execute_batch(MODEL_METRICS)?;
         model_metrics::add_routing_columns(&tx)?;
         repository::add_snooze_columns(&tx)?;
+        repository::add_merge_override_column(&tx)?;
         repository::add_shortened_column(&tx)?;
         typed_cards::upgrade(&tx)?;
         tx.execute_batch(STOP_BLOCKS)?;

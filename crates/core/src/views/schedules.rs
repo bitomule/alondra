@@ -74,7 +74,7 @@ pub(super) fn list(context: &RenderContext<'_>) -> View {
                     Verb::SchedDelete => "d",
                     _ => unreachable!(),
                 }.into());
-                if verb == Verb::SchedDelete { action.confirm = Some(Confirm { title: label.into(), message: t!(context.lang, "Future runs will stop. Delete this schedule?", "Las próximas ejecuciones se detendrán. ¿Eliminar esta programación?").into(), button: label.into() }); }
+                if verb == Verb::SchedDelete { action.confirm = Some(Confirm { cancel: None, title: label.into(), message: t!(context.lang, "Future runs will stop. Delete this schedule?", "Las próximas ejecuciones se detendrán. ¿Eliminar esta programación?").into(), button: label.into() }); }
                 row.actions.push(action);
             }
         }

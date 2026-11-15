@@ -120,11 +120,26 @@ async fn an_accepted_delivery_is_merged_by_alondra_and_the_node_is_only_asked_to
 async fn the_users_merge_button_is_merged_with_the_method_they_chose() {
     let (_home, domain, github) = presented("authorize", false);
     command(&domain, user(), "authorize", Command::AuthorizeMerge { authorization_id: "auth".into(),
-        presentation_id: "d".into(), pr_id: "pr".into(), expected_head: HEAD.into(), method: MergeMethod::Merge });
+        presentation_id: "d".into(), pr_id: "pr".into(), expected_head: HEAD.into(), method: MergeMethod::Merge, despite_pending_message: false });
     now().merge_due(&domain, &github).await.unwrap();
     assert_eq!(*github.merged.lock().unwrap(), vec![(7, HEAD.to_owned(), MergeMethod::Merge)]);
     end_node(&domain);
     assert_eq!(task(&domain), TaskState::Done);
+}
+
+/// 2026-11-14 23:29: a plain message to the task arrived 0.6 s after the user pressed merge. The
+/// merge goes ahead, and the task stays open for the message.
+#[tokio::test]
+async fn a_message_right_after_the_merge_button_is_merged_and_the_task_stays_for_the_message() {
+    let (_home, domain, github) = presented("message-after-merge", false);
+    command(&domain, user(), "authorize", Command::AuthorizeMerge { authorization_id: "auth".into(),
+        presentation_id: "d".into(), pr_id: "pr".into(), expected_head: HEAD.into(), method: MergeMethod::Squash, despite_pending_message: false });
+    command(&domain, Actor::System, "message", Command::TellNode { task_id: "t".into(), text: "Rename the button too".into(), from_user: true, answers: None });
+    now().merge_due(&domain, &github).await.unwrap();
+    assert_eq!(*github.merged.lock().unwrap(), vec![(7, HEAD.to_owned(), MergeMethod::Squash)], "the message does not take the merge back");
+    let state = domain.state().unwrap();
+    assert!(!state.tasks[&TaskId::from("t")].pending_user_inputs.is_empty(), "the message still waits for its answer");
+    assert_ne!(task(&domain), TaskState::Done);
 }
 
 #[tokio::test]
@@ -446,7 +461,7 @@ async fn pressing_merge_again_while_the_checks_wait_is_acted_on_at_once() {
     assert!(merger.merge_due(&domain, &github).await.unwrap(), "the same authorization waits out its poll");
     assert!(github.merged.lock().unwrap().is_empty());
     command(&domain, user(), "again", Command::AuthorizeMerge { authorization_id: "again".into(),
-        presentation_id: "d".into(), pr_id: "pr".into(), expected_head: HEAD.into(), method: MergeMethod::Merge });
+        presentation_id: "d".into(), pr_id: "pr".into(), expected_head: HEAD.into(), method: MergeMethod::Merge, despite_pending_message: false });
     merger.merge_due(&domain, &github).await.unwrap();
     assert_eq!(*github.merged.lock().unwrap(), vec![(7, HEAD.to_owned(), MergeMethod::Merge)],
         "the new press merges with its method without waiting for the next poll");
@@ -1073,7 +1088,7 @@ fn stacked(default: &str) -> (Home, Arc<DomainRuntime>, FakeGithub) {
     });
     command(&domain, user(), "authorize-down", Command::AuthorizeMerge {
         authorization_id: "auth-down".into(), presentation_id: "d-down".into(), pr_id: "pr-down".into(),
-        expected_head: head.clone(), method: MergeMethod::Squash,
+        expected_head: head.clone(), method: MergeMethod::Squash, despite_pending_message: false,
     });
     command(&domain, Actor::System, "parent-merged", Command::ObservePrState {
         pr_id: "pr".into(), head: HEAD.into(), base: default.into(), state: PrState::Merged, merged_head: Some(HEAD.into()),

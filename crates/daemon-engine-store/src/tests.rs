@@ -1034,7 +1034,7 @@ fn restart_preserves_decisions_documents_and_relations() {
             presentation_id: "delivery-1".into(),
             pr_id: "pr-1".into(),
             expected_head: "aaa".into(),
-            method: MergeMethod::Squash,
+            method: MergeMethod::Squash, despite_pending_message: false,
         },
     );
     execute(
@@ -1378,7 +1378,7 @@ fn second_merge_authorization_from_the_same_snapshot_is_stale() {
                 presentation_id: "delivery-1".into(),
                 pr_id: "pr-1".into(),
                 expected_head: "aaa".into(),
-                method,
+                method, despite_pending_message: false,
             },
         )
     };

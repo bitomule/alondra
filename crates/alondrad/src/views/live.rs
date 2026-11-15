@@ -319,7 +319,8 @@ impl Stored {
             return Self { launches, refusals, retries, launched, revision_times: Ok(Default::default()), request_times: Default::default(),
                 task_state_times: Default::default(), task_started_times: Default::default(), cancel_reasons: Default::default(), task_spend: vec![] };
         }
-        let revisions = state.inbox_orders().iter().map(|(_, order)| *order).collect::<Vec<_>>();
+        let revisions = state.inbox_orders().iter().map(|(_, order)| *order)
+            .chain(state.unanswered_message_revisions().into_iter().map(|(_, revision)| revision)).collect::<Vec<_>>();
         Self {
             launches, refusals, retries, launched,
             revision_times: store.revision_times(&revisions),
@@ -583,6 +584,11 @@ async fn gather_inner(
         tone: Tone::Info,
         action: None,
     });
+    let message_times = if clock_only { BTreeMap::new() } else {
+        read.revision_times.as_ref().map(|times| state.unanswered_message_revisions().into_iter()
+            .filter_map(|(presentation, revision)| times.get(&revision).map(|at| (presentation.0, timestamp(*at))))
+            .collect()).unwrap_or_default()
+    };
     let inbox_times = if clock_only { vec![] } else {
         let orders = state.inbox_orders();
         read.revision_times
@@ -654,6 +660,7 @@ async fn gather_inner(
         update,
         gauges,
         inbox_times,
+        message_times,
         request_times,
         projects: keyed.projects,
         options: keyed.options,

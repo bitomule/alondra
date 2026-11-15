@@ -1404,7 +1404,7 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
             .decisions
             .push(decode(row)?);
     }
-    for row in rows(c, "merge_authorizations", &["valid"], &[])? {
+    for row in rows(c, "merge_authorizations", &["valid", "despite_pending_message"], &[])? {
         let x: MergeAuthorization = decode(row)?;
         state.merge_authorizations.insert(x.id.clone(), x);
     }
@@ -1662,6 +1662,14 @@ pub(super) fn add_shortened_column(tx: &rusqlite::Transaction<'_>) -> rusqlite::
          AND length(body)=?1 AND substr(body,-?2)=?3",
         rusqlite::params![(alondra_core::domain::RESULT_LIMIT + MARKER.chars().count()) as i64, MARKER.chars().count() as i64, MARKER],
     )?;
+    Ok(())
+}
+/// Merges authorized before the user could merge over an unanswered message of theirs overrode none.
+pub(super) fn add_merge_override_column(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {
+    let present = tx.query_row("SELECT count(*) FROM pragma_table_info('merge_authorizations') WHERE name='despite_pending_message'", [], |row| row.get::<_, i64>(0))? == 1;
+    if !present {
+        tx.execute_batch("ALTER TABLE merge_authorizations ADD COLUMN despite_pending_message INTEGER NOT NULL DEFAULT 0 CHECK(despite_pending_message IN(0,1))")?;
+    }
     Ok(())
 }
 pub(super) fn add_snooze_columns(tx: &rusqlite::Transaction<'_>) -> rusqlite::Result<()> {

@@ -168,7 +168,7 @@ fn node_of<'a>(task: &Task, context: &'a RenderContext<'_>) -> Option<&'a super:
 }
 
 /// «14:05» out of a local ISO time.
-fn clock(at: &str) -> &str {
+pub(super) fn clock(at: &str) -> &str {
     at.get(11..16).unwrap_or(at)
 }
 

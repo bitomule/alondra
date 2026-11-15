@@ -557,7 +557,7 @@ public struct Action: Codable, Equatable, Sendable {
 }
 public struct ActionOption: Codable, Equatable, Sendable { public let id: String; public let label: String; public let description: String?; public let style: Style; public let input: Input; public let key: String? }
 public struct CommentSpec: Codable, Equatable, Sendable { public let kind: CommentKind }
-public struct Confirm: Codable, Equatable, Sendable { public let title: String; public let message: String; public let button: String }
+public struct Confirm: Codable, Equatable, Sendable { public let title: String; public let message: String; public let button: String; public let cancel: String? }
 public struct Condition: Codable, Equatable, Sendable {
     public let field: String
     public let equals: JSONValue?

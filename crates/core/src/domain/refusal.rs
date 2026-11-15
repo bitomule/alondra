@@ -35,6 +35,8 @@ pub enum Refusal {
     /// A newer result replaced the one the user looked at.
     NewerResult,
     PendingUserMessage,
+    /// The task has not answered the user's latest message yet: merging needs their confirmation.
+    UnansweredMessage,
     UserMessageUnavailable,
     AlreadyAnswered,
     Withdrawn,
@@ -98,6 +100,7 @@ impl Refusal {
             "stale_revision" | "conflict" | "stale_generation" | "stale_epoch" | "plan_approve_or_change" => Self::Changed,
             "acceptance_stale" => Self::NewerResult,
             "pending_user_message" | "pending_user_reply" => Self::PendingUserMessage,
+            "unanswered_message" => Self::UnansweredMessage,
             "message_receipt_unavailable" => Self::UserMessageUnavailable,
             "question_already_answered" | "already_answered" => Self::AlreadyAnswered,
             "withdrawn" | "already_withdrawn" => Self::Withdrawn,

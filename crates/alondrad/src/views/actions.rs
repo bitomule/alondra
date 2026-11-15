@@ -1382,6 +1382,7 @@ fn map_merge(
         authorization_id: AuthorizationId(format!("auth-{}", request.command_id)),
         presentation_id: interaction.id.clone(), pr_id: pr.id.clone(),
         expected_head: head, method,
+        despite_pending_message: action.extra.as_deref().is_some_and(|extra| extra.starts_with(alondra_core::views::action_id::MERGE_ANYWAY)),
     }, stamp.to_owned()))
 }
 
@@ -3807,6 +3808,27 @@ for line in sys.stdin:
         let state = domain.state().unwrap();
         let authorized: Vec<_> = state.merge_authorizations.values().map(|a| (a.pr_id.clone(), a.head.as_str())).collect();
         assert_eq!(authorized, [(site, "fedcba9876543210")], "the PR the button names, at the commit presented");
+    }
+
+    #[tokio::test]
+    async fn a_merge_confirmed_over_an_unanswered_message_merges_and_records_it() {
+        let (home, domain, client) = action_home();
+        let (_, site) = presented_two_prs(&domain);
+        apply_seed_command(&domain, Actor::System, "message", Command::TellNode {
+            task_id: "task".into(), text: "Rename the button too".into(), from_user: true, answers: None,
+        });
+        let revision = domain.state().unwrap().revision;
+        let unconfirmed = ActionId::new(Verb::Merge, &site.0, revision, Some("fedcba98-result".into())).unwrap();
+        let refused = act(&home, &domain, &client, FIRST, unconfirmed, None, None).await;
+        assert_ne!(refused["outcome"], "applied", "{refused}");
+        assert!(domain.state().unwrap().merge_authorizations.is_empty());
+        let revision = domain.state().unwrap().revision;
+        let confirmed = ActionId::new(Verb::Merge, &site.0, revision,
+            Some(format!("{}fedcba98-result", alondra_core::views::action_id::MERGE_ANYWAY))).unwrap();
+        let merged = act(&home, &domain, &client, FIRST, confirmed, None, None).await;
+        assert_eq!(merged["outcome"], "applied", "{merged}");
+        let state = domain.state().unwrap();
+        assert!(state.merge_authorizations.values().all(|a| a.pr_id == site && a.despite_pending_message), "{:?}", state.merge_authorizations);
     }
 
     #[test]

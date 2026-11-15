@@ -567,7 +567,7 @@ mod tests {
             for pr_id in ["pr-a", "pr-b"] {
                 run(user(), &format!("authorize-{pr_id}"), Command::AuthorizeMerge {
                     authorization_id: format!("auth-{pr_id}").into(), presentation_id: "delivery".into(), pr_id: pr_id.into(),
-                    expected_head: head.clone(), method: MergeMethod::Squash,
+                    expected_head: head.clone(), method: MergeMethod::Squash, despite_pending_message: false,
                 });
             }
             let state = domain.state().unwrap();
@@ -580,9 +580,9 @@ mod tests {
             }
             let state = domain.state().unwrap();
             assert_eq!(state.tasks.len(), task_count, "the PR question belongs to the existing delivery");
-            assert!(!state.merge_authorizations[&AuthorizationId::from("auth-pr-a")].valid);
+            assert!(state.merge_authorizations[&AuthorizationId::from("auth-pr-a")].valid, "a question after the merge never takes it back");
             assert!(state.merge_authorizations[&AuthorizationId::from("auth-pr-b")].valid);
-            assert_eq!(crate::domain_merges::due(&state).iter().map(|item| item.pr.id.0.as_str()).collect::<Vec<_>>(), ["pr-b"]);
+            assert_eq!(crate::domain_merges::due(&state).iter().map(|item| item.pr.id.0.as_str()).collect::<Vec<_>>(), ["pr-a", "pr-b"]);
         }
     }
 

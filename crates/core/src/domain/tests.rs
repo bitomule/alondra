@@ -939,7 +939,7 @@ fn authorize(s: &mut DomainState) {
             presentation_id: "d".into(),
             pr_id: "pr".into(),
             expected_head: "head1".into(),
-            method: MergeMethod::Squash,
+            method: MergeMethod::Squash, despite_pending_message: false,
         },
     )
     .unwrap();
@@ -1023,7 +1023,7 @@ fn a_node_claim_left_from_before_is_taken_over_by_alondra() {
 #[test]
 fn alondra_authorizes_its_own_merge_only_for_an_untouched_auto_merge_delivery() {
     let auto = |id: &str| Command::AuthorizeMerge { authorization_id: id.into(), presentation_id: "d".into(),
-        pr_id: "pr".into(), expected_head: "head1".into(), method: MergeMethod::Squash };
+        pr_id: "pr".into(), expected_head: "head1".into(), method: MergeMethod::Squash, despite_pending_message: false };
     let mut s = fixture();
     register(&mut s);
     present(&mut s, "d", pr_targets());
@@ -1095,7 +1095,7 @@ fn a_claimed_attempt_of_a_superseded_delivery_does_not_hold_back_the_new_merge()
     a.attempt = MergeAttemptState::Claimed;
     a.claimed_by = Some("a".into());
     let again = |id: &str, presentation: &str, head: &str| Command::AuthorizeMerge { authorization_id: id.into(),
-        presentation_id: presentation.into(), pr_id: "pr".into(), expected_head: head.into(), method: MergeMethod::Squash };
+        presentation_id: presentation.into(), pr_id: "pr".into(), expected_head: head.into(), method: MergeMethod::Squash, despite_pending_message: false };
     reject_unchanged(&mut s, user(), again("auth-same", "d", "head1"), "delivery_uncertain");
     exec(&mut s, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: "head2".into(), base: "main".into(),
         state: PrState::Open, merged_head: None }).unwrap();
@@ -2390,7 +2390,7 @@ fn stack_readiness_is_explicit_and_merge_requires_upstream_merge_and_retarget() 
             presentation_id: "d-down".into(),
             pr_id: "pr-down".into(),
             expected_head: "head-down".into(),
-            method: MergeMethod::Squash,
+            method: MergeMethod::Squash, despite_pending_message: false,
         },
     )
     .unwrap();
@@ -2669,7 +2669,7 @@ fn mixed_package_needs_merge_authorization_and_document_decision() {
             presentation_id: "d".into(),
             pr_id: "pr".into(),
             expected_head: "head1".into(),
-            method: MergeMethod::Squash,
+            method: MergeMethod::Squash, despite_pending_message: false,
         },
     )
     .unwrap();
@@ -2698,7 +2698,7 @@ fn mixed_package_needs_merge_authorization_and_document_decision() {
             presentation_id: "d".into(),
             pr_id: "pr".into(),
             expected_head: "head1".into(),
-            method: MergeMethod::Squash,
+            method: MergeMethod::Squash, despite_pending_message: false,
         },
     )
     .unwrap();
@@ -3339,7 +3339,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::DecideProposedPlan { presentation_id: ids.interaction.into(), targets: text(), choice: PlanChoice::Implement }, false),
         (Command::AuthorizeMerge { authorization_id: "fresh-auth".into(),
             presentation_id: ids.interaction.into(), pr_id: ids.pr.into(),
-            expected_head: "head1".into(), method: MergeMethod::Squash }, false),
+            expected_head: "head1".into(), method: MergeMethod::Squash, despite_pending_message: false }, false),
         (Command::ClaimMergeAuthorization { authorization_id: ids.authorization.into(),
             remote_head: "head1".into(), remote_base: "main".into(), base_verified: true }, false),
         (Command::ObserveMergeAttempt { authorization_id: ids.authorization.into(),
@@ -3529,7 +3529,7 @@ fn unknown_and_foreign_ids_are_typed_rejections_never_panics() {
         is_final: true, nothing_to_review: false, card: crate::domain::CardSpec::delivery("Review the result", &[], true) }).unwrap();
     exec(&mut s, user(), Command::AuthorizeMerge { authorization_id: "auth2".into(),
         presentation_id: "pres2".into(), pr_id: "pr2".into(), expected_head: "head1".into(),
-        method: MergeMethod::Squash }).unwrap();
+        method: MergeMethod::Squash, despite_pending_message: false }).unwrap();
     exec(&mut s, b.clone(), Command::AskQuestion { attachments: vec![], interaction_id: "q2".into(),
         scope: Scope::Task { task_id: "t2".into() }, recipient: Recipient::User, body: "Q?".into(),
         blocking: false, options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }], card: crate::domain::CardSpec::derived(crate::domain::CardKind::Provide, "Answer the question") }).unwrap();
@@ -4288,7 +4288,7 @@ fn a_push_after_the_final_delivery_withdraws_it_until_the_node_presents_the_new_
     assert!(!pending(&s, "d"), "no card the user cannot accept");
     assert_eq!(sent_to_node(&pushed), vec![delivery_withdrawn_behind_pr(1)], "the node hears why");
     let merge = |presentation: &str, head: &str| Command::AuthorizeMerge { authorization_id: format!("auth-{presentation}").into(),
-        presentation_id: presentation.into(), pr_id: "pr".into(), expected_head: head.into(), method: MergeMethod::Squash };
+        presentation_id: presentation.into(), pr_id: "pr".into(), expected_head: head.into(), method: MergeMethod::Squash, despite_pending_message: false };
     let before = s.clone();
     assert!(exec(&mut s, user(), merge("d", "head1")).is_err(), "the withdrawn delivery cannot be merged");
     assert_eq!(s, before);
@@ -4321,7 +4321,7 @@ fn a_question_asked_after_the_final_delivery_withdraws_it_until_the_node_deliver
     assert!(!pending(&s, "d") && pending(&s, "q"), "the PR card leaves the queue; the question stays");
     assert!(sent_to_node(&asked).contains(&delivery_withdrawn_for_questions()), "the node hears why");
     let merge = |presentation: &str| Command::AuthorizeMerge { authorization_id: "auth".into(), presentation_id: presentation.into(),
-        pr_id: "pr".into(), expected_head: "head1".into(), method: MergeMethod::Squash };
+        pr_id: "pr".into(), expected_head: "head1".into(), method: MergeMethod::Squash, despite_pending_message: false };
     let before = s.clone();
     assert!(exec(&mut s, user(), merge("d")).is_err(), "the withdrawn delivery cannot be merged");
     assert_eq!(s, before);
@@ -4698,7 +4698,7 @@ fn guards_refuse_what_the_commands_refuse() {
     };
     let merge = |authorization: &str, head: &str, method| Command::AuthorizeMerge {
         authorization_id: authorization.into(), presentation_id: "d".into(), pr_id: "pr".into(),
-        expected_head: head.into(), method,
+        expected_head: head.into(), method, despite_pending_message: false,
     };
     let commands = [
         Command::SnoozeCard { interaction_id: "d".into(), until: 200, now: 100 },
