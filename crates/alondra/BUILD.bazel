@@ -22,12 +22,30 @@ REPORT_SOURCES = [
 ]
 
 # The crash report keeps a line of alondrad.log only as the text of a log! call in the code: this
-# writes the catalog of those calls and the words of the code (`src/report/extract.rs`).
+# writes the catalog of those calls and the words of the code (`src/report/extract.rs`). It reads
+# every source in its own action, so a change that leaves both files the same never recompiles the
+# CLI: a build script's data are compile inputs of the crate it builds for.
+rust_binary(
+    name = "log_catalog_extract",
+    srcs = ["log_catalog.rs", "src/report/extract.rs"],
+    crate_root = "log_catalog.rs",
+    edition = "2024",
+)
+
+genrule(
+    name = "log_catalog_files",
+    srcs = REPORT_SOURCES,
+    outs = ["log-catalog.txt", "vocabulary.txt"],
+    cmd = "$(execpath :log_catalog_extract) $(OUTS)",
+    tools = [":log_catalog_extract"],
+)
+
 cargo_build_script(
     name = "log_catalog",
     srcs = ["build.rs", "src/report/extract.rs"],
+    build_script_env = {"ALONDRA_LOG_CATALOG_GENERATED": "1"},
     crate_root = "build.rs",
-    data = REPORT_SOURCES,
+    data = [":log-catalog.txt", ":vocabulary.txt"],
     edition = "2024",
 )
 
