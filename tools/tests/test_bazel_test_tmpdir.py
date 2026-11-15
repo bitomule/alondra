@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """The bazel test TMPDIR wrapper leaves nothing of its own behind, however the test ends."""
+import hashlib
 import os
 from pathlib import Path
 import signal
@@ -79,6 +80,15 @@ class BazelTestTmpdirTest(unittest.TestCase):
         result = self.run_executable(Path("/bin/ls").read_bytes()[:16])
         self.assertEqual(result.returncode, 126)
         self.assertIn(b"Invalid test executable", result.stderr)
+
+    def test_an_invalid_executable_reports_its_size_digest_and_first_bytes(self):
+        contents = Path("/bin/ls").read_bytes()[:16]
+        result = self.run_executable(contents)
+        self.assertEqual(result.returncode, 126)
+        self.assertIn(b"16 bytes", result.stderr)
+        self.assertIn(hashlib.sha256(contents).hexdigest().encode(), result.stderr)
+        self.assertIn(contents.hex().encode(), result.stderr)
+        self.assertIn(b"volume", result.stderr)
 
     def test_a_script_with_an_interpreter_keeps_its_arguments_and_exit_code(self):
         result = self.run_executable(b'#!/bin/sh\nprintf "%s" "$1"\nexit 7\n', "argument with spaces")
