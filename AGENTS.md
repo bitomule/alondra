@@ -50,7 +50,7 @@ or in the private repository that keeps it, never here.
   - A new integration test needs a Bazel target, or it does not run.
 - rustc and clippy compile incrementally (`.bazelrc`): an edit after the first build of a crate
   in a checkout recompiles only what changed. If rustc fails with an internal compiler error that
-  names its incremental state, run `make clean-incremental` and build again. A release builds with
+  names its incremental state, run `bazelisk clean --expunge` (it deletes the state with the rest of the output base) and build again. A release builds with
   `--config=release`, without it.
 - Web (`web/`): `npm ci --include=dev`, `npm run typecheck`, `npm run build`, `npm run test:e2e`.
 - `musts validate` is the done-check before committing, when `musts` is installed. It asks only for
