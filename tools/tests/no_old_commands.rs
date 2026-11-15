@@ -17,7 +17,7 @@ const SCANNED: &[&str] = &[
 
 const SKIPPED_DIRS: &[&str] = &["node_modules", "target", "build", ".build", "DerivedData", "dist"];
 
-const THIS_FILE: &str = "crates/alondra/tests/no_old_commands.rs";
+const THIS_FILE: &str = "tools/tests/no_old_commands.rs";
 
 /// Every old command a text names: `alondra <old>` as a whole word, `setup --<flag>` and
 /// `config --get`.
@@ -38,17 +38,15 @@ fn old_names(text: &str) -> Vec<String> {
     found
 }
 
-/// The checkout this test runs from: Bazel's runfiles link the Makefile back to it.
+/// The checkout as this test declares it: the `tree` targets in its data, read from its runfiles.
 fn workspace() -> PathBuf {
-    let makefile = std::env::var("RUNFILES_DIR").or_else(|_| std::env::var("TEST_SRCDIR"))
-        .map(|root| PathBuf::from(root).join(std::env::var("TEST_WORKSPACE").unwrap_or_else(|_| "_main".into())).join("Makefile"))
-        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Makefile"));
-    let real = makefile.canonicalize().unwrap_or_else(|e| panic!("{}: {e}", makefile.display()));
-    real.parent().expect("the Makefile is in the checkout's root").to_path_buf()
+    std::env::var("RUNFILES_DIR").or_else(|_| std::env::var("TEST_SRCDIR"))
+        .map(|root| PathBuf::from(root).join(std::env::var("TEST_WORKSPACE").unwrap_or_else(|_| "_main".into())))
+        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".."))
 }
 
 fn files(path: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(meta) = std::fs::symlink_metadata(path) else { return };
+    let Ok(meta) = std::fs::metadata(path) else { return };
     if meta.is_file() {
         out.push(path.to_path_buf());
     } else if meta.is_dir() {

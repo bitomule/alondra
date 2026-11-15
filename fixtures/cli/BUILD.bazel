@@ -1,5 +1,8 @@
+load("//tools:tree.bzl", "repo_tree")
 filegroup(
     name = "cli",
     srcs = glob(["*.txt"]),
     visibility = ["//visibility:public"],
 )
+
+repo_tree()

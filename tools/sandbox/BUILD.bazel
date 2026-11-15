@@ -1,3 +1,4 @@
+load("//tools:tree.bzl", "repo_tree")
 load("@rules_rust//rust:defs.bzl", "rust_binary")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
 
@@ -31,3 +32,5 @@ low_opt_rust_test(
     edition = "2024",
     deps = ["@crates//:tempfile"],
 )
+
+repo_tree()

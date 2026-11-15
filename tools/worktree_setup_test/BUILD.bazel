@@ -1,6 +1,9 @@
+load("//tools:tree.bzl", "repo_tree")
 sh_test(
     name = "setup_test",
     srcs = ["setup_test.py"],
     data = ["//:.bazelignore", "//tools:worktree-bazel-setup"],
     size = "small",
 )
+
+repo_tree()

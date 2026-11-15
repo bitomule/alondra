@@ -1,3 +1,4 @@
+load("//tools:tree.bzl", "repo_tree")
 load("//crates/alondrad:build_inputs_test.bzl", "rust_inputs_test")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
@@ -80,3 +81,5 @@ filegroup(
     srcs = glob(["src/**/*.rs"]),
     visibility = ["//crates/alondra:__pkg__", "//crates/alondrad:__pkg__", "//crates/daemon-engine:__pkg__", "//crates/daemon-engine-machine:__pkg__", "//crates/daemon-engine-store:__pkg__"],
 )
+
+repo_tree()

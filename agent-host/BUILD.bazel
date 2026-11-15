@@ -1,3 +1,4 @@
+load("//tools:tree.bzl", "repo_tree")
 load(":toolchain.bzl", "pinned_node")
 load("@host_npm//:defs.bzl", "npm_link_all_packages")
 load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
@@ -318,3 +319,5 @@ filegroup(
     ],
     visibility = ["//tools:__pkg__"],
 )
+
+repo_tree()

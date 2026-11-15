@@ -1,3 +1,4 @@
+load("//tools:tree.bzl", "repo_tree")
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
 load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
 
@@ -32,3 +33,5 @@ filegroup(
     srcs = glob(["Sources/**/*.swift"]),
     visibility = ["//apple:__pkg__"],
 )
+
+repo_tree()

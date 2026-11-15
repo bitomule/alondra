@@ -1,3 +1,4 @@
+load("//tools:tree.bzl", "repo_tree")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@build_bazel_rules_apple//apple:ios.bzl", "ios_application", "ios_extension")
 load("@build_bazel_rules_apple//apple:macos.bzl", "macos_application")
@@ -377,3 +378,5 @@ ios_extension(
     version = "//apple/Version",
     deps = [":AlondraLiveActivityLib"],
 )
+
+repo_tree()

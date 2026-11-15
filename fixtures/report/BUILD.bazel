@@ -1,5 +1,8 @@
+load("//tools:tree.bzl", "repo_tree")
 filegroup(
     name = "report",
     srcs = glob(["*"], exclude = ["BUILD.bazel"]),
     visibility = ["//visibility:public"],
 )
+
+repo_tree()

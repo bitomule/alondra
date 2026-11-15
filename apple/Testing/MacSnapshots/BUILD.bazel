@@ -1,3 +1,4 @@
+load("//tools:tree.bzl", "repo_tree")
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_test")
 load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
 
@@ -62,3 +63,5 @@ swift_test(
         "@swiftpkg_swift_issue_reporting//:IssueReportingTestSupport",
     ],
 )
+
+repo_tree()

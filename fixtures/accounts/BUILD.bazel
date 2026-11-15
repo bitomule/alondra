@@ -1,4 +1,7 @@
+load("//tools:tree.bzl", "repo_tree")
 exports_files(
     glob(["*.json"]),
     visibility = ["//visibility:public"],
 )
+
+repo_tree()

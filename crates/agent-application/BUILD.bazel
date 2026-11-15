@@ -1,3 +1,4 @@
+load("//tools:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@rules_rust//rust:defs.bzl", "rust_doc_test", "rust_library")
@@ -39,3 +40,5 @@ filegroup(
     srcs = glob(["src/**/*.rs"]),
     visibility = ["//crates/alondra:__pkg__"],
 )
+
+repo_tree()
