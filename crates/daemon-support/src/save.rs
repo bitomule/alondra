@@ -11,12 +11,24 @@ pub fn atomic(file: &Path, bytes: &[u8]) -> std::io::Result<()> {
     full_disk::write()?;
     let next = file.with_extension("next");
     let written = std::fs::File::create(&next)
-        .and_then(|mut written| written.write_all(bytes).and_then(|()| written.sync_all()))
+        .and_then(|mut written| written.write_all(bytes).and_then(|()| flush_to_disk(&written)))
         .and_then(|()| std::fs::rename(&next, file));
     if written.is_err() {
         let _ = std::fs::remove_file(&next);
     }
     written
+}
+
+#[cfg(not(any(test, feature = "test-hooks")))]
+fn flush_to_disk(written: &std::fs::File) -> std::io::Result<()> {
+    written.sync_all()
+}
+
+/// On macOS a flush empties the disk's own cache, and tests that save on every step spend most of
+/// their run waiting for it. No test can see whether the bytes reached the platter.
+#[cfg(any(test, feature = "test-hooks"))]
+fn flush_to_disk(_: &std::fs::File) -> std::io::Result<()> {
+    Ok(())
 }
 
 /// Whether the last save of one file failed. A full disk fails every save until there is space:
