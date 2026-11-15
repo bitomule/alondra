@@ -103,7 +103,7 @@ fn automatic_sonnet_routing_preserves_user_models_and_accounts() {
 }
 
 #[test]
-fn automatic_opus_fable_and_risky_sonnet_stay_on_claude() {
+fn automatic_opus_fable_and_risky_sonnet_stay_on_claude_while_claude_has_margin() {
     use alondra_core::accounts::Provider;
     let f = bare_world(); connect_claude_and_codex(&f);
     for mut catalog in f.domain.state().unwrap().model_catalogs.clone() {
@@ -123,6 +123,67 @@ fn automatic_opus_fable_and_risky_sonnet_stay_on_claude() {
         assert_eq!(account.provider, Provider::Claude);
     }
 }
+fn opus_and_fable_world() -> Fixture {
+    use alondra_core::accounts::Provider;
+    let f = bare_world(); connect_claude_and_codex(&f);
+    for mut catalog in f.domain.state().unwrap().model_catalogs.clone() {
+        catalog.native_default = Some(catalog.models[0].model.clone());
+        if catalog.account.provider == Provider::Claude {
+            let mut fable = catalog.models[0].clone(); fable.model = "fable".into(); catalog.models.push(fable);
+        }
+        command(&f.domain, Actor::System, Command::RecordModelCatalog { catalog });
+    }
+    f
+}
+
+fn exhaust_claude(f: &Fixture) {
+    use alondra_core::usage::{UsageReading, WindowKind, WindowReading};
+    let now = alondra_core::now_millis();
+    command(&f.domain, Actor::System, Command::RecordAccountUsage {
+        provider: alondra_core::accounts::Provider::Claude, account: alondra_core::accounts::AccountId::default_account(),
+        reading: UsageReading { windows: vec![WindowReading { kind: WindowKind::Session, used: alondra_core::usage::Share::FULL,
+            resets_at: Some(now + 3_600_000), exhausted: true }], plan: None, complete: true },
+        at: now, day: alondra_daemon_engine_model::local_day(now),
+    });
+}
+
+#[test]
+fn automatic_opus_and_fable_move_to_codex_when_no_claude_account_has_margin() {
+    use alondra_core::accounts::Provider;
+    let f = opus_and_fable_world();
+    exhaust_claude(&f);
+    let file = crate::domain_schedule_runner::options_at(&f.home).unwrap();
+    let requested = file.orchestrator_defaults(None, None);
+    let task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
+    for model in ["claude/opus", "claude/fable"] {
+        let body = launch_body(&f, json!({"model": model}));
+        let (resolved, account, reason) = native_launch(&f.domain, &f.home, &task, &requested, &file, &body, false, false).unwrap().unwrap();
+        assert_eq!(account.provider, Provider::Codex, "{model}: {reason}");
+        assert_eq!(resolved.selection.unwrap().effective.unwrap().model.provider, Provider::Codex, "{model}");
+        assert!(reason.contains("No Claude account has margin"), "{reason}");
+    }
+}
+
+#[test]
+fn a_user_pinned_opus_stays_on_claude_when_claude_has_no_margin() {
+    use alondra_core::accounts::Provider;
+    use alondra_core::model_selection::{ModelKey, ModelProfile, TaskSelection};
+    let f = opus_and_fable_world();
+    exhaust_claude(&f);
+    let file = crate::domain_schedule_runner::options_at(&f.home).unwrap();
+    let requested = file.orchestrator_defaults(None, None);
+    for model in ["claude/opus", "claude/fable"] {
+        let mut task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
+        let mut intent = TaskSelection::automatic(ModelProfile::Implementation);
+        intent.request_model(Some(ModelKey::parse_wire(model).unwrap()));
+        task.selection = Some(intent);
+        let body = launch_body(&f, json!({"model": model}));
+        let outcome = native_launch(&f.domain, &f.home, &task, &requested, &file, &body, false, false);
+        assert!(outcome.as_ref().is_err() || outcome.as_ref().unwrap().as_ref().is_some_and(|(_, account, _)| account.provider == Provider::Claude),
+            "{model}: the user's model never moves to Codex: {:?}", outcome.map(|launch| launch.map(|(_, account, _)| account)));
+    }
+}
+
 use crate::domain_store::HandoverProcess;
 use crate::node_close::Answer;
 use crate::node_push::testing::Node;

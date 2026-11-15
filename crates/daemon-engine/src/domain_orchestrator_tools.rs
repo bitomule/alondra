@@ -366,10 +366,9 @@ fn native_launch(domain: &DomainRuntime, home: &Path, task: &alondra_core::domai
         && !body.tags.as_ref().is_some_and(|tags| tags.severe() || tags.risks.contains(&alondra_core::task_tags::TaskRisk::UnclearSpec));
     let select = |selection: &TaskSelection, provider| crate::accounts::select_for_node_with_tools(domain, home, selection,
         active.as_ref(), provider, &denied_tools, alondra_core::now_millis());
+    let codex = || { let mut codex = initial.clone(); codex.requested = None; codex.requested_reasoning_effort = None; codex.effective = None; codex };
     let mut decision = if provisional {
-        let mut codex = initial.clone();
-        codex.requested = None; codex.requested_reasoning_effort = None; codex.effective = None;
-        match select(&codex, Some(Provider::Codex)) {
+        match select(&codex(), Some(Provider::Codex)) {
             Ok(mut decision) => { decision.reason = format!("Provisional Sonnet-level routing to Codex. {}", decision.reason); Ok(decision) }
             Err(error) if matches!(error.code.as_str(), "account_unavailable" | "model_unavailable") => {
                 select(&initial, Some(Provider::Claude)).map(|mut decision| {
@@ -378,8 +377,15 @@ fn native_launch(domain: &DomainRuntime, home: &Path, task: &alondra_core::domai
             }
             Err(error) => Err(error),
         }
+    } else if automatic && matches!(family.as_deref(), Some("opus" | "fable")) {
+        match select(&initial, Some(Provider::Claude)) {
+            Err(claude) if claude.code == "account_unavailable" => select(&codex(), Some(Provider::Codex))
+                .map(|mut decision| { decision.reason = format!("No Claude account has margin for this {}-level task: {}. {}", family.as_deref().unwrap_or_default(), claude.message, decision.reason); decision })
+                .map_err(|_| claude),
+            result => result,
+        }
     } else {
-        let provider = if automatic && matches!(family.as_deref(), Some("opus" | "fable" | "sonnet")) { Some(Provider::Claude) }
+        let provider = if automatic && family.as_deref() == Some("sonnet") { Some(Provider::Claude) }
             else if unstarted { None }
             else { body.provider.filter(|provider| denied_tools.is_empty() && file.accounts.any_enabled(*provider)) };
         if initial.requested.is_none() && unstarted && let Some(preferred) = body.provider {
