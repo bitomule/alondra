@@ -338,7 +338,7 @@ fn configuration(batch: &Batch) -> anyhow::Result<CodexConfiguration> {
         state_directory, host_environment: backend.host_environment, native_executable: backend.native,
         native_directory: batch.directory.clone(), native_environment, profile_id: "alondra".into(),
         account_id: batch.selection.account.account.as_str().to_owned(), host_release: env!("CARGO_PKG_VERSION").into(),
-        io_timeout: Duration::from_secs(backend.io_timeout_seconds), confinement: backend.confinement, worker: None,
+        io_timeout: Duration::from_secs(backend.io_timeout_seconds), confinement: backend.confinement, launcher: backend.launcher, worker: None,
     })
 }
 fn profile(batch: &Batch) -> anyhow::Result<OrchestratorProfile> {

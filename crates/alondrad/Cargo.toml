@@ -10,6 +10,7 @@ alondra-process-group.workspace = true
 alondra-core.workspace = true
 alondra-daemon-support.workspace = true
 alondra-daemon-engine.workspace = true
+alondra-agent-runtime.workspace = true
 alondra-e2e = { path = "../e2e" }
 alondra-domain.workspace = true
 anyhow.workspace = true

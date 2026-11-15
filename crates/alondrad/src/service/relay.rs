@@ -485,7 +485,21 @@ impl Service {
             PushDelivery::Alert => self.journal.quiet_hours(id)?.apply(payload, with_sound, local_minutes()),
             PushDelivery::Background | PushDelivery::Badge => (payload.clone(), false),
         };
-        let mut body = self.encode_push_or_minimal(id, device, binding, &payload, with_sound, delivery)?;
+        self.push_transport
+            .get()
+            .send(self, crate::push_transport::DevicePush { device: id, binding, delivery, with_sound, payload: &payload }, epoch)
+            .await
+    }
+
+    pub(crate) async fn send_through_relay(
+        &self,
+        push: crate::push_transport::DevicePush<'_>,
+        epoch: &mut Option<[u8; 16]>,
+    ) -> Result<()> {
+        let crate::push_transport::DevicePush { device: id, binding, delivery, with_sound, payload } = push;
+        let device = self.devices.get(id).ok_or_else(|| anyhow!("device is not configured for the service"))?;
+        let device = &device;
+        let mut body = self.encode_push_or_minimal(id, device, binding, payload, with_sound, delivery)?;
         let current_epoch = match *epoch {
             Some(epoch) => epoch,
             None => {

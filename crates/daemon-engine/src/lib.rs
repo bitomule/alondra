@@ -60,6 +60,8 @@ pub mod domain_github;
 pub mod open_pr_sweep;
 pub mod domain_holds;
 pub mod domain_merges;
+#[cfg(any(test, feature = "test-hooks"))]
+pub mod github_world;
 pub mod domain_messages;
 pub mod domain_orchestrator;
 pub mod domain_orchestrator_reads;

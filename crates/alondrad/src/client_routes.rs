@@ -32,7 +32,8 @@ pub(crate) use alondra_daemon_engine::live::Relaunch;
 #[cfg(test)]
 pub(crate) use alondra_daemon_engine::live::{ClosedNode, Live};
 pub(crate) use alondra_daemon_engine::reply::Reply;
-pub(crate) use pr_details::{hand_back_conflicts, GhView, Merge, PrView};
+pub use pr_details::PrView;
+pub(crate) use pr_details::{hand_back_conflicts, GhView, Merge, ViaGh};
 #[cfg(test)]
 pub(crate) use pr_details::Viewed;
 #[cfg(test)]

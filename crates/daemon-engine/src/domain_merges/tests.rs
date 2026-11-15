@@ -1226,3 +1226,16 @@ async fn a_claimed_stack_is_retargeted_again_if_its_base_changes_before_retry() 
     assert_eq!(merged.state, PrState::Merged);
     assert_eq!(merged.base, "main", "a claimed retry cannot merge into an obsolete feature branch");
 }
+
+#[tokio::test]
+async fn the_github_world_sees_the_stack_retargeted_before_it_merges() {
+    use crate::github_world::GithubWorld;
+    let (_home, domain, _) = stacked("main");
+    let world = GithubWorld::new();
+    world.open_pr_at(7, "parent-feature", "main", HEAD);
+    world.merge_externally(7);
+    world.open_pr_at(8, "child-feature", "parent-feature", &"2".repeat(40));
+    now().merge_due(&domain, &world).await.unwrap();
+    assert_eq!(world.gh_calls(), ["edit 8 --base main", "merge 8"]);
+    assert_eq!(world.merged_into(8).as_deref(), Some("main"));
+}

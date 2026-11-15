@@ -16,41 +16,68 @@ pub use crate::disk::BOOT_DATA;
 /// whole.
 pub type Gauges = Arc<std::sync::Mutex<Option<(Machine, Option<alondra_core::usage::Usage>, Vec<alondra_core::usage::ProviderUsage>)>>>;
 
+/// Where a sample of the Mac comes from: the real Mac in production, a scripted one in a scenario.
+pub trait MachineSampler: Send + Sync + 'static {
+    fn sample(&self) -> Machine;
+}
+
+/// The Mac the daemon runs on.
+pub struct SystemSampler(std::sync::Mutex<System>);
+
+impl SystemSampler {
+    pub fn new() -> Self {
+        Self(std::sync::Mutex::new(System::new()))
+    }
+}
+
+impl Default for SystemSampler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MachineSampler for SystemSampler {
+    fn sample(&self) -> Machine {
+        let mut sys = self.0.lock_or_recover("the machine sampler");
+        sys.refresh_memory();
+        sys.refresh_cpu_usage();
+        let pressure = forced_memory_free_percent().or_else(memorystatus_level);
+        let load = System::load_average();
+        let root = crate::disk::space(Path::new(BOOT_DATA)).or_else(|| crate::disk::space(Path::new("/")));
+        Machine {
+            at: now_millis(),
+            memory_total: sys.total_memory(),
+            memory_available: sys.available_memory(),
+            memory_free_percent: pressure,
+            memory_pressure: memorystatus_vm_pressure_level().and_then(MemoryPressure::from_kernel_level),
+            compressor: compressor(),
+            load: [load.one, load.five, load.fifteen],
+            cpus: sys.cpus().len(),
+            cpu_usage: sys.global_cpu_usage(),
+            disk_total: root.map_or(0, |space| space.total),
+            disk_available: root.map_or(0, |space| space.free),
+            disk_purgeable: root.map_or(0, |space| space.purgeable),
+            unreliable: load.one > UNRELIABLE_LOAD,
+        }
+    }
+}
+
 /// The plan's limits travel with the machine's gauges, read from what each account measured.
-pub async fn run(gauges: Gauges, usage_at: impl Fn(alondra_core::Millis) -> (Option<alondra_core::usage::Usage>, Vec<alondra_core::usage::ProviderUsage>)) {
-    sample_loop(|machine| {
+pub async fn run(
+    gauges: Gauges,
+    sampler: Arc<dyn MachineSampler>,
+    usage_at: impl Fn(alondra_core::Millis) -> (Option<alondra_core::usage::Usage>, Vec<alondra_core::usage::ProviderUsage>),
+) {
+    sample_loop(sampler, |machine| {
         let (usage, providers) = usage_at(machine.at);
         *gauges.lock_or_recover("the machine gauges") = Some((machine, usage, providers));
     }).await
 }
 
-async fn sample_loop(mut publish: impl FnMut(Machine)) {
-    let mut sys = System::new();
+async fn sample_loop(sampler: Arc<dyn MachineSampler>, mut publish: impl FnMut(Machine)) {
     loop {
-        let (next, machine) = tokio::task::spawn_blocking(move || {
-            sys.refresh_memory();
-            sys.refresh_cpu_usage();
-            let pressure = forced_memory_free_percent().or_else(memorystatus_level);
-            let load = System::load_average();
-            let root = crate::disk::space(Path::new(BOOT_DATA)).or_else(|| crate::disk::space(Path::new("/")));
-            let machine = Machine {
-                at: now_millis(),
-                memory_total: sys.total_memory(),
-                memory_available: sys.available_memory(),
-                memory_free_percent: pressure,
-                memory_pressure: memorystatus_vm_pressure_level().and_then(MemoryPressure::from_kernel_level),
-                compressor: compressor(),
-                load: [load.one, load.five, load.fifteen],
-                cpus: sys.cpus().len(),
-                cpu_usage: sys.global_cpu_usage(),
-                disk_total: root.map_or(0, |space| space.total),
-                disk_available: root.map_or(0, |space| space.free),
-                disk_purgeable: root.map_or(0, |space| space.purgeable),
-                unreliable: load.one > UNRELIABLE_LOAD,
-            };
-            (sys, machine)
-        }).await.expect("machine sample worker failed");
-        sys = next;
+        let sampling = sampler.clone();
+        let machine = tokio::task::spawn_blocking(move || sampling.sample()).await.expect("machine sample worker failed");
         publish(machine);
         clock::sleep(Duration::from_secs(10)).await;
     }

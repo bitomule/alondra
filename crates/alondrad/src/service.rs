@@ -319,6 +319,7 @@ pub struct Service {
     iroh_terminals: crate::iroh_terminals::IrohTerminals,
     /// Writers from either transport share their turn; scheduled relay reads bypass it.
     lane: Arc<tokio::sync::Mutex<()>>,
+    push_transport: crate::push_transport::Pushes,
     #[cfg(test)]
     envelope_clock: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
@@ -509,6 +510,12 @@ impl Service {
         #[cfg(test)]
         if let Some(clock) = &self.envelope_clock { return clock.load(std::sync::atomic::Ordering::Relaxed); }
         now_ms()
+    }
+
+    /// Sends pushes through `transport` instead of the relay.
+    pub fn with_push_transport(mut self, transport: crate::push_transport::Pushes) -> Self {
+        self.push_transport = transport;
+        self
     }
 
     pub fn with_domain(mut self, domain: Arc<crate::domain_runtime::DomainRuntime>) -> Self {
@@ -885,6 +892,7 @@ impl Service {
             iroh_relay: tokio::sync::watch::Sender::new(None),
             iroh_terminals: crate::iroh_terminals::IrohTerminals::open(home),
             lane: Arc::new(tokio::sync::Mutex::new(())),
+            push_transport: Default::default(),
             #[cfg(test)]
             envelope_clock: None,
         }))
@@ -1807,7 +1815,7 @@ impl Service {
         with_sound: bool,
         payload_for_device: impl Fn(&str) -> Value,
     ) -> Result<(usize, usize)> {
-        if self.relay.is_none() {
+        if !self.push_transport.get().reaches_devices(self) {
             return Ok((0, 0));
         }
         let mut epoch = None;
@@ -5371,6 +5379,7 @@ agreement_key = "{}"
             iroh_relay: tokio::sync::watch::Sender::new(None),
             iroh_terminals: crate::iroh_terminals::IrohTerminals::empty(),
             lane: Arc::new(tokio::sync::Mutex::new(())),
+            push_transport: Default::default(),
             #[cfg(test)]
             envelope_clock: None,
             client: Client::new(),
@@ -5471,6 +5480,7 @@ agreement_key = "{}"
             iroh_relay: tokio::sync::watch::Sender::new(None),
             iroh_terminals: crate::iroh_terminals::IrohTerminals::empty(),
             lane: Arc::new(tokio::sync::Mutex::new(())),
+            push_transport: Default::default(),
             #[cfg(test)]
             envelope_clock: None,
             client: Client::new(),
@@ -5582,6 +5592,7 @@ agreement_key = "{}"
                     iroh_relay: tokio::sync::watch::Sender::new(None),
                     iroh_terminals: crate::iroh_terminals::IrohTerminals::empty(),
                     lane: Arc::new(tokio::sync::Mutex::new(())),
+            push_transport: Default::default(),
                     #[cfg(test)]
                     envelope_clock: None,
                     client: Client::new(),
@@ -5730,6 +5741,7 @@ agreement_key = "{}"
             iroh_relay: tokio::sync::watch::Sender::new(None),
             iroh_terminals: crate::iroh_terminals::IrohTerminals::empty(),
             lane: Arc::new(tokio::sync::Mutex::new(())),
+            push_transport: Default::default(),
             #[cfg(test)]
             envelope_clock: None,
             client: Client::new(),
@@ -5853,6 +5865,7 @@ agreement_key = "{}"
             iroh_relay: tokio::sync::watch::Sender::new(None),
             iroh_terminals: crate::iroh_terminals::IrohTerminals::empty(),
             lane: Arc::new(tokio::sync::Mutex::new(())),
+            push_transport: Default::default(),
             #[cfg(test)]
             envelope_clock: None,
             client: Client::new(),
@@ -5895,6 +5908,7 @@ agreement_key = "{}"
             iroh_relay: tokio::sync::watch::Sender::new(None),
             iroh_terminals: crate::iroh_terminals::IrohTerminals::empty(),
             lane: Arc::new(tokio::sync::Mutex::new(())),
+            push_transport: Default::default(),
             #[cfg(test)]
             envelope_clock: None,
             client: Client::new(),
@@ -6094,6 +6108,7 @@ agreement_key = "{}"
             iroh_relay: tokio::sync::watch::Sender::new(None),
             iroh_terminals: crate::iroh_terminals::IrohTerminals::empty(),
             lane: Arc::new(tokio::sync::Mutex::new(())),
+            push_transport: Default::default(),
             #[cfg(test)]
             envelope_clock: None,
             client: Client::new(),
