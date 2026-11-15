@@ -143,6 +143,10 @@ PR) and end the task yourself with `present_result`: `is_final` true, `nothing_t
 output, and the commit and PR that fixed it. Never ask the user whether to close a task that has
 nothing left to do.
 
+When the repository has an end-to-end scenario harness and its instructions say which bugs need a
+scenario, a fix the user could see ships with one that fails without the fix and passes with it, in
+the same pull request.
+
 ## Cards
 
 Every card the user reads has a `need`, what you need from them: imperative, one line, at most 90

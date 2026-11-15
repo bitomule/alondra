@@ -90,6 +90,13 @@ or in the private repository that keeps it, never here.
   in the pull request: remove the fix, see the test fail, put it back, see it pass.
 - Fixing a bug starts by reproducing it on a fresh `origin/main`; if it no longer happens, there is
   nothing to fix.
+- Every daemon bug fix ships with a test that fails on `main` and passes with the fix, at the lowest
+  layer that shows the bug. It also ships with a conversation scenario (`crates/scenarios/cases/`)
+  when the bug was visible in the inbox, the task list, a task's detail or a push, or when it depends
+  on the provider, GitHub, a restart or an update, or the passage of time. Extend an existing scenario
+  before adding one. The pull request shows the scenario failing without the fix and passing with it
+  (`bazel run //crates/scenarios:ablate`). A scenario lands only with its fix; never commit a red or
+  expected-failure scenario.
 - No flaky tests: no wall-clock assertions, no sleeps racing other work, no retries to hide failures.
 - Every test target declares `size` or `timeout`, at least three times what it takes under load
   (`docs/running-tests.md`). `//tools:test_limits_test` fails on one that does not.

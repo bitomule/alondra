@@ -1,0 +1,97 @@
+name = "a declared stack is retargeted to the default branch before its second pull request merges"
+fixes = "#212"
+max_virtual = "1h"
+
+[world]
+repository = "demo/app"
+
+[[step]]
+do = "request"
+text = "Export the report as CSV and then as PDF"
+task = "t1"
+title = "Add the CSV export"
+
+[[step]]
+do = "github"
+event = "open_pr"
+number = 7
+head = "csv-export"
+base = "main"
+
+[[step]]
+do = "register_pr"
+task = "t1"
+number = 7
+
+[[step]]
+do = "present"
+task = "t1"
+id = "d1"
+prs = [7]
+body = "The CSV export is ready"
+
+[[step]]
+do = "stack_ready"
+task = "t1"
+presentation = "d1"
+pr = 7
+
+[[step]]
+do = "task"
+id = "t2"
+title = "Add the PDF export"
+stack_on = { upstream = "t1", presentation = "d1", pr = 7 }
+
+[[step]]
+do = "github"
+event = "open_pr"
+number = 8
+head = "pdf-export"
+base = "csv-export"
+
+[[step]]
+do = "register_pr"
+task = "t2"
+number = 8
+
+[[step]]
+do = "present"
+task = "t2"
+id = "d2"
+prs = [8]
+body = "The PDF export is ready"
+
+[[step]]
+do = "checkpoint"
+name = "two-deliveries"
+screens = ["home", "tasks"]
+pushes = true
+
+[[step]]
+do = "press"
+pr = 7
+action = "merge"
+
+[[step]]
+do = "press"
+pr = 8
+action = "merge"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "both-merged"
+screens = ["home", "tasks", "task:t2"]
+pushes = true
+
+[[step.expect]]
+check = "gh_calls"
+calls = ["merge 7", "edit 8 --base main", "merge 8"]
+
+[[step.expect]]
+check = "pr_merged_into"
+pr = 8
+branch = "main"

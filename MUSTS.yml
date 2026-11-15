@@ -1512,6 +1512,37 @@ checks:
       targets:
         - //tools:clock_guard_test
 
+  scenarios:
+    uses: bazel/test
+    paths:
+      - "crates/alondrad/**"
+      - "crates/daemon-engine*/**"
+      - "crates/daemon-support/**"
+      - "crates/core/**"
+      - "crates/agent-protocol/**"
+      - "crates/agent-runtime/**"
+      - "crates/provider-*/**"
+      - "crates/scenarios/**"
+      - "crates/scenarios-transcript/**"
+      - "crates/agent-application/**"
+      - "crates/codex-protocol/**"
+      - "crates/domain/**"
+      - "crates/e2e/**"
+      - "crates/foundation/**"
+      - "crates/process-group/**"
+      - "crates/store/**"
+      - "crates/BUILD.bazel"
+      - "crates/test_support.rs"
+      - "BUILD.bazel"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+      - "version.bzl"
+    with:
+      targets:
+        - //crates/scenarios:scenarios_test
+        - //crates/scenarios:scenarios_harness_test
+        - //crates/scenarios-transcript:scenarios_transcript_test
+
   worktree-setup:
     uses: bazel/test
     paths:

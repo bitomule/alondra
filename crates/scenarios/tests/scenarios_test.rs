@@ -1,0 +1,39 @@
+//! Every case of `cases/`, each one a test of its own: `--test_arg=<case>` runs the ones whose name
+//! contains it, and the shards Bazel asks for split the rest.
+
+use std::path::PathBuf;
+
+fn cases_root() -> PathBuf {
+    let runfiles = PathBuf::from(std::env::var_os("TEST_SRCDIR").expect("Bazel runfiles root"));
+    let workspace = std::env::var_os("TEST_WORKSPACE").expect("Bazel workspace");
+    runfiles.join(workspace).join(env!("SCENARIO_CASES"))
+}
+
+fn main() {
+    let filters: Vec<String> = std::env::args().skip(1).filter(|argument| !argument.starts_with("--")).collect();
+    let shard: usize = std::env::var("TEST_SHARD_INDEX").ok().and_then(|value| value.parse().ok()).unwrap_or(0);
+    let shards: usize = std::env::var("TEST_TOTAL_SHARDS").ok().and_then(|value| value.parse().ok()).unwrap_or(1);
+    if let Some(status) = std::env::var_os("TEST_SHARD_STATUS_FILE") {
+        let _ = std::fs::write(status, "");
+    }
+    let cases = alondra_scenarios::cases(&cases_root()).expect("the cases folder is readable");
+    assert!(!cases.is_empty(), "there is no scenario in {}", cases_root().display());
+    let mut failed = Vec::new();
+    for (index, case) in cases.iter().enumerate() {
+        let name = case.file_name().expect("a case has a name").to_string_lossy().into_owned();
+        if index % shards != shard || !(filters.is_empty() || filters.iter().any(|filter| name.contains(filter.as_str()))) {
+            continue;
+        }
+        match alondra_scenarios::check(case) {
+            Ok(_) => println!("scenario {name} ... ok"),
+            Err(error) => {
+                println!("scenario {name} ... FAILED\n{error}");
+                failed.push(name);
+            }
+        }
+    }
+    if !failed.is_empty() {
+        println!("\nfailed: {}", failed.join(", "));
+        std::process::exit(1);
+    }
+}

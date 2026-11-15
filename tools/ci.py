@@ -17,7 +17,7 @@ MAC_CHECKS = {
     "crate-daemon-support", "crate-process-group", "crate-provider-claude",
     "crate-provider-codex", "local-daemon", "build-from-source",
     "sourcekit-lsp-workspace", "deploy-brew", "deploy-apple", "apple-daemon-process",
-    "sdk-host", "reap-test-hosts", "native-fixture-lifecycle",
+    "sdk-host", "reap-test-hosts", "native-fixture-lifecycle", "scenarios",
 }
 LINUX_CHECKS = {
     "crate-agent-application", "crate-agent-protocol", "crate-codex-protocol",
