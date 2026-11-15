@@ -28,6 +28,7 @@ FRESH_SDK = 'fresh-sdk'
 PREVIOUS_DOCTOR = 'previous-doctor'
 HANDOVER_CRASHES = ('planned', 'bg_stopped', 'sdk_admitted')
 SDK_REHEARSAL = {'--sandbox-tool': '//tools/sandbox:alondra-sandbox'}
+RELEASE_CONFIG = '--config=release'
 # What a release ships, by the name it ships under: the binaries `bazelisk test //crates/...` built
 # and tested, in the same configuration, so the release never compiles them a second time.
 RELEASE_TARGETS = {
@@ -45,6 +46,12 @@ HOST_ENTITLEMENTS = ROOT / 'agent-host/host-entitlements.plist'
 def run(*args, capture=False, env=None):
     return subprocess.run(list(map(str, args)), cwd=ROOT, env=env, check=True,
                           text=True, stdout=subprocess.PIPE if capture else None).stdout
+
+
+def bazel(command, *args, capture=False):
+    """Every Bazel call of a release, in the release configuration: compiled from scratch, never
+    incrementally like the edit loop, so the tests and the shipped binaries share one build."""
+    return run('bazelisk', command, RELEASE_CONFIG, *args, capture=capture)
 
 
 def local_guard():
@@ -106,8 +113,8 @@ def manifest(ver, source, output):
 
 
 def bazel_file(label, *flags):
-    execroot = pathlib.Path(run('bazelisk', 'info', 'execution_root', capture=True).strip())
-    files = [line for line in run('bazelisk', 'cquery', *flags, '--output=files', label, capture=True).split()
+    execroot = pathlib.Path(bazel('info', 'execution_root', capture=True).strip())
+    files = [line for line in bazel('cquery', *flags, '--output=files', label, capture=True).split()
              if not line.endswith('.ok') and not line.endswith('.manifest.json')]
     if len(files) != 1:
         raise RuntimeError(f'{label} does not build exactly one file: {files}')
@@ -117,7 +124,7 @@ def bazel_file(label, *flags):
 def release_build(ver):
     """Finds what ships among the outputs the tests just built: with the tests' flags, Bazel runs
     no new compile action for the Rust binaries."""
-    run('bazelisk', 'build', *RELEASE_TARGETS.values())
+    bazel('build', *RELEASE_TARGETS.values())
     built = {name: bazel_file(label) for name, label in RELEASE_TARGETS.items()}
     check_versions(ver, built)
     for name in ('alondra-host', 'alondra-codex-host'):
@@ -148,7 +155,7 @@ def rehearse_upgrade(ver, output):
     """The previous release must replace itself with these bytes on copies of this Mac's HOME, and
     its claude --bg nodes move to the Agent SDK with their sessions."""
     archive = output / f'alondra-{ver}-{release.TARGETS[0]}.tar.gz'
-    run('bazelisk', 'build', *SDK_REHEARSAL.values())
+    bazel('build', *SDK_REHEARSAL.values())
     artifacts = [value for flag, label in SDK_REHEARSAL.items() for value in (flag, bazel_file(label))]
     run(sys.executable, ROOT / 'deploy/brew/upgrade-rehearsal.py', '--new', archive, *artifacts,
         '--sdk-fixtures', ROOT / 'agent-host', '--output', output / REHEARSAL)
@@ -276,7 +283,7 @@ def prepare(ver, source, output):
     # Never overwrite prior archives, including partially prepared artifacts.
     output.mkdir(parents=True, exist_ok=False)
     output.chmod(0o700)
-    run('bazelisk', 'test', '//crates/...', '//deploy/brew/...')
+    bazel('test', '//crates/...', '//deploy/brew/...')
     built = release_build(ver)
     for target in release.TARGETS:
         with tempfile.TemporaryDirectory(prefix='alondra-local-sign-') as temp:

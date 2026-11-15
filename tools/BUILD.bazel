@@ -175,6 +175,15 @@ sh_test(
     tags = ["external", "local"],
 )
 
+# Reads the checkout itself through the Makefile's runfiles link, so it is never cached.
+sh_test(
+    name = "release_config_test",
+    srcs = ["tests/test_release_config.py"],
+    data = ["//:Makefile", "//deploy/brew:local-release.py"],
+    size = "small",
+    tags = ["external", "local"],
+)
+
 sh_test(
     name = "licenses_test",
     srcs = ["tests/test_licenses.py"],

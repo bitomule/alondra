@@ -229,7 +229,7 @@ class LocalReleaseTests(unittest.TestCase):
             self.fail(f'Unexpected command before release validation: {args}')
         with patch.object(l, 'run', side_effect=fake), self.assertRaises(subprocess.CalledProcessError):
             l.prepare('0.1.2', 'source', self.root / 'artifacts')
-        self.assertEqual(calls[-1], ('bazelisk', 'test', '//crates/...', '//deploy/brew/...'))
+        self.assertEqual(calls[-1], ('bazelisk', 'test', l.RELEASE_CONFIG, '//crates/...', '//deploy/brew/...'))
 
     def test_disk_guard_accepts_threshold_and_rejects_below_it(self):
         sufficient = type('Usage', (), {'free': l.LOW_FREE})()
@@ -304,11 +304,12 @@ class LocalReleaseTests(unittest.TestCase):
         signed, archive_bytes, built_with = [], {}, []
         def fake(*args, **kwargs):
             if args[0] == 'bazelisk':
-                self.assertFalse(any(str(arg).startswith('--config') for arg in args), 'one configuration: the tests\'')
+                self.assertEqual([arg for arg in args if str(arg).startswith('--config')], [l.RELEASE_CONFIG],
+                                 'one configuration for the tests and the binaries: the release one')
             if args[:2] == ('bazelisk', 'info'):
                 return f'{execroot}\n'
-            if args[:2] == ('bazelisk', 'build') and args[2:] == tuple(l.RELEASE_TARGETS.values()):
-                built_with.append(args[2:])
+            if args[:3] == ('bazelisk', 'build', l.RELEASE_CONFIG) and args[3:] == tuple(l.RELEASE_TARGETS.values()):
+                built_with.append(args[3:])
                 for name, path in built.items():
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_bytes(name.encode())

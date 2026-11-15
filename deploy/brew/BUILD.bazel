@@ -75,3 +75,6 @@ sh_test(
     ],
     tags = ["no-sandbox"],
 )
+
+# Read by the guard that keeps every Bazel call of a release in the release configuration.
+exports_files(["local-release.py"], visibility = ["//tools:__pkg__"])
