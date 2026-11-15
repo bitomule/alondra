@@ -200,7 +200,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(workflow["on"], {"pull_request": {"branches": ["main"]}, "workflow_dispatch": {
             "inputs": {"check": {"description": "MUSTS check to diagnose (blank runs every check)",
                                   "type": "string", "default": "", "required": False}}}})
-        self.assertEqual(set(workflow["jobs"]), {"select", "validate"})
+        self.assertEqual(set(workflow["jobs"]), {"select", "validate", "CI"})
         select = workflow["jobs"]["select"]
         self.assertEqual(select["if"], "${{ github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' }}")
         self.assertEqual(workflow["concurrency"]["group"],
@@ -210,6 +210,22 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(validate["if"], "${{ needs.select.outputs.has_checks == 'true' }}")
         self.assertEqual(validate["env"]["DEVELOPER_DIR"],
                          "${{ matrix.runner == 'xcode-27' && '/Applications/Xcode_27.1.app/Contents/Developer' || '' }}")
+
+    def test_the_final_ci_job_is_a_stable_gate_that_fails_unless_every_selected_check_passed(self):
+        gate = json.loads((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]["CI"]
+        self.assertEqual(gate["name"], "CI")
+        self.assertEqual(gate["if"], "${{ always() }}")
+        self.assertEqual(gate["needs"], ["select", "validate"])
+        self.assertEqual(gate["env"], {"SELECT_RESULT": "${{ needs.select.result }}",
+                                       "VALIDATE_RESULT": "${{ needs.validate.result }}"})
+        expected = {("success", "success"): 0, ("success", "skipped"): 0, ("success", "failure"): 1,
+                    ("success", "cancelled"): 1, ("failure", "skipped"): 1, ("cancelled", "skipped"): 1,
+                    ("skipped", "skipped"): 1}
+        for (select, validate), status in expected.items():
+            with self.subTest(select=select, validate=validate):
+                result = subprocess.run(["bash", "-c", gate["steps"][0]["run"]], check=False,
+                                        env={"SELECT_RESULT": select, "VALIDATE_RESULT": validate})
+                self.assertEqual(result.returncode, status)
 
     def test_workflow_uses_read_only_permissions_pinned_actions_and_no_secrets_or_publication(self):
         text = (ROOT / ".github/workflows/ci.yml").read_text()
@@ -223,13 +239,15 @@ class WorkflowTests(unittest.TestCase):
             self.assertNotIn("permissions", job)
             self.assertIn("timeout-minutes", job)
             for step in job["steps"]:
-                if "uses" in step:
+                if job is workflow["jobs"]["CI"]:
+                    self.assertNotIn("uses", step)
+                elif "uses" in step:
                     self.assertRegex(step["uses"], r"^actions/checkout@[a-f0-9]{40}$")
                     self.assertIs(step["with"]["persist-credentials"], False)
                 else:
                     self.assertIn(step["run"], {
                         "python3 tools/ci.py plan", "python3 tools/ci.py run --targets \"$CI_TARGETS\"",
-                        "xcodebuild -version",
+                        "xcodebuild -version", workflow["jobs"]["CI"]["steps"][0]["run"],
                         "npm ci --prefix .github/ci-tools --no-audit --no-fund\necho \"$GITHUB_WORKSPACE/.github/ci-tools/node_modules/.bin\" >> \"$GITHUB_PATH\"",
                     })
 
