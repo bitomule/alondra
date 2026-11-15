@@ -13,7 +13,8 @@ from musts_scopes import matches, parse_checks
 
 MAC_CHECKS = {
     "crate-agent-runtime", "crate-alondra", "crate-alondrad", "crate-core", "crate-daemon-engine",
-    "crate-daemon-engine-machine", "crate-daemon-support", "crate-process-group", "crate-provider-claude",
+    "crate-daemon-engine-machine", "crate-daemon-engine-model", "crate-daemon-engine-store",
+    "crate-daemon-support", "crate-process-group", "crate-provider-claude",
     "crate-provider-codex", "local-daemon", "build-from-source",
     "sourcekit-lsp-workspace", "deploy-brew", "deploy-apple", "apple-daemon-process",
     "sdk-host", "reap-test-hosts", "native-fixture-lifecycle",
@@ -25,8 +26,7 @@ LINUX_CHECKS = {
     "sandbox-accounts", "low-opt-rust-tests", "sandbox-tool", "apple-scripts", "apple-catalogs",
     "plugin-mod", "cargo-bazel-deps", "load-bench-oracles", "buildbuddy-credential-helper",
     "public-build-inputs", "bazel-test-tmpdir", "musts-scopes", "test-durations", "test-limits",
-    "worktree-setup", "crate-daemon-engine-model", "crate-daemon-engine-store",
-    "public-data-guard", "worktree-volume-bench", "ci",
+    "worktree-setup", "public-data-guard", "worktree-volume-bench", "ci",
 }
 BOOTSTRAP = {
     "MUSTS.yml", "tools/ci.py", "tools/musts_scopes.py", ".github/workflows/ci.yml",
