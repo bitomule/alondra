@@ -96,7 +96,7 @@ pub struct DomainRuntime {
     #[cfg(any(test, feature = "test-hooks"))]
     before_acknowledge: Mutex<Option<Box<dyn FnMut() + Send>>>,
     #[cfg(any(test, feature = "test-hooks"))]
-    owner_failures: Mutex<Option<std::sync::mpsc::Sender<String>>>,
+    owner_failures: Mutex<Option<Box<dyn Fn(String) + Send>>>,
     /// The nodes whose driver a test steps by hand, with no owner thread: they count as owned.
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) driven_by_hand: Mutex<std::collections::BTreeSet<AgentId>>,
@@ -482,13 +482,18 @@ impl DomainRuntime {
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn owner_failures(&self) -> std::sync::mpsc::Receiver<String> {
         let (sender, failures) = std::sync::mpsc::channel();
-        *self.owner_failures.lock().unwrap() = Some(sender);
+        self.on_owner_failure(move |why| drop(sender.send(why)));
         failures
+    }
+    /// Calls `hook` with every failure an SDK owner reports from now on.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn on_owner_failure(&self, hook: impl Fn(String) + Send + 'static) {
+        *self.owner_failures.lock().unwrap() = Some(Box::new(hook));
     }
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn owner_failed(&self, why: String) {
-        if let Some(sender) = self.owner_failures.lock().unwrap().as_ref() {
-            let _ = sender.send(why);
+        if let Some(hook) = self.owner_failures.lock().unwrap().as_ref() {
+            hook(why);
         }
     }
     #[cfg(any(test, feature = "test-hooks"))]

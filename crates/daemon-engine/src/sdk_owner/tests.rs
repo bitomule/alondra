@@ -579,6 +579,28 @@ fn a_reaper_whose_pipe_closes_while_its_parent_still_lives_ends_the_hosts_and_th
     assert!(!root.parent().unwrap().exists(), "the reaper removed the hosts' folder");
 }
 
+/// Starts the ignored test `name` in a process of its own, with one test thread: the runner then
+/// writes `test <name> ... ` before the test runs, on the line the test prints to next.
+pub(super) fn test_process_holding(name: &str) -> std::process::Child {
+    std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--ignored", "--exact", "--nocapture", name])
+        .env("RUST_TEST_THREADS", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap()
+}
+
+/// The `<group> <folder>` a test process announces on a line of its own once it holds its host.
+/// Its output ending first fails the test with how the process ended.
+pub(super) fn host_announcement(owner: &mut std::process::Child) -> String {
+    use std::io::BufRead;
+    let announced = std::io::BufReader::new(owner.stdout.take().unwrap()).lines().map_while(Result::ok)
+        .find_map(|line| line.strip_prefix("holding ").map(str::to_owned));
+    announced.unwrap_or_else(|| panic!("the test process ended without announcing its host: {:?}", owner.wait()))
+}
+
 /// The test process `a_test_process_killed_mid_test_leaves_no_host_and_no_folder` kills. It also
 /// stands for a test that hangs: left alone, it runs until Bazel's timeout cuts it.
 #[test]
@@ -586,7 +608,7 @@ fn a_reaper_whose_pipe_closes_while_its_parent_still_lives_ends_the_hosts_and_th
 fn a_test_process_holding_a_host() {
     let slice = Slice::new();
     let driver = slice.launch();
-    println!("holding {} {}", driver.worker.host_group().unwrap(), slice._state.display());
+    println!("\nholding {} {}", driver.worker.host_group().unwrap(), slice._state.display());
     loop {
         std::thread::park();
     }
@@ -594,17 +616,10 @@ fn a_test_process_holding_a_host() {
 
 #[test]
 fn a_test_process_killed_mid_test_leaves_no_host_and_no_folder() {
-    use std::io::{BufRead, Read};
-    let mut owner = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--ignored", "--exact", "--nocapture", "sdk_owner::tests::a_test_process_holding_a_host"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
+    use std::io::Read;
+    let mut owner = test_process_holding("sdk_owner::tests::a_test_process_holding_a_host");
     let mut errors = owner.stderr.take().unwrap();
-    let holding = std::io::BufReader::new(owner.stdout.take().unwrap()).lines().map(Result::unwrap)
-        .find_map(|line| line.strip_prefix("holding ").map(str::to_owned)).expect("the test process launched its host");
+    let holding = host_announcement(&mut owner);
     let (group, root) = holding.split_once(' ').unwrap();
     let processes = alondra_process_group::members(group.parse().unwrap()).unwrap();
     assert!(!processes.is_empty(), "the host runs");
@@ -3969,25 +3984,47 @@ fn nodes_waiting_on_the_user_inside_their_turn_leave_their_slots_to_the_queue() 
 /// The owner of a node that just started, held on the first thing its host says until every
 /// process of that host has exited: it is in the middle of reading its host when the host ends.
 fn owner_reading_when_its_host_ends(slice: &Slice) -> (AgentId, std::sync::mpsc::Receiver<String>, Vec<alondra_process_group::Member>) {
-    let driver = slice.launch_with("consume-and-hold");
+    owner_reading_when_its_host_ends_after(slice, |_| {})
+}
+
+/// `owner_reading_when_its_host_ends`, with `prepare` run on the driver first. An owner that fails
+/// before its host's first word fails the test with its reason instead of leaving it waiting.
+fn owner_reading_when_its_host_ends_after(slice: &Slice, prepare: impl FnOnce(&mut Driver)) -> (AgentId, std::sync::mpsc::Receiver<String>, Vec<alondra_process_group::Member>) {
+    enum Seen { Holding, Failed(String) }
+    let mut driver = slice.launch_with("consume-and-hold");
+    prepare(&mut driver);
     let agent = driver.agent().clone();
     let processes = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
     let mut exits = alondra_process_group::Exits::new().unwrap();
     for process in &processes {
         exits.watch(process).unwrap();
     }
-    let (held, holding) = std::sync::mpsc::channel();
-    let mut hold = Some((exits, held));
+    let (seen, first) = std::sync::mpsc::channel();
+    let (failed, failures) = std::sync::mpsc::channel();
+    let failure_seen = seen.clone();
+    slice.domain.on_owner_failure(move |why: String| {
+        let _ = failure_seen.send(Seen::Failed(why.clone()));
+        let _ = failed.send(why);
+    });
+    let mut hold = Some((exits, seen));
     slice.on_acknowledge(move || {
         if let Some((mut exits, held)) = hold.take() {
-            held.send(()).unwrap();
+            held.send(Seen::Holding).unwrap();
             exits.wait().unwrap();
         }
     });
-    let failures = slice.domain.owner_failures();
     slice.domain.sdk_owners.lock().unwrap().push(Owner::spawn(driver));
-    holding.recv().unwrap();
+    if let Seen::Failed(why) = first.recv().unwrap() {
+        panic!("the owner failed before its host's first word: {why}");
+    }
     (agent, failures, processes)
+}
+
+#[test]
+#[should_panic(expected = "the owner failed before its host's first word")]
+fn an_owner_that_fails_before_its_host_speaks_fails_the_test_instead_of_hanging_it() {
+    let slice = Slice::new();
+    owner_reading_when_its_host_ends_after(&slice, |driver| driver.fail_next_step = true);
 }
 
 /// Alondra ended the host itself: its owner reported no failure, no card asks the user, no host
