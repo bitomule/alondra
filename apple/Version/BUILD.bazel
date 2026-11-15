@@ -1,0 +1,9 @@
+load("@build_bazel_rules_apple//apple:versioning.bzl", "apple_bundle_version")
+load("//tools:shared.bzl", "versions")
+
+apple_bundle_version(
+    name = "Version",
+    build_version = versions.build_number,
+    short_version_string = versions.version,
+    visibility = ["//apple:__pkg__"],
+)

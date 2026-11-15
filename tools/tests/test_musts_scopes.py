@@ -113,6 +113,18 @@ class MustsScopesTests(unittest.TestCase):
         self.assertFalse(scopes.matches(checks["apple-tests"]["paths"], "crates/core/src/usage.rs"))
         self.assertTrue(scopes.matches(checks["apple-daemon-process"]["paths"], "crates/core/src/usage.rs"))
 
+    def reopened_by(self, *changed):
+        checks = scopes.parse_checks(Path(os.environ["MUSTS_MANIFEST"]).read_text())
+        return {name for name, check in checks.items() if any(scopes.matches(check["paths"], path) for path in changed)}
+
+    def test_a_build_number_bump_reopens_only_the_checks_that_read_it(self):
+        self.assertEqual(self.reopened_by("tools/shared.bzl"), {"apple-app-build", "deploy-apple", "public-data-guard", "test-limits"})
+
+    def test_a_bump_with_other_changes_still_reopens_every_check_they_touch(self):
+        reopened = self.reopened_by("tools/shared.bzl", "apple/Features/BUILD.bazel")
+        self.assertIn("apple-tests", reopened)
+        self.assertIn("apple-app-build", reopened)
+
     def test_check_fails_once_a_path_is_taken_out(self):
         read = {"crates/relay/src/lib.rs", "fixtures/push/a.json", "Cargo.lock"}
         self.assertFalse(self.run_check(MANIFEST, read)[0])
