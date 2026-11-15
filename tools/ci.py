@@ -36,8 +36,9 @@ TARGET = re.compile(r"//[A-Za-z0-9_./+-]*:[A-Za-z0-9_./+-]+$|//[A-Za-z0-9_./+-]*
 # Bazel's documented exit status: the build succeeded but the target set contains no tests.
 NO_TESTS_FOUND = 4
 MANUAL_CHECKS = {"mac-inventory-review"}
-# Their tests lease an iOS simulator whose pinned runtime the hosted image does not provide.
-LOCAL_ONLY_CHECKS = {"apple-tests"}
+# Their tests lease an iOS simulator whose pinned runtime the hosted image does not provide, and the
+# Mac app build ran with them before it had its own check.
+LOCAL_ONLY_CHECKS = {"apple-tests", "apple-app-build"}
 
 
 def manual_reviews(text):

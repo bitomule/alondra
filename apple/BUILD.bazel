@@ -1,12 +1,10 @@
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@build_bazel_rules_apple//apple:ios.bzl", "ios_application", "ios_extension")
 load("@build_bazel_rules_apple//apple:macos.bzl", "macos_application")
-load("@build_bazel_rules_apple//apple:versioning.bzl", "apple_bundle_version")
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
 load("@alondra_signing//:signing.bzl", "IOS_BUNDLE_ID", "IOS_PROFILE", "LIVE_ACTIVITY_BUNDLE_ID", "LIVE_ACTIVITY_PROFILE", "NOTIFICATION_SERVICE_BUNDLE_ID", "NOTIFICATION_SERVICE_PROFILE", "TEAM_ID")
 load("//apple:entitlements.bzl", "entitlements_follow_signing_test", "signed_entitlements")
 load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
-load("//tools:shared.bzl", "versions")
 
 exports_files(
     ["entitlements_follow_signing_test.py"],
@@ -231,7 +229,7 @@ macos_application(
     provisioning_profile = select({":distribution": "@alondra_signing//:Alondra_Mac_AppStore.provisionprofile", "//conditions:default": None}),
     minimum_os_version = "26.0",
     resources = glob(["macOS/Resources/*.xcstrings"]) + ["//fixtures/views:all", "//fixtures/views:cards_ios", "//fixtures/views:demo_mac"],
-    version = ":Version",
+    version = "//apple/Version",
     visibility = ["//visibility:public"],
     deps = [":AlondraMacViewsEntry"],
 )
@@ -283,13 +281,6 @@ swift_library(
     ],
 )
 
-apple_bundle_version(
-    name = "Version",
-    build_version = versions.build_number,
-    short_version_string = versions.version,
-)
-
-
 ios_application(
     name = "AlondraiOS",
     app_icons = glob(["IconConcepts/Alondra.icon/**"]),
@@ -301,7 +292,7 @@ ios_application(
     infoplists = ["iOS/Info.plist", ":entitlements_push_keychain_group"] + BONJOUR_PLIST,
     minimum_os_version = "26.0",
     resources = glob(["iOS/Resources/*.xcstrings"]) + ["//fixtures/views:cards_ios"],
-    version = ":Version",
+    version = "//apple/Version",
     extensions = [":AlondraNotificationService", ":AlondraLiveActivity"],
     visibility = ["//visibility:public"],
     deps = [":AlondraiOSViewsEntry"],
@@ -349,7 +340,7 @@ ios_extension(
     minimum_os_version = "26.0",
     resources = glob(["iOSNotificationService/Resources/*.xcstrings"]),
     provisioning_profile = select({":distribution": "@alondra_signing//:Alondra_NotificationService_AppStore.mobileprovision", "//conditions:default": "@alondra_signing//:" + NOTIFICATION_SERVICE_PROFILE}),
-    version = ":Version",
+    version = "//apple/Version",
     deps = [":AlondraNotificationServiceLib"],
 )
 
@@ -383,6 +374,6 @@ ios_extension(
     minimum_os_version = "26.0",
     resources = glob(["iOSLiveActivity/Resources/*.xcstrings"]),
     provisioning_profile = select({":distribution": "@alondra_signing//:Alondra_LiveActivity_AppStore.mobileprovision", "//conditions:default": "@alondra_signing//:" + LIVE_ACTIVITY_PROFILE}),
-    version = ":Version",
+    version = "//apple/Version",
     deps = [":AlondraLiveActivityLib"],
 )
