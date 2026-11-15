@@ -1676,6 +1676,28 @@ impl DomainState {
         }
     }
 
+    /// A message the user sends after merging never takes the merge back: every authorization
+    /// the user gave stands, with the acceptance of its delivery, and the node still gets the
+    /// message. What only Alondra decided is decided again.
+    fn invalidate_keeping_user_merges(&mut self, task: &TaskId, invalidate: impl FnOnce(&mut Self)) {
+        let kept: Vec<(AuthorizationId, InteractionId)> = self.merge_authorizations.values()
+            .filter(|a| &a.task_id == task && a.valid && a.user_id != Feedback::ALONDRA)
+            .map(|a| (a.id.clone(), a.presentation_id.clone())).collect();
+        let accepted: Vec<(InteractionId, bool)> = kept.iter().filter_map(|(_, presentation)| match &self.interactions.get(presentation)?.payload {
+            InteractionPayload::Delivery { acceptance: Some(a), .. } => Some((presentation.clone(), a.valid)),
+            _ => None,
+        }).collect();
+        invalidate(self);
+        for (id, _) in &kept {
+            self.merge_authorizations.get_mut(id).expect("kept from the map").valid = true;
+        }
+        for (presentation, valid) in accepted {
+            if let Some(InteractionPayload::Delivery { acceptance: Some(a), .. }) = self.interactions.get_mut(&presentation).map(|p| &mut p.payload) {
+                a.valid = valid;
+            }
+        }
+    }
+
     fn invalidate_feedback(&mut self, task: &TaskId, target: &FeedbackTarget) {
         let FeedbackTarget::PullRequest { pr_id, .. } = target else {
             self.invalidate(task);
@@ -4908,7 +4930,11 @@ impl DomainState {
                         self.revision + 1
                     }
                 });
-                self.invalidate_feedback(&task, &target);
+                if matches!(instruction, Instruction::Reply | Instruction::Question) {
+                    self.invalidate_keeping_user_merges(&task, |state| state.invalidate_feedback(&task, &target));
+                } else {
+                    self.invalidate_feedback(&task, &target);
+                }
                 let p = self.interactions.get_mut(presentation_id).unwrap();
                 if let InteractionPayload::Delivery { feedback, .. } = &mut p.payload {
                     feedback.push(Feedback {
@@ -4932,7 +4958,7 @@ impl DomainState {
                 let u = self.accept_delivery_guard(actor, presentation_id, targets, self)?;
                 for (pr_id, head, method) in self.accepted_merges(presentation_id, targets)? {
                     let authorization = self.acceptance_authorization(pr_id);
-                    self.authorize_merge(&authorization, presentation_id, pr_id, head, method, &u, true)?;
+                    self.authorize_merge(&authorization, presentation_id, pr_id, head, method, false, &u, true)?;
                     created.push(authorization.0);
                 }
                 self.accept(presentation_id, &u)?;
@@ -4956,13 +4982,14 @@ impl DomainState {
                 pr_id,
                 expected_head,
                 method,
+                despite_pending_message,
             } => {
-                match self.merge_guard(actor, authorization_id, presentation_id, pr_id, expected_head, *method, self)? {
+                match self.merge_guard(actor, authorization_id, presentation_id, pr_id, expected_head, *method, *despite_pending_message, self)? {
                     None => {
-                        self.authorize_merge(authorization_id, presentation_id, pr_id, expected_head, *method, Feedback::ALONDRA, false)?;
+                        self.authorize_merge(authorization_id, presentation_id, pr_id, expected_head, *method, false, Feedback::ALONDRA, false)?;
                     }
                     Some(u) => {
-                        self.authorize_merge(authorization_id, presentation_id, pr_id, expected_head, *method, &u, true)?;
+                        self.authorize_merge(authorization_id, presentation_id, pr_id, expected_head, *method, *despite_pending_message, &u, true)?;
                         self.settle(presentation_id, &u);
                     }
                 }
@@ -4985,7 +5012,9 @@ impl DomainState {
                 system(actor)?;
                 self.active(&a.task_id)?;
                 let (presentation, _, _) = self.presentation(&a.presentation_id)?;
-                if self.pending_reply(presentation, &FeedbackTarget::PullRequest { pr_id: a.pr_id.clone(), head: a.head.clone() }) {
+                let target = FeedbackTarget::PullRequest { pr_id: a.pr_id.clone(), head: a.head.clone() };
+                let held = self.authorized_merge_held(presentation, &a.user_id, &target);
+                if held {
                     return fail("pending_user_reply", "The user's reply must be resolved before merging this pull request");
                 }
                 if !a.valid {
@@ -5593,7 +5622,7 @@ impl DomainState {
                     self.decide(lifecycles, task_id, record)?;
                 }
                 if *from_user && answers.is_none() {
-                    self.invalidate(task_id);
+                    self.invalidate_keeping_user_merges(task_id, |state| state.invalidate(task_id));
                     self.tasks.get_mut(task_id).unwrap().pending_user_inputs.insert(user_input);
                 }
                 let answered: Vec<InteractionId> = {
@@ -5757,10 +5786,14 @@ impl DomainState {
         pr_id: &PrId,
         expected_head: &str,
         method: MergeMethod,
+        despite_pending_message: bool,
         u: &str,
         consent: bool,
     ) -> Result<TaskId> {
-        let task = self.authorize_merge_guard(authorization_id, presentation_id, pr_id, expected_head, method, self)?;
+        let task = self.authorize_merge_guard(authorization_id, presentation_id, pr_id, expected_head, method, despite_pending_message, self)?;
+        let (presentation, _, _) = self.presentation(presentation_id)?;
+        let despite_pending_message = despite_pending_message && self.pending_user_message(presentation,
+            &FeedbackTarget::PullRequest { pr_id: pr_id.clone(), head: expected_head.to_owned() });
         for a in self.merge_authorizations.values_mut().filter(|a| a.pr_id == *pr_id) {
             a.valid = false;
         }
@@ -5778,6 +5811,7 @@ impl DomainState {
                 attempt: MergeAttemptState::Unclaimed,
                 claimed_by: None,
                 at_revision: self.revision + 1,
+                despite_pending_message,
             },
         );
         if let Some(r) = self.pull_requests.get_mut(pr_id).unwrap().review.as_mut().filter(|_| consent) {

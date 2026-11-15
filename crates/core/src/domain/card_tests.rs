@@ -470,7 +470,7 @@ fn merge_waits_for_what_blocks_it() {
     assert_eq!(s.blocked_by(&"d".into()), vec![InteractionId::from("q")]);
     let authorize = || Command::AuthorizeMerge {
         authorization_id: "auth".into(), presentation_id: "d".into(), pr_id: "pr".into(),
-        expected_head: "head1".into(), method: MergeMethod::Squash,
+        expected_head: "head1".into(), method: MergeMethod::Squash, despite_pending_message: false,
     };
     assert_eq!(refused(&mut s, user(), authorize()), ("blocked".into(), Some("presentation_id".into())));
     assert_eq!(refused(&mut s, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets: pr_target() }).0, "blocked");

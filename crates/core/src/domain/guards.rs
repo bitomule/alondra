@@ -27,8 +27,8 @@ impl DomainState {
             Command::DecideProposedPlan { presentation_id, targets, choice } => {
                 self.decide_plan_guard(actor, presentation_id, targets, *choice, holds).map(drop)
             }
-            Command::AuthorizeMerge { authorization_id, presentation_id, pr_id, expected_head, method } => {
-                self.merge_guard(actor, authorization_id, presentation_id, pr_id, expected_head, *method, holds).map(drop)
+            Command::AuthorizeMerge { authorization_id, presentation_id, pr_id, expected_head, method, despite_pending_message } => {
+                self.merge_guard(actor, authorization_id, presentation_id, pr_id, expected_head, *method, *despite_pending_message, holds).map(drop)
             }
             Command::CancelTask { task_id, .. } => self.cancel_guard(actor, task_id),
             Command::SettleStall { case_id, task_id, outcome } => self.settle_stall_guard(actor, case_id, task_id, outcome),
@@ -158,7 +158,7 @@ impl DomainState {
         self.unblocked(presentation_id, holds)?;
         for (pr_id, head, method) in self.accepted_merges(presentation_id, targets)? {
             let authorization = self.acceptance_authorization(pr_id);
-            self.authorize_merge_guard(&authorization, presentation_id, pr_id, head, method, holds)?;
+            self.authorize_merge_guard(&authorization, presentation_id, pr_id, head, method, false, holds)?;
         }
         self.acceptance_guard(presentation_id)?;
         Ok(u)
@@ -255,6 +255,7 @@ impl DomainState {
         pr_id: &PrId,
         expected_head: &str,
         method: MergeMethod,
+        despite_pending_message: bool,
         holds: &dyn Holds,
     ) -> Result<Option<String>> {
         id(&authorization_id.0)?;
@@ -271,7 +272,7 @@ impl DomainState {
         } else {
             Some(user(actor)?)
         };
-        self.authorize_merge_guard(authorization_id, presentation_id, pr_id, expected_head, method, holds)?;
+        self.authorize_merge_guard(authorization_id, presentation_id, pr_id, expected_head, method, despite_pending_message, holds)?;
         Ok(u)
     }
 
@@ -285,11 +286,17 @@ impl DomainState {
         pr_id: &PrId,
         expected_head: &str,
         method: MergeMethod,
+        despite_pending_message: bool,
         holds: &dyn Holds,
     ) -> Result<TaskId> {
         let (presentation, t, targets) = self.presentation(presentation_id)?;
-        if self.pending_reply(presentation, &FeedbackTarget::PullRequest { pr_id: pr_id.clone(), head: expected_head.to_owned() }) {
+        let target = FeedbackTarget::PullRequest { pr_id: pr_id.clone(), head: expected_head.to_owned() };
+        if self.merge_held(presentation, &target) {
             return fail("pending_user_reply", "The user's reply must be resolved before merging this pull request");
+        }
+        if !despite_pending_message && self.pending_user_message(presentation, &target) {
+            return fail("unanswered_message", "The task has not answered the user's latest message: merging needs the user's confirmation")
+                .map_err(|e| e.because(Refusal::UnansweredMessage));
         }
         self.unblocked(presentation_id, holds)?;
         let number = self.pull_requests[pr_id].number;

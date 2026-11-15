@@ -745,6 +745,9 @@ pub struct Confirm {
     pub title: String,
     pub message: String,
     pub button: String,
+    /// The words of the button that backs out, when they are not the client's own «Cancel».
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancel: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

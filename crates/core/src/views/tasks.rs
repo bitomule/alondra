@@ -1192,7 +1192,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         {
             action.key = (context.client == super::Client::Tui).then(|| key.into());
             if verb == Verb::Cancel {
-                action.confirm = Some(Confirm {
+                action.confirm = Some(Confirm { cancel: None,
                     title: label.into(),
                     message: t!(context.lang, "Cancel this task?", "¿Cancelar esta tarea?").into(),
                     button: label.into(),
@@ -1252,7 +1252,7 @@ fn move_action(task: &Task, context: &RenderContext<'_>) -> Option<super::Action
     action.presentation = super::Presentation::Menu;
     action.key = (context.client == super::Client::Tui).then(|| "V".into());
     action.options = options;
-    action.confirm = Some(Confirm {
+    action.confirm = Some(Confirm { cancel: None,
         title: t!(lang, "Move this task?", "¿Mover esta tarea?").into(),
         message: match &only {
             Some(account) => tf!(lang, "Its current node stops now. A new node on {account} carries on from the task's record, in the same worktree and branch.",
@@ -1330,7 +1330,7 @@ pub(super) fn request(id: &str, context: &RenderContext<'_>) -> Result<View, Bui
             Style::Destructive,
         ) {
             action.key = (context.client == super::Client::Tui).then(|| "x".into());
-            action.confirm = Some(Confirm {
+            action.confirm = Some(Confirm { cancel: None,
                 title: action.label.clone(),
                 message: t!(
                     context.lang,

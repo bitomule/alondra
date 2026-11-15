@@ -326,7 +326,7 @@ fn nothing_is_merged_or_accepted_while_a_review_of_the_task_is_open() {
     present_pr(&mut s, "c", "wc", "dc");
     let authorize = || Command::AuthorizeMerge {
         authorization_id: "auto-auth".into(), presentation_id: "dc".into(), pr_id: "pr".into(),
-        expected_head: "head1".into(), method: MergeMethod::Squash,
+        expected_head: "head1".into(), method: MergeMethod::Squash, despite_pending_message: false,
     };
     assert_eq!(refused(&mut s, Actor::System, authorize()), "blocked", "Alondra does not auto-merge under an open review");
     assert_eq!(

@@ -812,7 +812,7 @@ pub mod tests {
         });
         command(domain, Actor::User { user_id: "u".into() }, "authorize", Command::AuthorizeMerge {
             authorization_id: "auth".into(), presentation_id: "d".into(), pr_id: "pr".into(),
-            expected_head: HEAD.into(), method: MergeMethod::Squash,
+            expected_head: HEAD.into(), method: MergeMethod::Squash, despite_pending_message: false,
         });
     }
 
@@ -1248,7 +1248,7 @@ pub mod tests {
         assert!(merge.enabled, "{merge:?}");
         command(&domain, Actor::User { user_id: "u".into() }, "authorize-2", Command::AuthorizeMerge {
             authorization_id: "auth-2".into(), presentation_id: "d2".into(), pr_id: "pr".into(),
-            expected_head: OTHER.into(), method: MergeMethod::Squash,
+            expected_head: OTHER.into(), method: MergeMethod::Squash, despite_pending_message: false,
         });
     }
 

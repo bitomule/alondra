@@ -427,7 +427,7 @@ fn merging_a_pr_takes_its_own_card_away_and_the_others_stay() {
     let merge = |pr: &str, head: &str| crate::views::action_id::ActionId::new(crate::views::action_id::Verb::Merge, pr, 1, Some(format!("{head}-final"))).unwrap();
     assert!(crate::views::resolves_card(&s, &merge(PUBLIC, "11111111")), "the merge settles the card it is on");
     must(&mut s, user(), Command::AuthorizeMerge {
-        authorization_id: "first".into(), presentation_id: "final".into(), pr_id: PUBLIC.into(), expected_head: FIRST_HEAD.into(), method: MergeMethod::Squash,
+        authorization_id: "first".into(), presentation_id: "final".into(), pr_id: PUBLIC.into(), expected_head: FIRST_HEAD.into(), method: MergeMethod::Squash, despite_pending_message: false,
     });
     assert_eq!(cards(&s), [PUBLIC, CLOUD], "a card stays until GitHub says its PR merged");
     merged(&mut s, PUBLIC, FIRST_HEAD);
@@ -474,7 +474,7 @@ fn a_question_about_one_pr_keeps_the_other_card_and_the_working_task_visible() {
     let mut s = two_open_prs();
     must(&mut s, user(), Command::AuthorizeMerge {
         authorization_id: "other-pr".into(), presentation_id: "final".into(), pr_id: CLOUD.into(),
-        expected_head: CLOUD_HEAD.into(), method: MergeMethod::Squash,
+        expected_head: CLOUD_HEAD.into(), method: MergeMethod::Squash, despite_pending_message: false,
     });
     must(&mut s, user(), Command::SubmitFeedback {
         presentation_id: "final".into(), targets: vec![pr(PUBLIC, FIRST_HEAD)],
@@ -750,7 +750,7 @@ fn the_second_pr_of_the_mobile_menu_fix_reaches_the_user_with_its_merge() {
     assert_eq!(actions[0].1, "Squash and merge");
 
     must(&mut s, user(), Command::AuthorizeMerge {
-        authorization_id: "merge".into(), presentation_id: "final-2".into(), pr_id: CLOUD.into(), expected_head: CLOUD_HEAD.into(), method: MergeMethod::Squash,
+        authorization_id: "merge".into(), presentation_id: "final-2".into(), pr_id: CLOUD.into(), expected_head: CLOUD_HEAD.into(), method: MergeMethod::Squash, despite_pending_message: false,
     });
     merged(&mut s, CLOUD, CLOUD_HEAD);
     assert!(s.finished(&s.tasks[&TASK.into()]), "merging it settles the task");
@@ -802,14 +802,14 @@ fn a_delivery_of_a_pr_carries_every_open_pr_and_the_task_waits_for_each() {
     assert_eq!(*targets, vec![pr(PUBLIC, FIRST_HEAD), pr(CLOUD, CLOUD_HEAD)]);
 
     must(&mut s, user(), Command::AuthorizeMerge {
-        authorization_id: "first".into(), presentation_id: "final".into(), pr_id: PUBLIC.into(), expected_head: FIRST_HEAD.into(), method: MergeMethod::Squash,
+        authorization_id: "first".into(), presentation_id: "final".into(), pr_id: PUBLIC.into(), expected_head: FIRST_HEAD.into(), method: MergeMethod::Squash, despite_pending_message: false,
     });
     merged(&mut s, PUBLIC, FIRST_HEAD);
     assert!(!s.finished(&s.tasks[&TASK.into()]), "one PR is still open");
     assert_eq!(s.unmerged_targets(&TASK.into()), 1);
 
     must(&mut s, user(), Command::AuthorizeMerge {
-        authorization_id: "second".into(), presentation_id: "final".into(), pr_id: CLOUD.into(), expected_head: CLOUD_HEAD.into(), method: MergeMethod::Squash,
+        authorization_id: "second".into(), presentation_id: "final".into(), pr_id: CLOUD.into(), expected_head: CLOUD_HEAD.into(), method: MergeMethod::Squash, despite_pending_message: false,
     });
     merged(&mut s, CLOUD, CLOUD_HEAD);
     assert!(s.finished(&s.tasks[&TASK.into()]));
@@ -1064,8 +1064,7 @@ fn replying_to_a_second_pr_keeps_both_replies_with_the_working_node() {
             assert!(s.pending_reply(p, &target(pr_id, head)), "{pr_id} is still unanswered");
             let action = s.card_for_pr(&s.item(p), &pr_id.into()).unwrap().available_actions.into_iter()
                 .find(|action| action.kind == "authorize_merge").unwrap();
-            assert!(!action.enabled);
-            assert_eq!(action.disabled_reason.as_deref(), Some("pending_user_reply"));
+            assert!(action.enabled && s.pending_user_message(p, &target(pr_id, head)), "{pr_id} merges only once the user confirms");
         }
     }
     fn assert_returned(s: &DomainState) {

@@ -351,6 +351,9 @@ pub const APPROVE_PLAN: &str = "implement";
 /// The `extra` of «Only archive», which apps may still send from a card they show from before.
 pub const ARCHIVE_PLAN: &str = "archive";
 
+/// Opens the `extra` of a merge the user confirms while a message of theirs is unanswered.
+pub const MERGE_ANYWAY: &str = "anyway_";
+
 /// What an accept action's `extra` chooses for a result's proposed plan.
 pub fn plan_choice(extra: &str) -> Option<crate::domain::PlanChoice> {
     match extra {

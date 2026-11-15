@@ -23,7 +23,7 @@ pub(super) fn interrupt_action(id: &str, context: &RenderContext<'_>) -> Option<
     let mut action = common::action(Verb::Interrupt, id, context.domain.revision,
         t!(context.lang, "Interrupt", "Interrumpir"), Style::Secondary)?;
     action.key = (context.client == super::Client::Tui).then(|| "i".into());
-    action.confirm = Some(Confirm {
+    action.confirm = Some(Confirm { cancel: None,
         title: action.label.clone(),
         message: t!(context.lang, "Stop what this node is doing now? It keeps its task and waits for you.",
             "¿Detener lo que hace ahora este nodo? Conserva su tarea y te espera.").into(),
@@ -37,7 +37,7 @@ fn force_stop_action(id: &str, context: &RenderContext<'_>) -> Option<super::Act
         t!(context.lang, "Force stop", "Forzar parada"), Style::Destructive)?;
     action.key = (context.client == super::Client::Tui).then(|| "i".into());
     action.stamp = Some(t!(context.lang, "Stopping…", "Parando…").into());
-    action.confirm = Some(Confirm {
+    action.confirm = Some(Confirm { cancel: None,
         title: action.label.clone(),
         message: t!(context.lang, "Claude accepted the interrupt but keeps going. End its process now? The task keeps its conversation; your next message resumes it.",
             "Claude aceptó la interrupción pero sigue. ¿Terminar su proceso ahora? La tarea conserva su conversación; tu próximo mensaje la retoma.").into(),

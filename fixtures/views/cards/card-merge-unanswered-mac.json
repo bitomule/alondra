@@ -1,0 +1,242 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "card",
+  "key": "card:d",
+  "client": "mac",
+  "version": "v53e6ffff08decebf",
+  "cursor": "cursor-1",
+  "title": "Review the result",
+  "status": {
+    "version": "ve740a7d977bd0d28",
+    "summary": "1 to read · 0 tasks working",
+    "summary_parts": [
+      {
+        "id": "to_read",
+        "count": 1,
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
+    "badge": 1,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 1
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "needs_you",
+        "label": "waiting for you",
+        "value": 0
+      },
+      {
+        "id": "queued",
+        "label": "queued",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "paused",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "waiting",
+        "value": 1
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "card",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "d",
+          "kind": "review",
+          "need": "Review the result",
+          "title_is_separate": true,
+          "why": "Working on your message from 23:29",
+          "meta": "owner/repo · → main",
+          "content_row": {
+            "kind": "report",
+            "icon": "notice",
+            "label": "Report",
+            "summary": "1 point"
+          },
+          "reply": {
+            "id": "changes:pr@9~head1",
+            "label": "Request changes",
+            "style": "secondary",
+            "role": "neutral",
+            "presentation": "button",
+            "input": {
+              "kind": "text",
+              "placeholder": "Describe the changes",
+              "required": true,
+              "multiline": true
+            },
+            "attachments": true,
+            "comments": {
+              "kind": "diff_lines"
+            },
+            "enabled": true,
+            "stamp": "Changes requested",
+            "key": "r",
+            "link": {
+              "kind": "view",
+              "key": "pull_request:pr"
+            },
+            "resolves_card": true
+          },
+          "link": {
+            "kind": "view",
+            "key": "card:d"
+          },
+          "icon": "pull_request",
+          "eyebrow": {
+            "text": "Review · PR #1",
+            "tone": "accent"
+          },
+          "title": "Review the result",
+          "subtitle": "Working on your message from 23:29",
+          "context": [
+            {
+              "icon": "task",
+              "text": "Fix it",
+              "link": {
+                "kind": "view",
+                "key": "task:t"
+              },
+              "state": {
+                "text": "Waiting",
+                "tone": "neutral"
+              }
+            }
+          ],
+          "state": {
+            "text": "Checking with GitHub…",
+            "tone": "neutral"
+          },
+          "detail": "included",
+          "actions": [
+            {
+              "id": "merge:d@9~anyway_head1-d",
+              "label": "Squash and merge",
+              "style": "primary",
+              "role": "advance",
+              "option_id": "squash",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Merge without waiting for your message?",
+                "message": "This task got a message from you after opening the PR and is still working on it. If you merge now, the PR may not include what you asked for and another PR may be needed.",
+                "button": "Merge anyway",
+                "cancel": "Wait"
+              },
+              "enabled": true,
+              "stamp": "Merging…",
+              "key": "1",
+              "resolves_card": true
+            },
+            {
+              "id": "close_unmerged:d@9",
+              "label": "Close without merging",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Close PR #1 without merging?",
+                "message": "Alondra closes the PR on GitHub and cancels this task. Nothing is merged.",
+                "button": "Close PR"
+              },
+              "enabled": true,
+              "stamp": "Closing…",
+              "key": "k",
+              "resolves_card": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "diff",
+      "title": "Diff",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "content_ref",
+          "kind": "diff",
+          "title": "Diff",
+          "size": 0,
+          "digest": "head1",
+          "fetch": "/pull-requests/pr/diff",
+          "commentable": true
+        }
+      ]
+    },
+    {
+      "id": "description",
+      "title": "Description",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "Review the result",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    },
+    {
+      "id": "context",
+      "title": "Context",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Task",
+              "value": "Fix it",
+              "link": {
+                "kind": "view",
+                "key": "task:t"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

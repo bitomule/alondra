@@ -443,6 +443,9 @@ pub enum Command {
         pr_id: PrId,
         expected_head: String,
         method: MergeMethod,
+        /// The user confirmed merging while a message of theirs still waits for its answer.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        despite_pending_message: bool,
     },
     ClaimMergeAuthorization {
         authorization_id: AuthorizationId,

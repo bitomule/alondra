@@ -369,7 +369,7 @@ fn setup_variant(store: &mut DomainStore, variants: &Value, name: &str) {
                 presentation_id: string(field(authorization, "presentation_id")).into(),
                 pr_id: string(field(authorization, "pr_id")).into(),
                 expected_head: string(field(authorization, "head")).into(),
-                method: serde_json::from_value(field(authorization, "method").clone()).unwrap(),
+                method: serde_json::from_value(field(authorization, "method").clone()).unwrap(), despite_pending_message: false,
             },
         );
     } else if let Some(parent) = variant

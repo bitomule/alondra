@@ -1994,7 +1994,10 @@ fn draw_modal(f: &mut Frame, modal: &super::Modal, body: Rect) {
     let width = body.width.saturating_sub(8).clamp(20, 70);
     let inner_width = width.saturating_sub(4).max(1);
     let button = &modal.button;
-    let keys = trf!("⏎ {button} · Esc cancel", "⏎ {button} · Esc cancelar");
+    let keys = match &modal.cancel {
+        Some(cancel) => format!("⏎ {button} · Esc {cancel}"),
+        None => trf!("⏎ {button} · Esc cancel", "⏎ {button} · Esc cancelar"),
+    };
     let mut lines = vec![
         Line::from(Span::styled(
             format!("? {}", modal.title),

@@ -9,6 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[path = "client_language_tests.rs"]
 mod client_language_tests;
+#[path = "merge_message_tests.rs"]
+mod merge_message_tests;
 
 fn inbox_badge(state: &DomainState) -> u32 {
     super::inbox_badge(&crate::domain::ReadIndex::build(state))
@@ -5769,18 +5771,17 @@ fn a_reply_on_a_presented_pr_leaves_waiting_for_you_on_every_client_and_a_pause_
         let view = render(&state, &live, client, Lang::Es, "card:d", "");
         assert_eq!(view.view, "card", "the pending reply keeps its card available");
         let card = card_of(&view);
-        assert!(card.actions.iter().chain(&card.more).all(|action| !action.id.starts_with("merge:")),
-            "{client:?}: an unanswered reply never offers a merge");
-        assert!(serde_json::to_string(card).unwrap().contains("Queda un mensaje por responder"));
+        let merge = card.actions.iter().chain(&card.more).find(|action| action.id.starts_with("merge:"))
+            .unwrap_or_else(|| panic!("{client:?}: an unanswered reply still offers the merge"));
+        assert!(merge.confirm.is_some(), "{client:?}: merging over an unanswered reply asks first");
+        assert!(serde_json::to_string(card).unwrap().contains("Tu respuesta llegó y espera"));
         assert!(card.reply.as_ref().is_some_and(|reply| reply.enabled && reply.id.starts_with("changes:")),
             "{client:?}: the user can still write to the result");
     }
     let index = crate::domain::ReadIndex::build(&state);
     let authorization = index.cards().iter().flat_map(|card| &card.available_actions)
         .find(|action| action.kind == "authorize_merge").expect("merge availability is decided by the domain");
-    assert!(!authorization.enabled);
-    assert_eq!(authorization.disabled_reason.as_deref(), Some("pending_user_reply"));
-    assert_eq!(authorization.refusal, Some(crate::domain::Refusal::PendingUserMessage));
+    assert!(authorization.enabled, "the user may merge anyway, once they confirm");
     let presentation = &state.interactions[&crate::domain::InteractionId::from("d")];
     let crate::domain::InteractionPayload::Delivery { feedback, .. } = &presentation.payload else { panic!("a delivery") };
     assert_eq!(feedback.len(), 1);
@@ -5791,12 +5792,12 @@ fn a_reply_on_a_presented_pr_leaves_waiting_for_you_on_every_client_and_a_pause_
         command_id: "pending-reply-merge".into(), expected_revision: state.revision,
         command: Command::AuthorizeMerge {
             authorization_id: "pending-reply-authorization".into(), presentation_id: "d".into(), pr_id: "pr".into(),
-            expected_head: "head1".into(), method: crate::domain::MergeMethod::Squash,
+            expected_head: "head1".into(), method: crate::domain::MergeMethod::Squash, despite_pending_message: false,
         },
     }).unwrap_err();
-    assert_eq!(error.code, "pending_user_reply");
-    assert_eq!(error.why(), crate::domain::Refusal::PendingUserMessage);
-    assert_eq!(attempted, state, "a refused merge leaves the pending reply intact");
+    assert_eq!(error.code, "unanswered_message");
+    assert_eq!(error.why(), crate::domain::Refusal::UnansweredMessage);
+    assert_eq!(attempted, state, "a merge the user did not confirm leaves the pending reply intact");
 }
 
 #[test]

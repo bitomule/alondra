@@ -72,7 +72,7 @@ pub(super) fn pause_node_action(agent: &AgentId, context: &RenderContext<'_>) ->
     let mut action = common::action(Verb::Pause, &agent.0, task.revision, pause_label(lang), Style::Secondary)?;
     action.key = (context.client == super::Client::Tui).then(|| "p".into());
     action.stamp = Some(t!(lang, "Paused", "En pausa").into());
-    action.confirm = Some(Confirm {
+    action.confirm = Some(Confirm { cancel: None,
         title: t!(lang, "Pause this node?", "¿Pausar este nodo?").into(),
         message: t!(lang, "It stops what it is running now and keeps its task. Alondra does not resume it by itself: only you do.",
             "Deja lo que está ejecutando ahora y conserva su tarea. Alondra no lo reanuda solo: solo tú.").into(),

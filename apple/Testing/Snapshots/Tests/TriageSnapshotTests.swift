@@ -359,6 +359,33 @@ final class TriageSnapshotTests: XCTestCase {
         assertScreen(language: .spanish, inWindow: true) { Harness(store: store) }
     }
 
+    /// A PR whose task still works on a message of the user keeps its merge and says so beside it.
+    func test_aPullRequestWithAnUnansweredMessageKeepsItsMerge() throws {
+        let store = try single(try Fixtures.document("card-merge-unanswered"))
+        assertScreen(inWindow: true) { Harness(store: store) }
+    }
+
+    func test_aPullRequestWithAnUnansweredMessageKeepsItsMerge_es() throws {
+        let store = try single(try Fixtures.document("card-merge-unanswered-es"), spanish: true)
+        assertScreen(language: .spanish, inWindow: true) { Harness(store: store) }
+    }
+
+    func test_mergingOverAnUnansweredMessageAsksFirst() async throws {
+        for spanish in [false, true] {
+            let document = try Fixtures.document(spanish ? "card-merge-unanswered-es" : "card-merge-unanswered")
+            let card = try XCTUnwrap(document.sections.flatMap(\.items).compactMap { item -> Card? in
+                if case .card(let card) = item { card } else { nil }
+            }.first)
+            let merge = try XCTUnwrap(card.actions.first { $0.id?.hasPrefix("merge:") == true })
+            XCTAssertEqual(merge.confirm?.cancel, spanish ? "Esperar" : "Wait")
+            var actions = ActionFeature.State.device(dataEpoch: document.dataEpoch)
+            actions.action = merge
+            actions.confirmation = merge.confirm
+            let store = try single(document, spanish: spanish) { $0.cards[id: "d"]?.actions = actions }
+            await assertPresented(language: language(spanish), named: spanish ? "light_es" : "light") { Harness(store: store) }
+        }
+    }
+
     /// Once the merge is sent the stamp covers the whole card: no button shows through it.
     func test_aMergeSentHidesTheCardButtonsUnderTheStamp() throws {
         for spanish in [false, true] {

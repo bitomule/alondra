@@ -1430,6 +1430,9 @@ pub struct MergeAuthorization {
     pub attempt: MergeAttemptState,
     pub claimed_by: Option<AgentId>,
     pub at_revision: Revision,
+    /// The user merged knowing a message of theirs was still unanswered.
+    #[serde(default)]
+    pub despite_pending_message: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DomainState {

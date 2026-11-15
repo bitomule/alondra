@@ -305,6 +305,7 @@ impl App {
                 title: confirm.title.clone(),
                 body: confirm.message.clone(),
                 button: confirm.button.clone(),
+                cancel: confirm.cancel.clone(),
                 destructive: action.style == alondra_core::views::Style::Destructive,
                 then: super::ModalThen::Action {
                     action: Box::new(action.clone()),

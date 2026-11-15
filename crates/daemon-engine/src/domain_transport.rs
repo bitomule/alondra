@@ -1450,7 +1450,7 @@ pub mod tests {
         });
         command(&domain, Actor::User { user_id: "u".into() }, "authorize", Command::AuthorizeMerge {
             authorization_id: "auth".into(), presentation_id: "delivery".into(), pr_id: "pr".into(),
-            expected_head: head.into(), method: MergeMethod::Squash,
+            expected_head: head.into(), method: MergeMethod::Squash, despite_pending_message: false,
         });
         let domain = Arc::new(domain);
         let mut node = connect(&domain, "session-a").await;

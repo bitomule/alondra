@@ -1,0 +1,268 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "card",
+  "key": "card:d",
+  "client": "tui",
+  "version": "vb18e87bc8afda26f",
+  "cursor": "cursor-1",
+  "title": "Review the result",
+  "status": {
+    "version": "v160782bfb7fc643d",
+    "summary": "1 por leer · 0 tareas trabajando",
+    "summary_parts": [
+      {
+        "id": "to_read",
+        "count": 1,
+        "one": "{count} por leer",
+        "other": "{count} por leer"
+      },
+      {
+        "id": "working",
+        "count": 0,
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
+    "badge": 1,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 1
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 0
+      },
+      {
+        "id": "needs_you",
+        "label": "esperando por ti",
+        "value": 0
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
+        "value": 1
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "card",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "d",
+          "kind": "review",
+          "need": "Revisa el resultado",
+          "title_is_separate": true,
+          "why": "Atendiendo tu mensaje de las 23:29",
+          "meta": "owner/repo · → main",
+          "content_row": {
+            "kind": "report",
+            "icon": "notice",
+            "label": "Informe",
+            "summary": "1 punto"
+          },
+          "reply": {
+            "id": "changes:pr@9~head1",
+            "label": "Pedir cambios",
+            "style": "secondary",
+            "role": "neutral",
+            "presentation": "button",
+            "input": {
+              "kind": "text",
+              "placeholder": "Describe los cambios",
+              "required": true,
+              "multiline": true
+            },
+            "attachments": true,
+            "comments": {
+              "kind": "diff_lines"
+            },
+            "enabled": true,
+            "stamp": "Cambios solicitados",
+            "key": "r",
+            "link": {
+              "kind": "view",
+              "key": "pull_request:pr"
+            },
+            "resolves_card": true
+          },
+          "more": [
+            {
+              "id": "close_unmerged:d@9",
+              "label": "Cerrar sin hacer merge",
+              "style": "destructive",
+              "role": "risk",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "¿Cerrar la PR #1 sin hacer merge?",
+                "message": "Alondra cierra la PR en GitHub y cancela esta tarea. No se hace merge de nada.",
+                "button": "Cerrar la PR"
+              },
+              "enabled": true,
+              "stamp": "Cerrando…",
+              "key": "k",
+              "resolves_card": true
+            },
+            {
+              "id": "",
+              "label": "Revisar copia local",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "key": "l",
+              "link": {
+                "kind": "local",
+                "local": {
+                  "kind": "review_clone",
+                  "repo": "owner/repo",
+                  "branch": "head1",
+                  "pr": 1,
+                  "pr_id": "pr"
+                }
+              },
+              "resolves_card": false
+            }
+          ],
+          "link": {
+            "kind": "view",
+            "key": "card:d"
+          },
+          "icon": "pull_request",
+          "eyebrow": {
+            "text": "Revisar · PR #1",
+            "tone": "accent"
+          },
+          "title": "Review the result",
+          "subtitle": "Atendiendo tu mensaje de las 23:29",
+          "context": [
+            {
+              "icon": "task",
+              "text": "Fix it",
+              "link": {
+                "kind": "view",
+                "key": "task:t"
+              },
+              "state": {
+                "text": "En espera",
+                "tone": "neutral"
+              }
+            }
+          ],
+          "state": {
+            "text": "Consultando GitHub…",
+            "tone": "neutral"
+          },
+          "detail": "included",
+          "actions": [
+            {
+              "id": "merge:d@9~anyway_head1-d",
+              "label": "Squash and merge",
+              "style": "primary",
+              "role": "advance",
+              "option_id": "squash",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "¿Hacer merge sin esperar a tu mensaje?",
+                "message": "Esta tarea recibió un mensaje tuyo después de abrir el PR y aún lo está atendiendo. Si haces merge, puede que no incluya lo que pediste y haga falta otro PR.",
+                "button": "Hacer merge igualmente",
+                "cancel": "Esperar"
+              },
+              "enabled": true,
+              "stamp": "Haciendo merge…",
+              "key": "1",
+              "resolves_card": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "diff",
+      "title": "Diferencias",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "content_ref",
+          "kind": "diff",
+          "title": "Diferencias",
+          "size": 0,
+          "digest": "head1",
+          "fetch": "/pull-requests/pr/diff",
+          "commentable": true
+        }
+      ]
+    },
+    {
+      "id": "description",
+      "title": "Descripción",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "Review the result",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    },
+    {
+      "id": "context",
+      "title": "Contexto",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Tarea",
+              "value": "Fix it",
+              "link": {
+                "kind": "view",
+                "key": "task:t"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

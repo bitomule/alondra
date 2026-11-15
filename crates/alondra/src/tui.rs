@@ -207,6 +207,8 @@ pub struct Modal {
     pub title: String,
     pub body: String,
     pub button: String,
+    /// What Esc does in words, when the view names it.
+    pub cancel: Option<String>,
     pub destructive: bool,
     then: ModalThen,
 }
@@ -2417,6 +2419,7 @@ impl App {
                     return;
                 };
                 let modal = Modal {
+                    cancel: None,
                     title: outcome.title,
                     body: outcome.body.unwrap_or_default(),
                     button: next.label.clone(),

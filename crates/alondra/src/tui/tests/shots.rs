@@ -69,6 +69,18 @@ fn answered(lang: crate::i18n::Lang, outcome: Outcome) -> App {
     app
 }
 
+/// The PR card while its task still works on a message of the user; `press` asks for the merge.
+fn merge_over_an_unanswered_message(lang: crate::i18n::Lang, press: bool) -> App {
+    let mut app = app_with_the_pr_card(lang);
+    let mut card = view_fixture(if lang == crate::i18n::Lang::Es { "card-merge-unanswered-es-tui.json" } else { "card-merge-unanswered-tui.json" });
+    card["key"] = format!("card:{CARD}").into();
+    app.on_msg(Msg::ViewCard { key: format!("card:{CARD}"), result: Ok(serde_json::from_value(card).unwrap()) });
+    if press {
+        app.on_key(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE));
+    }
+    app
+}
+
 fn tasks(lang: crate::i18n::Lang) -> App {
     crate::i18n::set_for_this_thread(lang);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
@@ -118,7 +130,8 @@ fn tui_shots() {
             ("3-refused", answered(lang, Outcome::refused(&Refusal::UpstreamPrOpen { number: 11 }, view_lang))),
             ("4-changed", answered(lang, changed)),
         ];
-        let shots = shots.into_iter().chain([("5-tasks", tasks(lang)), ("6-usage", usage(lang, false)), ("7-usage-sheet", usage(lang, true))]);
+        let shots = shots.into_iter().chain([("5-tasks", tasks(lang)), ("6-usage", usage(lang, false)), ("7-usage-sheet", usage(lang, true)),
+            ("10-merge-unanswered", merge_over_an_unanswered_message(lang, false)), ("11-merge-unanswered-asks", merge_over_an_unanswered_message(lang, true))]);
         for (shot, mut app) in shots {
             let html = page(&mut app);
             std::fs::write(out.join(format!("{shot}-{name}.html")), html).unwrap();

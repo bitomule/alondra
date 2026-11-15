@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:d",
   "client": "mac",
-  "version": "v5106c7430eb0388a",
+  "version": "va4ec61de76199255",
   "cursor": "cursor-1",
   "title": "Review the result",
   "status": {
@@ -135,10 +135,6 @@
                 "text": "En espera",
                 "tone": "neutral"
               }
-            },
-            {
-              "icon": "warning",
-              "text": "Queda un mensaje por responder: espera un nuevo resultado."
             }
           ],
           "state": {
@@ -147,6 +143,28 @@
           },
           "detail": "included",
           "actions": [
+            {
+              "id": "merge:d@10~anyway_head1-d",
+              "label": "Squash and merge",
+              "style": "primary",
+              "role": "advance",
+              "option_id": "squash",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "¿Hacer merge sin esperar a tu mensaje?",
+                "message": "Esta tarea recibió un mensaje tuyo después de abrir el PR y aún lo está atendiendo. Si haces merge, puede que no incluya lo que pediste y haga falta otro PR.",
+                "button": "Hacer merge igualmente",
+                "cancel": "Esperar"
+              },
+              "enabled": true,
+              "stamp": "Haciendo merge…",
+              "key": "1",
+              "resolves_card": true
+            },
             {
               "id": "close_unmerged:d@10",
               "label": "Cerrar sin hacer merge",

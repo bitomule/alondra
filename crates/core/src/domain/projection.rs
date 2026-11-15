@@ -200,9 +200,53 @@ impl DomainState {
 
     /// An unresolved response survives the node consuming its input or ending a turn.
     pub fn pending_reply(&self, presentation: &Interaction, target: &FeedbackTarget) -> bool {
+        self.merge_held(presentation, target) || self.pending_user_message(presentation, target)
+    }
+
+    /// Something the user wrote to the task or on this delivery that its node has not answered
+    /// with a new delivery yet: the user may still merge, once they confirm.
+    pub fn pending_user_message(&self, presentation: &Interaction, target: &FeedbackTarget) -> bool {
+        self.pending_message_revision(presentation, target).is_some()
+    }
+
+    /// When the newest of those unanswered messages arrived, as the revision that recorded it;
+    /// `Some(0)` when the message carries no revision of its own.
+    pub fn pending_message_revision(&self, presentation: &Interaction, target: &FeedbackTarget) -> Option<Revision> {
+        let InteractionPayload::Delivery { acceptance, feedback, .. } = &presentation.payload else { return None };
+        let replies = feedback.iter().filter(|f| matches!(f.instruction, Instruction::Reply | Instruction::Question)
+            && f.target.affects(target) && acceptance.as_ref().is_none_or(|a| f.at_revision > a.at_revision))
+            .map(|f| f.at_revision);
+        let Scope::Task { task_id } = &presentation.scope else { return replies.max() };
+        let told = self.tasks.get(task_id).into_iter().flat_map(|task| &task.pending_user_inputs)
+            .map(|input| input.rsplit(':').next().and_then(|revision| revision.parse().ok()).unwrap_or(0));
+        replies.chain(told).max()
+    }
+
+    /// Every current delivery with a PR its task still owes the user an answer about, with the
+    /// revision of the newest unanswered message: what the card says since when.
+    pub fn unanswered_message_revisions(&self) -> Vec<(InteractionId, Revision)> {
+        self.tasks.values().filter_map(|task| self.interactions.get(task.final_presentation.as_ref()?)).filter_map(|presentation| {
+            let InteractionPayload::Delivery { targets, .. } = &presentation.payload else { return None };
+            targets.iter().filter_map(|target| match target {
+                DeliveryTarget::PullRequest { pr_id, head } => self.pending_message_revision(presentation,
+                    &FeedbackTarget::PullRequest { pr_id: pr_id.clone(), head: head.clone() }),
+                _ => None,
+            }).max().filter(|revision| *revision > 0).map(|revision| (presentation.id.clone(), revision))
+        }).collect()
+    }
+
+    /// What holds back a merge someone already authorized: the user's own go-ahead stands over a
+    /// message they send afterwards; Alondra's own merge still waits for every answer.
+    pub fn authorized_merge_held(&self, presentation: &Interaction, authorized_by: &str, target: &FeedbackTarget) -> bool {
+        if authorized_by == Feedback::ALONDRA { self.pending_reply(presentation, target) } else { self.merge_held(presentation, target) }
+    }
+
+    /// What holds a merge back even when the user would merge anyway: a clarification they asked
+    /// for, conflicts on an open PR, or a reply that went to the orchestrator as a request.
+    pub fn merge_held(&self, presentation: &Interaction, target: &FeedbackTarget) -> bool {
         let InteractionPayload::Delivery { acceptance, feedback, targets, .. } = &presentation.payload else { return false };
         if presentation.clarification.is_some() || feedback.iter().any(|f| {
-            f.instruction != Instruction::Changes && f.target.affects(target)
+            !matches!(f.instruction, Instruction::Changes | Instruction::Reply | Instruction::Question) && f.target.affects(target)
                 && acceptance.as_ref().is_none_or(|a| f.at_revision > a.at_revision)
                 && (f.instruction != Instruction::Conflicts || targets.iter().any(|pr| {
                     let DeliveryTarget::PullRequest { pr_id, head } = pr else { return false };
@@ -212,9 +256,8 @@ impl DomainState {
         }) {
             return true;
         }
-        let Scope::Task { task_id } = &presentation.scope else { return false };
-        self.tasks.get(task_id).is_some_and(|task| !task.pending_user_inputs.is_empty())
-            || self.requests.values().filter(|request| !request.closed).filter_map(|request| request.reply_to.as_ref()).any(|reply| {
+        matches!(presentation.scope, Scope::Task { .. })
+            && self.requests.values().filter(|request| !request.closed).filter_map(|request| request.reply_to.as_ref()).any(|reply| {
                 reply.interaction_id == presentation.id || self.interactions.get(&reply.interaction_id).is_some_and(|older| {
                     older.scope == presentation.scope && matches!(older.payload, InteractionPayload::Delivery { .. })
                 })
@@ -495,6 +538,8 @@ impl DomainState {
                                 {
                                     token.push('x');
                                 }
+                                let despite_pending_message = self.pending_user_message(i,
+                                    &FeedbackTarget::PullRequest { pr_id: pr_id.clone(), head: head.clone() });
                                 actions.push(self.action(
                                     "authorize_merge",
                                     Command::AuthorizeMerge {
@@ -503,6 +548,7 @@ impl DomainState {
                                         pr_id: pr_id.clone(),
                                         expected_head: head.clone(),
                                         method,
+                                        despite_pending_message,
                                     },
                                     Some(i.id.clone()),
                                     Some(head.clone()),
