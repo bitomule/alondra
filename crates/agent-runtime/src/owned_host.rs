@@ -832,7 +832,16 @@ pub enum Retained {
 pub struct EndedHost {
     state_dir: PathBuf,
     bootstrap: Vec<u8>,
-    _lock: File,
+    _lock: Claimed,
+}
+/// The lock of an ended host's folder, taken by this daemon. A child another thread forks holds a
+/// copy of its descriptor until that child's `exec`, and closing only this copy would leave the
+/// lock with it: the host would read as alive. Unlocking releases every copy.
+struct Claimed(File);
+impl Drop for Claimed {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
 }
 impl EndedHost {
     pub fn claim(state_dir: &Path) -> io::Result<Retained> {
@@ -842,7 +851,7 @@ impl EndedHost {
             Ok(_) => private_directory(state_dir)?,
         }
         let path = state_dir.join("host.lock");
-        let mut file = match OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(&path) {
+        let file = match OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(&path) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Retained::Absent),
             other => other?,
         };
@@ -860,16 +869,17 @@ impl EndedHost {
             Err(fs::TryLockError::WouldBlock) => return Ok(Retained::Held),
             Err(fs::TryLockError::Error(error)) => return Err(error),
         }
+        let mut claimed = Claimed(file);
         let named = fs::symlink_metadata(&path)?;
         if named.is_symlink() || (named.dev(), named.ino()) != (metadata.dev(), metadata.ino()) {
             return Err(refused("retained lock inode changed while claimed"));
         }
         let mut bootstrap = Vec::new();
-        file.read_to_end(&mut bootstrap)?;
+        claimed.0.read_to_end(&mut bootstrap)?;
         if bootstrap.is_empty() {
             return Ok(Retained::Absent);
         }
-        Ok(Retained::Ended(Self { state_dir: state_dir.to_path_buf(), bootstrap, _lock: file }))
+        Ok(Retained::Ended(Self { state_dir: state_dir.to_path_buf(), bootstrap, _lock: claimed }))
     }
     /// Ends the host that still holds the lock of `state_dir` though no owner can adopt it, then
     /// claims its folder. Each process holding the lock is asked to stop and waited out until it
