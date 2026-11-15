@@ -1038,9 +1038,11 @@ checks:
       - "plugin/tests/**"
       - "tools/BUILD.bazel"
       - "tools/plugin-mod-test.sh"
+      - "tools/tests/test_plugin_mod_test_tmpdir.py"
     with:
       targets:
         - //:plugin_mod_test
+        - //tools:plugin_mod_test_tmpdir_test
 
   sourcekit-lsp-workspace:
     uses: bazel/test

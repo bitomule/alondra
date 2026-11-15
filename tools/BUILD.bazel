@@ -172,6 +172,13 @@ sh_test(
 )
 
 sh_test(
+    name = "plugin_mod_test_tmpdir_test",
+    srcs = ["tests/test_plugin_mod_test_tmpdir.py"],
+    data = ["plugin-mod-test.sh"],
+    size = "small",
+)
+
+sh_test(
     name = "reap_test_hosts_test",
     srcs = ["tests/test_reap_test_hosts.py"],
     data = ["reap-test-hosts.py"],

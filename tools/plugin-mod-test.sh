@@ -5,7 +5,11 @@
 set -eu
 
 source_dir=$(dirname "$(dirname "$1")")
-work=${TEST_TMPDIR:-$(mktemp -d)}
+work=${TEST_TMPDIR:-}
+if [ -z "$work" ]; then
+    work=$(mktemp -d "${TMPDIR:-/tmp}/plugin-mod-test.XXXXXX")
+    trap 'rm -rf "$work"' EXIT
+fi
 rm -rf "$work/plugin" "$work/claude"
 cp -RL "$source_dir" "$work/plugin"
 command -v claude >/dev/null || { echo "Claude Code (claude) is not on PATH" >&2; exit 1; }
