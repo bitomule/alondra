@@ -89,35 +89,6 @@ checks:
       facts:
         - "Read the changed installation/runtime sources against docs/on-your-mac.md. Update that inventory for every changed installed or launched program, file read/write/delete, network connection/listener, macOS permission, credential or environment handoff; check README.md and INSTALL.md agree. Record source paths and what changed, or why the inventory remains accurate."
         - "Review the paths of mac-inventory-review in MUSTS.yml against the changed sources, including new files, so every installation/runtime surface still requires inventory review."
-  snapshot-recording:
-    uses: bazel/test
-    paths:
-      - ".bazelrc"
-      - ".bazelversion"
-      - "MODULE.bazel"
-      - "tools/BUILD.bazel"
-      - "tools/record_snapshots.py"
-      - "tools/simulator.py"
-      - "tools/tests/test_record_snapshots.py"
-    with:
-      targets:
-        - //tools:record_snapshots_test
-
-  simulator:
-    uses: bazel/test
-    paths:
-      - ".bazelrc"
-      - ".bazelversion"
-      - "MODULE.bazel"
-      - "tools/BUILD.bazel"
-      - "tools/simulator.py"
-      - "tools/tests/test_simulator.py"
-      - "apple/Testing/Simulator/BUILD.bazel"
-      - "apple/Testing/Simulator/config.bzl"
-    with:
-      targets:
-        - //tools:simulator_test
-
   ci:
     uses: bazel/test
     paths:

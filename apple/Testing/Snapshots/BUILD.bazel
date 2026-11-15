@@ -2,7 +2,6 @@ load("@build_bazel_rules_apple//apple:ios.bzl", "ios_application", "ios_unit_tes
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
 load("@simpool//:simpool_ios_test_runner.bzl", "simpool_ios_test_runner")
 load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
-load("//apple/Testing/Simulator:config.bzl", "SIMULATOR")
 
 exports_files(
     ["Support/AssertAppSnapshot.swift"],
@@ -25,8 +24,8 @@ exports_files(
 simpool_ios_test_runner(
     name = "iphone_17_pro_runner",
     create_xcresult_bundle = True,
-    device_type = SIMULATOR["device"],
-    os_version = SIMULATOR["runtime"],
+    device_type = "iPhone 17 Pro",
+    os_version = "26.3",
     pre_action = "//apple/Testing/Simulator:uninstall_test_host",
     visibility = ["//apple/Mermaid:__pkg__"],
     xcodebuild_args = [
@@ -104,8 +103,7 @@ FIRST_SUITE = "AccountSnapshotTests"
 [
     ios_unit_test(
         name = name,
-        timeout = "long" if migration else "moderate",
-        tags = ["manual"] if migration else [],
+        timeout = "moderate",
         bundle_id = "com.bitomule.alondra.snapshottests",
         data = glob(["Tests/__Snapshots__/**"], allow_empty = True) + [
             "Fixtures/pairing-native-label.png",
@@ -128,13 +126,11 @@ FIRST_SUITE = "AccountSnapshotTests"
         test_host = ":SnapshotTestHost",
         deps = [":AlondraSnapshotTestsLib"],
     )
-    for name, test_filter, migration in [
-        ("AlondraDetailSnapshotTests", ",".join([FIRST_SUITE] + DETAIL_SUITES), False),
-        ("AlondraScreenSnapshotTests", ",".join(["-" + suite for suite in DETAIL_SUITES + [TRIAGE_SUITE]]), False),
-        ("AlondraTriageSnapshotTests", ",".join([FIRST_SUITE, TRIAGE_SUITE]), False),
-        # One process records every reference once; verification retains the three warmed suites.
-        ("AlondraSnapshotMigrationTests", "", True),
-    ]
+    for name, test_filter in {
+        "AlondraDetailSnapshotTests": ",".join([FIRST_SUITE] + DETAIL_SUITES),
+        "AlondraScreenSnapshotTests": ",".join(["-" + suite for suite in DETAIL_SUITES + [TRIAGE_SUITE]]),
+        "AlondraTriageSnapshotTests": ",".join([FIRST_SUITE, TRIAGE_SUITE]),
+    }.items()
 ]
 
 test_suite(

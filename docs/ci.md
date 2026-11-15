@@ -1,14 +1,9 @@
-# Checks for external contributions
+# Pull request checks
 
-GitHub Actions validates pull requests from contributors other than the repository owner.
-The owner's changes, including changes opened by local agents under that account, continue to
-use musts and Bazel locally. This workflow does not configure branch protection, require a
-check, or change Alondra's merge behavior.
-
-The pull request's author decides whether jobs run, not the person who pushes another commit,
-approves a workflow, or reruns a job. Owner-authored pull requests are excluded even when their
-head branch is in a fork. GitHub can still show a skipped workflow entry for these pull requests;
-no runner is allocated. See [GitHub's job conditions](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-jobs-with-conditions).
+GitHub Actions validates every pull request to `main`, whoever opens it, as an additional check
+that stops broken code entering `main`. It does not replace local validation with musts and
+Bazel, and it does not change Alondra's merge behavior. Whether the check is required to merge is
+a branch-protection setting the maintainer decides; this workflow does not configure it.
 
 First-time fork contributors still need a maintainer to inspect the changes and approve the
 workflow through GitHub. The repository's contributor approval policy remains
@@ -20,8 +15,8 @@ measure every MUSTS target set, even when the chosen branch matches `main`. Its 
 input selects one complete MUSTS check for diagnosis; blank runs all checks. This input never
 narrows a pull request's scope. Manual runs have separate concurrency groups, so a diagnostic run
 does not cancel an ongoing measurement. They have the same
-read-only token, no secrets and no publication steps. This manual probe does not validate an
-external contribution or the first-time fork approval path; owner-authored PRs remain excluded.
+read-only token, no secrets and no publication steps. This manual probe does not validate a
+pull request or the first-time fork approval path.
 Use `gh workflow run ci.yml --repo bitomule/alondra --ref <branch>` once GitHub has registered the
 workflow. See [manual workflow execution](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
 and the [CLI reference](https://cli.github.com/manual/gh_workflow_run).
@@ -68,33 +63,15 @@ of its platform binary. It runs with the check's disposable HOME, without a logi
 CI disables auto-updates and nonessential traffic. The version initially matches the local CLI,
 2.1.291. See the [official installation and version-pinning instructions](https://code.claude.com/docs/en/setup).
 
-The Apple test job downloads simpool 0.35.0 into its disposable workspace and verifies the
-release binary SHA-256 before execution. Bazel receives its explicit path and a one-slot pool
-limit. This preserves the same pooled runner used locally, without Homebrew or a fallback
-unmanaged simulator. See the [pinned pool release](https://github.com/bitomule/simpool/releases/tag/v0.35.0).
-
 The image for macOS 27 uses the label `xcode-27`, not `macos-27` or `macos-latest`. Its contents
 are described in the [official image inventory](https://github.com/actions/runner-images/blob/main/images/macos/xcode-27-arm64-Readme.md)
 and [image announcement](https://github.com/actions/runner-images/issues/14404).
 
-## Simulator and image references
+## Checks that stay local
 
-`apple/Testing/Simulator/config.bzl` is the shared contract for snapshot and touch tests and the
-capture tools. `tools/simulator.py` checks the toolchain and runtime's supported device types,
-then creates and boots an isolated disposable simulator. A runtime merely appearing in the
-inventory is insufficient: iOS 27.1's device set can support only iPhone Duo, as documented in
-[runner-images #15000](https://github.com/actions/runner-images/issues/15000).
-
-References are recorded locally once for an OS migration and reviewed in their own PR. CI
-always verifies references; it never updates them. A runner or simulator failure is reported
-with its inventory and logs, without dropping targets or changing image tolerances.
-
-After confirming the same runtime can boot on both machines, `make snapshots-record-all`
-records the complete iOS and Mermaid reference set. Its manual migration target runs all screen
-suites in one process, so the account warm-up suite is captured once. The recorder uses the
-canonical Xcode version and a unique output generation; it refuses missing, unexpected or
-duplicate references before copying anything. Verify the result with the ordinary three
-snapshot targets and Mermaid before committing the images.
+`apple-tests` leases an iOS simulator whose pinned device and runtime the hosted image does not
+provide, so `tools/ci.py` never schedules it. Run it locally with musts and Bazel. Moving the
+simulator and its image references to the hosted runtime is a separate change.
 
 ## Credentials, cache and releases
 
@@ -139,7 +116,7 @@ remain GitHub's responsibility; this workflow introduces no Alondra waiting card
 
 ## Runner measurements
 
-These manual probes measure runner behavior; they do not validate an external contribution.
+These manual probes measure runner behavior; they do not validate a pull request.
 The times below are the Bazel command durations printed by `tools/ci.py`, including compilation
 and tests on fresh GitHub VMs. They exclude selection, runner queueing and checkout.
 

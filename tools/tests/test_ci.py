@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""External PR filtering, MUSTS target coverage, and the unprivileged workflow contract."""
+"""Pull request selection, MUSTS target coverage, and the unprivileged workflow contract."""
 import importlib.util
 import json
 import os
@@ -15,7 +15,6 @@ spec = importlib.util.spec_from_file_location("ci", ROOT / "tools/ci.py")
 ci = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ci)
 
-POOL_SETUP = 'mkdir -p .scratch/ci-bin\ncurl --fail --location --output .scratch/ci-bin/simpool https://github.com/bitomule/simpool/releases/download/v0.35.0/simpool-darwin-arm64\necho "c55fbeda49955cf9c1911be4477848c66156496a9e4abc74edd2da30af5f0d8a  .scratch/ci-bin/simpool" | shasum -a 256 --check\nchmod +x .scratch/ci-bin/simpool\necho "SIMPOOL_BIN=$GITHUB_WORKSPACE/.scratch/ci-bin/simpool" >> "$GITHUB_ENV"'
 
 MANIFEST = '''version: 1
 checks:
@@ -68,29 +67,19 @@ class SelectionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 ci.manifest(invalid)
 
-    def test_owner_is_excluded_including_an_owner_fork_and_reruns_by_another_actor(self):
-        for fork in (False, True):
-            value = event(fork=fork)
-            value["sender"] = {"login": "another-maintainer"}
-            self.assertFalse(ci.external_pr(value))
-
-    def test_external_first_time_and_returning_contributors_are_included(self):
-        for association in ("NONE", "FIRST_TIMER", "FIRST_TIME_CONTRIBUTOR", "CONTRIBUTOR", "COLLABORATOR"):
-            for fork in (False, True):
-                self.assertTrue(ci.external_pr(event("contributor", association, fork)))
-
-    def test_manual_dispatch_uses_the_default_branch_and_never_changes_pr_author_filtering(self):
+    def test_manual_dispatch_uses_the_default_branch_and_never_changes_pr_selection(self):
         value = event()
         value["repository"]["default_branch"] = "main"
         with patch.object(ci, "command", return_value=b"a" * 40 + b"\n") as command:
             self.assertEqual(ci.selection_base("workflow_dispatch", value), "a" * 40)
             command.assert_called_once_with("git", "rev-parse", "--verify", "refs/remotes/origin/main^{commit}")
-        for name in ("pull_request", "push", "pull_request_target"):
+        for name in ("push", "pull_request_target"):
             with self.subTest(event=name), self.assertRaises(ValueError):
                 ci.selection_base(name, value)
-        external = event("contributor", "NONE", True)
-        external["pull_request"]["base"] = {"sha": "b" * 40}
-        self.assertEqual(ci.selection_base("pull_request", external), "b" * 40)
+        for author, association, fork in (("owner", "OWNER", False), ("contributor", "NONE", True)):
+            pull_request = event(author, association, fork)
+            pull_request["pull_request"]["base"] = {"sha": "b" * 40}
+            self.assertEqual(ci.selection_base("pull_request", pull_request), "b" * 40)
         checks = ci.manifest(MANIFEST)
         self.assertEqual(len(ci.plan(checks, checks, set(), force_all=True)["include"]), 2)
 
@@ -149,7 +138,8 @@ class SelectionTests(unittest.TestCase):
     def test_every_current_manifest_target_has_exactly_one_runner(self):
         checks = ci.manifest((ROOT / "MUSTS.yml").read_text())
         jobs = ci.plan(checks, checks, {"MUSTS.yml"})["include"]
-        expected = {t for spec in checks.values() for t in spec["targets"]}
+        expected = {t for name, spec in checks.items() if name not in ci.LOCAL_ONLY_CHECKS
+                    for t in spec["targets"]}
         self.assertEqual({t for job in jobs for t in job["targets"]}, expected)
         for runner in {job["runner"] for job in jobs}:
             targets = [t for job in jobs if job["runner"] == runner for t in job["targets"]]
@@ -199,25 +189,22 @@ class WorkflowTests(unittest.TestCase):
         setup = next(s for s in workflow["jobs"]["validate"]["steps"] if s.get("name") == "Install the pinned offline plugin test CLI")
         self.assertEqual(setup["if"], "${{ matrix.check == 'plugin-mod' }}")
 
-    def test_apple_tests_have_a_verified_pool_instead_of_an_unmanaged_fallback(self):
-        workflow = json.loads((ROOT / ".github/workflows/ci.yml").read_text())
-        steps = workflow["jobs"]["validate"]["steps"]
-        setup = next(s for s in steps if s.get("name") == "Install the pinned simulator pool")
-        self.assertEqual(setup["if"], "${{ matrix.check == 'apple-tests' }}")
-        self.assertEqual(setup["run"], POOL_SETUP)
-        self.assertLess(steps.index(setup), next(i for i, s in enumerate(steps) if s.get("name") == "Build and test affected targets"))
-        self.assertNotIn("SIMPOOL_OPTIONAL", json.dumps(workflow))
+    def test_checks_that_need_the_local_simulator_never_reach_a_hosted_runner(self):
+        checks = ci.manifest((ROOT / "MUSTS.yml").read_text())
+        everything = ci.plan(checks, checks, set(), force_all=True)["include"]
+        self.assertIn("apple-tests", checks)
+        self.assertNotIn("apple-tests", {job["check"] for job in everything})
 
-    def test_only_external_prs_or_explicit_manual_runs_can_reserve_a_runner(self):
+    def test_only_pull_requests_or_explicit_manual_runs_can_reserve_a_runner(self):
         workflow = json.loads((ROOT / ".github/workflows/ci.yml").read_text())
         self.assertEqual(workflow["on"], {"pull_request": {"branches": ["main"]}, "workflow_dispatch": {
             "inputs": {"check": {"description": "MUSTS check to diagnose (blank runs every check)",
                                   "type": "string", "default": "", "required": False}}}})
         self.assertEqual(set(workflow["jobs"]), {"select", "validate"})
         select = workflow["jobs"]["select"]
-        self.assertEqual(select["if"], "${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.user.login != github.repository_owner && (github.event.pull_request.author_association != 'OWNER' || github.event.pull_request.head.repo.fork)) }}")
+        self.assertEqual(select["if"], "${{ github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' }}")
         self.assertEqual(workflow["concurrency"]["group"],
-                         "external-ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}")
+                         "pr-ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}")
         validate = workflow["jobs"]["validate"]
         self.assertEqual(validate["needs"], "select")
         self.assertEqual(validate["if"], "${{ needs.select.outputs.has_checks == 'true' }}")
@@ -241,10 +228,8 @@ class WorkflowTests(unittest.TestCase):
                     self.assertIs(step["with"]["persist-credentials"], False)
                 else:
                     self.assertIn(step["run"], {
-                        POOL_SETUP,
                         "python3 tools/ci.py plan", "python3 tools/ci.py run --targets \"$CI_TARGETS\"",
-                        "python3 tools/simulator.py",
-                        "xcodebuild -version\nxcrun simctl list runtimes -j\nxcrun simctl list devicetypes -j",
+                        "xcodebuild -version",
                         "npm ci --prefix .github/ci-tools --no-audit --no-fund\necho \"$GITHUB_WORKSPACE/.github/ci-tools/node_modules/.bin\" >> \"$GITHUB_PATH\"",
                     })
 
@@ -255,8 +240,6 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("common:ci --noremote_upload_local_results", ci_flags)
         self.assertIn("common:ci --bes_backend=", ci_flags)
         self.assertIn("test:ci --experimental_ui_max_stdouterr_bytes=16777216", ci_flags)
-        self.assertIn("test:ci --test_env=SIMPOOL_BIN", ci_flags)
-        self.assertIn("test:ci --test_env=SIMPOOL_MAX_SLOTS=1", ci_flags)
         self.assertIn("test:ci --test_env=DISABLE_AUTOUPDATER=1", ci_flags)
         self.assertIn("test:ci --test_env=CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", ci_flags)
         self.assertFalse(any("--config=" in line or "buildbuddy" in line for line in ci_flags))

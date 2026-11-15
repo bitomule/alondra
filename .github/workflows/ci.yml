@@ -1,7 +1,11 @@
 {
-  "name": "External contribution checks",
+  "name": "Pull request checks",
   "on": {
-    "pull_request": {"branches": ["main"]},
+    "pull_request": {
+      "branches": [
+        "main"
+      ]
+    },
     "workflow_dispatch": {
       "inputs": {
         "check": {
@@ -13,14 +17,16 @@
       }
     }
   },
-  "permissions": {"contents": "read"},
+  "permissions": {
+    "contents": "read"
+  },
   "concurrency": {
-    "group": "external-ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}",
+    "group": "pr-ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}",
     "cancel-in-progress": true
   },
   "jobs": {
     "select": {
-      "if": "${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.user.login != github.repository_owner && (github.event.pull_request.author_association != 'OWNER' || github.event.pull_request.head.repo.fork)) }}",
+      "if": "${{ github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' }}",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 5,
       "outputs": {
@@ -30,9 +36,16 @@
       "steps": [
         {
           "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-          "with": {"fetch-depth": 0, "persist-credentials": false}
+          "with": {
+            "fetch-depth": 0,
+            "persist-credentials": false
+          }
         },
-        {"id": "plan", "name": "Select MUSTS target sets", "run": "python3 tools/ci.py plan"}
+        {
+          "id": "plan",
+          "name": "Select MUSTS target sets",
+          "run": "python3 tools/ci.py plan"
+        }
       ]
     },
     "validate": {
@@ -54,17 +67,15 @@
       "steps": [
         {
           "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-          "with": {"fetch-depth": 0, "persist-credentials": false}
+          "with": {
+            "fetch-depth": 0,
+            "persist-credentials": false
+          }
         },
         {
-          "name": "Show toolchain and simulator inventory",
+          "name": "Show toolchain inventory",
           "if": "${{ runner.os == 'macOS' }}",
-          "run": "xcodebuild -version\nxcrun simctl list runtimes -j\nxcrun simctl list devicetypes -j"
-        },
-        {
-          "name": "Check the canonical snapshot simulator",
-          "if": "${{ matrix.check == 'apple-tests' }}",
-          "run": "python3 tools/simulator.py"
+          "run": "xcodebuild -version"
         },
         {
           "name": "Install the pinned offline plugin test CLI",
@@ -72,13 +83,10 @@
           "run": "npm ci --prefix .github/ci-tools --no-audit --no-fund\necho \"$GITHUB_WORKSPACE/.github/ci-tools/node_modules/.bin\" >> \"$GITHUB_PATH\""
         },
         {
-          "name": "Install the pinned simulator pool",
-          "if": "${{ matrix.check == 'apple-tests' }}",
-          "run": "mkdir -p .scratch/ci-bin\ncurl --fail --location --output .scratch/ci-bin/simpool https://github.com/bitomule/simpool/releases/download/v0.35.0/simpool-darwin-arm64\necho \"c55fbeda49955cf9c1911be4477848c66156496a9e4abc74edd2da30af5f0d8a  .scratch/ci-bin/simpool\" | shasum -a 256 --check\nchmod +x .scratch/ci-bin/simpool\necho \"SIMPOOL_BIN=$GITHUB_WORKSPACE/.scratch/ci-bin/simpool\" >> \"$GITHUB_ENV\""
-        },
-        {
           "name": "Build and test affected targets",
-          "env": {"CI_TARGETS": "${{ toJSON(matrix.targets) }}"},
+          "env": {
+            "CI_TARGETS": "${{ toJSON(matrix.targets) }}"
+          },
           "run": "python3 tools/ci.py run --targets \"$CI_TARGETS\""
         }
       ]

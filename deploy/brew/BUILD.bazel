@@ -8,27 +8,6 @@ filegroup(
 )
 
 sh_test(
-    name = "local_release_test",
-    srcs = ["tests/test_local_release.py"],
-    size = "small",
-    # The publisher needs modern Python (tomllib), not Apple's bundled Python 3.9.
-    env_inherit = ["PATH"],
-    data = [
-        "local-release.py",
-        "release.py",
-        "release.sh",
-        "alondra.rb.in",
-        "//:Cargo.toml",
-        "//:Cargo.lock",
-        "//agent-host:persistent-main.ts",
-        "//agent-host:codex-main.ts",
-        "//agent-host:host-entitlements.plist",
-        "//crates/alondrad:Info.plist",
-        "//crates:workspace_manifests",
-    ],
-)
-
-sh_test(
     name = "upgrade_rehearsal_test",
     srcs = ["tests/test_upgrade_rehearsal.py"],
     data = [
@@ -64,6 +43,7 @@ sh_test(
     data = [
         "local-release.py",
         "release.py",
+        "release.sh",
         "tests/test_local_release.py",
         "//:Cargo.lock",
         "//:Cargo.toml",

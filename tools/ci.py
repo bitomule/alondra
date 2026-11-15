@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run affected MUSTS checks for external PRs or a manual runner and timing probe."""
+"""Run affected MUSTS checks for pull requests to main or a manual runner and timing probe."""
 import argparse
 import json
 import os
@@ -13,10 +13,10 @@ from musts_scopes import matches, parse_checks
 
 MAC_CHECKS = {
     "crate-agent-runtime", "crate-alondra", "crate-alondrad", "crate-core", "crate-daemon-engine",
-    "crate-daemon-support", "crate-process-group", "crate-provider-claude",
+    "crate-daemon-engine-machine", "crate-daemon-support", "crate-process-group", "crate-provider-claude",
     "crate-provider-codex", "local-daemon", "build-from-source",
     "sourcekit-lsp-workspace", "deploy-brew", "deploy-apple", "apple-daemon-process",
-    "apple-tests", "sdk-host", "reap-test-hosts", "native-fixture-lifecycle",
+    "sdk-host", "reap-test-hosts", "native-fixture-lifecycle",
 }
 LINUX_CHECKS = {
     "crate-agent-application", "crate-agent-protocol", "crate-codex-protocol",
@@ -25,7 +25,8 @@ LINUX_CHECKS = {
     "sandbox-accounts", "low-opt-rust-tests", "sandbox-tool", "apple-scripts", "apple-catalogs",
     "plugin-mod", "cargo-bazel-deps", "load-bench-oracles", "buildbuddy-credential-helper",
     "public-build-inputs", "bazel-test-tmpdir", "musts-scopes", "test-durations", "test-limits",
-    "worktree-setup", "ci", "simulator", "snapshot-recording",
+    "worktree-setup", "crate-daemon-engine-model", "crate-daemon-engine-store",
+    "public-data-guard", "worktree-volume-bench", "ci",
 }
 BOOTSTRAP = {
     "MUSTS.yml", "tools/ci.py", "tools/musts_scopes.py", ".github/workflows/ci.yml",
@@ -35,6 +36,8 @@ TARGET = re.compile(r"//[A-Za-z0-9_./+-]*:[A-Za-z0-9_./+-]+$|//[A-Za-z0-9_./+-]*
 # Bazel's documented exit status: the build succeeded but the target set contains no tests.
 NO_TESTS_FOUND = 4
 MANUAL_CHECKS = {"mac-inventory-review"}
+# Their tests lease an iOS simulator whose pinned runtime the hosted image does not provide.
+LOCAL_ONLY_CHECKS = {"apple-tests"}
 
 
 def manual_reviews(text):
@@ -74,7 +77,7 @@ def manifest(text):
     reviews = manual_reviews(text)
     if not checks or set(checks) | set(reviews) != set(names):
         raise ValueError("Every MUSTS check must be a Bazel check or an explicit manual review")
-    if unknown := set(checks) - MAC_CHECKS - LINUX_CHECKS:
+    if unknown := set(checks) - MAC_CHECKS - LINUX_CHECKS - LOCAL_ONLY_CHECKS:
         raise ValueError(f"Assign a CI runner to new MUSTS checks: {sorted(unknown)}")
     for name, spec in checks.items():
         if not spec["paths"] or not spec["targets"] or any(not TARGET.fullmatch(t) for t in spec["targets"]):
@@ -89,14 +92,6 @@ def affected_reviews(current, previous, paths, force_all=False):
             if force_all or paths & BOOTSTRAP or any(matches(spec["paths"], path) for path in paths):
                 selected.setdefault(name, set()).update(spec["facts"])
     return {name: sorted(facts) for name, facts in sorted(selected.items())}
-
-
-def external_pr(event):
-    pr = event["pull_request"]
-    owner = event["repository"]["owner"]["login"]
-    return pr["user"]["login"] != owner and (
-        pr["author_association"] != "OWNER" or pr["head"]["repo"]["fork"]
-    )
 
 
 def changed_paths(raw):
@@ -123,7 +118,8 @@ def plan(current, previous, paths, force_all=False):
                 selected.setdefault(name, set()).update(spec["targets"])
     jobs = []
     for platform, runner in (("linux", "ubuntu-24.04"), ("macos", "xcode-27")):
-        names = [name for name in sorted(selected) if (name in MAC_CHECKS) == (platform == "macos")]
+        names = [name for name in sorted(selected)
+                 if name not in LOCAL_ONLY_CHECKS and (name in MAC_CHECKS) == (platform == "macos")]
         # A separate target set per check bounds each fresh runner's disk use. Targets shared by
         # checks on the same OS run once, including checks whose patterns are identical.
         seen = set()
@@ -133,7 +129,6 @@ def plan(current, previous, paths, force_all=False):
             if targets:
                 jobs.append({"check": name, "runner": runner, "targets": targets,
                              "timeout": 120 if platform == "macos" else 90})
-    jobs.sort(key=lambda job: job["check"] != "apple-tests")
     return {"include": jobs}
 
 
@@ -150,9 +145,9 @@ def selection_base(event_name, event):
     if event_name == "workflow_dispatch":
         branch = event["repository"]["default_branch"]
         return command("git", "rev-parse", "--verify", f"refs/remotes/origin/{branch}^{{commit}}").decode().strip()
-    if event_name == "pull_request" and external_pr(event):
+    if event_name == "pull_request":
         return event["pull_request"]["base"]["sha"]
-    raise ValueError("Expected an external pull request or an explicit manual dispatch")
+    raise ValueError("Expected a pull request or an explicit manual dispatch")
 
 
 def manual_scope(event_name, event, current, previous):
@@ -193,10 +188,9 @@ def select(args):
                       "base": ancestor, "paths": sorted(paths), "matrix": matrix,
                       "manual_reviews": reviews}, indent=2))
     with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
-        heading = "Runner and timing probe" if probe else "External contribution validation"
+        heading = "Runner and timing probe" if probe else "Pull request validation"
         summary.write(f"## {heading}\n\n{len(matrix['include'])} target sets selected from MUSTS.yml.\n")
         if probe:
-            summary.write("This runner probe does not validate the external-contributor or fork-approval path.\n")
             summary.write(f"\nRequested scope: **{requested or 'all checks'}**.\n")
         if not matrix["include"]:
             summary.write("No deterministic Bazel check reads the changed paths.\n")
