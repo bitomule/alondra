@@ -74,6 +74,7 @@ pub mod domain_store;
 pub mod domain_transport;
 pub mod home_renames;
 pub mod idle_compaction;
+pub mod ignored_outputs;
 pub mod obligation_watch;
 pub use alondra_daemon_engine_model::issues;
 pub mod idle_release;

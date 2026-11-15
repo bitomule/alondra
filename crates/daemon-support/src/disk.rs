@@ -82,7 +82,7 @@ pub struct Room {
 /// The space the files under `path` take on disk, links not followed and a file with several
 /// hard links counted once.
 #[derive(Debug, Default)]
-pub(crate) struct Tally {
+pub struct Tally {
     bytes: u64,
     linked: std::collections::HashSet<(u64, u64)>,
 }

@@ -26,6 +26,7 @@ use crate::usage_pause::Alerts;
 pub(crate) const FILE: &str = "machine-incident.json";
 /// Measurements in a row past the recovery line that end an incident: one alone may be a blip.
 const HEALTHY_SAMPLES: u32 = 2;
+const IGNORED_PASS_INTERVAL: Millis = 5 * 60_000;
 const TICK: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,6 +89,9 @@ struct Record {
     peaks_ignored: bool,
     #[serde(skip)]
     disk: Option<crate::disk::Space>,
+    /// When the ignored build outputs of idle worktrees were last looked at.
+    #[serde(skip)]
+    ignored_pass_at: Option<Millis>,
     #[serde(skip)]
     disk_volume: Option<PathBuf>,
     #[serde(skip)]
@@ -458,6 +462,20 @@ impl MachineWatch {
 
     pub(crate) fn disk_low(&self) -> bool {
         self.incident().is_some_and(|incident| incident.cause == MachineCause::Disk)
+    }
+
+    /// Whether the fullest disk is low, by the lines the disk incident uses, and the last look at
+    /// ignored build outputs is old enough: one pass walks every idle worktree, so a disk that
+    /// stays low gets one every `IGNORED_PASS_INTERVAL`, not one every sample.
+    pub(crate) fn ignored_pass_due(&self, now: Millis) -> bool {
+        let was_low = self.disk_low();
+        let mut record = self.record();
+        let low = record.disk.is_some_and(|space| space.low(was_low));
+        let due = low && record.ignored_pass_at.is_none_or(|at| now < at || now - at >= IGNORED_PASS_INTERVAL);
+        if due {
+            record.ignored_pass_at = Some(now);
+        }
+        due
     }
 
     /// Takes the Mac's own disk's space.
@@ -993,6 +1011,9 @@ pub(crate) fn look(domain: &DomainRuntime, machine: Machine) -> Vec<Action> {
         if watch.under_floor() {
             crate::admission::hold_for_disk(domain, now_millis());
         }
+        if watch.ignored_pass_due(now_millis()) {
+            crate::ignored_outputs::free_idle_worktrees(domain);
+        }
     }
     let previous = watch.incident();
     let fixed = fixed(domain, previous.as_ref());
@@ -1206,6 +1227,18 @@ mod tests {
         watch.record().boot_disk = Some(crate::disk::Space { free: 7 * GB, purgeable: 40 * GB, total: 500 * GB });
         assert!(watch.disk_room(&BTreeMap::new(), Some("app"), now).is_some(),
             "purgeable space does not pay swap's immediate writes");
+    }
+
+    #[test]
+    fn a_low_disk_looks_at_ignored_outputs_once_every_five_minutes_and_a_roomy_one_never() {
+        let watch = MachineWatch::default();
+        watch.measure_fullest_disk(space(100 * GB));
+        assert!(!watch.ignored_pass_due(0));
+        watch.measure_fullest_disk(space(GB));
+        assert!(watch.ignored_pass_due(1_000));
+        assert!(!watch.ignored_pass_due(1_000 + IGNORED_PASS_INTERVAL - 1));
+        assert!(watch.ignored_pass_due(1_000 + IGNORED_PASS_INTERVAL));
+        assert!(watch.ignored_pass_due(0), "a clock that went back starts over");
     }
 
     /// The daemon restarts while a node builds: what each project took and what the node at work
