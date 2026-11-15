@@ -1828,18 +1828,9 @@ async fn a_task_whose_host_was_resumed_after_it_ended_moves_too(){
     assert!(slice.domain.state().unwrap().lifecycle_journal[&task].iter().any(|record|matches!(record,LifecycleRecord::HostEnded{..})),"the first host's end is recorded and a host that resumes the same execution runs");
     request_move(&slice);
     // Its replacement owner queues the continuation on its next cycle after the host is ready.
-    let mut resumed_cycle=slice.domain.subscribe();
-    resumed_cycle.wait_for(|_|{
-        let lifecycle=Slice::lifecycle(&slice.domain);
-        !lifecycle.pending_inputs().is_empty() && matches!(lifecycle.live(),Some(alondra_domain::LiveState::Working(_)|alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::Gate)))
-    }).await.unwrap();
+    slice.domain.subscribe().wait_for(|_|crate::provider_transition::ready_in(slice.domain.read().state(),&task).unwrap()).await.unwrap();
     let(pulse,mut changed)=tokio::sync::watch::channel(0_u64);slice.domain.before_owner_publish(move||pulse.send_modify(|count|*count+=1));
-    let mut advanced=crate::provider_transition::advance(&slice.domain,&task).await.unwrap();
-    while advanced==Phase::ContextReady{
-        tokio::select!{_=resumed_cycle.changed()=>{},_=tokio::time::sleep(std::time::Duration::from_millis(250))=>{}}
-        advanced=crate::provider_transition::advance(&slice.domain,&task).await.unwrap();
-    }
-    assert_eq!(advanced,Phase::TargetAdmitted);
+    assert_eq!(crate::provider_transition::advance(&slice.domain,&task).await.unwrap(),Phase::TargetAdmitted);
     until_moved(&slice,&mut changed).await;
     let state=slice.domain.state().unwrap();
     assert_eq!(state.tasks[&task].account_key(),AccountKey::native(Provider::Claude));
@@ -1869,13 +1860,8 @@ async fn a_move_from_a_dead_host_that_left_a_claimed_message_settles_it_and_admi
     let status=|slice:&Slice|->String{slice.observer().query_row("SELECT status FROM lifecycle_dispatches WHERE id=?1",[left],|row|row.get(0)).unwrap()};
     request_move(&slice);
     let(pulse,mut changed)=tokio::sync::watch::channel(0_u64);slice.domain.before_owner_publish(move||pulse.send_modify(|count|*count+=1));
-    let mut advanced=crate::provider_transition::advance(&slice.domain,&task).await.unwrap();
+    let advanced=crate::provider_transition::advance(&slice.domain,&task).await.unwrap();
     assert_eq!(status(&slice),"rejected","the move settled what the dead host claimed: it never got it");
-    let mut cycle=slice.domain.subscribe();
-    while advanced==Phase::ContextReady{
-        tokio::select!{_=cycle.changed()=>{},_=tokio::time::sleep(std::time::Duration::from_millis(250))=>{}}
-        advanced=crate::provider_transition::advance(&slice.domain,&task).await.unwrap();
-    }
     assert_eq!(advanced,Phase::TargetAdmitted);
     until_moved(&slice,&mut changed).await;
     assert_eq!(slice.domain.state().unwrap().tasks[&task].account_key(),AccountKey::native(Provider::Claude));
