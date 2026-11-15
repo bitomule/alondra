@@ -33,7 +33,8 @@ See [doctor](../crates/alondra/src/doctor/system.rs), [uploads](../crates/daemon
 [language](../crates/alondra/src/i18n.rs) and [backend configuration](../crates/daemon-engine/src/sdk_owner/backend.rs).
 
 Building from source additionally runs Bazel and its downloaded Rust, Swift and Node toolchains.
-`make install` copies the three executables into `~/.local/bin` unless overridden; it is distinct
+Rust compiles incrementally: rustc and clippy keep about 5 GB of state in `rustc-incremental*`
+inside Bazel's output base, which `make clean-incremental` deletes. `make install` copies the three executables into `~/.local/bin` unless overridden; it is distinct
 from the Homebrew installation. See [Makefile](../Makefile) and [source installation](building-from-source.md).
 
 ## Files read and written

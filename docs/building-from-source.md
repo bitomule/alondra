@@ -61,6 +61,11 @@ version and a number ≥ 1.
 The first build downloads Bazel, the Rust toolchain and the crates: several minutes. The
 repository does not read any remote build cache unless you pass `--config=buildbuddy`.
 
+Rust compiles incrementally, so an edit after the first build recompiles only what changed. Its
+state takes about 5 GB inside Bazel's output base (`bazelisk info output_base`), next to
+everything else Bazel builds; `make clean-incremental` deletes it. Releases build without it
+(`--config=release`).
+
 ```bash
 make install
 ```

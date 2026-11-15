@@ -849,6 +849,22 @@ checks:
       targets:
         - //tools:low_opt_rust_tests_test
 
+  release-config:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "BUILD.bazel"
+      - "MODULE.bazel"
+      - "Makefile"
+      - "deploy/brew/BUILD.bazel"
+      - "deploy/brew/local-release.py"
+      - "tools/BUILD.bazel"
+      - "tools/tests/test_release_config.py"
+    with:
+      targets:
+        - //tools:release_config_test
+
   sandbox-tool:
     uses: bazel/test
     paths:
