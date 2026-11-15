@@ -253,13 +253,18 @@ class Fixture(unittest.TestCase):
 class CutRehearsalTests(Fixture):
     def test_a_cut_rehearsal_runs_its_finally(self):
         started, cleaned = self.work / 'started', self.work / 'cleaned'
+        # A SIGTERM landing just before a blocking sleep waits for the sleep to return; the wakeup
+        # descriptor is written by the C handler, so the select returns whenever the signal lands.
         script = (
-            'import importlib.machinery, pathlib, sys, time\n'
+            'import importlib.machinery, os, pathlib, select, signal, sys\n'
             'u = importlib.machinery.SourceFileLoader("rehearsal", sys.argv[1]).load_module()\n'
             'u.stop_cleanly_when_cut()\n'
+            'cut, woken = os.pipe()\n'
+            'os.set_blocking(woken, False)\n'
+            'signal.set_wakeup_fd(woken)\n'
             'try:\n'
             '    pathlib.Path(sys.argv[2]).touch()\n'
-            '    time.sleep(600)\n'
+            '    select.select([cut], [], [])\n'
             'finally:\n'
             '    pathlib.Path(sys.argv[3]).touch()\n'
         )
