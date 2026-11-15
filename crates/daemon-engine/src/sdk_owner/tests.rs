@@ -92,17 +92,31 @@ impl HostRoot {
                 if holder.pid == me || holder.zombie || alondra_process_group::group(holder.pid).unwrap() != Some(holder.pid) {
                     continue;
                 }
+                let held = holding(holder.pid, &folder.join("host.lock"));
                 let mut exits = alondra_process_group::Exits::new().unwrap();
                 for member in alondra_process_group::members(holder.pid).unwrap().iter().filter(|member| !member.zombie) {
                     exits.watch(member).unwrap();
                 }
                 assert_eq!(unsafe { libc::killpg(holder.pid, libc::SIGKILL) }, 0, "kill the group of {holder}");
                 exits.wait().unwrap();
-                killed.push(format!("{} ({holder})", folder.file_name().unwrap().to_string_lossy()));
+                killed.push(format!("{} ({holder}; {held})", folder.file_name().unwrap().to_string_lossy()));
             }
         }
         killed
     }
+}
+
+/// Who `pid` is and how it holds `lock`, so a host left running says which process it was: its
+/// command, the process that started it, and the descriptors that keep the lock open.
+fn holding(pid: i32, lock: &Path) -> String {
+    let table = alondra_process_group::table().unwrap_or_default();
+    let command = |pid: i32| table.iter().find(|entry| entry.pid == pid).map_or_else(|| "?".to_owned(), |entry| entry.argv.join(" ").chars().take(200).collect());
+    let parent = table.iter().find(|entry| entry.pid == pid).map(|entry| entry.parent);
+    let descriptors = std::process::Command::new("/usr/sbin/lsof").args(["-nP", "-a", "-F", "fn", "-p", &pid.to_string()]).arg("--").arg(lock).output()
+        .map(|output| String::from_utf8_lossy(&output.stdout).lines().filter_map(|line| line.strip_prefix('f')).collect::<Vec<_>>().join(","))
+        .unwrap_or_default();
+    format!("command: {}; parent: {}; holds host.lock as descriptor {}",
+        command(pid), parent.map_or_else(|| "?".to_owned(), |parent| format!("{parent} {}", command(parent))), if descriptors.is_empty() { "?" } else { &descriptors })
 }
 
 impl std::ops::Deref for HostRoot {
@@ -566,6 +580,8 @@ fn a_test_that_leaves_a_host_running_fails_and_the_host_ends_with_it() {
     let failure = catch_unwind(AssertUnwindSafe(|| drop(slice))).unwrap_err();
     let message = failure.downcast_ref::<String>().unwrap();
     assert!(message.starts_with("the test left SDK hosts running: sdk-"), "{message}");
+    assert!(message.contains("command: ") && message.contains("; parent: ") && message.contains("holds host.lock as descriptor "), "the host left running says which process it was: {message}");
+    assert!(!message.contains("descriptor ?") && !message.contains("command: ?"), "{message}");
     assert_eq!(survivors(&processes), Vec::<String>::new(), "the host's group ended with the test");
 }
 
