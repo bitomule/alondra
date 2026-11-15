@@ -5,6 +5,7 @@
 //! cancelled task's node has its turn cut. Work it declared after the merge holds the close until
 //! a fact ends it, never a clock. A close that keeps failing ends in a card the user answers.
 //! Nothing is closed while the node waits for the user.
+use alondra_core::clock;
 use alondra_core::domain::SystemCard;
 use crate::locks::Poisonable as _;
 use crate::domain_github::execute_system;
@@ -78,7 +79,7 @@ pub async fn run(domain: Arc<DomainRuntime>, sessions: Arc<dyn Sessions>, timing
         };
         let woke = tokio::select! {
             change = changed.changed() => change.is_ok(),
-            () = tokio::time::sleep(pause) => true,
+            () = clock::sleep(pause) => true,
         };
         if !woke {
             return;

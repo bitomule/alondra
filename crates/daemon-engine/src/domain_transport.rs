@@ -5,6 +5,7 @@
 //! Hooks observe sessions the domain already knows. They never create an
 //! Agent, a Task or a decision. The one transition they make is the one a
 //! session's own activity proves: its assigned Task has started.
+use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::domain_agent_lifecycle as lifecycle;
 use crate::domain_runtime::DomainRuntime;
@@ -22,7 +23,7 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 
@@ -1357,7 +1358,7 @@ pub mod tests {
                 std::thread::spawn(move || {
                     let _writer = domain.store.lock().unwrap();
                     taken.send(()).unwrap();
-                    std::thread::sleep(Duration::from_secs(2));
+                    clock::blocking_sleep(Duration::from_secs(2));
                 })
             };
             release.recv().unwrap();
@@ -1369,7 +1370,7 @@ pub mod tests {
             send_hook(&mut client, json!({"session_id": "session-a", "hook_event_name": event, "tool_name": tool,
                 "tool_input": {"command": "ls"}})).await;
             let mut reply = vec![];
-            let read = tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut reply)).await;
+            let read = clock::timeout(Duration::from_secs(1), client.read_to_end(&mut reply)).await;
             assert!(read.is_ok(), "{event} waited for the store before its reply");
             assert_eq!(&reply[..], b"\x00\xc8{}");
             handling.await.unwrap().unwrap();
@@ -1828,14 +1829,14 @@ pub mod tests {
         async fn line(&mut self) -> Option<Value> {
             use tokio::io::AsyncBufReadExt;
             let mut line = String::new();
-            let read = tokio::time::timeout(Duration::from_secs(5), self.reader.read_line(&mut line)).await.expect("no line arrived");
+            let read = clock::timeout(Duration::from_secs(5), self.reader.read_line(&mut line)).await.expect("no line arrived");
             (read.unwrap() > 0).then(|| serde_json::from_str(&line).unwrap())
         }
 
         async fn nothing_arrives(&mut self) -> bool {
             use tokio::io::AsyncBufReadExt;
             let mut line = String::new();
-            tokio::time::timeout(Duration::from_millis(150), self.reader.read_line(&mut line)).await.is_err()
+            clock::timeout(Duration::from_millis(150), self.reader.read_line(&mut line)).await.is_err()
         }
 
         async fn close(self) {
@@ -2445,7 +2446,7 @@ pub mod tests {
     }
 
     async fn still_waiting<F: std::future::Future + Unpin>(handler: &mut F) -> bool {
-        tokio::time::timeout(Duration::from_millis(300), handler).await.is_err()
+        clock::timeout(Duration::from_millis(300), handler).await.is_err()
     }
 
     #[tokio::test]

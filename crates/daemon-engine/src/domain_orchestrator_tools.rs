@@ -2,6 +2,7 @@
 //! Agent for a Task, type a message into an Agent's session, press Esc in it and read the
 //! machine. Each call carries the orchestrator execution's bearer; the domain changes a call
 //! implies (the new Agent, an assignment, a reopened Task) are that orchestrator's commands.
+use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::model_metrics::{Decision, DecisionKind};
@@ -807,12 +808,12 @@ async fn stop_replaced(domain: &DomainRuntime, old: &AgentId) -> Result<(), Stri
 
 /// Waits until `busy` is false, at most `deadline`; true when it is.
 async fn until_idle(busy: impl Fn() -> bool, deadline: std::time::Duration) -> bool {
-    let until = tokio::time::Instant::now() + deadline;
+    let until = clock::instant() + deadline;
     while busy() {
-        if tokio::time::Instant::now() >= until {
+        if clock::instant() >= until {
             return false;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(250).min(deadline)).await;
+        clock::sleep(std::time::Duration::from_millis(250).min(deadline)).await;
     }
     true
 }

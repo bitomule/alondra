@@ -2,6 +2,7 @@
 //! registration the relay keeps saying it no longer has. A device used in the last day, or one
 //! this Mac signs with itself, is never unpaired. Nothing asks the user: the device list says
 //! which went and why, and the device itself hears it was revoked when it comes back.
+use alondra_core::clock;
 use crate::auth::Device;
 use crate::device_usage::{DeviceUse, Expired, ExpiryReason, Usage};
 use crate::domain_bootstrap::DomainDaemon;
@@ -78,7 +79,7 @@ pub(crate) fn sweep(daemon: &DomainDaemon, home: &Path, now: i64, days: f64) -> 
 pub(crate) async fn run(daemon: Arc<DomainDaemon>, home: std::path::PathBuf, days: Option<f64>) {
     let mut ticks = 0u32;
     loop {
-        tokio::time::sleep(FLUSH_EVERY).await;
+        clock::sleep(FLUSH_EVERY).await;
         ticks += 1;
         let daemon = daemon.clone();
         let home = home.clone();

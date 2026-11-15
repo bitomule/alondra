@@ -25,7 +25,7 @@ LINUX_CHECKS = {
     "crate-store", "crates-root", "licenses", "prose-decisions", "bazel-artifact-paths",
     "sandbox-accounts", "low-opt-rust-tests", "release-config", "sandbox-tool", "apple-scripts", "apple-catalogs",
     "plugin-mod", "cargo-bazel-deps", "load-bench-oracles", "buildbuddy-credential-helper",
-    "public-build-inputs", "bazel-test-tmpdir", "musts-scopes", "test-durations", "test-limits",
+    "public-build-inputs", "bazel-test-tmpdir", "musts-scopes", "test-durations", "test-limits", "clock-guard",
     "worktree-setup", "public-data-guard", "worktree-volume-bench", "ci",
 }
 BOOTSTRAP = {

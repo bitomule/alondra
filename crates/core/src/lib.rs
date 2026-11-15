@@ -89,11 +89,7 @@ pub fn launch_settings() -> String {
     serde_json::json!({"enabledPlugins": off, "env": {LAUNCHED_ENV: "1"}}).to_string()
 }
 
-pub fn now_millis() -> Millis {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
+pub use clock::now_millis;
 
+pub mod clock;
 pub mod domain;

@@ -1,6 +1,7 @@
 //! Crash reports `alondra report` could not send because GitHub could not take them then: every
 //! minute (every second in a sandbox with fast timing) the daemon asks its own CLI to send again
 //! each one whose next try is due, in silence.
+use alondra_core::clock;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -57,7 +58,7 @@ pub async fn retry_pending(home: PathBuf, cli: Option<PathBuf>, fast: bool) {
     let Some(cli) = cli else { return };
     let reports = home.join("reports");
     loop {
-        tokio::time::sleep(if fast { Duration::from_secs(1) } else { EVERY }).await;
+        clock::sleep(if fast { Duration::from_secs(1) } else { EVERY }).await;
         for id in due(&reports, alondra_core::now_millis()) {
             let (cli, home) = (cli.clone(), home.clone());
             let _ = tokio::task::spawn_blocking(move || send_again(&cli, &home, &id)).await;

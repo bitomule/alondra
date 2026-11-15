@@ -1,6 +1,7 @@
 //! Reconciles historical account-move journals without selecting another account for a started
 //! node. Pre-admission moves are undone; an already committed destination is recovered only
 //! after positive evidence that its native execution started. The old journal format stays readable.
+use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{AccountMove, AccountMovePlan, AccountMoveStep};
@@ -306,7 +307,7 @@ pub async fn run(domain: Arc<DomainRuntime>) {
         tick(&domain).await;
         tokio::select! {
             _ = changed.changed() => {}
-            () = tokio::time::sleep(EVERY) => {}
+            () = clock::sleep(EVERY) => {}
         }
     }
 }

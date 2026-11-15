@@ -6,6 +6,7 @@
 //! again by itself and then put in front of the user (`start_failures`). A task whose node Alondra
 //! closed for a reason of its own (a replacement that stopped short, a node closed while the user
 //! asked for changes) is relaunched the same way, in the folder that node worked in.
+use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::domain_orchestrator_tools::{LaunchBody, Origin, launch_from, request_choices};
 use crate::live::Relaunch;
@@ -44,7 +45,7 @@ pub async fn run(domain: Arc<DomainRuntime>, home: PathBuf) {
         let woke = tokio::select! {
             change = changed.changed() => change.is_ok(),
             turn = turn.changed() => turn.is_ok(),
-            () = tokio::time::sleep(pause) => true,
+            () = clock::sleep(pause) => true,
         };
         if !woke {
             return;

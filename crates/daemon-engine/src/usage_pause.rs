@@ -19,6 +19,7 @@
 //! stream says it with a `rate_limit_event` whose `rate_limit_info.status` is `rejected` and
 //! whose `resetsAt` is Unix seconds, and with an assistant message whose `error` is `rate_limit`
 //! (code.claude.com/docs/en/agent-sdk/python, RateLimitEvent).
+use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use alondra_core::{Millis, now_millis};
 use serde::{Deserialize, Serialize};
@@ -437,7 +438,7 @@ async fn watch(domain: std::sync::Arc<crate::domain_runtime::DomainRuntime>, ale
         };
         let wait = (standing.until - now_millis()).max(0) as u64 + if standing.by_user { 0 } else { jitter(jitter_max_ms) };
         tokio::select! {
-            _ = tokio::time::sleep(Duration::from_millis(wait)) => {
+            _ = clock::sleep(Duration::from_millis(wait)) => {
                 let now = now_millis();
                 crate::usage_probe::follow(&domain, now);
                 if let Some(announced) = pause.resume_due(now) {

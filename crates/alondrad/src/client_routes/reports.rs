@@ -1,6 +1,7 @@
 //! A crash report from a screen: the daemon has its own CLI build it (`alondra report`), hands
 //! out the files the preview shows, exactly as they would leave the Mac, and sends it when the
 //! user says so (`alondra report send`). Nothing is sent without that last request.
+use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use super::{Client, Reply};
 use alondra_core::domain::DomainError;
@@ -106,7 +107,7 @@ async fn run(cli: PathBuf, home: &Path, lang: &str, args: Vec<String>, input: Op
         }
         child.wait_with_output().await
     };
-    let output = match tokio::time::timeout(limit, finished).await {
+    let output = match clock::timeout(limit, finished).await {
         Ok(Ok(output)) => output,
         Ok(Err(error)) => {
             log!("could not run alondra report: {error}");

@@ -6,6 +6,7 @@
 //! that node is never touched. It never closes one that waits for a permission, has work that is
 //! not saved or that the user chose to leave open. It also deletes the worktrees Alondra made for
 //! tasks that ended and whose session is gone, unless they hold work not saved.
+use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_github::execute_system;
@@ -92,15 +93,15 @@ pub const STOP_WAIT: Duration = Duration::from_secs(20);
 /// Cuts the session's turn and waits up to `wait` for it to stop; true once it no longer works.
 async fn stop_turn(domain: &DomainRuntime, agent: &AgentId, wait: Duration) -> bool {
     let _ = domain.live.pushes.interrupt(&agent.0);
-    let until = tokio::time::Instant::now() + wait;
+    let until = clock::instant() + wait;
     loop {
         if !domain.live.node(&agent.0).is_some_and(|node| node.busy) {
             return true;
         }
-        if tokio::time::Instant::now() >= until {
+        if clock::instant() >= until {
             return false;
         }
-        tokio::time::sleep(Duration::from_millis(100).min(wait)).await;
+        clock::sleep(Duration::from_millis(100).min(wait)).await;
     }
 }
 

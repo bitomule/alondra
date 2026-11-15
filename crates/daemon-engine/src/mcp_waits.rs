@@ -6,6 +6,7 @@
 //! closes. Claude connects the server only after it has answered the browser, so a sign-in that
 //! ended counts as a node reporting the server connected: every node that reports it signed out,
 //! the one that signed in too, connects it again.
+use alondra_core::clock;
 use crate::domain_runtime::DomainRuntime;
 use crate::locks::Poisonable as _;
 use alondra_core::domain::{
@@ -136,12 +137,12 @@ fn browser(server: &str, open: &OpenSignIn) -> Opened {
 /// Waits until `outcome` says something of the domain, for at most `ANSWER`.
 async fn answered<T>(domain: &DomainRuntime, mut outcome: impl FnMut(&DomainState) -> Option<T>) -> Option<T> {
     let mut changes = domain.subscribe();
-    let deadline = tokio::time::Instant::now() + ANSWER;
+    let deadline = clock::instant() + ANSWER;
     loop {
         if let Some(answer) = outcome(domain.read().state()) {
             return Some(answer);
         }
-        match tokio::time::timeout_at(deadline, changes.changed()).await {
+        match clock::timeout_at(deadline, changes.changed()).await {
             Ok(Ok(())) => {}
             _ => return outcome(domain.read().state()),
         }
@@ -408,7 +409,7 @@ pub async fn run(domain: Arc<DomainRuntime>) {
         match wake {
             Some(after) => tokio::select! {
                 _ = changes.changed() => {}
-                _ = tokio::time::sleep(after) => {}
+                _ = clock::sleep(after) => {}
             },
             None => {
                 if changes.changed().await.is_err() {

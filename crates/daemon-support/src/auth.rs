@@ -1,9 +1,11 @@
+use alondra_core::clock;
+use alondra_core::clock::Instant;
 use crate::locks::Poisonable as _;
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use alondra_core::now_millis;
 use alondra_e2e::HttpChallengeVerifier;
@@ -172,7 +174,7 @@ impl Auth {
         let code = random_hex(10);
         let mut p = self.pairing.lock_or_recover("the pairing codes");
         p.retain(|_, t| t.elapsed() < PAIRING_TTL);
-        p.insert(code.clone(), Instant::now());
+        p.insert(code.clone(), clock::instant());
         code
     }
 

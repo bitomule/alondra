@@ -1,4 +1,5 @@
 //! Find authored PRs whose work no longer has a live owner.
+use alondra_core::clock;
 use crate::domain_github::{GhCli, PrObserver, execute_system};
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::{Command, DomainState, OpenPrPending, OpenedPr, PullRequest, TaskState};
@@ -120,7 +121,7 @@ pub(crate) async fn sweep(domain: &DomainRuntime, gh: &GhCli, options: &OptionsF
 }
 
 pub async fn run(domain: Arc<DomainRuntime>, home: std::path::PathBuf) {
-    let mut interval = tokio::time::interval_at(tokio::time::Instant::now() + FIRST_SWEEP, SWEEP_INTERVAL);
+    let mut interval = clock::interval_at(clock::instant() + FIRST_SWEEP, SWEEP_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let gh = GhCli::new();
     loop {

@@ -1,3 +1,4 @@
+use alondra_core::clock;
 use alondra_core::domain::{
     Actor, CardKind, CardSpec, Command, CommandEnvelope, LaunchPlan, PROTOCOL_VERSION,
     QuestionOption, Recipient, Scope,
@@ -499,7 +500,7 @@ fn opened_request(service: &crate::service::Service, bytes: &[u8]) -> Value {
         return Value::Null;
     };
     let phone = SigningKey::from_slice(&PHONE_SIGNING).unwrap();
-    let now = std::time::SystemTime::now()
+    let now = clock::system_time()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis() as u64;
@@ -556,7 +557,7 @@ async fn iroh_stream(
     mut recv: iroh::endpoint::RecvStream,
 ) {
     let Ok(bytes) = recv.read_to_end(crate::iroh_endpoint::MAX_REQUEST).await else { return };
-    let received = std::time::SystemTime::now();
+    let received = clock::system_time();
     let request = opened_request(&service, &bytes);
     timing("received", &request, received);
     let (method, path) = (request["method"].as_str().unwrap_or_default(), request["path"].as_str().unwrap_or_default());
@@ -571,7 +572,7 @@ async fn iroh_stream(
         harness.acknowledgments.fetch_add(1, Ordering::Relaxed);
     }
     let reply = crate::iroh_endpoint::answer(&service, &device_id, &bytes).await;
-    timing("committed", &request, std::time::SystemTime::now());
+    timing("committed", &request, clock::system_time());
     if action && harness.hold_action.swap(false, Ordering::Relaxed) {
         let released = harness.release.notified();
         tokio::pin!(released);

@@ -4,6 +4,7 @@
 //! repository, a plugin, the user's account or their organization configures is refused: it is
 //! deleted there. Nodes that had it loaded keep it until their agent starts again, and the screen
 //! stops listing it for them meanwhile.
+use alondra_core::clock;
 use crate::mcp_probe::McpProbes;
 use crate::sdk_owner::SdkBackend;
 use alondra_core::domain::{McpNodeReading, McpServerKey, McpServerState};
@@ -137,7 +138,7 @@ pub(crate) fn run(backend: &SdkBackend, removal: &Removal, directory: &Path) -> 
     };
     let stdout = read(Box::new(child.stdout.take().expect("piped stdout")));
     let stderr = read(Box::new(child.stderr.take().expect("piped stderr")));
-    let started = std::time::Instant::now();
+    let started = clock::instant();
     let output = stderr.recv_timeout(DEADLINE).and_then(|errors| {
         let left = DEADLINE.saturating_sub(started.elapsed());
         stdout.recv_timeout(left).map(|output| format!("{output}{errors}"))

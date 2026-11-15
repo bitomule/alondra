@@ -3,10 +3,12 @@
 //! asked for it. The call is answered within a budget below what a node waits: with the outcome,
 //! or with a typed "still checking". The work goes on when the call is cut, and the same call
 //! sent again, with the same interaction id, joins it instead of starting another.
+use alondra_core::clock;
+use alondra_core::clock::Instant;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use alondra_core::domain::{DomainError, InteractionId};
 use serde_json::Value;
@@ -90,7 +92,7 @@ impl DeliveryReviews {
         let Some(mut finished) = self.join_or_start(interaction, fingerprint, work) else {
             return Err(earlier_still_checking());
         };
-        match tokio::time::timeout(self.limits().answer_within, finished.wait_for(Option::is_some)).await {
+        match clock::timeout(self.limits().answer_within, finished.wait_for(Option::is_some)).await {
             Err(_) => Err(still_checking()),
             Ok(Ok(delivered)) => {
                 let delivered = delivered.clone().expect("waited for a finished delivery");
@@ -140,7 +142,7 @@ impl DeliveryReviews {
             Running {
                 fingerprint,
                 finished: finished.clone(),
-                started: Instant::now(),
+                started: clock::instant(),
             },
         );
         Some(finished)

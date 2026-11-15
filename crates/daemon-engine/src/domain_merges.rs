@@ -5,6 +5,8 @@
 //! before `gh pr merge`. A
 //! merge counts only when GitHub reports the PR merged. A merge GitHub refuses goes back to the
 //! node with GitHub's reason, as feedback on that delivery.
+use alondra_core::clock;
+use alondra_core::clock::Instant;
 use crate::domain_github::{GhCli, GhFailure, execute_system, pr_url};
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
@@ -18,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Checks {
@@ -424,7 +426,7 @@ impl Merger {
         let open: BTreeSet<_> = due.iter().map(|item| item.pr.id.clone()).collect();
         self.forget_all_but(domain, &open);
         for item in due {
-            let now = Instant::now();
+            let now = clock::instant();
             // A new authorization is the user pressing Merge again: it is looked at now, not after
             // the wait the one before left behind.
             if let Some(authorization) = &item.authorization
@@ -457,7 +459,7 @@ impl Merger {
 
     /// How long the loop sleeps while something waits: the poll, or less when a merge retry is due sooner.
     pub(crate) fn pause(&self) -> Duration {
-        let now = Instant::now();
+        let now = clock::instant();
         self.transient.values().filter(|retry| retry.at > now).map(|retry| retry.at - now).fold(self.poll, Duration::min)
     }
 
@@ -711,7 +713,7 @@ impl Merger {
         if failures < TRANSIENT_MERGE_TRIES {
             let wait = merge_retry_wait(self.first_retry, failures);
             log!("merging {} failed, trying again in {} s: {failure}", pr.id, wait.as_secs());
-            self.transient.insert(pr.id.clone(), Retry { failures, at: Instant::now() + wait });
+            self.transient.insert(pr.id.clone(), Retry { failures, at: clock::instant() + wait });
             return Ok(Step::Retry);
         }
         self.transient.remove(&pr.id);
@@ -749,13 +751,13 @@ impl Merger {
     /// Reading the PR failed. Only `gh` that needs installing or a sign-in counts toward the card
     /// at once; anything else raises it once it has gone on for `give_up`.
     fn troubled(&mut self, domain: &DomainRuntime, pr: &PullRequest, failure: &GhFailure) {
-        let trouble = self.trouble.entry(pr.id.clone()).or_insert_with(|| Trouble { count: 0, since: Instant::now(), card: None });
+        let trouble = self.trouble.entry(pr.id.clone()).or_insert_with(|| Trouble { count: 0, since: clock::instant(), card: None });
         raise_trouble(domain, pr, failure, failure.needs_setup(), trouble, self.give_up);
     }
 
     /// Merging needs `gh` set up or access to the repository, which only the user can give.
     fn merge_troubled(&mut self, domain: &DomainRuntime, pr: &PullRequest, failure: &GhFailure) {
-        let trouble = self.merge_trouble.entry(pr.id.clone()).or_insert_with(|| Trouble { count: 0, since: Instant::now(), card: None });
+        let trouble = self.merge_trouble.entry(pr.id.clone()).or_insert_with(|| Trouble { count: 0, since: clock::instant(), card: None });
         raise_trouble(domain, pr, failure, true, trouble, self.give_up);
     }
 
@@ -899,7 +901,7 @@ pub async fn run(domain: Arc<DomainRuntime>, github: Arc<impl PrMerger>, mut mer
         let woke = match pause {
             Some(pause) => tokio::select! {
                 change = changed.changed() => change.is_ok(),
-                () = tokio::time::sleep(pause) => true,
+                () = clock::sleep(pause) => true,
             },
             None => changed.changed().await.is_ok(),
         };

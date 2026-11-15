@@ -1,3 +1,4 @@
+use alondra_core::clock;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -176,7 +177,7 @@ pub(crate) async fn default_branch(dir: &Path) -> Option<String> {
     }
     let gh = Command::new("gh").current_dir(dir).args(["repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"])
         .kill_on_drop(true).output();
-    let out = tokio::time::timeout(std::time::Duration::from_secs(20), gh).await.ok()?.ok()?;
+    let out = clock::timeout(std::time::Duration::from_secs(20), gh).await.ok()?.ok()?;
     let name = String::from_utf8_lossy(&out.stdout).trim().to_owned();
     (out.status.success() && !name.is_empty()).then(|| format!("origin/{name}"))
 }
@@ -187,7 +188,7 @@ async fn on_default_branch(dir: &Path) -> Option<(bool, String)> {
     let default = default_branch(dir).await?;
     let branch = default.strip_prefix("origin/").unwrap_or(&default).to_owned();
     let fetch = Command::new("git").arg("-C").arg(dir).args(["fetch", "--quiet", "origin", &branch]).kill_on_drop(true).output();
-    if !tokio::time::timeout(std::time::Duration::from_secs(60), fetch).await.ok()?.ok()?.status.success() {
+    if !clock::timeout(std::time::Duration::from_secs(60), fetch).await.ok()?.ok()?.status.success() {
         return None;
     }
     let check = Command::new("git").arg("-C").arg(dir).args(["merge-base", "--is-ancestor", "HEAD", &default]).kill_on_drop(true).output().await.ok()?;
@@ -227,7 +228,7 @@ pub const CHECK_LIMIT: Duration = Duration::from_secs(60);
 /// What `check` finds within `limit`, or a refusal that names the git that did not finish. Every
 /// git it starts is killed when it is dropped.
 async fn within(limit: Duration, dir: &Path, what: &str, check: impl Future<Output = Option<DomainError>>) -> Option<DomainError> {
-    match tokio::time::timeout(limit, check).await {
+    match clock::timeout(limit, check).await {
         Ok(refusal) => refusal,
         Err(_) => {
             log!("git did not finish in {} s to {what} in {}", limit.as_secs_f32(), dir.display());

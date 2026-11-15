@@ -2,6 +2,7 @@
 //! KeepAlive does nothing while the old process lives. Under launchd the daemon watches the path
 //! it was started from; once a different binary there passes `--preflight`, it drains and exits
 //! with `RELAUNCH` so launchd starts the new one. A binary that fails preflight is not run.
+use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -65,7 +66,7 @@ pub fn wait_until_free(home: &Path, every: Duration) {
         log!("another daemon holds {}: waiting for it to leave", home.display());
     }
     while in_use() {
-        std::thread::sleep(every);
+        clock::blocking_sleep(every);
     }
 }
 
@@ -119,7 +120,7 @@ pub struct Outcome {
 pub struct Watcher {
     path: PathBuf,
     running: Identity,
-    rejected: Option<(Identity, std::time::Instant)>,
+    rejected: Option<(Identity, clock::Instant)>,
     retry_rejected: Duration,
 }
 
@@ -150,7 +151,7 @@ impl Watcher {
         match outcome.passed {
             Ok(()) => Check::Relaunch { version: outcome.version },
             Err(reason) => {
-                self.rejected = Some((found, std::time::Instant::now()));
+                self.rejected = Some((found, clock::instant()));
                 Check::Rejected(Rejection { path: self.path.display().to_string(), version: outcome.version, reason, at: alondra_core::now_millis() })
             }
         }
@@ -190,7 +191,7 @@ fn output(path: &Path, arg: &str, timeout: Duration) -> Option<(bool, String)> {
 /// Returns once a replacement binary passed preflight; never returns for one that did not.
 pub async fn watch(mut watcher: Watcher, every: Duration) {
     loop {
-        tokio::time::sleep(every).await;
+        clock::sleep(every).await;
         let checked = tokio::task::spawn_blocking(move || {
             let check = watcher.check(run_preflight);
             (watcher, check)

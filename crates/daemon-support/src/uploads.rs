@@ -3,6 +3,7 @@
 //! after attaching. A node receives the copy's absolute path and opens it with its Read tool,
 //! which shows it images and PDFs as well as text.
 
+use alondra_core::clock;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -39,7 +40,7 @@ pub fn clean_name(raw: &str) -> String {
 }
 
 fn new_id(bytes: &[u8]) -> String {
-    let nanos = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default();
+    let nanos = clock::system_time().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default();
     let mut h = Sha256::new();
     h.update(nanos.to_le_bytes());
     h.update(std::process::id().to_le_bytes());

@@ -1,3 +1,4 @@
+use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use std::path::Path;
 use std::sync::Arc;
@@ -51,7 +52,7 @@ async fn sample_loop(mut publish: impl FnMut(Machine)) {
         }).await.expect("machine sample worker failed");
         sys = next;
         publish(machine);
-        tokio::time::sleep(Duration::from_secs(10)).await;
+        clock::sleep(Duration::from_secs(10)).await;
     }
 }
 

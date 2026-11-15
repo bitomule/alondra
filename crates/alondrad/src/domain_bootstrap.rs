@@ -1,4 +1,5 @@
 //! Local HTTP bootstrap: the routes are the shared domain handlers.
+use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::auth::{Signed, is_local};
 use crate::domain_runtime::DomainRuntime;
@@ -226,7 +227,7 @@ fn pairing_refused(error: crate::direct::pairing::PairingError) -> Response {
 }
 
 fn now_ms() -> u64 {
-    std::time::SystemTime::now()
+    clock::system_time()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
@@ -686,7 +687,7 @@ async fn files_sweep(
     let (domain, home) = (state.domain(), state.home.clone());
     match tokio::task::spawn_blocking(move || {
         let snapshot = domain.state()?;
-        Ok::<_, anyhow::Error>(crate::files_retention::sweep(&home, &snapshot, std::time::SystemTime::now()))
+        Ok::<_, anyhow::Error>(crate::files_retention::sweep(&home, &snapshot, clock::system_time()))
     }).await {
         Ok(Ok(report)) => Json(report).into_response(),
         _ => crate::domain_api::domain_error(DomainError::new("storage_unavailable", "the files folder could not be read")),

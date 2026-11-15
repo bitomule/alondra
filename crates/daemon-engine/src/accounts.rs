@@ -4,6 +4,7 @@
 //! it. An added account gets its folder, linked to the user's `~/.claude`; a removed one is signed
 //! out and its folder deleted. `~/.claude` itself is never changed. Each launch starts on the
 //! account the user's distribution picks (`choose_for_launch`).
+use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -915,7 +916,7 @@ pub async fn run(domain: Arc<DomainRuntime>, home: PathBuf) {
             }
         }).await;
         tokio::select! {
-            () = tokio::time::sleep(CHECK_EVERY) => {}
+            () = clock::sleep(CHECK_EVERY) => {}
             () = domain.live.account_check.notified() => {}
         }
     }

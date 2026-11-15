@@ -1,12 +1,13 @@
 //! The daemon's local action gates: one action in flight per device and request, replay receipts,
 //! and the read/write locks on the resources an action touches.
 
+use alondra_core::clock;
 use crate::locks::Poisonable as _;
 
 pub struct LocalActionReceipt {
     pub body: Vec<u8>,
     pub reply: serde_json::Value,
-    pub at: std::time::Instant,
+    pub at: clock::Instant,
 }
 
 pub type LocalActionKey = (String, String);

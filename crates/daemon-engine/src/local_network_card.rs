@@ -2,6 +2,7 @@
 //! denying it: opened once the denial outlasts the seconds macOS takes to let an updated binary
 //! through, withdrawn as soon as a check finds it allowed. "I've allowed it" checks again at once
 //! and, if macOS still denies it, opens a card that says so.
+use alondra_core::clock;
 use alondra_core::domain::SystemCard;
 use std::sync::Arc;
 use std::time::Duration;
@@ -115,7 +116,7 @@ async fn watch(
                 Step::Nothing => card,
             }
         }).await.expect("local network card worker failed");
-        tokio::time::sleep(tick).await;
+        clock::sleep(tick).await;
     }
 }
 

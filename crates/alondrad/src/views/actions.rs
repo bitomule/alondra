@@ -4,6 +4,7 @@
 //! every submission is checked against the current domain snapshot and then committed through
 //! the same command path as the resource API.
 
+use alondra_core::clock;
 use alondra_daemon_engine::local_actions::{LocalActionReceipt, LocalActionResource, LocalResourceGuard};
 #[path = "model_input.rs"]
 mod model_input;
@@ -89,7 +90,7 @@ pub(crate) async fn local(
     let external = ActionId::parse(&request.action_id).is_ok_and(|action| is_external(action.verb));
     let work = if external { domain.external_work.clone() } else { domain.command_work.clone() };
     let runtime = tokio::runtime::Handle::current();
-    let (action_id, client, started) = (request.action_id.clone(), request.client.clone(), std::time::Instant::now());
+    let (action_id, client, started) = (request.action_id.clone(), request.client.clone(), clock::instant());
     match work.run(move || runtime.block_on(async move {
         let client_routes = state.client();
         let response = super::action_results::execute_recorded(&domain, &client_routes, &home, &device, &body, request, || {
@@ -109,7 +110,7 @@ pub(crate) async fn local(
 
 /// Logs how `response` ended the action, inside the work that runs it: a client that stopped
 /// waiting does not cut the line.
-async fn logged(action_id: &str, client: &str, started: std::time::Instant, response: Response) -> Response {
+async fn logged(action_id: &str, client: &str, started: clock::Instant, response: Response) -> Response {
     let (parts, body) = response.into_parts();
     let Ok(bytes) = axum::body::to_bytes(body, crate::service::MAX_LOCAL_RESPONSE).await else {
         log_result(action_id, client, parts.status.as_u16(), &Value::Null, started.elapsed());
@@ -159,7 +160,7 @@ pub(crate) async fn relay(
     }
     // Relay request receipts already deduplicate the transport command. Domain receipts still
     // bind the submitted command_id to the semantic action and actor.
-    let (action_id, client_name, started) = (request.action_id.clone(), request.client.clone(), std::time::Instant::now());
+    let (action_id, client_name, started) = (request.action_id.clone(), request.client.clone(), clock::instant());
     let response = execute_action(&client.domain, client, client.home(), sender, request, Some(identity), authorize).await?;
     log_result(&action_id, &client_name, 200, &response, started.elapsed());
     Ok(json!({"status":200,"body":response}))
@@ -237,7 +238,7 @@ pub(super) async fn execute(
         Ok(reply) => {
             if gate.is_some() {
                 let entry = domain.local_actions.remember(receipt_key, LocalActionReceipt {
-                    body, reply: reply.clone(), at: std::time::Instant::now(),
+                    body, reply: reply.clone(), at: clock::instant(),
                 });
                 **command.as_mut().expect("local command gate missing") = Some(entry);
             }
@@ -3121,7 +3122,7 @@ for line in sys.stdin:
         assert!(retry.as_mut().poll(&mut context).is_pending());
         domain.live.pushes.acknowledged("agent-a", &[sent["id"].as_str().unwrap().to_owned()]);
         assert!(matches!(first.as_mut().poll(&mut context), Poll::Ready(_)));
-        let newer = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let newer = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
         for index in 0..1024 {
             domain.local_actions.remember(("other-device".into(), index.to_string()), LocalActionReceipt {
                 body: vec![], reply: json!({}), at: newer,

@@ -1,6 +1,7 @@
 //! Update awareness: the newest release in the Homebrew tap, checked at start (with jitter) and
 //! every 6 hours, quietly. With `auto_update`, a launchd daemon installed by Homebrew upgrades
 //! itself once per new version; `relaunch` then restarts it into the new binary.
+use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -108,10 +109,10 @@ impl Updater {
     }
 
     pub async fn run(self) {
-        tokio::time::sleep(Duration::from_secs(30 + u64::from_str_radix(&crate::auth::random_hex(2), 16).unwrap_or(0) % 300)).await;
+        clock::sleep(Duration::from_secs(30 + u64::from_str_radix(&crate::auth::random_hex(2), 16).unwrap_or(0) % 300)).await;
         loop {
             self.check_once(brew_upgrade).await;
-            tokio::time::sleep(EVERY).await;
+            clock::sleep(EVERY).await;
         }
     }
 }

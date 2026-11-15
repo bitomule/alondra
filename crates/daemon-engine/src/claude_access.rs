@@ -3,6 +3,7 @@
 //! tasks goes on when its limit resets. Its next turn proves Claude works, and the tasks the same
 //! wait held go on, or it holds again. The clock only says when to look. A sign-in is probed by
 //! the user's answer to its card, never here.
+use alondra_core::clock;
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::accounts::{AccountId, AccountKey, AccountState, AccountBilling, Provider};
 use alondra_core::domain::{
@@ -76,7 +77,7 @@ pub async fn run(domain: Arc<DomainRuntime>) {
         match next {
             Some(at) => tokio::select! {
                 _ = changes.changed() => {}
-                _ = tokio::time::sleep(Duration::from_millis(u64::try_from(at - now).unwrap_or(0))) => {}
+                _ = clock::sleep(Duration::from_millis(u64::try_from(at - now).unwrap_or(0))) => {}
             },
             None => {
                 if changes.changed().await.is_err() {

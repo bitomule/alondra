@@ -5,6 +5,7 @@
 //! the new copy has been verified and a committed marker is durable. Attachments are deliberately
 //! left in place: their references are stored in this database and remain
 //! valid when the database is copied to its canonical filename.
+use alondra_core::clock;
 use anyhow::{Context, Result, ensure};
 use rusqlite::{
     Connection, OpenFlags,
@@ -659,7 +660,7 @@ fn backup_database_with_progress(
             StepResult::Done => break,
             StepResult::More => progress()?,
             StepResult::Busy | StepResult::Locked => {
-                std::thread::sleep(Duration::from_millis(10));
+                clock::blocking_sleep(Duration::from_millis(10));
             }
             other => anyhow::bail!("unexpected SQLite backup result: {other:?}"),
         }

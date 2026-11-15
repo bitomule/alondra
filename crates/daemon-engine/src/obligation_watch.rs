@@ -5,6 +5,7 @@
 //! whose work ended with no turn to take up its notice is told, and what the orchestrator owes is
 //! reminded to it and then settled by Alondra. Nothing it does opens a card. The daemon keeps one
 //! clock, in `Live`: its own loop and every pass of the orchestrator step that one.
+use alondra_core::clock;
 use crate::domain_runtime::DomainRuntime;
 use crate::locks::Poisonable as _;
 use crate::sdk_owner::untaken;
@@ -266,7 +267,7 @@ pub async fn run(domain: Arc<DomainRuntime>) {
         if let Err(error) = passed {
             log!("a pass of the obligation watch stopped: {error}");
         }
-        tokio::time::sleep(PASS).await;
+        clock::sleep(PASS).await;
     }
 }
 

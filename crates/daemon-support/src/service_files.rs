@@ -1,4 +1,6 @@
 //! Bounded, device-owned attachment transfers inside the encrypted service channel.
+use alondra_core::clock;
+use alondra_core::clock::Instant;
 use crate::locks::Poisonable as _;
 use anyhow::{Context, Result, ensure};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -10,7 +12,7 @@ use std::{
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::Mutex,
-    time::{Duration, Instant},
+    time::{Duration},
 };
 
 pub const CHUNK: usize = 64 * 1024;
@@ -143,7 +145,7 @@ impl Transfers {
                     t.name == b.name && t.size == b.bytes && t.hash == b.sha256,
                     "transfer ID already used with different metadata"
                 );
-                t.touched = Instant::now();
+                t.touched = clock::instant();
                 return Ok(
                     json!({"offset":t.received,"chunk_bytes":CHUNK,"completed":t.result.is_some()}),
                 );
@@ -170,7 +172,7 @@ impl Transfers {
                     result: None,
                     finalization_attempted: false,
                     received: 0,
-                    touched: Instant::now(),
+                    touched: clock::instant(),
                 },
             );
             return Ok(json!({"offset":0,"chunk_bytes":CHUNK,"completed":false}));
@@ -219,7 +221,7 @@ impl Transfers {
                 t.data.extend_from_slice(&bytes);
                 t.received = t.data.len();
             }
-            t.touched = Instant::now();
+            t.touched = clock::instant();
             return Ok(json!({"offset":t.data.len()}));
         }
         ensure!(
@@ -261,7 +263,7 @@ impl Transfers {
                 .context(UNCERTAIN)?;
         let result = json!({"id":id,"name":a.name,"bytes":a.bytes,"kind":if crate::uploads::is_image(&a.name) {"image"} else {"file"},"path":a.stored_path});
         t.result = Some(result.clone());
-        t.touched = Instant::now();
+        t.touched = clock::instant();
         Ok(result)
     }
 }
@@ -353,7 +355,7 @@ impl StoredReads {
         ensure!(offset <= metadata.len() && (offset == 0 || version.is_some()), "invalid offset");
         ensure!(version.as_ref().is_none_or(|v| v == &current_version), TransferError::FileChanged);
         let key = (path, current_version.clone());
-        let now = Instant::now();
+        let now = clock::instant();
         let (cached, reservation) = {
             let mut copies = self.copies.lock_or_recover("the stored read cache");
             copies.retain(|_, copy| now.duration_since(copy.touched) < TTL);
@@ -388,7 +390,7 @@ impl StoredReads {
                 let oldest = copies.iter().min_by_key(|(_, entry)| entry.touched).unwrap().0.clone();
                 copies.remove(&oldest);
             }
-            copies.insert(key, CachedCopy { copy: copy.clone(), touched: Instant::now() });
+            copies.insert(key, CachedCopy { copy: copy.clone(), touched: clock::instant() });
             copy
         } else {
             // Evicted copies may still be serving another request; their reservations remain live.

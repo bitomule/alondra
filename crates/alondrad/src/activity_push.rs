@@ -16,6 +16,8 @@
 //! daemon can ship before the relay; and a phone the relay no longer has a registration for (410)
 //! is asked again after [`DORMANT`], or at once with a new push binding: turning Live Activities
 //! back on registers the same phone with the same binding.
+use alondra_core::clock;
+use alondra_core::clock::Instant;
 use crate::domain_runtime::DomainRuntime;
 use crate::service::Service;
 use alondra_core::domain::ActivityCounts;
@@ -23,7 +25,7 @@ use alondra_core::views::{self, Client, Lang, RenderContext, Transport};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Changes come in bursts (an answer closes a task and its node): one report for all.
 const SETTLE: Duration = Duration::from_secs(5);
@@ -285,11 +287,11 @@ async fn current(domain: &DomainRuntime, client: &crate::client_routes::Client) 
 pub async fn run(domain: Arc<DomainRuntime>, service: Arc<Service>, client: Arc<crate::client_routes::Client>) {
     let mac_name = mac_name();
     let mut changed = domain.subscribe();
-    let mut schedule = Schedule::new(current(&domain, &client).await, Instant::now());
+    let mut schedule = Schedule::new(current(&domain, &client).await, clock::instant());
     let mut seq = now_ms();
     let mut failing = false;
     loop {
-        let now = Instant::now();
+        let now = clock::instant();
         schedule.observe(current(&domain, &client).await, now);
         match service.activity_phones() {
             Ok(phones) => schedule.phones(phones),
@@ -317,17 +319,17 @@ pub async fn run(domain: Arc<DomainRuntime>, service: Arc<Service>, client: Arc<
                 _ => {}
             }
             failing = outcome == Sent::Retry;
-            if !schedule.record(&due, outcome, Instant::now()) {
+            if !schedule.record(&due, outcome, clock::instant()) {
                 break;
             }
         }
-        let wait = schedule.next(Instant::now())
-            .map_or(REPEAT, |at| at.saturating_duration_since(Instant::now()))
+        let wait = schedule.next(clock::instant())
+            .map_or(REPEAT, |at| at.saturating_duration_since(clock::instant()))
             .min(REPEAT);
         tokio::select! {
             result = changed.changed() => if result.is_err() { return },
             _ = service.activity_key_given() => {},
-            _ = tokio::time::sleep(wait) => {},
+            _ = clock::sleep(wait) => {},
         }
     }
 }

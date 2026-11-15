@@ -4,6 +4,7 @@
 //! the SDK Alondra adds it, and it takes out exactly the rule the user removes, leaving every
 //! other byte as it was.
 
+use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use std::io::Write;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -138,7 +139,7 @@ pub(crate) async fn chosen(domain: &std::sync::Arc<crate::domain_runtime::Domain
     let interaction_id = interaction_id.to_owned();
     let settings = domain.hook_work.run(move || remember(&recording, cwd.as_deref(), &offered, task_id.as_deref(), &interaction_id)).await?;
     let Some(settings) = settings else { return Ok(()) };
-    let started = std::time::Instant::now();
+    let started = clock::instant();
     while started.elapsed() < WRITE_WAIT {
         let settings = settings.clone();
         let offered = rules.to_vec();
@@ -180,7 +181,7 @@ async fn wait_for_write(_domain: &crate::domain_runtime::DomainRuntime) {
             return;
         }
     }
-    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    clock::sleep(std::time::Duration::from_millis(250)).await;
 }
 
 /// The rules Alondra added, each checked against its settings file: a pending rule the file has

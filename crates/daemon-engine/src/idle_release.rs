@@ -9,6 +9,7 @@
 //! The decision reads the task's lifecycle alone (`DomainState::host_releasable`). What is measured
 //! lives in memory: a restarted daemon counts each rest from its start. A resume waits for a free
 //! node slot like any turn.
+use alondra_core::clock;
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::{DomainState, TaskId};
 use alondra_core::{Millis, now_millis};
@@ -99,7 +100,7 @@ pub async fn run(domain: Arc<DomainRuntime>, timing: &'static Timing) {
         match pass(&domain, &mut rests, now, timing) {
             Some(at) => tokio::select! {
                 _ = changes.changed() => {}
-                _ = tokio::time::sleep(Duration::from_millis(u64::try_from(at - now).unwrap_or(0))) => {}
+                _ = clock::sleep(Duration::from_millis(u64::try_from(at - now).unwrap_or(0))) => {}
             },
             None => {
                 if changes.changed().await.is_err() {
@@ -107,7 +108,7 @@ pub async fn run(domain: Arc<DomainRuntime>, timing: &'static Timing) {
                 }
             }
         }
-        tokio::time::sleep(LOOK_SPACING).await;
+        clock::sleep(LOOK_SPACING).await;
     }
 }
 

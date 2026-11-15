@@ -1,6 +1,7 @@
 //! What the store keeps only while a reader needs it: raw SDK observations, and the rows of each
 //! table retention policy. This loop releases the rest and gives the disk back the space, away from
 //! startup.
+use alondra_core::clock;
 use crate::domain_runtime::DomainRuntime;
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,7 +10,7 @@ const FIRST_AFTER: Duration = Duration::from_secs(60);
 const EVERY: Duration = Duration::from_secs(60 * 60);
 
 pub async fn run(domain: Arc<DomainRuntime>) {
-    tokio::time::sleep(FIRST_AFTER).await;
+    clock::sleep(FIRST_AFTER).await;
     loop {
         let pass = {
             let domain = domain.clone();
@@ -38,6 +39,6 @@ pub async fn run(domain: Arc<DomainRuntime>) {
             Err(error) => log!("could not run the store's retention: {error}"),
         }
         crate::metrics_capture::pr_sizes(&domain, &crate::prs::GhCli, alondra_core::now_millis()).await;
-        tokio::time::sleep(EVERY).await;
+        clock::sleep(EVERY).await;
     }
 }
