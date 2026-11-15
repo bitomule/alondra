@@ -262,6 +262,7 @@ fn accounts_sharing_one_email_are_checked_before_their_sessions_are_taken_over()
     f.store(&config).unwrap();
     std::fs::write(f.home.join("accounts/work/signed-in"), "work@example.org").unwrap();
     let domain = Arc::new(DomainRuntime::open(&f.home).unwrap());
+    domain.live.unbounded_claude_status.store(true, std::sync::atomic::Ordering::Relaxed);
     let native = f.claude.executable.clone();
     domain.enable_sdk(crate::sdk_owner::SdkBackend {
         provider: Provider::Claude, origin: None,
