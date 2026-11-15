@@ -60,6 +60,17 @@ impl StageEntry {
             released = self.changed.wait(released).unwrap();
         }
     }
+    async fn wait_without_blocking(&self) {
+        loop {
+            let notified = self.ready.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if *self.released.lock().unwrap() {
+                break;
+            }
+            notified.await;
+        }
+    }
     fn release(&self) {
         *self.released.lock().unwrap() = true;
         self.changed.notify_all();
@@ -67,13 +78,13 @@ impl StageEntry {
     }
 }
 
-fn retained_writer_at_transition(stage: ReceiptWrite) {
+fn retained_writer_at_transition(stage: ReceiptWrite, workers: usize) {
     let (_directory, mut service, phone) = push_fixture();
     activate_push(&service);
     drop(crate::domain_runtime::DomainRuntime::open(&service.home).unwrap());
     let state = crate::domain_bootstrap::DomainDaemon::open(&service.home).unwrap();
     let runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
+        .worker_threads(workers)
         .enable_all()
         .build()
         .unwrap();
@@ -94,7 +105,7 @@ fn retained_writer_at_transition(stage: ReceiptWrite) {
                 if observed == stage && enabled.load(Ordering::SeqCst) {
                     entry.arrive().await;
                     enter.send(id).unwrap();
-                    entry.wait();
+                    entry.wait_without_blocking().await;
                 }
             })
         }
@@ -287,12 +298,17 @@ fn retained_writer_at_transition(stage: ReceiptWrite) {
 
 #[test]
 fn a_retained_writer_during_executing_keeps_health_serviceable() {
-    retained_writer_at_transition(ReceiptWrite::Executing);
+    retained_writer_at_transition(ReceiptWrite::Executing, 2);
 }
 
 #[test]
 fn a_retained_writer_during_completion_keeps_health_serviceable() {
-    retained_writer_at_transition(ReceiptWrite::Complete);
+    retained_writer_at_transition(ReceiptWrite::Complete, 2);
+}
+
+#[test]
+fn a_retained_writer_with_one_runtime_worker_still_reaches_both_transitions() {
+    retained_writer_at_transition(ReceiptWrite::Executing, 1);
 }
 
 fn transition_fixture() -> (
