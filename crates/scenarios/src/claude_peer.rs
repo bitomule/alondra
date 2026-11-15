@@ -12,6 +12,7 @@ use alondra_agent_protocol::{
     command_digest, host_proof, verify_owner_proof,
 };
 use alondra_agent_runtime::owned_host::{HostLauncher, HostSpawn};
+use alondra_scenarios_transcript::frames::FrameComparator;
 use alondra_scenarios_transcript::{Line, Transcript};
 use serde::Deserialize;
 use serde_json::Value;
@@ -161,7 +162,7 @@ fn is_expected(expected: &Value, received: &Value) -> bool {
             }
         }
     }
-    expected == received
+    FrameComparator::new().matches(&expected, &received)
 }
 
 struct Session {

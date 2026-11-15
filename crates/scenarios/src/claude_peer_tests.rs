@@ -154,3 +154,17 @@ fn what_the_daemon_assigns_replaces_the_name_a_transcript_gives_it() {
     name_assigned(&mut payload, "«conversation»", &json!("conversation-3"));
     assert_eq!(payload, json!({"params": {"inputId": "input-9", "items": ["input-9", "conversation-3"]}}));
 }
+
+#[test]
+fn what_changes_on_every_run_does_not_make_a_command_a_mismatch() {
+    let started = start("«user text 1»");
+    let (mut reader, mut writer) = attach(&started);
+    let command: Command = serde_json::from_value(json!({
+        "fence": fence(), "execution": execution(), "command_id": "44444444-4444-4444-8444-444444444444", "deadline_ms": 99,
+        "action": {"type": "offer", "input_id": INPUT, "prompt": "«user text 1»"},
+    }))
+    .unwrap();
+    writer.write(&Frame::new(Body::Command(command))).unwrap();
+    assert!(matches!(reader.read().unwrap().unwrap().body, Body::Receipt(_)));
+    assert!(started.seen.lock().unwrap().failure.is_none());
+}

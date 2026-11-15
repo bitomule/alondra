@@ -1,7 +1,7 @@
 load("//tools:tree.bzl", "repo_tree")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 load("//:version.bzl", "VERSION")
 
 rust_library(
@@ -23,6 +23,17 @@ low_opt_rust_test(
     edition = "2024",
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True),
+)
+
+rust_test(
+    name = "transcript_guard_test",
+    size = "small",
+    srcs = ["tests/transcript_guard.rs"],
+    crate_root = "tests/transcript_guard.rs",
+    data = ["//crates/scenarios:transcripts"],
+    edition = "2024",
+    env_inherit = ["ALONDRA_PRIVATE_LITERALS"],
+    deps = [":scenarios_transcript"],
 )
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

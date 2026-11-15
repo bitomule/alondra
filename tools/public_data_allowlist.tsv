@@ -19,3 +19,9 @@ crates/relay/src/management/waitlist.rs	personal-email	ana@-example.com	Delibera
 crates/relay/src/management/waitlist.rs	personal-email	ana@example-.com	Deliberately invalid address of a validation test
 crates/relay/src/push.rs	secret	-----BEGIN PRIVATE KEY-----	Header of a synthetic key used to prove the redactor hides it; no key follows
 tools/prose_decisions_allowlist.tsv	secret	-----BEGIN PRIVATE KEY-----	Header of a synthetic key used to prove the redactor hides it; no key follows
+crates/scenarios-transcript/src/anonymize.rs	home-path	*	canary values the tests plant to prove the anonymizer and the guard remove or refuse them; none is real
+crates/scenarios-transcript/src/anonymize.rs	personal-email	*	canary values the tests plant to prove the anonymizer and the guard remove or refuse them; none is real
+crates/scenarios-transcript/src/anonymize.rs	secret	*	canary values the tests plant to prove the anonymizer and the guard remove or refuse them; none is real
+crates/scenarios-transcript/src/guard.rs	home-path	*	canary values the tests plant to prove the anonymizer and the guard remove or refuse them; none is real
+crates/scenarios-transcript/src/guard.rs	personal-email	*	canary values the tests plant to prove the anonymizer and the guard remove or refuse them; none is real
+crates/scenarios-transcript/src/guard.rs	secret	*	canary values the tests plant to prove the anonymizer and the guard remove or refuse them; none is real

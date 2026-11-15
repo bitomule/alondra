@@ -643,6 +643,8 @@ checks:
       - "crates/process-group/**"
       - "crates/provider-claude/**"
       - "crates/provider-contract/**"
+      - "crates/scenarios-transcript/**"
+      - "crates/scenarios/transcripts/**"
       - "crates/store/**"
       - "crates/test_support.rs"
       - "tools/BUILD.bazel"
@@ -1797,6 +1799,7 @@ checks:
         - //crates/scenarios:scenarios_test
         - //crates/scenarios:scenarios_harness_test
         - //crates/scenarios-transcript:scenarios_transcript_test
+        - //crates/scenarios-transcript:transcript_guard_test
 
   worktree-setup:
     uses: bazel/test

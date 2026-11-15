@@ -27,6 +27,10 @@ name = "accept"
 path = "src/bin/accept.rs"
 
 [[bin]]
+name = "capture"
+path = "src/bin/capture.rs"
+
+[[bin]]
 name = "ablate"
 path = "src/bin/ablate.rs"
 

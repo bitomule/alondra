@@ -98,6 +98,24 @@ rust_binary(
     deps = all_crate_deps(normal = True),
 )
 
+# The transcripts the repository keeps: `//crates/scenarios-transcript:transcript_guard_test` checks each.
+filegroup(
+    name = "transcripts",
+    srcs = glob(["cases/**/*.ndjson", "cases/**/synthetic.txt", "transcripts/**"], allow_empty = True),
+    visibility = ["//crates/scenarios-transcript:__pkg__", "//crates/provider-claude:__pkg__"],
+)
+
+# `bazel run //crates/scenarios:capture -- --task <id> --out .scratch/<name>.ndjson` anonymizes the
+# frames the SDK host of a task wrote on this Mac into a transcript for a reviewer to read.
+rust_binary(
+    name = "capture",
+    srcs = ["src/bin/capture.rs"],
+    crate_root = "src/bin/capture.rs",
+    edition = "2024",
+    version = VERSION,
+    deps = all_crate_deps(normal = True) + ["//crates/scenarios-transcript:scenarios_transcript"],
+)
+
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 
 repo_tree()
