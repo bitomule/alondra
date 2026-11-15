@@ -75,6 +75,66 @@ impl Drop for Running<'_> {
         }
     }
 }
+/// A child of this process held between `fork` and `exec` until dropped, holding a copy of every
+/// descriptor this process had open when it forked.
+struct PausedFork {
+    release: UnixStream,
+    child: Option<std::thread::JoinHandle<()>>,
+}
+impl PausedFork {
+    fn start() -> Self {
+        use std::os::fd::AsRawFd;
+        let (mut forked, announce) = UnixStream::pair().unwrap();
+        let (release, held) = UnixStream::pair().unwrap();
+        let child = std::thread::spawn(move || {
+            let (announcing, holding) = (announce.as_raw_fd(), held.as_raw_fd());
+            let mut command = Command::new("/usr/bin/true");
+            command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+            // SAFETY: the closure runs in the forked child before its exec and calls only write and
+            // read, which are async-signal-safe.
+            unsafe {
+                command.pre_exec(move || {
+                    let mut byte = 0_u8;
+                    libc::write(announcing, (&raw const byte).cast(), 1);
+                    libc::read(holding, (&raw mut byte).cast(), 1);
+                    Ok(())
+                });
+            }
+            assert!(command.status().unwrap().success());
+            drop((announce, held));
+        });
+        forked.read_exact(&mut [0_u8]).unwrap();
+        Self { release, child: Some(child) }
+    }
+}
+impl Drop for PausedFork {
+    fn drop(&mut self) {
+        let _ = self.release.write_all(&[0]);
+        if let Some(child) = self.child.take() {
+            let ended = child.join();
+            if !std::thread::panicking() {
+                ended.unwrap();
+            }
+        }
+    }
+}
+/// A child another thread forks holds a copy of every descriptor of this process until its `exec`,
+/// close-on-exec ones included. A claim released by closing its descriptor left the lock with that
+/// child, and the host that ended read as alive: a move stayed draining.
+#[test]
+fn a_released_claim_leaves_the_host_ended_while_a_child_forked_meanwhile_waits_to_exec() {
+    use alondra_agent_runtime::owned_host::{EndedHost, Retained};
+    let directory = support::directory();
+    let lock = directory.join("host.lock");
+    fs::write(&lock, b"private-fixture-bootstrap").unwrap();
+    fs::set_permissions(&lock, fs::Permissions::from_mode(0o600)).unwrap();
+    let Retained::Ended(claim) = EndedHost::claim(&directory).unwrap() else { panic!("no process holds the lock of a host that ended") };
+    let forked = PausedFork::start();
+    drop(claim);
+    let again = EndedHost::claim(&directory).unwrap();
+    drop(forked);
+    assert!(matches!(again, Retained::Ended(_)), "the host that ended read as alive once its claim was released");
+}
 #[test]
 fn retained_bootstrap_and_live_lock_never_authorize_a_replacement_host() {
     let directory = support::directory();
