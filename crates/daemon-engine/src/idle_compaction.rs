@@ -10,6 +10,7 @@
 //! not hand anything to says nothing: its events may have waited in its journal, so their time is
 //! not the request's. What is measured lives in memory; a restarted daemon compacts again after
 //! the task's next turn.
+use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::{Command, CommandEnvelope, DomainState, PROTOCOL_VERSION, TaskId};
@@ -212,7 +213,7 @@ pub async fn run(domain: Arc<DomainRuntime>, timing: &'static Timing) {
         match next {
             Some(at) => tokio::select! {
                 _ = changes.changed() => {}
-                _ = tokio::time::sleep(Duration::from_millis(u64::try_from(at - now).unwrap_or(0))) => {}
+                _ = clock::sleep(Duration::from_millis(u64::try_from(at - now).unwrap_or(0))) => {}
             },
             None => {
                 if changes.changed().await.is_err() {

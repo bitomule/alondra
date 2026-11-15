@@ -1,5 +1,7 @@
 //! Technical delivery of committed v2 effects. An outbox handoff is not a
 //! business decision, user acceptance, or proof that Claude acted on a turn.
+use alondra_core::clock;
+use alondra_core::clock::Instant;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::OutboxMessage;
@@ -13,7 +15,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const RETRY_BACKOFF: Duration = Duration::from_secs(120);
 
@@ -45,13 +47,13 @@ pub async fn run(
         // committed process instead of silently serving a dead outbox.
         for message in ready_by_recipient(pending, &retry_after) {
             let id = message.id;
-            let waited = first_seen.entry(id).or_insert_with(Instant::now).elapsed();
+            let waited = first_seen.entry(id).or_insert_with(clock::instant).elapsed();
             deliver_from_runtime(&domain, &home, &push, service.as_deref(), &client, message, waited).await?;
-            retry_after.insert(id, Instant::now());
+            retry_after.insert(id, clock::instant());
         }
         tokio::select! {
             _ = changed.changed() => {},
-            _ = tokio::time::sleep(Duration::from_secs(10)) => {},
+            _ = clock::sleep(Duration::from_secs(10)) => {},
         }
     }
 }

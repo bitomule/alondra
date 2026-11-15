@@ -3,13 +3,15 @@
 //! Claude Code below that release is updated by Alondra, once per release it finds and every six
 //! hours at most. A failure is logged and reported by `/daemon`, and re-checked every ten minutes
 //! until it passes; each host start checks the version again for itself.
+use alondra_core::clock;
+use alondra_core::clock::Instant;
 use crate::locks::Poisonable as _;
 use alondra_core::claude_code;
 use alondra_core::claude_update::{self, Outcome as Update};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Status {
@@ -56,7 +58,7 @@ pub fn judge(plugin: Option<&Path>, outcomes: &Outcomes) -> Status {
 async fn claude(args: &[&str], timeout: Duration) -> Option<(bool, String)> {
     let run = tokio::process::Command::new("claude").args(args).kill_on_drop(true)
         .stdin(std::process::Stdio::null()).output();
-    let out = tokio::time::timeout(timeout, run).await.ok()?.ok()?;
+    let out = clock::timeout(timeout, run).await.ok()?.ok()?;
     Some((out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))))
 }
 
@@ -84,7 +86,7 @@ pub async fn run(plugin: Option<PathBuf>) {
         let wait = next_check(&status);
         *STATUS.lock_or_recover("the Claude Code check") = Some(status);
         let Some(wait) = wait else { return };
-        tokio::time::sleep(wait).await;
+        clock::sleep(wait).await;
     }
 }
 
@@ -109,7 +111,7 @@ fn due(last: Option<&Attempt>, version: &str, now: Instant) -> bool {
 }
 
 async fn updated(version: &str) -> Option<Update> {
-    let now = Instant::now();
+    let now = clock::instant();
     if !due(ATTEMPT.lock_or_recover("the Claude Code update").as_ref(), version, now) {
         return ATTEMPT.lock_or_recover("the Claude Code update").as_ref().map(|last| last.outcome.clone());
     }

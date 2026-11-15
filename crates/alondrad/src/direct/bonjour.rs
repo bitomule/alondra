@@ -2,6 +2,7 @@
 //! without typing an address. The TXT record is only a hint: identity comes from the keys
 //! `/direct/hello` returns. A sandbox daemon uses another service type, so real clients never
 //! list test Macs.
+use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use alondra_core::bonjour::{Advertisement, POLICY_DENIED, advertise as register, txt_record};
 use std::sync::Mutex;
@@ -74,7 +75,7 @@ pub(crate) fn advertise(name: &str, mac_id: &str, port: u16, sandbox: bool) -> A
                     let mut logged = None;
                     loop {
                         report(&advertisement, &mut logged);
-                        tokio::time::sleep(CHECK).await;
+                        clock::sleep(CHECK).await;
                     }
                 }
                 Err(error) => {
@@ -82,7 +83,7 @@ pub(crate) fn advertise(name: &str, mac_id: &str, port: u16, sandbox: bool) -> A
                     set_status("unavailable");
                 }
             }
-            tokio::time::sleep(RETRY).await;
+            clock::sleep(RETRY).await;
         }
     }))
 }

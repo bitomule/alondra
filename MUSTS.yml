@@ -1498,6 +1498,20 @@ checks:
       targets:
         - //tools:test_limits_test
 
+  clock-guard:
+    uses: bazel/test
+    paths:
+      - "crates/alondrad/**"
+      - "crates/daemon-engine*/**"
+      - "crates/daemon-support/**"
+      - "crates/core/src/clock.rs"
+      - "tools/BUILD.bazel"
+      - "tools/clock_guard.py"
+      - "tools/tests/test_clock_guard.py"
+    with:
+      targets:
+        - //tools:clock_guard_test
+
   worktree-setup:
     uses: bazel/test
     paths:

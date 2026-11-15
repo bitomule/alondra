@@ -1,6 +1,7 @@
 //! GitHub facts for domain v2 pull requests, read with `gh`. An observation records remote
 //! reality; a merged PR settles the final delivery that presented it. Merging is
 //! `domain_merges`'s, with the same `gh`.
+use alondra_core::clock;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
 use alondra_core::domain::{
@@ -95,7 +96,7 @@ impl PrObserver for GhCli {
                 .args(["pr", "view", &url, "--json", OBSERVED_FIELDS])
                 .kill_on_drop(true)
                 .output();
-            let output = match tokio::time::timeout(Duration::from_secs(30), run).await {
+            let output = match clock::timeout(Duration::from_secs(30), run).await {
                 Ok(Ok(output)) if output.status.success() => output,
                 Ok(Ok(output)) => return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned()),
                 Ok(Err(error)) => return Err(error.to_string()),
@@ -152,7 +153,7 @@ impl GhCli {
         if let Some(dir) = dir {
             command.current_dir(dir);
         }
-        match tokio::time::timeout(limit, command.output()).await {
+        match clock::timeout(limit, command.output()).await {
             Ok(Ok(output)) => Ok(output),
             Ok(Err(error)) => Err(GhFailure::Launch(error.kind(), error.to_string())),
             Err(_) => Err(GhFailure::TimedOut(format!("gh {} did not finish within {} s", args.first().copied().unwrap_or_default(), limit.as_secs()))),
@@ -692,7 +693,7 @@ pub async fn run(domain: Arc<DomainRuntime>, observer: Arc<impl PrObserver>, pol
         if open.is_empty() {
             continue;
         }
-        let mut interval = tokio::time::interval(poll);
+        let mut interval = clock::interval(poll);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval.tick().await; // consume the immediate tick after the initial read
         loop {
@@ -1078,7 +1079,7 @@ pub mod tests {
         tokio::task::yield_now().await;
         assert!(calls.try_recv().is_err(), "an empty registry makes no GitHub call");
         presented(&domain, false);
-        assert_eq!(tokio::time::timeout(Duration::from_secs(1), calls.recv()).await.unwrap(), Some(7));
+        assert_eq!(clock::timeout(Duration::from_secs(1), calls.recv()).await.unwrap(), Some(7));
         worker.abort();
     }
 
@@ -1159,7 +1160,7 @@ pub mod tests {
         );
 
         release_tx.send(()).unwrap();
-        tokio::time::timeout(Duration::from_secs(2), async {
+        clock::timeout(Duration::from_secs(2), async {
             while calls.recv().await != Some(8) {}
         })
         .await

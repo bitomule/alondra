@@ -1,6 +1,7 @@
 //! Under launchd, a daemon that cannot start is restarted every 10 seconds forever. Starts are
 //! counted in HOME until one serves; from the third failure in a row on, a failed start waits
 //! before exiting, and returns early once the binary is replaced so a fix is picked up at once.
+use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -43,7 +44,7 @@ pub fn wait(total: Duration, step: Duration, mut replaced: impl FnMut() -> bool)
     while waited < total {
         if replaced() { return true; }
         let next = step.min(total - waited);
-        std::thread::sleep(next);
+        clock::blocking_sleep(next);
         waited += next;
     }
     false

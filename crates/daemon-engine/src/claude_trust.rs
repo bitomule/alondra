@@ -7,8 +7,9 @@
 //! user chose to trust the folder on its card, or the repository is inside the projects folder
 //! the user chose at setup.
 
+use alondra_core::clock;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use serde_json::Value;
 
@@ -173,20 +174,20 @@ const LOCK_WAIT: Duration = Duration::from_millis(if cfg!(any(test, feature = "t
 impl ConfigLock {
     fn take(config: &Path) -> Result<Self, String> {
         let lock = PathBuf::from(format!("{}.lock", config.display()));
-        let started = Instant::now();
+        let started = clock::instant();
         loop {
             match std::fs::create_dir(&lock) {
                 Ok(()) => return Ok(Self(lock)),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                     let abandoned = std::fs::metadata(&lock).and_then(|meta| meta.modified()).ok()
-                        .and_then(|at| SystemTime::now().duration_since(at).ok())
+                        .and_then(|at| clock::system_time().duration_since(at).ok())
                         .is_some_and(|age| age > LOCK_ABANDONED);
                     if abandoned {
                         let _ = std::fs::remove_dir(&lock);
                     } else if started.elapsed() > LOCK_WAIT {
                         return Err(format!("another Claude Code session kept {} locked; try again in a moment", config.display()));
                     } else {
-                        std::thread::sleep(Duration::from_millis(100));
+                        clock::blocking_sleep(Duration::from_millis(100));
                     }
                 }
                 Err(error) => return Err(format!("Alondra could not lock {}: {error}", config.display())),

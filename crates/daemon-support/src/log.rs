@@ -5,6 +5,7 @@ macro_rules! log {
     };
 }
 
+use alondra_core::clock;
 use alondra_core::daemon_log;
 use std::io::{BufRead, Write};
 use std::os::fd::{AsRawFd, RawFd};
@@ -147,7 +148,7 @@ fn write(out: &mut impl std::io::Write, line: &str) {
 }
 
 pub fn stamp() -> String {
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let now = clock::system_time().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     local_iso(now.as_secs() as libc::time_t, now.subsec_millis())
 }
 

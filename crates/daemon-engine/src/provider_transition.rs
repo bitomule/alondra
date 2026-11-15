@@ -1,4 +1,5 @@
 //! A requested selection stays durable while its current execution drains, is fenced and hands off.
+use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{Attached,StoreError};
@@ -395,7 +396,7 @@ pub async fn run(domain:Arc<DomainRuntime>){
     let mut changed=domain.subscribe();
     loop{
         pass(&domain).await;
-        tokio::select!{result=changed.changed()=>if result.is_err(){return},_=tokio::time::sleep(std::time::Duration::from_secs(10))=>{}}
+        tokio::select!{result=changed.changed()=>if result.is_err(){return},_=clock::sleep(std::time::Duration::from_secs(10))=>{}}
     }
 }
 

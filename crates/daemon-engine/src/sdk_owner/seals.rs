@@ -1,6 +1,7 @@
 //! What the store issued with commits whose state readers already see: dispatch and control
 //! permits, claimed attempts, owner grants, recorded commands and observations. Each SDK owner takes only those
 //! of its own task; a commit of the normal command path hands its permits here too.
+use alondra_core::clock;
 use crate::locks::{Poisonable as _, AfterPanic as _};
 use alondra_core::domain::TaskId;
 use alondra_store::Committed;
@@ -28,11 +29,11 @@ impl Seals {
 
     /// Blocks until something of `task` arrives, `stopped` says the owner ends, or `timeout` passes.
     pub(crate) fn wait_for(&self, task: &TaskId, timeout: std::time::Duration, stopped: impl Fn() -> bool) -> Committed {
-        let deadline = std::time::Instant::now() + timeout;
+        let deadline = clock::instant() + timeout;
         let mut queued = self.queued.lock_or_exit("the SDK seals");
         loop {
             let taken = take_of(&mut queued, task);
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let left = deadline.saturating_duration_since(clock::instant());
             if !empty(&taken) || stopped() || left.is_zero() {
                 return taken;
             }
@@ -42,10 +43,10 @@ impl Seals {
 
     /// Blocks for `timeout`, or until `stopped` says the owner ends, taking nothing.
     pub(crate) fn pause(&self, timeout: std::time::Duration, stopped: impl Fn() -> bool) {
-        let deadline = std::time::Instant::now() + timeout;
+        let deadline = clock::instant() + timeout;
         let mut queued = self.queued.lock_or_exit("the SDK seals");
         loop {
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let left = deadline.saturating_duration_since(clock::instant());
             if stopped() || left.is_zero() {
                 return;
             }

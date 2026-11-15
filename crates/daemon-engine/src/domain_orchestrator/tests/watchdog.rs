@@ -1,5 +1,5 @@
 use super::*;
-use std::time::Instant;
+use alondra_core::clock::Instant;
 
 #[test]
 fn watchdog_measures_progress_and_fires_once_at_five_minutes() {

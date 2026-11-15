@@ -2,6 +2,8 @@
 //! `AdmitExecution`, launches the host, sends each dispatch the store issued for its task,
 //! stages what the host observes and acknowledges it only once readers see the commit.
 //! Every step commits through `DomainRuntime::own`; nothing here writes the store itself.
+use alondra_core::clock;
+use alondra_core::clock::Instant;
 use crate::locks::Poisonable as _;
 pub mod backend;
 pub(crate) mod seals;
@@ -29,7 +31,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// The host an SDK execution runs on, as the domain records it: never `claude-bg`.
 pub(crate) const HOST: &str = "alondra-sdk";
@@ -731,7 +733,7 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
 #[allow(clippy::too_many_arguments)]
 fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: Option<&std::path::Path>, relaunch: bool, end_refused: bool, explicit_account_retry:bool, claimed: &mut Option<alondra_agent_runtime::owned_host::EndedHost>) -> Result<Option<Driver>, Failed> {
     let _in_hand = InHand::new(&domain, &task);
-    let taken_at = Instant::now();
+    let taken_at = clock::instant();
     if relaunch { crate::account_move::require_started_destination(&domain,&task).map_err(Failed::new)?; }
     let base_backend = backend;
     let state = domain.state().map_err(|error| Failed::new(format!("reading the domain: {error:#}")))?;
@@ -846,7 +848,7 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
             .and_then(|lifecycle| lifecycle.pending_inputs().first().map(|input| (*input).clone()));
         drop(read);
         if driver.awaiting.is_some() && driver.unopened()? {
-            driver.opening_deadline = Some(Instant::now() + driver.opening_timeout);
+            driver.opening_deadline = Some(clock::instant() + driver.opening_timeout);
         }
         return Ok(Some(driver));
     };
@@ -1631,7 +1633,7 @@ impl Driver {
         log!("input {} of {} went to its SDK host ({}): {handoff:?}", input.as_str(), self.task, self.agent);
         self.sealed();
         if handoff != Handoff::RefusedBeforeOffer && self.unopened()? {
-            self.opening_deadline.get_or_insert(Instant::now() + self.opening_timeout);
+            self.opening_deadline.get_or_insert(clock::instant() + self.opening_timeout);
         }
         if handoff == Handoff::Offered {
             if let Some(since) = self.resuming_since.take() {
@@ -1927,7 +1929,7 @@ impl Driver {
     /// else read the host when the lifecycle waits for it or the host has something, else wait a
     /// moment for what the store issues for this task.
     pub fn step(&mut self, stopped: &dyn Fn() -> bool) -> Result<(), Failed> {
-        self.step_at(stopped, Instant::now())
+        self.step_at(stopped, clock::instant())
     }
 
     /// `step`, as at `now`.

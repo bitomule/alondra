@@ -6,6 +6,7 @@
 //! and its exit seen by the process's identity, the SDK execution admitted in the transaction
 //! that records it, then the old node closed. A daemon that comes back goes on from the last step
 //! recorded, so no step's effect happens twice, and the task never has two live owners.
+use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{Handover, HandoverProcess, HandoverStep};
@@ -73,7 +74,7 @@ impl BgSessions for ClaudeSessions {
 async fn stop_checked(short: &str) -> Result<(), String> {
     let stop = tokio::process::Command::new("claude").args(["stop", short]).kill_on_drop(true)
         .stdin(std::process::Stdio::null()).output();
-    match tokio::time::timeout(std::time::Duration::from_secs(20), stop).await {
+    match clock::timeout(std::time::Duration::from_secs(20), stop).await {
         Ok(Ok(out)) if out.status.success() => {}
         Ok(Ok(out)) => return Err(format!("claude stop {short} failed: {}", String::from_utf8_lossy(&out.stderr).trim())),
         Ok(Err(error)) => return Err(format!("claude stop {short} failed: {error}")),
@@ -82,7 +83,7 @@ async fn stop_checked(short: &str) -> Result<(), String> {
     for _ in 0..5 {
         let list = tokio::process::Command::new("claude").args(["agents", "--json", "--all"]).kill_on_drop(true)
             .stdin(std::process::Stdio::null()).output();
-        let listing = match tokio::time::timeout(std::time::Duration::from_secs(20), list).await {
+        let listing = match clock::timeout(std::time::Duration::from_secs(20), list).await {
             Ok(Ok(out)) if out.status.success() => String::from_utf8_lossy(&out.stdout).to_string(),
             Ok(Ok(out)) => return Err(format!("claude agents failed: {}", String::from_utf8_lossy(&out.stderr).trim())),
             Ok(Err(error)) => return Err(format!("claude agents failed: {error}")),
@@ -91,7 +92,7 @@ async fn stop_checked(short: &str) -> Result<(), String> {
         if !still_running(&listing, short) {
             return Ok(());
         }
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        clock::sleep(std::time::Duration::from_secs(1)).await;
     }
     Err(format!("claude agents still shows {short} running after claude stop"))
 }
@@ -268,7 +269,7 @@ fn follow(domain: &DomainRuntime, handover: Handover, text: String) {
             }
             tokio::select! {
                 _ = changed.changed() => {}
-                () = tokio::time::sleep(EVERY) => {}
+                () = clock::sleep(EVERY) => {}
             }
         }
     });
@@ -425,7 +426,7 @@ pub async fn run(domain: Arc<DomainRuntime>) {
         tick(&domain).await;
         tokio::select! {
             _ = changed.changed() => {}
-            () = tokio::time::sleep(EVERY) => {}
+            () = clock::sleep(EVERY) => {}
         }
     }
 }

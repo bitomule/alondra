@@ -1,6 +1,7 @@
 //! Where a paired device can reach this Mac directly: its addresses on the local network and,
 //! when Tailscale runs, its tailnet address and name. Devices read this through an encrypted
 //! envelope (`GET /routes`), so a device paired through the relay also learns the direct path.
+use alondra_core::clock;
 use serde::Serialize;
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
@@ -86,7 +87,7 @@ fn interface_addresses() -> Vec<IpAddr> {
 
 /// The MagicDNS name Tailscale gives this Mac, when its CLI answers quickly.
 async fn tailnet_name() -> Option<String> {
-    let output = tokio::time::timeout(
+    let output = clock::timeout(
         Duration::from_secs(2),
         tokio::process::Command::new("tailscale").args(["status", "--json"]).kill_on_drop(true).output(),
     )

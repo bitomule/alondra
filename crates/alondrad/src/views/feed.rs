@@ -1,3 +1,5 @@
+use alondra_core::clock;
+use alondra_core::clock::Instant;
 use crate::locks::Poisonable as _;
 use alondra_core::domain::DomainError;
 use alondra_core::views::{Client, ClientCapabilities, Lang, Transport, VIEWS_PROTOCOL};
@@ -14,7 +16,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, Instant},
+    time::{Duration},
 };
 use tokio::sync::{oneshot, watch};
 
@@ -48,12 +50,12 @@ impl Feeds {
     }
 
     fn live_keys(&self) -> Vec<String> {
-        self.live_keys_at(Instant::now())
+        self.live_keys_at(clock::instant())
     }
 
     fn remember_open(&self, device: &str, key: String) {
         self.open.lock_or_recover("the open feed views")
-            .insert(device.to_owned(), (key, Instant::now()));
+            .insert(device.to_owned(), (key, clock::instant()));
     }
 
     fn live_keys_at(&self, now: Instant) -> Vec<String> {
@@ -83,8 +85,8 @@ pub(crate) fn start_clock(client: &Arc<crate::client_routes::Client>) {
     let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
     let weak = Arc::downgrade(client);
     runtime.spawn(async move {
-        let mut interval = tokio::time::interval_at(
-            tokio::time::Instant::now() + Duration::from_secs(5),
+        let mut interval = clock::interval_at(
+            clock::instant() + Duration::from_secs(5),
             Duration::from_secs(5),
         );
         let Some(initial_client) = weak.upgrade() else { return };
@@ -193,7 +195,7 @@ pub(crate) async fn handle(
     {
         let _ = old.send(());
     }
-    let started = tokio::time::Instant::now();
+    let started = clock::instant();
     let mut domain_changes = client.domain.subscribe();
     let mut live_changes = client.feeds.clock.subscribe();
     let mut previous = None;
@@ -229,7 +231,7 @@ pub(crate) async fn handle(
             .into_response();
         }
         previous = Some(current.clone());
-        let timeout = tokio::time::sleep(Duration::from_secs(wait).saturating_sub(started.elapsed()));
+        let timeout = clock::sleep(Duration::from_secs(wait).saturating_sub(started.elapsed()));
         tokio::pin!(timeout);
         tokio::select! {
             _ = &mut cancel_rx => {

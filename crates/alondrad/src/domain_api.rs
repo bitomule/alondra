@@ -1,5 +1,6 @@
 //! Resource-oriented domain API. Both local HTTP and encrypted transport call the
 //! same runtime through `DomainHost`.
+use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::auth::{Signed, is_local};
 use crate::domain_authority::Principal;
@@ -463,7 +464,7 @@ pub(crate) async fn bounded_diff(gh: &crate::domain_github::GhCli, url: &str) ->
         })?;
     let stdout = child.stdout.take().expect("piped stdout");
     let mut bytes = Vec::new();
-    let read = tokio::time::timeout(
+    let read = clock::timeout(
         std::time::Duration::from_secs(60),
         stdout
             .take((MAX_DIFF_BYTES + 1) as u64)
@@ -482,7 +483,7 @@ pub(crate) async fn bounded_diff(gh: &crate::domain_github::GhCli, url: &str) ->
         let _ = child.kill().await;
         let _ = child.wait().await;
     } else {
-        let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
+        let status = clock::timeout(std::time::Duration::from_secs(5), child.wait()).await;
         if !matches!(status, Ok(Ok(status)) if status.success()) {
             return Err(DomainError::new(
                 "external_read_failed",
@@ -494,7 +495,7 @@ pub(crate) async fn bounded_diff(gh: &crate::domain_github::GhCli, url: &str) ->
 }
 
 async fn live_head(gh: &crate::domain_github::GhCli, url: &str) -> Result<String, Response> {
-    let output = tokio::time::timeout(
+    let output = clock::timeout(
         std::time::Duration::from_secs(20),
         tokio::process::Command::new(gh.program())
             .args(["pr", "view", url, "--json", "headRefOid"])
@@ -1074,7 +1075,7 @@ async fn execute_command<H: DomainHost>(
             let interaction = interaction_id.clone();
             let fingerprint = delivery_fingerprint(&token, &envelope);
             let reviews = host.clone();
-            let started = std::time::Instant::now();
+            let started = clock::instant();
             let delivered = reviews.delivery_reviews().deliver(&interaction, fingerprint, move || producer_command(host, principal, token, envelope)).await;
             match &delivered {
                 Ok(_) => log!("present_result {interaction}: answered stored after {} ms", started.elapsed().as_millis()),
@@ -1137,7 +1138,7 @@ fn delivery_fingerprint(token: &str, envelope: &CommandEnvelope) -> String {
 /// how the delivery ended. Other commands are not logged.
 struct Steps {
     delivery: Option<String>,
-    started: std::time::Instant,
+    started: clock::Instant,
 }
 
 impl Steps {
@@ -1150,11 +1151,11 @@ impl Steps {
         if let Some(delivery) = &delivery {
             log!("{delivery}: checking");
         }
-        Self { delivery, started: std::time::Instant::now() }
+        Self { delivery, started: clock::instant() }
     }
 
     async fn step<T>(&self, step: &str, work: impl std::future::Future<Output = T>) -> T {
-        let since = std::time::Instant::now();
+        let since = clock::instant();
         let done = work.await;
         if let Some(delivery) = &self.delivery {
             log!("{delivery}: {step} took {} ms", since.elapsed().as_millis());

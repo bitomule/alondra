@@ -1,6 +1,7 @@
+use alondra_core::clock;
+use alondra_core::clock::Instant;
 use crate::locks::Poisonable as _;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct LiveStoreRead {
@@ -23,7 +24,7 @@ pub(super) struct Read {
 
 impl Read {
     pub(super) fn new(sink: Sink, getter: &'static str) -> Self {
-        Self { sink, event: LiveStoreRead { getter, thread: format!("{:?}", std::thread::current().id()), statement_attempts: 0, rows: 0, vm_steps: None, failed: true, elapsed_ms: 0.0 }, started: Instant::now() }
+        Self { sink, event: LiveStoreRead { getter, thread: format!("{:?}", std::thread::current().id()), statement_attempts: 0, rows: 0, vm_steps: None, failed: true, elapsed_ms: 0.0 }, started: clock::instant() }
     }
     pub(super) fn statement(&mut self) { self.event.statement_attempts += 1; }
     pub(super) fn row(&mut self) { self.event.rows += 1; }

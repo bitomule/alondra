@@ -2,6 +2,7 @@
 //! elsewhere, and refusing while the session still has something pending. An interactive
 //! session is not a job `claude rm` knows: it only closes and its terminal stays open.
 //! Shared by the close route and by Alondra closing the node of a finished task.
+use alondra_core::clock;
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::AgentId;
 use axum::http::StatusCode;
@@ -60,7 +61,7 @@ impl Sessions for Machine {
     fn claude<'a>(&'a self, args: Vec<String>) -> Answer<'a, Result<Ran, String>> {
         Box::pin(async move {
             let run = tokio::process::Command::new("claude").args(&args).kill_on_drop(true).output();
-            match tokio::time::timeout(Duration::from_secs(60), run).await {
+            match clock::timeout(Duration::from_secs(60), run).await {
                 Ok(Ok(out)) => Ok(Ran {
                     success: out.status.success(),
                     stdout: String::from_utf8_lossy(&out.stdout).into_owned(),

@@ -6,6 +6,7 @@ pub(crate) mod bonjour;
 pub(crate) mod pairing;
 pub(crate) mod routes;
 
+use alondra_core::clock;
 use crate::service::{DirectRefusal, Service};
 use alondra_e2e::Envelope;
 use axum::body::{Body, Bytes};
@@ -106,7 +107,7 @@ pub(crate) fn remember_direct(home: &std::path::Path, device_id: &str) -> std::i
 }
 
 fn now_ms() -> u64 {
-    std::time::SystemTime::now()
+    clock::system_time()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
@@ -271,7 +272,7 @@ pub(crate) async fn run(direct: Arc<Direct>, sandbox: bool) {
             }
             Err(error) => log!("direct listener cannot bind {addr}: {error}"),
         }
-        tokio::time::sleep(Duration::from_secs(10)).await;
+        clock::sleep(Duration::from_secs(10)).await;
     }
 }
 

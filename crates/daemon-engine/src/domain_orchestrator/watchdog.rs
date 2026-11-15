@@ -1,6 +1,7 @@
+use alondra_core::clock;
+use alondra_core::clock::Instant;
 use super::*;
 use std::sync::atomic::Ordering;
-use std::time::Instant;
 
 const STALLED_AFTER: Duration = Duration::from_secs(5 * 60);
 
@@ -71,7 +72,7 @@ impl Watchdog {
         }
         interval.tick().await;
         MonitorCheck {
-            now: Instant::now(),
+            now: clock::instant(),
             #[cfg(any(test, feature = "test-hooks"))]
             observed: None,
         }
@@ -188,7 +189,7 @@ impl Executor {
     /// The worker owns its tick until both the provider and its admitted writers have stopped.
     /// Cancelling or dropping a tick would detach the provider's blocking worker.
     pub(super) async fn supervised_tick(self: &Arc<Self>, watchdog: &mut Watchdog) -> Result<()> {
-        self.supervised_tick_at(watchdog, Instant::now()).await
+        self.supervised_tick_at(watchdog, clock::instant()).await
     }
 
     async fn supervised_tick_at(
@@ -206,7 +207,7 @@ impl Executor {
         }
         let executor = Arc::clone(self);
         let mut worker = tokio::spawn(async move { executor.tick_with_stop(stop).await });
-        let mut check = tokio::time::interval(Duration::from_secs(10));
+        let mut check = clock::interval(Duration::from_secs(10));
         let result = loop {
             tokio::select! {
                 result = &mut worker => break result.context("orchestrator worker stopped")?,

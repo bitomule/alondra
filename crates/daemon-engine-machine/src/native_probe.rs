@@ -1,4 +1,5 @@
 //! A discarded reading needs a fresh fence and native read, rather than the periodic interval.
+use alondra_core::clock;
 use std::future::Future;
 use std::time::Duration;
 
@@ -22,7 +23,7 @@ where
     F: FnMut() -> P,
     P: Future<Output = Outcome>,
 {
-    retry_with(probe, tokio::time::sleep).await;
+    retry_with(probe, clock::sleep).await;
 }
 
 pub async fn retry_with<F, P, W, S>(mut probe: F, mut wait: W)

@@ -5,6 +5,7 @@
 //! It runs when the daemon starts, every 15 minutes for an account nothing else measured meanwhile,
 //! and right after Claude refused work for running out. A probe that fails keeps the last good
 //! reading, which says how old it is. A stale reading retries at once, then backs off up to 30 seconds.
+use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -406,7 +407,7 @@ pub async fn run(domain: Arc<DomainRuntime>, home: std::path::PathBuf) {
         tokio::select! {
             changed = changes.changed() => if changed.is_err() { return },
             changed = pauses.changed() => if changed.is_err() { return },
-            () = tokio::time::sleep(wait) => {}
+            () = clock::sleep(wait) => {}
         }
     }
 }

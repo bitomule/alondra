@@ -8,11 +8,13 @@
 //! Settings, and after an update that kept the launcher's path macOS denies the first sends for a
 //! few seconds and then lets them through. So it is checked again after start, on every network
 //! change the reachability watch sees, when Bonjour is refused, and whenever someone reads it.
+use alondra_core::clock;
+use alondra_core::clock::Instant;
 use crate::locks::Poisonable as _;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// After start, while it is not allowed yet.
 pub const AFTER_START: [Duration; 4] = [Duration::ZERO, Duration::from_secs(3), Duration::from_secs(10), Duration::from_secs(30)];
@@ -75,7 +77,7 @@ pub fn status() -> &'static str {
 /// The answer as of now: checked again when the last check is older than `FRESH`, once the
 /// daemon watches the permission.
 pub fn current() -> &'static str {
-    read(&mut tracker(), WATCHING.load(Ordering::SeqCst), Instant::now(), probe)
+    read(&mut tracker(), WATCHING.load(Ordering::SeqCst), clock::instant(), probe)
 }
 
 fn read(tracker: &mut Tracker, watching: bool, now: Instant, probe: impl FnOnce() -> (&'static str, String)) -> &'static str {
@@ -89,7 +91,7 @@ fn read(tracker: &mut Tracker, watching: bool, now: Instant, probe: impl FnOnce(
 }
 
 pub fn denied_for() -> Option<Duration> {
-    tracker().denied_for(Instant::now())
+    tracker().denied_for(clock::instant())
 }
 
 /// `allowed`, `denied`, or `unknown` when there is no router to try or the send failed otherwise.
@@ -118,7 +120,7 @@ fn probe() -> (&'static str, String) {
 /// Checks now and records the answer; a change is logged.
 pub fn check() -> &'static str {
     let (found, failure) = probe();
-    if tracker().record(found, Instant::now()) {
+    if tracker().record(found, clock::instant()) {
         log_change(found, &failure);
     }
     found
@@ -143,7 +145,7 @@ pub async fn watch() {
     WATCHING.store(true, Ordering::SeqCst);
     let mut waited = Duration::ZERO;
     for at in AFTER_START {
-        tokio::time::sleep(at.saturating_sub(waited)).await;
+        clock::sleep(at.saturating_sub(waited)).await;
         waited = at;
         if check_soon().await == "allowed" {
             return;

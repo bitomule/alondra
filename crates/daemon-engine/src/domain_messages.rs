@@ -1,5 +1,6 @@
 //! User messages reach a node through its task lifecycle, or through its mod for legacy nodes.
 //! A task with no node keeps its inputs until its first execution starts.
+use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 pub use crate::worktree::user_name;
@@ -167,7 +168,7 @@ pub async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, name: &s
         domain.live.gate.release_by_user_message(domain, &agent.0);
     }
     let delivered = match told {
-        crate::sdk_handover::Told::Pushed(acked) => match tokio::time::timeout(ACK_WAIT, acked).await {
+        crate::sdk_handover::Told::Pushed(acked) => match clock::timeout(ACK_WAIT, acked).await {
             Ok(Ok(())) => State::Handed,
             _ => State::Dispatching,
         },

@@ -2,6 +2,7 @@
 //! worktree instead, the one an earlier node left or a new one in the configured storage folder
 //! (by default `.claude/worktrees/`). Alondra does not leave isolation to the model.
 
+use alondra_core::clock;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -453,7 +454,7 @@ async fn fetched_default(top: &Path) -> Option<String> {
     let default = crate::worktree::default_branch(top).await?;
     let branch = default.strip_prefix("origin/").unwrap_or(&default).to_owned();
     let fetch = Command::new("git").arg("-C").arg(top).args(["fetch", "--quiet", "origin", &branch]).kill_on_drop(true).output();
-    let _ = tokio::time::timeout(Duration::from_secs(60), fetch).await;
+    let _ = clock::timeout(Duration::from_secs(60), fetch).await;
     git(top, &["rev-parse", "--verify", "--quiet", &default]).await.map(|_| default)
 }
 

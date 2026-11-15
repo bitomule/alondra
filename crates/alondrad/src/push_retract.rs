@@ -10,6 +10,8 @@
 //! The icon badge cannot wait for that: a badge only push sets it even for a force-quit app and
 //! is not throttled, so it follows every drop once the burst settles. The system applies it
 //! without the notification service extension, so the count travels in the clear.
+use alondra_core::clock;
+use alondra_core::clock::Instant;
 use crate::domain_runtime::DomainRuntime;
 use crate::service::Service;
 use alondra_core::domain::ReadIndex;
@@ -17,7 +19,7 @@ use alondra_core::views;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Cards often leave in bursts (an answer closes a task and its other cards): one push for all.
 const SETTLE: Duration = Duration::from_secs(10);
@@ -31,14 +33,14 @@ pub async fn run(domain: Arc<DomainRuntime>, service: Arc<Service>) {
     let mut changed = domain.subscribe();
     let mut pending = Pending::new(waiting(domain.read().index()));
     loop {
-        let wait = pending.next().map_or(Duration::from_secs(3600), |at| at.saturating_duration_since(Instant::now()));
+        let wait = pending.next().map_or(Duration::from_secs(3600), |at| at.saturating_duration_since(clock::instant()));
         tokio::select! {
             result = changed.changed() => if result.is_err() { return },
-            _ = tokio::time::sleep(wait) => {},
+            _ = clock::sleep(wait) => {},
         }
         let read = domain.read();
         let index = read.index();
-        let now = Instant::now();
+        let now = clock::instant();
         pending.observe(waiting(index), now);
         if pending.badge_due().is_some_and(|at| at <= now) {
             pending.take_badge();

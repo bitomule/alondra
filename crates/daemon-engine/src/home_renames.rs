@@ -1,6 +1,7 @@
 //! Startup moves of HOME files to their current names, removal of the copies earlier migrations
 //! left under the old ones once they are no longer a way back, and of files no reader uses any
 //! more.
+use alondra_core::clock;
 use crate::{admission, domain_cutover, domain_database_migration as database, domain_orchestrator};
 use anyhow::Result;
 use std::fs;
@@ -30,7 +31,7 @@ pub fn apply(home: &Path) -> Result<()> {
     for name in RETIRED {
         remove(&home.join(name))?;
     }
-    remove_recovery_copies(home, SystemTime::now())
+    remove_recovery_copies(home, clock::system_time())
 }
 
 fn rename(home: &Path, from: &str, to: &str) -> Result<()> {
