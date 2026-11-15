@@ -93,6 +93,11 @@ INTEGRATION_FILTERS = [
     "usage_probe::tests::",
 ]
 
+# The model checks run hundreds of generated histories through the real daemon and share one
+# run per history across their properties; on a busy machine they alone take minutes, so they
+# keep their own target and time limit instead of spending the unit target's.
+MODEL_FILTERS = ["machine_model::tests::"]
+
 ENGINE_TEST_SRCS = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"]
 
 ENGINE_TEST_COMPILE_DATA = SQL + [
@@ -117,7 +122,7 @@ low_opt_rust_test(
     name = "daemon_engine_test",
     size = "medium",
     srcs = ENGINE_TEST_SRCS,
-    args = ["--skip=" + filter for filter in INTEGRATION_FILTERS],
+    args = ["--skip=" + filter for filter in INTEGRATION_FILTERS + MODEL_FILTERS],
     compile_data = ENGINE_TEST_COMPILE_DATA,
     crate_name = "alondra_daemon_engine",
     crate_root = "src/lib.rs",
@@ -165,6 +170,16 @@ sh_test(
         "FIXTURE_ORCHESTRATOR_NATIVE": "$(rootpath //agent-host:orchestrator-fake-claude.py)",
         "HOME": ".",
     },
+)
+
+# The model checks of the same test binary, with a time limit that fits generated histories.
+sh_test(
+    name = "daemon_engine_model_test",
+    size = "medium",
+    srcs = ["run_test_binary.sh"],
+    args = ["$(rootpath :daemon_engine_test)"] + MODEL_FILTERS,
+    data = [":daemon_engine_test"],
+    env = {"HOME": "."},
 )
 
 rust_inputs_test(
