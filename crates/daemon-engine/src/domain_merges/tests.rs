@@ -1239,3 +1239,144 @@ async fn the_github_world_sees_the_stack_retargeted_before_it_merges() {
     assert_eq!(world.gh_calls(), ["edit 8 --base main", "merge 8"]);
     assert_eq!(world.merged_into(8).as_deref(), Some("main"));
 }
+
+fn bypass_world(checks: Checks, bypassable: &[&str]) -> crate::github_world::GithubWorld {
+    let world = crate::github_world::GithubWorld::new();
+    world.open_pr_at(7, "feature", "main", HEAD);
+    world.set_checks(7, checks);
+    world.set_merge_state(7, MergeState::Other);
+    world.require_checks(7, &["CI"]);
+    world.allow_bypass(7, bypassable);
+    world
+}
+
+#[tokio::test]
+async fn a_merge_the_user_authorized_goes_past_required_checks_they_may_bypass_while_they_run() {
+    let (_home, domain, _) = presented("bypass", false);
+    let world = bypass_world(Checks::Pending, &["CI"]);
+    accept(&domain);
+    assert!(!now().merge_due(&domain, &world).await.unwrap(), "nothing is left waiting");
+    assert_eq!(world.gh_calls(), ["merge 7 --admin"]);
+    assert_eq!(world.state_of(7), PrState::Merged);
+    end_node(&domain);
+    assert_eq!(task(&domain), TaskState::Done);
+}
+
+#[tokio::test]
+async fn required_checks_that_have_not_started_are_bypassed_too() {
+    let (_home, domain, _) = presented("bypass-none", false);
+    let world = bypass_world(Checks::None, &["CI"]);
+    accept(&domain);
+    now().merge_due(&domain, &world).await.unwrap();
+    assert_eq!(world.gh_calls(), ["merge 7 --admin"]);
+}
+
+#[tokio::test]
+async fn an_auto_merge_waits_for_required_checks_even_when_they_could_be_bypassed() {
+    let (_home, domain, _) = presented("bypass-auto", true);
+    let world = bypass_world(Checks::Pending, &["CI"]);
+    let mut merger = now();
+    assert!(merger.merge_due(&domain, &world).await.unwrap());
+    assert!(world.gh_calls().is_empty(), "{:?}", world.gh_calls());
+    world.set_checks(7, Checks::Passed);
+    merger.merge_due(&domain, &world).await.unwrap();
+    assert_eq!(world.gh_calls(), ["merge 7"]);
+}
+
+#[tokio::test]
+async fn required_checks_the_user_may_not_bypass_are_waited_for() {
+    let (_home, domain, _) = presented("bypass-denied", false);
+    let world = bypass_world(Checks::Pending, &[]);
+    accept(&domain);
+    let mut merger = now();
+    assert!(merger.merge_due(&domain, &world).await.unwrap());
+    assert!(world.gh_calls().is_empty(), "{:?}", world.gh_calls());
+    assert!(feedback(&domain).is_empty() && accepted(&domain));
+    world.set_checks(7, Checks::Passed);
+    merger.merge_due(&domain, &world).await.unwrap();
+    assert_eq!(world.gh_calls(), ["merge 7"]);
+}
+
+#[tokio::test]
+async fn conflicts_and_failing_checks_go_back_to_the_node_whatever_the_user_may_bypass() {
+    let (_home, domain, _) = presented("bypass-conflict", false);
+    let world = bypass_world(Checks::Pending, &["CI"]);
+    world.set_merge_state(7, MergeState::Conflicting);
+    accept(&domain);
+    now().merge_due(&domain, &world).await.unwrap();
+    assert!(world.gh_calls().is_empty(), "{:?}", world.gh_calls());
+    assert!(feedback(&domain).iter().any(|f| f.contains("conflicts with main")), "{:?}", feedback(&domain));
+
+    let (_home, domain, _) = presented("bypass-red", false);
+    let world = bypass_world(Checks::Failed(vec!["CI".into()]), &["CI"]);
+    accept(&domain);
+    now().merge_due(&domain, &world).await.unwrap();
+    assert!(world.gh_calls().is_empty(), "{:?}", world.gh_calls());
+    let feedback = feedback(&domain);
+    assert!(feedback.len() == 1 && feedback[0].contains("its checks failed (CI)"), "{feedback:?}");
+}
+
+#[tokio::test]
+async fn a_bypass_github_refuses_waits_for_the_checks_instead_of_handing_back() {
+    let (_home, domain, github) = presented("bypass-refused", false);
+    github.open_blocked(7, HEAD, Checks::Pending);
+    github.required.lock().unwrap().insert(7, Ok(vec!["build".into()]));
+    github.bypassable.lock().unwrap().insert(7, Ok(vec!["build".into()]));
+    github.merges.lock().unwrap().insert(7, Err("Pull request #7 is not mergeable: Required status check \"build\" is expected.".into()));
+    accept(&domain);
+    let mut merger = now();
+    assert!(merger.merge_due(&domain, &github).await.unwrap());
+    assert!(merger.merge_due(&domain, &github).await.unwrap());
+    let merges: Vec<String> = github.calls.lock().unwrap().iter().filter(|call| call.starts_with("merge")).cloned().collect();
+    assert_eq!(merges, ["merge 7 --admin"], "a refused bypass is not tried again on every poll");
+    assert!(feedback(&domain).is_empty() && accepted(&domain));
+    github.merges.lock().unwrap().remove(&7);
+    github.open(7, HEAD, Checks::Passed);
+    github.statuses.lock().unwrap().get_mut(&7).unwrap().as_mut().unwrap().passed.insert("build".into());
+    assert!(!merger.merge_due(&domain, &github).await.unwrap());
+    assert_eq!(github.calls.lock().unwrap().last().map(String::as_str), Some("merge 7"));
+}
+
+#[test]
+fn only_checks_every_requiring_ruleset_lets_the_user_bypass_and_classic_protection_does_not_require_are_bypassable() {
+    let rules = serde_json::json!([
+        {"type": "pull_request", "ruleset_id": 1},
+        {"type": "required_status_checks", "ruleset_id": 1, "parameters": {"required_status_checks": [{"context": "CI"}, {"context": "lint"}, {"context": "docs"}]}},
+        {"type": "required_status_checks", "ruleset_id": 2, "parameters": {"required_status_checks": [{"context": "lint"}]}},
+        {"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "unknown-source"}]}},
+    ]);
+    assert_eq!(check_rulesets(&rules), BTreeSet::from([1, 2]));
+    let can_bypass = BTreeMap::from([(1, true), (2, false)]);
+    assert_eq!(bypassable(&rules, &can_bypass, &["docs".into()]), ["CI"]);
+    for (mode, bypasses) in [("always", true), ("pull_requests_only", true), ("exempt", true), ("never", false)] {
+        assert_eq!(viewer_bypasses(&serde_json::json!({"current_user_can_bypass": mode})), bypasses, "{mode}");
+    }
+    assert!(!viewer_bypasses(&serde_json::json!({})), "a ruleset that does not say lets nobody past");
+}
+
+#[tokio::test]
+async fn gh_reads_each_rulesets_bypass_and_merges_past_them_with_admin() {
+    let home = Home(crate::test_support::Directory::new());
+    std::fs::create_dir(&home.0).unwrap();
+    let program = home.0.join("gh");
+    let log = home.0.join("calls");
+    std::fs::write(&program, format!(r#"#!/bin/sh
+printf '%s\n' "$*" >> {log}
+case "$*" in
+  *protection*) printf 'HTTP/2.0 404 Not Found\r\n\r\n{{"message":"Not Found"}}'; exit 1;;
+  *rules/branches*) printf 'HTTP/2.0 200 OK\r\n\r\n[{{"type":"required_status_checks","ruleset_id":26,"parameters":{{"required_status_checks":[{{"context":"CI"}}]}}}},{{"type":"required_status_checks","ruleset_id":27,"parameters":{{"required_status_checks":[{{"context":"audit"}}]}}}}]';;
+  *rulesets/26*) printf 'HTTP/2.0 200 OK\r\n\r\n{{"id":26,"current_user_can_bypass":"always"}}';;
+  *rulesets/27*) printf 'HTTP/2.0 200 OK\r\n\r\n{{"id":27,"current_user_can_bypass":"never"}}';;
+esac
+"#, log = log.display())).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let gh = GhCli::at(program);
+    let pr = PullRequest { id: "pr".into(), task_id: "t".into(), host: "github".into(), repository: "owner/repo".into(),
+        number: 7, head: HEAD.into(), base: "main".into(), state: PrState::Open, merged_head: None,
+        allowed_methods: vec![MergeMethod::Squash], review: None };
+    assert_eq!(gh.bypassable_checks(&pr, "main").await, Ok(vec!["CI".to_owned()]));
+    gh.merge_bypassing(&pr, HEAD, MergeMethod::Squash).await.unwrap();
+    let calls = std::fs::read_to_string(&log).unwrap();
+    assert!(calls.contains("repos/owner/repo/rulesets/26") && calls.contains("repos/owner/repo/rulesets/27"), "{calls}");
+    assert!(calls.contains(&format!("pr merge https://github.com/owner/repo/pull/7 --squash --match-head-commit {HEAD} --admin")), "{calls}");
+}

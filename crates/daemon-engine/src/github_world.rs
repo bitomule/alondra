@@ -23,6 +23,7 @@ struct Pr {
     title: String,
     body: String,
     required: Vec<String>,
+    bypassable: Vec<String>,
     merge_failure: Option<GhFailure>,
     no_access: bool,
     methods: Vec<MergeMethod>,
@@ -87,7 +88,7 @@ impl GithubWorld {
         self.world().prs.insert(number, Pr {
             head_ref: head_ref.into(), head, base: base.into(), state: PrState::Open, merged_into: None,
             draft: false, checks: Checks::Passed, merge_state: MergeState::Clean, title: format!("Pull request {number}"),
-            body: String::new(), required: Vec::new(), merge_failure: None, no_access: false,
+            body: String::new(), required: Vec::new(), bypassable: Vec::new(), merge_failure: None, no_access: false,
             methods: vec![MergeMethod::Squash, MergeMethod::Merge, MergeMethod::Rebase],
         });
     }
@@ -115,6 +116,10 @@ impl GithubWorld {
     }
     pub fn require_checks(&self, number: u64, names: &[&str]) {
         self.change(number, |pr| pr.required = names.iter().map(|name| (*name).to_owned()).collect());
+    }
+    /// Rulesets that let the signed-in account bypass these required checks of the PR's base.
+    pub fn allow_bypass(&self, number: u64, names: &[&str]) {
+        self.change(number, |pr| pr.bypassable = names.iter().map(|name| (*name).to_owned()).collect());
     }
     /// GitHub refuses every merge of the PR with `failure`.
     pub fn refuse_merge(&self, number: u64, failure: GhFailure) {
@@ -162,6 +167,33 @@ impl GithubWorld {
     pub fn merged_into(&self, number: u64) -> Option<String> {
         self.change(number, |pr| pr.merged_into.clone())
     }
+
+    fn merge_as(&self, pr: &PullRequest, head: &str, method: MergeMethod, bypass: bool) -> Result<(), GhFailure> {
+        let mut world = self.world();
+        world.calls.push(if bypass { format!("merge {} --admin", pr.number) } else { format!("merge {}", pr.number) });
+        let result = match world.prs.get(&pr.number) {
+            None => Err(unknown()),
+            Some(github) if github.state != PrState::Open => Err(GhFailure::Exit(Some(1), "Pull request is not open".into())),
+            Some(github) if github.head != head => Err(GhFailure::Exit(Some(1), "Head branch was modified. Review and try the merge again.".into())),
+            Some(github) if github.merge_failure.is_some() => Err(github.merge_failure.clone().unwrap_or_else(unknown)),
+            Some(github) if github.draft => Err(GhFailure::Exit(Some(1), "Pull request is still a draft".into())),
+            Some(github) if github.merge_state == MergeState::Conflicting => Err(GhFailure::Exit(Some(1), "Pull request is not mergeable".into())),
+            Some(github) if github.checks != Checks::Passed && missing_check(github, bypass).is_some() => Err(GhFailure::Exit(Some(1),
+                format!("Pull request #{} is not mergeable: Required status check \"{}\" is expected.", pr.number,
+                    missing_check(github, bypass).unwrap_or_default()))),
+            Some(_) => Ok(()),
+        };
+        if result.is_ok() {
+            world.merges.push((pr.number, head.to_owned(), method));
+            merge(&mut world, pr.number);
+        }
+        result
+    }
+}
+
+/// A required check the PR is still waiting for that this merge cannot go past.
+fn missing_check(pr: &Pr, bypass: bool) -> Option<String> {
+    pr.required.iter().find(|check| !bypass || !pr.bypassable.contains(check)).cloned()
 }
 
 fn merge(world: &mut World, number: u64) {
@@ -210,22 +242,16 @@ impl PrMerger for GithubWorld {
     }
 
     fn merge<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
-        let mut world = self.world();
-        world.calls.push(format!("merge {}", pr.number));
-        let result = match world.prs.get(&pr.number) {
-            None => Err(unknown()),
-            Some(github) if github.state != PrState::Open => Err(GhFailure::Exit(Some(1), "Pull request is not open".into())),
-            Some(github) if github.head != head => Err(GhFailure::Exit(Some(1), "Head branch was modified. Review and try the merge again.".into())),
-            Some(github) if github.merge_failure.is_some() => Err(github.merge_failure.clone().unwrap_or_else(unknown)),
-            Some(github) if github.draft => Err(GhFailure::Exit(Some(1), "Pull request is still a draft".into())),
-            Some(github) if github.merge_state == MergeState::Conflicting => Err(GhFailure::Exit(Some(1), "Pull request is not mergeable".into())),
-            Some(_) => Ok(()),
-        };
-        if result.is_ok() {
-            world.merges.push((pr.number, head.to_owned(), method));
-            merge(&mut world, pr.number);
-        }
-        Box::pin(async move { result })
+        Box::pin(std::future::ready(self.merge_as(pr, head, method, false)))
+    }
+
+    fn merge_bypassing<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
+        Box::pin(std::future::ready(self.merge_as(pr, head, method, true)))
+    }
+
+    fn bypassable_checks<'a>(&'a self, pr: &'a PullRequest, _base: &'a str) -> Pending<'a, Vec<String>> {
+        let bypassable = self.world().prs.get(&pr.number).map(|github| github.bypassable.clone());
+        Box::pin(async move { bypassable.ok_or_else(unknown) })
     }
 
     fn in_queue<'a>(&'a self, _pr: &'a PullRequest) -> Pending<'a, bool> {
