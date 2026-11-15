@@ -90,6 +90,26 @@
           "run": "python3 tools/ci.py run --targets \"$CI_TARGETS\""
         }
       ]
+    },
+    "CI": {
+      "needs": [
+        "select",
+        "validate"
+      ],
+      "if": "${{ always() }}",
+      "name": "CI",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 5,
+      "env": {
+        "SELECT_RESULT": "${{ needs.select.result }}",
+        "VALIDATE_RESULT": "${{ needs.validate.result }}"
+      },
+      "steps": [
+        {
+          "name": "Require every selected check to pass",
+          "run": "[ \"$SELECT_RESULT\" = success ] && { [ \"$VALIDATE_RESULT\" = success ] || [ \"$VALIDATE_RESULT\" = skipped ]; }"
+        }
+      ]
     }
   }
 }
