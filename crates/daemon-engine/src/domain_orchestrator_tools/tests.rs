@@ -1129,7 +1129,7 @@ fn the_follow_up_context_is_empty_without_earlier_work_and_shortens_a_long_resul
 }
 
 #[test]
-fn canonical_task_context_is_scoped_bounded_and_preserves_source_ids() {
+fn canonical_task_context_is_scoped_whole_and_preserves_source_ids() {
     let f = world();
     let mut state = f.domain.state().unwrap().as_ref().clone();
     let task = state.tasks[&TaskId::from("t")].clone();
@@ -1138,21 +1138,23 @@ fn canonical_task_context_is_scoped_bounded_and_preserves_source_ids() {
         id: "unrelated".into(), body: "Private unrelated request".into(), ..state.requests[&task.request_id].clone()
     });
     let context = canonical_task_context(&state, &task);
-    assert!(context.complete);
+    assert!(context.missing_sources.is_empty());
     assert!(context.text.contains("The requested feature"));
     assert!(context.text.contains(&task.request_id.to_string()));
     assert!(!context.text.contains("Private unrelated request"));
-    state.requests.get_mut(&task.request_id).unwrap().body = "界".repeat(CANONICAL_CONTEXT_LIMIT * 2);
+    let long = "界".repeat(64_000);
+    state.requests.get_mut(&task.request_id).unwrap().body = long.clone();
     let context = canonical_task_context(&state, &task);
-    assert!(context.text.chars().count() <= CANONICAL_CONTEXT_LIMIT);
-    assert!(!context.complete);
-    assert!(context.omitted_sources.contains(&format!("request:{}", task.request_id)));
-    assert!(!context.text.contains("界"));
+    assert!(context.missing_sources.is_empty(), "a long request is not a missing one");
+    assert!(context.text.contains(&long), "the request is carried whole");
+    state.requests.remove(&task.request_id);
+    let context = canonical_task_context(&state, &task);
+    assert_eq!(context.missing_sources, [format!("request:{}", task.request_id)]);
     assert!(context.text.contains(&task.id.to_string()));
 }
 
 #[test]
-fn canonical_task_context_keeps_ordered_public_user_inputs_and_refuses_missing_or_oversized_text() {
+fn canonical_task_context_keeps_ordered_public_user_inputs_whole_and_names_missing_text() {
     use alondra_core::domain::LifecycleRecord;
     let f = world();
     let mut state = f.domain.state().unwrap().as_ref().clone();
@@ -1164,7 +1166,7 @@ fn canonical_task_context_keeps_ordered_public_user_inputs_and_refuses_missing_o
     ] { state.lifecycle_journal.get_mut(&task.id).unwrap().push(record); }
     state.lifecycle_journal.insert("unrelated-task".into(), vec![LifecycleRecord::Told { input: "private".into(), text: Some("Unrelated private input".into()), answers: None }]);
     let context = canonical_task_context(&state, &task);
-    assert!(context.complete);
+    assert!(context.missing_sources.is_empty());
     let first = context.text.find("Only change the file-backed profile").unwrap();
     let second = context.text.find("Other: preserve the native default credentials").unwrap();
     let third = context.text.find("The native credentials still changed; repair that").unwrap();
@@ -1172,17 +1174,16 @@ fn canonical_task_context_keeps_ordered_public_user_inputs_and_refuses_missing_o
     assert!(!context.text.contains("Unrelated private input"));
     state.lifecycle_journal.get_mut(&task.id).unwrap().push(LifecycleRecord::Told { input: "lost".into(), text: None, answers: None });
     let context = canonical_task_context(&state, &task);
-    assert!(!context.complete);
-    assert!(context.omitted_sources.contains(&format!("task:{}:input:lost", task.id)));
-    state.lifecycle_journal.get_mut(&task.id).unwrap().push(LifecycleRecord::Told { input: "oversized".into(), text: Some("界".repeat(CANONICAL_CONTEXT_LIMIT)), answers: None });
+    assert_eq!(context.missing_sources, [format!("task:{}:input:lost", task.id)]);
+    let long = "界".repeat(40_000);
+    state.lifecycle_journal.get_mut(&task.id).unwrap().push(LifecycleRecord::Told { input: "long".into(), text: Some(long.clone()), answers: None });
     let context = canonical_task_context(&state, &task);
-    assert!(!context.complete);
-    assert!(context.omitted_sources.contains(&format!("task:{}:input:oversized", task.id)));
-    assert!(!context.text.contains("界"));
+    assert_eq!(context.missing_sources, [format!("task:{}:input:lost", task.id)], "a long input is not a missing one");
+    assert!(context.text.contains(&long), "a long input is carried whole");
 }
 
 #[test]
-fn canonical_task_context_keeps_the_newest_inputs_that_fit_and_stays_complete() {
+fn canonical_task_context_carries_every_input_whole_in_the_order_they_came() {
     use alondra_core::domain::LifecycleRecord;
     let f = world();
     let mut state = f.domain.state().unwrap().as_ref().clone();
@@ -1192,14 +1193,9 @@ fn canonical_task_context_keeps_the_newest_inputs_that_fit_and_stays_complete() 
         state.lifecycle_journal.get_mut(&task.id).unwrap().push(LifecycleRecord::Told { input: format!("input-{n}").into(), text: Some(format!("Input number {n:02}. {filler}")), answers: None });
     }
     let context = canonical_task_context(&state, &task);
-    assert!(context.complete, "inputs that do not fit are not lost: {:?}", context.omitted_sources);
-    assert!(context.text.chars().count() <= CANONICAL_CONTEXT_LIMIT);
-    assert!(context.text.contains("Input number 59."), "the newest input is kept");
-    assert!(!context.text.contains("Input number 00."), "the oldest input is left to the public conversation");
-    assert!(context.text.contains("earlier public user inputs are left out here to fit"));
-    let newest = context.text.find("Input number 59.").unwrap();
-    let older = context.text.find("Input number 58.").unwrap();
-    assert!(older < newest, "the inputs kept read in the order they came");
+    assert!(context.missing_sources.is_empty(), "{:?}", context.missing_sources);
+    let at: Vec<usize> = (0..60).map(|n| context.text.find(&format!("Input number {n:02}. {filler}")).unwrap_or_else(|| panic!("input {n} reaches the next node whole"))).collect();
+    assert!(at.windows(2).all(|pair| pair[0] < pair[1]), "the inputs read in the order they came");
 }
 
 #[test]
@@ -1226,11 +1222,11 @@ fn a_task_moves_to_another_provider_by_what_is_missing_never_by_a_marker_or_a_co
     assert!(crate::provider_transition::critical_context(&state, &task).is_ok());
     state.interactions.insert("earlier-result".into(), result(true));
     let context = canonical_task_context(&state, &task);
-    assert!(context.complete, "a dependency's compacted result is the excerpt a task that builds on it reads: {:?}", context.omitted_sources);
+    assert!(context.missing_sources.is_empty(), "a dependency's compacted result is the excerpt a task that builds on it reads: {:?}", context.missing_sources);
     assert!(context.text.contains("The colours live in one file now."));
     state.tasks.remove(&TaskId::from("earlier"));
     let context = canonical_task_context(&state, &task);
-    assert!(context.omitted_sources.contains(&"dependency:earlier".to_owned()), "{:?}", context.omitted_sources);
+    assert!(context.missing_sources.contains(&"dependency:earlier".to_owned()), "{:?}", context.missing_sources);
     assert!(crate::provider_transition::critical_context(&state, &task).is_err());
 }
 

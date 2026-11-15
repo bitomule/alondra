@@ -884,116 +884,72 @@ pub(crate) async fn relaunch_from(domain: &DomainRuntime, home: &Path, task_id: 
 }
 
 const FOLLOW_UP_LIMIT: usize = 12_000;
-pub(crate) const CANONICAL_CONTEXT_LIMIT: usize = 32_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CanonicalTaskContext {
     pub text: String,
-    pub complete: bool,
-    pub omitted_sources: Vec<String>,
+    pub missing_sources: Vec<String>,
 }
 
-/// What a task's next node must know to carry on: its request, plan, decisions, documents and the
-/// work it builds on, which must all fit, and the user's inputs, newest first, as many as fit after
-/// them. Older inputs left out still reach the node through the retained public conversation; the
-/// newest one must fit. A source Alondra no longer has makes the context incomplete.
+/// What a task's next node must know to carry on, whole: its request, plan, every input the user
+/// and Alondra gave it, decisions, documents and the work it builds on. A source Alondra no longer
+/// has is missing; whether the whole fits the next model is for the handoff to decide.
 pub(crate) fn canonical_task_context(state: &DomainState, task: &alondra_core::domain::Task) -> CanonicalTaskContext {
     use alondra_core::domain::{InteractionPayload, Recipient, Scope};
-    let header = format!("Task {}: {}\nRequest: {}", task.id, task.title, task.request_id);
-    let mut used = header.chars().count();
-    let mut complete = true;
-    let mut omitted_sources = vec![];
-    let mut fit = |source: String, text: String, into: &mut String| {
-        if text.is_empty() { return; }
-        let size = text.chars().count() + 2;
-        if used + size <= CANONICAL_CONTEXT_LIMIT {
-            used += size; into.push_str("\n\n"); into.push_str(&text);
-        } else {
-            complete = false; omitted_sources.push(source);
-        }
+    let mut text = format!("Task {}: {}\nRequest: {}", task.id, task.title, task.request_id);
+    let mut missing_sources = vec![];
+    let mut add = |part: String| {
+        if !part.is_empty() { text.push_str("\n\n"); text.push_str(&part); }
     };
-    let mut head = String::new();
-    if let Some(request) = state.requests.get(&task.request_id) {
-        fit(format!("request:{}", request.id), format!("## Original request\n{}", request.body), &mut head);
-    } else {
-        fit(format!("request:{}", task.request_id), "[The original request is missing.]".into(), &mut head);
+    match state.requests.get(&task.request_id) {
+        Some(request) => add(format!("## Original request\n{}", request.body)),
+        None => { add("[The original request is missing.]".into()); missing_sources.push(format!("request:{}", task.request_id)); }
     }
-    let plan = approved_plan(state, task);
-    let plan_source = state.checklists.get(&task.id).map_or_else(|| format!("task:{}:approved-plan", task.id), |checklist| format!("interaction:{}", checklist.plan));
-    fit(plan_source, plan, &mut head);
-    let mut missing = Vec::new();
-    let mut inputs = Vec::new();
+    add(approved_plan(state, task));
     let mut included_inputs = std::collections::BTreeSet::new();
     for record in state.lifecycle_journal.get(&task.id).into_iter().flat_map(|journal| journal.iter()) {
-        let (input, text) = match record {
+        let (input, said) = match record {
             alondra_core::domain::LifecycleRecord::Told { input, text, .. }
             | alondra_core::domain::LifecycleRecord::Answered { input, text, .. }
             | alondra_core::domain::LifecycleRecord::HandedBack { input, text, .. } => (input, text),
             _ => continue,
         };
         if !included_inputs.insert(input) { continue; }
-        let source = format!("task:{}:input:{input}", task.id);
-        match text {
-            Some(text) => inputs.push((source, format!("## Public user input ({input})\n{text}"))),
-            None => missing.push(source),
+        match said {
+            Some(said) => add(format!("## Public user input ({input})\n{said}")),
+            None => missing_sources.push(format!("task:{}:input:{input}", task.id)),
         }
     }
-    let mut tail = String::new();
-    fit(format!("task:{}:asked-changes", task.id), alondra_core::domain::asked_changes(state, task), &mut tail);
+    add(alondra_core::domain::asked_changes(state, task));
     let mut public: Vec<_> = state.interactions.values().filter(|interaction| interaction.scope == (Scope::Task { task_id: task.id.clone() }) && interaction.recipient == Recipient::User).collect();
     public.sort_by_key(|interaction| interaction.order);
     for interaction in public {
         if let InteractionPayload::Question { options, answer: Some(answer) } | InteractionPayload::ActionRequest { options, answer: Some(answer) } = &interaction.payload {
             let choice = options.iter().find(|option| option.id == answer.option_id).map_or(answer.option_id.as_str(), |option| option.label.as_str());
-            fit(format!("interaction:{}", interaction.id), format!("Public user decision {}: {} (revision {})", interaction.id, choice, answer.at_revision), &mut tail);
+            add(format!("Public user decision {}: {} (revision {})", interaction.id, choice, answer.at_revision));
         }
     }
     for (id, revision) in &task.documents {
-        fit(format!("document:{id}@{revision}"), format!("Document attached to this task: {id}, revision {revision}"), &mut tail);
+        add(format!("Document attached to this task: {id}, revision {revision}"));
     }
     let dependencies: std::collections::BTreeSet<_> = task.dependencies.iter().chain(&task.delivered_dependencies)
         .chain(task.stack.iter().map(|stack| &stack.upstream_task)).collect();
     for dependency in dependencies {
-        let source = format!("dependency:{dependency}");
         match state.tasks.get(dependency) {
             Some(earlier) => {
-                let mut text = format!("## Earlier work {}: {}", earlier.id, earlier.title);
+                let mut part = format!("## Earlier work {}: {}", earlier.id, earlier.title);
                 if let Some(result) = earlier.final_presentation.as_ref().and_then(|id| state.interactions.get(id)) {
-                    text.push_str(&format!("\n{}", result.body));
+                    part.push_str(&format!("\n{}", result.body));
                 }
                 for pr in state.task_prs(earlier) {
-                    text.push_str(&format!("\nPull request: https://{}/{}/pull/{}", pr.host, pr.repository, pr.number));
+                    part.push_str(&format!("\nPull request: https://{}/{}/pull/{}", pr.host, pr.repository, pr.number));
                 }
-                fit(source, text, &mut tail);
+                add(part);
             }
-            None => missing.push(source),
+            None => missing_sources.push(format!("dependency:{dependency}")),
         }
     }
-    let notice = |left: usize| format!("[{left} earlier public user inputs are left out here to fit; the public conversation below carries them.]");
-    let reserve = notice(inputs.len()).chars().count() + 2;
-    let mut kept = 0;
-    let mut kept_size = 0;
-    for (_, text) in inputs.iter().rev() {
-        let size = text.chars().count() + 2;
-        if used + kept_size + size + reserve > CANONICAL_CONTEXT_LIMIT { break; }
-        kept += 1; kept_size += size;
-    }
-    let left_out = inputs.len() - kept;
-    if let Some((newest, _)) = inputs.last().filter(|_| kept == 0) {
-        complete = false; omitted_sources.push(newest.clone());
-    }
-    let mut text = header;
-    text.push_str(&head);
-    if left_out > 0 { text.push_str("\n\n"); text.push_str(&notice(left_out)); }
-    for (_, input) in &inputs[left_out..] { text.push_str("\n\n"); text.push_str(input); }
-    text.push_str(&tail);
-    if !missing.is_empty() {
-        complete = false; omitted_sources.extend(missing);
-    }
-    if !state.requests.contains_key(&task.request_id) {
-        complete = false; omitted_sources.push(format!("request:{}", task.request_id));
-    }
-    CanonicalTaskContext { text, complete, omitted_sources }
+    CanonicalTaskContext { text, missing_sources }
 }
 
 fn prefixed(prefix: &str, text: String) -> String {
