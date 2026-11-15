@@ -162,7 +162,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         })?;
         report.snapshot("task-after-plan", &user.view("task:t-s5")?)
     });
-    report.case("S6", "The user force-stops work after the merge: it pauses without a card, then a message resumes it", |report| {
+    report.case("S6", "The user force-stops work after the merge: it pauses without a card, a message resumes it and its answer comes before the close", |report| {
         let mut script = task_script("req-s6", "t-s6", S6_TITLE);
         script.tasks[0].cleans_up = false;
         request(report, fakes, &user, &script, S6_TITLE)?;
@@ -170,7 +170,7 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
         state(report, &user, "t-s6", WORKING)?;
         act(report, fakes, &node, "the node says it publishes the release after the merge", &[Step::PostMergeWork { reason: Some("release.sh publishes 0.3.0".into()) }])?;
         act(report, fakes, &node, "the node delivers PR #26", &Step::work(26, "release.txt"))?;
-        let (_, view) = review_card(report, &user, &node)?;
+        let (merged_card, view) = review_card(report, &user, &node)?;
         let head = head(&node)?;
         press(report, &user, &view, "merge:", None, None, "the user merges PR #26 from the card")?;
         merged(report, fakes, 26, &head)?;
@@ -200,7 +200,17 @@ pub fn run(report: &mut Report, sandbox: &Sandbox, fakes: &Fakes) {
             let read = fakes.received(&node.short)?.iter().any(|input| input.text.contains("Finish the release"));
             Ok(((now.running() && read).then_some(now), "the instruction has not arrived".into()))
         })?;
-        act(report, fakes, &resumed, "the node finishes the release and cleans up", &[Step::PostMergeWork { reason: None }, Step::Cleanup])?;
+        act(report, fakes, &resumed, "the node finishes the release and answers the message with its final result", &[
+            Step::PostMergeWork { reason: None },
+            Step::Deliver { need: "Release 0.3.0 published".into(), pr: None, is_final: true },
+        ])?;
+        let answer = wait(report, "the answer waits on a review card of its own", || {
+            let inbox = user.inbox()?;
+            Ok((inbox.iter().rev().find(|id| id.starts_with(&format!("result-{}-", node.short)) && **id != merged_card).cloned(), format!("{inbox:?}")))
+        })?;
+        let view = user.view(&format!("card:{answer}"))?;
+        press(report, &user, &view, "accept:", None, None, "the user accepts the answer")?;
+        act(report, fakes, &resumed, "the node cleans up", &[Step::Cleanup])?;
         state(report, &user, "t-s6", FINISHED)
     });
 }
