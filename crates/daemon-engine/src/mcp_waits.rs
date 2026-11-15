@@ -7,13 +7,14 @@
 //! ended counts as a node reporting the server connected: every node that reports it signed out,
 //! the one that signed in too, connects it again.
 use crate::domain_runtime::DomainRuntime;
+use crate::locks::Poisonable as _;
 use alondra_core::domain::{
     Actor, Command, CommandEnvelope, DomainError, DomainState, InteractionId, MCP_SERVER_PREFIX, McpServerKey, McpServerState,
     McpStatus, Millis, OpenSignIn, PROTOCOL_VERSION, TaskId,
 };
 use std::collections::{BTreeSet, HashMap};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// How long Claude may take to open a sign-in or say how its servers are.
@@ -219,9 +220,10 @@ pub async fn give_back(domain: &Arc<DomainRuntime>, target: &Target, address: St
         .find(|task| open_sign_in(state.state(), task, &name).is_some_and(|open| open.callback_port.is_some()))
         .cloned()
         .ok_or_else(|| DomainError::new("not_found", format!("No sign-in to {name} is open: press Connect again")))?;
+    let flow = open_sign_in(state.state(), &task, &name).and_then(|open| open.state.clone());
     drop(state);
     let runtime = domain.clone();
-    let (server, at) = (name.clone(), task);
+    let (server, at) = (name.clone(), task.clone());
     let delivered = tokio::task::spawn_blocking(move || crate::mcp_sign_in::complete(&runtime, &at, &server, &address)).await
         .map_err(|_| DomainError::new("unavailable", "The sign-in could not be handed to Claude"))?;
     match delivered {
@@ -233,6 +235,10 @@ pub async fn give_back(domain: &Arc<DomainRuntime>, target: &Target, address: St
         Err(crate::mcp_sign_in::SignInError::Undelivered(_)) => {
             return Err(DomainError::new("conflict", format!("The sign-in to {name} was cut: press Connect again")));
         }
+    }
+    if let Some(flow) = flow {
+        domain.mcp_returns.0.lock_or_recover("the returned MCP sign-ins").push((task, name, flow));
+        domain.wake_subscribers();
     }
     Ok(())
 }
@@ -339,6 +345,11 @@ fn nodes(state: &DomainState) -> Vec<(TaskId, &[McpServerState])> {
 /// server, and the flow Claude names it by.
 type Returning = (TaskId, String, String);
 
+/// The sign-ins handed back to Claude. Handing one back ends it in the state at once, so the
+/// watcher takes them from here too, whether or not it ever saw them open.
+#[derive(Default)]
+pub(crate) struct Returns(Mutex<Vec<Returning>>);
+
 /// The open sign-ins that come back to Claude's listener, with its port: those of a card's waiting
 /// tasks and those the MCP servers screen opened alike.
 fn returning(state: &DomainState) -> Vec<(Returning, u16)> {
@@ -366,6 +377,7 @@ pub async fn run(domain: Arc<DomainRuntime>) {
         let snapshot = domain.read();
         let state = snapshot.state();
         let open = returning(state);
+        seen.extend(domain.mcp_returns.0.lock_or_recover("the returned MCP sign-ins").drain(..));
         let still: BTreeSet<Returning> = open.iter().map(|(sign_in, _)| sign_in.clone()).collect();
         let mut over: Vec<Returning> = seen.difference(&still).filter(|sign_in| !ended.contains(*sign_in)).cloned().collect();
         for (sign_in, port) in &open {
