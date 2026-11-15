@@ -9,7 +9,7 @@ build -c opt
 # rustc compiles incrementally: a one-line edit recompiles only what it changed. Actions run
 # unsandboxed in the execroot, so the state lives two levels up, in this checkout's output base,
 # and goes with it. Clippy keeps its own state: sharing rustc's would discard it on every check.
-# A release builds without it (`--config=release`); `make clean-incremental` deletes the state.
+# A release builds without it (`--config=release`); `bazelisk clean --expunge` deletes the state.
 build --@rules_rust//rust/settings:extra_rustc_flags=-Cincremental=../../rustc-incremental
 
 # Clippy resolves the APIs used by tests, including aliases and imported functions.

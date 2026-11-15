@@ -63,7 +63,8 @@ repository does not read any remote build cache unless you pass `--config=buildb
 
 Rust compiles incrementally, so an edit after the first build recompiles only what changed. Its
 state takes about 5 GB inside Bazel's output base (`bazelisk info output_base`), next to
-everything else Bazel builds; `make clean-incremental` deletes it. Releases build without it
+everything else Bazel builds; `bazelisk clean --expunge` deletes it with the rest of the output base; run it if rustc fails
+with an internal error that names the incremental state. Releases build without it
 (`--config=release`).
 
 ```bash
