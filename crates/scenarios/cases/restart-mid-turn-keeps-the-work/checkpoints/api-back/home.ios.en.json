@@ -1,0 +1,115 @@
+{
+  "client": "ios",
+  "cursor": "<cursor>",
+  "data_epoch": "<data_epoch>",
+  "empty": {
+    "text": "Nothing is waiting for you",
+    "tone": "neutral"
+  },
+  "key": "home",
+  "protocol": 1,
+  "sections": [
+    {
+      "collapsed": false,
+      "count": 0,
+      "id": "queue",
+      "items": [],
+      "title": "Waiting for You"
+    }
+  ],
+  "service": {
+    "capabilities": [
+      "account_presentation",
+      "model_selection",
+      "provider_accounts"
+    ],
+    "version": "<version>",
+    "views_protocol": {
+      "max": 1,
+      "min": 1
+    }
+  },
+  "status": {
+    "badge": 0,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 0
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 1
+      },
+      {
+        "id": "needs_you",
+        "label": "waiting for you",
+        "value": 0
+      },
+      {
+        "id": "queued",
+        "label": "queued",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "paused",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "waiting",
+        "value": 0
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "RAM",
+        "level": "calm",
+        "text": "25%",
+        "value": 0.25
+      },
+      {
+        "id": "cpu",
+        "label": "CPU",
+        "level": "calm",
+        "text": "5%",
+        "value": 0.05
+      },
+      {
+        "id": "disk",
+        "label": "Disk",
+        "level": "calm",
+        "text": "550 GB free",
+        "value": 0.5
+      }
+    ],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    },
+    "session_wait": {
+      "text": "No provider account is available · check Accounts",
+      "tone": "warning"
+    },
+    "summary": "1 task working",
+    "summary_parts": [
+      {
+        "count": 1,
+        "id": "working",
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
+    "version": "<version>"
+  },
+  "version": "<version>",
+  "view": "home"
+}

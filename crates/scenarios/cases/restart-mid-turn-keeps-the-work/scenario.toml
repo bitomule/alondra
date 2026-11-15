@@ -1,0 +1,80 @@
+name = "a restart in the middle of a turn, and another while the API is down, lose nothing and the task goes on when the API answers"
+max_virtual = "2h"
+
+[[step]]
+do = "request"
+text = "Export the report as CSV"
+task = "t1"
+title = "Add the CSV export"
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "working"
+screens = ["home", "tasks", "task:t1"]
+
+[[step]]
+do = "restart"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "after-restart"
+screens = ["home", "tasks", "task:t1"]
+
+[[step.expect]]
+check = "task_state"
+task = "t1"
+state = "running"
+
+[[step]]
+do = "provider_down"
+error = "server_error"
+status = 529
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "api-down"
+screens = ["home", "task:t1"]
+
+[[step]]
+do = "restart"
+
+[[step]]
+do = "provider_up"
+
+[[step]]
+do = "advance"
+by = "3m"
+
+[[step]]
+do = "rest"
+max = "30m"
+
+[[step]]
+do = "checkpoint"
+name = "api-back"
+screens = ["home"]
+
+[[step.expect]]
+check = "task_state"
+task = "t1"
+state = "running"

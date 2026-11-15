@@ -36,6 +36,12 @@ pub struct World {
     pub repository: String,
 }
 
+impl Step {
+    fn server_error() -> String {
+        "server_error".into()
+    }
+}
+
 impl World {
     fn default_clients() -> Vec<String> {
         vec!["ios".into(), "tui".into()]
@@ -84,7 +90,39 @@ pub enum Step {
     Github(GithubChange),
     /// The user presses `action` (a verb of the action ids: `merge`, `accept`, `changes`...) on the
     /// card of the presentation, as the app does it from the view.
-    Press { presentation: String, action: String },
+    Press { presentation: String, action: String, #[serde(default)] text: Option<String>, #[serde(default)] screen: Option<String> },
+    /// The node of `task` starts on its provider: its SDK host is admitted and takes the planned
+    /// input as a turn.
+    Node { task: String },
+    /// The turn of the node of `task` ends. While the provider is down it ends on the error the
+    /// provider answers with.
+    TurnEnd { task: String },
+    /// The turn of the node of `task` ends on this API error, whatever the provider's state.
+    ApiError { task: String, error: String, #[serde(default)] status: Option<u16> },
+    /// The provider answers every turn with this error, until `provider_up`. A node with an input
+    /// waiting takes it and its turn ends on the error.
+    ProviderDown { #[serde(default = "Step::server_error")] error: String, #[serde(default)] status: Option<u16> },
+    ProviderUp,
+    /// The sign-in of the provider expired: every turn ends on `authentication_failed`.
+    LoginExpired,
+    /// The user signed in again: the provider answers.
+    LoginRestored,
+    /// The SDK host of `task` ended. `resumes`: another host resumes the same session.
+    HostExit { task: String, #[serde(default)] resumes: bool },
+    /// The user writes to the node of `task`.
+    Tell { task: String, text: String },
+    /// The node of `task` reads the message the user wrote to it, in the turn it has running.
+    ReadMessage { task: String },
+    /// The node of `task` ended and Alondra recorded it.
+    NodeEnd { task: String },
+    /// The daemon stops and starts again over the same home, as a restart does.
+    Restart,
+    /// The daemon is replaced by a newer release: every SDK host of the older one is refused, ends,
+    /// and one that resumes its session takes its place.
+    Update,
+    /// The user presses the option `option` of the card the daemon shows for `task` whose id starts
+    /// with `card`, as the app does it from the view.
+    Answer { card: String, option: String, #[serde(default)] text: Option<String> },
     /// Virtual time passes.
     Advance { by: String },
     /// The daemon runs until nothing changes for a while.
@@ -125,6 +163,15 @@ pub enum Expect {
     /// Every transcript of the case was played to its end: the daemon sent what each expected and
     /// received everything it said.
     TranscriptsPlayed,
+    /// The view `screen` as the iOS app reads it in English shows (or, with `present = false`, does
+    /// not show) this text.
+    ViewShows { screen: String, text: String, #[serde(default = "Expect::shown")] present: bool },
+}
+
+impl Expect {
+    fn shown() -> bool {
+        true
+    }
 }
 
 pub fn parse_duration(text: &str) -> Result<Duration, ScenarioError> {
@@ -188,6 +235,44 @@ screens = ["home"]
         .unwrap();
         assert_eq!(scenario.steps.len(), 3);
         assert!(matches!(scenario.steps[1], Step::Github(GithubChange::OpenPr { number: 7, .. })));
+    }
+
+    #[test]
+    fn the_provider_restart_and_update_steps_are_read() {
+        let scenario = Scenario::parse(
+            r#"
+name = "demo"
+max_virtual = "1h"
+
+[[step]]
+do = "provider_down"
+status = 529
+
+[[step]]
+do = "api_error"
+task = "t1"
+error = "rate_limit"
+status = 429
+
+[[step]]
+do = "login_expired"
+
+[[step]]
+do = "host_exit"
+task = "t1"
+resumes = true
+
+[[step]]
+do = "restart"
+
+[[step]]
+do = "update"
+"#,
+        )
+        .unwrap();
+        assert!(matches!(&scenario.steps[0], Step::ProviderDown { error, status: Some(529) } if error == "server_error"));
+        assert!(matches!(scenario.steps[3], Step::HostExit { resumes: true, .. }));
+        assert!(matches!(scenario.steps[5], Step::Update));
     }
 
     #[test]

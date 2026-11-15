@@ -1,0 +1,78 @@
+name = "answering the card of one pull request of a delivery keeps the card of the other"
+max_virtual = "1h"
+
+[[step]]
+do = "request"
+text = "Export the report as CSV and as PDF"
+task = "t1"
+title = "Add the CSV and PDF exports"
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "github"
+event = "open_pr"
+number = 7
+head = "csv-export"
+base = "main"
+
+[[step]]
+do = "github"
+event = "open_pr"
+number = 8
+head = "pdf-export"
+base = "main"
+
+[[step]]
+do = "register_pr"
+task = "t1"
+number = 7
+
+[[step]]
+do = "register_pr"
+task = "t1"
+number = 8
+
+[[step]]
+do = "present"
+task = "t1"
+id = "d1"
+prs = [7, 8]
+body = "Both exports are ready"
+
+[[step]]
+do = "checkpoint"
+name = "two-cards"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "#7"
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "#8"
+
+[[step]]
+do = "press"
+presentation = "pr7"
+action = "changes"
+text = "Rename the column"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "after-reply"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "#8"

@@ -5,11 +5,26 @@ fn main() {
     // SAFETY: nothing else runs yet; the views show local time and a case is accepted in UTC.
     unsafe { std::env::set_var("TZ", "UTC") };
     let Some(name) = std::env::args().nth(1) else {
-        eprintln!("usage: accept <case>");
+        eprintln!("usage: accept <case> [--until-failure]");
         std::process::exit(2);
     };
     let workspace = std::env::var_os("BUILD_WORKSPACE_DIRECTORY").expect("run it with `bazel run`");
     let case = std::path::PathBuf::from(workspace).join("crates/scenarios/cases").join(&name);
+    if std::env::args().any(|argument| argument == "--until-failure") {
+        match alondra_scenarios::accept_until_failure(&case) {
+            Ok(failure) => {
+                println!("checkpoints before the failure written");
+                if let Some(failure) = failure {
+                    println!("{failure}");
+                }
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     match alondra_scenarios::accept(&case) {
         Ok(outcome) => {
             for (checkpoint, files) in outcome.checkpoints {

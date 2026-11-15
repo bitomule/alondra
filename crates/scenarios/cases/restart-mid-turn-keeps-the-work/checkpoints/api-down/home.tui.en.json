@@ -1,0 +1,234 @@
+{
+  "client": "tui",
+  "cursor": "<cursor>",
+  "data_epoch": "<data_epoch>",
+  "key": "home",
+  "protocol": 1,
+  "sections": [
+    {
+      "collapsed": false,
+      "count": 1,
+      "id": "waiting",
+      "items": [
+        {
+          "context": [
+            {
+              "icon": "task",
+              "link": {
+                "key": "task:t1",
+                "kind": "view"
+              },
+              "state": {
+                "text": "Needs you",
+                "tone": "warning"
+              },
+              "text": "Add the CSV export"
+            }
+          ],
+          "detail": "reference",
+          "eyebrow": {
+            "text": "Problem",
+            "tone": "critical"
+          },
+          "icon": "warning",
+          "id": "claude-outage-t1-10",
+          "kind": "problem",
+          "link": {
+            "key": "card:claude-outage-t1-10",
+            "kind": "view"
+          },
+          "meta": "Alondra",
+          "need": "Resolve the problem",
+          "state": {
+            "text": "Blocks Add the CSV export",
+            "tone": "warning"
+          },
+          "subtitle": "The Claude API kept failing after Claude Code's own retries. Alondra tries one task again every 2 minutes; when Claude answers, every waiting task goes on.",
+          "timestamps": [
+            {
+              "at": "<instant>",
+              "format": "relative",
+              "role": "created"
+            }
+          ],
+          "title": "Claude's API is not answering: a task waits",
+          "title_is_separate": true,
+          "type": "card",
+          "why": "The Claude API kept failing after Claude Code's own retries. Alondra tries one task again every 2 minutes; when Claude answers, every waiting task goes on."
+        }
+      ],
+      "title": "Waiting for You"
+    },
+    {
+      "collapsed": false,
+      "id": "detail",
+      "items": [
+        {
+          "actions": [
+            {
+              "attachments": false,
+              "enabled": true,
+              "id": "ans:claude-outage-t1-10@<revision>",
+              "input": {
+                "kind": "none"
+              },
+              "key": "1",
+              "label": "★ Try now",
+              "option_id": "try_now",
+              "presentation": "button",
+              "resolves_card": true,
+              "role": "advance",
+              "stamp": "Answered",
+              "style": "primary"
+            }
+          ],
+          "context": [
+            {
+              "icon": "task",
+              "link": {
+                "key": "task:t1",
+                "kind": "view"
+              },
+              "state": {
+                "text": "Needs you",
+                "tone": "warning"
+              },
+              "text": "Add the CSV export"
+            }
+          ],
+          "detail": "included",
+          "eyebrow": {
+            "text": "Problem",
+            "tone": "critical"
+          },
+          "icon": "warning",
+          "id": "claude-outage-t1-10",
+          "kind": "problem",
+          "link": {
+            "key": "card:claude-outage-t1-10",
+            "kind": "view"
+          },
+          "meta": "Alondra",
+          "need": "Resolve the problem",
+          "state": {
+            "text": "Blocks Add the CSV export",
+            "tone": "warning"
+          },
+          "subtitle": "The Claude API kept failing after Claude Code's own retries. Alondra tries one task again every 2 minutes; when Claude answers, every waiting task goes on.",
+          "timestamps": [
+            {
+              "at": "<instant>",
+              "format": "relative",
+              "role": "created"
+            }
+          ],
+          "title": "Claude's API is not answering: a task waits",
+          "title_is_separate": true,
+          "type": "card",
+          "why": "The Claude API kept failing after Claude Code's own retries. Alondra tries one task again every 2 minutes; when Claude answers, every waiting task goes on."
+        }
+      ]
+    }
+  ],
+  "service": {
+    "capabilities": [
+      "account_presentation",
+      "model_selection",
+      "provider_accounts"
+    ],
+    "version": "<version>",
+    "views_protocol": {
+      "max": 1,
+      "min": 1
+    }
+  },
+  "status": {
+    "badge": 1,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 1
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "needs_you",
+        "label": "waiting for you",
+        "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "queued",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "paused",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "waiting",
+        "value": 0
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "RAM",
+        "level": "calm",
+        "text": "25%",
+        "value": 0.25
+      },
+      {
+        "id": "cpu",
+        "label": "CPU",
+        "level": "calm",
+        "text": "5%",
+        "value": 0.05
+      },
+      {
+        "id": "disk",
+        "label": "Disk",
+        "level": "calm",
+        "text": "550 GB free",
+        "value": 0.5
+      }
+    ],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    },
+    "session_wait": {
+      "text": "No provider account is available · check Accounts",
+      "tone": "warning"
+    },
+    "summary": "1 question · 0 tasks working",
+    "summary_parts": [
+      {
+        "count": 1,
+        "id": "questions",
+        "one": "{count} question",
+        "other": "{count} questions"
+      },
+      {
+        "count": 0,
+        "id": "working",
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
+    "version": "<version>"
+  },
+  "version": "<version>",
+  "view": "home"
+}
