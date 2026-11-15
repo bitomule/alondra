@@ -128,15 +128,15 @@ low_opt_rust_test(
     deps = ENGINE_TEST_DEPS,
 )
 
-low_opt_rust_test(
+# The same test binary as daemon_engine_test, run with the integration filters: the engine compiles
+# in test mode once per change instead of once per target.
+sh_test(
     name = "daemon_engine_integration_test",
     size = "large",
-    srcs = ENGINE_TEST_SRCS,
-    args = INTEGRATION_FILTERS,
-    compile_data = ENGINE_TEST_COMPILE_DATA,
-    crate_name = "alondra_daemon_engine",
-    crate_root = "src/lib.rs",
+    srcs = ["run_test_binary.sh"],
+    args = ["$(rootpath :daemon_engine_test)"] + INTEGRATION_FILTERS,
     data = [
+        ":daemon_engine_test",
         "//agent-host:alondra-codex-host",
         "//agent-host:alondra-host",
         "//agent-host:alondra-codex-plan-legacy-fixture-host",
@@ -149,9 +149,9 @@ low_opt_rust_test(
         "//crates/alondra:alondra",
         "//crates/alondrad:alondrad",
     ],
-    edition = "2024",
     # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
     env = {
+        "FIXTURE_CLI": "$(rootpath //crates/alondra:alondra)",
         "FIXTURE_CODEX_HOST": "$(rootpath //agent-host:alondra-codex-host)",
         "FIXTURE_CODEX_LEGACY_HOST": "$(rootpath //agent-host:codex-legacy-fixture)",
         "FIXTURE_CODEX_MCP_NATIVE": "$(rootpath //agent-host:fake-codex-mcp.py)",
@@ -165,9 +165,6 @@ low_opt_rust_test(
         "FIXTURE_ORCHESTRATOR_NATIVE": "$(rootpath //agent-host:orchestrator-fake-claude.py)",
         "HOME": ".",
     },
-    rustc_env = {"CARGO_BIN_EXE_alondra": "$(rootpath //crates/alondra:alondra)"},
-    version = VERSION,
-    deps = ENGINE_TEST_DEPS,
 )
 
 rust_inputs_test(
