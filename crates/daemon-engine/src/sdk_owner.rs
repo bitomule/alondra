@@ -137,6 +137,51 @@ impl Preparer for Worker {
     }
 }
 
+/// The one takeover of a task's execution that runs now. A takeover reserves the next owner and may
+/// start a host: a second one at once fences the first, which then finds the second's host live,
+/// refuses it and loses the session. Another takeover of the task waits for this one to end.
+pub(crate) struct TakeoverTurn<'a> {
+    domain: &'a DomainRuntime,
+    task: TaskId,
+}
+
+impl<'a> TakeoverTurn<'a> {
+    pub(crate) fn wait(domain: &'a DomainRuntime, task: &TaskId) -> Self {
+        let mut taking = domain.taking_over.lock_or_recover("the takeovers under way");
+        while taking.contains(task) {
+            #[cfg(any(test, feature = "test-hooks"))]
+            domain.takeover_waited();
+            taking = domain.takeover_done.wait(taking).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        taking.insert(task.clone());
+        Self { domain, task: task.clone() }
+    }
+}
+
+impl Drop for TakeoverTurn<'_> {
+    fn drop(&mut self) {
+        self.domain.taking_over.lock_or_recover("the takeovers under way").remove(&self.task);
+        self.domain.takeover_done.notify_all();
+    }
+}
+
+/// Whether an owner of this daemon holds the host of the task's node.
+fn owned_now(domain: &DomainRuntime, task: &TaskId) -> bool {
+    domain.state().ok().and_then(|state| state.tasks.get(task).and_then(|task| task.agent_id.clone())).is_some_and(|agent| domain.owns_sdk_host(&agent))
+}
+
+/// Takes over the execution of a task no owner of this daemon holds, once no other takeover of it
+/// runs: one that ended meanwhile left an owner, and nothing more is taken.
+pub(crate) fn take_over_unowned(domain: &Arc<DomainRuntime>, backend: &SdkBackend, task: &TaskId, plugin: Option<&std::path::Path>) -> Result<(), Failed> {
+    let _turn = TakeoverTurn::wait(domain, task);
+    if owned_now(domain, task) {
+        return Ok(());
+    }
+    let driver = adopt(Arc::clone(domain), backend, task.clone(), plugin)?;
+    domain.add_sdk_owner(Owner::spawn(driver));
+    Ok(())
+}
+
 /// One execution's owner: its worker and the task whose dispatches and controls only it claims.
 /// The task's SDK execution is in hand while this lives.
 pub(crate) struct InHand {
@@ -750,6 +795,8 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
             Ok(adoption)
         })
         .map_err(failed("reserving the next owner"))?;
+    #[cfg(any(test, feature = "test-hooks"))]
+    domain.owner_reserved();
     let mut reserved = domain.seals.take(&task);
     let grant = reserved.owners.pop().ok_or_else(|| Failed::new("the reservation issued no owner grant".into()))?;
     let owner_generation = grant.generation();
@@ -1237,7 +1284,8 @@ fn retake_with_policy(domain: &DomainRuntime, task: TaskId,explicit_account_retr
 /// unanswered, and a fresh host takes the same input the execution waits for, any host still
 /// running ended first.
 fn take_again(runtime: &Arc<DomainRuntime>, backend: &SdkBackend, task: &TaskId, explicit_account_retry: bool) {
-    if runtime.state().ok().and_then(|state| state.tasks.get(task).and_then(|task| task.agent_id.clone())).is_some_and(|agent| runtime.owns_sdk_host(&agent)) {
+    let _turn = TakeoverTurn::wait(runtime, task);
+    if owned_now(runtime, task) {
         return;
     }
     let record = |fact: RuntimeObservation| -> Result<(), StoreError> {

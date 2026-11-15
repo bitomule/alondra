@@ -68,6 +68,11 @@ pub struct DomainRuntime {
     /// under way, or the driver of its host. Nothing takes over an execution in hand.
     /// A holder that panics leaves it whole, so it is recovered: one count up or down.
     pub(crate) in_hand: Mutex<std::collections::BTreeMap<TaskId, usize>>,
+    /// The tasks whose execution a takeover is taking now: another takeover of the same task waits
+    /// for it on `takeover_done`, so two never reserve an owner and start a host at once.
+    /// A holder that panics leaves it whole, so it is recovered: one insert or one remove.
+    pub(crate) taking_over: Mutex<std::collections::BTreeSet<TaskId>>,
+    pub(crate) takeover_done: std::sync::Condvar,
     /// The executions whose takeover found the disk full: taken over again once the machine watch
     /// measures space, never given up for it.
     /// A holder that panics leaves it whole, so it is recovered: one insert or one take.
@@ -99,6 +104,10 @@ pub struct DomainRuntime {
     before_acknowledge: Mutex<Option<Box<dyn FnMut() + Send>>>,
     #[cfg(any(test, feature = "test-hooks"))]
     owner_failures: Mutex<Option<Box<dyn Fn(String) + Send>>>,
+    #[cfg(any(test, feature = "test-hooks"))]
+    after_owner_reserved: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    #[cfg(any(test, feature = "test-hooks"))]
+    takeover_waits: Mutex<Option<Box<dyn FnMut() + Send>>>,
     /// The nodes whose driver a test steps by hand, with no owner thread: they count as owned.
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) driven_by_hand: Mutex<std::collections::BTreeSet<AgentId>>,
@@ -172,6 +181,8 @@ impl DomainRuntime {
             sdk_owners: Default::default(),
             retakes: Default::default(),
             in_hand: Default::default(),
+            taking_over: Default::default(),
+            takeover_done: Default::default(),
             waiting_for_space: Default::default(),
             host_losses_told: Default::default(),
             unowned_takes: Default::default(),
@@ -191,6 +202,10 @@ impl DomainRuntime {
             before_acknowledge: Default::default(),
             #[cfg(any(test, feature = "test-hooks"))]
             owner_failures: Default::default(),
+            #[cfg(any(test, feature = "test-hooks"))]
+            after_owner_reserved: Default::default(),
+            #[cfg(any(test, feature = "test-hooks"))]
+            takeover_waits: Default::default(),
             #[cfg(any(test, feature = "test-hooks"))]
             driven_by_hand: Default::default(),
             #[cfg(any(test, feature = "test-hooks"))]
@@ -472,6 +487,29 @@ impl DomainRuntime {
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn before_next_commit(&self, hook: impl FnOnce(&DomainRuntime) + Send + 'static) {
         *self.before_next_commit.lock().unwrap() = Some(Box::new(hook));
+    }
+    /// Runs `hook` once, as the next takeover has reserved its owner and not yet looked for the host.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn after_owner_reserved(&self, hook: impl FnOnce() + Send + 'static) {
+        *self.after_owner_reserved.lock().unwrap() = Some(Box::new(hook));
+    }
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn owner_reserved(&self) {
+        let hook = self.after_owner_reserved.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+    /// Runs `hook` each time a takeover waits for another of the same task.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn on_takeover_wait(&self, hook: impl FnMut() + Send + 'static) {
+        *self.takeover_waits.lock().unwrap() = Some(Box::new(hook));
+    }
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn takeover_waited(&self) {
+        if let Some(hook) = self.takeover_waits.lock().unwrap().as_mut() {
+            hook();
+        }
     }
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn before_owner_publish(&self, hook: impl FnMut() + Send + 'static) {

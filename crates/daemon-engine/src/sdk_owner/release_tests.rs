@@ -198,6 +198,54 @@ fn archived_hosts(slice: &Slice) -> Vec<String> {
         .filter(|name| name.contains(".ended-")).collect()
 }
 
+// 15 November: three tasks had just finished (a design accepted, a pull request merged) while their
+// hosts were closed. Telling the node to clean up took its execution over, and the closer of the
+// task took it over too: the second takeover started a host while the first had reserved its owner,
+// the first found that host live and refused, stopped it, could not start its own, and the user got
+// «stopped: Alondra could not resume its session». One takeover of a task runs at a time: the other
+// finds the task owned and the session goes on.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_finished_task_whose_closed_host_is_taken_over_twice_at_once_resumes_once_and_asks_nobody() {
+    use std::sync::mpsc::channel;
+    let slice = Slice::new();
+    let (session, _) = resting_node(&slice);
+    look_after_the_wait(&slice.domain);
+    until_released(&slice.domain, &[TASK]).await;
+    let agent = slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().unwrap();
+    let (reserved, first_reserved) = channel();
+    let (go, gone) = channel::<()>();
+    slice.domain.after_owner_reserved(move || {
+        reserved.send(()).unwrap();
+        gone.recv().unwrap();
+    });
+    let (settled, closer_settled) = channel();
+    let waits = settled.clone();
+    slice.domain.on_takeover_wait(move || drop(waits.send("waits")));
+    deliver_and_accept(&slice, &agent, vec![DeliveryTarget::Text { text: "The notes".into() }]);
+    crate::domain_messages::tell_sdk_node(&slice.domain, &TASK.into(), crate::node_push::ALONDRA, "Clean up and call cleanup_done.", "tell-cleanup", false).unwrap();
+    tokio::task::block_in_place(|| first_reserved.recv_timeout(std::time::Duration::from_secs(60))).expect("the first takeover never reserved its owner");
+    let handle = tokio::runtime::Handle::current();
+    std::thread::scope(|scope| {
+        let closer = scope.spawn(|| {
+            handle.block_on(close_pass(&slice));
+            drop(settled.send("closed"));
+        });
+        tokio::task::block_in_place(|| closer_settled.recv_timeout(std::time::Duration::from_secs(60))).expect("the closer neither took over nor waited");
+        go.send(()).unwrap();
+        closer.join().unwrap();
+    });
+    slice.domain.join_retakes();
+
+    let lost = open_card(&slice.domain, alondra_core::domain::HOST_LOST_PREFIX);
+    assert!(lost.is_none(), "no card tells the user the session could not be resumed: {lost:?}");
+    assert!(slice.domain.owns_sdk_host(&agent), "one host runs the finished task so it can clean up");
+    until_last_prompt_ends_with(&slice.domain, &slice.capture, "Clean up and call cleanup_done.").await;
+    let starts = slice.starts();
+    slice.domain.stop_sdk_owners();
+    assert_eq!(starts.len(), 2, "one host resumed the session: {starts:?}");
+    assert_eq!(starts[1]["resume"].as_str(), Some(session.as_str()), "the same session goes on: {starts:?}");
+}
+
 // Compaction is an input no `TellNode` carries: the look at the state finds it. The closed host
 // keeps what was measured of its conversation, so the cache can still be saved before it expires.
 #[tokio::test(flavor = "multi_thread")]
