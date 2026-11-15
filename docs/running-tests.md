@@ -13,6 +13,35 @@ own toolchains; install it with `bazelisk` (see
 
 A new integration test needs a Bazel target, or it does not run.
 
+## Invalid cached executables
+
+`make test` selects the repository's test wrapper explicitly, including when a user bazelrc
+selects another wrapper. For a direct invocation, use
+`bazelisk test <target> --run_under=//tools:test_tmpdir`. The wrapper asks the operating system to
+execute the test without Bash's fallback that interprets unrecognized executable bytes as shell
+commands. Invalid executables fail with status 126 and a recovery command; valid native binaries
+and scripts with a shebang keep their arguments and exit status.
+
+To investigate a suspect output, preserve its size, digest and initial bytes before rebuilding.
+Rebuild only the affected target in a new output base, without accepting or uploading cached
+results:
+
+```sh
+bazelisk --output_base="$PWD/.scratch/recovery" test <target> \
+  --noremote_accept_cached --disk_cache= --noremote_upload_local_results \
+  --run_under=//tools:test_tmpdir
+```
+
+Do not purge a shared cache to recover one target. Bazel 8.4.2 verifies downloaded digests by
+default; a matching digest proves identity with the recorded output, not that a compiler produced
+a valid executable. `--experimental_remote_capture_corrupted_outputs="$PWD/.scratch/corrupt"`
+can preserve outputs whose download fails verification.
+
+Bazel 8.4.2 already defaults to `--remote_download_outputs=toplevel`. Use `all`, `toplevel` and
+`minimal` explicitly when comparing downloads from fresh output bases. Keep `minimal` scoped to
+cache warming: commands outside Bazel that copy or execute `bazel-bin` outputs need those files
+materialized locally.
+
 ## Writing tests
 
 - Every behavior change comes with a test that fails without the change and passes with it.
