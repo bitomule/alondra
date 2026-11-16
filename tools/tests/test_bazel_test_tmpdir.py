@@ -113,6 +113,15 @@ class BazelTestTmpdirTest(unittest.TestCase):
         self.assertEqual(self.run_wrapped(READ_ONLY_TREE), 0)
         self.assertEqual(list(self.root.iterdir()), [])
 
+    @unittest.skipUnless(Path("/usr/bin/xcrun").exists(), "xcrun is macOS only")
+    def test_a_tool_found_through_xcrun_from_a_new_home_caches_inside_the_test(self):
+        env = {key: value for key, value in os.environ.items() if key != "xcrun_db"}
+        env["BAZEL_TEST_TMPDIR_ROOT"] = str(self.root)
+        script = 'mkdir "$TMPDIR/home" && HOME="$TMPDIR/home" /usr/bin/git --version >/dev/null && test -s "$TMPDIR/xcrun_db"'
+        result = subprocess.run([str(wrapper), "/bin/sh", "-c", script], env=env)
+        self.assertEqual(result.returncode, 0, "xcrun wrote its cache outside the test's TMPDIR")
+        self.assertEqual(list(self.root.iterdir()), [])
+
     def test_a_failing_test_leaves_nothing_and_keeps_its_exit_code(self):
         self.assertEqual(self.run_wrapped(READ_ONLY_TREE + " && exit 3"), 3)
         self.assertEqual(list(self.root.iterdir()), [])

@@ -1178,7 +1178,7 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
             let (capture, held, release) = (root.join("capture.json"), root.join("held"), root.join("release"));
             fifo(&held);
             fifo(&release);
-            let environment = BTreeMap::from([("HOME".to_owned(), root.to_str().unwrap().to_owned()), ("PATH".to_owned(), "/usr/bin:/bin".to_owned())]);
+            let environment = crate::test_support::fixture_environment(&root);
             let mut native_environment = environment.clone();
             for (name, path) in [("FIXTURE_CAPTURE", &capture), ("FIXTURE_HELD", &held), ("FIXTURE_RELEASE", &release)] {
                 native_environment.insert(name.into(), path.to_str().unwrap().into());

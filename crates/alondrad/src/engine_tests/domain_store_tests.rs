@@ -21,7 +21,7 @@ fn preflight_reports_a_rejected_journal_event_without_changing_the_home() {
     let diagnostic = format!("{:#}", crate::preflight::run(&config).unwrap_err());
     let output = std::process::Command::new(std::env::var("FIXTURE_DAEMON").unwrap())
         .arg("--preflight").env_clear().env("HOME", &*fixture.0).env("ALONDRA_HOME", &*fixture.0)
-        .env("TMPDIR", &*fixture.0).output().unwrap();
+        .env("TMPDIR", &*fixture.0).envs(crate::test_support::xcrun_cache()).output().unwrap();
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.starts_with("preflight failed: "), "{stderr}");

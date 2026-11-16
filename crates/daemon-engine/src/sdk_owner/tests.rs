@@ -165,7 +165,7 @@ pub(crate) fn fixture_backend(home: &Path, state: &HostRoot) -> (SdkBackend, Pat
     std::fs::copy(runfile("FIXTURE_NATIVE"), &native).unwrap();
     std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o700)).unwrap();
     let capture = home.join("native-capture.json");
-    let environment = BTreeMap::from([("HOME".to_owned(), home.to_str().unwrap().to_owned()), ("PATH".to_owned(), "/usr/bin:/bin".to_owned())]);
+    let environment = crate::test_support::fixture_environment(home);
     let mut native_environment = environment.clone();
     native_environment.insert("FIXTURE_CAPTURE".into(), capture.to_str().unwrap().into());
     let (node, host) = (runfile("FIXTURE_NODE"), runfile("FIXTURE_HOST"));

@@ -242,7 +242,7 @@ mod tests {
         fn host(&self) -> ProcessHost {
             ProcessHost {
                 launcher: self.launcher(),
-                environment: Some(vec![("HOME".into(), self.home.path().display().to_string()), ("PATH".into(), "/usr/bin:/bin".into())]),
+                environment: Some(crate::test_support::fixture_environment(self.home.path()).into_iter().collect()),
             }
         }
     }

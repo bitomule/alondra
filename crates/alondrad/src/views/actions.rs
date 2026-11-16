@@ -2372,7 +2372,7 @@ for line in sys.stdin:
         let domain = std::sync::Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
         domain.enable_sdk(crate::sdk_owner::SdkBackend { provider: Provider::Codex, origin: None, native,
             node: directory.join("unused-node"), host: directory.join("unused-host"), node_sha256: String::new(), host_sha256: String::new(), native_sha256: String::new(),
-            host_environment: Default::default(), native_environment: std::collections::BTreeMap::from([("HOME".into(), user.to_string_lossy().into_owned()), ("PATH".into(), "/usr/bin:/bin".into())]),
+            host_environment: Default::default(), native_environment: crate::test_support::fixture_environment(&user),
             confinement: None, state_root: directory.join("host-state"), io_timeout_seconds: 30, installed_native: false, launcher: Default::default() });
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         let request = |verb: Verb, subject: &str, extra: Option<&str>| {

@@ -1,7 +1,8 @@
 #!/bin/bash
 # Wraps every `bazel test` (`test --run_under` in .bazelrc; the maintainer's ~/.bazelrc runs a
 # copy, ~/bin/bazel-test-tmpdir): the test gets its own short TMPDIR, removed when it exits, fails
-# or is cut, so tests that never clean their temp dirs cannot fill the disk. Short and under /tmp
+# or is cut, so tests that never clean their temp dirs cannot fill the disk, nor xcrun's lookup
+# cache. Short and under /tmp
 # because macOS caps a unix socket path at 104 bytes. Whatever still runs from that folder when the
 # test ends dies with its process group, and a passing test that left an Alondra host (a process
 # whose stdin is a host.lock, the host's ownership lock) fails.
@@ -68,6 +69,11 @@ done
 dir=$(mktemp -d "$root/bt.XXXXXX") || exec python3 -c "$launcher" "$@"
 echo $$ >"$dir/.owner"
 export TMPDIR="$dir"
+# xcrun, and the /usr/bin shims of git, python3 and the other developer tools, add an entry to
+# their lookup cache for every new HOME and rewrite the whole cache each time. Tests give every
+# fixture its own HOME: in the user's temp folder that cache grew past 50 MB, and a tool killed
+# while rewriting it left a full copy behind, gigabytes a day. Here it goes with the test.
+export xcrun_db="$dir/xcrun_db"
 
 left_running() {
     PATH=$PATH:/usr/sbin lsof -a -u "$(id -u)" -d cwd,0 -Fpn 2>/dev/null |
