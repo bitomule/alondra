@@ -20,7 +20,7 @@ __pycache__/
 # musts: per-machine state; MUSTS.yml and .musts/ledger.lock.yaml stay tracked
 .musts/state.sqlite
 .musts/state.sqlite-*
-.musts/.lock
+.musts/.lock*
 .musts/evidence/
 .musts/bep.json
 
@@ -39,3 +39,4 @@ __pycache__/
 /.bazelrc.local
 /.bazelrc.local.*
 /.bazel-output-disk.log
+/.bazel-links/
