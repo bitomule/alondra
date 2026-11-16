@@ -310,3 +310,28 @@ fn a_usage_limit_stays_when_the_account_the_task_moves_to_cannot_take_it() {
     assert_eq!(usage_holds(&s).len(), 1, "a signed-out account takes no work off a limit");
     assert!(!s.interactions[&card].withdrawn);
 }
+
+// 2026-11-16: the same task, moved again once ending the limit on a move shipped. Its first move
+// had ended before any node started on the account it moved to, so the second only changed the
+// account the task starts on, and Codex's limit kept holding it.
+#[test]
+fn a_task_resting_after_a_move_leaves_the_usage_limit_when_it_moves_again() {
+    let mut s = on_codex();
+    let card = held_by_the_codex_limit(&mut s, "turn");
+    move_to(&mut s, claude()).unwrap();
+    must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false, by_alondra: true, ended_work: vec![] });
+    must(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![
+        account(Provider::Claude, "default", AccountState::SignedOut), account(Provider::Codex, "default", AccountState::SignedIn),
+    ], reserve: crate::usage::default_reserve() });
+    must(&mut s, Actor::System, Command::DeferTaskMove { task_id: "t".into(), account: claude() });
+    assert_eq!(usage_holds(&s).len(), 1, "the task rests after its move, still held by Codex's limit");
+    assert!(s.lifecycle_of(&"t".into()).unwrap().execution().is_none());
+    must(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![
+        account(Provider::Claude, "default", AccountState::SignedIn), account(Provider::Codex, "default", AccountState::SignedIn), account(Provider::Claude, "second", AccountState::SignedIn),
+    ], reserve: crate::usage::default_reserve() });
+    must(&mut s, Actor::System, Command::RecordModelCatalog { catalog: catalog(Provider::Claude, "second", "opus") });
+    let second = AccountKey::new(Provider::Claude, AccountId::parse("second").unwrap());
+    move_to(&mut s, second.clone()).unwrap();
+    left_the_limit_for_the_account_it_moved_to(&s, &card);
+    assert_eq!(situation(&s), Situation::Waiting(WaitsFor::Slot), "it starts on the account it moved to");
+}
