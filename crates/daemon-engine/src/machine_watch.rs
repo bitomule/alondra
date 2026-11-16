@@ -1050,7 +1050,7 @@ async fn watch(domain: std::sync::Arc<DomainRuntime>, sample: impl Fn() -> Optio
             act(&domain, &alerts, actions).await;
         }
         tokio::select! {
-            _ = tokio::time::sleep(tick) => {}
+            _ = alondra_core::clock::sleep(tick) => {}
             _ = domain.live().machine_watch.changed.notified() => {}
             changed = cards.changed() => if changed.is_err() { return },
         }

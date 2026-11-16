@@ -184,7 +184,7 @@ impl ConfigLock {
                         .is_some_and(|age| age > LOCK_ABANDONED);
                     if abandoned {
                         let _ = std::fs::remove_dir(&lock);
-                    } else if started.elapsed() > LOCK_WAIT {
+                    } else if alondra_core::clock::since(started) > LOCK_WAIT {
                         return Err(format!("another Claude Code session kept {} locked; try again in a moment", config.display()));
                     } else {
                         clock::blocking_sleep(Duration::from_millis(100));

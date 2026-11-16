@@ -38,7 +38,7 @@
                 },
                 {
                   "elapsed": {
-                    "since": "<instant>"
+                    "since": "2026-11-15T09:00:00.000+00:00"
                   },
                   "text": "desde las 09:00",
                   "tone": "neutral"
@@ -90,7 +90,7 @@
                 },
                 {
                   "elapsed": {
-                    "since": "<instant>"
+                    "since": "2026-11-15T09:00:00.000+00:00"
                   },
                   "text": "desde las 09:00",
                   "tone": "neutral"
@@ -128,7 +128,7 @@
                 },
                 {
                   "elapsed": {
-                    "since": "<instant>"
+                    "since": "2026-11-15T09:00:00.000+00:00"
                   },
                   "text": "desde las 09:00",
                   "tone": "neutral"

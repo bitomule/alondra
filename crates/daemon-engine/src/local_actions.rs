@@ -117,7 +117,7 @@ impl LocalActions {
     }
     pub fn cached(&self, key: &LocalActionKey) -> Option<std::sync::Arc<LocalActionReceipt>> {
         let mut receipts = self.receipts.lock_or_recover("the local action receipts");
-        receipts.retain(|_, entry| entry.at.elapsed() < std::time::Duration::from_secs(600));
+        receipts.retain(|_, entry| alondra_core::clock::since(entry.at) < std::time::Duration::from_secs(600));
         receipts.get(key).cloned()
     }
     pub fn remember(&self, key: LocalActionKey, receipt: LocalActionReceipt) -> std::sync::Arc<LocalActionReceipt> {

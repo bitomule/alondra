@@ -67,7 +67,7 @@
               "subtitle": "Claude Code's sign-in expired and a task waits. Open Terminal on the Mac, run claude and sign in with /login, then press I signed in.",
               "timestamps": [
                 {
-                  "at": "<instant>",
+                  "at": "2026-11-15T09:01:00.000+00:00",
                   "format": "relative",
                   "role": "created"
                 }

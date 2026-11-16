@@ -41,6 +41,16 @@ impl<T> Poisonable for RuntimeMutex<T> {
     }
 }
 
+impl<T> Poisonable for alondra_core::clock::Monitor<T> {
+    type Guard<'a> = MutexGuard<'a, T> where T: 'a;
+    fn lock_or_recover(&self, what: &str) -> MutexGuard<'_, T> {
+        self.lock().or_recover(what, || self.clear_poison())
+    }
+    fn lock_or_exit(&self, what: &str) -> MutexGuard<'_, T> {
+        self.lock().or_exit(what)
+    }
+}
+
 pub trait PoisonableRw<T: ?Sized> {
     fn read_or_recover(&self, what: &str) -> RwLockReadGuard<'_, T>;
     fn write_or_recover(&self, what: &str) -> RwLockWriteGuard<'_, T>;
@@ -85,7 +95,7 @@ pub(crate) fn exit_after_panic(what: &str) -> ! {
 /// Leaves `lock` as a thread that panicked holding it does.
 #[cfg(any(test, feature = "test-hooks"))]
 pub fn poison<T: Send + ?Sized>(lock: &Mutex<T>) {
-    std::thread::scope(|scope| {
+    alondra_core::clock::scope(|scope| {
         let _ = scope.spawn(|| {
             let _held = lock.lock();
             panic!("a holder panics");
@@ -95,8 +105,19 @@ pub fn poison<T: Send + ?Sized>(lock: &Mutex<T>) {
 }
 
 #[cfg(any(test, feature = "test-hooks"))]
+pub fn poison_monitor<T: Send>(monitor: &alondra_core::clock::Monitor<T>) {
+    alondra_core::clock::scope(|scope| {
+        let _ = scope.spawn(|| {
+            let _held = monitor.lock();
+            panic!("a holder panics");
+        }).join();
+    });
+    assert!(monitor.lock().is_err());
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
 pub fn poison_rw<T: Send + Sync + ?Sized>(lock: &RwLock<T>) {
-    std::thread::scope(|scope| {
+    alondra_core::clock::scope(|scope| {
         let _ = scope.spawn(|| {
             let _held = lock.write();
             panic!("a holder panics");

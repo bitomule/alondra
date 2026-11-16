@@ -168,7 +168,7 @@ pub(crate) fn read_handed_notices(domain: &DomainRuntime) {
 /// command that holds the domain store. Back to back they kept the store from the HTTP server's
 /// two workers for seconds, so the sweep hands it back after each notice for as long as it held it.
 pub fn read_handed_notices_in_background(domain: &DomainRuntime) {
-    read_handed(domain, |held| std::thread::sleep(held.max(SWEEP_PAUSE)));
+    read_handed(domain, |held| alondra_core::clock::blocking_sleep(held.max(SWEEP_PAUSE)));
 }
 
 const SWEEP_PAUSE: Duration = Duration::from_millis(2);
@@ -191,11 +191,11 @@ fn read_handed(domain: &DomainRuntime, pause: impl Fn(Duration)) {
             command_id: format!("orchestrator-read-{id}").into(), expected_revision: state.revision,
             command: Command::MarkRead { interaction_id: id.as_str().into() },
         };
-        let started = std::time::Instant::now();
+        let started = alondra_core::clock::instant();
         if let Err(error) = domain.execute_as_system(envelope) {
             log!("could not mark the orchestrator's notice {id} read: {error:?}");
         }
-        pause(started.elapsed());
+        pause(alondra_core::clock::since(started));
     }
 }
 
@@ -519,7 +519,7 @@ impl Executor {
             loop {
                 if *stopped.borrow() || load(&self.home).is_ok_and(|runtime| runtime.cancel_requested) { break; }
                 tokio::select! {
-                    _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+                    _ = alondra_core::clock::sleep(Duration::from_secs(1)) => {},
                     changed = stopped.changed() => {
                         if changed.is_err() { std::future::pending::<()>().await; }
                     }
@@ -991,14 +991,14 @@ pub async fn run(domain: Arc<DomainRuntime>, home: PathBuf, claude_home: PathBuf
             }
             Err(error) => log!("orchestrator ownership: {error}"),
         }
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        alondra_core::clock::sleep(Duration::from_secs(5)).await;
     };
     loop {
         match executor.startup_recovery().await {
             Ok(_) => break,
             Err(error) => log!("orchestrator recovery will retry: {error:#}"),
         }
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        alondra_core::clock::sleep(Duration::from_secs(5)).await;
     }
     if let Some(session) = load(&home).ok().and_then(|runtime| runtime.session_id) {
         executor.bind_session(&session);
@@ -1009,12 +1009,12 @@ pub async fn run(domain: Arc<DomainRuntime>, home: PathBuf, claude_home: PathBuf
     loop {
         if let Err(error) = executor.supervised_tick(&mut watchdog).await {
             log!("orchestrator: {error:#}");
-            tokio::time::sleep(Duration::from_secs(5)).await;
+            alondra_core::clock::sleep(Duration::from_secs(5)).await;
         }
         tokio::select! {
             _ = changed.changed() => {},
             _ = usage.changed() => {},
-            _ = tokio::time::sleep(Duration::from_secs(10)) => {},
+            _ = alondra_core::clock::sleep(Duration::from_secs(10)) => {},
         }
     }
 }

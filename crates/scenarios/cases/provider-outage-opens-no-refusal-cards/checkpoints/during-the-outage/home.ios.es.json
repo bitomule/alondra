@@ -67,7 +67,7 @@
               "subtitle": "La API de Claude siguió fallando tras los reintentos de Claude Code. Alondra prueba una tarea cada 2 minutos; cuando Claude responda, siguen todas.",
               "timestamps": [
                 {
-                  "at": "<instant>",
+                  "at": "2026-11-15T09:00:00.000+00:00",
                   "format": "relative",
                   "role": "created"
                 }

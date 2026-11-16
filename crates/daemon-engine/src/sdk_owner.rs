@@ -1203,7 +1203,7 @@ pub(crate) fn close_hosts_of_ended_nodes(domain: &DomainRuntime, state: &DomainS
             continue;
         }
         log!("the node {agent} ended with its task, but its SDK host still runs: it is closed");
-        retakes.push((task, std::thread::spawn(move || {
+        retakes.push((task, alondra_core::clock::spawn_thread(move || {
             if let Err(failed) = runtime.close_sdk_host(&agent) {
                 log!("the SDK host of the ended node {agent} did not close: {failed}");
             }
@@ -1297,7 +1297,7 @@ fn retake_with_policy(domain: &DomainRuntime, task: TaskId,explicit_account_retr
     }
     #[cfg(any(test, feature = "test-hooks"))]
     let refusal = crate::domain_store::carried_refusal();
-    retakes.push((task.clone(), std::thread::spawn(move || {
+    retakes.push((task.clone(), alondra_core::clock::spawn_thread(move || {
         #[cfg(any(test, feature = "test-hooks"))]
         refusal();
         take_again(&runtime, &backend, &task, explicit_account_retry);
@@ -1391,7 +1391,7 @@ pub(crate) fn halt(domain: &DomainRuntime, task: TaskId, agent: AgentId) {
     if retakes.iter().any(|(taking, _)| *taking == task) {
         return;
     }
-    retakes.push((task.clone(), std::thread::spawn(move || {
+    retakes.push((task.clone(), alondra_core::clock::spawn_thread(move || {
         match runtime.halt_sdk_host(&agent) {
             None => return,
             Some(Ok(())) => log!("the SDK host of {task} and every process under it stopped for its pause"),
@@ -1443,7 +1443,7 @@ pub fn take_all(domain: &Arc<DomainRuntime>, backend: &SdkBackend) -> Vec<(TaskI
     let Ok(state) = domain.state() else { return Vec::new() };
     let tasks: Vec<TaskId> = state.tasks.keys().filter(|task| to_take(domain, &state, task)).cloned().collect();
     let plugin = crate::plugins::node_in(domain.home());
-    std::thread::scope(|scope| {
+    alondra_core::clock::scope(|scope| {
         let taking: Vec<_> = tasks
             .into_iter()
             .map(|task| {
@@ -1716,7 +1716,7 @@ impl Driver {
         }
         if handoff == Handoff::Offered {
             if let Some(since) = self.resuming_since.take() {
-                log!("{} resumed its released session: its host took the input {} ms after the work arrived", self.task, since.elapsed().as_millis());
+                log!("{} resumed its released session: its host took the input {} ms after the work arrived", self.task, alondra_core::clock::since(since).as_millis());
             }
             self.awaiting = Some(input.clone());
             self.replacement = false;
@@ -2357,127 +2357,121 @@ impl Owner {
         let domain_of_owner = Arc::clone(&domain);
         let ended = Arc::new(AtomicBool::new(false));
         let ending = Arc::clone(&ended);
-        let clock = alondra_core::clock::Clock::current();
-        let runtime = tokio::runtime::Handle::try_current().ok();
-        let thread = std::thread::Builder::new()
-            .name(format!("sdk-owner-{}", driver.task))
-            .spawn(move || {
-                let _clock = clock.enter();
-                let _runtime = runtime.as_ref().map(tokio::runtime::Handle::enter);
-                let told = || flag.load(Ordering::SeqCst);
-                let mut lost_because = None;
-                loop {
-                    while !told() && !driver.moves_to_this_release && !driver.releases {
-                        if releasing.load(Ordering::SeqCst) {
-                            match driver.settle_release() {
-                                Ok(settled) => if settled { releasing.store(false, Ordering::SeqCst) },
-                                Err(error) => {
-                                    releasing.store(false, Ordering::SeqCst);
-                                    log!("could not read what the host of {} said before closing it: {error}", driver.task);
-                                }
+        let thread = alondra_core::clock::spawn_named_thread(Some(format!("sdk-owner-{}", driver.task)), move || {
+            let told = || flag.load(Ordering::SeqCst);
+            let mut lost_because = None;
+            loop {
+                while !told() && !driver.moves_to_this_release && !driver.releases {
+                    if releasing.load(Ordering::SeqCst) {
+                        match driver.settle_release() {
+                            Ok(settled) => if settled { releasing.store(false, Ordering::SeqCst) },
+                            Err(error) => {
+                                releasing.store(false, Ordering::SeqCst);
+                                log!("could not read what the host of {} said before closing it: {error}", driver.task);
                             }
-                        }
-                        if driver.releases {
-                            break;
-                        }
-                        if let Err(error) = driver.step(&told) {
-                            // Told to stop, the owner ended its host itself: what the host's end
-                            // breaks in the step it was reading is that end, not a failure.
-                            if !told() {
-                                failed_step(&driver, &error);
-                            }
-                            break;
                         }
                     }
+                    if driver.releases {
+                        break;
+                    }
+                    if let Err(error) = driver.step(&told) {
+                        // Told to stop, the owner ended its host itself: what the host's end
+                        // breaks in the step it was reading is that end, not a failure.
+                        if !told() {
+                            failed_step(&driver, &error);
+                        }
+                        break;
+                    }
+                }
+                if told() {
+                    break;
+                }
+                if driver.releases {
+                    match driver.release_host() {
+                        Ok(()) => {
+                            ending.store(true, Ordering::SeqCst);
+                            log!("{} rests with nothing in its host: the host closed and its session waits for its next input", driver.task);
+                            return Ok(());
+                        }
+                        Err(error) => {
+                            log!("the host of {} closed, but the node did not stay without one: {error}", driver.task);
+                            driver.releases = false;
+                            driver.replacement = false;
+                            driver.host_closed = true;
+                        }
+                    }
+                }
+                let backend = driver.domain.sdk().map(|(backend, _)| backend.clone());
+                let Some(backend) = backend.filter(|_| driver.host_to_replace()) else {
+                    lost_because = driver.native_account_refusal.clone().or_else(|| Some(if driver.gave_up_starting() {
+                        format!("Claude did not start in its session in {} new hosts in a row", driver.silent_hosts + 1)
+                    } else {
+                        "its new host stopped before it could take the task's next message".to_owned()
+                    }));
+                    break;
+                };
+                let relaunches = if driver.replacement { driver.relaunches + 1 } else { 0 };
+                let silent_hosts = if driver.claude_session.is_some() { 0 } else { driver.silent_hosts + 1 };
+                if driver.replacement {
+                    driver.domain.seals.pause(pause_before_relaunch(driver.relaunches), &told);
                     if told() {
                         break;
                     }
-                    if driver.releases {
-                        match driver.release_host() {
-                            Ok(()) => {
-                                ending.store(true, Ordering::SeqCst);
-                                log!("{} rests with nothing in its host: the host closed and its session waits for its next input", driver.task);
-                                return Ok(());
-                            }
-                            Err(error) => {
-                                log!("the host of {} closed, but the node did not stay without one: {error}", driver.task);
-                                driver.releases = false;
-                                driver.replacement = false;
-                                driver.host_closed = true;
-                            }
-                        }
-                    }
-                    let backend = driver.domain.sdk().map(|(backend, _)| backend.clone());
-                    let Some(backend) = backend.filter(|_| driver.host_to_replace()) else {
-                        lost_because = driver.native_account_refusal.clone().or_else(|| Some(if driver.gave_up_starting() {
-                            format!("Claude did not start in its session in {} new hosts in a row", driver.silent_hosts + 1)
-                        } else {
-                            "its new host stopped before it could take the task's next message".to_owned()
-                        }));
+                } else if driver.silent_hosts > 0 {
+                    driver.domain.seals.pause(pause_before_relaunch(driver.silent_hosts - 1), &told);
+                    if told() {
                         break;
-                    };
-                    let relaunches = if driver.replacement { driver.relaunches + 1 } else { 0 };
-                    let silent_hosts = if driver.claude_session.is_some() { 0 } else { driver.silent_hosts + 1 };
-                    if driver.replacement {
-                        driver.domain.seals.pause(pause_before_relaunch(driver.relaunches), &told);
-                        if told() {
-                            break;
-                        }
-                    } else if driver.silent_hosts > 0 {
-                        driver.domain.seals.pause(pause_before_relaunch(driver.silent_hosts - 1), &told);
-                        if told() {
-                            break;
-                        }
-                    }
-                    let task = driver.task.clone();
-                    let plugin = driver.plugin.clone().or_else(|| crate::plugins::node_in(driver.domain.home()));
-                    let moved = driver.moves_to_this_release;
-                    let ended = driver.native_failure.take();
-                    let waited = relaunch_wait(driver.relaunches);
-                    let controls = std::mem::take(&mut driver.controls);
-                    match driver.replace_ended_host(&backend, plugin.as_deref()) {
-                        Ok(mut next) => {
-                            *current.lock_or_recover("the SDK host stop") = next.worker.stopper();
-                            next.relaunches = relaunches;
-                            next.silent_hosts = silent_hosts;
-                            if relaunches > 0 {
-                                let why = ended.map_or_else(|| "before taking its input".to_owned(), |failure| format!("before taking its input ({failure})"));
-                                log!("the new SDK host of {task} ended {why}: after {}s a new host that resumes the same session took its place (relaunch {relaunches})", waited.as_secs());
-                            } else if moved {
-                                next.controls.extend(controls);
-                                log!("{task} rested on the SDK host of the release before: a host of this release that resumes the same Claude session took its place");
-                            } else {
-                                log!("the SDK host of {task} ended under this daemon: a host that resumes the same Claude session took its place");
-                            }
-                            driver = next;
-                        }
-                        Err(Failed { why, .. }) => {
-                            ending.store(true, Ordering::SeqCst);
-                            lost(&domain_of_owner, &task, &why);
-                            return Ok(());
-                        }
                     }
                 }
-                // Told to stop, or ended by its own failure, the owner stops its host and waits for
-                // it: no host is left running with no owner. Only a daemon that exits whole leaves
-                // its hosts running, for the daemon that comes back to adopt.
-                if interrupting.load(Ordering::SeqCst)
-                    && let Some(host) = driver.worker.stopper()
-                    && let Err(error) = host.request_after_interrupt()
-                {
-                    log!("could not ask the SDK host of {} to interrupt its turn and stop: {error}", driver.task);
+                let task = driver.task.clone();
+                let plugin = driver.plugin.clone().or_else(|| crate::plugins::node_in(driver.domain.home()));
+                let moved = driver.moves_to_this_release;
+                let ended = driver.native_failure.take();
+                let waited = relaunch_wait(driver.relaunches);
+                let controls = std::mem::take(&mut driver.controls);
+                match driver.replace_ended_host(&backend, plugin.as_deref()) {
+                    Ok(mut next) => {
+                        *current.lock_or_recover("the SDK host stop") = next.worker.stopper();
+                        next.relaunches = relaunches;
+                        next.silent_hosts = silent_hosts;
+                        if relaunches > 0 {
+                            let why = ended.map_or_else(|| "before taking its input".to_owned(), |failure| format!("before taking its input ({failure})"));
+                            log!("the new SDK host of {task} ended {why}: after {}s a new host that resumes the same session took its place (relaunch {relaunches})", waited.as_secs());
+                        } else if moved {
+                            next.controls.extend(controls);
+                            log!("{task} rested on the SDK host of the release before: a host of this release that resumes the same Claude session took its place");
+                        } else {
+                            log!("the SDK host of {task} ended under this daemon: a host that resumes the same Claude session took its place");
+                        }
+                        driver = next;
+                    }
+                    Err(Failed { why, .. }) => {
+                        ending.store(true, Ordering::SeqCst);
+                        lost(&domain_of_owner, &task, &why);
+                        return Ok(());
+                    }
                 }
-                let stopped = driver.stop();
-                if let Err(error) = &stopped {
-                    log!("the SDK host of {} did not stop cleanly: {error}", driver.task);
-                }
-                if let Some(why) = lost_because {
-                    ending.store(true, Ordering::SeqCst);
-                    lost(&driver.domain, &driver.task, &why);
-                }
-                stopped
-            })
-            .expect("spawning the SDK owner");
+            }
+            // Told to stop, or ended by its own failure, the owner stops its host and waits for
+            // it: no host is left running with no owner. Only a daemon that exits whole leaves
+            // its hosts running, for the daemon that comes back to adopt.
+            if interrupting.load(Ordering::SeqCst)
+                && let Some(host) = driver.worker.stopper()
+                && let Err(error) = host.request_after_interrupt()
+            {
+                log!("could not ask the SDK host of {} to interrupt its turn and stop: {error}", driver.task);
+            }
+            let stopped = driver.stop();
+            if let Err(error) = &stopped {
+                log!("the SDK host of {} did not stop cleanly: {error}", driver.task);
+            }
+            if let Some(why) = lost_because {
+                ending.store(true, Ordering::SeqCst);
+                lost(&driver.domain, &driver.task, &why);
+            }
+            stopped
+        })
+        .expect("spawning the SDK owner");
         Self { stopped, ended, interrupt, release, domain, host, agent, state_directory, thread: Some(thread) }
     }
 

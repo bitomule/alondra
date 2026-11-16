@@ -54,7 +54,7 @@
           "badges": [
             {
               "elapsed": {
-                "since": "<instant>"
+                "since": "2026-11-15T09:00:06.000+00:00"
               },
               "text": "desde las 09:00",
               "tone": "neutral"
@@ -80,7 +80,7 @@
           "struck": false,
           "title": "Desde",
           "trailing": {
-            "at": "<instant>",
+            "at": "2026-11-15T09:00:06.000+00:00",
             "format": "relative",
             "kind": "time"
           },
@@ -95,11 +95,11 @@
         {
           "depth": 0,
           "icon": "history",
-          "id": "<instant>",
+          "id": "2026-11-15T09:00:06.000+00:00",
           "struck": false,
           "title": "Trabajando",
           "trailing": {
-            "at": "<instant>",
+            "at": "2026-11-15T09:00:06.000+00:00",
             "format": "relative",
             "kind": "time"
           },
@@ -125,7 +125,7 @@
           "struck": false,
           "title": "Último mensaje",
           "trailing": {
-            "at": "<instant>",
+            "at": "2026-11-15T09:00:06.000+00:00",
             "format": "relative",
             "kind": "time"
           },

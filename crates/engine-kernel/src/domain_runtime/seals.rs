@@ -5,22 +5,20 @@ use alondra_core::clock;
 use crate::locks::{Poisonable as _, AfterPanic as _};
 use alondra_core::domain::TaskId;
 use alondra_store::Committed;
-use std::sync::{Condvar, Mutex};
 
 #[derive(Default)]
 pub struct Seals {
     /// A holder that panics can leave it half-changed, so the daemon exits: `take_of` moves one-
     /// shot permits out by field; lost ones would strand a task, and a fresh start derives them
     /// again from the store.
-    queued: Mutex<Vec<Committed>>,
-    arrived: Condvar,
+    queued: clock::Monitor<Vec<Committed>>,
 }
 
 impl Seals {
     /// Called by the runtime only after it published the commit that issued `committed`.
     pub fn put(&self, committed: Committed) {
         self.queued.lock_or_exit("the SDK seals").push(committed);
-        self.arrived.notify_all();
+        self.queued.notify_all();
     }
 
     pub fn take(&self, task: &TaskId) -> Committed {
@@ -37,7 +35,7 @@ impl Seals {
             if !empty(&taken) || stopped() || left.is_zero() {
                 return taken;
             }
-            queued = self.arrived.wait_timeout(queued, left).or_exit("the SDK seals").0;
+            queued = self.queued.wait(queued, left).or_exit("the SDK seals");
         }
     }
 
@@ -50,7 +48,7 @@ impl Seals {
             if stopped() || left.is_zero() {
                 return;
             }
-            queued = self.arrived.wait_timeout(queued, left).or_exit("the SDK seals").0;
+            queued = self.queued.wait(queued, left).or_exit("the SDK seals");
         }
     }
 
@@ -74,7 +72,7 @@ impl Seals {
     /// Wakes every waiting owner, so one told to stop sees it.
     pub fn wake(&self) {
         let _queued = self.queued.lock_or_exit("the SDK seals");
-        self.arrived.notify_all();
+        self.queued.notify_all();
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
@@ -125,7 +123,7 @@ mod tests {
     fn queued_child() {
         if child_home().is_none() { return; }
         let seals = Seals::default();
-        crate::locks::poison(&seals.queued);
+        crate::locks::poison_monitor(&seals.queued);
         let _ = seals.take_all();
         unreachable!("the seals were taken while poisoned");
     }

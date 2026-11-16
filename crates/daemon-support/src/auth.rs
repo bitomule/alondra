@@ -173,7 +173,7 @@ impl Auth {
     pub fn new_pairing_code(&self) -> String {
         let code = random_hex(10);
         let mut p = self.pairing.lock_or_recover("the pairing codes");
-        p.retain(|_, t| t.elapsed() < PAIRING_TTL);
+        p.retain(|_, t| alondra_core::clock::since(*t) < PAIRING_TTL);
         p.insert(code.clone(), clock::instant());
         code
     }
@@ -181,7 +181,7 @@ impl Auth {
     pub fn pair(&self, code: &str, name: &str, public_key_b64: &str) -> Result<Device, String> {
         let valid = {
             let mut p = self.pairing.lock_or_recover("the pairing codes");
-            p.remove(code).is_some_and(|t| t.elapsed() < PAIRING_TTL)
+            p.remove(code).is_some_and(|t| alondra_core::clock::since(t) < PAIRING_TTL)
         };
         if !valid {
             return Err("pairing code expired or unknown".into());

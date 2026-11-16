@@ -1080,8 +1080,8 @@ async fn execute_command<H: DomainHost>(
             let started = clock::instant();
             let delivered = reviews.delivery_reviews().deliver(&interaction, fingerprint, move || producer_command(host, principal, token, envelope)).await;
             match &delivered {
-                Ok(_) => log!("present_result {interaction}: answered stored after {} ms", started.elapsed().as_millis()),
-                Err(error) => log!("present_result {interaction}: answered {} after {} ms", error.code, started.elapsed().as_millis()),
+                Ok(_) => log!("present_result {interaction}: answered stored after {} ms", alondra_core::clock::since(started).as_millis()),
+                Err(error) => log!("present_result {interaction}: answered {} after {} ms", error.code, alondra_core::clock::since(started).as_millis()),
             }
             return answered(delivered);
         }
@@ -1160,14 +1160,14 @@ impl Steps {
         let since = clock::instant();
         let done = work.await;
         if let Some(delivery) = &self.delivery {
-            log!("{delivery}: {step} took {} ms", since.elapsed().as_millis());
+            log!("{delivery}: {step} took {} ms", alondra_core::clock::since(since).as_millis());
         }
         done
     }
 
     fn ended(&self, outcome: Result<Value, DomainError>) -> Result<Value, DomainError> {
         if let Some(delivery) = &self.delivery {
-            let took = self.started.elapsed().as_millis();
+            let took = alondra_core::clock::since(self.started).as_millis();
             match &outcome {
                 Ok(_) => log!("{delivery}: stored, {took} ms in all"),
                 Err(error) => log!("{delivery}: refused {} after {took} ms: {}", error.code, error.message),

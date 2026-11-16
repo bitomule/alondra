@@ -116,10 +116,10 @@ pub(crate) async fn local(
 async fn logged(action_id: &str, client: &str, started: clock::Instant, response: Response) -> Response {
     let (parts, body) = response.into_parts();
     let Ok(bytes) = axum::body::to_bytes(body, crate::service::MAX_LOCAL_RESPONSE).await else {
-        log_result(action_id, client, parts.status.as_u16(), &Value::Null, started.elapsed());
+        log_result(action_id, client, parts.status.as_u16(), &Value::Null, alondra_core::clock::since(started));
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-    log_result(action_id, client, parts.status.as_u16(), &serde_json::from_slice(&bytes).unwrap_or(Value::Null), started.elapsed());
+    log_result(action_id, client, parts.status.as_u16(), &serde_json::from_slice(&bytes).unwrap_or(Value::Null), alondra_core::clock::since(started));
     Response::from_parts(parts, axum::body::Body::from(bytes))
 }
 
@@ -165,7 +165,7 @@ pub(crate) async fn relay(
     // bind the submitted command_id to the semantic action and actor.
     let (action_id, client_name, started) = (request.action_id.clone(), request.client.clone(), clock::instant());
     let response = execute_action(&client.domain, client, client.home(), sender, request, Some(identity), authorize).await?;
-    log_result(&action_id, &client_name, 200, &response, started.elapsed());
+    log_result(&action_id, &client_name, 200, &response, alondra_core::clock::since(started));
     Ok(json!({"status":200,"body":response}))
 }
 

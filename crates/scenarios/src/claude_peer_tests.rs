@@ -165,3 +165,20 @@ fn what_changes_on_every_run_does_not_make_a_command_a_mismatch() {
     assert!(matches!(reader.read().unwrap().unwrap().body, Body::Receipt(_)));
     assert!(started.seen.lock().unwrap().failure.is_none());
 }
+
+#[test]
+fn a_wait_on_the_hosts_ends_at_the_exchange_that_reaches_it_and_a_stall_ends_at_the_watchdog() {
+    let activity = Activity::default();
+    let reached = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let ticking = {
+        let (activity, reached) = (activity.clone(), reached.clone());
+        std::thread::spawn(move || {
+            reached.store(true, std::sync::atomic::Ordering::SeqCst);
+            activity.tick();
+        })
+    };
+    let waited = activity.wait_until(|| reached.load(std::sync::atomic::Ordering::SeqCst), std::time::Duration::from_secs(60));
+    ticking.join().unwrap();
+    assert!(waited);
+    assert!(!activity.wait_until(|| false, std::time::Duration::from_millis(1)));
+}

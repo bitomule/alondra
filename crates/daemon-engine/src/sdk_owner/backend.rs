@@ -238,13 +238,13 @@ fn version_of(native: &Path) -> Result<String> {
         .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null())
         .spawn().with_context(|| format!("running {} --version", native.display()))?;
     let mut stdout = child.stdout.take().expect("piped stdout");
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    let (sender, receiver) = alondra_core::clock::channel();
+    alondra_core::clock::spawn_thread(move || {
         let mut text = String::new();
         let _ = stdout.read_to_string(&mut text);
         let _ = sender.send(text);
     });
-    let Ok(text) = receiver.recv_timeout(VERSION_TIMEOUT) else {
+    let Ok(text) = alondra_core::clock::recv_timeout(&receiver, VERSION_TIMEOUT) else {
         let _ = child.kill();
         let _ = child.wait();
         bail!("Claude Code (`{} --version`) did not answer within {} s", native.display(), VERSION_TIMEOUT.as_secs());

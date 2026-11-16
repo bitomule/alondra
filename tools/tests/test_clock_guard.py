@@ -49,27 +49,69 @@ class GuardTest(unittest.TestCase):
             "use std::time::{Duration, Instant};",
             "use tokio::time::sleep;",
             "use tokio::time::{sleep, Duration};",
+            "let m = rx.recv_timeout(d);",
+            "let took = started.elapsed();",
+            "let g = cv.wait_timeout(g, d);",
+            "std::thread::spawn(move || work());",
+            "let t = std::thread::Builder::new();",
+            "std::thread::scope(|s| work(s));",
         ]:
             self.write("src/a.rs", f"fn f() {{\n    {line}\n}}\n")
             self.assertEqual(len(guard.problems(self.root)), 1, line)
 
     def test_a_reading_through_the_clock_passes(self):
-        self.write("src/a.rs", "use alondra_core::clock;\nfn f() { clock::instant(); clock::sleep(d); }\n")
+        self.write("src/a.rs", "use alondra_core::clock;\nfn f() { clock::instant(); clock::sleep(d); clock::since(t); "
+                   "clock::recv_timeout(&rx, d); clock::spawn_thread(f); clock::Monitor::wait(&m, g, d); clock::scope(|s| s); }\n")
         self.assertEqual(guard.problems(self.root), [])
 
     def test_a_reading_in_the_last_line_of_a_multiline_import_is_named(self):
         self.write("src/a.rs", "use std::time::{\n    Duration,\n    Instant,\n};\n")
         self.assertEqual(len(guard.problems(self.root)), 1)
 
+    def test_a_reading_under_an_alias_is_named(self):
+        for text in [
+            "use std::time::SystemTime as Wall;\nfn f() { Wall::now(); }\n",
+            "use std::time::{SystemTime as Wall};\nfn f() { Wall::now(); }\n",
+            "type Wall = std::time::SystemTime;\nfn f() { Wall::now(); }\n",
+            "use std::thread as threads;\nfn f() { threads::sleep(d); }\n",
+            "use std::thread::{self as threads};\nfn f() { threads::spawn(w); }\n",
+            "use tokio::time as timers;\nfn f() { timers::sleep(d); }\n",
+            "use std::time as times;\nfn f() { let a: times::Instant = x; }\n",
+            "use core::time;\nfn f() { let a: time::Instant = x; }\n",
+            "use std as standard;\nfn f() { standard::thread::sleep(d); }\n",
+        ]:
+            self.write("src/a.rs", text)
+            self.assertEqual(len(guard.problems(self.root)), 1, text)
+
+    def test_only_the_item_a_cfg_test_marks_is_outside_the_guard(self):
+        self.write("src/a.rs", "#[cfg(test)]\nmod early;\nfn f() { std::thread::sleep(d); }\n")
+        self.assertEqual(guard.problems(self.root), ["crates/daemon-engine/src/a.rs:3: thread::sleep: use clock::blocking_sleep()"])
+        self.write("src/a.rs", "#[cfg(test)]\nfn helper() { let a = \"}\"; }\nfn f() { let a = Instant::now(); }\n")
+        self.assertEqual(len(guard.problems(self.root)), 1)
+        self.write("src/a.rs", "#[cfg(test)]\n#[path = \"x.rs\"]\nmod x;\nfn f() { let a = Instant::now(); }\n")
+        self.assertEqual(len(guard.problems(self.root)), 1)
+        self.write("src/a.rs", "#[cfg(any(test, feature = \"hooks\"))]\nfn f() { let a = Instant::now(); }\n")
+        self.assertEqual(len(guard.problems(self.root)), 1)
+
     def test_test_code_is_outside_the_guard(self):
         self.write("src/a_tests.rs", "fn f() { std::thread::sleep(d); }\n")
         self.write("tests/b.rs", "fn f() { std::thread::sleep(d); }\n")
         self.write("src/c.rs", "fn f() {}\n#[cfg(test)]\nmod tests { fn t() { std::thread::sleep(d); } }\n")
+        self.write("src/lib.rs", "#[cfg(test)]\n#[path = \"d/fixture.rs\"]\nmod fixture;\n#[cfg(test)]\nmod e;\n")
+        self.write("src/d/fixture.rs", "fn f() { std::thread::sleep(d); }\n")
+        self.write("src/e.rs", "mod inner;\nfn f() { std::thread::sleep(d); }\n")
+        self.write("src/e/inner.rs", "fn f() { std::thread::sleep(d); }\n")
         self.assertEqual(guard.problems(self.root), [])
 
-    def test_a_comment_mentioning_a_call_passes(self):
-        self.write("src/a.rs", "// never Instant::now() here\nfn f() {}\n")
+    def test_a_comment_or_a_literal_mentioning_a_call_passes(self):
+        self.write("src/a.rs", "// never Instant::now() here\n/* nor thread::sleep(d) */\nfn f() { let s = \"Instant::now()\"; let r = r#\"rx.recv_timeout(d)\"#; }\n")
         self.assertEqual(guard.problems(self.root), [])
+
+    def test_a_literal_does_not_hide_the_code_after_it(self):
+        self.write("src/a.rs", "fn f() { let u = \"https://example.com\"; let a = Instant::now(); }\n")
+        self.assertEqual(len(guard.problems(self.root)), 1)
+        self.write("src/a.rs", "fn f<'a>(c: char) { let q = '\"'; let a = Instant::now(); }\n")
+        self.assertEqual(len(guard.problems(self.root)), 1)
 
 
 if __name__ == "__main__":

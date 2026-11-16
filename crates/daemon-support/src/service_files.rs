@@ -122,7 +122,7 @@ impl Transfers {
             return download(home, serde_json::from_value(body)?);
         }
         let mut transfers = self.0.lock_or_recover("the file transfers");
-        transfers.retain(|_, t| t.touched.elapsed() < TTL);
+        transfers.retain(|_, t| alondra_core::clock::since(t.touched) < TTL);
         if route == "/v1/service/uploads/start" {
             let b: Start = serde_json::from_value(body)?;
             ensure!(valid_id(&b.transfer_id), "invalid transfer ID");

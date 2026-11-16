@@ -140,7 +140,7 @@ pub(crate) async fn chosen(domain: &std::sync::Arc<crate::domain_runtime::Domain
     let settings = domain.hook_work.run(move || remember(&recording, cwd.as_deref(), &offered, task_id.as_deref(), &interaction_id)).await?;
     let Some(settings) = settings else { return Ok(()) };
     let started = clock::instant();
-    while started.elapsed() < WRITE_WAIT {
+    while alondra_core::clock::since(started) < WRITE_WAIT {
         let settings = settings.clone();
         let offered = rules.to_vec();
         let written = domain.hook_work.run(move || {

@@ -45,11 +45,11 @@ fn send_again(cli: &Path, home: &Path, id: &str) {
         .spawn();
     let Ok(mut child) = child else { return };
     let pid = child.id();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    let (tx, rx) = alondra_core::clock::channel();
+    alondra_core::clock::spawn_thread(move || {
         let _ = tx.send(child.wait());
     });
-    if rx.recv_timeout(ONE_TRY).is_err() {
+    if alondra_core::clock::recv_timeout(&rx, ONE_TRY).is_err() {
         unsafe { libc::kill(pid as i32, libc::SIGKILL) };
     }
 }

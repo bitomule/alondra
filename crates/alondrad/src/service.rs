@@ -432,7 +432,7 @@ fn parse_push_preferences(
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now()
+    alondra_core::clock::system_time()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64

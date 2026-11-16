@@ -46,7 +46,7 @@
           "subtitle": "Claude Code no puede usar la API de Claude hasta que se arregle fuera de Alondra. Arréglalo y dile a la tarea que siga, o cancélala.",
           "timestamps": [
             {
-              "at": "<instant>",
+              "at": "2026-11-15T09:03:30.000+00:00",
               "format": "relative",
               "role": "created"
             }
@@ -151,7 +151,7 @@
           "subtitle": "Claude Code no puede usar la API de Claude hasta que se arregle fuera de Alondra. Arréglalo y dile a la tarea que siga, o cancélala.",
           "timestamps": [
             {
-              "at": "<instant>",
+              "at": "2026-11-15T09:03:30.000+00:00",
               "format": "relative",
               "role": "created"
             }

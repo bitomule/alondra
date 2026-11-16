@@ -107,14 +107,11 @@ struct Peer {
     seen: Arc<Mutex<Seen>>,
     activity: Activity,
     hosts: usize,
-    /// The real milliseconds the runner may still wait for a host that has lines left to play.
-    patience: Arc<std::sync::atomic::AtomicU64>,
 }
 
-/// Real time a scenario may spend, in all, waiting for the threads of its hosts: a transcript that
-/// is never played to its end ends the run with its failure, not a hang.
-const PATIENCE_MS: u64 = 20_000;
-
+/// Only a hang ends a wait for the hosts: a run whose hosts stop short of their transcripts fails
+/// naming what is left, instead of waiting for the test's own limit.
+const WATCHDOG: Duration = Duration::from_secs(120);
 
 /// The SDK host of a task as the scenario plays it: what its provider process reports to the
 /// daemon, through the commands the daemon records the host's observations with.
@@ -149,6 +146,11 @@ struct Context<'a> {
 }
 
 async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnce(&Launcher)) -> Result<(Outcome, Option<ScenarioError>), ScenarioError> {
+    // Tokio jumps a paused clock to its next timer whenever the runtime waits, as it does on a view
+    // read over HTTP, unless a blocking task runs: one runs for the whole scenario, so virtual time
+    // moves only when a step moves it.
+    let (thaw, frozen) = std::sync::mpsc::channel::<()>();
+    let freeze = tokio::task::spawn_blocking(move || frozen.recv().ok());
     let budget = parse_duration(&scenario.max_virtual)?;
     let home = tempfile::Builder::new().prefix("sc-").tempdir_in(short_root()).map_err(|error| ScenarioError::Invalid(error.to_string()))?;
     let invalid = |error: &dyn std::fmt::Display| ScenarioError::Invalid(error.to_string());
@@ -180,7 +182,7 @@ async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnc
         let (seen, activity) = (peer.seen.clone(), peer.activity.clone());
         let launcher = Launcher::new(peer);
         let backend = codex_backend(&config.home, launcher.clone()).map_err(|e| invalid(&e))?;
-        (launcher, Backend::Given(Some(backend)), Some(Peer { seen, activity, hosts: codex.len(), patience: Arc::new(std::sync::atomic::AtomicU64::new(PATIENCE_MS)) }))
+        (launcher, Backend::Given(Some(backend)), Some(Peer { seen, activity, hosts: codex.len() }))
     };
     probe(&launcher);
     let seams = seams_of(&github, &pushes, launcher, backend);
@@ -211,6 +213,8 @@ async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnc
         outcome: Outcome { checkpoints: Vec::new() },
     };
     let result = steps(&mut context).await;
+    drop(thaw);
+    freeze.await.ok();
     if let Some(daemon) = &context.daemon {
         daemon.tasks.abort();
         let domain = daemon.domain.clone();
@@ -480,38 +484,28 @@ impl Context<'_> {
         }
     }
 
-    /// The host's thread and the daemon's owner of it run in real time, beside the virtual clock:
-    /// waits, in the runtime's blocking pool (which keeps the clock from jumping), until the frames
-    /// between them stop for a moment, so the next step reads what the daemon did with them.
-    async fn settle_peer(&self) {
-        let Some(peer) = &self.peer else { return };
-        let (activity, seen, patience, hosts) = (peer.activity.clone(), peer.seen.clone(), peer.patience.clone(), peer.hosts);
-        tokio::task::spawn_blocking(move || {
-            let played = || {
+    /// The hosts and the daemon's owners of them answer each other at once, without virtual time
+    /// passing: once the first host started, the runner waits, on each exchange of frames, until
+    /// every host of the scenario played its transcript and the daemon committed what each said, so
+    /// the next step reads what the daemon did with them. The wait is in the runtime's blocking
+    /// pool, which keeps the clock where it is.
+    async fn settle_peer(&self) -> Result<(), ScenarioError> {
+        let Some(peer) = &self.peer else { return Ok(()) };
+        let (activity, seen, hosts) = (peer.activity.clone(), peer.seen.clone(), peer.hosts);
+        let settled = tokio::task::spawn_blocking(move || {
+            let reached = || {
                 let seen = seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                seen.remaining.len() == hosts && seen.unplayed() == 0
+                seen.remaining.is_empty() || seen.failure.is_some() || seen.played(hosts)
             };
-            let (mut last, mut calm) = (activity.count(), 0);
-            loop {
-                std::thread::sleep(Duration::from_millis(2));
-                let now = activity.count();
-                if now != last {
-                    (last, calm) = (now, 0);
-                    continue;
-                }
-                calm += 1;
-                if calm < 4 {
-                    continue;
-                }
-                let left = patience.load(std::sync::atomic::Ordering::SeqCst);
-                if played() || left == 0 {
-                    return;
-                }
-                patience.store(left.saturating_sub(2), std::sync::atomic::Ordering::SeqCst);
-            }
+            activity.wait_until(reached, WATCHDOG)
         })
         .await
-        .ok();
+        .unwrap_or(false);
+        if settled {
+            return Ok(());
+        }
+        let seen = peer.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        Err(ScenarioError::HostsStalled { started: seen.remaining.len(), expected: hosts, remaining: seen.remaining.clone() })
     }
 
     /// The task's node starts on Codex as a launch in production starts it: the daemon picks the
@@ -693,7 +687,7 @@ impl Context<'_> {
         for _ in 0..16 {
             tokio::task::yield_now().await;
         }
-        self.settle_peer().await;
+        self.settle_peer().await?;
         self.play_nodes(index)
     }
 

@@ -49,7 +49,7 @@ pub(crate) struct Client {
     home: PathBuf,
     pub(crate) gauges: crate::machine::Gauges,
     /// A holder that panics leaves it whole, so it is recovered: `views::live` empties it instead.
-    pub(crate) views_gauges: std::sync::Mutex<Option<(std::time::Instant, Vec<alondra_core::views::Gauge>, Vec<alondra_core::views::Gauge>)>>,
+    pub(crate) views_gauges: std::sync::Mutex<Option<(alondra_core::clock::Instant, Vec<alondra_core::views::Gauge>, Vec<alondra_core::views::Gauge>)>>,
     pub(crate) details: pr_details::PrDetails,
     /// A holder that panics leaves it whole, so it is recovered: one `Arc` swapped or cloned.
     pr_view: std::sync::Mutex<Arc<dyn PrView>>,
@@ -382,7 +382,7 @@ impl Client {
                 }
                 Err(error) => log!("could not read pull requests for their details: {error:#}"),
             }
-            tokio::time::sleep(DETAILS_INTERVAL).await;
+            alondra_core::clock::sleep(DETAILS_INTERVAL).await;
         }
     }
 

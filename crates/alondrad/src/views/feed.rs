@@ -217,7 +217,7 @@ pub(crate) async fn handle(
                 .as_deref()
                 .and_then(decode_cursor)
                 .is_some_and(|c| c.3 != current.status.version);
-        if changed || started.elapsed() >= Duration::from_secs(wait) {
+        if changed || alondra_core::clock::since(started) >= Duration::from_secs(wait) {
             remove_waiter(client, device, generation);
             return Json(Reply {
                 protocol: VIEWS_PROTOCOL,
@@ -232,7 +232,7 @@ pub(crate) async fn handle(
             .into_response();
         }
         previous = Some(current.clone());
-        let timeout = clock::sleep(Duration::from_secs(wait).saturating_sub(started.elapsed()));
+        let timeout = clock::sleep(Duration::from_secs(wait).saturating_sub(alondra_core::clock::since(started)));
         tokio::pin!(timeout);
         tokio::select! {
             _ = &mut cancel_rx => {

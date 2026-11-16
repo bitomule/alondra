@@ -610,7 +610,7 @@ async fn gather_inner(
     let sample = client.gauges.lock_or_recover("the machine gauges").clone();
     let gauges = if let Some((machine, _, providers)) = sample {
         let mut published = cache(&client.views_gauges);
-        published_gauges(&mut published, std::time::Instant::now(), lang, || (
+        published_gauges(&mut published, alondra_core::clock::instant(), lang, || (
             gauges(&machine, &providers, Lang::En, machine.at),
             gauges(&machine, &providers, Lang::Es, machine.at),
         ))
@@ -972,8 +972,8 @@ fn activity_source_revision(client: &crate::client_routes::Client, id: &str) -> 
 }
 
 fn published_gauges(
-    published: &mut Option<(std::time::Instant, Vec<Gauge>, Vec<Gauge>)>,
-    now: std::time::Instant,
+    published: &mut Option<(alondra_core::clock::Instant, Vec<Gauge>, Vec<Gauge>)>,
+    now: alondra_core::clock::Instant,
     lang: Lang,
     compute: impl FnOnce() -> (Vec<Gauge>, Vec<Gauge>),
 ) -> Vec<Gauge> {
@@ -1512,7 +1512,7 @@ mod cache_tests {
 
     #[test]
     fn published_gauges_debounce_for_a_minute_and_ignore_invisible_values() {
-        let now = std::time::Instant::now();
+        let now = alondra_core::clock::instant();
         let mut published = None;
         let gauge = |text: &str, value: f64| Gauge {
             id: "usage".into(), label: "Usage".into(), value, text: text.into(),
@@ -2084,7 +2084,7 @@ mod tests {
             cpu_usage: cpu, disk_total: 1_000, disk_available: 120, disk_purgeable: 0, unreliable: false };
         let usage = |today: f64| vec![provider(Provider::Claude, vec![line("Principal", AccountStand::CanWork, Some(30.0), None, Some((today, 15.0)))])];
         let sample = |m: &alondra_core::Machine, u: &[ProviderUsage]| (gauges(m, u, Lang::En, NOW), gauges(m, u, Lang::Es, NOW));
-        let start = std::time::Instant::now();
+        let start = alondra_core::clock::instant();
         let minute = |n: u64| start + std::time::Duration::from_secs(60 * n);
         let mut published = None;
         let first = published_gauges(&mut published, start, Lang::En, || sample(&machine(61, 21.0), &usage(2.0)));

@@ -128,8 +128,8 @@ pub(crate) fn run(backend: &SdkBackend, removal: &Removal, directory: &Path) -> 
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0)
         .spawn().map_err(|error| format!("could not start Claude Code: {error}"))?;
     let read = |mut pipe: Box<dyn Read + Send>| {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
+        let (sender, receiver) = alondra_core::clock::channel();
+        alondra_core::clock::spawn_thread(move || {
             let mut output = String::new();
             let _ = (&mut pipe).take(MAX_OUTPUT).read_to_string(&mut output);
             let _ = sender.send(output);
@@ -139,9 +139,9 @@ pub(crate) fn run(backend: &SdkBackend, removal: &Removal, directory: &Path) -> 
     let stdout = read(Box::new(child.stdout.take().expect("piped stdout")));
     let stderr = read(Box::new(child.stderr.take().expect("piped stderr")));
     let started = clock::instant();
-    let output = stderr.recv_timeout(DEADLINE).and_then(|errors| {
-        let left = DEADLINE.saturating_sub(started.elapsed());
-        stdout.recv_timeout(left).map(|output| format!("{output}{errors}"))
+    let output = alondra_core::clock::recv_timeout(&stderr, DEADLINE).and_then(|errors| {
+        let left = DEADLINE.saturating_sub(alondra_core::clock::since(started));
+        alondra_core::clock::recv_timeout(&stdout, left).map(|output| format!("{output}{errors}"))
     });
     let Ok(output) = output else {
         // SAFETY: Claude leads its own process group.
