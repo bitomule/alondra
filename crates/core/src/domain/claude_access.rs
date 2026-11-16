@@ -350,7 +350,7 @@ impl DomainState {
             return Ok(None);
         };
         self.withdraw_hold(&probe.card);
-        self.resume_held(&probe, lifecycles)?;
+        self.resume_held(&probe, None, lifecycles)?;
         Ok(Some(probe.task))
     }
 
@@ -363,7 +363,7 @@ impl DomainState {
             if account.provider == Provider::Codex && held.task != *source { continue; }
             if held.provider == account.provider && (held.hold == ClaudeHold::Outage || held.account == account.account) {
                 self.withdraw_hold(&held.card);
-                self.resume_held(&held, lifecycles)?;
+                self.resume_held(&held, None, lifecycles)?;
             }
         }
         if let Some(status) = self.accounts.iter_mut().find(|status| status.provider == account.provider && status.id == account.account && status.state == AccountState::SignedOut) {
@@ -374,16 +374,26 @@ impl DomainState {
         Ok(())
     }
 
-    /// The user answered a hold's card: its task goes on as the probe. False for any other card.
-    pub(super) fn settle_claude_card(&mut self, card: &InteractionId, lifecycles: &mut Lifecycles) -> Result<bool, DomainError> {
+    /// The user answered a hold's card: its task goes on as the probe, told what they wrote on the
+    /// card as a message of theirs the node has yet to answer. False for any other card.
+    pub(super) fn settle_claude_card(&mut self, card: &InteractionId, written: Option<&str>, lifecycles: &mut Lifecycles) -> Result<bool, DomainError> {
         if self.claude_hold(card).is_none() {
             return Ok(false);
         }
         if self.interactions.get(card).is_some_and(|card| !self.current_hold_credentials(card)) {
             return Err(DomainError::new("account_credentials_changed", "This node belongs to an earlier sign-in and stays paused. Create a new node for the current account credentials."));
         }
-        if let Some(held) = self.claude_held().into_iter().find(|held| held.card == *card) {
-            self.resume_held(&held, lifecycles)?;
+        let written = written.map(str::trim).filter(|text| !text.is_empty());
+        let Some(held) = self.claude_held().into_iter().find(|held| held.card == *card) else {
+            if written.is_some() {
+                return Err(DomainError::new(CLOSING, "This task is closing, so what you wrote reaches no node. Send it as a new request."));
+            }
+            return Ok(true);
+        };
+        let input = self.next_input(&held.task);
+        self.resume_held(&held, written, lifecycles)?;
+        if written.is_some() {
+            self.awaits_answer_to_user(&held.task, input);
         }
         Ok(true)
     }
@@ -448,7 +458,7 @@ impl DomainState {
         }
         self.withdraw_hold(&held.card);
         if self.lifecycle(lifecycles, task)?.pending_inputs().is_empty() {
-            return self.resume_held(&held, lifecycles);
+            return self.resume_held(&held, None, lifecycles);
         }
         self.decide(lifecycles, task, LifecycleRecord::PauseEnded { card: held.card.clone() })
     }
@@ -543,8 +553,13 @@ impl DomainState {
         }
     }
 
-    fn resume_held(&mut self, held: &ClaudeHeld, lifecycles: &mut Lifecycles) -> Result<(), DomainError> {
-        let record = LifecycleRecord::Resumed { card: held.card.clone(), input: self.next_input(&held.task), text: Some(if held.provider==Provider::Claude {held.hold.go_on()} else {"Continue your existing task. Alondra manages provider waits; do not poll, sleep or schedule a retry yourself."}.into()) };
+    fn resume_held(&mut self, held: &ClaudeHeld, written: Option<&str>, lifecycles: &mut Lifecycles) -> Result<(), DomainError> {
+        let mut text = String::from(if held.provider == Provider::Claude { held.hold.go_on() } else { "Continue your existing task. Alondra manages provider waits; do not poll, sleep or schedule a retry yourself." });
+        if let Some(written) = written {
+            text.push_str("\n\nThe user wrote: ");
+            text.push_str(written);
+        }
+        let record = LifecycleRecord::Resumed { card: held.card.clone(), input: self.next_input(&held.task), text: Some(text) };
         self.decide(lifecycles, &held.task, record)
     }
 }

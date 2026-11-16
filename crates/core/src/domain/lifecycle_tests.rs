@@ -1287,6 +1287,22 @@ fn an_expired_sign_in_leaves_its_account_signed_out_until_claude_answers_on_it()
     assert_aggregate_rules(&s);
 }
 
+// What the user writes on the sign-in card is a message of theirs: the node is told it, and the
+// task is not finished until the node answers it, even when its delivery already merged.
+#[test]
+fn text_written_on_the_sign_in_card_reaches_the_node_as_a_pending_user_message() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    fail_turn(&mut s, "t", "turn-1", "authentication_failed", Some(401));
+    let card = s.claude_held().into_iter().find(|held| held.task.0 == "t").unwrap().card;
+    let inputs = BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text("  Rename the column ".into()))]);
+    must(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: card, option_id: SIGNED_IN.into(), inputs });
+    let Some(LifecycleRecord::Resumed { input, text, .. }) = s.lifecycle_journal[&TaskId::from("t")].last().cloned() else { panic!("t was not resumed") };
+    assert_eq!(text.as_deref(), Some(format!("{GO_ON}\n\nThe user wrote: Rename the column").as_str()));
+    assert!(s.tasks[&TaskId::from("t")].pending_user_inputs.contains(&input), "the node owes the user an answer");
+    assert_aggregate_rules(&s);
+}
+
 #[test]
 fn a_refusal_signing_in_cannot_fix_asks_on_the_tasks_own_card_with_its_reason() {
     for (error, status, reason) in [("billing_error", Some(400), "the Claude account has a billing problem")] {

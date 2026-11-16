@@ -1,0 +1,75 @@
+name = "a reply to an integrated delivery after the login expired reaches the node once the user signed in again"
+max_virtual = "4h"
+
+[[step]]
+do = "request"
+text = "Export the report as CSV"
+task = "t1"
+title = "Add the CSV export"
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "github"
+event = "open_pr"
+number = 7
+head = "csv-export"
+base = "main"
+
+[[step]]
+do = "register_pr"
+task = "t1"
+number = 7
+
+[[step]]
+do = "present"
+task = "t1"
+id = "d1"
+prs = [7]
+body = "The CSV export is ready"
+
+[[step]]
+do = "login_expired"
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "github"
+event = "merge_externally"
+number = 7
+
+[[step]]
+do = "advance"
+by = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "signed-out"
+screens = ["home", "task:t1"]
+
+[[step]]
+do = "login_restored"
+
+[[step]]
+do = "answer"
+card = "claude-signed-out"
+option = "signed_in"
+text = "Rename the column"
+
+[[step]]
+do = "rest"
+max = "30m"
+
+[[step]]
+do = "checkpoint"
+name = "signed-in-again"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "task_state"
+task = "t1"
+state = "running"

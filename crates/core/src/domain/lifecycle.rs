@@ -2559,6 +2559,12 @@ impl DomainState {
         }
     }
 
+    /// Every PR of its delivery merged and the user wrote to it since: nothing is left to review,
+    /// and its node works on what they wrote.
+    fn answers_user_after_merge(&self, t: &Task, p: &Interaction) -> bool {
+        self.merged_delivery(p) && self.open_prs(t).next().is_none() && self.pending_user_message(p, &FeedbackTarget::Delivery)
+    }
+
     /// Its PR merged and its node still works on what it declared comes after.
     pub fn works_after_merge(&self, t: &Task) -> bool {
         t.wrap_up.post_merge_work.is_some() && (t.ending == Some(TaskEnding::Completing) || self.finished(t))
@@ -2594,7 +2600,7 @@ impl DomainState {
                 self.after_merge_state(t)
             } else if self.accepted(p) {
                 TaskState::WaitingDependency
-            } else if self.handed_back(p).is_some() || !t.blocks.is_empty() {
+            } else if self.handed_back(p).is_some() || !t.blocks.is_empty() || self.answers_user_after_merge(t, p) {
                 if t.started || t.agent_id.is_some() { TaskState::Running } else { TaskState::NotStarted }
             } else if !self.open_blockers(&t.id).is_empty() {
                 TaskState::AwaitingBlocker

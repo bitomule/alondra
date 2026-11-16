@@ -1,0 +1,347 @@
+{
+  "client": "tui",
+  "cursor": "<cursor>",
+  "data_epoch": "<data_epoch>",
+  "key": "task:t1",
+  "protocol": 1,
+  "sections": [
+    {
+      "collapsed": false,
+      "id": "header",
+      "items": [
+        {
+          "items": [
+            {
+              "kind": "state",
+              "label": "Estado",
+              "tone": "accent",
+              "value": "Trabajando · Turno en marcha desde las 09:05"
+            }
+          ],
+          "type": "facts"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "id": "elapsed",
+      "items": [
+        {
+          "badges": [
+            {
+              "elapsed": {
+                "since": "<instant>"
+              },
+              "text": "desde las 09:00",
+              "tone": "neutral"
+            }
+          ],
+          "depth": 0,
+          "icon": "history",
+          "id": "elapsed",
+          "struck": false,
+          "title": "En marcha",
+          "type": "row"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "id": "since",
+      "items": [
+        {
+          "depth": 0,
+          "icon": "history",
+          "id": "since",
+          "struck": false,
+          "title": "Desde",
+          "trailing": {
+            "at": "<instant>",
+            "format": "relative",
+            "kind": "time"
+          },
+          "type": "row"
+        }
+      ]
+    },
+    {
+      "collapsed": true,
+      "id": "request",
+      "items": [
+        {
+          "commentable": false,
+          "text": "Export the report as CSV",
+          "truncated": false,
+          "type": "markdown"
+        }
+      ],
+      "title": "Solicitud"
+    },
+    {
+      "collapsed": false,
+      "id": "pull_requests",
+      "items": [
+        {
+          "depth": 0,
+          "icon": "pull_request",
+          "id": "pr7",
+          "link": {
+            "key": "pull_request:pr7",
+            "kind": "view"
+          },
+          "struck": false,
+          "subtitle": "csv-export → main",
+          "title": "1 · Pull request 7",
+          "type": "row"
+        }
+      ],
+      "title": "Solicitudes de cambios"
+    },
+    {
+      "collapsed": false,
+      "id": "options",
+      "items": [
+        {
+          "items": [
+            {
+              "kind": "priority",
+              "label": "Prioridad",
+              "value": "Normal"
+            },
+            {
+              "label": "Gestión de PR",
+              "value": "La revisas tú; al aceptarla, Alondra hace el merge"
+            }
+          ],
+          "type": "facts"
+        }
+      ],
+      "title": "Opciones"
+    },
+    {
+      "collapsed": false,
+      "id": "actions",
+      "items": [
+        {
+          "actions": [
+            {
+              "attachments": true,
+              "enabled": true,
+              "id": "msg:agent-t1@<revision>~t1",
+              "input": {
+                "kind": "text",
+                "multiline": true,
+                "placeholder": "Escribe al nodo de esta tarea…",
+                "required": true
+              },
+              "key": "r",
+              "label": "Mensaje",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "neutral",
+              "style": "secondary"
+            },
+            {
+              "attachments": false,
+              "confirm": {
+                "button": "Interrumpir",
+                "message": "¿Detener lo que hace ahora este nodo? Conserva su tarea y te espera.",
+                "title": "Interrumpir"
+              },
+              "enabled": true,
+              "id": "interrupt:agent-t1@<revision>",
+              "input": {
+                "kind": "none"
+              },
+              "key": "i",
+              "label": "Interrumpir",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "neutral",
+              "style": "secondary"
+            },
+            {
+              "attachments": false,
+              "confirm": {
+                "button": "Pausar",
+                "message": "Deja lo que está ejecutando ahora y conserva su tarea. Alondra no lo reanuda solo: solo tú.",
+                "title": "¿Pausar este nodo?"
+              },
+              "enabled": true,
+              "id": "pause:agent-t1@<revision>",
+              "input": {
+                "kind": "none"
+              },
+              "key": "p",
+              "label": "Pausar",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "neutral",
+              "stamp": "En pausa",
+              "style": "secondary"
+            },
+            {
+              "attachments": false,
+              "enabled": true,
+              "id": "set_priority:t1@<revision>",
+              "input": {
+                "kind": "none"
+              },
+              "key": "P",
+              "label": "Prioridad",
+              "options": [
+                {
+                  "description": "Arranca antes que Normal y Baja",
+                  "id": "high",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "Alta",
+                  "style": "secondary"
+                },
+                {
+                  "description": "La de siempre",
+                  "id": "normal",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "Normal · ahora",
+                  "style": "secondary"
+                },
+                {
+                  "description": "Arranca cuando no espera nada más",
+                  "id": "low",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "Baja",
+                  "style": "secondary"
+                }
+              ],
+              "presentation": "menu",
+              "resolves_card": false,
+              "role": "neutral",
+              "style": "secondary"
+            },
+            {
+              "attachments": false,
+              "confirm": {
+                "button": "Cancelar tarea",
+                "message": "¿Cancelar esta tarea?",
+                "title": "Cancelar tarea"
+              },
+              "enabled": true,
+              "id": "cancel:t1@<revision>",
+              "input": {
+                "kind": "none"
+              },
+              "key": "x",
+              "label": "Cancelar tarea",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "risk",
+              "style": "destructive"
+            }
+          ],
+          "type": "actions"
+        }
+      ]
+    }
+  ],
+  "service": {
+    "capabilities": [
+      "account_presentation",
+      "model_selection",
+      "provider_accounts"
+    ],
+    "version": "<version>",
+    "views_protocol": {
+      "max": 1,
+      "min": 1
+    }
+  },
+  "status": {
+    "badge": 0,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 0
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 1
+      },
+      {
+        "id": "needs_you",
+        "label": "esperando por ti",
+        "value": 0
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
+        "value": 0
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "RAM",
+        "level": "calm",
+        "text": "25%",
+        "value": 0.25
+      },
+      {
+        "id": "cpu",
+        "label": "CPU",
+        "level": "calm",
+        "text": "5%",
+        "value": 0.05
+      },
+      {
+        "id": "disk",
+        "label": "Disco",
+        "level": "calm",
+        "text": "550 GB libres",
+        "value": 0.5
+      }
+    ],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    },
+    "session_wait": {
+      "text": "No hay ninguna cuenta de proveedor disponible · revisa Cuentas",
+      "tone": "warning"
+    },
+    "summary": "1 tarea trabajando",
+    "summary_parts": [
+      {
+        "count": 1,
+        "id": "working",
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
+    "version": "<version>"
+  },
+  "title": "Add the CSV export",
+  "version": "<version>",
+  "view": "task"
+}
