@@ -22,12 +22,13 @@ fn key_at(section: &str, path: &[&str], key: &str, root: &Value, frame: &Value) 
         ("doctor.json", []) => &["checks"],
         ("doctor.json", ["checks", "*"]) => &["id", "status"],
         ("manifest.json", []) => {
-            &["format", "format_version", "id", "created_at", "window", "alondra", "daemon_running", "description", "sections", "omitted", "trimmed", "log_read_capped_at_bytes"]
+            &["format", "format_version", "id", "created_at", "window", "alondra", "daemon_running", "description", "sections", "omitted", "masked", "trimmed", "log_read_capped_at_bytes"]
         }
         ("manifest.json", ["window"]) => &["from", "to", "hours"],
         ("manifest.json", ["description"]) => &["bytes", "sha256"],
         ("manifest.json", ["sections", "*"]) => &["name", "bytes", "sha256", "empty"],
         ("manifest.json", ["trimmed", "*"]) => &["section", "lines"],
+        ("manifest.json", ["masked", "*"]) => &["section", "line", "field"],
         ("manifest.json", ["omitted"]) => &[
             "daemon_log_lines_without_template",
             "lifecycle_events_not_decoded",
@@ -114,7 +115,7 @@ fn value_at(section: &str, path: &[&str], value: &str, root: &Value, frame: &Val
         }
         ("doctor.json", ["checks", "*", "status"]) => &["pass", "warn", "fail"],
         ("manifest.json", ["format"]) => &["alondra.report"],
-        ("manifest.json", ["sections", "*", "name"] | ["trimmed", "*", "section"]) => {
+        ("manifest.json", ["sections", "*", "name"] | ["trimmed", "*", "section"] | ["masked", "*", "section"]) => {
             return super::super::bundle::SECTIONS.contains(&value);
         }
         ("manifest.json", ["sections", "*", "empty"]) => return empty_reason(value),
@@ -129,7 +130,8 @@ fn value_at(section: &str, path: &[&str], value: &str, root: &Value, frame: &Val
         ("tasks.jsonl", ["open_questions", "*", "for"]) => &["user", "orchestrator"],
         ("tasks.jsonl", ["executions", "*", "backend"]) => &["sdk", "claude_bg"],
         ("tasks.jsonl", ["executions", "*", "host"]) => &["claude-bg"],
-        ("tasks.jsonl" | "nodes.jsonl", ["model"]) => &["haiku", "sonnet", "opus", "fable"],
+        ("tasks.jsonl" | "nodes.jsonl", ["model"]) => &["haiku", "sonnet", "opus", "fable", super::super::MASKED],
+        ("manifest.json", ["masked", "*", "field"]) => super::super::MASKABLE_FIELDS,
         ("nodes.jsonl", ["effort"]) => &["low", "medium", "high", "xhigh", "max"],
         ("nodes.jsonl", ["phase", "kind"]) => &[
             "starting",

@@ -980,6 +980,7 @@ fn a_report_over_five_megabytes_loses_its_oldest_log_lines_first() {
         ],
         description: None,
         omitted: Default::default(),
+        masked: Vec::new(),
         log_capped: false,
         daemon_running: true,
     };
@@ -1097,4 +1098,44 @@ fn a_refused_report_can_be_made_again_without_the_section_that_failed() {
     assert_eq!(checked(&mac, &rest.id).unwrap(), rest.files, "the rest is allowed to leave the Mac");
     let error = build_without(&mac, hours_before(72), None, None, &["secrets.txt".to_owned()]).err().unwrap().to_string();
     assert!(error.contains("secrets.txt"), "{error}");
+}
+
+fn home_with_account_and_model(account: &str, model: &str) -> Directory {
+    let home = Directory::new();
+    full_home(&home);
+    let db = Connection::open(home.join("domain.db")).unwrap();
+    db.execute_batch("CREATE TABLE accounts(accounts TEXT); CREATE TABLE task_accounts(task_id TEXT, account TEXT);").unwrap();
+    db.execute("INSERT INTO accounts VALUES (?1)", [json!([{"name": account}]).to_string()]).unwrap();
+    db.execute("INSERT INTO task_accounts VALUES ('t-fix-acme-invoice-rounding', ?1)", [account]).unwrap();
+    db.execute("UPDATE task_models SET model = ?1", [model]).unwrap();
+    std::fs::write(home.join("sdk/sdk-0abdea5e130f80de/launch-options.json"), json!({"model": model, "effort": "high"}).to_string()).unwrap();
+    home
+}
+
+#[test]
+fn a_model_that_is_the_name_of_an_account_is_masked_and_the_report_still_goes() {
+    let home = home_with_account_and_model("claude", "claude");
+    let mac = FakeMac::new(&home);
+    let built = build(&mac, hours_before(72), None, None).unwrap();
+    assert!(built.hits.is_empty(), "{:?}", built.hits);
+    let get = |name: &str| built.files.iter().find(|(n, _)| n == name).unwrap().1.clone();
+    for section in ["tasks.jsonl", "nodes.jsonl"] {
+        let row: Value = serde_json::from_str(get(section).lines().next().unwrap()).unwrap();
+        assert_eq!(row["model"], "masked", "{section}");
+    }
+    let manifest: Value = serde_json::from_str(&get("manifest.json")).unwrap();
+    assert_eq!(
+        manifest["masked"],
+        json!([{"section": "tasks.jsonl", "line": 1, "field": "model"}, {"section": "nodes.jsonl", "line": 1, "field": "model"}])
+    );
+    checked(&mac, &built.id).expect("the saved report passes the check again when it is sent");
+}
+
+#[test]
+fn a_model_that_is_not_private_is_never_masked() {
+    let home = home_with_account_and_model("personal", "opus");
+    let built = build(&FakeMac::new(&home), hours_before(72), None, None).unwrap();
+    let manifest: Value = serde_json::from_str(&built.files.iter().find(|(n, _)| n == "manifest.json").unwrap().1).unwrap();
+    assert_eq!(manifest["masked"], json!([]));
+    assert!(built.files.iter().any(|(n, t)| n == "tasks.jsonl" && !t.contains("\"model\":\"masked\"")));
 }

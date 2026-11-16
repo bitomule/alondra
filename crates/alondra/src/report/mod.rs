@@ -34,6 +34,31 @@ use self::templates::Catalog;
 /// The most an app's own section may weigh.
 pub const MAX_APP_SECTION: usize = 512 * 1024;
 
+/// The fields whose value the report masks, instead of refusing to go, when the final check finds a
+/// private value in them: the model a task or node runs on.
+pub(crate) const MASKABLE_FIELDS: &[&str] = &["model"];
+const MASKABLE_SECTIONS: &[&str] = &["tasks.jsonl", "nodes.jsonl"];
+pub(crate) const MASKED: &str = "masked";
+
+fn mask_private_fields(sections: &mut [collect::Section], private: &canary::Private) -> Vec<bundle::Masked> {
+    let mut masked = Vec::new();
+    for section in sections.iter_mut().filter(|s| MASKABLE_SECTIONS.contains(&s.name)) {
+        let mut text = String::new();
+        for (index, line) in section.text.lines().enumerate() {
+            let mut row: Value = serde_json::from_str(line).unwrap_or(Value::Null);
+            for field in MASKABLE_FIELDS {
+                if row[*field].as_str().is_some_and(|value| value != MASKED && !canary::scan(section.name, value, Some(private)).is_empty()) {
+                    row[*field] = Value::from(MASKED);
+                    masked.push(bundle::Masked { section: section.name.to_owned(), line: index + 1, field: (*field).to_owned() });
+                }
+            }
+            text.push_str(&(if row.is_null() { line.to_owned() } else { row.to_string() } + "\n"));
+        }
+        section.text = text;
+    }
+    masked
+}
+
 /// What `alondra report` built: where it is and what the final check found.
 pub struct Built {
     pub id: String,
@@ -72,6 +97,7 @@ pub fn build_without(host: &dyn Host, window: Window, description: Option<String
         section.text.clear();
         section.status = Status::Empty(tr!("left out at your request", "quitada a petición tuya").into());
     }
+    let masked = mask_private_fields(&mut collected.sections, &private::of_this_mac(host, &catalog.vocabulary));
     let now = host.now();
     let mut draft = Draft {
         id: bundle::new_id(now),
@@ -80,6 +106,7 @@ pub fn build_without(host: &dyn Host, window: Window, description: Option<String
         sections: collected.sections,
         description,
         omitted: collected.omitted,
+        masked,
         log_capped: collected.log_capped,
         daemon_running: collected.daemon_running,
     };

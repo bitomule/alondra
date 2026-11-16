@@ -34,6 +34,15 @@ pub struct Trim {
     pub lines: usize,
 }
 
+/// A value the final check found private in a field that can be masked: the report was sent with the
+/// field's value replaced, and says where.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Masked {
+    pub section: String,
+    pub line: usize,
+    pub field: String,
+}
+
 pub struct Draft {
     pub id: String,
     pub created_at: i64,
@@ -41,6 +50,7 @@ pub struct Draft {
     pub sections: Vec<Section>,
     pub description: Option<String>,
     pub omitted: Omitted,
+    pub masked: Vec<Masked>,
     pub log_capped: bool,
     pub daemon_running: bool,
 }
@@ -124,6 +134,7 @@ fn manifest(draft: &Draft, files: &Files, trims: &[Trim]) -> Value {
         "description": description,
         "sections": sections,
         "omitted": draft.omitted,
+        "masked": draft.masked,
         "trimmed": trims,
         "log_read_capped_at_bytes": draft.log_capped.then_some(super::daemon_log::READ_CAP),
     })
