@@ -3368,9 +3368,13 @@ impl DomainState {
             Command::MoveTask { task_id, expected_selection, account } => {
                 let (selection, pending) = self.move_task_guard(actor, task_id, expected_selection, account)?;
                 let task = self.tasks.get_mut(task_id).expect("checked above");
+                let rests = pending.is_none();
                 task.selection = Some(selection);
                 task.pending_selection = pending;
                 task.move_refused = None;
+                if rests {
+                    self.leave_hold_for_the_move(task_id, account, lifecycles)?;
+                }
             }
             Command::RecordTaskSelection { task_id, selection, pending } => {
                 system(actor)?;
