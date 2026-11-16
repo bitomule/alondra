@@ -371,8 +371,8 @@ for line in sys.stdin:
             fs::write(&rollout, "Retained native history\n").unwrap();
             let metadata = root.join("metadata.json");
             let trace = root.join("requests.jsonl");
-            let environment = BTreeMap::from([
-                ("HOME".into(), root.display().to_string()), ("PATH".into(), "/usr/bin:/bin".into()),
+            let mut environment = crate::test_support::fixture_environment(&root);
+            environment.extend([
                 ("THREAD_FIXTURE_METADATA".into(), metadata.display().to_string()), ("THREAD_FIXTURE_TRACE".into(), trace.display().to_string()),
             ]);
             Self { _root: root, executable, environment, directory, rollout, metadata, trace }
@@ -495,7 +495,7 @@ for raw in sys.stdin:
  print(json.dumps({'id':m['id'],'result':result}),flush=True)
 "#).unwrap();
         let mut command = Command::new("/usr/bin/python3");
-        command.arg(fixture).env_clear().env("HOME", &*scratch);
+        command.arg(fixture).env_clear().env("HOME", &*scratch).envs(crate::test_support::xcrun_cache());
         let report = probe(command, AccountKey::native(Provider::Codex), 123).unwrap();
         assert!(report.signed_in);
         assert!(report.supported_authentication());
@@ -526,7 +526,7 @@ for raw in sys.stdin:
  print(json.dumps({'id':m['id'],'result':result}),flush=True)
 "#).unwrap();
         for method in ["chatgpt", "apikey", "chatgptAuthTokens", "agentIdentity", "unknown", "apikey-cached", "signedout"] {
-            let mut command = Command::new("/usr/bin/python3"); command.arg(&fixture).arg(method).env_clear().env("HOME", &*scratch);
+            let mut command = Command::new("/usr/bin/python3"); command.arg(&fixture).arg(method).env_clear().env("HOME", &*scratch).envs(crate::test_support::xcrun_cache());
             let report = probe(command, AccountKey::native(Provider::Codex), 10).unwrap();
             assert_eq!(report.signed_in, method != "signedout", "native account metadata and Alondra support are separate facts");
             assert_eq!(report.supported_authentication(), matches!(method, "chatgpt" | "apikey"));
@@ -559,7 +559,7 @@ for raw in sys.stdin:
  print(json.dumps({'id':m['id'],'result':result}),flush=True)
 "#).unwrap();
         for mode in ["identity-only", "catalog-error"] {
-            let mut command = Command::new("/usr/bin/python3"); command.arg(&fixture).arg(mode).env_clear().env("HOME", &*scratch);
+            let mut command = Command::new("/usr/bin/python3"); command.arg(&fixture).arg(mode).env_clear().env("HOME", &*scratch).envs(crate::test_support::xcrun_cache());
             let report = probe_matching(command, AccountKey::native(Provider::Codex), 10, |_| mode == "catalog-error").unwrap();
             assert!(report.signed_in); assert_eq!(report.native_identity().as_deref(), Some("replacement-workspace"));
             assert!(report.catalog.models.is_empty()); assert!(report.catalog.revision.is_empty(), "an unobserved catalog cannot be published as an empty advertisement");
@@ -579,7 +579,7 @@ for raw in sys.stdin:
  else: answer={'error':{'code':-32602,'message':'Fixture base URL requires HTTPS','data':{'accessToken':'never-print-error-data'}}}
  print(json.dumps(dict(id=m['id'],**answer)),flush=True)
 "#).unwrap();
-        let command = || { let mut command = Command::new("/usr/bin/python3"); command.arg(&fixture).env_clear().env("HOME", &*scratch); command };
+        let command = || { let mut command = Command::new("/usr/bin/python3"); command.arg(&fixture).env_clear().env("HOME", &*scratch).envs(crate::test_support::xcrun_cache()); command };
         assert_eq!(probe(command(), AccountKey::native(Provider::Codex), 0).unwrap_err(), "Codex refused account/read");
         let error = probe_fixture(command(), AccountKey::native(Provider::Codex), 0).unwrap_err();
         assert!(error.contains("native RPC -32602: Fixture base URL requires HTTPS")); assert!(!error.contains("never-print-error-data") && !error.contains("accessToken"));
@@ -605,7 +605,7 @@ for raw in sys.stdin:
  print(json.dumps({'id':m['id'],'result':result}),flush=True)
 "#).unwrap();
         for mode in ["unavailable", "unknown", "false", "true"] {
-            let mut command = Command::new("/usr/bin/python3"); command.arg(&fixture).arg(mode).env_clear().env("HOME", &*scratch);
+            let mut command = Command::new("/usr/bin/python3"); command.arg(&fixture).arg(mode).env_clear().env("HOME", &*scratch).envs(crate::test_support::xcrun_cache());
             let report = probe(command, AccountKey::native(Provider::Codex), 1).unwrap();
             assert!(report.signed_in && report.supported_authentication()); assert_eq!(report.email.as_deref(), Some("first@example.test"));
             assert_eq!(report.catalog.native_default.as_deref(), Some("fixture-model")); assert_eq!(report.catalog.models.len(), 1);

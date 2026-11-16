@@ -148,6 +148,24 @@ impl AsRef<std::ffi::OsStr> for Directory {
     }
 }
 
+/// xcrun and the developer tools in /usr/bin (git, python3) cache a lookup for every new HOME and
+/// rewrite that whole cache each time; `tools/test-tmpdir.sh` keeps it in the test's own TMPDIR.
+/// A child started with an environment built from scratch keeps it there with this variable.
+pub fn xcrun_cache() -> Option<(String, String)> {
+    std::env::var("xcrun_db").ok().map(|path| ("xcrun_db".to_owned(), path))
+}
+
+/// HOME and the system PATH for a child whose environment is built from scratch, xcrun's cache
+/// still in the test's TMPDIR.
+pub fn fixture_environment(home: &Path) -> std::collections::BTreeMap<String, String> {
+    let mut environment = std::collections::BTreeMap::from([
+        ("HOME".to_owned(), home.display().to_string()),
+        ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
+    ]);
+    environment.extend(xcrun_cache());
+    environment
+}
+
 /// The longest temporary folder that leaves room for a socket deep inside a fixture.
 #[cfg(unix)]
 const SOCKET_ROOT_LIMIT: usize = 32;
