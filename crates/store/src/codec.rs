@@ -954,6 +954,88 @@ pub(super) enum EventRecord {
     Compact {
         input: String,
     },
+    EvidenceUnapplied {
+        evidence: EvidenceRecord,
+    },
+    Contradicted {
+        contradiction: ContradictionRecord,
+        recovery: RecoveryRecord,
+    },
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum EvidenceRecord {
+    TurnEnd,
+    Transport,
+    Unreadable,
+}
+impl From<Evidence> for EvidenceRecord {
+    fn from(evidence: Evidence) -> Self {
+        match evidence {
+            Evidence::TurnEnd => Self::TurnEnd,
+            Evidence::Transport => Self::Transport,
+            Evidence::Unreadable => Self::Unreadable,
+        }
+    }
+}
+impl From<EvidenceRecord> for Evidence {
+    fn from(evidence: EvidenceRecord) -> Self {
+        match evidence {
+            EvidenceRecord::TurnEnd => Self::TurnEnd,
+            EvidenceRecord::Transport => Self::Transport,
+            EvidenceRecord::Unreadable => Self::Unreadable,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum ContradictionRecord {
+    TurnEndUnapplied,
+    HostLost,
+}
+impl From<Contradiction> for ContradictionRecord {
+    fn from(contradiction: Contradiction) -> Self {
+        match contradiction {
+            Contradiction::TurnEndUnapplied => Self::TurnEndUnapplied,
+            Contradiction::HostLost => Self::HostLost,
+        }
+    }
+}
+impl From<ContradictionRecord> for Contradiction {
+    fn from(contradiction: ContradictionRecord) -> Self {
+        match contradiction {
+            ContradictionRecord::TurnEndUnapplied => Self::TurnEndUnapplied,
+            ContradictionRecord::HostLost => Self::HostLost,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum RecoveryRecord {
+    CloseTurn,
+    ReplaceHost,
+    OpenCase,
+}
+impl From<Recovery> for RecoveryRecord {
+    fn from(recovery: Recovery) -> Self {
+        match recovery {
+            Recovery::CloseTurn => Self::CloseTurn,
+            Recovery::ReplaceHost => Self::ReplaceHost,
+            Recovery::OpenCase => Self::OpenCase,
+        }
+    }
+}
+impl From<RecoveryRecord> for Recovery {
+    fn from(recovery: RecoveryRecord) -> Self {
+        match recovery {
+            RecoveryRecord::CloseTurn => Self::CloseTurn,
+            RecoveryRecord::ReplaceHost => Self::ReplaceHost,
+            RecoveryRecord::OpenCase => Self::OpenCase,
+        }
+    }
 }
 impl From<&Event> for EventRecord {
     fn from(event: &Event) -> Self {
@@ -1128,6 +1210,11 @@ impl From<&Event> for EventRecord {
             Event::Compact { input } => Self::Compact {
                 input: input.as_str().to_owned(),
             },
+            Event::EvidenceUnapplied { evidence } => Self::EvidenceUnapplied { evidence: (*evidence).into() },
+            Event::Contradicted { contradiction, recovery } => Self::Contradicted {
+                contradiction: (*contradiction).into(),
+                recovery: (*recovery).into(),
+            },
         }
     }
 }
@@ -1176,6 +1263,8 @@ impl EventRecord {
             Self::Unfinished { .. } => "Unfinished",
             Self::RequestControl { .. } => "RequestControl",
             Self::Compact { .. } => "Compact",
+            Self::EvidenceUnapplied { .. } => "EvidenceUnapplied",
+            Self::Contradicted { .. } => "Contradicted",
         }
     }
 
@@ -1359,6 +1448,11 @@ impl EventRecord {
             },
             EventRecord::Compact { input } => Event::Compact {
                 input: InputId::new(input).map_err(Error::from)?,
+            },
+            EventRecord::EvidenceUnapplied { evidence } => Event::EvidenceUnapplied { evidence: evidence.into() },
+            EventRecord::Contradicted { contradiction, recovery } => Event::Contradicted {
+                contradiction: contradiction.into(),
+                recovery: recovery.into(),
             },
         })
     }
@@ -1730,6 +1824,16 @@ mod tests {
                 input: InputId::new("compact").unwrap(),
             },
         );
+        for evidence in [Evidence::TurnEnd, Evidence::Transport, Evidence::Unreadable] {
+            roundtrip(&current, Event::EvidenceUnapplied { evidence });
+        }
+        for (contradiction, recovery) in [
+            (Contradiction::TurnEndUnapplied, Recovery::CloseTurn),
+            (Contradiction::TurnEndUnapplied, Recovery::ReplaceHost),
+            (Contradiction::HostLost, Recovery::OpenCase),
+        ] {
+            roundtrip(&current, Event::Contradicted { contradiction, recovery });
+        }
         for outcome in [
             PlanReviewOutcome::Unchanged,
             PlanReviewOutcome::PlanChanged,

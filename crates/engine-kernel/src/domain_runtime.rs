@@ -966,6 +966,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RecordHostEnded { task_id, .. }
         | Command::RecordHostReleased { task_id, .. }
         | Command::RecordHostRetaken { task_id, .. }
+        | Command::RecordUnappliedEvidence { task_id, .. }
         | Command::RecordInterruptAccepted { task_id, .. }
         | Command::RecordDoubtfulHandoff { task_id, .. }
         | Command::ReconcileRecoveryCards { task_id }

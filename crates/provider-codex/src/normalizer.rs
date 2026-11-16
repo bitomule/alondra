@@ -290,8 +290,9 @@ fn fold(batch: &OrderedObservation, state: &mut Checkpoint, method: &str, params
                     "failed" => Some(failed_outcome(params.get("turn").unwrap_or(&Value::Null), state.thread.as_deref().is_some_and(|thread| string(params, "threadId") == Some(thread)))),
                     _ => None,
                 };
-                if let Some(outcome) = outcome {
-                    end_turn(batch, state, outcome, facts)?;
+                match outcome {
+                    Some(outcome) => end_turn(batch, state, outcome, facts)?,
+                    None => facts.push(Observation::UnreadTurnEnd),
                 }
             }
         }
@@ -817,7 +818,7 @@ mod tests {
     fn unknown_turn_status_is_retained_without_claiming_completion() {
         let batch = batch(); let mut state = Checkpoint { turn: Some("turn".into()), ..Checkpoint::default() }; let mut facts = Vec::new();
         fold(&batch, &mut state, "turn/completed", &json!({"turn":{"id":"turn","status":"futureStatus"}}), &mut facts, |_| invalid()).unwrap();
-        assert!(facts.is_empty()); assert!(state.turn.is_some());
+        assert_eq!(facts, vec![Observation::UnreadTurnEnd], "the lifecycle hears of an end it cannot read"); assert!(state.turn.is_some());
     }
     #[test]
     fn a_native_child_outlives_its_parent_turn_until_positive_scoped_quiescence(){

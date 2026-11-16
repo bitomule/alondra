@@ -1,0 +1,39 @@
+name = "three turn ends in a row the lifecycle cannot apply wake the node, replace its host, then open the orchestrator's case, with no card"
+max_virtual = "30m"
+
+[[step]]
+do = "request"
+text = "Export the report as CSV"
+task = "t1"
+title = "Add the CSV export"
+
+[[step]]
+do = "codex_node"
+task = "t1"
+transcripts = ["first-host-two-unread-ends.ndjson", "second-host-third-unread-end.ndjson"]
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "case-opened"
+screens = ["home", "tasks", "task:t1"]
+pushes = true
+
+[[step.expect]]
+check = "transcripts_played"
+
+[[step.expect]]
+check = "no_user_card"
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "Retry"
+present = false
+
+[[step.expect]]
+check = "stall_case"
+task = "t1"

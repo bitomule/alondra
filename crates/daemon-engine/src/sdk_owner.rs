@@ -2065,6 +2065,11 @@ impl Driver {
             log!("the process of {} wrote nothing since it was handed an input and no event named it: it is stopped and a host that resumes the same session gets the input again, flagged as possibly received, when the gate gives it a slot", self.task);
             return Err(Failed::new("the process wrote nothing since it was handed an input".into()));
         }
+        if !self.requeued && self.domain.state().is_ok_and(|state| state.lifecycle_of(&self.task).is_ok_and(|lifecycle| lifecycle.replaces_host())) {
+            self.requeued = true;
+            log!("the lifecycle of {} contradicted what its host reported again: a host that resumes the same session takes its place", self.task);
+            return Err(Failed::new("the task's lifecycle asked for a host that resumes its session".into()));
+        }
         if self.advance_idle_host_of_another_release()? {
             return Ok(());
         }

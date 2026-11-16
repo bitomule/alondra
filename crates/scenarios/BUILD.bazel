@@ -68,6 +68,7 @@ rust_binary(
 sh_test(
     name = "scenarios_test",
     size = "medium",
+    timeout = "long",
     srcs = ["run_scenarios.sh"],
     data = [":scenarios_runner"] + glob(["cases/**"]),
     env = {"HOME": ".", "TZ": "UTC"},

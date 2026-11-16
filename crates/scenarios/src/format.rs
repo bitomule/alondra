@@ -40,6 +40,9 @@ impl Step {
     fn server_error() -> String {
         "server_error".into()
     }
+    fn from_user() -> bool {
+        true
+    }
 }
 
 impl World {
@@ -80,12 +83,20 @@ pub enum Step {
     RegisterPr { task: String, number: u64 },
     /// The node of `task` presents the pull requests as its result.
     Present { task: String, id: String, prs: Vec<u64>, body: String },
+    /// The node of `task` says it cleaned up what its finished task generated.
+    CleanupDone { task: String },
     /// The node of `task` tells the pull request is ready for others to stack on.
     StackReady { task: String, presentation: String, pr: u64 },
     /// The task starts on Codex: the daemon launches its node as it does in production, and the
     /// host it starts plays the first of `transcripts`. A host that ends, and the one that takes
     /// its place, each play the next.
     CodexNode { task: String, transcripts: Vec<String> },
+    /// `codex_node`, on Claude: each host the daemon starts for the task plays the next of
+    /// `transcripts`, whose provider is `claude`. A scenario plays the hosts of one provider.
+    ClaudeNode { task: String, transcripts: Vec<String> },
+    /// The domain refuses the next turn end a host reports, whole: neither the end of the turn nor
+    /// the runtime fact that would record it alone is applied.
+    RefuseTurnEnd,
     /// Something happens on GitHub.
     Github(GithubChange),
     /// The user presses `action` (a verb of the action ids: `merge`, `accept`, `changes`...) on the
@@ -110,8 +121,8 @@ pub enum Step {
     LoginRestored,
     /// The SDK host of `task` ended. `resumes`: another host resumes the same session.
     HostExit { task: String, #[serde(default)] resumes: bool },
-    /// The user writes to the node of `task`.
-    Tell { task: String, text: String },
+    /// The user writes to the node of `task`; with `from_user = false`, the orchestrator does.
+    Tell { task: String, text: String, #[serde(default = "Step::from_user")] from_user: bool },
     /// The node of `task` reads the message the user wrote to it, in the turn it has running.
     ReadMessage { task: String },
     /// The node of `task` ended and Alondra recorded it.
@@ -169,6 +180,14 @@ pub enum Expect {
     NoPushes { #[serde(default)] delivery: Option<String> },
     /// The last icon badge pushed since the last checkpoint (the checkpoint sets `pushes`) is `count`.
     Badge { count: u64 },
+    /// The user's inbox (the home's «Waiting for You») holds no card.
+    NoUserCard,
+    /// No card whose id starts with `prefix` was ever opened, not even one withdrawn since:
+    /// `host-lost` is the card that tells the user a session could not be resumed.
+    NoCardOpened { prefix: String },
+    /// The orchestrator has a case open to settle how the stopped node of `task` goes on: a card
+    /// only it reads.
+    StallCase { task: String },
     /// The view `screen` as the iOS app reads it in English shows (or, with `present = false`, does
     /// not show) this text.
     ViewShows { screen: String, text: String, #[serde(default = "Expect::shown")] present: bool },

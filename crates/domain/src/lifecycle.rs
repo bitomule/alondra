@@ -1,7 +1,9 @@
 mod commands;
+mod contradiction;
 mod obligation;
 mod observations;
 
+pub use contradiction::{Contradiction, Evidence, RECOVERIES, Recovery};
 pub use obligation::{Obligation, Owed, Party};
 
 use alondra_foundation::{AgentId, InteractionId, MAX_REVISION, Revision, TaskId};
@@ -709,6 +711,17 @@ pub enum Event {
     Compact {
         input: InputId,
     },
+    /// The provider reported `evidence` that the lifecycle could not apply: nothing changes but
+    /// the record of it.
+    EvidenceUnapplied {
+        evidence: Evidence,
+    },
+    /// The lifecycle disagrees with its host or provider and takes `recovery`, which must be the
+    /// one `recovery()` gives. A recovery that ends the turn is followed by that turn's end.
+    Contradicted {
+        contradiction: Contradiction,
+        recovery: Recovery,
+    },
 }
 
 impl Event {
@@ -760,6 +773,8 @@ impl Event {
             | Self::DrainObserved { .. }
             | Self::PostMergeDeclared { .. }
             | Self::PostMergeEnded { .. }
+            | Self::EvidenceUnapplied { .. }
+            | Self::Contradicted { .. }
             | Self::HoldForPlanReview { .. }
             | Self::PlanReviewSettled { .. }
             | Self::Discard { .. }
@@ -1190,6 +1205,12 @@ pub struct TaskLifecycle {
     /// input of the last wake: once `EMPTY_TURN_WAKES` did, the next empty turn waits on a case.
     empty_turns: u8,
     woken: Option<InputId>,
+    /// How many contradictions came in a row with no progress between them, and whether the last
+    /// one ends the open turn, whose end comes next.
+    recoveries: u8,
+    ending: bool,
+    /// The last recovery asked for a host that resumes the session; the host's end settles it.
+    replacing: bool,
     /// The revision since which the task owes its current `obligation()`.
     owed_since: Revision,
 }
@@ -1210,6 +1231,9 @@ impl TaskLifecycle {
             settled: BTreeSet::new(),
             empty_turns: 0,
             woken: None,
+            recoveries: 0,
+            ending: false,
+            replacing: false,
             owed_since: 0,
         })
     }
@@ -1679,12 +1703,22 @@ impl TaskLifecycle {
             settled: self.settled.clone(),
             empty_turns: self.empty_turns,
             woken: self.woken.clone(),
+            recoveries: self.recoveries,
+            ending: false,
+            replacing: self.replacing && !matches!(&event, Event::Admit { .. } | Event::Runtime { fact: RuntimeFact::HostEnded { .. } | RuntimeFact::HostStopped { .. }, .. }),
             owed_since: self.owed_since,
         };
         let keeps_wake = keeps_wake(&event, self.woken.as_ref());
+        let keeps_recoveries = contradiction::keeps_recoveries(&event, self.ending);
+        if let Event::Contradicted { recovery, .. } = &event {
+            candidate.ending = recovery.ends_turn();
+        }
         candidate.transition(event)?;
         if !keeps_wake {
             candidate.rest_wakes();
+        }
+        if !keeps_recoveries {
+            candidate.recoveries = 0;
         }
         candidate.revision += 1;
         if candidate.owes() != self.owes() {
@@ -1699,7 +1733,8 @@ impl TaskLifecycle {
 /// Any card, delivery, work of the node's own, input or new execution starts the count again.
 fn keeps_wake(event: &Event, woken: Option<&InputId>) -> bool {
     let Event::Runtime { fact, .. } = event else {
-        return matches!(event, Event::RequestControl { .. } | Event::DrainObserved { .. } | Event::AwaitEnded { .. } | Event::Unfinished { .. } | Event::HostReleased | Event::HostRetaken);
+        return matches!(event, Event::RequestControl { .. } | Event::DrainObserved { .. } | Event::AwaitEnded { .. } | Event::Unfinished { .. } | Event::HostReleased | Event::HostRetaken
+            | Event::Contradicted { .. } | Event::EvidenceUnapplied { .. });
     };
     match fact {
         RuntimeFact::TurnStarted { trigger: Trigger::Input(input), .. } | RuntimeFact::InputConsumed { input } => Some(input) == woken,

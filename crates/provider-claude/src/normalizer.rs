@@ -252,6 +252,7 @@ impl ObservationNormalizer for Normalizer {
             return Normalization::new(Vec::new(), bytes);
         }
         let before = serde_json::to_vec(&checkpoint).map_err(|_| AdapterError::InvalidObservation)?;
+        let result = matches!(&event.observation, WireObservation::Sdk { kind: SdkEventKind::Result, .. });
         let folded = fold(event, session, &mut checkpoint, |ids| {
             let keys = ids
                 .iter()
@@ -286,7 +287,7 @@ impl ObservationNormalizer for Normalizer {
             Ok(facts) => facts,
             Err(AdapterError::Unsupported | AdapterError::InvalidObservation) => {
                 checkpoint = serde_json::from_slice(&before).map_err(|_| AdapterError::InvalidObservation)?;
-                Vec::new()
+                if result { vec![Observation::UnreadTurnEnd] } else { Vec::new() }
             }
             Err(error) => return Err(error),
         };

@@ -1,0 +1,29 @@
+name = "a claude turn whose result names another input is closed and the node woken, with no card"
+max_virtual = "30m"
+
+[[step]]
+do = "request"
+text = "Export the report as CSV"
+task = "t1"
+title = "Add the CSV export"
+
+[[step]]
+do = "claude_node"
+task = "t1"
+transcripts = ["result-names-another-input.ndjson"]
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "woken"
+screens = ["home", "task:t1"]
+pushes = true
+
+[[step.expect]]
+check = "transcripts_played"
+
+[[step.expect]]
+check = "no_user_card"

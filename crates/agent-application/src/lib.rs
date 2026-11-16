@@ -199,7 +199,7 @@ pub trait ObservationNormalizer {
     ) -> std::result::Result<Normalization, AdapterError>;
 }
 
-/// Normalizes every observation by skipping it: what a discarded observation is staged with.
+/// Normalizes every observation by skipping it.
 pub struct Skipping<'normalizer, N>(pub &'normalizer N);
 impl<N: ObservationNormalizer> ObservationNormalizer for Skipping<'_, N> {
     fn normalize(
@@ -215,6 +215,39 @@ impl<N: ObservationNormalizer> ObservationNormalizer for Skipping<'_, N> {
         metadata: &ObservationMetadata<'_, '_>,
     ) -> std::result::Result<Normalization, AdapterError> {
         self.0.skip(batch, metadata)
+    }
+}
+
+/// Normalizes every observation by skipping it, and remembers whether what it skipped held the end
+/// of a turn: what a discarded observation is staged with.
+pub struct Witnessing<'normalizer, N> {
+    normalizer: &'normalizer N,
+    ended: std::cell::Cell<bool>,
+}
+impl<'normalizer, N> Witnessing<'normalizer, N> {
+    pub fn new(normalizer: &'normalizer N) -> Self {
+        Self { normalizer, ended: std::cell::Cell::new(false) }
+    }
+    pub fn ended_a_turn(&self) -> bool {
+        self.ended.get()
+    }
+}
+impl<N: ObservationNormalizer> ObservationNormalizer for Witnessing<'_, N> {
+    fn normalize(
+        &self,
+        batch: &OrderedObservation,
+        metadata: &ObservationMetadata<'_, '_>,
+    ) -> std::result::Result<Normalization, AdapterError> {
+        let read = self.normalizer.normalize(batch, metadata);
+        self.ended.set(read.is_ok_and(|read| read.facts.iter().any(|fact| matches!(fact, Observation::TurnEnded { .. } | Observation::UnreadTurnEnd))));
+        self.normalizer.skip(batch, metadata)
+    }
+    fn skip(
+        &self,
+        batch: &OrderedObservation,
+        metadata: &ObservationMetadata<'_, '_>,
+    ) -> std::result::Result<Normalization, AdapterError> {
+        self.normalizer.skip(batch, metadata)
     }
 }
 
@@ -273,6 +306,11 @@ pub enum ObservedFact {
     },
     /// Evidence about Claude itself, not about the task: its runtime does not move.
     ModelAnswered,
+    /// What the provider reported that the task's record cannot take as a fact: the domain
+    /// records it, and recovers when it contradicts what the record expects.
+    Unapplied {
+        evidence: alondra_domain::Evidence,
+    },
     /// Claude asks for the decision its host persisted at `epoch`: the domain asks the user or
     /// decides it by its own rules.
     Asked {
@@ -407,7 +445,8 @@ fn domain_fact(fact: &Observation) -> Result<ObservedFact> {
         }
         Observation::McpToolFailed => return Ok(ObservedFact::McpToolFailed),
         Observation::Usage(report) => return Ok(ObservedFact::Usage(report.clone())),
-        Observation::TransportLost | Observation::ResourceReleased => return Err(Error::RequiresDomainCommand),
+        Observation::TransportLost | Observation::ResourceReleased => return Ok(ObservedFact::Unapplied { evidence: alondra_domain::Evidence::Transport }),
+        Observation::UnreadTurnEnd => return Ok(ObservedFact::Unapplied { evidence: alondra_domain::Evidence::TurnEnd }),
     }))
 }
 
@@ -458,8 +497,7 @@ impl PendingObservation {
 }
 
 /// Accepts the raw observation and stages its checkpoint; the facts it was normalized to are the
-/// domain's to record. A lost transport or a released resource returns RequiresDomainCommand
-/// before anything else: the domain does not record them yet.
+/// domain's to record.
 /// The owner must abort the whole transaction on error; this helper stages no independent commit.
 pub fn stage_observation<N: ObservationNormalizer>(
     transaction: &mut LifecycleTransaction<'_>,

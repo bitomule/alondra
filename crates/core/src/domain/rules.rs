@@ -13,6 +13,8 @@ pub use effect::command_name;
 use effect::{answers_with_its_effect, effect_outside_the_domain};
 pub use open_pr::cancelled_pr_comment;
 mod stall;
+mod contradiction;
+pub use contradiction::{ContradictionRecord, RecoveryRecord, UnappliedEvidence};
 pub use stall::{STALL_ATTEMPTS, STALL_CLOSE, STALL_INSTRUCT, STALL_TEXT_MAX, STALLED_PREFIX, StallOutcome, UNSETTLED_AFTER_MERGE, UNSETTLED_DELIVERY, UNSETTLED_INSTRUCT, is_stall_case, stalled_card_id};
 pub(in crate::domain) use stall::{stalled_before, stalled_in_place_of};
 mod turn_result;
@@ -2796,6 +2798,7 @@ impl DomainState {
             | Command::AbortTaskSelection { task_id, .. }
             | Command::RecordHostReleased { task_id, .. }
             | Command::RecordHostRetaken { task_id, .. }
+            | Command::RecordUnappliedEvidence { task_id, .. }
             | Command::RecordInterruptAccepted { task_id, .. }
             | Command::RecordDoubtfulHandoff { task_id, .. }
             | Command::RecordHostLost { task_id, .. }
@@ -5507,6 +5510,11 @@ impl DomainState {
                 system(actor)?;
                 self.task(task_id)?;
                 self.record_host_retaken(task_id, *generation, lifecycles)?;
+            }
+            Command::RecordUnappliedEvidence { task_id, generation, evidence } => {
+                system(actor)?;
+                self.task(task_id)?;
+                self.record_unapplied_evidence(task_id, *generation, *evidence, effects, lifecycles)?;
             }
             Command::AbortTaskSelection { task_id, selection, refused } => {
                 system(actor)?;

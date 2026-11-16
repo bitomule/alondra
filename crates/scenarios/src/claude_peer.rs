@@ -12,6 +12,7 @@ use alondra_agent_protocol::{
     command_digest, host_proof, verify_owner_proof,
 };
 use alondra_agent_runtime::owned_host::{HostLauncher, HostSpawn};
+use crate::error::ScenarioError;
 use alondra_scenarios_transcript::frames::FrameComparator;
 use alondra_scenarios_transcript::{Line, Transcript};
 use serde::Deserialize;
@@ -22,7 +23,7 @@ use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command as Process, Stdio};
 use std::sync::{Arc, Mutex};
 
@@ -44,6 +45,15 @@ struct Bootstrap {
     /// Where the events of a host that replaces another continue: after the last the daemon kept.
     #[serde(default)]
     journal_base: u64,
+    /// The native session a Claude host runs; a Codex host's bootstrap names none.
+    #[serde(default)]
+    native: Native,
+}
+
+#[derive(Default, Deserialize)]
+struct Native {
+    #[serde(default)]
+    session_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -202,11 +212,25 @@ impl Session {
                 body.insert("cursor".into(), self.cursor.into());
                 if let Some(observation) = body.get_mut("observation") {
                     self.ids.lock().unwrap_or_else(std::sync::PoisonError::into_inner).assign(observation);
+                    if let Some(session) = self.bootstrap.native.session_id.clone().map(Value::String) {
+                        name_assigned(observation, "«session»", &session);
+                    }
                 }
             }
             _ => {}
         }
         serde_json::from_value(frame).map_err(|e| protocol(format!("an inbound frame of the transcript is not a frame: {e}")))
+    }
+}
+
+/// The Claude session a host runs never travels in a frame the daemon sends, so a transcript names
+/// it `«session»` and the session of the host's bootstrap takes its place.
+fn name_assigned(value: &mut Value, name: &str, id: &Value) {
+    match value {
+        Value::String(text) if text == name => *value = id.clone(),
+        Value::Object(map) => map.values_mut().for_each(|inner| name_assigned(inner, name, id)),
+        Value::Array(items) => items.iter_mut().for_each(|inner| name_assigned(inner, name, id)),
+        _ => {}
     }
 }
 
@@ -426,6 +450,37 @@ impl HostLauncher for PeerLauncher {
         });
         Ok(child)
     }
+}
+
+/// What Claude's host announces in its hello (`HOST_CAPABILITIES` of `agent-host/frame.ts`): what a
+/// task's owner requires of it, and every action it carries.
+const CLAUDE_HOST: &[&str] = &[
+    "streaming_input", "exact_decisions", "owner_attach", "commit_ack", "interrupt", "force_stop", "set_model",
+    "set_permission_mode", "mcp_status", "mcp_reconnect", "mcp_sign_in", "mcp_clear_auth",
+];
+
+/// The transcripts `names` of the case, each of the host of `provider`.
+pub fn transcripts(case: &Path, names: &[String], provider: &str) -> Result<Vec<Transcript>, ScenarioError> {
+    let mut transcripts = Vec::new();
+    for name in names {
+        let path = case.join("transcripts").join(name);
+        let text = std::fs::read_to_string(&path).map_err(|error| ScenarioError::Invalid(format!("{}: {error}", path.display())))?;
+        let transcript = Transcript::parse(&text).map_err(|error| ScenarioError::Invalid(format!("{}: {error}", path.display())))?;
+        if transcript.header.provider != provider {
+            return Err(ScenarioError::Invalid(format!(
+                "{}: a transcript of a {provider} node names provider `{provider}`, not `{}`",
+                path.display(),
+                transcript.header.provider
+            )));
+        }
+        transcripts.push(transcript);
+    }
+    Ok(transcripts)
+}
+
+/// The hosts of a Claude node: one transcript per host the daemon starts.
+pub fn launcher(case: &Path, names: &[String]) -> Result<PeerLauncher, ScenarioError> {
+    Ok(PeerLauncher::declaring(CLAUDE_HOST, transcripts(case, names, "claude")?))
 }
 
 #[cfg(test)]

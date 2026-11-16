@@ -832,6 +832,13 @@ pub enum Command {
         task_id: TaskId,
         generation: u64,
     },
+    /// The provider of the Task's SDK execution of `generation` reported `evidence` that Alondra
+    /// could not apply.
+    RecordUnappliedEvidence {
+        task_id: TaskId,
+        generation: u64,
+        evidence: UnappliedEvidence,
+    },
     RecordInterruptAccepted {
         task_id: TaskId,
         generation: u64,

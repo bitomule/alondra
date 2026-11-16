@@ -12,6 +12,7 @@ use alondra_core::domain::{
     Actor, CardSpec, Command, CommandEnvelope, DeliveryTarget, LaunchPlan, MergeMethod, NodeEnd, PROTOCOL_VERSION,
     RuntimeObservation, SdkApiFailure, StackDependency,
 };
+use alondra_core::accounts::Provider;
 use alondra_core::views::action_id::ActionId;
 use alondra_daemon_engine::github_world::GithubWorld;
 use alondra_daemon_engine::machine::MachineSampler;
@@ -167,16 +168,19 @@ async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnc
     let github = Arc::new(GithubWorld::new());
     let pushes = RecordedPushes::default();
     let leaks = Arc::new(Mutex::new(Vec::new()));
-    let codex = codex_transcripts(scenario);
-    let (launcher, backend, peer) = if codex.is_empty() {
-        (Launcher::new(RefusingLauncher(leaks.clone())), Backend::Given(None), None)
-    } else {
-        let case = scenario.case.as_deref().ok_or_else(|| ScenarioError::Invalid("a step that starts a provider reads the transcripts of its case".into()))?;
-        let peer = crate::codex_peer::launcher(case, &codex)?;
-        let (seen, activity) = (peer.seen.clone(), peer.activity.clone());
-        let launcher = Launcher::new(peer);
-        let backend = codex_backend(&config.home, launcher.clone()).map_err(|e| invalid(&e))?;
-        (launcher, Backend::Given(Some(backend)), Some(Peer { seen, activity, hosts: codex.len(), patience: Arc::new(std::sync::atomic::AtomicU64::new(PATIENCE_MS)) }))
+    let (launcher, backend, peer) = match hosts_of(scenario)? {
+        None => (Launcher::new(RefusingLauncher(leaks.clone())), Backend::Given(None), None),
+        Some((provider, transcripts)) => {
+            let case = scenario.case.as_deref().ok_or_else(|| ScenarioError::Invalid("a step that starts a provider reads the transcripts of its case".into()))?;
+            let peer = match provider {
+                Provider::Claude => crate::claude_peer::launcher(case, &transcripts)?,
+                Provider::Codex => crate::codex_peer::launcher(case, &transcripts)?,
+            };
+            let (seen, activity) = (peer.seen.clone(), peer.activity.clone());
+            let launcher = Launcher::new(peer);
+            let backend = sdk_backend(&config.home, provider, launcher.clone()).map_err(|e| invalid(&e))?;
+            (launcher, Backend::Given(Some(backend)), Some(Peer { seen, activity, hosts: transcripts.len(), patience: Arc::new(std::sync::atomic::AtomicU64::new(PATIENCE_MS)) }))
+        }
     };
     probe(&launcher);
     let seams = seams_of(&github, &pushes, launcher, backend);
@@ -235,21 +239,27 @@ async fn steps(context: &mut Context<'_>) -> Result<(), ScenarioError> {
     Ok(())
 }
 
-/// The transcripts of every host the scenario's `codex_node` steps start, in order.
-fn codex_transcripts(scenario: &Scenario) -> Vec<String> {
-    scenario
-        .steps
-        .iter()
-        .filter_map(|step| match step {
-            Step::CodexNode { transcripts, .. } => Some(transcripts.clone()),
-            _ => None,
-        })
-        .flatten()
-        .collect()
+/// The provider whose hosts the scenario's `claude_node` or `codex_node` steps start, and the
+/// transcript of every host, in order. One scenario plays the hosts of one provider.
+fn hosts_of(scenario: &Scenario) -> Result<Option<(Provider, Vec<String>)>, ScenarioError> {
+    let mut found: Option<(Provider, Vec<String>)> = None;
+    for step in &scenario.steps {
+        let (provider, transcripts) = match step {
+            Step::ClaudeNode { transcripts, .. } => (Provider::Claude, transcripts),
+            Step::CodexNode { transcripts, .. } => (Provider::Codex, transcripts),
+            _ => continue,
+        };
+        match &mut found {
+            None => found = Some((provider, transcripts.clone())),
+            Some((known, all)) if *known == provider => all.extend(transcripts.iter().cloned()),
+            Some(_) => return Err(ScenarioError::Invalid("a scenario plays the hosts of one provider: it has `claude_node` or `codex_node` steps, never both".into())),
+        }
+    }
+    Ok(found)
 }
 
-fn runs_on_codex(scenario: &Scenario, task: &str) -> bool {
-    scenario.steps.iter().any(|step| matches!(step, Step::CodexNode { task: named, .. } if named == task))
+fn runs_on_sdk(scenario: &Scenario, task: &str) -> bool {
+    scenario.steps.iter().any(|step| matches!(step, Step::ClaudeNode { task: named, .. } | Step::CodexNode { task: named, .. } if named == task))
 }
 
 /// A folder short enough for a host's socket to live deep inside it.
@@ -261,9 +271,9 @@ fn short_root() -> std::path::PathBuf {
     }
 }
 
-/// The backend of a daemon whose Codex nodes start through `launcher`: three files that stand where
-/// the host and the native executable stand, named by their digests as a real configuration names them.
-fn codex_backend(home: &Path, launcher: Launcher) -> Result<alondra_daemon_engine::sdk_owner::backend::SdkBackend, String> {
+/// The backend of a daemon whose nodes on `provider` start through `launcher`: three files that stand
+/// where the host and the native executable stand, named by their digests as a real configuration names them.
+fn sdk_backend(home: &Path, provider: Provider, launcher: Launcher) -> Result<alondra_daemon_engine::sdk_owner::backend::SdkBackend, String> {
     use alondra_daemon_engine::sdk_owner::backend::{SdkBackend, digest};
     let file = |name: &str| -> Result<(std::path::PathBuf, String), String> {
         let path = home.join(name);
@@ -271,10 +281,14 @@ fn codex_backend(home: &Path, launcher: Launcher) -> Result<alondra_daemon_engin
         let sha = digest(&path).map_err(|e| format!("{e:#}"))?;
         Ok((path, sha))
     };
-    let ((node, node_sha256), (native, native_sha256)) = (file("codex-host")?, file("codex-native")?);
+    let name = match provider {
+        Provider::Claude => "claude",
+        Provider::Codex => "codex",
+    };
+    let ((node, node_sha256), (native, native_sha256)) = (file(&format!("{name}-host"))?, file(&format!("{name}-native"))?);
     let environment = BTreeMap::from([("HOME".to_owned(), home.display().to_string()), ("PATH".to_owned(), "/usr/bin:/bin".to_owned())]);
     Ok(SdkBackend {
-        provider: alondra_core::accounts::Provider::Codex,
+        provider,
         origin: None,
         host: node.clone(),
         host_sha256: node_sha256.clone(),
@@ -307,6 +321,13 @@ impl Context<'_> {
 
     fn failed(index: usize, reason: impl std::fmt::Display) -> ScenarioError {
         ScenarioError::Step { index, reason: reason.to_string() }
+    }
+
+    /// The node of `task` as an actor: the one the daemon launched for it, or the one the scenario
+    /// registered.
+    fn node_of(&self, task: &str) -> Actor {
+        let launched = self.daemon().domain.state().ok().and_then(|state| state.tasks.get(&task.to_owned().into()).and_then(|task| task.agent_id.clone()));
+        Actor::Agent { agent_id: launched.unwrap_or_else(|| agent_of(task).into()) }
     }
 
     fn head(&self, index: usize, number: u64) -> Result<String, ScenarioError> {
@@ -362,7 +383,7 @@ impl Context<'_> {
             }
             Step::RegisterPr { task, number } => {
                 let head = self.head(index, *number)?;
-                self.command(index, Actor::Agent { agent_id: agent_of(task).into() }, Command::RegisterPr {
+                self.command(index, self.node_of(task), Command::RegisterPr {
                     task_id: task.clone().into(),
                     pr_id: pr_id(*number).into(),
                     host: REPOSITORY_HOST.into(),
@@ -378,7 +399,7 @@ impl Context<'_> {
                 for number in prs {
                     targets.push(DeliveryTarget::PullRequest { pr_id: pr_id(*number).into(), head: self.head(index, *number)? });
                 }
-                self.command(index, Actor::Agent { agent_id: agent_of(task).into() }, Command::PresentResult {
+                self.command(index, self.node_of(task), Command::PresentResult {
                     checklist: Vec::new(),
                     attachments: Vec::new(),
                     task_id: task.clone().into(),
@@ -390,9 +411,12 @@ impl Context<'_> {
                     card: CardSpec::delivery("Review the result", &[], true),
                 })?;
             }
+            Step::CleanupDone { task } => {
+                self.command(index, self.node_of(task), Command::ConfirmCleanup { task_id: task.clone().into(), discard: Vec::new() })?;
+            }
             Step::StackReady { task, presentation, pr } => {
                 let head = self.head(index, *pr)?;
-                self.command(index, Actor::Agent { agent_id: agent_of(task).into() }, Command::PublishStackReadiness {
+                self.command(index, self.node_of(task), Command::PublishStackReadiness {
                     task_id: task.clone().into(),
                     presentation_id: presentation.clone().into(),
                     pr_id: pr_id(*pr).into(),
@@ -400,7 +424,9 @@ impl Context<'_> {
                     ready: true,
                 })?;
             }
-            Step::CodexNode { task, .. } => self.start_codex_node(index, task).await?,
+            Step::ClaudeNode { task, .. } => self.start_sdk_node(index, task, Provider::Claude).await?,
+            Step::CodexNode { task, .. } => self.start_sdk_node(index, task, Provider::Codex).await?,
+            Step::RefuseTurnEnd => alondra_daemon_engine::domain_store::refuse_next(alondra_daemon_engine::domain_store::Refuse::WholeTurnEnd),
             Step::Github(change) => match change {
                 GithubChange::OpenPr { number, head, base } => {
                     let commit = self.github.open_pr(*number, head, base);
@@ -427,8 +453,8 @@ impl Context<'_> {
             }
             Step::ProviderUp | Step::LoginRestored => self.outage = None,
             Step::HostExit { task, resumes } => self.host_exit(index, task, *resumes)?,
-            Step::Tell { task, text } => {
-                self.command(index, Actor::System, Command::TellNode { task_id: task.clone().into(), text: text.clone(), from_user: true, answers: None })?;
+            Step::Tell { task, text, from_user } => {
+                self.command(index, Actor::System, Command::TellNode { task_id: task.clone().into(), text: text.clone(), from_user: *from_user, answers: None })?;
             }
             Step::ReadMessage { task } => {
                 let input = self.pending_input(index, task)?.ok_or_else(|| Self::failed(index, format!("{task} has no message waiting")))?;
@@ -497,27 +523,27 @@ impl Context<'_> {
         .ok();
     }
 
-    /// The task's node starts on Codex as a launch in production starts it: the daemon picks the
+    /// The task's node starts on `provider` as a launch in production starts it: the daemon picks the
     /// account and model, writes the mission and starts the host it supervises.
-    async fn start_codex_node(&mut self, index: usize, task: &str) -> Result<(), ScenarioError> {
-        use alondra_core::accounts::{AccountId, AccountKey, AccountState, AccountStatus, Provider};
+    async fn start_sdk_node(&mut self, index: usize, task: &str, provider: Provider) -> Result<(), ScenarioError> {
+        use alondra_core::accounts::{AccountId, AccountKey, AccountState, AccountStatus};
         use alondra_core::model_selection::{AccountModelCatalog, CatalogModel, ModelKey, ModelProfile, ModelSelection, TaskSelection};
         // The daemon's first look at its accounts finishes before the scenario says which exist.
         for _ in 0..5 {
             self.pass(Duration::from_secs(1), index).await?;
         }
         let mut settings = alondra_core::accounts::AccountsConfig::fresh();
-        settings.connect(Provider::Codex);
+        settings.connect(provider);
         std::fs::write(alondra_core::options::path_in(&self.config.home), settings.to_toml()).map_err(|e| Self::failed(index, e))?;
         let state = self.daemon().domain.state().map_err(|e| Self::failed(index, e))?;
         let mut accounts = state.accounts.clone();
         accounts.push(AccountStatus {
-            provider: Provider::Codex, id: AccountId::default_account(), name: "Codex".into(), state: AccountState::SignedIn,
+            provider, id: AccountId::default_account(), name: format!("{provider:?}"), state: AccountState::SignedIn,
             native_identity: Some("demo-workspace".into()), email: Some("ana@example.com".into()), plan: None, billing: Default::default(),
             sign_ins: 0, profile: None,
         });
         self.command(index, Actor::System, Command::RecordAccounts { accounts, reserve: state.account_reserve })?;
-        let key = AccountKey { provider: Provider::Codex, account: AccountId::default_account() };
+        let key = AccountKey { provider, account: AccountId::default_account() };
         self.command(index, Actor::System, Command::RecordModelCatalog { catalog: AccountModelCatalog {
             account: key.clone(), revision: "demo-catalog".into(), measured_at: 1, native_default: Some("demo-model".into()),
             models: vec![CatalogModel {
@@ -527,7 +553,7 @@ impl Context<'_> {
             }],
         } })?;
         alondra_daemon_engine::accounts::finish_initial_check(&self.daemon().domain);
-        let model = ModelKey { provider: Provider::Codex, model: "demo-model".into() };
+        let model = ModelKey { provider, model: "demo-model".into() };
         let mut selection = TaskSelection::automatic(ModelProfile::General);
         selection.request_model(Some(model.clone()));
         selection.effective = Some(ModelSelection { model, reasoning_effort: Some("high".into()), catalog_revision: "demo-catalog".into() });
@@ -540,7 +566,7 @@ impl Context<'_> {
             .map_err(|e| Self::failed(index, e))?;
         let title = state.tasks.get(&task.to_owned().into()).map(|task| task.title.clone()).unwrap_or_default();
         let options = alondra_daemon_engine::sdk_owner::LaunchOptions {
-            provider: Provider::Codex, model: Some("demo-model".into()), effort: Some("high".into()), selection: Some(selection),
+            provider, model: Some("demo-model".into()), effort: Some("high".into()), selection: Some(selection),
             ..Default::default()
         };
         alondra_daemon_engine::sdk_owner::launch(&self.daemon().domain, alondra_daemon_engine::sdk_owner::Launch {
@@ -558,7 +584,7 @@ impl Context<'_> {
             task_id: task.to_owned().into(),
             request_id: request.into(),
             title: title.to_owned(),
-            agent_id: (!runs_on_codex(self.scenario, task) && !self.runs_on_a_provider(task)).then(|| agent_of(task).into()),
+            agent_id: (!runs_on_sdk(self.scenario, task) && !self.runs_on_a_provider(task)).then(|| agent_of(task).into()),
             review_prs: true,
             dependencies: BTreeSet::new(),
             stack,
@@ -822,6 +848,36 @@ impl Context<'_> {
                 if rendered.contains(wanted.as_str()) != *present {
                     let verb = if *present { "shows" } else { "does not show" };
                     return Err(failed(format!("{screen} {verb} {wanted:?}"), rendered));
+                }
+            }
+            Expect::NoUserCard => {
+                let home = self.view("home", "ios", "en").await?;
+                let queue = home["sections"].as_array().into_iter().flatten().find(|section| section["id"] == "queue");
+                let cards = queue.and_then(|section| section["items"].as_array()).cloned().unwrap_or_default();
+                if !cards.is_empty() {
+                    return Err(failed("no card waits for the user".into(), checkpoint::render(&Value::Array(cards))));
+                }
+            }
+            Expect::NoCardOpened { prefix } => {
+                let state = self.daemon().domain.state().map_err(|e| ScenarioError::Invalid(e.to_string()))?;
+                let opened: Vec<String> = state.interactions.keys().filter(|id| id.0.starts_with(prefix.as_str())).map(|id| id.0.clone()).collect();
+                if !opened.is_empty() {
+                    return Err(failed(format!("no card {prefix}…"), format!("{opened:?}")));
+                }
+            }
+            Expect::StallCase { task } => {
+                use alondra_core::domain::{InteractionPayload, Recipient, Scope, SystemCard};
+                let state = self.daemon().domain.state().map_err(|e| ScenarioError::Invalid(e.to_string()))?;
+                let open = state.interactions.values().any(|card| {
+                    card.system_card == Some(SystemCard::Stalled)
+                        && card.recipient == Recipient::Orchestrator
+                        && matches!(&card.scope, Scope::Task { task_id } if task_id.0 == *task)
+                        && !card.withdrawn
+                        && matches!(card.payload, InteractionPayload::Question { answer: None, .. })
+                });
+                if !open {
+                    let cards: Vec<String> = state.interactions.values().map(|card| format!("{} {:?} {:?}", card.id.0, card.system_card, card.recipient)).collect();
+                    return Err(failed(format!("an open case of {task} for the orchestrator"), format!("{cards:?}")));
                 }
             }
             Expect::TaskState { task, state } => {

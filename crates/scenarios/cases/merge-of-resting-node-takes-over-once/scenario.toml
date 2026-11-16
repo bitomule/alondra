@@ -1,0 +1,101 @@
+name = "a resting node whose host closed has its delivery merged: its cleanup message and its closer take its session over once, with no card"
+fixes = "#261"
+max_virtual = "1h"
+
+[[step]]
+do = "request"
+text = "Export the report as CSV"
+task = "t1"
+title = "Add the CSV export"
+
+[[step]]
+do = "github"
+event = "open_pr"
+number = 7
+head = "csv-export"
+base = "main"
+
+[[step]]
+do = "claude_node"
+task = "t1"
+transcripts = ["rests-with-its-delivery.ndjson", "resumes-to-clean-up.ndjson"]
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "register_pr"
+task = "t1"
+number = 7
+
+[[step]]
+do = "present"
+task = "t1"
+id = "d1"
+prs = [7]
+body = "The CSV export is ready"
+
+[[step]]
+do = "tell"
+task = "t1"
+text = "Wrap it up"
+from_user = false
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "resting-with-its-host-closed"
+screens = ["home", "task:t1"]
+
+[[step]]
+do = "press"
+presentation = "d1"
+action = "merge"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "cleanup_done"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "closed"
+screens = ["home", "tasks"]
+pushes = true
+
+[[step.expect]]
+check = "transcripts_played"
+
+[[step.expect]]
+check = "no_card_opened"
+prefix = "host-lost"
+
+[[step.expect]]
+check = "no_user_card"
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "Retry"
+present = false
+
+[[step.expect]]
+check = "pr_merged_into"
+pr = 7
+branch = "main"
+
+[[step.expect]]
+check = "task_state"
+task = "t1"
+state = "done"

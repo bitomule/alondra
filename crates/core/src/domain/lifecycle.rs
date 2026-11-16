@@ -492,6 +492,10 @@ pub enum LifecycleRecord {
     /// The request at `epoch` ended without a decision reaching Claude. `unheard_card` is the card
     /// the aggregate requires when nothing else explains the task's next step.
     DecisionAborted { epoch: u64, unheard_card: InteractionId },
+    /// The provider reported `evidence` that Alondra could not apply, and it contradicted nothing.
+    EvidenceUnapplied { evidence: UnappliedEvidence },
+    /// The lifecycle disagreed with its host or provider and took `recovery`.
+    Contradicted { contradiction: ContradictionRecord, recovery: RecoveryRecord },
 }
 
 /// The aggregates of the tasks one transaction decides on, taken from the lifecycles the state
@@ -768,6 +772,8 @@ fn event(task: &TaskId, record: &LifecycleRecord, lifecycle: &TaskLifecycle) -> 
         LifecycleRecord::DecisionContinued { epoch } => runtime(RuntimeFact::ContinuationConsumed {
             continuation: decision_continuation(lifecycle.generation(), *epoch),
         })?,
+        LifecycleRecord::EvidenceUnapplied { evidence } => Event::EvidenceUnapplied { evidence: (*evidence).into() },
+        LifecycleRecord::Contradicted { contradiction, recovery } => Event::Contradicted { contradiction: (*contradiction).into(), recovery: (*recovery).into() },
         LifecycleRecord::DecisionAborted { epoch, unheard_card } => runtime(RuntimeFact::CallbackAborted {
             callback: decision_callback(lifecycle.generation(), *epoch),
             unheard_card: unheard_card.clone(),
@@ -1031,6 +1037,8 @@ fn record_of(task: &TaskId, event: &Event, texts: &BTreeMap<InputId, String>, li
             operation: record_of_control(kind),
         },
         Event::Compact { input } => LifecycleRecord::Compacted { input: input.as_str().into() },
+        Event::EvidenceUnapplied { evidence } => LifecycleRecord::EvidenceUnapplied { evidence: (*evidence).into() },
+        Event::Contradicted { contradiction, recovery } => LifecycleRecord::Contradicted { contradiction: (*contradiction).into(), recovery: (*recovery).into() },
         Event::Runtime { fact: RuntimeFact::Ask { card, callback, reason }, .. } => LifecycleRecord::DecisionAsked {
             card: card.clone(),
             epoch: epoch_of(task, lifecycle, callback.as_str())?,
@@ -1510,7 +1518,7 @@ impl DomainState {
         }
         let end = self.observed_turn_end(task, turn, failure, failed);
         let unexplained = end.is_none() && failure.is_none();
-        self.finish_observed_turn(task, generation, turn, end, unexplained, effects, lifecycles)
+        self.finish_observed_turn(task, generation, turn, end, unexplained, None, true, effects, lifecycles)
     }
 
     /// The wait `failure` asks for, when it asks for one.
@@ -1565,12 +1573,14 @@ impl DomainState {
         }
         let end = self.observed_turn_end(task, turn, failure, failed).or_else(|| failure.map(TurnEnd::Refused));
         let unexplained = end.is_none() && failure.is_none();
-        self.finish_observed_turn(task, generation, turn, end, unexplained, effects, lifecycles)
+        self.finish_observed_turn(task, generation, turn, end, unexplained, None, true, effects, lifecycles)
     }
 
+    /// The end of `turn`. An empty one is explained by `cause`, else by what the task owes, and
+    /// hands the node back its turn only when `may_wake`: otherwise it opens the case at once.
     #[allow(clippy::too_many_arguments)]
-    fn finish_observed_turn(&mut self, task: &TaskId, generation: u64, turn: &str,
-        end: Option<TurnEnd<'_>>, unexplained: bool, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
+    pub(in crate::domain) fn finish_observed_turn(&mut self, task: &TaskId, generation: u64, turn: &str,
+        end: Option<TurnEnd<'_>>, unexplained: bool, cause: Option<EmptyTurn>, may_wake: bool, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
         let stalled = end.is_none();
         let card = if stalled { stalled_card_id(task, generation, turn) } else { turn_ended_card_id(task, generation, turn) };
         let paused = self.tasks.get(task).and_then(|task| task.agent_id.as_ref())
@@ -1581,14 +1591,14 @@ impl DomainState {
             self.turn_await(task).filter(|_| unexplained)
         };
         let empty = unexplained && awaits.is_none();
-        let wake = (empty && self.lifecycle(lifecycles, task)?.hands_back_an_empty_turn()).then(|| self.next_input(task));
+        let wake = (empty && may_wake && self.lifecycle(lifecycles, task)?.hands_back_an_empty_turn()).then(|| self.next_input(task));
         if wake.is_none() && awaits.is_none() {
             self.consume_notifications_read(task, generation, lifecycles)?;
         }
         let wakes = self.lifecycle(lifecycles, task)?.empty_turns() + 1;
-        let text = wake.as_ref().map(|_| self.empty_turn(task).wake_text_at(wakes));
+        let text = wake.as_ref().map(|_| cause.clone().unwrap_or_else(|| self.empty_turn(task)).wake_text_at(wakes));
         self.decide(lifecycles, task, LifecycleRecord::TurnEnded { turn: turn.into(), unheard_card: card.clone(), text, wake, awaits, stalled })?;
-        let owed = if empty { self.owed_step(task, self.lifecycle(lifecycles, task)?) } else { None };
+        let owed = if empty && cause.is_none() { self.owed_step(task, self.lifecycle(lifecycles, task)?) } else { None };
         if let Some(owed) = &owed {
             let wake = self.wake_for(task, lifecycles)?;
             let wakes = self.lifecycle(lifecycles, task)?.empty_turns() + 1;
@@ -1603,7 +1613,7 @@ impl DomainState {
         if self.lifecycle(lifecycles, task)?.cards().iter().any(|(required, _)| **required == card) {
             match end {
                 None => {
-                    let why = owed.unwrap_or_else(|| self.empty_turn(task));
+                    let why = owed.or(cause).unwrap_or_else(|| self.empty_turn(task));
                     self.open_stall_on(task, card, why, effects)?;
                 }
                 Some(end) => {
@@ -2757,6 +2767,8 @@ pub enum EmptyTurn {
     UnactedAnswer { card: InteractionId, need: String, said: String },
     /// The node's PR merged and it rests with the work it said runs after the merge, `reason`, owed.
     AfterMerge { reason: String },
+    /// The lifecycle disagreed with what the node's host or provider reported.
+    Contradicted(alondra_domain::Contradiction),
 }
 impl EmptyTurn {
     /// What the node is told the first time Alondra hands it back its turn after one that ended empty.
@@ -2766,6 +2778,8 @@ impl EmptyTurn {
             Self::UnpresentedPr { number } => format!("Your turn ended and you registered pull request #{number} without presenting it: present it with `present_result` (is_final true, the pull request in targets) and end your turn. {WAKE_LIMIT}"),
             Self::UnactedAnswer { card, need, said } => format!("You asked “{need}” (card {card}) and the user answered: “{said}”. That answer is final and already yours: act on it now. If your delivery changes, present it again with `present_result`; if it stands as it is, present it again as it is. {WAKE_LIMIT}"),
             Self::AfterMerge { reason } => format!("{} {WAKE_LIMIT}", post_merge_carry_on_instruction(reason)),
+            Self::Contradicted(alondra_domain::Contradiction::TurnEndUnapplied) => format!("Alondra could not read how your last turn ended, so it ended that turn for you. Check where you were and go on with your task: deliver your result with `present_result`, ask the user with `ask`, or wait through its Alondra tool. {WAKE_LIMIT}"),
+            Self::Contradicted(alondra_domain::Contradiction::HostLost) => format!("Your session was taken over by a new host. Check where you were and go on with your task; whatever you ran in the background ended and will not report back. {WAKE_LIMIT}"),
         }
     }
     /// What the node is told on the `wake`th wake in a row, counted from 1.
@@ -2782,6 +2796,8 @@ impl EmptyTurn {
             Self::UnpresentedPr { number } => format!("It registered pull request #{number}, still open, and never presented it."),
             Self::UnactedAnswer { card, need, said } => format!("Its delivery waits for the user's review. After presenting it, it asked the user “{need}” (card {card}), the user answered “{said}”. It took that answer and rested without acting on it."),
             Self::AfterMerge { reason } => format!("Its PR is merged and it rests with the work it said runs after the merge (“{reason}”) still owed."),
+            Self::Contradicted(alondra_domain::Contradiction::TurnEndUnapplied) => "Its provider kept ending turns in a way Alondra could not apply: Alondra ended the turn and woke the node, then gave it a new host that resumed its session, and it happened again.".to_owned(),
+            Self::Contradicted(alondra_domain::Contradiction::HostLost) => "No host stays with it: Alondra gave it new hosts that resumed its session and it lost them again.".to_owned(),
         }
     }
 }
@@ -2801,7 +2817,7 @@ pub const NATIVE_CONTEXT_EXCEEDED_WHY: &str = "Codex reports that this request e
 pub const FAILED_CODE_MAX: usize = 40;
 
 /// Why a root turn ended with a card for the user: something only they decide.
-enum TurnEnd<'a> {
+pub(in crate::domain) enum TurnEnd<'a> {
     Interrupted,
     Refused(&'a SdkApiFailure),
     /// Claude Code ended it as failed with this code.

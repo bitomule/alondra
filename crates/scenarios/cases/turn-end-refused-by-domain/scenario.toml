@@ -1,0 +1,32 @@
+name = "a turn end the domain refuses whole is closed and the node woken, with no card"
+max_virtual = "30m"
+
+[[step]]
+do = "request"
+text = "Export the report as CSV"
+task = "t1"
+title = "Add the CSV export"
+
+[[step]]
+do = "refuse_turn_end"
+
+[[step]]
+do = "claude_node"
+task = "t1"
+transcripts = ["turn-end-refused.ndjson"]
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "woken"
+screens = ["home", "task:t1"]
+pushes = true
+
+[[step.expect]]
+check = "transcripts_played"
+
+[[step.expect]]
+check = "no_user_card"

@@ -3246,9 +3246,10 @@ fn variant_index(c: &Command) -> usize {
         Command::NotePrChanges { .. } => 136,
         Command::RecordHostReleased { .. } => 137,
         Command::RecordHostRetaken { .. } => 138,
+        Command::RecordUnappliedEvidence { .. } => 139,
     }
 }
-const COMMAND_KINDS: usize = 139;
+const COMMAND_KINDS: usize = 140;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3396,6 +3397,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordClaudeHold { task_id: ids.task.into(), generation: 1, failure: SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: None } }, false),
         (Command::RecordHostReleased { task_id: ids.task.into(), generation: 1 }, false),
         (Command::RecordHostRetaken { task_id: ids.task.into(), generation: 1 }, false),
+        (Command::RecordUnappliedEvidence { task_id: ids.task.into(), generation: 1, evidence: UnappliedEvidence::TurnEnd }, false),
         (Command::RecordDoubtfulHandoff { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into(), resumes: false, by_alondra: false }, false),
         (Command::ReconcileRecoveryCards { task_id: ids.task.into() }, false),
         (Command::RecordHostLost { task_id: ids.task.into(), reason: "its host did not stop".into(), quiet: false }, false),

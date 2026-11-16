@@ -224,6 +224,9 @@ pub enum Observation {
     ModelAnswered,
     TransportLost,
     ResourceReleased,
+    /// The provider ended a turn in a way the normalizer could not read: the lifecycle decides
+    /// whether its own record still holds that turn open.
+    UnreadTurnEnd,
     /// Claude asks for a decision. `epoch` is the host's journal cursor of the request, unique in
     /// its execution; `tool_use` names the tool call it is about, absent for an MCP server's
     /// request for input; `payload` is the request exactly as the host persisted it.

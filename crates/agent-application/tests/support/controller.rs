@@ -37,7 +37,7 @@ pub fn record_facts(
             | ObservedFact::McpToolFailed
             | ObservedFact::Reconciled { .. }
             | ObservedFact::Usage(_) => continue,
-            ObservedFact::ContinuationRequested { .. } | ObservedFact::TurnEnded { .. } | ObservedFact::InputDropped { .. } | ObservedFact::Asked { .. } | ObservedFact::Settled { .. } => {
+            ObservedFact::ContinuationRequested { .. } | ObservedFact::TurnEnded { .. } | ObservedFact::InputDropped { .. } | ObservedFact::Asked { .. } | ObservedFact::Settled { .. } | ObservedFact::Unapplied { .. } => {
                 return Err(Error::RequiresDomainCommand);
             }
         };

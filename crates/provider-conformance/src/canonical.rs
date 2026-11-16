@@ -41,6 +41,7 @@ impl Canon {
                 format!("Reconciled({}, live=[{}])", if *idle { "idle" } else { "busy" }, live.join(", "))
             }
             ObservedFact::ModelAnswered => "ModelAnswered".into(),
+            ObservedFact::Unapplied { evidence } => format!("Unapplied({evidence:?})"),
             ObservedFact::Asked { request, epoch, kind, .. } => {
                 format!("Asked({}, {}, {kind:?})", self.name('D', request), self.name('E', &epoch.to_string()))
             }

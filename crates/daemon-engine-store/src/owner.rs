@@ -120,6 +120,46 @@ pub enum Refuse {
     InterruptAccepted,
     /// The provider's adapter refuses the next observation, as one it cannot read.
     Observation,
+    /// The domain refuses the next turn end any thread records, whole: its boundary and the runtime
+    /// fact that would record it alone, until another observation comes.
+    WholeTurnEnd,
+}
+
+/// The turn end refused whole: asked for, or the turn of the task whose end is refused.
+#[cfg(any(test, feature = "test-hooks"))]
+enum WholeTurnEnd {
+    Asked,
+    Refusing { task: alondra_core::domain::TaskId, turn: String },
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+static WHOLE_TURN_END: std::sync::Mutex<Option<WholeTurnEnd>> = std::sync::Mutex::new(None);
+
+/// Whether `command` records the end of the turn refused whole. The first pass of a later
+/// observation, which never probes, ends the refusal.
+#[cfg(any(test, feature = "test-hooks"))]
+fn whole_turn_end_refused(command: &Command, probe: bool) -> bool {
+    let mut refused = WHOLE_TURN_END.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let ended = match command {
+        Command::RecordTurnBoundary { task_id, turn, .. } => Some((task_id, turn)),
+        Command::RecordRuntimeFacts { task_id, facts, .. } => facts.iter().find_map(|fact| match fact {
+            RuntimeObservation::TurnEnded { turn, .. } => Some((task_id, turn)),
+            _ => None,
+        }),
+        _ => None,
+    };
+    match (refused.as_ref(), ended) {
+        (Some(WholeTurnEnd::Asked), Some((task, turn))) if matches!(command, Command::RecordTurnBoundary { .. }) => {
+            *refused = Some(WholeTurnEnd::Refusing { task: task.clone(), turn: turn.clone() });
+            true
+        }
+        (Some(WholeTurnEnd::Refusing { task, turn }), Some((ending, ended))) if task == ending && turn == ended => true,
+        (Some(WholeTurnEnd::Refusing { .. }), _) if !probe => {
+            *refused = None;
+            false
+        }
+        _ => false,
+    }
 }
 
 #[cfg(any(test, feature = "test-hooks"))]
@@ -130,12 +170,19 @@ thread_local! {
 /// The next `what` this thread observes is refused.
 #[cfg(any(test, feature = "test-hooks"))]
 pub fn refuse_next(what: Refuse) {
+    if what == Refuse::WholeTurnEnd {
+        *WHOLE_TURN_END.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(WholeTurnEnd::Asked);
+        return;
+    }
     REFUSE.with(|refuse| refuse.set(Some(what)));
 }
 
 /// The refusal the test asked for; the run that probes takes it.
 #[cfg(any(test, feature = "test-hooks"))]
 fn refused_for_test(command: &Command, probe: bool) -> Option<StoreError> {
+    if whole_turn_end_refused(command, probe) {
+        return Some(DomainError::new("conflict", "the test refuses the whole turn end").into());
+    }
     let what = match command {
         Command::RecordTurnBoundary { .. } => Refuse::TurnEnd,
         Command::RecordDecisionRequest { .. } => Refuse::DecisionRequest,
@@ -416,6 +463,10 @@ impl<'connection> OwnerTransaction<'connection> {
                     }
                 }
                 ObservedFact::ModelAnswered => if account_fresh || same_known_identity{technical.push(RuntimeObservation::ModelAnswered)},
+                ObservedFact::Unapplied { evidence } => {
+                    flush(&mut commands, &mut technical);
+                    commands.push(Command::RecordUnappliedEvidence { task_id: task_id.clone(), generation, evidence: (*evidence).into() });
+                }
                 ObservedFact::TurnEnded { turn, outcome } => {
                     turn_ended = true;
                     flush(&mut commands, &mut technical);
@@ -700,6 +751,16 @@ impl<'connection> OwnerTransaction<'connection> {
                     log!("the end of {turn} on {task_id} is recorded without its refused reaction: {}", refusal.message);
                     continue;
                 }
+                let unapplied = CommandEnvelope {
+                    command_id: format!("{}:unapplied", envelope.command_id.0).as_str().into(),
+                    command: Command::RecordUnappliedEvidence { task_id: task_id.clone(), generation: *generation, evidence: alondra_core::domain::UnappliedEvidence::TurnEnd },
+                    ..envelope.clone()
+                };
+                if self.refusal(&unapplied).is_none() {
+                    self.stage_command(&Actor::System, &unapplied, Attached::None)?;
+                    log!("the domain refused the end of {turn} on {task_id} ({}): its lifecycle records it as evidence it could not apply", refusal.message);
+                    continue;
+                }
             }
             if let Command::RecordDecisionRequest { task_id, generation, epoch, .. } = &envelope.command {
                 let denial = CommandEnvelope {
@@ -743,13 +804,27 @@ impl<'connection> OwnerTransaction<'connection> {
         normalizer: &N,
         reason: super::DiscardReason,
     ) -> std::result::Result<ObservationAcceptance, StoreError> {
-        let skipping = alondra_agent_application::Skipping(normalizer);
-        let pending = alondra_agent_application::stage_observation(&mut self.journal, binding, owner_generation, batch, &skipping)
+        let witness = alondra_agent_application::Witnessing::new(normalizer);
+        let pending = alondra_agent_application::stage_observation(&mut self.journal, binding, owner_generation, batch, &witness)
             .map_err(application_error)?;
         let execution = pending.execution().clone();
         let accepted = pending.settle_recorded(&mut self.journal, 0).map_err(application_error)?;
         if accepted == ObservationAcceptance::Accepted {
             self.sql(|conn| super::discarded_observations::record(conn, &execution, batch.cursor, reason))?;
+            let evidence = if witness.ended_a_turn() { alondra_core::domain::UnappliedEvidence::TurnEnd } else { alondra_core::domain::UnappliedEvidence::Unreadable };
+            let envelope = CommandEnvelope {
+                protocol_version: PROTOCOL_VERSION,
+                data_epoch: self.draft.state.data_epoch.clone(),
+                command_id: format!("discarded:{}:{}:{}", execution.task(), execution.generation(), batch.cursor).as_str().into(),
+                expected_revision: 0,
+                command: Command::RecordUnappliedEvidence { task_id: execution.task().clone(), generation: execution.generation(), evidence },
+            };
+            match self.refusal(&envelope) {
+                None => {
+                    self.stage_command(&Actor::System, &envelope, Attached::None)?;
+                }
+                Some(refusal) => log!("observation {} of {} was discarded and its lifecycle could not record it either: {}", batch.cursor, execution.task(), refusal.message),
+            }
         }
         self.observe_provider_transition(&execution, batch.cursor)?;
         Ok(accepted)

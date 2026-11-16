@@ -543,6 +543,8 @@ impl TaskLifecycle {
                     *stop = TurnStop::ForceRequested;
                 }
             }
+            Event::EvidenceUnapplied { .. } => self.evidence_unapplied()?,
+            Event::Contradicted { contradiction, recovery } => self.contradicted(contradiction, recovery)?,
             Event::Compact { input } => {
                 if self
                     .cards()

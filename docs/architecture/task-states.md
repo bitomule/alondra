@@ -88,6 +88,39 @@ No deadline, because an event ends the state:
 | A move to another account | Each step advances or fails; a failure aborts the move with its reason |
 | Capacity, another task, the user | Read again on every pass |
 
+## Contradictions
+
+Every state above names the event that ends it, so a stuck node is not detected by elapsed time:
+it is a contradiction between what the lifecycle expects and what the host or the provider
+reported. Each contradiction is a typed fact the aggregate checks against its own state
+(`crates/domain/src/lifecycle/contradiction.rs`), and the recovery it takes depends on how many
+came in a row with nothing between them that moved the task on (a turn the provider ended, a
+question, work of the node's own, an input, a card or a delivery):
+
+| Contradictions in a row | Recovery |
+|---|---|
+| First | Its own: for a turn end the lifecycle could not apply, the open turn ends as one that explains nothing, which hands the node back its turn with what happened |
+| Second | A host that resumes the same session takes the place of the current one (`replaces_host`, acted on by the SDK owner); the host's end settles it |
+| Third | The open turn ends and the orchestrator gets the case, settled with a closed outcome like any stopped node |
+
+Nothing in this chain reaches the user. What the provider reported and Alondra could not apply is
+recorded as `EvidenceUnapplied` (`RecordUnappliedEvidence`) instead of a log line: a turn end the
+domain refused, an observation discarded whole (with whether it held a turn end), a provider
+result the normalizer could not read (Claude: a `result` that names no input of the open turn;
+Codex: a `turn/completed` of the running turn with a status it does not know), and Codex's lost
+transport. Only a turn end while the lifecycle holds a turn open is a contradiction; the rest is
+evidence the task's record keeps.
+
+| Contradiction | Evidence | Status |
+|---|---|---|
+| `TurnEndUnapplied` | A turn end the lifecycle could not apply while its turn is open | Detected and recovered |
+| `HostLost` | No host can be taken over for an execution that runs | In the domain; the daemon does not report it yet |
+| A session that never opens, an input that vanished, a stream that ended without a result, a host whose storage failed, an adopted host whose own state disagrees | The host's own account of its state | Planned: the host reports its state as a fact |
+| A lost force stop, an owner that panicked, a wake nobody took, a decision the provider never settled | The control's receipt, the owner's end, the provider's idle | Planned |
+
+Two deadlines remain for a native process that is alive and says nothing at all, where no event
+exists: the session that never opens and `HandInput`. Each logs when it fires.
+
 ## Rules
 
 Each rule is held by a type or by a property test.

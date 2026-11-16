@@ -9,7 +9,6 @@
 
 use crate::claude_peer::PeerLauncher;
 use crate::error::ScenarioError;
-use alondra_scenarios_transcript::Transcript;
 use std::path::Path;
 
 /// What the Codex host announces in its hello, and the daemon requires of it for a task.
@@ -19,15 +18,5 @@ const CAPABILITIES: &[&str] = &[
 ];
 
 pub fn launcher(case: &Path, names: &[String]) -> Result<PeerLauncher, ScenarioError> {
-    let mut transcripts = Vec::new();
-    for name in names {
-        let path = case.join("transcripts").join(name);
-        let text = std::fs::read_to_string(&path).map_err(|error| ScenarioError::Invalid(format!("{}: {error}", path.display())))?;
-        let transcript = Transcript::parse(&text).map_err(|error| ScenarioError::Invalid(format!("{}: {error}", path.display())))?;
-        if transcript.header.provider != "codex" {
-            return Err(ScenarioError::Invalid(format!("{}: a Codex transcript names provider `codex`, not `{}`", path.display(), transcript.header.provider)));
-        }
-        transcripts.push(transcript);
-    }
-    Ok(PeerLauncher::declaring(CAPABILITIES, transcripts).with_app_server())
+    Ok(PeerLauncher::declaring(CAPABILITIES, crate::claude_peer::transcripts(case, names, "codex")?).with_app_server())
 }

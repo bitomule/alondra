@@ -202,6 +202,15 @@ fn an_alert_the_phone_received_fails_a_check_that_there_was_none() {
 }
 
 #[test]
+fn a_scenario_that_starts_claude_and_codex_nodes_is_refused_before_anything_runs() {
+    let text = format!("{SMALL}\n[[step]]\ndo = \"claude_node\"\ntask = \"t1\"\ntranscripts = [\"a.ndjson\"]\n\n[[step]]\ndo = \"codex_node\"\ntask = \"t1\"\ntranscripts = [\"b.ndjson\"]\n");
+    match run(&scenario(&text), None) {
+        Err(ScenarioError::Invalid(why)) => assert!(why.contains("never both"), "{why}"),
+        other => panic!("expected the scenario refused, found {:?}", other.map(|_| ())),
+    }
+}
+
+#[test]
 fn a_badge_the_phone_never_got_fails_a_check_on_it() {
     let lines = "pushes = true\n\n[[step.expect]]\ncheck = \"badge\"\ncount = 0\n";
     match delivered(lines) {
@@ -216,4 +225,18 @@ fn a_badge_the_phone_never_got_fails_a_check_on_it() {
 fn a_check_on_pushes_needs_the_checkpoint_to_read_them() {
     let lines = "\n[[step.expect]]\ncheck = \"no_pushes\"\n";
     assert!(matches!(delivered(lines), Err(ScenarioError::Invalid(_))));
+}
+
+#[test]
+fn a_claude_node_refuses_a_transcript_of_another_provider() {
+    let case = tempfile::tempdir().unwrap();
+    std::fs::create_dir(case.path().join("transcripts")).unwrap();
+    let header = r#"{"type": "transcript_start", "provider": "codex", "protocol_version": 1, "sdk_version": "0.163.0", "model": "demo-model", "captured_at": "2026-11-16", "scenario": "harness", "origin": "written"}"#;
+    std::fs::write(case.path().join("transcripts/host.ndjson"), format!("{header}\n")).unwrap();
+    let mut scenario = scenario(&format!("{SMALL}\n[[step]]\ndo = \"claude_node\"\ntask = \"t1\"\ntranscripts = [\"host.ndjson\"]\n"));
+    scenario.case = Some(case.path().to_path_buf());
+    match run(&scenario, None) {
+        Err(ScenarioError::Invalid(why)) => assert!(why.contains("names provider `claude`, not `codex`"), "{why}"),
+        other => panic!("expected the transcript refused, found {:?}", other.map(|_| ())),
+    }
 }

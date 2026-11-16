@@ -109,7 +109,8 @@ impl DomainState {
         t.stalls += 1;
         let (number, title) = (t.stalls, t.title.clone());
         let only_close = number > STALL_ATTEMPTS;
-        let delivered = !matches!(why, EmptyTurn::Unexplained | EmptyTurn::UnpresentedPr { .. });
+        let delivered = !matches!(why, EmptyTurn::Unexplained | EmptyTurn::UnpresentedPr { .. } | EmptyTurn::Contradicted(_));
+        let contradicted = matches!(why, EmptyTurn::Contradicted(_));
         let why = why.stall_text();
         let delivery = if delivered {
             " Its delivery stays with the user while you settle it: instruct sends the node back to its step, close cancels the task and its delivery, and a case nobody settles leaves the delivery with the user."
@@ -121,8 +122,13 @@ impl DomainState {
         } else {
             format!("This is case {number} of {STALL_ATTEMPTS} since the task last moved on. Settle it with instruct (one concrete next step the node gets) or close (the task ends with your result, what got done and what did not). After case {STALL_ATTEMPTS}, close is the only outcome.")
         };
+        let stop = if contradicted {
+            format!("The node of Task “{title}” ({task}) cannot go on by itself. {why}")
+        } else {
+            format!("The node of Task “{title}” ({task}) stopped with nothing that explains its next step: no result, no question, no work of its own running and nothing it waits for. {why} Alondra already handed it back its turn {EMPTY_TURN_WAKES} times in a row with what happened.")
+        };
         let body = format!(
-            "The node of Task “{title}” ({task}) stopped with nothing that explains its next step: no result, no question, no work of its own running and nothing it waits for. {why} Alondra already handed it back its turn {EMPTY_TURN_WAKES} times in a row with what happened. \
+            "{stop} \
              This is never a question for the user: read its mission, its last words and its worktree below, and settle it with settle_stall(case_id: \"{card}\", task_id: \"{task}\", outcome). {outcomes}{delivery}");
         let need = fit_title(&title, CardSpec::TITLED_NEED_MAX, |title| format!("“{title}” stopped without a result or a question: settle how it goes on"));
         self.insert_system_card(Interaction {

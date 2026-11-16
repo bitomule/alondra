@@ -1,0 +1,3 @@
+Add the CSV export
+Alondra could not read how your last turn ended, so it ended that turn for you. Check where you were and go on with your task
+Your turn ended without a result

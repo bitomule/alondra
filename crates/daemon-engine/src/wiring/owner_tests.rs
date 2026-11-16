@@ -560,23 +560,22 @@ fn a_deferred_commit_failure_issues_no_seal_publication_or_cache() {
     assert!(store.conn.is_autocommit());
 }
 
-// Case 4: a released resource is not a fact the domain records yet, so nothing retires the
-// execution behind its back: the observation is refused, and its raw evidence, checkpoint and
-// journal stay as they were, with nothing acknowledged.
+// Case 4: a released resource is not a fact that retires the execution behind its back: the
+// lifecycle records it as evidence it could not apply, and the execution stays as it was.
 #[test]
-fn a_released_resource_is_refused_and_nothing_of_its_observation_commits() {
+fn a_released_resource_is_recorded_as_evidence_and_leaves_the_execution_as_it_was() {
     let (fixture, store, execution) = running();
     let runtime = runtime(&fixture, store);
-    let observer = observer(&fixture);
-    let before = counts(&observer);
     let state = Arc::clone(runtime.read().state());
-    let refused = runtime.own(scope_of(&state), |owner| {
+    let task = execution.task().clone();
+    let activity = state.lifecycle_of(&task).unwrap().activity();
+    runtime.own(scope_of(&state), |owner| {
         owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Released, no_home(), false)
-    });
-    assert!(refused.is_err(), "a released resource is refused");
-    assert_eq!(counts(&observer), before);
-    assert!(runtime.take_acknowledgements().is_empty());
-    assert_eq!(runtime.read().state().revision, state.revision);
+    }).unwrap();
+    let after = Arc::clone(runtime.read().state());
+    assert_eq!(after.lifecycle_journal[&task].last(), Some(&alondra_core::domain::LifecycleRecord::EvidenceUnapplied { evidence: alondra_core::domain::UnappliedEvidence::Transport }));
+    assert_eq!(after.lifecycle_of(&task).unwrap().execution(), Some(&execution));
+    assert_eq!(after.lifecycle_of(&task).unwrap().activity(), activity);
 }
 
 // Case 5: the commit precedes publication; the acknowledgement waits for publication while the
@@ -1630,6 +1629,29 @@ fn an_observation_the_adapter_refuses_is_discarded_with_why_and_the_next_one_set
     assert_eq!(commit(&runtime, &batch(&execution, 2), &Normalizer::Available).unwrap(), ObservationAcceptance::Accepted);
     assert_eq!(cursor_of(&runtime), 1, "the next observation is recorded");
     assert_eq!(discarded(&fixture).len(), 1, "and nothing else is discarded");
+}
+
+/// An observation discarded whole that held the end of the running turn is not lost with it: the
+/// lifecycle records the end it could not apply and ends its open turn.
+#[test]
+fn a_discarded_observation_that_ended_the_running_turn_still_ends_it() {
+    let (fixture, mut store, execution) = running();
+    let input = pending_input(&mut store);
+    let runtime = runtime(&fixture, store);
+    let turn = TurnId::new("turn-1").unwrap();
+    commit(&runtime, &batch(&execution, 1), &Normalizer::Facts(vec![Observation::Available, Observation::TurnStarted { input, turn: turn.clone() }])).unwrap();
+    assert_eq!(runtime.read().state().lifecycle_of(&task()).unwrap().activity(), alondra_domain::ActivityView::Working);
+    crate::domain_store::refuse_next(crate::domain_store::Refuse::Observation);
+    let end = Normalizer::Facts(vec![Observation::TurnEnded { turn, outcome: alondra_provider_contract::TurnOutcome::Completed }]);
+    assert_eq!(commit(&runtime, &batch(&execution, 2), &end).unwrap(), ObservationAcceptance::Accepted);
+    assert_eq!(discarded(&fixture).len(), 1);
+    let state = Arc::clone(runtime.read().state());
+    assert!(state.lifecycle_journal[&task()].iter().any(|record| matches!(record, alondra_core::domain::LifecycleRecord::Contradicted {
+        contradiction: alondra_core::domain::ContradictionRecord::TurnEndUnapplied, recovery: alondra_core::domain::RecoveryRecord::CloseTurn,
+    })));
+    let lifecycle = state.lifecycle_of(&task()).unwrap();
+    assert_ne!(lifecycle.activity(), alondra_domain::ActivityView::Working, "the turn ended");
+    assert!(matches!(state.lifecycle_journal[&task()].last(), Some(alondra_core::domain::LifecycleRecord::TurnEnded { .. })), "the end follows the contradiction");
 }
 
 /// Production, 2026-11-09 (t-asc-analytics-hang): a host kept reporting work of a task already
