@@ -27,7 +27,7 @@ pub async fn run(domain: Arc<DomainRuntime>, home: PathBuf) {
         log!("could not look at the automatic launches a restart interrupted: {error:#}");
     }
     let mut changed = domain.subscribe();
-    let mut turn = domain.live.gate.subscribe();
+    let mut turn = domain.live().gate.subscribe();
     let mut backoff = FIRST_BACKOFF;
     loop {
         let pause = match pass(&domain, &home).await {
@@ -115,7 +115,7 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
     let mut ready: Vec<&Task> = state.tasks.values().filter(|task| candidate(&state, task)).collect();
     ready.sort_by_key(|task| (task.priority, planned.get(&task.id).copied().unwrap_or(now), &task.id));
     for task in ready {
-        let relaunching = match domain.live.closed_task(&task.id.0).map(|node| node.relaunch) {
+        let relaunching = match domain.live().closed_task(&task.id.0).map(|node| node.relaunch) {
             Some(Relaunch::AskUser) => continue,
             Some(Relaunch::ByItself) => true,
             None => false,
@@ -130,10 +130,10 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
         if retries.get(&task.id).is_some_and(|(_, at)| *at > now) {
             continue;
         }
-        if domain.live.api_watch.down(now) {
+        if domain.live().api_watch.down(now) {
             continue;
         }
-        let usage_out = domain.live.usage_pause.current().is_some();
+        let usage_out = domain.live().usage_pause.current().is_some();
         let retry = match row.as_ref().map(|row| (row.state, row.reason)) {
             None => false,
             Some((AutoLaunchState::Launched, _)) if relaunching => {
@@ -154,7 +154,7 @@ pub(crate) async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
         }
         let waiting = crate::admission::Waiting { key: crate::admission::Key::Task(task.id.clone()), priority: task.priority, resuming: false,
             since: planned.get(&task.id).copied().unwrap_or(now) };
-        if domain.live.gate.ask(domain, waiting, now).is_err() {
+        if domain.live().gate.ask(domain, waiting, now).is_err() {
             continue;
         }
         if !domain.store.lock_or_exit("the domain store").claim_auto_launch(&task.id, now, retry)? {
@@ -193,7 +193,7 @@ fn settle(domain: &DomainRuntime, task: &TaskId, cwd: Option<&str>, launched: Re
         Err(error) => match error.code.as_str() {
             "usage_exhausted" => block(AutoLaunchReason::UsageExhausted)?,
             "account_unavailable" | "account_check_in_progress" => {
-                domain.live.gate.not_started(&crate::admission::Key::Task(task.clone()));
+                domain.live().gate.not_started(&crate::admission::Key::Task(task.clone()));
                 domain.store.lock_or_exit("the domain store").forget_auto_launch(task)?;
             }
             "worktrees_unavailable" | "disk_low" | "plan_review_pending" => domain.store.lock_or_exit("the domain store").forget_auto_launch(task)?,
@@ -207,7 +207,7 @@ fn settle(domain: &DomainRuntime, task: &TaskId, cwd: Option<&str>, launched: Re
                 }
             }
             code => {
-                domain.live.gate.not_started(&crate::admission::Key::Task(task.clone()));
+                domain.live().gate.not_started(&crate::admission::Key::Task(task.clone()));
                 if let Some(problem) = crate::start_failures::problem_of(code, &error.message, cwd) {
                     crate::start_failures::failed(domain, task, problem, now)?;
                 }

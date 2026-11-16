@@ -133,6 +133,6 @@ mod tests {
     #[test]
     fn taking_seals_after_a_panic_holding_them_exits_the_daemon() {
         let home = crate::test_support::Directory::new();
-        assert_exited_for(&in_child("sdk_owner::seals::tests::queued_child", &home), "the SDK seals");
+        assert_exited_for(&in_child("domain_runtime::seals::tests::queued_child", &home), "the SDK seals");
     }
 }

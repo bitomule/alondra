@@ -124,3 +124,4 @@ pub mod task_context;
 pub mod task_worktrees;
 pub mod usage_pause;
 pub mod usage_probe;
+pub mod wiring;

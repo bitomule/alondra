@@ -443,7 +443,7 @@ fn progress(name: &str, input: &Value, result: &Value) -> Option<Report> {
 pub(crate) fn feed(domain: &crate::domain_runtime::DomainRuntime, agent: &alondra_core::domain::AgentId, observation: &alondra_provider_contract::OrderedObservation) {
     if let Some(message) = alondra_provider_claude::sdk_message(observation) {
         let now = alondra_core::now_millis();
-        if let Some(steps) = domain.live.mods.apply_sdk(&agent.0, &message, now) {
+        if let Some(steps) = domain.live().mods.apply_sdk(&agent.0, &message, now) {
             crate::metrics_capture::node_turn(domain, agent, &message, steps, now);
         }
     }
@@ -746,5 +746,14 @@ mod tests {
         let session = reports.session("sdk-a").unwrap();
         assert!(session.tool.is_none() && session.background.is_empty());
         assert!(!reports.connected("sdk-a"));
+    }
+}
+
+/// Ends the waits of SDK nodes whose lifecycle a commit moved on.
+pub(crate) struct EndedWaits;
+
+impl crate::domain_runtime::CommitObserver for EndedWaits {
+    fn published(&self, domain: &crate::domain_runtime::DomainRuntime, before: &alondra_core::domain::DomainState, after: &alondra_core::domain::DomainState) {
+        clear_ended_waits(domain, before, after);
     }
 }

@@ -46,9 +46,9 @@ fn world() -> Fixture {
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), };
     run(&domain, Actor::Orchestrator { generation: 0 }, task("t1", Some("agent-a"), &[]));
     run(&domain, Actor::Orchestrator { generation: 0 }, task("t2", None, &["t1"]));
-    domain.live.observe(&json!({"session_id": "agent-a", "hook_event_name": "UserPromptSubmit", "cwd": "/Users/me/Projects/App", "prompt": "go"}));
+    domain.live().observe(&json!({"session_id": "agent-a", "hook_event_name": "UserPromptSubmit", "cwd": "/Users/me/Projects/App", "prompt": "go"}));
     domain.report(serde_json::from_value(json!({"session_id": "agent-a", "event": "model", "model": "claude-sonnet-5-5"})).unwrap(), 1);
-    domain.live.observe(&json!({"session_id": "stranger", "hook_event_name": "UserPromptSubmit", "cwd": "/Users/me/Projects/App", "prompt": "go"}));
+    domain.live().observe(&json!({"session_id": "stranger", "hook_event_name": "UserPromptSubmit", "cwd": "/Users/me/Projects/App", "prompt": "go"}));
     Fixture(home, domain)
 }
 

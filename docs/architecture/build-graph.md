@@ -39,8 +39,38 @@ binaries:  alondra (CLI)            alondrad (composition root)
 ```
 
 `engine-kernel` keeps only the kernel's state: store, reads, snapshot, authority, live operations and
-change notices. Each subsystem owns its own state, created and wired by `alondrad`, and hears of
-commits through an observer trait instead of the kernel calling it.
+change notices. Each subsystem owns its own state and hears of commits through an observer trait
+instead of the kernel calling it.
+
+## The runtime without its subsystems
+
+`DomainRuntime` names none of the engine's subsystems:
+
+- A subsystem's state is an `Extension` (`domain_runtime/extensions.rs`): the runtime keeps one slot
+  per extension type without naming the type, and the subsystem reads its state through an accessor
+  it defines (`domain.live()`, `domain.sdk_owners()`, `domain.handovers()`…), created on first use.
+- A commit tells every `CommitObserver` (`domain_runtime/observers.rs`), in the order they were
+  registered: the state readers are about to see, the change once the writer lock is released, and
+  the command that made it. An observer may also carry out a command in place of the store, as the
+  admission gate does with Resume on the card of a pause it holds.
+- `wiring.rs` is where the engine is put together: `DomainRuntime::open` registers the observers of
+  the SDK owners, the admission gate, the SDK nodes' waits, the task closer and «Allow always».
+  The runtime's own constructor, `open_observed`, takes them as a list.
+
+`bazel test //tools:module_cycles_test` fails when the main cycle of a crate's production modules
+grows past its limit in `tools/module_cycles.tsv`. `python3 tools/module_graph.py --production
+crates/daemon-engine/src` prints the graph it counts: the files `lib.rs` reaches through its `mod`
+declarations (`#[path]` included), without `#[cfg(test)]` items, comments or literals.
+
+| `daemon-engine` | Main cycle | Lines in it |
+|---|---:|---:|
+| Before (`main` at 16a6891) | 55 modules | 35,646 |
+| Runtime without subsystems | 34 modules | 28,654 |
+
+The 54 above counted modules by file name; the same graph through `#[path]` declarations holds one
+more. What stays in the cycle is the SDK, admission and the orchestrator. Two small cycles remain
+for the kernel crate to cut: `domain_runtime`, `domain_store`, `domain_holds` and `allow_always`;
+and `sdk_live`, `node_reports`, `node_work` and `codex_live`.
 
 ## Where it starts (2026-11-15, main at bc73a80)
 

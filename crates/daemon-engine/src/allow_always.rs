@@ -174,7 +174,7 @@ pub(crate) struct ConfirmationWait {
 async fn wait_for_write(_domain: &crate::domain_runtime::DomainRuntime) {
     #[cfg(any(test, feature = "test-hooks"))]
     {
-        let confirmation = _domain.allow_always_wait.lock().unwrap().take();
+        let confirmation = _domain.allow_always_wait().lock().unwrap().take();
         if let Some(confirmation) = confirmation {
             confirmation.entered.send(()).unwrap();
             confirmation.release.await.unwrap();
@@ -523,5 +523,46 @@ mod tests {
         let destructive = serde_json::json!({"command": "make build && rm -rf out"});
         assert_eq!(assess(Some("Bash"), &destructive, Some(cwd), Some("default"), &Value::Null, &*home),
             Some(Refusal::new("rm -rf out", Why::Deletes).into()));
+    }
+}
+
+/// Writes the rules of «Allow always», chosen on the card of a decision Claude asked for through
+/// the SDK, once the answer is committed as its decision.
+pub(crate) struct ChosenAlways;
+
+impl crate::domain_runtime::CommitObserver for ChosenAlways {
+    fn committed(&self, domain: &crate::domain_runtime::DomainRuntime, command: &alondra_core::domain::Command, state: &alondra_core::domain::DomainState) {
+        use alondra_core::domain::{Command as Domain, Hold, LifecycleRecord, Scope};
+        let Domain::AnswerQuestion { interaction_id, option_id, .. } = command else { return };
+        if option_id != Hold::ALWAYS {
+            return;
+        }
+        let Some(card) = state.interactions.get(interaction_id) else { return };
+        let Scope::Task { task_id } = &card.scope else { return };
+        let decided = state.lifecycle_journal.get(task_id).is_some_and(|journal| {
+            journal.iter().any(|record| matches!(record, LifecycleRecord::Decided { card, .. } if card == interaction_id))
+        });
+        let Some(rules) = card.card.allow_always.as_ref().and_then(AllowAlways::rules).filter(|_| decided) else { return };
+        let written = domain.task_worktree(task_id).and_then(|worktree| {
+            chosen_through_sdk(domain, worktree.as_deref(), rules, Some(&task_id.0), &interaction_id.0)
+        });
+        if let Err(error) = written {
+            log!("allow always: the rules of {interaction_id} were not written: {error:#}");
+        }
+    }
+}
+
+/// What a test holds the next write of «Allow always» rules on.
+#[cfg(any(test, feature = "test-hooks"))]
+#[derive(Default)]
+pub(crate) struct Waits(pub std::sync::Mutex<Option<ConfirmationWait>>);
+
+#[cfg(any(test, feature = "test-hooks"))]
+crate::extension!(Waits);
+
+#[cfg(any(test, feature = "test-hooks"))]
+impl crate::domain_runtime::DomainRuntime {
+    pub(crate) fn allow_always_wait(&self) -> &std::sync::Mutex<Option<ConfirmationWait>> {
+        &self.extension::<Waits>().0
     }
 }

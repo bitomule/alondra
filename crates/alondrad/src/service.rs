@@ -6377,7 +6377,7 @@ agreement_key = "{}"
                 || Ok(()),
             )
             .unwrap();
-        domain.live.observe(&json!({"session_id": "agent-a", "hook_event_name": "SessionStart", "cwd": "/Users/me/Projects/App"}));
+        domain.live().observe(&json!({"session_id": "agent-a", "hook_event_name": "SessionStart", "cwd": "/Users/me/Projects/App"}));
         let phone_signing = SigningKey::from_slice(&[3u8; 32]).unwrap();
         let phone_agreement = SecretKey::from_slice(&[4u8; 32]).unwrap();
         let signing_wire = URL_SAFE_NO_PAD.encode(phone_signing.verifying_key().to_sec1_bytes());

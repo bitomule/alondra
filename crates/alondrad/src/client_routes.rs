@@ -444,7 +444,7 @@ impl Client {
             Some((machine, usage, _)) => (json!(machine), json!(usage)),
             None => (Value::Null, Value::Null),
         };
-        let nodes = alondra_daemon_engine::live::runtime_nodes(self.domain.live.nodes(), &state, |task| state_times.get(task).copied());
+        let nodes = alondra_daemon_engine::live::runtime_nodes(self.domain.live().nodes(), &state, |task| state_times.get(task).copied());
         let tasks: serde_json::Map<String, Value> = state.tasks.iter().map(|(id, task)| {
             let (_, effort) = launches.get(&task.request_id).cloned().unwrap_or_default();
             (id.0.clone(), json!({"project": task.project, "state_since": state_times.get(id),
@@ -477,7 +477,7 @@ impl Client {
         if !state.agents.contains_key(&agent) {
             return crate::domain_api::domain_error(DomainError::new("not_found", "agent does not exist"));
         }
-        let mut threads = self.domain.live.threads(id).unwrap_or_default();
+        let mut threads = self.domain.live().threads(id).unwrap_or_default();
         let only_task = single_open_task(&state, &agent);
         for thread in &mut threads {
             let known = thread.task.as_ref().is_some_and(|task| state.tasks.contains_key(&TaskId(task.clone())));
@@ -493,7 +493,7 @@ impl Client {
             Ok(state) => state,
             Err(_) => return storage(),
         };
-        let nodes = self.domain.live.nodes();
+        let nodes = self.domain.live().nodes();
         let candidates: Vec<(String, String)> = state.agents.values().map(|agent| {
             let node = nodes.iter().find(|node| node.session_id == agent.id.0);
             let tasks: Vec<&str> = state.tasks.values()

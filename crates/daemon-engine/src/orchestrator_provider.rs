@@ -81,7 +81,7 @@ pub(crate) fn record_limit(domain: &crate::domain_runtime::DomainRuntime, select
     use alondra_core::usage::{Share, UsageReading, WindowKind, WindowReading};
     let account = &selection.account;
     let Some(source) = selection.account_status.as_ref() else { return };
-    let reset = until.or_else(|| (account.provider == alondra_core::accounts::Provider::Claude).then(|| domain.live.measured.reset_after_limit(&account.account, now)).flatten()).filter(|reset| *reset > now);
+    let reset = until.or_else(|| (account.provider == alondra_core::accounts::Provider::Claude).then(|| domain.live().measured.reset_after_limit(&account.account, now)).flatten()).filter(|reset| *reset > now);
     let read = domain.read();
     let scope = match alondra_store::AuthorityScope::new(read.state().data_epoch.clone()) { Ok(scope) => scope, Err(_) => return };
     let envelope = CommandEnvelope {

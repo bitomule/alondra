@@ -182,11 +182,11 @@ pub(super) async fn execute(
     let action_id = request.action_id.clone();
     let body = serde_json::to_vec(&request).unwrap_or_default();
     let gate = if identity.is_none() && external {
-        match domain.local_actions.gate(&receipt_key) {
+        match domain.local_actions().gate(&receipt_key) {
             Some(gate) => Some(gate),
             None => {
                 if authorize().is_err() { return error("forbidden", "device approval was revoked"); }
-                if let Some(entry) = domain.local_actions.cached(&receipt_key) {
+                if let Some(entry) = domain.local_actions().cached(&receipt_key) {
                     if entry.body != body { return error("idempotency_conflict", if spanish {
                         "El identificador del comando ya se usó con otra acción"
                     } else { "command_id was reused with different input" }); }
@@ -206,7 +206,7 @@ pub(super) async fn execute(
     if gate.is_some() {
         if authorize().is_err() { return error("forbidden", "device approval was revoked"); }
         let entry = command.as_ref().and_then(|guard| guard.as_ref().cloned())
-            .or_else(|| domain.local_actions.cached(&receipt_key));
+            .or_else(|| domain.local_actions().cached(&receipt_key));
         if let Some(entry) = entry {
             if entry.body != body { return error("idempotency_conflict", if spanish {
                 "El identificador del comando ya se usó con otra acción"
@@ -221,14 +221,14 @@ pub(super) async fn execute(
                 |action| resources_of(&domain.state().expect("domain snapshot unavailable"), action));
             let mut held = Vec::with_capacity(requested.len());
             for (key, exclusive) in &requested {
-                let resource = domain.local_actions.resource(key.clone());
+                let resource = domain.local_actions().resource(key.clone());
                 held.push(if *exclusive {
                     LocalResourceGuard::Write { _guard: resource.write_owned().await }
                 } else {
                     LocalResourceGuard::Read { _guard: resource.read_owned().await }
                 });
             }
-            let worker = domain.local_actions.workers.acquire().await.expect("local action workers closed");
+            let worker = domain.local_actions().workers.acquire().await.expect("local action workers closed");
             let current = action.as_ref().map_or_else(Vec::new,
                 |action| resources_of(&domain.state().expect("domain snapshot unavailable"), action));
             if current == requested { break (held, Some(worker)); }
@@ -237,7 +237,7 @@ pub(super) async fn execute(
     match execute_action(domain, client, home, device, request, identity, authorize).await {
         Ok(reply) => {
             if gate.is_some() {
-                let entry = domain.local_actions.remember(receipt_key, LocalActionReceipt {
+                let entry = domain.local_actions().remember(receipt_key, LocalActionReceipt {
                     body, reply: reply.clone(), at: clock::instant(),
                 });
                 **command.as_mut().expect("local command gate missing") = Some(entry);
@@ -654,7 +654,7 @@ async fn execute_external(
                     Err(crate::domain_store::StoreError::Storage(error)) => Err(error),
                 };
             }
-            match domain.live.pushes.interrupt(&agent.0) {
+            match domain.live().pushes.interrupt(&agent.0) {
                 Ok(()) => Ok(to_applied(200, json!({"interrupted": agent.0}))),
                 Err(_) => Ok(node_unreachable_value(&state, &agent, lang)),
             }
@@ -679,7 +679,7 @@ async fn execute_external(
         Verb::Pause => {
             let now = alondra_core::now_millis();
             let paused = if state.agents.contains_key(&AgentId(action.subject.clone())) {
-                domain.live.gate.pause_by_user(domain, &action.subject, now)
+                domain.live().gate.pause_by_user(domain, &action.subject, now)
             } else {
                 crate::admission::hold_queued(domain, &TaskId(action.subject.clone()), now)
             };
@@ -690,7 +690,7 @@ async fn execute_external(
         }
         Verb::Resume => {
             let now = alondra_core::now_millis();
-            if domain.live.gate.resume_now(domain, &action.subject, now) {
+            if domain.live().gate.resume_now(domain, &action.subject, now) {
                 return Ok(to_applied(200, json!({"resumed": action.subject})));
             }
             match crate::admission::release_queued(domain, &TaskId(action.subject.clone())) {
@@ -2419,7 +2419,7 @@ for line in sys.stdin:
         let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetLimit, "limit", "4", "es"), None, || Ok(())).await.unwrap();
         assert_eq!(reply["outcome"], "applied", "{reply}");
         assert_eq!(fs::read_to_string(&options).unwrap(), "# mine\nmax_working_nodes = 4\n\n[defaults]\neffort = \"light\"\n");
-        assert_eq!(domain.live.gate.live(&domain, alondra_core::now_millis()).unwrap().fixed, Some(4));
+        assert_eq!(domain.live().gate.live(&domain, alondra_core::now_millis()).unwrap().fixed, Some(4));
         let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetLimit, "limit", "auto", "en"), None, || Ok(())).await.unwrap();
         assert_eq!(reply["outcome"], "applied", "{reply}");
         assert!(fs::read_to_string(&options).unwrap().contains("max_working_nodes = \"auto\""));
@@ -2943,7 +2943,7 @@ for line in sys.stdin:
         apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
             agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
         });
-        let mut node = domain.live.pushes.attach("agent-a", 1);
+        let mut node = domain.live().pushes.attach("agent-a", 1);
         let state = domain.state().unwrap();
         let mut message = pacing_request(&state, Verb::Msg, "agent-a", "", "en");
         message.input.text = Some("A message for the isolated test peer".into());
@@ -2961,7 +2961,7 @@ for line in sys.stdin:
         assert_eq!(reply.status(), StatusCode::OK);
         assert!(std::fs::read_to_string(alondra_core::options::path_in(&home.0)).unwrap()
             .contains("max_working_nodes = 4"));
-        domain.live.pushes.acknowledged("agent-a", &[sent["id"].as_str().unwrap().to_owned()]);
+        domain.live().pushes.acknowledged("agent-a", &[sent["id"].as_str().unwrap().to_owned()]);
         let Poll::Ready(reply) = first.as_mut().poll(&mut context) else {
             panic!("the acknowledged message must complete");
         };
@@ -2982,7 +2982,7 @@ for line in sys.stdin:
         apply_seed_command(&domain, Actor::System, "unrelated-node", Command::RegisterAgent {
             agent_id: "task-a".into(), name: "Unrelated node".into(), at: 0,
         });
-        let mut unrelated = domain.live.pushes.attach("task-a", 1);
+        let mut unrelated = domain.live().pushes.attach("task-a", 1);
         for (text, lang, stamp) in [("Keep the old API", "en", "Message kept: the task's node reads it when it starts"),
             ("Then update the docs", "es", "Mensaje guardado: el nodo de la tarea lo lee al arrancar")] {
             let mut request = pacing_request(&domain.state().unwrap(), Verb::TaskMsg, "task-a", "", lang);
@@ -3023,7 +3023,7 @@ for line in sys.stdin:
         apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
             agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
         });
-        let mut node = domain.live.pushes.attach("agent-a", 1);
+        let mut node = domain.live().pushes.attach("agent-a", 1);
         let mut request = pacing_request(&domain.state().unwrap(), Verb::Msg, "agent-a", "", "en");
         request.input.text = Some("One message".into());
         let mut first = Box::pin(execute(&domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())));
@@ -3033,7 +3033,7 @@ for line in sys.stdin:
         let sent: Value = serde_json::from_str(&node.try_recv().unwrap()).unwrap();
         assert!(retry.as_mut().poll(&mut context).is_pending());
         assert!(matches!(node.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
-        domain.live.pushes.acknowledged("agent-a", &[sent["id"].as_str().unwrap().to_owned()]);
+        domain.live().pushes.acknowledged("agent-a", &[sent["id"].as_str().unwrap().to_owned()]);
         let Poll::Ready(reply) = first.as_mut().poll(&mut context) else { panic!("message not completed"); };
         drop(reply);
         let Poll::Ready(reply) = retry.as_mut().poll(&mut context) else { panic!("coalesced retry not completed"); };
@@ -3077,7 +3077,7 @@ for line in sys.stdin:
         apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
             agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
         });
-        let mut node = domain.live.pushes.attach("agent-a", 1);
+        let mut node = domain.live().pushes.attach("agent-a", 1);
         let state = domain.state().unwrap();
         let mut message = pacing_request(&state, Verb::Msg, "agent-a", "", "en");
         message.input.text = Some("First".into());
@@ -3094,12 +3094,12 @@ for line in sys.stdin:
         let mut queued = Box::pin(execute(&domain, &client, &home.0, "test-device", limit, None, || Ok(())));
         assert!(queued.as_mut().poll(&mut context).is_pending());
         assert!(!alondra_core::options::path_in(&home.0).exists());
-        domain.live.pushes.acknowledged("agent-a", &[sent["id"].as_str().unwrap().to_owned()]);
+        domain.live().pushes.acknowledged("agent-a", &[sent["id"].as_str().unwrap().to_owned()]);
         assert!(matches!(first.as_mut().poll(&mut context), Poll::Ready(_)));
         let Poll::Ready(reply) = queued.as_mut().poll(&mut context) else { panic!("capacity was not released"); };
         assert_eq!(reply.status(), StatusCode::OK);
         assert!(second.as_mut().poll(&mut context).is_pending());
-        domain.live.pushes.acknowledged("agent-a", &[other["id"].as_str().unwrap().to_owned()]);
+        domain.live().pushes.acknowledged("agent-a", &[other["id"].as_str().unwrap().to_owned()]);
         assert!(matches!(second.as_mut().poll(&mut context), Poll::Ready(_)));
     }
 
@@ -3111,7 +3111,7 @@ for line in sys.stdin:
         apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
             agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
         });
-        let mut node = domain.live.pushes.attach("agent-a", 1);
+        let mut node = domain.live().pushes.attach("agent-a", 1);
         let mut request = pacing_request(&domain.state().unwrap(), Verb::Msg, "agent-a", "", "en");
         request.input.text = Some("One message".into());
         let mut first = Box::pin(execute(&domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())));
@@ -3120,11 +3120,11 @@ for line in sys.stdin:
         assert!(first.as_mut().poll(&mut context).is_pending());
         let sent: Value = serde_json::from_str(&node.try_recv().unwrap()).unwrap();
         assert!(retry.as_mut().poll(&mut context).is_pending());
-        domain.live.pushes.acknowledged("agent-a", &[sent["id"].as_str().unwrap().to_owned()]);
+        domain.live().pushes.acknowledged("agent-a", &[sent["id"].as_str().unwrap().to_owned()]);
         assert!(matches!(first.as_mut().poll(&mut context), Poll::Ready(_)));
         let newer = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
         for index in 0..1024 {
-            domain.local_actions.remember(("other-device".into(), index.to_string()), LocalActionReceipt {
+            domain.local_actions().remember(("other-device".into(), index.to_string()), LocalActionReceipt {
                 body: vec![], reply: json!({}), at: newer,
             });
         }
@@ -3281,8 +3281,8 @@ for line in sys.stdin:
         use std::task::{Context, Poll, Waker};
         let (home, domain, client) = action_home();
         apply_seed_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id:"agent-a".into(), name:"Agent".into(), at: 0 });
-        let mut node = domain.live.pushes.attach("agent-a", 1);
-        let full = domain.local_actions.slots.clone().acquire_many_owned(1024).await.unwrap();
+        let mut node = domain.live().pushes.attach("agent-a", 1);
+        let full = domain.local_actions().slots.clone().acquire_many_owned(1024).await.unwrap();
         let mut request = pacing_request(&domain.state().unwrap(), Verb::Msg, "agent-a", "", "en");
         request.input.text = Some("Not admitted".into());
         let mut pending = Box::pin(execute(&domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())));
@@ -3298,7 +3298,7 @@ for line in sys.stdin:
         let mut retry = Box::pin(execute(&domain, &client, &home.0, "test-device", request, None, || Ok(())));
         assert!(retry.as_mut().poll(&mut context).is_pending());
         let sent: Value = serde_json::from_str(&node.try_recv().unwrap()).unwrap();
-        domain.live.pushes.acknowledged("agent-a", &[sent["id"].as_str().unwrap().to_owned()]);
+        domain.live().pushes.acknowledged("agent-a", &[sent["id"].as_str().unwrap().to_owned()]);
         assert!(matches!(retry.as_mut().poll(&mut context), Poll::Ready(_)));
     }
 
@@ -3310,7 +3310,7 @@ for line in sys.stdin:
         apply_seed_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id:"agent-a".into(), name:"Agent".into(), at: 0 });
         let sessions = std::sync::Arc::new(HeldClose { removes:Default::default(), listed:true.into(), release:tokio::sync::Semaphore::new(0) });
         client.use_sessions(sessions.clone());
-        let mut node = domain.live.pushes.attach("agent-a", 1);
+        let mut node = domain.live().pushes.attach("agent-a", 1);
         let state = domain.state().unwrap();
         let close = pacing_request(&state, Verb::Close, "agent-a", "", "en");
         let mut message = pacing_request(&state, Verb::Msg, "agent-a", "", "en");
@@ -3387,8 +3387,8 @@ for line in sys.stdin:
         use std::task::{Context, Poll, Waker};
         let (home, domain, client) = action_home();
         apply_seed_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id:"agent-a".into(), name:"Agent".into(), at: 0 });
-        let mut node = domain.live.pushes.attach("agent-a", 1);
-        domain.live.mark_closed("agent-a");
+        let mut node = domain.live().pushes.attach("agent-a", 1);
+        domain.live().mark_closed("agent-a");
         let mut request = pacing_request(&domain.state().unwrap(), Verb::Msg, "agent-a", "", "en");
         request.input.text = Some("Do not reach a closed node".into());
         let mut pending = Box::pin(execute(&domain, &client, &home.0, "test-device", request, None, || Ok(())));
@@ -3408,7 +3408,7 @@ for line in sys.stdin:
         let bytes = axum::body::to_bytes(original.into_body(), 1024 * 1024).await.unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["outcome"], "applied");
-        let _full = domain.local_actions.slots.clone().acquire_many_owned(1024).await.unwrap();
+        let _full = domain.local_actions().slots.clone().acquire_many_owned(1024).await.unwrap();
         let recovered = execute(&domain, &client, &home.0, "test-device", request.clone(), None, || Ok(())).await;
         assert_eq!(axum::body::to_bytes(recovered.into_body(), 1024 * 1024).await.unwrap(), bytes,
             "admission must not replace an available applied receipt with busy");

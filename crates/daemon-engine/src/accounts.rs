@@ -47,7 +47,7 @@ impl Claude {
         let path = backend.native_environment.get("PATH").cloned().unwrap_or_default();
         let executable = if backend.installed_native { claude_account::executable(&path)? } else { backend.native.clone() };
         let user_home = Self::user_home(domain);
-        Some(Claude { executable, environment: backend.native_environment.clone(), user_home, path, username: claude_account::effective_username()?, timeout: (!domain.live.unbounded_claude_status.load(std::sync::atomic::Ordering::Relaxed)).then_some(claude_account::STATUS_TIMEOUT) })
+        Some(Claude { executable, environment: backend.native_environment.clone(), user_home, path, username: claude_account::effective_username()?, timeout: (!domain.live().unbounded_claude_status.load(std::sync::atomic::Ordering::Relaxed)).then_some(claude_account::STATUS_TIMEOUT) })
     }
 
     /// The profile the default account runs with: the one the daemon was set up with.
@@ -240,17 +240,17 @@ pub(crate) fn select_for_node(domain: &DomainRuntime, home: &Path, intent: &alon
 }
 
 pub fn begin_initial_check(domain: &DomainRuntime) {
-    domain.live.initial_account_check_pending.store(true, std::sync::atomic::Ordering::Release);
+    domain.live().initial_account_check_pending.store(true, std::sync::atomic::Ordering::Release);
 }
 
 /// The check after startup is done: a scenario has no account to probe, so it says so itself.
 #[cfg(any(test, feature = "test-hooks"))]
 pub fn finish_initial_check(domain: &DomainRuntime) {
-    domain.live.initial_account_check_pending.store(false, std::sync::atomic::Ordering::Release);
+    domain.live().initial_account_check_pending.store(false, std::sync::atomic::Ordering::Release);
 }
 
 pub fn require_initial_check(domain: &DomainRuntime) -> Result<(), alondra_core::domain::DomainError> {
-    if domain.live.initial_account_check_pending.load(std::sync::atomic::Ordering::Acquire) {
+    if domain.live().initial_account_check_pending.load(std::sync::atomic::Ordering::Acquire) {
         return Err(alondra_core::domain::DomainError::new("account_check_in_progress", "Accounts are being checked after startup. New nodes will wait for current authentication and billing information."));
     }
     Ok(())
@@ -288,8 +288,8 @@ pub(crate) fn select_for_node_with_tools(domain: &DomainRuntime, home: &Path, in
 /// Claude answered while no account had a session: the accounts are checked now, not at the next
 /// round, so the wait ends as soon as the check sees the session.
 pub(crate) fn answered(domain: &DomainRuntime) {
-    if domain.live.usage_pause.waits_for_session() {
-        domain.live.account_check.notify_one();
+    if domain.live().usage_pause.waits_for_session() {
+        domain.live().account_check.notify_one();
     }
 }
 
@@ -592,7 +592,7 @@ fn read_models(domain: &DomainRuntime, home: &Path, key: &AccountKey) -> Result<
 /// Checks every account's sign-in and records what it saw.
 pub fn check(domain: &DomainRuntime, home: &Path) {
     if check_current(domain, home) == crate::native_probe::Outcome::Stale {
-        domain.live.account_check.notify_one();
+        domain.live().account_check.notify_one();
     }
 }
 
@@ -664,8 +664,8 @@ fn check_current(domain: &DomainRuntime, home: &Path) -> crate::native_probe::Ou
                 return crate::native_probe::Outcome::of(&why);
             }
             correct_crossed_sessions(domain, &known);
-            if domain.live.initial_account_check_pending.swap(false, std::sync::atomic::Ordering::AcqRel) {
-                domain.live.gate.poke();
+            if domain.live().initial_account_check_pending.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                domain.live().gate.poke();
             }
             let refresh: Vec<_> = domain.read().state().accounts.iter().filter(|account| account.provider == Provider::Claude && account.state == AccountState::SignedIn)
                 .filter(|account| {
@@ -923,7 +923,7 @@ pub async fn run(domain: Arc<DomainRuntime>, home: PathBuf) {
         }).await;
         tokio::select! {
             () = clock::sleep(CHECK_EVERY) => {}
-            () = domain.live.account_check.notified() => {}
+            () = domain.live().account_check.notified() => {}
         }
     }
 }

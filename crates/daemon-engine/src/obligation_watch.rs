@@ -200,16 +200,16 @@ struct GateWorld<'a> {
 
 impl World for GateWorld<'_> {
     fn waits_for_slot(&self, task: &TaskId) -> bool {
-        self.domain.live.gate.waits_for_slot(self.domain, self.state, task)
+        self.domain.live().gate.waits_for_slot(self.domain, self.state, task)
     }
 
     fn orchestrator_held(&self) -> bool {
-        self.domain.live.usage_pause.is_active()
+        self.domain.live().usage_pause.is_active()
     }
 
     fn last_output(&self, task: &TaskId) -> Option<Millis> {
         let agent = self.state.tasks.get(task)?.agent_id.clone()?;
-        self.domain.owns_sdk_host(&agent).then(|| self.domain.live.outputs.lock_or_recover("the node outputs").get(task).copied().unwrap_or_default())
+        self.domain.owns_sdk_host(&agent).then(|| self.domain.live().outputs.lock_or_recover("the node outputs").get(task).copied().unwrap_or_default())
     }
 }
 
@@ -251,7 +251,7 @@ pub fn apply(domain: &DomainRuntime, task: &TaskId, action: Action) -> Result<()
         }
         Action::Requeue => {
             if agent.is_some_and(|agent| domain.owns_sdk_host(&agent)) {
-                domain.requeues.lock_or_recover("the requeued tasks").insert(task.clone());
+                domain.sdk_owners().requeues.lock_or_recover("the requeued tasks").insert(task.clone());
                 domain.seals.wake();
             }
         }
@@ -263,7 +263,7 @@ pub fn apply(domain: &DomainRuntime, task: &TaskId, action: Action) -> Result<()
 pub async fn run(domain: Arc<DomainRuntime>) {
     loop {
         let domain = Arc::clone(&domain);
-        let passed = tokio::task::spawn_blocking(move || pass(&domain, &mut domain.live.obligations.lock_or_recover("the obligation watch"), now_millis())).await;
+        let passed = tokio::task::spawn_blocking(move || pass(&domain, &mut domain.live().obligations.lock_or_recover("the obligation watch"), now_millis())).await;
         if let Err(error) = passed {
             log!("a pass of the obligation watch stopped: {error}");
         }

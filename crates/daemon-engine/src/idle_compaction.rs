@@ -176,17 +176,17 @@ pub(crate) fn resting(state: &DomainState, task: &TaskId) -> bool {
 
 /// Asks for the compaction of every task due at `now`, and says when to look again.
 pub(crate) fn compact_due(domain: &DomainRuntime, now: Millis, timing: &Timing) -> Option<Millis> {
-    if domain.live.usage_pause.is_active() {
+    if domain.live().usage_pause.is_active() {
         return Some(now + 60_000);
     }
     let read = domain.read();
     let state = read.state();
-    let readings = domain.contexts.readings();
+    let readings = domain.contexts().readings();
     let candidates: Vec<Candidate> = readings.iter().map(|(task, reading)| Candidate { task: task.clone(), reading: *reading, resting: resting(state, task) }).collect();
     let (tasks, next) = due(&candidates, now, timing);
     for task in tasks {
         let reading = readings.iter().find(|(read, _)| *read == task).map(|(_, reading)| *reading).expect("a due task has its reading");
-        domain.contexts.spend(&task, reading);
+        domain.contexts().spend(&task, reading);
         let envelope = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
             data_epoch: state.data_epoch.clone(),
@@ -310,5 +310,13 @@ mod tests {
         contexts.forget(&task);
         contexts.observed(&task, ContextEvent::Answered { tokens: 250_000, cache: Some(Duration::from_secs(3600)), model: None }, 2);
         assert!(contexts.readings().is_empty(), "a forgotten task measures again only after its next handoff");
+    }
+}
+
+crate::extension!(Contexts);
+
+impl crate::domain_runtime::DomainRuntime {
+    pub fn contexts(&self) -> &Contexts {
+        self.extension()
     }
 }

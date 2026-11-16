@@ -109,7 +109,7 @@ pub(crate) fn replans(state: &DomainState, rest: u64) -> Vec<Step> {
 /// last turn did, and whether or not other messages wait for it: it only adds a reminder.
 pub(crate) fn hand_replans(domain: &DomainRuntime) {
     let Ok(state) = domain.state() else { return };
-    let rest = domain.live.orchestrator_rests.load(std::sync::atomic::Ordering::Relaxed);
+    let rest = domain.live().orchestrator_rests.load(std::sync::atomic::Ordering::Relaxed);
     for step in replans(&state, rest) {
         carry_out(domain, &state, &step);
     }
@@ -375,7 +375,7 @@ pub(crate) fn settle(domain: &DomainRuntime) {
 /// on every pass of the orchestrator, busy or failing, so nothing a task waits for from it lasts
 /// for ever.
 pub(crate) fn settle_overdue(domain: &DomainRuntime, now: Millis) {
-    crate::obligation_watch::pass(domain, &mut domain.live.obligations.lock_or_recover("the obligation watch"), now);
+    crate::obligation_watch::pass(domain, &mut domain.live().obligations.lock_or_recover("the obligation watch"), now);
 }
 
 /// What the orchestrator owes the `due` tasks past its deadline: a reminder the first time, then
@@ -567,7 +567,7 @@ mod tests {
     }
 
     fn rest(domain: &DomainRuntime) {
-        domain.live.orchestrator_rests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        domain.live().orchestrator_rests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         hand_replans(domain);
     }
 

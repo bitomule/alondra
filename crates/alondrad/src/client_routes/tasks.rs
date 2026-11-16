@@ -61,7 +61,7 @@ impl Client {
     pub(super) fn presence(&self, body: &Value) -> Reply {
         match serde_json::from_value::<Presence>(body.clone()) {
             Ok(Presence { client }) if !client.is_empty() && client.len() <= 64 => {
-                self.domain.live.touch(&client);
+                self.domain.live().touch(&client);
                 Reply::ok(json!({}))
             }
             _ => Reply::error(DomainError::new("invalid_input", "invalid presence")),

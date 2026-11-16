@@ -148,7 +148,7 @@ impl Client {
         let loaded = crate::options::load_in(&self.home, &self.options);
         let root = loaded.file.projects_root(&crate::options::user_home());
         let mut used: BTreeMap<String, Vec<i64>> = BTreeMap::new();
-        for node in self.domain.live.nodes().iter().filter(|node| !node.is_orchestrator) {
+        for node in self.domain.live().nodes().iter().filter(|node| !node.is_orchestrator) {
             used.entry(node.project()).or_default().push(node.created_at);
         }
         let list = alondra_core::options::ranked(alondra_core::options::projects(&root), &used);

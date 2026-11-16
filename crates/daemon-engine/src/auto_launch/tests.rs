@@ -51,7 +51,7 @@ fn world_using_sdk(enable: fn(&Arc<DomainRuntime>, &Path) -> SdkLaunches) -> Fix
     crate::machine_watch::pace(&domain, &alondra_core::Machine { at: 1, memory_total: 16 << 30,
         memory_available: 12 << 30, memory_free_percent: Some(75), cpus: 11,
         disk_total: 500_000_000_000, disk_available: 400_000_000_000, ..Default::default() });
-    domain.live.machine_watch.measure_disk(crate::disk::Space { total: 500_000_000_000, free: 400_000_000_000, purgeable: 0 });
+    domain.live().machine_watch.measure_disk(crate::disk::Space { total: 500_000_000_000, free: 400_000_000_000, purgeable: 0 });
     let sdk = enable(&domain, &home);
     command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Rebuild the editor".into(), auto_merge: false, maintenance: false, message: false });
     command(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Editor".into() });
@@ -211,14 +211,14 @@ async fn while_usage_is_exhausted_a_ready_task_waits_and_starts_when_usage_is_ba
     done_task(&f, "f0");
     create(&f, "f1", &["f0"], Some(&plan(&f, "app/f1")));
     let now = alondra_core::now_millis();
-    f.domain.live.usage_pause.exhaust(Some(now + 3_600_000), now);
+    f.domain.live().usage_pause.exhaust(Some(now + 3_600_000), now);
     pass(&f.domain, &f.home).await.unwrap();
     pass(&f.domain, &f.home).await.unwrap();
     assert_eq!(launches(&f), 0);
     assert_eq!(auto(&f, "f1").unwrap().reason, Some(AutoLaunchReason::UsageExhausted));
     assert!(told(&f).iter().all(|id| !id.starts_with("auto-launch")), "the orchestrator is not told: it can do nothing");
 
-    f.domain.live.usage_pause.resume(alondra_core::now_millis());
+    f.domain.live().usage_pause.resume(alondra_core::now_millis());
     pass(&f.domain, &f.home).await.unwrap();
     assert_eq!(launches(&f), 1);
     assert_eq!(auto(&f, "f1").unwrap().state, AutoLaunchState::Launched);
@@ -261,17 +261,17 @@ async fn while_the_disk_is_nearly_full_a_ready_task_waits_and_starts_once_there_
     let f = world();
     done_task(&f, "f0");
     create(&f, "f1", &["f0"], Some(&plan(&f, "app/f1")));
-    f.domain.live.machine_watch.set_disk_low(true);
+    f.domain.live().machine_watch.set_disk_low(true);
     pass(&f.domain, &f.home).await.unwrap();
     pass(&f.domain, &f.home).await.unwrap();
     assert_eq!(launches(&f), 0);
     assert_eq!(auto(&f, "f1"), None, "not claimed: it starts by itself once there is space");
     assert!(told(&f).iter().all(|id| !id.starts_with("auto-launch")), "the orchestrator is not told: the user has the disk card");
-    let queued = f.domain.live.gate.live(&f.domain, alondra_core::now_millis()).unwrap().queued;
+    let queued = f.domain.live().gate.live(&f.domain, alondra_core::now_millis()).unwrap().queued;
     assert!(queued.iter().any(|queued| queued.task_id == "f1" && matches!(queued.hold, alondra_core::views::LiveHold::Disk { .. })),
         "it waits at the gate for room on the disk: {queued:?}");
 
-    f.domain.live.machine_watch.set_disk_low(false);
+    f.domain.live().machine_watch.set_disk_low(false);
     pass(&f.domain, &f.home).await.unwrap();
     assert_eq!(launches(&f), 1);
     assert_eq!(auto(&f, "f1").unwrap().state, AutoLaunchState::Launched);
@@ -299,7 +299,7 @@ async fn a_task_whose_node_the_user_closed_is_not_started_again_by_itself() {
     let f = world();
     done_task(&f, "f0");
     create(&f, "f1", &["f0"], Some(&plan(&f, "app/f1")));
-    f.domain.live.remember_closed_task("f1", crate::live::ClosedNode { name: "app/f1".into(), cwd: None, relaunch: crate::live::Relaunch::AskUser });
+    f.domain.live().remember_closed_task("f1", crate::live::ClosedNode { name: "app/f1".into(), cwd: None, relaunch: crate::live::Relaunch::AskUser });
     pass(&f.domain, &f.home).await.unwrap();
     assert_eq!(launches(&f), 0);
     assert_eq!(auto(&f, "f1"), None);
@@ -343,14 +343,14 @@ async fn a_manual_and_an_automatic_launch_never_both_start_a_task() {
     let f = world();
     done_task(&f, "f0");
     create(&f, "f1", &["f0"], Some(&plan(&f, "app/f1")));
-    assert!(f.domain.live.begin_launch("f1"), "a manual launch is under way");
+    assert!(f.domain.live().begin_launch("f1"), "a manual launch is under way");
     pass(&f.domain, &f.home).await.unwrap();
     assert_eq!(launches(&f), 0, "the automatic one gives way");
     let body: LaunchBody = serde_json::from_value(json!({"task": "f1"})).unwrap();
     let refused = launch(&f.domain, &f.home, body, |_| None).await.unwrap_err();
     assert_eq!(refused.code, "conflict");
     assert!(refused.message.contains("is being launched already"), "{}", refused.message);
-    f.domain.live.end_launch("f1");
+    f.domain.live().end_launch("f1");
 
     let body: LaunchBody = serde_json::from_value(json!({"task": "f1"})).unwrap();
     launch(&f.domain, &f.home, body, |_| None).await.unwrap();
@@ -362,7 +362,7 @@ async fn a_manual_and_an_automatic_launch_never_both_start_a_task() {
 #[tokio::test]
 async fn twelve_independent_tasks_with_a_plan_start_four_at_a_time_and_the_next_starts_when_one_closes() {
     let f = world();
-    f.domain.live.gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(4)) });
+    f.domain.live().gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(4)) });
     let ids: Vec<String> = (1..=12).map(|n| format!("i{n:02}")).collect();
     for id in &ids {
         create(&f, id, &[], Some(&plan(&f, &format!("app/{id}"))));
@@ -387,20 +387,20 @@ async fn twelve_independent_tasks_with_a_plan_start_four_at_a_time_and_the_next_
 #[tokio::test]
 async fn a_task_cancelled_while_it_starts_leaves_without_a_retry_or_a_card_and_the_next_one_starts() {
     let f = world();
-    f.domain.live.gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(1)) });
+    f.domain.live().gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(1)) });
     create(&f, "a", &[], Some(&plan(&f, "app/a")));
     create(&f, "b", &[], Some(&plan(&f, "app/b")));
     let now = alondra_core::now_millis();
     let waiting = crate::admission::Waiting { key: crate::admission::Key::Task("a".into()), priority: alondra_core::domain::TaskPriority::Normal,
         resuming: false, since: 0 };
-    assert_eq!(f.domain.live.gate.ask(&f.domain, waiting, now), Ok(()));
+    assert_eq!(f.domain.live().gate.ask(&f.domain, waiting, now), Ok(()));
     assert!(f.domain.store.lock().unwrap().claim_auto_launch(&"a".into(), now, false).unwrap());
-    assert!(f.domain.live.begin_launch("a"));
+    assert!(f.domain.live().begin_launch("a"));
     let domain = f.domain.clone();
     let cancel: Box<dyn FnOnce() + Send> = Box::new(move || command(&domain, Actor::Orchestrator { generation: 0 }, Command::CancelTask { task_id: "a".into(), reason: None }));
     let launched = crate::domain_orchestrator_tools::launch_guarded(&f.domain, &f.home, LaunchBody::from_plan("a".into(), &plan(&f, "app/a")), |_| None,
         Origin::Auto, Some(cancel)).await;
-    f.domain.live.end_launch("a");
+    f.domain.live().end_launch("a");
     assert!(launched.as_ref().is_err_and(|error| error.message.contains("Task is terminal")), "cancelled before its admission: {launched:?}");
     settle(&f.domain, &"a".into(), f.project.to_str(), launched, now).unwrap();
     assert!(!f.domain.store.lock().unwrap().start_retries().unwrap().contains_key(&TaskId::from("a")), "no retry");
@@ -431,19 +431,19 @@ async fn the_worktree_made_for_a_task_cancelled_while_it_starts_goes_when_it_clo
         &["commit", "-q", "--allow-empty", "-m", "base"]] {
         crate::worktree::testing::git(&f.project, args);
     }
-    f.domain.live.gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(1)) });
+    f.domain.live().gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(1)) });
     create(&f, "a", &[], Some(&plan(&f, "app/a")));
     let now = alondra_core::now_millis();
     let waiting = crate::admission::Waiting { key: crate::admission::Key::Task("a".into()), priority: alondra_core::domain::TaskPriority::Normal,
         resuming: false, since: 0 };
-    assert_eq!(f.domain.live.gate.ask(&f.domain, waiting, now), Ok(()));
+    assert_eq!(f.domain.live().gate.ask(&f.domain, waiting, now), Ok(()));
     assert!(f.domain.store.lock().unwrap().claim_auto_launch(&"a".into(), now, false).unwrap());
-    assert!(f.domain.live.begin_launch("a"));
+    assert!(f.domain.live().begin_launch("a"));
     let domain = f.domain.clone();
     let cancel: Box<dyn FnOnce() + Send> = Box::new(move || command(&domain, Actor::Orchestrator { generation: 0 }, Command::CancelTask { task_id: "a".into(), reason: None }));
     let launched = crate::domain_orchestrator_tools::launch_guarded(&f.domain, &f.home, LaunchBody::from_plan("a".into(), &plan(&f, "app/a")), |_| None,
         Origin::Auto, Some(cancel)).await;
-    f.domain.live.end_launch("a");
+    f.domain.live().end_launch("a");
     assert!(launched.is_err(), "cancelled before its admission: {launched:?}");
     settle(&f.domain, &"a".into(), f.project.to_str(), launched, now).unwrap();
     let worktree = f.project.join(".claude/worktrees/a");
@@ -826,7 +826,7 @@ async fn a_node_the_user_closes_asks_to_relaunch_and_the_relaunch_starts_a_new_n
 
 /// The orchestrator ended a turn: what it still has to re-plan is handed to it again.
 fn rest(f: &Fixture) {
-    f.domain.live.orchestrator_rests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    f.domain.live().orchestrator_rests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     crate::orchestrator_inbox::hand_replans(&f.domain);
 }
 
@@ -842,7 +842,7 @@ fn queued(f: &Fixture) -> Vec<(String, i64)> {
 #[tokio::test]
 async fn a_reopened_task_waits_in_the_queue_with_its_seniority_and_a_refused_start_keeps_it_there() {
     let f = world_using_sdk(SdkLaunches::enable);
-    f.domain.live.gate.ignore_mac();
+    f.domain.live().gate.ignore_mac();
     create(&f, "f1", &[], Some(&plan(&f, "app/f1")));
     pass(&f.domain, &f.home).await.unwrap();
     f.sdk.until_answered("f1").await;
@@ -864,7 +864,7 @@ async fn a_reopened_task_waits_in_the_queue_with_its_seniority_and_a_refused_sta
     let body: LaunchBody = serde_json::from_value(json!({"task": "f2", "name": "app/f2", "cwd": f.project.to_str().unwrap()})).unwrap();
     crate::admission::enqueue(&f.domain, &body, "orchestrator", alondra_core::now_millis()).unwrap();
     let now = alondra_core::now_millis();
-    let snapshot = f.domain.live.gate.snapshot(&f.domain, now).unwrap();
+    let snapshot = f.domain.live().gate.snapshot(&f.domain, now).unwrap();
     let order: Vec<String> = snapshot.queue.iter().map(|waiting| format!("{:?}", waiting.key)).collect();
     assert_eq!(order[0], "Task(TaskId(\"f1\"))", "reopened, it keeps its place ahead of later work: {order:?}");
     assert_eq!(snapshot.working, 0, "back in the queue, its first start no longer counts as one under way");
@@ -875,7 +875,7 @@ async fn a_reopened_task_waits_in_the_queue_with_its_seniority_and_a_refused_sta
     assert!(queued(&f).iter().any(|(task, _)| task == "f1"), "a refused start never takes it out of the queue: {:?}", queued(&f));
     let retry = f.domain.store.lock().unwrap().start_retries().unwrap()[&TaskId::from("f1")];
     assert!(retry.1 > now, "it waits for its retry");
-    let order: Vec<String> = f.domain.live.gate.snapshot(&f.domain, now).unwrap().queue.iter()
+    let order: Vec<String> = f.domain.live().gate.snapshot(&f.domain, now).unwrap().queue.iter()
         .map(|waiting| format!("{:?}", waiting.key)).collect();
     assert_eq!(order, ["Task(TaskId(\"f2\"))"], "while it waits for its retry it holds nobody back");
 
@@ -938,19 +938,19 @@ async fn a_dependent_held_by_the_users_decision_starts_after_its_review_with_the
 }
 
 fn queued_ids(f: &Fixture) -> Vec<(String, bool)> {
-    let pacing = f.domain.live.gate.live(&f.domain, alondra_core::now_millis()).unwrap();
+    let pacing = f.domain.live().gate.live(&f.domain, alondra_core::now_millis()).unwrap();
     pacing.queued.into_iter().map(|queued| (queued.task_id, queued.pausable)).collect()
 }
 
 fn paused_ids(f: &Fixture) -> Vec<String> {
-    let pacing = f.domain.live.gate.live(&f.domain, alondra_core::now_millis()).unwrap();
+    let pacing = f.domain.live().gate.live(&f.domain, alondra_core::now_millis()).unwrap();
     pacing.paused.into_iter().map(|paused| paused.task_id).collect()
 }
 
 #[tokio::test]
 async fn pausing_a_task_waiting_for_its_automatic_start_takes_it_out_of_the_queue_until_the_user_resumes_it() {
     let f = world();
-    f.domain.live.gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(1)) });
+    f.domain.live().gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(1)) });
     create(&f, "q1", &[], Some(&plan(&f, "app/q1")));
     create(&f, "q2", &[], Some(&plan(&f, "app/q2")));
     pass(&f.domain, &f.home).await.unwrap();
@@ -965,7 +965,7 @@ async fn pausing_a_task_waiting_for_its_automatic_start_takes_it_out_of_the_queu
     pass(&f.domain, &f.home).await.unwrap();
     pass(&f.domain, &f.home).await.unwrap();
     assert_eq!(launches(&f), 1, "a slot is free, but only the user brings q2 back");
-    assert_eq!(f.domain.live.gate.snapshot(&f.domain, alondra_core::now_millis()).unwrap().working, 0, "q2 takes no slot while paused");
+    assert_eq!(f.domain.live().gate.snapshot(&f.domain, alondra_core::now_millis()).unwrap().working, 0, "q2 takes no slot while paused");
     let body: LaunchBody = serde_json::from_value(json!({"task": "q2"})).unwrap();
     let refused = launch(&f.domain, &f.home, body, |_| None).await.unwrap_err();
     assert_eq!(refused.code, "conflict");
@@ -984,7 +984,7 @@ async fn pausing_a_task_waiting_for_its_automatic_start_takes_it_out_of_the_queu
 #[tokio::test]
 async fn pausing_a_launch_the_orchestrator_queued_takes_it_out_of_the_queue_until_the_user_resumes_it_and_then_it_waits_for_a_slot() {
     let f = world();
-    f.domain.live.gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(1)) });
+    f.domain.live().gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(1)) });
     create(&f, "o1", &[], Some(&plan(&f, "app/o1")));
     create(&f, "o2", &[], Some(&plan(&f, "app/o2")));
     let body: LaunchBody = serde_json::from_value(json!({"task": "o1"})).unwrap();
@@ -1067,6 +1067,6 @@ async fn a_node_alondra_closed_is_relaunched_by_itself_and_a_failed_relaunch_is_
         changed.changed().await.unwrap();
     }
     assert!(f.sdk.starts().iter().any(|start| start["resume"].as_str() == Some(original.as_str())), "it resumes the same session: {:?}", f.sdk.starts());
-    assert!(f.domain.live.closed_task("f1").is_none(), "the task no longer waits for a relaunch");
+    assert!(f.domain.live().closed_task("f1").is_none(), "the task no longer waits for a relaunch");
     assert!(problem(&f, "f1").is_none());
 }

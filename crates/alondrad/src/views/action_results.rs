@@ -157,13 +157,13 @@ async fn journal<T: Send + 'static>(
     operation: impl FnOnce(&mut Connection, &str) -> Result<T> + Send + 'static,
 ) -> Result<T> {
     let admitted = domain
-        .local_actions
+        .local_actions()
         .journal_admissions
         .clone()
         .try_acquire_owned()
         .context("action result journal admission full")?;
     let physical = domain
-        .local_actions
+        .local_actions()
         .journal_worker
         .clone()
         .acquire_owned()
@@ -219,7 +219,7 @@ pub(super) async fn execute_recorded(
     let digest: [u8; 32] = Sha256::digest(raw_body).into();
     let (id, expected_epoch) = (request.command_id.clone(), epoch.clone());
     let operation_device = signed.clone();
-    let running = domain.local_actions.running.clone();
+    let running = domain.local_actions().running.clone();
     let admitted = journal(domain, home.to_owned(), signed.clone(), move |c, actor| {
         let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let scope = journal_scope(&operation_device,actor,&expected_epoch);
@@ -405,7 +405,7 @@ pub(super) async fn read(
         return unknown(StatusCode::CONFLICT, UnknownReason::DataReset);
     }
     let (id, epoch, digest) = (lookup.id.clone(), lookup.data_epoch.clone(), lookup.digest);
-    let running = domain.local_actions.running.clone();
+    let running = domain.local_actions().running.clone();
     let result = journal(&domain,home.clone(),device.clone(),move |c,actor| {
         let row: Option<(String,Option<Vec<u8>>)> = c.query_row("SELECT state,response FROM action_results WHERE actor=?1 AND command_id=?2 AND data_epoch=?3 AND digest=?4",
             params![actor,id,epoch,digest.as_slice()],|row|Ok((row.get(0)?,row.get(1)?))).optional()?;
@@ -896,7 +896,7 @@ mod tests {
         let peer = Arc::new(Peer::new(&home));
         let (state, base, server) = serve(home.clone()).await;
         let (_, body, path) = action(&state);
-        let resource = state.domain().local_actions.resource(
+        let resource = state.domain().local_actions().resource(
             alondra_daemon_engine::local_actions::LocalActionResource::NodeLimitSettings,
         );
         let held = resource.clone().write_owned().await;

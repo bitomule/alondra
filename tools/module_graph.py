@@ -3,11 +3,20 @@
 that depend on each other in a cycle. A cycle has to be cut before its modules can live in separate
 crates. Reads sources only; nothing is built.
 
-    python3 tools/module_graph.py crates/daemon-engine/src"""
+    python3 tools/module_graph.py crates/daemon-engine/src
+    python3 tools/module_graph.py --production crates/daemon-engine/src
+
+`--production` counts only what the library compiles outside its tests: the files `lib.rs` reaches
+through its `mod` declarations, without `#[cfg(test)]` items or comments. That is the graph a crate
+split has to cut."""
 import collections
 import re
 import sys
 from pathlib import Path
+
+TEST_ONLY = "#[cfg(test)]"
+MOD = re.compile(r"((?:#\[[^\]]*\]\s*)*)(?:pub(?:\([^)]*\))?\s+)?mod\s+([a-z_0-9]+)\s*;")
+PATH = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
 
 
 def modules(root):
@@ -27,6 +36,123 @@ def modules(root):
             module["files"].append(text)
             module["lines"] += text.count("\n")
             module["tests"] += len(re.findall(r"#\[(?:tokio::)?test", text))
+    return found
+
+
+def skip_literal(text, at):
+    """Where the string, char literal or comment starting at `at` ends; `at` when none starts there."""
+    if text.startswith("//", at):
+        end = text.find("\n", at)
+        return len(text) if end < 0 else end
+    if text.startswith("/*", at):
+        depth, index = 0, at
+        while index < len(text):
+            if text.startswith("/*", index):
+                depth, index = depth + 1, index + 2
+            elif text.startswith("*/", index):
+                depth, index = depth - 1, index + 2
+                if depth == 0:
+                    return index
+            else:
+                index += 1
+        return len(text)
+    raw = re.match(r'b?r(#*)"', text[at:at + 260])
+    if raw and (at == 0 or not (text[at - 1].isalnum() or text[at - 1] == "_")):
+        closing = '"' + raw.group(1)
+        end = text.find(closing, at + raw.end())
+        return len(text) if end < 0 else end + len(closing)
+    if text[at] == '"':
+        index = at + 1
+        while index < len(text) and text[index] != '"':
+            index += 2 if text[index] == "\\" else 1
+        return index + 1
+    if text[at] == "'":
+        char = re.match(r"'(?:\\(?:u\{[0-9a-fA-F]+\}|x[0-9a-fA-F]{2}|.)|[^\\'])'", text[at:at + 12])
+        return at + char.end() if char else at
+    return at
+
+
+def blank(piece):
+    return re.sub(r"[^\n]", " ", piece)
+
+
+def code_only(text):
+    """`text` with its comments and literals blanked, so braces and paths in them never count; every
+    other character stays at its offset."""
+    out, index = [], 0
+    while index < len(text):
+        end = skip_literal(text, index)
+        if end == index:
+            out.append(text[index])
+            index += 1
+            continue
+        out.append(blank(text[index:end]))
+        index = end
+    return "".join(out)
+
+
+def item_end(code, at):
+    """Where the item starting at `at` ends: its `;` outside braces, or the brace closing its body."""
+    depth = 0
+    for index in range(at, len(code)):
+        char = code[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        elif char == ";" and depth == 0:
+            return index + 1
+    return len(code)
+
+
+def without_tests(code):
+    """`code` with the items under `#[cfg(test)]` blanked, attributes after it included."""
+    out, index = [], 0
+    while True:
+        start = code.find(TEST_ONLY, index)
+        if start < 0:
+            out.append(code[index:])
+            return "".join(out)
+        out.append(code[index:start])
+        index = item_end(code, start + len(TEST_ONLY))
+        out.append(blank(code[start:index]))
+
+
+def child_file(parent, name, path):
+    """The file of `mod name;` declared in `parent`, as rustc looks for it."""
+    owns_directory = parent.name in ("lib.rs", "mod.rs")
+    directory = parent.parent if owns_directory else parent.parent / parent.stem
+    if path:
+        return parent.parent / path
+    for candidate in (directory / f"{name}.rs", directory / name / "mod.rs"):
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def production_modules(root):
+    """Each module `lib.rs` declares, with the production code of every file it reaches."""
+    found = {}
+
+    def visit(file, module):
+        text = file.read_text()
+        code = without_tests(code_only(text))
+        if module is not None:
+            found[module]["files"].append(code)
+            found[module]["lines"] += sum(1 for line in code.splitlines() if line.strip())
+        for declared in MOD.finditer(code):
+            name = declared.group(2)
+            path = PATH.search(text[declared.start(1):declared.end(1)])
+            child = child_file(file, name, path.group(1) if path else None)
+            if child is None or not child.resolve().is_relative_to(root.resolve()):
+                continue
+            top = module if module is not None else name
+            found.setdefault(top, {"lines": 0, "tests": 0, "files": []})
+            visit(child, top)
+
+    visit(root / "lib.rs", None)
     return found
 
 
@@ -71,8 +197,20 @@ def cycles(found):
     return sorted(groups, key=len, reverse=True)
 
 
-def main():
-    found = modules(Path(sys.argv[1]))
+def main_cycle(root):
+    """The largest group of production modules that depend on each other, with its lines."""
+    found = production_modules(Path(root))
+    dependencies(found)
+    group = cycles(found)[0] if found else []
+    if len(group) < 2:
+        return [], 0
+    return group, sum(found[name]["lines"] for name in group)
+
+
+def main(argv):
+    production = "--production" in argv
+    root = Path([arg for arg in argv if arg != "--production"][0])
+    found = production_modules(root) if production else modules(root)
     dependencies(found)
     for name, module in sorted(found.items()):
         uses = " ".join(f"{use}:{count}" for use, count in sorted(module["uses"].items()))
@@ -86,4 +224,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

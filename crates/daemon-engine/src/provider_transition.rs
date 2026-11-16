@@ -217,7 +217,7 @@ fn end_source(domain:&Arc<DomainRuntime>,plan:&Plan)->Result<(),DomainError>{
     let alive=!matches!(EndedHost::claim(&plan.source.host_directory),Ok(Retained::Ended(_)));
     if alive || !host_ended(domain,&plan.task)? || crate::sdk_owner::claims_left(domain,&plan.task).map_err(failure)?{end_and_fence(domain,plan)?;}
     ensure_fence(domain,plan)?;
-    let fences=domain.selection_changes.fences.lock_or_recover("the provider transition fences");
+    let fences=domain.selection_changes().fences.lock_or_recover("the provider transition fences");
     domain.own(scope(domain)?,|owner|owner.source_fenced(plan,fences.get(&plan.id).unwrap())).map_err(store_failure).map(drop)
 }
 /// Whether the end of the task's current execution is already committed. A host that resumed the
@@ -249,7 +249,7 @@ fn start_target(domain:&Arc<DomainRuntime>,plan:&Plan,prepared:PreparedHandoff)-
 }
 /// Starts on its new account the task a move left waiting, once it has something to go on with.
 pub(crate) async fn start_moved(domain:&Arc<DomainRuntime>,task:&TaskId)->Result<bool,DomainError>{
-    let _advance=domain.selection_changes.advancing.lock().await;
+    let _advance=domain.selection_changes().advancing.lock().await;
     if !starts_elsewhere(domain,task) || !ready_to_start(domain,task)? || !admitted(domain,task){return Ok(false)}
     let change=domain.store.lock_or_exit("the domain store").deferred_move(task).map_err(failure)?.ok_or_else(||failure("The move is missing"))?;
     let prepared=serde_json::from_value(prepared_facts(change.clone())).map_err(failure)?;
@@ -261,7 +261,7 @@ pub(crate) async fn start_moved(domain:&Arc<DomainRuntime>,task:&TaskId)->Result
 fn admitted(domain:&DomainRuntime,task:&TaskId)->bool{
     let Some(priority)=domain.read().state().tasks.get(task).map(|task|task.priority) else{return false};
     let now=alondra_core::now_millis();
-    domain.live.gate.ask(domain,crate::admission::Waiting{key:crate::admission::Key::Task(task.clone()),priority,resuming:false,since:now},now).is_ok()
+    domain.live().gate.ask(domain,crate::admission::Waiting{key:crate::admission::Key::Task(task.clone()),priority,resuming:false,since:now},now).is_ok()
 }
 /// Whether the task has something to go on with and nobody else to wait for: the moment its next
 /// node starts, as the node it moved from would have resumed then. A delivery goes on once the
@@ -295,24 +295,24 @@ fn end_and_fence(domain:&Arc<DomainRuntime>,plan:&Plan)->Result<(),DomainError>{
     domain.stop_sdk_host(&plan.source.agent).map_err(failure)?;
     let claimed=crate::sdk_owner::end_and_claim_unowned_host(Arc::clone(domain),backend,plan.task.clone()).map_err(failure)?;
     if let Some(proof)=claimed.filter(|proof|proof.state_dir()==plan.source.host_directory){
-        domain.selection_changes.fences.lock_or_recover("the provider transition fences").insert(plan.id.clone(),proof);
+        domain.selection_changes().fences.lock_or_recover("the provider transition fences").insert(plan.id.clone(),proof);
     }
     ensure_fence(domain,plan)
 }
 fn ensure_fence(domain:&DomainRuntime,plan:&Plan)->Result<(),DomainError>{
-    if domain.selection_changes.fences.lock_or_recover("the provider transition fences").contains_key(&plan.id){return Ok(())}
+    if domain.selection_changes().fences.lock_or_recover("the provider transition fences").contains_key(&plan.id){return Ok(())}
     let retained=EndedHost::claim(&plan.source.host_directory).map_err(failure)?;
     let proof=match retained{Retained::Ended(proof)=>proof,Retained::Held=>return Err(failure("The source host still holds its native execution")),Retained::Absent=>return Err(failure("The source host fence is missing; its absence is not continuation proof"))};
-    domain.selection_changes.fences.lock_or_recover("the provider transition fences").insert(plan.id.clone(),proof);
+    domain.selection_changes().fences.lock_or_recover("the provider transition fences").insert(plan.id.clone(),proof);
     Ok(())
 }
 
 pub(crate) async fn advance(domain:&Arc<DomainRuntime>,task:&TaskId)->Result<Phase,DomainError>{
-    let _advance=domain.selection_changes.advancing.lock().await;
+    let _advance=domain.selection_changes().advancing.lock().await;
     loop{
         let change=current(domain,task)?.ok_or_else(||failure("No selection change is pending"))?;
         #[cfg(any(test, feature = "test-hooks"))]
-        if *domain.selection_changes.crash_at.lock().unwrap()==Some(change.phase){return Err(failure("the daemon died"))}
+        if *domain.selection_changes().crash_at.lock().unwrap()==Some(change.phase){return Err(failure("the daemon died"))}
         let plan=&change.plan;
         if plan.kind==Kind::Model && plan.target_account!=plan.source.account{return Err(failure("The account and provider of this native session cannot change; create a new node"))}
         if plan.kind==Kind::Model && matches!(change.phase,Phase::SourceFenced|Phase::ContextReady|Phase::TargetAdmitted|Phase::Consumed){return Err(failure("Session transfer is disabled; the node keeps its original account and native history"))}
@@ -369,7 +369,7 @@ pub(crate) async fn advance(domain:&Arc<DomainRuntime>,task:&TaskId)->Result<Pha
                 }
                 if !available || !matches!(classify(plan),SelectionTransition::ApplyNextTurn){return Err(failure("The existing native session cannot apply this model change; create a new node"))}
                 end_and_fence(domain,plan)?;
-                let fences=domain.selection_changes.fences.lock_or_recover("the provider transition fences");
+                let fences=domain.selection_changes().fences.lock_or_recover("the provider transition fences");
                 domain.own(scope(domain)?,|owner|owner.source_fenced(plan,fences.get(&plan.id).unwrap())).map_err(store_failure)?;
             }
             Phase::SourceFenced=>{ensure_fence(domain,plan)?;prepare_context(domain,plan)?;}
@@ -390,7 +390,7 @@ pub(crate) async fn advance(domain:&Arc<DomainRuntime>,task:&TaskId)->Result<Pha
                 return Ok(change.phase)
             }
             Phase::Consumed=>{phase(domain,&change,Phase::Done,change.facts.clone())?;}
-            Phase::Done|Phase::Aborted=>{domain.selection_changes.fences.lock_or_recover("the provider transition fences").remove(&plan.id);return Ok(change.phase)}
+            Phase::Done|Phase::Aborted=>{domain.selection_changes().fences.lock_or_recover("the provider transition fences").remove(&plan.id);return Ok(change.phase)}
             Phase::Uncertain=>{
                 abort(domain,task,change.facts["reason"].as_str().unwrap_or("The move was left without an outcome"))?;
                 return Ok(Phase::Aborted)
@@ -425,10 +425,10 @@ pub(crate) async fn pass(domain:&Arc<DomainRuntime>){
 }
 
 pub(crate) fn release_finished_fences(domain:&DomainRuntime){
-    let ids:Vec<String>=domain.selection_changes.fences.lock_or_recover("the provider transition fences").keys().cloned().collect();
+    let ids:Vec<String>=domain.selection_changes().fences.lock_or_recover("the provider transition fences").keys().cloned().collect();
     for id in ids{
         let ended=domain.store.lock_or_exit("the domain store").provider_transition_finished(&id).unwrap_or(false);
-        if ended{domain.selection_changes.fences.lock_or_recover("the provider transition fences").remove(&id);}
+        if ended{domain.selection_changes().fences.lock_or_recover("the provider transition fences").remove(&id);}
     }
 }
 /// Ends a selection change that cannot finish: the task keeps the selection it had before, nothing
@@ -446,6 +446,14 @@ pub(crate) fn abort(domain:&DomainRuntime,task:&TaskId,reason:&str)->Result<(),D
         owner.release_context(&plan.id,task)?;
         owner.provider_transition_phase(&plan.id,change.phase,Phase::Aborted,json!({"previous_phase":change.phase,"reason":reason}))
     }).map_err(store_failure)?;
-    domain.selection_changes.fences.lock_or_recover("the provider transition fences").remove(&plan.id);
+    domain.selection_changes().fences.lock_or_recover("the provider transition fences").remove(&plan.id);
     Ok(())
+}
+
+crate::extension!(Transitions);
+
+impl crate::domain_runtime::DomainRuntime {
+    pub(crate) fn selection_changes(&self) -> &Transitions {
+        self.extension()
+    }
 }

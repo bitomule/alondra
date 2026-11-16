@@ -56,7 +56,7 @@ pub(crate) fn plan_changed(domain: &DomainRuntime, task: &TaskId) -> Result<()> 
         store.set_start_retry(task, None)?;
         store.set_launch_refusal(task, None, alondra_core::now_millis())?;
     }
-    domain.live.gate.poke();
+    domain.live().gate.poke();
     Ok(())
 }
 
@@ -75,9 +75,9 @@ pub(crate) fn ended(domain: &DomainRuntime, task: &TaskId) -> Result<bool> {
         store.dequeue_launch(task)?;
     }
     let key = crate::admission::Key::Task(task.clone());
-    domain.live.gate.forget(&key);
-    domain.live.gate.not_started(&key);
-    domain.live.gate.poke();
+    domain.live().gate.forget(&key);
+    domain.live().gate.not_started(&key);
+    domain.live().gate.poke();
     Ok(true)
 }
 
@@ -110,7 +110,7 @@ pub(crate) fn raise(domain: &DomainRuntime, task: &TaskId, problem: StartProblem
 
 /// What the daemon knows of how every open task gets going.
 pub(crate) fn facts(domain: &DomainRuntime, state: &DomainState) -> Result<BTreeMap<TaskId, StartFacts>> {
-    let held = domain.live.gate.pauses(domain).held;
+    let held = domain.live().gate.pauses(domain).held;
     let store = domain.store.lock_or_exit("the domain store");
     let planned = store.planned_tasks()?;
     let autos = store.auto_launches()?;
@@ -121,7 +121,7 @@ pub(crate) fn facts(domain: &DomainRuntime, state: &DomainState) -> Result<BTree
     for task in state.tasks.values().filter(|task| !task.over() && !task.archived) {
         let scheduled = state.schedule.runs.values().any(|run| run.task_id.as_ref() == Some(&task.id));
         let auto = autos.iter().find(|row| row.task_id == task.id);
-        let closed = domain.live.closed_task(&task.id.0).map(|node| node.relaunch);
+        let closed = domain.live().closed_task(&task.id.0).map(|node| node.relaunch);
         let relaunching = closed == Some(Relaunch::ByItself);
         let start = match (retries.get(&task.id).filter(|(_, at)| *at > now), auto.map(|row| (row.state, row.reason))) {
             (Some((attempt, at)), _) => Start::Retry { attempt: *attempt, at: *at },
@@ -130,7 +130,7 @@ pub(crate) fn facts(domain: &DomainRuntime, state: &DomainState) -> Result<BTree
             (None, Some((AutoLaunchState::Launching, _))) => Start::Launching,
             (None, Some((AutoLaunchState::Launched, _))) if relaunching => Start::Ready,
             (None, Some((AutoLaunchState::Launched, _))) => Start::Launched,
-            (None, None) if domain.live.is_launching(&task.id.0) || queued.contains(&task.id) => Start::Launching,
+            (None, None) if domain.live().is_launching(&task.id.0) || queued.contains(&task.id) => Start::Launching,
             (None, None) if !relaunching && store.task_was_launched(&task.id)? => Start::Launched,
             (None, None) => Start::Ready,
         };

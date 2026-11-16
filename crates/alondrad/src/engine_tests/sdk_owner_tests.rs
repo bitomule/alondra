@@ -130,7 +130,7 @@ async fn an_sdk_node_asked_to_clean_up_is_closed_only_once_it_says_it_did() {
     driver.step(&|| false).unwrap();
     slice.settle(&mut driver);
     assert_eq!(lifecycle(&slice.domain).activity(), ActivityView::Resting, "the turn with the request ended");
-    slice.domain.sdk_owners.lock().unwrap().push(Owner::spawn(driver));
+    slice.domain.sdk_owners().held.lock().unwrap().push(Owner::spawn(driver));
     let timing = crate::task_closer::Timing::new(None);
     crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &timing, alondra_core::now_millis()).await.unwrap();
     assert!(slice.domain.owns_sdk_host(&agent), "the host stays until the node says it cleaned up");
@@ -206,7 +206,7 @@ fn a_reply_claude_holds_reads_as_being_delivered_with_no_deadline() {
     assert_eq!(lifecycle(&slice.domain).activity(), ActivityView::Starting, "Claude holds the reply and starts no turn");
     let shown = |lang| {
         let read = slice.domain.read();
-        let live = LiveSnapshot { pacing: slice.domain.live.gate.live(&slice.domain, alondra_core::now_millis()), ..LiveSnapshot::default() };
+        let live = LiveSnapshot { pacing: slice.domain.live().gate.live(&slice.domain, alondra_core::now_millis()), ..LiveSnapshot::default() };
         let view = build(&format!("task:{TASK}"), RenderContext {
             domain: read.state(), index: read.index(), live: &live, client: Client::Tui, lang,
             transport: Transport::Loopback, cursor: "test", rendered_at: "",
@@ -573,7 +573,7 @@ async fn accepted_then_conflicting(slice: &Slice, driver: &mut Driver) {
     driver.step(&|| false).unwrap();
     slice.settle(driver);
     slice.run(&user(), "accept", Command::AcceptDelivery { presentation_id: "final".into(), targets });
-    slice.domain.live.gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(0)) });
+    slice.domain.live().gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(0)) });
     let github = FakeGithub::new();
     github.open(7, "head-a", Checks::Passed);
     if let Some(Ok(status)) = github.statuses.lock().unwrap().get_mut(&7) {
@@ -606,7 +606,7 @@ async fn an_accepted_pr_that_turns_conflicting_goes_back_to_its_node_with_a_conf
     assert!(!conflict_prompts(&slice).is_empty(), "the conflict turn reaches the node with no slot free: {:?}", slice.prompts());
     slice.settle(&mut driver);
     assert_eq!(conflict_prompts(&slice).len(), 1, "the node is told once to resolve the conflicts: {:?}", slice.prompts());
-    let snapshot = slice.domain.live.gate.snapshot(&slice.domain, alondra_core::now_millis()).unwrap();
+    let snapshot = slice.domain.live().gate.snapshot(&slice.domain, alondra_core::now_millis()).unwrap();
     assert!(snapshot.queue.is_empty(), "nothing of the task waits in the gate: {:?}", snapshot.queue.iter().map(|waiting| format!("{:?}", waiting.key)).collect::<Vec<_>>());
     driver.stop().unwrap();
 }

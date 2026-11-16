@@ -289,7 +289,7 @@ fn quieted_by(domain: &DomainRuntime, read: &ReadSnapshot, message: &OutboxMessa
     let resurfaced_at = message.interaction_id.as_deref()
         .and_then(|id| read.state().interactions.get(&InteractionId::from(id)))
         .and_then(|card| card.resurfaced_at_revision);
-    let at_desk = domain.live.touched_since(&AT_DESK_CLIENTS, now - AT_DESK_FOR_MS);
+    let at_desk = domain.live().touched_since(&AT_DESK_CLIENTS, now - AT_DESK_FOR_MS);
     Ok(quiet_reason(history, resurfaced_at, at_desk))
 }
 
@@ -1208,12 +1208,12 @@ mod tests {
         let message = user_message(&domain, "question-a");
         let quieted = |at| quieted_by(&domain, &domain.read(), &message, at).unwrap();
         let now = alondra_core::now_millis();
-        domain.live.touch("ios");
+        domain.live().touch("ios");
         assert_eq!(quieted(now), None, "the phone itself is not the Mac");
-        domain.live.touch("tui");
+        domain.live().touch("tui");
         assert_eq!(quieted(now + 90_000), Some(Quieted::AtDesk), "used 90 s ago");
         assert_eq!(quieted(now + 150_000), None, "away for 150 s: the phone sounds again");
-        domain.live.touch("mac");
+        domain.live().touch("mac");
         assert_eq!(quieted(now + 60_000), Some(Quieted::AtDesk));
         drop(domain);
         std::fs::remove_dir_all(home).unwrap();

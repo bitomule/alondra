@@ -80,7 +80,7 @@ impl Facts {
     /// None when the store already holds a newer revision than `state`: a snapshot read now
     /// would mix the two.
     fn observe(client: &crate::client_routes::Client, state: &DomainState) -> Option<Self> {
-        let live = &client.domain.live;
+        let live = client.domain.live();
         let domain = client.domain.subscribe();
         let hooks = live.changed.subscribe();
         let reports = live.mods.changed.subscribe();
@@ -88,7 +88,7 @@ impl Facts {
         let gate = live.gate.subscribe();
         let sampled = client.feeds.subscribe();
         let pull_requests = client.details.version();
-        let contexts = client.domain.contexts.version();
+        let contexts = client.domain.contexts().version();
         let (store_rows, newest) = client.domain.live_read().read_mark().ok()?;
         (newest <= state.revision && *domain.borrow() == state.revision).then(|| Self {
             epoch: state.data_epoch.0.clone(), revision: state.revision, store_rows, pull_requests, contexts,
@@ -120,7 +120,7 @@ impl Marks {
         Self {
             store_rows: client.domain.live_read().read_mark().ok().map(|(rows, _)| rows),
             pull_requests: client.details.version(),
-            contexts: client.domain.contexts.version(),
+            contexts: client.domain.contexts().version(),
         }
     }
 }
@@ -340,7 +340,7 @@ impl Stored {
 fn waiting_to_start<'a>(client: &crate::client_routes::Client, state: &'a DomainState) -> Vec<&'a alondra_core::domain::Task> {
     state.tasks.values()
         .filter(|task| task.state == TaskState::NotStarted && !task.archived && task.agent_id.is_none())
-        .filter(|task| client.domain.live.closed_task(&task.id.0).is_none_or(|node| node.relaunch == crate::client_routes::Relaunch::ByItself))
+        .filter(|task| client.domain.live().closed_task(&task.id.0).is_none_or(|node| node.relaunch == crate::client_routes::Relaunch::ByItself))
         .collect()
 }
 
@@ -353,7 +353,7 @@ async fn gather_inner(
     clock_only: bool,
     now: Millis,
 ) -> LiveSnapshot {
-    let (exhausted, waits_for_session) = match client.domain.live.usage_pause.current() {
+    let (exhausted, waits_for_session) = match client.domain.live().usage_pause.current() {
         Some(standing) if standing.no_session => (None, true),
         standing => (standing, false),
     };
@@ -385,10 +385,10 @@ async fn gather_inner(
         .values()
         .filter_map(|agent| {
             let session_id = agent.id.0.clone();
-            let reported = client.domain.live.mods.session(&session_id).unwrap_or_default();
+            let reported = client.domain.live().mods.session(&session_id).unwrap_or_default();
             let open_task = state.tasks.values().any(|task| task.agent_id.as_ref() == Some(&agent.id) && !task.archived
                 && !matches!(task.state, TaskState::Done | TaskState::Closing | TaskState::Cancelled));
-            let (node, state_since) = match client.domain.live.node(&session_id) {
+            let (node, state_since) = match client.domain.live().node(&session_id) {
                 Some(node) => {
                     let state_since = Some(node.state_since);
                     (node, state_since)
@@ -447,7 +447,7 @@ async fn gather_inner(
                 }).collect::<Vec<_>>();
             let background_badge = (!counts.is_empty()).then(|| counts.join(" · "));
             let context = state.tasks.values().filter(|task| task.agent_id.as_ref() == Some(&agent.id))
-                .find_map(|task| client.domain.contexts.used(&task.id))
+                .find_map(|task| client.domain.contexts().used(&task.id))
                 .map(|used| (used.percent(), used.window));
             let reported_wait = state.tasks.values().find(|task| task.agent_id.as_ref() == Some(&agent.id))
                 .and_then(|task| {
@@ -652,8 +652,8 @@ async fn gather_inner(
     let keyed = gather_keyed(client, state, keys, issue_data).await;
     LiveSnapshot {
         observed_at: quota_clock(state, keys, now),
-        closed_nodes: client.domain.live.closed_sessions(),
-        closed_tasks: client.domain.live.user_closed_task_ids(),
+        closed_nodes: client.domain.live().closed_sessions(),
+        closed_tasks: client.domain.live().user_closed_task_ids(),
         nodes,
         pull_requests,
         orchestrator,
@@ -684,7 +684,7 @@ async fn gather_inner(
         waits_for_session,
         launch_refusals,
         start_waits,
-        pacing: client.domain.live.gate.live(&client.domain, now),
+        pacing: client.domain.live().gate.live(&client.domain, now),
         allowed_rules: keyed.allowed_rules,
         allow_always_missing: keyed.allow_always_missing,
         mcp_probes: keyed.mcp_probes,
@@ -937,7 +937,7 @@ async fn read_live_json(
 }
 
 fn search_source_revision(client: &crate::client_routes::Client, state: &DomainState) -> String {
-    let nodes = client.domain.live.nodes();
+    let nodes = client.domain.live().nodes();
     let candidates: Vec<_> = state.agents.values().map(|agent| {
         let node = nodes.iter().find(|node| node.session_id == agent.id.0);
         let tasks: Vec<&str> = state.tasks.values()
@@ -963,7 +963,7 @@ fn activity_agents(state: &DomainState, keys: &[String]) -> BTreeSet<String> {
 }
 
 fn activity_source_revision(client: &crate::client_routes::Client, id: &str) -> String {
-    client.domain.live.threads(id)
+    client.domain.live().threads(id)
         .and_then(|activity| serde_json::to_vec(&activity).ok())
         .map(|bytes| digest_hex(&bytes))
         .unwrap_or_default()
@@ -1104,9 +1104,9 @@ mod cache_tests {
 
         let changes: [(&str, Box<dyn Fn() + '_>); 6] = [
             ("a store write outside commands", Box::new(|| domain.store.lock().unwrap().set_start_retry(&"retry".into(), Some((1, 2_000_000_000_000))).unwrap())),
-            ("a hook", Box::new(|| domain.live.observe(&serde_json::json!({"session_id": "node", "hook_event_name": "Stop", "last_assistant_message": "Done"})))),
+            ("a hook", Box::new(|| domain.live().observe(&serde_json::json!({"session_id": "node", "hook_event_name": "Stop", "last_assistant_message": "Done"})))),
             ("a node report", Box::new(|| report(&domain, serde_json::json!({"session_id": "node", "event": "turn.complete", "answer": "Done"}), 1_000))),
-            ("a closed node's task", Box::new(|| domain.live.remember_closed_task("closed", crate::client_routes::ClosedNode { name: "Closed".into(), cwd: None, relaunch: crate::client_routes::Relaunch::AskUser }))),
+            ("a closed node's task", Box::new(|| domain.live().remember_closed_task("closed", crate::client_routes::ClosedNode { name: "Closed".into(), cwd: None, relaunch: crate::client_routes::Relaunch::AskUser }))),
             ("pull request details", Box::new(|| client.details.record("pr", Default::default()))),
             ("the live sampler", Box::new(|| client.feeds.wake())),
         ];
@@ -1239,7 +1239,7 @@ mod cache_tests {
                 at: now, kind, model: None, effort: None, approach: None, chosen_by: ModelChooser::Orchestrator,
                 reason: None, title: id.into(), provider: None, tags: None }).unwrap();
         }
-        domain.live.remember_closed_task("closed", crate::client_routes::ClosedNode { name: "Closed node".into(), cwd: None, relaunch: crate::client_routes::Relaunch::AskUser });
+        domain.live().remember_closed_task("closed", crate::client_routes::ClosedNode { name: "Closed node".into(), cwd: None, relaunch: crate::client_routes::Relaunch::AskUser });
         domain.store.lock().unwrap().set_start_retry(&"retry".into(), Some((2, now + 60_000))).unwrap();
         domain.reads.lock().unwrap().begin_live_read_trace();
         let changed = gather_at(&client, &state, Lang::En, &[], false, false, now).await;
@@ -1256,7 +1256,7 @@ mod cache_tests {
         let later = gather_at(&client, &state, Lang::Es, &[], false, false, now + 2 * 86_400_000).await;
         assert_eq!(later.start_waits["retry"], LiveStartWait::Room,
             "a retry whose time has passed waits for room at the gate, never «Reintento a las» an hour gone by");
-        domain.live.forget_closed_task("closed");
+        domain.live().forget_closed_task("closed");
         domain.store.lock().unwrap().set_start_retry(&"retry".into(), None).unwrap();
         let restored = gather_at(&client, &state, Lang::En, &[], false, false, now).await;
         assert_eq!(restored.start_waits["closed"], LiveStartWait::Room);
@@ -1320,8 +1320,8 @@ mod cache_tests {
         let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
         execute(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "known".into(), name: "Known".into(), at: 0 });
-        domain.live.observe(&serde_json::json!({"session_id": "known", "hook_event_name": "Stop", "last_assistant_message": "Ready"}));
-        let since = domain.live.node("known").unwrap().state_since;
+        domain.live().observe(&serde_json::json!({"session_id": "known", "hook_event_name": "Stop", "last_assistant_message": "Ready"}));
+        let since = domain.live().node("known").unwrap().state_since;
         let state = domain.state().unwrap();
         let before = gather_at(&client, &state, Lang::En, &[], false, false, since + 1).await;
         let later = gather_at(&client, &state, Lang::En, &[], false, false, since + 30 * 60_000).await;
@@ -1350,8 +1350,8 @@ mod cache_tests {
         let limit = 2_000 + 48 * 60 * 60_000;
         let working = gather_at(&client, &state, Lang::En, &[], false, false, limit).await;
         assert_eq!(working.nodes[0].tool_since, Some(crate::usage_pause::clock_text(2_000, limit, false)));
-        domain.live.mods.set_shell_alive("reported", Some(false), limit);
-        domain.live.mods.set_shell_alive("reported", Some(false), limit + 1);
+        domain.live().mods.set_shell_alive("reported", Some(false), limit);
+        domain.live().mods.set_shell_alive("reported", Some(false), limit + 1);
         let working_view = client.views.render("tasks", &alondra_core::domain::ReadSnapshot::build(state.clone()), &working, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         report(&domain, serde_json::json!({"session_id": "reported", "event": "turn.complete", "answer": "Done", "aborted": true}), limit + 2);
         let answer = gather_at(&client, &state, Lang::En, &[], false, false, limit + 2).await;
@@ -1382,7 +1382,7 @@ mod cache_tests {
             (2_200, message(None, json!([{"type": "tool_use", "id": "build", "name": "Bash", "input": {"command": "make build"}}]))),
             (2_300, message(Some("child"), json!([{"type": "text", "text": "Child thread only."}]))),
         ] {
-            domain.live.mods.apply_sdk("sdk-a", &observed, at);
+            domain.live().mods.apply_sdk("sdk-a", &observed, at);
         }
         let state = domain.state().unwrap();
         let open = gather_at(&client, &state, Lang::En, &[], false, false, 2_400).await;
@@ -1390,12 +1390,12 @@ mod cache_tests {
         assert_eq!(node.last_message.as_deref(), Some("The parser checks passed. I am reviewing the diff."));
         assert_eq!(node.last_message_at, Some(timestamp(2_100)));
         assert_eq!(node.tool.as_deref(), Some("Bash: make build"));
-        assert_eq!(domain.live.mods.session("sdk-a").unwrap().answer.unwrap().text, "Previous turn.");
-        domain.live.mods.apply_sdk("sdk-a", &json!({"type": "system", "subtype": "session_state_changed", "state": "idle"}), 2_500);
+        assert_eq!(domain.live().mods.session("sdk-a").unwrap().answer.unwrap().text, "Previous turn.");
+        domain.live().mods.apply_sdk("sdk-a", &json!({"type": "system", "subtype": "session_state_changed", "state": "idle"}), 2_500);
         let idle = gather_at(&client, &state, Lang::En, &[], false, false, 2_500).await;
         assert_eq!(idle.nodes[0].last_message, node.last_message, "idle without a result keeps the last words");
         assert_eq!(idle.nodes[0].last_message_at, node.last_message_at);
-        domain.live.mods.apply_sdk("sdk-a", &json!({"type": "result", "result": "Review complete."}), 2_600);
+        domain.live().mods.apply_sdk("sdk-a", &json!({"type": "result", "result": "Review complete."}), 2_600);
         let ended = gather_at(&client, &state, Lang::En, &[], false, false, 2_700).await;
         assert_eq!(ended.nodes[0].last_message.as_deref(), Some("Review complete."));
         assert_eq!(ended.nodes[0].last_message_at, Some(timestamp(2_600)));
@@ -1425,7 +1425,7 @@ mod cache_tests {
             message(None, json!([{"type": "tool_use", "id": "toolu_bash", "name": "Bash", "input": {"command": "cargo test"}}])),
             message(Some("toolu_agent"), json!([{"type": "tool_use", "id": "toolu_read", "name": "Read", "input": {"file_path": "/w/README.md"}}])),
         ].into_iter().enumerate() {
-            domain.live.mods.apply_sdk("sdk-a", &observed, 1_000 + at as Millis);
+            domain.live().mods.apply_sdk("sdk-a", &observed, 1_000 + at as Millis);
         }
         let state = domain.state().unwrap();
         let live = gather_at(&client, &state, Lang::En, &[], false, false, 2_000).await;
@@ -1439,7 +1439,7 @@ mod cache_tests {
         assert_eq!(node.background.iter().map(|item| item.label.as_str()).collect::<Vec<_>>(), ["sleep 600"], "a running subagent shows as a run, not twice");
         assert_eq!(node.subagents.iter().map(|run| run.label.as_str()).collect::<Vec<_>>(), ["Check the links"]);
         assert_eq!(node.steps.iter().map(|step| (step.subject.as_str(), step.state)).collect::<Vec<_>>(), [("Write the changelog", StepState::InProgress)]);
-        let threads = domain.live.threads("sdk-a").expect("its activity");
+        let threads = domain.live().threads("sdk-a").expect("its activity");
         assert_eq!(threads.iter().map(|thread| (thread.agent_id.as_deref(), thread.summary.as_deref())).collect::<Vec<_>>(),
             [(None, Some("cargo test")), (Some("a1"), Some("/w/README.md"))]);
     }
@@ -1467,7 +1467,7 @@ mod cache_tests {
         let home = crate::test_support::Directory::new();
         fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
-        domain.live.gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(2)) });
+        domain.live().gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(2)) });
         let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
         execute(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
@@ -1489,12 +1489,12 @@ mod cache_tests {
             ] });
             domain.report(Envelope { session_id: agent, report: Report::TurnStart }, now);
         }
-        assert!(domain.live.gate.hold_back(&domain, "agent-harness", crate::pauses::Reason::Declared {
+        assert!(domain.live().gate.hold_back(&domain, "agent-harness", crate::pauses::Reason::Declared {
             reason: "The build ran out of memory".into(),
         }, now));
 
         let state = domain.state().unwrap();
-        let gate = domain.live.gate.snapshot(&domain, now).unwrap();
+        let gate = domain.live().gate.snapshot(&domain, now).unwrap();
         let live = gather_at(&client, &state, Lang::En, &[], false, false, now).await;
         let tasks = client.views.render("tasks", &alondra_core::domain::ReadSnapshot::build(state.clone()), &live, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         let mut listed = vec![];
@@ -1605,13 +1605,13 @@ mod cache_tests {
         let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
         let state = domain.state().unwrap();
         assert!(gather(&client, &state, Lang::En, &["home".into()], false, false).await.pacing.is_some());
-        domain.live.gate.poison();
-        domain.live.machine_watch.poison();
+        domain.live().gate.poison();
+        domain.live().machine_watch.poison();
         crate::locks::poison(&client.live_snapshots.entries);
         crate::locks::poison(&client.live_reads.0);
         crate::locks::poison(&client.views_gauges);
         crate::locks::poison(&client.gauges);
-        domain.live.gate.poke();
+        domain.live().gate.poke();
         let live = gather(&client, &state, Lang::En, &["home".into()], false, false).await;
         assert!(live.pacing.is_some());
         assert!(client.live_snapshots.entries.lock().is_ok_and(|entries| !entries.is_empty()));
@@ -1639,8 +1639,8 @@ mod cache_tests {
         let message_hook = |id: &str, message: &str| serde_json::json!({
             "session_id": id, "hook_event_name": "Stop", "last_assistant_message": message,
         });
-        domain.live.observe(&activity_hook("a", "Parser ready"));
-        domain.live.observe(&message_hook("b", "Other work"));
+        domain.live().observe(&activity_hook("a", "Parser ready"));
+        domain.live().observe(&message_hook("b", "Other work"));
         let state = domain.state().unwrap();
         let activity = activity_source_revision(&client, "a");
         let search = search_source_revision(&client, &state);
@@ -1652,13 +1652,13 @@ mod cache_tests {
         assert!(cache.get(activity_path, state.revision, &activity).is_some());
         assert!(cache.get(search_path, state.revision, &search).is_some());
 
-        domain.live.observe(&message_hook("b", "Other work changed"));
+        domain.live().observe(&message_hook("b", "Other work changed"));
         assert_eq!(activity_source_revision(&client, "a"), activity);
         assert!(cache.get(activity_path, state.revision, &activity_source_revision(&client, "a")).is_some());
         assert_ne!(search_source_revision(&client, &state), search);
         assert!(cache.get(search_path, state.revision, &search_source_revision(&client, &state)).is_none());
 
-        domain.live.observe(&activity_hook("a", "Parser changed"));
+        domain.live().observe(&activity_hook("a", "Parser changed"));
         assert_ne!(activity_source_revision(&client, "a"), activity);
         assert!(cache.get(activity_path, state.revision, &activity_source_revision(&client, "a")).is_none());
         drop(client);

@@ -18,7 +18,7 @@ fn wire<T: serde::Serialize>(value: &T) -> Value {
 
 /// A live session as the legacy overview listed it, named after its Agent.
 fn model_of(domain: &DomainRuntime, session_id: &str) -> Value {
-    json!(domain.live.mods.session(session_id).and_then(|reported| reported.model))
+    json!(domain.live().mods.session(session_id).and_then(|reported| reported.model))
 }
 
 /// A node whose session is closed, and that its task's lifecycle no longer runs.
@@ -86,7 +86,7 @@ fn node_row(node: &Node, state: &DomainState, domain: &DomainRuntime) -> Value {
 /// A node of the Agent SDK, which no hook session describes: the domain's phase of it, its task
 /// as the domain holds it, whether this daemon runs its host, and what its host's events said last.
 fn sdk_node_row(agent: &Agent, state: &DomainState, domain: &DomainRuntime) -> Value {
-    let reported = domain.live.mods.session(&agent.id.0).unwrap_or_default();
+    let reported = domain.live().mods.session(&agent.id.0).unwrap_or_default();
     let mut node = Node::new(&agent.id.0, agent.since);
     node.alive = false;
     node.name = Some(agent.name.clone());
@@ -107,7 +107,7 @@ fn sdk_node_row(agent: &Agent, state: &DomainState, domain: &DomainRuntime) -> V
 
 /// Every node the domain knows: a hook session's, or one of the Agent SDK, which has none.
 fn node_rows(domain: &DomainRuntime, state: &DomainState) -> Vec<Value> {
-    let live = domain.live.nodes();
+    let live = domain.live().nodes();
     let mut rows: Vec<Value> = live.iter()
         .filter(|n| state.agents.contains_key(&AgentId(n.session_id.clone())))
         .map(|n| node_row(n, state, domain)).collect();
@@ -199,7 +199,7 @@ pub fn tasks_in_progress(domain: &DomainRuntime, machine: Value, usage: Value) -
 
 /// The Agent a name, short id or session id names.
 fn agent_named(domain: &DomainRuntime, state: &DomainState, key: &str) -> Result<AgentId, DomainError> {
-    let live = domain.live.nodes();
+    let live = domain.live().nodes();
     let short = |id: &AgentId| live.iter().find(|n| n.session_id == id.0).map(|n| n.short_id.clone());
     let found: Vec<&AgentId> = state.agents.values()
         .filter(|a| a.id.0 == key || a.name == key || short(&a.id).is_some_and(|s| !s.is_empty() && s == key))
@@ -215,7 +215,7 @@ fn agent_named(domain: &DomainRuntime, state: &DomainState, key: &str) -> Result
 pub fn node(domain: &DomainRuntime, key: &str) -> Result<Value, DomainError> {
     let state = state(domain)?;
     let agent = agent_named(domain, &state, key)?;
-    let live = domain.live.node(&agent.0);
+    let live = domain.live().node(&agent.0);
     let mut node = match live {
         Some(live) => node_row(&live, &state, domain),
         None if crate::sdk_owner::runs_through_sdk(&state, &agent) || state.agents[&agent].phase == NodePhase::ThroughSdk =>

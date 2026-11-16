@@ -362,7 +362,7 @@ impl Admission {
         if inner.saved.pauses.paused.get(session).is_some_and(|paused| paused.reason.holds()) {
             return true;
         }
-        let turn_since = domain.live.mods.session(session).and_then(|reported| reported.working_since);
+        let turn_since = domain.live().mods.session(session).and_then(|reported| reported.working_since);
         inner.saved.pauses.paused.insert(session.to_owned(), Paused {
             task, reason, since: now, cut: None, turn_since, cleanup: crate::pauses::Cleanup::Done, released: false,
         });
@@ -786,7 +786,7 @@ fn lifecycle_revision(state: &DomainState, session: &str) -> Option<u64> {
 fn resume_locked(domain: &DomainRuntime, inner: &mut Inner, session: &str, now: Millis) {
     let Some(mut paused) = inner.saved.pauses.paused.remove(session) else { return };
     if let Reason::ApiError(retry) = &paused.reason && retry.outage {
-        domain.live.api_watch.probed(now);
+        domain.live().api_watch.probed(now);
     }
     if inner.saved.pauses.resumed.remove(session).is_some() {
         paused.reason = Reason::ByUser;
@@ -838,7 +838,7 @@ fn admit(domain: &DomainRuntime, state: &DomainState, inner: &mut Inner, key: Ke
     let task = task_of(state, &key);
     let project = task.as_ref().and_then(|task| state.tasks.get(task)).and_then(|task| task.project.clone());
     let reservation = task.map(Key::Task).unwrap_or_else(|| key.clone());
-    domain.live.machine_watch.reserve_admission(reservation, project);
+    domain.live().machine_watch.reserve_admission(reservation, project);
     inner.admitted.retain(|(_, at)| now - at < IN_FLIGHT);
     inner.at_work.remove(&key);
     let admitted: BTreeSet<&Key> = inner.admitted.iter().map(|(key, _)| key).collect();
@@ -1062,12 +1062,12 @@ fn projects_of<'a>(state: &DomainState, tasks: impl Iterator<Item = &'a TaskId>)
 /// node of `claude --bg`, whose next turn cannot wait, goes on too.
 pub(crate) fn hold_for_disk(domain: &DomainRuntime, now: Millis) {
     let Ok(state) = domain.state() else { return };
-    let gate = &domain.live.gate;
+    let gate = &domain.live().gate;
     let pauses = gate.pauses(domain);
     let at_work: Vec<crate::disk_peaks::AtWork> = working_tasks(domain, &state).into_iter().filter_map(|task| {
         let session = crate::pauses::session_of(&state, &task)?;
         Some(crate::disk_peaks::AtWork {
-            used: domain.live.machine_watch.disk_used(&task),
+            used: domain.live().machine_watch.disk_used(&task),
             can_wait: crate::pauses::through_sdk(domain, &session),
             held: pauses.paused.contains_key(&session),
             task,
@@ -1157,7 +1157,7 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
     busy.retain(|task| !turn_waits.contains_key(task));
     let paused = |task: &TaskId| crate::pauses::session_of(state, task).is_some_and(|session| inner.saved.pauses.paused.contains_key(&session));
     let waiting_again: BTreeSet<&Key> = queued.iter()
-        .filter(|waiting| !matches!(&waiting.key, Key::Task(task) if domain.live.is_launching(&task.0)))
+        .filter(|waiting| !matches!(&waiting.key, Key::Task(task) if domain.live().is_launching(&task.0)))
         .map(|waiting| &waiting.key).collect();
     let in_flight: Vec<Option<TaskId>> = inner.admitted.iter()
         .filter(|(key, at)| now - at < IN_FLIGHT && !waiting_again.contains(key) && !inner.at_work.contains(key))
@@ -1194,17 +1194,17 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
     for waiting in queued.into_iter().filter(|waiting| still_waits(state, &waiting.key)) {
         all.insert(waiting.key.clone(), waiting);
     }
-    let usage_clear = !domain.live.usage_pause.is_active();
-    let probe = crate::api_failures::outage_probe(&inner.saved.pauses.paused, &domain.live.api_watch, now);
+    let usage_clear = !domain.live().usage_pause.is_active();
+    let probe = crate::api_failures::outage_probe(&inner.saved.pauses.paused, &domain.live().api_watch, now);
     let resumed = &inner.saved.pauses.resumed;
     let held_turns: BTreeSet<TaskId> = turns_held_for_disk(state).collect();
     let returning = inner.saved.pauses.paused.iter()
         .filter(|(_, paused)| !(paused.reason == Reason::Disk && held_turns.contains(&paused.task)))
         .filter(|(session, _)| inner.refused.get(*session).is_none_or(|refused| lifecycle_revision(state, session) != Some(*refused)))
         .filter(|(session, paused)| resumed.contains_key(*session) || match &paused.reason {
-        Reason::ApiError(retry) if retry.outage => domain.live.api_watch.answered_since(paused.since) || probe.as_ref() == Some(*session),
+        Reason::ApiError(retry) if retry.outage => domain.live().api_watch.answered_since(paused.since) || probe.as_ref() == Some(*session),
         _ => paused.returns(usage_clear && (!matches!(paused.reason, Reason::Usage)
-            || crate::usage_pause::task_usage_ready(state, &paused.task, paused.since, now)), domain.live.api_watch.answered_since(paused.since), now),
+            || crate::usage_pause::task_usage_ready(state, &paused.task, paused.since, now)), domain.live().api_watch.answered_since(paused.since), now),
     });
     for (session, paused) in returning {
         let key = Key::Resume(session.clone());
@@ -1217,7 +1217,7 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
         all.insert(key.clone(), Waiting { key, priority: priority_of(state, Some(task)), resuming: true, since });
     }
     let queue = disk_returns_first(ordered(all.into_values().collect()), &inner.saved.pauses);
-    let mut mac = domain.live.machine_watch.mac();
+    let mut mac = domain.live().machine_watch.mac();
     let mut observed = BTreeSet::new();
     mac.observed_in_flight = inner.admitted.iter()
         .filter(|(_, at)| now - at < IN_FLIGHT && mac.observed_nodes_at.is_some_and(|measured| measured >= *at && measured <= now && now - measured <= 30_000))
@@ -1235,8 +1235,8 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
     let reserving = reserving_tasks(state, working_tasks.iter().filter(|task| Some(*task) != head.as_ref()));
     let project = head.and_then(|task| state.tasks.get(&task)).and_then(|task| task.project.as_deref());
     let reservation_head = queue.first().map(|head| task_of(state, &head.key).map(Key::Task).unwrap_or_else(|| head.key.clone()));
-    let disk = domain.live.machine_watch.disk_room_for(&reserving, project, reservation_head.as_ref(), now);
-    let disk_detail = domain.live.machine_watch.disk_detail_for(&reserving, project, reservation_head.as_ref(), now);
+    let disk = domain.live().machine_watch.disk_room_for(&reserving, project, reservation_head.as_ref(), now);
+    let disk_detail = domain.live().machine_watch.disk_detail_for(&reserving, project, reservation_head.as_ref(), now);
     let mut snapshot = Snapshot { queue, working, working_tasks, limit, setting, limits, mac, in_flight: admitted, hold: None, disk, disk_detail };
     snapshot.hold = snapshot.next_start().and_then(|head| hold_of(inner, head, &snapshot, now).err());
     snapshot
@@ -1258,7 +1258,7 @@ pub fn hold_queued(domain: &DomainRuntime, task: &TaskId, now: Millis) -> Result
             drop(store);
             let state = domain.state().map_err(|_| NOT_QUEUED)?;
             let key = Key::Task(task.clone());
-            let waits = domain.live.gate.lock().asking.contains_key(&key)
+            let waits = domain.live().gate.lock().asking.contains_key(&key)
                 && state.tasks.get(task).is_some_and(|task| crate::auto_launch::candidate(&state, task));
             if !waits {
                 return Err(NOT_QUEUED);
@@ -1266,7 +1266,7 @@ pub fn hold_queued(domain: &DomainRuntime, task: &TaskId, now: Millis) -> Result
             (LaunchBody::from_plan(task.clone(), &plan).to_queue(), AUTO_ORIGIN.to_owned())
         }
     };
-    let gate = &domain.live.gate;
+    let gate = &domain.live().gate;
     let mut inner = gate.lock();
     inner.asking.remove(&Key::Task(task.clone()));
     inner.saved.pauses.held.insert(task.clone(), crate::pauses::Held { body, origin, since: now });
@@ -1280,13 +1280,13 @@ const AUTO_ORIGIN: &str = "auto";
 
 /// A task the user paused in the queue: nothing starts it until the user resumes it.
 pub(crate) fn held_by_user(domain: &DomainRuntime, task: &TaskId) -> bool {
-    domain.live.gate.lock().saved.pauses.held.contains_key(task)
+    domain.live().gate.lock().saved.pauses.held.contains_key(task)
 }
 
 /// The user resumed a queued task they paused: it goes back to the queue with its age, and the
 /// gate starts it when its turn comes.
 pub fn release_queued(domain: &DomainRuntime, task: &TaskId) -> Result<(), &'static str> {
-    let gate = &domain.live.gate;
+    let gate = &domain.live().gate;
     let held = gate.lock().saved.pauses.held.get(task).cloned().ok_or("This node or task is not paused")?;
     domain.store.lock_or_exit("the domain store").enqueue_launch(task, &held.body, &held.origin, held.since)
         .map_err(|_| "Alondra could not queue the task")?;
@@ -1301,13 +1301,13 @@ pub fn release_queued(domain: &DomainRuntime, task: &TaskId) -> Result<(), &'sta
 /// Queues a launch the orchestrator or the user asked for; the gate starts it when its turn comes.
 pub(crate) fn enqueue(domain: &DomainRuntime, body: &LaunchBody, origin: &str, now: Millis) -> anyhow::Result<()> {
     domain.store.lock_or_exit("the domain store").enqueue_launch(body.task_id(), &body.to_queue(), origin, now)?;
-    domain.live.gate.poke();
+    domain.live().gate.poke();
     Ok(())
 }
 
 /// The place and the wait of a queued task, worded for the orchestrator.
 pub(crate) fn queued_text(domain: &DomainRuntime, task: &TaskId, now: Millis) -> String {
-    let Some(pacing) = domain.live.gate.live(domain, now) else { return "It waits in the queue for a free slot.".into() };
+    let Some(pacing) = domain.live().gate.live(domain, now) else { return "It waits in the queue for a free slot.".into() };
     let Some(place) = pacing.queued.iter().find(|queued| queued.task_id == task.0) else {
         return "It waits in the queue for a free slot.".into();
     };
@@ -1332,7 +1332,7 @@ pub async fn run(domain: Arc<DomainRuntime>, home: PathBuf) {
         }
         tokio::select! {
             () = tokio::time::sleep(TICK) => {}
-            () = domain.live.gate.changed.notified() => {}
+            () = domain.live().gate.changed.notified() => {}
             changed = changes.changed() => if changed.is_err() { return },
         }
     }
@@ -1351,7 +1351,7 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
     for row in rows.iter().filter(|row| !still_waits(&state, &Key::Task(row.task_id.clone()))) {
         domain.store.lock_or_exit("the domain store").dequeue_launch(&row.task_id)?;
     }
-    let gate = &domain.live.gate;
+    let gate = &domain.live().gate;
     let to_halt;
     let granted;
     let head = {
@@ -1433,8 +1433,8 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
 /// by itself (usage, disk) is tried again on a later turn, any other is a failed start, tried again
 /// by itself and then put to the user. `launch_from` records the failures it knows.
 fn refused(domain: &DomainRuntime, task: &TaskId, error: &alondra_core::domain::DomainError, now: Millis) -> anyhow::Result<()> {
-    domain.live.gate.not_started(&Key::Task(task.clone()));
-    if domain.live.is_launching(&task.0) || matches!(error.code.as_str(), "launch_failed" | "workspace_untrusted" | "usage_exhausted" | "worktrees_unavailable" | "disk_low" | "account_unavailable" | "account_check_in_progress") {
+    domain.live().gate.not_started(&Key::Task(task.clone()));
+    if domain.live().is_launching(&task.0) || matches!(error.code.as_str(), "launch_failed" | "workspace_untrusted" | "usage_exhausted" | "worktrees_unavailable" | "disk_low" | "account_unavailable" | "account_check_in_progress") {
         return Ok(());
     }
     let state = domain.state()?;
@@ -1449,3 +1449,29 @@ fn refused(domain: &DomainRuntime, task: &TaskId, error: &alondra_core::domain::
 
 #[cfg(test)]
 mod tests;
+
+/// The user's Resume on the card of a pause the gate holds a node of the Agent SDK in: the gate,
+/// not the domain, ends that pause, so it is the Resume of the node's task.
+pub(crate) struct PauseResume;
+
+impl crate::domain_runtime::CommitObserver for PauseResume {
+    fn carries_out<'a>(&'a self, domain: &'a DomainRuntime, actor: &alondra_core::domain::Actor, command: &Command) -> Option<crate::domain_runtime::Carried<'a>> {
+        use alondra_core::domain::{Actor, Scope, NODE_PAUSE_RESUME};
+        let (Actor::User { .. }, Command::AnswerQuestion { interaction_id, option_id, .. }) = (actor, command) else { return None };
+        if option_id != NODE_PAUSE_RESUME {
+            return None;
+        }
+        let state = domain.state().ok()?;
+        let card = state.interactions.get(interaction_id).filter(|card| state.node_pause_card(&card.id) && state.open(card))?;
+        let Scope::Task { task_id } = &card.scope else { return None };
+        let agent = state.tasks.get(task_id)?.agent_id.clone()?;
+        Some(Box::new(move || {
+            if !domain.live().gate.resume_now(domain, &agent.0, alondra_core::now_millis()) {
+                return Err(crate::domain_store::StoreError::Domain(alondra_core::domain::DomainError::new("conflict", "The node is no longer paused")));
+            }
+            let revision = domain.state().map_err(crate::domain_store::StoreError::Storage)?.revision;
+            Ok(alondra_core::domain::CommandOutcome { revision, changed: false, effects: vec![], created_ids: vec![], superseded_acceptances: vec![],
+                effect: vec!["The paused node resumes now.".into()] })
+        }))
+    }
+}

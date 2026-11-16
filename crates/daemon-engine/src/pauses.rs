@@ -126,7 +126,7 @@ pub(crate) fn resume_text(paused: &Paused, now: Millis) -> String {
 
 /// The command a node's turn is running, as its mod reports it.
 fn cut_of(domain: &DomainRuntime, session: &str) -> Option<String> {
-    let reported = domain.live.mods.session(session)?;
+    let reported = domain.live().mods.session(session)?;
     let tool = reported.tool?;
     Some(crate::node_reports::short_label(tool.summary.as_deref().unwrap_or(&tool.name)))
 }
@@ -150,8 +150,8 @@ pub(crate) fn stop(domain: &DomainRuntime, pauses: &mut Pauses, session: &str, t
         return;
     }
     let cut = cut_of(domain, session);
-    let turn_since = domain.live.mods.session(session).and_then(|reported| reported.working_since);
-    if domain.live.pushes.interrupt(session).is_err() {
+    let turn_since = domain.live().mods.session(session).and_then(|reported| reported.working_since);
+    if domain.live().pushes.interrupt(session).is_err() {
         log!("could not interrupt {session} to pause it: it is not connected");
     }
     log!("pausing {session} ({task}) for {reason:?}{}", cut.as_ref().map(|cut| format!(", cutting {cut}")).unwrap_or_default());
@@ -202,12 +202,12 @@ pub(crate) fn look(domain: &DomainRuntime, state: &DomainState, pauses: &mut Pau
     pauses.paused.retain(|session, paused| {
         let open = state.tasks.get(&paused.task).is_some_and(|task| !task.archived && !task.state.terminal() && !matches!(task.state, TaskState::Closing))
             && session_of(state, &paused.task).as_deref() == Some(session.as_str())
-            && !domain.live.is_closed(session);
-        let new_turn = domain.live.mods.session(session).and_then(|reported| reported.working_since)
+            && !domain.live().is_closed(session);
+        let new_turn = domain.live().mods.session(session).and_then(|reported| reported.working_since)
             .filter(|since| *since > paused.since && Some(*since) != paused.turn_since);
         if open && paused.reason.holds() && let Some(since) = new_turn {
             log!("{session} started a turn while paused for {:?}: stopping it again", paused.reason);
-            if domain.live.pushes.interrupt(session).is_err() {
+            if domain.live().pushes.interrupt(session).is_err() {
                 log!("could not interrupt {session} to keep it paused: it is not connected");
             }
             paused.turn_since = Some(since);
@@ -241,7 +241,7 @@ fn clean_up(domain: &DomainRuntime, pauses: &mut Pauses, now: Millis) {
     }
     let table = crate::process_watch::snapshot();
     for (session, stage) in due {
-        let left = domain.live.mods.session(&session).and_then(|reported| reported.peer_pid)
+        let left = domain.live().mods.session(&session).and_then(|reported| reported.peer_pid)
             .map(|pid| crate::process_watch::work_descendants(&table, pid)).unwrap_or_default();
         let signal = if stage == Cleanup::Pending { libc::SIGTERM } else { libc::SIGKILL };
         if !left.is_empty() {

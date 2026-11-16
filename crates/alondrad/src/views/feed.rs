@@ -92,8 +92,8 @@ pub(crate) fn start_clock(client: &Arc<crate::client_routes::Client>) {
         let Some(initial_client) = weak.upgrade() else { return };
         let mut domain_changes = initial_client.domain.subscribe();
         let mut state = initial_client.domain.state().ok();
-        let mut hook_changes = initial_client.domain.live.changed.subscribe();
-        let mut report_changes = initial_client.domain.live.mods.changed.subscribe();
+        let mut hook_changes = initial_client.domain.live().changed.subscribe();
+        let mut report_changes = initial_client.domain.live().mods.changed.subscribe();
         drop(initial_client);
         let mut last = None;
         loop {
@@ -808,8 +808,8 @@ mod tests {
         runtime.block_on(async {
             let state = fixture.client.domain.state().unwrap();
             let mut domain_changes = fixture.client.domain.subscribe();
-            let mut hook_changes = fixture.client.domain.live.changed.subscribe();
-            let mut report_changes = fixture.client.domain.live.mods.changed.subscribe();
+            let mut hook_changes = fixture.client.domain.live().changed.subscribe();
+            let mut report_changes = fixture.client.domain.live().mods.changed.subscribe();
             assert!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes).is_pending());
             let live = super::super::live::gather(&fixture.client, &state, Lang::En, &[key.clone()], false, false).await;
             let rendered = fixture.client.views.render(&key, &alondra_core::domain::ReadSnapshot::build(state.clone()), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
@@ -851,20 +851,20 @@ mod tests {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             let mut domain_changes = fixture.client.domain.subscribe();
-            let mut hook_changes = fixture.client.domain.live.changed.subscribe();
-            let mut report_changes = fixture.client.domain.live.mods.changed.subscribe();
-            fixture.client.domain.live.observe(&serde_json::json!({"hook_event_name": "Stop"}));
+            let mut hook_changes = fixture.client.domain.live().changed.subscribe();
+            let mut report_changes = fixture.client.domain.live().mods.changed.subscribe();
+            fixture.client.domain.live().observe(&serde_json::json!({"hook_event_name": "Stop"}));
             assert!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes).is_pending());
-            fixture.client.domain.live.observe(&serde_json::json!({"session_id": "hook", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "echo hooked"}}));
+            fixture.client.domain.live().observe(&serde_json::json!({"session_id": "hook", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "echo hooked"}}));
             assert_eq!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes), std::task::Poll::Ready(Some(false)));
             let hello = || crate::node_reports::Hello { session_id: "connected".into(), version: "test".into(), cwd: None, launch_key: None, working: false };
             let first = fixture.client.domain.connect_node(hello(), 1_700_000_000_000);
             assert_eq!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes), std::task::Poll::Ready(Some(false)));
             let second = fixture.client.domain.connect_node(hello(), 1_700_000_000_001);
             assert_eq!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes), std::task::Poll::Ready(Some(false)));
-            assert!(!fixture.client.domain.live.mods.disconnect("connected", first));
+            assert!(!fixture.client.domain.live().mods.disconnect("connected", first));
             assert!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes).is_pending());
-            assert!(fixture.client.domain.live.mods.disconnect("connected", second));
+            assert!(fixture.client.domain.live().mods.disconnect("connected", second));
             assert_eq!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes), std::task::Poll::Ready(Some(false)));
         });
     }
@@ -878,15 +878,15 @@ mod tests {
         );
         let weak = Arc::downgrade(&retired);
         let mut retired_domain = retired.domain.subscribe();
-        let mut retired_hooks = retired.domain.live.changed.subscribe();
-        let mut retired_reports = retired.domain.live.mods.changed.subscribe();
+        let mut retired_hooks = retired.domain.live().changed.subscribe();
+        let mut retired_reports = retired.domain.live().mods.changed.subscribe();
         drop(retired);
         assert!(weak.upgrade().is_none());
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             let mut domain_changes = fixture.client.domain.subscribe();
-            let mut hook_changes = fixture.client.domain.live.changed.subscribe();
-            let mut report_changes = fixture.client.domain.live.mods.changed.subscribe();
+            let mut hook_changes = fixture.client.domain.live().changed.subscribe();
+            let mut report_changes = fixture.client.domain.live().mods.changed.subscribe();
             fixture.client.domain.report(crate::node_reports::Envelope {
                 session_id: "replacement".into(),
                 report: crate::node_reports::Report::ToolEnd { tool_use_id: None },
@@ -905,7 +905,7 @@ mod tests {
         runtime.block_on(async {
             let (agent, key) = fixture.node_on_task("node-wake");
             let agent = agent.as_str();
-            fixture.client.domain.live.observe(&serde_json::json!({
+            fixture.client.domain.live().observe(&serde_json::json!({
                 "session_id": agent, "hook_event_name": "PreToolUse", "tool_name": "Bash",
                 "tool_input": {"command": "echo first"}, "cwd": "/tmp/feed-project"
             }));
@@ -918,7 +918,7 @@ mod tests {
             let first_wake = *fixture.client.feeds.clock.borrow();
             assert!(!sample_live(&fixture.client, &fixture.client.domain.state().unwrap(), &mut last).await,
                 "an unchanged node projection does not wake the feed");
-            fixture.client.domain.live.observe(&serde_json::json!({
+            fixture.client.domain.live().observe(&serde_json::json!({
                 "session_id": agent, "hook_event_name": "PreToolUse", "tool_name": "Bash",
                 "tool_input": {"command": "echo second"}, "cwd": "/tmp/feed-project"
             }));
@@ -935,7 +935,7 @@ mod tests {
         let agent = agent.as_str();
         let tool = |command: &str| serde_json::json!({"type": "assistant", "parent_tool_use_id": null, "message": {"role": "assistant",
             "content": [{"type": "tool_use", "id": format!("toolu-{}", command.len()), "name": "Bash", "input": {"command": command}}]}});
-        fixture.client.domain.live.mods.apply_sdk(agent, &tool("echo first"), alondra_core::now_millis());
+        fixture.client.domain.live().mods.apply_sdk(agent, &tool("echo first"), alondra_core::now_millis());
         let state = fixture.client.domain.state().unwrap();
         let live = super::super::live::gather(&fixture.client, &state, Lang::En, &[key.clone()], false, false).await;
         let rendered = fixture.client.views.render(&key, &alondra_core::domain::ReadSnapshot::build(state.clone()), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
@@ -945,7 +945,7 @@ mod tests {
         assert_eq!(unchanged["stale"], serde_json::json!([]), "{unchanged}");
         let mut last = None;
         sample_live(&fixture.client, &fixture.client.domain.state().unwrap(), &mut last).await;
-        fixture.client.domain.live.mods.apply_sdk(agent, &tool("echo second, again"), alondra_core::now_millis());
+        fixture.client.domain.live().mods.apply_sdk(agent, &tool("echo second, again"), alondra_core::now_millis());
         assert!(sample_live(&fixture.client, &fixture.client.domain.state().unwrap(), &mut last).await);
         let reply = response_json(handle(&fixture.client, "device-activity", &query(&first.cursor, 0, &open), Transport::Loopback).await).await;
         assert_eq!(reply["stale"], serde_json::json!([key]), "{reply}");

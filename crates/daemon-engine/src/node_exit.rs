@@ -13,7 +13,7 @@ pub(crate) fn session_ended(domain: &DomainRuntime, session: &str) -> bool {
 
 /// `session_ended` with Claude Code's home at `claude_home`.
 pub(crate) fn session_ended_in(domain: &DomainRuntime, claude_home: &std::path::Path, session: &str) -> bool {
-    let known = domain.live.mods.session(session).and_then(|reported| reported.job_dir);
+    let known = domain.live().mods.session(session).and_then(|reported| reported.job_dir);
     let Some(dir) = known.or_else(|| crate::job_state::locate(claude_home, session)) else { return false };
     !dir.exists() || crate::job_state::read_in(&dir, session).is_some_and(|job| job.phase == crate::job_state::Phase::Stopped)
 }
@@ -33,8 +33,8 @@ fn open_task(state: &alondra_core::domain::DomainState, session: &str) -> bool {
 /// A session whose replacement stopped short because it could not be stopped ends for that
 /// reason, and Alondra starts its tasks' next node by itself.
 pub(crate) fn user_closed(domain: &DomainRuntime, session: &str) -> anyhow::Result<()> {
-    let cwd = domain.live.mods.session(session).and_then(|reported| reported.cwd);
-    let Some(why) = domain.live.take_aborted_replace(session) else {
+    let cwd = domain.live().mods.session(session).and_then(|reported| reported.cwd);
+    let Some(why) = domain.live().take_aborted_replace(session) else {
         take_out(domain, session, "node closed by the user", cwd, Relaunch::AskUser)?;
         return Ok(());
     };
@@ -66,7 +66,7 @@ pub(crate) fn take_out(domain: &DomainRuntime, session: &str, reason: &str, cwd:
         };
         match domain.execute_as_system(envelope) {
             Ok(_) => {
-                domain.live.remember_closed_task(&task_id.0, node.clone());
+                domain.live().remember_closed_task(&task_id.0, node.clone());
                 freed.push(task_id);
             }
             Err(failure) => log!("could not free {task_id} after its node was closed: {failure:?}"),
@@ -74,8 +74,8 @@ pub(crate) fn take_out(domain: &DomainRuntime, session: &str, reason: &str, cwd:
     }
     crate::domain_agent_lifecycle::node_event(domain, &agent, NodeEvent::SessionClosed).map_err(|failure| anyhow::anyhow!("{failure}"))?;
     crate::domain_transport::session_ended(domain, &agent)?;
-    domain.live.mark_closed(session);
-    domain.live.apply(&alondra_core::Event::NodeRemoved { session_id: session.to_owned() });
+    domain.live().mark_closed(session);
+    domain.live().apply(&alondra_core::Event::NodeRemoved { session_id: session.to_owned() });
     domain.forget_ended_session(session)?;
     Ok(freed)
 }

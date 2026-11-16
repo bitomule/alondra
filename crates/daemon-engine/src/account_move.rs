@@ -140,12 +140,12 @@ pub(crate) fn require_started_destination(domain:&DomainRuntime,task:&TaskId)->R
 /// Takes the task's move as far as it goes: from the step recorded to its end, done or undone.
 /// An error leaves the move at its step, for the next tick.
 pub(crate) async fn advance(domain: &Arc<DomainRuntime>, task: &TaskId) -> Result<AccountMoveStep, String> {
-    let _one = domain.moves.moving.lock().await;
+    let _one = domain.moves().moving.lock().await;
     loop {
         let moving = latest(domain, task).ok_or_else(|| format!("{task} has no account move"))?;
         let step = moving.step;
         #[cfg(any(test, feature = "test-hooks"))]
-        if *domain.moves.crash_after.lock().unwrap() == Some(step) && step != AccountMoveStep::Admitted {
+        if *domain.moves().crash_after.lock().unwrap() == Some(step) && step != AccountMoveStep::Admitted {
             return Err(format!("the daemon died after {step:?}"));
         }
         match step {
@@ -221,7 +221,7 @@ async fn admit(domain: &Arc<DomainRuntime>, moving: &AccountMove) -> Result<(), 
     match admitted {
         Ok(driver) => {
             domain.add_sdk_owner(crate::sdk_owner::Owner::spawn(driver));
-            domain.live.forget_closed_task(&moving.task.0);
+            domain.live().forget_closed_task(&moving.task.0);
             Ok(())
         }
         Err(crate::sdk_owner::Failed { why, .. }) if latest(domain, &moving.task).is_some_and(|now| now.step == AccountMoveStep::Admitted) => {
@@ -315,3 +315,11 @@ pub async fn run(domain: Arc<DomainRuntime>) {
 #[cfg(test)]
 #[path = "account_move/tests.rs"]
 mod tests;
+
+crate::extension!(Moves);
+
+impl crate::domain_runtime::DomainRuntime {
+    pub(crate) fn moves(&self) -> &Moves {
+        self.extension()
+    }
+}

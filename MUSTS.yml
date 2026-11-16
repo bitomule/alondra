@@ -911,6 +911,23 @@ checks:
       targets:
         - //tools:edit_bench_test
 
+  module-cycles:
+    uses: bazel/test
+    paths:
+      - "BUILD.bazel"
+      - "crates/alondrad/**"
+      - "crates/daemon-engine/**"
+      - "tools/BUILD.bazel"
+      - "tools/module_cycles.tsv"
+      - "tools/module_graph.py"
+      - "tools/rust_test.bzl"
+      - "tools/tests/test_module_cycles.py"
+      - "tools/tree.bzl"
+      - "version.bzl"
+    with:
+      targets:
+        - //tools:module_cycles_test
+
   sandbox-accounts:
     uses: bazel/test
     paths:

@@ -17,7 +17,7 @@ impl HostGuard {
     ) -> Result<Self> {
         {
             let mut current = domain
-                .live
+                .live()
                 .orchestrator_host
                 .lock_or_recover("the orchestrator host");
             anyhow::ensure!(
@@ -36,7 +36,7 @@ impl Drop for HostGuard {
     fn drop(&mut self) {
         let mut current = self
             .domain
-            .live
+            .live()
             .orchestrator_host
             .lock_or_recover("the orchestrator host");
         if current.as_ref().is_some_and(|(run, _)| *run == self.run) {
@@ -106,7 +106,7 @@ impl Executor {
     pub(super) fn interrupt_host(&self) -> Result<()> {
         let current = self
             .domain
-            .live
+            .live()
             .orchestrator_host
             .lock_or_recover("the orchestrator host")
             .clone();
@@ -153,8 +153,8 @@ impl Executor {
 
     fn watchdog_due(&self, watchdog: &mut Watchdog, now: Instant) -> bool {
         let requests = self.waiting_requests();
-        let suspended = self.domain.live.usage_pause.is_active()
-            || self.domain.live.account_wait.is_waiting()
+        let suspended = self.domain.live().usage_pause.is_active()
+            || self.domain.live().account_wait.is_waiting()
             || load(&self.home).is_ok_and(|runtime| {
                 runtime.active_run.is_some()
                     && runtime.last_error.is_some()
@@ -168,9 +168,7 @@ impl Executor {
             !requests.is_empty(),
             suspended,
             self.domain
-                .live
-                .orchestrator_progress
-                .load(Ordering::Relaxed),
+                .orchestrator_progress(),
         ) {
             return false;
         }

@@ -95,7 +95,7 @@ fn batch_with_confirmed_effect(f: &Fixture, selected: bool) -> Run {
     );
     if selected {
         f.domain()
-            .live
+            .live()
             .orchestrator_runs
             .lock()
             .unwrap()
@@ -418,7 +418,7 @@ async fn persisted_handoff_survives_reconcile_failure_and_restart_without_a_cold
         assert!(
             !restarted
                 .domain
-                .live
+                .live()
                 .orchestrator_runs
                 .lock()
                 .unwrap()
@@ -707,7 +707,7 @@ async fn explicit_decisions_finish_after_runtime_save_failure_without_a_second_u
             assert_eq!(response["status"], 409, "{decision:?}/{messages}");
             assert_eq!(fault.hits(), 1);
             assert!(
-                f.domain().live.orchestrator_stop.lock().unwrap().is_none(),
+                f.domain().live().orchestrator_stop.lock().unwrap().is_none(),
                 "{decision:?}/{messages}"
             );
             drop(fault);
@@ -766,7 +766,7 @@ async fn failed_explicit_decision_commit_leaves_every_claim_uncertain() {
     let fault = faults::Injection::at(&f.executor.home, "delivery_commit", 1);
     assert!(f.executor.retry(&run.id).is_err());
     drop(fault);
-    assert!(f.domain().live.orchestrator_stop.lock().unwrap().is_some());
+    assert!(f.domain().live().orchestrator_stop.lock().unwrap().is_some());
     let attempts = f
         .domain()
         .store
