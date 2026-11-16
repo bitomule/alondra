@@ -21,11 +21,10 @@ AUDITED = {
 
 
 def checkout():
-    """The checkout this test runs from: Bazel's runfiles link the Makefile back to it."""
+    """The checkout as this test declares it: the `tree` targets in its data, read from its runfiles."""
     runfiles = os.environ.get("TEST_SRCDIR")
     if runfiles:
-        makefile = Path(runfiles) / os.environ.get("TEST_WORKSPACE", "_main") / "Makefile"
-        return makefile.resolve().parent
+        return Path(runfiles) / os.environ.get("TEST_WORKSPACE", "_main")
     return Path(__file__).resolve().parents[2]
 
 

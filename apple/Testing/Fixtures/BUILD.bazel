@@ -1,3 +1,4 @@
+load("//tools:tree.bzl", "repo_tree")
 filegroup(
     name = "sources",
     testonly = True,
@@ -9,3 +10,5 @@ exports_files(
     ["DiffFixture.swift", "RequestedFormCard.swift", "SpanishTestData.swift"],
     visibility = ["//apple:__subpackages__"],
 )
+
+repo_tree()

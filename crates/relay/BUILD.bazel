@@ -1,3 +1,4 @@
+load("//tools:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps", "crate_deps")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
@@ -35,3 +36,5 @@ low_opt_rust_test(
 )
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+
+repo_tree()

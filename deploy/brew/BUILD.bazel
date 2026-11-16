@@ -1,3 +1,4 @@
+load("//tools:tree.bzl", "repo_tree")
 filegroup(
     name = "license_inputs",
     srcs = [
@@ -78,3 +79,5 @@ sh_test(
 
 # Read by the guard that keeps every Bazel call of a release in the release configuration.
 exports_files(["local-release.py"], visibility = ["//tools:__pkg__"])
+
+repo_tree()

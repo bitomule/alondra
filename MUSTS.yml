@@ -104,6 +104,8 @@ checks:
       - "tools/ci.py"
       - "tools/musts_scopes.py"
       - "tools/tests/test_ci.py"
+      - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
     with:
       targets:
         - //tools:ci_test
@@ -128,6 +130,7 @@ checks:
       - "crates/test_support.rs"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
       - "version.bzl"
     with:
       targets:
@@ -146,6 +149,7 @@ checks:
       - "crates/foundation/**"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
     with:
       targets:
         - //crates/agent-protocol/...
@@ -171,6 +175,7 @@ checks:
       - "crates/test_support.rs"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
       - "version.bzl"
     with:
       targets:
@@ -224,6 +229,7 @@ checks:
       - "plugin/skills/**"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
       - "version.bzl"
     with:
       targets:
@@ -281,6 +287,7 @@ checks:
       - "launchd/**"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
       - "version.bzl"
     with:
       targets:
@@ -300,6 +307,7 @@ checks:
       - "crates/foundation/**"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
     with:
       targets:
         - //crates/codex-protocol/...
@@ -328,6 +336,7 @@ checks:
       - "fixtures/views/metrics/**"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
     with:
       targets:
         - //crates/core/...
@@ -384,6 +393,7 @@ checks:
       - "launchd/**"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
       - "version.bzl"
     with:
       targets:
@@ -420,6 +430,7 @@ checks:
       - "crates/test_support.rs"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
       - "version.bzl"
     with:
       targets:
@@ -458,6 +469,7 @@ checks:
       - "fixtures/domain-v2/acceptance.json"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
       - "version.bzl"
     with:
       targets:
@@ -491,6 +503,7 @@ checks:
       - "crates/test_support.rs"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
       - "version.bzl"
     with:
       targets:
@@ -524,6 +537,7 @@ checks:
       - "fixtures/workflow/**"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
       - "version.bzl"
     with:
       targets:
@@ -542,6 +556,7 @@ checks:
       - "crates/foundation/**"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
     with:
       targets:
         - //crates/domain/...
@@ -560,6 +575,7 @@ checks:
       - "crates/test_support.rs"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
     with:
       targets:
         - //crates/e2e/...
@@ -579,6 +595,7 @@ checks:
       - "crates/foundation/**"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
     with:
       targets:
         - //crates/foundation/...
@@ -595,6 +612,7 @@ checks:
       - "crates/process-group/**"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
     with:
       targets:
         - //crates/process-group/...
@@ -629,6 +647,7 @@ checks:
       - "crates/test_support.rs"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
       - "version.bzl"
     with:
       targets:
@@ -664,6 +683,7 @@ checks:
       - "crates/test_support.rs"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
       - "version.bzl"
     with:
       targets:
@@ -682,6 +702,7 @@ checks:
       - "crates/provider-contract/**"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
     with:
       targets:
         - //crates/provider-contract/...
@@ -704,6 +725,7 @@ checks:
       - "fixtures/push/**"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
       - "web/react-router.config.ts"
     with:
       targets:
@@ -728,6 +750,7 @@ checks:
       - "crates/test_support.rs"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
       - "version.bzl"
     with:
       targets:
@@ -746,6 +769,7 @@ checks:
       - "crates/BUILD.bazel"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
     with:
       targets:
         - //crates:test_directory_test
@@ -776,6 +800,8 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/tests/test_licenses.py"
       - "tools/third_party_notices.py"
+      - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
       - "web/app/public/fonts/*.txt"
       - "web/package-lock.json"
       - "web/package.json"
@@ -786,16 +812,47 @@ checks:
   prose-decisions:
     uses: bazel/test
     paths:
+      - ".bsp/**"
+      - ".claude-plugin/**"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".musts/**"
+      - ".sourcekit-lsp/**"
+      - "agent-host/**"
+      - "apple/**"
+      - "crates/**"
+      - "docs/**"
+      - "plugin-orchestrator/.claude-plugin/**"
+      - "plugin-orchestrator/bin/**"
+      - "plugin-orchestrator/evals/**"
+      - "plugin-orchestrator/skills/**"
+      - "plugin/**"
+      - "tests/native/codex/**"
+      - "tools/testdata/**"
+      - "web/**"
+      - "*.bazel"
+      - "*.lock"
+      - "*.md"
+      - "*.toml"
+      - ".bazelignore"
       - ".bazelrc"
       - ".bazelversion"
-      - "BUILD.bazel"
-      - "MODULE.bazel"
+      - ".github/pull_request_template.md"
+      - ".gitignore"
+      - "MUSTS.yml"
       - "Makefile"
+      - "Package.resolved"
+      - "Package.swift"
+      - "plugin-orchestrator/.mcp.json"
+      - "tests/native/*.py"
+      - "tests/native/README.md"
+      - "tests/system/*.py"
+      - "tests/system/*.rs"
+      - "tools/*.bzl"
       - "tools/BUILD.bazel"
       - "tools/prose_decisions.py"
       - "tools/prose_decisions_allowlist.tsv"
-      - "tools/testdata/**"
       - "tools/tests/test_prose_decisions.py"
+      - "version.bzl"
     with:
       targets:
         - //tools:prose_decisions_test
@@ -810,6 +867,8 @@ checks:
       - "Makefile"
       - "tools/BUILD.bazel"
       - "tools/tests/test_bazel_artifact_paths.py"
+      - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
     with:
       targets:
         - //tools:bazel_artifact_paths_test
@@ -822,6 +881,34 @@ checks:
       targets:
         - //tools:public_data_guard_test
 
+  hermetic-tests:
+    uses: bazel/test
+    paths:
+      - "**"
+    with:
+      targets:
+        - //tools:hermetic_tests_test
+
+  no-old-commands:
+    uses: bazel/test
+    paths:
+      - "**"
+    with:
+      targets:
+        - //tools:no_old_commands_test
+
+  edit-bench:
+    uses: bazel/test
+    paths:
+      - "tools/BUILD.bazel"
+      - "tools/edit_bench.py"
+      - "tools/tests/test_edit_bench.py"
+      - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
+    with:
+      targets:
+        - //tools:edit_bench_test
+
   sandbox-accounts:
     uses: bazel/test
     paths:
@@ -831,6 +918,8 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/sandbox_accounts.py"
       - "tools/tests/test_sandbox_accounts.py"
+      - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
     with:
       targets:
         - //tools:sandbox_accounts_test
@@ -838,13 +927,7 @@ checks:
   low-opt-rust-tests:
     uses: bazel/test
     paths:
-      - ".bazelrc"
-      - ".bazelversion"
-      - "BUILD.bazel"
-      - "MODULE.bazel"
-      - "Makefile"
-      - "tools/BUILD.bazel"
-      - "tools/tests/test_low_opt_rust_tests.py"
+      - "**"
     with:
       targets:
         - //tools:low_opt_rust_tests_test
@@ -856,11 +939,12 @@ checks:
       - ".bazelversion"
       - "BUILD.bazel"
       - "MODULE.bazel"
-      - "Makefile"
       - "deploy/brew/BUILD.bazel"
       - "deploy/brew/local-release.py"
       - "tools/BUILD.bazel"
       - "tools/tests/test_release_config.py"
+      - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
     with:
       targets:
         - //tools:release_config_test
@@ -879,6 +963,7 @@ checks:
       - "tools/sandbox/BUILD.bazel"
       - "tools/sandbox/fixtures/**"
       - "tools/sandbox/src/**"
+      - "tools/tree.bzl"
     with:
       targets:
         - //tools/sandbox:alondra-sandbox_test
@@ -918,6 +1003,7 @@ checks:
       - "tests/system/macos/local_daemon_test.py"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
       - "version.bzl"
     with:
       targets:
@@ -932,6 +1018,8 @@ checks:
       - "tests/system/macos/BUILD.bazel"
       - "tests/system/macos/build_from_source.sh"
       - "tests/system/macos/build_from_source_test.py"
+      - "tools/BUILD.bazel"
+      - "tools/tree.bzl"
     with:
       targets:
         - //tests/system/macos:build_from_source_test
@@ -963,6 +1051,8 @@ checks:
       - "apple/macOS/Resources/Localizable.xcstrings"
       - "apple/push_keychain_group_test.py"
       - "apple/update_keeps_session_test.py"
+      - "tools/BUILD.bazel"
+      - "tools/tree.bzl"
     with:
       targets:
         - //apple:no_sleep_wording_test
@@ -1018,6 +1108,8 @@ checks:
       - "apple/macOS/Workspace/**"
       - "apple/spanish_catalog_test.py"
       - "apple/unused_catalog_strings_test.py"
+      - "tools/BUILD.bazel"
+      - "tools/tree.bzl"
     with:
       targets:
         - //apple:spanish_catalog_test
@@ -1039,6 +1131,8 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/plugin-mod-test.sh"
       - "tools/tests/test_plugin_mod_test_tmpdir.py"
+      - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
     with:
       targets:
         - //:plugin_mod_test
@@ -1057,6 +1151,8 @@ checks:
       - "Package.swift"
       - "tools/BUILD.bazel"
       - "tools/tests/test_sourcekit_lsp_workspace.py"
+      - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
     with:
       targets:
         - //:sourcekit_lsp_workspace_test
@@ -1091,6 +1187,7 @@ checks:
       - "deploy/brew/node/LICENSE"
       - "deploy/brew/plugin_payload_test.py"
       - "deploy/brew/release.py"
+      - "deploy/brew/release.sh"
       - "deploy/brew/tests/run-release-tests.sh"
       - "deploy/brew/tests/test_local_release.py"
       - "deploy/brew/tests/test_release.py"
@@ -1108,6 +1205,8 @@ checks:
       - "plugin/tests/**"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
     with:
       targets:
         - //deploy/brew:local_release_test
@@ -1128,6 +1227,8 @@ checks:
       - "deploy/apple/increment_version_test.sh"
       - "tools/BUILD.bazel"
       - "tools/shared.bzl"
+      - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
     with:
       targets:
         - //deploy/apple:prepare_test
@@ -1200,6 +1301,7 @@ checks:
       - "Package.resolved"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
       - "version.bzl"
     with:
       targets:
@@ -1211,6 +1313,8 @@ checks:
     paths:
       - ".bazelrc"
       - ".bazelversion"
+      - "MODULE.bazel"
+      - "Package.resolved"
       - "apple/*.bzl"
       - "apple/BUILD.bazel"
       - "apple/Contract/**"
@@ -1226,26 +1330,26 @@ checks:
       - "apple/Data/Transport/**"
       - "apple/Demo/**"
       - "apple/Design/**"
-      - "apple/entitlements_follow_signing_test.py"
       - "apple/Features/**"
-      - "apple/iOS/Resources/Localizable.xcstrings"
-      - "apple/iOS/UI/**"
-      - "apple/iOSLiveActivity/Resources/LiveActivity.xcstrings"
-      - "apple/iOSLiveActivity/Views/**"
-      - "apple/macOS/**"
       - "apple/Mermaid/BUILD.bazel"
       - "apple/Mermaid/Fixtures/**"
       - "apple/Mermaid/Snapshots/**"
       - "apple/Mermaid/Sources/**"
       - "apple/Mermaid/Tests/**"
       - "apple/Testing/**"
+      - "apple/entitlements_follow_signing_test.py"
+      - "apple/iOS/Resources/Localizable.xcstrings"
+      - "apple/iOS/UI/**"
+      - "apple/iOSLiveActivity/Resources/LiveActivity.xcstrings"
+      - "apple/iOSLiveActivity/Views/**"
+      - "apple/macOS/**"
       - "fixtures/diffs/**"
       - "fixtures/markdown/**"
       - "fixtures/push/**"
       - "fixtures/report/**"
       - "fixtures/views/**"
-      - "MODULE.bazel"
-      - "Package.resolved"
+      - "tools/BUILD.bazel"
+      - "tools/tree.bzl"
     with:
       targets:
         - //apple/Contract:AlondraContractTests
@@ -1341,6 +1445,8 @@ checks:
       - "fixtures/views/cards/card-know-command-es.json"
       - "fixtures/views/cards/card-mcp-sign-in-es.json"
       - "fixtures/views/cards/card-mcp-sign-in.json"
+      - "fixtures/views/cards/card-merge-unanswered-es.json"
+      - "fixtures/views/cards/card-merge-unanswered.json"
       - "fixtures/views/cards/card-orchestrator-decide.json"
       - "fixtures/views/cards/card-outcome-answer-es.json"
       - "fixtures/views/cards/card-outcome-answer.json"
@@ -1358,6 +1464,7 @@ checks:
       - "fixtures/views/cards/card-settled-ios.json"
       - "fixtures/views/cards/card-settled-mac-es.json"
       - "fixtures/views/cards/card-two-prs-es.json"
+      - "fixtures/views/cards/card-two-prs-other-es.json"
       - "fixtures/views/cards/card-two-prs.json"
       - "fixtures/views/cards/card-unheard-ios-es.json"
       - "fixtures/views/cards/delivered-review-task-ios-es.json"
@@ -1396,10 +1503,16 @@ checks:
       - "fixtures/views/cards/task-closed-ios-es.json"
       - "fixtures/views/cards/task-closed-ios.json"
       - "fixtures/views/cards/task-ios.json"
+      - "fixtures/views/cards/task-model-ios-es.json"
+      - "fixtures/views/cards/task-model-ios.json"
       - "fixtures/views/cards/task-pacing-ios-es.json"
       - "fixtures/views/cards/task-pacing-ios.json"
       - "fixtures/views/cards/task-working-ios-es.json"
       - "fixtures/views/cards/task-working-ios.json"
+      - "fixtures/views/cards/task-working-rows-ios-es.json"
+      - "fixtures/views/cards/task-working-rows-ios.json"
+      - "fixtures/views/cards/task-working-rows-mac-es.json"
+      - "fixtures/views/cards/task-working-rows-tui-es.json"
       - "fixtures/views/cards/tasks-ios-es-finished.json"
       - "fixtures/views/cards/tasks-ios-es.json"
       - "fixtures/views/cards/tasks-ios-finished.json"
@@ -1407,6 +1520,7 @@ checks:
       - "fixtures/views/cards/tasks-mac-finished.json"
       - "tools/BUILD.bazel"
       - "tools/shared.bzl"
+      - "tools/tree.bzl"
     with:
       targets:
         - //apple:mac_app_build_test
@@ -1462,14 +1576,10 @@ checks:
       - "agent-host/umask.test.mjs"
       - "crates/agent-protocol/**"
       - "tools/BUILD.bazel"
-      - "tools/prose_decisions.py"
-      - "tools/prose_decisions_allowlist.tsv"
       - "tools/rust_test.bzl"
-      - "tools/testdata/**"
-      - "tools/tests/test_prose_decisions.py"
+      - "tools/tree.bzl"
     with:
       targets:
-        - //tools:prose_decisions_test
         - //agent-host:sdk_test
         - //agent-host:release_host
         - //agent-host:sea_test
@@ -1507,6 +1617,7 @@ checks:
       - "crates/cargo_bazel_deps_test.py"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
       - "version.bzl"
     with:
       targets:
@@ -1516,6 +1627,8 @@ checks:
     uses: bazel/test
     paths:
       - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
       - "tools/worktree_volume_bench.py"
       - "tools/tests/test_worktree_volume_bench.py"
     with:
@@ -1528,6 +1641,8 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/load_bench.py"
       - "tools/tests/test_load_bench.py"
+      - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
     with:
       targets:
         - //tools:load_bench_test
@@ -1538,6 +1653,8 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/buildbuddy-credential-helper.sh"
       - "tools/tests/test_buildbuddy_credential_helper.py"
+      - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
     with:
       targets:
         - //tools:buildbuddy_credential_helper_test
@@ -1551,6 +1668,8 @@ checks:
       - "signing/**"
       - "tools/BUILD.bazel"
       - "tools/tests/test_public_build_inputs.py"
+      - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
     with:
       targets:
         - //tools:public_build_inputs_test
@@ -1561,6 +1680,8 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/test-tmpdir.sh"
       - "tools/tests/test_bazel_test_tmpdir.py"
+      - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
     with:
       targets:
         - //tools:bazel_test_tmpdir_test
@@ -1571,6 +1692,8 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/reap-test-hosts.py"
       - "tools/tests/test_reap_test_hosts.py"
+      - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
     with:
       targets:
         - //tools:reap_test_hosts_test
@@ -1586,6 +1709,8 @@ checks:
       - "tests/native/claude/model_double.py"
       - "tests/native/claude/run.py"
       - "tests/native/claude/run.sh"
+      - "tools/BUILD.bazel"
+      - "tools/tree.bzl"
     with:
       targets:
         - //tests/native/claude:client_lifecycle_test
@@ -1598,6 +1723,8 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/musts_scopes.py"
       - "tools/tests/test_musts_scopes.py"
+      - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
     with:
       targets:
         - //tools:musts_scopes_test
@@ -1608,6 +1735,8 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/test_durations.py"
       - "tools/tests/test_test_durations.py"
+      - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
     with:
       targets:
         - //tools:test_durations_test
@@ -1615,14 +1744,7 @@ checks:
   test-limits:
     uses: bazel/test
     paths:
-      - ".bazelrc"
-      - "**/*.bzl"
-      - "**/BUILD.bazel"
-      - "Makefile"
-      - "tools/BUILD.bazel"
-      - "tools/test_limits.py"
-      - "tools/test_limits_allowlist.tsv"
-      - "tools/tests/test_test_limits.py"
+      - "**"
     with:
       targets:
         - //tools:test_limits_test
@@ -1630,13 +1752,16 @@ checks:
   clock-guard:
     uses: bazel/test
     paths:
+      - "BUILD.bazel"
       - "crates/alondrad/**"
       - "crates/daemon-engine*/**"
       - "crates/daemon-support/**"
-      - "crates/core/src/clock.rs"
       - "tools/BUILD.bazel"
       - "tools/clock_guard.py"
       - "tools/tests/test_clock_guard.py"
+      - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
+      - "version.bzl"
     with:
       targets:
         - //tools:clock_guard_test
@@ -1665,6 +1790,7 @@ checks:
       - "BUILD.bazel"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
       - "version.bzl"
     with:
       targets:
@@ -1681,6 +1807,8 @@ checks:
       - "BUILD.bazel"
       - "MODULE.bazel"
       - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
       - "tools/worktree-bazel-setup"
       - "tools/worktree_setup_test/**"
     with:

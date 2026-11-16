@@ -1,3 +1,4 @@
+load("//tools:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
 
@@ -55,3 +56,5 @@ sh_test(
     ],
     size = "small",
 )
+
+repo_tree()

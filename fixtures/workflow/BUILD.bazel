@@ -1,5 +1,8 @@
+load("//tools:tree.bzl", "repo_tree")
 filegroup(
     name = "workflow",
     srcs = glob(["*.json", "*.jsonl", "*.js"]),
     visibility = ["//visibility:public"],
 )
+
+repo_tree()

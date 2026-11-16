@@ -1,3 +1,4 @@
+load("//tools:tree.bzl", "repo_tree")
 load("//apple:entitlements.bzl", "entitlements_follow_signing_test", "signed_entitlements")
 
 SAMPLE_BUNDLE_ID = "org.sample.notes"
@@ -23,3 +24,5 @@ entitlements_follow_signing_test(
     notification_service_bundle_id = SAMPLE_BUNDLE_ID + ".Service",
     team_id = "SAMPLE0001",
 )
+
+repo_tree()

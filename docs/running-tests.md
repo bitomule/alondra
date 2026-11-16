@@ -13,6 +13,27 @@ own toolchains; install it with `bazelisk` (see
 
 A new integration test needs a Bazel target, or it does not run.
 
+## Cached results
+
+`bazelisk test` runs again only the targets whose declared inputs changed; every other target reports
+`(cached) PASSED` from the local or remote cache. Run the scope you touched (`//crates/<crate>/...`
+or `//...`) and let the cache skip the rest: there is no separate list of affected tests to keep.
+
+A cached result is only as good as the inputs the target declares, so every test reads what its
+BUILD target lists, from its runfiles. A test that reads the checkout (a lint over many packages)
+lists the `tree` of each directory it reads: every package calls `repo_tree()` from
+`tools/tree.bzl`, which declares `:files` (that package's files) and `:tree` (those plus the `:tree`
+of every package below). `//tools:hermetic_tests_test` refuses a test that resolves a runfiles link
+back to the checkout, and a test tagged `external`, `local`, `no-cache` or `no-remote` without a
+reason in `tools/uncacheable_tests.tsv`.
+
+`bazel run //tools:edit_bench` measures what one-line edits cost: the crates and test targets each
+reopens, the actions Bazel really runs, and the time to edit and test. `--edit <path>` picks the
+files; without it, the files edited most often in the last two weeks. `--query-only` only counts.
+On a shared Mac, where bazelqueue keeps a `bazel run` in its build slot until the program ends,
+build the script and run it outside Bazel:
+`bazelisk run --script_path=.scratch/edit_bench //tools:edit_bench && .scratch/edit_bench --edit <path>`.
+
 ## Invalid cached executables
 
 `make test` selects the repository's test wrapper explicitly, including when a user bazelrc

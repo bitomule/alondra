@@ -1,3 +1,4 @@
+load("//tools:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps", "crate_deps")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@rules_rust//cargo:defs.bzl", "cargo_build_script")
@@ -153,15 +154,6 @@ low_opt_rust_test(
     deps = all_crate_deps(normal = True, normal_dev = True),
 )
 
-# Reads the checkout itself through the Makefile's runfiles link, so it is never cached.
-low_opt_rust_test(
-    name = "no_old_commands_test",
-    size = "small",
-    srcs = ["tests/no_old_commands.rs"],
-    data = ["//:Makefile"],
-    edition = "2024",
-    rustc_env = {"CARGO_MANIFEST_DIR": "crates/alondra"},
-    tags = ["external", "local"],
-)
-
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+
+repo_tree()

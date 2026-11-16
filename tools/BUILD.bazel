@@ -1,3 +1,5 @@
+load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("//tools:tree.bzl", "repo_tree")
 exports_files(["shared.bzl"])
 
 sh_test(
@@ -45,8 +47,6 @@ sh_test(
     size = "small",
 )
 
-# Reads the checkout itself through the Makefile's runfiles link, so it is never cached: a glob
-# would not cross into the packages under crates/, apple/ and agent-host/.
 sh_test(
     name = "prose_decisions_test",
     srcs = ["tests/test_prose_decisions.py"],
@@ -54,21 +54,22 @@ sh_test(
         "prose_decisions.py",
         "prose_decisions_allowlist.tsv",
         "testdata/prose_decisions_corpus.tsv",
-        "//:Makefile",
+        "//:files",
+        "//agent-host:tree",
+        "//apple:tree",
+        "//crates:tree",
     ],
     size = "small",
-    tags = ["external", "local"],
 )
 
-# Reads the checkout itself through the Makefile's runfiles link, so it is never cached: tracked files
-# of every package are no data a glob here can reach.
+# Reads a private literals file outside the checkout (ALONDRA_PRIVATE_LITERALS), so it is never cached.
 sh_test(
     name = "public_data_guard_test",
     srcs = ["tests/test_public_data_guard.py"],
     data = [
         "public_data_guard.py",
         "public_data_allowlist.tsv",
-        "//:Makefile",
+        "//:tree",
     ],
     env_inherit = ["ALONDRA_PRIVATE_LITERALS"],
     size = "small",
@@ -107,30 +108,63 @@ sh_test(
     size = "small",
 )
 
-# Reads the checkout itself through the Makefile's runfiles link, so it is never cached: BUILD files
-# of other packages are no data a glob here can reach.
 sh_test(
     name = "test_limits_test",
     srcs = ["tests/test_test_limits.py"],
     data = [
         "test_limits.py",
         "test_limits_allowlist.tsv",
-        "//:Makefile",
+        "//:tree",
     ],
     size = "small",
-    tags = ["external", "local"],
 )
 
-# Reads the daemon crates' sources through the Makefile's runfiles link, like test_limits_test.
 sh_test(
     name = "clock_guard_test",
     srcs = ["tests/test_clock_guard.py"],
     data = [
         "clock_guard.py",
-        "//:Makefile",
+        "//crates/alondrad:tree",
+        "//crates/daemon-engine:tree",
+        "//crates/daemon-engine-machine:tree",
+        "//crates/daemon-engine-model:tree",
+        "//crates/daemon-engine-store:tree",
+        "//crates/daemon-support:tree",
     ],
     size = "small",
-    tags = ["external", "local"],
+)
+
+# `bazel run //tools:edit_bench`: what each frequent edit reopens and what Bazel really reruns.
+sh_binary(
+    name = "edit_bench",
+    srcs = ["edit_bench.py"],
+)
+
+sh_test(
+    name = "edit_bench_test",
+    srcs = ["tests/test_edit_bench.py"],
+    data = ["edit_bench.py"],
+    size = "small",
+)
+
+low_opt_rust_test(
+    name = "no_old_commands_test",
+    size = "small",
+    srcs = ["tests/no_old_commands.rs"],
+    data = ["//:tree"],
+    edition = "2024",
+    rustc_env = {"CARGO_MANIFEST_DIR": "tools"},
+)
+
+sh_test(
+    name = "hermetic_tests_test",
+    srcs = ["tests/test_hermetic_tests.py"],
+    data = [
+        "hermetic_tests.py",
+        "uncacheable_tests.tsv",
+        "//:tree",
+    ],
+    size = "small",
 )
 
 sh_test(
@@ -185,22 +219,18 @@ sh_test(
     size = "small",
 )
 
-# Reads the checkout itself through the Makefile's runfiles link, so it is never cached.
 sh_test(
     name = "low_opt_rust_tests_test",
     srcs = ["tests/test_low_opt_rust_tests.py"],
-    data = ["//:Makefile"],
+    data = ["//:tree"],
     size = "small",
-    tags = ["external", "local"],
 )
 
-# Reads the checkout itself through the Makefile's runfiles link, so it is never cached.
 sh_test(
     name = "release_config_test",
     srcs = ["tests/test_release_config.py"],
-    data = ["//:Makefile", "//deploy/brew:local-release.py"],
+    data = ["//:.bazelrc", "//deploy/brew:local-release.py"],
     size = "small",
-    tags = ["external", "local"],
 )
 
 sh_test(
@@ -219,3 +249,5 @@ exports_files(
     ['worktree-bazel-setup'],
     visibility = ["//tools/worktree_setup_test:__pkg__"],
 )
+
+repo_tree()

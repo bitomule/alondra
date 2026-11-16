@@ -1,3 +1,4 @@
+load("//tools:tree.bzl", "repo_tree")
 filegroup(
     name = "all",
     srcs = glob(["*.json"], allow_empty = True),
@@ -47,3 +48,5 @@ filegroup(
     srcs = glob(["pr-images/*"], allow_empty = True),
     visibility = ["//visibility:public"],
 )
+
+repo_tree()

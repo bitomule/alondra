@@ -1,5 +1,8 @@
+load("//tools:tree.bzl", "repo_tree")
 filegroup(
     name = "push",
     srcs = glob(["*.json"]),
     visibility = ["//visibility:public"],
 )
+
+repo_tree()

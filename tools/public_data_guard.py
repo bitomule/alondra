@@ -30,6 +30,7 @@ OWN_FILES = {
     "tools/public_data_guard.py",
     "tools/public_data_allowlist.tsv",
     "tools/tests/test_public_data_guard.py",
+    "tools/public_data_guard_test",
 }
 SKIPPED_DIRS = {".git", ".claude", ".scratch", ".musts", "node_modules", "target", "DerivedData", "dist"}
 SKIPPED_NAMES = {"package-lock.json", "MODULE.bazel.lock", "Cargo.lock", "Package.resolved", "LICENSE", "LICENSE.md"}

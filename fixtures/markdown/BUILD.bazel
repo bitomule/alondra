@@ -1,3 +1,4 @@
+load("//tools:tree.bzl", "repo_tree")
 filegroup(
     name = "markdown",
     srcs = glob([
@@ -7,3 +8,5 @@ filegroup(
     ]),
     visibility = ["//visibility:public"],
 )
+
+repo_tree()

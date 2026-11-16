@@ -1,3 +1,4 @@
+load("//tools:tree.bzl", "repo_tree")
 load("@aspect_rules_js//js:defs.bzl", "js_run_binary")
 
 # The fixture's archive reader and the model double, for the e2e sandbox's SDK backend.
@@ -117,3 +118,5 @@ sh_test(
     target_compatible_with = ["@platforms//os:macos", "@platforms//cpu:aarch64"],
     timeout = "long",
 )
+
+repo_tree()

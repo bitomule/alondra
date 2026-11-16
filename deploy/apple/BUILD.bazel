@@ -1,3 +1,4 @@
+load("//tools:tree.bzl", "repo_tree")
 sh_test(
     name = "prepare_test",
     size = "small",
@@ -21,3 +22,5 @@ sh_test(
     srcs = ["test_version_guard.py"],
     data = ["prepare.py", "version_guard.py", "//tools:shared.bzl"],
 )
+
+repo_tree()

@@ -1,3 +1,4 @@
+load("//tools:tree.bzl", "repo_tree")
 exports_files(["repo.bzl", "signing.example.bzl"])
 
 filegroup(
@@ -5,3 +6,5 @@ filegroup(
     srcs = glob(["**"]),
     visibility = ["//tools:__pkg__"],
 )
+
+repo_tree()

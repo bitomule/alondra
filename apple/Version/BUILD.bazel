@@ -1,3 +1,4 @@
+load("//tools:tree.bzl", "repo_tree")
 load("@build_bazel_rules_apple//apple:versioning.bzl", "apple_bundle_version")
 load("//tools:shared.bzl", "versions")
 
@@ -7,3 +8,5 @@ apple_bundle_version(
     short_version_string = versions.version,
     visibility = ["//apple:__pkg__"],
 )
+
+repo_tree()
