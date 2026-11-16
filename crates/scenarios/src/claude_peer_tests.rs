@@ -9,6 +9,8 @@ use std::io::{Seek, SeekFrom, Write};
 
 const SECRET_HEX: &str = "0101010101010101010101010101010101010101010101010101010101010101";
 const INPUT: &str = "11111111-1111-4111-8111-111111111111";
+const RECORDED_INPUT: &str = "00000000-0000-4000-8000-000000000101";
+const RECORDED_CONVERSATION: &str = "00000000-0000-4000-8000-000000000001";
 
 fn fence() -> Value {
     json!({"profile_id": "profile", "account_id": "account", "data_epoch": "epoch", "host_id": "host"})
@@ -20,10 +22,11 @@ fn execution() -> Value {
 
 fn transcript(prompt: &str) -> Transcript {
     let header = json!({"type": "transcript_start", "provider": "claude", "protocol_version": 1, "sdk_version": "0.3.300", "model": "model-a", "captured_at": "2026-11-15", "scenario": "peer", "origin": "written"});
-    let offer = json!({"type": "expect_outbound", "frame": {"protocol_version": 1, "body": {"type": "command", "action": {"type": "offer", "input_id": INPUT, "prompt": prompt}}}});
+    let offer = json!({"type": "expect_outbound", "frame": {"protocol_version": 1, "body": {"type": "command", "execution": {"conversation_id": RECORDED_CONVERSATION}, "action": {"type": "offer", "input_id": RECORDED_INPUT, "prompt": prompt}}}});
     let admitted = json!({"type": "emit_inbound", "frame": {"protocol_version": 1, "body": {"type": "receipt", "outcome": {"status": "accepted", "phase": "applied"}}}});
+    let started = json!({"type": "emit_inbound", "frame": {"protocol_version": 1, "body": {"type": "event", "observation": {"type": "sdk", "kind": "message", "native": {}, "payload": {"inputId": RECORDED_INPUT, "conversation": RECORDED_CONVERSATION}, "failures": []}}}});
     let exited = json!({"type": "emit_inbound", "frame": {"protocol_version": 1, "body": {"type": "event", "observation": {"type": "process_exited", "exit_code": 0, "signal": null}}}});
-    Transcript::parse(&format!("{header}\n{offer}\n{admitted}\n{exited}\n")).unwrap()
+    Transcript::parse(&format!("{header}\n{offer}\n{admitted}\n{started}\n{exited}\n")).unwrap()
 }
 
 struct Started {
@@ -121,6 +124,8 @@ fn the_peer_answers_a_command_the_transcript_expected_with_the_frames_that_follo
     assert_eq!(receipt.command_sha256, command_digest(&command).unwrap());
     let Body::Event(event) = reader.read().unwrap().unwrap().body else { panic!("then the event of the transcript") };
     assert_eq!(event.cursor, 1);
+    let event = serde_json::to_value(&event.observation).unwrap();
+    assert_eq!(event["payload"], json!({"inputId": INPUT, "conversation": "22222222-2222-4222-8222-222222222222"}), "the ids the transcript recorded are the run's");
     assert!(started.seen.lock().unwrap().failure.is_none());
     assert!(matches!(command.action, Action::Offer { .. }) && PROTOCOL_VERSION == 1);
 }
@@ -141,18 +146,10 @@ fn a_command_the_transcript_did_not_expect_is_a_mismatch_with_both_frames() {
 
 #[test]
 fn the_prompt_of_an_offer_only_has_to_contain_what_the_transcript_names() {
-    let frame = |prompt: &str, input: &str| json!({"protocol_version": 1, "body": {"type": "command", "action": {"type": "offer", "input_id": input, "prompt": prompt}}});
-    let expected = frame("Add the CSV export", "");
-    assert!(is_expected(&expected, &frame("Resumed. Add the CSV export, then stop.", "input-9")));
-    assert!(!is_expected(&expected, &frame("Something else", "input-9")));
-}
-
-#[test]
-fn what_the_daemon_assigns_replaces_the_name_a_transcript_gives_it() {
-    let mut payload = json!({"params": {"inputId": "«input»", "items": ["«input»", "«conversation»"]}});
-    name_assigned(&mut payload, "«input»", &json!("input-9"));
-    name_assigned(&mut payload, "«conversation»", &json!("conversation-3"));
-    assert_eq!(payload, json!({"params": {"inputId": "input-9", "items": ["input-9", "conversation-3"]}}));
+    let frame = |prompt: &str, input: &str| json!({"protocol_version": 1, "body": {"type": "command", "execution": {"conversation_id": "c"}, "action": {"type": "offer", "input_id": input, "prompt": prompt}}});
+    let expected = frame("Add the CSV export", RECORDED_INPUT);
+    assert!(is_expected(&mut FrameComparator::new(), &expected, &frame("Resumed. Add the CSV export, then stop.", "input-9")));
+    assert!(!is_expected(&mut FrameComparator::new(), &expected, &frame("Something else", "input-9")));
 }
 
 #[test]

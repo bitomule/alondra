@@ -1,0 +1,5 @@
+Listing the folder.
+Running the command.
+The subagent finished.
+The turn failed before reading its input.
+You've hit your usage limit. Try again later.

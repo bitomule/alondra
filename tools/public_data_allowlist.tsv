@@ -20,8 +20,10 @@ crates/relay/src/management/waitlist.rs	personal-email	ana@example-.com	Delibera
 crates/relay/src/push.rs	secret	-----BEGIN PRIVATE KEY-----	Header of a synthetic key used to prove the redactor hides it; no key follows
 tools/prose_decisions_allowlist.tsv	secret	-----BEGIN PRIVATE KEY-----	Header of a synthetic key used to prove the redactor hides it; no key follows
 crates/scenarios-transcript/src/anonymize.rs	home-path	/Users/canaryman	canary value a test plants to prove the anonymizer or the guard removes or refuses it; not real
+crates/scenarios-transcript/src/anonymize.rs	secret	AKIACANARY0123456789	canary value a test plants to prove the anonymizer or the guard removes or refuses it; not real
 crates/scenarios-transcript/src/anonymize.rs	personal-email	canary.person@canary-mail.io	canary value a test plants to prove the anonymizer or the guard removes or refuses it; not real
 crates/scenarios-transcript/src/anonymize.rs	secret	sk-ant-canary0123456789abcdef	canary value a test plants to prove the anonymizer or the guard removes or refuses it; not real
 crates/scenarios-transcript/src/guard.rs	home-path	/Users/canaryman	canary value a test plants to prove the anonymizer or the guard removes or refuses it; not real
+crates/scenarios-transcript/src/guard.rs	secret	AKIACANARY0123456789	canary value a test plants to prove the anonymizer or the guard removes or refuses it; not real
 crates/scenarios-transcript/src/guard.rs	personal-email	canary.person@canary-mail.io	canary value a test plants to prove the anonymizer or the guard removes or refuses it; not real
 crates/scenarios-transcript/src/guard.rs	secret	sk-ant-canary0123456789abcdef	canary value a test plants to prove the anonymizer or the guard removes or refuses it; not real

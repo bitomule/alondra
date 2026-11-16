@@ -37,6 +37,9 @@ or in the private repository that keeps it, never here.
   `ALONDRA_PRIVATE_LITERALS` points to, which the test inherits from its environment and never
   prints. Without that variable (a contributor's Mac) only the generic rules run, and the test
   passes or fails on them alone.
+- `//crates/scenarios:transcript_guard_test` checks every transcript of the repository, whatever
+  its name, and fails without that list: set `ALONDRA_PRIVATE_LITERALS=none` where there is no list
+  on purpose, as the public CI does.
 - Found something private already published? Tell the user with a card. Never rewrite history, close
   or delete anything on your own.
 

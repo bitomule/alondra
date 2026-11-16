@@ -46,6 +46,11 @@ impl Private {
     pub fn len(&self) -> usize {
         self.values.len()
     }
+
+    /// Each value, lowercased.
+    pub fn values(&self) -> impl Iterator<Item = &str> {
+        self.values.iter().map(|(value, _, _)| value.as_str())
+    }
 }
 
 fn word_set(text: &str) -> HashSet<String> {

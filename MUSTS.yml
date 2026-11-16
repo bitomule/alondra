@@ -1913,6 +1913,10 @@ checks:
       - "crates/scenarios/**"
       - "crates/scenarios-transcript/**"
       - "fixtures/transcripts/**"
+      - "crates/alondra/BUILD.bazel"
+      - "crates/alondra/src/lib.rs"
+      - "crates/alondra/src/report/**"
+      - "tools/public_data_guard.py"
       - "crates/alondrad/**"
       - "crates/codex-protocol/**"
       - "crates/core/**"
@@ -1933,7 +1937,15 @@ checks:
       targets:
         - //crates/scenarios:scenarios_test
         - //crates/scenarios:scenarios_harness_test
+        - //crates/scenarios:from_report_bin_test
         - //crates/scenarios-transcript:scenarios_transcript_test
+
+  transcript-guard:
+    uses: bazel/test
+    paths:
+      - "**"
+    with:
+      targets:
         - //crates/scenarios:transcript_guard_test
 
   worktree-setup:

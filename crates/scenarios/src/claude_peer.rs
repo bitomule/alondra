@@ -131,27 +131,12 @@ fn steps(transcript: &Transcript) -> VecDeque<Step> {
         .collect()
 }
 
-/// A frame of the daemon as it is compared: without what the daemon assigns on each run.
-fn comparable(mut frame: Value) -> Value {
-    if let Some(body) = frame.get_mut("body").and_then(Value::as_object_mut) {
-        for key in ["command_id", "deadline_ms", "fence", "execution"] {
-            body.remove(key);
-        }
-        if let Some(action) = body.get_mut("action").and_then(Value::as_object_mut) {
-            for key in ["cwd", "input_id"] {
-                action.remove(key);
-            }
-        }
-    }
-    frame
-}
-
 /// Whether the frame the daemon sent is the one the transcript expected. The prompt of an offer is
 /// the mission the daemon wrote around the task, so the transcript names the part of it that
 /// matters and the offer has to contain it.
-fn is_expected(expected: &Value, received: &Value) -> bool {
+fn is_expected(ids: &mut FrameComparator, expected: &Value, received: &Value) -> bool {
     let prompt = |frame: &Value| frame.pointer("/body/action/prompt").and_then(Value::as_str).map(str::to_owned);
-    let (mut expected, mut received) = (comparable(expected.clone()), comparable(received.clone()));
+    let (mut expected, mut received) = (expected.clone(), received.clone());
     if let (Some(wanted), Some(sent)) = (prompt(&expected), prompt(&received)) {
         if !sent.contains(&wanted) {
             return false;
@@ -162,7 +147,7 @@ fn is_expected(expected: &Value, received: &Value) -> bool {
             }
         }
     }
-    FrameComparator::new().matches(&expected, &received)
+    ids.matches(&expected, &received)
 }
 
 struct Session {
@@ -180,6 +165,8 @@ struct Session {
     secret: [u8; 32],
     cursor: u64,
     last: Option<Command>,
+    /// The ids the daemon assigned to the recorded ones, shared by every host of the scenario.
+    ids: Arc<Mutex<FrameComparator>>,
 }
 
 impl Session {
@@ -213,31 +200,13 @@ impl Session {
             Some("event") => {
                 self.cursor += 1;
                 body.insert("cursor".into(), self.cursor.into());
-                let input = self.last.as_ref().and_then(|command| serde_json::to_value(command).ok()).and_then(|command| command.pointer("/action/input_id").cloned());
-                let conversation = serde_json::to_value(&self.bootstrap.execution).ok().and_then(|execution| execution.get("conversation_id").cloned());
                 if let Some(observation) = body.get_mut("observation") {
-                    for (name, id) in [("«input»", input), ("«conversation»", conversation)] {
-                        if let Some(id) = id {
-                            name_assigned(observation, name, &id);
-                        }
-                    }
+                    self.ids.lock().unwrap_or_else(std::sync::PoisonError::into_inner).assign(observation);
                 }
             }
             _ => {}
         }
         serde_json::from_value(frame).map_err(|e| protocol(format!("an inbound frame of the transcript is not a frame: {e}")))
-    }
-}
-
-/// What the daemon assigns is not known to a transcript, which names it (`«input»`, the input of
-/// the last offer; `«conversation»`, the conversation of the execution): wherever it does, the
-/// assigned id takes its place.
-fn name_assigned(value: &mut Value, name: &str, id: &Value) {
-    match value {
-        Value::String(text) if text == name => *value = id.clone(),
-        Value::Object(map) => map.values_mut().for_each(|inner| name_assigned(inner, name, id)),
-        Value::Array(items) => items.iter_mut().for_each(|inner| name_assigned(inner, name, id)),
-        _ => {}
     }
 }
 
@@ -349,7 +318,8 @@ fn serve(stream: UnixStream, queue: &mut VecDeque<Step>, session: &mut Session, 
                     Some(Step::Expect(expected)) => Some(expected.clone()),
                     _ => None,
                 };
-                if !expected.as_ref().is_some_and(|expected| is_expected(expected, &received)) {
+                let matched = expected.as_ref().is_some_and(|expected| is_expected(&mut session.ids.lock().unwrap_or_else(std::sync::PoisonError::into_inner), expected, &received));
+                if !matched {
                     let mismatch = PeerError::Mismatch { expected, received };
                     seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).failure.get_or_insert(mismatch.clone());
                     return Err(mismatch);
@@ -376,6 +346,7 @@ pub struct PeerLauncher {
     app_server: bool,
     capabilities: &'static [&'static str],
     transcripts: Mutex<VecDeque<Transcript>>,
+    ids: Arc<Mutex<FrameComparator>>,
     pub seen: Arc<Mutex<Seen>>,
     pub activity: Activity,
 }
@@ -398,7 +369,7 @@ impl PeerLauncher {
 
     /// A peer whose hosts announce `capabilities` in their hello: what the provider's real host announces.
     pub fn declaring(capabilities: &'static [&'static str], transcripts: Vec<Transcript>) -> Self {
-        Self { app_server: false, capabilities, transcripts: Mutex::new(transcripts.into()), seen: Arc::default(), activity: Activity::default() }
+        Self { app_server: false, capabilities, transcripts: Mutex::new(transcripts.into()), ids: Arc::default(), seen: Arc::default(), activity: Activity::default() }
     }
 }
 
@@ -441,7 +412,7 @@ impl HostLauncher for PeerLauncher {
             seen.remaining.push(queue.len());
             seen.remaining.len() - 1
         };
-        let mut session = Session { acknowledged: bootstrap.journal_base, ends_after: None, app_server: self.app_server, capabilities: self.capabilities, host, activity: self.activity.clone(), group: child.id() as i32, cursor: bootstrap.journal_base, bootstrap, secret, last: None };
+        let mut session = Session { acknowledged: bootstrap.journal_base, ends_after: None, app_server: self.app_server, capabilities: self.capabilities, host, activity: self.activity.clone(), group: child.id() as i32, cursor: bootstrap.journal_base, bootstrap, secret, last: None, ids: self.ids.clone() };
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 match serve(stream, &mut queue, &mut session, &seen) {

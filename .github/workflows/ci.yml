@@ -61,6 +61,7 @@
       },
       "env": {
         "ALONDRA_SIGNING_DIR": "${{ github.workspace }}/.scratch/unsigned-signing",
+        "ALONDRA_PRIVATE_LITERALS": "none",
         "DISABLE_AUTOUPDATER": "1",
         "DEVELOPER_DIR": "${{ matrix.runner == 'xcode-27' && '/Applications/Xcode_27.1.app/Contents/Developer' || '' }}"
       },

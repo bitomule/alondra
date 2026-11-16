@@ -123,6 +123,17 @@ class GuardTest(unittest.TestCase):
         (self.root / "image.png").write_bytes(b"\x89PNG\xff\xfe maria.garcia@gmail.com")
         self.assertEqual(guard.report(self.root), [])
 
+    def test_files_outside_the_checkout_are_checked_by_every_rule_without_the_allowlist_or_the_text(self):
+        self.literals("CanaryHorizon")
+        self.allow("draft/gaps.txt\tpersonal-email\tmaria.garcia@gmail.com\tharmless\n")
+        (self.root / "draft").mkdir()
+        (self.root / "draft/gaps.txt").write_text("ok\nmaria.garcia@gmail.com and BIT-4821\n")
+        (self.root / "draft/scenario.toml").write_text("name = \"canaryhorizon\"\n")
+        problems = guard.files_report(self.root, ["draft/gaps.txt", "draft/scenario.toml"])
+        self.assertEqual(problems, ["draft/gaps.txt:2: personal-email", "draft/gaps.txt:2: tracker-id", "draft/scenario.toml:1: private-literal"])
+        self.assertEqual(guard.main(["--files", str(self.root), "draft/gaps.txt"]), 1)
+        self.assertEqual(guard.main(["--files", str(self.root)]), 0)
+
 
 class DiffTest(unittest.TestCase):
     def setUp(self):

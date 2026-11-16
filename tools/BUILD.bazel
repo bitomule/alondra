@@ -33,6 +33,11 @@ exports_files(
 )
 
 exports_files(
+    ["public_data_guard.py"],
+    visibility = ["//crates/scenarios:__pkg__"],
+)
+
+exports_files(
     [
         "plugin-mod-test.sh",
         "tests/test_sourcekit_lsp_workspace.py",

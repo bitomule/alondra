@@ -101,6 +101,22 @@ fn final_check(host: &dyn Host, files: &Files, pseudonyms: &redact::Pseudonyms, 
     bundle::check(files, &private)
 }
 
+/// The report's final check over files that came out of a report, such as a scenario drafted from
+/// one: every shape of a secret, an address or an email, and the private values given.
+pub fn leaks(files: &[(&str, &str)], private_values: &[String]) -> Vec<Hit> {
+    let catalog = Catalog::built();
+    let mut private = canary::Private::default();
+    for value in private_values {
+        private.add("a private value", value, &catalog.vocabulary);
+    }
+    files.iter().flat_map(|(name, text)| check::section(name, text, &private)).collect()
+}
+
+/// This Mac's own private values, as the report's final check reads them.
+pub fn private_values_of_this_mac() -> Vec<String> {
+    private::of_this_mac(&Mac::new(), &Catalog::built().vocabulary).values().map(str::to_owned).collect()
+}
+
 /// The files of a report already previewed, if they are still those of the preview and the final
 /// check finds nothing.
 pub fn checked(host: &dyn Host, id: &str) -> Result<Files> {

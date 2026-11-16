@@ -208,6 +208,8 @@ class WorkflowTests(unittest.TestCase):
         validate = workflow["jobs"]["validate"]
         self.assertEqual(validate["needs"], "select")
         self.assertEqual(validate["if"], "${{ needs.select.outputs.has_checks == 'true' }}")
+        self.assertEqual(validate["env"]["ALONDRA_PRIVATE_LITERALS"], "none",
+                         "the public CI has no list of private literals and says so")
         self.assertEqual(validate["env"]["DEVELOPER_DIR"],
                          "${{ matrix.runner == 'xcode-27' && '/Applications/Xcode_27.1.app/Contents/Developer' || '' }}")
 

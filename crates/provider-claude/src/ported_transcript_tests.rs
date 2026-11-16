@@ -1,6 +1,7 @@
-//! A turn a real Claude Code session ended with a 401, ported as an anonymized transcript and
-//! replayed through the normalizer the daemon runs: the frames of the host in their order, with the
-//! ids the transcript recorded, end the turn as an authentication failure with its status.
+//! A turn Claude Code ends with a 401, written by hand in the shape a real session leaves (no real
+//! session was captured for it) and replayed through the normalizer the daemon runs: the frames of
+//! the host in their order, with the ids the transcript recorded, end the turn as an authentication
+//! failure with its status.
 
 use super::*;
 use alondra_agent_protocol::{Body, Frame};
@@ -37,9 +38,9 @@ fn replay(transcript: &Transcript) -> Vec<Observation> {
 }
 
 #[test]
-fn the_ported_turn_ends_as_an_authentication_failure_with_its_status() {
+fn the_written_401_turn_ends_as_an_authentication_failure_with_its_status() {
     let transcript = Transcript::parse(PORTED).unwrap();
-    assert_eq!(transcript.header.origin, alondra_scenarios_transcript::Origin::PortedIncident);
+    assert_eq!(transcript.header.origin, alondra_scenarios_transcript::Origin::Written, "no real session was captured for it");
     let facts = replay(&transcript);
     assert!(!facts.contains(&Observation::ModelAnswered), "{facts:?}");
     match facts.last() {
