@@ -282,6 +282,14 @@ impl super::Client {
         *self.pr_view.lock_or_recover("the pull request view") = view;
     }
 
+    pub(crate) fn use_pr_merger(&self, github: Arc<dyn alondra_daemon_engine::domain_merges::PrMerger>) {
+        *self.pr_merger.lock_or_recover("the pull request merger") = github;
+    }
+
+    pub(crate) fn pr_merger(&self) -> Arc<dyn alondra_daemon_engine::domain_merges::PrMerger> {
+        self.pr_merger.lock_or_recover("the pull request merger").clone()
+    }
+
     pub(crate) fn use_pr_images(&self, github: Arc<dyn GitHubImages>) {
         *self.pr_images.lock_or_recover("the pull request images") = github;
     }

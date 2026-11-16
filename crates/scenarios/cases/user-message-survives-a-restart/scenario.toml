@@ -1,0 +1,59 @@
+name = "a message the user writes to a node in the middle of its turn reaches the node after the daemon restarts"
+max_virtual = "1h"
+
+[[step]]
+do = "request"
+text = "Export the report as CSV"
+task = "t1"
+title = "Add the CSV export"
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "tell"
+task = "t1"
+text = "Use semicolons as the separator"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "message-sent"
+screens = ["home", "task:t1"]
+
+[[step]]
+do = "restart"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "read_message"
+task = "t1"
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "message-read-after-restart"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "task_state"
+task = "t1"
+state = "running"

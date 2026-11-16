@@ -43,6 +43,10 @@ prs = [7, 8]
 body = "Both exports are ready"
 
 [[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
 do = "checkpoint"
 name = "two-prs"
 screens = ["home", "task:t1"]
@@ -56,6 +60,14 @@ action = "merge"
 do = "press"
 presentation = "pr8"
 action = "merge"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "cleanup_done"
+task = "t1"
 
 [[step]]
 do = "rest"

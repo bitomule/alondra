@@ -129,7 +129,12 @@ impl Assembled {
 
 /// Opens the domain at `config.home` and assembles the daemon over it: what a scenario starts.
 pub async fn start(config: &Config, seams: Seams) -> Result<Assembled> {
-    let domain = alondra_daemon_engine::wiring::open(&config.home)?;
+    start_over(config, alondra_daemon_engine::wiring::open(&config.home)?, seams).await
+}
+
+/// `start` over a domain the caller opened at `config.home`, so it can prepare the domain before
+/// the daemon takes the SDK hosts over: how a scenario's restart keeps the hosts it plays.
+pub async fn start_over(config: &Config, domain: domain_runtime::DomainRuntime, seams: Seams) -> Result<Assembled> {
     let state = domain_bootstrap::DomainDaemon::over(&config.home, domain)?;
     assemble(config, state, seams).await
 }
@@ -324,6 +329,7 @@ pub(crate) async fn assemble_with(
     let owners = state_domain.clone();
     client.use_pr_view(seams.github.view.clone());
     client.use_pr_images(seams.github.images.clone());
+    client.use_pr_merger(seams.github.merger.clone());
     tasks.spawn(client.run(seams.github.view.clone()));
     let orchestrator = config.wake.then(|| {
         tasks.spawn(domain_orchestrator::run(

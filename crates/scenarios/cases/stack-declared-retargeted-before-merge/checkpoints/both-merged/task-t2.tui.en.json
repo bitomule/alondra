@@ -21,7 +21,7 @@
               "kind": "request",
               "label": "Request",
               "link": {
-                "key": "request:request",
+                "key": "request:00000000-0000-4000-8000-000000000002",
                 "kind": "view"
               },
               "value": "Add the CSV export"
@@ -84,9 +84,9 @@
         {
           "depth": 0,
           "icon": "pull_request",
-          "id": "pr8",
+          "id": "github.com/demo/app#8",
           "link": {
-            "key": "pull_request:pr8",
+            "key": "pull_request:github.com/demo/app#8",
             "kind": "view"
           },
           "struck": false,
@@ -111,6 +111,10 @@
             {
               "label": "PR handling",
               "value": "You review it; accepting it merges it"
+            },
+            {
+              "label": "Effort",
+              "value": "Auto"
             }
           ],
           "type": "facts"

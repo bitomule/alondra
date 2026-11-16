@@ -32,12 +32,12 @@
       {
         "id": "tasks",
         "label": "Tareas",
-        "value": 0
+        "value": 1
       },
       {
         "id": "working",
         "label": "trabajando",
-        "value": 0
+        "value": 1
       },
       {
         "id": "needs_you",
@@ -91,10 +91,10 @@
       "text": "No hay ninguna cuenta de proveedor disponible · revisa Cuentas",
       "tone": "warning"
     },
-    "summary": "0 tareas trabajando",
+    "summary": "1 tarea trabajando",
     "summary_parts": [
       {
-        "count": 0,
+        "count": 1,
         "id": "working",
         "one": "{count} tarea trabajando",
         "other": "{count} tareas trabajando"

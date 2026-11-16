@@ -32,10 +32,12 @@ pub(crate) trait DomainHost: Send + Sync + 'static {
 
 /// What a final delivery needs from GitHub before it is stored: no draft PR, and no configured
 /// private name in a public one. Other commands need nothing.
-async fn final_delivery_review(home: &FsPath, state: Arc<DomainState>, command: &Command) -> Result<Option<crate::public_content::Reviewed>, DomainError> {
+async fn final_delivery_review(
+    home: &FsPath, merger: Arc<dyn crate::domain_merges::PrMerger>, state: Arc<DomainState>, command: &Command,
+) -> Result<Option<crate::public_content::Reviewed>, DomainError> {
     let Command::PresentResult { task_id, targets, is_final: true, .. } = command else { return Ok(None) };
     let gh = crate::domain_github::GhCli::new();
-    if let Some(refusal) = crate::domain_merges::draft_refusal(&state, &state.with_open_prs(task_id, targets), &gh).await {
+    if let Some(refusal) = crate::domain_merges::draft_refusal(&state, &state.with_open_prs(task_id, targets), &merger).await {
         return Err(refusal);
     }
     crate::public_content::check(home, &state, command, &gh).await
@@ -1242,7 +1244,11 @@ async fn checked_producer_command<H: DomainHost>(
     }
     let reviewed = if matches!(principal, Principal::Agent { .. }) {
         let state = host.domain().state().map_err(|_| storage())?;
-        steps.step("the public content review", final_delivery_review(host.home(), state, &envelope.command)).await?
+        let merger = host.new_work_client().map_or_else(
+            || Arc::new(crate::domain_github::GhCli::new()) as Arc<dyn crate::domain_merges::PrMerger>,
+            crate::client_routes::Client::pr_merger,
+        );
+        steps.step("the public content review", final_delivery_review(host.home(), merger, state, &envelope.command)).await?
     } else { None };
     let work = host.domain().producer_work.clone();
     let mut envelope = envelope;

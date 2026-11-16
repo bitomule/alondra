@@ -95,10 +95,10 @@
             "tone": "accent"
           },
           "icon": "pull_request",
-          "id": "pr8",
+          "id": "github.com/demo/app#8",
           "kind": "review",
           "link": {
-            "key": "card:pr8",
+            "key": "card:github.com/demo/app#8",
             "kind": "view"
           },
           "meta": "Add the CSV and PDF exports",
@@ -141,9 +141,9 @@
         {
           "depth": 0,
           "icon": "pull_request",
-          "id": "pr7",
+          "id": "github.com/demo/app#7",
           "link": {
-            "key": "pull_request:pr7",
+            "key": "pull_request:github.com/demo/app#7",
             "kind": "view"
           },
           "struck": false,
@@ -154,9 +154,9 @@
         {
           "depth": 0,
           "icon": "pull_request",
-          "id": "pr8",
+          "id": "github.com/demo/app#8",
           "link": {
-            "key": "pull_request:pr8",
+            "key": "pull_request:github.com/demo/app#8",
             "kind": "view"
           },
           "struck": false,
@@ -181,6 +181,10 @@
             {
               "label": "Gestión de PR",
               "value": "La revisas tú; al aceptarla, Alondra hace el merge"
+            },
+            {
+              "label": "Esfuerzo",
+              "value": "Automático"
             }
           ],
           "type": "facts"

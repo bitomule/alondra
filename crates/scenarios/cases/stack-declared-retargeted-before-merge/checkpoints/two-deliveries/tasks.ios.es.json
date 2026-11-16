@@ -93,7 +93,7 @@
               ],
               "depth": 1,
               "icon": "mission",
-              "id": "group:request",
+              "id": "group:00000000-0000-4000-8000-000000000002",
               "link": {
                 "key": "task:t2",
                 "kind": "view"

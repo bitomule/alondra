@@ -1,5 +1,6 @@
-//! The phone of a scenario: a paired device that reads the views and sends the actions to the
-//! daemon's own listener on loopback, signing every request as the apps do.
+//! The phone of a scenario, a paired device that reads the views and sends the actions to the
+//! daemon's own listener on loopback, signing every request as the apps do; and the node's
+//! calls of its tools, which reach the same listener with the session's capability.
 
 use alondrad::assemble::Assembled;
 use base64::Engine;
@@ -72,6 +73,22 @@ impl Phone {
         stream.read_to_end(&mut raw).await?;
         parse(&raw)
     }
+}
+
+/// A call of a node's tools as `alondra mcp-node` makes it: plain HTTP to the daemon's loopback
+/// listener, with the capability the daemon issued to the node's session as its bearer.
+pub async fn node_post(addr: SocketAddr, capability: &str, path: &str, body: &Value) -> std::io::Result<Response> {
+    let bytes = serde_json::to_vec(body).expect("a json value renders");
+    let request = format!(
+        "POST {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nauthorization: Bearer {capability}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n",
+        bytes.len()
+    );
+    let mut stream = tokio::net::TcpStream::connect(addr).await?;
+    stream.write_all(request.as_bytes()).await?;
+    stream.write_all(&bytes).await?;
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).await?;
+    parse(&raw)
 }
 
 fn parse(raw: &[u8]) -> std::io::Result<Response> {

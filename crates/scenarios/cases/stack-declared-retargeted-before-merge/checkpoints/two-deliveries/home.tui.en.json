@@ -173,7 +173,7 @@
                   "branch": "0000000000000000000000000000000000000001",
                   "kind": "review_clone",
                   "pr": 7,
-                  "pr_id": "pr7",
+                  "pr_id": "github.com/demo/app#7",
                   "repo": "demo/app"
                 }
               },
@@ -190,7 +190,7 @@
               "kind": "diff_lines"
             },
             "enabled": true,
-            "id": "changes:pr7@<revision>~00000000",
+            "id": "changes:github.com/demo/app#7@<revision>~00000000",
             "input": {
               "kind": "text",
               "multiline": true,
@@ -200,7 +200,7 @@
             "key": "r",
             "label": "Request changes",
             "link": {
-              "key": "pull_request:pr7",
+              "key": "pull_request:github.com/demo/app#7",
               "kind": "view"
             },
             "presentation": "button",
