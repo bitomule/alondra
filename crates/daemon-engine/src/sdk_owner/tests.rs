@@ -2648,6 +2648,31 @@ async fn an_execution_the_start_could_not_take_over_gets_a_card_and_try_again_re
     assert_eq!(starts.last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {starts:?}");
 }
 
+// 16 November (t-xcrun-db-temp-files): a takeover failed and put the host-lost card, then the
+// daemon's own retake took the execution over a moment later. The card stayed open and held the
+// task paused for the user, so the input it waited for never went to the new host and the watch
+// gave host after host up for it. A takeover that works closes the card of the outage it ends.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_takeover_that_works_without_the_user_closes_the_host_lost_card_and_the_input_goes() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("consume-and-hold");
+    slice.until_working(&mut driver);
+    strand_host(&slice, driver);
+    let refuse = |refused: bool| std::fs::set_permissions(&slice.backend.state_root, std::fs::Permissions::from_mode(if refused { 0o500 } else { 0o700 })).unwrap();
+    refuse(true);
+    let restarted = slice.restart();
+    restarted.enable_sdk(slice.backend.clone());
+    adopt_all(&restarted, &slice.backend);
+    assert!(open_card(&restarted, HOST_LOST_PREFIX).is_some(), "the failed takeover put its card");
+    refuse(false);
+    crate::sdk_owner::retake(&restarted, TASK.into());
+    restarted.join_retakes();
+    let agent = restarted.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().unwrap();
+    assert!(restarted.owns_sdk_host(&agent), "the execution was taken over again");
+    assert!(open_card(&restarted, HOST_LOST_PREFIX).is_none(), "the outage ended: its card closes, nobody has to try again");
+    restarted.stop_sdk_owners();
+}
+
 // A session whose account changed identity could not be taken over, and each «Try again» opened a
 // card with its own push. An outage tells the user once, however many times it is tried, and a
 // takeover that works ends it.

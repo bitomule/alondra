@@ -1015,6 +1015,7 @@ pub fn adopt_all(domain: &Arc<DomainRuntime>, backend: &SdkBackend) {
                 domain.add_sdk_owner(Owner::spawn(driver));
                 domain.live().forget_closed_task(&task.0);
                 domain.sdk_owners().host_losses_told.lock_or_recover("the tasks told of a lost host").remove(&task);
+                close_host_lost_card(domain, &task);
                 log!("the SDK execution of {task} was taken over: the same Claude session goes on");
             }
             Err(failed) => not_taken(domain, &task, failed),
@@ -1073,6 +1074,28 @@ pub(crate) fn retake_waiting_for_space(domain: &DomainRuntime) {
     for task in waiting.into_iter().filter(|task| unowned(domain, &state, task)) {
         log!("there is disk space again: the SDK execution of {task} is taken over");
         retake(domain, task);
+    }
+}
+
+/// A host runs the task again, so the card of the outage that held it is answered as the user's
+/// «Try again» would: the task goes on with its pending input instead of waiting for a click.
+fn close_host_lost_card(domain: &DomainRuntime, task: &TaskId) {
+    let Ok(state) = domain.state() else { return };
+    let open = state.interactions.values().find(|card| {
+        !card.withdrawn && retakes(card)
+            && matches!(&card.payload, InteractionPayload::Question { answer: None, .. })
+            && card.scope == (Scope::Task { task_id: task.clone() })
+    });
+    let Some(card) = open else { return };
+    let envelope = CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION,
+        data_epoch: state.data_epoch.clone(),
+        command_id: format!("host-found-{task}-{}", crate::auth::random_hex(8)).into(),
+        expected_revision: 0,
+        command: Command::AnswerQuestion { interaction_id: card.id.clone(), option_id: RETAKE.into(), inputs: BTreeMap::new(), attachments: vec![] },
+    };
+    if let Err(error) = domain.execute_as_system(envelope) {
+        log!("the host-lost card of {task} stays open: {}", store_text(&error));
     }
 }
 
@@ -1346,6 +1369,7 @@ fn take_again(runtime: &Arc<DomainRuntime>, backend: &SdkBackend, task: &TaskId,
         Ok(driver) => {
             runtime.add_sdk_owner(Owner::spawn(driver));
             runtime.sdk_owners().host_losses_told.lock_or_recover("the tasks told of a lost host").remove(task);
+            close_host_lost_card(runtime, task);
             log!("the SDK execution of {task} was taken over again: the same Claude session goes on");
         }
         Err(failed) => not_taken(runtime, task, failed),
