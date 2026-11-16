@@ -215,7 +215,7 @@ fn unknown() -> GhFailure {
 impl PrMerger for GithubWorld {
     fn status<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, Status> {
         let status = self.world().prs.get(&pr.number).map(|github| Status {
-            state: github.state, head: github.head.clone(), base: github.base.clone(), checks: github.checks.clone(),
+            state: github.state, head: github.head.clone(), head_ref: github.head_ref.clone(), base: github.base.clone(), checks: github.checks.clone(),
             passed: BTreeSet::new(), merge_state: github.merge_state,
         });
         Box::pin(async move { status.ok_or_else(unknown) })
