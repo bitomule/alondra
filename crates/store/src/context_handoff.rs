@@ -4,7 +4,11 @@ use crate::{ContextEntry, ContextRef, HistoryCoverage};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+/// What the earlier public conversation may add to the task's records in a handoff.
 pub const HANDOFF_TOKEN_CAP: u64 = 16_000;
+/// What a handoff may take when the destination model's window is unknown: well under the
+/// smallest window of the models Alondra runs, 200,000 tokens.
+pub const UNKNOWN_WINDOW_TOKENS: u64 = 64_000;
 
 #[derive(Clone, Copy, Debug)]
 pub struct HandoffBudget {
@@ -13,7 +17,7 @@ pub struct HandoffBudget {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum HandoffError { IncompleteHistory(String), NewInputTooLarge, CriticalContextTooLarge }
+pub enum HandoffError { IncompleteHistory(String), NewInputTooLarge, CriticalContextTooLarge { needed: u64, available: u64 } }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreparedHandoff {
@@ -43,12 +47,14 @@ pub fn prepare_context_handoff(canonical: &str, new_input: &str, entries: &[Cont
         }
     }
     let input_tokens = estimated_tokens(new_input);
-    let available = match budget.destination_context_tokens {
-        Some(window) => window.checked_sub(budget.reserved_tokens).and_then(|tokens| tokens.checked_sub(input_tokens)).ok_or(HandoffError::NewInputTooLarge)?.min(HANDOFF_TOKEN_CAP),
-        None => HANDOFF_TOKEN_CAP,
+    let window = match budget.destination_context_tokens {
+        Some(window) => window.checked_sub(budget.reserved_tokens).and_then(|tokens| tokens.checked_sub(input_tokens)).ok_or(HandoffError::NewInputTooLarge)?,
+        None => UNKNOWN_WINDOW_TOKENS,
     };
     let header = format!("Alondra task context (public records)\n{canonical}\n");
-    if estimated_tokens(&header) > available { return Err(HandoffError::CriticalContextTooLarge); }
+    let records = estimated_tokens(&header);
+    if records > window { return Err(HandoffError::CriticalContextTooLarge { needed: records, available: window }); }
+    let available = window.min(records.saturating_add(HANDOFF_TOKEN_CAP));
     let relevant: Vec<_> = entries.iter().filter(|entry| after.is_none_or(|after| entry.reference.task != after.task || entry.reference.sequence > after.sequence)).collect();
     if after.is_some_and(|after| entries.iter().any(|entry| entry.reference.task != after.task)) {
         return Err(HandoffError::IncompleteHistory("The continuation cursor belongs to another task".into()));
@@ -70,7 +76,7 @@ pub fn prepare_context_handoff(canonical: &str, new_input: &str, entries: &[Cont
     if omitted_items > 0 { context.push_str(&format!("\n{omitted_items} earlier public conversation items were omitted to fit the destination.\n")); }
     let references = chosen.iter().map(|(entry, _)| entry.reference.clone()).collect();
     for (_, content) in chosen { context.push_str(&content); }
-    if estimated_tokens(&context) > available { return Err(HandoffError::CriticalContextTooLarge); }
+    if estimated_tokens(&context) > available { return Err(HandoffError::CriticalContextTooLarge { needed: estimated_tokens(&context), available }); }
     let mut hash = Sha256::new();
     hash.update((context.len() as u64).to_be_bytes());
     hash.update(context.as_bytes());
@@ -107,6 +113,29 @@ mod tests {
         let coverage = HistoryCoverage { omitted_items: 1, reason: Some("Content was purged".into()), ..Default::default() };
         assert!(matches!(prepare_context_handoff("Task", "New input", &[], &coverage, None, budget()), Err(HandoffError::IncompleteHistory(_))));
         assert_eq!(prepare_context_handoff("Task", &"x".repeat(30_000), &[], &HistoryCoverage::default(), None, budget()), Err(HandoffError::NewInputTooLarge));
+    }
+
+    #[test]
+    fn records_beyond_the_conversation_cap_move_whole_when_the_destination_holds_them() {
+        let records = "r".repeat(60_000);
+        let entries = vec![item(1, "The recent decision")];
+        let roomy = HandoffBudget { destination_context_tokens: Some(200_000), reserved_tokens: 4_096 };
+        let prepared = prepare_context_handoff(&records, "Continue", &entries, &HistoryCoverage::default(), None, roomy).unwrap();
+        assert!(prepared.context.contains(&records), "the task's records are never cut to the conversation cap");
+        assert!(prepared.context.contains("The recent decision"));
+        let unknown = HandoffBudget { destination_context_tokens: None, reserved_tokens: 4_096 };
+        assert!(prepare_context_handoff(&records, "Continue", &entries, &HistoryCoverage::default(), None, unknown).unwrap().context.contains(&records));
+    }
+
+    #[test]
+    fn records_the_destination_cannot_hold_are_refused_by_size_never_cut() {
+        let records = "r".repeat(3 * UNKNOWN_WINDOW_TOKENS as usize + 3);
+        let unknown = HandoffBudget { destination_context_tokens: None, reserved_tokens: 4_096 };
+        assert!(matches!(prepare_context_handoff(&records, "Continue", &[], &HistoryCoverage::default(), None, unknown),
+            Err(HandoffError::CriticalContextTooLarge { available: UNKNOWN_WINDOW_TOKENS, .. })));
+        let small = HandoffBudget { destination_context_tokens: Some(20_000), reserved_tokens: 4_096 };
+        let Err(HandoffError::CriticalContextTooLarge { needed, available }) = prepare_context_handoff(&"r".repeat(60_000), "Continue", &[], &HistoryCoverage::default(), None, small) else { panic!("too large for the destination") };
+        assert!(needed > available && available < 16_000, "{needed} {available}");
     }
 
     #[test]

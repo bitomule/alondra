@@ -1951,6 +1951,24 @@ async fn settled_move(slice:&Slice)->String{
         }
     }).await.unwrap_or_else(|_|panic!("the move stopped short of an outcome at {:?}",move_steps(slice).last()))
 }
+/// Waits, passing as the daemon does, until a node of the task runs on the account it moved to: a
+/// move whose node rested by then defers its start to a later pass.
+async fn started_on_the_new_account(slice:&Slice){
+    let mut changed=slice.domain.subscribe();
+    tokio::time::timeout(std::time::Duration::from_secs(60),async{
+        while admissions(slice)<2{
+            crate::provider_transition::pass(&slice.domain).await;
+            if admissions(slice)<2{changed.changed().await.unwrap();}
+        }
+    }).await.expect("no node started on the account the task moved to");
+}
+/// The context the move handed to the task's next node, as its journal recorded it: what that node
+/// starts from, whether it starts at once or on a later pass.
+fn handed_context(slice:&Slice)->String{
+    let observer=slice.observer();
+    let facts:String=observer.query_row("SELECT facts FROM provider_transition_steps WHERE task_id=?1 AND phase='context_ready' ORDER BY sequence DESC LIMIT 1",[TASK],|row|row.get(0)).unwrap();
+    serde_json::from_str::<serde_json::Value>(&facts).unwrap()["context"].as_str().expect("the handed context").to_owned()
+}
 fn paused_by_the_user(slice:&Slice)->bool{
     Slice::lifecycle(&slice.domain).cards().iter().any(|(_,reason)|*reason==alondra_domain::WaitReason::Pause)
 }
@@ -2069,6 +2087,7 @@ async fn a_task_built_on_an_ended_task_whose_result_was_compacted_moves(){
     working_on_codex(&slice);
     request_move(&slice);
     assert_eq!(settled_move(&slice).await,"done","the move ends: {:?}",slice.domain.state().unwrap().tasks[&task].move_refused);
+    started_on_the_new_account(&slice).await;
     let state=slice.domain.state().unwrap();
     assert!(state.tasks[&task].move_refused.is_none());
     assert_eq!(state.tasks[&task].account_key(),AccountKey::native(Provider::Claude));
@@ -2077,10 +2096,55 @@ async fn a_task_built_on_an_ended_task_whose_result_was_compacted_moves(){
     slice.domain.stop_sdk_owners();
 }
 
+/// An earlier task this one builds on, ended with a final result of about `size` characters.
+fn built_on_an_ended_task(slice:&Slice,earlier:&str,size:usize){
+    let earlier:TaskId=earlier.into();
+    slice.run(&Actor::Orchestrator{generation:0},&format!("{earlier}-task"),Command::CreateTask{
+        plan_items:None,continues:None,task_id:earlier.clone(),request_id:"sdk-slice-request".into(),title:format!("Research {earlier}"),
+        agent_id:None,review_prs:false,dependencies:BTreeSet::new(),stack:None,launch:Some(LaunchPlan::new(&earlier.to_string(),slice.worktree.to_str().unwrap())),
+    });
+    let node=format!("{earlier}-node");
+    slice.run(&system(),&format!("{earlier}-register"),Command::RegisterAgent{agent_id:node.as_str().into(),name:node.clone(),at:0});
+    slice.run(&user(),&format!("{earlier}-assign"),Command::AssignTask{task_id:earlier.clone(),agent_id:node.as_str().into(),model:None});
+    let targets=vec![DeliveryTarget::Text{text:format!("The {earlier} findings")}];
+    let body=format!("The {earlier} findings.\n\n{}","Each measurement the node took is listed with its source. ".repeat(size/58));
+    slice.run(&Actor::Agent{agent_id:node.as_str().into()},&format!("{earlier}-result"),Command::PresentResult{
+        checklist:vec![],attachments:vec![],task_id:earlier.clone(),interaction_id:format!("{earlier}-final").into(),body,targets:targets.clone(),
+        is_final:true,nothing_to_review:false,card:CardSpec::delivery("Review the findings",&targets,true),
+    });
+    slice.run(&user(),&format!("{earlier}-accept"),Command::AcceptDelivery{presentation_id:format!("{earlier}-final").into(),targets});
+    slice.run(&system(),&format!("{earlier}-end"),Command::RecordNodeEnd{task_id:earlier,end:NodeEnd::Closed,agent_id:None});
+}
+
+// 2026-11-15: a task built on four research tasks, told fourteen things while it worked, the last
+// an 18,000-character brief, refused to move: «Critical task context is incomplete», naming that
+// last input. Its text was stored whole; the context only had a fixed 32,000-character budget, the
+// work it built on took most of it, and a source that did not fit read as a missing one.
+#[tokio::test]
+async fn a_task_built_on_four_tasks_and_told_a_long_brief_moves_with_every_input_whole(){
+    let slice=Slice::new();let task:TaskId=TASK.into();
+    let earlier=[("volume-research",2_300),("volume-measure",3_800),("volume-layout",3_100),("volume-cleanup",6_100)];
+    for (id,size) in earlier{built_on_an_ended_task(&slice,id,size);}
+    slice.run(&Actor::Orchestrator{generation:0},"depend-on-research",Command::SetDependencies{task_id:task.clone(),
+        dependencies:earlier.iter().map(|(id,_)|TaskId::from(*id)).collect(),stack:None,reason:None});
+    working_on_codex(&slice);
+    let inputs:Vec<String>=(0..13).map(|n|format!("Input {n:02}. {}","Keep the doctor's checks read-only on the volume. ".repeat(40))).chain(
+        std::iter::once(format!("The brief. {}","Report each worktree's size, owner and age in the doctor's output. ".repeat(270)))).collect();
+    for (n,text) in inputs.iter().enumerate(){
+        slice.run(&system(),&format!("input-{n}"),Command::TellNode{task_id:task.clone(),text:text.clone(),from_user:false,answers:None});
+    }
+    request_move(&slice);
+    assert_eq!(settled_move(&slice).await,"done","the move ends: {:?}",slice.domain.state().unwrap().tasks[&task].move_refused);
+    let context=handed_context(&slice);
+    for text in &inputs{assert!(context.contains(text.as_str()),"every input reaches the new node whole: {}",&text[..20]);}
+    for (id,_) in earlier{assert!(context.contains(&format!("The {id} findings.")),"the work it builds on reaches the new node: {id}");}
+    slice.domain.stop_sdk_owners();
+}
+
 // Found in use: a task told many things while it worked refused to move once its inputs passed the
 // context limit, «Critical task context is incomplete», naming inputs and work it still had.
 #[tokio::test]
-async fn a_task_told_more_than_its_context_holds_moves_with_its_newest_inputs(){
+async fn a_task_told_more_than_its_context_held_moves_with_every_input(){
     let slice=Slice::new();let task:TaskId=TASK.into();
     let excerpt=built_on_a_compacted_result(&slice);
     working_on_codex(&slice);
@@ -2091,11 +2155,10 @@ async fn a_task_told_more_than_its_context_holds_moves_with_its_newest_inputs(){
     slice.run(&system(),"newest",Command::TellNode{task_id:task.clone(),text:"Extend the task: also cover the closing path".into(),from_user:false,answers:None});
     request_move(&slice);
     assert_eq!(settled_move(&slice).await,"done","the move ends: {:?}",slice.domain.state().unwrap().tasks[&task].move_refused);
-    let state=slice.domain.state().unwrap();
-    assert_eq!(state.tasks[&task].account_key(),AccountKey::native(Provider::Claude));
-    let prompt=slice.prompts().into_iter().find(|prompt|prompt.starts_with("Alondra task context (public records)")).expect("Claude starts from the task's record");
-    assert!(prompt.contains("Extend the task: also cover the closing path"),"the newest input reaches the new node: {prompt}");
-    assert!(prompt.contains(&excerpt),"the work it builds on reaches the new node: {prompt}");
+    let context=handed_context(&slice);
+    assert!(context.contains("Extend the task: also cover the closing path"),"the newest input reaches the new node: {context}");
+    for n in 0..40{assert!(context.contains(&format!("Notice {n:02}. {filler}")),"every earlier input reaches the new node whole: notice {n}");}
+    assert!(context.contains(&excerpt),"the work it builds on reaches the new node: {context}");
     slice.domain.stop_sdk_owners();
 }
 
