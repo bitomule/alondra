@@ -1,0 +1,363 @@
+{
+  "client": "ios",
+  "cursor": "<cursor>",
+  "data_epoch": "<data_epoch>",
+  "first_cards": [
+    {
+      "client": "ios",
+      "cursor": "<cursor>",
+      "data_epoch": "<data_epoch>",
+      "key": "card:turn-ended-t1-1-turn-2",
+      "protocol": 1,
+      "sections": [
+        {
+          "collapsed": false,
+          "id": "card",
+          "items": [
+            {
+              "actions": [
+                {
+                  "attachments": false,
+                  "enabled": true,
+                  "id": "ans:turn-ended-t1-1-turn-2@<revision>",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "Que siga",
+                  "option_id": "carry_on",
+                  "presentation": "button",
+                  "resolves_card": true,
+                  "role": "neutral",
+                  "stamp": "Respondida",
+                  "style": "secondary"
+                },
+                {
+                  "attachments": false,
+                  "enabled": true,
+                  "id": "ans:turn-ended-t1-1-turn-2@<revision>",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "Cancelar la tarea",
+                  "option_id": "cancel_task",
+                  "presentation": "button",
+                  "resolves_card": true,
+                  "role": "neutral",
+                  "stamp": "Respondida",
+                  "style": "secondary"
+                }
+              ],
+              "context": [
+                {
+                  "icon": "task",
+                  "link": {
+                    "key": "task:t1",
+                    "kind": "view"
+                  },
+                  "state": {
+                    "text": "Te necesita",
+                    "tone": "warning"
+                  },
+                  "text": "Add the CSV export"
+                }
+              ],
+              "detail": "included",
+              "eyebrow": {
+                "text": "Decidir",
+                "tone": "accent"
+              },
+              "icon": "question",
+              "id": "turn-ended-t1-1-turn-2",
+              "kind": "decide",
+              "link": {
+                "key": "card:turn-ended-t1-1-turn-2",
+                "kind": "view"
+              },
+              "meta": "Alondra",
+              "need": "Elige una opción",
+              "reply": {
+                "attachments": true,
+                "enabled": true,
+                "id": "reply:turn-ended-t1-1-turn-2@<revision>",
+                "input": {
+                  "kind": "text",
+                  "multiline": true,
+                  "placeholder": "Responder a Add the CSV export…",
+                  "required": true
+                },
+                "label": "Responder",
+                "presentation": "button",
+                "resolves_card": true,
+                "role": "neutral",
+                "stamp": "Respondiste",
+                "style": "secondary"
+              },
+              "state": {
+                "text": "Bloquea a Add the CSV export",
+                "tone": "warning"
+              },
+              "subtitle": "Claude Code no puede usar la API de Claude hasta que se arregle fuera de Alondra. Arréglalo y dile a la tarea que siga, o cancélala.",
+              "timestamps": [
+                {
+                  "at": "<instant>",
+                  "format": "relative",
+                  "role": "created"
+                }
+              ],
+              "title": "«Add the CSV export» se ha parado: la cuenta de Claude rechaza esta petición",
+              "title_is_separate": true,
+              "type": "card",
+              "why": "Claude Code no puede usar la API de Claude hasta que se arregle fuera de Alondra. Arréglalo y dile a la tarea que siga, o cancélala."
+            }
+          ]
+        },
+        {
+          "collapsed": false,
+          "id": "content",
+          "items": [
+            {
+              "commentable": false,
+              "text": "Que siga\n\nSigue con su tarea y te pregunta con una tarjeta cuando te necesite",
+              "truncated": false,
+              "type": "markdown"
+            },
+            {
+              "commentable": false,
+              "text": "Cancelar la tarea\n\nLa tarea termina y se cierra su ejecución",
+              "truncated": false,
+              "type": "markdown"
+            }
+          ]
+        },
+        {
+          "collapsed": false,
+          "id": "context",
+          "items": [
+            {
+              "items": [
+                {
+                  "label": "Tarea",
+                  "link": {
+                    "key": "task:t1",
+                    "kind": "view"
+                  },
+                  "value": "Add the CSV export"
+                }
+              ],
+              "type": "facts"
+            }
+          ],
+          "title": "Contexto"
+        }
+      ],
+      "status": {
+        "badge": 1,
+        "counts": [
+          {
+            "id": "inbox",
+            "label": "Bandeja",
+            "value": 1
+          },
+          {
+            "id": "tasks",
+            "label": "Tareas",
+            "value": 2
+          },
+          {
+            "id": "working",
+            "label": "trabajando",
+            "value": 1
+          },
+          {
+            "id": "needs_you",
+            "label": "esperando por ti",
+            "value": 1
+          },
+          {
+            "id": "queued",
+            "label": "en cola",
+            "value": 0
+          },
+          {
+            "id": "paused",
+            "label": "en pausa",
+            "value": 0
+          },
+          {
+            "id": "other_waiting",
+            "label": "en espera",
+            "value": 0
+          }
+        ],
+        "gauges": [
+          {
+            "id": "memory",
+            "label": "RAM",
+            "level": "calm",
+            "text": "25%",
+            "value": 0.25
+          },
+          {
+            "id": "cpu",
+            "label": "CPU",
+            "level": "calm",
+            "text": "5%",
+            "value": 0.05
+          },
+          {
+            "id": "disk",
+            "label": "Disco",
+            "level": "calm",
+            "text": "550 GB libres",
+            "value": 0.5
+          }
+        ],
+        "orchestrator": {
+          "text": "inactivo",
+          "tone": "neutral"
+        },
+        "session_wait": {
+          "text": "No hay ninguna cuenta de proveedor disponible · revisa Cuentas",
+          "tone": "warning"
+        },
+        "summary": "1 pregunta · 1 tarea trabajando",
+        "summary_parts": [
+          {
+            "count": 1,
+            "id": "questions",
+            "one": "{count} pregunta",
+            "other": "{count} preguntas"
+          },
+          {
+            "count": 1,
+            "id": "working",
+            "one": "{count} tarea trabajando",
+            "other": "{count} tareas trabajando"
+          }
+        ],
+        "version": "<version>"
+      },
+      "title": "«Add the CSV export» se ha parado: la cuenta de Claude rechaza esta petición",
+      "version": "<version>",
+      "view": "card"
+    }
+  ],
+  "key": "home",
+  "protocol": 1,
+  "sections": [
+    {
+      "card_ids": [
+        "turn-ended-t1-1-turn-2"
+      ],
+      "card_waits": [
+        "question"
+      ],
+      "collapsed": false,
+      "count": 1,
+      "id": "queue",
+      "items": [],
+      "title": "Te espera"
+    }
+  ],
+  "service": {
+    "capabilities": [
+      "account_presentation",
+      "model_selection",
+      "provider_accounts"
+    ],
+    "version": "<version>",
+    "views_protocol": {
+      "max": 1,
+      "min": 1
+    }
+  },
+  "status": {
+    "badge": 1,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 1
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 2
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 1
+      },
+      {
+        "id": "needs_you",
+        "label": "esperando por ti",
+        "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
+        "value": 0
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "RAM",
+        "level": "calm",
+        "text": "25%",
+        "value": 0.25
+      },
+      {
+        "id": "cpu",
+        "label": "CPU",
+        "level": "calm",
+        "text": "5%",
+        "value": 0.05
+      },
+      {
+        "id": "disk",
+        "label": "Disco",
+        "level": "calm",
+        "text": "550 GB libres",
+        "value": 0.5
+      }
+    ],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    },
+    "session_wait": {
+      "text": "No hay ninguna cuenta de proveedor disponible · revisa Cuentas",
+      "tone": "warning"
+    },
+    "summary": "1 pregunta · 1 tarea trabajando",
+    "summary_parts": [
+      {
+        "count": 1,
+        "id": "questions",
+        "one": "{count} pregunta",
+        "other": "{count} preguntas"
+      },
+      {
+        "count": 1,
+        "id": "working",
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
+    "version": "<version>"
+  },
+  "version": "<version>",
+  "view": "home"
+}

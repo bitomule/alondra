@@ -126,7 +126,7 @@ struct Context<'a> {
     scenario: &'a Scenario,
     accepted: Option<&'a Path>,
     config: alondra_core::config::Config,
-    outage: Option<SdkApiFailure>,
+    outage: Option<(SdkApiFailure, Vec<String>)>,
     hosts: BTreeMap<String, Host>,
     daemon: Option<Assembled>,
     github: Arc<GithubWorld>,
@@ -413,11 +413,11 @@ impl Context<'_> {
             Step::ApiError { task, error, status } => {
                 self.end_turn(index, task, Some(SdkApiFailure { error: error.clone(), status: *status, resets_at: None }))?;
             }
-            Step::ProviderDown { error, status } => {
-                self.outage = Some(SdkApiFailure { error: error.clone(), status: *status, resets_at: None });
+            Step::ProviderDown { error, status, tasks } => {
+                self.outage = Some((SdkApiFailure { error: error.clone(), status: *status, resets_at: None }, tasks.clone()));
             }
             Step::LoginExpired => {
-                self.outage = Some(SdkApiFailure { error: "authentication_failed".into(), status: Some(401), resets_at: None });
+                self.outage = Some((SdkApiFailure { error: "authentication_failed".into(), status: Some(401), resets_at: None }, Vec::new()));
             }
             Step::ProviderUp | Step::LoginRestored => self.outage = None,
             Step::HostExit { task, resumes } => self.host_exit(index, task, *resumes)?,
@@ -562,8 +562,9 @@ impl Context<'_> {
         })
     }
 
-    fn failure_for(&self, _task: &str) -> Option<SdkApiFailure> {
-        self.outage.clone()
+    fn failure_for(&self, task: &str) -> Option<SdkApiFailure> {
+        let (failure, tasks) = self.outage.as_ref()?;
+        (tasks.is_empty() || tasks.iter().any(|named| named == task)).then(|| failure.clone())
     }
 
     /// The pending input the task's node has not taken yet, if any.

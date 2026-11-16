@@ -1,0 +1,70 @@
+name = "a 403 only one task gets, while another works, waits out the API once and then asks on that task's own card"
+max_virtual = "1h"
+
+[[step]]
+do = "request"
+text = "Export the report as CSV"
+task = "t1"
+title = "Add the CSV export"
+
+[[step]]
+do = "task"
+id = "t2"
+title = "Add the PDF export"
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "node"
+task = "t2"
+
+[[step]]
+do = "provider_down"
+error = "authentication_failed"
+status = 403
+tasks = ["t1"]
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "advance"
+by = "30s"
+
+[[step]]
+do = "checkpoint"
+name = "first-refusal-waits"
+screens = ["home"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "refuses this request"
+present = false
+
+[[step]]
+do = "advance"
+by = "3m"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "refused-after-the-probe"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "refuses this request"
+present = true
+
+[[step.expect]]
+check = "task_state"
+task = "t2"
+state = "running"
