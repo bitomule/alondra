@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use alondra_core::domain::{ChecklistMark, DeliveryTarget, DomainError, DomainState, EvidenceKind, TaskId};
 use serde_json::Value;
-use tokio::process::Command;
+use alondra_core::outside::AsyncCommand as Command;
 
 pub fn user_name() -> String {
     alondra_core::config::Config::load().map(|config| config.name).unwrap_or_else(|_| "The user".into())
@@ -46,7 +46,7 @@ pub fn origin_in(claude_home: &Path, session_id: &str) -> Option<WorktreeOrigin>
 /// Where Claude Code puts the worktree of a subagent `agent` that the node working in `own`
 /// launched: `agent-<agent>` in the `.claude/worktrees` of the repository `own` belongs to.
 pub fn subagent_worktree(own: &Path, agent: &str) -> Option<PathBuf> {
-    let common = std::process::Command::new("git").arg("-C").arg(own)
+    let common = alondra_core::outside::Command::new("git").arg("-C").arg(own)
         .args(["rev-parse", "--path-format=absolute", "--git-common-dir"]).output().ok()
         .filter(|out| out.status.success())
         .map(|out| PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()))?;
@@ -82,7 +82,7 @@ pub fn registrable(path: &Path, protected: &Protected) -> Result<(), String> {
     }
     let canonical = path.canonicalize().map_err(|e| format!("{shown} cannot be read: {e}"))?;
     let git = |args: &[&str]| {
-        let out = std::process::Command::new("git").arg("-C").arg(path).args(args).output().ok()?;
+        let out = alondra_core::outside::Command::new("git").arg("-C").arg(path).args(args).output().ok()?;
         out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
     };
     let top = git(&["rev-parse", "--path-format=absolute", "--show-toplevel"]).ok_or_else(|| format!("{shown} is not in a git repository"))?;
@@ -695,7 +695,7 @@ pub mod testing {
     use std::path::{Path, PathBuf};
 
     pub fn git(dir: &Path, args: &[&str]) {
-        let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+        let out = alondra_core::outside::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
         assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     }
 
@@ -735,7 +735,7 @@ mod tests {
     use super::*;
 
     fn run(dir: &Path, args: &[&str]) {
-        let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+        let out = alondra_core::outside::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
         assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     }
 
@@ -962,7 +962,7 @@ mod tests {
     }
 
     fn branch_exists(repository: &Path, branch: &str) -> bool {
-        std::process::Command::new("git").arg("-C").arg(repository)
+        alondra_core::outside::Command::new("git").arg("-C").arg(repository)
             .args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).status().unwrap().success()
     }
 

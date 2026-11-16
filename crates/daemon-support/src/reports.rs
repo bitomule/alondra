@@ -36,7 +36,7 @@ pub fn due(reports: &Path, now: i64) -> Vec<String> {
 }
 
 fn send_again(cli: &Path, home: &Path, id: &str) {
-    let child = std::process::Command::new(cli)
+    let child = alondra_core::outside::Command::new(cli)
         .args(["report", "send", id, "--retry"])
         .env("ALONDRA_HOME", home)
         .stdin(std::process::Stdio::null())

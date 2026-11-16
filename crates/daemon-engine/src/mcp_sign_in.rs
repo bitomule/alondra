@@ -46,7 +46,7 @@ fn parse(address: &str) -> Result<Return, SignInError> {
 /// is over.
 fn deliver(back: &Return) -> Result<u16, String> {
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, back.port));
-    let mut stream = TcpStream::connect_timeout(&address, EXCHANGE).map_err(|_| "Claude no longer waits for this sign-in".to_owned())?;
+    let mut stream = alondra_core::outside::tcp_connect_timeout(&address, EXCHANGE).map_err(|_| "Claude no longer waits for this sign-in".to_owned())?;
     stream.set_read_timeout(Some(EXCHANGE)).map_err(|error| error.to_string())?;
     stream.set_write_timeout(Some(EXCHANGE)).map_err(|error| error.to_string())?;
     let request = format!("GET {} HTTP/1.1\r\nHost: localhost:{}\r\nConnection: close\r\n\r\n", back.target, back.port);

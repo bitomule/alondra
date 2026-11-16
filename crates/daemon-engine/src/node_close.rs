@@ -61,7 +61,7 @@ pub struct Machine;
 impl Sessions for Machine {
     fn claude<'a>(&'a self, args: Vec<String>) -> Answer<'a, Result<Ran, String>> {
         Box::pin(async move {
-            let run = tokio::process::Command::new("claude").args(&args).kill_on_drop(true).output();
+            let run = alondra_core::outside::AsyncCommand::new("claude").args(&args).kill_on_drop(true).output();
             match clock::timeout(Duration::from_secs(60), run).await {
                 Ok(Ok(out)) => Ok(Ran {
                     success: out.status.success(),
@@ -220,7 +220,7 @@ fn repository_of(dir: &Path) -> Result<PathBuf, String> {
 /// Whether the repository of `dir` still lists it in `git worktree list --porcelain -z`.
 async fn registered(dir: &Path) -> Result<bool, String> {
     let repo_git = repository_of(dir)?;
-    let out = tokio::process::Command::new("git")
+    let out = alondra_core::outside::AsyncCommand::new("git")
         .arg(format!("--git-dir={}", repo_git.display()))
         .args(["worktree", "list", "--porcelain", "-z"])
         .output()
@@ -248,7 +248,7 @@ async fn discard_if_identical(dir: &Path, branch: &str) -> Result<(), String> {
         let repo_git = repo_git.clone();
         let index = index.clone();
         async move {
-            let out = tokio::process::Command::new("git")
+            let out = alondra_core::outside::AsyncCommand::new("git")
                 .env("GIT_INDEX_FILE", &index)
                 .arg(format!("--git-dir={}", repo_git.display()))
                 .args(&args)

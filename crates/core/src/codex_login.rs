@@ -1,6 +1,6 @@
 //! Managed device login never invokes the CLI login, which revokes the previous credential.
 use std::path::Path;
-use std::process::Command;
+use crate::outside::Command;
 use std::time::Duration;
 use serde_json::{Value, json};
 use crate::codex_account::Probe;

@@ -13,6 +13,7 @@ alondra-agent-runtime.workspace = true
 alondra-core.workspace = true
 alondra-daemon-engine = { workspace = true, features = ["test-hooks"] }
 alondra-daemon-support = { workspace = true, features = ["test-hooks"] }
+alondra-process-group.workspace = true
 alondra-scenarios-transcript.workspace = true
 base64 = "0.23.1"
 libc.workspace = true

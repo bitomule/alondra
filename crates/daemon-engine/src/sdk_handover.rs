@@ -74,7 +74,7 @@ impl BgSessions for ClaudeSessions {
 /// Stops a `claude --bg` session for good and says whether it did: `claude stop` answered and
 /// `claude agents` no longer shows it running.
 async fn stop_checked(short: &str) -> Result<(), String> {
-    let stop = tokio::process::Command::new("claude").args(["stop", short]).kill_on_drop(true)
+    let stop = alondra_core::outside::AsyncCommand::new("claude").args(["stop", short]).kill_on_drop(true)
         .stdin(std::process::Stdio::null()).output();
     match clock::timeout(std::time::Duration::from_secs(20), stop).await {
         Ok(Ok(out)) if out.status.success() => {}
@@ -83,7 +83,7 @@ async fn stop_checked(short: &str) -> Result<(), String> {
         Err(_) => return Err(format!("claude stop {short} did not answer in 20 s")),
     }
     for _ in 0..5 {
-        let list = tokio::process::Command::new("claude").args(["agents", "--json", "--all"]).kill_on_drop(true)
+        let list = alondra_core::outside::AsyncCommand::new("claude").args(["agents", "--json", "--all"]).kill_on_drop(true)
             .stdin(std::process::Stdio::null()).output();
         let listing = match clock::timeout(std::time::Duration::from_secs(20), list).await {
             Ok(Ok(out)) if out.status.success() => String::from_utf8_lossy(&out.stdout).to_string(),

@@ -124,6 +124,11 @@ pub struct VirtualRuntime {
 
 impl VirtualRuntime {
     pub fn new(epoch_millis: Millis) -> std::io::Result<VirtualRuntime> {
+        Self::with_thread_start(epoch_millis, || ())
+    }
+
+    /// A virtual runtime whose threads also run `on_thread_start` once their clock is current.
+    pub fn with_thread_start(epoch_millis: Millis, on_thread_start: impl Fn() + Send + Sync + 'static) -> std::io::Result<VirtualRuntime> {
         let shared: Arc<OnceLock<Clock>> = Arc::new(OnceLock::new());
         let for_threads = shared.clone();
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -133,6 +138,7 @@ impl VirtualRuntime {
                 if let Some(clock) = for_threads.get() {
                     std::mem::forget(clock.enter());
                 }
+                on_thread_start();
             })
             .build()?;
         let origin = runtime.block_on(async { Instant::now() });

@@ -456,6 +456,7 @@ dependencies = [
  "alondra-core",
  "alondra-daemon-engine",
  "alondra-daemon-support",
+ "alondra-process-group",
  "alondra-scenarios-transcript",
  "alondrad",
  "base64 0.23.1",

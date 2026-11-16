@@ -221,6 +221,9 @@ pub(crate) async fn assemble_with(
     let state_auth = auth.clone();
     let gauges = state.gauges();
     let client = state.client();
+    client.use_pr_view(seams.github.view.clone());
+    client.use_pr_images(seams.github.images.clone());
+    client.use_pr_merger(seams.github.merger.clone());
     let push = Arc::new(push::Push::open(&config.home)?);
     let addr = SocketAddr::new(config.listen, config.port);
     let listener = tokio::net::TcpListener::bind(addr)
@@ -296,7 +299,7 @@ pub(crate) async fn assemble_with(
     }
     let handed = domain.clone();
     tokio::task::spawn_blocking(move || domain_orchestrator::read_handed_notices_in_background(&handed));
-    tasks.spawn(retention::run(domain.clone()));
+    tasks.spawn(retention::run(domain.clone(), Arc::new(client_routes::GhOfView(seams.github.view.clone()))));
     let gate = tasks.spawn(admission::run(domain.clone(), config.home.clone()));
     let transport = tasks.spawn(domain_transport::run(hooks, domain.clone()));
     if real && accounts::config(&config.home).is_ok_and(|accounts| accounts.connected_providers().contains(&alondra_core::accounts::Provider::Claude)) {
@@ -319,7 +322,7 @@ pub(crate) async fn assemble_with(
         (domain_merges::Merger::default(), std::time::Duration::from_secs(60))
     };
     tasks.spawn(domain_merges::run(merges_domain, Arc::new(seams.github.merger.clone()), merger));
-    tasks.spawn(alondra_daemon_engine::open_pr_sweep::run(domain.clone(), config.home.clone()));
+    tasks.spawn(alondra_daemon_engine::open_pr_sweep::run(domain.clone(), config.home.clone(), seams.github.observer.clone()));
     let github = tasks.spawn(domain_github::run(
         domain,
         Arc::new(seams.github.observer.clone()),
@@ -327,9 +330,6 @@ pub(crate) async fn assemble_with(
     ));
     tasks.spawn(machine::run(gauges, seams.machine.clone(), state_domain.clone()));
     let owners = state_domain.clone();
-    client.use_pr_view(seams.github.view.clone());
-    client.use_pr_images(seams.github.images.clone());
-    client.use_pr_merger(seams.github.merger.clone());
     tasks.spawn(client.run(seams.github.view.clone()));
     let orchestrator = config.wake.then(|| {
         tasks.spawn(domain_orchestrator::run(

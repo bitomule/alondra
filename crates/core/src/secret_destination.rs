@@ -5,7 +5,7 @@
 use std::io::Write as _;
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use crate::outside::Command;
 
 use serde::{Deserialize, Serialize};
 

@@ -306,6 +306,17 @@ impl PrObserver for GithubWorld {
         Box::pin(async move { facts.ok_or_else(|| "no such PR".to_owned()) })
     }
 
+    /// Every pull request of this world was opened by a task Alondra registered: the user authored
+    /// none of their own.
+    fn authored_open(&self) -> crate::domain_github::Authored<'_> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn head_branch<'a>(&'a self, url: &'a str) -> crate::domain_github::Branch<'a> {
+        let branch = number_of(url).and_then(|number| self.world().prs.get(&number).map(|github| github.head_ref.clone()));
+        Box::pin(async move { branch.ok_or_else(|| "no such PR".to_owned()) })
+    }
+
     fn close<'a>(&'a self, _host: &'a str, _repository: &'a str, number: u64, comment: &'a str) -> Closed<'a> {
         let mut world = self.world();
         world.calls.push(format!("close {number}"));

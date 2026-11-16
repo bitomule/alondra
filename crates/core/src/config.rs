@@ -300,8 +300,7 @@ impl Config {
 
 /// First word of the macOS account's full name, then the login name.
 pub fn system_name() -> Option<String> {
-    let full = std::process::Command::new("/usr/bin/id").arg("-F").output().ok().filter(|o| o.status.success());
-    full.and_then(|o| String::from_utf8_lossy(&o.stdout).split_whitespace().next().map(str::to_string))
+    crate::outside::account_name().and_then(|full| full.split_whitespace().next().map(str::to_string))
         .or_else(|| std::env::var("USER").ok().filter(|u| !u.is_empty()))
 }
 

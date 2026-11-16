@@ -3,11 +3,12 @@
 
 use alondra_daemon_engine::sdk_owner::SdkOwners as _;
 use crate::checkpoint::{self, Files};
-use crate::claude_peer::{Activity, Seen};
+use crate::claude_peer::{Activity, Hosts, Seen};
 use crate::error::ScenarioError;
 use crate::format::{Checkpoint, Expect, GithubChange, Scenario, Step, parse_duration};
 use crate::http::{PHONE_SECRET, Phone};
 use alondra_agent_runtime::owned_host::{HostLauncher, HostSpawn, Launcher};
+use alondra_core::outside::{Isolation, Mac};
 use alondra_core::domain::{
     Actor, CardSpec, Command, CommandEnvelope, DeliveryTarget, LaunchPlan, MergeMethod, NodeEnd, PROTOCOL_VERSION,
     RuntimeObservation, SdkApiFailure, StackDependency,
@@ -70,6 +71,24 @@ pub fn run(scenario: &Scenario, accepted: Option<&Path>) -> Result<Outcome, Scen
     run_with(scenario, accepted, |_| ())
 }
 
+/// What a test of the harness reaches once the daemon is assembled: the launcher the daemon starts
+/// processes through, and the processes of the stand-in hosts the run starts.
+pub struct Probe<'a> {
+    pub launcher: &'a Launcher,
+    pub hosts: Hosts,
+}
+
+/// Ends the processes of the stand-in hosts when the run ends, whether it passed, failed or panicked.
+struct Ending(Hosts);
+
+impl Drop for Ending {
+    fn drop(&mut self) {
+        if let Err(error) = self.0.end() {
+            eprintln!("a host of the scenario outlived it: {error}");
+        }
+    }
+}
+
 /// Runs the scenario as far as it goes: the checkpoints it passed, and the failure that stopped it.
 pub fn run_partial(scenario: &Scenario) -> (Outcome, Option<ScenarioError>) {
     match run_inner(scenario, None, |_| ()) {
@@ -78,9 +97,9 @@ pub fn run_partial(scenario: &Scenario) -> (Outcome, Option<ScenarioError>) {
     }
 }
 
-/// `run`, with `probe` handed the launcher the daemon starts processes through, once it is
-/// assembled: how a test of the harness makes something reach for a process.
-pub fn run_with(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnce(&Launcher)) -> Result<Outcome, ScenarioError> {
+/// `run`, with `probe` handed the launcher and the hosts once the daemon is assembled: how a test of
+/// the harness makes something reach for a process, or looks at what the run started.
+pub fn run_with(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnce(&Probe)) -> Result<Outcome, ScenarioError> {
     match run_inner(scenario, accepted, probe)? {
         (outcome, None) => Ok(outcome),
         (_, Some(failure)) => Err(failure),
@@ -90,13 +109,20 @@ pub fn run_with(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnce
 fn run_inner(
     scenario: &Scenario,
     accepted: Option<&Path>,
-    probe: impl FnOnce(&Launcher),
+    probe: impl FnOnce(&Probe),
 ) -> Result<(Outcome, Option<ScenarioError>), ScenarioError> {
+    let hosts = Hosts::default();
+    let _ending = Ending(hosts.clone());
     if std::env::var("TZ").as_deref() != Ok("UTC") {
         return Err(ScenarioError::Invalid("scenarios run with TZ=UTC: the views show local time, which differs from Mac to Mac".into()));
     }
-    let runtime = alondra_core::clock::VirtualRuntime::new(EPOCH_MILLIS).map_err(|error| ScenarioError::Invalid(error.to_string()))?;
-    runtime.block_on(execute(scenario, accepted, probe))
+    let leaks = Arc::new(Mutex::new(Vec::new()));
+    let isolation = Isolation::new(leaks.clone(), Mac { account: "Ana".into(), computer: "Ana's Mac".into() });
+    let for_threads = isolation.clone();
+    let runtime = alondra_core::clock::VirtualRuntime::with_thread_start(EPOCH_MILLIS, move || std::mem::forget(for_threads.enter()))
+        .map_err(|error| ScenarioError::Invalid(error.to_string()))?;
+    let _entered = isolation.enter();
+    runtime.block_on(execute(scenario, accepted, leaks, hosts, probe))
 }
 
 /// 2026-11-15 09:00 UTC: every scenario starts at the same instant.
@@ -148,7 +174,15 @@ struct Context<'a> {
     outcome: Outcome,
 }
 
-async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnce(&Launcher)) -> Result<(Outcome, Option<ScenarioError>), ScenarioError> {
+/// `leaks` gathers what reached outside the scenario's world: a process the daemon started or a
+/// host it looked up, through its launcher or through `alondra_core::outside`.
+async fn execute(
+    scenario: &Scenario,
+    accepted: Option<&Path>,
+    leaks: Arc<Mutex<Vec<String>>>,
+    hosts: Hosts,
+    probe: impl FnOnce(&Probe),
+) -> Result<(Outcome, Option<ScenarioError>), ScenarioError> {
     let budget = parse_duration(&scenario.max_virtual)?;
     let home = tempfile::Builder::new().prefix("sc-").tempdir_in(short_root()).map_err(|error| ScenarioError::Invalid(error.to_string()))?;
     let invalid = |error: &dyn std::fmt::Display| ScenarioError::Invalid(error.to_string());
@@ -170,19 +204,19 @@ async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnc
 
     let github = Arc::new(GithubWorld::new());
     let pushes = RecordedPushes::default();
-    let leaks = Arc::new(Mutex::new(Vec::new()));
     let codex = codex_transcripts(scenario);
     let (launcher, backend, peer) = if codex.is_empty() {
         (Launcher::new(RefusingLauncher(leaks.clone())), Backend::Given(None), None)
     } else {
         let case = scenario.case.as_deref().ok_or_else(|| ScenarioError::Invalid("a step that starts a provider reads the transcripts of its case".into()))?;
-        let peer = crate::codex_peer::launcher(case, &codex)?;
+        let mut peer = crate::codex_peer::launcher(case, &codex)?;
+        peer.hosts = hosts.clone();
         let (seen, activity) = (peer.seen.clone(), peer.activity.clone());
         let launcher = Launcher::new(peer);
         let backend = codex_backend(&config.home, launcher.clone()).map_err(|e| invalid(&e))?;
         (launcher, Backend::Given(Some(backend)), Some(Peer { seen, activity, hosts: codex.len(), patience: Arc::new(std::sync::atomic::AtomicU64::new(PATIENCE_MS)) }))
     };
-    probe(&launcher);
+    probe(&Probe { launcher: &launcher, hosts });
     let seams = seams_of(&github, &pushes, launcher, backend);
     alondrad::scenario_phone::prepare(&config.home).map_err(|e| invalid(&format!("{e:#}")))?;
     let daemon = assemble::start(&config, seams).await.map_err(|e| invalid(&format!("{e:#}")))?;

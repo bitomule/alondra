@@ -153,7 +153,7 @@ impl Apns {
     fn load(cfg: ApnsConfig) -> Result<Self> {
         let pem = std::fs::read_to_string(&cfg.key_path).with_context(|| format!("cannot read {}", cfg.key_path.display()))?;
         let key = SigningKey::from_pkcs8_pem(&pem).map_err(|e| anyhow::anyhow!("invalid .p8 key: {e}"))?;
-        let client = reqwest::Client::builder().http2_prior_knowledge().timeout(Duration::from_secs(15)).build()?;
+        let client = crate::web::client().http2_prior_knowledge().timeout(Duration::from_secs(15)).build()?;
         Ok(Apns { key, key_id: cfg.key_id, team_id: cfg.team_id, topic: cfg.topic, client, jwt: Mutex::new(None) })
     }
 

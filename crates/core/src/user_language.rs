@@ -8,7 +8,7 @@ pub fn current() -> Lang {
 }
 
 fn system_language() -> Option<String> {
-    let out = std::process::Command::new("/usr/bin/defaults").args(["read", "-g", "AppleLanguages"]).output().ok()?;
+    let out = crate::outside::Command::new("/usr/bin/defaults").args(["read", "-g", "AppleLanguages"]).output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
     let first = text.split(|c: char| c == '"' || c == '(' || c == ',' || c.is_whitespace()).find(|t| !t.is_empty() && *t != ")")?;
     Some(first.to_string())

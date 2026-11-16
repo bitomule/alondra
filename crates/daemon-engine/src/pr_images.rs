@@ -285,7 +285,7 @@ impl Gh {
 
     fn web(&self) -> &reqwest::Client {
         self.web.get_or_init(|| {
-            reqwest::Client::builder()
+            alondra_daemon_support::web::client()
                 .timeout(LIMIT)
                 .redirect(reqwest::redirect::Policy::none())
                 .build()

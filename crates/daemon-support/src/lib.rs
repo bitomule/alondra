@@ -50,6 +50,7 @@ pub mod start_guard;
 pub mod updates;
 pub mod uploads;
 pub mod watcher;
+pub mod web;
 pub mod workflow_state;
 pub mod worktree;
 pub mod worktrees_root;

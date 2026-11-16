@@ -1,6 +1,6 @@
 name = "a delivery whose pull request merged closes when its node ends, though the usage limit holds the task"
 fixes = "#227"
-max_virtual = "2h"
+max_virtual = "3h"
 
 [[step]]
 do = "request"
@@ -82,6 +82,20 @@ count = 0
 check = "pr_merged_into"
 pr = 7
 branch = "main"
+
+[[step.expect]]
+check = "task_state"
+task = "t1"
+state = "done"
+
+[[step]]
+do = "advance"
+by = "70m"
+
+[[step]]
+do = "checkpoint"
+name = "an-hour-after-the-merge"
+screens = ["home"]
 
 [[step.expect]]
 check = "task_state"

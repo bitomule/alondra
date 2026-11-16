@@ -9,7 +9,7 @@ use crate::locks::Poisonable as _;
 use std::io::Write;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use alondra_core::outside::Command;
 
 use alondra_core::allow_always::{self as rules, AllowAlways, Mode, Place, Refusal, Why};
 use anyhow::{bail, Context, Result};

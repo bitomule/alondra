@@ -89,7 +89,7 @@ fn interface_addresses() -> Vec<IpAddr> {
 async fn tailnet_name() -> Option<String> {
     let output = clock::timeout(
         Duration::from_secs(2),
-        tokio::process::Command::new("tailscale").args(["status", "--json"]).kill_on_drop(true).output(),
+        alondra_core::outside::AsyncCommand::new("tailscale").args(["status", "--json"]).kill_on_drop(true).output(),
     )
     .await
     .ok()?

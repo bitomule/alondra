@@ -349,6 +349,29 @@ pub struct PeerLauncher {
     ids: Arc<Mutex<FrameComparator>>,
     pub seen: Arc<Mutex<Seen>>,
     pub activity: Activity,
+    pub hosts: Hosts,
+}
+
+/// The processes of every host a peer started, to end when the run that started them ends.
+#[derive(Clone, Default)]
+pub struct Hosts(Arc<Mutex<Vec<alondra_process_group::Member>>>);
+
+impl Hosts {
+    pub fn members(&self) -> Vec<alondra_process_group::Member> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    }
+
+    fn started(&self, group: i32) -> std::io::Result<()> {
+        let members = alondra_process_group::members(group)?;
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extend(members);
+        Ok(())
+    }
+
+    /// Ends every process the hosts started that still runs; a PID another process took by now
+    /// is left alone.
+    pub fn end(&self) -> std::io::Result<()> {
+        alondra_process_group::end_tree(&self.members(), std::time::Duration::from_secs(5))
+    }
 }
 
 impl PeerLauncher {
@@ -369,7 +392,7 @@ impl PeerLauncher {
 
     /// A peer whose hosts announce `capabilities` in their hello: what the provider's real host announces.
     pub fn declaring(capabilities: &'static [&'static str], transcripts: Vec<Transcript>) -> Self {
-        Self { app_server: false, capabilities, transcripts: Mutex::new(transcripts.into()), ids: Arc::default(), seen: Arc::default(), activity: Activity::default() }
+        Self { app_server: false, capabilities, transcripts: Mutex::new(transcripts.into()), ids: Arc::default(), seen: Arc::default(), activity: Activity::default(), hosts: Hosts::default() }
     }
 }
 
@@ -404,6 +427,11 @@ impl HostLauncher for PeerLauncher {
             let mut stdout = std::io::BufReader::new(child.stdout.take().ok_or_else(|| invalid("the host has no output"))?);
             std::io::BufRead::read_line(&mut stdout, &mut String::new())?;
             child.stdout = Some(stdout.into_inner());
+        }
+        if let Err(error) = self.hosts.started(child.id() as i32) {
+            unsafe { libc::killpg(child.id() as i32, libc::SIGKILL) };
+            child.wait()?;
+            return Err(error);
         }
         let seen = self.seen.clone();
         let mut queue = steps(&transcript);

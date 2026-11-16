@@ -125,3 +125,15 @@ filegroup(
 )
 
 repo_tree()
+
+# The door to what is outside the daemon refuses and writes down what an isolated world reaches.
+# Its own binary: an isolation alive isolates every thread of the process that entered none.
+low_opt_rust_test(
+    name = "outside_test",
+    size = "small",
+    crate_root = "tests/outside.rs",
+    srcs = ["tests/outside.rs"],
+    edition = "2024",
+    version = "0.1.0",
+    deps = [":alondra_core"] + all_crate_deps(normal = True),
+)

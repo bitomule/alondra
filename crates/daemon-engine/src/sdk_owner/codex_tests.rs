@@ -397,7 +397,7 @@ pub fn native_model_fixture(slice:&Slice,journey:Option<(&Path,u16)>)->(NativeMo
     backend.native_environment.insert("RUST_LOG".into(), "off".into());
     if let Some((_,port))=journey {backend.native_environment.insert("ALONDRA_PORT".into(),port.to_string());}
     std::fs::write(backend_path, serde_json::to_vec(&backend).unwrap()).unwrap();
-    let mut probe_command = ProcessCommand::new(&backend.native);
+    let mut probe_command = alondra_core::outside::Command::new(&backend.native);
     probe_command.env_clear().env("HOME", &*slice._home).env("CODEX_HOME", &code_home).env("PATH", "/usr/bin:/bin").env("RUST_LOG", "off");
     let observed = alondra_core::codex_account::probe_fixture(probe_command, AccountKey { provider: Provider::Codex, account: AccountId::default_account() }, alondra_core::now_millis()).unwrap();
     assert!(observed.signed_in && observed.requires_auth && observed.auth_method.as_deref()==Some("chatgpt") && !observed.pay_per_use && observed.email.as_deref()==Some("first@example.test"), "the native CLI validates the isolated synthetic managed account, never no-auth or an API key");

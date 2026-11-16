@@ -69,6 +69,7 @@ checks:
       - "crates/core/src/issues.rs"
       - "crates/core/src/launcher.rs"
       - "crates/core/src/options.rs"
+      - "crates/core/src/outside.rs"
       - "crates/core/src/projects_folder.rs"
       - "crates/core/src/secret_destination.rs"
       - "crates/core/src/service_config.rs"
@@ -1900,6 +1901,27 @@ checks:
     with:
       targets:
         - //tools:clock_guard_test
+
+  outside-guard:
+    uses: bazel/test
+    paths:
+      - "BUILD.bazel"
+      - "crates/alondrad/**"
+      - "crates/core/**"
+      - "crates/daemon-engine*/**"
+      - "crates/daemon-support/**"
+      - "crates/engine-kernel/**"
+      - "tools/BUILD.bazel"
+      - "tools/outside_guard.py"
+      - "tools/rust_inputs_test.bzl"
+      - "tools/rust_sources.bzl"
+      - "tools/rust_test.bzl"
+      - "tools/tests/test_outside_guard.py"
+      - "tools/tree.bzl"
+      - "version.bzl"
+    with:
+      targets:
+        - //tools:outside_guard_test
 
   scenarios:
     uses: bazel/test

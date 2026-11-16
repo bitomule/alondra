@@ -123,7 +123,7 @@ fn open_sign_in<'a>(state: &'a DomainState, task: &TaskId, server: &str) -> Opti
 /// connection is what a browser opens ahead of a request; nothing is sent on it.
 fn listening(port: u16) -> bool {
     let addresses: Vec<SocketAddr> = ("localhost", port).to_socket_addrs().map(Iterator::collect).unwrap_or_default();
-    addresses.iter().any(|address| TcpStream::connect_timeout(address, Duration::from_millis(300)).is_ok())
+    addresses.iter().any(|address| alondra_core::outside::tcp_connect_timeout(address, Duration::from_millis(300)).is_ok())
 }
 
 fn still_open(open: &OpenSignIn) -> bool {

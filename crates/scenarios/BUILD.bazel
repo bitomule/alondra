@@ -11,6 +11,7 @@ DEPS = all_crate_deps(normal = True) + [
     "//crates/core:alondra_core",
     "//crates/daemon-engine:daemon_engine_test_hooks",
     "//crates/daemon-support:daemon_support_test_hooks",
+    "//crates/process-group:process_group",
     "//crates/scenarios-transcript:scenarios_transcript",
 ]
 
@@ -34,6 +35,7 @@ low_opt_rust_test(
     name = "scenarios_harness_test",
     size = "medium",
     srcs = glob(["src/**/*.rs"], exclude = ["src/bin/*.rs"]),
+    data = glob(["cases/codex-turn-cut-and-resumed/**"]),
     crate_name = "alondra_scenarios",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -46,6 +48,7 @@ low_opt_rust_test(
         "//crates/core:alondra_core",
         "//crates/daemon-engine:daemon_engine_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",
+        "//crates/process-group:process_group",
         "//crates/scenarios-transcript:scenarios_transcript",
     ],
 )

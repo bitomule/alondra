@@ -6,7 +6,7 @@ use alondra_core::clock;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use tokio::process::Command;
+use alondra_core::outside::AsyncCommand as Command;
 
 #[derive(Debug)]
 pub enum LaunchError {
@@ -527,7 +527,7 @@ mod tests {
     use super::*;
 
     fn sh(dir: &Path, args: &[&str]) -> String {
-        let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+        let out = alondra_core::outside::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
         assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }

@@ -452,7 +452,7 @@ fn diff_paths(diff: &str) -> std::collections::HashSet<String> {
 }
 
 pub(crate) async fn bounded_diff(gh: &crate::domain_github::GhCli, url: &str) -> Result<(Vec<u8>, bool), DomainError> {
-    let mut child = tokio::process::Command::new(gh.program())
+    let mut child = alondra_core::outside::AsyncCommand::new(gh.program())
         .args(["pr", "diff", url])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -499,7 +499,7 @@ pub(crate) async fn bounded_diff(gh: &crate::domain_github::GhCli, url: &str) ->
 async fn live_head(gh: &crate::domain_github::GhCli, url: &str) -> Result<String, Response> {
     let output = clock::timeout(
         std::time::Duration::from_secs(20),
-        tokio::process::Command::new(gh.program())
+        alondra_core::outside::AsyncCommand::new(gh.program())
             .args(["pr", "view", url, "--json", "headRefOid"])
             .kill_on_drop(true)
             .output(),
@@ -1474,7 +1474,7 @@ mod tests {
     fn continuation_storage_diagnostic_keeps_the_cause_in_the_daemon() {
         const PROBE: &str = "ALONDRA_CONTINUATION_LOG_PROBE";
         if std::env::var_os(PROBE).is_none() {
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
+            let output = alondra_core::outside::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "domain_api::tests::continuation_storage_diagnostic_keeps_the_cause_in_the_daemon", "--nocapture"])
                 .env(PROBE, "1").output().unwrap();
             let stderr = String::from_utf8_lossy(&output.stderr);

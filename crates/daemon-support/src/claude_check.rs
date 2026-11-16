@@ -56,7 +56,7 @@ pub fn judge(plugin: Option<&Path>, outcomes: &Outcomes) -> Status {
 }
 
 async fn claude(args: &[&str], timeout: Duration) -> Option<(bool, String)> {
-    let run = tokio::process::Command::new("claude").args(args).kill_on_drop(true)
+    let run = alondra_core::outside::AsyncCommand::new("claude").args(args).kill_on_drop(true)
         .stdin(std::process::Stdio::null()).output();
     let out = clock::timeout(timeout, run).await.ok()?.ok()?;
     Some((out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))))

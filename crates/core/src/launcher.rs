@@ -3,7 +3,7 @@
 //! release in a new Cellar directory, so the launcher is copied to a fixed path under
 //! `ALONDRA_HOME` and only replaced when its own version changes.
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use crate::outside::Command;
 
 pub const NAME: &str = "alondrad-launcher";
 

@@ -173,7 +173,7 @@ pub fn run_preflight(path: &Path) -> Outcome {
 }
 
 fn output(path: &Path, arg: &str, timeout: Duration) -> Option<(bool, String)> {
-    let child = std::process::Command::new(path).arg(arg)
+    let child = alondra_core::outside::Command::new(path).arg(arg)
         .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
         .spawn().ok()?;
     let pid = child.id();
@@ -336,7 +336,6 @@ mod tests {
         use std::io::{Read, Write};
         use std::os::fd::AsRawFd;
         use std::os::unix::fs::PermissionsExt;
-        use std::os::unix::process::CommandExt;
         let scratch_directory = crate::test_support::Directory::new();
         std::fs::create_dir_all(&*scratch_directory).unwrap();
         let bin = scratch_directory.join("alondrad");
@@ -345,7 +344,7 @@ mod tests {
         let (mut release, held) = std::os::unix::net::UnixStream::pair().unwrap();
         let child = std::thread::spawn(move || {
             let (announcing, holding) = (announce.as_raw_fd(), held.as_raw_fd());
-            let mut command = std::process::Command::new("/usr/bin/true");
+            let mut command = alondra_core::outside::Command::new("/usr/bin/true");
             // SAFETY: the closure runs in the forked child before its exec and calls only write and
             // read, which are async-signal-safe.
             unsafe {

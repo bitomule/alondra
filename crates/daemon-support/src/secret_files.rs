@@ -2,7 +2,7 @@
 //! worktree and in the repository's main checkout, so the value never enters the domain.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use alondra_core::outside::Command;
 
 use alondra_core::domain::{Author, DomainError, DomainState, Interaction, Scope, TaskId};
 use alondra_core::secret_destination::SecretDestination;

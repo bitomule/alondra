@@ -8,7 +8,8 @@
 use std::collections::BTreeMap;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{ExitStatus, Stdio};
+use crate::outside::Command;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;

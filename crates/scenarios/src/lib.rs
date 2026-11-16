@@ -14,7 +14,7 @@ pub mod runner;
 
 pub use error::ScenarioError;
 pub use format::Scenario;
-pub use runner::{Outcome, run, run_partial, run_with};
+pub use runner::{Outcome, Probe, run, run_partial, run_with};
 
 #[cfg(test)]
 mod harness_tests;

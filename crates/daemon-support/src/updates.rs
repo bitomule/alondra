@@ -52,7 +52,7 @@ fn record_attempt(home: &Path, attempt: &Attempt) {
 
 /// The newest release, or nothing when offline, rate limited or answered oddly.
 pub async fn fetch(url: &str) -> Option<String> {
-    let client = reqwest::Client::builder().timeout(FETCH_TIMEOUT)
+    let client = crate::web::client().timeout(FETCH_TIMEOUT)
         .user_agent(concat!("alondrad/", env!("CARGO_PKG_VERSION"))).build().ok()?;
     let response = client.get(url).header("accept", "application/vnd.github+json").send().await.ok()?;
     let releases: serde_json::Value = response.error_for_status().ok()?.json().await.ok()?;
@@ -130,7 +130,7 @@ pub fn updater(config: &alondra_core::config::Config) -> Updater {
 }
 
 fn brew_upgrade(brew: &Path) -> (bool, String) {
-    let child = std::process::Command::new(brew).args(["upgrade", update::FORMULA])
+    let child = alondra_core::outside::Command::new(brew).args(["upgrade", update::FORMULA])
         .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
         .spawn();
     let child = match child {

@@ -234,7 +234,7 @@ fn compatible(native: &Path, sha256: &str) -> Result<String> {
 
 fn version_of(native: &Path) -> Result<String> {
     use std::io::Read;
-    let mut child = std::process::Command::new(native).arg("--version")
+    let mut child = alondra_core::outside::Command::new(native).arg("--version")
         .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null())
         .spawn().with_context(|| format!("running {} --version", native.display()))?;
     let mut stdout = child.stdout.take().expect("piped stdout");

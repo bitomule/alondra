@@ -11,7 +11,7 @@
 use alondra_core::clock;
 use alondra_core::clock::Instant;
 use crate::locks::Poisonable as _;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -105,7 +105,7 @@ pub fn classify(sent: std::io::Result<usize>) -> &'static str {
 
 fn send_to(gateway: IpAddr) -> std::io::Result<usize> {
     let unspecified: IpAddr = if gateway.is_ipv4() { Ipv4Addr::UNSPECIFIED.into() } else { Ipv6Addr::UNSPECIFIED.into() };
-    UdpSocket::bind(SocketAddr::new(unspecified, 0))?.send_to(&[0], SocketAddr::new(gateway, 9))
+    alondra_core::outside::udp_send(SocketAddr::new(unspecified, 0), SocketAddr::new(gateway, 9), &[0])
 }
 
 fn probe() -> (&'static str, String) {

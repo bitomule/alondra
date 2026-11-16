@@ -21,7 +21,8 @@ impl Volumes for System {
         #[cfg(target_os = "macos")]
         {
             use std::io::Write;
-            use std::process::{Command, Stdio};
+            use std::process::Stdio;
+            use alondra_core::outside::Command;
             use std::os::unix::ffi::{OsStrExt, OsStringExt};
             let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
             let mut stats = std::mem::MaybeUninit::<libc::statfs>::uninit();
@@ -47,7 +48,7 @@ impl Volumes for System {
     }
     fn mount(&self, identity: &str) -> bool {
         #[cfg(target_os = "macos")]
-        { std::process::Command::new("/usr/sbin/diskutil").args(["mount", identity]).status().is_ok_and(|status| status.success()) }
+        { alondra_core::outside::Command::new("/usr/sbin/diskutil").args(["mount", identity]).status().is_ok_and(|status| status.success()) }
         #[cfg(not(target_os = "macos"))]
         { let _ = identity; false }
     }

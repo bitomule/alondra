@@ -96,7 +96,7 @@ impl Codex {
         Some(Self { executable, environment: backend.native_environment.clone(), user_home, path, username: claude_account::effective_username()? })
     }
 
-    pub(crate) fn command(&self, profile: Option<&Path>) -> std::process::Command {
+    pub(crate) fn command(&self, profile: Option<&Path>) -> alondra_core::outside::Command {
         alondra_core::codex_account::command(&self.executable, &self.environment, &self.user_home, &self.path, &self.username, profile)
     }
 

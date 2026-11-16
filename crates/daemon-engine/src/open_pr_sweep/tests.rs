@@ -1,4 +1,5 @@
 use super::*;
+use crate::domain_github::GhCli;
 use alondra_core::domain::*;
 use std::os::unix::fs::PermissionsExt;
 

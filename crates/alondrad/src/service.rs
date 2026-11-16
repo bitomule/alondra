@@ -490,7 +490,7 @@ fn resolve(home: &Path, path: &Path) -> PathBuf {
 }
 
 fn http_client() -> reqwest::ClientBuilder {
-    Client::builder()
+    alondra_daemon_support::web::client()
         .redirect(reqwest::redirect::Policy::none())
         // PR merge and GitHub issue refresh can take close to 90 seconds locally.
         .timeout(Duration::from_secs(95))

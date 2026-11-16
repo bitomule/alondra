@@ -14,9 +14,9 @@ use alondra_core::views::{LiveMcpProbe, LiveMcpRemoval};
 use alondra_foundation::{McpOrigin, McpTraits};
 use std::collections::BTreeMap;
 use std::io::Read;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+use alondra_core::outside::Command;
 use std::time::Duration;
 
 /// Claude reads and writes its settings well within this.

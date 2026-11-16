@@ -160,6 +160,23 @@ sh_test(
     size = "small",
 )
 
+sh_test(
+    name = "outside_guard_test",
+    srcs = ["tests/test_outside_guard.py"],
+    data = [
+        "outside_guard.py",
+        "//crates/alondrad:tree",
+        "//crates/core:tree",
+        "//crates/daemon-engine:tree",
+        "//crates/daemon-engine-machine:tree",
+        "//crates/engine-kernel:tree",
+        "//crates/daemon-engine-model:tree",
+        "//crates/daemon-engine-store:tree",
+        "//crates/daemon-support:tree",
+    ],
+    size = "small",
+)
+
 # `bazel run //tools:edit_bench`: what each frequent edit reopens and what Bazel really reruns.
 sh_binary(
     name = "edit_bench",

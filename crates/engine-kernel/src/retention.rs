@@ -9,7 +9,7 @@ use std::time::Duration;
 const FIRST_AFTER: Duration = Duration::from_secs(60);
 const EVERY: Duration = Duration::from_secs(60 * 60);
 
-pub async fn run(domain: Arc<DomainRuntime>) {
+pub async fn run(domain: Arc<DomainRuntime>, github: Arc<impl crate::prs::Gh + Send + 'static>) {
     clock::sleep(FIRST_AFTER).await;
     loop {
         let pass = {
@@ -38,7 +38,7 @@ pub async fn run(domain: Arc<DomainRuntime>) {
             Ok(Err(error)) => log!("could not run the store's retention: {error}"),
             Err(error) => log!("could not run the store's retention: {error}"),
         }
-        crate::metrics_capture::pr_sizes(&domain, &crate::prs::GhCli, alondra_core::now_millis()).await;
+        crate::metrics_capture::pr_sizes(&domain, &*github, alondra_core::now_millis()).await;
         clock::sleep(EVERY).await;
     }
 }

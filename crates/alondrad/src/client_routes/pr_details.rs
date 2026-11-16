@@ -55,6 +55,15 @@ impl<G: crate::prs::Gh + Send + Sync + 'static> PrView for ViaGh<G> {
     }
 }
 
+/// A view of pull requests as `Gh`, so what reads PRs outside the client reads the same GitHub.
+pub(crate) struct GhOfView(pub Arc<dyn PrView>);
+
+impl crate::prs::Gh for GhOfView {
+    async fn view(&self, url: &str) -> Option<Value> {
+        self.0.view(url).await
+    }
+}
+
 impl PrView for GhView {
     fn view<'a>(&'a self, url: &'a str) -> Viewed<'a> {
         Box::pin(crate::prs::Gh::view(&crate::prs::GhCli, url))

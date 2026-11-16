@@ -644,12 +644,12 @@ impl OptionsFile {
 
 /// The project a directory belongs to: the first folder under the projects root.
 pub fn project_of(root: &Path, cwd: &Path) -> Option<String> {
-    let repository = std::process::Command::new("git").arg("-C").arg(cwd)
+    let repository = cwd.is_dir().then(|| crate::outside::Command::new("git").arg("-C").arg(cwd)
         .args(["rev-parse", "--path-format=absolute", "--git-common-dir"]).output().ok()
         .filter(|out| out.status.success())
         .and_then(|out| String::from_utf8(out.stdout).ok())
         .map(|common| PathBuf::from(common.trim()))
-        .and_then(|common| common.parent().map(Path::to_path_buf));
+        .and_then(|common| common.parent().map(Path::to_path_buf))).flatten();
     repository.as_deref().unwrap_or(cwd).strip_prefix(root).ok()?.components().next().map(|c| c.as_os_str().to_string_lossy().to_string())
 }
 

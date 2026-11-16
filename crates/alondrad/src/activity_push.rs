@@ -265,13 +265,7 @@ fn now_ms() -> u64 {
 }
 
 fn mac_name() -> String {
-    let name = std::process::Command::new("scutil")
-        .args(["--get", "ComputerName"])
-        .output()
-        .ok()
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "Mac".into());
+    let name = alondra_core::outside::computer_name().unwrap_or_else(|| "Mac".into());
     name.chars().take(MAC_NAME_LIMIT).collect()
 }
 

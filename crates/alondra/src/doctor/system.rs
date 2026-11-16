@@ -383,7 +383,7 @@ impl System for Real {
         let username = alondra_core::claude_account::effective_username()?;
         let mut command = alondra_core::codex_account::command(&executable, &context.environment, &context.home, &context.path, &username, None);
         command.arg("--version");
-        command_output(command, Duration::from_secs(10)).filter(|(ok, _)| *ok).map(|(_, version)| version)
+        command_output(command.into_std(), Duration::from_secs(10)).filter(|(ok, _)| *ok).map(|(_, version)| version)
     }
     fn native_accounts(&self) -> Option<Value> {
         crate::provider_accounts::accounts(&Client::new(Duration::from_secs(5)))

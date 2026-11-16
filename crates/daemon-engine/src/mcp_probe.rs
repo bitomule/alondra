@@ -8,9 +8,9 @@ use alondra_core::views::{LiveMcpProbe, LiveMcpRemoval};
 use alondra_foundation::McpOrigin;
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+use alondra_core::outside::Command;
 use std::sync::Mutex;
 use std::time::Duration;
 

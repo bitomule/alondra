@@ -44,12 +44,40 @@ impl PrFacts {
 
 pub(crate) type Observed<'a> = Pin<Box<dyn Future<Output = Result<PrFacts, String>> + Send + 'a>>;
 pub(crate) type Closed<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+pub(crate) type Authored<'a> = Pin<Box<dyn Future<Output = Result<Vec<AuthoredPr>, String>> + Send + 'a>>;
+pub(crate) type Branch<'a> = Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
+
+/// An open pull request the signed-in user authored, as GitHub's search names it.
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct AuthoredPr {
+    #[serde(rename = "repository", deserialize_with = "name_with_owner")]
+    pub repository: String,
+    pub number: u64,
+    pub url: String,
+}
+
+fn name_with_owner<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    #[derive(serde::Deserialize)]
+    struct Repository {
+        #[serde(rename = "nameWithOwner")]
+        name_with_owner: String,
+    }
+    Ok(<Repository as serde::Deserialize>::deserialize(deserializer)?.name_with_owner)
+}
 
 pub trait PrObserver: Send + Sync + 'static {
     fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Observed<'a>;
     /// Closes the PR on GitHub with `comment`.
     fn close<'a>(&'a self, _host: &'a str, _repository: &'a str, _number: u64, _comment: &'a str) -> Closed<'a> {
         Box::pin(async { Err("this observer cannot close pull requests".to_owned()) })
+    }
+    /// The open pull requests the signed-in user authored, anywhere on GitHub.
+    fn authored_open(&self) -> Authored<'_> {
+        Box::pin(async { Err("this observer cannot search pull requests".to_owned()) })
+    }
+    /// The branch the head of the pull request at `url` is on.
+    fn head_branch<'a>(&'a self, _url: &'a str) -> Branch<'a> {
+        Box::pin(async { Err("this observer cannot read the branch of a pull request".to_owned()) })
     }
 }
 
@@ -60,6 +88,12 @@ impl PrObserver for Arc<dyn PrObserver> {
     fn close<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, comment: &'a str) -> Closed<'a> {
         (**self).close(host, repository, number, comment)
     }
+    fn authored_open(&self) -> Authored<'_> {
+        (**self).authored_open()
+    }
+    fn head_branch<'a>(&'a self, url: &'a str) -> Branch<'a> {
+        (**self).head_branch(url)
+    }
 }
 
 impl<T: PrObserver> PrObserver for Arc<T> {
@@ -68,6 +102,12 @@ impl<T: PrObserver> PrObserver for Arc<T> {
     }
     fn close<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, comment: &'a str) -> Closed<'a> {
         (**self).close(host, repository, number, comment)
+    }
+    fn authored_open(&self) -> Authored<'_> {
+        (**self).authored_open()
+    }
+    fn head_branch<'a>(&'a self, url: &'a str) -> Branch<'a> {
+        (**self).head_branch(url)
     }
 }
 
@@ -101,7 +141,7 @@ impl PrObserver for GhCli {
     fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Observed<'a> {
         Box::pin(async move {
             let url = format!("https://{}/{repository}/pull/{number}", alondra_core::domain::normalize_pr_host(host));
-            let run = tokio::process::Command::new(&self.program)
+            let run = alondra_core::outside::AsyncCommand::new(&self.program)
                 .args(["pr", "view", &url, "--json", OBSERVED_FIELDS])
                 .kill_on_drop(true)
                 .output();
@@ -122,6 +162,24 @@ impl PrObserver for GhCli {
             let url = pr_url(host, repository, number);
             self.run(&["pr", "close", &url, "--comment", comment], None, Duration::from_secs(30)).await
                 .map(drop).map_err(|failure| failure.to_string())
+        })
+    }
+    fn authored_open(&self) -> Authored<'_> {
+        Box::pin(async move {
+            let args = ["search", "prs", "--author", "@me", "--state", "open", "--limit", "1000", "--json", "repository,number,url"];
+            let output = self.run(&args, None, Duration::from_secs(30)).await.map_err(|failure| failure.to_string())?;
+            serde_json::from_slice(&output).map_err(|error| format!("decoding the open PR search: {error}"))
+        })
+    }
+    fn head_branch<'a>(&'a self, url: &'a str) -> Branch<'a> {
+        Box::pin(async move {
+            #[derive(serde::Deserialize)]
+            struct Head {
+                #[serde(rename = "headRefName")]
+                name: String,
+            }
+            let output = self.run(&["pr", "view", url, "--json", "headRefName"], None, Duration::from_secs(30)).await.map_err(|failure| failure.to_string())?;
+            serde_json::from_slice::<Head>(&output).map(|head| head.name).map_err(|error| format!("decoding the branch: {error}"))
         })
     }
 }
@@ -157,7 +215,7 @@ impl GhCli {
     }
 
     async fn output(&self, args: &[&str], dir: Option<&std::path::Path>, limit: Duration) -> Result<std::process::Output, GhFailure> {
-        let mut command = tokio::process::Command::new(&self.program);
+        let mut command = alondra_core::outside::AsyncCommand::new(&self.program);
         command.args(args).kill_on_drop(true);
         if let Some(dir) = dir {
             command.current_dir(dir);

@@ -9,7 +9,7 @@ use serde_json::Value;
 const FIELDS: &str = "title,body,baseRefName,headRefName,additions,deletions,changedFiles,statusCheckRollup,mergeable,mergeStateStatus,state,headRefOid,isDraft";
 
 async fn gh_json(args: &[&str]) -> Option<Value> {
-    let out = clock::timeout(Duration::from_secs(30), tokio::process::Command::new("gh").args(args).kill_on_drop(true).output()).await.ok()?.ok()?;
+    let out = clock::timeout(Duration::from_secs(30), alondra_core::outside::AsyncCommand::new("gh").args(args).kill_on_drop(true).output()).await.ok()?.ok()?;
     out.status.success().then(|| serde_json::from_slice(&out.stdout).ok()).flatten()
 }
 
@@ -29,7 +29,7 @@ pub trait Gh: Sync {
 }
 
 async fn gh_run(args: &[String]) -> Result<Value, String> {
-    let run = tokio::process::Command::new("gh").args(args).kill_on_drop(true).output();
+    let run = alondra_core::outside::AsyncCommand::new("gh").args(args).kill_on_drop(true).output();
     match clock::timeout(Duration::from_secs(30), run).await {
         Ok(Ok(out)) if out.status.success() => serde_json::from_slice(&out.stdout).map_err(|e| e.to_string()),
         Ok(Ok(out)) => Err(String::from_utf8_lossy(&out.stderr).trim().to_string()),

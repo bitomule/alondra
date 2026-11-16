@@ -4,7 +4,8 @@
 use crate::claude_code;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+use crate::outside::Command;
 use std::time::{Duration, Instant};
 
 const UPDATE_TIMEOUT: Duration = Duration::from_secs(300);

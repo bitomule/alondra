@@ -95,7 +95,7 @@ fn lang_of(body: &Value) -> &'static str {
 /// What the CLI printed, as the document it is, or why there is none.
 async fn run(cli: PathBuf, home: &Path, lang: &str, args: Vec<String>, input: Option<String>, limit: Duration) -> Result<Value, Reply> {
     use tokio::io::AsyncWriteExt;
-    let mut command = tokio::process::Command::new(cli);
+    let mut command = alondra_core::outside::AsyncCommand::new(cli);
     command.args(&args).env("ALONDRA_HOME", home).env("ALONDRA_LANG", lang)
         .stdin(if input.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
         .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())

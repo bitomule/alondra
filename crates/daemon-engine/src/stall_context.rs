@@ -4,7 +4,7 @@ use crate::live::LiveOf as _;
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::{DomainState, Interaction, Scope, Task, WorktreeOrigin};
 use std::path::Path;
-use std::process::Command;
+use alondra_core::outside::Command;
 
 const MISSION_SHOWN: usize = 4_000;
 const WORDS_SHOWN: usize = 2_000;

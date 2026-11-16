@@ -86,7 +86,7 @@ fn attachment_at(path: &Path, source: &str) -> anyhow::Result<Attachment> {
 /// Replaces the stored file with a JPEG next to it; `None` leaves the original in place.
 fn to_jpeg(path: &Path) -> Option<PathBuf> {
     let out = path.with_extension("jpg");
-    let ok = std::process::Command::new("/usr/bin/sips")
+    let ok = alondra_core::outside::Command::new("/usr/bin/sips")
         .args(["-s", "format", "jpeg"])
         .arg(path)
         .arg("--out")
@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn an_iphone_photo_arrives_as_a_jpeg_the_node_can_see() {
         let home = home("heic");
-        let sample = std::process::Command::new("/usr/bin/sips")
+        let sample = alondra_core::outside::Command::new("/usr/bin/sips")
             .args(["-s", "format", "heic", "-z", "8", "8", "/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/GenericDocumentIcon.icns", "--out"])
             .arg(home.join("IMG_0001.HEIC"))
             .output()

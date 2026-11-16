@@ -111,7 +111,7 @@ fn a_scenario_that_is_not_valid_never_starts() {
 
 #[test]
 fn a_process_started_through_the_launcher_is_a_leak() {
-    let result = run_with(&scenario(SMALL), None, |launcher| {
+    let result = run_with(&scenario(SMALL), None, |probe| {
         let state = tempfile::tempdir().unwrap();
         let bootstrap = tempfile::tempfile().unwrap();
         let spawn = alondra_agent_runtime::owned_host::HostSpawn {
@@ -122,7 +122,7 @@ fn a_process_started_through_the_launcher_is_a_leak() {
             confinement: None,
             stdin: bootstrap,
         };
-        assert!(launcher.get().spawn(spawn).is_err());
+        assert!(probe.launcher.get().spawn(spawn).is_err());
     });
     match result {
         Err(ScenarioError::Leak(what)) => assert_eq!(what, "process /usr/bin/true"),
@@ -216,4 +216,48 @@ fn a_badge_the_phone_never_got_fails_a_check_on_it() {
 fn a_check_on_pushes_needs_the_checkpoint_to_read_them() {
     let lines = "\n[[step.expect]]\ncheck = \"no_pushes\"\n";
     assert!(matches!(delivered(lines), Err(ScenarioError::Invalid(_))));
+}
+
+#[test]
+fn a_program_the_daemon_runs_is_a_leak() {
+    let result = run_with(&scenario(SMALL), None, |_| {
+        assert!(alondra_core::outside::Command::new("/usr/bin/true").status().is_err());
+    });
+    match result {
+        Err(ScenarioError::Leak(what)) => assert_eq!(what, "process /usr/bin/true"),
+        other => panic!("expected a leak, found {:?}", other.map(|_| ())),
+    }
+}
+
+#[test]
+fn a_host_the_daemon_looks_up_is_a_leak() {
+    let result = run_with(&scenario(SMALL), None, |_| {
+        assert!(alondra_core::outside::connect("example.invalid").is_err());
+        assert!(alondra_core::outside::connect("127.0.0.1").is_ok(), "the daemon itself is inside the world");
+    });
+    match result {
+        Err(ScenarioError::Leak(what)) => assert_eq!(what, "network example.invalid"),
+        other => panic!("expected a leak, found {:?}", other.map(|_| ())),
+    }
+}
+
+/// The Codex case, with a restart once a new host resumed the thread and a checkpoint nobody
+/// accepted: the run fails while the host the first daemon started was left running for the next
+/// one to adopt.
+#[test]
+fn the_hosts_of_a_scenario_that_fails_end_with_it() {
+    let case = std::path::Path::new("crates/scenarios/cases/codex-turn-cut-and-resumed");
+    let text = std::fs::read_to_string(case.join("scenario.toml")).unwrap();
+    let cut = text.find("[[step]]\ndo = \"checkpoint\"").expect("the case checks what it shows once its host resumed");
+    let mut failing = Scenario::parse(&format!("{}[[step]]\ndo = \"restart\"\n\n[[step]]\ndo = \"checkpoint\"\nname = \"never-accepted\"\nscreens = [\"home\"]\n", &text[..cut])).unwrap();
+    failing.case = Some(case.to_path_buf());
+    let accepted = tempfile::tempdir().unwrap();
+    let mut hosts = None;
+    let result = run_with(&failing, Some(accepted.path()), |probe| hosts = Some(probe.hosts.clone()));
+    assert!(result.is_err(), "the checkpoint was never accepted");
+    let members = hosts.unwrap().members();
+    assert!(!members.is_empty(), "the case starts a host");
+    for member in &members {
+        assert!(!alondra_process_group::alive(member).unwrap(), "{member} outlived the scenario");
+    }
 }

@@ -12,7 +12,8 @@ use crate::locks::Poisonable as _;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+use alondra_core::outside::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -161,7 +162,6 @@ fn run_probe(backend: &SdkBackend, folder: Option<&Path>, flag: &str) -> Result<
         }
         None => Command::new(artifact.executable()),
     };
-    use std::os::unix::process::CommandExt;
     let mut child = command
         .arg(artifact.artifact())
         .arg(flag)
