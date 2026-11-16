@@ -683,6 +683,7 @@ checks:
       - "crates/foundation/**"
       - "crates/process-group/**"
       - "crates/provider-claude/**"
+      - "crates/provider-conformance/**"
       - "crates/provider-contract/**"
       - "crates/scenarios-transcript/**"
       - "fixtures/transcripts/**"
@@ -721,7 +722,9 @@ checks:
       - "crates/provider-claude/build_inputs_test.bzl"
       - "crates/provider-claude/src/archive_tests.rs"
       - "crates/provider-codex/**"
+      - "crates/provider-conformance/**"
       - "crates/provider-contract/**"
+      - "crates/scenarios-transcript/**"
       - "crates/store/**"
       - "crates/test_support.rs"
       - "tools/BUILD.bazel"
@@ -731,6 +734,31 @@ checks:
     with:
       targets:
         - //crates/provider-codex/...
+
+  crate-provider-conformance:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "clippy.toml"
+      - "crates/agent-application/**"
+      - "crates/domain-store-schema/**"
+      - "crates/domain/**"
+      - "crates/foundation/**"
+      - "crates/provider-conformance/**"
+      - "crates/provider-contract/**"
+      - "crates/scenarios-transcript/**"
+      - "crates/store/**"
+      - "tools/BUILD.bazel"
+      - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
+      - "version.bzl"
+    with:
+      targets:
+        - //crates/provider-conformance/...
 
   crate-provider-contract:
     uses: bazel/test

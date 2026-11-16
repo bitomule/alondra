@@ -19,6 +19,7 @@ getrandom = "0.4.3"
 
 [dev-dependencies]
 alondra-domain.workspace = true
+alondra-provider-conformance.workspace = true
 rusqlite.workspace = true
 tempfile.workspace = true
 sha2.workspace = true

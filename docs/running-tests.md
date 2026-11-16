@@ -150,6 +150,12 @@ action is pressed on the card the view serves, through `POST /actions`.
 - Views show local time: the runner needs `TZ=UTC`, which the Bazel targets and `accept` set.
 - `crates/scenarios-transcript` reads the transcript of a provider's process, one reader for
   every user of one.
+- `crates/provider-conformance` holds the scenarios every provider adapter must pass: a native
+  transcript per provider and one expected sequence of neutral facts. Each provider's test target
+  runs them through its real normalizer; `bazel test //crates/provider-codex:provider_codex_test
+  --test_arg=conformance_tests::` (or provider-claude) runs only the suite and prints its table.
+  A difference known today is listed in its `catalogue.rs` with its cause; one that stops happening
+  fails the suite until its entry is removed.
 
 ## End to end
 
