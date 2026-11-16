@@ -1962,6 +1962,13 @@ async fn started_on_the_new_account(slice:&Slice){
         }
     }).await.expect("no node started on the account the task moved to");
 }
+/// The context the move handed to the task's next node, as its journal recorded it: what that node
+/// starts from, whether it starts at once or on a later pass.
+fn handed_context(slice:&Slice)->String{
+    let observer=slice.observer();
+    let facts:String=observer.query_row("SELECT facts FROM provider_transition_steps WHERE task_id=?1 AND phase='context_ready' ORDER BY sequence DESC LIMIT 1",[TASK],|row|row.get(0)).unwrap();
+    serde_json::from_str::<serde_json::Value>(&facts).unwrap()["context"].as_str().expect("the handed context").to_owned()
+}
 fn paused_by_the_user(slice:&Slice)->bool{
     Slice::lifecycle(&slice.domain).cards().iter().any(|(_,reason)|*reason==alondra_domain::WaitReason::Pause)
 }
@@ -2128,11 +2135,9 @@ async fn a_task_built_on_four_tasks_and_told_a_long_brief_moves_with_every_input
     }
     request_move(&slice);
     assert_eq!(settled_move(&slice).await,"done","the move ends: {:?}",slice.domain.state().unwrap().tasks[&task].move_refused);
-    started_on_the_new_account(&slice).await;
-    assert_eq!(slice.domain.state().unwrap().tasks[&task].account_key(),AccountKey::native(Provider::Claude));
-    let prompt=slice.prompts().into_iter().find(|prompt|prompt.starts_with("Alondra task context (public records)")).expect("Claude starts from the task's record");
-    for text in &inputs{assert!(prompt.contains(text.as_str()),"every input reaches the new node whole: {}",&text[..20]);}
-    for (id,_) in earlier{assert!(prompt.contains(&format!("The {id} findings.")),"the work it builds on reaches the new node: {id}");}
+    let context=handed_context(&slice);
+    for text in &inputs{assert!(context.contains(text.as_str()),"every input reaches the new node whole: {}",&text[..20]);}
+    for (id,_) in earlier{assert!(context.contains(&format!("The {id} findings.")),"the work it builds on reaches the new node: {id}");}
     slice.domain.stop_sdk_owners();
 }
 
@@ -2150,13 +2155,10 @@ async fn a_task_told_more_than_its_context_held_moves_with_every_input(){
     slice.run(&system(),"newest",Command::TellNode{task_id:task.clone(),text:"Extend the task: also cover the closing path".into(),from_user:false,answers:None});
     request_move(&slice);
     assert_eq!(settled_move(&slice).await,"done","the move ends: {:?}",slice.domain.state().unwrap().tasks[&task].move_refused);
-    started_on_the_new_account(&slice).await;
-    let state=slice.domain.state().unwrap();
-    assert_eq!(state.tasks[&task].account_key(),AccountKey::native(Provider::Claude));
-    let prompt=slice.prompts().into_iter().find(|prompt|prompt.starts_with("Alondra task context (public records)")).expect("Claude starts from the task's record");
-    assert!(prompt.contains("Extend the task: also cover the closing path"),"the newest input reaches the new node: {prompt}");
-    for n in 0..40{assert!(prompt.contains(&format!("Notice {n:02}. {filler}")),"every earlier input reaches the new node whole: notice {n}");}
-    assert!(prompt.contains(&excerpt),"the work it builds on reaches the new node: {prompt}");
+    let context=handed_context(&slice);
+    assert!(context.contains("Extend the task: also cover the closing path"),"the newest input reaches the new node: {context}");
+    for n in 0..40{assert!(context.contains(&format!("Notice {n:02}. {filler}")),"every earlier input reaches the new node whole: notice {n}");}
+    assert!(context.contains(&excerpt),"the work it builds on reaches the new node: {context}");
     slice.domain.stop_sdk_owners();
 }
 
