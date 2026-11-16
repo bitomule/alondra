@@ -134,7 +134,7 @@ every key shares is kept once per language; keys that read files or GitHub (`mac
 | Guard equals execution, every button | `assert_guard_matches_execution`, in `action()` under `cfg(test)` | a button's guard accepts or refuses differently from running its command on a copy |
 | Guard equals execution, every refusal | `guards_refuse_what_the_commands_refuse` (`domain/tests.rs`) | any button command × 5 actors × 5 envelopes × 4 delivery states disagrees |
 | View budget | `//crates/core:views_budget_test` | any of 29 keys renders cold over 50 ms (median of 5) on a real-size domain, or a `Family` has no measured key |
-| Index cost | `make read-index-bench` | building the index of a real-size domain with 420 waiting cards takes over 10 ms |
+| Index cost | `bazelisk run -c opt //crates/core:read_index_cost -- --check-cost` | building the index of a real-size domain with 420 waiting cards takes over 10 ms |
 | Snapshot pairing | `domain_runtime.rs` tests | a commit publishes a state without its index, or a stale pair is accepted |
 | Live snapshot reuse | `views::live` cache tests | a fact change does not force exactly one new read, or a snapshot read across a change is kept |
 
@@ -184,7 +184,7 @@ Copy of the real domain (351 tasks, 304 nodes, 326 requests, 1817 cards, 257 PRs
 
 Real-size fixture (`views_budget_test`: 286 tasks, 287 nodes, 1858 cards, 270 PRs, 12 waiting):
 index build 1.6 ms; every view 0.04–1.4 ms median against the 50 ms budget (sidebar 1.4, search
-1.4, the rest under 0.6). `make read-index-bench` (308 tasks, 1708 cards, 420 waiting): 2.4 ms
+1.4, the rest under 0.6). `bazelisk run -c opt //crates/core:read_index_cost -- --check-cost` (308 tasks, 1708 cards, 420 waiting): 2.4 ms
 median, 2.7 ms max against 10 ms.
 
 What is left of a cold home on the real copy is the live gather; the commit cost is SQLite.

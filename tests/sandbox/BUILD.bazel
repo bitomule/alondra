@@ -117,7 +117,7 @@ sh_test(
     ],
 )
 
-# Opt-in too: the scripted journeys (make e2e-journeys) on a fresh sandbox with the fake claude and gh.
+# Opt-in too: the scripted journeys (the `journeys` test) on a fresh sandbox with the fake claude and gh.
 sh_test(
     name = "journeys",
     timeout = "long",
@@ -229,7 +229,7 @@ sh_test(
     ],
 )
 
-# Opt-in: a task through the Agent SDK host and the pinned native Claude (make e2e-sdk), its
+# Opt-in: a task through the Agent SDK host and the pinned native Claude (the `sdk_journey` test), its
 # turn-end card answered from the phone. macOS arm64, about 250 MB of native binary, no account.
 sh_test(
     name = "sdk_journey",
