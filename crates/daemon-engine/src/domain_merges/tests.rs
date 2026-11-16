@@ -233,7 +233,7 @@ async fn an_auto_merge_waits_for_the_task_that_reviews_it_and_merges_once_it_app
 #[tokio::test]
 async fn an_auto_merge_goes_through_the_claims_checks() {
     let (_home, domain, github) = presented("auto-base", true);
-    github.statuses.lock().unwrap().insert(7, Ok(Status { state: PrState::Open, head: HEAD.into(), base: "develop".into(), checks: Checks::Passed, passed: BTreeSet::new(), merge_state: MergeState::Clean }));
+    github.statuses.lock().unwrap().insert(7, Ok(Status { state: PrState::Open, head: HEAD.into(), head_ref: String::new(), base: "develop".into(), checks: Checks::Passed, passed: BTreeSet::new(), merge_state: MergeState::Clean }));
     assert!(now().merge_due(&domain, &github).await.unwrap());
     assert!(github.merged.lock().unwrap().is_empty(), "GitHub's base differs from the registered one: the claim refuses");
     assert_eq!(domain.state().unwrap().merge_authorizations.values().next().unwrap().attempt, MergeAttemptState::Unclaimed);

@@ -38,6 +38,8 @@ pub enum Checks {
 pub struct Status {
     pub state: PrState,
     pub head: String,
+    /// The name of the branch the PR comes from.
+    pub head_ref: String,
     pub base: String,
     pub checks: Checks,
     /// The names of the checks that succeeded or need nothing more.
@@ -175,11 +177,11 @@ impl PrMerger for GhCli {
     fn status<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, Status> {
         Box::pin(async move {
             let url = pr_url(&pr.host, &pr.repository, pr.number);
-            let out = self.run(&["pr", "view", &url, "--json", "state,headRefOid,baseRefName,statusCheckRollup,mergeStateStatus,mergeable"], None,
+            let out = self.run(&["pr", "view", &url, "--json", "state,headRefOid,headRefName,baseRefName,statusCheckRollup,mergeStateStatus,mergeable"], None,
                 Duration::from_secs(30)).await?;
             let value: Value = serde_json::from_slice(&out).map_err(GhFailure::unreadable)?;
             let facts = crate::domain_github::parse(&value).map_err(GhFailure::Unreadable)?;
-            Ok(Status { state: facts.state, head: facts.head, base: facts.base, checks: rollup(&value), passed: passed(&value),
+            Ok(Status { state: facts.state, head: facts.head, head_ref: value["headRefName"].as_str().unwrap_or_default().to_owned(), base: facts.base, checks: rollup(&value), passed: passed(&value),
                 merge_state: MergeState::of(&value) })
         })
     }
@@ -550,7 +552,9 @@ impl Merger {
 
     async fn retarget_stack(&mut self, domain: &DomainRuntime, github: &impl PrMerger, item: &Due, status: Status) -> Result<Option<Status>> {
         let state = domain.state()?;
-        let Some(stack) = state.tasks.get(&item.pr.task_id).and_then(|task| task.stack.as_ref()).cloned() else { return Ok(Some(status)) };
+        let Some(stack) = state.tasks.get(&item.pr.task_id).and_then(|task| task.stack.as_ref()).cloned() else {
+            return self.retarget_sibling(domain, github, item, status).await;
+        };
         if state.stack_ready(&state.tasks[&item.pr.task_id]).is_err() { return Ok(None); }
         let Some(upstream) = state.pull_requests.get(&stack.pr_id) else { return Ok(None) };
         if upstream.host != item.pr.host || upstream.repository != item.pr.repository { return Ok(None); }
@@ -577,16 +581,50 @@ impl Merger {
                 && now.presentation == item.presentation && now.authorization == item.authorization)
         { return Ok(None); }
         if current.base != default {
-            if let Err(error) = github.retarget(&item.pr, &default).await {
-                self.troubled(domain, &item.pr, &error);
-                return Ok(None);
-            }
-            current = match github.status(&item.pr).await {
-                Ok(current) => current,
+            return self.move_onto(domain, github, item, &default).await;
+        }
+        Ok((current.state == PrState::Open && current.head == item.head).then_some(current))
+    }
+
+    /// A pull request opened on the branch of another pull request of its own task, with no stack declared:
+    /// it waits until that one is merged, then moves onto the default branch before it merges.
+    async fn retarget_sibling(&mut self, domain: &DomainRuntime, github: &impl PrMerger, item: &Due, status: Status) -> Result<Option<Status>> {
+        let state = domain.state()?;
+        let siblings: Vec<_> = state.pull_requests.values().filter(|other| other.id != item.pr.id && other.task_id == item.pr.task_id
+            && other.host == item.pr.host && other.repository == item.pr.repository).cloned().collect();
+        if siblings.is_empty() { return Ok(Some(status)); }
+        let default = match github.default_branch(&item.pr).await {
+            Ok(base) => base,
+            Err(error) => { self.troubled(domain, &item.pr, &error); return Ok(None); }
+        };
+        if status.base == default { return Ok(Some(status)); }
+        for sibling in &siblings {
+            let remote = match github.status(sibling).await {
+                Ok(remote) => remote,
                 Err(error) => { self.troubled(domain, &item.pr, &error); return Ok(None); }
             };
-            if !observe_status(domain, &item.pr.id, &current)? { return Ok(None); }
+            if remote.head_ref != status.base { continue; }
+            match remote.state {
+                PrState::Open => return Ok(None),
+                PrState::Closed => return Ok(Some(status)),
+                PrState::Merged if remote.base != default => return Ok(None),
+                PrState::Merged => record_merged(domain, sibling, &remote)?,
+            }
+            return self.move_onto(domain, github, item, &default).await;
         }
+        Ok(Some(status))
+    }
+
+    async fn move_onto(&mut self, domain: &DomainRuntime, github: &impl PrMerger, item: &Due, default: &str) -> Result<Option<Status>> {
+        if let Err(error) = github.retarget(&item.pr, default).await {
+            self.troubled(domain, &item.pr, &error);
+            return Ok(None);
+        }
+        let current = match github.status(&item.pr).await {
+            Ok(current) => current,
+            Err(error) => { self.troubled(domain, &item.pr, &error); return Ok(None); }
+        };
+        if !observe_status(domain, &item.pr.id, &current)? { return Ok(None); }
         Ok((current.state == PrState::Open && current.head == item.head && current.base == default).then_some(current))
     }
 
@@ -1082,7 +1120,7 @@ impl FakeGithub {
             retargets: Default::default(), after_retarget: Default::default(), on_draft: Default::default(), on_default: Default::default() }
     }
     pub fn open(&self, number: u64, head: &str, checks: Checks) {
-        self.statuses.lock().unwrap().insert(number, Ok(Status { state: PrState::Open, head: head.into(), base: "main".into(), checks,
+        self.statuses.lock().unwrap().insert(number, Ok(Status { state: PrState::Open, head: head.into(), head_ref: String::new(), base: "main".into(), checks,
             passed: BTreeSet::new(), merge_state: MergeState::Clean }));
     }
     /// An open PR whose `mergeStateStatus` is BLOCKED.
