@@ -31,7 +31,7 @@ low_opt_rust_test(
     edition = "2024",
     version = "0.1.0",
     deps = _DEPS + ["//crates/domain:domain"] + all_crate_deps(normal_dev = True),
-    compile_data = ["//crates/agent-protocol:fixtures/hello.json", "//crates/alondrad:src/domain_store/schema.sql"] + glob(["fixtures/native/*.jsonl"]),
+    compile_data = ["//crates/agent-protocol:fixtures/hello.json", "//crates/domain-store-schema:schema.sql"] + glob(["fixtures/native/*.jsonl"]),
     env = {"HOME": "."},
 )
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

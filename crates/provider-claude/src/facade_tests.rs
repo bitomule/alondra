@@ -22,7 +22,7 @@ impl Fixture {
         let mut connection = SqlConnection::open(directory.join("domain.db")).unwrap();
         connection.execute_batch("PRAGMA foreign_keys=ON").unwrap();
         connection
-            .execute_batch(include_str!("../../alondrad/src/domain_store/schema.sql"))
+            .execute_batch(include_str!("../../domain-store-schema/schema.sql"))
             .unwrap();
         connection.execute_batch("CREATE TABLE task_worktrees(task_id TEXT PRIMARY KEY,dir TEXT NOT NULL,at INTEGER NOT NULL); INSERT INTO domain_meta VALUES(1,'epoch',0,0); INSERT INTO requests(id,body,closed) VALUES('request','Work',0); INSERT INTO agents(id,name) VALUES('node','Worker'); INSERT INTO tasks(id,request_id,title,state,revision,started,review_prs,archived) VALUES('task','request','Task','not_started',0,0,0,0)").unwrap();
         connection

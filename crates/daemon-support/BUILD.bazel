@@ -1,5 +1,5 @@
 load("//tools:tree.bzl", "repo_tree")
-load("//crates/alondrad:build_inputs_test.bzl", "rust_inputs_test")
+load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_library")
@@ -74,6 +74,9 @@ rust_inputs_test(
 )
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+
+# Evidence alondrad's check of the domain v2 acceptance catalog finds tests in.
+exports_files(["src/domain_authority.rs", "src/domain_cutover.rs"], visibility = ["//crates/alondrad:__pkg__"])
 
 # The crate's production sources: the crash report's log catalog reads them, and fails on a test
 # file among them; alondrad's lock policy test reads them too.

@@ -3,16 +3,19 @@ load("@crates//:defs.bzl", "all_crate_deps")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_doc_test", "rust_library", "rust_test")
 load("//tools:rust_sources.bzl", "production_sources")
+load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
+
+CORE_DEPS = all_crate_deps(normal = True) + ["//crates/foundation:foundation", "//crates/domain:domain"]
 
 rust_library(
     name = "alondra_core",
-    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    srcs = production_sources(test_only = ["src/recorded.rs", "src/model_decider/properties.rs"]),
     compile_data = ["src/model_sheets.toml"],
     crate_name = "alondra_core",
     edition = "2024",
     version = "0.1.0",
     visibility = ["//visibility:public"],
-    deps = all_crate_deps(normal = True) + ["//crates/foundation:foundation", "//crates/domain:domain"],
+    deps = CORE_DEPS,
 )
 
 exports_files(glob(["fixtures/*.jsonl"]) + ["src/domain/tests.rs"])
@@ -28,10 +31,13 @@ rust_doc_test(
 low_opt_rust_test(
     name = "alondra_core_test",
     timeout = "moderate",
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
     compile_data = glob(["fixtures/*.jsonl", "fixtures/*.json"]) + ["src/model_sheets.toml", "//fixtures/views:all", "//fixtures/views:cards", "//fixtures/views:metrics", "//fixtures/accounts:recorded-rows.json", "//:docs/architecture/cards.md"],
-    crate = ":alondra_core",
-    deps = all_crate_deps(normal_dev = True),
+    crate_name = "alondra_core",
+    crate_root = "src/lib.rs",
+    deps = CORE_DEPS + all_crate_deps(normal_dev = True),
     edition = "2024",
+    version = "0.1.0",
 )
 
 # Opt-in profiling driver; ordinary tests do not execute it.
@@ -94,6 +100,18 @@ rust_test(
         "//crates/domain:domain",
         "@crates//:serde_json",
     ],
+)
+
+# The library compiles only production sources: a test file among its inputs would rebuild every
+# crate above it whenever the test changes.
+rust_inputs_test(
+    name = "production_inputs_test",
+    size = "small",
+    required_sources = ["crates/core/src/lib.rs"],
+    source_dir = "crates/core/src/",
+    target_under_test = ":alondra_core",
+    test_only_sources = ["crates/core/src/views/tests.rs", "crates/core/src/recorded.rs", "crates/core/src/model_decider/properties.rs", "crates/test_support.rs"],
+    test_sources = False,
 )
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

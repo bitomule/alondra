@@ -4,6 +4,7 @@ load("@crates//:defs.bzl", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
+load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 
 WORKSPACE_DEPS = [
     "//crates/core:alondra_core",
@@ -12,7 +13,7 @@ WORKSPACE_DEPS = [
 
 rust_library(
     name = "daemon_engine_model",
-    srcs = glob(["src/**/*.rs"]),
+    srcs = production_sources(test_only = ["src/faults.rs"]),
     crate_name = "alondra_daemon_engine_model",
     edition = "2024",
     version = VERSION,
@@ -44,6 +45,18 @@ low_opt_rust_test(
     env = {"HOME": "."},
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/daemon-support:daemon_support"],
+)
+
+# The library compiles only production sources: a test file among its inputs would rebuild every
+# crate above it whenever the test changes.
+rust_inputs_test(
+    name = "production_inputs_test",
+    size = "small",
+    required_sources = ["crates/daemon-engine-model/src/lib.rs"],
+    source_dir = "crates/daemon-engine-model/src/",
+    target_under_test = ":daemon_engine_model",
+    test_only_sources = ["crates/daemon-engine-model/src/faults.rs"],
+    test_sources = False,
 )
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

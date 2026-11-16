@@ -2,10 +2,12 @@ load("//tools:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//tools:rust_sources.bzl", "production_sources")
+load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 
 rust_library(
     name = "alondra_e2e",
-    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    srcs = production_sources(),
     crate_name = "alondra_e2e",
     edition = "2024",
     version = "0.1.0",
@@ -16,9 +18,24 @@ rust_library(
 low_opt_rust_test(
     name = "alondra_e2e_test",
     size = "small",
-    crate = ":alondra_e2e",
-    deps = all_crate_deps(normal_dev = True),
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    crate_name = "alondra_e2e",
+    crate_root = "src/lib.rs",
+    version = "0.1.0",
+    deps = all_crate_deps(normal = True, normal_dev = True),
     edition = "2024",
+)
+
+# The library compiles only production sources: a test file among its inputs would rebuild every
+# crate above it whenever the test changes.
+rust_inputs_test(
+    name = "production_inputs_test",
+    size = "small",
+    required_sources = ["crates/e2e/src/lib.rs"],
+    source_dir = "crates/e2e/src/",
+    target_under_test = ":alondra_e2e",
+    test_only_sources = ["crates/test_support.rs"],
+    test_sources = False,
 )
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

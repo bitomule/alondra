@@ -152,7 +152,7 @@ fn database(path: &Path, cwd: &Path) -> rusqlite::Connection {
     let connection = rusqlite::Connection::open(path).unwrap();
     connection.execute_batch("PRAGMA foreign_keys=ON").unwrap();
     connection
-        .execute_batch(include_str!("../../alondrad/src/domain_store/schema.sql"))
+        .execute_batch(include_str!("../../domain-store-schema/schema.sql"))
         .unwrap();
     connection.execute_batch("CREATE TABLE task_worktrees(task_id TEXT PRIMARY KEY,dir TEXT NOT NULL,at INTEGER NOT NULL); INSERT INTO domain_meta VALUES(1,'sdk-epoch',0,0); INSERT INTO requests(id,body,closed) VALUES('sdk-request','Work',0); INSERT INTO agents(id,name) VALUES('sdk-node','Worker'); INSERT INTO tasks(id,request_id,title,state,revision,started,review_prs,archived) VALUES('sdk-task','sdk-request','SDK fixture task','not_started',0,0,0,0)").unwrap();
     connection

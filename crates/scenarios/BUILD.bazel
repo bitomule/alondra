@@ -98,11 +98,16 @@ rust_binary(
     deps = all_crate_deps(normal = True),
 )
 
-# The transcripts the repository keeps: `//crates/scenarios-transcript:transcript_guard_test` checks each.
-filegroup(
-    name = "transcripts",
-    srcs = glob(["cases/**/*.ndjson", "cases/**/synthetic.txt", "transcripts/**"], allow_empty = True),
-    visibility = ["//crates/scenarios-transcript:__pkg__", "//crates/provider-claude:__pkg__"],
+# Every transcript the repository keeps, the scenarios' and the replayed fixtures', is anonymized.
+low_opt_rust_test(
+    name = "transcript_guard_test",
+    size = "small",
+    srcs = ["tests/transcript_guard.rs"],
+    crate_root = "tests/transcript_guard.rs",
+    data = glob(["cases/**/*.ndjson", "cases/**/synthetic.txt"]) + ["//fixtures/transcripts"],
+    edition = "2024",
+    env_inherit = ["ALONDRA_PRIVATE_LITERALS"],
+    deps = ["//crates/scenarios-transcript:scenarios_transcript"],
 )
 
 # `bazel run //crates/scenarios:capture -- --task <id> --out .scratch/<name>.ndjson` anonymizes the

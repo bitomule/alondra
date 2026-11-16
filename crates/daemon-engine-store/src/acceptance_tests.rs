@@ -8,14 +8,10 @@
 use super::*;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use crate::acceptance_cases::CASES;
 use std::collections::BTreeSet;
 
 const CATALOG: &str = include_str!("../../../fixtures/domain-v2/acceptance.json");
-const CASES: &[&str] = &[
-    "V01", "V03", "V06", "V07", "V08", "V09", "V10", "V11", "V16", "V17", "V18", "V20", "V21",
-    "V23", "V24", "V25", "V45", "V50", "V52",
-];
-const SCHEDULE_CASES: &[&str] = &["V54", "V55", "V56", "V57", "V58", "V62"];
 fn expected_rejection(case_id: &str, step: usize) -> Option<&'static str> {
     match (case_id, step) {
         ("V07", 1) => Some("acceptance_missing"),
@@ -800,71 +796,4 @@ fn shared_catalog_domain_and_sql_cases() {
         );
         restarted.integrity_check().unwrap();
     }
-}
-
-/// Every catalog scenario states how it is executed, and the statement holds:
-/// runner cases are exactly the listed ones, evidence names existing tests, and
-/// pending scenarios say which layer they wait for.
-#[test]
-fn catalog_execution_status_is_explicit_and_evidenced() {
-    let catalog: Value = serde_json::from_str(CATALOG).unwrap();
-    let legend = field(&catalog, "execution_status_legend")
-        .as_object()
-        .unwrap();
-    let sources = [
-        include_str!("tests.rs"),
-        include_str!("schedule_acceptance_tests.rs"),
-        include_str!("../../daemon-support/src/domain_cutover.rs"),
-        include_str!("../../daemon-support/src/domain_authority.rs"),
-        include_str!("../../alondrad/src/domain_api.rs"),
-        include_str!("../../alondrad/src/service/domain_parity_tests.rs"),
-        include_str!("../../core/src/domain/tests.rs"),
-    ];
-    let mut runner = BTreeSet::new();
-    let mut schedule_runner = BTreeSet::new();
-    for case in field(&catalog, "scenarios").as_array().unwrap() {
-        let id = string(field(case, "id"));
-        let status = string(field(case, "execution_status"));
-        assert!(
-            legend.contains_key(status),
-            "{id}: status {status} is not in the legend"
-        );
-        match status {
-            "store_runner" => {
-                runner.insert(id);
-            }
-            "schedule_runner" => {
-                schedule_runner.insert(id);
-            }
-            "test_evidence" => {
-                let evidence = field(case, "cs_evidence").as_array().unwrap();
-                assert!(
-                    !evidence.is_empty(),
-                    "{id}: test_evidence needs cs_evidence"
-                );
-                for name in evidence {
-                    let function = string(name).rsplit("::").next().unwrap();
-                    assert!(
-                        sources
-                            .iter()
-                            .any(|source| source.contains(&format!("fn {function}("))),
-                        "{id}: evidence {} names no existing test",
-                        string(name)
-                    );
-                }
-            }
-            _ => {
-                assert!(
-                    case.get("cs_evidence")
-                        .is_none_or(|e| e.as_array().unwrap().is_empty()),
-                    "{id}: a pending scenario cannot also claim evidence"
-                );
-            }
-        }
-    }
-    assert_eq!(runner, CASES.iter().copied().collect::<BTreeSet<_>>());
-    assert_eq!(
-        schedule_runner,
-        SCHEDULE_CASES.iter().copied().collect::<BTreeSet<_>>()
-    );
 }

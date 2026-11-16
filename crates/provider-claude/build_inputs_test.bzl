@@ -18,7 +18,7 @@ def _rust_inputs_test_impl(ctx):
         "crates/provider-claude/src/facade_tests.rs",
         "crates/test_support.rs",
         "crates/agent-application/tests/support/controller.rs",
-        "crates/alondrad/src/domain_store/schema.sql",
+        "crates/domain-store-schema/schema.sql",
         "crates/agent-protocol/fixtures/hello.json",
     ]
     for action in actions:

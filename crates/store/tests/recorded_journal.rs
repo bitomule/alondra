@@ -13,7 +13,7 @@ fn recorded(directory: &test_support::Directory, fixture: &str) -> Connection {
     std::fs::create_dir_all(&**directory).unwrap();
     let mut connection = Connection::open(directory.join("domain.db")).unwrap();
     connection.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
-    connection.execute_batch(include_str!("../../alondrad/src/domain_store/schema.sql")).unwrap();
+    connection.execute_batch(include_str!("../../domain-store-schema/schema.sql")).unwrap();
     let mut installing = connection.transaction_with_behavior(TransactionBehavior::Immediate).unwrap();
     LifecycleTransaction::install(&mut installing).unwrap();
     installing.commit().unwrap();

@@ -225,11 +225,11 @@ impl Fixture {
         let mut connection = Connection::open(directory.join("domain.db")).unwrap();
         connection.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
         connection
-            .execute_batch(include_str!("../../alondrad/src/domain_store/schema.sql"))
+            .execute_batch(include_str!("../../domain-store-schema/schema.sql"))
             .unwrap();
         connection
             .execute_batch(include_str!(
-                "../../alondrad/src/domain_store/schedule_launch_transition.sql"
+                "../../domain-store-schema/schedule_launch_transition.sql"
             ))
             .unwrap();
         // The daemon currently creates this additive table outside schema.sql (TASK_WORKTREES).
