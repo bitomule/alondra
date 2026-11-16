@@ -243,6 +243,12 @@ pub fn begin_initial_check(domain: &DomainRuntime) {
     domain.live.initial_account_check_pending.store(true, std::sync::atomic::Ordering::Release);
 }
 
+/// The check after startup is done: a scenario has no account to probe, so it says so itself.
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn finish_initial_check(domain: &DomainRuntime) {
+    domain.live.initial_account_check_pending.store(false, std::sync::atomic::Ordering::Release);
+}
+
 pub fn require_initial_check(domain: &DomainRuntime) -> Result<(), alondra_core::domain::DomainError> {
     if domain.live.initial_account_check_pending.load(std::sync::atomic::Ordering::Acquire) {
         return Err(alondra_core::domain::DomainError::new("account_check_in_progress", "Accounts are being checked after startup. New nodes will wait for current authentication and billing information."));

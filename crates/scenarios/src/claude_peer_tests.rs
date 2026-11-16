@@ -138,3 +138,19 @@ fn a_command_the_transcript_did_not_expect_is_a_mismatch_with_both_frames() {
         other => panic!("expected a mismatch, found {other:?}"),
     }
 }
+
+#[test]
+fn the_prompt_of_an_offer_only_has_to_contain_what_the_transcript_names() {
+    let frame = |prompt: &str, input: &str| json!({"protocol_version": 1, "body": {"type": "command", "action": {"type": "offer", "input_id": input, "prompt": prompt}}});
+    let expected = frame("Add the CSV export", "");
+    assert!(is_expected(&expected, &frame("Resumed. Add the CSV export, then stop.", "input-9")));
+    assert!(!is_expected(&expected, &frame("Something else", "input-9")));
+}
+
+#[test]
+fn what_the_daemon_assigns_replaces_the_name_a_transcript_gives_it() {
+    let mut payload = json!({"params": {"inputId": "«input»", "items": ["«input»", "«conversation»"]}});
+    name_assigned(&mut payload, "«input»", &json!("input-9"));
+    name_assigned(&mut payload, "«conversation»", &json!("conversation-3"));
+    assert_eq!(payload, json!({"params": {"inputId": "input-9", "items": ["input-9", "conversation-3"]}}));
+}

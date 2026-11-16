@@ -5,6 +5,7 @@
 
 pub mod checkpoint;
 pub mod claude_peer;
+pub mod codex_peer;
 pub mod error;
 pub mod format;
 pub mod http;
@@ -32,7 +33,9 @@ pub fn cases(cases_root: &Path) -> std::io::Result<Vec<PathBuf>> {
 pub fn load(case: &Path) -> Result<Scenario, ScenarioError> {
     let text = std::fs::read_to_string(case.join("scenario.toml"))
         .map_err(|error| ScenarioError::Invalid(format!("{}: {error}", case.join("scenario.toml").display())))?;
-    Scenario::parse(&text)
+    let mut scenario = Scenario::parse(&text)?;
+    scenario.case = Some(case.to_path_buf());
+    Ok(scenario)
 }
 
 /// Runs the case and compares every checkpoint with the files accepted in its folder.

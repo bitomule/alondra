@@ -19,7 +19,7 @@
                 {
                   "attachments": false,
                   "enabled": true,
-                  "id": "merge:d1@6~00000000-d1",
+                  "id": "merge:d1@<revision>~00000000-d1",
                   "input": {
                     "kind": "none"
                   },
@@ -74,7 +74,7 @@
                     "title": "Close PR #7 without merging?"
                   },
                   "enabled": true,
-                  "id": "close_unmerged:d1@6",
+                  "id": "close_unmerged:d1@<revision>",
                   "input": {
                     "kind": "none"
                   },
@@ -110,7 +110,7 @@
                   "kind": "diff_lines"
                 },
                 "enabled": true,
-                "id": "changes:pr7@15~00000000",
+                "id": "changes:pr7@<revision>~00000000",
                 "input": {
                   "kind": "text",
                   "multiline": true,

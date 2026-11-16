@@ -2303,9 +2303,13 @@ impl Owner {
         let domain_of_owner = Arc::clone(&domain);
         let ended = Arc::new(AtomicBool::new(false));
         let ending = Arc::clone(&ended);
+        let clock = alondra_core::clock::Clock::current();
+        let runtime = tokio::runtime::Handle::try_current().ok();
         let thread = std::thread::Builder::new()
             .name(format!("sdk-owner-{}", driver.task))
             .spawn(move || {
+                let _clock = clock.enter();
+                let _runtime = runtime.as_ref().map(tokio::runtime::Handle::enter);
                 let told = || flag.load(Ordering::SeqCst);
                 let mut lost_because = None;
                 loop {

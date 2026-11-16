@@ -35,7 +35,7 @@
         {
           "attachments": false,
           "enabled": true,
-          "id": "clear_completed:view@25",
+          "id": "clear_completed:view@<revision>",
           "input": {
             "kind": "none"
           },
