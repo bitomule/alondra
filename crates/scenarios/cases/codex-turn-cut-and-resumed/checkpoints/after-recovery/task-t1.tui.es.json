@@ -156,6 +156,10 @@
             {
               "label": "Gestión de PR",
               "value": "La revisas tú; al aceptarla, Alondra hace el merge"
+            },
+            {
+              "label": "Esfuerzo",
+              "value": "Automático"
             }
           ],
           "type": "facts"

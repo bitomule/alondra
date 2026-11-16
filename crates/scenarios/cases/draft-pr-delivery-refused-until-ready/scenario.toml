@@ -1,0 +1,74 @@
+name = "a final delivery of a draft pull request is turned down, and the same delivery is presented once the PR is ready"
+max_virtual = "1h"
+
+[[step]]
+do = "request"
+text = "Export the report as CSV"
+task = "t1"
+title = "Add the CSV export"
+
+[[step]]
+do = "github"
+event = "open_pr"
+number = 7
+head = "csv-export"
+base = "main"
+draft = true
+
+[[step]]
+do = "register_pr"
+task = "t1"
+number = 7
+
+[[step]]
+do = "present"
+task = "t1"
+id = "d1"
+prs = [7]
+body = "The CSV export is ready"
+refused = "pull_request_is_draft"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "refused-while-draft"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "#7"
+present = false
+
+[[step]]
+do = "github"
+event = "mark_ready"
+number = 7
+
+[[step]]
+do = "advance"
+by = "150s"
+
+[[step]]
+do = "present"
+task = "t1"
+id = "d1"
+prs = [7]
+body = "The CSV export is ready"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "presented-when-ready"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "#7"

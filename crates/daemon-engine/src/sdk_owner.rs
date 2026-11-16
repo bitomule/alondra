@@ -37,7 +37,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 /// The host an SDK execution runs on, as the domain records it: never `claude-bg`.
-pub(crate) const HOST: &str = "alondra-sdk";
+pub const HOST: &str = "alondra-sdk";
 const DRIVER: &str = "claude-agent-sdk";
 /// How long the owner waits for the host before it looks again for a control to send: a quiet
 /// turn never holds back an interrupt.
@@ -2836,4 +2836,10 @@ fn retake_told(domain: &DomainRuntime, command: &Command) {
         | Command::ReconnectMcp { task_id, .. } | Command::StartMcpSignIn { task_id, .. } | Command::ClearMcpSignIn { task_id, .. } = command {
         wake_released(domain, task_id);
     }
+}
+
+/// The SDK host of `agent` is one a test plays by hand, with no owner thread: it counts as owned.
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn drive_by_hand(domain: &DomainRuntime, agent: &AgentId) {
+    domain.sdk_owners().driven_by_hand.lock().expect("driven by hand poisoned").insert(agent.clone());
 }

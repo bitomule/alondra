@@ -135,8 +135,13 @@ fake world), the clock (virtual: time moves only when a step says so), the push 
 Mac's load and the provider's process. A case is a folder, `crates/scenarios/cases/<name>/`, with
 a `scenario.toml` (a world, steps, checkpoints) and the accepted checkpoints. At a checkpoint the
 runner reads the views of the daemon by client and language (the same `GET /views/...` the apps
-read) and the pushes sent since the last one, and compares them with the accepted files. An
-action is pressed on the card the view serves, through `POST /actions`.
+read) and the pushes sent since the last one, and compares them with the accepted files. The
+user acts as the app does: a request is written on the new request screen, a message in the
+task's composer, and an action is pressed on the card the view serves, all through
+`POST /actions`; an action the daemon turns down fails the step. A node calls its tools as
+`alondra mcp-node` does, at the task's routes with the capability the daemon issued to its
+session, so a delivery goes through the same checks (a draft pull request is refused). The nodes
+a scenario plays count as the daemon's own SDK hosts, also after a restart.
 
 - `bazel test //crates/scenarios:scenarios_test` runs every case; `--test_arg=<name>` runs the
   cases whose name contains it. `//crates/scenarios:scenarios_harness_test` tests the harness

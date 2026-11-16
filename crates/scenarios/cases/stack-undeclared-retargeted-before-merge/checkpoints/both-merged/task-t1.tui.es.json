@@ -33,7 +33,7 @@
                 "since": "<instant>",
                 "until": "<instant>"
               },
-              "text": "<1 min",
+              "text": "2 min",
               "tone": "neutral"
             }
           ],
@@ -74,7 +74,7 @@
           "icon": "history",
           "id": "now",
           "struck": false,
-          "title": "nodo abierto: es tu propia sesión",
+          "title": "nodo cerrado",
           "type": "row"
         }
       ]
@@ -99,9 +99,9 @@
         {
           "depth": 0,
           "icon": "pull_request",
-          "id": "pr7",
+          "id": "github.com/demo/app#7",
           "link": {
-            "key": "pull_request:pr7",
+            "key": "pull_request:github.com/demo/app#7",
             "kind": "view"
           },
           "struck": false,
@@ -112,9 +112,9 @@
         {
           "depth": 0,
           "icon": "pull_request",
-          "id": "pr8",
+          "id": "github.com/demo/app#8",
           "link": {
-            "key": "pull_request:pr8",
+            "key": "pull_request:github.com/demo/app#8",
             "kind": "view"
           },
           "struck": false,
@@ -139,6 +139,10 @@
             {
               "label": "Gestión de PR",
               "value": "La revisas tú; al aceptarla, Alondra hace el merge"
+            },
+            {
+              "label": "Esfuerzo",
+              "value": "Automático"
             }
           ],
           "type": "facts"

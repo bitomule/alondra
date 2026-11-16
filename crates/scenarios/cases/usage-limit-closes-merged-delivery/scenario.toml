@@ -38,6 +38,11 @@ error = "rate_limit"
 status = 429
 
 [[step]]
+do = "provider_down"
+error = "rate_limit"
+status = 429
+
+[[step]]
 do = "rest"
 max = "5m"
 
@@ -54,6 +59,10 @@ action = "merge"
 [[step]]
 do = "rest"
 max = "10m"
+
+[[step]]
+do = "advance"
+by = "30m"
 
 [[step]]
 do = "rest"

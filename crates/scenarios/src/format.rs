@@ -72,14 +72,16 @@ pub struct StackOn {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "do", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Step {
-    /// The user asks for something: a request and the first task of it.
+    /// The user asks for something from the app's new request screen, and the orchestrator makes
+    /// the first task of it.
     Request { text: String, task: String, title: String },
     /// A further task of the request, optionally stacked on a pull request of an earlier one.
     Task { id: String, title: String, #[serde(default)] stack_on: Option<StackOn> },
     /// The node of `task` registers a pull request it opened.
     RegisterPr { task: String, number: u64 },
-    /// The node of `task` presents the pull requests as its result.
-    Present { task: String, id: String, prs: Vec<u64>, body: String },
+    /// The node of `task` presents the pull requests as its result. With `refused`, the daemon must
+    /// turn the delivery down with that code, and nothing is presented.
+    Present { task: String, id: String, prs: Vec<u64>, body: String, #[serde(default)] refused: Option<String> },
     /// The node of `task` tells the pull request is ready for others to stack on.
     StackReady { task: String, presentation: String, pr: u64 },
     /// The task starts on Codex: the daemon launches its node as it does in production, and the
@@ -110,10 +112,13 @@ pub enum Step {
     LoginRestored,
     /// The SDK host of `task` ended. `resumes`: another host resumes the same session.
     HostExit { task: String, #[serde(default)] resumes: bool },
-    /// The user writes to the node of `task`.
+    /// The user writes to the node of `task` from the task's screen of the app.
     Tell { task: String, text: String },
-    /// The node of `task` reads the message the user wrote to it, in the turn it has running.
+    /// The node of `task` reads the oldest message the user wrote to it that it has not read, in
+    /// the turn it has running: the input that message became must still be waiting.
     ReadMessage { task: String },
+    /// The node of `task` says it cleaned up after its task, as `cleanup_done` does.
+    CleanupDone { task: String },
     /// The node of `task` ended and Alondra recorded it.
     NodeEnd { task: String },
     /// The daemon stops and starts again over the same home, as a restart does.
@@ -134,7 +139,9 @@ pub enum Step {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case", deny_unknown_fields)]
 pub enum GithubChange {
-    OpenPr { number: u64, head: String, base: String },
+    OpenPr { number: u64, head: String, base: String, #[serde(default)] draft: bool },
+    /// The PR leaves draft, as `gh pr ready` does.
+    MarkReady { number: u64 },
     MergeExternally { number: u64 },
     CloseExternally { number: u64 },
 }

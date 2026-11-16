@@ -14,8 +14,8 @@
             {
               "kind": "state",
               "label": "Estado",
-              "tone": "success",
-              "value": "Terminada"
+              "tone": "accent",
+              "value": "Trabajando · Turno en marcha desde las 09:01"
             },
             {
               "kind": "request",
@@ -35,10 +35,9 @@
           "badges": [
             {
               "elapsed": {
-                "since": "<instant>",
-                "until": "<instant>"
+                "since": "<instant>"
               },
-              "text": "1 min",
+              "text": "desde las 09:00",
               "tone": "neutral"
             }
           ],
@@ -46,7 +45,7 @@
           "icon": "history",
           "id": "elapsed",
           "struck": false,
-          "title": "Duró",
+          "title": "En marcha",
           "type": "row"
         }
       ]
@@ -71,20 +70,6 @@
       ]
     },
     {
-      "collapsed": false,
-      "id": "now",
-      "items": [
-        {
-          "depth": 0,
-          "icon": "history",
-          "id": "now",
-          "struck": false,
-          "title": "nodo abierto: es tu propia sesión",
-          "type": "row"
-        }
-      ]
-    },
-    {
       "collapsed": true,
       "id": "request",
       "items": [
@@ -104,9 +89,9 @@
         {
           "depth": 0,
           "icon": "pull_request",
-          "id": "pr41",
+          "id": "github.com/demo/app#41",
           "link": {
-            "key": "pull_request:pr41",
+            "key": "pull_request:github.com/demo/app#41",
             "kind": "view"
           },
           "struck": false,
@@ -117,9 +102,9 @@
         {
           "depth": 0,
           "icon": "pull_request",
-          "id": "pr42",
+          "id": "github.com/demo/app#42",
           "link": {
-            "key": "pull_request:pr42",
+            "key": "pull_request:github.com/demo/app#42",
             "kind": "view"
           },
           "struck": false,
@@ -144,6 +129,10 @@
             {
               "label": "Gestión de PR",
               "value": "La revisas tú; al aceptarla, Alondra hace el merge"
+            },
+            {
+              "label": "Esfuerzo",
+              "value": "Automático"
             }
           ],
           "type": "facts"
@@ -175,16 +164,100 @@
             },
             {
               "attachments": false,
+              "confirm": {
+                "button": "Interrumpir",
+                "message": "¿Detener lo que hace ahora este nodo? Conserva su tarea y te espera.",
+                "title": "Interrumpir"
+              },
               "enabled": true,
-              "id": "reopen:t1@<revision>",
+              "id": "interrupt:agent-t1@<revision>",
               "input": {
                 "kind": "none"
               },
-              "label": "Reabrir",
+              "label": "Interrumpir",
               "presentation": "button",
               "resolves_card": false,
               "role": "neutral",
               "style": "secondary"
+            },
+            {
+              "attachments": false,
+              "confirm": {
+                "button": "Pausar",
+                "message": "Deja lo que está ejecutando ahora y conserva su tarea. Alondra no lo reanuda solo: solo tú.",
+                "title": "¿Pausar este nodo?"
+              },
+              "enabled": true,
+              "id": "pause:agent-t1@<revision>",
+              "input": {
+                "kind": "none"
+              },
+              "label": "Pausar",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "neutral",
+              "stamp": "En pausa",
+              "style": "secondary"
+            },
+            {
+              "attachments": false,
+              "enabled": true,
+              "id": "set_priority:t1@<revision>",
+              "input": {
+                "kind": "none"
+              },
+              "label": "Prioridad",
+              "options": [
+                {
+                  "description": "Arranca antes que Normal y Baja",
+                  "id": "high",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "Alta",
+                  "style": "secondary"
+                },
+                {
+                  "description": "La de siempre",
+                  "id": "normal",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "Normal · ahora",
+                  "style": "secondary"
+                },
+                {
+                  "description": "Arranca cuando no espera nada más",
+                  "id": "low",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "Baja",
+                  "style": "secondary"
+                }
+              ],
+              "presentation": "menu",
+              "resolves_card": false,
+              "role": "neutral",
+              "style": "secondary"
+            },
+            {
+              "attachments": false,
+              "confirm": {
+                "button": "Cancelar tarea",
+                "message": "¿Cancelar esta tarea?",
+                "title": "Cancelar tarea"
+              },
+              "enabled": true,
+              "id": "cancel:t1@<revision>",
+              "input": {
+                "kind": "none"
+              },
+              "label": "Cancelar tarea",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "risk",
+              "style": "destructive"
             }
           ],
           "type": "actions"
@@ -215,12 +288,12 @@
       {
         "id": "tasks",
         "label": "Tareas",
-        "value": 0
+        "value": 1
       },
       {
         "id": "working",
         "label": "trabajando",
-        "value": 0
+        "value": 1
       },
       {
         "id": "needs_you",
@@ -274,10 +347,10 @@
       "text": "No hay ninguna cuenta de proveedor disponible · revisa Cuentas",
       "tone": "warning"
     },
-    "summary": "0 tareas trabajando",
+    "summary": "1 tarea trabajando",
     "summary_parts": [
       {
-        "count": 0,
+        "count": 1,
         "id": "working",
         "one": "{count} tarea trabajando",
         "other": "{count} tareas trabajando"

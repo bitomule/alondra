@@ -55,6 +55,8 @@ pub(crate) struct Client {
     pr_view: std::sync::Mutex<Arc<dyn PrView>>,
     /// A holder that panics leaves it whole, so it is recovered: one `Arc` swapped or cloned.
     pr_images: std::sync::Mutex<Arc<dyn crate::pr_images::GitHubImages>>,
+    /// A holder that panics leaves it whole, so it is recovered: one `Arc` swapped or cloned.
+    pr_merger: std::sync::Mutex<Arc<dyn alondra_daemon_engine::domain_merges::PrMerger>>,
     pub(crate) views: crate::views::cache::Cache,
     pub(crate) feeds: crate::views::feed::Feeds,
     /// A holder that panics leaves it whole, so it is recovered: one `Arc` swapped or cloned.
@@ -287,6 +289,7 @@ impl Client {
             details: Default::default(),
             pr_view: std::sync::Mutex::new(Arc::new(GhView)),
             pr_images: std::sync::Mutex::new(Arc::new(crate::pr_images::Gh::new())),
+            pr_merger: std::sync::Mutex::new(Arc::new(crate::domain_github::GhCli::new())),
             views: Default::default(),
             feeds: Default::default(),
             sessions: std::sync::Mutex::new(Arc::new(crate::node_close::Machine)),

@@ -6,12 +6,12 @@
       "alondra": {
         "actions": [
           {
-            "id": "merge:pr41@<revision>~00000000-d1",
+            "id": "merge:github.com/demo/app#41@<revision>~00000000-d1",
             "label": "Squash and merge",
             "option": "squash"
           },
           {
-            "id": "changes:pr41@<revision>~00000000",
+            "id": "changes:github.com/demo/app#41@<revision>~00000000",
             "label": "Request changes",
             "placeholder": "Describe the changes",
             "text": true

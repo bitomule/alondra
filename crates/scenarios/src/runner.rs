@@ -137,6 +137,10 @@ struct Context<'a> {
     leaks: Arc<Mutex<Vec<String>>>,
     phone: Phone,
     heads: BTreeMap<u64, String>,
+    /// The capability the daemon issued to each task's node, by task.
+    capabilities: BTreeMap<String, String>,
+    /// The inputs the user's messages became, by task, in the order the user wrote them.
+    told: BTreeMap<String, std::collections::VecDeque<String>>,
     request: Option<String>,
     commands: u64,
     spent: Duration,
@@ -198,6 +202,8 @@ async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnc
         leaks,
         phone,
         heads: BTreeMap::new(),
+        capabilities: BTreeMap::new(),
+        told: BTreeMap::new(),
         request: None,
         commands: 0,
         spent: Duration::ZERO,
@@ -296,13 +302,23 @@ fn agent_of(task: &str) -> String {
     format!("agent-{task}")
 }
 
-fn pr_id(number: u64) -> String {
-    format!("pr{number}")
-}
 
 impl Context<'_> {
     fn daemon(&self) -> &Assembled {
         self.daemon.as_ref().expect("a daemon is assembled between steps")
+    }
+
+    /// The id the daemon gives the scenario's PR `number`: its host, repository and number.
+    fn pr_id(&self, number: u64) -> alondra_core::domain::PrId {
+        alondra_core::domain::hosted_pr_id(REPOSITORY_HOST, &self.scenario.world.repository, number)
+    }
+
+    /// The subject a case names a card by: `pr7` stands for the card of the scenario's PR 7.
+    fn subject(&self, named: &str) -> String {
+        match named.strip_prefix("pr").and_then(|number| number.parse().ok()) {
+            Some(number) => self.pr_id(number).0,
+            None => named.to_owned(),
+        }
     }
 
     fn failed(index: usize, reason: impl std::fmt::Display) -> ScenarioError {
@@ -340,11 +356,9 @@ impl Context<'_> {
         match step {
             Step::Request { text, task, title } => {
                 self.command(index, Actor::System, Command::RegisterAgent { agent_id: agent_of(task).into(), name: task.clone(), at: 0 })?;
-                self.command(index, Actor::User { user_id: "ana".into() }, Command::CreateRequest {
-                    request_id: "request".into(), body: text.clone(), auto_merge: false, maintenance: false, message: false,
-                })?;
-                self.command(index, orchestrator(), Command::TitleRequest { request_id: "request".into(), title: title.clone() })?;
-                self.request = Some("request".into());
+                let request = self.new_request(index, text).await?;
+                self.command(index, orchestrator(), Command::TitleRequest { request_id: request.clone().into(), title: title.clone() })?;
+                self.request = Some(request);
                 self.create_task(index, task, title, None)?;
             }
             Step::Task { id, title, stack_on } => {
@@ -353,7 +367,7 @@ impl Context<'_> {
                     Some(on) => Some(StackDependency {
                         upstream_task: on.upstream.clone().into(),
                         presentation_id: on.presentation.clone().into(),
-                        pr_id: pr_id(on.pr).into(),
+                        pr_id: self.pr_id(on.pr),
                         head: self.head(index, on.pr)?,
                     }),
                     None => None,
@@ -362,23 +376,23 @@ impl Context<'_> {
             }
             Step::RegisterPr { task, number } => {
                 let head = self.head(index, *number)?;
-                self.command(index, Actor::Agent { agent_id: agent_of(task).into() }, Command::RegisterPr {
+                self.node_command(index, task, &format!("/tasks/{task}/pull-requests"), None, Command::RegisterPr {
                     task_id: task.clone().into(),
-                    pr_id: pr_id(*number).into(),
+                    pr_id: self.pr_id(*number),
                     host: REPOSITORY_HOST.into(),
                     repository: self.scenario.world.repository.clone(),
                     number: *number,
                     head,
                     base: self.github.base_of(*number),
                     allowed_methods: vec![MergeMethod::Squash, MergeMethod::Merge],
-                })?;
+                }).await?;
             }
-            Step::Present { task, id, prs, body } => {
+            Step::Present { task, id, prs, body, refused } => {
                 let mut targets = Vec::new();
                 for number in prs {
-                    targets.push(DeliveryTarget::PullRequest { pr_id: pr_id(*number).into(), head: self.head(index, *number)? });
+                    targets.push(DeliveryTarget::PullRequest { pr_id: self.pr_id(*number), head: self.head(index, *number)? });
                 }
-                self.command(index, Actor::Agent { agent_id: agent_of(task).into() }, Command::PresentResult {
+                self.node_command(index, task, &format!("/tasks/{task}/results"), refused.as_deref(), Command::PresentResult {
                     checklist: Vec::new(),
                     attachments: Vec::new(),
                     task_id: task.clone().into(),
@@ -388,24 +402,26 @@ impl Context<'_> {
                     is_final: true,
                     nothing_to_review: false,
                     card: CardSpec::delivery("Review the result", &[], true),
-                })?;
+                }).await?;
             }
             Step::StackReady { task, presentation, pr } => {
                 let head = self.head(index, *pr)?;
-                self.command(index, Actor::Agent { agent_id: agent_of(task).into() }, Command::PublishStackReadiness {
+                self.node_command(index, task, &format!("/tasks/{task}/stack-readiness"), None, Command::PublishStackReadiness {
                     task_id: task.clone().into(),
                     presentation_id: presentation.clone().into(),
-                    pr_id: pr_id(*pr).into(),
+                    pr_id: self.pr_id(*pr),
                     head,
                     ready: true,
-                })?;
+                }).await?;
             }
             Step::CodexNode { task, .. } => self.start_codex_node(index, task).await?,
             Step::Github(change) => match change {
-                GithubChange::OpenPr { number, head, base } => {
+                GithubChange::OpenPr { number, head, base, draft } => {
                     let commit = self.github.open_pr(*number, head, base);
+                    self.github.set_draft(*number, *draft);
                     self.heads.insert(*number, commit);
                 }
+                GithubChange::MarkReady { number } => self.github.set_draft(*number, false),
                 GithubChange::MergeExternally { number } => self.github.merge_externally(*number),
                 GithubChange::CloseExternally { number } => self.github.close_externally(*number),
             },
@@ -427,13 +443,14 @@ impl Context<'_> {
             }
             Step::ProviderUp | Step::LoginRestored => self.outage = None,
             Step::HostExit { task, resumes } => self.host_exit(index, task, *resumes)?,
-            Step::Tell { task, text } => {
-                self.command(index, Actor::System, Command::TellNode { task_id: task.clone().into(), text: text.clone(), from_user: true, answers: None })?;
-            }
+            Step::Tell { task, text } => self.tell(index, task, text).await?,
             Step::ReadMessage { task } => {
-                let input = self.pending_input(index, task)?.ok_or_else(|| Self::failed(index, format!("{task} has no message waiting")))?;
+                let input = self.message_waiting(index, task)?;
                 let generation = self.hosts.get(task).map_or(1, |host| host.generation);
                 self.command(index, Actor::System, Command::RecordRuntimeFacts { task_id: task.clone().into(), generation, facts: vec![RuntimeObservation::InputConsumed { input }] })?;
+            }
+            Step::CleanupDone { task } => {
+                self.node_command(index, task, &format!("/tasks/{task}/cleanup"), None, Command::ConfirmCleanup { task_id: task.clone().into(), discard: Vec::new() }).await?;
             }
             Step::NodeEnd { task } => {
                 self.command(index, Actor::System, Command::RecordNodeEnd { task_id: task.clone().into(), end: NodeEnd::Closed, agent_id: Some(agent_of(task).into()) })?;
@@ -575,13 +592,18 @@ impl Context<'_> {
 
     /// The pending input the task's node has not taken yet, if any.
     fn pending_input(&self, index: usize, task: &str) -> Result<Option<String>, ScenarioError> {
+        Ok(self.pending_inputs(index, task)?.into_iter().next())
+    }
+
+    fn pending_inputs(&self, index: usize, task: &str) -> Result<Vec<String>, ScenarioError> {
         let state = self.daemon().domain.state().map_err(|e| Self::failed(index, e))?;
         let lifecycle = state.lifecycle_of(&task.to_owned().into()).map_err(|e| Self::failed(index, e))?;
-        Ok(lifecycle.pending_inputs().first().map(|input| input.as_str().to_owned()))
+        Ok(lifecycle.pending_inputs().into_iter().map(|input| input.as_str().to_owned()).collect())
     }
 
     fn start_node(&mut self, index: usize, task: &str) -> Result<(), ScenarioError> {
-        alondra_daemon_engine::domain_store::admit_through_sdk(&self.daemon().domain, &task.to_owned().into(), &agent_of(task));
+        alondra_daemon_engine::sdk_owner::drive_by_hand(&self.daemon().domain, &agent_of(task).into());
+        alondra_daemon_engine::domain_store::admit_through_sdk_with_host(&self.daemon().domain, &task.to_owned().into(), &agent_of(task), alondra_daemon_engine::sdk_owner::HOST);
         let input = self
             .pending_input(index, task)?
             .ok_or_else(|| Self::failed(index, format!("the admitted task {task} has no input to take")))?;
@@ -634,7 +656,9 @@ impl Context<'_> {
         Ok(())
     }
 
-    /// Stops the daemon and starts it again over the same home, with the same edges.
+    /// Stops the daemon and starts it again over the same home, with the same edges. The hosts the
+    /// scenario plays outlive it, and the new daemon counts them as its own before it takes over
+    /// the SDK executions.
     async fn restart(&mut self, index: usize) -> Result<(), ScenarioError> {
         if let Some(old) = self.daemon.take() {
             old.tasks.abort();
@@ -645,7 +669,11 @@ impl Context<'_> {
         }
         let launcher = Launcher::new(RefusingLauncher(self.leaks.clone()));
         let seams = seams_of(&self.github, &self.pushes, launcher, Backend::Given(None));
-        let daemon = assemble::start(&self.config, seams).await.map_err(|e| Self::failed(index, format!("{e:#}")))?;
+        let domain = alondra_daemon_engine::wiring::open(&self.config.home).map_err(|e| Self::failed(index, format!("{e:#}")))?;
+        for task in self.hosts.keys() {
+            alondra_daemon_engine::sdk_owner::drive_by_hand(&domain, &agent_of(task).into());
+        }
+        let daemon = assemble::start_over(&self.config, domain, seams).await.map_err(|e| Self::failed(index, format!("{e:#}")))?;
         self.daemon = Some(daemon);
         self.pass(Duration::from_secs(1), index).await
     }
@@ -703,11 +731,92 @@ impl Context<'_> {
     async fn press(&mut self, index: usize, presentation: &str, verb: &str, typed: Option<&str>, screen: &str) -> Result<(), ScenarioError> {
         let (client, lang) = ("ios", "en");
         let view = self.view(screen, client, lang).await?;
-        let found = find_action(&view, presentation, verb);
+        let found = find_action(&view, &self.subject(presentation), verb);
         let Some(action) = found else {
             return Err(ScenarioError::ActionMissing { presentation: presentation.to_owned(), action: verb.to_owned(), view: checkpoint::render(&view) });
         };
-        self.send_action(index, &view, &action, verb, typed, client, lang).await
+        self.send_action(index, &view, &action, verb, typed_input(typed), client, lang).await.map(drop)
+    }
+
+    /// The user writes a request on the app's new request screen; the daemon names it by the
+    /// command that sent it.
+    async fn new_request(&mut self, index: usize, text: &str) -> Result<String, ScenarioError> {
+        let (client, lang) = ("ios", "en");
+        let view = self.view("new_request", client, lang).await?;
+        let Some(action) = find_action(&view, "view", "new_request") else {
+            return Err(ScenarioError::ActionMissing { presentation: "new_request".into(), action: "new_request".into(), view: checkpoint::render(&view) });
+        };
+        self.send_action(index, &view, &action, "new_request", json!({"fields": {"text": text}}), client, lang).await
+    }
+
+    /// The user writes to the task's node from the task's screen, with the composer the app shows
+    /// there: to the node that runs it, or kept on the task for the node that starts it.
+    async fn tell(&mut self, index: usize, task: &str, text: &str) -> Result<(), ScenarioError> {
+        let (client, lang) = ("ios", "en");
+        let screen = format!("task:{task}");
+        let view = self.view(&screen, client, lang).await?;
+        let Some(action) = find_message(&view, task) else {
+            return Err(ScenarioError::ActionMissing { presentation: screen, action: "msg".into(), view: checkpoint::render(&view) });
+        };
+        let before = self.pending_inputs(index, task)?;
+        self.send_action(index, &view, &action, "msg", json!({"text": text}), client, lang).await?;
+        let input = self
+            .pending_inputs(index, task)?
+            .into_iter()
+            .find(|input| !before.contains(input))
+            .ok_or_else(|| Self::failed(index, format!("the message to {task} left no input for its node")))?;
+        self.told.entry(task.to_owned()).or_default().push_back(input);
+        Ok(())
+    }
+
+    /// The input of the oldest message the user wrote to `task` that its node has not read: it
+    /// must still wait for the node, whatever happened since it was written.
+    fn message_waiting(&mut self, index: usize, task: &str) -> Result<String, ScenarioError> {
+        let input = self
+            .told
+            .get_mut(task)
+            .and_then(std::collections::VecDeque::pop_front)
+            .ok_or_else(|| Self::failed(index, format!("nobody wrote to {task}")))?;
+        if !self.pending_inputs(index, task)?.contains(&input) {
+            return Err(Self::failed(index, format!("the message the user wrote to {task} no longer waits for its node")));
+        }
+        Ok(input)
+    }
+
+    /// The capability the daemon issues to the node of `task` when it binds its session: once,
+    /// kept by the node for as long as it runs, across restarts of the daemon.
+    fn capability(&mut self, index: usize, task: &str) -> Result<String, ScenarioError> {
+        if let Some(capability) = self.capabilities.get(task) {
+            return Ok(capability.clone());
+        }
+        let capability = self.daemon().domain.bind_agent(&agent_of(task)).map_err(|e| Self::failed(index, e))?;
+        let capability = capability.expose_for_child_environment().to_owned();
+        self.capabilities.insert(task.to_owned(), capability.clone());
+        Ok(capability)
+    }
+
+    /// A tool of the node of `task`, called as `alondra mcp-node` calls it: the command's fields at
+    /// the tool's route, with the session's capability. With `refused`, the daemon must turn it
+    /// down with that code.
+    async fn node_command(&mut self, index: usize, task: &str, path: &str, refused: Option<&str>, command: Command) -> Result<(), ScenarioError> {
+        let capability = self.capability(index, task)?;
+        self.commands += 1;
+        let state = self.daemon().domain.state().map_err(|e| Self::failed(index, e))?;
+        let mut body = serde_json::to_value(&command).map_err(|e| Self::failed(index, e))?;
+        let fields = body.as_object_mut().ok_or_else(|| Self::failed(index, "a command is an object"))?;
+        fields.remove("kind");
+        fields.insert("data_epoch".into(), json!(state.data_epoch));
+        fields.insert("command_id".into(), json!(format!("node-{}", self.commands)));
+        fields.insert("expected_revision".into(), json!(0));
+        let addr = std::net::SocketAddr::new(self.config.listen, self.config.port);
+        let response = crate::http::node_post(addr, &capability, path, &body).await.map_err(|e| Self::failed(index, e))?;
+        let code = (response.status >= 300).then(|| response.json()["code"].as_str().unwrap_or_default().to_owned());
+        match (refused, code) {
+            (None, None) => Ok(()),
+            (Some(wanted), Some(code)) if wanted == code => Ok(()),
+            (Some(wanted), None) => Err(Self::failed(index, format!("the daemon accepted {path}; the case expects it refused with {wanted}"))),
+            (_, Some(_)) => Err(ScenarioError::ActionRefused { action: format!("POST {path}"), code: response.status, body: response.body }),
+        }
     }
 
     /// The user presses the option of a card, as the app does it from the view of the home.
@@ -717,25 +826,27 @@ impl Context<'_> {
         let Some(action) = find_option(&view, card, option) else {
             return Err(ScenarioError::ActionMissing { presentation: card.to_owned(), action: option.to_owned(), view: checkpoint::render(&view) });
         };
-        self.send_action(index, &view, &action, option, typed, client, lang).await
+        self.send_action(index, &view, &action, option, typed_input(typed), client, lang).await.map(drop)
     }
 
-    async fn send_action(&mut self, index: usize, view: &Value, action: &Value, verb: &str, typed: Option<&str>, client: &str, lang: &str) -> Result<(), ScenarioError> {
+    /// Sends the action as the app does and answers the id of the command that carried it.
+    async fn send_action(&mut self, index: usize, view: &Value, action: &Value, verb: &str, input: Value, client: &str, lang: &str) -> Result<String, ScenarioError> {
         self.commands += 1;
+        let command_id = format!("00000000-0000-4000-8000-{:012x}", self.commands);
         let body = json!({
             "protocol": alondra_core::views::VIEWS_PROTOCOL,
-            "command_id": format!("00000000-0000-4000-8000-{:012x}", self.commands),
+            "command_id": command_id,
             "data_epoch": view["data_epoch"],
             "client": client, "lang": lang,
             "action_id": action["id"],
             "option_id": action.get("option_id").cloned().unwrap_or(Value::Null),
-            "input": typed.map_or_else(|| json!({}), |typed| json!({"text": typed})),
+            "input": input,
         });
         let response = self.phone.post("/actions", &body).await.map_err(|e| Self::failed(index, e))?;
-        if response.status >= 300 {
+        if response.status >= 300 || response.json()["outcome"] != "applied" {
             return Err(ScenarioError::ActionRefused { action: verb.to_owned(), code: response.status, body: response.body });
         }
-        Ok(())
+        Ok(command_id)
     }
 
     async fn checkpoint(&mut self, _index: usize, checkpoint: &Checkpoint) -> Result<(), ScenarioError> {
@@ -903,6 +1014,39 @@ fn find_option(view: &Value, card: &str, option: &str) -> Option<Value> {
         .find(|candidate| {
             candidate.get("option_id").and_then(Value::as_str) == Some(option)
                 && candidate["id"].as_str().and_then(|id| ActionId::parse(id).ok()).is_some_and(|id| id.subject.starts_with(card))
+        })
+        .cloned()
+}
+
+fn typed_input(typed: Option<&str>) -> Value {
+    typed.map_or_else(|| json!({}), |typed| json!({"text": typed}))
+}
+
+/// The composer of the task's screen: a message to the node that runs the task, or one kept on the
+/// task when no node runs it.
+fn find_message(view: &Value, task: &str) -> Option<Value> {
+    fn walk<'a>(value: &'a Value, found: &mut Vec<&'a Value>) {
+        match value {
+            Value::Object(map) => {
+                if map.get("id").and_then(Value::as_str).is_some() {
+                    found.push(value);
+                }
+                map.values().for_each(|inner| walk(inner, found));
+            }
+            Value::Array(items) => items.iter().for_each(|inner| walk(inner, found)),
+            _ => {}
+        }
+    }
+    let mut candidates = Vec::new();
+    walk(view, &mut candidates);
+    candidates
+        .into_iter()
+        .find(|candidate| {
+            candidate["id"].as_str().and_then(|id| ActionId::parse(id).ok()).is_some_and(|id| match id.verb {
+                alondra_core::views::action_id::Verb::Msg => id.extra.as_deref() == Some(task),
+                alondra_core::views::action_id::Verb::TaskMsg => id.subject == task,
+                _ => false,
+            })
         })
         .cloned()
 }

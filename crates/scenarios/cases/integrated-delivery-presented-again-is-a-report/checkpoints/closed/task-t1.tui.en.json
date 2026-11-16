@@ -33,7 +33,7 @@
                 "since": "<instant>",
                 "until": "<instant>"
               },
-              "text": "1 min",
+              "text": "2 min",
               "tone": "neutral"
             }
           ],
@@ -74,7 +74,7 @@
           "icon": "history",
           "id": "now",
           "struck": false,
-          "title": "node left open: it is your own session",
+          "title": "node closed",
           "type": "row"
         }
       ]
@@ -99,9 +99,9 @@
         {
           "depth": 0,
           "icon": "pull_request",
-          "id": "pr41",
+          "id": "github.com/demo/app#41",
           "link": {
-            "key": "pull_request:pr41",
+            "key": "pull_request:github.com/demo/app#41",
             "kind": "view"
           },
           "struck": false,
@@ -112,9 +112,9 @@
         {
           "depth": 0,
           "icon": "pull_request",
-          "id": "pr42",
+          "id": "github.com/demo/app#42",
           "link": {
-            "key": "pull_request:pr42",
+            "key": "pull_request:github.com/demo/app#42",
             "kind": "view"
           },
           "struck": false,
@@ -139,6 +139,10 @@
             {
               "label": "PR handling",
               "value": "You review it; accepting it merges it"
+            },
+            {
+              "label": "Effort",
+              "value": "Auto"
             }
           ],
           "type": "facts"

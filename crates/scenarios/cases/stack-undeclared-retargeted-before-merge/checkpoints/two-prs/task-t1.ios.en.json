@@ -14,8 +14,8 @@
             {
               "kind": "state",
               "label": "State",
-              "tone": "accent",
-              "value": "Working · Turn running since 09:00"
+              "tone": "info",
+              "value": "Delivered · For review · PR #7 · Pull request 7"
             },
             {
               "kind": "request",
@@ -88,8 +88,8 @@
                 "kind": "view"
               },
               "state": {
-                "text": "Working",
-                "tone": "accent"
+                "text": "Delivered",
+                "tone": "info"
               },
               "text": "Add the CSV and PDF exports"
             }
@@ -100,10 +100,10 @@
             "tone": "accent"
           },
           "icon": "pull_request",
-          "id": "pr7",
+          "id": "github.com/demo/app#7",
           "kind": "review",
           "link": {
-            "key": "card:pr7",
+            "key": "card:github.com/demo/app#7",
             "kind": "view"
           },
           "meta": "Add the CSV and PDF exports",
@@ -138,8 +138,8 @@
                 "kind": "view"
               },
               "state": {
-                "text": "Working",
-                "tone": "accent"
+                "text": "Delivered",
+                "tone": "info"
               },
               "text": "Add the CSV and PDF exports"
             }
@@ -150,10 +150,10 @@
             "tone": "accent"
           },
           "icon": "pull_request",
-          "id": "pr8",
+          "id": "github.com/demo/app#8",
           "kind": "review",
           "link": {
-            "key": "card:pr8",
+            "key": "card:github.com/demo/app#8",
             "kind": "view"
           },
           "meta": "Add the CSV and PDF exports",
@@ -196,9 +196,9 @@
         {
           "depth": 0,
           "icon": "pull_request",
-          "id": "pr7",
+          "id": "github.com/demo/app#7",
           "link": {
-            "key": "pull_request:pr7",
+            "key": "pull_request:github.com/demo/app#7",
             "kind": "view"
           },
           "struck": false,
@@ -209,9 +209,9 @@
         {
           "depth": 0,
           "icon": "pull_request",
-          "id": "pr8",
+          "id": "github.com/demo/app#8",
           "link": {
-            "key": "pull_request:pr8",
+            "key": "pull_request:github.com/demo/app#8",
             "kind": "view"
           },
           "struck": false,
@@ -236,6 +236,10 @@
             {
               "label": "PR handling",
               "value": "You review it; accepting it merges it"
+            },
+            {
+              "label": "Effort",
+              "value": "Auto"
             }
           ],
           "type": "facts"
@@ -263,43 +267,6 @@
               "presentation": "button",
               "resolves_card": false,
               "role": "neutral",
-              "style": "secondary"
-            },
-            {
-              "attachments": false,
-              "confirm": {
-                "button": "Interrupt",
-                "message": "Stop what this node is doing now? It keeps its task and waits for you.",
-                "title": "Interrupt"
-              },
-              "enabled": true,
-              "id": "interrupt:agent-t1@<revision>",
-              "input": {
-                "kind": "none"
-              },
-              "label": "Interrupt",
-              "presentation": "button",
-              "resolves_card": false,
-              "role": "neutral",
-              "style": "secondary"
-            },
-            {
-              "attachments": false,
-              "confirm": {
-                "button": "Pause",
-                "message": "It stops what it is running now and keeps its task. Alondra does not resume it by itself: only you do.",
-                "title": "Pause this node?"
-              },
-              "enabled": true,
-              "id": "pause:agent-t1@<revision>",
-              "input": {
-                "kind": "none"
-              },
-              "label": "Pause",
-              "presentation": "button",
-              "resolves_card": false,
-              "role": "neutral",
-              "stamp": "Paused",
               "style": "secondary"
             },
             {
@@ -396,12 +363,12 @@
       {
         "id": "working",
         "label": "working",
-        "value": 1
+        "value": 0
       },
       {
         "id": "needs_you",
         "label": "waiting for you",
-        "value": 0
+        "value": 1
       },
       {
         "id": "queued",
@@ -450,7 +417,7 @@
       "text": "No provider account is available · check Accounts",
       "tone": "warning"
     },
-    "summary": "2 to read · 1 task working",
+    "summary": "2 to read · 0 tasks working",
     "summary_parts": [
       {
         "count": 2,
@@ -459,7 +426,7 @@
         "other": "{count} to read"
       },
       {
-        "count": 1,
+        "count": 0,
         "id": "working",
         "one": "{count} task working",
         "other": "{count} tasks working"

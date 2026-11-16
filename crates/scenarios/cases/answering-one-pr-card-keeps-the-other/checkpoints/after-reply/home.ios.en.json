@@ -7,7 +7,7 @@
       "client": "ios",
       "cursor": "<cursor>",
       "data_epoch": "<data_epoch>",
-      "key": "card:pr8",
+      "key": "card:github.com/demo/app#8",
       "protocol": 1,
       "sections": [
         {
@@ -19,7 +19,7 @@
                 {
                   "attachments": false,
                   "enabled": true,
-                  "id": "merge:pr8@<revision>~00000000-d1",
+                  "id": "merge:github.com/demo/app#8@<revision>~00000000-d1",
                   "input": {
                     "kind": "none"
                   },
@@ -58,10 +58,10 @@
                 "tone": "accent"
               },
               "icon": "pull_request",
-              "id": "pr8",
+              "id": "github.com/demo/app#8",
               "kind": "review",
               "link": {
-                "key": "card:pr8",
+                "key": "card:github.com/demo/app#8",
                 "kind": "view"
               },
               "meta": "demo/app · pdf-export → main · 1 file · +1 −0 · 1 of 1 passed",
@@ -74,7 +74,7 @@
                     "title": "Close PR #8 without merging?"
                   },
                   "enabled": true,
-                  "id": "close_unmerged:pr8@<revision>",
+                  "id": "close_unmerged:github.com/demo/app#8@<revision>",
                   "input": {
                     "kind": "none"
                   },
@@ -110,7 +110,7 @@
                   "kind": "diff_lines"
                 },
                 "enabled": true,
-                "id": "changes:pr8@<revision>~00000000",
+                "id": "changes:github.com/demo/app#8@<revision>~00000000",
                 "input": {
                   "kind": "text",
                   "multiline": true,
@@ -119,7 +119,7 @@
                 },
                 "label": "Request changes",
                 "link": {
-                  "key": "pull_request:pr8",
+                  "key": "pull_request:github.com/demo/app#8",
                   "kind": "view"
                 },
                 "presentation": "button",
@@ -154,7 +154,7 @@
                 {
                   "label": "app#7",
                   "link": {
-                    "key": "card:pr7",
+                    "key": "card:github.com/demo/app#7",
                     "kind": "view"
                   },
                   "tone": "success",
@@ -173,7 +173,7 @@
             {
               "commentable": true,
               "digest": "0000000000000000000000000000000000000002",
-              "fetch": "/pull-requests/pr8/diff",
+              "fetch": "/pull-requests/github.com%2Fdemo%2Fapp%238/diff",
               "kind": "diff",
               "size": 0,
               "title": "Diff",
@@ -329,7 +329,7 @@
   "sections": [
     {
       "card_ids": [
-        "pr8"
+        "github.com/demo/app#8"
       ],
       "card_waits": [
         "review"

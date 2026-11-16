@@ -156,6 +156,10 @@
             {
               "label": "PR handling",
               "value": "You review it; accepting it merges it"
+            },
+            {
+              "label": "Effort",
+              "value": "Auto"
             }
           ],
           "type": "facts"
