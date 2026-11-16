@@ -236,3 +236,4 @@ crates/scenarios-transcript/src/guard.rs	|| line.to_lowercase().match_indices("b
 crates/scenarios-transcript/src/guard.rs	let domain = domain.to_lowercase();	security-parse	the leak scanner of committed transcripts reads text on purpose
 crates/scenarios-transcript/src/guard.rs	!before.is_some_and(|c| c.is_ascii_alphanumeric()) && !bytes.get(at).is_some_and(char::is_ascii_alphanumeric) && !text.starts_with(PSEUDO_UUID_PREFIX)	security-parse	the leak scanner of committed transcripts reads text on purpose
 crates/scenarios-transcript/src/guard.rs	let lowered = line.to_lowercase();	security-parse	the leak scanner of committed transcripts reads text on purpose
+crates/scenarios/src/from_report.rs	.map(|values| values.keys().map(|value| value.trim().to_lowercase()).filter(|value| value.chars().count() >= 4 && !value.chars().all(|c| c.is_ascii_digit() || c == '.')).collect())	security-parse	the leak scanner of a draft reads the values a report replaced on purpose

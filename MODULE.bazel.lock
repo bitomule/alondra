@@ -766,7 +766,7 @@
           "@@//crates/provider-contract/Cargo.toml": "836283d2aba9ddf221b21265f9bbe365870106994176cfcb095f105ca8d3c233",
           "@@//crates/relay/Cargo.toml": "c5efc00d91d964209ac25039b9d319f332936ccd93701a2a2b45035eb7a85a79",
           "@@//crates/scenarios-transcript/Cargo.toml": "a71de903276e0517a27af1c6a4ed0802109a733714c51bf125f233b2b67378a3",
-          "@@//crates/scenarios/Cargo.toml": "6b367e242fb5346fa5afd11adedb8a026ed9c3bf19964a995ef2dbe60ef703e4",
+          "@@//crates/scenarios/Cargo.toml": "8db2113a8a0391ef6d1c7c19050822336beb2fb109f907b0230b5ced3576efc1",
           "@@//crates/store/Cargo.toml": "c22827c420c91ff94f0605d75c672d2b62f337d152b0e13a4c3f86c3f6074aba"
         },
         "recordedDirentsInputs": {},
