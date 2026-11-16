@@ -31,7 +31,7 @@ const MOST_REARMS: u32 = 6;
 
 /// The open tasks whose node holds a slot, as the gate reads them.
 pub(super) fn slot_tasks(state: &DomainState) -> BTreeSet<TaskId> {
-    crate::admission::slot_tasks(state, &ReadIndex::build(state))
+    admission::slot_tasks(state, &ReadIndex::build(state))
 }
 
 /// The open tasks that must hold a slot by what every screen reads of them: at work or a step of
@@ -153,7 +153,7 @@ fn counts_differ(state: &DomainState, index: &ReadIndex) -> Option<String> {
     if header != working.len() {
         return Some(format!("the header counts {header} working, the tasks that read working are {working:?}"));
     }
-    let gate = crate::admission::slot_tasks(state, index);
+    let gate = admission::slot_tasks(state, index);
     let shown = tasks_shown_on_a_slot(state, index);
     (gate != shown).then(|| format!("the gate counts {gate:?} on a slot, the tasks every screen reads on one are {shown:?}"))
 }
@@ -216,7 +216,7 @@ fn judge(history: &History) -> Verdicts {
     if seen.most_rearms > MOST_REARMS {
         verdicts.rearms = failed(format!("a step was owed again {} times with nobody acting: it re-arms in a loop\n{}", seen.most_rearms, seen.excess.clone().unwrap_or_default()));
     }
-    let zombies: Vec<TaskId> = crate::sdk_owner::ended_node_tasks(&state).into_iter().filter(|task| machine.world.hosts.contains_key(task)).collect();
+    let zombies: Vec<TaskId> = sdk_owner::ended_node_tasks(&state).into_iter().filter(|task| machine.world.hosts.contains_key(task)).collect();
     let closing: Vec<String> = seen.closing_taken.iter().chain(&seen.closing_cards).cloned()
         .chain(zombies.iter().map(|task| format!("a host still runs for {task}, whose node ended"))).collect();
     if !closing.is_empty() {

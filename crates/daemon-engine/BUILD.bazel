@@ -23,7 +23,7 @@ rust_library(
     name = "daemon_engine",
     srcs = production_sources(test_only = [
         "src/github_world.rs",
-        "src/machine_model/**",
+        "src/machine_hooks.rs",
     ]),
     crate_name = "alondra_daemon_engine",
     edition = "2024",
@@ -50,7 +50,7 @@ rust_library(
     edition = "2024",
     rustc_flags = [LOW_OPT_LEVEL],
     version = VERSION,
-    visibility = ["//crates/alondrad:__pkg__", "//crates/scenarios:__pkg__"],
+    visibility = ["//crates/alondrad:__pkg__", "//crates/machine-model:__pkg__", "//crates/scenarios:__pkg__"],
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
         "//crates/codex-protocol:codex_protocol",
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
@@ -88,11 +88,6 @@ INTEGRATION_FILTERS = [
     "usage_probe::tests::",
 ]
 
-# The model checks run hundreds of generated histories through the real daemon and share one
-# run per history across their properties; on a busy machine they alone take minutes, so they
-# keep their own target and time limit instead of spending the unit target's.
-MODEL_FILTERS = ["machine_model::tests::"]
-
 ENGINE_TEST_SRCS = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"]
 
 ENGINE_TEST_COMPILE_DATA = [
@@ -114,7 +109,7 @@ low_opt_rust_test(
     name = "daemon_engine_test",
     size = "medium",
     srcs = ENGINE_TEST_SRCS,
-    args = ["--skip=" + filter for filter in INTEGRATION_FILTERS + MODEL_FILTERS],
+    args = ["--skip=" + filter for filter in INTEGRATION_FILTERS],
     compile_data = ENGINE_TEST_COMPILE_DATA,
     crate_name = "alondra_daemon_engine",
     crate_root = "src/lib.rs",
@@ -164,23 +159,13 @@ sh_test(
     },
 )
 
-# The model checks of the same test binary, with a time limit that fits generated histories.
-sh_test(
-    name = "daemon_engine_model_test",
-    size = "medium",
-    srcs = ["run_test_binary.sh"],
-    args = ["$(rootpath :daemon_engine_test)"] + MODEL_FILTERS,
-    data = [":daemon_engine_test"],
-    env = {"HOME": "."},
-)
-
 rust_inputs_test(
     name = "production_inputs_test",
     size = "small",
     required_sources = ["crates/daemon-engine/src/lib.rs", "crates/daemon-engine/src/wiring.rs"],
     source_dir = "crates/daemon-engine/src/",
     target_under_test = ":daemon_engine",
-    test_only_sources = ["crates/daemon-engine/src/github_world.rs", "crates/daemon-engine/src/wiring/owner_tests.rs", "crates/test_support.rs"],
+    test_only_sources = ["crates/daemon-engine/src/github_world.rs", "crates/daemon-engine/src/machine_hooks.rs", "crates/daemon-engine/src/wiring/owner_tests.rs", "crates/test_support.rs"],
     test_sources = False,
 )
 
@@ -190,7 +175,7 @@ rust_inputs_test(
     required_sources = ["crates/daemon-engine/src/lib.rs", "crates/daemon-engine/src/wiring.rs"],
     source_dir = "crates/daemon-engine/src/",
     target_under_test = ":daemon_engine_test_hooks",
-    test_only_sources = ["crates/daemon-engine/src/github_world.rs", "crates/daemon-engine/src/wiring/owner_tests.rs", "crates/test_support.rs"],
+    test_only_sources = ["crates/daemon-engine/src/github_world.rs", "crates/daemon-engine/src/machine_hooks.rs", "crates/daemon-engine/src/wiring/owner_tests.rs", "crates/test_support.rs"],
     test_sources = True,
 )
 
@@ -200,7 +185,7 @@ exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 # file among them; alondrad's lock policy test reads them too.
 filegroup(
     name = "report_sources",
-    srcs = production_sources(test_only = ["src/machine_model/**", "src/github_world.rs"]),
+    srcs = production_sources(test_only = ["src/github_world.rs", "src/machine_hooks.rs"]),
     visibility = ["//crates/alondra:__pkg__", "//crates/alondrad:__pkg__"],
 )
 

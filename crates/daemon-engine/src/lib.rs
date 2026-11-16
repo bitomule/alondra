@@ -91,8 +91,8 @@ pub mod local_network_card;
 pub mod machine;
 pub use alondra_daemon_engine_machine::machine_state;
 pub mod machine_watch;
-#[cfg(test)]
-mod machine_model;
+#[cfg(feature = "test-hooks")]
+pub mod machine_hooks;
 pub mod mcp_probe;
 pub mod mcp_remove;
 pub mod mcp_sign_in;

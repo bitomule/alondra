@@ -403,6 +403,49 @@ checks:
       targets:
         - //crates/daemon-engine/...
 
+  crate-machine-model:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "clippy.toml"
+      - "crates/agent-application/**"
+      - "crates/agent-protocol/**"
+      - "crates/agent-runtime/**"
+      - "crates/codex-protocol/**"
+      - "crates/core/**"
+      - "crates/daemon-engine-machine/**"
+      - "crates/daemon-engine-model/**"
+      - "crates/daemon-engine-store/**"
+      - "crates/daemon-engine/**"
+      - "crates/daemon-support/**"
+      - "crates/domain-store-schema/**"
+      - "crates/domain/**"
+      - "crates/e2e/**"
+      - "crates/engine-kernel/**"
+      - "crates/foundation/**"
+      - "crates/machine-model/**"
+      - "crates/process-group/**"
+      - "crates/provider-claude/**"
+      - "crates/provider-codex/**"
+      - "crates/provider-contract/**"
+      - "crates/store/**"
+      - "BUILD.bazel"
+      - "crates/BUILD.bazel"
+      - "crates/test_support.rs"
+      - "tools/BUILD.bazel"
+      - "tools/rust_inputs_test.bzl"
+      - "tools/rust_sources.bzl"
+      - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
+      - "version.bzl"
+    with:
+      targets:
+        - //crates/machine-model:machine_model_test
+
   crate-daemon-engine-machine:
     uses: bazel/test
     paths:

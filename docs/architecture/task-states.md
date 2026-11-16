@@ -118,7 +118,7 @@ Each rule is held by a type or by a property test.
 10. **The orchestrator's cards are announced after its pass.** A card the orchestrator puts for
     the user during a pass is pushed only once that pass ended, and only if still open.
 
-A model test (`crates/daemon-engine/src/machine_model`) mixes provider facts, user actions, daemon restarts and
+A model test (`crates/machine-model`) mixes provider facts, user actions, daemon restarts and
 limits, then lets the clock run with nothing else happening, and checks that every open task ends
 working with a live session or process behind it, on a card of the user, paused by them,
 delivered for their review, or waiting for capacity or tasks that are really missing. It assumes
@@ -164,7 +164,7 @@ request. Where a phase differs from the plan, it is listed below the table.
 | 11 | One count of work and of slots | `crates/core`, `admission` | #160 | Merged |
 | 12 | A present fact on every working row | `crates/core/src/views` (`NowFact`) | #169 | Merged |
 | 13 | The wait report | `agent-host`, `crates/alondra`, `docs/wait-report.md` | #171 | Merged |
-| 14 | The model test | `crates/daemon-engine/src/machine_model` | #170 | Merged; no known gaps |
+| 14 | The model test | `crates/machine-model` | #170 | Merged; no known gaps |
 | 15 | The legacy node machine retired | `crates/core` `node_machine` | #173 | Merged |
 | 16 | An answer always reaches its turn | `admission`, `crates/domain` | #159 | Merged |
 

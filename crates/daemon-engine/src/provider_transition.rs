@@ -285,7 +285,7 @@ pub(crate) fn ready_in(state:&DomainState,task:&TaskId)->Result<bool,DomainError
 /// How a move whose source has ended goes on: its target starts now, or the move ends at once and
 /// the target starts when something resumes the task. A move never waits for the task to be ready.
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub(crate) enum MoveStart{Start,Defer}
+pub enum MoveStart{Start,Defer}
 pub(crate) fn move_start(state:&DomainState,task:&TaskId)->Result<MoveStart,DomainError>{
     Ok(if ready_in(state,task)?{MoveStart::Start}else{MoveStart::Defer})
 }
