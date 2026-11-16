@@ -5,27 +5,38 @@ load("@rules_rust//cargo:defs.bzl", "cargo_build_script")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
 load("//:version.bzl", "VERSION")
 
-REPORT_SOURCES = [
-    "//crates/alondrad:report_sources",
-    "//crates/core:report_sources",
-    "//crates/daemon-engine:report_sources",
-    "//crates/daemon-engine-model:report_sources", "//crates/daemon-engine-store:report_sources", "//crates/daemon-engine-machine:report_sources",
-    "//crates/daemon-support:report_sources",
-    "//crates/domain:report_sources",
-    "//crates/foundation:report_sources",
-    "//crates/store:report_sources",
-    "//crates/agent-application:report_sources",
-    "//crates/agent-protocol:report_sources",
-    "//crates/agent-runtime:report_sources",
-    "//crates/provider-claude:report_sources",
-    "//crates/provider-contract:report_sources",
-    "//crates/process-group:report_sources",
+# Each crate's part of the crash report's log catalog, from its production sources, in the
+# catalog's order: `--log` reads its log calls, `--words` the words of its code
+# (`src/report/extract.rs`). The report's own schema adds the values it expects in the state it
+# reads, among them phases only older releases stored.
+CATALOG_FRAGMENTS = [
+    ("alondrad", "//crates/alondrad:report_sources", "--log --words"),
+    ("alondrad_launcher", "//crates/alondrad:launcher_report_sources", "--log"),
+    ("daemon_support", "//crates/daemon-support:report_sources", "--log --words"),
+    ("daemon_engine", "//crates/daemon-engine:report_sources", "--log --words"),
+    ("daemon_engine_model", "//crates/daemon-engine-model:report_sources", "--log --words"),
+    ("daemon_engine_store", "//crates/daemon-engine-store:report_sources", "--log --words"),
+    ("daemon_engine_machine", "//crates/daemon-engine-machine:report_sources", "--log --words"),
+    ("core", "//crates/core:report_sources", "--log --words"),
+    ("provider_claude", "//crates/provider-claude:report_sources", "--log --words"),
+    ("domain", "//crates/domain:report_sources", "--words"),
+    ("foundation", "//crates/foundation:report_sources", "--words"),
+    ("store", "//crates/store:report_sources", "--words"),
+    ("agent_application", "//crates/agent-application:report_sources", "--words"),
+    ("agent_protocol", "//crates/agent-protocol:report_sources", "--words"),
+    ("agent_runtime", "//crates/agent-runtime:report_sources", "--words"),
+    ("provider_contract", "//crates/provider-contract:report_sources", "--words"),
+    ("process_group", "//crates/process-group:report_sources", "--words"),
+    ("report_schema", "src/report/check/schema.rs", "--words"),
 ]
 
+REPORT_SOURCES = [sources for _, sources, _ in CATALOG_FRAGMENTS if sources.startswith("//")]
+
 # The crash report keeps a line of alondrad.log only as the text of a log! call in the code: this
-# writes the catalog of those calls and the words of the code (`src/report/extract.rs`). It reads
-# every source in its own action, so a change that leaves both files the same never recompiles the
-# CLI: a build script's data are compile inputs of the crate it builds for.
+# writes the catalog of those calls and the words of the code. Each crate's part comes from its
+# production sources in its own action, which fails on a test file, and the parts are joined in
+# another: a test never reaches the CLI, and a change that leaves every part the same never
+# recompiles it, because a build script's data are compile inputs of the crate it builds for.
 rust_binary(
     name = "log_catalog_extract",
     srcs = ["log_catalog.rs", "src/report/extract.rs"],
@@ -33,11 +44,19 @@ rust_binary(
     edition = "2024",
 )
 
+[genrule(
+    name = "log_catalog_" + name,
+    srcs = [sources],
+    outs = ["log_catalog/" + name + ".catalog", "log_catalog/" + name + ".words"],
+    cmd = "$(execpath :log_catalog_extract) fragment $(OUTS) " + kind + " $(SRCS)",
+    tools = [":log_catalog_extract"],
+) for name, sources, kind in CATALOG_FRAGMENTS]
+
 genrule(
     name = "log_catalog_files",
-    srcs = REPORT_SOURCES,
+    srcs = [":log_catalog_" + name for name, _, _ in CATALOG_FRAGMENTS],
     outs = ["log-catalog.txt", "vocabulary.txt"],
-    cmd = "$(execpath :log_catalog_extract) $(OUTS)",
+    cmd = "$(execpath :log_catalog_extract) join $(OUTS) $(SRCS)",
     tools = [":log_catalog_extract"],
 )
 

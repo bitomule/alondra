@@ -3,6 +3,7 @@ load("//tools:rust_test.bzl", "LOW_OPT_LEVEL", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:version.bzl", "VERSION")
+load("//tools:rust_sources.bzl", "production_sources")
 
 WORKSPACE_DEPS = [
     "//crates/core:alondra_core",
@@ -49,7 +50,7 @@ exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 
 filegroup(
     name = "report_sources",
-    srcs = glob(["src/**/*.rs"]),
+    srcs = production_sources(test_only = ["src/faults.rs"]),
     visibility = ["//crates/alondra:__pkg__", "//crates/alondrad:__pkg__"],
 )
 

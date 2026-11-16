@@ -4,6 +4,7 @@ load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps", "crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
 load("//:version.bzl", "VERSION")
+load("//tools:rust_sources.bzl", "production_sources")
 
 exports_files(["Info.plist"], visibility = ["//deploy/brew:__pkg__"])
 
@@ -212,10 +213,17 @@ low_opt_rust_test(
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 
-# Read by the crash report's build script for its log catalog and the words of the code.
+# The crate's production sources: the crash report's log catalog reads them, and fails on a test
+# file among them.
 filegroup(
     name = "report_sources",
-    srcs = glob(["src/**/*.rs", "launcher/**/*.rs"]),
+    srcs = production_sources(test_only = ["src/operation_journal/process_fixture.rs"]),
+    visibility = ["//crates/alondra:__pkg__"],
+)
+
+filegroup(
+    name = "launcher_report_sources",
+    srcs = glob(["launcher/**/*.rs"]),
     visibility = ["//crates/alondra:__pkg__"],
 )
 

@@ -339,37 +339,148 @@ pub fn rust_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     files
 }
 
+/// Whether `file` is a test module by its name: `tests.rs`, `*_tests.rs`, anything under a `tests`
+/// folder, or the test support every crate shares.
+pub fn named_as_test(file: &std::path::Path) -> bool {
+    let name = file.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+    name == "tests.rs" || name.ends_with("_tests.rs") || file.ends_with("crates/test_support.rs") || file.parent().is_some_and(|dir| dir.components().any(|part| part.as_os_str() == "tests"))
+}
+
+/// Whether a `#[cfg(...)]` condition holds only when tests are compiled, with or without the
+/// `test-hooks` feature other crates' tests build with.
+fn test_condition(condition: &str) -> bool {
+    let hooks = "feature = \"test-hooks\"";
+    condition == "test" || condition == hooks || condition == format!("any(test, {hooks})") || condition.starts_with("all(test,")
+}
+
+fn normalized(path: &std::path::Path) -> std::path::PathBuf {
+    let mut out = std::path::PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir if out.file_name().is_some() => {
+                out.pop();
+            }
+            part => out.push(part),
+        }
+    }
+    out
+}
+
+/// The files of the `mod name;` items of `file`, each with whether a test-only `#[cfg]` gates it.
+fn declared_modules(file: &std::path::Path, source: &str) -> Vec<(Vec<std::path::PathBuf>, bool)> {
+    let dir = file.parent().unwrap_or(std::path::Path::new(""));
+    let stem = file.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default();
+    let base = if ["lib", "main", "mod"].contains(&stem) { dir.to_path_buf() } else { dir.join(stem) };
+    let lines: Vec<&str> = source.lines().map(str::trim).collect();
+    let mut found = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let item = line.trim_start_matches("pub(crate) ").trim_start_matches("pub(super) ").trim_start_matches("pub ");
+        let Some(name) = item.strip_prefix("mod ").and_then(|rest| rest.strip_suffix(';')) else { continue };
+        if !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            continue;
+        }
+        let attributes = lines[..index].iter().rev().take_while(|line| line.starts_with("#["));
+        let mut test = false;
+        let mut path = None;
+        for attribute in attributes {
+            if let Some(condition) = attribute.strip_prefix("#[cfg(").and_then(|rest| rest.strip_suffix(")]")) {
+                test |= test_condition(condition);
+            } else if let Some(value) = attribute.strip_prefix("#[path = \"").and_then(|rest| rest.strip_suffix("\"]")) {
+                path = Some(dir.join(value));
+            }
+        }
+        let candidates = match path {
+            Some(path) => vec![normalized(&path)],
+            None => vec![normalized(&base.join(format!("{name}.rs"))), normalized(&base.join(name).join("mod.rs"))],
+        };
+        found.push((candidates, test));
+    }
+    found
+}
+
+/// The files among `files` that only tests compile: test modules by name, modules declared under
+/// `#[cfg(test)]` or the `test-hooks` feature, and every module below one of them.
+pub fn test_only(files: &[(std::path::PathBuf, String)]) -> std::collections::BTreeSet<std::path::PathBuf> {
+    let present: std::collections::BTreeSet<std::path::PathBuf> = files.iter().map(|(file, _)| normalized(file)).collect();
+    let mut edges = Vec::new();
+    for (file, source) in files {
+        for (candidates, test) in declared_modules(&normalized(file), source) {
+            if let Some(child) = candidates.into_iter().find(|candidate| present.contains(candidate)) {
+                edges.push((normalized(file), child, test));
+            }
+        }
+    }
+    let mut only: std::collections::BTreeSet<std::path::PathBuf> = present.iter().filter(|file| named_as_test(file)).cloned().collect();
+    loop {
+        let before = only.len();
+        for (parent, child, test) in &edges {
+            if *test || only.contains(parent) {
+                only.insert(child.clone());
+            }
+        }
+        if only.len() == before {
+            return only;
+        }
+    }
+}
+
+/// One crate's part of the catalog from its production `files` (`origin`, source), in order: with
+/// `log`, the line of every log call and the words of its fixed text; with `words`, the variants of
+/// its enums and the `snake_case` words it quotes.
+pub fn fragment(files: &[(String, String)], log: bool, words: bool) -> (String, std::collections::BTreeSet<String>) {
+    let mut catalog = String::new();
+    let mut vocabulary = std::collections::BTreeSet::new();
+    for (origin, source) in files {
+        if log {
+            let macros: &[&str] = if origin.ends_with("src/log.rs") { &["log"] } else { &["log", "eprintln"] };
+            let builders = LINE_BUILDERS.iter().filter(|(file, _)| file == origin).flat_map(|(_, function)| builder_formats(source, function));
+            for (line, format) in calls(source, macros).into_iter().chain(stderr_writes(source)).chain(builders) {
+                vocabulary.extend(fixed_words(&format));
+                catalog.push_str(&catalog_line(&format!("{origin}:{line}"), &format));
+                catalog.push('\n');
+            }
+        }
+        if words {
+            for variant in variants(source) {
+                vocabulary.extend(spellings(&variant));
+            }
+            vocabulary.extend(quoted_snake_words(source));
+        }
+    }
+    (catalog, vocabulary)
+}
+
 /// The catalog (`file:line<TAB>format`, one call per line) and the vocabulary (one word per line)
-/// of the sources under `root`.
-pub fn build(root: &std::path::Path) -> (String, String) {
+/// of the crates' fragments, in order.
+pub fn join(fragments: impl IntoIterator<Item = (String, std::collections::BTreeSet<String>)>) -> (String, String) {
     let mut catalog = String::new();
     let mut vocabulary = std::collections::BTreeSet::new();
     for (origin, format) in BUILT_IN {
         catalog.push_str(&catalog_line(origin, format));
         catalog.push('\n');
     }
-    for dir in LOG_SOURCES {
-        for file in rust_files(&root.join(dir)) {
-            let Ok(source) = std::fs::read_to_string(&file) else { continue };
-            let origin = file.strip_prefix(root).unwrap_or(&file).to_string_lossy().into_owned();
-            let macros: &[&str] = if origin.ends_with("src/log.rs") { &["log"] } else { &["log", "eprintln"] };
-            let builders = LINE_BUILDERS.iter().filter(|(file, _)| *file == origin).flat_map(|(_, function)| builder_formats(&source, function));
-            for (line, format) in calls(&source, macros).into_iter().chain(stderr_writes(&source)).chain(builders) {
-                vocabulary.extend(fixed_words(&format));
-                catalog.push_str(&catalog_line(&format!("{origin}:{line}"), &format));
-                catalog.push('\n');
-            }
-        }
-    }
-    for dir in VOCABULARY_SOURCES {
-        for file in rust_files(&root.join(dir)) {
-            let Ok(source) = std::fs::read_to_string(&file) else { continue };
-            for variant in variants(&source) {
-                vocabulary.extend(spellings(&variant));
-            }
-            vocabulary.extend(quoted_snake_words(&source));
-        }
+    for (part, words) in fragments {
+        catalog.push_str(&part);
+        vocabulary.extend(words);
     }
     let vocabulary: Vec<String> = vocabulary.into_iter().collect();
     (catalog, vocabulary.join("\n") + "\n")
+}
+
+/// The production sources under `dirs` of `root`, each with its origin relative to `root`.
+pub fn production_files(root: &std::path::Path, dirs: &[&str]) -> Vec<(String, String)> {
+    let files: Vec<(std::path::PathBuf, String)> = dirs
+        .iter()
+        .flat_map(|dir| rust_files(&root.join(dir)))
+        .filter_map(|file| Some((file.strip_prefix(root).unwrap_or(&file).to_path_buf(), std::fs::read_to_string(&file).ok()?)))
+        .collect();
+    let tests = test_only(&files);
+    files.into_iter().filter(|(file, _)| !tests.contains(&normalized(file))).map(|(file, source)| (file.to_string_lossy().into_owned(), source)).collect()
+}
+
+/// The catalog and vocabulary of the production sources under `root`, as Bazel joins them from the
+/// crates' fragments.
+pub fn build(root: &std::path::Path) -> (String, String) {
+    join([fragment(&production_files(root, LOG_SOURCES), true, false), fragment(&production_files(root, VOCABULARY_SOURCES), false, true)])
 }

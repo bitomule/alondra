@@ -66,6 +66,8 @@ crates/core/src/views/common.rs	let name = name.to_lowercase();	display	redact s
 crates/alondra/src/report/extract.rs	while let Some(at) = rest.find("enum ") {	format	enum names read from Rust sources for the report's vocabulary
 crates/alondra/src/report/extract.rs	parts.last_mut().expect("a part").extend(c.to_lowercase());	format	enum names read from Rust sources for the report's vocabulary
 crates/alondra/src/report/extract.rs	let mut out = vec![variant.to_owned(), variant.to_lowercase(), parts.join("_"), parts.join("-")];	format	enum names read from Rust sources for the report's vocabulary
+crates/alondra/src/report/extract.rs	condition == "test" || condition == hooks || condition == format!("any(test, {hooks})") || condition.starts_with("all(test,")	format	#[cfg] conditions read from Rust sources to keep test modules out of the report's catalog
+crates/alondra/src/report/extract.rs	let Some(name) = item.strip_prefix("mod ").and_then(|rest| rest.strip_suffix(';')) else { continue };	format	mod items read from Rust sources to keep test modules out of the report's catalog
 crates/alondra/src/report/github.rs	if !url.starts_with(RAW_GISTS) {	format	GitHub gist URL
 crates/alondra/src/report/send.rs	let rest = text.strip_prefix("https://github.com/")?;	format	GitHub URL
 crates/alondra/src/service_setup.rs	anyhow::ensure!(config.agreement_key_path == format!("{prefix}/service-keys/{AGREEMENT_FILE}")	format	configured file paths
