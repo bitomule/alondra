@@ -32,7 +32,7 @@ const UNSPLIT_CAUSE: &str = "request_unsplit";
 const BODY_SHOWN: usize = 2_000;
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Step {
+pub enum Step {
     Close { request: RequestId, withdrawn: bool },
     Remind { request: RequestId, id: String, card: SystemCard, text: String },
     Raise { request: RequestId, id: String, card: SystemCard, problem: UnsplitProblem },

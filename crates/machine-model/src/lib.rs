@@ -13,10 +13,10 @@
 mod tests;
 mod world;
 
-use crate::obligation_watch::{self, Watch};
-use crate::admission::{self, Key, Waiting};
-use crate::provider_transition::{self, MoveStart};
-use crate::sdk_owner;
+use alondra_daemon_engine::machine_hooks::admission::{self, Key, Waiting};
+use alondra_daemon_engine::machine_hooks::obligation_watch::{self, Watch};
+use alondra_daemon_engine::machine_hooks::provider_transition::{self, MoveStart};
+use alondra_daemon_engine::machine_hooks::{orchestrator_inbox, problems, sdk_owner};
 use alondra_core::domain::obligation_policy;
 use alondra_core::domain::{
     Actor, AgentId, CardKind, CardSpec, ContentKind, Command, CommandEnvelope, CommandOutcome, DecisionPrompt, DomainEffect, DeliveryTarget, DomainState, Hold,
@@ -708,7 +708,7 @@ impl Machine {
             let admitted = self.run(Actor::System, Command::AdmitExecution {
                 provider: Provider::Claude, task_id: task.clone(), agent_id: agent,
                 conversation: format!("conversation-{task}-{}", self.agents), instance: format!("instance-{task}-{}", self.agents),
-                host: crate::sdk_owner::HOST.into(), model: None, account: state.tasks[&task].account.clone(), leaves_limit: None,
+                host: sdk_owner::HOST.into(), model: None, account: state.tasks[&task].account.clone(), leaves_limit: None,
             });
             if admitted.is_err() {
                 self.unadmitted.insert(task, state.revision);
@@ -748,7 +748,7 @@ impl Machine {
             let admitted = self.run(Actor::System, Command::AdmitExecution {
                 provider: Provider::Claude, task_id: task.clone(), agent_id: agent,
                 conversation: format!("conversation-{task}-{}", self.agents), instance: format!("instance-{task}-{}", self.agents),
-                host: crate::sdk_owner::HOST.into(), model: None, account: Some(account.account.clone()), leaves_limit: None,
+                host: sdk_owner::HOST.into(), model: None, account: Some(account.account.clone()), leaves_limit: None,
             });
             if admitted.is_err() {
                 continue;
@@ -884,7 +884,7 @@ impl Machine {
     fn hand_replans(&mut self) -> bool {
         let revision = self.revision();
         let state = self.state();
-        for step in crate::orchestrator_inbox::replans(&state, self.rests) {
+        for step in orchestrator_inbox::replans(&state, self.rests) {
             self.carry_out(&step);
         }
         self.revision() != revision
@@ -1135,7 +1135,7 @@ impl Machine {
             self.run(Actor::System, Command::AdmitExecution {
                 provider: Provider::Claude, task_id: task.clone(), agent_id: agent,
                 conversation: format!("conversation-{task}-{}", self.agents), instance: format!("instance-{task}-{}", self.agents),
-                host: crate::sdk_owner::HOST.into(), model: None, account: Some(target.account.clone()), leaves_limit: None,
+                host: sdk_owner::HOST.into(), model: None, account: Some(target.account.clone()), leaves_limit: None,
             })
         } else if start == Some(MoveStart::Defer) {
             self.run(Actor::System, Command::DeferTaskMove { task_id: task.clone(), account: target.clone() })
@@ -1265,7 +1265,7 @@ impl Machine {
     fn apply(&mut self, task: &TaskId, action: obligation_watch::Action) {
         if action == obligation_watch::Action::Answer {
             let state = self.state();
-            for (step, _) in crate::orchestrator_inbox::overdue(&state, &BTreeSet::from([task.clone()])) {
+            for (step, _) in orchestrator_inbox::overdue(&state, &BTreeSet::from([task.clone()])) {
                 self.carry_out(&step);
             }
             return;
@@ -1296,16 +1296,16 @@ impl Machine {
 
     /// What `orchestrator_inbox::carry_out` does with a step the orchestrator owes past its
     /// deadline: the command `orchestrator_inbox::command_of` gives it.
-    fn carry_out(&mut self, step: &crate::orchestrator_inbox::Step) {
-        use crate::orchestrator_inbox::Step;
+    fn carry_out(&mut self, step: &orchestrator_inbox::Step) {
+        use orchestrator_inbox::Step;
         if let Step::TellPlanReview { id, card, review, number } = step {
             if !self.state().interactions.contains_key(&InteractionId(id.clone())) {
                 let text = format!("The plans of {review} are not reviewed yet (reminder {number})");
-                let _ = self.run(Actor::System, crate::domain_runtime::problems::tell_command(id, Some(card.clone()), text));
+                let _ = self.run(Actor::System, problems::tell_command(id, Some(card.clone()), text));
             }
             return;
         }
-        let Some(command) = crate::orchestrator_inbox::command_of(step) else {
+        let Some(command) = orchestrator_inbox::command_of(step) else {
             if let Step::Close { .. } | Step::Raise { .. } = step {
                 panic!("a step past its deadline ends in a card for the user or outside what the orchestrator owes: {step:?}");
             }
