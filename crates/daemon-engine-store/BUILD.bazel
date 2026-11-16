@@ -80,7 +80,7 @@ rust_inputs_test(
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 filegroup(
     name = "report_sources",
-    srcs = production_sources(test_only = ["src/testing.rs", "src/live_read_trace.rs", "src/load_bench.rs"]),
+    srcs = production_sources(test_only = ["src/acceptance_cases.rs", "src/live_read_trace.rs", "src/load_bench.rs", "src/testing.rs"]),
     visibility = ["//crates/alondra:__pkg__", "//crates/alondrad:__pkg__"],
 )
 
