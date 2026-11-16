@@ -30,7 +30,7 @@
           "badges": [
             {
               "elapsed": {
-                "since": "<instant>"
+                "since": "2026-11-15T09:00:00.000+00:00"
               },
               "text": "since 09:00",
               "tone": "neutral"
@@ -56,7 +56,7 @@
           "struck": false,
           "title": "Since",
           "trailing": {
-            "at": "<instant>",
+            "at": "2026-11-15T09:03:30.000+00:00",
             "format": "relative",
             "kind": "time"
           },
@@ -122,7 +122,7 @@
           "subtitle": "Claude Code cannot use the Claude API until this is fixed outside Alondra. Fix it, then tell the task to go on, or cancel it.",
           "timestamps": [
             {
-              "at": "<instant>",
+              "at": "2026-11-15T09:03:30.000+00:00",
               "format": "relative",
               "role": "created"
             }

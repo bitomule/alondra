@@ -1358,7 +1358,7 @@ pub mod tests {
             let (taken, release) = std::sync::mpsc::channel();
             let busy = {
                 let domain = domain.clone();
-                std::thread::spawn(move || {
+                alondra_core::clock::spawn_thread(move || {
                     let _writer = domain.store.lock().unwrap();
                     taken.send(()).unwrap();
                     clock::blocking_sleep(Duration::from_secs(2));

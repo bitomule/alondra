@@ -191,7 +191,7 @@ pub(crate) async fn run(service: Arc<Service>) {
         if let Some(bound) = bind_preferring_port(service.iroh_key(), &config).await {
             break bound;
         }
-        tokio::time::sleep(RETRY).await;
+        alondra_core::clock::sleep(RETRY).await;
     };
     log!("iroh endpoint {} on {:?}", endpoint.id(), endpoint.bound_sockets());
     update(|status| {
@@ -285,12 +285,12 @@ struct Hello {
 }
 
 async fn serve_connection(service: &Arc<Service>, connection: Connection) {
-    let device_id = match tokio::time::timeout(HELLO_TIMEOUT, hello(service, &connection)).await {
+    let device_id = match alondra_core::clock::timeout(HELLO_TIMEOUT, hello(service, &connection)).await {
         Ok(Some(device_id)) => device_id,
         Ok(None) => return connection.close(VarInt::from_u32(close::UNAUTHORIZED), b"unauthorized"),
         Err(_) => return connection.close(VarInt::from_u32(close::HELLO_TIMEOUT), b"no hello"),
     };
-    let opened = std::time::Instant::now();
+    let opened = alondra_core::clock::instant();
     let followed = tokio::spawn(crate::reachability::follow(connection.clone()));
     while let Ok((send, recv)) = connection.accept_bi().await {
         let (service, device_id) = (service.clone(), device_id.clone());
@@ -300,7 +300,7 @@ async fn serve_connection(service: &Arc<Service>, connection: Connection) {
         crate::reachability::record_session(kind, bytes);
         log!(
             "iroh connection from {device_id} closed after {:?}, path {kind:?}, bytes lan={} internet={} relay={}",
-            opened.elapsed(),
+            alondra_core::clock::since(opened),
             bytes.lan,
             bytes.internet,
             bytes.relay

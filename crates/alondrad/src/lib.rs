@@ -463,7 +463,7 @@ fn retire_empty_older_sidecar(home: &Path) -> Result<Option<std::path::PathBuf>>
 }
 
 pub(crate) fn unix_seconds() -> u64 {
-    std::time::SystemTime::now()
+    alondra_core::clock::system_time()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
 }

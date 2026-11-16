@@ -117,13 +117,13 @@ fn run(backend: &SdkBackend, directory: &Path) -> Result<Vec<McpServerState>, St
     let written = stdin.write_all(config.to_string().as_bytes());
     drop(stdin);
     let mut stdout = child.stdout.take().expect("piped stdout");
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    let (sender, receiver) = alondra_core::clock::channel();
+    alondra_core::clock::spawn_thread(move || {
         let mut output = String::new();
         let _ = (&mut stdout).take(MAX_OUTPUT).read_to_string(&mut output);
         let _ = sender.send(output);
     });
-    let output = receiver.recv_timeout(DEADLINE);
+    let output = alondra_core::clock::recv_timeout(&receiver, DEADLINE);
     if output.is_err() {
         // SAFETY: the host leads its own process group, Claude included.
         unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) };
@@ -146,7 +146,7 @@ pub fn check(
     if !probes.begin(&project) {
         return false;
     }
-    std::thread::spawn(move || {
+    alondra_core::clock::spawn_thread(move || {
         let at = crate::log::local_iso(alondra_core::now_millis().div_euclid(1000) as libc::time_t, 0);
         let probe = match run(&backend, &directory) {
             Ok(servers) => LiveMcpProbe::Checked { at, servers },

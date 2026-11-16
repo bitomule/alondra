@@ -20,6 +20,9 @@ pub enum ScenarioError {
     ExpectFailed { checkpoint: String, expected: String, actual: String },
     /// The daemon sent the provider something other than the transcript expected next.
     TranscriptMismatch { expected: Option<String>, received: String },
+    /// The hosts stopped short of their transcripts and nothing they exchanged with the daemon moved
+    /// them on: how many started and what each has left to play.
+    HostsStalled { started: usize, expected: usize, remaining: Vec<usize> },
     /// Something reached for a real service: the network, an outside process, the system clock.
     Leak(String),
 }
@@ -48,6 +51,9 @@ impl std::fmt::Display for ScenarioError {
             }
             Self::TranscriptMismatch { expected, received } => {
                 write!(f, "the transcript expected {expected:?} and the daemon sent {received}")
+            }
+            Self::HostsStalled { started, expected, remaining } => {
+                write!(f, "{started} of {expected} hosts started and stopped with lines left to play: {remaining:?}")
             }
             Self::Leak(what) => write!(f, "a real service was reached: {what}"),
         }

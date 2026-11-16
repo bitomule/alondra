@@ -140,7 +140,7 @@ impl Watcher {
 
     pub fn check(&mut self, preflight: impl FnOnce(&Path) -> Outcome) -> Check {
         let Ok(found) = identity(&self.path) else { return Check::Unchanged };
-        let waiting_to_retry = self.rejected.is_some_and(|(rejected, at)| rejected == found && at.elapsed() < self.retry_rejected);
+        let waiting_to_retry = self.rejected.is_some_and(|(rejected, at)| rejected == found && alondra_core::clock::since(at) < self.retry_rejected);
         if found == self.running || waiting_to_retry {
             return Check::Unchanged;
         }
@@ -177,9 +177,9 @@ fn output(path: &Path, arg: &str, timeout: Duration) -> Option<(bool, String)> {
         .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
         .spawn().ok()?;
     let pid = child.id();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || { let _ = tx.send(child.wait_with_output()); });
-    let Ok(Ok(out)) = rx.recv_timeout(timeout) else {
+    let (tx, rx) = alondra_core::clock::channel();
+    alondra_core::clock::spawn_thread(move || { let _ = tx.send(child.wait_with_output()); });
+    let Ok(Ok(out)) = alondra_core::clock::recv_timeout(&rx, timeout) else {
         unsafe { libc::kill(pid as i32, libc::SIGKILL) };
         return None;
     };
@@ -397,5 +397,34 @@ mod tests {
         let outcome = run_preflight(&bin);
         assert_eq!(outcome.passed, Ok(()));
         assert_eq!(outcome.version.as_deref(), Some("99.0.0"));
+    }
+
+    /// The daemon's start waits on a thread of its own for an older daemon to leave its home. On a
+    /// virtual clock that thread polls on virtual time, so two hours of an older daemon pass at once.
+    #[test]
+    fn two_virtual_hours_waiting_for_the_home_pass_on_the_thread_that_waits() {
+        const EPOCH: alondra_core::Millis = 1_700_000_000_000;
+        const TWO_HOURS: Duration = Duration::from_secs(2 * 3600);
+        const EVERY: Duration = Duration::from_millis(500);
+        let home = crate::test_support::Directory::new();
+        let runtime = clock::VirtualRuntime::new(EPOCH).unwrap();
+        let freed = runtime.block_on(async {
+            let older = alondra_core::home_lock::HomeLock::shared(&home).unwrap();
+            let leaving = tokio::spawn(async move {
+                clock::sleep(TWO_HOURS).await;
+                drop(older);
+            });
+            let (done, finished) = tokio::sync::oneshot::channel();
+            let path = home.to_path_buf();
+            clock::spawn_thread(move || {
+                wait_until_free(&path, EVERY);
+                done.send(alondra_core::now_millis()).ok();
+            });
+            let freed = finished.await.unwrap();
+            leaving.await.unwrap();
+            freed
+        });
+        let left = EPOCH + TWO_HOURS.as_millis() as alondra_core::Millis;
+        assert!((left..=left + EVERY.as_millis() as alondra_core::Millis).contains(&freed), "freed at {freed}, the older daemon left at {left}");
     }
 }

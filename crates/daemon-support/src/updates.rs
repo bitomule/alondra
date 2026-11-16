@@ -138,9 +138,9 @@ fn brew_upgrade(brew: &Path) -> (bool, String) {
         Err(e) => return (false, format!("cannot run {}: {e}", brew.display())),
     };
     let pid = child.id();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || { let _ = tx.send(child.wait_with_output()); });
-    let Ok(Ok(out)) = rx.recv_timeout(UPGRADE_TIMEOUT) else {
+    let (tx, rx) = alondra_core::clock::channel();
+    alondra_core::clock::spawn_thread(move || { let _ = tx.send(child.wait_with_output()); });
+    let Ok(Ok(out)) = alondra_core::clock::recv_timeout(&rx, UPGRADE_TIMEOUT) else {
         unsafe { libc::kill(pid as i32, libc::SIGKILL) };
         return (false, "brew upgrade did not finish".into());
     };

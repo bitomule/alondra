@@ -176,14 +176,14 @@ fn run_probe(backend: &SdkBackend, folder: Option<&Path>, flag: &str) -> Result<
         .map_err(|error| format!("starting the SDK host: {error}"))?;
     let written = child.stdin.take().expect("piped stdin").write_all(request.to_string().as_bytes());
     let (mut stdout, mut stderr) = (child.stdout.take().expect("piped stdout"), child.stderr.take().expect("piped stderr"));
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    let (sender, receiver) = alondra_core::clock::channel();
+    alondra_core::clock::spawn_thread(move || {
         let (mut out, mut err) = (String::new(), String::new());
         let _ = stdout.read_to_string(&mut out);
         let _ = stderr.read_to_string(&mut err);
         let _ = sender.send((out, err));
     });
-    let Ok((out, err)) = receiver.recv_timeout(TIMEOUT + Duration::from_secs(5)) else {
+    let Ok((out, err)) = alondra_core::clock::recv_timeout(&receiver, TIMEOUT + Duration::from_secs(5)) else {
         // The probe leads its own process group: it and the Claude it started go together.
         unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) };
         let _ = child.wait();

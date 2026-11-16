@@ -46,7 +46,7 @@
           "subtitle": "La sesión de Claude Code caducó y una tarea espera. Abre Terminal en el Mac, ejecuta claude e inicia sesión con /login; luego pulsa Ya he iniciado sesión.",
           "timestamps": [
             {
-              "at": "<instant>",
+              "at": "2026-11-15T09:01:00.000+00:00",
               "format": "relative",
               "role": "created"
             }
@@ -117,7 +117,7 @@
           "subtitle": "La sesión de Claude Code caducó y una tarea espera. Abre Terminal en el Mac, ejecuta claude e inicia sesión con /login; luego pulsa Ya he iniciado sesión.",
           "timestamps": [
             {
-              "at": "<instant>",
+              "at": "2026-11-15T09:01:00.000+00:00",
               "format": "relative",
               "role": "created"
             }

@@ -122,7 +122,7 @@ impl DeliveryReviews {
     {
         let mut running = guard(&self.running);
         running.retain(|_, entry| {
-            entry.finished.borrow().is_none() || entry.started.elapsed() < KEPT
+            entry.finished.borrow().is_none() || alondra_core::clock::since(entry.started) < KEPT
         });
         if let Some(entry) = running.get(interaction) {
             if entry.fingerprint == fingerprint {

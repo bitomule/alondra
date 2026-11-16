@@ -1333,7 +1333,7 @@ pub async fn run(domain: Arc<DomainRuntime>, home: PathBuf) {
             log!("the admission gate could not start a queued launch: {error:#}");
         }
         tokio::select! {
-            () = tokio::time::sleep(TICK) => {}
+            () = alondra_core::clock::sleep(TICK) => {}
             () = domain.live().gate.changed.notified() => {}
             changed = changes.changed() => if changed.is_err() { return },
         }

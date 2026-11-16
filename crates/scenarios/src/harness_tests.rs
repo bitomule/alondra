@@ -217,3 +217,28 @@ fn a_check_on_pushes_needs_the_checkpoint_to_read_them() {
     let lines = "\n[[step.expect]]\ncheck = \"no_pushes\"\n";
     assert!(matches!(delivered(lines), Err(ScenarioError::Invalid(_))));
 }
+
+/// Virtual time moves only when a step moves it: reading the views of a checkpoint over HTTP lets
+/// no daemon timer jump the clock, so a checkpoint keeps the exact instant of what happened.
+#[test]
+fn a_checkpoint_keeps_the_instants_the_steps_set() {
+    let text = format!("{SMALL}
+[[step]]
+do = \"advance\"
+by = \"25m\"
+
+[[step]]
+do = \"task\"
+id = \"t2\"
+title = \"Add the summary\"
+
+[[step]]
+do = \"checkpoint\"
+name = \"later\"
+screens = [\"task:t2\"]
+");
+    let outcome = run(&scenario(&text), None).expect("the scenario runs");
+    let read = |checkpoint: usize, file: &str| outcome.checkpoints[checkpoint].1[file].clone();
+    assert!(read(0, "task-t1.ios.en.json").contains("\"2026-11-15T09:00:00.000+00:00\""), "{}", read(0, "task-t1.ios.en.json"));
+    assert!(read(1, "task-t2.ios.en.json").contains("\"2026-11-15T09:25:00.000+00:00\""), "{}", read(1, "task-t2.ios.en.json"));
+}

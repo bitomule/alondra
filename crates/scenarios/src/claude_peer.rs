@@ -17,7 +17,6 @@ use alondra_scenarios_transcript::{Line, Transcript};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -90,25 +89,52 @@ pub struct Seen {
     pub failure: Option<PeerError>,
     /// What each host started so far still has to play of its transcript, by the order it started in.
     pub remaining: Vec<usize>,
+    /// The events each host sent that the daemon has not acknowledged yet.
+    pub unacknowledged: Vec<u64>,
 }
 
 impl Seen {
     pub fn unplayed(&self) -> usize {
         self.remaining.iter().sum()
     }
+
+    /// Every host of `hosts` started, played its transcript to its end, and had what it said
+    /// committed by the daemon.
+    pub fn played(&self, hosts: usize) -> bool {
+        self.remaining.len() == hosts && self.unplayed() == 0 && self.unacknowledged.iter().all(|left| *left == 0)
+    }
 }
 
-/// How many frames the peers have exchanged with the daemon: the runner waits for it to stop
-/// moving before it reads what the daemon did with them.
+/// Each exchange of frames between the peers and the daemon: the runner waits on it for the peers
+/// to reach the state it needs, without polling.
 #[derive(Clone, Default)]
-pub struct Activity(Arc<AtomicU64>);
+pub struct Activity(Arc<(Mutex<u64>, std::sync::Condvar)>);
 
 impl Activity {
     pub fn count(&self) -> u64 {
-        self.0.load(Ordering::SeqCst)
+        *self.0.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+
     fn tick(&self) {
-        self.0.fetch_add(1, Ordering::SeqCst);
+        *self.0.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+        self.0.1.notify_all();
+    }
+
+    /// Blocks until `reached` holds, looking again after each exchange. `false` when `watchdog`
+    /// passes first: the peers stopped short of it, which a run reports instead of hanging.
+    pub fn wait_until(&self, reached: impl Fn() -> bool, watchdog: std::time::Duration) -> bool {
+        let (lock, exchanged) = &*self.0;
+        let mut count = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            if reached() {
+                return true;
+            }
+            let (next, waited) = exchanged.wait_timeout(count, watchdog).unwrap_or_else(std::sync::PoisonError::into_inner);
+            if waited.timed_out() {
+                return reached();
+            }
+            count = next;
+        }
     }
 }
 
@@ -284,8 +310,12 @@ fn emit(queue: &mut VecDeque<Step>, session: &mut Session, writer: &mut FramedWr
     Ok(true)
 }
 
-fn note(seen: &Mutex<Seen>, host: usize, remaining: usize) {
-    seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remaining[host] = remaining;
+fn note(seen: &Mutex<Seen>, session: &Session, remaining: usize) {
+    let mut seen = seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    seen.remaining[session.host] = remaining;
+    seen.unacknowledged[session.host] = session.cursor.saturating_sub(session.acknowledged);
+    drop(seen);
+    session.activity.tick();
 }
 
 fn serve(stream: UnixStream, queue: &mut VecDeque<Step>, session: &mut Session, seen: &Mutex<Seen>) -> Result<(), PeerError> {
@@ -294,7 +324,7 @@ fn serve(stream: UnixStream, queue: &mut VecDeque<Step>, session: &mut Session, 
     let mut reader = FramedReader::new(stream);
     handshake(&mut reader, &mut writer, session)?;
     let alive = emit(queue, session, &mut writer)?;
-    note(seen, session.host, queue.len());
+    note(seen, session, queue.len());
     if !alive {
         return Ok(());
     }
@@ -304,6 +334,7 @@ fn serve(stream: UnixStream, queue: &mut VecDeque<Step>, session: &mut Session, 
             Body::Acknowledge(acknowledge) => {
                 seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).acknowledged.push(acknowledge.cursor);
                 session.acknowledged = session.acknowledged.max(acknowledge.cursor);
+                note(seen, session, queue.len());
                 if session.ends_after.is_some_and(|cursor| session.acknowledged >= cursor) {
                     session.ends_after = None;
                     if !session.end() {
@@ -327,7 +358,7 @@ fn serve(stream: UnixStream, queue: &mut VecDeque<Step>, session: &mut Session, 
                 queue.pop_front();
                 session.last = Some(command);
                 let alive = emit(queue, session, &mut writer)?;
-                note(seen, session.host, queue.len());
+                note(seen, session, queue.len());
                 if !alive {
                     return Ok(());
                 }
@@ -410,17 +441,26 @@ impl HostLauncher for PeerLauncher {
         let host = {
             let mut seen = seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             seen.remaining.push(queue.len());
+            seen.unacknowledged.push(0);
             seen.remaining.len() - 1
         };
         let mut session = Session { acknowledged: bootstrap.journal_base, ends_after: None, app_server: self.app_server, capabilities: self.capabilities, host, activity: self.activity.clone(), group: child.id() as i32, cursor: bootstrap.journal_base, bootstrap, secret, last: None, ids: self.ids.clone() };
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                match serve(stream, &mut queue, &mut session, &seen) {
-                    Err(PeerError::Closed) | Ok(()) => {}
+                let served = serve(stream, &mut queue, &mut session, &seen);
+                let mut seen = seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                seen.unacknowledged[session.host] = 0;
+                let failed = match served {
+                    Err(PeerError::Closed) | Ok(()) => false,
                     Err(error) => {
-                        seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).failure.get_or_insert(error);
-                        break;
+                        seen.failure.get_or_insert(error);
+                        true
                     }
+                };
+                drop(seen);
+                session.activity.tick();
+                if failed {
+                    break;
                 }
             }
         });

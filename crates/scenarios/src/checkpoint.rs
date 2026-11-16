@@ -1,6 +1,7 @@
 //! What a checkpoint records and how it is compared with what the case accepted: the views by
 //! client and language, normalized so that nothing that changes from run to run is in them, and
-//! the pushes sent since the last checkpoint.
+//! the pushes sent since the last checkpoint. Instants stay as the daemon wrote them: the virtual
+//! clock moves only when a step moves it, so each one is the same in every run.
 
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -10,15 +11,6 @@ pub type Files = BTreeMap<String, String>;
 
 /// Keys whose values differ from run to run without meaning anything to a reader.
 const VOLATILE: &[&str] = &["data_epoch", "version", "cursor"];
-
-/// An ISO 8601 instant such as `2026-11-15T09:00:25.000+00:00`. The loops of the daemon and the
-/// blocking threads under them race the paused clock, so an instant moves by seconds from run to
-/// run; what the view says in words, to the minute, stays in it.
-fn is_instant(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    bytes.len() >= 19 && bytes[4] == b'-' && bytes[7] == b'-' && bytes[10] == b'T' && bytes[13] == b':'
-        && bytes[..4].iter().all(u8::is_ascii_digit)
-}
 
 /// The ids the daemon draws at random (`sdk-` and sixteen hex digits, the node of a task) and the
 /// revision that ends the id of a row (`@25`): they differ from run to run and say nothing to a reader.
@@ -47,7 +39,6 @@ fn mask_ids(text: &str) -> String {
 
 pub fn normalize(value: &mut Value) {
     match value {
-        Value::String(text) if is_instant(text) => *text = "<instant>".into(),
         Value::String(text) => *text = mask_ids(text),
         Value::Object(map) => {
             for (key, inner) in map.iter_mut() {
@@ -145,10 +136,10 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn what_changes_from_run_to_run_is_masked_and_the_rest_is_kept() {
+    fn what_changes_from_run_to_run_is_masked_and_the_instants_are_kept() {
         let mut view = json!({"data_epoch": "abc", "sections": [{"version": "v1", "title": "Inbox", "at": "2026-11-15T09:00:25.000+00:00"}]});
         normalize(&mut view);
-        assert_eq!(view, json!({"data_epoch": "<data_epoch>", "sections": [{"version": "<version>", "title": "Inbox", "at": "<instant>"}]}));
+        assert_eq!(view, json!({"data_epoch": "<data_epoch>", "sections": [{"version": "<version>", "title": "Inbox", "at": "2026-11-15T09:00:25.000+00:00"}]}));
     }
 
     #[test]

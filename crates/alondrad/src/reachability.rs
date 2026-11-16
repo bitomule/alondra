@@ -443,7 +443,7 @@ pub(crate) fn current() -> Option<Reachability> {
 
 async fn probe_router() -> Option<Offered> {
     let client = portmapper::Client::new(portmapper::Config::default());
-    match tokio::time::timeout(PROBE_TIMEOUT, client.probe()).await {
+    match alondra_core::clock::timeout(PROBE_TIMEOUT, client.probe()).await {
         Ok(Ok(Ok(found))) => Some(Offered { upnp: found.upnp, nat_pmp: found.nat_pmp, pcp: found.pcp }),
         Ok(Ok(Err(error))) if matches!(error, portmapper::ProbeError::NoGateway { .. }) => None,
         _ => Some(Offered::default()),
@@ -477,8 +477,8 @@ pub(crate) async fn watch(endpoint: Endpoint, port_fixed: bool, portmapper: &Por
     let probing = !matches!(portmapper, PortmapperConfig::Disabled);
     let mut reports = endpoint.net_report();
     let mut addrs = endpoint.watch_addr();
-    let mut probe = tokio::time::interval(PROBE_EVERY);
-    let mut refresh = tokio::time::interval(REFRESH);
+    let mut probe = alondra_core::clock::interval(PROBE_EVERY);
+    let mut refresh = alondra_core::clock::interval(REFRESH);
     let mut logged: Option<Reachability> = None;
     loop {
         let (interface_ips, gateway) = interfaces().await;

@@ -34,7 +34,7 @@ impl Read {
 
 impl Drop for Read {
     fn drop(&mut self) {
-        self.event.elapsed_ms = self.started.elapsed().as_secs_f64() * 1_000.0;
+        self.event.elapsed_ms = alondra_core::clock::since(self.started).as_secs_f64() * 1_000.0;
         self.sink.lock_or_recover("the live read trace").push(self.event.clone());
     }
 }

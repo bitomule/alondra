@@ -53,7 +53,7 @@ pub(crate) struct RelayConnector {
     /// The relay epoch the iroh endpoint was last bound in, and when a failed attempt was.
     /// A holder that panics leaves it whole, so it is recovered: one assignment of retry
     /// bookkeeping.
-    iroh_bound: std::sync::Mutex<Option<([u8; 16], Option<std::time::Instant>)>>,
+    iroh_bound: std::sync::Mutex<Option<([u8; 16], Option<alondra_core::clock::Instant>)>>,
     /// The device endpoints bound on this Mac's behalf in that epoch, and when one last failed.
     /// A holder that panics leaves it whole, so it is recovered: bindings for one epoch, set one by
     /// one and reset with the next.
@@ -68,7 +68,7 @@ pub(crate) struct RelayConnector {
 struct DevicesBound {
     epoch: Option<[u8; 16]>,
     nodes: std::collections::BTreeMap<String, String>,
-    failed: Option<std::time::Instant>,
+    failed: Option<alondra_core::clock::Instant>,
 }
 
 #[derive(Deserialize)]
@@ -281,7 +281,7 @@ impl Service {
         }
         let due = match *relay.iroh_bound.lock_or_recover("the iroh binding") {
             Some((bound, None)) => bound != *epoch,
-            Some((bound, Some(failed))) => bound != *epoch || failed.elapsed() >= IROH_BIND_RETRY,
+            Some((bound, Some(failed))) => bound != *epoch || alondra_core::clock::since(failed) >= IROH_BIND_RETRY,
             None => true,
         };
         if !due {
@@ -294,7 +294,7 @@ impl Service {
             }
             Err(error) => {
                 log!("iroh endpoint not bound at the relay: {error:#}");
-                Some(std::time::Instant::now())
+                Some(alondra_core::clock::instant())
             }
         };
         *relay.iroh_bound.lock_or_recover("the iroh binding") = Some((*epoch, failed));
@@ -325,7 +325,7 @@ impl Service {
             if bound.epoch != Some(*epoch) {
                 *bound = DevicesBound { epoch: Some(*epoch), ..DevicesBound::default() };
             }
-            if bound.failed.is_some_and(|failed| failed.elapsed() < IROH_BIND_RETRY) {
+            if bound.failed.is_some_and(|failed| alondra_core::clock::since(failed) < IROH_BIND_RETRY) {
                 return;
             }
             self.iroh_hellos()
@@ -349,7 +349,7 @@ impl Service {
                 }
                 Err(error) => {
                     log!("iroh endpoint of {id} not bound at the relay: {error:#}");
-                    bound.failed = Some(std::time::Instant::now());
+                    bound.failed = Some(alondra_core::clock::instant());
                 }
             }
         }
@@ -432,7 +432,7 @@ impl Service {
                 }
             };
             tokio::select! {
-                () = tokio::time::sleep(wait) => {}
+                () = alondra_core::clock::sleep(wait) => {}
                 () = relay.wake.notified() => {}
             }
         }

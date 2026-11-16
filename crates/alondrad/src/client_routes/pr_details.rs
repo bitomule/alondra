@@ -328,7 +328,7 @@ impl super::Client {
         let url = crate::domain_github::pr_url(&pr.host, &pr.repository, pr.number);
         for attempt in 0..attempts {
             if attempt > 0 {
-                tokio::time::sleep(pause).await;
+                alondra_core::clock::sleep(pause).await;
             }
             let request = self.details.begin(&pr.id.0);
             let Some(answer) = view.view(&url).await else { return Merge::Unknown };
@@ -410,7 +410,7 @@ impl super::Client {
             let url = crate::domain_github::pr_url(&pr.host, &pr.repository, pr.number);
             for attempt in 0..HEAD_ATTEMPTS {
                 if attempt > 0 {
-                    tokio::time::sleep(HEAD_PAUSE).await;
+                    alondra_core::clock::sleep(HEAD_PAUSE).await;
                 }
                 let Some(facts) = view.view(&url).await.and_then(|answer| crate::domain_github::parse(&answer).ok()) else { continue };
                 if let Err(error) = crate::domain_github::observe(&self.domain, pr_id, &facts) {

@@ -961,7 +961,7 @@ fn raise_trouble(domain: &DomainRuntime, pr: &PullRequest, failure: &GhFailure, 
     if counts {
         trouble.count += 1;
     }
-    if trouble.card.is_some() || (trouble.count < NON_TRANSIENT_FAILURES_BEFORE_CARD && trouble.since.elapsed() < give_up) {
+    if trouble.card.is_some() || (trouble.count < NON_TRANSIENT_FAILURES_BEFORE_CARD && alondra_core::clock::since(trouble.since) < give_up) {
         return;
     }
     let id = format!("problem-merge-{}-{}", pr.slug(), crate::auth::random_hex(6));

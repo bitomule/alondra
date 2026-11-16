@@ -33,7 +33,7 @@ pub async fn run(
     let mut retry_after: HashMap<i64, Instant> = HashMap::new();
     let mut first_seen: HashMap<i64, Instant> = HashMap::new();
     loop {
-        retry_after.retain(|_, at| at.elapsed() < RETRY_BACKOFF);
+        retry_after.retain(|_, at| alondra_core::clock::since(*at) < RETRY_BACKOFF);
         let pending = {
             let mut store = domain.store.lock_or_exit("the domain store");
             store.discard_expired_orchestrator_messages(
@@ -48,7 +48,7 @@ pub async fn run(
         // committed process instead of silently serving a dead outbox.
         for message in ready_by_recipient(pending, &retry_after) {
             let id = message.id;
-            let waited = first_seen.entry(id).or_insert_with(clock::instant).elapsed();
+            let waited = clock::since(*first_seen.entry(id).or_insert_with(clock::instant));
             deliver_from_runtime(&domain, &home, &push, service.as_deref(), &client, message, waited).await?;
             retry_after.insert(id, clock::instant());
         }
@@ -190,7 +190,7 @@ fn ready_messages(
         .filter(|message| {
             !retry_after
                 .get(&message.id)
-                .is_some_and(|at| at.elapsed() < RETRY_BACKOFF)
+                .is_some_and(|at| alondra_core::clock::since(*at) < RETRY_BACKOFF)
         })
         .take(64)
         .collect()
