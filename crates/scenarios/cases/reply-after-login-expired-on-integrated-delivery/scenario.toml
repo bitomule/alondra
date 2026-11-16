@@ -31,6 +31,10 @@ prs = [7]
 body = "The CSV export is ready"
 
 [[step]]
+do = "advance"
+by = "1m"
+
+[[step]]
 do = "login_expired"
 
 [[step]]

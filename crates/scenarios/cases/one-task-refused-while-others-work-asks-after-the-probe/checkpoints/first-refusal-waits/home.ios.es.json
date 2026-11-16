@@ -7,7 +7,7 @@
       "client": "ios",
       "cursor": "<cursor>",
       "data_epoch": "<data_epoch>",
-      "key": "card:claude-outage-t1-11",
+      "key": "card:claude-outage-t1-13",
       "protocol": 1,
       "sections": [
         {
@@ -19,7 +19,7 @@
                 {
                   "attachments": false,
                   "enabled": true,
-                  "id": "ans:claude-outage-t1-11@<revision>",
+                  "id": "ans:claude-outage-t1-13@<revision>",
                   "input": {
                     "kind": "none"
                   },
@@ -52,10 +52,10 @@
                 "tone": "critical"
               },
               "icon": "warning",
-              "id": "claude-outage-t1-11",
+              "id": "claude-outage-t1-13",
               "kind": "problem",
               "link": {
-                "key": "card:claude-outage-t1-11",
+                "key": "card:claude-outage-t1-13",
                 "kind": "view"
               },
               "meta": "Alondra",
@@ -209,7 +209,7 @@
   "sections": [
     {
       "card_ids": [
-        "claude-outage-t1-11"
+        "claude-outage-t1-13"
       ],
       "card_waits": [
         "question"

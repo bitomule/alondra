@@ -1,0 +1,40 @@
+[
+  {
+    "delivery": "alert",
+    "device": "<phone>",
+    "payload": {
+      "alondra": {
+        "actions": [
+          {
+            "id": "merge:pr41@<revision>~00000000-d1",
+            "label": "Squash and merge",
+            "option": "squash"
+          },
+          {
+            "id": "changes:pr41@<revision>~00000000",
+            "label": "Request changes",
+            "placeholder": "Describe the changes",
+            "text": true
+          }
+        ],
+        "card": "d1",
+        "data_epoch": "<data_epoch>",
+        "kind": "delivery",
+        "protocol": 1
+      },
+      "aps": {
+        "alert": {
+          "body": "Review · PR #41",
+          "title": "Review the result · app#41"
+        },
+        "badge": 2,
+        "category": "ALONDRA_PUSH",
+        "interruption-level": "active",
+        "mutable-content": 1,
+        "sound": "default",
+        "thread-id": "t1"
+      }
+    },
+    "with_sound": true
+  }
+]

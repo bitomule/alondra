@@ -43,6 +43,16 @@ prs = [41, 42]
 body = "Both exports are ready"
 
 [[step]]
+do = "rest"
+max = "1m"
+
+[[step]]
+do = "checkpoint"
+name = "delivery-presented"
+screens = ["home"]
+pushes = true
+
+[[step]]
 do = "tell"
 task = "t1"
 text = "Also add the totals row"
@@ -84,6 +94,11 @@ max = "10m"
 do = "checkpoint"
 name = "report-shown"
 screens = ["home", "task:t1"]
+pushes = true
+
+[[step.expect]]
+check = "no_pushes"
+delivery = "alert"
 
 [[step.expect]]
 check = "view_shows"

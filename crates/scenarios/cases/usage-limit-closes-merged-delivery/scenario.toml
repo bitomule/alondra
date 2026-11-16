@@ -63,6 +63,11 @@ max = "10m"
 do = "checkpoint"
 name = "closed"
 screens = ["home"]
+pushes = true
+
+[[step.expect]]
+check = "badge"
+count = 0
 
 [[step.expect]]
 check = "pr_merged_into"

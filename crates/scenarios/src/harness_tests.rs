@@ -129,3 +129,91 @@ fn a_process_started_through_the_launcher_is_a_leak() {
         other => panic!("expected a leak, found {:?}", other.map(|_| ())),
     }
 }
+
+const DELIVERED: &str = r#"
+name = "a delivery waits for the user"
+max_virtual = "1h"
+
+[[step]]
+do = "request"
+text = "Export the report"
+task = "t1"
+title = "Add the export"
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "github"
+event = "open_pr"
+number = 7
+head = "export"
+base = "main"
+
+[[step]]
+do = "register_pr"
+task = "t1"
+number = 7
+
+[[step]]
+do = "present"
+task = "t1"
+id = "d1"
+prs = [7]
+body = "The export is ready"
+
+[[step]]
+do = "rest"
+max = "1m"
+
+[[step]]
+do = "checkpoint"
+name = "delivered"
+screens = ["home"]
+"#;
+
+fn delivered(checkpoint_lines: &str) -> Result<Outcome, ScenarioError> {
+    run(&scenario(&format!("{DELIVERED}{checkpoint_lines}")), None)
+}
+
+#[test]
+fn the_pushes_a_phone_received_are_in_the_checkpoint_that_asks_for_them() {
+    let outcome = delivered("pushes = true\n").expect("the scenario runs");
+    let (_, files) = &outcome.checkpoints[0];
+    let pushes: serde_json::Value = serde_json::from_str(&files["pushes.json"]).unwrap();
+    let alerts: Vec<&serde_json::Value> = pushes.as_array().unwrap().iter().filter(|push| push["delivery"] == "alert").collect();
+    assert_eq!(alerts.len(), 1, "{pushes}");
+    assert_eq!(alerts[0]["device"], "<phone>");
+    assert_eq!(alerts[0]["payload"]["alondra"]["card"], "d1");
+}
+
+#[test]
+fn an_alert_the_phone_received_fails_a_check_that_there_was_none() {
+    let lines = "pushes = true\n\n[[step.expect]]\ncheck = \"no_pushes\"\ndelivery = \"alert\"\n";
+    match delivered(lines) {
+        Err(ScenarioError::ExpectFailed { checkpoint, expected, actual }) => {
+            assert_eq!(checkpoint, "delivered");
+            assert_eq!(expected, "no alert push");
+            assert!(actual.contains("alert"), "{actual}");
+        }
+        other => panic!("expected a failed assertion, found {:?}", other.map(|_| ())),
+    }
+}
+
+#[test]
+fn a_badge_the_phone_never_got_fails_a_check_on_it() {
+    let lines = "pushes = true\n\n[[step.expect]]\ncheck = \"badge\"\ncount = 0\n";
+    match delivered(lines) {
+        Err(ScenarioError::ExpectFailed { expected, actual, .. }) => {
+            assert_eq!((expected.as_str(), actual.as_str()), ("the icon badge set to 0", "None"));
+        }
+        other => panic!("expected a failed assertion, found {:?}", other.map(|_| ())),
+    }
+}
+
+#[test]
+fn a_check_on_pushes_needs_the_checkpoint_to_read_them() {
+    let lines = "\n[[step.expect]]\ncheck = \"no_pushes\"\n";
+    assert!(matches!(delivered(lines), Err(ScenarioError::Invalid(_))));
+}

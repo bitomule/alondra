@@ -8,6 +8,9 @@ use serde_json::Value;
 use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+/// The secret the phone's keys derive from: the same in every scenario, so every run signs alike.
+pub const PHONE_SECRET: [u8; 32] = [9u8; 32];
+
 pub struct Phone {
     addr: SocketAddr,
     key: p256::ecdsa::SigningKey,
@@ -28,11 +31,15 @@ impl Response {
 
 impl Phone {
     pub fn pair(daemon: &Assembled, addr: SocketAddr) -> Result<Self, String> {
-        let key = p256::ecdsa::SigningKey::from_slice(&[9u8; 32]).map_err(|error| error.to_string())?;
+        let key = p256::ecdsa::SigningKey::from_slice(&PHONE_SECRET).map_err(|error| error.to_string())?;
         let code = daemon.auth.new_pairing_code();
         let public = base64::engine::general_purpose::STANDARD.encode(key.verifying_key().to_sec1_bytes());
         let device = daemon.auth.pair(&code, "Scenario phone", &public)?;
         Ok(Self { addr, key, device: device.id, sent: std::cell::Cell::new(0) })
+    }
+
+    pub fn device(&self) -> &str {
+        &self.device
     }
 
     pub async fn get(&self, path: &str) -> std::io::Result<Response> {

@@ -31,10 +31,10 @@
             "tone": "critical"
           },
           "icon": "warning",
-          "id": "claude-outage-t1-11",
+          "id": "claude-outage-t1-13",
           "kind": "problem",
           "link": {
-            "key": "card:claude-outage-t1-11",
+            "key": "card:claude-outage-t1-13",
             "kind": "view"
           },
           "meta": "Alondra",
@@ -68,7 +68,7 @@
             {
               "attachments": false,
               "enabled": true,
-              "id": "ans:claude-outage-t1-11@<revision>",
+              "id": "ans:claude-outage-t1-13@<revision>",
               "input": {
                 "kind": "none"
               },
@@ -102,10 +102,10 @@
             "tone": "critical"
           },
           "icon": "warning",
-          "id": "claude-outage-t1-11",
+          "id": "claude-outage-t1-13",
           "kind": "problem",
           "link": {
-            "key": "card:claude-outage-t1-11",
+            "key": "card:claude-outage-t1-13",
             "kind": "view"
           },
           "meta": "Alondra",

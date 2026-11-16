@@ -31,10 +31,10 @@
             "tone": "critical"
           },
           "icon": "warning",
-          "id": "claude-signed-out-t1-9",
+          "id": "claude-signed-out-t1-12",
           "kind": "problem",
           "link": {
-            "key": "card:claude-signed-out-t1-9",
+            "key": "card:claude-signed-out-t1-12",
             "kind": "view"
           },
           "meta": "Alondra",
@@ -68,7 +68,7 @@
             {
               "attachments": false,
               "enabled": true,
-              "id": "ans:claude-signed-out-t1-9@<revision>",
+              "id": "ans:claude-signed-out-t1-12@<revision>",
               "input": {
                 "kind": "none"
               },
@@ -102,10 +102,10 @@
             "tone": "critical"
           },
           "icon": "warning",
-          "id": "claude-signed-out-t1-9",
+          "id": "claude-signed-out-t1-12",
           "kind": "problem",
           "link": {
-            "key": "card:claude-signed-out-t1-9",
+            "key": "card:claude-signed-out-t1-12",
             "kind": "view"
           },
           "meta": "Alondra",
