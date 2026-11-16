@@ -1676,15 +1676,15 @@ impl DomainState {
         }
     }
 
-    /// A message the user sends after merging never takes the merge back: every authorization
-    /// the user gave stands, with the acceptance of its delivery, and the node still gets the
-    /// message. What only Alondra decided is decided again.
     /// The user wrote to the task: its node owes them an answer before the task can finish, and
     /// what the node presented before no longer settles it.
     pub(super) fn awaits_answer_to_user(&mut self, task: &TaskId, input: String) {
         self.invalidate_keeping_user_merges(task, |state| state.invalidate(task));
         self.tasks.get_mut(task).expect("the task the user wrote to exists").pending_user_inputs.insert(input);
     }
+    /// A message the user sends after merging never takes the merge back: every authorization
+    /// the user gave stands, with the acceptance of its delivery, and the node still gets the
+    /// message. What only Alondra decided is decided again.
     fn invalidate_keeping_user_merges(&mut self, task: &TaskId, invalidate: impl FnOnce(&mut Self)) {
         let kept: Vec<(AuthorizationId, InteractionId)> = self.merge_authorizations.values()
             .filter(|a| &a.task_id == task && a.valid && a.user_id != Feedback::ALONDRA)
