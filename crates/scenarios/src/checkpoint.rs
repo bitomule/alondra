@@ -20,9 +20,35 @@ fn is_instant(text: &str) -> bool {
         && bytes[..4].iter().all(u8::is_ascii_digit)
 }
 
+/// The ids the daemon draws at random (`sdk-` and sixteen hex digits, the node of a task) and the
+/// revision that ends the id of a row (`@25`): they differ from run to run and say nothing to a reader.
+fn mask_ids(text: &str) -> String {
+    let mut masked = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(['@', 's']) {
+        masked.push_str(&rest[..at]);
+        let tail = &rest[at..];
+        let digits = tail.strip_prefix('@').map(|after| after.bytes().take_while(u8::is_ascii_digit).count()).unwrap_or(0);
+        let hex = tail.strip_prefix("sdk-").map(|after| after.bytes().take_while(u8::is_ascii_hexdigit).count()).unwrap_or(0);
+        if digits > 0 {
+            masked.push_str("@<revision>");
+            rest = &tail[1 + digits..];
+        } else if hex >= 16 {
+            masked.push_str("<node>");
+            rest = &tail[4 + hex..];
+        } else {
+            masked.push_str(&tail[..1]);
+            rest = &tail[1..];
+        }
+    }
+    masked.push_str(rest);
+    masked
+}
+
 pub fn normalize(value: &mut Value) {
     match value {
         Value::String(text) if is_instant(text) => *text = "<instant>".into(),
+        Value::String(text) => *text = mask_ids(text),
         Value::Object(map) => {
             for (key, inner) in map.iter_mut() {
                 if VOLATILE.contains(&key.as_str()) && inner.is_string() {
@@ -123,6 +149,13 @@ mod tests {
         let mut view = json!({"data_epoch": "abc", "sections": [{"version": "v1", "title": "Inbox", "at": "2026-11-15T09:00:25.000+00:00"}]});
         normalize(&mut view);
         assert_eq!(view, json!({"data_epoch": "<data_epoch>", "sections": [{"version": "<version>", "title": "Inbox", "at": "<instant>"}]}));
+    }
+
+    #[test]
+    fn the_ids_the_daemon_draws_and_the_revision_of_a_row_are_masked() {
+        let mut view = json!({"id": "pause:sdk-acee27f00e56b821@19~t1", "next": "clear_completed:view@25", "mail": "ana@example.com"});
+        normalize(&mut view);
+        assert_eq!(view, json!({"id": "pause:<node>@<revision>~t1", "next": "clear_completed:view@<revision>", "mail": "ana@example.com"}));
     }
 
     #[test]

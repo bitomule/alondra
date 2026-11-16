@@ -63,6 +63,7 @@ impl From<crate::claude_peer::PeerError> for ScenarioError {
                 Self::TranscriptMismatch { expected: expected.map(|frame| frame.to_string()), received: received.to_string() }
             }
             crate::claude_peer::PeerError::Protocol(why) => Self::Invalid(why),
+            crate::claude_peer::PeerError::Closed => Self::Invalid("the daemon closed the connection".into()),
         }
     }
 }

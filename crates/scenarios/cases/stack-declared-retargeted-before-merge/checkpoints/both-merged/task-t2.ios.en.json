@@ -123,7 +123,7 @@
             {
               "attachments": true,
               "enabled": true,
-              "id": "msg:agent-t2@25~t2",
+              "id": "msg:agent-t2@<revision>~t2",
               "input": {
                 "kind": "text",
                 "multiline": true,
@@ -139,7 +139,7 @@
             {
               "attachments": false,
               "enabled": true,
-              "id": "reopen:t2@25",
+              "id": "reopen:t2@<revision>",
               "input": {
                 "kind": "none"
               },

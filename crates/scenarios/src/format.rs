@@ -18,6 +18,9 @@ pub struct Scenario {
     pub world: World,
     #[serde(default, rename = "step")]
     pub steps: Vec<Step>,
+    /// The folder of the case, which the transcripts its steps name are read from.
+    #[serde(skip)]
+    pub case: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,6 +76,10 @@ pub enum Step {
     Present { task: String, id: String, prs: Vec<u64>, body: String },
     /// The node of `task` tells the pull request is ready for others to stack on.
     StackReady { task: String, presentation: String, pr: u64 },
+    /// The task starts on Codex: the daemon launches its node as it does in production, and the
+    /// host it starts plays the first of `transcripts`. A host that ends, and the one that takes
+    /// its place, each play the next.
+    CodexNode { task: String, transcripts: Vec<String> },
     /// Something happens on GitHub.
     Github(GithubChange),
     /// The user presses `action` (a verb of the action ids: `merge`, `accept`, `changes`...) on the
@@ -115,6 +122,9 @@ pub enum Expect {
     GhCalls { calls: Vec<String> },
     PrMergedInto { pr: u64, branch: String },
     TaskState { task: String, state: alondra_core::domain::TaskState },
+    /// Every transcript of the case was played to its end: the daemon sent what each expected and
+    /// received everything it said.
+    TranscriptsPlayed,
 }
 
 pub fn parse_duration(text: &str) -> Result<Duration, ScenarioError> {

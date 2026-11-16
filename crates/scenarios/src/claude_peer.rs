@@ -16,6 +16,7 @@ use alondra_scenarios_transcript::{Line, Transcript};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -39,6 +40,9 @@ struct Bootstrap {
     fence: Fence,
     execution: Execution,
     manifest: Manifest,
+    /// Where the events of a host that replaces another continue: after the last the daemon kept.
+    #[serde(default)]
+    journal_base: u64,
 }
 
 #[derive(Deserialize)]
@@ -54,6 +58,15 @@ pub enum PeerError {
     /// The daemon sent a frame the transcript did not expect next.
     Mismatch { expected: Option<Value>, received: Value },
     Protocol(String),
+    /// The daemon closed its end of the connection, as it does with a host it replaces.
+    Closed,
+}
+
+fn wire(error: alondra_agent_protocol::Error) -> PeerError {
+    match error {
+        alondra_agent_protocol::Error::Io(_) => PeerError::Closed,
+        other => PeerError::Protocol(other.to_string()),
+    }
 }
 
 impl std::fmt::Display for PeerError {
@@ -61,6 +74,7 @@ impl std::fmt::Display for PeerError {
         match self {
             Self::Mismatch { expected, received } => write!(f, "expected {expected:?}, the daemon sent {received}"),
             Self::Protocol(why) => write!(f, "protocol: {why}"),
+            Self::Closed => f.write_str("the daemon closed the connection"),
         }
     }
 }
@@ -73,6 +87,28 @@ pub struct Seen {
     pub acknowledged: Vec<u64>,
     /// The first thing that went wrong, if anything did.
     pub failure: Option<PeerError>,
+    /// What each host started so far still has to play of its transcript, by the order it started in.
+    pub remaining: Vec<usize>,
+}
+
+impl Seen {
+    pub fn unplayed(&self) -> usize {
+        self.remaining.iter().sum()
+    }
+}
+
+/// How many frames the peers have exchanged with the daemon: the runner waits for it to stop
+/// moving before it reads what the daemon did with them.
+#[derive(Clone, Default)]
+pub struct Activity(Arc<AtomicU64>);
+
+impl Activity {
+    pub fn count(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
+    }
+    fn tick(&self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 enum Step {
@@ -101,13 +137,44 @@ fn comparable(mut frame: Value) -> Value {
             body.remove(key);
         }
         if let Some(action) = body.get_mut("action").and_then(Value::as_object_mut) {
-            action.remove("cwd");
+            for key in ["cwd", "input_id"] {
+                action.remove(key);
+            }
         }
     }
     frame
 }
 
+/// Whether the frame the daemon sent is the one the transcript expected. The prompt of an offer is
+/// the mission the daemon wrote around the task, so the transcript names the part of it that
+/// matters and the offer has to contain it.
+fn is_expected(expected: &Value, received: &Value) -> bool {
+    let prompt = |frame: &Value| frame.pointer("/body/action/prompt").and_then(Value::as_str).map(str::to_owned);
+    let (mut expected, mut received) = (comparable(expected.clone()), comparable(received.clone()));
+    if let (Some(wanted), Some(sent)) = (prompt(&expected), prompt(&received)) {
+        if !sent.contains(&wanted) {
+            return false;
+        }
+        for frame in [&mut expected, &mut received] {
+            if let Some(action) = frame.pointer_mut("/body/action").and_then(Value::as_object_mut) {
+                action.remove("prompt");
+            }
+        }
+    }
+    expected == received
+}
+
 struct Session {
+    /// The last cursor the daemon acknowledged, and the cursor the host ends after: it ends once
+    /// the daemon has committed what the host said before it.
+    acknowledged: u64,
+    ends_after: Option<u64>,
+    app_server: bool,
+    capabilities: &'static [&'static str],
+    host: usize,
+    activity: Activity,
+    /// The process group of the process the daemon supervises as the host.
+    group: i32,
     bootstrap: Bootstrap,
     secret: [u8; 32],
     cursor: u64,
@@ -115,6 +182,19 @@ struct Session {
 }
 
 impl Session {
+    /// The host's process, or only its app-server, ends. Whether the connection goes on.
+    fn end(&mut self) -> bool {
+        self.activity.tick();
+        if self.app_server {
+            // Only the app-server dies: its host lives on, and cannot say so.
+            let _ = Process::new("/usr/bin/pkill").args(["-KILL", "-P", &self.group.to_string()]).status();
+            true
+        } else {
+            unsafe { libc::killpg(self.group, libc::SIGKILL) };
+            false
+        }
+    }
+
     /// The frame of the transcript with what the host knows filled in: its fence and execution, the
     /// command a receipt answers and the next cursor of an event.
     fn fill(&mut self, frame: &Value) -> Result<Frame, PeerError> {
@@ -132,10 +212,31 @@ impl Session {
             Some("event") => {
                 self.cursor += 1;
                 body.insert("cursor".into(), self.cursor.into());
+                let input = self.last.as_ref().and_then(|command| serde_json::to_value(command).ok()).and_then(|command| command.pointer("/action/input_id").cloned());
+                let conversation = serde_json::to_value(&self.bootstrap.execution).ok().and_then(|execution| execution.get("conversation_id").cloned());
+                if let Some(observation) = body.get_mut("observation") {
+                    for (name, id) in [("«input»", input), ("«conversation»", conversation)] {
+                        if let Some(id) = id {
+                            name_assigned(observation, name, &id);
+                        }
+                    }
+                }
             }
             _ => {}
         }
         serde_json::from_value(frame).map_err(|e| protocol(format!("an inbound frame of the transcript is not a frame: {e}")))
+    }
+}
+
+/// What the daemon assigns is not known to a transcript, which names it (`«input»`, the input of
+/// the last offer; `«conversation»`, the conversation of the execution): wherever it does, the
+/// assigned id takes its place.
+fn name_assigned(value: &mut Value, name: &str, id: &Value) {
+    match value {
+        Value::String(text) if text == name => *value = id.clone(),
+        Value::Object(map) => map.values_mut().for_each(|inner| name_assigned(inner, name, id)),
+        Value::Array(items) => items.iter_mut().for_each(|inner| name_assigned(inner, name, id)),
+        _ => {}
     }
 }
 
@@ -149,13 +250,13 @@ fn handshake(
     writer
         .write(&Frame::new(Body::Hello(Hello {
             protocol_versions: vec![PROTOCOL_VERSION],
-            capabilities: CAPABILITIES.iter().map(|c| (*c).to_owned()).collect(),
+            capabilities: session.capabilities.iter().map(|c| (*c).to_owned()).collect(),
             fence: b.fence.clone(),
             host_release: b.manifest.host_release.clone(),
             host_sha256: b.manifest.host_sha256.clone(),
             sdk_version: b.manifest.sdk_version.clone(),
         })))
-        .map_err(|e| protocol(e.to_string()))?;
+        .map_err(wire)?;
     writer
         .write(&Frame::new(Body::Challenge(Challenge {
             fence: b.fence.clone(),
@@ -164,8 +265,8 @@ fn handshake(
             nonce: "a".repeat(64),
             executable_sha256: b.manifest.executable_sha256.clone(),
         })))
-        .map_err(|e| protocol(e.to_string()))?;
-    let attach: Attach = match reader.read().map_err(|e| protocol(e.to_string()))?.map(|frame| frame.body) {
+        .map_err(wire)?;
+    let attach: Attach = match reader.read().map_err(wire)?.map(|frame| frame.body) {
         Some(Body::Attach(attach)) => attach,
         other => return Err(protocol(format!("expected the daemon's attach, found {other:?}"))),
     };
@@ -179,7 +280,7 @@ fn handshake(
             owner_generation: attach.owner_generation,
             proof,
         })))
-        .map_err(|e| protocol(e.to_string()))
+        .map_err(wire)
 }
 
 fn decode_secret(hex: &str) -> Option<[u8; 32]> {
@@ -200,12 +301,21 @@ fn emit(queue: &mut VecDeque<Step>, session: &mut Session, writer: &mut FramedWr
         match queue.pop_front() {
             Some(Step::Emit(frame)) => {
                 let frame = session.fill(&frame)?;
-                writer.write(&frame).map_err(|e| PeerError::Protocol(e.to_string()))?;
+                writer.write(&frame).map_err(wire)?;
+                session.activity.tick();
             }
-            _ => return Ok(false),
+            _ if session.acknowledged < session.cursor => {
+                session.ends_after = Some(session.cursor);
+                return Ok(true);
+            }
+            _ => return Ok(session.end()),
         }
     }
     Ok(true)
+}
+
+fn note(seen: &Mutex<Seen>, host: usize, remaining: usize) {
+    seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remaining[host] = remaining;
 }
 
 fn serve(stream: UnixStream, queue: &mut VecDeque<Step>, session: &mut Session, seen: &Mutex<Seen>) -> Result<(), PeerError> {
@@ -213,12 +323,24 @@ fn serve(stream: UnixStream, queue: &mut VecDeque<Step>, session: &mut Session, 
     let mut writer = FramedWriter::new(stream.try_clone().map_err(|e| protocol(e.to_string()))?);
     let mut reader = FramedReader::new(stream);
     handshake(&mut reader, &mut writer, session)?;
-    if !emit(queue, session, &mut writer)? {
+    let alive = emit(queue, session, &mut writer)?;
+    note(seen, session.host, queue.len());
+    if !alive {
         return Ok(());
     }
-    while let Some((frame, _)) = reader.read_with_digest().map_err(|e| protocol(e.to_string()))? {
+    while let Some((frame, _)) = reader.read_with_digest().map_err(wire)? {
+        session.activity.tick();
         match frame.body {
-            Body::Acknowledge(acknowledge) => seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).acknowledged.push(acknowledge.cursor),
+            Body::Acknowledge(acknowledge) => {
+                seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).acknowledged.push(acknowledge.cursor);
+                session.acknowledged = session.acknowledged.max(acknowledge.cursor);
+                if session.ends_after.is_some_and(|cursor| session.acknowledged >= cursor) {
+                    session.ends_after = None;
+                    if !session.end() {
+                        return Ok(());
+                    }
+                }
+            }
             Body::Command(command) => {
                 let received = serde_json::to_value(Frame::new(Body::Command(command.clone()))).map_err(|e| protocol(e.to_string()))?;
                 seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).commands.push(received.clone());
@@ -226,14 +348,16 @@ fn serve(stream: UnixStream, queue: &mut VecDeque<Step>, session: &mut Session, 
                     Some(Step::Expect(expected)) => Some(expected.clone()),
                     _ => None,
                 };
-                if expected.as_ref().map(|expected| comparable(expected.clone())) != Some(comparable(received.clone())) {
+                if !expected.as_ref().is_some_and(|expected| is_expected(expected, &received)) {
                     let mismatch = PeerError::Mismatch { expected, received };
                     seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).failure.get_or_insert(mismatch.clone());
                     return Err(mismatch);
                 }
                 queue.pop_front();
                 session.last = Some(command);
-                if !emit(queue, session, &mut writer)? {
+                let alive = emit(queue, session, &mut writer)?;
+                note(seen, session.host, queue.len());
+                if !alive {
                     return Ok(());
                 }
             }
@@ -243,16 +367,37 @@ fn serve(stream: UnixStream, queue: &mut VecDeque<Step>, session: &mut Session, 
     Ok(())
 }
 
-/// Starts a stand-in for the SDK host wherever the daemon would start one: a host that speaks the
-/// protocol on the host's socket as the transcript says, in a thread of this process.
+/// Starts a stand-in for the provider's host wherever the daemon would start one: a host that
+/// speaks the protocol on the host's socket as the transcript says, in a thread of this process.
+/// Each host the daemon starts plays the next transcript: a host that ended and the one that
+/// replaces it are two.
 pub struct PeerLauncher {
-    transcript: Mutex<Option<Transcript>>,
+    app_server: bool,
+    capabilities: &'static [&'static str],
+    transcripts: Mutex<VecDeque<Transcript>>,
     pub seen: Arc<Mutex<Seen>>,
+    pub activity: Activity,
 }
 
 impl PeerLauncher {
     pub fn new(transcript: Transcript) -> Self {
-        Self { transcript: Mutex::new(Some(transcript)), seen: Arc::default() }
+        Self::sequence(vec![transcript])
+    }
+
+    pub fn sequence(transcripts: Vec<Transcript>) -> Self {
+        Self::declaring(CAPABILITIES, transcripts)
+    }
+
+    /// Each host's process has one direct child, standing where the Codex app-server stands: the
+    /// daemon takes the host for lost when that child is gone.
+    pub fn with_app_server(mut self) -> Self {
+        self.app_server = true;
+        self
+    }
+
+    /// A peer whose hosts announce `capabilities` in their hello: what the provider's real host announces.
+    pub fn declaring(capabilities: &'static [&'static str], transcripts: Vec<Transcript>) -> Self {
+        Self { app_server: false, capabilities, transcripts: Mutex::new(transcripts.into()), seen: Arc::default(), activity: Activity::default() }
     }
 }
 
@@ -263,22 +408,51 @@ impl HostLauncher for PeerLauncher {
         spawn.stdin.read_to_string(&mut text)?;
         let bootstrap: Bootstrap = serde_json::from_str(&text).map_err(|e| invalid(&e.to_string()))?;
         let secret = decode_secret(&bootstrap.control_secret).ok_or_else(|| invalid("the control secret is not 32 bytes of hex"))?;
-        let transcript = self.transcript.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take().ok_or_else(|| invalid("this peer already ran"))?;
+        let transcript = self
+            .transcripts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop_front()
+            .ok_or_else(|| invalid("the daemon started a host the scenario has no transcript for"))?;
         let listener = UnixListener::bind(&bootstrap.socket_path)?;
         std::fs::set_permissions(&bootstrap.socket_path, std::fs::Permissions::from_mode(0o600))?;
+        // The process the daemon supervises: it does nothing but exist until it is stopped.
+        let mut process = if self.app_server {
+            let mut shell = Process::new("/bin/sh");
+            shell.args(["-c", "/bin/sleep 86400 & echo started; wait"]);
+            shell
+        } else {
+            let mut sleep = Process::new("/bin/sleep");
+            sleep.arg("86400");
+            sleep
+        };
+        let mut child = process.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0).spawn()?;
+        if self.app_server {
+            // The host is not up until its app-server is: the daemon looks for that child at once.
+            let mut stdout = std::io::BufReader::new(child.stdout.take().ok_or_else(|| invalid("the host has no output"))?);
+            std::io::BufRead::read_line(&mut stdout, &mut String::new())?;
+            child.stdout = Some(stdout.into_inner());
+        }
         let seen = self.seen.clone();
         let mut queue = steps(&transcript);
-        let mut session = Session { bootstrap, secret, cursor: 0, last: None };
+        let host = {
+            let mut seen = seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            seen.remaining.push(queue.len());
+            seen.remaining.len() - 1
+        };
+        let mut session = Session { acknowledged: bootstrap.journal_base, ends_after: None, app_server: self.app_server, capabilities: self.capabilities, host, activity: self.activity.clone(), group: child.id() as i32, cursor: bootstrap.journal_base, bootstrap, secret, last: None };
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                if let Err(error) = serve(stream, &mut queue, &mut session, &seen) {
-                    seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).failure.get_or_insert(error);
-                    return;
+                match serve(stream, &mut queue, &mut session, &seen) {
+                    Err(PeerError::Closed) | Ok(()) => {}
+                    Err(error) => {
+                        seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).failure.get_or_insert(error);
+                        break;
+                    }
                 }
             }
         });
-        // The process the daemon supervises: it does nothing but exist until it is stopped.
-        Process::new("/bin/sleep").arg("86400").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0).spawn()
+        Ok(child)
     }
 }
 
