@@ -1,0 +1,106 @@
+name = "a delivery presented again after all its pull requests merged is a report that closes the task"
+max_virtual = "2h"
+
+[[step]]
+do = "request"
+text = "Export the report as CSV and as PDF"
+task = "t1"
+title = "Add the CSV and PDF exports"
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "github"
+event = "open_pr"
+number = 41
+head = "csv-export"
+base = "main"
+
+[[step]]
+do = "github"
+event = "open_pr"
+number = 42
+head = "pdf-export"
+base = "main"
+
+[[step]]
+do = "register_pr"
+task = "t1"
+number = 41
+
+[[step]]
+do = "register_pr"
+task = "t1"
+number = 42
+
+[[step]]
+do = "present"
+task = "t1"
+id = "d1"
+prs = [41, 42]
+body = "Both exports are ready"
+
+[[step]]
+do = "tell"
+task = "t1"
+text = "Also add the totals row"
+
+[[step]]
+do = "github"
+event = "merge_externally"
+number = 41
+
+[[step]]
+do = "github"
+event = "merge_externally"
+number = 42
+
+[[step]]
+do = "rest"
+max = "1m"
+
+[[step]]
+do = "read_message"
+task = "t1"
+
+[[step]]
+do = "present"
+task = "t1"
+id = "d2"
+prs = [41, 42]
+body = "The totals row is ready"
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "report-shown"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "Merge"
+present = false
+
+[[step]]
+do = "rest"
+max = "30m"
+
+[[step]]
+do = "checkpoint"
+name = "closed"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "task_state"
+task = "t1"
+state = "done"

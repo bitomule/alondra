@@ -14,7 +14,7 @@ pub mod runner;
 
 pub use error::ScenarioError;
 pub use format::Scenario;
-pub use runner::{Outcome, run, run_with};
+pub use runner::{Outcome, run, run_partial, run_with};
 
 #[cfg(test)]
 mod harness_tests;
@@ -51,4 +51,14 @@ pub fn accept(case: &Path) -> Result<Outcome, ScenarioError> {
         checkpoint::write(case, name, files).map_err(|error| ScenarioError::Invalid(error.to_string()))?;
     }
     Ok(outcome)
+}
+
+/// Runs the case of a bug not fixed yet and writes the checkpoints it passed before the failure
+/// that shows the bug, which is returned. The fix accepts the rest.
+pub fn accept_until_failure(case: &Path) -> Result<Option<ScenarioError>, ScenarioError> {
+    let (outcome, failure) = run_partial(&load(case)?);
+    for (name, files) in &outcome.checkpoints {
+        checkpoint::write(case, name, files).map_err(|error| ScenarioError::Invalid(error.to_string()))?;
+    }
+    Ok(failure)
 }
