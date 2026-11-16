@@ -4285,6 +4285,7 @@ impl DomainState {
                     (Recipient::Orchestrator, Actor::Orchestrator { .. }) => {
                         "alondra-orchestrator".into()
                     }
+                    (Recipient::User, Actor::System) if retakes(&i) => "alondra".into(),
                     _ => return fail("forbidden", "Only the intended recipient can answer"),
                 };
                 if i.card.kind == CardKind::Propose {
