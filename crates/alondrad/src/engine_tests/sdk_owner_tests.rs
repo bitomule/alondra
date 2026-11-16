@@ -630,3 +630,26 @@ async fn an_accepted_pr_that_turns_conflicting_after_its_host_died_reaches_a_hos
     assert_eq!(conflict_prompts(&slice).len(), 1, "{:?}", slice.prompts());
     slice.domain.stop_sdk_owners();
 }
+
+/// What the TUI's detail of the task `agent` works on offers, given the live node the daemon gathers for it.
+fn node_offers(domain: &DomainRuntime, agent: &AgentId) -> Vec<String> {
+    use alondra_views::{Client, Item, RenderContext, Transport, build, live::{LiveNode, LiveSnapshot}};
+    let read = domain.read();
+    let live = LiveSnapshot { nodes: vec![LiveNode { agent_id: agent.0.clone(), short_id: Some(agent.0.chars().take(8).collect()), ..Default::default() }], ..Default::default() };
+    let view = build(&format!("task:{TASK}"), RenderContext {
+        domain: read.state(), index: read.index(), live: &live, client: Client::Tui, lang: alondra_views::Lang::En,
+        transport: Transport::Loopback, cursor: "test", rendered_at: "",
+    }).unwrap();
+    let mut offers = vec![];
+    for section in &view.sections {
+        if section.id == "attach" {
+            offers.push("attach".to_owned());
+        }
+        for item in &section.items {
+            if let Item::Actions(bar) = item {
+                offers.extend(bar.actions.iter().map(|action| action.id.clone()));
+            }
+        }
+    }
+    offers
+}

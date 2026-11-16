@@ -677,7 +677,8 @@ fn a_task_launched_through_the_sdk_ends_its_turn_with_one_card_readers_see_befor
 }
 
 /// What the TUI's detail of the task `agent` works on offers, given the live node the daemon gathers for it.
-pub fn node_offers(domain: &DomainRuntime, agent: &AgentId) -> Vec<String> {
+#[cfg(test)]
+fn node_offers(domain: &DomainRuntime, agent: &AgentId) -> Vec<String> {
     use alondra_views::{Client, Item, RenderContext, Transport, build, live::{LiveNode, LiveSnapshot}};
     let read = domain.read();
     let live = LiveSnapshot { nodes: vec![LiveNode { agent_id: agent.0.clone(), short_id: Some(agent.0.chars().take(8).collect()), ..Default::default() }], ..Default::default() };
