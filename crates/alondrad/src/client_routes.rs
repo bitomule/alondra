@@ -1,6 +1,7 @@
 //! The routes the TUI and the CLI call on a domain daemon beyond the domain itself: the
 //! live runtime of the Mac and its sessions, and what a session is doing. The domain stays
 //! the only authority; nothing here decides an action.
+use alondra_daemon_engine::live::LiveOf as _;
 use crate::locks::Poisonable as _;
 mod close;
 mod mcp;

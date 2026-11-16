@@ -1,3 +1,5 @@
+use crate::sdk_owner::SdkOwners as _;
+use crate::live::LiveOf as _;
 use super::testing::{Fixture, fixture};
 use super::*;
 
@@ -133,7 +135,7 @@ async fn legacy_confirmed_batch_without_selection_resolves_on_startup_and_new_re
     let f = fixture();
     let run = legacy_batch_with_confirmed_effect(&f);
     let restarted = Executor {
-        domain: Arc::new(DomainRuntime::open(&f.executor.home).unwrap()),
+        domain: Arc::new(crate::wiring::open(&f.executor.home).unwrap()),
         home: f.executor.home.clone(),
         claude_home: f.executor.claude_home.clone(),
     };
@@ -411,7 +413,7 @@ async fn persisted_handoff_survives_reconcile_failure_and_restart_without_a_cold
             assert!(persisted.active_run.is_none());
         }
         let restarted = Executor {
-            domain: Arc::new(DomainRuntime::open(&f.executor.home).unwrap()),
+            domain: Arc::new(crate::wiring::open(&f.executor.home).unwrap()),
             home: f.executor.home.clone(),
             claude_home: f.executor.claude_home.clone(),
         };
@@ -467,7 +469,7 @@ async fn startup_preserves_a_current_cancelled_batch_without_legacy_recovery() {
     expected.cancel_requested = false;
     save(&f.executor.home, &expected).unwrap();
     let restarted = Executor {
-        domain: Arc::new(DomainRuntime::open(&f.executor.home).unwrap()),
+        domain: Arc::new(crate::wiring::open(&f.executor.home).unwrap()),
         home: f.executor.home.clone(),
         claude_home: f.executor.claude_home.clone(),
     };
@@ -533,7 +535,7 @@ async fn startup_still_resolves_a_legacy_sessionless_batch() {
     )
     .unwrap();
     let restarted = Executor {
-        domain: Arc::new(DomainRuntime::open(&f.executor.home).unwrap()),
+        domain: Arc::new(crate::wiring::open(&f.executor.home).unwrap()),
         home: f.executor.home.clone(),
         claude_home: f.executor.claude_home.clone(),
     };
@@ -648,7 +650,7 @@ async fn completed_batch_claims_are_handed_after_restart_before_delivery_commit(
     assert_eq!(fault.hits(), 1);
     drop(fault);
     let run = load(&f.executor.home).unwrap().active_run.unwrap();
-    let domain = Arc::new(DomainRuntime::open(&f.executor.home).unwrap());
+    let domain = Arc::new(crate::wiring::open(&f.executor.home).unwrap());
     assert!(
         domain
             .store
@@ -714,7 +716,7 @@ async fn explicit_decisions_finish_after_runtime_save_failure_without_a_second_u
             assert!(load(&f.executor.home).unwrap().active_run.is_some());
             // A fresh runtime proves that the decision survives loss of all in-memory state.
             let restarted = Executor {
-                domain: Arc::new(DomainRuntime::open(&f.executor.home).unwrap()),
+                domain: Arc::new(crate::wiring::open(&f.executor.home).unwrap()),
                 home: f.executor.home.clone(),
                 claude_home: f.executor.claude_home.clone(),
             };
@@ -811,7 +813,7 @@ async fn settled_launch_and_limit_failures_stay_automatic_after_restart() {
         let runtime = load(&f.executor.home).unwrap();
         assert!(runtime.active_run.is_none());
         let old_run = runtime.last_run_id.unwrap();
-        let domain = Arc::new(DomainRuntime::open(&f.executor.home).unwrap());
+        let domain = Arc::new(crate::wiring::open(&f.executor.home).unwrap());
         domain.enable_sdk(f.domain().sdk().unwrap().0.clone());
         let restarted = Executor {
             domain,
@@ -847,7 +849,7 @@ async fn settled_launch_and_limit_failures_stay_automatic_after_restart() {
             )
             .unwrap();
             let history = Executor {
-                domain: Arc::new(DomainRuntime::open(&f.executor.home).unwrap()),
+                domain: Arc::new(crate::wiring::open(&f.executor.home).unwrap()),
                 home: f.executor.home.clone(),
                 claude_home: f.executor.claude_home.clone(),
             };
@@ -877,7 +879,7 @@ async fn a_partially_written_launch_failure_keeps_its_automatic_disposition_afte
     runtime.failure = Some(Failure::Launch);
     save(&f.executor.home, &runtime).unwrap();
     let restarted = Executor {
-        domain: Arc::new(DomainRuntime::open(&f.executor.home).unwrap()),
+        domain: Arc::new(crate::wiring::open(&f.executor.home).unwrap()),
         home: f.executor.home.clone(),
         claude_home: f.executor.claude_home.clone(),
     };

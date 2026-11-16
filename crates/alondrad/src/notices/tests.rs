@@ -29,7 +29,7 @@ impl Fixture {
     fn new() -> Self {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+        let domain = Arc::new(alondra_daemon_engine::wiring::open(&home).unwrap());
         let fixture = Self { home, domain };
         fixture.command(Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into(), at: 0 });
         fixture.command(Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
@@ -133,7 +133,7 @@ async fn a_card_withdrawn_before_its_push_left_is_never_noticed() {
 #[tokio::test]
 async fn only_a_signed_device_on_this_mac_reads_notices() {
     let fixture = Fixture::new();
-    drop(DomainRuntime::open(&fixture.home).unwrap());
+    drop(alondra_daemon_engine::wiring::open(&fixture.home).unwrap());
     let state = crate::domain_bootstrap::DomainDaemon::open(&fixture.home).unwrap();
     let auth = state.auth();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

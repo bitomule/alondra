@@ -1,6 +1,7 @@
 //! What a task waits for from the orchestrator has a deadline: a stopped node's case is reminded
 //! after 10 minutes and settled by Alondra after 20, however busy or failing the orchestrator is,
 //! and never while the usage limit holds it.
+use crate::live::LiveOf as _;
 use super::testing::fixture;
 use super::*;
 use alondra_core::domain::{
@@ -130,7 +131,7 @@ async fn a_last_error_does_not_stop_the_fallback() {
 fn after_three_cases_the_task_closes_with_its_result() {
     let home = crate::test_support::Directory::new();
     std::fs::create_dir_all(&home).unwrap();
-    let domain = DomainRuntime::open(&home).unwrap();
+    let domain = crate::wiring::open(&home).unwrap();
     let mut case = stalled(&domain);
     for n in 1..=STALL_ATTEMPTS {
         as_actor(&domain, Actor::Orchestrator { generation: 0 }, Command::SettleStall {
@@ -152,7 +153,7 @@ fn after_three_cases_the_task_closes_with_its_result() {
 fn no_fallback_runs_while_the_usage_limit_holds_the_orchestrator() {
     let home = crate::test_support::Directory::new();
     std::fs::create_dir_all(&home).unwrap();
-    let domain = DomainRuntime::open(&home).unwrap();
+    let domain = crate::wiring::open(&home).unwrap();
     let case = stalled(&domain);
     domain.live().usage_pause.exhaust(Some(2 * 60 * MINUTE), 0);
     for minutes in (0..=60).step_by(5) {

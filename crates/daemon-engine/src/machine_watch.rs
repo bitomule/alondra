@@ -1,6 +1,8 @@
 //! Machine pressure is recorded as samples, incidents and admission state. No incident creates
 //! a user card or a fallback push. The admission gate resumes waiting nodes after recovery.
 //! Disk incidents retain hysteresis; memory only paces new starts and never stops running work.
+use crate::sdk_owner::SdkOwners as _;
+use crate::live::LiveOf as _;
 use alondra_core::domain::SystemCard;
 #[cfg(test)]
 use alondra_core::machine_incident::MACHINE_FIXED_LABEL;
@@ -2016,7 +2018,7 @@ mod tests {
     fn world() -> (Home, Arc<DomainRuntime>) {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+        let domain = Arc::new(crate::wiring::open(&home).unwrap());
         (Home(home), domain)
     }
 
@@ -2265,7 +2267,7 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         let left = Incident { since: 1_000, cause: MachineCause::Memory, card: Some("machine-1000".into()), cards: 1, nodes_shown: 0, healthy: 0 };
         std::fs::write(home.join(FILE), serde_json::json!({"incident": left, "declared": {}}).to_string()).unwrap();
-        let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+        let domain = Arc::new(crate::wiring::open(&home).unwrap());
         let body = r#"{"cause":"memory","disk_free":0,"memory_free_percent":38,"memory_pressure":true,"single_node":true}"#;
         domain.raise_worded_problem("machine-1000", Some(SystemCard::Machine), MACHINE_CAUSE, "Free up memory: macOS reports memory pressure (38% free) with a single node working".into(), "something outside Alondra uses the memory".into(), body.into(), vec![
             alondra_core::domain::QuestionOption { id: MACHINE_FIXED_OPTION.into(), label: MACHINE_FIXED_LABEL.into(), description: None },

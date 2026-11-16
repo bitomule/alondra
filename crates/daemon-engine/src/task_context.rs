@@ -45,7 +45,7 @@ mod tests {
 
     #[test]
     fn current_batch_manifest_rejects_a_still_issued_bearer_after_generation_advances() {
-        let home=Directory::new();std::fs::create_dir_all(&home).unwrap();let domain=DomainRuntime::open_at(&home,&home.join("domain.db")).unwrap();
+        let home=Directory::new();std::fs::create_dir_all(&home).unwrap();let domain=crate::wiring::open_at(&home,&home.join("domain.db")).unwrap();
         let generation=domain.read().state().orchestrator_generation;
         let old=domain.issue(Principal::Orchestrator{generation,execution_id:"old-batch".into()}).unwrap();
         assert!(domain.read_batch_outcomes(old.expose_for_child_environment(),None,true,"",7).is_ok());
@@ -59,7 +59,7 @@ mod tests {
     fn portable_context_reader_requires_the_current_assigned_node_and_own_cursor() {
         let home = Directory::new();
         std::fs::create_dir_all(home.join("work")).unwrap();
-        let domain = DomainRuntime::open_at(&home, &home.join("domain.db")).unwrap();
+        let domain = crate::wiring::open_at(&home, &home.join("domain.db")).unwrap();
         let run = |actor: Actor, id: &str, command| {
             let state = domain.state().unwrap();
             domain.execute_fixture(&actor, CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: id.into(), expected_revision: 0, command }).unwrap();

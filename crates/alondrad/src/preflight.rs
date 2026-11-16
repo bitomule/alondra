@@ -43,7 +43,7 @@ fn start(config: &Config) -> Result<String> {
     let (_, _source_fence) = crate::domain_database_migration::migrate_and_fence(&config.home)?;
     crate::retire_empty_older_sidecar(&config.home)?;
     crate::ensure_domain_protocol(&config.home)?;
-    let domain = crate::domain_runtime::DomainRuntime::open(&config.home)?;
+    let domain = alondra_daemon_engine::wiring::open(&config.home)?;
     crate::domain_bootstrap::DomainDaemon::over(&config.home, domain)?;
     Ok("canonical domain state starts".into())
 }

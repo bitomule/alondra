@@ -6,6 +6,8 @@
 //! and its exit seen by the process's identity, the SDK execution admitted in the transaction
 //! that records it, then the old node closed. A daemon that comes back goes on from the last step
 //! recorded, so no step's effect happens twice, and the task never has two live owners.
+use crate::sdk_owner::SdkOwners as _;
+use crate::live::LiveOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
@@ -447,8 +449,12 @@ mod tests;
 
 crate::extension!(Handovers);
 
-impl crate::domain_runtime::DomainRuntime {
-    pub(crate) fn handovers(&self) -> &Handovers {
+pub trait HandoversOf {
+    fn handovers(&self) -> &Handovers;
+}
+
+impl HandoversOf for crate::domain_runtime::DomainRuntime {
+    fn handovers(&self) -> &Handovers {
         self.extension()
     }
 }

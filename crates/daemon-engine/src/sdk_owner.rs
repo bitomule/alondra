@@ -2,6 +2,10 @@
 //! `AdmitExecution`, launches the host, sends each dispatch the store issued for its task,
 //! stages what the host observes and acknowledges it only once readers see the commit.
 //! Every step commits through `DomainRuntime::own`; nothing here writes the store itself.
+use crate::live::LiveOf as _;
+use crate::idle_compaction::ContextsOf as _;
+use crate::account_move::MovesOf as _;
+use crate::sdk_handover::HandoversOf as _;
 use alondra_core::clock;
 use alondra_core::clock::Instant;
 use crate::locks::Poisonable as _;
@@ -2575,22 +2579,91 @@ pub struct Owners {
 
 crate::extension!(Owners);
 
-impl DomainRuntime {
-    pub fn sdk_owners(&self) -> &Owners {
+pub trait SdkOwners {
+    fn sdk_owners(&self) -> &Owners;
+
+    /// Only a sandbox daemon whose configuration names an SDK backend calls this, once.
+    fn enable_sdk(self: &Arc<Self>, backend: SdkBackend);
+
+    /// The SDK backend and the runtime its owners run on, when this daemon has one.
+    fn sdk(&self) -> Option<(&SdkBackend, Arc<DomainRuntime>)>;
+
+    /// Stops every SDK owner and waits for each host's exit; nothing of an SDK host outlives the
+    /// daemon that owns it.
+    fn stop_sdk_owners(&self);
+
+    /// Waits until every execution being taken over again is taken, or has its card.
+    fn join_retakes(&self);
+
+    /// Whether this daemon owns the SDK host of `agent`: an owner of it runs and has not ended.
+    fn owns_sdk_host(&self, agent: &AgentId) -> bool;
+
+    /// The process group of every node host this daemon owns now, which is what a node costs.
+    fn node_groups_by_agent(&self) -> Vec<(AgentId, i32)>;
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn node_groups(&self) -> Vec<i32>;
+
+    /// Keeps `owner` as the owner of its node's host, in place of any of that node that ended on
+    /// its own. Those are joined once the list is released: their end may read it.
+    fn add_sdk_owner(&self, owner: Owner);
+
+    /// Asks the owner of `agent`'s host, if it holds one, to close it.
+    fn ask_to_release_host(&self, agent: &AgentId);
+
+    /// Stops the SDK host of `agent` and waits until it and its whole process group exited. `Ok`
+    /// with nothing to stop when this daemon owns no host for it.
+    fn stop_sdk_host(&self, agent: &AgentId) -> Result<(), Failed>;
+
+    /// Stops the host of a node whose task is over, once the turn its Claude runs, if any, has
+    /// ended as an interrupted turn.
+    fn close_sdk_host(&self, agent: &AgentId) -> Result<(), Failed>;
+
+    /// Stops the host of a paused node as `close_sdk_host` does, and every process under it. `None`
+    /// when this daemon owns no host for it.
+    fn halt_sdk_host(&self, agent: &AgentId) -> Option<Result<(), Failed>>;
+
+    /// Runs `hook` once, as the next takeover has reserved its owner and not yet looked for the host.
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn after_owner_reserved(&self, hook: impl FnOnce() + Send + 'static);
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn owner_reserved(&self);
+
+    /// Runs `hook` each time a takeover waits for another of the same task.
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn on_takeover_wait(&self, hook: impl FnMut() + Send + 'static);
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn takeover_waited(&self);
+
+    /// Every failure an SDK owner reports from now on.
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn owner_failures(&self) -> std::sync::mpsc::Receiver<String>;
+
+    /// Calls `hook` with every failure an SDK owner reports from now on.
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn on_owner_failure(&self, hook: impl Fn(String) + Send + 'static);
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn owner_failed(&self, why: String);
+}
+
+impl SdkOwners for crate::domain_runtime::DomainRuntime {
+    fn sdk_owners(&self) -> &Owners {
         self.extension()
     }
-    /// Only a sandbox daemon whose configuration names an SDK backend calls this, once.
-    pub fn enable_sdk(self: &Arc<Self>, backend: SdkBackend) {
+
+    fn enable_sdk(self: &Arc<Self>, backend: SdkBackend) {
         let _ = self.sdk_owners().backend.set((backend, Arc::downgrade(self)));
     }
-    /// The SDK backend and the runtime its owners run on, when this daemon has one.
-    pub fn sdk(&self) -> Option<(&SdkBackend, Arc<DomainRuntime>)> {
+
+    fn sdk(&self) -> Option<(&SdkBackend, Arc<DomainRuntime>)> {
         let (backend, runtime) = self.sdk_owners().backend.get()?;
         Some((backend, runtime.upgrade()?))
     }
-    /// Stops every SDK owner and waits for each host's exit; nothing of an SDK host outlives the
-    /// daemon that owns it.
-    pub fn stop_sdk_owners(&self) {
+
+    fn stop_sdk_owners(&self) {
         self.join_retakes();
         let owners = std::mem::take(&mut *self.sdk_owners().held.lock_or_recover("the SDK owners"));
         log!("stopping {} SDK host(s)", owners.len());
@@ -2601,34 +2674,33 @@ impl DomainRuntime {
             }
         }
     }
-    /// Waits until every execution being taken over again is taken, or has its card.
-    pub(crate) fn join_retakes(&self) {
+
+    fn join_retakes(&self) {
         let retakes = std::mem::take(&mut *self.sdk_owners().retakes.lock_or_recover("the retakes"));
         for (_, retake) in retakes {
             let _ = retake.join();
         }
     }
-    /// Whether this daemon owns the SDK host of `agent`: an owner of it runs and has not ended.
-    pub fn owns_sdk_host(&self, agent: &AgentId) -> bool {
+
+    fn owns_sdk_host(&self, agent: &AgentId) -> bool {
         #[cfg(any(test, feature = "test-hooks"))]
         if self.sdk_owners().driven_by_hand.lock().expect("driven by hand poisoned").contains(agent) {
             return true;
         }
         self.sdk_owners().held.lock_or_recover("the SDK owners").iter().any(|owner| owner.agent() == agent && !owner.ended())
     }
-    /// The process group of every node host this daemon owns now, which is what a node costs.
-    pub(crate) fn node_groups_by_agent(&self) -> Vec<(AgentId, i32)> {
+
+    fn node_groups_by_agent(&self) -> Vec<(AgentId, i32)> {
         self.sdk_owners().held.lock_or_recover("the SDK owners").iter()
             .filter_map(|owner| owner.host_group().map(|group| (owner.agent().clone(), group))).collect()
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn node_groups(&self) -> Vec<i32> {
+    fn node_groups(&self) -> Vec<i32> {
         self.node_groups_by_agent().into_iter().map(|(_, group)| group).collect()
     }
-    /// Keeps `owner` as the owner of its node's host, in place of any of that node that ended on
-    /// its own. Those are joined once the list is released: their end may read it.
-    pub fn add_sdk_owner(&self, owner: Owner) {
+
+    fn add_sdk_owner(&self, owner: Owner) {
         let ended: Vec<Owner> = {
             let mut owners = self.sdk_owners().held.lock_or_recover("the SDK owners");
             let (ended, kept) = std::mem::take(&mut *owners).into_iter().partition(|held| held.agent() == owner.agent() && held.ended());
@@ -2638,74 +2710,75 @@ impl DomainRuntime {
         };
         drop(ended);
     }
-    /// Asks the owner of `agent`'s host, if it holds one, to close it.
-    pub(crate) fn ask_to_release_host(&self, agent: &AgentId) {
+
+    fn ask_to_release_host(&self, agent: &AgentId) {
         if let Some(owner) = self.sdk_owners().held.lock_or_recover("the SDK owners").iter().find(|owner| owner.agent() == agent && !owner.ended()) {
             owner.ask_to_release();
         }
     }
-    /// Stops the SDK host of `agent` and waits until it and its whole process group exited. `Ok`
-    /// with nothing to stop when this daemon owns no host for it.
-    pub(crate) fn stop_sdk_host(&self, agent: &AgentId) -> Result<(), Failed> {
-        self.take_sdk_owner(agent).map_or(Ok(()), |mut owner| owner.stop())
+
+    fn stop_sdk_host(&self, agent: &AgentId) -> Result<(), Failed> {
+        take_sdk_owner(self, agent).map_or(Ok(()), |mut owner| owner.stop())
     }
-    /// Stops the host of a node whose task is over, once the turn its Claude runs, if any, has
-    /// ended as an interrupted turn.
-    pub(crate) fn close_sdk_host(&self, agent: &AgentId) -> Result<(), Failed> {
-        self.take_sdk_owner(agent).map_or(Ok(()), |mut owner| owner.close())
+
+    fn close_sdk_host(&self, agent: &AgentId) -> Result<(), Failed> {
+        take_sdk_owner(self, agent).map_or(Ok(()), |mut owner| owner.close())
     }
-    /// Stops the host of a paused node as `close_sdk_host` does, and every process under it. `None`
-    /// when this daemon owns no host for it.
-    pub(crate) fn halt_sdk_host(&self, agent: &AgentId) -> Option<Result<(), Failed>> {
-        self.take_sdk_owner(agent).map(|mut owner| owner.halt())
+
+    fn halt_sdk_host(&self, agent: &AgentId) -> Option<Result<(), Failed>> {
+        take_sdk_owner(self, agent).map(|mut owner| owner.halt())
     }
-    fn take_sdk_owner(&self, agent: &AgentId) -> Option<Owner> {
-        let mut owners = self.sdk_owners().held.lock_or_recover("the SDK owners");
-        owners.iter().position(|owner| owner.agent() == agent && !owner.ended())
-            .or_else(|| owners.iter().position(|owner| owner.agent() == agent))
-            .map(|at| owners.remove(at))
-    }
-    /// Runs `hook` once, as the next takeover has reserved its owner and not yet looked for the host.
+
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn after_owner_reserved(&self, hook: impl FnOnce() + Send + 'static) {
+    fn after_owner_reserved(&self, hook: impl FnOnce() + Send + 'static) {
         *self.sdk_owners().after_owner_reserved.lock().unwrap() = Some(Box::new(hook));
     }
+
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn owner_reserved(&self) {
+    fn owner_reserved(&self) {
         let hook = self.sdk_owners().after_owner_reserved.lock().unwrap().take();
         if let Some(hook) = hook {
             hook();
         }
     }
-    /// Runs `hook` each time a takeover waits for another of the same task.
+
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn on_takeover_wait(&self, hook: impl FnMut() + Send + 'static) {
+    fn on_takeover_wait(&self, hook: impl FnMut() + Send + 'static) {
         *self.sdk_owners().takeover_waits.lock().unwrap() = Some(Box::new(hook));
     }
+
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn takeover_waited(&self) {
+    fn takeover_waited(&self) {
         if let Some(hook) = self.sdk_owners().takeover_waits.lock().unwrap().as_mut() {
             hook();
         }
     }
-    /// Every failure an SDK owner reports from now on.
+
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn owner_failures(&self) -> std::sync::mpsc::Receiver<String> {
+    fn owner_failures(&self) -> std::sync::mpsc::Receiver<String> {
         let (sender, failures) = std::sync::mpsc::channel();
         self.on_owner_failure(move |why| drop(sender.send(why)));
         failures
     }
-    /// Calls `hook` with every failure an SDK owner reports from now on.
+
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn on_owner_failure(&self, hook: impl Fn(String) + Send + 'static) {
+    fn on_owner_failure(&self, hook: impl Fn(String) + Send + 'static) {
         *self.sdk_owners().owner_failures.lock().unwrap() = Some(Box::new(hook));
     }
+
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn owner_failed(&self, why: String) {
+    fn owner_failed(&self, why: String) {
         if let Some(hook) = self.sdk_owners().owner_failures.lock().unwrap().as_ref() {
             hook(why);
         }
     }
+}
+
+fn take_sdk_owner(domain: &DomainRuntime, agent: &AgentId) -> Option<Owner> {
+    let mut owners = domain.sdk_owners().held.lock_or_recover("the SDK owners");
+    owners.iter().position(|owner| owner.agent() == agent && !owner.ended())
+        .or_else(|| owners.iter().position(|owner| owner.agent() == agent))
+        .map(|at| owners.remove(at))
 }
 
 /// Takes an SDK execution over again when a committed command asks for it.

@@ -1,5 +1,6 @@
 //! What a task's page needs beyond the projection: how it got where it is, and why the user
 //! cancelled it.
+use alondra_daemon_engine::live::LiveOf as _;
 use crate::locks::Poisonable as _;
 use super::{Client, Reply, storage};
 use alondra_core::domain::{DomainError, TaskId};

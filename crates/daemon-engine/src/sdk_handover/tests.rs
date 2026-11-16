@@ -3,6 +3,9 @@
 //! with the session it resumed and its folder. The node's `claude --bg` process is a real child
 //! process, named by its identity; Claude Code's `claude stop` is the double here. Every wait is
 //! on a fact the domain publishes, never on a clock.
+use crate::sdk_owner::SdkOwners as _;
+use crate::live::LiveOf as _;
+use crate::sdk_handover::HandoversOf as _;
 use super::*;
 use crate::domain_store::StoreError;
 use crate::test_support::Directory;
@@ -155,7 +158,7 @@ impl World {
     }
 
     fn boot(home: &Path, database: &Path, backend: &crate::sdk_owner::SdkBackend, bg: &Arc<Bg>) -> Arc<DomainRuntime> {
-        let domain = Arc::new(DomainRuntime::open_at(home, database).unwrap());
+        let domain = Arc::new(crate::wiring::open_at(home, database).unwrap());
         crate::sdk_owner::tests::measure_healthy_machine(&domain);
         domain.enable_sdk(backend.clone());
         domain.handovers().use_sessions(Arc::clone(bg) as Arc<dyn BgSessions>);

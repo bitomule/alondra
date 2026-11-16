@@ -3,6 +3,8 @@
 //! execution. The batch is claimed from the domain outbox before Claude runs
 //! and finished as handed, retryable or uncertain afterwards; finishing an
 //! invocation never completes a Task.
+use crate::sdk_owner::SdkOwners as _;
+use crate::live::LiveOf as _;
 use alondra_core::domain::SystemCard;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
@@ -1128,7 +1130,7 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
         std::fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         let home = root.join("home");
         std::fs::create_dir_all(&home).unwrap();
-        let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+        let domain = Arc::new(crate::wiring::open(&home).unwrap());
         Fixture::over(root, domain, home)
     }
 
@@ -1716,7 +1718,7 @@ mod tests {
         assert!(!pending.is_empty());
 
         let restarted = Executor {
-            domain: Arc::new(DomainRuntime::open(&f.executor.home).unwrap()),
+            domain: Arc::new(crate::wiring::open(&f.executor.home).unwrap()),
             home: f.executor.home.clone(),
             claude_home: f.executor.claude_home.clone(),
         };
@@ -1731,7 +1733,7 @@ mod tests {
         drop(restarted);
 
         let reopened_again = Executor {
-            domain: Arc::new(DomainRuntime::open(&f.executor.home).unwrap()),
+            domain: Arc::new(crate::wiring::open(&f.executor.home).unwrap()),
             home: f.executor.home.clone(),
             claude_home: f.executor.claude_home.clone(),
         };
@@ -2325,7 +2327,7 @@ mod tests {
         let root = crate::test_support::Directory::new();
         let home = root.join("home");
         std::fs::create_dir_all(&home).unwrap();
-        let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+        let domain = Arc::new(crate::wiring::open(&home).unwrap());
         let claude_home = super::testing::registered_plugins(&root);
         let _ownership = crate::orchestrator_process::Ownership::acquire(&home.join("runtime/orchestrator")).unwrap().unwrap();
         let executor = Executor { domain: domain.clone(), home: home.clone(), claude_home };

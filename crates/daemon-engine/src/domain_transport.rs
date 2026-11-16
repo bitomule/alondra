@@ -5,6 +5,9 @@
 //! Hooks observe sessions the domain already knows. They never create an
 //! Agent, a Task or a decision. The one transition they make is the one a
 //! session's own activity proves: its assigned Task has started.
+use crate::live::LiveOf as _;
+#[cfg(any(test, feature = "test-hooks"))]
+use crate::allow_always::AllowAlwaysWait as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::domain_agent_lifecycle as lifecycle;
@@ -819,7 +822,7 @@ pub mod tests {
             Self(home)
         }
         pub fn open(&self) -> Arc<DomainRuntime> {
-            Arc::new(DomainRuntime::open(&self.0).unwrap())
+            Arc::new(crate::wiring::open(&self.0).unwrap())
         }
     }
     impl Drop for Fixture {

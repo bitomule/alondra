@@ -14,7 +14,7 @@ impl Fixture {
     fn new() -> Self {
         let (home, mut service, phone) = push_fixture();
         activate_push(&service);
-        let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        let domain = Arc::new(alondra_daemon_engine::wiring::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         let clock = Arc::new(AtomicU64::new(1_000));
         service.envelope_clock = Some(clock.clone());
@@ -74,7 +74,7 @@ async fn a_fresh_read_recovers_expired_action_ciphertext_after_a_daemon_restart_
         "mac-1","phone-1","mac-1",700_000).is_err(), "generic expired response verification must remain closed");
     assert!(matches!(f.service.handle_direct(original.clone()).await, Err(DirectRefusal::Unauthorized)),
         "expired original mutations cannot reach even an existing receipt");
-    let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&f.home).unwrap());
+    let domain = Arc::new(alondra_daemon_engine::wiring::open(&f.home).unwrap());
     let client = crate::client_routes::Client::open(domain.clone(), &f.home, Default::default());
     let mut restarted = Service::open(&f.home, 0, Arc::new(Auth::open(&f.home).unwrap())).unwrap().unwrap()
         .with_domain(domain.clone()).with_client(client);
@@ -214,7 +214,7 @@ async fn a_receipt_does_not_cross_a_domain_reset_even_when_the_journal_survives(
     let original = f.action();
     f.direct(original.clone()).await;
     let old_epoch = f.domain.state().unwrap().data_epoch.0.clone();
-    let new_domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&other_home).unwrap());
+    let new_domain = Arc::new(alondra_daemon_engine::wiring::open(&other_home).unwrap());
     assert_ne!(new_domain.state().unwrap().data_epoch.0, old_epoch);
     f.domain = new_domain.clone();
     f.service.domain = Some(new_domain);
@@ -425,7 +425,7 @@ impl Fixture {
     }
 
     fn restart(&mut self) {
-        let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&self.home).unwrap());
+        let domain = Arc::new(alondra_daemon_engine::wiring::open(&self.home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &self.home, Default::default());
         let mut restarted = Service::open(&self.home, 0, Arc::new(Auth::open(&self.home).unwrap())).unwrap().unwrap()
             .with_domain(domain.clone()).with_client(client);

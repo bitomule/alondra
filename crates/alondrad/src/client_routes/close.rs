@@ -1,5 +1,6 @@
 //! The close route: closing a `claude --bg` session of an earlier release by hand, from the apps
 //! or the CLI. A node of the Agent SDK ends with its task.
+use alondra_daemon_engine::live::LiveOf as _;
 use crate::locks::Poisonable as _;
 use super::{Client, Reply};
 pub(crate) use crate::node_close::Answer;

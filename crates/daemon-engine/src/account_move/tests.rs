@@ -3,6 +3,8 @@
 //! with the session it resumed, its folder and the account folder it ran with, and refuses a turn
 //! with Claude's usage limit when told. Every wait is on a fact the domain publishes, never on a
 //! clock.
+use crate::sdk_owner::SdkOwners as _;
+use crate::account_move::MovesOf as _;
 use super::*;
 use crate::domain_store::StoreError;
 use crate::test_support::Directory;
@@ -73,7 +75,7 @@ impl World {
     }
 
     fn boot(home: &Path, database: &Path, backend: &crate::sdk_owner::SdkBackend) -> Arc<DomainRuntime> {
-        let domain = Arc::new(DomainRuntime::open_at(home, database).unwrap());
+        let domain = Arc::new(crate::wiring::open_at(home, database).unwrap());
         domain.enable_sdk(backend.clone());
         domain
     }

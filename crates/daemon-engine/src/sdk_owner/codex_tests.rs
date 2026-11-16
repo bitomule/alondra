@@ -1,3 +1,6 @@
+use crate::sdk_owner::SdkOwners as _;
+use crate::live::LiveOf as _;
+use crate::provider_transition::TransitionsOf as _;
 use super::*;
 
 pub fn configured(slice: &Slice, mode: &str) -> PathBuf {

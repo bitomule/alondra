@@ -6,6 +6,7 @@
 //! that node is never touched. It never closes one that waits for a permission, has work that is
 //! not saved or that the user chose to leave open. It also deletes the worktrees Alondra made for
 //! tasks that ended and whose session is gone, unless they hold work not saved.
+use crate::live::LiveOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;

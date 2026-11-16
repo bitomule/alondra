@@ -1,3 +1,6 @@
+use crate::sdk_owner::SdkOwners as _;
+use crate::live::LiveOf as _;
+use crate::sdk_handover::HandoversOf as _;
 use super::*;
 
 #[test]
@@ -235,7 +238,7 @@ fn bare_world() -> Fixture {
     let project = root.join("App");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&project).unwrap();
-    let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+    let domain = Arc::new(crate::wiring::open(&home).unwrap());
     crate::machine_watch::pace(&domain, &alondra_core::Machine { at: 1, memory_total: 16 << 30,
         memory_available: 12 << 30, memory_free_percent: Some(75), cpus: 11,
         disk_total: 500_000_000_000, disk_available: 400_000_000_000, ..Default::default() });

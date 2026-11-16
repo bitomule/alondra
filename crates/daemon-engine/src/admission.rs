@@ -14,6 +14,8 @@
 //! gate starts them; the automatic launches, the scheduled runs and the revival of lost nodes keep
 //! their own durable claims and only ask the gate, which wakes them when their turn comes. Nodes
 //! paused for the machine (`pauses`) wait here too and the gate tells them to carry on.
+use crate::sdk_owner::SdkOwners as _;
+use crate::live::LiveOf as _;
 use crate::locks::Poisonable as _;
 use crate::domain_orchestrator_tools::{LaunchBody, Origin, launch_from, request_choices};
 use crate::domain_runtime::DomainRuntime;

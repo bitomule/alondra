@@ -1,6 +1,8 @@
 //! Schedule v2's local-calendar and launch preparation adapter. The command
 //! carrying this intent must be committed with its Run, Request, and Task before
 //! a technical launch claim can call Claude.
+use crate::sdk_owner::SdkOwners as _;
+use crate::live::LiveOf as _;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
@@ -1093,7 +1095,7 @@ mod tests {
         schedule.title = "Changed title".into();
         schedule.revision += 1;
         execute_system(&fixture.domain, Command::UpdateSchedule { schedule }).unwrap();
-        let reopened = DomainRuntime::open(&fixture.home).unwrap();
+        let reopened = crate::wiring::open(&fixture.home).unwrap();
         finish_claim(&reopened, &fixture.home, &run.id).unwrap();
         assert_eq!(reopened.state().unwrap().schedule.runs[&run.id], saved);
         assert_eq!(old_path.canonicalize().unwrap(), old_path);
@@ -1109,7 +1111,7 @@ mod tests {
     }
     impl Fixture {
         fn open(home: &Path) -> DomainRuntime {
-            let domain = DomainRuntime::open(home).unwrap();
+            let domain = crate::wiring::open(home).unwrap();
             crate::sdk_owner::tests::measure_healthy_machine(&domain);
             domain
         }

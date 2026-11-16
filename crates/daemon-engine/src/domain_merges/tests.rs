@@ -45,7 +45,7 @@ fn now() -> Merger {
 fn presented(_tag: &str, auto_merge: bool) -> (Home, Arc<DomainRuntime>, FakeGithub) {
     let home = Home(crate::test_support::Directory::new());
     std::fs::create_dir(&home.0).unwrap();
-    let domain = Arc::new(DomainRuntime::open(&home.0).unwrap());
+    let domain = Arc::new(crate::wiring::open(&home.0).unwrap());
     command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into(), at: 0 });
     command(&domain, user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge, maintenance: false, message: false });
     command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,

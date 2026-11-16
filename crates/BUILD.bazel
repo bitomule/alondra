@@ -28,6 +28,7 @@ WORKSPACE_MEMBERS = [
     "daemon-engine-machine",
     "daemon-support",
     "domain",
+    "engine-kernel",
     "e2e",
     "foundation",
     "process-group",

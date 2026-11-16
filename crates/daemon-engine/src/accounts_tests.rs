@@ -1,3 +1,5 @@
+use crate::sdk_owner::SdkOwners as _;
+use crate::live::LiveOf as _;
 use super::*;
 use crate::test_support::Directory;
 use alondra_core::accounts::{Distribution, Policy, ProviderAccount};
@@ -70,7 +72,7 @@ fn claude_account_probes_keep_the_native_deadline_for_installed_and_pinned_backe
     let f = fixture();
     assert_eq!(f.claude.timeout, None, "the finite shell fixture waits for completion");
     for installed_native in [false, true] {
-        let domain = Arc::new(DomainRuntime::open(&f.home).unwrap());
+        let domain = Arc::new(crate::wiring::open(&f.home).unwrap());
         let native = f.claude.executable.clone();
         domain.enable_sdk(crate::sdk_owner::SdkBackend {
             provider: Provider::Claude, origin: None,
@@ -123,7 +125,7 @@ fn legacy_migration_preserves_policy_and_custom_profiles_and_seeds_only_the_exac
     let review = RoleModelPolicy::OrderedCandidates { candidates: vec![ModelCandidate { model: "user-review-model".into(), reasoning_effort: None }] };
     let profiles = std::collections::BTreeMap::from([(Provider::Claude, std::collections::BTreeMap::from([(ModelProfile::Review, review.clone())]))]);
     std::fs::write(alondra_core::options::path_in(&f.home), alondra_core::options::with_model_profiles(&text, &profiles).unwrap()).unwrap();
-    let runtime = DomainRuntime::open(&f.home).unwrap();
+    let runtime = crate::wiring::open(&f.home).unwrap();
     migrate_legacy_settings(&runtime, &f.home).unwrap();
     let after = options_file(&f.home).unwrap();
     assert_eq!(after.accounts.connected, Some(vec![Provider::Claude]));
@@ -143,7 +145,7 @@ fn legacy_migration_preserves_policy_and_custom_profiles_and_seeds_only_the_exac
 fn first_install_and_explicit_codex_only_configuration_never_seed_a_claude_account_or_profile() {
     let f = fixture();
     std::fs::remove_file(alondra_core::options::path_in(&f.home)).unwrap();
-    let runtime = DomainRuntime::open(&f.home).unwrap();
+    let runtime = crate::wiring::open(&f.home).unwrap();
     migrate_legacy_settings(&runtime, &f.home).unwrap();
     assert!(!alondra_core::options::path_in(&f.home).exists());
     let mut codex = alondra_core::options::OptionsFile::fresh(); codex.accounts.connect(Provider::Codex);
@@ -261,7 +263,7 @@ fn accounts_sharing_one_email_are_checked_before_their_sessions_are_taken_over()
     let config = with(vec![work()]);
     f.store(&config).unwrap();
     std::fs::write(f.home.join("accounts/work/signed-in"), "work@example.org").unwrap();
-    let domain = Arc::new(DomainRuntime::open(&f.home).unwrap());
+    let domain = Arc::new(crate::wiring::open(&f.home).unwrap());
     domain.live().unbounded_claude_status.store(true, std::sync::atomic::Ordering::Relaxed);
     let native = f.claude.executable.clone();
     domain.enable_sdk(crate::sdk_owner::SdkBackend {
@@ -360,7 +362,7 @@ fn a_settings_change_writes_the_file_and_the_domain_and_survives_a_restart() {
     let user = Actor::User { user_id: "device:test".into() };
     let order = |domain: &DomainRuntime| domain.read().state().accounts.iter().map(|a| a.id.to_string()).collect::<Vec<_>>();
     {
-        let domain = DomainRuntime::open(&f.home).unwrap();
+        let domain = crate::wiring::open(&f.home).unwrap();
         check(&domain, &f.home);
         assert_eq!(order(&domain), ["default", "work"]);
 
@@ -381,7 +383,7 @@ fn a_settings_change_writes_the_file_and_the_domain_and_survives_a_restart() {
         let refused = change(&domain, &f.home, &Actor::System, &AccountChange::SetPolicy { policy: Policy::Margin });
         assert!(matches!(refused, Err(ChangeRefused::Domain(ref e)) if e.code == "forbidden"), "only the user changes the accounts: {refused:?}");
     }
-    let restarted = DomainRuntime::open(&f.home).unwrap();
+    let restarted = crate::wiring::open(&f.home).unwrap();
     assert_eq!(restarted.read().state().account_policy, Policy::Chain, "the policy survives a restart");
     assert!(restarted.read().state().account_moves, "so does moving nodes");
     assert_eq!(order(&restarted), ["work", "default"]);
@@ -428,7 +430,7 @@ fn known_native_denials_filter_automatic_codex_before_choosing_a_compatible_clau
     use alondra_core::model_selection::{AccountModelCatalog, CatalogModel, ModelProfile, TaskSelection};
     let f = fixture(); let mut config = AccountsConfig::fresh(); config.connect(Provider::Codex); config.connect(Provider::Claude);
     let keys = vec![AccountKey::native(Provider::Codex), AccountKey::native(Provider::Claude)]; config.set_order(keys.clone()).unwrap();
-    f.store(&config).unwrap(); let domain = DomainRuntime::open(&f.home).unwrap();
+    f.store(&config).unwrap(); let domain = crate::wiring::open(&f.home).unwrap();
     let statuses = keys.iter().map(|key| AccountStatus { provider:key.provider,id:key.account.clone(),name:"Personal".into(),state:AccountState::SignedIn,native_identity: None, email:None,plan:None,billing:AccountBilling::default(),sign_ins: 0, profile: None }).collect();
     record_account_command(&domain,Command::RecordAccounts {accounts:statuses,reserve:alondra_core::usage::Share::of(config.distribution.reserve)});
     record_account_command(&domain,Command::RecordAccountConfiguration {order:keys.clone(),version:version(&config)});
@@ -472,7 +474,7 @@ fn probe_catalog() -> Command {
 
 #[test]
 fn a_delayed_native_probe_cannot_replace_a_new_credential_identity_or_its_metadata() {
-    let f = fixture(); let domain = DomainRuntime::open(&f.home).unwrap();
+    let f = fixture(); let domain = crate::wiring::open(&f.home).unwrap();
     let original = probe_account("first@example.invalid");
     record_probe_fixture(&domain, vec![original.clone()]);
     let (fence, _) = probe_fence(&domain, &f.home).unwrap();
@@ -485,14 +487,14 @@ fn a_delayed_native_probe_cannot_replace_a_new_credential_identity_or_its_metada
     assert_eq!(domain.read().state().accounts[0].email.as_deref(), Some("second@example.invalid"));
     assert!(domain.read().state().account_usage.is_empty()); assert!(domain.read().state().model_catalogs.is_empty());
     drop(domain);
-    let reopened = DomainRuntime::open(&f.home).unwrap();
+    let reopened = crate::wiring::open(&f.home).unwrap();
     assert_eq!(reopened.read().state().accounts[0].email.as_deref(), Some("second@example.invalid"));
     assert!(reopened.read().state().account_usage.is_empty()); assert!(reopened.read().state().model_catalogs.is_empty());
 }
 
 #[test]
 fn a_native_metadata_bundle_rolls_back_all_results_when_a_later_command_is_refused() {
-    let f = fixture(); let domain = DomainRuntime::open(&f.home).unwrap(); let account = probe_account("first@example.invalid");
+    let f = fixture(); let domain = crate::wiring::open(&f.home).unwrap(); let account = probe_account("first@example.invalid");
     record_probe_fixture(&domain, vec![account.clone()]);
     let (fence, _) = probe_fence(&domain, &f.home).unwrap();
     let before = domain.read().state().clone();
@@ -500,12 +502,12 @@ fn a_native_metadata_bundle_rolls_back_all_results_when_a_later_command_is_refus
     assert!(error.contains("twice"), "{error}");
     assert_eq!(domain.read().state().revision, before.revision);
     assert!(domain.read().state().model_catalogs.is_empty());
-    drop(domain); assert!(DomainRuntime::open(&f.home).unwrap().read().state().model_catalogs.is_empty());
+    drop(domain); assert!(crate::wiring::open(&f.home).unwrap().read().state().model_catalogs.is_empty());
 }
 
 #[test]
 fn a_native_probe_cannot_publish_across_an_unimported_options_file_edit() {
-    let f = fixture(); let domain = DomainRuntime::open(&f.home).unwrap();
+    let f = fixture(); let domain = crate::wiring::open(&f.home).unwrap();
     record_probe_fixture(&domain, vec![probe_account("first@example.invalid")]);
     let (fence, _) = probe_fence(&domain, &f.home).unwrap();
     let options = alondra_core::options::path_in(&f.home);
@@ -523,7 +525,7 @@ fn probe_usage(provider: Provider, at: i64, exhausted: bool) -> Command {
 
 #[test]
 fn native_probe_publication_preserves_newer_quota_and_rolls_back_its_other_metadata() {
-    let f = fixture(); let domain = DomainRuntime::open(&f.home).unwrap();
+    let f = fixture(); let domain = crate::wiring::open(&f.home).unwrap();
     record_probe_fixture(&domain, vec![probe_account("first@example.invalid")]);
     let (newer, _) = probe_fence(&domain, &f.home).unwrap();
     publish_probe(&domain, &f.home, newer, vec![probe_usage(Provider::Claude, 10, true)]).unwrap();
@@ -537,7 +539,7 @@ fn native_probe_publication_preserves_newer_quota_and_rolls_back_its_other_metad
 
 #[test]
 fn a_current_native_metadata_bundle_survives_unrelated_quota_progress_and_restart() {
-    let f = fixture(); let domain = DomainRuntime::open(&f.home).unwrap();
+    let f = fixture(); let domain = crate::wiring::open(&f.home).unwrap();
     record_probe_fixture(&domain, vec![probe_account("first@example.invalid")]);
     let (first, _) = probe_fence(&domain, &f.home).unwrap();
     let (other, _) = probe_fence(&domain, &f.home).unwrap();
@@ -546,7 +548,7 @@ fn a_current_native_metadata_bundle_survives_unrelated_quota_progress_and_restar
     assert_eq!(domain.read().state().model_catalogs.len(), 1);
     assert_eq!(domain.read().state().account_usage.len(), 2);
     drop(domain);
-    let reopened = DomainRuntime::open(&f.home).unwrap();
+    let reopened = crate::wiring::open(&f.home).unwrap();
     assert_eq!(reopened.read().state().model_catalogs.len(), 1);
     assert_eq!(reopened.read().state().account_usage.len(), 2);
 }
@@ -554,7 +556,7 @@ fn a_current_native_metadata_bundle_survives_unrelated_quota_progress_and_restar
 #[test]
 fn cached_authentication_cannot_launch_new_work_until_a_current_roster_is_committed() {
     use alondra_core::model_selection::{AccountModelCatalog, CatalogModel, ModelProfile, TaskSelection};
-    let f = fixture(); let domain = DomainRuntime::open(&f.home).unwrap();
+    let f = fixture(); let domain = crate::wiring::open(&f.home).unwrap();
     record_probe_fixture(&domain, vec![probe_account("cached@example.invalid")]);
     record_account_command(&domain, Command::RecordAccountConfiguration { order: vec![AccountKey::native(Provider::Claude)], version: version(&config(&f.home).unwrap()) });
     record_account_command(&domain, Command::RecordModelCatalog { catalog: AccountModelCatalog {
@@ -581,17 +583,17 @@ fn cached_authentication_cannot_launch_new_work_until_a_current_roster_is_commit
 
 #[test]
 fn native_workspace_identity_survives_the_existing_account_store_without_a_parallel_registry() {
-    let f = fixture(); let domain = DomainRuntime::open(&f.home).unwrap();
+    let f = fixture(); let domain = crate::wiring::open(&f.home).unwrap();
     let mut account = probe_account("first@example.invalid"); account.provider = Provider::Codex; account.native_identity = Some("native-workspace".into());
     record_probe_fixture(&domain, vec![account.clone()]);
     drop(domain);
-    let reopened = DomainRuntime::open(&f.home).unwrap();
+    let reopened = crate::wiring::open(&f.home).unwrap();
     assert_eq!(reopened.read().state().accounts, [account]);
 }
 
 #[test]
 fn the_actual_codex_metadata_check_keeps_external_auth_unavailable_and_api_keys_out_of_automatic_work() {
-    let f = fixture(); let domain = Arc::new(DomainRuntime::open(&f.home).unwrap());
+    let f = fixture(); let domain = Arc::new(crate::wiring::open(&f.home).unwrap());
     let _hosts = crate::sdk_owner::tests::SdkLaunches::enable(&domain, &f.home);
     let native = f._scratch.join("codex-native");
     std::fs::copy(std::env::var("FIXTURE_CODEX_NATIVE").unwrap(), &native).unwrap();
@@ -640,7 +642,7 @@ fn absent_native_workspace_never_proves_existing_session_identity() {
 async fn a_stale_startup_account_check_retries_and_releases_account_selection() {
     use alondra_core::model_selection::{ModelProfile, TaskSelection};
     let f = fixture();
-    let domain = Arc::new(DomainRuntime::open(&f.home).unwrap());
+    let domain = Arc::new(crate::wiring::open(&f.home).unwrap());
     let _hosts = crate::sdk_owner::tests::SdkLaunches::enable(&domain, &f.home);
     let native = f._scratch.join("codex-native");
     let original = std::fs::read_to_string(std::env::var("FIXTURE_CODEX_NATIVE").unwrap()).unwrap();
@@ -678,7 +680,7 @@ async fn a_stale_startup_account_check_retries_and_releases_account_selection() 
 #[tokio::test]
 async fn a_stale_model_catalog_retries_the_account_check_until_models_are_ready() {
     let f = fixture();
-    let domain = Arc::new(DomainRuntime::open(&f.home).unwrap());
+    let domain = Arc::new(crate::wiring::open(&f.home).unwrap());
     domain.live().unbounded_claude_status.store(true, std::sync::atomic::Ordering::Relaxed);
     let state = crate::sdk_owner::tests::HostRoot::new();
     let (mut backend, _) = crate::sdk_owner::tests::fixture_backend(&f.home, &state);
@@ -726,7 +728,7 @@ for raw in sys.stdin:
 #[test]
 fn connecting_claude_on_a_fresh_install_gives_the_orchestrator_a_model_claude_advertises() {
     use alondra_core::model_selection::{AccountModelCatalog, CatalogModel, ModelCandidate, ModelProfile, RoleModelPolicy};
-    let f = fixture(); let domain = DomainRuntime::open(&f.home).unwrap();
+    let f = fixture(); let domain = crate::wiring::open(&f.home).unwrap();
     let options = alondra_core::options::path_in(&f.home);
     std::fs::remove_file(&options).unwrap();
     check(&domain, &f.home);

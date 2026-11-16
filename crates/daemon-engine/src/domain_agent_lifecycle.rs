@@ -158,7 +158,7 @@ mod tests {
             Self(home)
         }
         fn open(&self) -> DomainRuntime {
-            DomainRuntime::open(&self.0).unwrap()
+            crate::wiring::open(&self.0).unwrap()
         }
     }
     impl Drop for Fixture {

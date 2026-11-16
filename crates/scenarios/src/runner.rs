@@ -1,6 +1,7 @@
 //! Carries a scenario out: assembles the daemon over fake edges on a virtual clock, runs the
 //! steps, and reads the checkpoints.
 
+use alondra_daemon_engine::sdk_owner::SdkOwners as _;
 use crate::checkpoint::{self, Files};
 use crate::claude_peer::{Activity, Seen};
 use crate::error::ScenarioError;

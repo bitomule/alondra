@@ -8,7 +8,7 @@ use std::sync::mpsc;
 fn a_retained_sqlite_writer_does_not_occupy_the_daemon_runtime() {
     let (_directory, mut service, phone) = push_fixture();
     activate_push(&service);
-    drop(crate::domain_runtime::DomainRuntime::open(&service.home).unwrap());
+    drop(alondra_daemon_engine::wiring::open(&service.home).unwrap());
     let state = crate::domain_bootstrap::DomainDaemon::open(&service.home).unwrap();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2).enable_all().build().unwrap();

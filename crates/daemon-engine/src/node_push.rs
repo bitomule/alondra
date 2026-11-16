@@ -136,6 +136,7 @@ impl Pushes {
 #[cfg(any(test, feature = "test-hooks"))]
 pub mod testing {
     use crate::domain_runtime::DomainRuntime;
+    use crate::live::LiveOf as _;
     use serde_json::Value;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};

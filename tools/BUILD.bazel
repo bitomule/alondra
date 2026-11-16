@@ -134,6 +134,7 @@ sh_test(
         "module_cycles.tsv",
         "module_graph.py",
         "//crates/daemon-engine:tree",
+        "//crates/engine-kernel:tree",
     ],
     size = "small",
 )
@@ -146,6 +147,7 @@ sh_test(
         "//crates/alondrad:tree",
         "//crates/daemon-engine:tree",
         "//crates/daemon-engine-machine:tree",
+        "//crates/engine-kernel:tree",
         "//crates/daemon-engine-model:tree",
         "//crates/daemon-engine-store:tree",
         "//crates/daemon-support:tree",

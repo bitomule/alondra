@@ -1,3 +1,4 @@
+use crate::live::LiveOf as _;
 use super::*;
 use alondra_core::domain::{Actor, Command, CommandEnvelope, QuestionOption, Scope, TaskId, PROTOCOL_VERSION};
 use std::collections::BTreeSet;
@@ -34,7 +35,7 @@ fn ask(domain: &DomainRuntime, id: &str, recipient: Recipient, scope: Scope, act
 fn world() -> Fixture {
     let home = crate::test_support::Directory::new();
     std::fs::create_dir_all(&home).unwrap();
-    let domain = DomainRuntime::open(&home).unwrap();
+    let domain = crate::wiring::open(&home).unwrap();
     for (id, name) in [("agent-a", "Instance A"), ("agent-b", "Instance B")] {
         run(&domain, Actor::System, Command::RegisterAgent { agent_id: id.into(), name: name.into(), at: 0 });
     }

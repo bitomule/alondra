@@ -10,6 +10,7 @@ crates. Reads sources only; nothing is built.
 through its `mod` declarations, without `#[cfg(test)]` items or comments. That is the graph a crate
 split has to cut."""
 import collections
+import os
 import re
 import sys
 from pathlib import Path
@@ -146,7 +147,7 @@ def production_modules(root):
             name = declared.group(2)
             path = PATH.search(text[declared.start(1):declared.end(1)])
             child = child_file(file, name, path.group(1) if path else None)
-            if child is None or not child.resolve().is_relative_to(root.resolve()):
+            if child is None or not Path(os.path.normpath(child)).is_relative_to(os.path.normpath(root)):
                 continue
             top = module if module is not None else name
             found.setdefault(top, {"lines": 0, "tests": 0, "files": []})

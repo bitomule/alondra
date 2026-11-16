@@ -1,5 +1,7 @@
 //! The task list moves only when a task's state moves: what a node does inside its turn reaches its
 //! task's detail, never the list nor the changes feed of a client that has only the list open.
+use alondra_daemon_engine::sdk_owner::SdkOwners as _;
+use alondra_daemon_engine::live::LiveOf as _;
 use alondra_daemon_engine::sdk_owner::Driver;
 use alondra_daemon_engine::sdk_owner::tests::*;
 use alondra_core::domain::*;

@@ -1,6 +1,9 @@
 //! The vertical slice through the real owner: the daemon's store, commands and `own`, the pinned
 //! Node host with the official SDK, and a fake native Claude that answers each prompt with a
 //! result. Each step waits on the host's next event, never on a clock.
+use crate::sdk_owner::SdkOwners as _;
+use crate::live::LiveOf as _;
+use crate::idle_compaction::ContextsOf as _;
 use super::*;
 use crate::test_support::Directory;
 use alondra_core::accounts::{AccountId, AccountState, AccountStatus, Provider};
@@ -375,7 +378,7 @@ impl Slice {
         std::fs::DirBuilder::new().mode(0o700).create(&plugin).unwrap();
         let (backend, capture) = fixture_backend(&home, &state);
         let database = home.join(name);
-        let domain = Arc::new(DomainRuntime::open_at(&home, &database).unwrap());
+        let domain = Arc::new(crate::wiring::open_at(&home, &database).unwrap());
         measure_healthy_machine(&domain);
         let slice = Self { domain, database, capture, worktree, plugin, backend, kept: Arc::default(), _home: home, _state: state };
         slice.on_acknowledge(|| {});
@@ -1187,7 +1190,7 @@ async fn a_delivery_behind_its_pr_goes_back_to_the_sdk_node_with_what_changed() 
     assert!(state.interactions[&InteractionId::from("final")].withdrawn);
     assert!(slice.domain.store.lock().unwrap().pending_messages().unwrap().iter().all(|message| message.recipient_kind != "agent"),
         "the node is told through its input, not a second message");
-    let restarted = DomainRuntime::open_at(&slice._home, &slice.database).unwrap();
+    let restarted = crate::wiring::open_at(&slice._home, &slice.database).unwrap();
     assert_eq!(restarted.state().unwrap().tasks[&TaskId::from(TASK)].final_presentation, None, "a daemon start reads what was committed");
     assert_eq!(driver.pending_permits(), 1, "the input leaves for the node's host");
     driver.step(&|| false).unwrap();
@@ -2226,7 +2229,7 @@ impl Slice {
     }
 
     pub fn restart(&self) -> Arc<DomainRuntime> {
-        let domain = Arc::new(DomainRuntime::open_at(&self._home, &self.database).unwrap());
+        let domain = Arc::new(crate::wiring::open_at(&self._home, &self.database).unwrap());
         measure_healthy_machine(&domain);
         domain
     }
