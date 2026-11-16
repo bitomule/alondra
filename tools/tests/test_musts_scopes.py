@@ -118,7 +118,10 @@ class MustsScopesTests(unittest.TestCase):
         return {name for name, check in checks.items() if any(scopes.matches(check["paths"], path) for path in changed)}
 
     def test_a_build_number_bump_reopens_only_the_checks_that_read_it(self):
-        self.assertEqual(self.reopened_by("tools/shared.bzl"), {"apple-app-build", "deploy-apple", "public-data-guard", "test-limits"})
+        self.assertEqual(self.reopened_by("tools/shared.bzl"), {
+            "apple-app-build", "deploy-apple", "public-data-guard", "test-limits",
+            "hermetic-tests", "low-opt-rust-tests", "no-old-commands", "prose-decisions",
+        })
 
     def test_a_bump_with_other_changes_still_reopens_every_check_they_touch(self):
         reopened = self.reopened_by("tools/shared.bzl", "apple/Features/BUILD.bazel")
