@@ -123,7 +123,6 @@ checks:
       - "clippy.toml"
       - "crates/BUILD.bazel"
       - "crates/agent-application/**"
-      - "crates/alondrad/**"
       - "crates/domain/**"
       - "crates/foundation/**"
       - "crates/provider-contract/**"
@@ -133,6 +132,9 @@ checks:
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
       - "version.bzl"
+      - "crates/domain-store-schema/BUILD.bazel"
+      - "crates/domain-store-schema/schema.sql"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //crates/agent-application/...
@@ -151,6 +153,7 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //crates/agent-protocol/...
@@ -167,7 +170,6 @@ checks:
       - "clippy.toml"
       - "crates/BUILD.bazel"
       - "crates/agent-runtime/**"
-      - "crates/alondrad/**"
       - "crates/domain/**"
       - "crates/foundation/**"
       - "crates/process-group/**"
@@ -178,6 +180,10 @@ checks:
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
       - "version.bzl"
+      - "crates/domain-store-schema/BUILD.bazel"
+      - "crates/domain-store-schema/schema.sql"
+      - "tools/rust_inputs_test.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //crates/agent-runtime/...
@@ -233,6 +239,8 @@ checks:
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
       - "version.bzl"
+      - "tools/rust_inputs_test.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //crates/alondra/...
@@ -292,6 +300,11 @@ checks:
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
       - "version.bzl"
+      - "crates/domain-store-schema/**"
+      - "fixtures/domain-v2/BUILD.bazel"
+      - "fixtures/domain-v2/acceptance.json"
+      - "tools/rust_inputs_test.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //crates/alondrad/...
@@ -311,6 +324,7 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //crates/codex-protocol/...
@@ -340,6 +354,8 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
+      - "tools/rust_inputs_test.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //crates/core/...
@@ -399,6 +415,9 @@ checks:
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
       - "version.bzl"
+      - "crates/domain-store-schema/**"
+      - "tools/rust_inputs_test.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //crates/daemon-engine/...
@@ -459,7 +478,6 @@ checks:
       - "crates/agent-application/**"
       - "crates/agent-protocol/**"
       - "crates/agent-runtime/**"
-      - "crates/alondrad/**"
       - "crates/codex-protocol/**"
       - "crates/core/**"
       - "crates/daemon-engine-machine/**"
@@ -479,6 +497,9 @@ checks:
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
       - "version.bzl"
+      - "crates/domain-store-schema/**"
+      - "tools/rust_inputs_test.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //crates/daemon-engine-machine/...
@@ -496,7 +517,6 @@ checks:
       - "crates/agent-application/**"
       - "crates/agent-protocol/**"
       - "crates/agent-runtime/**"
-      - "crates/alondrad/**"
       - "crates/codex-protocol/**"
       - "crates/core/**"
       - "crates/daemon-engine-model/**"
@@ -516,6 +536,9 @@ checks:
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
       - "version.bzl"
+      - "crates/domain-store-schema/**"
+      - "tools/rust_inputs_test.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //crates/engine-kernel/...
@@ -532,7 +555,6 @@ checks:
       - "crates/agent-application/**"
       - "crates/agent-protocol/**"
       - "crates/agent-runtime/**"
-      - "crates/alondrad/**"
       - "crates/codex-protocol/**"
       - "crates/core/**"
       - "crates/daemon-engine-model/**"
@@ -555,6 +577,9 @@ checks:
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
       - "version.bzl"
+      - "crates/domain-store-schema/**"
+      - "tools/rust_inputs_test.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //crates/daemon-engine-store/...
@@ -573,7 +598,6 @@ checks:
       - "crates/agent-application/**"
       - "crates/agent-protocol/**"
       - "crates/agent-runtime/**"
-      - "crates/alondrad/**"
       - "crates/core/**"
       - "crates/daemon-engine-model/**"
       - "crates/daemon-support/**"
@@ -589,6 +613,8 @@ checks:
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
       - "version.bzl"
+      - "tools/rust_inputs_test.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //crates/daemon-engine-model/...
@@ -607,7 +633,6 @@ checks:
       - "crates/agent-application/**"
       - "crates/agent-protocol/**"
       - "crates/agent-runtime/**"
-      - "crates/alondrad/**"
       - "crates/core/**"
       - "crates/daemon-support/**"
       - "crates/domain/**"
@@ -623,6 +648,8 @@ checks:
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
       - "version.bzl"
+      - "tools/rust_inputs_test.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //crates/daemon-support/...
@@ -641,6 +668,7 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //crates/domain/...
@@ -660,6 +688,8 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
+      - "tools/rust_inputs_test.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //crates/e2e/...
@@ -680,6 +710,7 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //crates/foundation/...
@@ -697,6 +728,7 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //crates/process-group/...
@@ -721,7 +753,6 @@ checks:
       - "crates/agent-application/**"
       - "crates/agent-protocol/**"
       - "crates/agent-runtime/**"
-      - "crates/alondrad/**"
       - "crates/domain/**"
       - "crates/foundation/**"
       - "crates/process-group/**"
@@ -736,6 +767,10 @@ checks:
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
       - "version.bzl"
+      - "crates/domain-store-schema/BUILD.bazel"
+      - "crates/domain-store-schema/schema.sql"
+      - "tools/rust_inputs_test.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //crates/provider-claude/...
@@ -754,7 +789,6 @@ checks:
       - "crates/agent-application/**"
       - "crates/agent-protocol/**"
       - "crates/agent-runtime/**"
-      - "crates/alondrad/BUILD.bazel"
       - "tools/rust_inputs_test.bzl"
       - "crates/domain-store-schema/schema.sql"
       - "crates/codex-protocol/**"
@@ -774,6 +808,8 @@ checks:
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
       - "version.bzl"
+      - "crates/domain-store-schema/BUILD.bazel"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //crates/provider-codex/...
@@ -799,6 +835,8 @@ checks:
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
       - "version.bzl"
+      - "BUILD.bazel"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //crates/provider-conformance/...
@@ -817,6 +855,7 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //crates/provider-contract/...
@@ -841,6 +880,8 @@ checks:
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
       - "web/react-router.config.ts"
+      - "tools/rust_inputs_test.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //crates/relay/...
@@ -856,7 +897,6 @@ checks:
       - "MODULE.bazel"
       - "clippy.toml"
       - "crates/BUILD.bazel"
-      - "crates/alondrad/**"
       - "crates/domain/**"
       - "crates/foundation/**"
       - "crates/provider-contract/**"
@@ -866,6 +906,8 @@ checks:
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
       - "version.bzl"
+      - "crates/domain-store-schema/**"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //crates/store/...
@@ -1027,7 +1069,6 @@ checks:
     uses: bazel/test
     paths:
       - "BUILD.bazel"
-      - "crates/alondrad/**"
       - "crates/daemon-engine/**"
       - "crates/engine-kernel/**"
       - "tools/BUILD.bazel"
@@ -1037,6 +1078,8 @@ checks:
       - "tools/tests/test_module_cycles.py"
       - "tools/tree.bzl"
       - "version.bzl"
+      - "tools/rust_inputs_test.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //tools:module_cycles_test
@@ -1096,6 +1139,8 @@ checks:
       - "tools/sandbox/fixtures/**"
       - "tools/sandbox/src/**"
       - "tools/tree.bzl"
+      - "tools/rust_inputs_test.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //tools/sandbox:alondra-sandbox_test
@@ -1107,7 +1152,6 @@ checks:
       - ".bazelversion"
       - "BUILD.bazel"
       - "MODULE.bazel"
-      - "crates/BUILD.bazel"
       - "crates/agent-application/**"
       - "crates/agent-protocol/**"
       - "crates/agent-runtime/**"
@@ -1129,7 +1173,6 @@ checks:
       - "crates/provider-codex/**"
       - "crates/provider-contract/**"
       - "crates/store/**"
-      - "crates/test_support.rs"
       - "launchd/**"
       - "tests/system/macos/BUILD.bazel"
       - "tests/system/macos/cli.py"
@@ -1138,6 +1181,9 @@ checks:
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
       - "version.bzl"
+      - "crates/domain-store-schema/**"
+      - "tools/rust_inputs_test.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //tests/system/macos:local_daemon_test
@@ -1340,6 +1386,7 @@ checks:
       - "tools/rust_test.bzl"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //deploy/brew:local_release_test
@@ -1437,6 +1484,11 @@ checks:
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
       - "version.bzl"
+      - "crates/domain-store-schema/**"
+      - "fixtures/domain-v2/BUILD.bazel"
+      - "fixtures/domain-v2/acceptance.json"
+      - "tools/rust_inputs_test.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //apple/Data/Feed:ActionJournalProcessTests
@@ -1712,6 +1764,7 @@ checks:
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //agent-host:sdk_test
@@ -1753,6 +1806,8 @@ checks:
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
       - "version.bzl"
+      - "tools/rust_inputs_test.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //crates:cargo_bazel_deps_test
@@ -1897,6 +1952,8 @@ checks:
       - "tools/tests/test_clock_guard.py"
       - "tools/tree.bzl"
       - "version.bzl"
+      - "tools/rust_inputs_test.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //tools:clock_guard_test
@@ -1912,7 +1969,6 @@ checks:
       - "crates/provider-*/**"
       - "crates/scenarios/**"
       - "crates/scenarios-transcript/**"
-      - "fixtures/transcripts/**"
       - "crates/alondra/BUILD.bazel"
       - "crates/alondra/src/lib.rs"
       - "crates/alondra/src/report/**"
@@ -1933,6 +1989,14 @@ checks:
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
       - "version.bzl"
+      - "crates/alondra/build.rs"
+      - "crates/alondra/log_catalog.rs"
+      - "crates/alondra/src/**"
+      - "crates/domain-store-schema/**"
+      - "launchd/BUILD.bazel"
+      - "launchd/alondra.plist.in"
+      - "tools/rust_inputs_test.bzl"
+      - "tools/rust_sources.bzl"
     with:
       targets:
         - //crates/scenarios:scenarios_test
