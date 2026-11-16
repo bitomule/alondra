@@ -98,20 +98,24 @@ rust_binary(
     deps = all_crate_deps(normal = True),
 )
 
-# Every transcript the repository keeps, the scenarios' and the replayed fixtures', is anonymized.
+# Every transcript the repository keeps, wherever it is and whatever its name, is anonymized. It
+# reads the private literals file ALONDRA_PRIVATE_LITERALS names, outside the checkout, so it is
+# never cached; without that list it fails, unless the variable says `none` (the public CI).
 low_opt_rust_test(
     name = "transcript_guard_test",
     size = "small",
     srcs = ["tests/transcript_guard.rs"],
     crate_root = "tests/transcript_guard.rs",
-    data = glob(["cases/**/*.ndjson", "cases/**/synthetic.txt"]) + ["//fixtures/transcripts"],
+    data = ["//:tree"],
     edition = "2024",
     env_inherit = ["ALONDRA_PRIVATE_LITERALS"],
+    tags = ["external", "local"],
     deps = ["//crates/scenarios-transcript:scenarios_transcript"],
 )
 
 # `bazel run //crates/scenarios:capture -- --task <id> --out .scratch/<name>.ndjson` anonymizes the
-# frames the SDK host of a task wrote on this Mac into a transcript for a reviewer to read.
+# frames the hosts of a task, Claude's or Codex's, wrote on this Mac into transcripts for a reviewer
+# to read, in the worktree's `.scratch`.
 rust_binary(
     name = "capture",
     srcs = ["src/bin/capture.rs"],
@@ -122,7 +126,8 @@ rust_binary(
 )
 
 # `bazel run //crates/scenarios:from_report -- <package> --name <case> --out .scratch/<case>` drafts a
-# scenario from an `alondra report` package and the list of what a person completes.
+# scenario from an `alondra report` package and the list of what a person completes, after the
+# report's own final check and the public data guard read it.
 rust_binary(
     name = "from_report",
     testonly = True,
@@ -131,7 +136,18 @@ rust_binary(
     edition = "2024",
     rustc_flags = ["-Copt-level=0"],
     version = VERSION,
-    deps = DEPS + [":scenarios"],
+    deps = DEPS + [":scenarios", "//crates/alondra:alondra_lib"],
+)
+
+low_opt_rust_test(
+    name = "from_report_bin_test",
+    size = "small",
+    srcs = ["src/bin/from_report.rs", "src/bin/from_report_tests.rs"],
+    crate_root = "src/bin/from_report.rs",
+    data = ["//tools:public_data_guard.py"],
+    edition = "2024",
+    version = VERSION,
+    deps = DEPS + [":scenarios", "//crates/alondra:alondra_lib"],
 )
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

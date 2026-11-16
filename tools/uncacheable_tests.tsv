@@ -1,6 +1,7 @@
 # Tests Bazel cannot cache, each with why. tools/hermetic_tests.py refuses any test tagged external,
 # local, no-cache or no-remote that has no line here, and any line whose test became cacheable.
 //:plugin_mod_test	Runs the user's installed Claude Code (`claude plugin test`) from PATH: that program is no declared input.
+//crates/scenarios:transcript_guard_test	Reads the private literals file ALONDRA_PRIVATE_LITERALS names, outside the checkout.
 //tests/native/claude:accounts_test	Opt-in: drives the real native Claude against the network.
 //tests/native/claude:client_lifecycle_test	Its descendant's Unix socket needs a short /tmp path outside any sandbox, and it lists real process groups.
 //tests/native/claude:mcp_sign_in_test	Opt-in: drives the real native Claude against the network.

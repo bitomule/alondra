@@ -25,6 +25,7 @@ mod provider_accounts;
 mod ops;
 mod pty;
 mod report;
+pub use report::{leaks as report_leaks, private_values_of_this_mac};
 mod report_wait;
 mod service_setup;
 mod service_pair;

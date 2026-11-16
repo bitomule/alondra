@@ -450,6 +450,7 @@ dependencies = [
 name = "alondra-scenarios"
 version = "0.3.46"
 dependencies = [
+ "alondra",
  "alondra-agent-protocol",
  "alondra-agent-runtime",
  "alondra-core",

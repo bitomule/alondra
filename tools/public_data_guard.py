@@ -2,7 +2,8 @@
 """Fails when a tracked file carries personal or private data that must not be public.
 
 This repository is public: everything committed here can be read by anyone. The guard scans every
-tracked text file (or only the lines a diff adds, with --against) for personal emails, home
+tracked text file (or only the lines a diff adds, with --against, or the files `--files <root>
+<relative>...` names, outside the checkout) for personal emails, home
 directories of real people, device identifiers, public IP addresses, credentials and tracker ids. A match is either in the allowlist next to this file (with the
 reason it is harmless) or a failure; an allowlist entry that matches nothing is a failure too, so
 the list only shrinks.
@@ -208,7 +209,25 @@ def report(root, against=None):
     return problems
 
 
+def files_report(root, relatives):
+    """The findings in files outside the checkout, such as a draft about to be written: every rule,
+    no allowlist, and never the matched text."""
+    literals = private_literals()
+    problems = []
+    for relative in relatives:
+        for number, line in enumerate(lines_of(root, relative), 1):
+            for rule, _ in hits(line, literals):
+                problems.append(f"{relative}:{number}: {rule}")
+    return problems
+
+
 def main(argv):
+    if "--files" in argv:
+        at = argv.index("--files")
+        problems = files_report(Path(argv[at + 1]), argv[at + 2:])
+        for problem in problems:
+            print(problem)
+        return 1 if problems else 0
     against = argv[argv.index("--against") + 1] if "--against" in argv else None
     root = Path(__file__).resolve().parents[1]
     problems = report(root, against)

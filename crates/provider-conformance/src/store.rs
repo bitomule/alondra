@@ -8,7 +8,7 @@ use alondra_store::{AdapterInputMetadata, AuthorityScope, InputPayload, Lifecycl
 use rusqlite::{Connection, TransactionBehavior};
 use std::collections::BTreeSet;
 
-const WORKSPACE: &str = "/workspace/task";
+const WORKSPACE: &str = "/Users/ana/work";
 
 fn failed(step: &str) -> impl Fn(alondra_store::Error) -> String + '_ {
     move |error| format!("{step}: {error:?}")

@@ -12,6 +12,8 @@
 pub mod anonymize;
 pub mod frames;
 pub mod guard;
+pub mod outbox;
+pub mod scratch;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

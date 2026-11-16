@@ -6,6 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+alondra = { path = "../alondra" }
 alondrad = { path = "../alondrad" }
 alondra-agent-protocol.workspace = true
 alondra-agent-runtime.workspace = true

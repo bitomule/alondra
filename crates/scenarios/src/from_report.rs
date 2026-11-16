@@ -1,9 +1,12 @@
 //! Turns an `alondra report` package into the draft of a scenario: the tasks and what happened to
 //! them as steps, the shape of the SDK host's frames as a transcript, and the list of what the
 //! report cannot tell and a person completes. Nothing is written when the package or the draft
-//! carries one of this Mac's private values, or anything the transcript guard refuses.
+//! carries one of this Mac's private values, anything the transcript guard refuses, or anything
+//! one of the checks the caller adds finds: the binary adds the report's own final check and the
+//! repository's public data guard.
 
-use alondra_scenarios_transcript::guard::{self, DEMO_EMAIL};
+use alondra_agent_protocol::SdkEventKind;
+use alondra_scenarios_transcript::guard::{self, DEMO_USER};
 use alondra_scenarios_transcript::{Header, Line, Origin, Transcript};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -45,8 +48,12 @@ pub struct Draft {
 pub struct Leak {
     pub file: String,
     pub line: usize,
-    pub rule: &'static str,
+    pub rule: String,
 }
+
+/// A check every file of the package and of the draft passes before anything is written: it reads
+/// the files by name and the values the report replaced, and says what it finds.
+pub type Check<'a> = &'a dyn Fn(&[(&str, &str)], &[String]) -> Vec<Leak>;
 
 impl std::fmt::Display for Leak {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -200,7 +207,7 @@ fn transcripts_of(package: &Package, scenario: &str, gaps: &mut Vec<String>) -> 
         for frame in host["frames"].as_array().into_iter().flatten().filter(|frame| frame["type"] == "event") {
             match frame["observation"].as_str() {
                 Some("sdk") => {
-                    let kind = frame["detail"].as_str().filter(|kind| guard::is_token(kind)).unwrap_or("message");
+                    let kind = frame["detail"].as_str().filter(|kind| serde_json::from_value::<SdkEventKind>(json!(kind)).is_ok()).unwrap_or("message");
                     lines.push(Line::EmitInbound {
                         frame: json!({"protocol_version": version, "body": {"type": "event", "observation": {"type": "sdk", "kind": kind, "native": {}, "payload": {"text": format!("«model text {}»", lines.len() + 1)}, "failures": []}}}),
                     });
@@ -224,21 +231,23 @@ fn scan(file: &str, text: &str, literals: &[String]) -> Vec<Leak> {
     guard::scan_transcript(text, literals, &BTreeSet::new())
         .into_iter()
         .filter(|(_, rule)| *rule != "free-text" && *rule != "not-json")
-        .map(|(line, rule)| Leak { file: file.to_owned(), line, rule })
+        .map(|(line, rule)| Leak { file: file.to_owned(), line, rule: rule.to_owned() })
         .collect()
 }
 
 fn scan_toml(file: &str, text: &str, literals: &[String]) -> Vec<Leak> {
     text.lines()
         .enumerate()
-        .flat_map(|(index, line)| guard::scan_line(line, literals).into_iter().map(move |rule| Leak { file: file.to_owned(), line: index + 1, rule }))
+        .flat_map(|(index, line)| guard::scan_line(line, literals).into_iter().map(move |rule| Leak { file: file.to_owned(), line: index + 1, rule: rule.to_owned() }))
         .collect()
 }
 
 /// The draft of a scenario named `name` from the package, or why nothing may be written.
-pub fn draft(name: &str, package: &Package, originals: &[String], literals: &[String]) -> Result<Draft, Refusal> {
+pub fn draft(name: &str, package: &Package, originals: &[String], literals: &[String], checks: &[Check]) -> Result<Draft, Refusal> {
+    let files: Vec<(&str, &str)> = package.iter().map(|(file, text)| (file.as_str(), text.as_str())).collect();
+    let mut leaks: Vec<Leak> = checks.iter().flat_map(|check| check(&files, originals)).collect();
     let literals: Vec<String> = literals.iter().chain(originals).cloned().collect();
-    let mut leaks: Vec<Leak> = package.iter().flat_map(|(file, text)| scan(file, text, &literals)).collect();
+    leaks.extend(package.iter().flat_map(|(file, text)| scan(file, text, &literals)));
     if !leaks.is_empty() {
         return Err(Refusal::Leaks(leaks));
     }
@@ -254,7 +263,7 @@ pub fn draft(name: &str, package: &Package, originals: &[String], literals: &[St
     let mut scenario_toml = format!("name = \"{name}\"\nmax_virtual = \"{}m\"\n\n[world]\nrepository = \"demo/app\"\n{steps}", (spent + 60).max(60));
     let _ = write!(scenario_toml, "\n[[step]]\ndo = \"rest\"\nmax = \"{SETTLE}\"\n\n[[step]]\ndo = \"checkpoint\"\nname = \"end\"\nscreens = {}\npushes = true\n", json!(screens));
     gaps.push("checkpoint end: add the `expect` of what the report showed going wrong, then run `bazel run //crates/scenarios:accept -- <case>` and read what it wrote".into());
-    gaps.push(format!("the demo world speaks as {DEMO_EMAIL}; add a `[world]` account, clients and languages if the problem depends on them"));
+    gaps.push(format!("the demo world speaks as its user `{DEMO_USER}`; add a `[world]` account, clients and languages if the problem depends on them"));
     let mut gap_list = String::from("What the report cannot tell, for whoever writes the scenario to complete:\n");
     for gap in &gaps {
         let _ = writeln!(gap_list, "- {gap}");
@@ -264,6 +273,9 @@ pub fn draft(name: &str, package: &Package, originals: &[String], literals: &[St
     for (file, text) in &transcripts {
         leaks.extend(scan(file, text, &literals));
     }
+    let drafted: Vec<(&str, &str)> =
+        [("scenario.toml", scenario_toml.as_str()), ("gaps.txt", gap_list.as_str())].into_iter().chain(transcripts.iter().map(|(file, text)| (file.as_str(), text.as_str()))).collect();
+    leaks.extend(checks.iter().flat_map(|check| check(&drafted, originals)));
     if !leaks.is_empty() {
         return Err(Refusal::Leaks(leaks));
     }
@@ -283,9 +295,9 @@ pub fn write(out: &Path, draft: &Draft) -> std::io::Result<()> {
 
 /// Reads the package folder, drafts and writes into `out`; the folder is created only when the
 /// draft is clean.
-pub fn convert(package: &Path, name: &str, out: &Path, literals: &[String]) -> Result<Draft, Refusal> {
+pub fn convert(package: &Path, name: &str, out: &Path, literals: &[String], checks: &[Check]) -> Result<Draft, Refusal> {
     let (files, originals) = read_package(package)?;
-    let draft = draft(name, &files, &originals, literals)?;
+    let draft = draft(name, &files, &originals, literals, checks)?;
     write(out, &draft).map_err(|error| Refusal::Unreadable(error.to_string()))?;
     Ok(draft)
 }

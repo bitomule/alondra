@@ -1,6 +1,6 @@
 load("//tools:tree.bzl", "repo_tree")
 
-# Anonymized transcripts of real sessions, below every crate that replays them.
+# Transcripts in the shape a real session leaves, below every crate that replays them.
 # `//crates/scenarios:transcript_guard_test` checks each.
 filegroup(
     name = "transcripts",
