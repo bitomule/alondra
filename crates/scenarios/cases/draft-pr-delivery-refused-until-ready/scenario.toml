@@ -49,6 +49,10 @@ event = "mark_ready"
 number = 7
 
 [[step]]
+do = "advance"
+by = "150s"
+
+[[step]]
 do = "present"
 task = "t1"
 id = "d1"

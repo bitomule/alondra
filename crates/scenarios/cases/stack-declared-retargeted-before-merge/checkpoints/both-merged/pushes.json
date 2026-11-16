@@ -11,7 +11,7 @@
             "option": "squash"
           },
           {
-            "id": "changes:pr8@<revision>~00000000",
+            "id": "changes:github.com/demo/app#8@<revision>~00000000",
             "label": "Request changes",
             "placeholder": "Describe the changes",
             "text": true

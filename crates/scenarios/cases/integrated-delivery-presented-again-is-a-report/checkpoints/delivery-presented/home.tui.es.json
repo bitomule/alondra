@@ -37,10 +37,10 @@
             "tone": "accent"
           },
           "icon": "pull_request",
-          "id": "pr41",
+          "id": "github.com/demo/app#41",
           "kind": "review",
           "link": {
-            "key": "card:pr41",
+            "key": "card:github.com/demo/app#41",
             "kind": "view"
           },
           "meta": "Add the CSV and PDF exports",
@@ -87,10 +87,10 @@
             "tone": "accent"
           },
           "icon": "pull_request",
-          "id": "pr42",
+          "id": "github.com/demo/app#42",
           "kind": "review",
           "link": {
-            "key": "card:pr42",
+            "key": "card:github.com/demo/app#42",
             "kind": "view"
           },
           "meta": "Add the CSV and PDF exports",
@@ -122,7 +122,7 @@
             {
               "attachments": false,
               "enabled": true,
-              "id": "merge:pr41@<revision>~00000000-d1",
+              "id": "merge:github.com/demo/app#41@<revision>~00000000-d1",
               "input": {
                 "kind": "none"
               },
@@ -162,10 +162,10 @@
             "tone": "accent"
           },
           "icon": "pull_request",
-          "id": "pr41",
+          "id": "github.com/demo/app#41",
           "kind": "review",
           "link": {
-            "key": "card:pr41",
+            "key": "card:github.com/demo/app#41",
             "kind": "view"
           },
           "meta": "demo/app · csv-export → main · 1 archivo · +1 −0 · 1 de 1 correctos",
@@ -178,7 +178,7 @@
                 "title": "¿Cerrar la PR #41 sin hacer merge?"
               },
               "enabled": true,
-              "id": "close_unmerged:pr41@<revision>",
+              "id": "close_unmerged:github.com/demo/app#41@<revision>",
               "input": {
                 "kind": "none"
               },
@@ -223,7 +223,7 @@
                   "branch": "0000000000000000000000000000000000000001",
                   "kind": "review_clone",
                   "pr": 41,
-                  "pr_id": "pr41",
+                  "pr_id": "github.com/demo/app#41",
                   "repo": "demo/app"
                 }
               },
@@ -240,7 +240,7 @@
               "kind": "diff_lines"
             },
             "enabled": true,
-            "id": "changes:pr41@<revision>~00000000",
+            "id": "changes:github.com/demo/app#41@<revision>~00000000",
             "input": {
               "kind": "text",
               "multiline": true,
@@ -250,7 +250,7 @@
             "key": "r",
             "label": "Pedir cambios",
             "link": {
-              "key": "pull_request:pr41",
+              "key": "pull_request:github.com/demo/app#41",
               "kind": "view"
             },
             "presentation": "button",

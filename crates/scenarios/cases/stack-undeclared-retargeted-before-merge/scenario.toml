@@ -66,6 +66,10 @@ do = "rest"
 max = "10m"
 
 [[step]]
+do = "advance"
+by = "90s"
+
+[[step]]
 do = "cleanup_done"
 task = "t1"
 
