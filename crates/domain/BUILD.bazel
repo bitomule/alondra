@@ -2,6 +2,7 @@ load("//tools:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@rules_rust//rust:defs.bzl", "rust_doc_test", "rust_library")
+load("//tools:rust_sources.bzl", "production_sources")
 
 rust_library(
     name = "domain",
@@ -48,10 +49,11 @@ low_opt_rust_test(
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 
-# Read by the crash report's build script for its log catalog and the words of the code.
+# The crate's production sources: the crash report's log catalog reads them, and fails on a test
+# file among them.
 filegroup(
     name = "report_sources",
-    srcs = glob(["src/**/*.rs"]),
+    srcs = production_sources(),
     visibility = ["//crates/alondra:__pkg__"],
 )
 

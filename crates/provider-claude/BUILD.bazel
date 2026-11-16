@@ -3,6 +3,7 @@ load(":build_inputs_test.bzl", "rust_inputs_test")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_doc_test", "rust_library")
+load("//tools:rust_sources.bzl", "production_sources")
 
 _PROVIDER_SOURCES = glob(["src/*.rs"], exclude = ["src/*_tests.rs"])
 _PROVIDER_TEST_SOURCES = _PROVIDER_SOURCES + [
@@ -105,10 +106,11 @@ rust_inputs_test(
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 exports_files(["src/archive_tests.rs"], visibility = ["//crates/provider-codex:__pkg__"])
 
-# Read by the crash report's build script for its log catalog and the words of the code.
+# The crate's production sources: the crash report's log catalog reads them, and fails on a test
+# file among them.
 filegroup(
     name = "report_sources",
-    srcs = glob(["src/**/*.rs"]),
+    srcs = production_sources(),
     visibility = ["//crates/alondra:__pkg__"],
 )
 

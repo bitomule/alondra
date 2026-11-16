@@ -397,6 +397,33 @@ fn a_new_log_call_enters_the_catalog_by_itself() {
 }
 
 #[test]
+fn a_file_only_tests_compile_never_enters_the_catalog() {
+    let root = Directory::new();
+    let write = |path: &str, text: &str| {
+        let file = root.join(path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, text).unwrap();
+    };
+    write(
+        "crates/daemon-engine/src/lib.rs",
+        "pub mod shipped;\n#[cfg(test)]\nmod helpers;\n#[cfg(any(test, feature = \"test-hooks\"))]\n#[path = \"world/fake.rs\"]\npub mod fake;\n#[cfg(test)]\nmod tests;\nfn f() { log!(\"the shipped engine started\"); }\n",
+    );
+    write("crates/daemon-engine/src/shipped.rs", "fn f() { log!(\"a shipped module logged\"); }\n");
+    write("crates/daemon-engine/src/helpers.rs", "mod deeper;\nfn f() { log!(\"a test helper logged\"); }\n");
+    write("crates/daemon-engine/src/helpers/deeper.rs", "fn f() { log!(\"a helper's child logged\"); }\n");
+    write("crates/daemon-engine/src/world/fake.rs", "fn f() { log!(\"a test hook logged\"); }\n");
+    write("crates/daemon-engine/src/tests.rs", "fn f() { log!(\"a test logged\"); }\n");
+    write("crates/daemon-engine/src/admission/hold_tests.rs", "fn f() { log!(\"a hold test logged\"); }\n");
+    let (catalog, _) = extract::build(&root);
+    for shipped in ["the shipped engine started", "a shipped module logged"] {
+        assert!(catalog.contains(shipped), "{shipped} missing from {catalog}");
+    }
+    for test in ["a test helper logged", "a helper's child logged", "a test hook logged", "a test logged", "a hold test logged"] {
+        assert!(!catalog.contains(test), "{test} entered {catalog}");
+    }
+}
+
+#[test]
 fn a_line_written_to_stderr_enters_the_catalog_and_other_writes_do_not() {
     let root = Directory::new();
     std::fs::create_dir_all(root.join("crates/core/src")).unwrap();
