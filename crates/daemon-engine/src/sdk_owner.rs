@@ -1713,10 +1713,6 @@ impl Driver {
         self.worker.submit(command).unwrap_or(Handoff::Uncertain)
     }
 
-    /// The host of an open session refused `input` before offering it, which leaves nothing for a
-    /// provider event to end: the same text goes again at once. When the host refuses that one
-    /// too, the owner fails: a host that resumes the same session takes this one's place, and the
-    /// input waits for a slot of the gate. A session that never opened keeps the start it has.
     /// Something else changed the task between the claim and the command's record, so no host was
     /// offered the input: the claim is rejected and the input goes again, as a refused one does.
     fn claim_went_stale(&mut self, intent: i64, stamp: &alondra_foundation::ExecutionStamp, generation: u64, input: &InputId) -> Result<(), Failed> {
@@ -1724,7 +1720,14 @@ impl Driver {
         let rejected = self.domain.own(self.scope.clone(), |owner| owner.resolve(stamp, intent, generation, DispatchReceipt::Rejected));
         match rejected {
             Ok(_) => {}
-            Err(StoreError::Storage(error)) if stale(&error) => return Ok(()),
+            Err(StoreError::Storage(error)) if stale(&error) => {
+                let task = self.task.clone();
+                let (open, _) = self.domain.own(self.scope.clone(), |owner| owner.claim_is_open(&task, intent)).map_err(failed("reading the stale claim"))?;
+                if open {
+                    return Err(Failed::new(format!("the claim of input {} could not be rejected and nothing resolved it", input.as_str())));
+                }
+                return Ok(());
+            }
             Err(error) => return Err(failed("rejecting the stale claim")(error)),
         }
         self.sealed();
@@ -1734,6 +1737,10 @@ impl Driver {
         Ok(())
     }
 
+    /// The host of an open session refused `input` before offering it, which leaves nothing for a
+    /// provider event to end: the same text goes again at once. When the host refuses that one
+    /// too, the owner fails: a host that resumes the same session takes this one's place, and the
+    /// input waits for a slot of the gate. A session that never opened keeps the start it has.
     fn offer_refused(&mut self, input: &InputId) -> Result<(), Failed> {
         let task = self.task.clone();
         if self.unopened()? {

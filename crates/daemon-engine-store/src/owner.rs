@@ -889,6 +889,11 @@ impl<'connection> OwnerTransaction<'connection> {
         Ok(self.journal.resolve_dispatch(stamp, intent, owner_generation, receipt)?)
     }
 
+    /// Whether the claim of `intent` still waits for a receipt: nothing resolved it yet.
+    pub fn claim_is_open(&self, task: &TaskId, intent: i64) -> std::result::Result<bool, StoreError> {
+        Ok(self.journal.unresolved(task)?.iter().any(|dispatch| dispatch.intent_id == intent && !dispatch.uncertain_receipt))
+    }
+
     pub fn record_handoff_proof(&mut self, grant: &OwnerGrant, intent: i64, proof: &alondra_provider_contract::HandoffProof) -> std::result::Result<bool, StoreError> {
         Ok(self.journal.record_handoff_proof(grant, intent, proof)?)
     }
