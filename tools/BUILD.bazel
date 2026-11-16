@@ -109,6 +109,13 @@ sh_test(
 )
 
 sh_test(
+    name = "repo_tree_exclusions_test",
+    srcs = ["tests/test_repo_tree_exclusions.py"],
+    data = ["//:tree"],
+    size = "small",
+)
+
+sh_test(
     name = "test_limits_test",
     srcs = ["tests/test_test_limits.py"],
     data = [

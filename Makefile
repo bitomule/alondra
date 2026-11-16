@@ -50,7 +50,7 @@ snapshots-record:
 		--test_env=SNAPSHOT_TESTING_RECORD=failed \
 		--test_env=SNAPSHOT_ROOT=$(SNAPSHOT_ROOT) \
 		--nocache_test_results --test_output=errors
-	@copied=; for outputs in $$(find bazel-testlogs/apple/Testing/Snapshots -type d -name test.outputs); do \
+	@copied=; for outputs in $$(find .bazel-links/bazel-testlogs/apple/Testing/Snapshots -type d -name test.outputs); do \
 		if [ -d "$$outputs/$(SNAPSHOT_ROOT)" ]; then \
 			mkdir -p $(SNAPSHOT_ROOT) && cp -R "$$outputs/$(SNAPSHOT_ROOT)/." $(SNAPSHOT_ROOT)/ && chmod -R u+w $(SNAPSHOT_ROOT); \
 			copied=yes; \
@@ -70,7 +70,7 @@ tui-shots:
 	bazelisk test //crates/alondra:alondra_test --test_arg=--ignored --test_arg=tui_shots --test_env=RUST_MIN_STACK=268435456 \
 		--nocache_test_results --zip_undeclared_test_outputs=false --test_output=errors
 	@mkdir -p $(TUI_SHOTS)
-	@for page in bazel-testlogs/crates/alondra/alondra_test/test.outputs/*.html; do \
+	@for page in .bazel-links/bazel-testlogs/crates/alondra/alondra_test/test.outputs/*.html; do \
 		"$(CHROME)" --headless=new --disable-gpu --hide-scrollbars --window-size=1110,664 \
 			--screenshot="$(TUI_SHOTS)/$$(basename $$page .html).png" "file://$(CURDIR)/$$page" >/dev/null 2>&1; \
 	done
@@ -92,7 +92,7 @@ mac-snapshots-record:
 		--test_env=SNAPSHOT_TESTING_RECORD=failed \
 		--test_env=SNAPSHOT_ROOT=$(MAC_SNAPSHOT_ROOT) \
 		--nocache_test_results --test_output=errors
-	@outputs=$$(find bazel-testlogs/apple/Testing/MacSnapshots/AlondraMacSnapshotTests -type d -name test.outputs | head -1); \
+	@outputs=$$(find .bazel-links/bazel-testlogs/apple/Testing/MacSnapshots/AlondraMacSnapshotTests -type d -name test.outputs | head -1); \
 	if [ -n "$$outputs" ] && [ -d "$$outputs/$(MAC_SNAPSHOT_ROOT)" ]; then \
 		mkdir -p $(MAC_SNAPSHOT_ROOT) && cp -R "$$outputs/$(MAC_SNAPSHOT_ROOT)/." $(MAC_SNAPSHOT_ROOT)/ && chmod -R u+w $(MAC_SNAPSHOT_ROOT); \
 		echo "Baselines copied to $(MAC_SNAPSHOT_ROOT)"; \
@@ -107,7 +107,7 @@ mermaid-snapshots-record:
 	-bazelisk test $(MERMAID_SNAPSHOT_TARGET) \
 		--test_env=SNAPSHOT_TESTING_RECORD=failed \
 		--nocache_test_results --test_output=errors
-	@outputs=$$(find bazel-testlogs/apple/Mermaid/AlondraMermaidSnapshotTests -type d -name test.outputs | head -1); \
+	@outputs=$$(find .bazel-links/bazel-testlogs/apple/Mermaid/AlondraMermaidSnapshotTests -type d -name test.outputs | head -1); \
 	if [ -n "$$outputs" ] && [ -d "$$outputs/$(MERMAID_SNAPSHOT_ROOT)" ]; then \
 		mkdir -p $(MERMAID_SNAPSHOT_ROOT) && cp -R "$$outputs/$(MERMAID_SNAPSHOT_ROOT)/." $(MERMAID_SNAPSHOT_ROOT)/ && chmod -R u+w $(MERMAID_SNAPSHOT_ROOT); \
 		echo "Baselines copied to $(MERMAID_SNAPSHOT_ROOT)"; \
@@ -120,7 +120,7 @@ mermaid-snapshots-record:
 mermaid-fixtures-record:
 	-bazelisk test //apple/Mermaid:AlondraMermaidTests --test_env=MERMAID_FIXTURES_RECORD=1 \
 		--zip_undeclared_test_outputs=false --nocache_test_results --test_output=errors
-	@outputs=bazel-testlogs/apple/Mermaid/AlondraMermaidTests/test.outputs; \
+	@outputs=.bazel-links/bazel-testlogs/apple/Mermaid/AlondraMermaidTests/test.outputs; \
 	for file in $$outputs/*.tree $$outputs/*.crossings; do cp "$$file" apple/Mermaid/Fixtures/valid/; done; \
 	for file in $$outputs/*.error; do cp "$$file" apple/Mermaid/Fixtures/invalid/; done; \
 	chmod -R u+w apple/Mermaid/Fixtures
@@ -389,7 +389,7 @@ e2e-ios-live-activity:
 		$$(bazelisk cquery --output=files '//crates/alondrad + //crates/alondra + //crates/relay:alondra-relay + //tools/sandbox:alondra-sandbox' 2>/dev/null | grep -v '\.ok$$')
 
 # Scripted journeys on a fresh sandbox with the fake claude and gh (tools/sandbox/src/journey);
-# JOURNEY=task-cycle|session|reopen|mcp|report|local|accounts runs one. Evidence: bazel-testlogs/tests/sandbox/journeys/test.outputs.
+# JOURNEY=task-cycle|session|reopen|mcp|report|local|accounts runs one. Evidence: .bazel-links/bazel-testlogs/tests/sandbox/journeys/test.outputs.
 # How the node and orchestrator skills behave with a real Claude run (plugin/evals,
 # plugin-orchestrator/evals): opt-in, it costs tokens. RUNS=1 for a quick look.
 skill-evals:
@@ -438,8 +438,8 @@ worktree-volume-bench:
 # Latency of /v1/health, views and hooks plus alondrad's CPU under N simulated nodes (tools/load_bench.py).
 load-bench:
 	bazelisk build //crates/alondrad //crates/alondra //crates/daemon-engine-store:daemon_engine_store_test
-	python3 tools/load_bench.py --daemon bazel-bin/crates/alondrad/alondrad \
-		--cli bazel-bin/crates/alondra/alondra --seed bazel-bin/crates/daemon-engine-store/daemon_engine_store_test $(LOAD_BENCH_ARGS)
+	python3 tools/load_bench.py --daemon .bazel-links/bazel-bin/crates/alondrad/alondrad \
+		--cli .bazel-links/bazel-bin/crates/alondra/alondra --seed .bazel-links/bazel-bin/crates/daemon-engine-store/daemon_engine_store_test $(LOAD_BENCH_ARGS)
 
 soak:
 	bazelisk build //crates/alondrad

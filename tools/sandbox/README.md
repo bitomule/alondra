@@ -165,7 +165,7 @@ that its working task has a native session and positive simulated tokens recorde
     held task goes on. Trabajo is removed afterwards.
 - B1, after them: the sandbox's `claude` ran only as the SDK host's native Claude, never `--bg` or `-p`.
 
-Evidence lands in `bazel-testlogs/tests/sandbox/journeys/test.outputs/` (`$SANDBOX_DIR/journeys`
+Evidence lands in `.bazel-links/bazel-testlogs/tests/sandbox/journeys/test.outputs/` (`$SANDBOX_DIR/journeys`
 when run by hand):
 - `journeys.md` and `journeys.json`: each step with what it expected and saw;
 - `views/<case>/`: the views at each milestone;

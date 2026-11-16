@@ -3,6 +3,9 @@ common --cache_computed_file_digests=500000
 common --noworker_sandboxing
 common --spawn_strategy=worker,local
 build --incompatible_strict_action_env
+# The convenience symlinks go in one directory that .bazelignore skips: a symlink at the root leads
+# the root package's glob into a runfiles tree that links back to the checkout, an infinite loop.
+common --symlink_prefix=.bazel-links/bazel-
 build --macos_minimum_os=26.0
 build -c opt
 
