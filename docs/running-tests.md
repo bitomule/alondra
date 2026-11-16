@@ -154,6 +154,6 @@ action is pressed on the card the view serves, through `POST /actions`.
 ## End to end
 
 `make e2e-sandbox` starts a throwaway daemon in a temporary home with fake `claude` and `gh`, and
-`make e2e-journeys` runs the scripted journeys against it. `make tui-sandbox SESSION=name` opens
+`bazelisk test //tests/sandbox:journeys --nocache_test_results --zip_undeclared_test_outputs=false --test_output=streamed` runs the scripted journeys against it. `make tui-sandbox SESSION=name` opens
 the TUI in tmux on a seeded sandbox, to try a change you can see; `make tui-sandbox-stop
 SESSION=name` removes it. Neither ever touches your real daemon.

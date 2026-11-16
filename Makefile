@@ -20,7 +20,7 @@ BETA_GROUP := Internal Pilot,Private Pilot
 APPLE_VERSION = $(shell sed -n 's/^ *version = "\(.*\)".*/\1/p' tools/shared.bzl)
 APPLE_BUILD = $(shell sed -n 's/^ *build_number = "\(.*\)".*/\1/p' tools/shared.bzl)
 
-.PHONY: action-outcomes worktree-volume-bench connection-measurements musts-scopes reap-test-hosts version-guard increment-version build-release snapshots-record snapshots-verify tui-shots mac-snapshots-record mac-snapshots-verify mermaid-snapshots-record mermaid-fixtures-record no-holds build test install run tui setup launchd unlaunchd restart status doctor mac device device-console e2e-sandbox e2e-sandbox-stop tui-sandbox tui-sandbox-stop demo-captures e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-doc-links e2e-pr-images e2e-doc-mermaid e2e-sandbox-logs e2e-direct-cards e2e-allow-always e2e-turn-end-wait e2e-interrupt-unheard e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-ios-live-activity e2e-plan-card e2e-card-attachments e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure read-index-bench tasks-screen upgrade-rehearsal clean-xcode-test-results e2e-journeys e2e-sdk e2e-explore skill-evals
+.PHONY: action-outcomes worktree-volume-bench connection-measurements musts-scopes reap-test-hosts version-guard increment-version build-release snapshots-record tui-shots mac-snapshots-record mermaid-snapshots-record mermaid-fixtures-record no-holds build test install run tui setup launchd unlaunchd restart status doctor mac device device-console e2e-sandbox e2e-sandbox-stop tui-sandbox tui-sandbox-stop demo-captures e2e-iroh e2e-iroh-cli e2e-wizard e2e-doc-review e2e-doc-links e2e-pr-images e2e-doc-mermaid e2e-sandbox-logs e2e-direct-cards e2e-allow-always e2e-turn-end-wait e2e-interrupt-unheard e2e-cards-tui e2e-tui-optimistic e2e-ios-cards e2e-ios-live-activity e2e-plan-card e2e-card-attachments e2e-plan-result e2e-plan-review e2e-pause-queued e2e-cancel e2e-ios-offline soak load-bench views-measure tasks-screen upgrade-rehearsal clean-xcode-test-results e2e-explore skill-evals
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -61,9 +61,6 @@ snapshots-record:
 	else \
 		echo "Every baseline still matches its screen: nothing recorded"; \
 	fi
-
-snapshots-verify:
-	bazelisk test $(SNAPSHOT_TARGET) --test_output=errors
 
 TUI_SHOTS ?= /tmp/alondra-tui-shots
 CHROME ?= /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
@@ -139,9 +136,6 @@ connection-measurements:
 ACTION_LOG ?= $(HOME)/.alondra/alondrad.log
 action-outcomes:
 	python3 tools/action_outcomes.py "$(ACTION_LOG)"
-
-mac-snapshots-verify:
-	bazelisk test $(MAC_SNAPSHOT_TARGET) --test_output=errors
 
 brew-guard:
 	@if [ -z "$(FORCE_DEV_INSTALL)" ] && { [ -e /opt/homebrew/opt/alondra ] || [ -e /usr/local/opt/alondra ]; }; then \
@@ -402,15 +396,6 @@ skill-evals:
 	tools/skill-evals.sh $(if $(RUNS),--runs $(RUNS))
 
 
-# The SDK journey: a task through the Agent SDK host and the pinned native Claude, its turn-end card
-# answered from the phone (tests/sandbox/sdk_journey.sh). Opt-in: macOS arm64, ~250 MB native binary.
-e2e-sdk:
-	bazelisk test //tests/sandbox:sdk_journey --nocache_test_results --zip_undeclared_test_outputs=false --test_output=streamed
-
-e2e-journeys:
-	bazelisk test //tests/sandbox:journeys --nocache_test_results --zip_undeclared_test_outputs=false \
-		--test_output=streamed $(if $(JOURNEY),--test_env=JOURNEY=$(JOURNEY))
-
 # The tester agent drives each Mac's TUI in tmux and writes a report (tools/e2e-explore.sh):
 # MODEL (opus), BUDGET (USD, 5), FOCUS (extra instructions). Prints where the report is.
 e2e-explore:
@@ -442,10 +427,6 @@ views-measure:
 	bazelisk build //crates/alondrad:alondrad_test
 	home=$$(mktemp -d) && trap 'rm -rf "$$home"' EXIT && HOME="$$home" ALONDRA_VIEWS_MEASURE_DB="$(abspath $(DB))" \
 		$(call exe,//crates/alondrad:alondrad_test) --ignored --exact views::measure_tests::measure_real_domain_views --nocapture
-
-# Building the read index of a domain the size of the real one; fails over 10 ms.
-read-index-bench:
-	bazelisk run -c opt //crates/core:read_index_cost -- --check-cost
 
 # How fast a task's worktree is in ROOT (tools/worktree_volume_bench.py): `make worktree-volume-bench
 # ROOT=<folder> [COMMIT=<sha>] [BENCH_JSON=<file>]`. It removes only the worktrees it makes.

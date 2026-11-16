@@ -13,7 +13,7 @@ make e2e-sandbox-logs MAC=2        # tail one daemon's log (MAC=relay for the re
 make e2e-sandbox-stop              # stop everything and delete SANDBOX_DIR (KEEP=1 keeps it)
 bazelisk test //tests/sandbox:scenarios   # opt-in: fresh two-Mac sandbox + automatic scenarios
 make e2e-sandbox FAKES=1           # the same, with the sandbox's own claude and gh (below)
-make e2e-journeys                  # opt-in: fresh sandbox with the fakes + scripted journeys
+bazelisk test //tests/sandbox:journeys --nocache_test_results --zip_undeclared_test_outputs=false --test_output=streamed   # opt-in: fresh sandbox with the fakes + scripted journeys
 make e2e-explore                   # the tester agent drives each Mac's TUI and writes a report
 make tui-sandbox SESSION=review    # a seeded one-Mac sandbox with its TUI in tmux, to review a change by hand
 make tui-sandbox-stop SESSION=review  # end that tmux session and remove its sandbox
@@ -111,8 +111,8 @@ an MCP server's form and wait for the answer, which it keeps in `elicitations.js
 
 ## Journeys
 
-`make e2e-journeys` (`//tests/sandbox:journeys`) starts a two-Mac sandbox with the fakes, runs
-`scenario`, then `alondra-sandbox journey all`; `JOURNEY=task-cycle|session|reopen|mcp|report|local|accounts` runs one, and
+`bazelisk test //tests/sandbox:journeys --nocache_test_results --zip_undeclared_test_outputs=false --test_output=streamed` starts a two-Mac sandbox with the fakes, runs
+`scenario`, then `alondra-sandbox journey all`; adding `--test_env=JOURNEY=task-cycle|session|reopen|mcp|report|local|accounts` runs one, and
 `alondra-sandbox journey <name>` runs against a sandbox already started with `FAKES=1`. A phone acts
 as the user through views and actions, the way the iPhone does.
 
@@ -192,7 +192,7 @@ the real login, Keychain or `~/.claude.json`. Only a sandbox daemon keeps a synt
 one, the configuration's native Claude runs in the user's real HOME with their default profile, and
 `alondrad --preflight` checks the configuration as the daemon would admit it.
 
-`make e2e-sdk` (`//tests/sandbox:sdk_journey`, opt-in, macOS arm64) starts such a sandbox and runs
+`bazelisk test //tests/sandbox:sdk_journey --nocache_test_results --zip_undeclared_test_outputs=false --test_output=streamed` (opt-in, macOS arm64, ~250 MB native binary) starts such a sandbox and runs
 the `sdk` journey: the phone sends a request, the native Claude's first turn ends with the card
 «stopped without delivering or asking», «Carry on» with a note reaches Claude, its next turn ends
 with a card of its own, and what the user writes on that card reaches Claude too. Then the model
