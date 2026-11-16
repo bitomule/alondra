@@ -7,12 +7,12 @@ async fn workers_receive_the_configured_admission_gate() {
     let home = crate::test_support::Directory::new();
     std::fs::create_dir_all(&home).unwrap();
     let domain = Arc::new(domain_runtime::DomainRuntime::open(&home).unwrap());
-    domain.live.gate.tune(admission::Tuning { spacing: 0, limit: Some(admission::Limit::Fixed(1)) });
+    domain.live().gate.tune(admission::Tuning { spacing: 0, limit: Some(admission::Limit::Fixed(1)) });
     let mut config = Config::defaults();
     config.home = home.to_path_buf();
     config.fast_timing = true;
     let PreparedWorkers(ready) = prepare_workers(&config, domain.clone(), None).await;
-    assert_eq!(ready.live.gate.snapshot(&ready, 0).unwrap().limit, admission::UNPACED);
+    assert_eq!(ready.live().gate.snapshot(&ready, 0).unwrap().limit, admission::UNPACED);
 }
 
 #[tokio::test]

@@ -58,8 +58,6 @@ pub struct Live {
     pub sandbox: std::sync::atomic::AtomicBool,
     pub usage_pause: crate::usage_pause::UsagePause,
     pub(crate) account_wait: crate::accounts::AccountWait,
-    /// Committed orchestrator work only; unrelated domain activity cannot hide a stuck batch.
-    pub(crate) orchestrator_progress: AtomicU64,
     /// How many turns the orchestrator has ended, as `Runtime::rests` says: the evidence Alondra
     /// hands it what it still has to re-plan by.
     pub(crate) orchestrator_rests: AtomicU64,
@@ -506,5 +504,41 @@ mod poison_tests {
         crate::locks::poison(&live.presence);
         live.touch("phone");
         assert!(live.last_touched("phone").is_some());
+    }
+}
+
+crate::extension!(Live, |domain: &crate::domain_runtime::DomainRuntime| Live::persisted_in(domain.home()));
+
+impl crate::domain_runtime::DomainRuntime {
+    pub fn live(&self) -> &Live {
+        self.extension()
+    }
+
+    /// A node mod connected.
+    pub fn connect_node(&self, hello: crate::node_reports::Hello, at: alondra_core::Millis) -> u64 {
+        self.live().mods.connect(hello, at)
+    }
+
+    /// A node mod's report: what it says is kept for the views.
+    pub fn report(&self, envelope: crate::node_reports::Envelope, at: alondra_core::Millis) {
+        if let crate::node_reports::Report::PromptSubmit { origin } = envelope.report {
+            self.live().observe_prompt(&envelope.session_id, origin);
+        }
+        self.live().mods.apply(envelope, at);
+    }
+
+    /// Whether Alondra launched this session: a recorded launch, or a scheduled run it started.
+    pub(crate) fn launched_by_alondra(&self, agent: &alondra_core::domain::AgentId) -> anyhow::Result<bool> {
+        if self.store.lock_or_exit("the domain store").launched_by_alondra(&agent.0)? || self.live().mods.started_with_a_launch_key(&agent.0) {
+            return Ok(true);
+        }
+        Ok(self.state()?.schedule.runs.values().any(|run| run.launch.as_ref().is_some_and(|launch| launch.agent_id.as_ref() == Some(agent))))
+    }
+
+    /// What Alondra kept about a session only while it lives: the worktree it inherited and why
+    /// its replacement stopped short.
+    pub(crate) fn forget_ended_session(&self, agent: &str) -> anyhow::Result<()> {
+        self.live().take_aborted_replace(agent);
+        self.forget_inherited_worktree(agent)
     }
 }

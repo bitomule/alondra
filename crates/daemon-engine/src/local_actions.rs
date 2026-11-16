@@ -148,3 +148,11 @@ mod tests {
         assert!(!running.runs(&key));
     }
 }
+
+crate::extension!(LocalActions);
+
+impl crate::domain_runtime::DomainRuntime {
+    pub fn local_actions(&self) -> &LocalActions {
+        self.extension()
+    }
+}

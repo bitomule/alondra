@@ -150,13 +150,13 @@ pub mod testing {
     impl Node {
         pub fn connect(domain: &Arc<DomainRuntime>, session: &str) -> Node {
             let node = Node { lines: Default::default(), silent: Default::default() };
-            let mut receiver = domain.live.pushes.attach(session, 1);
+            let mut receiver = domain.live().pushes.attach(session, 1);
             let (lines, silent, domain, session) = (node.lines.clone(), node.silent.clone(), domain.clone(), session.to_owned());
             tokio::spawn(async move {
                 while let Some(line) = receiver.recv().await {
                     let line: Value = serde_json::from_str(&line).unwrap();
                     if let (Some(id), false) = (line["id"].as_str(), silent.load(Ordering::Relaxed)) {
-                        domain.live.pushes.acknowledged(&session, &[id.to_owned()]);
+                        domain.live().pushes.acknowledged(&session, &[id.to_owned()]);
                     }
                     lines.lock().unwrap().push(line);
                 }

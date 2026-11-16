@@ -262,7 +262,7 @@ fn accounts_sharing_one_email_are_checked_before_their_sessions_are_taken_over()
     f.store(&config).unwrap();
     std::fs::write(f.home.join("accounts/work/signed-in"), "work@example.org").unwrap();
     let domain = Arc::new(DomainRuntime::open(&f.home).unwrap());
-    domain.live.unbounded_claude_status.store(true, std::sync::atomic::Ordering::Relaxed);
+    domain.live().unbounded_claude_status.store(true, std::sync::atomic::Ordering::Relaxed);
     let native = f.claude.executable.clone();
     domain.enable_sdk(crate::sdk_owner::SdkBackend {
         provider: Provider::Claude, origin: None,
@@ -679,7 +679,7 @@ async fn a_stale_startup_account_check_retries_and_releases_account_selection() 
 async fn a_stale_model_catalog_retries_the_account_check_until_models_are_ready() {
     let f = fixture();
     let domain = Arc::new(DomainRuntime::open(&f.home).unwrap());
-    domain.live.unbounded_claude_status.store(true, std::sync::atomic::Ordering::Relaxed);
+    domain.live().unbounded_claude_status.store(true, std::sync::atomic::Ordering::Relaxed);
     let state = crate::sdk_owner::tests::HostRoot::new();
     let (mut backend, _) = crate::sdk_owner::tests::fixture_backend(&f.home, &state);
     std::fs::write(&backend.native, r#"#!/usr/bin/python3

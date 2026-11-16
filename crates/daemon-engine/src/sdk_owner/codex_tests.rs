@@ -57,8 +57,8 @@ async fn a_task_created_with_a_codex_launch_plan_starts_on_codex() {
         ..LaunchPlan::new("release-notes", slice.worktree.to_str().unwrap()) };
     slice.domain.store.lock().unwrap().set_launch_plan(&TASK.into(), &plan, 1).unwrap();
     slice.domain.enable_sdk(slice.backend.clone());
-    slice.domain.live.gate.ignore_mac();
-    slice.domain.live.gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(4)) });
+    slice.domain.live().gate.ignore_mac();
+    slice.domain.live().gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(4)) });
     let mut changed = slice.domain.subscribe();
     crate::auto_launch::pass(&slice.domain, &slice._home).await.unwrap();
     loop {
@@ -212,7 +212,7 @@ async fn a_reopened_task_with_unproven_claude_history_starts_codex_from_the_queu
     assert_eq!(slice.domain.state().unwrap().checklists[&task], checklist);
 
     slice.domain.enable_sdk(slice.backend.clone());
-    slice.domain.live.gate.ignore_mac();
+    slice.domain.live().gate.ignore_mac();
     let before_starts = slice.starts();
     crate::admission::pass_at(&slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
     crate::auto_launch::pass(&slice.domain, &slice._home).await.unwrap();
@@ -537,7 +537,7 @@ async fn codex_transition_model_is_pending_until_the_exact_native_configuration_
     assert_eq!(crate::provider_transition::advance(&slice.domain,&TASK.into()).await.unwrap(),crate::domain_store::provider_transition::Phase::Done);
     while Slice::lifecycle(&slice.domain).is_pending(&alondra_foundation::InputId::new(&queued).unwrap()){changed.changed().await.unwrap();}
     while !*after_feed.borrow(){after_feed.changed().await.unwrap();}
-    assert_eq!(slice.domain.live.mods.session(&instance.0).unwrap().model.as_deref(),Some("fixture-second"),"the owner feed publishes the native accepted model before acknowledging its consumed input");
+    assert_eq!(slice.domain.live().mods.session(&instance.0).unwrap().model.as_deref(),Some("fixture-second"),"the owner feed publishes the native accepted model before acknowledging its consumed input");
     let task=slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].clone();assert_eq!(task.agent_id,Some(instance.clone()));assert!(task.pending_selection.is_none());assert_eq!(task.selection.as_ref().unwrap().effective,Some(target.clone()));
     assert_eq!(LaunchOptions::load(&slice.backend.state_root.join(&instance.0)).unwrap().selection.as_ref().unwrap().effective,Some(target));
     let native=transcript(&trace);assert_eq!(native.iter().filter(|message|message["method"]=="initialize").count(),1);let next=native.iter().find(|message|message["method"]=="turn/start" && message["params"]["input"][0]["text"]=="Use the configured model for this next input").unwrap();assert_eq!(next["params"]["model"],"fixture-second");assert!(native.iter().filter(|message|message["method"]=="turn/start").all(|message|message["params"]["threadId"]==next["params"]["threadId"]));slice.domain.stop_sdk_owners();
@@ -1407,10 +1407,10 @@ async fn a_paused_codex_session_loses_its_app_server_and_delivers_resume_and_mes
     while Slice::lifecycle(&slice.domain).activity() != ActivityView::Working { driver.observe().unwrap(); }
     let native = native_process(&mut driver);
     slice.domain.enable_sdk(slice.backend.clone());
-    slice.domain.driven_by_hand.lock().unwrap().insert(driver.agent().clone());
-    slice.domain.live.gate.ignore_mac();
+    slice.domain.sdk_owners().driven_by_hand.lock().unwrap().insert(driver.agent().clone());
+    slice.domain.live().gate.ignore_mac();
     let agent = driver.agent().0.clone();
-    slice.domain.live.gate.pause_by_user(&slice.domain, &agent, alondra_core::now_millis()).unwrap();
+    slice.domain.live().gate.pause_by_user(&slice.domain, &agent, alondra_core::now_millis()).unwrap();
     while !slice.domain.read().state().lifecycle_journal[&TaskId::from(TASK)].iter().any(|record| matches!(record, LifecycleRecord::TurnEnded { .. })) {
         driver.step(&|| true).unwrap();
     }
@@ -1422,7 +1422,7 @@ async fn a_paused_codex_session_loses_its_app_server_and_delivers_resume_and_mes
     replacement.step(&|| true).unwrap();
     assert!(replacement.paused(), "replacing a dead host does not release a user pause");
     assert_eq!(transcript(&trace).iter().filter(|request| request["method"] == "turn/start").count(), 1);
-    assert!(slice.domain.live.gate.resume_now(&slice.domain, &agent, alondra_core::now_millis()));
+    assert!(slice.domain.live().gate.resume_now(&slice.domain, &agent, alondra_core::now_millis()));
     crate::admission::pass_at(&slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
     while !Slice::lifecycle(&slice.domain).pending_inputs().is_empty() || turns_started(&slice.domain) < 3 {
         replacement.step(&|| true).unwrap();
@@ -1802,10 +1802,10 @@ async fn a_move_survives_a_daemon_restart_after_every_step_without_a_second_node
         let slice=Slice::new();let task:TaskId=TASK.into();
         working_on_codex(&slice);
         request_move(&slice);
-        *slice.domain.selection_changes.crash_at.lock().unwrap()=Some(died);
+        *slice.domain.selection_changes().crash_at.lock().unwrap()=Some(died);
         let advanced=crate::provider_transition::advance(&slice.domain,&task).await;
         assert_eq!(move_steps(&slice).last().map(String::as_str),Some(died.key()),"the daemon died right after {died:?}: {advanced:?}");
-        slice.domain.stop_sdk_owners();slice.domain.selection_changes.die();
+        slice.domain.stop_sdk_owners();slice.domain.selection_changes().die();
         let domain=slice.restart();domain.enable_sdk(slice.backend.clone());
         let(pulse,mut changed)=tokio::sync::watch::channel(0_u64);domain.before_owner_publish(move||pulse.send_modify(|count|*count+=1));
         advance_until_moved(&slice,&domain,&task,&mut changed).await;
@@ -1984,8 +1984,8 @@ fn source_host(slice:&Slice)->PathBuf{
 async fn a_paused_task_moves_at_once_and_starts_on_the_new_account_when_resumed(){
     let slice=Slice::new();let task:TaskId=TASK.into();
     let source=working_on_codex(&slice);
-    slice.domain.live.gate.ignore_mac();
-    slice.domain.live.gate.pause_by_user(&slice.domain,&source.0,alondra_core::now_millis()).unwrap();
+    slice.domain.live().gate.ignore_mac();
+    slice.domain.live().gate.pause_by_user(&slice.domain,&source.0,alondra_core::now_millis()).unwrap();
     slice.domain.subscribe().wait_for(|_|paused_by_the_user(&slice)).await.unwrap();
     request_move(&slice);
     assert_eq!(settled_move(&slice).await,"done");
@@ -2180,16 +2180,16 @@ async fn a_delivery_moved_while_reviewed_waits_for_the_user_and_starts_on_the_ne
     let owed=Slice::lifecycle(&slice.domain).obligation().map(|obligation|(obligation.party,obligation.owed));
     assert_eq!(owed,Some((alondra_domain::Party::User,alondra_domain::Owed::User)),"the delivery waits for the user's review");
     assert_eq!(admissions(&slice),1);
-    slice.domain.live.gate.ignore_mac();
-    slice.domain.live.gate.tune(crate::admission::Tuning{spacing:0,limit:Some(crate::admission::Limit::Fixed(0))});
+    slice.domain.live().gate.ignore_mac();
+    slice.domain.live().gate.tune(crate::admission::Tuning{spacing:0,limit:Some(crate::admission::Limit::Fixed(0))});
     slice.run(&user(),"send-back",Command::SubmitFeedback{merge_failure:None,attachments:vec![],presentation_id:"notes".into(),
         targets:targets.clone(),body:"Add the date".into(),instruction:alondra_core::domain::Instruction::Changes});
     assert_eq!(Slice::lifecycle(&slice.domain).obligation().map(|o|(o.party,o.owed)), Some((alondra_domain::Party::Alondra,alondra_domain::Owed::Start)));
     for _ in 0..3{crate::provider_transition::pass(&slice.domain).await;}
     assert_eq!(admissions(&slice),1,"the gate holds the start while it has no slot");
     let restarted=slice.restart(); restarted.enable_sdk(slice.backend.clone());
-    restarted.live.gate.ignore_mac();
-    restarted.live.gate.tune(crate::admission::Tuning{spacing:0,limit:Some(crate::admission::Limit::Fixed(4))});
+    restarted.live().gate.ignore_mac();
+    restarted.live().gate.tune(crate::admission::Tuning{spacing:0,limit:Some(crate::admission::Limit::Fixed(4))});
     let mut changed=restarted.subscribe();
     let admissions=||restarted.read().state().lifecycle_journal[&task].iter().filter(|record|matches!(record,LifecycleRecord::Admitted{..})).count();
     while admissions()<2{

@@ -162,7 +162,7 @@ pub(crate) struct Launching<'a> {
 
 impl<'a> Launching<'a> {
     pub(crate) fn begin(domain: &'a DomainRuntime, task: &TaskId) -> Result<Self, DomainError> {
-        if !domain.live.begin_launch(&task.0) {
+        if !domain.live().begin_launch(&task.0) {
             return Err(DomainError::new("conflict", format!("{task} is being launched already")));
         }
         Ok(Self { domain, task: task.0.clone() })
@@ -171,7 +171,7 @@ impl<'a> Launching<'a> {
 
 impl Drop for Launching<'_> {
     fn drop(&mut self) {
-        self.domain.live.end_launch(&self.task);
+        self.domain.live().end_launch(&self.task);
     }
 }
 
@@ -423,7 +423,7 @@ fn task_title(domain: &DomainRuntime, task: &TaskId) -> String {
 /// Only a replacement that did not finish is told: one that did shows in tasks_in_progress and the
 /// task, and one that left the task without a node is followed by the node Alondra starts by itself.
 fn tell_replace_failed(domain: &DomainRuntime, task: &TaskId, error: &DomainError) {
-    if domain.live.closed_task(&task.0).is_some_and(|node| node.relaunch == crate::live::Relaunch::ByItself) {
+    if domain.live().closed_task(&task.0).is_some_and(|node| node.relaunch == crate::live::Relaunch::ByItself) {
         log!("the replacement of {task}'s node did not finish ({}); Alondra starts a new node by itself", error.message);
         return;
     }
@@ -504,7 +504,7 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
         return Err(DomainError::new("active_account_immutable","Choose account and provider when creating a node. The existing native session keeps its original account"));
     }
     let mut native = native_launch(domain, home, task, &requested, &file, &body, prior_native, reopening.is_some())
-        .map_err(|error| match domain.live.usage_pause.current() {
+        .map_err(|error| match domain.live().usage_pause.current() {
             Some(exhausted) if error.code == "account_unavailable" => usage_refusal(domain, &task.id, &exhausted),
             _ => error,
         })?;
@@ -537,7 +537,7 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
     if prior_native && alondra_core::accounts::AccountKey::new(provider,account.clone().unwrap_or_else(alondra_core::accounts::AccountId::default_account)) != task.account_key() {
         return Err(DomainError::new("active_account_immutable","Choose account and provider when creating a node. The existing native session keeps its original account"));
     }
-    if let Some(exhausted) = domain.live.usage_pause.current().filter(|exhausted| exhausted.by_user || (native.is_none() && pinned.is_none())) {
+    if let Some(exhausted) = domain.live().usage_pause.current().filter(|exhausted| exhausted.by_user || (native.is_none() && pinned.is_none())) {
         return Err(usage_refusal(domain, &task.id, &exhausted));
     }
     let projects_root = crate::domain_schedule_runner::options_at(home).ok().map(|file| file.projects_root(&crate::options::user_home()));
@@ -567,7 +567,7 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
             return Err(DomainError::new("main_checkout", format!("{why}. {} stays as it is and was not launched", task.id)));
         }
         Err(crate::launch_worktree::LaunchError::Storage(why)) => {
-            domain.live.gate.not_started(&crate::admission::Key::Task(task.id.clone()));
+            domain.live().gate.not_started(&crate::admission::Key::Task(task.id.clone()));
             remember_refusal(domain, &task.id, Some(("worktrees_unavailable", None)));
             if origin == Origin::Orchestrator && replaced.is_none() {
                 return queue_at_gate(domain, &body, &task.id, &task.title);
@@ -578,8 +578,8 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
     if reopening.is_none() && !Path::new(&cwd).is_dir() {
         return Err(DomainError::new("invalid_input", format!("directory {cwd} does not exist")));
     }
-    if let Some(why) = domain.live.machine_watch.refuse_launch(&storage) {
-        domain.live.gate.not_started(&crate::admission::Key::Task(task.id.clone()));
+    if let Some(why) = domain.live().machine_watch.refuse_launch(&storage) {
+        domain.live().gate.not_started(&crate::admission::Key::Task(task.id.clone()));
         if origin == Origin::Orchestrator && replaced.is_none() {
             return queue_at_gate(domain, &body, &task.id, &task.title);
         }
@@ -609,14 +609,14 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
     let (workplace, recover_directory) = match isolation {
         Ok(workplace) => workplace,
         Err(crate::launch_worktree::LaunchError::Storage(why)) => {
-            domain.live.gate.not_started(&crate::admission::Key::Task(task.id.clone()));
+            domain.live().gate.not_started(&crate::admission::Key::Task(task.id.clone()));
             remember_refusal(domain, &task.id, Some(("worktrees_unavailable", None)));
             return Err(DomainError::new("worktrees_unavailable", why));
         }
         Err(why) => {
             if let Some(known) = &known
                 && let Err(unavailable) = crate::task_worktrees::ready(domain, &known.to_string_lossy()).await {
-                domain.live.gate.not_started(&crate::admission::Key::Task(task.id.clone()));
+                domain.live().gate.not_started(&crate::admission::Key::Task(task.id.clone()));
                 remember_refusal(domain, &task.id, Some(("worktrees_unavailable", None)));
                 return Err(DomainError::new("worktrees_unavailable", unavailable.to_string()));
             }
@@ -659,8 +659,8 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
         let now = alondra_core::now_millis();
         let key = Key::Task(task.id.clone());
         let waiting = Waiting { key: key.clone(), priority: task.priority, resuming: false, since: now };
-        if domain.live.gate.ask(domain, waiting, now).is_err() {
-            domain.live.gate.forget(&key);
+        if domain.live().gate.ask(domain, waiting, now).is_err() {
+            domain.live().gate.forget(&key);
             return queue_at_gate(domain, &body, &task.id, &task.title);
         }
     }
@@ -791,23 +791,23 @@ fn record_worktree(domain: &DomainRuntime, agent: Option<&str>, workplace: &Work
 /// the turn deadline it is interrupted, and then stopped either way. Its watch keeps the revival off
 /// it meanwhile; if the stop fails it is handed back to the revival and the task keeps it.
 async fn stop_replaced(domain: &DomainRuntime, old: &AgentId) -> Result<(), String> {
-    let busy = || domain.live.node(&old.0).is_some_and(|node| node.busy);
-    let deadline = domain.handovers.turn_deadline();
+    let busy = || domain.live().node(&old.0).is_some_and(|node| node.busy);
+    let deadline = domain.handovers().turn_deadline();
     if !until_idle(busy, deadline).await {
-        let _ = domain.live.pushes.interrupt(&old.0);
+        let _ = domain.live().pushes.interrupt(&old.0);
         until_idle(busy, deadline).await;
     }
-    let watched = domain.live.begin_watch(&old.0);
-    let stopped = match domain.handovers.sessions().stop(&old.0).await {
+    let watched = domain.live().begin_watch(&old.0);
+    let stopped = match domain.handovers().sessions().stop(&old.0).await {
         Err(_) if crate::node_exit::session_ended(domain, &old.0) => Ok(()),
         stopped => stopped,
     };
     match &stopped {
-        Ok(()) => domain.live.mark_closed(&old.0),
-        Err(reason) => domain.live.note_aborted_replace(&old.0, reason),
+        Ok(()) => domain.live().mark_closed(&old.0),
+        Err(reason) => domain.live().note_aborted_replace(&old.0, reason),
     }
     if watched {
-        domain.live.end_watch(&old.0);
+        domain.live().end_watch(&old.0);
     }
     stopped
 }
@@ -850,7 +850,7 @@ fn owned_worktree(domain: &DomainRuntime, session: &str) -> Option<String> {
 /// Where a node works: the worktree Claude Code made for it, else the folder it started in.
 fn node_folder(domain: &DomainRuntime, session: &str) -> Option<String> {
     crate::worktree::worktree_of(session).and_then(|dir| dir.to_str().map(str::to_owned))
-        .or_else(|| domain.live.mods.session(session).and_then(|reported| reported.cwd))
+        .or_else(|| domain.live().mods.session(session).and_then(|reported| reported.cwd))
 }
 
 /// A new node for a task whose node the user closed, launched with the task's mission in the
@@ -864,7 +864,7 @@ pub(crate) async fn relaunch_from(domain: &DomainRuntime, home: &Path, task_id: 
     let current = state(domain)?;
     let waiting = current.tasks.get(task_id)
         .filter(|task| task.state == alondra_core::domain::TaskState::NotStarted && task.agent_id.is_none() && !task.archived);
-    let (Some(task), Some(closed)) = (waiting, domain.live.closed_task(&task_id.0)) else {
+    let (Some(task), Some(closed)) = (waiting, domain.live().closed_task(&task_id.0)) else {
         return Err(DomainError::new("conflict", "This task is not waiting for a relaunch"));
     };
     let asked = request_choices(domain, &task.request_id).ok().flatten();
@@ -1061,7 +1061,7 @@ pub struct SendBody {
 pub async fn send(domain: &DomainRuntime, home: &Path, actor: &Actor, body: SendBody) -> Result<Value, DomainError> {
     let current = state(domain)?;
     let agent_id = agent(&current, &body.node)?;
-    let node_runs =domain.live.mods.session(&agent_id.0).and_then(|reported| reported.model);
+    let node_runs =domain.live().mods.session(&agent_id.0).and_then(|reported| reported.model);
     let node_model = node_runs.as_deref().map(alondra_core::model_label::model_family);
     if let Some(task_id) = &body.task {
         let task = current.tasks.get(task_id).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;
@@ -1240,7 +1240,7 @@ pub struct NodeBody {
 pub fn interrupt(domain: &DomainRuntime, body: NodeBody) -> Result<Value, DomainError> {
     let current = state(domain)?;
     let agent_id = agent(&current, &body.node)?;
-    domain.live.pushes.interrupt(&agent_id.0)
+    domain.live().pushes.interrupt(&agent_id.0)
         .map_err(|_| DomainError::new("session_unreachable", "the node is not connected to Alondra: its session is stopped or its Claude Code mod is not running. Nothing was sent"))?;
     Ok(json!({"interrupted": agent_id.0}))
 }

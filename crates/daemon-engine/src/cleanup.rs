@@ -74,7 +74,7 @@ fn why(state: &DomainState, domain: &DomainRuntime, claude_home: &Path, agent: &
         Some(job) if matches!(job.phase, crate::job_state::Phase::Working | crate::job_state::Phase::Blocked) => return None,
         Some(job) if job.worktree.as_deref().is_some_and(|dir| worked_in(state, domain, agent, dir)) => return None,
         Some(job) => job.updated_at,
-        None => domain.live.node(&agent.0)?.state_since,
+        None => domain.live().node(&agent.0)?.state_since,
     };
     (now - stopped_since > STOPPED_FOR_MS).then_some((Why::StoppedWithoutTask, None))
 }
@@ -83,7 +83,7 @@ fn why(state: &DomainState, domain: &DomainRuntime, claude_home: &Path, agent: &
 /// its worktree, which `claude rm` of this one would delete.
 fn worked_in(state: &DomainState, domain: &DomainRuntime, agent: &AgentId, dir: &Path) -> bool {
     state.tasks.values().filter(|task| !task.over()).filter_map(|task| task.agent_id.as_ref()).filter(|other| *other != agent)
-        .filter_map(|other| domain.live.mods.session(&other.0)?.cwd)
+        .filter_map(|other| domain.live().mods.session(&other.0)?.cwd)
         .any(|cwd| Path::new(&cwd).starts_with(dir))
 }
 
@@ -92,10 +92,10 @@ pub const STOP_WAIT: Duration = Duration::from_secs(20);
 
 /// Cuts the session's turn and waits up to `wait` for it to stop; true once it no longer works.
 async fn stop_turn(domain: &DomainRuntime, agent: &AgentId, wait: Duration) -> bool {
-    let _ = domain.live.pushes.interrupt(&agent.0);
+    let _ = domain.live().pushes.interrupt(&agent.0);
     let until = clock::instant() + wait;
     loop {
-        if !domain.live.node(&agent.0).is_some_and(|node| node.busy) {
+        if !domain.live().node(&agent.0).is_some_and(|node| node.busy) {
             return true;
         }
         if clock::instant() >= until {
@@ -111,9 +111,9 @@ fn free_stopped(domain: &DomainRuntime, state: &DomainState, claude_home: &Path,
     let mut rows = vec![];
     for known in state.agents.values() {
         let session = known.id.0.as_str();
-        let node = domain.live.node(session);
+        let node = domain.live().node(session);
         if node.as_ref().is_some_and(|node| node.is_orchestrator) || !domain.launched_by_alondra(&known.id).unwrap_or(false)
-            || !crate::node_exit::has_open_task(domain, session) || domain.live.mods.connected(session)
+            || !crate::node_exit::has_open_task(domain, session) || domain.live().mods.connected(session)
             || !crate::node_exit::session_ended_in(domain, claude_home, session) || crate::sdk_handover::moved(domain, &known.id)
         {
             continue;
@@ -143,7 +143,7 @@ pub async fn run(
     let freed = free_stopped(domain, &state, claude_home, dry_run);
     let mut candidates = vec![];
     for known in state.agents.values() {
-        let node = domain.live.node(&known.id.0);
+        let node = domain.live().node(&known.id.0);
         let short: String = node.as_ref().map_or_else(|| known.id.0.chars().take(8).collect(), |node| node.short_id.clone());
         if node.as_ref().is_some_and(|node| node.is_orchestrator) || !listed(&listing, &short) || !domain.launched_by_alondra(&known.id).unwrap_or(false) {
             continue;
@@ -155,7 +155,7 @@ pub async fn run(
     candidates.sort_by(|a, b| a.agent.0.cmp(&b.agent.0));
     let (mut close, mut closed, mut left, mut failed) = (vec![], vec![], vec![], vec![]);
     for candidate in candidates {
-        let mut node = domain.live.node(&candidate.agent.0);
+        let mut node = domain.live().node(&candidate.agent.0);
         let mut stuck = false;
         if node.as_ref().is_some_and(|node| node.busy) {
             if !dry_run && !stop_turn(domain, &candidate.agent, stop_wait).await {
@@ -163,7 +163,7 @@ pub async fn run(
                 continue;
             }
             stuck = true;
-            node = domain.live.node(&candidate.agent.0);
+            node = domain.live().node(&candidate.agent.0);
         }
         if node.as_ref().is_some_and(|node| node.waiting_permission) || crate::domain_holds::waits_on_user(&state, &candidate.agent.0) {
             left.push(kept(&candidate, "permission", None));
@@ -179,12 +179,12 @@ pub async fn run(
             close.push(row);
             continue;
         }
-        if !domain.live.begin_watch(&candidate.agent.0) {
+        if !domain.live().begin_watch(&candidate.agent.0) {
             left.push(kept(&candidate, "busy", None));
             continue;
         }
         let outcome = close_node(domain, sessions, &candidate.agent, false).await;
-        domain.live.end_watch(&candidate.agent.0);
+        domain.live().end_watch(&candidate.agent.0);
         match outcome {
             Ok(CloseOutcome::Closed { .. }) => {
                 for task in state.tasks.values().filter(|task| task.agent_id.as_ref() == Some(&candidate.agent) && task.over() && task.wrap_up.node.is_none()) {
@@ -229,7 +229,7 @@ async fn closed_task_worktrees(
             continue;
         }
         if let Some(agent) = &task.agent_id {
-            let short: String = domain.live.node(&agent.0).map_or_else(|| agent.0.chars().take(8).collect(), |node| node.short_id);
+            let short: String = domain.live().node(&agent.0).map_or_else(|| agent.0.chars().take(8).collect(), |node| node.short_id);
             if !domain.launched_by_alondra(agent).unwrap_or(false) || (listed(listing, &short) && !ended.contains(&short.as_str())) {
                 continue;
             }
@@ -254,7 +254,7 @@ async fn closed_task_worktrees(
 
 fn open_task_works_in(state: &DomainState, domain: &DomainRuntime, dir: &Path) -> bool {
     state.tasks.values().filter(|task| !task.over()).filter_map(|task| task.agent_id.as_ref())
-        .filter_map(|agent| domain.live.mods.session(&agent.0)?.cwd)
+        .filter_map(|agent| domain.live().mods.session(&agent.0)?.cwd)
         .any(|cwd| Path::new(&cwd).starts_with(dir))
 }
 

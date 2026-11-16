@@ -53,9 +53,7 @@ fn diagnostic_chatter_and_unrelated_domain_activity_do_not_mask_a_stall() {
     drop(owner);
     let progress = f
         .domain()
-        .live
-        .orchestrator_progress
-        .load(Ordering::Relaxed);
+        .orchestrator_progress();
     f.domain()
         .publish_batch_report(
             "chatter",
@@ -92,9 +90,7 @@ fn diagnostic_chatter_and_unrelated_domain_activity_do_not_mask_a_stall() {
         .unwrap();
     assert_eq!(
         f.domain()
-            .live
-            .orchestrator_progress
-            .load(Ordering::Relaxed),
+            .orchestrator_progress(),
         progress
     );
     let start = Instant::now();
@@ -201,9 +197,7 @@ async fn watchdog_restart_recovers_a_legacy_run_instead_of_repeating_its_idle_gu
     let mut watchdog = Watchdog {
         progress: f
             .domain()
-            .live
-            .orchestrator_progress
-            .load(Ordering::Relaxed),
+            .orchestrator_progress(),
         since: Some(start),
         ..Default::default()
     };
@@ -239,9 +233,7 @@ async fn a_watchdog_retries_legacy_recovery_after_its_runtime_write_fails() {
         let mut watchdog = Watchdog {
             progress: f
                 .domain()
-                .live
-                .orchestrator_progress
-                .load(Ordering::Relaxed),
+                .orchestrator_progress(),
             since: Some(start),
             ..Default::default()
         };
@@ -339,7 +331,7 @@ async fn a_watchdog_cancels_a_held_provider_and_the_next_request_runs_without_a_
     let (_notice, drained) = on_drain(&run);
     let stop = f
         .domain()
-        .live
+        .live()
         .orchestrator_host
         .lock()
         .unwrap()
@@ -369,7 +361,7 @@ async fn a_watchdog_cancels_a_held_provider_and_the_next_request_runs_without_a_
             .join("runtime/orchestrator/owner.json")
             .exists()
     );
-    assert!(f.domain().live.orchestrator_host.lock().unwrap().is_none());
+    assert!(f.domain().live().orchestrator_host.lock().unwrap().is_none());
     assert!(load(&f.executor.home).unwrap().active_run.is_none());
     assert!(f.cards(PROBLEM_PREFIX).is_empty());
     f.tell("fresh", "Process the next request");
@@ -398,7 +390,7 @@ async fn watchdog_keeps_monitoring_until_an_admitted_physical_writer_finishes() 
     let (_notice, drained) = on_drain(&run);
     let stop = f
         .domain()
-        .live
+        .live()
         .orchestrator_host
         .lock()
         .unwrap()
@@ -437,7 +429,7 @@ async fn watchdog_keeps_monitoring_until_an_admitted_physical_writer_finishes() 
         stop.process_group().is_none(),
         "the host is reaped before admitted operations drain"
     );
-    assert!(f.domain().live.orchestrator_host.lock().unwrap().is_none());
+    assert!(f.domain().live().orchestrator_host.lock().unwrap().is_none());
     f.tell("fresh", "Run after the old writer has finished");
     clock.check(start + STALLED_AFTER * 2).await;
     assert!(
@@ -479,26 +471,26 @@ fn account_usage_and_explicit_user_waits_do_not_trigger_the_watchdog() {
     let mut watchdog = Watchdog::default();
     assert!(!f.executor.watchdog_due(&mut watchdog, start));
     f.domain()
-        .live
+        .live()
         .account_wait
         .wait_for("Sign in to the selected account");
     assert!(
         !f.executor
             .watchdog_due(&mut watchdog, start + STALLED_AFTER * 2)
     );
-    f.domain().live.account_wait.end();
-    f.domain().live.usage_pause.exhaust(Some(1_000), 0);
+    f.domain().live().account_wait.end();
+    f.domain().live().usage_pause.exhaust(Some(1_000), 0);
     assert!(
         !f.executor
             .watchdog_due(&mut watchdog, start + STALLED_AFTER * 4)
     );
-    f.domain().live.usage_pause.resume(1_000);
-    f.domain().live.usage_pause.pause_by_user(2_000, 1_000);
+    f.domain().live().usage_pause.resume(1_000);
+    f.domain().live().usage_pause.pause_by_user(2_000, 1_000);
     assert!(
         !f.executor
             .watchdog_due(&mut watchdog, start + STALLED_AFTER * 6)
     );
-    f.domain().live.usage_pause.resume(2_000);
+    f.domain().live().usage_pause.resume(2_000);
     let mut runtime = load(&f.executor.home).unwrap();
     runtime.active_run = Some(Run {
         id: "explicit-decision".into(),

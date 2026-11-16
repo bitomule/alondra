@@ -126,6 +126,18 @@ sh_test(
     size = "small",
 )
 
+# Fails when the main cycle of a crate's production modules grows past its limit in module_cycles.tsv.
+sh_test(
+    name = "module_cycles_test",
+    srcs = ["tests/test_module_cycles.py"],
+    data = [
+        "module_cycles.tsv",
+        "module_graph.py",
+        "//crates/daemon-engine:tree",
+    ],
+    size = "small",
+)
+
 sh_test(
     name = "clock_guard_test",
     srcs = ["tests/test_clock_guard.py"],

@@ -101,8 +101,8 @@ fn runtime_progress_a_held_view_and_hook_recording_do_not_stop_guards_or_machine
             ..Default::default()
         }, None, vec![]))));
         let watcher = tokio::spawn(crate::machine_watch::run(domain.clone(), gauges, Silent));
-        domain.live.machine_watch.sampled.notified().await;
-        let threads = domain.live.machine_watch.sample_threads.lock().unwrap().clone();
+        domain.live().machine_watch.sampled.notified().await;
+        let threads = domain.live().machine_watch.sample_threads.lock().unwrap().clone();
         assert!(!threads.is_empty());
         assert!(threads.iter().all(|thread| *thread != driver));
         let samples = fixture.0.join(crate::machine_state::SAMPLES_DIR);

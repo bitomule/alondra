@@ -246,7 +246,7 @@ pub(crate) fn tell(domain: &DomainRuntime, session: &str, from: &str, text: &str
             return Ok(Told::Moving);
         }
     }
-    domain.live.pushes.message(session, from, text, as_user).map(Told::Pushed)
+    domain.live().pushes.message(session, from, text, as_user).map(Told::Pushed)
 }
 
 /// What reaches a node that already moves goes to the SDK node once the move is done.
@@ -278,12 +278,12 @@ fn follow(domain: &DomainRuntime, handover: Handover, text: String) {
 /// Takes `agent`'s move as far as the facts let it: from the step recorded to the end, or to a
 /// step that waits for a fact (the node at rest again). An error leaves the move at its step.
 pub(crate) async fn advance(domain: &Arc<DomainRuntime>, agent: &AgentId) -> Result<HandoverStep, String> {
-    let _one = domain.handovers.moving.lock().await;
+    let _one = domain.handovers().moving.lock().await;
     loop {
         let handover = handover_of(domain, agent).ok_or_else(|| format!("{agent} has no move"))?;
         let step = handover.step;
         #[cfg(any(test, feature = "test-hooks"))]
-        if *domain.handovers.crash_after.lock().unwrap() == Some(step) && step != HandoverStep::SdkAdmitted {
+        if *domain.handovers().crash_after.lock().unwrap() == Some(step) && step != HandoverStep::SdkAdmitted {
             return Err(format!("the daemon died after {step:?}"));
         }
         match step {
@@ -303,7 +303,7 @@ pub(crate) async fn advance(domain: &Arc<DomainRuntime>, agent: &AgentId) -> Res
 /// process seen at the plan and any Claude Code lists now must both be gone.
 async fn stop(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<bool, String> {
     let node = &handover.node;
-    let sessions = domain.handovers.sessions();
+    let sessions = domain.handovers().sessions();
     let mut processes: Vec<HandoverProcess> = handover.plan.process.into_iter().collect();
     processes.extend(sessions.listed(&node.0).await?.filter(|listed| !processes.contains(listed)));
     if processes.iter().any(|process| sessions.alive(process)) {
@@ -351,7 +351,7 @@ async fn admit(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<(), S
         .map_err(|error| format!("the admission stopped: {error}"))?
         .map_err(|crate::sdk_owner::Failed { why, .. }| format!("the SDK execution was not admitted: {why}"))?;
     domain.add_sdk_owner(crate::sdk_owner::Owner::spawn(driver));
-    domain.live.forget_closed_task(&handover.task.0);
+    domain.live().forget_closed_task(&handover.task.0);
     Ok(())
 }
 
@@ -386,8 +386,8 @@ async fn finish(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<(), 
         log!("could not close {node} after its move to the Agent SDK: {failure}");
     }
     crate::domain_transport::session_ended(domain, node).map_err(|error| format!("ending the old node's session: {error:#}"))?;
-    domain.live.mark_closed(&node.0);
-    domain.live.apply(&alondra_core::Event::NodeRemoved { session_id: node.0.clone() });
+    domain.live().mark_closed(&node.0);
+    domain.live().apply(&alondra_core::Event::NodeRemoved { session_id: node.0.clone() });
     domain.forget_ended_session(&node.0).map_err(|error| format!("{error:#}"))?;
     domain.store.lock_or_exit("the domain store").record_handover_done(node, &handover.task)
         .map_err(|error| format!("recording the end of the move: {error:#}"))?;
@@ -444,3 +444,11 @@ async fn tick(domain: &Arc<DomainRuntime>) {
 #[cfg(test)]
 #[path = "sdk_handover/tests.rs"]
 mod tests;
+
+crate::extension!(Handovers);
+
+impl crate::domain_runtime::DomainRuntime {
+    pub(crate) fn handovers(&self) -> &Handovers {
+        self.extension()
+    }
+}

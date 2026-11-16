@@ -274,7 +274,7 @@ async fn a_result_of_another_input_is_not_the_batch_handled() {
 #[tokio::test]
 async fn a_batch_that_ran_out_of_usage_before_answering_pauses_and_waits_without_a_card() {
     let f = ended("fixture:limited").await;
-    assert!(f.domain().live.usage_pause.is_active(), "usage pauses everything");
+    assert!(f.domain().live().usage_pause.is_active(), "usage pauses everything");
     let runtime = load(&f.executor.home).unwrap();
     assert!(runtime.active_run.is_none() && runtime.failure.is_none(), "{runtime:?}");
     assert_eq!(f.attempts(), ["retryable"]);
@@ -321,7 +321,7 @@ async fn a_no_effect_cancellation_retires_its_remembered_logical_stop() {
     let during = async {
         f.held().await;
         let run = load(&f.executor.home).unwrap().active_run.unwrap();
-        *f.domain().live.orchestrator_stop.lock().unwrap() = Some((run.clone(), BatchProblem {
+        *f.domain().live().orchestrator_stop.lock().unwrap() = Some((run.clone(), BatchProblem {
             stop: BatchStop::Denied,
             calls: vec![],
             subjects: vec![],
@@ -331,7 +331,7 @@ async fn a_no_effect_cancellation_retires_its_remembered_logical_stop() {
     };
     let (result, ()) = tokio::join!(f.executor.tick(), during);
     result.unwrap();
-    assert!(f.domain().live.orchestrator_stop.lock().unwrap().is_none(),
+    assert!(f.domain().live().orchestrator_stop.lock().unwrap().is_none(),
         "a completed cancellation cannot leave a logical stop to resurrect");
     let runtime = load(&f.executor.home).unwrap();
     assert!(runtime.active_run.is_none() && runtime.failure.is_none());

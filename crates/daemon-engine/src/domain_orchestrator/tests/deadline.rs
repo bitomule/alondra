@@ -154,13 +154,13 @@ fn no_fallback_runs_while_the_usage_limit_holds_the_orchestrator() {
     std::fs::create_dir_all(&home).unwrap();
     let domain = DomainRuntime::open(&home).unwrap();
     let case = stalled(&domain);
-    domain.live.usage_pause.exhaust(Some(2 * 60 * MINUTE), 0);
+    domain.live().usage_pause.exhaust(Some(2 * 60 * MINUTE), 0);
     for minutes in (0..=60).step_by(5) {
         crate::orchestrator_inbox::settle_overdue(&domain, minutes * MINUTE);
     }
     assert!(!reminded(&domain, &case), "an hour held by the usage limit counts for nothing");
     assert!(domain.state().unwrap().open(&domain.state().unwrap().interactions[&case]));
-    domain.live.usage_pause.resume(60 * MINUTE);
+    domain.live().usage_pause.resume(60 * MINUTE);
     for minutes in [61, 71] {
         crate::orchestrator_inbox::settle_overdue(&domain, minutes * MINUTE);
     }

@@ -36,7 +36,7 @@ impl Client {
             return Ok(refused("This node runs through the Agent SDK and ends with its task: cancel its task to stop it", vec![]));
         }
         let sessions = self.sessions();
-        let name = self.domain.live.node(agent_id).and_then(|node| node.name.clone()).unwrap_or(known.name);
+        let name = self.domain.live().node(agent_id).and_then(|node| node.name.clone()).unwrap_or(known.name);
         Ok(match close_node(&self.domain, sessions.as_ref(), &agent, true).await? {
             CloseOutcome::Closed { output } => Reply::ok(json!({"ok": true, "interactive": false, "output": output})),
             CloseOutcome::NotListed => Reply::ok(json!({"ok": true, "interactive": true, "output": format!(

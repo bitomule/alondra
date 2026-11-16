@@ -276,7 +276,7 @@ fn historical(world:&World,step:AccountMoveStep,source_node:AgentId)->i64{
 #[tokio::test]
 async fn historical_unstarted_destinations_are_parked_before_startup_or_explicit_recovery(){
     for step in [AccountMoveStep::Admitted,AccountMoveStep::Done]{
-        let mut world=World::with_accounts(true);*world.domain.moves.crash_after.lock().unwrap()=Some(AccountMoveStep::Admitted);
+        let mut world=World::with_accounts(true);*world.domain.moves().crash_after.lock().unwrap()=Some(AccountMoveStep::Admitted);
         let launch=crate::sdk_owner::Launch{task:TASK.into(),name:"admitted-destination".into(),directory:world.worktree.to_str().unwrap().into(),prompt:"Write the release notes".into(),plugin:world.home.join(crate::plugins::NODE),options:Default::default(),model:None,account:AccountId::default_account()};
         assert!(crate::sdk_owner::launch(&world.domain,launch).await.unwrap_err().message.contains("admission's commit"));
         let destination=world.node();
@@ -284,7 +284,7 @@ async fn historical_unstarted_destinations_are_parked_before_startup_or_explicit
         historical(&world,step,"legacy-source".into());
         let state=world.domain.state().unwrap();let life=state.lifecycle_of(&TASK.into()).unwrap();
         std::fs::write(world.backend.state_root.join(life.execution().unwrap().instance().as_str()).join("host.lock"),b"").unwrap();
-        *world.domain.moves.crash_after.lock().unwrap()=None;world.restart().await;
+        *world.domain.moves().crash_after.lock().unwrap()=None;world.restart().await;
         assert!(crate::sdk_owner::launch_admitted(world.domain.clone(),&world.backend,TASK.into(),&world.home.join(crate::plugins::NODE)).err().unwrap().to_string().contains("never positively observed"));
         tick(&world.domain).await;
         assert_eq!(world.step(),Some(step));assert_eq!(world.node(),destination);

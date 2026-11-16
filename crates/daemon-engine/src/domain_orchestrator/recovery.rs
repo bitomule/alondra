@@ -111,7 +111,7 @@ impl Executor {
                         .lock_or_exit("the domain store")
                         .finish_batch(&batch.run)?;
                     self.domain
-                        .live
+                        .live()
                         .orchestrator_runs
                         .lock_or_recover("the orchestrator runs")
                         .remove(&batch.run);
@@ -232,7 +232,7 @@ impl Executor {
                         .any(|handoff| handoff.run_id == run.id)
                     && !self
                         .domain
-                        .live
+                        .live()
                         .orchestrator_runs
                         .lock_or_recover("the orchestrator runs")
                         .contains(&run.id)
@@ -321,7 +321,7 @@ impl Executor {
                         .lock_or_exit("the domain store")
                         .finish_batch(&run.id)?;
                     self.domain
-                        .live
+                        .live()
                         .orchestrator_runs
                         .lock_or_recover("the orchestrator runs")
                         .remove(&run.id);

@@ -158,7 +158,7 @@ impl World {
         let domain = Arc::new(DomainRuntime::open_at(home, database).unwrap());
         crate::sdk_owner::tests::measure_healthy_machine(&domain);
         domain.enable_sdk(backend.clone());
-        domain.handovers.use_sessions(Arc::clone(bg) as Arc<dyn BgSessions>);
+        domain.handovers().use_sessions(Arc::clone(bg) as Arc<dyn BgSessions>);
         domain
     }
 
@@ -306,7 +306,7 @@ async fn a_move_cut_after_its_admission_starts_the_host_and_claude_code_a_releas
     world.rest();
     world.answer();
     world.plan_move();
-    *world.domain.handovers.crash_after.lock().unwrap() = Some(HandoverStep::SdkAdmitted);
+    *world.domain.handovers().crash_after.lock().unwrap() = Some(HandoverStep::SdkAdmitted);
     tick(&world.domain).await;
     assert_eq!(world.step(), Some(HandoverStep::SdkAdmitted));
     world.restart().await;
@@ -325,7 +325,7 @@ async fn a_crash_after_each_step_of_the_move_goes_on_from_that_step_and_repeats_
         world.rest();
         world.answer();
         world.plan_move();
-        *world.domain.handovers.crash_after.lock().unwrap() = Some(step);
+        *world.domain.handovers().crash_after.lock().unwrap() = Some(step);
         tick(&world.domain).await;
         assert_eq!(world.step(), Some(step), "the move stopped at {step:?}");
         assert!(world.live_owners() <= 1, "two live owners after a crash at {step:?}");
@@ -369,7 +369,7 @@ proptest::proptest! {
             world.answer();
             world.plan_move();
             world.bg.early_answers.store(early, Ordering::SeqCst);
-            *world.domain.handovers.crash_after.lock().unwrap() = crash.map(|at| [HandoverStep::Planned, HandoverStep::BgStopped, HandoverStep::SdkAdmitted][at]);
+            *world.domain.handovers().crash_after.lock().unwrap() = crash.map(|at| [HandoverStep::Planned, HandoverStep::BgStopped, HandoverStep::SdkAdmitted][at]);
             for _ in 0..=early {
                 tick(&world.domain).await;
                 assert!(world.live_owners() <= 1, "two live owners");

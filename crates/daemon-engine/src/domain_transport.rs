@@ -137,7 +137,7 @@ fn answer_first(domain: &DomainRuntime, payload: &Value) -> Option<Value> {
 
 /// A PreToolUse answered without recording the hook: a node the gate holds, and Alondra's own tools.
 fn unrecorded_pre_tool_use(domain: &DomainRuntime, session_id: &str, tool: Option<&str>) -> Option<Value> {
-    if let Some(reason) = domain.live.gate.holding(domain, session_id) {
+    if let Some(reason) = domain.live().gate.holding(domain, session_id) {
         let why = if reason == crate::pauses::Reason::ByUser { PAUSED_BY_USER } else { PAUSED_FOR_MEMORY };
         return Some(pre_tool_use_denied(why));
     }
@@ -224,7 +224,7 @@ async fn node_hold(mut stream: UnixStream, domain: &Arc<DomainRuntime>, card: Va
     let posting = domain.clone();
     let request = card.clone();
     let posted = domain.hook_work.run(move ||
-        crate::domain_holds::post(&posting, &request, posting.live.mods.is_node(&request.session_id))
+        crate::domain_holds::post(&posting, &request, posting.live().mods.is_node(&request.session_id))
     ).await??;
     let mut written = None;
     let reply = match posted {
@@ -283,7 +283,7 @@ async fn node_connection(mut stream: UnixStream, domain: &Arc<DomainRuntime>, he
     let number = domain.hook_work.run(move || {
         let domain = connecting;
         let session = connecting_session;
-        if domain.live.sandbox.load(std::sync::atomic::Ordering::Relaxed) {
+        if domain.live().sandbox.load(std::sync::atomic::Ordering::Relaxed) {
             register_probe(&domain, &session)?;
         }
         let launch_key = hello.launch_key.clone();
@@ -295,13 +295,13 @@ async fn node_connection(mut stream: UnixStream, domain: &Arc<DomainRuntime>, he
         }
         Ok::<_, anyhow::Error>(number)
     }).await??;
-    if domain.live.mods.session(&session).and_then(|reported| reported.connection) != Some(number) {
+    if domain.live().mods.session(&session).and_then(|reported| reported.connection) != Some(number) {
         return Ok(());
     }
     if let Some(pid) = stream.peer_cred().ok().and_then(|credentials| credentials.pid()) {
-        domain.live.mods.set_peer(&session, pid as u32);
+        domain.live().mods.set_peer(&session, pid as u32);
     }
-    let mut lines = domain.live.pushes.attach(&session, number);
+    let mut lines = domain.live().pushes.attach(&session, number);
     let mut changed = domain.subscribe();
     let held = async {
         stream.write_all(&200u16.to_be_bytes()).await?;
@@ -315,7 +315,7 @@ async fn node_connection(mut stream: UnixStream, domain: &Arc<DomainRuntime>, he
                 Ok::<_, anyhow::Error>((pending, sent))
             }).await??;
             sent = next_sent;
-            if domain.live.mods.session(&session).and_then(|reported| reported.connection) != Some(number) {
+            if domain.live().mods.session(&session).and_then(|reported| reported.connection) != Some(number) {
                 return Ok(());
             }
             for line in pending {
@@ -336,8 +336,8 @@ async fn node_connection(mut stream: UnixStream, domain: &Arc<DomainRuntime>, he
         }
     }
     .await;
-    domain.live.pushes.detach(&session, number);
-    domain.live.mods.disconnect(&session, number);
+    domain.live().pushes.detach(&session, number);
+    domain.live().mods.disconnect(&session, number);
     held.or_else(|error: anyhow::Error| match error.downcast_ref::<std::io::Error>().map(std::io::Error::kind) {
         Some(std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe) => Ok(()),
         _ => Err(error),
@@ -411,7 +411,7 @@ async fn node_ack(mut stream: UnixStream, domain: &Arc<DomainRuntime>, ack: Valu
     let acknowledging = domain.clone();
     domain.hook_work.run(move || {
         hand_over(&acknowledging, &ack.session_id, &ack.ids)?;
-        acknowledging.live.pushes.acknowledged(&ack.session_id, &ack.ids);
+        acknowledging.live().pushes.acknowledged(&ack.session_id, &ack.ids);
         Ok::<_, anyhow::Error>(())
     }).await??;
     write_reply(&mut stream, 200, b"{}").await.context("writing its reply")?;
@@ -478,9 +478,9 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
     if !state.agents.contains_key(&agent_id) {
         return Ok(Reply::Plain(json!({})));
     }
-    domain.live.observe_hook(&state, payload);
+    domain.live().observe_hook(&state, payload);
     if crate::api_failures::proves_an_answer(&event) {
-        domain.live.api_watch.answered(&session_id, alondra_core::now_millis());
+        domain.live().api_watch.answered(&session_id, alondra_core::now_millis());
         crate::accounts::answered(domain);
     }
     match event.as_str() {
@@ -502,12 +502,12 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
         log!("blocked {session_id} from acting as the user: {reason}");
         return Ok(Reply::Plain(pre_tool_use_denied(&reason)));
     }
-    if let Some(held) = crate::domain_holds::hold_elicitation(domain, payload, domain.live.mods.is_node(&session_id))? {
+    if let Some(held) = crate::domain_holds::hold_elicitation(domain, payload, domain.live().mods.is_node(&session_id))? {
         return Ok(Reply::Held(held));
     }
     match event.as_str() {
         "SessionStart" | "SessionEnd" => Ok(Reply::Plain(json!({}))),
-        "Stop" if domain.live.gate.paused_by_user(domain, &session_id) => Ok(Reply::Plain(json!({}))),
+        "Stop" if domain.live().gate.paused_by_user(domain, &session_id) => Ok(Reply::Plain(json!({}))),
         "Stop" => {
             if let Some(said) = text(payload, "last_assistant_message") {
                 lifecycle::record_last_words(domain, &agent_id, &said)?;
@@ -579,7 +579,7 @@ fn undelivered(domain: &DomainRuntime, agent_id: &AgentId, payload: &Value) -> R
 }
 
 fn driven_by_user(domain: &DomainRuntime, agent_id: &AgentId) -> bool {
-    !domain.live.mods.is_node(&agent_id.0) || domain.live.node(&agent_id.0).is_some_and(|node| node.attached)
+    !domain.live().mods.is_node(&agent_id.0) || domain.live().node(&agent_id.0).is_some_and(|node| node.attached)
 }
 
 /// The node machine paused the node (the Mac, its own `wait_for_machine`, Alondra's pacing of
@@ -601,12 +601,12 @@ fn paused(state: &DomainState, agent_id: &AgentId) -> bool {
 pub(crate) fn stopped_without_delivering(domain: &DomainRuntime, state: &DomainState, agent_id: &AgentId,
     stop_blocks: impl Fn(&TaskId) -> Option<(u32, i64)>) -> Option<bool> {
     let session = agent_id.0.as_str();
-    let idle = domain.live.mods.session(session).is_some_and(|reported| reported.connection.is_some()
+    let idle = domain.live().mods.session(session).is_some_and(|reported| reported.connection.is_some()
         && reported.tool.is_none() && (reported.background.is_empty() || reported.work_gone())
         && (reported.job.as_ref().is_some_and(|job| job.phase == crate::job_state::Phase::Blocked)
             || reported.working_since.is_none() && reported.halt().is_none()));
     if !idle || driven_by_user(domain, agent_id) || paused(state, agent_id)
-        || domain.live.is_closed(session) || domain.live.gate.paused(domain, session).is_some()
+        || domain.live().is_closed(session) || domain.live().gate.paused(domain, session).is_some()
         || crate::domain_holds::waits_on_user(state, session)
     {
         return None;
@@ -838,7 +838,7 @@ pub mod tests {
 
     /// An Agent with a Task, a question and the User's answer queued for it.
     fn answered_question(domain: &Arc<DomainRuntime>, agent: &str) {
-        domain.live.mods.loaded_in(agent);
+        domain.live().mods.loaded_in(agent);
         command(domain, Actor::System, &format!("register-{agent}"), Command::RegisterAgent {
             agent_id: agent.into(), name: agent.into(), at: 0
         });
@@ -1054,7 +1054,7 @@ pub mod tests {
     }
 
     pub fn node_with_task(domain: &Arc<DomainRuntime>) {
-        domain.live.mods.loaded_in("agent-a");
+        domain.live().mods.loaded_in("agent-a");
         command(domain, Actor::System, "register", Command::RegisterAgent {
             agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
         });
@@ -1304,8 +1304,8 @@ pub mod tests {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             let watcher = tokio::spawn(crate::machine_watch::run(domain.clone(), gauges, Silent));
-            domain.live.machine_watch.sampled.notified().await;
-            let threads = domain.live.machine_watch.sample_threads.lock().unwrap().clone();
+            domain.live().machine_watch.sampled.notified().await;
+            let threads = domain.live().machine_watch.sample_threads.lock().unwrap().clone();
             watcher.abort();
             assert!(watcher.await.unwrap_err().is_cancelled());
             assert!(!threads.is_empty());
@@ -1621,7 +1621,7 @@ pub mod tests {
         let fixture = Fixture::new();
         let domain = fixture.open();
         node_with_task(&domain);
-        domain.live.gate.pause_by_user(&domain, "agent-a", alondra_core::now_millis()).unwrap();
+        domain.live().gate.pause_by_user(&domain, "agent-a", alondra_core::now_millis()).unwrap();
         for tool in ["Bash", "mcp__plugin_alondra_alondra__present_result"] {
             let (reply, result) = hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "PreToolUse", "tool_name": tool}), Some(6)).await;
             result.unwrap();
@@ -1630,7 +1630,7 @@ pub mod tests {
         }
         assert_eq!(hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop"}), Some(6)).await.0, json!({}));
 
-        domain.live.gate.release_by_user_message(&domain, "agent-a");
+        domain.live().gate.release_by_user_message(&domain, "agent-a");
         let (reply, _) = hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "PreToolUse", "tool_name": "Bash"}), Some(6)).await;
         assert_ne!(reply["hookSpecificOutput"]["permissionDecision"], "deny", "{reply}");
         assert_eq!(hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop"}), Some(6)).await.0["decision"], "block");
@@ -1642,8 +1642,8 @@ pub mod tests {
         let domain = fixture.open();
         node_with_task(&domain);
         hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "PreToolUse", "tool_name": "Bash"}), Some(6)).await.1.unwrap();
-        domain.live.apply(&alondra_core::Event::AttachChanged { session_id: "agent-a".into(), attached: true });
-        assert!(domain.live.node("agent-a").is_some_and(|node| node.attached));
+        domain.live().apply(&alondra_core::Event::AttachChanged { session_id: "agent-a".into(), attached: true });
+        assert!(domain.live().node("agent-a").is_some_and(|node| node.attached));
         assert_eq!(hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop"}), Some(6)).await.0, json!({}),
             "the user attached to its terminal");
         working_agent_without_mod(&domain, "agent-z");
@@ -1657,11 +1657,11 @@ pub mod tests {
         let domain = fixture.open();
         node_with_task(&domain);
         mod_report(&domain, json!({"event": "prompt.submit", "origin": "plugin"}), 1);
-        let node = domain.live.node("agent-a").unwrap();
+        let node = domain.live().node("agent-a").unwrap();
         assert_eq!((node.last_prompt_origin, node.user_prompt_at), (Some(alondra_core::PromptOrigin::Other), None),
             "Alondra's mod submitting a message is not the user");
         mod_report(&domain, json!({"event": "prompt.submit", "origin": "composer"}), 2);
-        let node = domain.live.node("agent-a").unwrap();
+        let node = domain.live().node("agent-a").unwrap();
         assert_eq!(node.last_prompt_origin, Some(alondra_core::PromptOrigin::Composer));
         assert!(node.user_prompt_at.is_some(), "the user typed in the terminal");
     }
@@ -1694,7 +1694,7 @@ pub mod tests {
         domain.connect_node(serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap(), started);
         hook(domain, json!({"session_id": "agent-a", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": RELEASE}}), Some(6)).await;
         mod_report(domain, json!({"event": "shell.start", "id": "b1", "command": RELEASE}), started);
-        domain.live.mods.set_shell_alive("agent-a", Some(true), started + 1);
+        domain.live().mods.set_shell_alive("agent-a", Some(true), started + 1);
         let stop = json!({"session_id": "agent-a", "hook_event_name": "Stop",
             "background_tasks": [{"id": "b1", "type": "shell", "command": RELEASE}]});
         assert_eq!(hook(domain, stop, Some(6)).await.0, json!({}), "its command will wake it: no hold-back");
@@ -1725,7 +1725,7 @@ pub mod tests {
         domain.connect_node(serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap(), at);
         domain.report(serde_json::from_value(json!({"session_id": "agent-a", "event": "subagent.end", "id": "sub"})).unwrap(), at);
         domain.report(serde_json::from_value(json!({"session_id": "agent-a", "event": "subagent.start", "id": "sub"})).unwrap(), at);
-        domain.live.mods.set_shell_alive("agent-a", Some(false), at + 1);
+        domain.live().mods.set_shell_alive("agent-a", Some(false), at + 1);
     }
 
     /// The node of the flaky snapshots task: its one question answered, it ended its turn saying
@@ -1909,7 +1909,7 @@ pub mod tests {
         let domain = fixture.open();
         connect(&domain, "8a73d968-0000").await.close().await;
         assert!(domain.state().unwrap().agents.is_empty(), "a real daemon never invents an Agent");
-        domain.live.sandbox.store(true, std::sync::atomic::Ordering::Relaxed);
+        domain.live().sandbox.store(true, std::sync::atomic::Ordering::Relaxed);
         connect(&domain, "8a73d968-0000").await.close().await;
         connect(&domain, "8a73d968-0000").await.close().await;
         let state = domain.state().unwrap();
@@ -1930,15 +1930,15 @@ pub mod tests {
         assert!(older.nothing_arrives().await);
         let mut newer = connect(&domain, "session-a").await;
         assert!(older.line().await.is_none(), "the older connection is closed by the daemon");
-        domain.live.pushes.interrupt("session-a").unwrap();
+        domain.live().pushes.interrupt("session-a").unwrap();
         assert_eq!(newer.line().await.unwrap(), json!({"interrupt": true}));
         newer.close().await;
-        assert!(domain.live.mods.session("session-a").unwrap().connection_lost());
+        assert!(domain.live().mods.session("session-a").unwrap().connection_lost());
     }
 
     pub fn working_agent(domain: &Arc<DomainRuntime>, agent: &str) {
         working_agent_without_mod(domain, agent);
-        domain.live.mods.loaded_in(agent);
+        domain.live().mods.loaded_in(agent);
     }
 
     fn working_agent_without_mod(domain: &Arc<DomainRuntime>, agent: &str) {
@@ -2101,7 +2101,7 @@ pub mod tests {
         let message = agent_outbox(&domain, "ack-agent")[0].0;
         let (entered, waiting) = tokio::sync::oneshot::channel();
         let (release, confirmation) = tokio::sync::oneshot::channel();
-        *domain.allow_always_wait.lock().unwrap() = Some(crate::allow_always::ConfirmationWait { entered, release: confirmation });
+        *domain.allow_always_wait().lock().unwrap() = Some(crate::allow_always::ConfirmationWait { entered, release: confirmation });
         let (mut client, server) = UnixStream::pair().unwrap();
         let card = command_card("permission-agent", "make build", &worktree, Value::Null);
         send(&mut client, &json!({"node_hold": card})).await;
@@ -2550,8 +2550,8 @@ pub mod tests {
         let domain = fixture.open();
         working_agent_without_mod(&domain, "no-mod");
         command(&domain, Actor::System, "register-idle", Command::RegisterAgent { agent_id: "idle".into(), name: "idle".into(), at: 0 });
-        domain.live.mods.loaded_in("idle");
-        domain.live.mods.loaded_in("stranger");
+        domain.live().mods.loaded_in("idle");
+        domain.live().mods.loaded_in("stranger");
         for card in [permission("no-mod"), permission("idle"), permission("stranger")] {
             assert_eq!(answered_without_a_card(&domain, card.clone()).await, json!({"held": false}), "{card}");
         }

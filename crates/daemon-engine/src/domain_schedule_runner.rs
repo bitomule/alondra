@@ -180,7 +180,7 @@ async fn prepare_sdk(
         decision.account
     } else {
         let id = crate::accounts::choose_for_launch(domain, home, alondra_core::now_millis())
-            .ok_or_else(|| alondra_core::domain::DomainError::new("account_unavailable", if domain.live.usage_pause.waits_for_session() { "no Claude account on this Mac has a session" } else { "no Claude account on this Mac has usage left" }))?;
+            .ok_or_else(|| alondra_core::domain::DomainError::new("account_unavailable", if domain.live().usage_pause.waits_for_session() { "no Claude account on this Mac has a session" } else { "no Claude account on this Mac has usage left" }))?;
         alondra_core::accounts::AccountKey::new(alondra_core::accounts::Provider::Claude, id)
     };
     crate::accounts::log_choice(domain, "scheduled run", &account, alondra_core::now_millis());
@@ -293,13 +293,7 @@ fn ordinary_conflict(error: &StoreError) -> bool {
     matches!(error, StoreError::Domain(domain) if matches!(domain.code.as_str(), "conflict" | "not_found" | "stale_revision"))
 }
 
-pub fn options_at(home: &Path) -> Result<OptionsFile> {
-    match crate::domain_store::provider_settings::read_options(home) {
-        Ok(Some(contents)) => OptionsFile::parse(&contents).map_err(anyhow::Error::msg),
-        Ok(None) => Ok(OptionsFile::fresh()),
-        Err(error) => Err(anyhow::anyhow!(error)),
-    }
-}
+pub use crate::options::options_at;
 
 fn scheduled_task_name(title: &str, at: i64) -> Result<String> {
     let seconds = at.div_euclid(1000) as libc::time_t;
@@ -456,13 +450,13 @@ async fn dispatch_pending(
             Err(_) => false,
         }
     } else { crate::accounts::choose_for_launch(domain, home, now).is_some() };
-    let paused = domain.live.usage_pause.current().is_some_and(|pause| pause.by_user || resolved.selection.is_none());
-    if !ready || paused || domain.live.machine_watch.disk_low() {
+    let paused = domain.live().usage_pause.current().is_some_and(|pause| pause.by_user || resolved.selection.is_none());
+    if !ready || paused || domain.live().machine_watch.disk_low() {
         return Ok(());
     }
     let key = crate::admission::Key::Run(run_id.0.clone());
     if state.scheduled_launch_guard(run_id).is_err() {
-        domain.live.gate.forget(&key);
+        domain.live().gate.forget(&key);
         return Ok(());
     }
     let waiting = crate::admission::Waiting {
@@ -471,7 +465,7 @@ async fn dispatch_pending(
         resuming: false,
         since: run.claimed_at.unwrap_or(now),
     };
-    if domain.live.gate.ask(domain, waiting, now).is_err() {
+    if domain.live().gate.ask(domain, waiting, now).is_err() {
         return Ok(());
     }
     let root = options_at(home)?.worktrees_root;
@@ -486,16 +480,16 @@ async fn dispatch_pending(
     if configured {
         if let Some(path) = &known {
             if crate::task_worktrees::ready(domain, path).await.is_err() {
-                domain.live.gate.not_started(&key);
+                domain.live().gate.not_started(&key);
                 domain.store.lock_or_exit("the domain store").set_launch_refusal(&task, Some(("worktrees_unavailable", None)), now)?;
                 return Ok(());
             }
         }
         match crate::launch_worktree::storage_for(Path::new(&launch.intent.cwd), &crate::launch_worktree::slug(&task.0), known.as_deref().map(Path::new), None, root.as_ref()).await {
-            Ok(storage) if domain.live.machine_watch.refuse_launch(&storage).is_none() => {},
+            Ok(storage) if domain.live().machine_watch.refuse_launch(&storage).is_none() => {},
             Err(crate::launch_worktree::LaunchError::Workspace(why)) => return fail_run(domain, run_id, why),
             result => {
-                domain.live.gate.not_started(&key);
+                domain.live().gate.not_started(&key);
                 if result.is_err() {
                     domain.store.lock_or_exit("the domain store").set_launch_refusal(&task, Some(("worktrees_unavailable", None)), now)?;
                 }
@@ -508,7 +502,7 @@ async fn dispatch_pending(
         match prepare_sdk(domain, &intent, &task, &policy, home).await {
             Ok(prepared) => Some(prepared),
             Err(error) if error.code == "worktrees_unavailable" => {
-                domain.live.gate.not_started(&key);
+                domain.live().gate.not_started(&key);
                 domain.store.lock_or_exit("the domain store").set_launch_refusal(&task, Some(("worktrees_unavailable", None)), now)?;
                 return Ok(());
             }
@@ -524,11 +518,11 @@ async fn dispatch_pending(
     ) {
         Ok(_) => (),
         Err(error) if ordinary_conflict(&error) => {
-            domain.live.gate.not_started(&key);
+            domain.live().gate.not_started(&key);
             return Ok(());
         }
         Err(error) => {
-            domain.live.gate.not_started(&key);
+            domain.live().gate.not_started(&key);
             return Err(error.into());
         }
     }
@@ -695,7 +689,7 @@ pub(crate) async fn run_cycle(
         fail_run(domain, &run_id, reason.into())?;
     }
     answer_failed_launches(domain, home)?;
-    let paused = domain.live.usage_pause.is_active() || domain.live.machine_watch.disk_low();
+    let paused = domain.live().usage_pause.is_active() || domain.live().machine_watch.disk_low();
     if due_enabled && !paused {
         let now = alondra_core::now_millis();
         let state = domain.state()?;
@@ -853,12 +847,12 @@ pub async fn run(
     due_enabled: bool,
 ) -> Result<()> {
     let mut schedule_changes = domain.subscribe_schedules();
-    let mut usage_changes = domain.live.usage_pause.subscribe();
-    let mut turn = domain.live.gate.subscribe();
+    let mut usage_changes = domain.live().usage_pause.subscribe();
+    let mut turn = domain.live().gate.subscribe();
     let mut system_clock = crate::schedule_clock::ClockChanges::new();
     loop {
         run_cycle(&domain, &home, due_enabled).await?;
-        let deadline = if domain.live.usage_pause.is_active() { None } else { nearest_run(&*domain.state()?, due_enabled) };
+        let deadline = if domain.live().usage_pause.is_active() { None } else { nearest_run(&*domain.state()?, due_enabled) };
         match wait_for_next_run(
             deadline,
             &mut schedule_changes,
@@ -1528,7 +1522,7 @@ mod tests {
             resuming: false,
             since: 0,
         };
-        assert!(restarted.live.gate.ask(&restarted, waiting, alondra_core::now_millis()).is_err(), "the gate never lets a launch of a cancelled task through");
+        assert!(restarted.live().gate.ask(&restarted, waiting, alondra_core::now_millis()).is_err(), "the gate never lets a launch of a cancelled task through");
 
         run_cycle(&restarted, &fixture.home, false).await.unwrap();
         let state = restarted.state().unwrap();
@@ -1723,7 +1717,7 @@ mod tests {
         let _sdk = SdkLaunches::enable(&fixture.domain, &fixture.home);
         fixture.claim("manual-1");
         let now = alondra_core::now_millis();
-        fixture.domain.live.usage_pause.exhaust(Some(now + 3_600_000), now);
+        fixture.domain.live().usage_pause.exhaust(Some(now + 3_600_000), now);
         let runs = || fixture.domain.state().unwrap().schedule.runs.len();
         run_cycle(&fixture.domain, &fixture.home, false).await.unwrap();
         let mut due = fixture.domain.state().unwrap().schedule.schedules[&ScheduleId::from("schedule-1")].clone();
@@ -1742,7 +1736,7 @@ mod tests {
         assert!(state.schedule.runs.values().all(|run| run.state != ScheduleRunState::Failed), "nothing is recorded as failed");
         assert_eq!(state.schedule.schedules[&ScheduleId::from("schedule-1")].next_run, Some(now), "still due");
 
-        fixture.domain.live.usage_pause.resume(alondra_core::now_millis());
+        fixture.domain.live().usage_pause.resume(alondra_core::now_millis());
         run_cycle(&fixture.domain, &fixture.home, true).await.unwrap();
         assert_eq!(fixture.launches(), 2, "back: the deferred launch and the due schedule go, one each");
         assert_eq!(runs(), 2);
@@ -1795,7 +1789,7 @@ mod tests {
         let _sdk = SdkLaunches::enable(&fixture.domain, &fixture.home);
         fixture.claim("manual-1");
         let now = alondra_core::now_millis();
-        fixture.domain.live.machine_watch.set_disk_low(true);
+        fixture.domain.live().machine_watch.set_disk_low(true);
         run_cycle(&fixture.domain, &fixture.home, false).await.unwrap();
         let mut due = fixture.domain.state().unwrap().schedule.schedules[&ScheduleId::from("schedule-1")].clone();
         due.enabled = true;
@@ -1810,7 +1804,7 @@ mod tests {
         assert_eq!(state.schedule.runs[&ScheduleRunId::from("manual-1")].launch.as_ref().unwrap().state, ScheduleLaunchState::Pending);
         assert!(state.schedule.runs.values().all(|run| run.state != ScheduleRunState::Failed), "nothing is recorded as failed");
 
-        fixture.domain.live.machine_watch.set_disk_low(false);
+        fixture.domain.live().machine_watch.set_disk_low(false);
         run_cycle(&fixture.domain, &fixture.home, true).await.unwrap();
         assert_eq!(fixture.launches(), 2, "space again: the deferred launch and the due schedule go");
     }

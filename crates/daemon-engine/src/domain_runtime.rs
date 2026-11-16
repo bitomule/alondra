@@ -15,8 +15,6 @@ pub struct DomainRuntime {
     pub external_work: crate::blocking_work::BlockingWork,
     pub command_work: crate::blocking_work::BlockingWork,
     pub hook_work: crate::blocking_work::BlockingWork,
-    #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) allow_always_wait: Mutex<Option<crate::allow_always::ConfirmationWait>>,
     pub(crate) guard_work: crate::blocking_work::BlockingWork,
     home: PathBuf,
     /// A holder that panics can leave it half-changed, so the daemon exits: the guard stays held
@@ -43,8 +41,6 @@ pub struct DomainRuntime {
     changed: watch::Sender<Revision>,
     schedule_changed: watch::Sender<Revision>,
     pub stored_reads: Arc<crate::service_files::StoredReads>,
-    pub local_actions: crate::local_actions::LocalActions,
-    pub live: crate::live::Live,
     /// User messages for sessions in the user's own terminal, handed at their next Stop hook.
     /// A holder that panics leaves it whole, so it is recovered: one remove or lookup each.
     pub(crate) held:
@@ -52,65 +48,23 @@ pub struct DomainRuntime {
     rejections: rejections::Rejections,
     /// Store seals of commits whose state readers already see, for the SDK owners to claim,
     /// send and acknowledge.
-    pub(crate) seals: crate::sdk_owner::Seals,
-    /// Set at startup only in a sandbox daemon whose configuration names one: otherwise no task
-    /// ever runs through the SDK.
-    sdk: std::sync::OnceLock<(crate::sdk_owner::SdkBackend, std::sync::Weak<DomainRuntime>)>,
-    /// A holder that panics leaves it whole, so it is recovered: `add_sdk_owner` takes, partitions
-    /// and puts back the list with only field and atomic reads in between; the hosts stop outside
-    /// it.
-    pub sdk_owners: Mutex<Vec<crate::sdk_owner::Owner>>,
-    /// The executions being taken over again, each with its task, while that runs.
-    /// A holder that panics leaves it whole, so it is recovered: a retain and then one push of a
-    /// thread already spawned.
-    pub(crate) retakes: Mutex<Vec<(TaskId, std::thread::JoinHandle<()>)>>,
-    /// The tasks whose SDK execution is in hand, with how many hold it: a launch or a takeover
-    /// under way, or the driver of its host. Nothing takes over an execution in hand.
-    /// A holder that panics leaves it whole, so it is recovered: one count up or down.
-    pub(crate) in_hand: Mutex<std::collections::BTreeMap<TaskId, usize>>,
-    /// The tasks whose execution a takeover is taking now: another takeover of the same task waits
-    /// for it on `takeover_done`, so two never reserve an owner and start a host at once.
-    /// A holder that panics leaves it whole, so it is recovered: one insert or one remove.
-    pub(crate) taking_over: Mutex<std::collections::BTreeSet<TaskId>>,
-    pub(crate) takeover_done: std::sync::Condvar,
-    /// The executions whose takeover found the disk full: taken over again once the machine watch
-    /// measures space, never given up for it.
-    /// A holder that panics leaves it whole, so it is recovered: one insert or one take.
-    pub(crate) waiting_for_space: Mutex<std::collections::BTreeSet<TaskId>>,
-    /// The tasks whose lost host the user already heard of, until a takeover works again.
-    pub(crate) host_losses_told: Mutex<std::collections::BTreeSet<TaskId>>,
-    /// When the gate last took over each task it found working with no owner of this daemon.
-    pub(crate) unowned_takes: Mutex<std::collections::BTreeMap<TaskId, (alondra_core::Millis, u64)>>,
-    /// The tasks whose session took no turn on the input offered again: their owner puts a host
-    /// that resumes the same session in place of its own, and the input waits for a slot.
-    pub(crate) requeues: Mutex<std::collections::BTreeSet<TaskId>>,
+    pub(crate) seals: seals::Seals,
     /// Makes every write of the capability registry fail as on a full disk.
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) full_disk: std::sync::atomic::AtomicBool,
-    /// Each `claude --bg` node's move to the SDK, once this daemon has an SDK backend.
-    pub(crate) handovers: crate::sdk_handover::Handovers,
-    /// Each move of an SDK task to another account when its own reaches its usage limit.
-    pub(crate) moves: crate::account_move::Moves,
-    pub(crate) selection_changes: crate::provider_transition::Transitions,
-    /// The MCP sign-ins handed back to Claude that the MCP watcher has not taken yet.
-    pub(crate) mcp_returns: crate::mcp_waits::Returns,
-    /// What each SDK task's conversation measured, to compact it while it rests.
-    pub contexts: crate::idle_compaction::Contexts,
+    /// What each subsystem keeps, without the runtime naming it.
+    extensions: extensions::Extensions,
+    /// The subsystems that hear of every commit, in the order the engine registered them.
+    observers: Vec<Box<dyn CommitObserver>>,
+    /// Counts what the orchestrator did, for the watchdog that tells a working orchestrator from a
+    /// stuck one.
+    orchestrator_progress: std::sync::atomic::AtomicU64,
     #[cfg(any(test, feature = "test-hooks"))]
     before_owner_publish: Mutex<Option<Box<dyn FnMut() + Send>>>,
     #[cfg(any(test, feature = "test-hooks"))]
     before_next_commit: Mutex<Option<Box<dyn FnOnce(&DomainRuntime) + Send>>>,
     #[cfg(any(test, feature = "test-hooks"))]
     before_acknowledge: Mutex<Option<Box<dyn FnMut() + Send>>>,
-    #[cfg(any(test, feature = "test-hooks"))]
-    owner_failures: Mutex<Option<Box<dyn Fn(String) + Send>>>,
-    #[cfg(any(test, feature = "test-hooks"))]
-    after_owner_reserved: Mutex<Option<Box<dyn FnOnce() + Send>>>,
-    #[cfg(any(test, feature = "test-hooks"))]
-    takeover_waits: Mutex<Option<Box<dyn FnMut() + Send>>>,
-    /// The nodes whose driver a test steps by hand, with no owner thread: they count as owned.
-    #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) driven_by_hand: Mutex<std::collections::BTreeSet<AgentId>>,
     /// How many read indexes publication built: one per commit that changed the domain.
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) index_builds: std::sync::atomic::AtomicU64,
@@ -118,10 +72,20 @@ pub struct DomainRuntime {
 pub(crate) use alondra_daemon_engine_model::retention::Retained;
 
 pub mod batch_operations;
+pub mod extensions;
+pub mod observers;
+pub(crate) mod seals;
+
+pub use extensions::{Extension, Slot};
+pub use observers::{Carried, CommitObserver};
 
 impl DomainRuntime {
-    pub(crate) fn orchestrator_progress(&self) {
-        self.live.orchestrator_progress.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    pub(crate) fn note_orchestrator_progress(&self) {
+        self.orchestrator_progress.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub(crate) fn orchestrator_progress(&self) -> u64 {
+        self.orchestrator_progress.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub(crate) fn transport_receipt(
@@ -135,15 +99,13 @@ impl DomainRuntime {
         store.transport_receipt(identity)
     }
 
-    pub fn open(home: &Path) -> Result<Self> {
-        Self::open_at(home, &crate::domain_database_migration::active_path(home))
-    }
-
-    pub(crate) fn open_at(home: &Path, database: &Path) -> Result<Self> {
+    /// The runtime of the domain database at `database`, telling `observers` of every commit,
+    /// those it makes while opening included.
+    pub fn open_observed(home: &Path, database: &Path, observers: Vec<Box<dyn CommitObserver>>) -> Result<Self> {
         let mut store = DomainStore::open(database)?.with_decisions(Arc::new(crate::domain_holds::HeldCards));
         let reads = DomainStore::open_readonly(database)?;
         crate::domain_store::provider_settings::recover_store(&mut store, home)?;
-        let options = crate::domain_schedule_runner::options_at(home).unwrap_or_default();
+        let options = crate::options::options_at(home).unwrap_or_default();
         let home_of_user = crate::options::user_home();
         let projects_root = options.projects_root(&home_of_user);
         store.fill_task_projects(&projects_root)?;
@@ -159,8 +121,6 @@ impl DomainRuntime {
             external_work: crate::blocking_work::BlockingWork::new(2),
             command_work: crate::blocking_work::BlockingWork::new(2),
             hook_work: crate::blocking_work::BlockingWork::new(1),
-            #[cfg(any(test, feature = "test-hooks"))]
-            allow_always_wait: Default::default(),
             guard_work: crate::blocking_work::BlockingWork::new(2),
             home: home.to_path_buf(),
             store: RuntimeMutex::new(store),
@@ -172,42 +132,20 @@ impl DomainRuntime {
             changed,
             schedule_changed,
             stored_reads: Default::default(),
-            local_actions: Default::default(),
-            live: crate::live::Live::persisted_in(home),
             held: Default::default(),
             rejections: Default::default(),
             seals: Default::default(),
-            sdk: Default::default(),
-            sdk_owners: Default::default(),
-            retakes: Default::default(),
-            in_hand: Default::default(),
-            taking_over: Default::default(),
-            takeover_done: Default::default(),
-            waiting_for_space: Default::default(),
-            host_losses_told: Default::default(),
-            unowned_takes: Default::default(),
-            requeues: Default::default(),
             #[cfg(any(test, feature = "test-hooks"))]
             full_disk: Default::default(),
-            handovers: Default::default(),
-            moves: Default::default(),
-            selection_changes: Default::default(),
-            mcp_returns: Default::default(),
-            contexts: Default::default(),
+            extensions: Default::default(),
+            observers,
+            orchestrator_progress: Default::default(),
             #[cfg(any(test, feature = "test-hooks"))]
             before_owner_publish: Default::default(),
             #[cfg(any(test, feature = "test-hooks"))]
             before_next_commit: Default::default(),
             #[cfg(any(test, feature = "test-hooks"))]
             before_acknowledge: Default::default(),
-            #[cfg(any(test, feature = "test-hooks"))]
-            owner_failures: Default::default(),
-            #[cfg(any(test, feature = "test-hooks"))]
-            after_owner_reserved: Default::default(),
-            #[cfg(any(test, feature = "test-hooks"))]
-            takeover_waits: Default::default(),
-            #[cfg(any(test, feature = "test-hooks"))]
-            driven_by_hand: Default::default(),
             #[cfg(any(test, feature = "test-hooks"))]
             index_builds: Default::default(),
         };
@@ -269,92 +207,6 @@ impl DomainRuntime {
             }
             Err(error) => Err(error.into()),
         }
-    }
-    /// Only a sandbox daemon whose configuration names an SDK backend calls this, once.
-    pub fn enable_sdk(self: &Arc<Self>, backend: crate::sdk_owner::SdkBackend) {
-        let _ = self.sdk.set((backend, Arc::downgrade(self)));
-    }
-    /// The SDK backend and the runtime its owners run on, when this daemon has one.
-    /// Stops every SDK owner and waits for each host's exit; nothing of an SDK host outlives the
-    /// daemon that owns it.
-    pub fn stop_sdk_owners(&self) {
-        self.join_retakes();
-        let owners = std::mem::take(&mut *self.sdk_owners.lock_or_recover("the SDK owners"));
-        log!("stopping {} SDK host(s)", owners.len());
-        for mut owner in owners {
-            match owner.stop() {
-                Ok(()) => log!("the SDK host of {} and its process group exited", owner.agent()),
-                Err(error) => log!("the SDK host of {} did not stop with the daemon: {error}", owner.agent()),
-            }
-        }
-    }
-    /// Waits until every execution being taken over again is taken, or has its card.
-    pub(crate) fn join_retakes(&self) {
-        let retakes = std::mem::take(&mut *self.retakes.lock_or_recover("the retakes"));
-        for (_, retake) in retakes {
-            let _ = retake.join();
-        }
-    }
-    /// Whether this daemon owns the SDK host of `agent`: an owner of it runs and has not ended.
-    pub fn owns_sdk_host(&self, agent: &AgentId) -> bool {
-        #[cfg(any(test, feature = "test-hooks"))]
-        if self.driven_by_hand.lock().expect("driven by hand poisoned").contains(agent) {
-            return true;
-        }
-        self.sdk_owners.lock_or_recover("the SDK owners").iter().any(|owner| owner.agent() == agent && !owner.ended())
-    }
-    /// The process group of every node host this daemon owns now, which is what a node costs.
-    pub(crate) fn node_groups_by_agent(&self) -> Vec<(AgentId, i32)> {
-        self.sdk_owners.lock_or_recover("the SDK owners").iter()
-            .filter_map(|owner| owner.host_group().map(|group| (owner.agent().clone(), group))).collect()
-    }
-
-    #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn node_groups(&self) -> Vec<i32> {
-        self.node_groups_by_agent().into_iter().map(|(_, group)| group).collect()
-    }
-    /// Keeps `owner` as the owner of its node's host, in place of any of that node that ended on
-    /// its own. Those are joined once the list is released: their end may read it.
-    pub fn add_sdk_owner(&self, owner: crate::sdk_owner::Owner) {
-        let ended: Vec<crate::sdk_owner::Owner> = {
-            let mut owners = self.sdk_owners.lock_or_recover("the SDK owners");
-            let (ended, kept) = std::mem::take(&mut *owners).into_iter().partition(|held| held.agent() == owner.agent() && held.ended());
-            *owners = kept;
-            owners.push(owner);
-            ended
-        };
-        drop(ended);
-    }
-    /// Asks the owner of `agent`'s host, if it holds one, to close it.
-    pub(crate) fn ask_to_release_host(&self, agent: &AgentId) {
-        if let Some(owner) = self.sdk_owners.lock_or_recover("the SDK owners").iter().find(|owner| owner.agent() == agent && !owner.ended()) {
-            owner.ask_to_release();
-        }
-    }
-    /// Stops the SDK host of `agent` and waits until it and its whole process group exited. `Ok`
-    /// with nothing to stop when this daemon owns no host for it.
-    pub(crate) fn stop_sdk_host(&self, agent: &AgentId) -> Result<(), crate::sdk_owner::Failed> {
-        self.take_sdk_owner(agent).map_or(Ok(()), |mut owner| owner.stop())
-    }
-    /// Stops the host of a node whose task is over, once the turn its Claude runs, if any, has
-    /// ended as an interrupted turn.
-    pub(crate) fn close_sdk_host(&self, agent: &AgentId) -> Result<(), crate::sdk_owner::Failed> {
-        self.take_sdk_owner(agent).map_or(Ok(()), |mut owner| owner.close())
-    }
-    /// Stops the host of a paused node as `close_sdk_host` does, and every process under it. `None`
-    /// when this daemon owns no host for it.
-    pub(crate) fn halt_sdk_host(&self, agent: &AgentId) -> Option<Result<(), crate::sdk_owner::Failed>> {
-        self.take_sdk_owner(agent).map(|mut owner| owner.halt())
-    }
-    fn take_sdk_owner(&self, agent: &AgentId) -> Option<crate::sdk_owner::Owner> {
-        let mut owners = self.sdk_owners.lock_or_recover("the SDK owners");
-        owners.iter().position(|owner| owner.agent() == agent && !owner.ended())
-            .or_else(|| owners.iter().position(|owner| owner.agent() == agent))
-            .map(|at| owners.remove(at))
-    }
-    pub fn sdk(&self) -> Option<(&crate::sdk_owner::SdkBackend, Arc<DomainRuntime>)> {
-        let (backend, runtime) = self.sdk.get()?;
-        Some((backend, runtime.upgrade()?))
     }
     pub(crate) fn home(&self) -> &Path {
         &self.home
@@ -488,29 +340,6 @@ impl DomainRuntime {
     pub(crate) fn before_next_commit(&self, hook: impl FnOnce(&DomainRuntime) + Send + 'static) {
         *self.before_next_commit.lock().unwrap() = Some(Box::new(hook));
     }
-    /// Runs `hook` once, as the next takeover has reserved its owner and not yet looked for the host.
-    #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn after_owner_reserved(&self, hook: impl FnOnce() + Send + 'static) {
-        *self.after_owner_reserved.lock().unwrap() = Some(Box::new(hook));
-    }
-    #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn owner_reserved(&self) {
-        let hook = self.after_owner_reserved.lock().unwrap().take();
-        if let Some(hook) = hook {
-            hook();
-        }
-    }
-    /// Runs `hook` each time a takeover waits for another of the same task.
-    #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn on_takeover_wait(&self, hook: impl FnMut() + Send + 'static) {
-        *self.takeover_waits.lock().unwrap() = Some(Box::new(hook));
-    }
-    #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn takeover_waited(&self) {
-        if let Some(hook) = self.takeover_waits.lock().unwrap().as_mut() {
-            hook();
-        }
-    }
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn before_owner_publish(&self, hook: impl FnMut() + Send + 'static) {
         *self.before_owner_publish.lock().unwrap() = Some(Box::new(hook));
@@ -518,24 +347,6 @@ impl DomainRuntime {
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn on_acknowledge(&self, hook: impl FnMut() + Send + 'static) {
         *self.before_acknowledge.lock().unwrap() = Some(Box::new(hook));
-    }
-    /// Every failure an SDK owner reports from now on.
-    #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn owner_failures(&self) -> std::sync::mpsc::Receiver<String> {
-        let (sender, failures) = std::sync::mpsc::channel();
-        self.on_owner_failure(move |why| drop(sender.send(why)));
-        failures
-    }
-    /// Calls `hook` with every failure an SDK owner reports from now on.
-    #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn on_owner_failure(&self, hook: impl Fn(String) + Send + 'static) {
-        *self.owner_failures.lock().unwrap() = Some(Box::new(hook));
-    }
-    #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn owner_failed(&self, why: String) {
-        if let Some(hook) = self.owner_failures.lock().unwrap().as_ref() {
-            hook(why);
-        }
     }
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn before_acknowledge(&self) {
@@ -552,7 +363,9 @@ impl DomainRuntime {
         self.index_builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let snapshot = Arc::new(ReadSnapshot::build(Arc::clone(state)));
         let before = self.read();
-        crate::sdk_live::clear_ended_waits(self, before.state(), state);
+        for observer in &self.observers {
+            observer.published(self, before.state(), state);
+        }
         for (task, card) in snapshot.index().unlisted_waits() {
             if before.index().task(task).and_then(|read| read.unlisted.as_ref()) != Some(card) {
                 log!("{task} waits on card {card} that the inbox does not list");
@@ -567,7 +380,7 @@ impl DomainRuntime {
             | "alondra/threadReady" | "alondra/inputAccepted" | "turn/started" | "turn/completed"
             | "item/started" | "item/completed"
             | "model/rerouted") {
-            self.orchestrator_progress();
+            self.note_orchestrator_progress();
         }
         let committed = store.load()?;
         self.publish(&committed);
@@ -805,26 +618,6 @@ impl DomainRuntime {
         self.execute_with(actor, envelope, transport, None, authorize)
     }
 
-    /// Whether Alondra launched this session: a recorded launch, or a scheduled run it started.
-    /// A node mod connected.
-    pub fn connect_node(&self, hello: crate::node_reports::Hello, at: alondra_core::Millis) -> u64 {
-        self.live.mods.connect(hello, at)
-    }
-
-    /// A node mod's report: what it says is kept for the views.
-    pub fn report(&self, envelope: crate::node_reports::Envelope, at: alondra_core::Millis) {
-        if let crate::node_reports::Report::PromptSubmit { origin } = envelope.report {
-            self.live.observe_prompt(&envelope.session_id, origin);
-        }
-        self.live.mods.apply(envelope, at);
-    }
-
-    pub(crate) fn launched_by_alondra(&self, agent: &AgentId) -> Result<bool> {
-        if self.store.lock_or_exit("the domain store").launched_by_alondra(&agent.0)? || self.live.mods.started_with_a_launch_key(&agent.0) {
-            return Ok(true);
-        }
-        Ok(self.state()?.schedule.runs.values().any(|run| run.launch.as_ref().is_some_and(|launch| launch.agent_id.as_ref() == Some(agent))))
-    }
     pub fn launch_plan(&self, task_id: &TaskId) -> Result<Option<alondra_daemon_engine_model::LaunchPlan>> {
         self.store.lock_or_exit("the domain store").launch_plan(task_id)
     }
@@ -864,12 +657,17 @@ impl DomainRuntime {
     pub(crate) fn set_task_worktree(&self, task: &TaskId, dir: &str) -> Result<()> {
         self.store.lock_or_exit("the domain store").set_task_worktree(task, dir, alondra_core::now_millis())?;
         let command = Command::RecordTaskWorktree { task_id: task.clone(), path: dir.to_owned(), origin: WorktreeOrigin::Task, branch: None };
-        crate::domain_github::execute_system(self, command).map_err(|error| anyhow::anyhow!("{error}"))
+        let state = self.state()?;
+        let envelope = CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            data_epoch: state.data_epoch.clone(),
+            command_id: format!("github-{}", crate::auth::random_hex(16)).into(),
+            expected_revision: state.revision,
+            command,
+        };
+        self.execute_as_system(envelope).map(drop).map_err(|error| anyhow::anyhow!("{error}"))
     }
-    /// What Alondra kept about a session only while it lives: the worktree it inherited and why
-    /// its replacement stopped short.
-    pub(crate) fn forget_ended_session(&self, agent: &str) -> Result<()> {
-        self.live.take_aborted_replace(agent);
+    pub(crate) fn forget_inherited_worktree(&self, agent: &str) -> Result<()> {
         self.store.lock_or_exit("the domain store").forget_inherited_worktree(agent)
     }
     pub fn record_model_decision(&self, decision: &crate::domain_store::model_metrics::Decision) -> Result<()> {
@@ -951,10 +749,10 @@ impl DomainRuntime {
                 hook(self);
             }
         }
-        if let Some(agent) = self.pause_card_resumed(actor, &envelope.command) {
+        if let Some(carry) = self.observers.iter().find_map(|observer| observer.carries_out(self, actor, &envelope.command)) {
             let _approval = crate::approval_lease::ApprovalLease::shared(&self.approval_home)?;
             authorize()?;
-            return self.resume_paused(&agent);
+            return carry();
         }
         let mut store = self.store.lock_or_exit("the domain store");
         // Lock order is domain store → approval lease. Revocation takes only the
@@ -978,7 +776,7 @@ impl DomainRuntime {
         }
         let mut commit = commit?;
         self.publish(&commit.state);
-        if let Some(sealed) = commit.sealed.take().filter(|sealed| !crate::sdk_owner::seals::empty(sealed)) {
+        if let Some(sealed) = commit.sealed.take().filter(|sealed| !seals::empty(sealed)) {
             self.seals.put(sealed);
         }
         if !commit.replayed && commit.outcome.changed {
@@ -989,78 +787,14 @@ impl DomainRuntime {
         }
         drop(store);
         if !commit.replayed && commit.outcome.changed {
-            crate::task_closer::settle_unattended(self, &commit.state);
-            self.allowed_always(&prepared.envelope.command, &commit.state);
-            self.retake_lost(&prepared.envelope.command, &commit.state);
-            self.retake_told(&prepared.envelope.command);
+            for observer in &self.observers {
+                observer.changed(self, &commit.state);
+            }
+            for observer in &self.observers {
+                observer.committed(self, &prepared.envelope.command, &commit.state);
+            }
         }
         Ok(commit.outcome)
-    }
-
-    /// The user's Resume on the card of a pause the gate holds a node of the Agent SDK in: the
-    /// gate, not the domain, ends that pause, so it is the Resume of the node's task.
-    fn pause_card_resumed(&self, actor: &Actor, command: &Command) -> Option<AgentId> {
-        let (Actor::User { .. }, Command::AnswerQuestion { interaction_id, option_id, .. }) = (actor, command) else { return None };
-        if option_id != NODE_PAUSE_RESUME {
-            return None;
-        }
-        let state = self.state().ok()?;
-        let card = state.interactions.get(interaction_id).filter(|card| state.node_pause_card(&card.id) && state.open(card))?;
-        let Scope::Task { task_id } = &card.scope else { return None };
-        state.tasks.get(task_id)?.agent_id.clone()
-    }
-
-    fn resume_paused(&self, agent: &AgentId) -> Result<CommandOutcome, StoreError> {
-        if !self.live.gate.resume_now(self, &agent.0, alondra_core::now_millis()) {
-            return Err(StoreError::Domain(DomainError::new("conflict", "The node is no longer paused")));
-        }
-        let revision = self.state().map_err(StoreError::Storage)?.revision;
-        Ok(CommandOutcome { revision, changed: false, effects: vec![], created_ids: vec![], superseded_acceptances: vec![],
-            effect: vec!["The paused node resumes now.".into()] })
-    }
-
-    /// «Try again», chosen on the card of a task whose SDK execution could not be taken over and
-    /// committed as its answer: the daemon takes the execution over again.
-    fn retake_lost(&self, command: &Command, state: &DomainState) {
-        let Command::AnswerQuestion { interaction_id, option_id, .. } = command else { return };
-        if option_id != alondra_core::domain::RETAKE {
-            return;
-        }
-        let Some(Scope::Task { task_id }) = state.interactions.get(interaction_id).map(|card| &card.scope) else { return };
-        crate::sdk_owner::retake_manually(self, task_id.clone());
-    }
-
-    /// Something was told to the node of an SDK task whose execution no owner of this daemon
-    /// holds: a host that resumes its session takes it over, so what it was told reaches it.
-    fn retake_told(&self, command: &Command) {
-        if let Command::TellNode { task_id, .. } = command {
-            crate::sdk_owner::take_if_unowned(self, task_id);
-        }
-        if let Command::SetModel { task_id, .. } | Command::SetPermissionMode { task_id, .. } | Command::ReadMcpStatus { task_id }
-            | Command::ReconnectMcp { task_id, .. } | Command::StartMcpSignIn { task_id, .. } | Command::ClearMcpSignIn { task_id, .. } = command {
-            crate::sdk_owner::wake_released(self, task_id);
-        }
-    }
-
-    /// «Allow always», chosen on the card of a decision Claude asked for through the SDK and
-    /// committed as its decision: the card's rules are written for the task's repo.
-    fn allowed_always(&self, command: &Command, state: &DomainState) {
-        let Command::AnswerQuestion { interaction_id, option_id, .. } = command else { return };
-        if option_id != Hold::ALWAYS {
-            return;
-        }
-        let Some(card) = state.interactions.get(interaction_id) else { return };
-        let Scope::Task { task_id } = &card.scope else { return };
-        let decided = state.lifecycle_journal.get(task_id).is_some_and(|journal| {
-            journal.iter().any(|record| matches!(record, LifecycleRecord::Decided { card, .. } if card == interaction_id))
-        });
-        let Some(rules) = card.card.allow_always.as_ref().and_then(alondra_core::allow_always::AllowAlways::rules).filter(|_| decided) else { return };
-        let written = self.task_worktree(task_id).and_then(|worktree| {
-            crate::allow_always::chosen_through_sdk(self, worktree.as_deref(), rules, Some(&task_id.0), &interaction_id.0)
-        });
-        if let Err(error) = written {
-            log!("allow always: the rules of {interaction_id} were not written: {error:#}");
-        }
     }
 
     pub fn execute_bearer(
@@ -1140,10 +874,10 @@ impl DomainRuntime {
         let mut commit = commit?;
         if !commit.replayed && commit.outcome.changed && matches!(principal, Principal::Orchestrator { .. }) {
             authority.record_change(&principal, &command_kind(&prepared.envelope.command));
-            self.orchestrator_progress();
+            self.note_orchestrator_progress();
         }
         self.publish(&commit.state);
-        if let Some(sealed) = commit.sealed.take().filter(|sealed| !crate::sdk_owner::seals::empty(sealed)) {
+        if let Some(sealed) = commit.sealed.take().filter(|sealed| !seals::empty(sealed)) {
             self.seals.put(sealed);
         }
         if !commit.replayed && commit.outcome.changed {
@@ -1154,7 +888,9 @@ impl DomainRuntime {
         }
         drop(store);
         if !commit.replayed && commit.outcome.changed {
-            crate::task_closer::settle_unattended(self, &commit.state);
+            for observer in &self.observers {
+                observer.changed(self, &commit.state);
+            }
         }
         Ok((commit.outcome, commit.replayed))
     }

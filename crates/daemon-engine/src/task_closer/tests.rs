@@ -51,7 +51,7 @@ impl Sessions for FakeSessions {
                         hook();
                     }
                     if let Some((domain, seen)) = self.watch_while_removing.lock().unwrap().as_mut() {
-                        *seen = Some(domain.live.begin_watch(SESSION));
+                        *seen = Some(domain.live().begin_watch(SESSION));
                     }
                     let ran = self.rm_answers.lock().unwrap().pop_front().unwrap_or_else(|| crate::node_close::Ran::ok(format!("removed {}", args[1])));
                     if ran.success {
@@ -157,9 +157,9 @@ async fn a_user_message_racing_after_removal_begins_is_explicitly_refused() {
 async fn another_session_watcher_does_not_leave_a_false_removal_claim() {
     let rig = Rig::new(Some(Duration::ZERO));
     rig.confirm();
-    assert!(rig.domain.live.begin_watch(SESSION));
+    assert!(rig.domain.live().begin_watch(SESSION));
     rig.pass(T0 + MINUTE).await;
-    rig.domain.live.end_watch(SESSION);
+    rig.domain.live().end_watch(SESSION);
     assert_eq!(rig.sessions.removals(), 0);
     let row = rig.domain.store.lock().unwrap().task_closing(&"t".into()).unwrap().unwrap();
     assert!(row.rm_started_at.is_none());
@@ -196,11 +196,11 @@ impl Rig {
             review_prs: false, dependencies: Default::default(), stack: None,
             launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
         });
-        domain.live.apply(&Event::DaemonSeen(DaemonObservation {
+        domain.live().apply(&Event::DaemonSeen(DaemonObservation {
             session_id: SESSION.into(), short_id: SHORT.into(), name: Some("Node".into()), ..Default::default()
         }));
-        domain.live.observe(&hook("SessionStart"));
-        domain.live.observe(&hook("Stop"));
+        domain.live().observe(&hook("SessionStart"));
+        domain.live().observe(&hook("Stop"));
         let node = Node::connect(&domain, SESSION);
         let sessions = FakeSessions::listing(&[SHORT]);
         Self { _home: Home(home), domain, sessions, node, timing: Timing::new(wait) }
@@ -346,8 +346,8 @@ async fn a_node_that_confirms_its_cleanup_is_closed_and_its_task_is_done() {
     assert!(!scratch.exists(), "the task's scratch folder goes with the task");
     assert_eq!(rig.sessions.calls.lock().unwrap().iter().filter(|call| call[0] == "rm" && call[1] == SHORT).count(), 1);
     rig.assert_done(NodeEnd::Closed);
-    assert!(rig.domain.live.begin_watch(SESSION), "the watch is released");
-    rig.domain.live.end_watch(SESSION);
+    assert!(rig.domain.live().begin_watch(SESSION), "the watch is released");
+    rig.domain.live().end_watch(SESSION);
     assert_eq!(rig.closing(), None);
 }
 
@@ -378,13 +378,13 @@ async fn with_the_wait_off_only_the_nodes_confirmation_closes_it() {
 #[tokio::test]
 async fn a_working_node_is_not_closed_until_it_is_idle() {
     let rig = Rig::new(thirty_minutes());
-    rig.domain.live.observe(&hook("UserPromptSubmit"));
-    assert!(rig.domain.live.node(SESSION).unwrap().busy);
+    rig.domain.live().observe(&hook("UserPromptSubmit"));
+    assert!(rig.domain.live().node(SESSION).unwrap().busy);
     rig.confirm();
     rig.pass(T0).await;
     assert_eq!(rig.sessions.removals(), 0);
     assert_eq!(rig.task().state, TaskState::Closing);
-    rig.domain.live.observe(&hook("Stop"));
+    rig.domain.live().observe(&hook("Stop"));
     rig.pass(T0 + MINUTE).await;
     rig.assert_done(NodeEnd::Closed);
 }
@@ -392,7 +392,7 @@ async fn a_working_node_is_not_closed_until_it_is_idle() {
 #[tokio::test]
 async fn a_node_waiting_for_a_permission_is_never_closed_and_counts_no_failure() {
     let rig = Rig::new(thirty_minutes());
-    rig.domain.live.observe(&hook("PermissionRequest"));
+    rig.domain.live().observe(&hook("PermissionRequest"));
     rig.confirm();
     rig.pass(T0).await;
     rig.pass(T0 + 120 * MINUTE).await;
@@ -529,11 +529,11 @@ async fn a_cancelled_tasks_busy_node_has_its_turn_cut_is_closed_once_idle_and_ge
     let rig = Rig::new(thirty_minutes());
     command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
     let told = rig.told().len();
-    rig.domain.live.observe(&hook("UserPromptSubmit"));
+    rig.domain.live().observe(&hook("UserPromptSubmit"));
     rig.pass(T0).await;
     assert_eq!(rig.sessions.removals(), 0, "not while it works");
     assert_eq!(rig.node.interrupts(), 1, "its turn is cut at once: the task no longer exists");
-    rig.domain.live.observe(&hook("Stop"));
+    rig.domain.live().observe(&hook("Stop"));
     rig.pass(T0 + MINUTE).await;
     assert_eq!(rig.sessions.removals(), 1);
     let task = rig.task();
@@ -623,7 +623,7 @@ async fn a_users_session_with_unproved_release_work_stays_available_after_merge(
 #[tokio::test]
 async fn the_orchestrator_is_never_closed() {
     let rig = Rig::new(thirty_minutes());
-    rig.domain.live.apply(&Event::MarkedOrchestrator { session_id: SESSION.into() });
+    rig.domain.live().apply(&Event::MarkedOrchestrator { session_id: SESSION.into() });
     rig.confirm();
     rig.pass(T0).await;
     assert!(rig.sessions.calls.lock().unwrap().is_empty());
@@ -662,13 +662,13 @@ const HOUR: i64 = 60 * MINUTE;
 #[tokio::test]
 async fn a_busy_node_of_a_finished_task_is_never_cut_and_closes_once_its_turn_ends() {
     let rig = Rig::new(thirty_minutes());
-    rig.domain.live.observe(&hook("UserPromptSubmit"));
+    rig.domain.live().observe(&hook("UserPromptSubmit"));
     for hours in [0, 1, 6, 24, 72] {
         rig.pass(T0 + hours * HOUR).await;
     }
     assert_eq!((rig.node.interrupts(), rig.sessions.removals(), rig.closing().unwrap().failures), (0, 0, 0));
     assert!(rig.cards().is_empty());
-    rig.domain.live.observe(&hook("Stop"));
+    rig.domain.live().observe(&hook("Stop"));
     rig.pass(T0 + 72 * HOUR + MINUTE).await;
     assert_eq!(rig.sessions.removals(), 1);
     rig.assert_done(NodeEnd::Closed);
@@ -678,7 +678,7 @@ async fn a_busy_node_of_a_finished_task_is_never_cut_and_closes_once_its_turn_en
 async fn a_busy_node_that_declared_work_after_the_merge_never_has_its_turn_cut() {
     let rig = Rig::new(thirty_minutes());
     rig.declare_post_merge_work(Some("release.sh publishes 0.2.58"));
-    rig.domain.live.observe(&hook("UserPromptSubmit"));
+    rig.domain.live().observe(&hook("UserPromptSubmit"));
     for minutes in [0, 31, 62, 120, 179] {
         rig.pass(T0 + minutes * MINUTE).await;
     }
@@ -719,7 +719,7 @@ async fn a_task_that_goes_back_to_work_while_its_session_is_removed_is_released_
     assert_eq!((task.state, task.agent_id.clone()), (TaskState::NotStarted, None), "ready to be relaunched, not working without a node");
     assert!(task.wrap_up.is_default());
     assert_eq!(rig.closing(), None);
-    assert_eq!(rig.domain.live.closed_task("t").map(|node| node.relaunch), Some(crate::live::Relaunch::ByItself),
+    assert_eq!(rig.domain.live().closed_task("t").map(|node| node.relaunch), Some(crate::live::Relaunch::ByItself),
         "what a relaunch needs is kept, and Alondra starts it by itself");
     let told: Vec<_> = rig.domain.state().unwrap().interactions.values().map(|i| i.body.clone()).collect();
     assert!(!told.iter().any(|body| body.contains("closed while the user asked for changes")), "the orchestrator is not asked to launch it: {told:?}");
@@ -794,7 +794,7 @@ async fn the_wait_runs_again_in_full_once_the_node_stops_declaring_its_work_afte
 async fn a_busy_node_working_after_the_merge_counts_no_failure() {
     let rig = Rig::new(thirty_minutes());
     rig.declare_post_merge_work(Some("deploy, brew and release.sh"));
-    rig.domain.live.observe(&hook("UserPromptSubmit"));
+    rig.domain.live().observe(&hook("UserPromptSubmit"));
     for minutes in [0, 31, 62, 93, 124, 155] {
         rig.pass(T0 + minutes * MINUTE).await;
     }
@@ -1113,7 +1113,7 @@ impl Rig {
     /// The node's session ends on its own, as Claude Code's SessionEnd hook reports it.
     fn session_ends(&self) {
         self.sessions.listed.lock().unwrap().clear();
-        self.domain.live.observe(&hook("SessionEnd"));
+        self.domain.live().observe(&hook("SessionEnd"));
         let agent = alondra_core::domain::AgentId(SESSION.into());
         crate::domain_agent_lifecycle::node_event(&self.domain, &agent, alondra_core::domain::NodeEvent::SessionClosed).unwrap();
         crate::domain_transport::session_ended(&self.domain, &agent).unwrap();

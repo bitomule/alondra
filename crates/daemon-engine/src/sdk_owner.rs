@@ -6,7 +6,6 @@ use alondra_core::clock;
 use alondra_core::clock::Instant;
 use crate::locks::Poisonable as _;
 pub mod backend;
-pub(crate) mod seals;
 mod worker;
 mod claude_history;
 mod node_environment;
@@ -15,7 +14,7 @@ pub(crate) use alondra_daemon_engine_model::NativeAccountIdentity;
 use worker::{Worker, Found};
 use alondra_core::accounts::{AccountKey, Provider};
 pub use backend::SdkBackend;
-pub(crate) use seals::Seals;
+pub(crate) use crate::domain_runtime::seals::{self, Seals};
 
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{Attached, Preparer, StoreError};
@@ -147,11 +146,11 @@ pub(crate) struct TakeoverTurn<'a> {
 
 impl<'a> TakeoverTurn<'a> {
     pub(crate) fn wait(domain: &'a DomainRuntime, task: &TaskId) -> Self {
-        let mut taking = domain.taking_over.lock_or_recover("the takeovers under way");
+        let mut taking = domain.sdk_owners().taking_over.lock_or_recover("the takeovers under way");
         while taking.contains(task) {
             #[cfg(any(test, feature = "test-hooks"))]
             domain.takeover_waited();
-            taking = domain.takeover_done.wait(taking).unwrap_or_else(std::sync::PoisonError::into_inner);
+            taking = domain.sdk_owners().takeover_done.wait(taking).unwrap_or_else(std::sync::PoisonError::into_inner);
         }
         taking.insert(task.clone());
         Self { domain, task: task.clone() }
@@ -160,8 +159,8 @@ impl<'a> TakeoverTurn<'a> {
 
 impl Drop for TakeoverTurn<'_> {
     fn drop(&mut self) {
-        self.domain.taking_over.lock_or_recover("the takeovers under way").remove(&self.task);
-        self.domain.takeover_done.notify_all();
+        self.domain.sdk_owners().taking_over.lock_or_recover("the takeovers under way").remove(&self.task);
+        self.domain.sdk_owners().takeover_done.notify_all();
     }
 }
 
@@ -191,14 +190,14 @@ pub(crate) struct InHand {
 
 impl InHand {
     fn new(domain: &Arc<DomainRuntime>, task: &TaskId) -> Self {
-        *domain.in_hand.lock_or_recover("the executions in hand").entry(task.clone()).or_default() += 1;
+        *domain.sdk_owners().in_hand.lock_or_recover("the executions in hand").entry(task.clone()).or_default() += 1;
         Self { domain: Arc::clone(domain), task: task.clone() }
     }
 }
 
 impl Drop for InHand {
     fn drop(&mut self) {
-        let mut held = self.domain.in_hand.lock_or_recover("the executions in hand");
+        let mut held = self.domain.sdk_owners().in_hand.lock_or_recover("the executions in hand");
         if let Some(count) = held.get_mut(&self.task) {
             *count -= 1;
             if *count == 0 {
@@ -573,9 +572,9 @@ fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch,
         .map_err(failed("admitting the execution"))?;
     #[cfg(any(test, feature = "test-hooks"))]
     if match &continuation {
-        Some(Continuation::Node(_)) => *domain.handovers.crash_after.lock().unwrap() == Some(crate::domain_store::HandoverStep::SdkAdmitted),
-        Some(Continuation::Moved { .. }) => *domain.moves.crash_after.lock().unwrap() == Some(crate::domain_store::AccountMoveStep::Admitted),
-        None => *domain.moves.crash_after.lock().unwrap() == Some(crate::domain_store::AccountMoveStep::Admitted),
+        Some(Continuation::Node(_)) => *domain.handovers().crash_after.lock().unwrap() == Some(crate::domain_store::HandoverStep::SdkAdmitted),
+        Some(Continuation::Moved { .. }) => *domain.moves().crash_after.lock().unwrap() == Some(crate::domain_store::AccountMoveStep::Admitted),
+        None => *domain.moves().crash_after.lock().unwrap() == Some(crate::domain_store::AccountMoveStep::Admitted),
         Some(Continuation::Transition { .. }) | Some(Continuation::Native { .. }) => false,
     } {
         return Err(Failed::new("the daemon died after the admission's commit".into()));
@@ -667,7 +666,7 @@ pub(crate) async fn launch_prepared(domain: &DomainRuntime, launch: Launch, reop
         .map_err(|Failed { why, .. }| DomainError::new("launch_failed", format!("the task did not start through the Agent SDK: {why}")))?;
     let agent = driver.agent().clone();
     domain.add_sdk_owner(Owner::spawn(driver));
-    domain.live.forget_closed_task(&task.0);
+    domain.live().forget_closed_task(&task.0);
     Ok(serde_json::json!({"agent_id": agent, "short_id": agent.0.chars().take(8).collect::<String>(), "task": task}))
 }
 
@@ -874,7 +873,7 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
             log!("the live SDK host of {task} runs the release before: it goes on, and once the node rests a host of this release takes its place");
         }
         let mut driver = Driver::new(domain, worker, scope, task.clone(), agent, Duration::from_secs(backend.io_timeout_seconds));
-        if let Some(scope)=live_scope{driver.domain.contexts.forget(&driver.task);driver.domain.live.mods.restore_codex_scope(&driver.agent.0,scope,alondra_core::now_millis());}
+        if let Some(scope)=live_scope{driver.domain.contexts().forget(&driver.task);driver.domain.live().mods.restore_codex_scope(&driver.agent.0,scope,alondra_core::now_millis());}
         driver.log_host("was adopted");
         driver.receive_permits(reserved.permits);
         for command in adoption.commands {
@@ -1010,8 +1009,8 @@ pub fn adopt_all(domain: &Arc<DomainRuntime>, backend: &SdkBackend) {
         match taken {
             Ok(driver) => {
                 domain.add_sdk_owner(Owner::spawn(driver));
-                domain.live.forget_closed_task(&task.0);
-                domain.host_losses_told.lock_or_recover("the tasks told of a lost host").remove(&task);
+                domain.live().forget_closed_task(&task.0);
+                domain.sdk_owners().host_losses_told.lock_or_recover("the tasks told of a lost host").remove(&task);
                 log!("the SDK execution of {task} was taken over: the same Claude session goes on");
             }
             Err(failed) => not_taken(domain, &task, failed),
@@ -1056,13 +1055,13 @@ fn not_taken(domain: &DomainRuntime, task: &TaskId, failed: Failed) {
         return lost(domain, task, &failed.why);
     }
     log!("the SDK execution of {task} waits for disk space to be taken over: {failed}");
-    domain.waiting_for_space.lock_or_recover("the tasks waiting for space").insert(task.clone());
+    domain.sdk_owners().waiting_for_space.lock_or_recover("the tasks waiting for space").insert(task.clone());
 }
 
 /// The machine watch measured space on the disk: each execution whose takeover found it full is
 /// taken over again, unless it ended or another owner took it meanwhile.
 pub(crate) fn retake_waiting_for_space(domain: &DomainRuntime) {
-    let waiting = std::mem::take(&mut *domain.waiting_for_space.lock_or_recover("the tasks waiting for space"));
+    let waiting = std::mem::take(&mut *domain.sdk_owners().waiting_for_space.lock_or_recover("the tasks waiting for space"));
     if waiting.is_empty() {
         return;
     }
@@ -1086,7 +1085,7 @@ pub(crate) fn lost(domain: &DomainRuntime, task: &TaskId, why: &str) {
         log!("{task} is paused: a host that resumes its session takes it over when the pause ends");
         return;
     }
-    let quiet = !domain.host_losses_told.lock_or_recover("the tasks told of a lost host").insert(task.clone());
+    let quiet = !domain.sdk_owners().host_losses_told.lock_or_recover("the tasks told of a lost host").insert(task.clone());
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,
         data_epoch: state.data_epoch.clone(),
@@ -1158,7 +1157,7 @@ pub(crate) fn take_working_unowned(domain: &DomainRuntime, state: &DomainState, 
         .filter(|task| to_take(domain, state, task))
         .filter_map(|task| Some((task.clone(), state.lifecycle_of(&task).ok()?.revision())))
         .collect();
-    let due = due_unowned(&mut domain.unowned_takes.lock_or_recover("the tasks taken over unowned"), working, now);
+    let due = due_unowned(&mut domain.sdk_owners().unowned_takes.lock_or_recover("the tasks taken over unowned"), working, now);
     for task in due {
         log!("{task} reads as working with no SDK host of its own: one that resumes its session takes it over");
         retake(domain, task);
@@ -1171,7 +1170,7 @@ pub(crate) fn take_working_unowned(domain: &DomainRuntime, state: &DomainState, 
 pub(crate) fn close_hosts_of_ended_nodes(domain: &DomainRuntime, state: &DomainState) {
     for (task, agent) in ended_nodes_with_hosts(domain, state) {
         let Some((_, runtime)) = domain.sdk() else { return };
-        let mut retakes = domain.retakes.lock_or_recover("the retakes");
+        let mut retakes = domain.sdk_owners().retakes.lock_or_recover("the retakes");
         retakes.retain(|(_, retake)| !retake.is_finished());
         if retakes.iter().any(|(taking, _)| *taking == task) {
             continue;
@@ -1264,7 +1263,7 @@ fn retake_with_policy(domain: &DomainRuntime, task: TaskId,explicit_account_retr
         return lost(domain, &task, NO_HOST);
     };
     let backend = backend.clone();
-    let mut retakes = domain.retakes.lock_or_recover("the retakes");
+    let mut retakes = domain.sdk_owners().retakes.lock_or_recover("the retakes");
     retakes.retain(|(_, retake)| !retake.is_finished());
     if retakes.iter().any(|(taking, _)| *taking == task) {
         return;
@@ -1342,7 +1341,7 @@ fn take_again(runtime: &Arc<DomainRuntime>, backend: &SdkBackend, task: &TaskId,
     match taken {
         Ok(driver) => {
             runtime.add_sdk_owner(Owner::spawn(driver));
-            runtime.host_losses_told.lock_or_recover("the tasks told of a lost host").remove(task);
+            runtime.sdk_owners().host_losses_told.lock_or_recover("the tasks told of a lost host").remove(task);
             log!("the SDK execution of {task} was taken over again: the same Claude session goes on");
         }
         Err(failed) => not_taken(runtime, task, failed),
@@ -1359,7 +1358,7 @@ pub(crate) fn halt(domain: &DomainRuntime, task: TaskId, agent: AgentId) {
     }
     let Some((backend, runtime)) = domain.sdk() else { return };
     let backend = backend.clone();
-    let mut retakes = domain.retakes.lock_or_recover("the retakes");
+    let mut retakes = domain.sdk_owners().retakes.lock_or_recover("the retakes");
     retakes.retain(|(_, retake)| !retake.is_finished());
     if retakes.iter().any(|(taking, _)| *taking == task) {
         return;
@@ -1377,20 +1376,20 @@ pub(crate) fn halt(domain: &DomainRuntime, task: TaskId, agent: AgentId) {
 
 /// Whether a retake of `task`, or the halt that replaces its host for a pause, is under way.
 pub(crate) fn being_retaken(domain: &DomainRuntime, task: &TaskId) -> bool {
-    domain.retakes.lock_or_recover("the retakes").iter().any(|(taking, retake)| taking == task && !retake.is_finished())
+    domain.sdk_owners().retakes.lock_or_recover("the retakes").iter().any(|(taking, retake)| taking == task && !retake.is_finished())
 }
 
 /// Whether the task runs through the SDK, has not ended, and no owner of this daemon, launch,
 /// takeover or retake under way, or move to another account holds its execution.
 fn to_take(domain: &DomainRuntime, state: &DomainState, task: &TaskId) -> bool {
     unowned(domain, state, task) && state.lifecycle_of(task).ok().is_none_or(|lifecycle| !lifecycle.host_released()
-        || !lifecycle.pending_inputs().is_empty() && !domain.live.gate.waits_for_slot(domain, state, task))
+        || !lifecycle.pending_inputs().is_empty() && !domain.live().gate.waits_for_slot(domain, state, task))
 }
 
 fn unowned(domain: &DomainRuntime, state: &DomainState, task: &TaskId) -> bool {
     state.tasks.get(task).and_then(|task| task.agent_id.as_ref()).is_some_and(|agent| !domain.owns_sdk_host(agent))
-        && !domain.in_hand.lock_or_recover("the executions in hand").contains_key(task)
-        && !domain.retakes.lock_or_recover("the retakes").iter().any(|(taking, retake)| taking == task && !retake.is_finished())
+        && !domain.sdk_owners().in_hand.lock_or_recover("the executions in hand").contains_key(task)
+        && !domain.sdk_owners().retakes.lock_or_recover("the retakes").iter().any(|(taking, retake)| taking == task && !retake.is_finished())
         && !crate::account_move::holds_execution(domain, task)
         && !crate::provider_transition::holds_execution(domain, task)
         && takeable(state, task)
@@ -1672,7 +1671,7 @@ impl Driver {
             Err(error) => return Err(failed("recording the command")(error)),
         }
         let command = self.sealed().commands.pop().ok_or_else(|| Failed::new("the command left no seal".into()))?;
-        self.domain.contexts.handed(&self.task, alondra_core::now_millis());
+        self.domain.contexts().handed(&self.task, alondra_core::now_millis());
         let handoff = self.submit(&command);
         if handoff == Handoff::Uncertain && self.worker.host_exited() {
             self.host_closed = true;
@@ -1831,7 +1830,7 @@ impl Driver {
             }
         }
         let (worker, home) = (&self.worker, self.domain.home());
-        self.domain.live.outputs.lock_or_recover("the node outputs").insert(self.task.clone(), alondra_core::now_millis());
+        self.domain.live().outputs.lock_or_recover("the node outputs").insert(self.task.clone(), alondra_core::now_millis());
         let journaled = self.journal_len();
         let (acceptance, unrecorded) = commit_observation(&self.domain, &self.scope, &binding, generation, &batch, worker.normalizer(), home,identity.as_ref())
             .map_err(failed(&format!("committing the observation at cursor {}", batch.cursor)))?;
@@ -1840,7 +1839,7 @@ impl Driver {
             self.results.retain(|awaited| *awaited != answered);
         }
         if let Some(event) = self.worker.context_event(&batch) {
-            self.domain.contexts.observed(&self.task, event, alondra_core::now_millis());
+            self.domain.contexts().observed(&self.task, event, alondra_core::now_millis());
         }
         feed(self.worker.provider(), &self.domain, &self.agent, &batch);
         if let Some(line) = alondra_provider_claude::sdk_message(&batch).and_then(|message| claude_said(&message, &mut self.claude_session)) {
@@ -1885,7 +1884,7 @@ impl Driver {
             let state = read.state();
             state.turn_passes_gate(&self.task) && state.lifecycle_of(&self.task).is_ok_and(|lifecycle| lifecycle.input_starts_turn())
         };
-        !starts || self.domain.live.gate.may_take_turn(&self.domain, &self.task, alondra_core::now_millis())
+        !starts || self.domain.live().gate.may_take_turn(&self.domain, &self.task, alondra_core::now_millis())
     }
 
     /// The user's answer to a decision lets a turn go on that held no slot while it waited on them.
@@ -1896,7 +1895,7 @@ impl Driver {
             let state = read.state();
             state.turn_passes_gate(&self.task) && state.lifecycle_of(&self.task).is_ok_and(|lifecycle| lifecycle.answer_goes_on())
         };
-        !goes_on || self.domain.live.gate.may_take_turn(&self.domain, &self.task, alondra_core::now_millis())
+        !goes_on || self.domain.live().gate.may_take_turn(&self.domain, &self.task, alondra_core::now_millis())
     }
 
     /// Whether the task's lifecycle waits for the host: an input it was handed and has not taken
@@ -2033,7 +2032,7 @@ impl Driver {
             log!("the SDK host of {} did not open its Claude session within {} s of its input: another host takes its place", self.task, self.opening_timeout.as_secs());
             return Err(Failed::new("the host did not open its Claude session in time".into()));
         }
-        if self.domain.requeues.lock_or_recover("the requeued tasks").remove(&self.task) {
+        if self.domain.sdk_owners().requeues.lock_or_recover("the requeued tasks").remove(&self.task) {
             self.requeued = true;
             log!("the process of {} wrote nothing since it was handed an input and no event named it: it is stopped and a host that resumes the same session gets the input again, flagged as possibly received, when the gate gives it a slot", self.task);
             return Err(Failed::new("the process wrote nothing since it was handed an input".into()));
@@ -2184,11 +2183,11 @@ impl Driver {
 
 impl Drop for Driver {
     fn drop(&mut self) {
-        self.domain.live.gate.owner_ended(&self.task);
+        self.domain.live().gate.owner_ended(&self.task);
         if !self.releases {
-            self.domain.contexts.forget(&self.task);
+            self.domain.contexts().forget(&self.task);
         }
-        self.domain.live.mods.sdk_ended(&self.agent.0, alondra_core::now_millis());
+        self.domain.live().mods.sdk_ended(&self.agent.0, alondra_core::now_millis());
     }
 }
 
@@ -2528,3 +2527,216 @@ impl Drop for Owner {
 #[cfg(any(test, feature = "test-hooks"))]
 #[path = "sdk_owner/tests.rs"]
 pub mod tests;
+
+/// What this daemon keeps about the SDK hosts it owns and the executions it takes over.
+#[derive(Default)]
+pub struct Owners {
+    /// A holder that panics leaves it whole, so it is recovered: `add_sdk_owner` takes, partitions
+    /// and puts back the list with only field and atomic reads in between; the hosts stop outside
+    /// it.
+    pub held: Mutex<Vec<Owner>>,
+    /// The executions being taken over again, each with its task, while that runs.
+    /// A holder that panics leaves it whole, so it is recovered: a retain and then one push of a
+    /// thread already spawned.
+    pub(crate) retakes: Mutex<Vec<(TaskId, std::thread::JoinHandle<()>)>>,
+    /// The tasks whose SDK execution is in hand, with how many hold it: a launch or a takeover
+    /// under way, or the driver of its host. Nothing takes over an execution in hand.
+    /// A holder that panics leaves it whole, so it is recovered: one count up or down.
+    pub(crate) in_hand: Mutex<BTreeMap<TaskId, usize>>,
+    /// The tasks whose execution a takeover is taking now: another takeover of the same task waits
+    /// for it on `takeover_done`, so two never reserve an owner and start a host at once.
+    /// A holder that panics leaves it whole, so it is recovered: one insert or one remove.
+    pub(crate) taking_over: Mutex<BTreeSet<TaskId>>,
+    pub(crate) takeover_done: std::sync::Condvar,
+    /// The executions whose takeover found the disk full: taken over again once the machine watch
+    /// measures space, never given up for it.
+    /// A holder that panics leaves it whole, so it is recovered: one insert or one take.
+    pub(crate) waiting_for_space: Mutex<BTreeSet<TaskId>>,
+    /// The tasks whose lost host the user already heard of, until a takeover works again.
+    pub(crate) host_losses_told: Mutex<BTreeSet<TaskId>>,
+    /// When the gate last took over each task it found working with no owner of this daemon.
+    pub(crate) unowned_takes: Mutex<BTreeMap<TaskId, (alondra_core::Millis, u64)>>,
+    /// The tasks whose session took no turn on the input offered again: their owner puts a host
+    /// that resumes the same session in place of its own, and the input waits for a slot.
+    pub(crate) requeues: Mutex<BTreeSet<TaskId>>,
+    /// Set at startup only in a sandbox daemon whose configuration names one: otherwise no task
+    /// ever runs through the SDK.
+    backend: std::sync::OnceLock<(SdkBackend, std::sync::Weak<DomainRuntime>)>,
+    #[cfg(any(test, feature = "test-hooks"))]
+    after_owner_reserved: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    #[cfg(any(test, feature = "test-hooks"))]
+    takeover_waits: Mutex<Option<Box<dyn FnMut() + Send>>>,
+    #[cfg(any(test, feature = "test-hooks"))]
+    owner_failures: Mutex<Option<Box<dyn Fn(String) + Send>>>,
+    /// The nodes whose driver a test steps by hand, with no owner thread: they count as owned.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) driven_by_hand: Mutex<BTreeSet<AgentId>>,
+}
+
+crate::extension!(Owners);
+
+impl DomainRuntime {
+    pub fn sdk_owners(&self) -> &Owners {
+        self.extension()
+    }
+    /// Only a sandbox daemon whose configuration names an SDK backend calls this, once.
+    pub fn enable_sdk(self: &Arc<Self>, backend: SdkBackend) {
+        let _ = self.sdk_owners().backend.set((backend, Arc::downgrade(self)));
+    }
+    /// The SDK backend and the runtime its owners run on, when this daemon has one.
+    pub fn sdk(&self) -> Option<(&SdkBackend, Arc<DomainRuntime>)> {
+        let (backend, runtime) = self.sdk_owners().backend.get()?;
+        Some((backend, runtime.upgrade()?))
+    }
+    /// Stops every SDK owner and waits for each host's exit; nothing of an SDK host outlives the
+    /// daemon that owns it.
+    pub fn stop_sdk_owners(&self) {
+        self.join_retakes();
+        let owners = std::mem::take(&mut *self.sdk_owners().held.lock_or_recover("the SDK owners"));
+        log!("stopping {} SDK host(s)", owners.len());
+        for mut owner in owners {
+            match owner.stop() {
+                Ok(()) => log!("the SDK host of {} and its process group exited", owner.agent()),
+                Err(error) => log!("the SDK host of {} did not stop with the daemon: {error}", owner.agent()),
+            }
+        }
+    }
+    /// Waits until every execution being taken over again is taken, or has its card.
+    pub(crate) fn join_retakes(&self) {
+        let retakes = std::mem::take(&mut *self.sdk_owners().retakes.lock_or_recover("the retakes"));
+        for (_, retake) in retakes {
+            let _ = retake.join();
+        }
+    }
+    /// Whether this daemon owns the SDK host of `agent`: an owner of it runs and has not ended.
+    pub fn owns_sdk_host(&self, agent: &AgentId) -> bool {
+        #[cfg(any(test, feature = "test-hooks"))]
+        if self.sdk_owners().driven_by_hand.lock().expect("driven by hand poisoned").contains(agent) {
+            return true;
+        }
+        self.sdk_owners().held.lock_or_recover("the SDK owners").iter().any(|owner| owner.agent() == agent && !owner.ended())
+    }
+    /// The process group of every node host this daemon owns now, which is what a node costs.
+    pub(crate) fn node_groups_by_agent(&self) -> Vec<(AgentId, i32)> {
+        self.sdk_owners().held.lock_or_recover("the SDK owners").iter()
+            .filter_map(|owner| owner.host_group().map(|group| (owner.agent().clone(), group))).collect()
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn node_groups(&self) -> Vec<i32> {
+        self.node_groups_by_agent().into_iter().map(|(_, group)| group).collect()
+    }
+    /// Keeps `owner` as the owner of its node's host, in place of any of that node that ended on
+    /// its own. Those are joined once the list is released: their end may read it.
+    pub fn add_sdk_owner(&self, owner: Owner) {
+        let ended: Vec<Owner> = {
+            let mut owners = self.sdk_owners().held.lock_or_recover("the SDK owners");
+            let (ended, kept) = std::mem::take(&mut *owners).into_iter().partition(|held| held.agent() == owner.agent() && held.ended());
+            *owners = kept;
+            owners.push(owner);
+            ended
+        };
+        drop(ended);
+    }
+    /// Asks the owner of `agent`'s host, if it holds one, to close it.
+    pub(crate) fn ask_to_release_host(&self, agent: &AgentId) {
+        if let Some(owner) = self.sdk_owners().held.lock_or_recover("the SDK owners").iter().find(|owner| owner.agent() == agent && !owner.ended()) {
+            owner.ask_to_release();
+        }
+    }
+    /// Stops the SDK host of `agent` and waits until it and its whole process group exited. `Ok`
+    /// with nothing to stop when this daemon owns no host for it.
+    pub(crate) fn stop_sdk_host(&self, agent: &AgentId) -> Result<(), Failed> {
+        self.take_sdk_owner(agent).map_or(Ok(()), |mut owner| owner.stop())
+    }
+    /// Stops the host of a node whose task is over, once the turn its Claude runs, if any, has
+    /// ended as an interrupted turn.
+    pub(crate) fn close_sdk_host(&self, agent: &AgentId) -> Result<(), Failed> {
+        self.take_sdk_owner(agent).map_or(Ok(()), |mut owner| owner.close())
+    }
+    /// Stops the host of a paused node as `close_sdk_host` does, and every process under it. `None`
+    /// when this daemon owns no host for it.
+    pub(crate) fn halt_sdk_host(&self, agent: &AgentId) -> Option<Result<(), Failed>> {
+        self.take_sdk_owner(agent).map(|mut owner| owner.halt())
+    }
+    fn take_sdk_owner(&self, agent: &AgentId) -> Option<Owner> {
+        let mut owners = self.sdk_owners().held.lock_or_recover("the SDK owners");
+        owners.iter().position(|owner| owner.agent() == agent && !owner.ended())
+            .or_else(|| owners.iter().position(|owner| owner.agent() == agent))
+            .map(|at| owners.remove(at))
+    }
+    /// Runs `hook` once, as the next takeover has reserved its owner and not yet looked for the host.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn after_owner_reserved(&self, hook: impl FnOnce() + Send + 'static) {
+        *self.sdk_owners().after_owner_reserved.lock().unwrap() = Some(Box::new(hook));
+    }
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn owner_reserved(&self) {
+        let hook = self.sdk_owners().after_owner_reserved.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+    /// Runs `hook` each time a takeover waits for another of the same task.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn on_takeover_wait(&self, hook: impl FnMut() + Send + 'static) {
+        *self.sdk_owners().takeover_waits.lock().unwrap() = Some(Box::new(hook));
+    }
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn takeover_waited(&self) {
+        if let Some(hook) = self.sdk_owners().takeover_waits.lock().unwrap().as_mut() {
+            hook();
+        }
+    }
+    /// Every failure an SDK owner reports from now on.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn owner_failures(&self) -> std::sync::mpsc::Receiver<String> {
+        let (sender, failures) = std::sync::mpsc::channel();
+        self.on_owner_failure(move |why| drop(sender.send(why)));
+        failures
+    }
+    /// Calls `hook` with every failure an SDK owner reports from now on.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn on_owner_failure(&self, hook: impl Fn(String) + Send + 'static) {
+        *self.sdk_owners().owner_failures.lock().unwrap() = Some(Box::new(hook));
+    }
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn owner_failed(&self, why: String) {
+        if let Some(hook) = self.sdk_owners().owner_failures.lock().unwrap().as_ref() {
+            hook(why);
+        }
+    }
+}
+
+/// Takes an SDK execution over again when a committed command asks for it.
+pub(crate) struct Retakes;
+
+impl crate::domain_runtime::CommitObserver for Retakes {
+    fn committed(&self, domain: &DomainRuntime, command: &Command, state: &DomainState) {
+        retake_lost(domain, command, state);
+        retake_told(domain, command);
+    }
+}
+
+/// «Try again», chosen on the card of a task whose SDK execution could not be taken over and
+/// committed as its answer: the daemon takes the execution over again.
+fn retake_lost(domain: &DomainRuntime, command: &Command, state: &DomainState) {
+    let Command::AnswerQuestion { interaction_id, option_id, .. } = command else { return };
+    if option_id != alondra_core::domain::RETAKE {
+        return;
+    }
+    let Some(Scope::Task { task_id }) = state.interactions.get(interaction_id).map(|card| &card.scope) else { return };
+    retake_manually(domain, task_id.clone());
+}
+
+/// Something was told to the node of an SDK task whose execution no owner of this daemon
+/// holds: a host that resumes its session takes it over, so what it was told reaches it.
+fn retake_told(domain: &DomainRuntime, command: &Command) {
+    if let Command::TellNode { task_id, .. } = command {
+        take_if_unowned(domain, task_id);
+    }
+    if let Command::SetModel { task_id, .. } | Command::SetPermissionMode { task_id, .. } | Command::ReadMcpStatus { task_id }
+        | Command::ReconnectMcp { task_id, .. } | Command::StartMcpSignIn { task_id, .. } | Command::ClearMcpSignIn { task_id, .. } = command {
+        wake_released(domain, task_id);
+    }
+}

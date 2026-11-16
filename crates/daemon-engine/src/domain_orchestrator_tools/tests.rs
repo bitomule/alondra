@@ -239,11 +239,11 @@ fn bare_world() -> Fixture {
     crate::machine_watch::pace(&domain, &alondra_core::Machine { at: 1, memory_total: 16 << 30,
         memory_available: 12 << 30, memory_free_percent: Some(75), cpus: 11,
         disk_total: 500_000_000_000, disk_available: 400_000_000_000, ..Default::default() });
-    domain.live.machine_watch.measure_disk(crate::disk::Space { total: 500_000_000_000, free: 400_000_000_000, purgeable: 0 });
+    domain.live().machine_watch.measure_disk(crate::disk::Space { total: 500_000_000_000, free: 400_000_000_000, purgeable: 0 });
     let sessions = Arc::new(FakeSessions::default());
     let _ = sessions.domain.set(Arc::downgrade(&domain));
-    domain.handovers.use_sessions(sessions.clone() as Arc<dyn BgSessions>);
-    *domain.handovers.turn_deadline.lock().unwrap() = Some(std::time::Duration::from_millis(20));
+    domain.handovers().use_sessions(sessions.clone() as Arc<dyn BgSessions>);
+    *domain.handovers().turn_deadline.lock().unwrap() = Some(std::time::Duration::from_millis(20));
     command(&domain, Actor::System, Command::RegisterAgent { agent_id: "agent-b".into(), name: "Instance B".into(), at: 0 });
     command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Make the editor readable".into(), auto_merge: false, maintenance: false, message: false });
     command(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Readable editor".into() });
@@ -361,7 +361,7 @@ impl BgSessions for FakeSessions {
             self.stopped.lock().unwrap().push(session.into());
             let domain = self.domain.get().and_then(Weak::upgrade);
             if let Some(domain) = &domain {
-                self.busy_at_stop.lock().unwrap().push(domain.live.node(session).is_some_and(|node| node.busy));
+                self.busy_at_stop.lock().unwrap().push(domain.live().node(session).is_some_and(|node| node.busy));
             }
             Ok(())
         })
@@ -697,8 +697,8 @@ async fn a_disk_preflight_refusal_invalidates_admission_before_a_remounted_volum
     const GB: u64 = 1_000_000_000;
     for origin in [Origin::Auto, Origin::Admitted] {
         let f = bare_world();
-        let gate = &f.domain.live.gate;
-        let watch = &f.domain.live.machine_watch;
+        let gate = &f.domain.live().gate;
+        let watch = &f.domain.live().machine_watch;
         gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(4)) });
         let mount = PathBuf::from("/Volumes/BuildCache");
         let space = |free| crate::disk::Space { total: 500 * GB, free, purgeable: 0 };
@@ -739,14 +739,14 @@ async fn a_disk_preflight_refusal_invalidates_admission_before_a_remounted_volum
 async fn a_launch_is_refused_while_usage_is_exhausted_and_goes_ahead_once_it_is_back() {
     let f = world();
     let now = alondra_core::now_millis();
-    f.domain.live.usage_pause.exhaust(Some(now + 3_600_000), now);
+    f.domain.live().usage_pause.exhaust(Some(now + 3_600_000), now);
     let refused = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap_err();
     assert_eq!(refused.code, "usage_exhausted");
     assert!(refused.message.contains("No Claude account on this Mac has usage left"), "{}", refused.message);
     assert!(f.sdk().starts().is_empty());
     assert!(f.task_node().is_none(), "the task is left as it was");
 
-    f.domain.live.usage_pause.resume(alondra_core::now_millis());
+    f.domain.live().usage_pause.resume(alondra_core::now_millis());
     launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
     assert_eq!(f.launched(1).await.0.len(), 1);
 }
@@ -760,7 +760,7 @@ async fn a_launch_that_finds_no_account_while_usage_is_exhausted_waits_for_usage
     std::fs::write(alondra_core::options::path_in(&f.home), "[accounts]\nconnected = []\n").unwrap();
     command(&f.domain, Actor::System, Command::RecordTaskSelection { task_id: "t".into(), selection: TaskSelection::automatic(ModelProfile::Implementation), pending: None });
     let now = alondra_core::now_millis();
-    f.domain.live.usage_pause.exhaust(Some(now + 3_600_000), now);
+    f.domain.live().usage_pause.exhaust(Some(now + 3_600_000), now);
     let refused = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "claude/sonnet"})), |_| None).await.unwrap_err();
     assert_eq!(refused.code, "usage_exhausted", "{refused:?}");
     assert!(f.sdk().starts().is_empty());
@@ -872,12 +872,12 @@ async fn worktrees_root_admission_checks_storage_space_before_creating_a_worktre
     let original = std::fs::read_to_string(&options).unwrap_or_default();
     std::fs::write(&options, alondra_core::options::with_worktrees_root(&original, Some(&root)).unwrap()).unwrap();
     let space = |free| crate::disk::Space { total: 500_000_000_000, free, purgeable: 0 };
-    f.domain.live.machine_watch.give_launch_space(path.clone(), space(1_000_000_000));
+    f.domain.live().machine_watch.give_launch_space(path.clone(), space(1_000_000_000));
     let queued = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
     assert_eq!(queued["queued"], true);
     assert!(!path.join("App").exists(), "admission happens before creating the repository or task folder");
     assert!(f.sdk().starts().is_empty(), "the healthy system disk cannot substitute for full worktree storage");
-    f.domain.live.machine_watch.give_launch_space(path.clone(), space(400_000_000_000));
+    f.domain.live().machine_watch.give_launch_space(path.clone(), space(400_000_000_000));
     crate::admission::pass(&f.domain, &f.home).await.unwrap();
     assert_eq!(f.launched(1).await.0, [path.join("App/t")]);
 }
@@ -955,7 +955,7 @@ async fn worktrees_root_retains_volume_identity_on_the_daemon_disk_after_options
 #[tokio::test]
 async fn a_launch_while_the_disk_is_nearly_full_waits_in_the_queue_and_starts_once_it_has_space() {
     let f = world();
-    f.domain.live.machine_watch.set_disk_low(true);
+    f.domain.live().machine_watch.set_disk_low(true);
     let queued = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
     assert_eq!(queued["queued"], true, "{queued}");
     assert!(queued["message"].as_str().unwrap().contains("the disk has no room for one more build (1.0 GB free of 5.0 GB needed)"), "{queued}");
@@ -963,7 +963,7 @@ async fn a_launch_while_the_disk_is_nearly_full_waits_in_the_queue_and_starts_on
     assert!(f.task_node().is_none(), "the task waits as it was");
     assert_eq!(f.domain.store.lock().unwrap().launch_queue().unwrap().len(), 1);
 
-    f.domain.live.machine_watch.set_disk_low(false);
+    f.domain.live().machine_watch.set_disk_low(false);
     crate::admission::pass(&f.domain, &f.home).await.unwrap();
     assert_eq!(f.launched(1).await.0.len(), 1);
 }
@@ -980,7 +980,7 @@ async fn a_task_whose_node_the_user_closed_is_relaunched_for_that_task_in_the_cl
     close_sdk_node(&f, &old);
     let state = f.domain.state().unwrap();
     assert_eq!((state.tasks[&"t".into()].state, state.tasks[&"t".into()].agent_id.clone()), (TaskState::NotStarted, None));
-    assert_eq!(f.domain.live.closed_task_ids(), ["t"]);
+    assert_eq!(f.domain.live().closed_task_ids(), ["t"]);
 
     let answer = relaunch(&f.domain, &f.home, &"t".into()).await.unwrap();
     let agent = agent_of(&answer);
@@ -991,7 +991,7 @@ async fn a_task_whose_node_the_user_closed_is_relaunched_for_that_task_in_the_cl
     let state = f.domain.state().unwrap();
     assert_eq!(state.agents[&agent].name, "Instance B", "it keeps the closed node's name");
     assert_eq!(state.tasks[&"t".into()].agent_id, Some(agent));
-    assert!(f.domain.live.closed_task_ids().is_empty(), "the task no longer waits for a relaunch");
+    assert!(f.domain.live().closed_task_ids().is_empty(), "the task no longer waits for a relaunch");
     let again = relaunch(&f.domain, &f.home, &"t".into()).await.unwrap_err();
     assert_eq!(again.code, "conflict");
 }
@@ -1408,7 +1408,7 @@ async fn replacing_a_tasks_node_stops_it_keeps_its_folder_and_gives_the_task_to_
     assert_eq!(state.agents[&agent].name, "Instance B", "it keeps the old node's name");
     assert_eq!(state.tasks[&TaskId::from("t")].agent_id, Some(agent));
     assert!(!alondra_core::domain::ReadIndex::build(&state).holds_slot(&old), "the old node is disconnected");
-    assert!(f.domain.live.closed_task_ids().is_empty());
+    assert!(f.domain.live().closed_task_ids().is_empty());
 }
 
 #[tokio::test]
@@ -1466,7 +1466,7 @@ async fn a_replacement_whose_stop_fails_launches_nothing_and_the_old_node_keeps_
     assert_eq!(state.tasks[&TaskId::from("t")].agent_id, Some(AgentId::from("agent-b")), "the old node keeps its task");
     assert_eq!(state.tasks[&TaskId::from("t")].state, TaskState::Running);
     assert_eq!(state.agents.len(), 1, "no new agent was registered");
-    assert!(state.agents[&AgentId::from("agent-b")].phase.live() && !f.domain.live.is_closed("agent-b"));
+    assert!(state.agents[&AgentId::from("agent-b")].phase.live() && !f.domain.live().is_closed("agent-b"));
 }
 
 fn release_reasons(f: &Fixture) -> Vec<String> {
@@ -1510,17 +1510,17 @@ async fn a_node_that_ends_after_its_replacement_stopped_short_frees_its_task_to_
     crate::node_exit::user_closed(&f.domain, "agent-b").unwrap();
     assert_eq!(f.task_node(), None, "the task is free");
     assert_eq!(release_reasons(&f), [crate::node_exit::REPLACE_ABORTED]);
-    assert_eq!(f.domain.live.closed_task("t").map(|node| node.relaunch), Some(crate::live::Relaunch::ByItself));
-    assert!(f.domain.live.user_closed_task_ids().is_empty(), "nobody is asked to relaunch it");
+    assert_eq!(f.domain.live().closed_task("t").map(|node| node.relaunch), Some(crate::live::Relaunch::ByItself));
+    assert!(f.domain.live().user_closed_task_ids().is_empty(), "nobody is asked to relaunch it");
     assert!(told_orchestrator(&f, "replace-aborted-").is_empty(), "the orchestrator is not asked to launch it");
     assert!(f.sdk().starts().is_empty());
 }
 
 fn on_a_turn(f: &Fixture) {
-    f.domain.live.apply(&alondra_core::Event::DaemonSeen(alondra_core::DaemonObservation {
+    f.domain.live().apply(&alondra_core::Event::DaemonSeen(alondra_core::DaemonObservation {
         session_id: "agent-b".into(), short_id: "agent-b".into(), name: Some("Instance B".into()), ..Default::default() }));
-    f.domain.live.observe(&json!({"session_id": "agent-b", "hook_event_name": "UserPromptSubmit", "prompt": "go"}));
-    assert!(f.domain.live.node("agent-b").is_some_and(|node| node.busy), "agent-b is on a turn");
+    f.domain.live().observe(&json!({"session_id": "agent-b", "hook_event_name": "UserPromptSubmit", "prompt": "go"}));
+    assert!(f.domain.live().node("agent-b").is_some_and(|node| node.busy), "agent-b is on a turn");
 }
 
 #[tokio::test]
@@ -1535,7 +1535,7 @@ async fn a_node_on_a_turn_is_stopped_once_the_turn_ends() {
         std::task::Poll::Ready(())
     }).await;
     assert!(f.sessions.stopped.lock().unwrap().is_empty());
-    f.domain.live.observe(&json!({"session_id": "agent-b", "hook_event_name": "Stop"}));
+    f.domain.live().observe(&json!({"session_id": "agent-b", "hook_event_name": "Stop"}));
     stopping.await.unwrap();
     assert_eq!(*f.sessions.busy_at_stop.lock().unwrap(), [false], "claude stop waited for the turn to end");
     assert!(f.sdk().starts().is_empty());
@@ -1681,8 +1681,8 @@ async fn until_replaced(f: &Fixture, old: &AgentId) {
 
 /// Waits until the replacement under way gives the task's launch guard back.
 async fn until_launchable(f: &Fixture) {
-    f.domain.live.until_launch_ends("t").await;
-    assert!(f.domain.live.begin_launch("t"), "the launch guard is released once it ends");
+    f.domain.live().until_launch_ends("t").await;
+    assert!(f.domain.live().begin_launch("t"), "the launch guard is released once it ends");
 }
 
 /// Waiting for the old node's turn can outlast the call: the orchestrator gets its answer at once,
@@ -1705,7 +1705,7 @@ async fn a_replacement_answers_before_the_old_node_stops_and_finishes_without_a_
     assert!(f.sessions.stopped.lock().unwrap().is_empty(), "the shared supervisor answers before its checked stop work is released");
     let again = launch_replacing(f.domain.clone(), f.home.clone(), replace_body(), |_| None).await.unwrap_err();
     assert_eq!(again.code, "conflict", "a second launch waits for the replacement under way: {}", again.message);
-    f.domain.live.observe(&json!({"session_id": "agent-b", "hook_event_name": "Stop"}));
+    f.domain.live().observe(&json!({"session_id": "agent-b", "hook_event_name": "Stop"}));
     release.send(()).unwrap();
     until_launchable(&f).await;
     assert_eq!(*f.sessions.stopped.lock().unwrap(), ["agent-b"]);
@@ -1741,7 +1741,7 @@ async fn a_replacement_refused_before_stopping_anything_answers_with_the_refusal
     let refused = launch_replacing(f.domain.clone(), f.home.clone(), body, |_| None).await.unwrap_err();
     assert_eq!(refused.code, "invalid_input");
     assert!(f.sessions.stopped.lock().unwrap().is_empty());
-    assert!(f.domain.live.begin_launch("t"), "the launch guard is released");
+    assert!(f.domain.live().begin_launch("t"), "the launch guard is released");
 }
 
 /// Once the old node is stopped the task has no node: when the new one does not start, the
@@ -1758,7 +1758,7 @@ async fn a_replacement_whose_new_node_does_not_start_is_relaunched_by_itself() {
     f.sdk().refuse_starts(true);
     launch_replacing(f.domain.clone(), f.home.clone(), replace_body(), |_| None).await.unwrap();
     until_launchable(&f).await;
-    f.domain.live.end_launch("t");
+    f.domain.live().end_launch("t");
     assert_eq!(f.task_node(), None);
     assert!(!f.domain.owns_sdk_host(&old));
     assert_eq!(f.sdk().starts().len(), 1, "only the original verified native session was started");
@@ -1835,10 +1835,10 @@ async fn an_ended_session_leaves_no_inherited_worktree_or_aborted_replace_behind
     let f = bare_world();
     connected_node_on_the_task(&f);
     f.domain.set_inherited_worktree("agent-b", f.project.to_str().unwrap(), "agent-a").unwrap();
-    f.domain.live.note_aborted_replace("agent-b", "stop failed");
+    f.domain.live().note_aborted_replace("agent-b", "stop failed");
     crate::node_exit::take_out(&f.domain, "agent-b", "node closed by the user", None, crate::live::Relaunch::AskUser).unwrap();
     assert_eq!(f.domain.inherited_worktree("agent-b").unwrap(), None);
-    assert_eq!(f.domain.live.take_aborted_replace("agent-b"), None);
+    assert_eq!(f.domain.live().take_aborted_replace("agent-b"), None);
 }
 
 #[tokio::test]
@@ -1984,7 +1984,7 @@ async fn an_unverified_legacy_native_session_is_kept_until_it_can_be_recovered()
     assert_eq!(state.tasks[&TaskId::from("t")].agent_id, original.agent_id);
     assert_eq!(state.tasks[&TaskId::from("t")].account_key(), original.account_key());
     assert!(state.agents[&AgentId::from("agent-b")].phase.live());
-    assert!(!f.domain.live.is_closed("agent-b"));
+    assert!(!f.domain.live().is_closed("agent-b"));
 }
 
 #[tokio::test]
@@ -2107,7 +2107,7 @@ async fn while_no_account_can_work_a_launch_waits_for_capacity_and_goes_ahead_on
 
     week_used(&f, "work", 0.3);
     crate::usage_probe::follow(&f.domain, alondra_core::now_millis());
-    f.domain.live.usage_pause.resume(alondra_core::now_millis());
+    f.domain.live().usage_pause.resume(alondra_core::now_millis());
     launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
     f.launched(1).await;
     assert_eq!(config_dir_sha256(&f), Some(sha256(folder.to_str().unwrap())), "on the account that came back");
@@ -2155,12 +2155,12 @@ async fn a_started_legacy_background_node_cannot_be_stopped_to_select_another_ac
     command(&f.domain,Actor::System,Command::RecordAccounts{accounts,reserve:alondra_core::usage::default_reserve()});
     let choices=Choices{project:None,options:OptionsFile::parse("[[accounts.claude]]\nid=\"default\"\nname=\"Native default\"\n[[accounts.claude]]\nid=\"work\"\nname=\"Work\"\n[defaults]\naccount=\"claude/work\"\n").unwrap().resolve(None,&std::collections::BTreeMap::new()).unwrap(),issue:None,issue_text:None,attachments:vec![]};
     let original=f.task_node();let before=f.sdk().starts();
-    assert!(f.domain.live.mods.session("agent-b").is_some(), "the fixture has an actual connected mod session");
+    assert!(f.domain.live().mods.session("agent-b").is_some(), "the fixture has an actual connected mod session");
     let error=launch(&f.domain,&f.home,launch_body(&f,json!({"replace":true,"model":"sonnet"})),|_|Some(choices)).await.unwrap_err();
     assert_eq!(error.code,"active_account_immutable");assert_eq!(f.task_node(),original);
     assert!(f.sessions.stopped.lock().unwrap().is_empty(),"wrong-account replacement is refused before stopping the legacy native session");
-    assert_eq!(f.sdk().starts(),before);assert!(f.domain.live.mods.session("agent-b").is_some());
-    assert!(!f.domain.live.is_closed("agent-b"));
+    assert_eq!(f.sdk().starts(),before);assert!(f.domain.live().mods.session("agent-b").is_some());
+    assert!(!f.domain.live().is_closed("agent-b"));
     assert!(f.domain.state().unwrap().agents[&AgentId::from("agent-b")].phase.live());
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].account_key().account,AccountId::default_account());
 }
@@ -2306,12 +2306,12 @@ async fn an_unstarted_selection_replaces_a_disabled_account_but_a_started_one_ca
     assert_eq!(resolved.selection.unwrap().requested, task.selection.as_ref().unwrap().requested, "a compatible model stays binding");
     task.started = true;
     assert!(native_launch(&f.domain, &f.home, &task, &requested, &file, &body, true, false).is_err(), "an existing session never migrates");
-    f.domain.live.machine_watch.set_disk_low(true);
+    f.domain.live().machine_watch.set_disk_low(true);
     let queued = launch(&f.domain, &f.home, body, |_| None).await.unwrap();
     assert_eq!(queued["queued"], true);
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].selection.as_ref().unwrap().account, Some(work.clone()), "the move survives a refusal before admission");
     assert!(f.sdk().starts().is_empty());
-    f.domain.live.machine_watch.set_disk_low(false);
+    f.domain.live().machine_watch.set_disk_low(false);
     crate::admission::pass(&f.domain, &f.home).await.unwrap();
     f.launched(1).await;
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].account_key(), work, "the admitted execution keeps the reselected account");
@@ -2344,7 +2344,7 @@ async fn an_unstarted_selection_waits_without_a_card_then_starts_on_an_active_pr
         assert!(store.start_retries().unwrap().is_empty(), "account availability is not a failed start");
         assert!(store.auto_launch(&"t".into()).unwrap().is_none(), "the next pass can try again");
         drop(store);
-        assert_eq!(f.domain.live.gate.snapshot(&f.domain, alondra_core::now_millis()).unwrap().working, 0, "an unavailable account reserves no working slot");
+        assert_eq!(f.domain.live().gate.snapshot(&f.domain, alondra_core::now_millis()).unwrap().working, 0, "an unavailable account reserves no working slot");
     }
     assert_eq!(f.domain.state().unwrap().interactions.len(), cards);
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].selection.as_ref(), Some(&intent), "waiting preserves the selection until a destination is known");
@@ -2497,7 +2497,7 @@ async fn refuse_its_start(f: &Fixture) -> alondra_core::domain::Interaction {
     crate::auto_launch::pass(&f.domain, &f.home).await.unwrap();
     assert!(f.sdk().starts().is_empty());
     assert!(f.domain.store.lock().unwrap().start_retries().unwrap().is_empty(), "no retry is promised for a start that cannot work");
-    assert_eq!(f.domain.live.gate.snapshot(&f.domain, alondra_core::now_millis()).unwrap().in_flight, 0,
+    assert_eq!(f.domain.live().gate.snapshot(&f.domain, alondra_core::now_millis()).unwrap().in_flight, 0,
         "a start that did not start holds no slot, so the next try asks the gate again");
     let state = f.domain.state().unwrap();
     let card = state.open_plan_refusal(&"t".into()).cloned().expect("the orchestrator is handed the refused plan at once");
@@ -2547,7 +2547,7 @@ async fn a_refused_plan_the_orchestrator_leaves_is_handed_back_at_every_rest_and
     crate::orchestrator_inbox::hand_replans(&f.domain);
     assert_eq!(reminders(), 1, "once per rest");
     for _ in 0..3 {
-        f.domain.live.orchestrator_rests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        f.domain.live().orchestrator_rests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         crate::orchestrator_inbox::hand_replans(&f.domain);
     }
     assert_eq!(reminders(), 4);

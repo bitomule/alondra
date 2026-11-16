@@ -67,7 +67,7 @@ impl Turn {
     }
 
     fn observe(&self, message: &Value, at: Millis) {
-        self.slice.domain.live.mods.apply_sdk(&self.agent(), message, at);
+        self.slice.domain.live().mods.apply_sdk(&self.agent(), message, at);
     }
 
     /// `alondra report-wait` writes the file; the live sampler is what notices it.

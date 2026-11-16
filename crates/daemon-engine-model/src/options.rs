@@ -43,6 +43,15 @@ pub const OPTIONS_LIMIT: u64 = 4 * 1024 * 1024;
 
 pub fn pending(home: &Path) -> bool { home.join(PENDING).symlink_metadata().is_ok() }
 
+/// The options file in `home`, or a fresh one when there is none.
+pub fn options_at(home: &Path) -> Result<OptionsFile> {
+    match read_options(home) {
+        Ok(Some(contents)) => OptionsFile::parse(&contents).map_err(anyhow::Error::msg),
+        Ok(None) => Ok(OptionsFile::fresh()),
+        Err(error) => Err(anyhow::anyhow!(error)),
+    }
+}
+
 pub fn read_options(home: &Path) -> Result<Option<String>, String> {
     if pending(home) { return Err("An accounts or model settings change is being reconciled; try again when it finishes".into()); }
     let text = read_optional(&alondra_core::options::path_in(home)).map_err(|why| why.to_string())?;

@@ -534,7 +534,7 @@ async fn prepare_workers(
     backend: Option<sdk_owner::backend::SdkBackend>,
 ) -> PreparedWorkers {
     accounts::begin_initial_check(&domain);
-    domain.live.sandbox.store(config.sandbox, std::sync::atomic::Ordering::Relaxed);
+    domain.live().sandbox.store(config.sandbox, std::sync::atomic::Ordering::Relaxed);
     if let Some(backend) = backend {
         domain.enable_sdk(backend.clone());
         let adopting = domain.clone();
@@ -544,14 +544,14 @@ async fn prepare_workers(
         }).await.ok();
     }
     if config.fast_timing {
-        domain.live.gate.tune(admission::Tuning { spacing: 1_000, limit: Some(admission::Limit::Fixed(admission::UNPACED)) });
-        domain.live.gate.ignore_mac();
-        domain.live.machine_watch.ignore_peaks();
+        domain.live().gate.tune(admission::Tuning { spacing: 1_000, limit: Some(admission::Limit::Fixed(admission::UNPACED)) });
+        domain.live().gate.ignore_mac();
+        domain.live().machine_watch.ignore_peaks();
     } else {
-        domain.live.machine_watch.discover_volumes();
+        domain.live().machine_watch.discover_volumes();
     }
     if config.ignore_mac_load {
-        domain.live.gate.ignore_mac();
+        domain.live().gate.ignore_mac();
     }
     PreparedWorkers(domain)
 }

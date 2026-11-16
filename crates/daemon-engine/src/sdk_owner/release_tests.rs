@@ -8,8 +8,8 @@ const WAIT: Timing = Timing { wait: 1_000 };
 
 fn enable(slice: &Slice) {
     slice.domain.enable_sdk(slice.backend.clone());
-    slice.domain.live.gate.ignore_mac();
-    slice.domain.live.gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(6)) });
+    slice.domain.live().gate.ignore_mac();
+    slice.domain.live().gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(6)) });
 }
 
 /// Two looks a wait apart: the second finds every resting host due.
@@ -131,7 +131,7 @@ async fn resumes_over_the_node_limit_wait_for_capacity_with_no_process_and_no_ca
     look_after_the_wait(&slice.domain);
     until_released(&slice.domain, &tasks).await;
     std::fs::write(format!("{}.hold", slice.capture.display()), "").unwrap();
-    let limit = |slots| slice.domain.live.gate.tune(crate::admission::Tuning { spacing: 60_000, limit: Some(crate::admission::Limit::Fixed(slots)) });
+    let limit = |slots| slice.domain.live().gate.tune(crate::admission::Tuning { spacing: 60_000, limit: Some(crate::admission::Limit::Fixed(slots)) });
     let working = || crate::admission::working_tasks(&slice.domain, &slice.domain.read().state());
     limit(1);
     let started = slice.starts().len();
@@ -145,7 +145,7 @@ async fn resumes_over_the_node_limit_wait_for_capacity_with_no_process_and_no_ca
     gate_look(&slice).await;
 
     assert_eq!(working().len(), 1, "the limit holds whatever the number of nodes with work");
-    let waits = |task: &str| slice.domain.live.gate.waits_for_slot(&slice.domain, &slice.domain.read().state(), &task.into());
+    let waits = |task: &str| slice.domain.live().gate.waits_for_slot(&slice.domain, &slice.domain.read().state(), &task.into());
     assert_eq!(tasks.iter().filter(|task| waits(task)).count(), 2, "the others wait for a slot");
     assert_eq!(slice.domain.node_groups().len(), 1, "with no host of their own");
     assert!(slice.starts().len() <= started + 1, "and no Claude: {:?}", slice.starts());
@@ -260,7 +260,7 @@ async fn a_large_closed_conversation_is_resumed_to_compact_before_its_cache_expi
     look_after_the_wait(&slice.domain);
     until_released(&slice.domain, &[TASK]).await;
 
-    let readings = slice.domain.contexts.readings();
+    let readings = slice.domain.contexts().readings();
     assert_eq!(readings.len(), 1, "closing the host forgets nothing of the conversation");
     compact_due(&slice.domain, readings[0].1.expires_at - Compaction::LIVE.lead, &Compaction::LIVE);
     assert_eq!(lifecycle(&slice.domain).pending_inputs().len(), 1, "the compaction waits for a host");
@@ -401,7 +401,7 @@ fn a_paused_node_keeps_what_its_pause_decided() {
     let mut driver = slice.launch();
     slice.settle(&mut driver);
     let agent = driver.agent().clone();
-    assert!(slice.domain.live.gate.hold_back(&slice.domain, &agent.0, crate::pauses::Reason::Disk, alondra_core::now_millis()));
+    assert!(slice.domain.live().gate.hold_back(&slice.domain, &agent.0, crate::pauses::Reason::Disk, alondra_core::now_millis()));
     assert!(!slice.domain.read().state().host_releasable(&TASK.into()));
     driver.stop().unwrap();
 }

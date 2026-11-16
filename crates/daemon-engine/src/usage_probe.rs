@@ -218,16 +218,16 @@ fn available_accounts(state: &DomainState, now: Millis) -> Vec<alondra_core::acc
 pub(crate) fn follow(domain: &DomainRuntime, now: Millis) {
     let read = domain.read();
     let state = read.state();
-    domain.live.measured.sync(state);
+    domain.live().measured.sync(state);
     let ready = available_accounts(state, now);
     let other_capacity = ready.iter().any(|key| key.provider == Provider::Codex || state.accounts.iter().any(|status|
         status.provider == key.provider && status.id == key.account && status.billing == AccountBilling::PayPerUse));
     drop(read);
     if other_capacity {
-        if domain.live.usage_pause.provider_account_back(now) { domain.live.gate.poke(); }
+        if domain.live().usage_pause.provider_account_back(now) { domain.live().gate.poke(); }
     } else if !ready.is_empty() {
         crate::usage_pause::session_is_back(domain);
-        domain.live.usage_pause.margin_back(now);
+        domain.live().usage_pause.margin_back(now);
     } else {
         hold(domain, now);
     }
@@ -243,16 +243,16 @@ pub(crate) fn hold(domain: &DomainRuntime, now: Millis) {
         .filter_map(|provider| alondra_core::usage::margin_returns_at(provider, &accounts, &state.account_usage, now)).min();
     drop(read);
     if until.is_none() {
-        domain.live.usage_pause.wait_for_session(now);
+        domain.live().usage_pause.wait_for_session(now);
     } else {
-        domain.live.usage_pause.exhaust_for_margin(until, now);
+        domain.live().usage_pause.exhaust_for_margin(until, now);
     }
 }
 
 /// Records that Claude refused `account` work for its usage, until `until` when Claude said: its
 /// readings say it ran out, so no new work starts on it, and the next probe measures the rest.
 pub(crate) fn record_limit(domain: &DomainRuntime, account: &AccountId, until: Option<Millis>, now: Millis) {
-    let until = until.or_else(|| domain.live.measured.reset_after_limit(account, now)).filter(|until| *until > now);
+    let until = until.or_else(|| domain.live().measured.reset_after_limit(account, now)).filter(|until| *until > now);
     let window = WindowReading { kind: WindowKind::Session, used: Share::FULL, resets_at: until, exhausted: true };
     record(domain, account, UsageReading { windows: vec![window], plan: None, complete: false }, now);
     follow(domain, now);
@@ -372,7 +372,7 @@ async fn measure_account(domain: &DomainRuntime, home: &Path, account: &AccountI
 /// what the accounts say.
 pub async fn run(domain: Arc<DomainRuntime>, home: std::path::PathBuf) {
     let mut changes = domain.subscribe();
-    let mut pauses = domain.live.usage_pause.subscribe();
+    let mut pauses = domain.live().usage_pause.subscribe();
     let mut schedule = ProbeSchedule::default();
     loop {
         let now = now_millis();
@@ -387,7 +387,7 @@ pub async fn run(domain: Arc<DomainRuntime>, home: std::path::PathBuf) {
         drop(read);
         // A `claude --bg` node's hook paused the Mac: measure the default account, the one they run on.
         let nodes = AccountId::default_account();
-        let refused = domain.live.usage_pause.current().filter(|standing| !standing.by_user).map(|standing| standing.since);
+        let refused = domain.live().usage_pause.current().filter(|standing| !standing.by_user).map(|standing| standing.since);
         if refused.is_some_and(|since| schedule.probed.get(&nodes).is_none_or(|probe| *probe < since)) && accounts.contains(&nodes) && !schedule.retries.contains_key(&nodes) && !ready.contains(&nodes) {
             ready.push(nodes);
         }

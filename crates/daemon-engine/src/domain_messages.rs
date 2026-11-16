@@ -123,7 +123,7 @@ pub async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, name: &s
     if scheduled || crate::sdk_owner::runs_through_sdk(&state, agent) {
         let told = tell_through_sdk(domain, &state, home, user, name, agent, body, as_user);
         if as_user && !scheduled && told.is_ok() {
-            domain.live.gate.resume_by_user_message(domain, &agent.0, alondra_core::now_millis());
+            domain.live().gate.resume_by_user_message(domain, &agent.0, alondra_core::now_millis());
         }
         return told;
     }
@@ -136,7 +136,7 @@ pub async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, name: &s
     if let Some((_, successor)) = crate::sdk_handover::successor(domain, agent) {
         return tell_through_sdk(domain, &state, home, user, name, &successor, body, as_user);
     }
-    if domain.live.is_closed(&agent.0) {
+    if domain.live().is_closed(&agent.0) {
         return Err(refused("session_unreachable", "the node is not connected to Alondra: its session is stopped or its Claude Code mod is not running. Nothing was sent"));
     }
     let task = match &body.task_id {
@@ -150,7 +150,7 @@ pub async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, name: &s
         None => None,
     };
     let text = wording(&body, task, name, home)?;
-    if domain.live.mods.session(&agent.0).is_some_and(|reported| reported.halt().is_some())
+    if domain.live().mods.session(&agent.0).is_some_and(|reported| reported.halt().is_some())
         && !crate::domain_holds::waits_on_user(&state, &agent.0)
     {
         return Err(refused("session_stalled", format!("{name}'s turn stopped: the command it waited on or its session is gone, so a message would not reach it. Alondra restarts it; send again once it is back. Nothing was sent")));
@@ -165,7 +165,7 @@ pub async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, name: &s
     let told = crate::sdk_handover::tell(domain, &agent.0, &author, &text, as_user)
         .map_err(|_| refused("session_unreachable", "the node is not connected to Alondra: its session is stopped or its Claude Code mod is not running. Nothing was sent"))?;
     if as_user {
-        domain.live.gate.release_by_user_message(domain, &agent.0);
+        domain.live().gate.release_by_user_message(domain, &agent.0);
     }
     let delivered = match told {
         crate::sdk_handover::Told::Pushed(acked) => match clock::timeout(ACK_WAIT, acked).await {
@@ -723,7 +723,7 @@ mod tests {
         node.silent.store(true, std::sync::atomic::Ordering::Relaxed);
         let answer = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(json!({"text": "hi"})), false).await.unwrap();
         assert_eq!(answer, json!({"delivery_state": "dispatching"}));
-        domain.live.pushes.detach("agent-a", 1);
+        domain.live().pushes.detach("agent-a", 1);
         let again = Node::connect(&domain, "agent-a");
         tokio::task::yield_now().await;
         assert_eq!(again.texts(), ["hi"], "unacknowledged, so written again");
@@ -740,8 +740,8 @@ mod tests {
         let quiet = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(json!({"text": "quiet"})), false).await;
         assert!(quiet.is_ok(), "a quiet turn takes messages however long it has been quiet");
         domain.report(serde_json::from_value(json!({"session_id": "agent-a", "event": "tool.start", "tool": "Bash", "tool_use_id": "call"})).unwrap(), now + 1);
-        domain.live.mods.set_shell_alive("agent-a", Some(false), now + 2);
-        domain.live.mods.set_shell_alive("agent-a", Some(false), now + 3);
+        domain.live().mods.set_shell_alive("agent-a", Some(false), now + 2);
+        domain.live().mods.set_shell_alive("agent-a", Some(false), now + 3);
         let refused = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(json!({"text": "hi"})), false).await.unwrap_err();
         assert_eq!(refused.code, "session_stalled");
         assert_eq!(node.texts(), ["quiet"], "nothing more was written down its connection");

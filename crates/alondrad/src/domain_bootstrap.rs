@@ -481,7 +481,7 @@ async fn daemon(
     };
     Json(
         json!({"version": env!("CARGO_PKG_VERSION"),
-        "home": state.home, "sandbox": state.domain.live.sandbox.load(std::sync::atomic::Ordering::Relaxed),
+        "home": state.home, "sandbox": state.domain.live().sandbox.load(std::sync::atomic::Ordering::Relaxed),
         "views_protocol": crate::views::this_service().views_protocol,
         "update":crate::updates::status(&state.home),
         "preflight_rejected": crate::relaunch::rejected(), "supervised": crate::relaunch::under_launchd(),
@@ -1078,13 +1078,13 @@ async fn sandbox_interrupt(
     headers: HeaderMap,
     axum::extract::Path(session): axum::extract::Path<String>,
 ) -> Response {
-    if !state.domain.live.sandbox.load(std::sync::atomic::Ordering::Relaxed) {
+    if !state.domain.live().sandbox.load(std::sync::atomic::Ordering::Relaxed) {
         return StatusCode::NOT_FOUND.into_response();
     }
     if let Some(refused) = local_only(&peer, &headers) {
         return refused;
     }
-    match state.domain.live.pushes.interrupt(&session) {
+    match state.domain.live().pushes.interrupt(&session) {
         Ok(()) => Json(json!({"interrupted": session})).into_response(),
         Err(_) => crate::domain_api::domain_error(DomainError::new("session_unreachable", "no connection from that session")),
     }
@@ -1201,7 +1201,7 @@ async fn agent_waiting_machine(
             "invalid reason",
         ));
     };
-    let live = &state.domain.live;
+    let live = state.domain.live();
     let turn = live.node(&session_id).map_or(0, |node| node.turn);
     let now = alondra_core::now_millis();
     live.machine_watch.declare(&session_id, body.resource, &body.reason, turn, now);
@@ -2255,7 +2255,7 @@ mod tests {
                 .status(),
             StatusCode::NOT_FOUND
         );
-        domain.live.observe(&json!({"session_id": "test-agent", "hook_event_name": "UserPromptSubmit", "cwd": "/tmp", "prompt": "go"}));
+        domain.live().observe(&json!({"session_id": "test-agent", "hook_event_name": "UserPromptSubmit", "cwd": "/tmp", "prompt": "go"}));
         let waiting = json!({"resource": "build_queue", "reason": "Bazel remote cache token expired, build queue stuck"});
         assert_eq!(
             client
@@ -2281,14 +2281,14 @@ mod tests {
             StatusCode::OK,
             "the words of the reason never refuse a wait"
         );
-        let declared = |session: &str| domain.live.machine_watch.declared()[session].resource;
+        let declared = |session: &str| domain.live().machine_watch.declared()[session].resource;
         assert_eq!(declared("test-agent"), Some(alondra_core::machine_incident::MachineResource::BuildQueue));
         let post = |body: Value| client.post(format!("{base}/agents/waiting-machine")).bearer_auth(&bearer).json(&body).send();
         assert_eq!(post(json!({"reason": "disk full"})).await.unwrap().status(), StatusCode::OK, "a CLI older than resource");
         assert_eq!(declared("test-agent"), None);
         assert!(post(json!({"resource": "usage", "reason": "weekly limit"})).await.unwrap().status().is_client_error(),
             "no resource names the subscription's usage");
-        let node = domain.live.node("test-agent").unwrap();
+        let node = domain.live().node("test-agent").unwrap();
         assert_eq!(
             node.turn_signal,
             Some(alondra_core::TurnSignal::WaitingMachine),

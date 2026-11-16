@@ -238,7 +238,7 @@ pub async fn give_back(domain: &Arc<DomainRuntime>, target: &Target, address: St
         }
     }
     if let Some(flow) = flow {
-        domain.mcp_returns.0.lock_or_recover("the returned MCP sign-ins").push((task, name, flow));
+        domain.mcp_returns().0.lock_or_recover("the returned MCP sign-ins").push((task, name, flow));
         domain.wake_subscribers();
     }
     Ok(())
@@ -378,7 +378,7 @@ pub async fn run(domain: Arc<DomainRuntime>) {
         let snapshot = domain.read();
         let state = snapshot.state();
         let open = returning(state);
-        seen.extend(domain.mcp_returns.0.lock_or_recover("the returned MCP sign-ins").drain(..));
+        seen.extend(domain.mcp_returns().0.lock_or_recover("the returned MCP sign-ins").drain(..));
         let still: BTreeSet<Returning> = open.iter().map(|(sign_in, _)| sign_in.clone()).collect();
         let mut over: Vec<Returning> = seen.difference(&still).filter(|sign_in| !ended.contains(*sign_in)).cloned().collect();
         for (sign_in, port) in &open {
@@ -423,3 +423,11 @@ pub async fn run(domain: Arc<DomainRuntime>) {
 #[cfg(test)]
 #[path = "mcp_waits_tests.rs"]
 mod tests;
+
+crate::extension!(Returns);
+
+impl crate::domain_runtime::DomainRuntime {
+    pub(crate) fn mcp_returns(&self) -> &Returns {
+        self.extension()
+    }
+}

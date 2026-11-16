@@ -221,7 +221,7 @@ async fn a_stale_usage_probe_retries_with_a_fresh_fence_and_makes_the_account_se
     assert_eq!(crate::accounts::select_for_launch(&domain, &home, &intent, now_millis()).unwrap().account, key);
     let recovered_at = now_millis();
     follow(&domain, recovered_at);
-    assert_eq!(domain.live.usage_pause.current().map(|standing| standing.until), Some(recovered_at), "fresh capacity makes the pause due for resumption now");
+    assert_eq!(domain.live().usage_pause.current().map(|standing| standing.until), Some(recovered_at), "fresh capacity makes the pause due for resumption now");
 }
 
 #[test]
@@ -307,22 +307,22 @@ fn the_mac_waits_only_while_no_account_can_work() {
     two_accounts(&domain);
     let now = now_millis();
     record_limit(&domain, &id("default"), Some(now + 3_600_000), now);
-    assert!(!domain.live.usage_pause.is_active(), "the work account can still work");
+    assert!(!domain.live().usage_pause.is_active(), "the work account can still work");
     assert!(domain.read().state().account_usage.iter().any(|usage| usage.account.is_default() && usage.exhausted_until(now) == Some(now + 3_600_000)));
     record_limit(&domain, &id("work"), Some(now + 7_200_000), now);
-    assert_eq!(domain.live.usage_pause.current().map(|standing| standing.until), Some(now + 3_600_000), "until the soonest account comes back");
+    assert_eq!(domain.live().usage_pause.current().map(|standing| standing.until), Some(now + 3_600_000), "until the soonest account comes back");
     record_limit(&domain, &id("work"), Some(now + 1_800_000), now);
-    assert_eq!(domain.live.usage_pause.current().map(|standing| standing.until), Some(now + 1_800_000), "a reading that moves a reset earlier moves the wait");
+    assert_eq!(domain.live().usage_pause.current().map(|standing| standing.until), Some(now + 1_800_000), "a reading that moves a reset earlier moves the wait");
     record(&domain, &id("default"), UsageReading {
         windows: vec![WindowReading { kind: WindowKind::Session, used: Share::of(0.2), resets_at: Some(now + 3_600_000), exhausted: false }],
         plan: None, complete: true,
     }, now + 1_000);
     follow(&domain, now + 1_000);
-    assert_eq!(domain.live.usage_pause.current().map(|standing| standing.until), Some(now + 1_000), "the default account works again: the wait ends now");
-    domain.live.usage_pause.resume(now + 1_000);
-    domain.live.usage_pause.exhaust(Some(now + 600_000), now + 2_000);
+    assert_eq!(domain.live().usage_pause.current().map(|standing| standing.until), Some(now + 1_000), "the default account works again: the wait ends now");
+    domain.live().usage_pause.resume(now + 1_000);
+    domain.live().usage_pause.exhaust(Some(now + 600_000), now + 2_000);
     follow(&domain, now + 2_000);
-    assert_eq!(domain.live.usage_pause.current().map(|standing| standing.until), Some(now + 600_000), "a limit Claude reported that no reading shows yet stands");
+    assert_eq!(domain.live().usage_pause.current().map(|standing| standing.until), Some(now + 600_000), "a limit Claude reported that no reading shows yet stands");
 }
 
 fn readiness_accounts(domain: &DomainRuntime, accounts: Vec<AccountStatus>) {
@@ -348,7 +348,7 @@ fn missing_or_unavailable_providers_do_not_invent_a_claude_quota_reset() {
         let domain = DomainRuntime::open(&home).unwrap();
         readiness_accounts(&domain, status.into_iter().collect());
         follow(&domain, NOW);
-        let wait = domain.live.usage_pause.current().unwrap();
+        let wait = domain.live().usage_pause.current().unwrap();
         assert!(wait.no_session, "provider availability is unknown, not quota exhaustion");
         assert_eq!(wait.until, NOW, "there is no fabricated future reset");
     }
@@ -360,12 +360,12 @@ fn codex_capacity_ends_legacy_global_limits_but_preserves_a_user_pause() {
     std::fs::create_dir_all(&home).unwrap();
     let domain = DomainRuntime::open(&home).unwrap();
     readiness_accounts(&domain, vec![codex_status(AccountState::SignedIn)]);
-    domain.live.usage_pause.exhaust(Some(NOW + 3_600_000), NOW);
+    domain.live().usage_pause.exhaust(Some(NOW + 3_600_000), NOW);
     follow(&domain, NOW);
-    assert!(domain.live.usage_pause.current().is_none(), "Claude's old global limit cannot block Codex");
-    domain.live.usage_pause.pause_by_user(NOW + 7_200_000, NOW);
+    assert!(domain.live().usage_pause.current().is_none(), "Claude's old global limit cannot block Codex");
+    domain.live().usage_pause.pause_by_user(NOW + 7_200_000, NOW);
     follow(&domain, NOW);
-    let pause = domain.live.usage_pause.current().unwrap();
+    let pause = domain.live().usage_pause.current().unwrap();
     assert!(pause.by_user);
     assert_eq!(pause.until, NOW + 7_200_000);
 }
@@ -378,9 +378,9 @@ fn an_explicit_paid_account_is_not_blocked_by_automatic_chain_readiness() {
     let paid = AccountStatus { billing: AccountBilling::PayPerUse, ..codex_status(AccountState::SignedIn) };
     readiness_accounts(&domain, vec![paid]);
     assert!(alondra_core::usage::eligible_account_keys(&[], &domain.read().state().accounts, &[], NOW).is_empty(), "automatic selection still refuses paid accounts");
-    domain.live.usage_pause.wait_for_session(NOW);
+    domain.live().usage_pause.wait_for_session(NOW);
     follow(&domain, NOW);
-    assert!(!domain.live.usage_pause.is_active(), "a user-authorized paid launch must reach its own guarded selector");
+    assert!(!domain.live().usage_pause.is_active(), "a user-authorized paid launch must reach its own guarded selector");
 }
 
 #[test]
@@ -397,7 +397,7 @@ fn codex_native_quota_uses_its_actual_reset() {
     drop(read);
     domain.execute_as_system(envelope).unwrap();
     follow(&domain, NOW);
-    let pause = domain.live.usage_pause.current().unwrap();
+    let pause = domain.live().usage_pause.current().unwrap();
     assert!(!pause.no_session);
     assert_eq!(pause.until, NOW + 900_000, "the native Codex reset is retained");
 }
@@ -416,7 +416,7 @@ fn an_unknown_native_quota_marker_never_fabricates_a_future_reset() {
     drop(read);
     domain.execute_as_system(envelope).unwrap();
     follow(&domain, NOW);
-    let pause = domain.live.usage_pause.current().unwrap();
+    let pause = domain.live().usage_pause.current().unwrap();
     assert!(pause.no_session, "availability awaits native metadata; no reset is known");
     assert_eq!(pause.until, NOW);
     assert!(alondra_core::usage::eligible_account_keys(&[], &domain.read().state().accounts, &domain.read().state().account_usage, NOW).is_empty(), "the real quota marker still fences automatic launches");

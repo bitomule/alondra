@@ -53,9 +53,9 @@ fn a_nodes_turn_records_what_it_spent_and_its_steps_for_the_task_it_works_on() {
             assistant("m2", Some("toolu_agent"), read),
             assistant("m3", None, json!([{"type": "text", "text": "Done"}])),
         ] {
-            assert_eq!(domain.live.mods.apply_sdk(&agent.0, &message, 10), None);
+            assert_eq!(domain.live().mods.apply_sdk(&agent.0, &message, 10), None);
         }
-        let steps = domain.live.mods.apply_sdk(&agent.0, &result(), 11).expect("a result ends the turn");
+        let steps = domain.live().mods.apply_sdk(&agent.0, &result(), 11).expect("a result ends the turn");
         node_turn(domain, &agent, &result(), steps, 11);
 
         let store = domain.store.lock().expect("store");

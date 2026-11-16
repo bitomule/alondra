@@ -208,7 +208,7 @@ fn hook(session: &str, event: &str, extra: Value) -> Value {
 }
 
 fn observe_sessions(fixture: &Fixture) {
-    let live = &fixture.domain.live;
+    let live = fixture.domain.live();
     live.observe(&hook("agent-a", "SessionStart", json!({"cwd": "/Users/me/Projects/App"})));
     live.observe(&hook("agent-a", "UserPromptSubmit", json!({"prompt": "Fix the colours"})));
     live.observe(&hook("agent-a", "PreToolUse", json!({"tool_name": "Bash", "tool_use_id": "t1",
@@ -314,7 +314,7 @@ async fn activity_and_search_answer_as_the_fixture_does() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
     observe_sessions(&fixture);
-    let live = &fixture.domain.live;
+    let live = fixture.domain.live();
     live.observe(&hook("agent-a", "SubagentStart", json!({"agent_id": "sub-1", "agent_type": "Explore"})));
     let expected = fixture_json("requests.json");
 
@@ -403,8 +403,8 @@ async fn closing_a_background_session_runs_claude_rm_and_closes_it() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
     observe_sessions(&fixture);
-    fixture.domain.live.observe(&hook("agent-a", "Stop", json!({})));
-    let short = fixture.domain.live.node("agent-a").unwrap().short_id;
+    fixture.domain.live().observe(&hook("agent-a", "Stop", json!({})));
+    let short = fixture.domain.live().node("agent-a").unwrap().short_id;
     let sessions = FakeSessions::listing(&[&short]);
     fixture.client.use_sessions(sessions.clone());
     let expected = fixture_json("requests.json");
@@ -429,8 +429,8 @@ async fn a_node_the_user_closed_leaves_the_tasks_in_progress_stays_gone_after_a_
     let fixture = Fixture::start().await;
     seed_work(&fixture);
     observe_sessions(&fixture);
-    fixture.domain.live.observe(&hook("agent-a", "Stop", json!({})));
-    let short = fixture.domain.live.node("agent-a").unwrap().short_id;
+    fixture.domain.live().observe(&hook("agent-a", "Stop", json!({})));
+    let short = fixture.domain.live().node("agent-a").unwrap().short_id;
     fixture.client.use_sessions(FakeSessions::listing(&[&short]));
     assert!(in_progress(&fixture, "task-1").await, "its task is in progress before it is closed");
 
@@ -495,7 +495,7 @@ async fn a_busy_session_or_one_with_unsaved_work_is_not_closed() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
     observe_sessions(&fixture);
-    let short = fixture.domain.live.node("agent-a").unwrap().short_id;
+    let short = fixture.domain.live().node("agent-a").unwrap().short_id;
     let sessions = Arc::new(FakeSessions {
         listed: std::sync::Mutex::new(vec![short.clone()]), leftovers: Some("2 uncommitted file(s) in /w".into()),
         calls: Default::default(), stuck: false,
@@ -507,7 +507,7 @@ async fn a_busy_session_or_one_with_unsaved_work_is_not_closed() {
     assert_eq!(answer["code"], "close_refused", "a refusal is named so the apps say why: {answer}");
     assert!(answer["error"].as_str().unwrap().contains("still has something pending"));
 
-    fixture.domain.live.observe(&hook("agent-a", "Stop", json!({})));
+    fixture.domain.live().observe(&hook("agent-a", "Stop", json!({})));
     let (status, answer) = fixture.local_send("/agents/agent-a/close", &json!({})).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(answer["reasons"], json!([{"kind": "worktree", "detail": "2 uncommitted file(s) in /w"}]), "force never discards work: {answer}");
@@ -681,7 +681,7 @@ async fn projects_are_the_checkouts_under_the_root_ranked_by_what_the_daemon_saw
 
     fixture.command(Actor::System, "register-web", Command::RegisterAgent { agent_id: "agent-web".into(), name: "Web agent".into(), at: 0 });
     let cwd = fixture.home.join("Projects").join("Web");
-    fixture.domain.live.observe(&hook("agent-web", "SessionStart", json!({"cwd": cwd.to_str().unwrap()})));
+    fixture.domain.live().observe(&hook("agent-web", "SessionStart", json!({"cwd": cwd.to_str().unwrap()})));
     assert_eq!(names(&fixture.get_json("/projects").await), ["Web", "App"], "the project a session is working in comes first");
 }
 
@@ -913,15 +913,15 @@ async fn the_presence_ping_is_recorded_for_the_client_that_sent_it() {
     let fixture = Fixture::start().await;
     let expected = fixture_json("requests.json");
     let request = &expected["presence"];
-    assert!(fixture.domain.live.last_touched("tui").is_none());
+    assert!(fixture.domain.live().last_touched("tui").is_none());
     let (status, answer) = fixture.send("POST", request["path"].as_str().unwrap(), &request["body"]).await;
     assert_eq!((status, &answer), (StatusCode::OK, &request["response"]));
-    assert!(fixture.domain.live.last_touched("tui").is_some_and(|at| at > 0));
+    assert!(fixture.domain.live().last_touched("tui").is_some_and(|at| at > 0));
     assert_eq!(fixture.send("POST", "/activity", &json!({"client": ""})).await.0, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(fixture.send("POST", "/activity", &json!({})).await.0, StatusCode::UNPROCESSABLE_ENTITY);
     let unsigned = reqwest::Client::new().post(format!("{}/activity", fixture.base)).json(&json!({"client": "x"})).send().await.unwrap();
     assert_eq!(unsigned.status(), StatusCode::FORBIDDEN);
-    assert!(fixture.domain.live.last_touched("x").is_none());
+    assert!(fixture.domain.live().last_touched("x").is_none());
 }
 
 #[tokio::test]
@@ -1034,7 +1034,7 @@ async fn the_task_detail_shows_what_its_node_mod_reports() {
         && fact["value"].as_str().is_some_and(|value| value.starts_with("Bash: bazel test //crates/... · desde las "))), "{readings:?}");
 
     report(json!({"event": "turn.complete", "turn_id": "t1", "answer": "Stopped halfway through the parser", "aborted": true}));
-    mods.live.mods.disconnect("agent-a", connection);
+    mods.live().mods.disconnect("agent-a", connection);
     let shown = task_shown(&fixture, "task-1", "en").await;
     assert!(!shown.iter().any(|(text, _)| text.contains("Unreachable") || text.contains("conexión")), "a closed connection is never a state: {shown:?}");
     let detail = view_json(&fixture, "task:task-1", "en").await;
@@ -1078,8 +1078,8 @@ async fn a_task_waits_for_room_on_the_disk_and_starts_once_the_disk_has_it() {
         agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
     });
-    let watch = &fixture.domain.live.machine_watch;
-    let ask = || fixture.domain.live.gate.ask(&fixture.domain, Waiting { key: Key::Task("task-9".into()), priority: alondra_core::domain::TaskPriority::Normal, resuming: false, since: 0 }, alondra_core::now_millis());
+    let watch = &fixture.domain.live().machine_watch;
+    let ask = || fixture.domain.live().gate.ask(&fixture.domain, Waiting { key: Key::Task("task-9".into()), priority: alondra_core::domain::TaskPriority::Normal, resuming: false, since: 0 }, alondra_core::now_millis());
     watch.measure_disk(crate::disk::Space { free: 6 * GB, purgeable: 0, total: 500 * GB });
     assert_eq!(ask(), Err(Hold::Disk { free: 6 * GB, needed: 21 * GB, volume: None }),
         "projects never measured: 8 GB for the build of the node at work and 8 GB for this one, on top of the 5 GB line");
@@ -1176,10 +1176,10 @@ async fn a_background_shell_whose_process_is_gone_ended_and_stops_counting_as_wo
     mods.connect_node(hello, now);
     mods.report(serde_json::from_value(json!({"session_id": "agent-a", "event": "shell.start", "id": "u1", "command": "sleep 99999"})).unwrap(),
         now - 3 * 60 * 60 * 1000);
-    mods.live.mods.set_shell_alive("agent-a", Some(true), now);
+    mods.live().mods.set_shell_alive("agent-a", Some(true), now);
     let shown = task_shown(&fixture, "task-1", "en").await;
     assert!(shown.contains(&("1 shell".into(), "neutral".into())), "three hours on a live shell is work: {shown:?}");
-    mods.live.mods.set_shell_alive("agent-a", Some(false), now);
+    mods.live().mods.set_shell_alive("agent-a", Some(false), now);
     let shown = task_shown(&fixture, "task-1", "en").await;
     assert!(shown.iter().all(|(label, _)| !label.contains("shell")), "nothing runs once its shell is gone: {shown:?}");
     assert!(!shown[0].0.starts_with("Working"), "a shell whose process is gone is not work");
@@ -1210,7 +1210,7 @@ async fn a_node_whose_session_ended_with_its_task_open_leaves_the_tasks_in_progr
     let mods = &domain;
     let connection = mods.connect_node(serde_json::from_value(json!({"session_id": "stopped", "version": "2.1.287"})).unwrap(), alondra_core::now_millis());
     mods.report(serde_json::from_value(json!({"session_id": "stopped", "event": "session.end"})).unwrap(), alondra_core::now_millis());
-    mods.live.mods.disconnect("stopped", connection);
+    mods.live().mods.disconnect("stopped", connection);
     crate::domain_agent_lifecycle::move_instance(domain, &"stopped".into(), alondra_core::domain::NodeEvent::SessionClosed,
         &crate::domain_agent_lifecycle::prepare_event(domain, "end-stopped").unwrap()).unwrap();
 

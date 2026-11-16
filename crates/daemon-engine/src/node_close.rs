@@ -134,7 +134,7 @@ pub async fn close_node(
     leave_if_not_listed: bool,
 ) -> anyhow::Result<CloseOutcome> {
     let agent_id = agent.0.as_str();
-    let node = domain.live.node(agent_id);
+    let node = domain.live().node(agent_id);
     let short: String = node.as_ref().map_or_else(|| agent_id.chars().take(8).collect(), |node| node.short_id.clone());
     let (busy, waiting_permission) = node.as_ref().map_or((false, false), |node| (node.busy, node.waiting_permission));
     let listing = match sessions.agents().await {
@@ -153,10 +153,10 @@ pub async fn close_node(
         let message = reasons.iter().map(|r| r.detail.clone().unwrap_or_else(|| r.kind.to_string())).collect::<Vec<_>>().join("; ");
         return Ok(CloseOutcome::Refused { message: format!("{short} still has something pending, so it was not closed: {message}"), reasons });
     }
-    let watched = domain.live.begin_watch(agent_id);
+    let watched = domain.live().begin_watch(agent_id);
     let removed = remove(domain, sessions, agent_id, &short).await;
     if watched {
-        domain.live.end_watch(agent_id);
+        domain.live().end_watch(agent_id);
     }
     removed
 }

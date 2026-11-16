@@ -258,15 +258,15 @@ fn record_end(domain: &DomainRuntime, task_id: &TaskId, end: NodeEnd, agent: Opt
     let (Some(state), true) = (before, back_to_work) else { return Ok(()) };
     let (Some(_), Some(agent)) = (state.tasks.get(task_id), agent) else { return Ok(()) };
     let name = state.agents.get(agent).map_or_else(|| agent.0.clone(), |known| known.name.clone());
-    domain.live.remember_closed_task(&task_id.0, crate::live::ClosedNode { name,
-        cwd: domain.live.mods.session(&agent.0).and_then(|reported| reported.cwd), relaunch: crate::live::Relaunch::ByItself });
+    domain.live().remember_closed_task(&task_id.0, crate::live::ClosedNode { name,
+        cwd: domain.live().mods.session(&agent.0).and_then(|reported| reported.cwd), relaunch: crate::live::Relaunch::ByItself });
     log!("the node of {task_id} was closed while the user asked for changes on it; Alondra starts a new one");
     Ok(())
 }
 
 fn finish(domain: &DomainRuntime, row: &TaskClosing, agent: Option<&AgentId>, end: NodeEnd) -> Result<()> {
     if let Some(agent) = agent {
-        domain.live.set_close_interrupted(&agent.0, None);
+        domain.live().set_close_interrupted(&agent.0, None);
     }
     record_end(domain, &row.task_id, end, agent)?;
     forget_post_merge_check(domain, &row.task_id)?;
@@ -307,7 +307,7 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
             Card::Leave => return finish(domain, &row, task.agent_id.as_ref(), NodeEnd::KeptByUser),
             Card::Retry | Card::Withdrawn => {
                 if let Some(agent) = &task.agent_id {
-                    domain.live.set_close_interrupted(&agent.0, None);
+                    domain.live().set_close_interrupted(&agent.0, None);
                 }
                 row.failures = 0;
                 row.problem_id = None;
@@ -333,7 +333,7 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
     if owned || crate::sdk_owner::runs_through_sdk(&state, &agent) {
         return close_sdk_node(domain, timing, now, &state, task, &agent, kind, row, owned).await;
     }
-    let orchestrator = domain.live.node(&agent.0).is_some_and(|node| node.is_orchestrator);
+    let orchestrator = domain.live().node(&agent.0).is_some_and(|node| node.is_orchestrator);
     if orchestrator || !domain.launched_by_alondra(&agent)? {
         return finish(domain, &row, Some(&agent), NodeEnd::UsersOwn);
     }
@@ -360,7 +360,7 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
     if !left.is_empty() {
         return hold_for_worktrees(domain, timing, now, task, &agent, row, &left, matches!(kind, Due::Cleanup));
     }
-    let node = domain.live.node(&agent.0);
+    let node = domain.live().node(&agent.0);
     if node.as_ref().is_some_and(|node| node.waiting_permission) || crate::domain_holds::waits_on_user(&state, &agent.0) {
         return Ok(());
     }
@@ -368,26 +368,26 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
         if matches!(kind, Due::Cleanup) {
             return Ok(());
         }
-        return match domain.live.close_interrupted_at(&agent.0) {
+        return match domain.live().close_interrupted_at(&agent.0) {
             None => {
-                let _ = domain.live.pushes.interrupt(&agent.0);
-                domain.live.set_close_interrupted(&agent.0, Some(now));
+                let _ = domain.live().pushes.interrupt(&agent.0);
+                domain.live().set_close_interrupted(&agent.0, Some(now));
                 Ok(())
             }
             Some(at) if now - at < millis(timing.retry) => Ok(()),
             Some(_) => {
-                domain.live.set_close_interrupted(&agent.0, None);
+                domain.live().set_close_interrupted(&agent.0, None);
                 failure(domain, timing, now, task, &agent, row, STILL_WORKING, (CloseStop::Working, ""), matches!(kind, Due::Cleanup))
             }
         };
     }
-    if !domain.live.begin_watch(&agent.0) {
+    if !domain.live().begin_watch(&agent.0) {
         return Ok(());
     }
     match domain.store.lock_or_exit("the domain store").claim_task_removal(task_id, now) {
         Ok(true) => {}
         claimed => {
-            domain.live.end_watch(&agent.0);
+            domain.live().end_watch(&agent.0);
             claimed?;
             return Ok(());
         }
@@ -399,7 +399,7 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
         Ok(()) => close_node(domain, sessions, &agent, false).await,
         Err(error) => Err(error),
     };
-    domain.live.end_watch(&agent.0);
+    domain.live().end_watch(&agent.0);
     let outcome = match outcome {
         Ok(outcome) => outcome,
         Err(error) => {
@@ -725,3 +725,12 @@ fn raise_card(domain: &DomainRuntime, task: &Task, stop: CloseStop, detail: &str
 
 #[cfg(test)]
 mod tests;
+
+/// Settles the tasks a commit left due with nobody to close them.
+pub(crate) struct Unattended;
+
+impl crate::domain_runtime::CommitObserver for Unattended {
+    fn changed(&self, domain: &DomainRuntime, state: &DomainState) {
+        settle_unattended(domain, state);
+    }
+}

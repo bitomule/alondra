@@ -370,7 +370,7 @@ pub(crate) fn settle_pace_cards(domain: &crate::domain_runtime::DomainRuntime, n
     use alondra_core::domain::SystemCard;
     use alondra_core::usage::{OVER_PACE_PAUSE_OPTION, PACE_RESUME_OPTION, PACE_RESUME_PREFIX, PACE_STAY_OPTION};
     let Ok(state) = domain.state() else { return };
-    let pause = &domain.live.usage_pause;
+    let pause = &domain.live().usage_pause;
     for (id, interaction) in state.interactions.iter().filter(|(_, interaction)| !interaction.withdrawn) {
         let InteractionPayload::Question { answer: Some(answer), .. } = &interaction.payload else { continue };
         let today = alondra_daemon_engine_model::local_day(now);
@@ -401,7 +401,7 @@ pub(crate) fn settle_pace_cards(domain: &crate::domain_runtime::DomainRuntime, n
 
 async fn watch_pace_cards(domain: std::sync::Arc<crate::domain_runtime::DomainRuntime>) {
     let mut cards = domain.subscribe();
-    let mut pauses = domain.live.usage_pause.subscribe();
+    let mut pauses = domain.live().usage_pause.subscribe();
     loop {
         settle_pace_cards(&domain, now_millis());
         tokio::select! {
@@ -424,7 +424,7 @@ pub async fn run(domain: std::sync::Arc<crate::domain_runtime::DomainRuntime>, a
 }
 
 async fn watch(domain: std::sync::Arc<crate::domain_runtime::DomainRuntime>, alerts: impl Alerts, jitter_max_ms: u64) {
-    let pause = &domain.live.usage_pause;
+    let pause = &domain.live().usage_pause;
     let mut changes = pause.subscribe();
     loop {
         if let Some((exhausted, again)) = pause.claim_announcement() {
@@ -460,7 +460,7 @@ fn jitter(max_ms: u64) -> u64 {
 
 /// An account has a session again: a wait for one ends now and what it held carries on.
 pub(crate) fn session_is_back(domain: &crate::domain_runtime::DomainRuntime) {
-    if domain.live.usage_pause.session_back() {
+    if domain.live().usage_pause.session_back() {
         log!("a Claude account has a session: resuming what waited for one");
         wake_nodes(domain);
     }
@@ -477,11 +477,11 @@ pub(crate) fn wake_nodes(domain: &crate::domain_runtime::DomainRuntime) {
 fn wake_legacy_nodes(domain: &crate::domain_runtime::DomainRuntime, require_capacity: bool) {
     let now = now_millis();
     let Ok(state) = domain.state() else { return };
-    for node in domain.live.nodes().into_iter().filter(|node| node.usage_limited && !node.busy) {
+    for node in domain.live().nodes().into_iter().filter(|node| node.usage_limited && !node.busy) {
         if !legacy_wake_ready(&state, &alondra_core::domain::AgentId(node.session_id.clone()), now, require_capacity) {
             continue;
         }
-        if !domain.live.gate.hold_back(domain, &node.session_id, crate::pauses::Reason::Usage, now) {
+        if !domain.live().gate.hold_back(domain, &node.session_id, crate::pauses::Reason::Usage, now) {
             let _ = crate::sdk_handover::tell(domain, &node.session_id, crate::node_push::ALONDRA, RESUME_MESSAGE, true);
         }
     }
@@ -746,26 +746,26 @@ mod tests {
     fn a_node_stopped_by_the_limit_sets_the_exhaustion_to_the_reset_the_plan_reports() {
         let (domain, home) = domain();
         let now = now_millis();
-        domain.live.observe(&stop_failure("s1", "overloaded", None));
-        assert!(!domain.live.usage_pause.is_active(), "an overloaded API is not an empty plan");
+        domain.live().observe(&stop_failure("s1", "overloaded", None));
+        assert!(!domain.live().usage_pause.is_active(), "an overloaded API is not an empty plan");
 
         measure(&domain, &[(WindowKind::Session, 0.8, now + 2 * 3_600_000)]);
-        domain.live.observe(&stop_failure("s1", "rate_limit", None));
-        let until = domain.live.usage_pause.current().unwrap().until;
+        domain.live().observe(&stop_failure("s1", "rate_limit", None));
+        let until = domain.live().usage_pause.current().unwrap().until;
         assert!((until - (now + 2 * 3_600_000)).abs() < 2_000, "the 5-hour window's reset: {until}");
 
         let (named, named_home) = self::domain();
         let before = now_millis();
-        named.live.observe(&stop_failure("s1", "rate_limit", Some("You've hit your session limit · resets 11:59pm")));
+        named.live().observe(&stop_failure("s1", "rate_limit", Some("You've hit your session limit · resets 11:59pm")));
         let after = now_millis();
-        let until = named.live.usage_pause.current().unwrap().until;
+        let until = named.live().usage_pause.current().unwrap().until;
         assert!((before + UNKNOWN_RESET_WAIT_MS..=after + UNKNOWN_RESET_WAIT_MS).contains(&until), "a reset in the error's words is not one: {until}");
 
         let (unknown, unknown_home) = self::domain();
         let before = now_millis();
-        unknown.live.observe(&stop_failure("s1", "rate_limit", None));
+        unknown.live().observe(&stop_failure("s1", "rate_limit", None));
         let after = now_millis();
-        let until = unknown.live.usage_pause.current().unwrap().until;
+        let until = unknown.live().usage_pause.current().unwrap().until;
         assert!((before + UNKNOWN_RESET_WAIT_MS..=after + UNKNOWN_RESET_WAIT_MS).contains(&until), "no reset known: the default wait");
         for path in [home, named_home, unknown_home] {
             std::fs::remove_dir_all(path).unwrap();
@@ -777,21 +777,21 @@ mod tests {
         let (domain, _home) = domain();
         let now = now_millis();
         measure(&domain, &[(WindowKind::Session, 0.6, now + 3_600_000)]);
-        assert!(!domain.live.usage_pause.is_active());
+        assert!(!domain.live().usage_pause.is_active());
         measure(&domain, &[(WindowKind::Session, 1.0, now + 3_600_000), (WindowKind::Weekly, 0.4, now + 4 * 86_400_000)]);
-        let until = domain.live.usage_pause.current().unwrap().until;
+        let until = domain.live().usage_pause.current().unwrap().until;
         assert_eq!(until, now + 3_600_000);
 
         let (opus, _opus_home) = self::domain();
         measure(&opus, &[(WindowKind::Other("seven_day_opus".into()), 1.0, now + 86_400_000)]);
-        assert!(!opus.live.usage_pause.is_active(), "one model's window alone leaves the others working");
+        assert!(!opus.live().usage_pause.is_active(), "one model's window alone leaves the others working");
     }
 
     #[tokio::test]
     async fn waking_tells_each_node_the_limit_stopped_to_carry_on_and_nobody_else() {
         let (domain, home) = domain();
-        domain.live.observe(&stop_failure("limited", "rate_limit", None));
-        domain.live.observe(&json!({"session_id": "fine", "hook_event_name": "UserPromptSubmit", "prompt": "go"}));
+        domain.live().observe(&stop_failure("limited", "rate_limit", None));
+        domain.live().observe(&json!({"session_id": "fine", "hook_event_name": "UserPromptSubmit", "prompt": "go"}));
         let limited = Node::connect(&domain, "limited");
         let fine = Node::connect(&domain, "fine");
         wake_nodes(&domain);
@@ -811,22 +811,22 @@ mod tests {
     #[tokio::test]
     async fn the_watcher_tells_once_when_it_starts_resumes_at_the_reset_wakes_the_nodes_and_tells_once_when_it_ends() {
         let (domain, home) = domain();
-        domain.live.apply(&alondra_core::Event::Hook(alondra_core::HookEvent {
+        domain.live().apply(&alondra_core::Event::Hook(alondra_core::HookEvent {
             session_id: "limited".into(), event: "StopFailure".into(), error_type: Some("rate_limit".into()), ..Default::default()
         }));
         let node = Node::connect(&domain, "limited");
         let told = Arc::new(Told(Mutex::new(vec![])));
-        domain.live.usage_pause.exhaust(Some(now_millis() + 150), now_millis());
+        domain.live().usage_pause.exhaust(Some(now_millis() + 150), now_millis());
         let watcher = tokio::spawn(watch(domain.clone(), told.clone(), 0));
         for _ in 0..200 {
-            if !domain.live.usage_pause.is_active() && !node.texts().is_empty() {
+            if !domain.live().usage_pause.is_active() && !node.texts().is_empty() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
         watcher.abort();
-        assert!(!domain.live.usage_pause.is_active(), "resumed at the reset");
+        assert!(!domain.live().usage_pause.is_active(), "resumed at the reset");
         assert_eq!(node.texts(), [RESUME_MESSAGE], "the node the limit stopped is told once");
         let told = told.0.lock().unwrap().clone();
         assert_eq!(told.len(), 2, "one when it started and one when it ended: {told:?}");
@@ -901,19 +901,19 @@ mod tests {
         answer(&domain, &id, "pause_until_tomorrow");
         let now = now_millis();
         settle_pace_cards(&domain, now);
-        let standing = domain.live.usage_pause.current().expect("paused");
+        let standing = domain.live().usage_pause.current().expect("paused");
         assert!(standing.by_user);
         assert_eq!(standing.until, next_local_midnight(now));
         assert!(standing.until > now && standing.until <= now + 25 * 3_600_000);
-        assert!(domain.live.usage_pause.claim_announcement().is_none(), "the user did this: no push about it");
+        assert!(domain.live().usage_pause.claim_announcement().is_none(), "the user did this: no push about it");
         let resume = the_card(&domain, "pace-resume-").expect("a way to resume early");
 
         settle_pace_cards(&domain, now);
-        assert_eq!(domain.live.usage_pause.current().unwrap().until, standing.until, "answered once, acted on once");
+        assert_eq!(domain.live().usage_pause.current().unwrap().until, standing.until, "answered once, acted on once");
         answer(&domain, &resume.id.0, "resume_now");
         settle_pace_cards(&domain, now_millis());
-        assert!(!domain.live.usage_pause.is_active(), "resume now clears the pause");
-        assert_eq!(domain.live.usage_pause.record.lock().unwrap().strikes, 0);
+        assert!(!domain.live().usage_pause.is_active(), "resume now clears the pause");
+        assert_eq!(domain.live().usage_pause.record.lock().unwrap().strikes, 0);
         std::fs::remove_dir_all(home).unwrap();
     }
 
@@ -923,9 +923,9 @@ mod tests {
         raise_over_pace_card(&domain, now_millis());
         answer(&domain, &the_card(&domain, "over-pace-").unwrap().id.0, "pause_until_tomorrow");
         settle_pace_cards(&domain, now_millis() + 86_400_000);
-        assert!(!domain.live.usage_pause.is_active(), "yesterday's answer paused yesterday only");
+        assert!(!domain.live().usage_pause.is_active(), "yesterday's answer paused yesterday only");
         settle_pace_cards(&domain, now_millis());
-        assert!(domain.live.usage_pause.current().is_some_and(|standing| standing.by_user), "today's answer brings the pause back");
+        assert!(domain.live().usage_pause.current().is_some_and(|standing| standing.by_user), "today's answer brings the pause back");
     }
 
     #[test]
@@ -935,7 +935,7 @@ mod tests {
         let id = the_card(&domain, "over-pace-").unwrap().id.0;
         answer(&domain, &id, "keep_going");
         settle_pace_cards(&domain, now_millis());
-        assert!(!domain.live.usage_pause.is_active());
+        assert!(!domain.live().usage_pause.is_active());
         assert!(the_card(&domain, "pace-resume-").is_none());
         std::fs::remove_dir_all(home).unwrap();
     }
@@ -947,7 +947,7 @@ mod tests {
         answer(&domain, &the_card(&domain, "over-pace-").unwrap().id.0, "pause_until_tomorrow");
         settle_pace_cards(&domain, now_millis());
         assert!(the_card(&domain, "pace-resume-").is_some());
-        let pause = &domain.live.usage_pause;
+        let pause = &domain.live().usage_pause;
         let until = pause.current().unwrap().until;
         pause.exhaust(Some(until + 3_600_000), now_millis());
         let standing = pause.current().unwrap();
@@ -963,7 +963,7 @@ mod tests {
     async fn no_account_with_a_session_sounds_because_only_the_user_can_fix_it() {
         let (domain, home) = domain();
         let told = Arc::new(Told(Mutex::new(vec![])));
-        domain.live.usage_pause.wait_for_session(now_millis());
+        domain.live().usage_pause.wait_for_session(now_millis());
         let watcher = tokio::spawn(watch(domain.clone(), told.clone(), 0));
         for _ in 0..200 {
             if !told.0.lock().unwrap().is_empty() {
@@ -980,17 +980,17 @@ mod tests {
     async fn a_pause_by_the_user_resumes_by_itself_at_its_time_without_telling_anyone() {
         let (domain, home) = domain();
         let told = Arc::new(Told(Mutex::new(vec![])));
-        domain.live.usage_pause.pause_by_user(now_millis() + 100, now_millis());
+        domain.live().usage_pause.pause_by_user(now_millis() + 100, now_millis());
         let watcher = tokio::spawn(watch(domain.clone(), told.clone(), 0));
         for _ in 0..200 {
-            if !domain.live.usage_pause.is_active() {
+            if !domain.live().usage_pause.is_active() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
         watcher.abort();
-        assert!(!domain.live.usage_pause.is_active());
+        assert!(!domain.live().usage_pause.is_active());
         assert!(told.0.lock().unwrap().is_empty());
         std::fs::remove_dir_all(home).unwrap();
     }

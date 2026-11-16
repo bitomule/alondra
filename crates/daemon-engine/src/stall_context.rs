@@ -21,7 +21,7 @@ pub(crate) fn context(domain: &DomainRuntime, state: &DomainState, case: &Intera
         .or_else(|| state.requests.get(&task.request_id).map(|request| request.body.clone()))
         .unwrap_or_default();
     let words = task.agent_id.as_ref()
-        .and_then(|agent| domain.live.mods.session(&agent.0))
+        .and_then(|agent| domain.live().mods.session(&agent.0))
         .and_then(|reported| reported.answer)
         .map(|answer| answer.text)
         .filter(|text| !text.trim().is_empty());

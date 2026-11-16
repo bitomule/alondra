@@ -105,11 +105,11 @@ impl Rig {
         let session = format!("a{n:07}-0000-4000-8000-000000000000");
         let short = format!("a{n:07}");
         command(&self.domain, Actor::System, Command::RegisterAgent { agent_id: session.clone().into(), name: format!("Node {n}"), at: 0 });
-        self.domain.live.apply(&Event::DaemonSeen(DaemonObservation {
+        self.domain.live().apply(&Event::DaemonSeen(DaemonObservation {
             session_id: session.clone(), short_id: short.clone(), name: Some(format!("Node {n}")), ..Default::default()
         }));
-        self.domain.live.observe(&serde_json::json!({"session_id": session, "hook_event_name": "SessionStart"}));
-        self.domain.live.observe(&serde_json::json!({"session_id": session, "hook_event_name": "Stop"}));
+        self.domain.live().observe(&serde_json::json!({"session_id": session, "hook_event_name": "SessionStart"}));
+        self.domain.live().observe(&serde_json::json!({"session_id": session, "hook_event_name": "Stop"}));
         self.sessions.listed.lock().unwrap().push(short);
         let id = format!("t{n}");
         command(&self.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: id.clone().into(), request_id: "r".into(), title: format!("Task {n}"),
@@ -167,7 +167,7 @@ impl Rig {
     }
 
     fn busy(&self, session: &str) {
-        self.domain.live.observe(&serde_json::json!({"session_id": session, "hook_event_name": "UserPromptSubmit", "prompt": "go"}));
+        self.domain.live().observe(&serde_json::json!({"session_id": session, "hook_event_name": "UserPromptSubmit", "prompt": "go"}));
     }
 }
 
@@ -219,8 +219,8 @@ async fn cleanup_keeps_sessions_with_unsaved_work_working_or_waiting_and_says_wh
     let working = rig.session(Task::Done, true);
     let waiting = rig.session(Task::Cancelled, true);
     rig.sessions.leftovers.lock().unwrap().insert(unsaved, "a.txt is not committed".into());
-    rig.domain.live.observe(&serde_json::json!({"session_id": working, "hook_event_name": "UserPromptSubmit", "prompt": "go"}));
-    rig.domain.live.observe(&serde_json::json!({"session_id": waiting, "hook_event_name": "PermissionRequest"}));
+    rig.domain.live().observe(&serde_json::json!({"session_id": working, "hook_event_name": "UserPromptSubmit", "prompt": "go"}));
+    rig.domain.live().observe(&serde_json::json!({"session_id": waiting, "hook_event_name": "PermissionRequest"}));
     let report = rig.run(false).await;
     assert!(rig.sessions.removals().is_empty());
     let kept: Vec<(String, String)> = report["kept"].as_array().unwrap().iter()
@@ -236,7 +236,7 @@ async fn cleanup_never_looks_at_open_tasks_the_orchestrator_or_sessions_alondra_
     let foreign = rig.session(Task::Done, false);
     let orchestrator = rig.session(Task::None, true);
     rig.job(&orchestrator, "idle", "2025-12-25T00:00:00.000Z");
-    rig.domain.live.apply(&Event::MarkedOrchestrator { session_id: orchestrator });
+    rig.domain.live().apply(&Event::MarkedOrchestrator { session_id: orchestrator });
     let report = rig.run(false).await;
     let _ = foreign;
     for list in ["close", "closed", "kept", "failed"] {
@@ -307,13 +307,13 @@ impl Rig {
         let session = format!("a{n:07}-0000-4000-8000-000000000000");
         let short = format!("a{n:07}");
         command(&self.domain, Actor::System, Command::RegisterAgent { agent_id: session.clone().into(), name: format!("Node {n}"), at: 0 });
-        self.domain.live.apply(&Event::DaemonSeen(DaemonObservation {
+        self.domain.live().apply(&Event::DaemonSeen(DaemonObservation {
             session_id: session.clone(), short_id: short.clone(), name: Some(format!("Node {n}")), ..Default::default()
         }));
-        self.domain.live.observe(&serde_json::json!({"session_id": session, "hook_event_name": "SessionStart"}));
-        self.domain.live.observe(&serde_json::json!({"session_id": session, "hook_event_name": "Stop"}));
+        self.domain.live().observe(&serde_json::json!({"session_id": session, "hook_event_name": "SessionStart"}));
+        self.domain.live().observe(&serde_json::json!({"session_id": session, "hook_event_name": "Stop"}));
         if let Some(key) = launch_key {
-            self.domain.live.mods.loaded_for(&session, Some(key));
+            self.domain.live().mods.loaded_for(&session, Some(key));
         }
         self.sessions.listed.lock().unwrap().push(short);
         let id = format!("t{n}");
@@ -394,7 +394,7 @@ async fn a_node_still_working_after_its_task_ended_has_its_turn_cut_and_is_close
             while !lines.lock().unwrap().iter().any(|line| line["interrupt"] == true) {
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
-            domain.live.observe(&serde_json::json!({"session_id": session, "hook_event_name": "Stop"}));
+            domain.live().observe(&serde_json::json!({"session_id": session, "hook_event_name": "Stop"}));
         }
     });
     let report = rig.run_waiting(false, Duration::from_secs(10)).await;
