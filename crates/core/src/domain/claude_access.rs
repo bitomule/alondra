@@ -156,6 +156,15 @@ impl DomainState {
         self.interactions.get(card).and_then(ClaudeHold::of)
     }
 
+    /// Whether `task` fails on its own: it went on from waiting out the API, its turn failed again
+    /// before ending, and no other task of its provider still waits for the API.
+    pub(super) fn refused_alone(&self, task: &TaskId) -> bool {
+        let Some(journal) = self.lifecycle_journal.get(task) else { return false };
+        let back_from_outage = matches!(last_hold(journal, &self.interactions), Some((card, false, false)) if self.claude_hold(card) == Some(ClaudeHold::Outage));
+        let provider = self.task_account_key(task).provider;
+        back_from_outage && !self.claude_held().iter().any(|held| held.task != *task && held.provider == provider && held.hold == ClaudeHold::Outage)
+    }
+
     /// When the usage limit `card` waits for resets, in Unix seconds, when Claude said.
     pub fn usage_resets_at(&self, card: &InteractionId) -> Option<u64> {
         match self.interactions.get(card)?.system_card {

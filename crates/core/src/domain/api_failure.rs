@@ -118,18 +118,26 @@ pub enum SdkFailureKind {
 }
 
 /// The kind of an SDK turn's API error. A 403 is labelled `authentication_failed` too, but signing
-/// in again does not help with it. An answer cut at the output limit is no failure of the API: the
-/// turn ends like any other. A category Claude Code adds later is taken as an outage.
+/// in again does not help with it, and it says the same for an account the API refuses and for an
+/// API that refuses everyone: it is taken as an outage, and the domain asks the user only once the
+/// task alone keeps getting it (`DomainState::refused_alone`). An answer cut at the output limit is
+/// no failure of the API: the turn ends like any other. A category Claude Code adds later is taken
+/// as an outage.
 pub fn classify_sdk(error: &str, status: Option<u16>) -> Option<SdkFailureKind> {
     Some(match error {
         "max_output_tokens" => return None,
-        "authentication_failed" if status == Some(403) => SdkFailureKind::NeedsUser,
+        _ if refused_with_403(error, status) => SdkFailureKind::Outage,
         "authentication_failed" => SdkFailureKind::SignedOut,
         "rate_limit" => SdkFailureKind::Usage,
         "oauth_org_not_allowed" | "account_on_hold" | "verification_required" | "billing_error" | "cloud_credential_error"
         | "invalid_request" | "model_not_found" => SdkFailureKind::NeedsUser,
         _ => SdkFailureKind::Outage,
     })
+}
+
+/// A 403 labelled `authentication_failed`: a refused account or an API down for everyone.
+pub fn refused_with_403(error: &str, status: Option<u16>) -> bool {
+    error == "authentication_failed" && status == Some(403)
 }
 
 /// The categories `api_refusal` names.

@@ -1289,10 +1289,7 @@ fn an_expired_sign_in_leaves_its_account_signed_out_until_claude_answers_on_it()
 
 #[test]
 fn a_refusal_signing_in_cannot_fix_asks_on_the_tasks_own_card_with_its_reason() {
-    for (error, status, reason) in [
-        ("authentication_failed", Some(403), "the Claude account refuses this request"),
-        ("billing_error", Some(400), "the Claude account has a billing problem"),
-    ] {
+    for (error, status, reason) in [("billing_error", Some(400), "the Claude account has a billing problem")] {
         let mut s = world();
         let card = sdk_turn(&mut s, "t", "a");
         fail_turn(&mut s, "t", "turn-1", error, status);
@@ -1304,6 +1301,70 @@ fn a_refusal_signing_in_cannot_fix_asks_on_the_tasks_own_card_with_its_reason() 
         assert_eq!(held(&s), []);
         assert_aggregate_rules(&s);
     }
+}
+
+fn probe_outage(s: &mut DomainState) {
+    must(s, Actor::System, Command::ProbeClaudeAccess { provider: crate::accounts::Provider::Claude, hold: ClaudeHold::Outage, account: None });
+}
+fn refusal_cards(s: &DomainState) -> Vec<String> {
+    s.interactions.values().filter(|i| s.open(i) && i.card.effective_title().contains("refuses this request")).map(|i| i.id.0.clone()).collect()
+}
+
+// A 403 says the same for an account the API refuses and for an API that refuses everyone. Every
+// node getting it is the API: one hold waits it out, and no task asks the user to fix its account.
+#[test]
+fn a_403_on_every_task_is_one_hold_on_the_api_and_no_refusal() {
+    let mut s = world();
+    for (task, node) in [("t", "a"), ("u", "b")] {
+        sdk_turn(&mut s, task, node);
+        let failed = fail_turn(&mut s, task, "turn-1", "authentication_failed", Some(403));
+        assert_eq!(notices(&failed), 0, "{task}: waiting out the API is never announced");
+    }
+    assert_eq!(held(&s), [("t".into(), ClaudeHold::Outage), ("u".into(), ClaudeHold::Outage)]);
+    probe_outage(&mut s);
+    turn_on_resumed(&mut s, "t", "turn-2");
+    fail_turn(&mut s, "t", "turn-2", "authentication_failed", Some(403));
+    assert_eq!(held(&s).len(), 2, "the probe fails with the other still waiting: still the API");
+    assert_eq!(refusal_cards(&s), Vec::<String>::new());
+    assert_eq!(listed_holds(&s).len(), 1, "Waiting for You lists one hold: {:?}", listed_holds(&s));
+    assert_aggregate_rules(&s);
+}
+
+// The same 403 on one task alone, again once it went on, is that task's own refusal: it asks the
+// user on the task's own card, with the reason.
+#[test]
+fn a_403_the_task_alone_gets_again_after_waiting_is_its_refusal() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    fail_turn(&mut s, "t", "turn-1", "authentication_failed", Some(403));
+    assert_eq!(held(&s), [("t".into(), ClaudeHold::Outage)], "a first 403 may be the API's");
+    assert_eq!(refusal_cards(&s), Vec::<String>::new());
+    probe_outage(&mut s);
+    turn_on_resumed(&mut s, "t", "turn-2");
+    let card = turn_ended_card_id(&"t".into(), 1, "turn-2");
+    fail_turn(&mut s, "t", "turn-2", "authentication_failed", Some(403));
+    let asked = &s.interactions[&card];
+    assert_eq!(asked.card.effective_title(), "“Task t” stopped: the Claude account refuses this request");
+    assert_eq!(asked.card.why, REFUSED_WHY);
+    assert_eq!(held(&s), []);
+    assert!(sign_in_cards(&s).is_empty(), "a 403 is not a logout");
+    assert_aggregate_rules(&s);
+}
+
+// Another task got answers from the model while one kept getting a 403: the answer let the waiting
+// task go on, and its next 403 is its own refusal.
+#[test]
+fn a_403_after_the_model_answered_another_task_is_the_tasks_refusal() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    sdk_turn(&mut s, "u", "b");
+    fail_turn(&mut s, "t", "turn-1", "authentication_failed", Some(403));
+    must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "u".into(), generation: 1, facts: vec![RuntimeObservation::ModelAnswered] });
+    assert_eq!(held(&s), [], "the model answering lets the task go on");
+    turn_on_resumed(&mut s, "t", "turn-2");
+    fail_turn(&mut s, "t", "turn-2", "authentication_failed", Some(403));
+    assert_eq!(refusal_cards(&s).len(), 1);
+    assert_aggregate_rules(&s);
 }
 
 // What the user sees with two tasks signed out: one card in Waiting for You, which counts them, and

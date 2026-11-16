@@ -1515,9 +1515,18 @@ impl DomainState {
 
     /// The wait `failure` asks for, when it asks for one.
     pub(super) fn hold_after_failure(&mut self, task: &TaskId, failure: &SdkApiFailure, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
-        match classify_sdk(&failure.error, failure.status).and_then(ClaudeHold::for_failure) {
+        match self.sdk_failure_kind(task, failure).and_then(ClaudeHold::for_failure) {
             Some(hold) => self.hold_on_claude(task, hold, failure.resets_at, effects, lifecycles),
             None => Ok(()),
+        }
+    }
+
+    /// The kind of `failure` for `task`: a 403 waits out the API with every task it stops, and is
+    /// the task's own refusal only once the task alone keeps getting it.
+    fn sdk_failure_kind(&self, task: &TaskId, failure: &SdkApiFailure) -> Option<SdkFailureKind> {
+        match classify_sdk(&failure.error, failure.status)? {
+            SdkFailureKind::Outage if refused_with_403(&failure.error, failure.status) && self.refused_alone(task) => Some(SdkFailureKind::NeedsUser),
+            kind => Some(kind),
         }
     }
 
@@ -1529,7 +1538,7 @@ impl DomainState {
     }
 
     fn observed_turn_end<'a>(&self, task: &TaskId, turn: &str, failure: Option<&'a SdkApiFailure>, failed: Option<&'a str>) -> Option<TurnEnd<'a>> {
-        let kind = failure.and_then(|failure| classify_sdk(&failure.error, failure.status));
+        let kind = failure.and_then(|failure| self.sdk_failure_kind(task, failure));
         let interrupted = self.lifecycle_journal.get(task).is_some_and(|journal| interrupted(journal, turn));
         let provider = self.tasks[task].provider;
         match failure.filter(|_| kind == Some(SdkFailureKind::NeedsUser)) {

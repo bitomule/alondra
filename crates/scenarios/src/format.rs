@@ -99,9 +99,10 @@ pub enum Step {
     TurnEnd { task: String },
     /// The turn of the node of `task` ends on this API error, whatever the provider's state.
     ApiError { task: String, error: String, #[serde(default)] status: Option<u16> },
-    /// The provider answers every turn with this error, until `provider_up`. A node with an input
-    /// waiting takes it and its turn ends on the error.
-    ProviderDown { #[serde(default = "Step::server_error")] error: String, #[serde(default)] status: Option<u16> },
+    /// The provider answers every turn with this error, until `provider_up`; only the turns of
+    /// `tasks` when it names any, and the others' turns get answers. A node with an input waiting
+    /// takes it and its turn ends on the error.
+    ProviderDown { #[serde(default = "Step::server_error")] error: String, #[serde(default)] status: Option<u16>, #[serde(default)] tasks: Vec<String> },
     ProviderUp,
     /// The sign-in of the provider expired: every turn ends on `authentication_failed`.
     LoginExpired,
@@ -270,7 +271,7 @@ do = "update"
 "#,
         )
         .unwrap();
-        assert!(matches!(&scenario.steps[0], Step::ProviderDown { error, status: Some(529) } if error == "server_error"));
+        assert!(matches!(&scenario.steps[0], Step::ProviderDown { error, status: Some(529), tasks } if error == "server_error" && tasks.is_empty()));
         assert!(matches!(scenario.steps[3], Step::HostExit { resumes: true, .. }));
         assert!(matches!(scenario.steps[5], Step::Update));
     }
