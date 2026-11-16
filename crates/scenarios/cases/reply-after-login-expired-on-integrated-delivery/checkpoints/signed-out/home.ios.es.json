@@ -1,0 +1,325 @@
+{
+  "client": "ios",
+  "cursor": "<cursor>",
+  "data_epoch": "<data_epoch>",
+  "first_cards": [
+    {
+      "client": "ios",
+      "cursor": "<cursor>",
+      "data_epoch": "<data_epoch>",
+      "key": "card:claude-signed-out-t1-9",
+      "protocol": 1,
+      "sections": [
+        {
+          "collapsed": false,
+          "id": "card",
+          "items": [
+            {
+              "actions": [
+                {
+                  "attachments": false,
+                  "enabled": true,
+                  "id": "ans:claude-signed-out-t1-9@<revision>",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "★ Ya he iniciado sesión",
+                  "option_id": "signed_in",
+                  "presentation": "button",
+                  "resolves_card": true,
+                  "role": "advance",
+                  "stamp": "Respondida",
+                  "style": "primary"
+                }
+              ],
+              "context": [
+                {
+                  "icon": "task",
+                  "link": {
+                    "key": "task:t1",
+                    "kind": "view"
+                  },
+                  "state": {
+                    "text": "Te necesita",
+                    "tone": "warning"
+                  },
+                  "text": "Add the CSV export"
+                }
+              ],
+              "detail": "included",
+              "eyebrow": {
+                "text": "Problema",
+                "tone": "critical"
+              },
+              "icon": "warning",
+              "id": "claude-signed-out-t1-9",
+              "kind": "problem",
+              "link": {
+                "key": "card:claude-signed-out-t1-9",
+                "kind": "view"
+              },
+              "meta": "Alondra",
+              "need": "Resuelve el problema",
+              "state": {
+                "text": "Bloquea a Add the CSV export",
+                "tone": "warning"
+              },
+              "subtitle": "La sesión de Claude Code caducó y una tarea espera. Abre Terminal en el Mac, ejecuta claude e inicia sesión con /login; luego pulsa Ya he iniciado sesión.",
+              "timestamps": [
+                {
+                  "at": "<instant>",
+                  "format": "relative",
+                  "role": "created"
+                }
+              ],
+              "title": "Inicia sesión en Claude fuera de Alondra",
+              "title_is_separate": true,
+              "type": "card",
+              "why": "La sesión de Claude Code caducó y una tarea espera. Abre Terminal en el Mac, ejecuta claude e inicia sesión con /login; luego pulsa Ya he iniciado sesión."
+            }
+          ]
+        },
+        {
+          "collapsed": false,
+          "id": "content",
+          "items": [
+            {
+              "commentable": false,
+              "text": "Ya he iniciado sesión\n\nSigue una de las tareas que esperan; cuando Claude le responda, siguen las demás",
+              "truncated": false,
+              "type": "markdown"
+            }
+          ]
+        },
+        {
+          "collapsed": false,
+          "id": "context",
+          "items": [
+            {
+              "items": [
+                {
+                  "label": "Tarea",
+                  "link": {
+                    "key": "task:t1",
+                    "kind": "view"
+                  },
+                  "value": "Add the CSV export"
+                }
+              ],
+              "type": "facts"
+            }
+          ],
+          "title": "Contexto"
+        }
+      ],
+      "status": {
+        "badge": 1,
+        "counts": [
+          {
+            "id": "inbox",
+            "label": "Bandeja",
+            "value": 1
+          },
+          {
+            "id": "tasks",
+            "label": "Tareas",
+            "value": 1
+          },
+          {
+            "id": "working",
+            "label": "trabajando",
+            "value": 0
+          },
+          {
+            "id": "needs_you",
+            "label": "esperando por ti",
+            "value": 1
+          },
+          {
+            "id": "queued",
+            "label": "en cola",
+            "value": 0
+          },
+          {
+            "id": "paused",
+            "label": "en pausa",
+            "value": 0
+          },
+          {
+            "id": "other_waiting",
+            "label": "en espera",
+            "value": 0
+          }
+        ],
+        "gauges": [
+          {
+            "id": "memory",
+            "label": "RAM",
+            "level": "calm",
+            "text": "25%",
+            "value": 0.25
+          },
+          {
+            "id": "cpu",
+            "label": "CPU",
+            "level": "calm",
+            "text": "5%",
+            "value": 0.05
+          },
+          {
+            "id": "disk",
+            "label": "Disco",
+            "level": "calm",
+            "text": "550 GB libres",
+            "value": 0.5
+          }
+        ],
+        "orchestrator": {
+          "text": "inactivo",
+          "tone": "neutral"
+        },
+        "session_wait": {
+          "text": "No hay ninguna cuenta de proveedor disponible · revisa Cuentas",
+          "tone": "warning"
+        },
+        "summary": "1 pregunta · 0 tareas trabajando",
+        "summary_parts": [
+          {
+            "count": 1,
+            "id": "questions",
+            "one": "{count} pregunta",
+            "other": "{count} preguntas"
+          },
+          {
+            "count": 0,
+            "id": "working",
+            "one": "{count} tarea trabajando",
+            "other": "{count} tareas trabajando"
+          }
+        ],
+        "version": "<version>"
+      },
+      "title": "Inicia sesión en Claude fuera de Alondra",
+      "version": "<version>",
+      "view": "card"
+    }
+  ],
+  "key": "home",
+  "protocol": 1,
+  "sections": [
+    {
+      "card_ids": [
+        "claude-signed-out-t1-9"
+      ],
+      "card_waits": [
+        "question"
+      ],
+      "collapsed": false,
+      "count": 1,
+      "id": "queue",
+      "items": [],
+      "title": "Te espera"
+    }
+  ],
+  "service": {
+    "capabilities": [
+      "account_presentation",
+      "model_selection",
+      "provider_accounts"
+    ],
+    "version": "<version>",
+    "views_protocol": {
+      "max": 1,
+      "min": 1
+    }
+  },
+  "status": {
+    "badge": 1,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 1
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 0
+      },
+      {
+        "id": "needs_you",
+        "label": "esperando por ti",
+        "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
+        "value": 0
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "RAM",
+        "level": "calm",
+        "text": "25%",
+        "value": 0.25
+      },
+      {
+        "id": "cpu",
+        "label": "CPU",
+        "level": "calm",
+        "text": "5%",
+        "value": 0.05
+      },
+      {
+        "id": "disk",
+        "label": "Disco",
+        "level": "calm",
+        "text": "550 GB libres",
+        "value": 0.5
+      }
+    ],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    },
+    "session_wait": {
+      "text": "No hay ninguna cuenta de proveedor disponible · revisa Cuentas",
+      "tone": "warning"
+    },
+    "summary": "1 pregunta · 0 tareas trabajando",
+    "summary_parts": [
+      {
+        "count": 1,
+        "id": "questions",
+        "one": "{count} pregunta",
+        "other": "{count} preguntas"
+      },
+      {
+        "count": 0,
+        "id": "working",
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
+    "version": "<version>"
+  },
+  "version": "<version>",
+  "view": "home"
+}

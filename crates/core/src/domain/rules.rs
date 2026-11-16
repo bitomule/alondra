@@ -1676,6 +1676,12 @@ impl DomainState {
         }
     }
 
+    /// The user wrote to the task: its node owes them an answer before the task can finish, and
+    /// what the node presented before no longer settles it.
+    pub(super) fn awaits_answer_to_user(&mut self, task: &TaskId, input: String) {
+        self.invalidate_keeping_user_merges(task, |state| state.invalidate(task));
+        self.tasks.get_mut(task).expect("the task the user wrote to exists").pending_user_inputs.insert(input);
+    }
     /// A message the user sends after merging never takes the merge back: every authorization
     /// the user gave stands, with the acceptance of its delivery, and the node still gets the
     /// message. What only Alondra decided is decided again.
@@ -4347,7 +4353,7 @@ impl DomainState {
                     self.checklists.insert(task_id.clone(), checklist);
                 }
                 let written = inputs.values().find_map(|value| match value { InputValue::Text(text) => Some(text.clone()), _ => None });
-                if !self.settle_claude_card(interaction_id, lifecycles)?
+                if !self.settle_claude_card(interaction_id, written.as_deref(), lifecycles)?
                     && !self.settle_mcp_card(interaction_id, lifecycles)?
                     && !self.decide_sdk_card(interaction_id, lifecycles)?
                     && !self.settle_host_lost(interaction_id, option_id, written.as_deref(), lifecycles)?
@@ -5623,8 +5629,7 @@ impl DomainState {
                     self.decide(lifecycles, task_id, record)?;
                 }
                 if *from_user && answers.is_none() {
-                    self.invalidate_keeping_user_merges(task_id, |state| state.invalidate(task_id));
-                    self.tasks.get_mut(task_id).unwrap().pending_user_inputs.insert(user_input);
+                    self.awaits_answer_to_user(task_id, user_input);
                 }
                 let answered: Vec<InteractionId> = {
                     let still = self.lifecycle(lifecycles, task_id)?.cards();
