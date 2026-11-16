@@ -3,7 +3,9 @@ load("@crates//:defs.bzl", "all_crate_deps", "crate_deps")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@rules_rust//cargo:defs.bzl", "cargo_build_script")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
+load("//tools:rust_sources.bzl", "production_sources")
 load("//:version.bzl", "VERSION")
+load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 
 # Each crate's part of the crash report's log catalog, from its production sources, in the
 # catalog's order: `--log` reads its log calls, `--words` the words of its code
@@ -71,7 +73,7 @@ cargo_build_script(
 
 rust_library(
     name = "alondra_lib",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    srcs = production_sources(test_only = ["src/account_native_smoke.rs", "src/service_client/live_transfer_test.rs", "src/tui/md/corpus.rs"], exclude = ["src/main.rs"]),
     compile_data = ["//launchd:alondra.plist.in"],
     crate_name = "alondra",
     crate_root = "src/lib.rs",
@@ -171,6 +173,18 @@ low_opt_rust_test(
         "CARGO_BIN_EXE_fake_daemon": "$(rootpath :fake_daemon)",
     },
     deps = all_crate_deps(normal = True, normal_dev = True),
+)
+
+# The library compiles only production sources: a test file among its inputs would rebuild every
+# crate above it whenever the test changes.
+rust_inputs_test(
+    name = "production_inputs_test",
+    size = "small",
+    required_sources = ["crates/alondra/src/lib.rs"],
+    source_dir = "crates/alondra/src/",
+    target_under_test = ":alondra_lib",
+    test_only_sources = ["crates/alondra/src/account_native_smoke.rs", "crates/alondra/src/service_client/live_transfer_test.rs", "crates/alondra/src/tui/md/corpus.rs", "crates/alondra/src/tui/tests/screens.rs"],
+    test_sources = False,
 )
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

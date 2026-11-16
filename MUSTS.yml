@@ -644,7 +644,7 @@ checks:
       - "crates/provider-claude/**"
       - "crates/provider-contract/**"
       - "crates/scenarios-transcript/**"
-      - "crates/scenarios/transcripts/**"
+      - "fixtures/transcripts/**"
       - "crates/store/**"
       - "crates/test_support.rs"
       - "tools/BUILD.bazel"
@@ -670,8 +670,8 @@ checks:
       - "crates/agent-protocol/**"
       - "crates/agent-runtime/**"
       - "crates/alondrad/BUILD.bazel"
-      - "crates/alondrad/build_inputs_test.bzl"
-      - "crates/alondrad/src/domain_store/schema.sql"
+      - "tools/rust_inputs_test.bzl"
+      - "crates/domain-store-schema/schema.sql"
       - "crates/codex-protocol/**"
       - "crates/domain/**"
       - "crates/foundation/**"
@@ -1198,7 +1198,7 @@ checks:
       - "crates/*/BUILD.bazel"
       - "crates/*/Cargo.toml"
       - "crates/alondrad/Info.plist"
-      - "crates/alondrad/build_inputs_test.bzl"
+      - "tools/rust_inputs_test.bzl"
       - "crates/provider-claude/build_inputs_test.bzl"
       - "deploy/brew/BUILD.bazel"
       - "deploy/brew/alondra.rb.in"
@@ -1798,6 +1798,7 @@ checks:
       - "crates/scenarios/**"
       - "crates/scenarios-transcript/**"
       - "crates/agent-application/**"
+      - "fixtures/transcripts/**"
       - "crates/codex-protocol/**"
       - "crates/domain/**"
       - "crates/e2e/**"
@@ -1816,7 +1817,7 @@ checks:
         - //crates/scenarios:scenarios_test
         - //crates/scenarios:scenarios_harness_test
         - //crates/scenarios-transcript:scenarios_transcript_test
-        - //crates/scenarios-transcript:transcript_guard_test
+        - //crates/scenarios:transcript_guard_test
 
   worktree-setup:
     uses: bazel/test

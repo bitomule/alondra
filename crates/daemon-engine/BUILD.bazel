@@ -1,5 +1,5 @@
 load("//tools:tree.bzl", "repo_tree")
-load("//crates/alondrad:build_inputs_test.bzl", "rust_inputs_test")
+load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 load("//tools:rust_test.bzl", "LOW_OPT_LEVEL", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_library")
@@ -19,20 +19,16 @@ WORKSPACE_DEPS = [
     "//crates/store:store",
 ]
 
-# The domain store's schema stays in alondrad, where the crates that create a store for their
-# tests read it.
-SQL = [
-    "//crates/alondrad:src/domain_store/schema.sql",
-    "//crates/alondrad:src/domain_store/schedule_launch_transition.sql",
-]
-
 rust_library(
     name = "daemon_engine",
-    srcs = glob(
-        ["src/**/*.rs"],
-        exclude = ["src/**/*_tests.rs", "src/**/tests.rs", "src/**/tests/*.rs", "src/machine_model/**"],
-    ),
-    compile_data = SQL,
+    srcs = production_sources(test_only = [
+        "src/domain_store/runtime_metrics.rs",
+        "src/domain_store/runtime_metrics_fold.rs",
+        "src/domain_store/runtime_owner.rs",
+        "src/domain_store/runtime_retention.rs",
+        "src/github_world.rs",
+        "src/machine_model/**",
+    ]),
     crate_name = "alondra_daemon_engine",
     edition = "2024",
     version = VERSION,
@@ -51,7 +47,6 @@ rust_library(
     name = "daemon_engine_test_hooks",
     testonly = True,
     srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
-    compile_data = SQL,
     crate_features = ["test-hooks"],
     crate_name = "alondra_daemon_engine",
     crate_root = "src/lib.rs",
@@ -102,11 +97,7 @@ MODEL_FILTERS = ["machine_model::tests::"]
 
 ENGINE_TEST_SRCS = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"]
 
-ENGINE_TEST_COMPILE_DATA = SQL + [
-    "//crates/alondrad:src/domain_api.rs",
-    "//crates/alondrad:src/service/domain_parity_tests.rs",
-    "//crates/core:src/domain/tests.rs",
-    "//crates/daemon-support:report_sources",
+ENGINE_TEST_COMPILE_DATA = [
     "//fixtures/client-v2",
     "//fixtures/accounts:recorded-rows.json",
     "//fixtures/domain-v2:acceptance.json",
@@ -190,7 +181,7 @@ rust_inputs_test(
     required_sources = ["crates/daemon-engine/src/lib.rs", "crates/daemon-engine/src/domain_runtime.rs"],
     source_dir = "crates/daemon-engine/src/",
     target_under_test = ":daemon_engine",
-    test_only_sources = ["crates/daemon-engine/src/domain_store/owner_tests.rs", "crates/test_support.rs"],
+    test_only_sources = ["crates/daemon-engine/src/domain_store/owner_tests.rs", "crates/daemon-engine/src/domain_store/runtime_owner.rs", "crates/daemon-engine/src/github_world.rs", "crates/test_support.rs"],
     test_sources = False,
 )
 
@@ -200,7 +191,7 @@ rust_inputs_test(
     required_sources = ["crates/daemon-engine/src/lib.rs", "crates/daemon-engine/src/domain_runtime.rs"],
     source_dir = "crates/daemon-engine/src/",
     target_under_test = ":daemon_engine_test_hooks",
-    test_only_sources = ["crates/daemon-engine/src/domain_store/owner_tests.rs", "crates/test_support.rs"],
+    test_only_sources = ["crates/daemon-engine/src/domain_store/owner_tests.rs", "crates/daemon-engine/src/domain_store/runtime_owner.rs", "crates/daemon-engine/src/github_world.rs", "crates/test_support.rs"],
     test_sources = True,
 )
 

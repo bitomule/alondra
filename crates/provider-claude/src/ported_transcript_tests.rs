@@ -8,7 +8,7 @@ use alondra_foundation::InputId;
 use alondra_scenarios_transcript::Transcript;
 use serde_json::json;
 
-const PORTED: &str = include_str!("../../scenarios/transcripts/claude-401-turn/transcript.ndjson");
+const PORTED: &str = include_str!("../../../fixtures/transcripts/claude-401-turn/transcript.ndjson");
 
 /// What a host stamps on every event: the transcript does not record it.
 fn stamped(frame: &Value, cursor: u64) -> Frame {

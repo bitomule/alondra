@@ -3,23 +3,29 @@ load("@crates//:defs.bzl", "all_crate_deps")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
 load("//tools:rust_sources.bzl", "production_sources")
+load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
+
+RUNTIME_DEPS = ["//crates/process-group:process_group", "//crates/store:store"] + all_crate_deps(normal = True)
 
 rust_library(
     name = "agent_runtime",
-    srcs = glob(["src/**/*.rs"]) + ["tests/connect.rs", "//crates:test_support.rs"],
+    srcs = production_sources(),
     crate_name = "alondra_agent_runtime",
     edition = "2024",
     version = "0.1.0",
     visibility = ["//crates:__subpackages__"],
-    deps = ["//crates/process-group:process_group", "//crates/store:store"] + all_crate_deps(normal = True),
+    deps = RUNTIME_DEPS,
 )
 
 low_opt_rust_test(
     name = "readiness_test",
     size = "small",
-    crate = ":agent_runtime",
+    srcs = glob(["src/**/*.rs"]) + ["tests/connect.rs", "//crates:test_support.rs"],
+    crate_name = "alondra_agent_runtime",
+    crate_root = "src/lib.rs",
     edition = "2024",
-    deps = all_crate_deps(normal_dev = True),
+    version = "0.1.0",
+    deps = RUNTIME_DEPS + all_crate_deps(normal_dev = True),
 )
 
 
@@ -27,7 +33,7 @@ rust_binary(
     name = "owned_host_fixture",
     crate_root = "tests/fixtures/owned_host.rs",
     srcs = ["tests/fixtures/owned_host.rs", "tests/support/mod.rs", "//crates:test_support.rs"],
-    compile_data = ["//crates/alondrad:src/domain_store/schema.sql"],
+    compile_data = ["//crates/domain-store-schema:schema.sql"],
     edition = "2024",
     deps = [":agent_runtime", "//crates/domain:domain", "//crates/foundation:foundation", "//crates/provider-contract:provider_contract", "//crates/store:store"] + all_crate_deps(normal = True, normal_dev = True),
 )
@@ -36,13 +42,25 @@ low_opt_rust_test(
     size = "small",
     crate_root = "tests/owned_host.rs",
     srcs = ["tests/owned_host.rs", "tests/support/mod.rs", "//crates:test_support.rs"],
-    compile_data = ["//crates/alondrad:src/domain_store/schema.sql"],
+    compile_data = ["//crates/domain-store-schema:schema.sql"],
     data = [":owned_host_fixture"],
     # Every test spawns processes and asserts on kernel locks: run in parallel in one process, a
     # spawn in one test copies, for an instant, the locked descriptor of another into its child.
     env = {"HOME": ".", "ALONDRA_OWNED_HOST_FIXTURE": "$(rootpath :owned_host_fixture)", "RUST_TEST_THREADS": "1"},
     edition = "2024",
     deps = [":agent_runtime", "//crates/process-group:process_group", "//crates/domain:domain", "//crates/foundation:foundation", "//crates/provider-contract:provider_contract", "//crates/store:store"] + all_crate_deps(normal = True, normal_dev = True),
+)
+
+# The library compiles only production sources: a test file among its inputs would rebuild every
+# crate above it whenever the test changes.
+rust_inputs_test(
+    name = "production_inputs_test",
+    size = "small",
+    required_sources = ["crates/agent-runtime/src/lib.rs"],
+    source_dir = "crates/agent-runtime/src/",
+    target_under_test = ":agent_runtime",
+    test_only_sources = ["crates/agent-runtime/tests/connect.rs", "crates/test_support.rs"],
+    test_sources = False,
 )
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

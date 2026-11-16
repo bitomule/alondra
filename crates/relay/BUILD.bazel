@@ -2,17 +2,21 @@ load("//tools:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps", "crate_deps")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
+load("//tools:rust_sources.bzl", "production_sources")
+load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
+
+RELAY_DEPS = all_crate_deps(normal = True) + ["//crates/e2e:alondra_e2e"]
 
 rust_library(
     name = "alondra_relay_lib",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]) + ["//crates:test_support.rs"],
+    srcs = production_sources(exclude = ["src/main.rs"]),
     compile_data = glob(["migrations/*.sql"]),
     crate_name = "alondra_relay",
     crate_root = "src/lib.rs",
     edition = "2024",
     version = "0.1.0",
     visibility = ["//visibility:public"],
-    deps = all_crate_deps(normal = True) + ["//crates/e2e:alondra_e2e"],
+    deps = RELAY_DEPS,
 )
 
 rust_binary(
@@ -29,10 +33,25 @@ low_opt_rust_test(
     name = "alondra_relay_test",
     size = "small",
     visibility = ["//apple/Data/Feed:__pkg__"],
-    compile_data = glob(["tests/fixtures/**"]) + ["//fixtures/push", "//:docs/architecture/push-fields.md", "//:web/react-router.config.ts"],
-    crate = ":alondra_relay_lib",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]) + ["//crates:test_support.rs"],
+    compile_data = glob(["migrations/*.sql", "tests/fixtures/**"]) + ["//fixtures/push", "//:docs/architecture/push-fields.md", "//:web/react-router.config.ts"],
+    crate_name = "alondra_relay",
+    crate_root = "src/lib.rs",
     edition = "2024",
-    deps = all_crate_deps(normal_dev = True),
+    version = "0.1.0",
+    deps = RELAY_DEPS + all_crate_deps(normal_dev = True),
+)
+
+# The library compiles only production sources: a test file among its inputs would rebuild every
+# crate above it whenever the test changes.
+rust_inputs_test(
+    name = "production_inputs_test",
+    size = "small",
+    required_sources = ["crates/relay/src/lib.rs"],
+    source_dir = "crates/relay/src/",
+    target_under_test = ":alondra_relay_lib",
+    test_only_sources = ["crates/relay/src/operator_tests.rs", "crates/test_support.rs"],
+    test_sources = False,
 )
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

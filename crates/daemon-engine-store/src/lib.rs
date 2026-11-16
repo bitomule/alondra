@@ -59,10 +59,10 @@ pub const SCHEMA_VERSION: i64 = 5;
 pub const PREVIOUS_SCHEMA_VERSION: i64 = 4;
 pub const ORCHESTRATOR_MESSAGE_TTL_MS: i64 = 24 * 60 * 60 * 1_000;
 const APPLICATION_ID: i64 = 0x414c4432;
-const SCHEDULE_LAUNCH_TRANSITION: &str = include_str!("../../alondrad/src/domain_store/schedule_launch_transition.sql");
+const SCHEDULE_LAUNCH_TRANSITION: &str = include_str!("../../domain-store-schema/schedule_launch_transition.sql");
 const SCHEMA: &str = concat!(
-    include_str!("../../alondrad/src/domain_store/schema.sql"),
-    include_str!("../../alondrad/src/domain_store/schedule_launch_transition.sql")
+    include_str!("../../domain-store-schema/schema.sql"),
+    include_str!("../../domain-store-schema/schedule_launch_transition.sql")
 );
 /// Created on every open instead of with the schema, so a store made before models were recorded
 /// gains it without being moved aside.
@@ -2142,6 +2142,8 @@ mod write_cost_tests;
 #[cfg(any(test, feature = "test-hooks"))]
 #[path = "load_bench.rs"]
 pub mod load_bench;
+#[cfg(any(test, feature = "test-hooks"))]
+pub mod acceptance_cases;
 #[cfg(test)]
 #[path = "acceptance_tests.rs"]
 mod acceptance_tests;

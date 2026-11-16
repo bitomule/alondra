@@ -4,24 +4,22 @@ load("@crates//:defs.bzl", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
+load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 
 WORKSPACE_DEPS = ["//crates/agent-application:agent_application", "//crates/agent-runtime:agent_runtime", "//crates/core:alondra_core", "//crates/domain:domain", "//crates/foundation:foundation", "//crates/provider-codex:provider_codex", "//crates/provider-contract:provider_contract", "//crates/store:store"]
 SQL = [
-    "//crates/alondrad:src/domain_store/schema.sql",
-    "//crates/alondrad:src/domain_store/schedule_launch_transition.sql",
+    "//crates/domain-store-schema:schema.sql",
+    "//crates/domain-store-schema:schedule_launch_transition.sql",
     "src/model_metrics.sql",
 ]
-TEST_DATA = SQL + [
-    "//crates/alondrad:src/domain_api.rs",
-    "//crates/alondrad:src/service/domain_parity_tests.rs",
-    "//crates/core:src/domain/tests.rs",
-    "//crates/daemon-support:report_sources",
-    "//fixtures/domain-v2:acceptance.json",
-]
+TEST_DATA = SQL + ["//fixtures/domain-v2:acceptance.json"]
+
+# The tests alondrad's check of the acceptance catalog finds its evidence in.
+exports_files(["src/tests.rs", "src/schedule_acceptance_tests.rs"], visibility = ["//crates/alondrad:__pkg__"])
 
 rust_library(
     name = "daemon_engine_store",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/**/*_tests.rs", "src/**/tests.rs", "src/**/tests/*.rs", "src/testing.rs"]),
+    srcs = production_sources(test_only = ["src/acceptance_cases.rs", "src/live_read_trace.rs", "src/load_bench.rs", "src/testing.rs"]),
     compile_data = SQL,
     crate_name = "alondra_daemon_engine_store",
     edition = "2024",
@@ -44,7 +42,7 @@ rust_library(
     edition = "2024",
     rustc_flags = [LOW_OPT_LEVEL],
     version = VERSION,
-    visibility = ["//crates/daemon-engine:__pkg__", "//crates/daemon-engine-machine:__pkg__"],
+    visibility = ["//crates/alondrad:__pkg__", "//crates/daemon-engine:__pkg__", "//crates/daemon-engine-machine:__pkg__"],
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",
@@ -67,10 +65,22 @@ low_opt_rust_test(
     ],
 )
 
+# The library compiles only production sources: a test file among its inputs would rebuild every
+# crate above it whenever the test changes.
+rust_inputs_test(
+    name = "production_inputs_test",
+    size = "small",
+    required_sources = ["crates/daemon-engine-store/src/lib.rs"],
+    source_dir = "crates/daemon-engine-store/src/",
+    target_under_test = ":daemon_engine_store",
+    test_only_sources = ["crates/daemon-engine-store/src/acceptance_cases.rs", "crates/daemon-engine-store/src/live_read_trace.rs", "crates/daemon-engine-store/src/load_bench.rs", "crates/daemon-engine-store/src/testing.rs"],
+    test_sources = False,
+)
+
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 filegroup(
     name = "report_sources",
-    srcs = production_sources(test_only = ["src/testing.rs", "src/live_read_trace.rs", "src/load_bench.rs"]),
+    srcs = production_sources(test_only = ["src/acceptance_cases.rs", "src/live_read_trace.rs", "src/load_bench.rs", "src/testing.rs"]),
     visibility = ["//crates/alondra:__pkg__", "//crates/alondrad:__pkg__"],
 )
 
