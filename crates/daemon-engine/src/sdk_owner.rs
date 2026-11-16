@@ -1665,9 +1665,12 @@ impl Driver {
         let attempt = self.sealed().attempts.pop().ok_or_else(|| Failed::new("the claim issued no attempt".into()))?;
         let generation = self.worker.owner_generation().map_err(adapter("reading the owner generation"))?;
         let worker = &mut self.worker;
-        self.domain
-            .own(self.scope.clone(), |owner| owner.record_command(attempt, generation, worker))
-            .map_err(failed("recording the command"))?;
+        let (intent, stamp) = (attempt.intent_id(), attempt.execution().clone());
+        match self.domain.own(self.scope.clone(), |owner| owner.record_command(attempt, generation, worker)) {
+            Ok(_) => {}
+            Err(StoreError::Storage(error)) if stale(&error) => return self.claim_went_stale(intent, &stamp, generation, &input),
+            Err(error) => return Err(failed("recording the command")(error)),
+        }
         let command = self.sealed().commands.pop().ok_or_else(|| Failed::new("the command left no seal".into()))?;
         self.domain.contexts.handed(&self.task, alondra_core::now_millis());
         let handoff = self.submit(&command);
@@ -1708,6 +1711,30 @@ impl Driver {
             return Handoff::RefusedBeforeOffer;
         }
         self.worker.submit(command).unwrap_or(Handoff::Uncertain)
+    }
+
+    /// Something else changed the task between the claim and the command's record, so no host was
+    /// offered the input: the claim is rejected and the input goes again, as a refused one does.
+    fn claim_went_stale(&mut self, intent: i64, stamp: &alondra_foundation::ExecutionStamp, generation: u64, input: &InputId) -> Result<(), Failed> {
+        log!("input {} of {} was claimed, but the task changed before its command was recorded: it goes again", input.as_str(), self.task);
+        let rejected = self.domain.own(self.scope.clone(), |owner| owner.resolve(stamp, intent, generation, DispatchReceipt::Rejected));
+        match rejected {
+            Ok(_) => {}
+            Err(StoreError::Storage(error)) if stale(&error) => {
+                let task = self.task.clone();
+                let (open, _) = self.domain.own(self.scope.clone(), |owner| owner.claim_is_open(&task, intent)).map_err(failed("reading the stale claim"))?;
+                if open {
+                    return Err(Failed::new(format!("the claim of input {} could not be rejected and nothing resolved it", input.as_str())));
+                }
+                return Ok(());
+            }
+            Err(error) => return Err(failed("rejecting the stale claim")(error)),
+        }
+        self.sealed();
+        let task = self.task.clone();
+        self.domain.own(self.scope.clone(), |owner| untaken::resend_refused(owner, &task, input)).map_err(failed("sending the stale input again"))?;
+        self.sealed();
+        Ok(())
     }
 
     /// The host of an open session refused `input` before offering it, which leaves nothing for a
