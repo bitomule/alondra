@@ -16,6 +16,7 @@ def _rust_inputs_test_impl(ctx):
     component = [
         "crates/provider-claude/src/controller_tests.rs",
         "crates/provider-claude/src/facade_tests.rs",
+        "crates/provider-claude/src/conformance_tests.rs",
         "crates/test_support.rs",
         "crates/agent-application/tests/support/controller.rs",
         "crates/domain-store-schema/schema.sql",
