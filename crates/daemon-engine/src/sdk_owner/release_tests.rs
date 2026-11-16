@@ -1,5 +1,8 @@
 //! A node that rests holds no process, its session goes on when its task has something to do, and a
 //! node with anything of the task in its host keeps it.
+use crate::sdk_owner::SdkOwners as _;
+use crate::live::LiveOf as _;
+use crate::idle_compaction::ContextsOf as _;
 use super::codex_tests::{claude_ready, configured, git, launch, request_move, resumed_threads, transcript, until_moved};
 use super::*;
 use crate::idle_release::{Rests, Timing, pass};

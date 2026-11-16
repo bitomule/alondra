@@ -1,6 +1,8 @@
 //! Reconciles historical account-move journals without selecting another account for a started
 //! node. Pre-admission moves are undone; an already committed destination is recovered only
 //! after positive evidence that its native execution started. The old journal format stays readable.
+use crate::sdk_owner::SdkOwners as _;
+use crate::live::LiveOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
@@ -318,8 +320,12 @@ mod tests;
 
 crate::extension!(Moves);
 
-impl crate::domain_runtime::DomainRuntime {
-    pub(crate) fn moves(&self) -> &Moves {
+pub trait MovesOf {
+    fn moves(&self) -> &Moves;
+}
+
+impl MovesOf for crate::domain_runtime::DomainRuntime {
+    fn moves(&self) -> &Moves {
         self.extension()
     }
 }

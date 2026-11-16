@@ -1,3 +1,4 @@
+use crate::live::LiveOf as _;
 use super::*;
 use crate::machine_watch::step_on;
 use crate::node_reports::{Envelope, Report};
@@ -278,7 +279,7 @@ fn healthy(domain: &DomainRuntime) {
 fn unmeasured_world() -> (Home, Arc<DomainRuntime>) {
     let home = crate::test_support::Directory::new();
     std::fs::create_dir_all(&home).unwrap();
-    let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+    let domain = Arc::new(crate::wiring::open(&home).unwrap());
     run(&domain, Actor::User { user_id: "u".into() }, Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
     run(&domain, Actor::User { user_id: "u".into() }, Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
     (Home(home), domain)
@@ -369,7 +370,7 @@ fn a_launch_the_orchestrator_queued_is_kept_across_a_restart_and_leaves_when_its
     create(&domain, "t1");
     let body: LaunchBody = serde_json::from_value(serde_json::json!({"task": "t1", "name": "app/t1", "cwd": "/tmp"})).unwrap();
     enqueue(&domain, &body, "orchestrator", 5).unwrap();
-    let reopened = DomainRuntime::open(&home.0).unwrap();
+    let reopened = crate::wiring::open(&home.0).unwrap();
     let queue = reopened.store.lock().unwrap().launch_queue().unwrap();
     assert_eq!(queue.len(), 1);
     assert_eq!(LaunchBody::from_queue(&queue[0].body).unwrap().task_id(), &TaskId::from("t1"));
@@ -392,7 +393,7 @@ fn a_review_follows_the_priority_of_the_task_it_reviews() {
     assert_eq!(domain.state().unwrap().tasks[&TaskId::from("review")].priority, TaskPriority::Low);
     run(&domain, Actor::User { user_id: "u".into() }, Command::SetPriority { task_id: "work".into(), priority: TaskPriority::High });
     assert_eq!(domain.state().unwrap().tasks[&TaskId::from("review")].priority, TaskPriority::High);
-    let reopened = DomainRuntime::open(domain.home()).unwrap();
+    let reopened = crate::wiring::open(domain.home()).unwrap();
     assert_eq!(reopened.state().unwrap().tasks[&TaskId::from("review")].priority, TaskPriority::High, "kept in the store");
 }
 
@@ -712,7 +713,7 @@ fn reading_start_facts_hands_pauses_an_older_daemon_saved_without_holding_the_st
             "paused": {"agent-t1": {"task": "t1", "reason": {"kind": "memory"}, "since": 1, "cleanup": "done", "released": false}},
         },
     }).to_string()).unwrap();
-    let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+    let domain = Arc::new(crate::wiring::open(&home).unwrap());
     run(&domain, Actor::User { user_id: "u".into() }, Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
     create(&domain, "t1");
     run(&domain, Actor::System, Command::RegisterAgent { agent_id: AgentId("agent-t1".into()), name: "agent-t1".into(), at: 0 });
@@ -755,7 +756,7 @@ fn a_waiting_task_raised_to_high_goes_ahead_before_it_asks_again() {
     assert!(gate.ask(&domain, normal("older", base + 1), later).is_err(), "the High task is first even though it has not asked since");
     let raised = Waiting { priority: TaskPriority::High, ..normal("raised", base + 2) };
     assert_eq!(gate.ask(&domain, raised, later), Ok(()));
-    let reopened = DomainRuntime::open(domain.home()).unwrap();
+    let reopened = crate::wiring::open(domain.home()).unwrap();
     assert_eq!(reopened.state().unwrap().tasks[&TaskId::from("raised")].priority, TaskPriority::High, "kept in the store");
 }
 
@@ -832,7 +833,7 @@ fn a_home_with_the_previous_gate_file_starts_with_its_pauses_under_the_new_name(
 
     assert!(!home.join(PREVIOUS_FILE).exists() && !home.join("fleet-gate.next").exists());
     assert!(home.join(FILE).exists());
-    let domain = crate::domain_runtime::DomainRuntime::open(&home).unwrap();
+    let domain = crate::wiring::open(&home).unwrap();
     assert!(held_by_user(&domain, &"t-held".into()), "the task the user paused in the queue stays paused");
 }
 
@@ -1110,7 +1111,7 @@ fn nodes_the_user_resumed_still_wait_for_a_slot_after_the_daemon_restarts() {
     }
     drop(domain);
 
-    let domain = DomainRuntime::open(&home.0).unwrap();
+    let domain = crate::wiring::open(&home.0).unwrap();
     healthy(&domain);
     let gate = &domain.live().gate;
     gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(1)) });
@@ -1346,7 +1347,7 @@ fn a_node_the_disks_floor_held_still_waits_after_a_restart_and_goes_on_once_ther
     finish(&domain, "t1", base + SAMPLE);
     drop(domain);
 
-    let domain = DomainRuntime::open(&home.0).unwrap();
+    let domain = crate::wiring::open(&home.0).unwrap();
     let gate = &domain.live().gate;
     gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
     gate.ignore_mac();

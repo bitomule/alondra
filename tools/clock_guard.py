@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """The daemon reads the time and waits only through `alondra_core::clock`, so a test can run it on a
-virtual clock. Production code of `alondrad`, the `daemon-engine*` crates and `daemon-support` never
+virtual clock. Production code of `alondrad`, the `daemon-engine*` crates, `engine-kernel` and `daemon-support` never
 calls the system clock or a timer directly.
 
 Test code is outside the guard: files under `tests/`, `*_tests.rs`, `tests.rs`, `test_*.rs`, and
@@ -13,6 +13,7 @@ CRATES = [
     "alondrad",
     "daemon-engine",
     "daemon-engine-machine",
+    "engine-kernel",
     "daemon-engine-model",
     "daemon-engine-store",
     "daemon-support",

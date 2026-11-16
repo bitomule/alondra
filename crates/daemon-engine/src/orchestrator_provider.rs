@@ -1,3 +1,4 @@
+use crate::live::LiveOf as _;
 use crate::domain_store::BatchOwner;
 use alondra_core::accounts::AccountKey;
 use alondra_core::model_selection::ModelSelection;
@@ -117,7 +118,7 @@ mod tests {
         for provider in [Provider::Claude, Provider::Codex] {
             let directory = crate::test_support::Directory::new();
             std::fs::create_dir_all(&directory).unwrap();
-            let domain = crate::domain_runtime::DomainRuntime::open(&directory).unwrap();
+            let domain = crate::wiring::open(&directory).unwrap();
             let publish = |email: &str| {
                 let account = AccountStatus { provider, id: AccountId::default_account(), name: "Native account".into(), state: AccountState::SignedIn,
                     native_identity: None, email: Some(email.into()), plan: None, billing: Default::default(), sign_ins: 0, profile: None };
@@ -138,7 +139,7 @@ mod tests {
             record_limit(&domain, &batch, Some(200), 101);
             assert!(domain.read().state().account_usage[0].windows.iter().any(|window| window.reading.exhausted), "current native limit evidence remains effective");
             drop(domain);
-            let reopened = crate::domain_runtime::DomainRuntime::open(&directory).unwrap();
+            let reopened = crate::wiring::open(&directory).unwrap();
             assert_eq!(reopened.read().state().accounts[0].email.as_deref(), Some("replacement@example.invalid"));
             assert!(reopened.read().state().account_usage[0].windows.iter().any(|window| window.reading.exhausted));
         }

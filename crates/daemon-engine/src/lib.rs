@@ -43,6 +43,17 @@ use alondra_daemon_support::{
 #[cfg(target_os = "macos")]
 use alondra_daemon_support::schedule_clock;
 
+pub use alondra_engine_kernel::{
+    domain_database_migration,
+    domain_runtime,
+    domain_sessions,
+    domain_store,
+    extension,
+    metrics_capture,
+    retention,
+    settings_projection,
+};
+
 pub mod account_move;
 pub mod accounts;
 pub mod admission;
@@ -55,7 +66,6 @@ pub mod cleanup;
 pub mod codex_live;
 pub mod database_check;
 pub mod domain_agent_lifecycle;
-pub mod domain_database_migration;
 pub mod domain_github;
 pub mod open_pr_sweep;
 pub mod domain_holds;
@@ -66,11 +76,8 @@ pub mod domain_messages;
 pub mod domain_orchestrator;
 pub mod domain_orchestrator_reads;
 pub mod domain_orchestrator_tools;
-pub mod domain_runtime;
 pub mod domain_schedule_api;
 pub mod domain_schedule_runner;
-pub mod domain_sessions;
-pub mod domain_store;
 pub mod domain_transport;
 pub mod home_renames;
 pub mod idle_compaction;
@@ -90,7 +97,6 @@ pub mod mcp_probe;
 pub mod mcp_remove;
 pub mod mcp_sign_in;
 pub mod mcp_waits;
-pub mod metrics_capture;
 pub use alondra_daemon_engine_machine::native_probe;
 pub mod node_close;
 pub mod node_exit;
@@ -109,11 +115,9 @@ pub mod pr_images;
 pub mod pr_viewed;
 pub mod provider_transition;
 pub use alondra_daemon_engine_model::reply;
-pub mod retention;
 pub mod sdk_handover;
 pub mod sdk_live;
 pub mod sdk_owner;
-pub mod settings_projection;
 pub use alondra_daemon_engine_model::settings_file;
 pub mod stall_context;
 pub mod start_failures;

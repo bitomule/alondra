@@ -60,7 +60,7 @@ mod tests {
     fn redraft() -> (crate::test_support::Directory, DomainRuntime) {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let domain = DomainRuntime::open(&home).unwrap();
+        let domain = crate::wiring::open(&home).unwrap();
         must(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "Phase B".into(), at: 0 });
         must(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "r".into(), body: "Redraft index".into(), auto_merge: false, maintenance: false, message: false });
@@ -111,7 +111,7 @@ mod tests {
         let queued = alondra_daemon_engine_model::LaunchBody::from_plan("c".into(), &plan("c", "old")).to_queue();
         domain.store.lock().unwrap().enqueue_launch(&"c".into(), &queued, "reopen", 1).unwrap();
         drop(domain);
-        let domain = DomainRuntime::open(&home).unwrap();
+        let domain = crate::wiring::open(&home).unwrap();
         assert!(held(&domain.state().unwrap(), &"c".into()).is_some(), "the hold is persisted");
         let at_before: i64 = domain.store.lock().unwrap().planned_tasks().unwrap()[&TaskId::from("c")];
         settle(&domain, "replan-c", "c", PlanReviewOutcome::PlanChanged { launch: plan("c", "Phase C: group with 512 px prints"), reason: "The user chose 512 px".into() }).unwrap();

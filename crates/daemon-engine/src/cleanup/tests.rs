@@ -1,3 +1,4 @@
+use crate::live::LiveOf as _;
 use super::*;
 use crate::domain_store::model_metrics::{Decision, DecisionKind};
 use crate::node_close::Answer;
@@ -90,7 +91,7 @@ impl Rig {
         let claude_home = root.join("claude");
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(claude_home.join("jobs")).unwrap();
-        let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+        let domain = Arc::new(crate::wiring::open(&home).unwrap());
         command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         command(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
         let sessions = Arc::new(FakeSessions { listed: Default::default(), leftovers: Default::default(), calls: Default::default() });

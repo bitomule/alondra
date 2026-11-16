@@ -151,8 +151,12 @@ mod tests {
 
 crate::extension!(LocalActions);
 
-impl crate::domain_runtime::DomainRuntime {
-    pub fn local_actions(&self) -> &LocalActions {
+pub trait LocalActionsOf {
+    fn local_actions(&self) -> &LocalActions;
+}
+
+impl LocalActionsOf for crate::domain_runtime::DomainRuntime {
+    fn local_actions(&self) -> &LocalActions {
         self.extension()
     }
 }

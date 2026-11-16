@@ -1,5 +1,6 @@
 //! User messages reach a node through its task lifecycle, or through its mod for legacy nodes.
 //! A task with no node keeps its inputs until its first execution starts.
+use crate::live::LiveOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
@@ -432,7 +433,7 @@ mod tests {
     fn world() -> (Fixture, Arc<DomainRuntime>) {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+        let domain = Arc::new(crate::wiring::open(&home).unwrap());
         let run = |actor: Actor, id: &str, command: Command| {
             let state = domain.state().unwrap();
             let envelope = CommandEnvelope { protocol_version: alondra_core::domain::PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),

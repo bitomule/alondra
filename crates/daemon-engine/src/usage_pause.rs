@@ -19,6 +19,7 @@
 //! stream says it with a `rate_limit_event` whose `rate_limit_info.status` is `rejected` and
 //! whose `resetsAt` is Unix seconds, and with an assistant message whose `error` is `rate_limit`
 //! (code.claude.com/docs/en/agent-sdk/python, RateLimitEvent).
+use crate::live::LiveOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use alondra_core::{Millis, now_millis};
@@ -711,7 +712,7 @@ mod tests {
     fn domain() -> (Arc<DomainRuntime>, crate::test_support::Directory) {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+        let domain = Arc::new(crate::wiring::open(&home).unwrap());
         let state = domain.state().unwrap();
         domain.execute_as_system(alondra_core::domain::CommandEnvelope {
             protocol_version: alondra_core::domain::PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "fixture-claude-account".into(),

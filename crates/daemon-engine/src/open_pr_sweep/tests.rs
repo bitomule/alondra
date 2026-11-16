@@ -38,7 +38,7 @@ impl Fixture {
     fn new() -> Self {
         let root = crate::test_support::Directory::new();
         std::fs::create_dir_all(root.join("home")).unwrap();
-        let domain = DomainRuntime::open(&root.join("home")).unwrap();
+        let domain = crate::wiring::open(&root.join("home")).unwrap();
         let projects = root.join("projects");
         std::fs::create_dir_all(projects.join("checkout/.git")).unwrap();
         std::fs::write(projects.join("checkout/.git/config"), "[remote \"origin\"]\nurl = https://github.com/owner/repo.git\n").unwrap();
@@ -115,7 +115,7 @@ async fn two_sweeps_and_a_restart_request_adoption_only_once() {
     assert_eq!(f.calls().lines().filter(|c| c.starts_with("pr view")).count(), 1);
     let home = f.root.join("home");
     drop(f.domain);
-    let domain = DomainRuntime::open(&home).unwrap();
+    let domain = crate::wiring::open(&home).unwrap();
     sweep(&domain, &f.gh, &f.options, &f.root).await.unwrap();
     let state = domain.state().unwrap();
     assert_eq!(state.requests.len(), before);
@@ -180,7 +180,7 @@ async fn the_sweep_closes_the_open_pr_of_a_cancelled_task_once_and_the_close_sur
     f.sweep().await;
     let home = f.root.join("home");
     drop(f.domain);
-    let domain = DomainRuntime::open(&home).unwrap();
+    let domain = crate::wiring::open(&home).unwrap();
     assert!(matches!(domain.state().unwrap().tasks[&"closed".into()].open_pr, Some(OpenPrPending::Close { .. })));
     let before = domain.state().unwrap();
     sweep(&domain, &f.gh, &f.options, &f.root).await.unwrap();
@@ -215,7 +215,7 @@ async fn a_new_task_can_take_a_closed_tasks_pr_and_keep_the_old_delivery() {
     drop(state);
     let home = f.root.join("home");
     drop(f.domain);
-    let domain = DomainRuntime::open(&home).unwrap();
+    let domain = crate::wiring::open(&home).unwrap();
     let state = domain.state().unwrap();
     state.validate().unwrap();
     assert_eq!(state.pull_requests[&pr_id].task_id, TaskId::from("new"));

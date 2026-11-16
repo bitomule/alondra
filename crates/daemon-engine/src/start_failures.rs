@@ -2,6 +2,7 @@
 //! tried again by itself a few times and then put in front of the user, and a node the user closed
 //! asks whether to relaunch. The decisions are the domain's (`after_failure`, `DomainState::react`);
 //! this carries them out.
+use crate::live::LiveOf as _;
 use crate::locks::Poisonable as _;
 use crate::live::Relaunch;
 use crate::domain_runtime::DomainRuntime;

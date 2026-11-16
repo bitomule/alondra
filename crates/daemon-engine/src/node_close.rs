@@ -2,6 +2,7 @@
 //! elsewhere, and refusing while the session still has something pending. An interactive
 //! session is not a job `claude rm` knows: it only closes and its terminal stays open.
 //! Shared by the close route and by Alondra closing the node of a finished task.
+use crate::live::LiveOf as _;
 use alondra_core::clock;
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::AgentId;

@@ -445,7 +445,7 @@ async fn a_claude_denial_cannot_be_replayed_after_losing_both_final_writes_and_r
     assert!(fault.hits() > 0);
     drop(fault);
     let restarted = Executor {
-        domain: Arc::new(DomainRuntime::open(&f.executor.home).unwrap()),
+        domain: Arc::new(crate::wiring::open(&f.executor.home).unwrap()),
         home: f.executor.home.clone(),
         claude_home: f.executor.claude_home.clone(),
     };

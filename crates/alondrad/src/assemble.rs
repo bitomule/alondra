@@ -120,7 +120,7 @@ pub struct Assembled {
 
 /// Opens the domain at `config.home` and assembles the daemon over it: what a scenario starts.
 pub async fn start(config: &Config, seams: Seams) -> Result<Assembled> {
-    let domain = domain_runtime::DomainRuntime::open(&config.home)?;
+    let domain = alondra_daemon_engine::wiring::open(&config.home)?;
     let state = domain_bootstrap::DomainDaemon::over(&config.home, domain)?;
     assemble(config, state, seams).await
 }

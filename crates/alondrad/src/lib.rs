@@ -1,3 +1,5 @@
+use alondra_daemon_engine::sdk_owner::SdkOwners as _;
+use alondra_daemon_engine::live::LiveOf as _;
 // The engine's fixtures take its `Directory`, so alondrad's tests share that one.
 #[cfg(test)]
 use alondra_daemon_engine::test_support;
@@ -246,7 +248,7 @@ async fn run(diagnostic: Option<String>) -> Result<()> {
     }
     ensure_domain_protocol(&config.home)?;
     sdk_owner::backend::load(&config.home, config.sandbox, &options::user_home())?;
-    let domain = domain_runtime::DomainRuntime::open(&config.home)?;
+    let domain = alondra_daemon_engine::wiring::open(&config.home)?;
     if let Some(device) = diagnostic {
         // Diagnostic delivery uses the same canonical domain store but does not
         // start the long-running workers or HTTP listener.
@@ -804,7 +806,7 @@ mod argument_tests {
         std::fs::create_dir(&home).unwrap();
         domain_cutover::refuse_legacy_home(&home).unwrap();
         ensure_domain_protocol(&home).unwrap();
-        let _domain = domain_runtime::DomainRuntime::open(&home).unwrap();
+        let _domain = alondra_daemon_engine::wiring::open(&home).unwrap();
         domain_bootstrap::DomainDaemon::open(&home).unwrap();
         assert!(home.join("domain.db").is_file());
         assert!(!home.join("alondra.db").exists());

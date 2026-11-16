@@ -1,6 +1,7 @@
 //! One v2-only daemon on a temporary HOME. A fake Claude session speaks to it the
 //! way a real one does: through the real `alondra mcp-node` binary with the
 //! capability the daemon issued it, and through `alondra hook` on the hook socket.
+use alondra_daemon_engine::live::LiveOf as _;
 use crate::domain_bootstrap::{DomainDaemon, router};
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::*;
@@ -28,7 +29,7 @@ struct Daemon {
 
 impl Daemon {
     async fn start(home: &Path) -> Self {
-        drop(DomainRuntime::open(home).unwrap());
+        drop(alondra_daemon_engine::wiring::open(home).unwrap());
         let state = DomainDaemon::open(home).unwrap();
         let domain = state.domain();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

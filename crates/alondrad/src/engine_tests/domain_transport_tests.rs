@@ -1,4 +1,5 @@
 //! The producer transport while a client reads views and the feed through alondrad's routes.
+use alondra_daemon_engine::live::LiveOf as _;
 use alondra_daemon_engine::domain_transport::tests::*;
 use alondra_daemon_engine::domain_transport::*;
 use alondra_core::domain::*;

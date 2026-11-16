@@ -10,6 +10,8 @@
 //! not hand anything to says nothing: its events may have waited in its journal, so their time is
 //! not the request's. What is measured lives in memory; a restarted daemon compacts again after
 //! the task's next turn.
+use crate::sdk_owner::SdkOwners as _;
+use crate::live::LiveOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
@@ -315,8 +317,12 @@ mod tests {
 
 crate::extension!(Contexts);
 
-impl crate::domain_runtime::DomainRuntime {
-    pub fn contexts(&self) -> &Contexts {
+pub trait ContextsOf {
+    fn contexts(&self) -> &Contexts;
+}
+
+impl ContextsOf for crate::domain_runtime::DomainRuntime {
+    fn contexts(&self) -> &Contexts {
         self.extension()
     }
 }

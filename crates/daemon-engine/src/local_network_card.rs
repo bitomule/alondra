@@ -157,7 +157,7 @@ mod tests {
     fn world() -> (Home, Arc<DomainRuntime>) {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+        let domain = Arc::new(crate::wiring::open(&home).unwrap());
         (Home(home), domain)
     }
 

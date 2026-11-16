@@ -1,5 +1,6 @@
 //! What happens when a node's session ends for good: the user stopped or deleted it, or Alondra
 //! replaced or closed it. Its open tasks go back to not started with no node, and the node closes.
+use crate::live::LiveOf as _;
 use crate::live::Relaunch;
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::{AgentId, Command, CommandEnvelope, NodeEvent, TaskId, PROTOCOL_VERSION};

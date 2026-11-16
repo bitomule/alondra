@@ -426,8 +426,12 @@ mod tests;
 
 crate::extension!(Returns);
 
-impl crate::domain_runtime::DomainRuntime {
-    pub(crate) fn mcp_returns(&self) -> &Returns {
+pub trait McpReturnsOf {
+    fn mcp_returns(&self) -> &Returns;
+}
+
+impl McpReturnsOf for crate::domain_runtime::DomainRuntime {
+    fn mcp_returns(&self) -> &Returns {
         self.extension()
     }
 }

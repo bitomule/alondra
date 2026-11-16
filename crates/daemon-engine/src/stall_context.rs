@@ -1,5 +1,6 @@
 //! What the orchestrator reads with the case of a stopped node: the task's mission, the node's
 //! last words and its worktree, read when the case reaches it.
+use crate::live::LiveOf as _;
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::{DomainState, Interaction, Scope, Task, WorktreeOrigin};
 use std::path::Path;

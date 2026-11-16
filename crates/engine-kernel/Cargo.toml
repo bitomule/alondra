@@ -1,0 +1,37 @@
+[package]
+name = "alondra-engine-kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+test-hooks = ["dep:tempfile", "alondra-daemon-engine-model/test-hooks", "alondra-daemon-engine-store/test-hooks", "alondra-daemon-support/test-hooks"]
+
+[dependencies]
+alondra-agent-application.workspace = true
+alondra-core.workspace = true
+alondra-daemon-engine-model.workspace = true
+alondra-daemon-engine-store.workspace = true
+alondra-daemon-support.workspace = true
+alondra-domain.workspace = true
+alondra-foundation.workspace = true
+alondra-provider-contract.workspace = true
+alondra-store.workspace = true
+anyhow.workspace = true
+base64 = "0.23.1"
+libc.workspace = true
+rusqlite = { workspace = true, features = ["backup"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.11.0"
+tempfile = { workspace = true, optional = true }
+tokio.workspace = true
+
+[dev-dependencies]
+p256 = { version = "0.14.0", features = ["ecdsa", "pem", "pkcs8"] }
+alondra-daemon-engine-model = { workspace = true, features = ["test-hooks"] }
+alondra-daemon-engine-store = { workspace = true, features = ["test-hooks"] }
+alondra-daemon-support = { workspace = true, features = ["test-hooks"] }
+proptest.workspace = true
+tempfile.workspace = true

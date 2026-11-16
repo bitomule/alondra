@@ -1,3 +1,4 @@
+use alondra_daemon_engine::local_actions::LocalActionsOf as _;
 use super::actions::{ActionRequest, execute};
 use alondra_core::views::action_outcome::{UnknownReason, in_progress_body, unknown_body};
 use alondra_daemon_engine::local_actions::RunningAction;
@@ -544,7 +545,7 @@ mod tests {
     async fn serve(
         home: Arc<crate::test_support::Directory>,
     ) -> (Arc<crate::domain_bootstrap::DomainDaemon>, String, Server) {
-        drop(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        drop(alondra_daemon_engine::wiring::open(&home).unwrap());
         let state = crate::domain_bootstrap::DomainDaemon::open(&home).unwrap();
         let router = crate::domain_bootstrap::router(state.clone())
             .layer(axum::middleware::from_fn_with_state(

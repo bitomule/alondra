@@ -9,6 +9,7 @@
 //! The decision reads the task's lifecycle alone (`DomainState::host_releasable`). What is measured
 //! lives in memory: a restarted daemon counts each rest from its start. A resume waits for a free
 //! node slot like any turn.
+use crate::sdk_owner::SdkOwners as _;
 use alondra_core::clock;
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::{DomainState, TaskId};

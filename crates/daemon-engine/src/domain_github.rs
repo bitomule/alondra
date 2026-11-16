@@ -910,7 +910,7 @@ pub mod tests {
         authorized(&domain);
         opened(&domain);
         drop(domain);
-        let domain = DomainRuntime::open(&fixture.0).unwrap();
+        let domain = crate::wiring::open(&fixture.0).unwrap();
         assert_eq!(domain.state().unwrap().tasks[&"t".into()].opened_prs.len(), 1, "the note outlives the daemon");
 
         let observer = FakeObserver::new();
@@ -920,7 +920,7 @@ pub mod tests {
         observer.set(7, Ok(github));
         read_opened(&domain, &observer, None).await.unwrap();
         drop(domain);
-        let domain = DomainRuntime::open(&fixture.0).unwrap();
+        let domain = crate::wiring::open(&fixture.0).unwrap();
         let state = domain.state().unwrap();
         let task = &state.tasks[&"t".into()];
         assert_eq!(task.later_prs, vec![hosted_pr_id("github.com", "owner/site", 6)]);
@@ -1050,7 +1050,7 @@ pub mod tests {
     pub fn open(_tag: &str) -> (Fixture, DomainRuntime) {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir(&home).unwrap();
-        let domain = DomainRuntime::open(&home).unwrap();
+        let domain = crate::wiring::open(&home).unwrap();
         (Fixture(home), domain)
     }
 
@@ -1335,13 +1335,13 @@ pub mod tests {
     /// Task `t` with its PR open, closed by the orchestrator under a build that left the close
     /// waiting for GitHub to deliver the PR.
     fn held_by_an_older_build(fixture: &Fixture) -> DomainRuntime {
-        let domain = DomainRuntime::open(&fixture.0).unwrap();
+        let domain = crate::wiring::open(&fixture.0).unwrap();
         registered(&domain);
         drop(domain);
         let held = serde_json::to_string(&OpenPrPending::Deliver { result: None }).unwrap();
         rusqlite::Connection::open(crate::domain_database_migration::active_path(&fixture.0)).unwrap()
             .execute("INSERT INTO task_open_prs(task_id,pending) VALUES('t',?1)", [held]).unwrap();
-        let domain = DomainRuntime::open(&fixture.0).unwrap();
+        let domain = crate::wiring::open(&fixture.0).unwrap();
         assert_eq!(domain.state().unwrap().tasks[&"t".into()].open_pr, Some(OpenPrPending::Deliver { result: None }));
         domain
     }
@@ -1486,7 +1486,7 @@ pub mod tests {
         cancelled_with_its_pr_reopened(&domain);
         close_cancelled(&domain);
         drop(domain);
-        let domain = DomainRuntime::open(&fixture.0).unwrap();
+        let domain = crate::wiring::open(&fixture.0).unwrap();
         let state = domain.state().unwrap();
         assert_eq!(state.tasks[&"t".into()].open_pr, Some(OpenPrPending::Close { comment: "Cancelled in Alondra: Task".into() }), "it outlives a restart");
         assert_eq!(state.pull_requests[&"pr".into()].state, PrState::Open);
@@ -1517,7 +1517,7 @@ pub mod tests {
         assert_eq!(observer.3.load(std::sync::atomic::Ordering::Relaxed), 2, "the second refusal waits a round before trying again");
         assert!(observer.1.lock().unwrap().is_empty());
         drop(domain);
-        let domain = DomainRuntime::open(&fixture.0).unwrap();
+        let domain = crate::wiring::open(&fixture.0).unwrap();
         assert!(matches!(domain.state().unwrap().tasks[&"t".into()].open_pr, Some(OpenPrPending::Close { .. })), "the refusals did not lose the close");
         *observer.2.lock().unwrap() = None;
         reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();

@@ -5,6 +5,8 @@
 //! It runs when the daemon starts, every 15 minutes for an account nothing else measured meanwhile,
 //! and right after Claude refused work for running out. A probe that fails keeps the last good
 //! reading, which says how old it is. A stale reading retries at once, then backs off up to 30 seconds.
+use crate::sdk_owner::SdkOwners as _;
+use crate::live::LiveOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use std::collections::HashMap;

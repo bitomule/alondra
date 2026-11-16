@@ -12,6 +12,7 @@
 //! orchestrator's to decide, so no clock settles them and no card asks the user. Alondra reads the
 //! orchestrator's own state instead: every time it rests (a turn ended, handled or failed, or it
 //! is idle) the open item is handed to it again, once per rest.
+use crate::live::LiveOf as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::locks::Poisonable as _;
 use alondra_core::domain::obligation_policy::{ANSWER, Millis};
@@ -470,7 +471,7 @@ mod tests {
     fn a_message_acted_on_without_tasks_closes_once_the_orchestrator_is_done() {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let domain = DomainRuntime::open(&home).unwrap();
+        let domain = crate::wiring::open(&home).unwrap();
         request(&domain, "m-1", true);
         settle(&domain);
         settle(&domain);
@@ -482,7 +483,7 @@ mod tests {
     fn a_request_left_without_tasks_goes_back_once_then_becomes_the_users_problem() {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let domain = DomainRuntime::open(&home).unwrap();
+        let domain = crate::wiring::open(&home).unwrap();
         request(&domain, "r-1", false);
         settle(&domain);
         assert_eq!(cards(&domain, UNSPLIT_NOTICE_PREFIX), [format!("{UNSPLIT_NOTICE_PREFIX}r-1-1")]);
@@ -505,7 +506,7 @@ mod tests {
     fn a_request_with_a_task_or_an_open_question_of_the_orchestrator_is_left_alone() {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let domain = DomainRuntime::open(&home).unwrap();
+        let domain = crate::wiring::open(&home).unwrap();
         request(&domain, "asked", false);
         request(&domain, "split", true);
         run(&domain, Actor::Orchestrator { generation: 0 }, "ask", Command::AskQuestion {
@@ -537,7 +538,7 @@ mod tests {
     fn a_request_whose_only_task_the_user_cancels_before_it_starts_hands_the_orchestrator_nothing() {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let domain = DomainRuntime::open(&home).unwrap();
+        let domain = crate::wiring::open(&home).unwrap();
         request(&domain, "solo", false);
         request(&domain, "pair", false);
         let create = |id: &str, request: &str, dependencies: &[&str]| Command::CreateTask { plan_items: None, continues: None,
@@ -593,7 +594,7 @@ mod tests {
     fn a_wait_for_a_cancelled_task_is_handed_back_at_every_rest_and_never_decided_for_the_orchestrator() {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let domain = DomainRuntime::open(&home).unwrap();
+        let domain = crate::wiring::open(&home).unwrap();
         pair_of_tasks(&domain, false);
         let task = TaskId::from("second");
         let reminders = || cards(&domain, DEPENDENCY_CANCELLED_NOTICE_PREFIX).len();
@@ -629,7 +630,7 @@ mod tests {
     fn a_task_waiting_for_a_cancelled_one_that_is_re_pointed_owes_nothing_to_the_orchestrator() {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let domain = DomainRuntime::open(&home).unwrap();
+        let domain = crate::wiring::open(&home).unwrap();
         pair_of_tasks(&domain, true);
         run(&domain, Actor::System, "old-card", Command::RaiseStartProblem {
             task_id: "second".into(), problem: StartProblem::DependencyCancelled { dependency: "first".into() },
@@ -730,7 +731,7 @@ mod tests {
     fn an_unanswered_question_goes_back_to_its_node_without_a_card() {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let domain = DomainRuntime::open(&home).unwrap();
+        let domain = crate::wiring::open(&home).unwrap();
         sdk_node_with_task(&domain);
         ask(&domain, "q");
         node_step(&domain);
@@ -762,7 +763,7 @@ mod tests {
     fn an_answered_question_or_one_of_a_task_that_ended_is_left_alone() {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let domain = DomainRuntime::open(&home).unwrap();
+        let domain = crate::wiring::open(&home).unwrap();
         node_with_task(&domain);
         ask(&domain, "answered");
         answer(&domain, Actor::Orchestrator { generation: 0 }, "answered", "done");
@@ -778,7 +779,7 @@ mod tests {
     fn a_problem_about_an_unanswered_question_is_withdrawn() {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let domain = DomainRuntime::open(&home).unwrap();
+        let domain = crate::wiring::open(&home).unwrap();
         node_with_task(&domain);
         ask(&domain, "q");
         let problem = alondra_core::orchestrator_cards::UnansweredProblem { question_id: "q".into(), task_title: "Task".into(), question: "Create the phase tasks".into() };
@@ -796,7 +797,7 @@ mod tests {
     fn a_suggestion_left_unsettled_goes_back_once_and_never_to_the_user() {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let domain = DomainRuntime::open(&home).unwrap();
+        let domain = crate::wiring::open(&home).unwrap();
         node_with_task(&domain);
         run(&domain, Actor::Agent { agent_id: "a".into() }, "suggest", Command::AskQuestion {
             attachments: vec![], interaction_id: "p".into(), scope: Scope::Task { task_id: "t".into() },
@@ -844,7 +845,7 @@ mod tests {
         fn no_question_to_the_orchestrator_outlives_its_deadlines(ops in proptest::collection::vec(op(), 1..24)) {
             let home = crate::test_support::Directory::new();
             std::fs::create_dir_all(&home).unwrap();
-            let domain = DomainRuntime::open(&home).unwrap();
+            let domain = crate::wiring::open(&home).unwrap();
             sdk_node_with_task(&domain);
             let mut clock = 0;
             for (at, op) in ops.into_iter().enumerate() {

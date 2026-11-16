@@ -1,3 +1,4 @@
+use alondra_daemon_engine::live::LiveOf as _;
 use alondra_core::clock;
 use alondra_core::clock::Instant;
 use crate::locks::Poisonable as _;
@@ -490,7 +491,7 @@ mod tests {
         fn new() -> Self {
             let home = crate::test_support::Directory::new();
             fs::create_dir(&home).unwrap();
-            let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+            let domain = Arc::new(alondra_daemon_engine::wiring::open(&home).unwrap());
             let client = crate::client_routes::Client::open(
                 domain,
                 &home,

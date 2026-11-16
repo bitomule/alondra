@@ -31,6 +31,9 @@ class CheckoutTest(unittest.TestCase):
         root = checkout()
         for source, most in limits(root):
             with self.subTest(source):
+                declared = graph.MOD.findall(graph.without_tests(graph.code_only((root / source / "lib.rs").read_text())))
+                self.assertGreaterEqual(len(graph.production_modules(root / source)), len(declared) // 2,
+                    f"{source}: most modules lib.rs declares were not read, so no cycle could be measured")
                 cycle, lines = graph.main_cycle(root / source)
                 self.assertLessEqual(len(cycle), most, f"{source}: {len(cycle)} modules ({lines} lines) depend on each other: {' '.join(cycle)}")
 
@@ -54,6 +57,18 @@ class GraphTest(unittest.TestCase):
             "c.rs": "use crate::a;\n",
         })
         self.assertEqual(graph.main_cycle(self.source)[0], ["a", "b"])
+
+    def test_sources_linked_from_elsewhere_as_in_bazels_runfiles_still_count(self):
+        self.crate({
+            "real/lib.rs": "mod a;\nmod b;\n",
+            "real/a.rs": "use crate::b::B;\n",
+            "real/b.rs": "fn f() { crate::a::g(); }\n",
+        })
+        linked = self.source / "runfiles"
+        linked.mkdir()
+        for name in ("lib.rs", "a.rs", "b.rs"):
+            (linked / name).symlink_to(self.source / "real" / name)
+        self.assertEqual(graph.main_cycle(linked)[0], ["a", "b"])
 
     def test_test_code_comments_and_strings_never_make_a_cycle(self):
         self.crate({

@@ -561,8 +561,13 @@ pub(crate) struct Waits(pub std::sync::Mutex<Option<ConfirmationWait>>);
 crate::extension!(Waits);
 
 #[cfg(any(test, feature = "test-hooks"))]
-impl crate::domain_runtime::DomainRuntime {
-    pub(crate) fn allow_always_wait(&self) -> &std::sync::Mutex<Option<ConfirmationWait>> {
+pub trait AllowAlwaysWait {
+    fn allow_always_wait(&self) -> &std::sync::Mutex<Option<ConfirmationWait>>;
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+impl AllowAlwaysWait for crate::domain_runtime::DomainRuntime {
+    fn allow_always_wait(&self) -> &std::sync::Mutex<Option<ConfirmationWait>> {
         &self.extension::<Waits>().0
     }
 }

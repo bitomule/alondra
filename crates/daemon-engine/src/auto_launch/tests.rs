@@ -1,3 +1,5 @@
+use crate::sdk_owner::SdkOwners as _;
+use crate::live::LiveOf as _;
 use super::*;
 use crate::domain_orchestrator_tools::{LaunchBody, launch};
 use alondra_daemon_engine_model::LaunchPlan;
@@ -47,7 +49,7 @@ fn world_using_sdk(enable: fn(&Arc<DomainRuntime>, &Path) -> SdkLaunches) -> Fix
     let project = root.join("App");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&project).unwrap();
-    let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+    let domain = Arc::new(crate::wiring::open(&home).unwrap());
     crate::machine_watch::pace(&domain, &alondra_core::Machine { at: 1, memory_total: 16 << 30,
         memory_available: 12 << 30, memory_free_percent: Some(75), cpus: 11,
         disk_total: 500_000_000_000, disk_available: 400_000_000_000, ..Default::default() });

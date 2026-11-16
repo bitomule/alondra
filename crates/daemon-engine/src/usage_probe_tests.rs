@@ -1,3 +1,5 @@
+use crate::sdk_owner::SdkOwners as _;
+use crate::live::LiveOf as _;
 use super::*;
 use crate::test_support::Directory;
 use alondra_core::usage::WindowKind;
@@ -107,7 +109,7 @@ async fn a_usage_retry_rechecks_settings_before_launching_a_disabled_account() {
     use alondra_core::accounts::{AccountsConfig, ProviderAccount};
     let home = Directory::new();
     std::fs::create_dir_all(&home).unwrap();
-    let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+    let domain = Arc::new(crate::wiring::open(&home).unwrap());
     two_accounts(&domain);
     let mut config = AccountsConfig::default();
     config.claude = vec![ProviderAccount { enabled: false, ..ProviderAccount::implicit_default() },
@@ -170,7 +172,7 @@ async fn a_stale_usage_probe_retries_with_a_fresh_fence_and_makes_the_account_se
     use alondra_core::model_selection::{AccountModelCatalog, CatalogModel, ModelProfile, TaskSelection};
     let home = Directory::new();
     std::fs::create_dir_all(&home).unwrap();
-    let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+    let domain = Arc::new(crate::wiring::open(&home).unwrap());
     let state = crate::sdk_owner::tests::HostRoot::new();
     let mut backend = probe_backend(&home, &state);
     let mut config = AccountsConfig::fresh();
@@ -249,7 +251,7 @@ fn the_probe_runs_the_released_host_without_a_prompt_and_reads_each_accounts_fol
 fn a_probe_that_fails_keeps_the_last_good_reading_and_its_age() {
     let home = Directory::new();
     std::fs::create_dir_all(&home).unwrap();
-    let domain = DomainRuntime::open(&home).unwrap();
+    let domain = crate::wiring::open(&home).unwrap();
     let state = crate::sdk_owner::tests::HostRoot::new();
     let backend = probe_backend(&home, &state);
     let reading = probe(&backend, None).unwrap();
@@ -272,12 +274,12 @@ fn the_readings_and_the_days_start_survive_a_restart() {
         plan: Some("max".into()), complete: false,
     };
     let before = {
-        let domain = DomainRuntime::open(&home).unwrap();
+        let domain = crate::wiring::open(&home).unwrap();
         record(&domain, &AccountId::default_account(), week(0.12), NOW);
         record(&domain, &AccountId::default_account(), week(0.30), NOW + 60_000);
         domain.read().state().account_usage.clone()
     };
-    let restarted = DomainRuntime::open(&home).unwrap();
+    let restarted = crate::wiring::open(&home).unwrap();
     assert_eq!(restarted.read().state().account_usage, before);
     let usage = restarted.read().index().usage(NOW + 120_000, &alondra_daemon_engine_model::local_day(NOW)).unwrap();
     assert_eq!(usage.today_spent.map(f64::round), Some(18.0), "today still counts from its first reading");
@@ -303,7 +305,7 @@ fn two_accounts(domain: &DomainRuntime) {
 fn the_mac_waits_only_while_no_account_can_work() {
     let home = Directory::new();
     std::fs::create_dir_all(&home).unwrap();
-    let domain = DomainRuntime::open(&home).unwrap();
+    let domain = crate::wiring::open(&home).unwrap();
     two_accounts(&domain);
     let now = now_millis();
     record_limit(&domain, &id("default"), Some(now + 3_600_000), now);
@@ -345,7 +347,7 @@ fn missing_or_unavailable_providers_do_not_invent_a_claude_quota_reset() {
     for status in [None, Some(codex_status(AccountState::Unavailable)), Some(codex_status(AccountState::SignedOut))] {
         let home = Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let domain = DomainRuntime::open(&home).unwrap();
+        let domain = crate::wiring::open(&home).unwrap();
         readiness_accounts(&domain, status.into_iter().collect());
         follow(&domain, NOW);
         let wait = domain.live().usage_pause.current().unwrap();
@@ -358,7 +360,7 @@ fn missing_or_unavailable_providers_do_not_invent_a_claude_quota_reset() {
 fn codex_capacity_ends_legacy_global_limits_but_preserves_a_user_pause() {
     let home = Directory::new();
     std::fs::create_dir_all(&home).unwrap();
-    let domain = DomainRuntime::open(&home).unwrap();
+    let domain = crate::wiring::open(&home).unwrap();
     readiness_accounts(&domain, vec![codex_status(AccountState::SignedIn)]);
     domain.live().usage_pause.exhaust(Some(NOW + 3_600_000), NOW);
     follow(&domain, NOW);
@@ -374,7 +376,7 @@ fn codex_capacity_ends_legacy_global_limits_but_preserves_a_user_pause() {
 fn an_explicit_paid_account_is_not_blocked_by_automatic_chain_readiness() {
     let home = Directory::new();
     std::fs::create_dir_all(&home).unwrap();
-    let domain = DomainRuntime::open(&home).unwrap();
+    let domain = crate::wiring::open(&home).unwrap();
     let paid = AccountStatus { billing: AccountBilling::PayPerUse, ..codex_status(AccountState::SignedIn) };
     readiness_accounts(&domain, vec![paid]);
     assert!(alondra_core::usage::eligible_account_keys(&[], &domain.read().state().accounts, &[], NOW).is_empty(), "automatic selection still refuses paid accounts");
@@ -387,7 +389,7 @@ fn an_explicit_paid_account_is_not_blocked_by_automatic_chain_readiness() {
 fn codex_native_quota_uses_its_actual_reset() {
     let home = Directory::new();
     std::fs::create_dir_all(&home).unwrap();
-    let domain = DomainRuntime::open(&home).unwrap();
+    let domain = crate::wiring::open(&home).unwrap();
     readiness_accounts(&domain, vec![codex_status(AccountState::SignedIn)]);
     let window = WindowReading { kind: WindowKind::Other("codex:account:primary:300".into()), used: Share::FULL, resets_at: Some(NOW + 900_000), exhausted: true };
     let reading = UsageReading { plan: None, complete: true, windows: vec![window] };
@@ -406,7 +408,7 @@ fn codex_native_quota_uses_its_actual_reset() {
 fn an_unknown_native_quota_marker_never_fabricates_a_future_reset() {
     let home = Directory::new();
     std::fs::create_dir_all(&home).unwrap();
-    let domain = DomainRuntime::open(&home).unwrap();
+    let domain = crate::wiring::open(&home).unwrap();
     readiness_accounts(&domain, vec![codex_status(AccountState::SignedIn)]);
     let window = WindowReading { kind: WindowKind::Other("codex:account:limit".into()), used: Share::of(0.0), resets_at: None, exhausted: true };
     let reading = UsageReading { plan: None, complete: false, windows: vec![window] };
@@ -430,7 +432,7 @@ fn the_account_rows_recorded_before_the_margin_fix_load_and_spread_work_to_claud
     let rows: serde_json::Value = serde_json::from_str(include_str!("../../../fixtures/accounts/recorded-rows.json")).unwrap();
     let home = Directory::new();
     std::fs::create_dir_all(&home).unwrap();
-    drop(DomainRuntime::open(&home).unwrap());
+    drop(crate::wiring::open(&home).unwrap());
     {
         let connection = rusqlite::Connection::open(crate::domain_database_migration::active_path(&home)).unwrap();
         connection.execute("INSERT INTO accounts(singleton,accounts,reserve) VALUES(1,?1,?2) ON CONFLICT(singleton) DO UPDATE SET accounts=excluded.accounts, reserve=excluded.reserve",
@@ -444,7 +446,7 @@ fn the_account_rows_recorded_before_the_margin_fix_load_and_spread_work_to_claud
         connection.execute("INSERT INTO account_distribution(singleton,policy,move_when_exhausted) VALUES(1,?1,?2) ON CONFLICT(singleton) DO UPDATE SET policy=excluded.policy, move_when_exhausted=excluded.move_when_exhausted",
             rusqlite::params![rows["account_distribution"]["policy"].as_str().unwrap(), rows["account_distribution"]["move_when_exhausted"].as_i64().unwrap()]).unwrap();
     }
-    let domain = DomainRuntime::open(&home).unwrap();
+    let domain = crate::wiring::open(&home).unwrap();
     let now = domain.read().state().account_usage.iter().filter_map(AccountUsage::measured_at).max().unwrap();
     assert_eq!(domain.read().state().account_policy, Policy::Margin);
     let ready = available_accounts(domain.read().state(), now);

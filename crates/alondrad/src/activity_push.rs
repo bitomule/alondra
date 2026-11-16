@@ -16,6 +16,7 @@
 //! daemon can ship before the relay; and a phone the relay no longer has a registration for (410)
 //! is asked again after [`DORMANT`], or at once with a new push binding: turning Live Activities
 //! back on registers the same phone with the same binding.
+use alondra_daemon_engine::live::LiveOf as _;
 use alondra_core::clock;
 use alondra_core::clock::Instant;
 use crate::domain_runtime::DomainRuntime;

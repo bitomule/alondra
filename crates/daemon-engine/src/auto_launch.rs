@@ -6,6 +6,7 @@
 //! again by itself and then put in front of the user (`start_failures`). A task whose node Alondra
 //! closed for a reason of its own (a replacement that stopped short, a node closed while the user
 //! asked for changes) is relaunched the same way, in the folder that node worked in.
+use crate::live::LiveOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::domain_orchestrator_tools::{LaunchBody, Origin, launch_from, request_choices};

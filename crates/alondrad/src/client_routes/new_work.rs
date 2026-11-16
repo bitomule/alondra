@@ -1,6 +1,7 @@
 //! Asking for new work: the options a request can carry, the projects it can be for, the open
 //! issues it can come from, and the request itself, which is created together with what the
 //! user chose for its launch.
+use alondra_daemon_engine::live::LiveOf as _;
 use crate::locks::Poisonable as _;
 use super::close::Answer;
 use super::{Client, Reply};

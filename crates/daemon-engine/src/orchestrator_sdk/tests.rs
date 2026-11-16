@@ -1,6 +1,8 @@
 //! Orchestrator batches through the real SDK host: the pinned Node host with the official SDK and
 //! a fake native Claude that answers each prompt as its marker says. A held turn waits on a FIFO
 //! the test writes, never on a clock.
+use crate::sdk_owner::SdkOwners as _;
+use crate::live::LiveOf as _;
 use super::*;
 use crate::domain_orchestrator::testing::{Fixture, fixture};
 use crate::domain_orchestrator::{Failure, Run, Runtime, load, save};

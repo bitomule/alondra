@@ -509,35 +509,47 @@ mod poison_tests {
 
 crate::extension!(Live, |domain: &crate::domain_runtime::DomainRuntime| Live::persisted_in(domain.home()));
 
-impl crate::domain_runtime::DomainRuntime {
-    pub fn live(&self) -> &Live {
+pub trait LiveOf {
+    fn live(&self) -> &Live;
+
+    /// A node mod connected.
+    fn connect_node(&self, hello: crate::node_reports::Hello, at: alondra_core::Millis) -> u64;
+
+    /// A node mod's report: what it says is kept for the views.
+    fn report(&self, envelope: crate::node_reports::Envelope, at: alondra_core::Millis);
+
+    /// Whether Alondra launched this session: a recorded launch, or a scheduled run it started.
+    fn launched_by_alondra(&self, agent: &alondra_core::domain::AgentId) -> anyhow::Result<bool>;
+
+    /// What Alondra kept about a session only while it lives: the worktree it inherited and why
+    /// its replacement stopped short.
+    fn forget_ended_session(&self, agent: &str) -> anyhow::Result<()>;
+}
+
+impl LiveOf for crate::domain_runtime::DomainRuntime {
+    fn live(&self) -> &Live {
         self.extension()
     }
 
-    /// A node mod connected.
-    pub fn connect_node(&self, hello: crate::node_reports::Hello, at: alondra_core::Millis) -> u64 {
+    fn connect_node(&self, hello: crate::node_reports::Hello, at: alondra_core::Millis) -> u64 {
         self.live().mods.connect(hello, at)
     }
 
-    /// A node mod's report: what it says is kept for the views.
-    pub fn report(&self, envelope: crate::node_reports::Envelope, at: alondra_core::Millis) {
+    fn report(&self, envelope: crate::node_reports::Envelope, at: alondra_core::Millis) {
         if let crate::node_reports::Report::PromptSubmit { origin } = envelope.report {
             self.live().observe_prompt(&envelope.session_id, origin);
         }
         self.live().mods.apply(envelope, at);
     }
 
-    /// Whether Alondra launched this session: a recorded launch, or a scheduled run it started.
-    pub(crate) fn launched_by_alondra(&self, agent: &alondra_core::domain::AgentId) -> anyhow::Result<bool> {
+    fn launched_by_alondra(&self, agent: &alondra_core::domain::AgentId) -> anyhow::Result<bool> {
         if self.store.lock_or_exit("the domain store").launched_by_alondra(&agent.0)? || self.live().mods.started_with_a_launch_key(&agent.0) {
             return Ok(true);
         }
         Ok(self.state()?.schedule.runs.values().any(|run| run.launch.as_ref().is_some_and(|launch| launch.agent_id.as_ref() == Some(agent))))
     }
 
-    /// What Alondra kept about a session only while it lives: the worktree it inherited and why
-    /// its replacement stopped short.
-    pub(crate) fn forget_ended_session(&self, agent: &str) -> anyhow::Result<()> {
+    fn forget_ended_session(&self, agent: &str) -> anyhow::Result<()> {
         self.live().take_aborted_replace(agent);
         self.forget_inherited_worktree(agent)
     }

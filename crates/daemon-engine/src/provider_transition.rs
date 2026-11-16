@@ -1,4 +1,6 @@
 //! A requested selection stays durable while its current execution drains, is fenced and hands off.
+use crate::sdk_owner::SdkOwners as _;
+use crate::live::LiveOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
@@ -452,8 +454,12 @@ pub(crate) fn abort(domain:&DomainRuntime,task:&TaskId,reason:&str)->Result<(),D
 
 crate::extension!(Transitions);
 
-impl crate::domain_runtime::DomainRuntime {
-    pub(crate) fn selection_changes(&self) -> &Transitions {
+pub trait TransitionsOf {
+    fn selection_changes(&self) -> &Transitions;
+}
+
+impl TransitionsOf for crate::domain_runtime::DomainRuntime {
+    fn selection_changes(&self) -> &Transitions {
         self.extension()
     }
 }

@@ -1,3 +1,4 @@
+use crate::sdk_owner::SdkOwners as _;
 use crate::orchestrator_provider::ProviderOwner;
 use crate::domain_store::batch_effects::BatchReport;
 use crate::orchestrator_process::{Output, ProcessOwner, Stream, bounded};
@@ -714,7 +715,7 @@ candidates=[{model="fixture-model",reasoning_effort="high"}]
             drop(fault);
             let cold_restart = refuse_report && failed_write.is_some();
             if cold_restart {
-                let restarted = crate::domain_orchestrator::Executor { domain: Arc::new(crate::domain_runtime::DomainRuntime::open(&f.executor.home).unwrap()), home: f.executor.home.clone(), claude_home: f.executor.claude_home.clone() };
+                let restarted = crate::domain_orchestrator::Executor { domain: Arc::new(crate::wiring::open(&f.executor.home).unwrap()), home: f.executor.home.clone(), claude_home: f.executor.claude_home.clone() };
                 restarted.repair_incomplete().await.unwrap();
                 let runtime=crate::domain_orchestrator::load(&f.executor.home).unwrap();
                 assert_eq!(runtime.failure,Some(crate::domain_orchestrator::Failure::Interrupted));
