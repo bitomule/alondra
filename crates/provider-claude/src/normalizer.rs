@@ -2651,3 +2651,6 @@ mod diagnostic_tests {
         assert!(!ended_with_its_host(&event(SdkEventKind::Result, json!({"type": "result"})).observation));
     }
 }
+#[cfg(test)]
+#[path = "ported_transcript_tests.rs"]
+mod ported_transcript_tests;

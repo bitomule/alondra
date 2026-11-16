@@ -9,6 +9,10 @@
 //! {"type":"runtime_exit","code":0}
 //! ```
 
+pub mod anonymize;
+pub mod frames;
+pub mod guard;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

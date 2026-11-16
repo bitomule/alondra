@@ -10,6 +10,7 @@ _PROVIDER_TEST_SOURCES = _PROVIDER_SOURCES + [
     "src/facade_tests.rs",
     "src/ended_tests.rs",
     "src/archive_tests.rs",
+    "src/ported_transcript_tests.rs",
     "//crates:test_support.rs",
     "//crates/agent-application:tests/support/controller.rs",
 ]
@@ -40,8 +41,8 @@ low_opt_rust_test(
     srcs = _PROVIDER_TEST_SOURCES,
     crate_name = "alondra_provider_claude",
     version = "0.1.0",
-    compile_data = ["//crates/agent-protocol:fixtures/hello.json", "//crates/alondrad:src/domain_store/schema.sql"] + glob(["fixtures/native/*.jsonl"]),
-    deps = _PROVIDER_DEPS + ["//crates/domain:domain"] + all_crate_deps(normal_dev = True),
+    compile_data = ["//crates/agent-protocol:fixtures/hello.json", "//crates/alondrad:src/domain_store/schema.sql", "//crates/scenarios:transcripts"] + glob(["fixtures/native/*.jsonl"]),
+    deps = _PROVIDER_DEPS + ["//crates/domain:domain", "//crates/scenarios-transcript:scenarios_transcript"] + all_crate_deps(normal_dev = True),
     edition = "2024",
     env = {"HOME": "."},
 )
@@ -55,10 +56,11 @@ low_opt_rust_test(
     version = "0.1.0",
     crate_features = ["sdk_fixture"],
     edition = "2024",
-    deps = _PROVIDER_DEPS + ["//crates/domain:domain"] + all_crate_deps(normal_dev = True),
+    deps = _PROVIDER_DEPS + ["//crates/domain:domain", "//crates/scenarios-transcript:scenarios_transcript"] + all_crate_deps(normal_dev = True),
     compile_data = [
         "//crates/alondrad:src/domain_store/schema.sql",
         "//crates/agent-protocol:fixtures/hello.json",
+        "//crates/scenarios:transcripts",
     ],
     data = [
         "//agent-host:pinned_node",

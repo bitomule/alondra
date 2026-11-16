@@ -25,6 +25,17 @@ low_opt_rust_test(
     deps = all_crate_deps(normal = True, normal_dev = True),
 )
 
+low_opt_rust_test(
+    name = "transcript_guard_test",
+    size = "small",
+    srcs = ["tests/transcript_guard.rs"],
+    crate_root = "tests/transcript_guard.rs",
+    data = ["//crates/scenarios:transcripts"],
+    edition = "2024",
+    env_inherit = ["ALONDRA_PRIVATE_LITERALS"],
+    deps = [":scenarios_transcript"],
+)
+
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 
 repo_tree()
