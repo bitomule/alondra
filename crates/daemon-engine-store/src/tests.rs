@@ -2639,3 +2639,47 @@ fn reply_windows_roundtrip_and_legacy_rows_keep_the_last_reply_only() {
     }
     store.integrity_check().unwrap();
 }
+
+/// Pages SQLite had to read from the file since the connection opened.
+fn pages_read(store: &DomainStore) -> i64 {
+    let (mut current, mut highest) = (0, 0);
+    let status = unsafe { rusqlite::ffi::sqlite3_db_status(store.conn.handle(), rusqlite::ffi::SQLITE_DBSTATUS_CACHE_MISS, &mut current, &mut highest, 0) };
+    assert_eq!(status, rusqlite::ffi::SQLITE_OK);
+    i64::from(current)
+}
+
+#[test]
+fn adding_a_column_reads_only_the_table_it_changed() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    store.conn.execute_batch(
+        "CREATE TABLE unrelated_history(id INTEGER PRIMARY KEY, task_id TEXT REFERENCES tasks(id), body BLOB NOT NULL);
+         WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<4000)
+         INSERT INTO unrelated_history(body) SELECT randomblob(1000) FROM n;
+         ALTER TABLE merge_authorizations DROP COLUMN despite_pending_message;",
+    ).unwrap();
+    let unrelated_pages: i64 = store.conn.query_row("SELECT count(*) FROM dbstat WHERE name='unrelated_history'", [], |r| r.get(0)).unwrap();
+    drop(store);
+    let reopened = DomainStore::open(&fixture.path()).unwrap();
+    let column: i64 = reopened.conn.query_row("SELECT count(*) FROM pragma_table_info('merge_authorizations') WHERE name='despite_pending_message'", [], |r| r.get(0)).unwrap();
+    assert_eq!(column, 1);
+    let read = pages_read(&reopened);
+    assert!(read < unrelated_pages / 4, "opening read {read} pages for one added column; the untouched table alone has {unrelated_pages}");
+}
+
+#[test]
+fn a_migrated_table_with_a_broken_reference_is_refused_when_it_opens() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    store.conn.execute_batch(
+        "PRAGMA foreign_keys=OFF;
+         ALTER TABLE merge_authorizations DROP COLUMN despite_pending_message;
+         INSERT INTO merge_authorizations(id,task_id,pr_id,presentation_id,head,method,user_id,valid,attempt,claimed_by,at_revision)
+         VALUES('orphan','no-task','no-pr','no-card','head','squash','user',1,'unclaimed',NULL,1);",
+    ).unwrap();
+    drop(store);
+    let refused = DomainStore::open(&fixture.path()).err().expect("a dangling merge authorization is refused");
+    assert!(format!("{refused:#}").contains("foreign key check of merge_authorizations"), "{refused:#}");
+}

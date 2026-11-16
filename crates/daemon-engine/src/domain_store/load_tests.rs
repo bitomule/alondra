@@ -182,11 +182,11 @@ fn opening_the_domain_does_not_read_historical_observation_pages() {
     extended.conn.execute_batch("ALTER TABLE model_decisions DROP COLUMN provider").unwrap();
     drop(extended);
     let migrated = DomainStore::open(&fixture.path()).unwrap();
-    assert!(pages_read(&migrated.conn) > extended_reads + 1_000,
-        "changing an existing table must retain its exhaustive validation");
+    assert!(pages_read(&migrated.conn) <= extended_reads + 64,
+        "changing one table read historical evidence: {extended_reads} → {} pages", pages_read(&migrated.conn));
     migrated.conn.execute_batch("CREATE TABLE node_costs(obsolete TEXT)").unwrap();
     drop(migrated);
     let cleaned = DomainStore::open(&fixture.path()).unwrap();
-    assert!(pages_read(&cleaned.conn) > extended_reads + 1_000,
-        "removing an existing table must retain its exhaustive validation");
+    assert!(pages_read(&cleaned.conn) <= extended_reads + 64,
+        "removing one table read historical evidence: {extended_reads} → {} pages", pages_read(&cleaned.conn));
 }

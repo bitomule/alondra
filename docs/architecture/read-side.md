@@ -214,10 +214,13 @@ replayed again through its index, which reports its failure as before. `store_te
 misses with a cache far smaller than the journal.
 
 An ordinary open checks the schema and performs restart recovery, but does not run SQLite's
-exhaustive `integrity_check` or `foreign_key_check`. Those audits remain on creation, migrations
-between stored schema versions, and changes or removal of previously existing tables. Adding
-schema objects without changing existing table formats uses SQLite's DDL and foreign-key
-validation; it does not audit unrelated historical pages. Full audits can also be requested with
+exhaustive `integrity_check` or `foreign_key_check`. Those audits remain on creation and
+migrations between stored schema versions. A change or removal of previously existing tables
+checks only those tables: `integrity_check` of each table still there, and `foreign_key_check` of
+those tables and of every table that references one of them. Opening a 744 MB database from the
+previous release, whose only change adds one column, took 40-62 s with the whole-database audit and
+takes 10-12 s this way. Adding schema objects without changing existing table formats uses SQLite's
+DDL and foreign-key validation; it does not audit unrelated historical pages. Full audits can also be requested with
 `alondrad --check-database <path>` on a stopped HOME or a
 private HOME copy including its `service-home.lock`. The diagnostic takes that existing lock
 exclusively, copies the database and its WAL or journal into private scratch storage, then checks

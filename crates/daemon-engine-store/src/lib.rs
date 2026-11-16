@@ -478,6 +478,32 @@ pub fn schedule_command(command: &Command) -> bool {
 pub fn audit(connection: &Connection) -> Result<()> {
     let result: String = connection.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
     ensure!(result == "ok", "database integrity check failed: {result}");
+    audit_foreign_keys(connection)
+}
+/// `audit` for a database whose other tables a migration left as they were: only the migrated
+/// tables, and the references into them, are read again. Reading every table of a database of
+/// hundreds of megabytes takes most of a minute.
+fn audit_tables(connection: &Connection, tables: &[String]) -> Result<()> {
+    for table in tables {
+        let result: String = connection.query_row("SELECT * FROM pragma_integrity_check(?1)", [table], |row| row.get(0))?;
+        ensure!(result == "ok", "database integrity check of {table} failed: {result}");
+    }
+    let mut referencing = connection.prepare(
+        "SELECT DISTINCT t.name FROM sqlite_schema t, pragma_foreign_key_list(t.name) f
+         WHERE t.type='table' AND f.\"table\" IN (SELECT value FROM json_each(?1))",
+    )?;
+    let migrated = serde_json::to_string(tables)?;
+    let mut checked: std::collections::BTreeSet<String> = tables.iter().cloned().collect();
+    for name in referencing.query_map([&migrated], |row| row.get::<_, String>(0))? {
+        checked.insert(name?);
+    }
+    for table in &checked {
+        let violations: i64 = connection.query_row("SELECT count(*) FROM pragma_foreign_key_check(?1)", [table], |row| row.get(0))?;
+        ensure!(violations == 0, "database foreign key check of {table} failed: {violations} violation(s)");
+    }
+    Ok(())
+}
+fn audit_foreign_keys(connection: &Connection) -> Result<()> {
     let violations: i64 = connection.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| row.get(0))?;
     ensure!(violations == 0, "database foreign key check failed: {violations} violation(s)");
     Ok(())
@@ -849,11 +875,12 @@ impl DomainStore {
         alondra_store::LifecycleTransaction::upgrade(&mut tx)?;
         if version == SCHEMA_VERSION { alondra_store::LifecycleTransaction::verify(&tx)?; }
         let schema_after: i64 = tx.pragma_query_value(None, "schema_version", |r| r.get(0))?;
-        let table_migration = if schema_before != schema_after {
+        let migrated_tables: Option<Vec<String>> = if schema_before != schema_after {
             let tables_after = table_definitions(&tx)?;
-            tables_before.iter().any(|(name, sql)| tables_after.get(name) != Some(sql))
+            let changed: Vec<&String> = tables_before.iter().filter(|(name, sql)| tables_after.get(*name) != Some(sql)).map(|(name, _)| name).collect();
+            (!changed.is_empty()).then(|| changed.into_iter().filter(|name| tables_after.contains_key(*name)).cloned().collect())
         } else {
-            false
+            None
         };
         if version == PREVIOUS_SCHEMA_VERSION {
             lifecycle_migration::migrate(&conn, tx)
@@ -862,8 +889,10 @@ impl DomainStore {
             tx.commit()?;
         }
         let store = Self::from_connection(conn);
-        if version != SCHEMA_VERSION || table_migration {
+        if version != SCHEMA_VERSION {
             store.integrity_check()?;
+        } else if let Some(tables) = migrated_tables {
+            audit_tables(&store.conn, &tables)?;
         }
         store.conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, false)?;
         Ok(store)
