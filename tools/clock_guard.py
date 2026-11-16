@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """The daemon reads the time, waits and starts threads only through `alondra_core::clock`, so a test
-can run it on a virtual clock. Production code of `alondrad`, the `daemon-engine*` crates, `engine-kernel`
-and `daemon-support` never calls the system clock, a timer or a timed wait directly, under its own name
-or under an alias.
+can run it on a virtual clock. Production code of `alondrad`, the `daemon-engine*` crates,
+`engine-kernel`, `engine-github` and `daemon-support` never calls the system clock, a timer or a
+timed wait directly, under its own name or under an alias.
 
 Test code is outside the guard: files under `tests/`, `*_tests.rs`, `tests.rs`, `test_*.rs`, and the
 one item each `#[cfg(test)]` marks. Comments and the text of literals are not code. The guard has
@@ -16,6 +16,7 @@ CRATES = [
     "alondrad",
     "daemon-engine",
     "daemon-engine-machine",
+    "engine-github",
     "engine-kernel",
     "daemon-engine-model",
     "daemon-engine-store",

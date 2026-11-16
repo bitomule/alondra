@@ -14,7 +14,7 @@ const UUID: &str = "3bae41ae-ce20-495d-bb1b-ad4229a6e245";
 pub struct FakeGitHub(Mutex<Fake>);
 
 #[derive(Default)]
-pub(crate) struct Fake {
+pub struct Fake {
     files: BTreeMap<(String, String, String), Vec<u8>>,
     sizes: BTreeMap<String, u64>,
     repositories: BTreeSet<String>,

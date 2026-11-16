@@ -46,7 +46,8 @@ instead of the kernel calling it.
 
 `engine-kernel` holds `domain_runtime`, `domain_store`, the database migration, sessions, retention,
 the settings projection and the capture of metrics. It depends on no engine subsystem, and only
-`daemon-engine` may depend on it (Bazel visibility), so it can never import one.
+`daemon-engine` and the subsystem crates may depend on it (Bazel visibility), so it can never import
+one.
 
 - A subsystem's state is an `Extension` (`domain_runtime/extensions.rs`): the runtime keeps one slot
   per extension type without naming the type. Each subsystem reads its state through a trait it
@@ -76,6 +77,7 @@ the runtime used to be invisible to it.
 | Before (`main` at 16a6891) | 55 modules | 35,646 |
 | Runtime without subsystems, as first measured | 34 modules | 28,654 |
 | Kernel in its own crate | 45 modules | 32,053 |
+| GitHub in its own crate | 42 modules | 30,333 |
 
 The 54 above counted modules by file name; the same graph through `#[path]` declarations holds one
 more. The 34 missed what each module reached through methods the subsystems added to the runtime:
@@ -84,6 +86,19 @@ with the kernel in its own crate those are traits each caller imports, so the gr
 the engine's fixtures that open a wired runtime). Their dependencies were always there; they are
 what phases 7 to 10 cut. The kernel's only cycle is `domain_runtime` with `domain_store`, inside the
 crate.
+
+## Subsystem crates
+
+Each subsystem crate sits on `engine-kernel` beside the others: it names none of them, and only
+`daemon-engine` may depend on it, which re-exports its modules so the engine and `alondrad` keep
+their paths. Its tests open the runtime with `DomainRuntime::open_unwired`, without the engine's
+observers; a test that needs another subsystem runs with the engine.
+
+- `engine-github`: reading pull requests with `gh` (`domain_github`), merging them
+  (`domain_merges`), the images and viewed files of their descriptions (`pr_images`, `pr_viewed`),
+  the sweep that adopts open PRs left without a live owner (`open_pr_sweep`) and the fake GitHub
+  the tests and scenarios share (`github_world`, test hooks only). Its tests are
+  `//crates/engine-github:engine_github_test`.
 
 ## Where it starts (2026-11-15, main at bc73a80)
 

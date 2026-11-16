@@ -11,7 +11,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 /// More images than this in one description are not brought.
-pub(crate) const MOST: usize = 30;
+pub const MOST: usize = 30;
 const SIGNED_HOST: &str = "private-user-images.githubusercontent.com";
 const LIMIT: Duration = Duration::from_secs(30);
 
@@ -24,7 +24,7 @@ pub enum Failure {
     Transient,
 }
 
-pub(crate) type Fetch<'a, T> = Pin<Box<dyn Future<Output = Result<T, Failure>> + Send + 'a>>;
+pub type Fetch<'a, T> = Pin<Box<dyn Future<Output = Result<T, Failure>> + Send + 'a>>;
 
 /// What the daemon asks GitHub for, behind a pointer so a test can answer for it.
 pub trait GitHubImages: Send + Sync + 'static {
@@ -279,7 +279,7 @@ impl Gh {
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn at(program: std::path::PathBuf) -> Self {
+    pub fn at(program: std::path::PathBuf) -> Self {
         Self { cli: crate::domain_github::GhCli::at(program), web: std::sync::OnceLock::new() }
     }
 

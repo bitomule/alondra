@@ -178,6 +178,7 @@ dependencies = [
  "alondra-daemon-engine-store",
  "alondra-daemon-support",
  "alondra-domain",
+ "alondra-engine-github",
  "alondra-engine-kernel",
  "alondra-foundation",
  "alondra-process-group",
@@ -314,6 +315,24 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+]
+
+[[package]]
+name = "alondra-engine-github"
+version = "0.3.46"
+dependencies = [
+ "alondra-core",
+ "alondra-daemon-engine-model",
+ "alondra-daemon-support",
+ "alondra-engine-kernel",
+ "anyhow",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
 ]
 
 [[package]]

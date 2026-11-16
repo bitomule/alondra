@@ -36,14 +36,14 @@ pub struct PrFacts {
 }
 
 impl PrFacts {
-    pub(crate) fn status(&self) -> OpenPrStatus {
+    pub fn status(&self) -> OpenPrStatus {
         OpenPrStatus { state: self.state, head: self.head.clone(), base: self.base.clone(),
             mergeable: self.mergeable, checks: self.checks.clone() }
     }
 }
 
-pub(crate) type Observed<'a> = Pin<Box<dyn Future<Output = Result<PrFacts, String>> + Send + 'a>>;
-pub(crate) type Closed<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
+pub type Observed<'a> = Pin<Box<dyn Future<Output = Result<PrFacts, String>> + Send + 'a>>;
+pub type Closed<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 
 pub trait PrObserver: Send + Sync + 'static {
     fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Observed<'a>;
@@ -146,7 +146,7 @@ impl GhCli {
 
     /// One `gh api` call with `--include`: GitHub's HTTP status, headers and body, whatever the status.
     /// A failure is only `gh` failing before GitHub answered.
-    pub(crate) async fn api(&self, args: &[&str], limit: Duration) -> Result<HttpAnswer, GhFailure> {
+    pub async fn api(&self, args: &[&str], limit: Duration) -> Result<HttpAnswer, GhFailure> {
         let args: Vec<&str> = ["api", "--include"].into_iter().chain(args.iter().copied()).collect();
         let output = self.output(&args, None, limit).await?;
         match HttpAnswer::parse(&output.stdout) {
@@ -170,7 +170,7 @@ impl GhCli {
     }
 
     /// The open PR GitHub has for the branch checked out in `dir`, as host, `owner/repo` and number.
-    pub(crate) async fn branch_pr(&self, dir: &std::path::Path, limit: Duration) -> Option<(String, String, u64)> {
+    pub async fn branch_pr(&self, dir: &std::path::Path, limit: Duration) -> Option<(String, String, u64)> {
         let out = self.run(&["pr", "view", "--json", "url,state"], Some(dir), limit).await.ok()?;
         let value: Value = serde_json::from_slice(&out).ok()?;
         if value["state"].as_str() != Some("OPEN") {
@@ -198,19 +198,19 @@ pub enum GhFailure {
 
 impl GhFailure {
     /// `gh` cannot work on this Mac until someone installs it or signs it in.
-    pub(crate) fn needs_setup(&self) -> bool {
+    pub fn needs_setup(&self) -> bool {
         matches!(self, Self::Launch(..) | Self::Exit(Some(4), _))
     }
 
-    pub(crate) fn signed_out(&self) -> bool {
+    pub fn signed_out(&self) -> bool {
         matches!(self, Self::Exit(Some(4), _))
     }
 
-    pub(crate) fn timed_out(&self) -> bool {
+    pub fn timed_out(&self) -> bool {
         matches!(self, Self::TimedOut(_))
     }
 
-    pub(crate) fn unreadable(error: impl std::fmt::Display) -> Self {
+    pub fn unreadable(error: impl std::fmt::Display) -> Self {
         Self::Unreadable(error.to_string())
     }
 }
@@ -239,7 +239,7 @@ impl From<GhFailure> for String {
 
 /// What GitHub answered to a `gh api --include` call.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct HttpAnswer {
+pub struct HttpAnswer {
     pub status: u16,
     /// Header names in lower case.
     pub headers: BTreeMap<String, String>,
@@ -248,7 +248,7 @@ pub(crate) struct HttpAnswer {
 
 impl HttpAnswer {
     /// `HTTP/<version> <status> <reason>`, header lines, an empty line, then the body.
-    pub(crate) fn parse(stdout: &[u8]) -> Option<Self> {
+    pub fn parse(stdout: &[u8]) -> Option<Self> {
         let end = stdout.windows(4).position(|window| window == b"\r\n\r\n")?;
         let head = std::str::from_utf8(&stdout[..end]).ok()?;
         let mut lines = head.lines();
@@ -258,18 +258,18 @@ impl HttpAnswer {
         Some(Self { status, headers, body: stdout[end + 4..].to_vec() })
     }
 
-    pub(crate) fn success(&self) -> bool {
+    pub fn success(&self) -> bool {
         (200..300).contains(&self.status)
     }
 
     /// GitHub refused for its rate limit: a 429, or a 403 with no requests left or a wait to respect.
-    pub(crate) fn rate_limited(&self) -> bool {
+    pub fn rate_limited(&self) -> bool {
         self.status == 429 || (self.status == 403
             && (self.headers.get("x-ratelimit-remaining").is_some_and(|left| left == "0") || self.headers.contains_key("retry-after")))
     }
 
     /// The answer as a failure, with GitHub's `message` for showing.
-    pub(crate) fn failure(&self) -> GhFailure {
+    pub fn failure(&self) -> GhFailure {
         let message = serde_json::from_slice::<Value>(&self.body).ok()
             .and_then(|value| value["message"].as_str().map(str::to_owned)).unwrap_or_default();
         GhFailure::Http(self.status, message)
@@ -382,7 +382,7 @@ fn reading_prs(state: &DomainState) -> BTreeSet<(TaskId, OpenedPr)> {
 
 /// Reads from GitHub each PR a node was seen opening, of `task` or of every task, and makes it its
 /// task's. One GitHub cannot report stays noted: its delivery waits, and the next round tries again.
-pub(crate) async fn read_opened(domain: &DomainRuntime, observer: &impl PrObserver, task: Option<&TaskId>) -> Result<()> {
+pub async fn read_opened(domain: &DomainRuntime, observer: &impl PrObserver, task: Option<&TaskId>) -> Result<()> {
     let state = domain.state()?;
     let opened: Vec<(TaskId, OpenedPr)> = state.tasks.values().filter(|t| task.is_none_or(|task| *task == t.id))
         .flat_map(|t| t.opened_prs.iter().map(|pr| (t.id.clone(), pr.clone()))).collect();
@@ -451,7 +451,7 @@ pub async fn catch_up_task_using(domain: &DomainRuntime, gh: &GhCli, source: &im
 
 /// Bring the domain's view of each watched PR up to date with GitHub. A PR
 /// GitHub cannot report is left as it was.
-pub(crate) async fn reconcile(
+pub async fn reconcile(
     domain: &DomainRuntime, observer: &impl PrObserver, failures: &mut ObservationFailures,
 ) -> Result<()> {
     deliver_held(domain, observer).await?;
@@ -549,7 +549,7 @@ const CLOSE_WAIT_MAX_ROUNDS: u32 = 32;
 /// repeating itself. Closes that GitHub refused count apart: each failure
 /// doubles the rounds Alondra lets pass before it tries again.
 #[derive(Default)]
-pub(crate) struct ObservationFailures(BTreeMap<PrId, u32>, BTreeMap<PrId, CloseFailure>);
+pub struct ObservationFailures(BTreeMap<PrId, u32>, BTreeMap<PrId, CloseFailure>);
 
 #[derive(Default)]
 struct CloseFailure {
@@ -730,7 +730,7 @@ pub async fn run(domain: Arc<DomainRuntime>, observer: Arc<impl PrObserver>, pol
 #[cfg(any(test, feature = "test-hooks"))]
 /// GitHub from memory: the facts of each PR, the closes it took, the ones it was asked for, and
 /// the error it refuses closes with, if any. A close it takes leaves the PR closed.
-pub(crate) struct FakeObserver(
+pub struct FakeObserver(
     pub std::sync::Mutex<std::collections::BTreeMap<u64, Result<PrFacts, String>>>,
     pub std::sync::Mutex<Vec<(u64, String)>>,
     pub std::sync::Mutex<Option<String>>,
@@ -738,10 +738,10 @@ pub(crate) struct FakeObserver(
 );
 #[cfg(any(test, feature = "test-hooks"))]
 impl FakeObserver {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self(Default::default(), Default::default(), Default::default(), Default::default())
     }
-    pub(crate) fn set(&self, number: u64, facts: Result<PrFacts, String>) {
+    pub fn set(&self, number: u64, facts: Result<PrFacts, String>) {
         self.0.lock().unwrap().insert(number, facts);
     }
 }
@@ -910,7 +910,7 @@ pub mod tests {
         authorized(&domain);
         opened(&domain);
         drop(domain);
-        let domain = crate::wiring::open(&fixture.0).unwrap();
+        let domain = crate::unwired(&fixture.0).unwrap();
         assert_eq!(domain.state().unwrap().tasks[&"t".into()].opened_prs.len(), 1, "the note outlives the daemon");
 
         let observer = FakeObserver::new();
@@ -920,7 +920,7 @@ pub mod tests {
         observer.set(7, Ok(github));
         read_opened(&domain, &observer, None).await.unwrap();
         drop(domain);
-        let domain = crate::wiring::open(&fixture.0).unwrap();
+        let domain = crate::unwired(&fixture.0).unwrap();
         let state = domain.state().unwrap();
         let task = &state.tasks[&"t".into()];
         assert_eq!(task.later_prs, vec![hosted_pr_id("github.com", "owner/site", 6)]);
@@ -1050,7 +1050,7 @@ pub mod tests {
     pub fn open(_tag: &str) -> (Fixture, DomainRuntime) {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir(&home).unwrap();
-        let domain = crate::wiring::open(&home).unwrap();
+        let domain = crate::unwired(&home).unwrap();
         (Fixture(home), domain)
     }
 
@@ -1335,13 +1335,13 @@ pub mod tests {
     /// Task `t` with its PR open, closed by the orchestrator under a build that left the close
     /// waiting for GitHub to deliver the PR.
     fn held_by_an_older_build(fixture: &Fixture) -> DomainRuntime {
-        let domain = crate::wiring::open(&fixture.0).unwrap();
+        let domain = crate::unwired(&fixture.0).unwrap();
         registered(&domain);
         drop(domain);
         let held = serde_json::to_string(&OpenPrPending::Deliver { result: None }).unwrap();
         rusqlite::Connection::open(crate::domain_database_migration::active_path(&fixture.0)).unwrap()
             .execute("INSERT INTO task_open_prs(task_id,pending) VALUES('t',?1)", [held]).unwrap();
-        let domain = crate::wiring::open(&fixture.0).unwrap();
+        let domain = crate::unwired(&fixture.0).unwrap();
         assert_eq!(domain.state().unwrap().tasks[&"t".into()].open_pr, Some(OpenPrPending::Deliver { result: None }));
         domain
     }
@@ -1486,7 +1486,7 @@ pub mod tests {
         cancelled_with_its_pr_reopened(&domain);
         close_cancelled(&domain);
         drop(domain);
-        let domain = crate::wiring::open(&fixture.0).unwrap();
+        let domain = crate::unwired(&fixture.0).unwrap();
         let state = domain.state().unwrap();
         assert_eq!(state.tasks[&"t".into()].open_pr, Some(OpenPrPending::Close { comment: "Cancelled in Alondra: Task".into() }), "it outlives a restart");
         assert_eq!(state.pull_requests[&"pr".into()].state, PrState::Open);
@@ -1517,7 +1517,7 @@ pub mod tests {
         assert_eq!(observer.3.load(std::sync::atomic::Ordering::Relaxed), 2, "the second refusal waits a round before trying again");
         assert!(observer.1.lock().unwrap().is_empty());
         drop(domain);
-        let domain = crate::wiring::open(&fixture.0).unwrap();
+        let domain = crate::unwired(&fixture.0).unwrap();
         assert!(matches!(domain.state().unwrap().tasks[&"t".into()].open_pr, Some(OpenPrPending::Close { .. })), "the refusals did not lose the close");
         *observer.2.lock().unwrap() = None;
         reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
