@@ -32,6 +32,7 @@ use std::{
 
 mod relay;
 mod registration;
+pub mod scenario_phone;
 use registration::{Operation as RegistrationOperation, Rejection as RegistrationRejection};
 pub(crate) mod operation_results;
 

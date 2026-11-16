@@ -147,6 +147,11 @@ action is pressed on the card the view serves, through `POST /actions`.
 - `bazel run //crates/scenarios:ablate -- <case> --revert <file>...` runs only that case without
   the fix (those files as they were on the base of the branch) and with it, and prints the block
   the pull request shows.
+- The scenario's phone is a service device of the daemon: it registers its push destination through
+  the same encrypted request the app sends, so every push the daemon sends it is recorded. A
+  checkpoint with `pushes = true` writes them to `pushes.json` (every alert; of the badge and
+  retraction pushes, the last of each) and can assert `check = "no_pushes"` (optionally for one
+  `delivery`: `alert`, `background` or `badge`) or `check = "badge"` with the `count` the icon ends at.
 - Views show local time: the runner needs `TZ=UTC`, which the Bazel targets and `accept` set.
 - `crates/scenarios-transcript` reads the transcript of a provider's process, one reader for
   every user of one.

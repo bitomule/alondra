@@ -123,6 +123,7 @@ mod activity_push;
 mod push_alerts;
 mod push_retract;
 mod service;
+pub use service::scenario_phone;
 mod settings;
 mod client_routes;
 mod views;

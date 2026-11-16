@@ -6,7 +6,7 @@ use crate::checkpoint::{self, Files};
 use crate::claude_peer::{Activity, Seen};
 use crate::error::ScenarioError;
 use crate::format::{Checkpoint, Expect, GithubChange, Scenario, Step, parse_duration};
-use crate::http::Phone;
+use crate::http::{PHONE_SECRET, Phone};
 use alondra_agent_runtime::owned_host::{HostLauncher, HostSpawn, Launcher};
 use alondra_core::domain::{
     Actor, CardSpec, Command, CommandEnvelope, DeliveryTarget, LaunchPlan, MergeMethod, NodeEnd, PROTOCOL_VERSION,
@@ -16,7 +16,7 @@ use alondra_core::views::action_id::ActionId;
 use alondra_daemon_engine::github_world::GithubWorld;
 use alondra_daemon_engine::machine::MachineSampler;
 use alondrad::assemble::{self, Assembled, Backend, GithubSeams, Pushes, Seams};
-use alondrad::push_transport::RecordedPushes;
+use alondrad::push_transport::{RecordedPushes, SentPush};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -26,6 +26,8 @@ use std::time::Duration;
 /// How long the daemon must stay unchanged, in virtual seconds, for it to count as resting. The
 /// scenario daemon polls every couple of seconds, so this outlasts every loop's period.
 const QUIET: u64 = 30;
+/// Where the pushes of the scenario's phone go: the push binding the app registers, 32 bytes.
+const PUSH_DESTINATION: &str = "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ";
 const REPOSITORY_HOST: &str = "github.com";
 
 pub struct Outcome {
@@ -178,8 +180,11 @@ async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnc
     };
     probe(&launcher);
     let seams = seams_of(&github, &pushes, launcher, backend);
+    alondrad::scenario_phone::prepare(&config.home).map_err(|e| invalid(&format!("{e:#}")))?;
     let daemon = assemble::start(&config, seams).await.map_err(|e| invalid(&format!("{e:#}")))?;
     let phone = Phone::pair(&daemon, std::net::SocketAddr::new(config.listen, config.port)).map_err(|e| invalid(&e))?;
+    let destination = alondrad::scenario_phone::Phone::new(phone.device(), PHONE_SECRET).map_err(|e| invalid(&format!("{e:#}")))?;
+    daemon.register_phone_push(&destination, PUSH_DESTINATION).await.map_err(|e| invalid(&format!("{e:#}")))?;
     let mut context = Context {
         peer,
         scenario,
@@ -745,17 +750,22 @@ impl Context<'_> {
                 }
             }
         }
-        if checkpoint.pushes {
-            let sent: Vec<Value> = self
-                .pushes
-                .take()
-                .into_iter()
-                .map(|push| json!({"device": push.device, "delivery": push.delivery, "with_sound": push.with_sound, "payload": push.payload}))
-                .collect();
-            files.insert("pushes.json".into(), checkpoint::render(&Value::Array(sent)));
+        let sent = checkpoint.pushes.then(|| self.pushes.take());
+        if let Some(sent) = &sent {
+            let mut rendered = Value::Array(
+                settled(sent)
+                    .into_iter()
+                    .map(|push| {
+                        let device = if push.device == self.phone.device() { "<phone>" } else { push.device.as_str() };
+                        json!({"device": device, "delivery": push.delivery, "with_sound": push.with_sound, "payload": push.payload})
+                    })
+                    .collect(),
+            );
+            checkpoint::normalize(&mut rendered);
+            files.insert("pushes.json".into(), checkpoint::render(&rendered));
         }
         for expect in &checkpoint.expect {
-            self.expect(&checkpoint.name, expect).await?;
+            self.expect(&checkpoint.name, expect, sent.as_deref()).await?;
         }
         if let Some(case) = self.accepted {
             let differences = checkpoint::compare(&checkpoint::accepted(case, &checkpoint.name), &files);
@@ -767,7 +777,7 @@ impl Context<'_> {
         Ok(())
     }
 
-    async fn expect(&self, checkpoint: &str, expect: &Expect) -> Result<(), ScenarioError> {
+    async fn expect(&self, checkpoint: &str, expect: &Expect, sent: Option<&[SentPush]>) -> Result<(), ScenarioError> {
         let failed = |expected: String, actual: String| ScenarioError::ExpectFailed { checkpoint: checkpoint.to_owned(), expected, actual };
         match expect {
             Expect::GhCalls { calls } => {
@@ -792,6 +802,21 @@ impl Context<'_> {
                     ));
                 }
             }
+            Expect::NoPushes { delivery } => {
+                let sent = sent.ok_or_else(|| ScenarioError::Invalid("a check on pushes needs `pushes = true` on its checkpoint".into()))?;
+                let unwanted: Vec<&SentPush> = sent.iter().filter(|push| delivery.as_deref().is_none_or(|kind| push.delivery == kind)).collect();
+                if !unwanted.is_empty() {
+                    let kind = delivery.as_deref().unwrap_or("any");
+                    return Err(failed(format!("no {kind} push"), format!("{unwanted:?}")));
+                }
+            }
+            Expect::Badge { count } => {
+                let sent = sent.ok_or_else(|| ScenarioError::Invalid("a check on pushes needs `pushes = true` on its checkpoint".into()))?;
+                let actual = sent.iter().rev().find(|push| push.delivery == "badge").and_then(|push| push.payload.pointer("/aps/badge").and_then(Value::as_u64));
+                if actual != Some(*count) {
+                    return Err(failed(format!("the icon badge set to {count}"), format!("{actual:?}")));
+                }
+            }
             Expect::ViewShows { screen, text: wanted, present } => {
                 let rendered = checkpoint::render(&self.view(screen, "ios", "en").await?);
                 if rendered.contains(wanted.as_str()) != *present {
@@ -809,6 +834,24 @@ impl Context<'_> {
         }
         Ok(())
     }
+}
+
+/// The pushes a phone is left with: every alert, and of the badge and retraction pushes only the
+/// last of each, which carry the whole queue. Whether a burst of cards leaving the queue settles
+/// into one of those pushes or two depends on how the daemon's threads race the paused clock; the
+/// one the phone ends with does not.
+fn settled(sent: &[SentPush]) -> Vec<&SentPush> {
+    let last_of = |delivery: &str| sent.iter().rposition(|push| push.delivery == delivery);
+    let (badge, background) = (last_of("badge"), last_of("background"));
+    sent.iter()
+        .enumerate()
+        .filter(|(at, push)| match push.delivery {
+            "badge" => Some(*at) == badge,
+            "background" => Some(*at) == background,
+            _ => true,
+        })
+        .map(|(_, push)| push)
+        .collect()
 }
 
 /// The action `verb` of the card of `presentation`, as the view serves it: the action whose id

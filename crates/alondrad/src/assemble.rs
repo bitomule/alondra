@@ -116,6 +116,15 @@ pub struct Assembled {
     pub(crate) connector: Option<tokio::task::JoinHandle<()>>,
     pub(crate) machine_watch: tokio::task::JoinHandle<()>,
     pub(crate) gate: tokio::task::JoinHandle<()>,
+    service: Option<Arc<service::Service>>,
+}
+
+impl Assembled {
+    /// The phone registers `binding` as where its pushes go, as the app does it.
+    pub async fn register_phone_push(&self, phone: &crate::scenario_phone::Phone, binding: &str) -> Result<()> {
+        let service = self.service.as_ref().context("the home has no service: call scenario_phone::prepare before starting")?;
+        service.register_phone_push(phone, binding).await
+    }
 }
 
 /// Opens the domain at `config.home` and assembles the daemon over it: what a scenario starts.
@@ -323,6 +332,7 @@ pub(crate) async fn assemble_with(
             watcher::claude_home(),
         ))
     });
+    let kept = service.clone();
     let connector = service
         .filter(|service| real && service.has_relay())
         .map(|service| tasks.spawn(async move { service.run().await }));
@@ -344,5 +354,6 @@ pub(crate) async fn assemble_with(
         connector,
         machine_watch,
         gate,
+        service: kept,
     })
 }

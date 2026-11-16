@@ -164,6 +164,11 @@ pub enum Expect {
     /// Every transcript of the case was played to its end: the daemon sent what each expected and
     /// received everything it said.
     TranscriptsPlayed,
+    /// The pushes sent since the last checkpoint (the checkpoint sets `pushes`) include none, or
+    /// none of that `delivery` (`alert`, `background` or `badge`).
+    NoPushes { #[serde(default)] delivery: Option<String> },
+    /// The last icon badge pushed since the last checkpoint (the checkpoint sets `pushes`) is `count`.
+    Badge { count: u64 },
     /// The view `screen` as the iOS app reads it in English shows (or, with `present = false`, does
     /// not show) this text.
     ViewShows { screen: String, text: String, #[serde(default = "Expect::shown")] present: bool },
