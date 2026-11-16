@@ -2,12 +2,26 @@
 //! left under the old ones once they are no longer a way back, and of files no reader uses any
 //! more.
 use alondra_core::clock;
-use crate::{admission, domain_cutover, domain_database_migration as database, domain_orchestrator};
+use crate::{domain_cutover, domain_database_migration as database};
 use anyhow::Result;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
+
+/// The admission gate's saved state.
+pub mod admission {
+    pub const FILE: &str = "admission.json";
+    /// The gate's file before it was renamed; startup moves it to `FILE`.
+    pub const PREVIOUS_FILE: &str = "fleet-gate.json";
+}
+
+/// The orchestrator's runtime record.
+pub mod orchestrator {
+    pub const FILE: &str = "orchestrator.json";
+    /// The runtime record's name before it was renamed; startup moves it to `FILE`.
+    pub const PREVIOUS_FILE: &str = "orchestrator-v2.json";
+}
 
 /// How long the old database stays as a recovery copy after the move to `domain.db`.
 const RECOVERY_WINDOW: Duration = Duration::from_secs(7 * 24 * 60 * 60);
@@ -24,7 +38,7 @@ pub fn apply(home: &Path) -> Result<()> {
     let Ok(_lock) = alondra_core::home_lock::HomeLock::recovery(home) else {
         return Ok(());
     };
-    rename(home, domain_orchestrator::PREVIOUS_FILE, domain_orchestrator::FILE)?;
+    rename(home, orchestrator::PREVIOUS_FILE, orchestrator::FILE)?;
     rename(home, domain_cutover::PREVIOUS_MARKER, domain_cutover::MARKER)?;
     remove(&home.join(admission::PREVIOUS_FILE).with_extension("next"))?;
     rename(home, admission::PREVIOUS_FILE, admission::FILE)?;
@@ -135,6 +149,11 @@ mod tests {
         home.write("domain-v2-retired-1790619331/domain-v2.db", "old");
     }
 
+    fn session_id(home: &Home) -> String {
+        let record: serde_json::Value = serde_json::from_slice(&fs::read(home.0.join(orchestrator::FILE)).unwrap()).unwrap();
+        record["session_id"].as_str().unwrap().to_owned()
+    }
+
     #[test]
     fn the_orchestrator_record_moves_to_its_new_name() {
         let home = Home::new();
@@ -144,7 +163,7 @@ mod tests {
         apply(&home.0).unwrap();
 
         assert_eq!(home.names(), ["orchestrator.json"]);
-        assert_eq!(domain_orchestrator::load(&home.0).unwrap().session_id.as_deref(), Some("d6ec6dac-9169-4dc0-ab34-0e05a07d7417"));
+        assert_eq!(session_id(&home), "d6ec6dac-9169-4dc0-ab34-0e05a07d7417");
     }
 
     #[test]
@@ -156,7 +175,7 @@ mod tests {
         apply(&home.0).unwrap();
 
         assert_eq!(home.names(), ["orchestrator.json"]);
-        assert!(domain_orchestrator::load(&home.0).unwrap().session_id.unwrap().starts_with("0000aaaa"));
+        assert!(session_id(&home).starts_with("0000aaaa"));
     }
 
     #[test]

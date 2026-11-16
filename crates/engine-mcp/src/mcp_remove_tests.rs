@@ -25,7 +25,7 @@ fn target(name: &str, url: Option<&str>) -> String {
 /// or fails with what `fails` holds and leaves `.claude.json` as the test wrote it.
 pub struct Fixture {
     home: crate::test_support::Directory,
-    backend: SdkBackend,
+    backend: McpHost,
     projects: Vec<ProjectEntry>,
 }
 
@@ -41,11 +41,10 @@ if [ -e "$HOME/fails" ]; then cat "$HOME/fails" >&2; exit 1; fi
 echo "Removed MCP server $6"
 "#).unwrap();
         std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let backend = SdkBackend { provider:alondra_core::accounts::Provider::Claude,origin:None,
-            node: PathBuf::new(), node_sha256: String::new(), host: PathBuf::new(), host_sha256: String::new(),
-            native, native_sha256: String::new(), host_environment: BTreeMap::new(),
+        let backend = McpHost {
+            native,
             native_environment: BTreeMap::from([("HOME".into(), home.display().to_string()), ("PATH".into(), "/usr/bin:/bin".into())]),
-            confinement: None, state_root: home.join("sdk"), io_timeout_seconds: 1, installed_native: false, launcher: Default::default(),
+            ..McpHost::default()
         };
         let projects = vec![ProjectEntry { name: "quill".into(), path: project, last_used: None, nodes: 0 }];
         Self { home, backend, projects }

@@ -6,7 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-test-hooks = ["dep:tempfile", "alondra-daemon-engine-model/test-hooks", "alondra-daemon-engine-store/test-hooks", "alondra-daemon-engine-machine/test-hooks", "alondra-engine-kernel/test-hooks", "alondra-engine-github/test-hooks", "alondra-daemon-support/test-hooks"]
+test-hooks = ["dep:tempfile", "alondra-daemon-engine-model/test-hooks", "alondra-daemon-engine-store/test-hooks", "alondra-daemon-engine-machine/test-hooks", "alondra-engine-kernel/test-hooks", "alondra-engine-github/test-hooks", "alondra-engine-live/test-hooks", "alondra-engine-mcp/test-hooks", "alondra-engine-worktrees/test-hooks", "alondra-daemon-support/test-hooks"]
 
 [dependencies]
 alondra-agent-application.workspace = true
@@ -19,6 +19,9 @@ alondra-daemon-support.workspace = true
 alondra-domain.workspace = true
 alondra-engine-github.workspace = true
 alondra-engine-kernel.workspace = true
+alondra-engine-live.workspace = true
+alondra-engine-mcp.workspace = true
+alondra-engine-worktrees.workspace = true
 alondra-foundation.workspace = true
 alondra-process-group.workspace = true
 alondra-provider-claude.workspace = true
@@ -44,6 +47,9 @@ url = "2.5"
 
 [dev-dependencies]
 alondra-engine-github = { workspace = true, features = ["test-hooks"] }
+alondra-engine-live = { workspace = true, features = ["test-hooks"] }
+alondra-engine-mcp = { workspace = true, features = ["test-hooks"] }
+alondra-engine-worktrees = { workspace = true, features = ["test-hooks"] }
 alondra-engine-kernel = { workspace = true, features = ["test-hooks"] }
 alondra-daemon-engine-machine = { workspace = true, features = ["test-hooks"] }
 alondra-daemon-engine-store = { workspace = true, features = ["test-hooks"] }

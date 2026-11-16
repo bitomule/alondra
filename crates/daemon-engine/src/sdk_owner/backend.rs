@@ -187,6 +187,20 @@ impl SdkBackend {
     }
 }
 
+impl alondra_engine_mcp::mcp_host::HostBackend for SdkBackend {
+    fn start(&self) -> Result<alondra_engine_mcp::mcp_host::McpHost, String> {
+        let backend = self.for_start().map_err(|error| error.to_string())?;
+        Ok(alondra_engine_mcp::mcp_host::McpHost {
+            confinement: backend.confinement,
+            node: backend.node,
+            host: backend.host,
+            native: backend.native,
+            host_environment: backend.host_environment,
+            native_environment: backend.native_environment,
+        })
+    }
+}
+
 impl SdkBackend {
     /// The backend an execution on `account` runs with. The default account runs with the profile
     /// the daemon was set up with, none for Claude's default one; any other runs Claude with its folder inside

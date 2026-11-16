@@ -34,9 +34,7 @@ use std::sync::Arc;
 use crate::runtime_mutex::RuntimeMutex as Mutex;
 use std::time::Duration;
 
-pub(crate) const FILE: &str = "admission.json";
-/// The gate's file before it was renamed; startup moves it to `FILE`.
-pub(crate) const PREVIOUS_FILE: &str = "fleet-gate.json";
+pub(crate) use alondra_engine_worktrees::home_renames::admission::{FILE, PREVIOUS_FILE};
 pub(crate) const SPACING: Millis = 60_000;
 /// The limit of tests and of a sandbox with fast timing, in place of automatic.
 pub const UNPACED: u32 = 12;

@@ -180,6 +180,9 @@ dependencies = [
  "alondra-domain",
  "alondra-engine-github",
  "alondra-engine-kernel",
+ "alondra-engine-live",
+ "alondra-engine-mcp",
+ "alondra-engine-worktrees",
  "alondra-foundation",
  "alondra-process-group",
  "alondra-provider-claude",
@@ -357,6 +360,54 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "alondra-engine-live"
+version = "0.3.47"
+dependencies = [
+ "alondra-core",
+ "alondra-daemon-support",
+ "alondra-engine-kernel",
+ "alondra-provider-claude",
+ "alondra-provider-codex",
+ "alondra-provider-contract",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "alondra-engine-mcp"
+version = "0.3.47"
+dependencies = [
+ "alondra-core",
+ "alondra-daemon-support",
+ "alondra-engine-kernel",
+ "alondra-foundation",
+ "alondra-provider-claude",
+ "alondra-store",
+ "anyhow",
+ "libc",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "alondra-engine-worktrees"
+version = "0.3.47"
+dependencies = [
+ "alondra-core",
+ "alondra-daemon-support",
+ "alondra-engine-kernel",
+ "anyhow",
+ "serde_json",
  "tempfile",
  "tokio",
 ]

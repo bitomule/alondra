@@ -24,9 +24,8 @@ use std::time::Duration;
 
 const MAX_BATCH_MESSAGES: usize = 32;
 const MAX_BATCH_BYTES: usize = 128 * 1024;
-pub const FILE: &str = "orchestrator.json";
-/// The runtime record's name before it was renamed; startup moves it to `FILE`.
-pub(crate) const PREVIOUS_FILE: &str = "orchestrator-v2.json";
+pub use alondra_engine_worktrees::home_renames::orchestrator::FILE;
+pub(crate) use alondra_engine_worktrees::home_renames::orchestrator::PREVIOUS_FILE;
 const SUMMARY_LINE: usize = 200;
 const MAX_SUMMARY_BYTES: usize = 32 * 1024;
 /// The most of its final words a batch hands to the next one.

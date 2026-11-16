@@ -2,7 +2,7 @@
 //! project and only asks it how its servers are: no message reaches Claude, so the model is never
 //! called, and Claude keeps no session of it. Each check is the user's: nothing checks on its own.
 use crate::locks::Poisonable as _;
-use crate::sdk_owner::SdkBackend;
+use crate::mcp_host::HostBackend;
 use alondra_core::domain::{McpServerState, McpStatus};
 use alondra_core::views::{LiveMcpProbe, LiveMcpRemoval};
 use alondra_foundation::McpOrigin;
@@ -43,7 +43,7 @@ impl McpProbes {
 
     /// Keeps that the user deleted a server: of `project`'s own settings, or of their own for every
     /// project. The checks that found it there no longer list it.
-    pub(crate) fn removed(&self, removal: LiveMcpRemoval, project: Option<&str>) {
+    pub fn removed(&self, removal: LiveMcpRemoval, project: Option<&str>) {
         for (checked, probe) in self.probes.lock_or_recover("the MCP probes").iter_mut() {
             let origin = match project {
                 None => McpOrigin::UserSettings,
@@ -69,7 +69,7 @@ impl McpProbes {
         true
     }
 
-    pub(crate) fn finish(&self, project: &str, probe: LiveMcpProbe) {
+    pub fn finish(&self, project: &str, probe: LiveMcpProbe) {
         self.probes.lock_or_recover("the MCP probes").insert(project.to_owned(), probe);
     }
 }
@@ -99,8 +99,8 @@ fn parse(output: &str) -> Result<Vec<McpServerState>, String> {
 }
 
 /// Starts the host in `directory` as a check and reads what it answers, within `DEADLINE`.
-fn run(backend: &SdkBackend, directory: &Path) -> Result<Vec<McpServerState>, String> {
-    let backend = backend.for_start().map_err(|error| error.to_string())?;
+fn run(backend: &impl HostBackend, directory: &Path) -> Result<Vec<McpServerState>, String> {
+    let backend = backend.start()?;
     let mut command = match &backend.confinement {
         Some(profile) => {
             let mut command = Command::new("/usr/bin/sandbox-exec");
@@ -138,7 +138,7 @@ fn run(backend: &SdkBackend, directory: &Path) -> Result<Vec<McpServerState>, St
 /// checked. `done` runs once the result is in `probes`.
 pub fn check(
     probes: std::sync::Arc<McpProbes>,
-    backend: SdkBackend,
+    backend: impl HostBackend,
     project: String,
     directory: std::path::PathBuf,
     done: impl FnOnce() + Send + 'static,

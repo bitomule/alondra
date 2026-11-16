@@ -33,6 +33,9 @@ rust_library(
         "//crates/daemon-support:daemon_support",
         "//crates/engine-github:engine_github",
         "//crates/engine-kernel:engine_kernel",
+        "//crates/engine-live:engine_live",
+        "//crates/engine-mcp:engine_mcp",
+        "//crates/engine-worktrees:engine_worktrees",
     ],
 )
 
@@ -57,6 +60,9 @@ rust_library(
         "//crates/daemon-support:daemon_support_test_hooks",
         "//crates/engine-github:engine_github_test_hooks",
         "//crates/engine-kernel:engine_kernel_test_hooks",
+        "//crates/engine-live:engine_live_test_hooks",
+        "//crates/engine-mcp:engine_mcp_test_hooks",
+        "//crates/engine-worktrees:engine_worktrees_test_hooks",
     ],
 )
 
@@ -103,6 +109,9 @@ ENGINE_TEST_DEPS = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_
     "//crates/daemon-support:daemon_support_test_hooks",
     "//crates/engine-github:engine_github_test_hooks",
     "//crates/engine-kernel:engine_kernel_test_hooks",
+    "//crates/engine-live:engine_live_test_hooks",
+    "//crates/engine-mcp:engine_mcp_test_hooks",
+    "//crates/engine-worktrees:engine_worktrees_test_hooks",
 ]
 
 low_opt_rust_test(

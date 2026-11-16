@@ -1,0 +1,23 @@
+[package]
+name = "alondra-engine-worktrees"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+test-hooks = ["dep:tempfile", "alondra-daemon-support/test-hooks", "alondra-engine-kernel/test-hooks"]
+
+[dependencies]
+alondra-core.workspace = true
+alondra-daemon-support.workspace = true
+alondra-engine-kernel.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+tempfile = { workspace = true, optional = true }
+tokio.workspace = true
+
+[dev-dependencies]
+alondra-daemon-support = { workspace = true, features = ["test-hooks"] }
+alondra-engine-kernel = { workspace = true, features = ["test-hooks"] }
+tempfile.workspace = true

@@ -1,0 +1,84 @@
+load("//tools:tree.bzl", "repo_tree")
+load("//tools:rust_test.bzl", "LOW_OPT_LEVEL", "low_opt_rust_test")
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
+load("//:version.bzl", "VERSION")
+load("//tools:rust_sources.bzl", "production_sources")
+
+# A subsystem on the kernel beside the others: it depends on none of them, and only the engine
+# that wires them sees it.
+WORKSPACE_DEPS = [
+    "//crates/core:alondra_core",
+    "//crates/foundation:foundation",
+    "//crates/provider-claude:provider_claude",
+    "//crates/store:store",
+]
+
+rust_library(
+    name = "engine_mcp",
+    srcs = production_sources(),
+    crate_name = "alondra_engine_mcp",
+    edition = "2024",
+    version = VERSION,
+    visibility = ["//crates/daemon-engine:__pkg__"],
+    deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
+        "//crates/daemon-support:daemon_support",
+        "//crates/engine-kernel:engine_kernel",
+    ],
+)
+
+rust_library(
+    name = "engine_mcp_test_hooks",
+    testonly = True,
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    crate_features = ["test-hooks"],
+    crate_name = "alondra_engine_mcp",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    rustc_flags = [LOW_OPT_LEVEL],
+    version = VERSION,
+    visibility = ["//crates/daemon-engine:__pkg__"],
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
+        "//crates/daemon-support:daemon_support_test_hooks",
+        "//crates/engine-kernel:engine_kernel_test_hooks",
+    ],
+)
+
+low_opt_rust_test(
+    name = "engine_mcp_test",
+    size = "small",
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    crate_name = "alondra_engine_mcp",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
+    env = {"HOME": "."},
+    version = VERSION,
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
+        "//crates/daemon-support:daemon_support_test_hooks",
+        "//crates/engine-kernel:engine_kernel_test_hooks",
+    ],
+)
+
+rust_inputs_test(
+    name = "production_inputs_test",
+    size = "small",
+    required_sources = ["crates/engine-mcp/src/lib.rs", "crates/engine-mcp/src/mcp_waits.rs"],
+    source_dir = "crates/engine-mcp/src/",
+    target_under_test = ":engine_mcp",
+    test_only_sources = ["crates/engine-mcp/src/mcp_remove_tests.rs", "crates/test_support.rs"],
+    test_sources = False,
+)
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+
+# The crate's production sources: the crash report's log catalog reads them, and fails on a test
+# file among them; alondrad's lock policy test reads them too.
+filegroup(
+    name = "report_sources",
+    srcs = production_sources(),
+    visibility = ["//crates/alondra:__pkg__", "//crates/alondrad:__pkg__"],
+)
+
+repo_tree()

@@ -78,6 +78,7 @@ the runtime used to be invisible to it.
 | Runtime without subsystems, as first measured | 34 modules | 28,654 |
 | Kernel in its own crate | 45 modules | 32,053 |
 | GitHub in its own crate | 42 modules | 30,333 |
+| MCP, live nodes and worktrees in their own crates | 38 modules | 29,096 |
 
 The 54 above counted modules by file name; the same graph through `#[path]` declarations holds one
 more. The 34 missed what each module reached through methods the subsystems added to the runtime:
@@ -91,14 +92,26 @@ crate.
 
 Each subsystem crate sits on `engine-kernel` beside the others: it names none of them, and only
 `daemon-engine` may depend on it, which re-exports its modules so the engine and `alondrad` keep
-their paths. Its tests open the runtime with `DomainRuntime::open_unwired`, without the engine's
-observers; a test that needs another subsystem runs with the engine.
+their paths. Its tests open the runtime without the engine's observers; a test that needs another
+subsystem runs with the engine. What a subsystem needs from one above it reaches it as a trait the
+subsystem defines or as an argument.
 
 - `engine-github`: reading pull requests with `gh` (`domain_github`), merging them
   (`domain_merges`), the images and viewed files of their descriptions (`pr_images`, `pr_viewed`),
   the sweep that adopts open PRs left without a live owner (`open_pr_sweep`) and the fake GitHub
   the tests and scenarios share (`github_world`, test hooks only). Its tests are
   `//crates/engine-github:engine_github_test`.
+- `engine-mcp`: what a node waits for while an MCP server signs in (`mcp_waits`, `mcp_sign_in`)
+  and the checks and deletions of the MCP servers screen (`mcp_probe`, `mcp_remove`). The SDK
+  backend reaches it as `mcp_host::HostBackend`, which `daemon-engine` implements for `SdkBackend`.
+- `engine-live`: what each node's mod reports or its Agent SDK or Codex host observes
+  (`node_reports`, `node_work`, `sdk_live`, `codex_live`) and what each SDK task measured of its
+  conversation (`contexts`). Its feeds take the node reports they write as an argument; the wait
+  reports, which need the SDK backend's state folder, stay with the SDK owners
+  (`sdk_owner/waits.rs`).
+- `engine-worktrees`: each task's worktree (`task_worktrees`), those of cancelled tasks
+  (`cancelled_worktrees`) and the startup moves of HOME files (`home_renames`), which now owns the
+  names of the admission and orchestrator files it moves.
 
 ## Where it starts (2026-11-15, main at bc73a80)
 

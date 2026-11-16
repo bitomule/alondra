@@ -18,7 +18,7 @@ pub fn open_at(home: &Path, database: &Path) -> Result<DomainRuntime> {
 fn observers() -> Vec<Box<dyn CommitObserver>> {
     vec![
         Box::new(crate::admission::PauseResume),
-        Box::new(crate::sdk_live::EndedWaits),
+        Box::new(crate::sdk_owner::waits::EndedWaits),
         Box::new(crate::task_closer::Unattended),
         Box::new(crate::allow_always::ChosenAlways),
         Box::new(crate::sdk_owner::Retakes),
