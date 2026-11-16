@@ -8,6 +8,7 @@ pub mod claude_peer;
 pub mod codex_peer;
 pub mod error;
 pub mod format;
+pub mod from_report;
 pub mod http;
 pub mod runner;
 

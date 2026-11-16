@@ -116,6 +116,19 @@ rust_binary(
     deps = all_crate_deps(normal = True) + ["//crates/scenarios-transcript:scenarios_transcript"],
 )
 
+# `bazel run //crates/scenarios:from_report -- <package> --name <case> --out .scratch/<case>` drafts a
+# scenario from an `alondra report` package and the list of what a person completes.
+rust_binary(
+    name = "from_report",
+    testonly = True,
+    srcs = ["src/bin/from_report.rs"],
+    crate_root = "src/bin/from_report.rs",
+    edition = "2024",
+    rustc_flags = ["-Copt-level=0"],
+    version = VERSION,
+    deps = DEPS + [":scenarios"],
+)
+
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 
 repo_tree()

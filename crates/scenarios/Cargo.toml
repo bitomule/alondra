@@ -31,6 +31,10 @@ name = "capture"
 path = "src/bin/capture.rs"
 
 [[bin]]
+name = "from_report"
+path = "src/bin/from_report.rs"
+
+[[bin]]
 name = "ablate"
 path = "src/bin/ablate.rs"
 
