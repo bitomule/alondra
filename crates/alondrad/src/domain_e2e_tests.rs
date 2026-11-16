@@ -4,7 +4,7 @@
 use alondra_daemon_engine::live::LiveOf as _;
 use crate::domain_bootstrap::{DomainDaemon, router};
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain::*;
+use alondra_domain_rules::*;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -170,8 +170,8 @@ fn bg_node_with_a_task(daemon: &Daemon, home: &Path, title: &str) -> (String, Ta
 
 fn user_language() -> &'static str {
     match alondra_core::user_language::current() {
-        alondra_core::views::Lang::Es => "es",
-        alondra_core::views::Lang::En => "en",
+        alondra_views::Lang::Es => "es",
+        alondra_views::Lang::En => "en",
     }
 }
 
@@ -413,7 +413,7 @@ impl App {
     /// The card's "Request changes" action, as the app reads it from the card's view.
     async fn changes_action(&self, card: &str) -> (String, String) {
         let view = self.send("GET", &format!("/views/card%3A{card}?protocol={}&client=ios&lang=es",
-            alondra_core::views::VIEWS_PROTOCOL), None).await;
+            alondra_views::VIEWS_PROTOCOL), None).await;
         let actions = view.to_string();
         let id = view["sections"].as_array().into_iter().flatten()
             .flat_map(|section| section["items"].as_array().into_iter().flatten())
@@ -434,7 +434,7 @@ impl App {
     /// Sends the comments with an action read earlier: the card may have changed since.
     async fn send_changes(&self, (action_id, data_epoch): (String, String), comments: Value) -> Value {
         self.send("POST", "/actions", Some(json!({
-            "protocol": alondra_core::views::VIEWS_PROTOCOL, "command_id": uuid_v4(), "data_epoch": data_epoch,
+            "protocol": alondra_views::VIEWS_PROTOCOL, "command_id": uuid_v4(), "data_epoch": data_epoch,
             "client": "ios", "lang": "es", "action_id": action_id, "input": {"comments": comments},
         }))).await
     }
@@ -573,7 +573,7 @@ async fn comments_sent_on_a_document_review_reach_the_node_even_when_it_moves_on
 impl App {
     async fn view(&self, key: &str) -> Value {
         self.send("GET", &format!("/views/{}?protocol={}&client=ios&lang=es", key.replace(':', "%3A"),
-            alondra_core::views::VIEWS_PROTOCOL), None).await
+            alondra_views::VIEWS_PROTOCOL), None).await
     }
 
     /// The cards waiting for the user, in the order the phone shows them.
@@ -604,7 +604,7 @@ impl App {
     async fn perform(&self, action: &Value, option: Option<&str>, text: Option<&str>) -> Value {
         let epoch = self.view("home").await["data_epoch"].as_str().unwrap().to_owned();
         self.send("POST", "/actions", Some(json!({
-            "protocol": alondra_core::views::VIEWS_PROTOCOL, "command_id": uuid_v4(), "data_epoch": epoch,
+            "protocol": alondra_views::VIEWS_PROTOCOL, "command_id": uuid_v4(), "data_epoch": epoch,
             "client": "ios", "lang": "es", "action_id": action["id"], "option_id": option, "input": {"text": text},
         }))).await
     }
@@ -620,7 +620,7 @@ impl App {
         let reply = self.perform(&action, option, text).await;
         assert_eq!(reply["outcome"], "applied", "{card}: {reply}");
         let changes = self.send("GET", &format!("/changes?protocol={}&client=ios&lang=es&wait=0&cursor={}&views=home%40{}",
-            alondra_core::views::VIEWS_PROTOCOL, before["cursor"].as_str().unwrap(), before["version"].as_str().unwrap()), None).await;
+            alondra_views::VIEWS_PROTOCOL, before["cursor"].as_str().unwrap(), before["version"].as_str().unwrap()), None).await;
         if leaves {
             assert!(changes["stale"].as_array().unwrap().contains(&json!("home")), "the phone's next poll says home changed: {changes}");
         }

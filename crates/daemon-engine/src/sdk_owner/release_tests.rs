@@ -239,7 +239,7 @@ async fn a_finished_task_whose_closed_host_is_taken_over_twice_at_once_resumes_o
     });
     slice.domain.join_retakes();
 
-    let lost = open_card(&slice.domain, alondra_core::domain::HOST_LOST_PREFIX);
+    let lost = open_card(&slice.domain, alondra_domain_rules::HOST_LOST_PREFIX);
     assert!(lost.is_none(), "no card tells the user the session could not be resumed: {lost:?}");
     assert!(slice.domain.owns_sdk_host(&agent), "one host runs the finished task so it can clean up");
     until_last_prompt_ends_with(&slice.domain, &slice.capture, "Clean up and call cleanup_done.").await;

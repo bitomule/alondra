@@ -13,7 +13,7 @@ use crate::domain_orchestrator_tools::{LaunchBody, Origin, launch_from, request_
 use crate::live::Relaunch;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
-use alondra_core::domain::{DomainError, DomainState, Task, TaskId, TaskState};
+use alondra_domain_rules::{DomainError, DomainState, Task, TaskId, TaskState};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -82,7 +82,7 @@ fn cancel_planless(domain: &DomainRuntime, state: &DomainState) -> Result<()> {
         .filter(|task| !planned.contains_key(&task.id) && !state.schedule.runs.values().any(|run| run.task_id.as_ref() == Some(&task.id)))
         .collect();
     for task in planless {
-        let cancelled = crate::domain_github::execute_system(domain, alondra_core::domain::Command::CancelTask { task_id: task.id.clone(), reason: None });
+        let cancelled = crate::domain_github::execute_system(domain, alondra_domain_rules::Command::CancelTask { task_id: task.id.clone(), reason: None });
         if let Err(error) = cancelled {
             log!("could not cancel {}, which has no launch plan: {error:?}", task.id);
             continue;
@@ -169,7 +169,7 @@ pub async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
         let launched = match &plan {
             _ if relaunching => crate::domain_orchestrator_tools::relaunch_from(domain, home, &task.id, Origin::Auto).await,
             Some(plan) => {
-                let choices = |request: &alondra_core::domain::RequestId| request_choices(domain, request).ok().flatten();
+                let choices = |request: &alondra_domain_rules::RequestId| request_choices(domain, request).ok().flatten();
                 launch_from(domain, home, LaunchBody::from_plan(task.id.clone(), plan), choices, Origin::Auto).await
             }
             None => {

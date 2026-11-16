@@ -7,7 +7,7 @@
 //! (`ALONDRA_DOMAIN_SETTINGS`), which its mod reports in `session.start`.
 use crate::locks::Poisonable as _;
 use crate::node_work::End;
-use alondra_core::views::RunOutcome;
+use alondra_view_model::RunOutcome;
 use alondra_core::{BackgroundItem, BackgroundKind, Millis, ToolInFlight};
 use serde::Deserialize;
 use serde_json::Value;

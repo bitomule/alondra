@@ -4,7 +4,7 @@
 //! sums it up. The script under `<session>/workflows/scripts/` lists the phases from the start.
 //! Every read is bounded and a half-written or unknown file reads as nothing.
 use crate::locks::Poisonable as _;
-use alondra_core::views::{LiveWorkflow, LiveWorkflowAgent, WORKFLOW_AGENT_ROWS};
+use alondra_view_model::{LiveWorkflow, LiveWorkflowAgent, WORKFLOW_AGENT_ROWS};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};

@@ -46,7 +46,7 @@ pub mod batch_effects;
 mod batch_recovery;
 pub mod retention;
 
-use alondra_core::domain::*;
+use alondra_domain_rules::*;
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
@@ -1193,18 +1193,18 @@ const BATCH_HOST: &str = "alondra-sdk-orchestrator";
 pub struct BatchOwner {
     run: String,
     session: String,
-    epoch: alondra_core::domain::DataEpoch,
+    epoch: alondra_domain_rules::DataEpoch,
 }
 
 impl BatchOwner {
-    fn issued(run: &str, session: &str, epoch: alondra_core::domain::DataEpoch) -> Self {
+    fn issued(run: &str, session: &str, epoch: alondra_domain_rules::DataEpoch) -> Self {
         Self { run: run.into(), session: session.into(), epoch }
     }
     pub fn run(&self) -> &str {
         &self.run
     }
     pub fn session(&self) -> &str { &self.session }
-    pub fn epoch(&self) -> &alondra_core::domain::DataEpoch { &self.epoch }
+    pub fn epoch(&self) -> &alondra_domain_rules::DataEpoch { &self.epoch }
     pub fn host_name(&self) -> &str { BATCH_HOST }
 }
 
@@ -1910,14 +1910,14 @@ impl DomainStore {
         ids: &[i64],
         run: &str,
         session: &str,
-        epoch: alondra_core::domain::DataEpoch,
+        epoch: alondra_domain_rules::DataEpoch,
     ) -> Result<(Vec<DeliveryClaim>, BatchOwner)> {
         self.claim_selected_orchestrator_batch(ids, run, session, epoch, None)
     }
 
     pub fn claim_selected_orchestrator_batch(
         &mut self, ids: &[i64], run: &str, session: &str,
-        epoch: alondra_core::domain::DataEpoch,
+        epoch: alondra_domain_rules::DataEpoch,
         selection: Option<&alondra_daemon_engine_model::BatchSelection>,
     ) -> Result<(Vec<DeliveryClaim>, BatchOwner)> {
         #[cfg(any(test, feature = "test-hooks"))]

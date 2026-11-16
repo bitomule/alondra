@@ -34,7 +34,7 @@ fn catalog_execution_status_is_explicit_and_evidenced() {
         include_str!("../../../daemon-support/src/domain_authority.rs"),
         include_str!("../domain_api.rs"),
         include_str!("../service/domain_parity_tests.rs"),
-        include_str!("../../../core/src/domain/tests.rs"),
+        include_str!("../../../domain-rules/src/tests.rs"),
     ];
     let mut runner = BTreeSet::new();
     let mut schedule_runner = BTreeSet::new();

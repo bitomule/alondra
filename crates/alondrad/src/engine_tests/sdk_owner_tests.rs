@@ -9,12 +9,12 @@ use alondra_daemon_engine::sdk_owner::tests::*;
 use alondra_daemon_engine::sdk_owner::*;
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::accounts::{AccountId, Provider};
-use alondra_core::domain::*;
+use alondra_domain_rules::*;
 use std::sync::Arc;
 
 #[test]
 fn a_reported_wait_reaches_every_client_task_screen_without_changing_slots_or_the_list() {
-    use alondra_core::views::{Client, Lang, Transport, now_fact::NowDoing};
+    use alondra_views::{Client, Lang, Transport, now_fact::NowDoing};
     for background in [false, true] {
         let slice = Slice::new();
         slice.domain.enable_sdk(slice.backend.clone());
@@ -34,7 +34,7 @@ fn a_reported_wait_reaches_every_client_task_screen_without_changing_slots_or_th
             let wait = node.reported_wait.as_ref().unwrap();
             assert_eq!((&*wait.what, wait.progress.as_deref(), wait.detail.as_deref()), ("the server", Some("2 of 3"), Some("Acknowledgement")));
             assert!(!wait.since.is_empty());
-            assert!(matches!(alondra_core::views::now_fact::now_fact(Some(node), &Doing::Turn, "15:00", lang).doing, NowDoing::Reported { .. }));
+            assert!(matches!(alondra_views::now_fact::now_fact(Some(node), &Doing::Turn, "15:00", lang).doing, NowDoing::Reported { .. }));
             for target in [Client::Ios, Client::Mac, Client::Tui] {
                 let text = |key: &str| serde_json::to_string(&client.views.render(key, &read, &live, target, lang, Transport::Loopback).unwrap()).unwrap();
                 let screen = text(&format!("task:{TASK}"));
@@ -53,7 +53,7 @@ fn a_reported_wait_reaches_every_client_task_screen_without_changing_slots_or_th
 // card says it stopped; the user's answer reaches Claude as its next input and ends the wait.
 #[test]
 fn a_turn_that_ends_with_the_nodes_question_open_shows_only_that_question_and_the_answer_reaches_claude() {
-    use alondra_core::domain::{CardKind, CardSpec, QuestionOption, Recipient, Scope};
+    use alondra_domain_rules::{CardKind, CardSpec, QuestionOption, Recipient, Scope};
     let slice = Slice::new();
     let mut driver = slice.launch_working();
     let options = ["Short", "Long"].map(|label| QuestionOption { id: label.to_lowercase(), label: label.into(), description: None }).to_vec();
@@ -167,7 +167,7 @@ fn background_work_for_the_users_reply_that_its_replaced_host_ended_is_reported_
     slice.settle(&mut driver);
     assert_eq!((lifecycle(&slice.domain).phase(), lifecycle(&slice.domain).activity()), (alondra_domain::TaskPhase::Delivered, ActivityView::Resting));
     slice.run(&user(), "reply", Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "final".into(), targets,
-        body: "background-shell".into(), instruction: alondra_core::domain::Instruction::Reply });
+        body: "background-shell".into(), instruction: alondra_domain_rules::Instruction::Reply });
     assert_eq!(crate::domain_delivery::tell_sdk_nodes(&slice.domain), 1, "the reply is told to the node");
     driver.step(&|| false).unwrap();
     until_own_work(&slice, &mut driver);
@@ -185,7 +185,7 @@ fn background_work_for_the_users_reply_that_its_replaced_host_ended_is_reported_
 // no deadline gives the host up.
 #[test]
 fn a_reply_claude_holds_reads_as_being_delivered_with_no_deadline() {
-    use alondra_core::views::{Client, RenderContext, Transport, build, live::LiveSnapshot, text::Lang};
+    use alondra_views::{Client, RenderContext, Transport, build, live::LiveSnapshot, text::Lang};
     use alondra_daemon_engine::obligation_watch::pass;
     use alondra_daemon_engine::sdk_owner::tests::untaken::{drive_by_hand, enforcing_every_deadline, until_prompted};
     let slice = Slice::new();
@@ -202,7 +202,7 @@ fn a_reply_claude_holds_reads_as_being_delivered_with_no_deadline() {
     slice.settle(&mut driver);
     let reply = "Shorter please stall-while-held";
     slice.run(&user(), "reply", Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "final".into(), targets,
-        body: reply.into(), instruction: alondra_core::domain::Instruction::Reply });
+        body: reply.into(), instruction: alondra_domain_rules::Instruction::Reply });
     assert_eq!(crate::domain_delivery::tell_sdk_nodes(&slice.domain), 1);
     until_prompted(&slice, &mut driver, reply, 1);
     assert_eq!(lifecycle(&slice.domain).activity(), ActivityView::Starting, "Claude holds the reply and starts no turn");
@@ -232,16 +232,16 @@ fn a_reply_claude_holds_reads_as_being_delivered_with_no_deadline() {
 
 /// The user presses «Interrupt» on the task of `agent`, through the action path the clients use.
 fn press_interrupt(slice: &Slice, agent: &AgentId) -> serde_json::Value {
-    press(slice, alondra_core::views::action_id::Verb::Interrupt, agent)
+    press(slice, alondra_views::action_id::Verb::Interrupt, agent)
 }
 
 /// The user presses the node's `verb` button on the task of `agent`, through the action path the
 /// clients use.
-fn press(slice: &Slice, verb: alondra_core::views::action_id::Verb, agent: &AgentId) -> serde_json::Value {
+fn press(slice: &Slice, verb: alondra_views::action_id::Verb, agent: &AgentId) -> serde_json::Value {
     let state = slice.domain.state().unwrap();
-    let action = alondra_core::views::action_id::ActionId::new(verb, &agent.0, state.revision, None).unwrap();
+    let action = alondra_views::action_id::ActionId::new(verb, &agent.0, state.revision, None).unwrap();
     let request = crate::views::actions::ActionRequest {
-        protocol: alondra_core::views::VIEWS_PROTOCOL,
+        protocol: alondra_views::VIEWS_PROTOCOL,
         command_id: format!("0b6f9a52-3c1e-4d7a-9f20-{:012x}", state.revision),
         data_epoch: state.data_epoch.0.clone(),
         client: "ios".into(),
@@ -262,14 +262,14 @@ fn press(slice: &Slice, verb: alondra_core::views::action_id::Verb, agent: &Agen
 // host. Before, the node stayed «working» with nothing that could stop it.
 #[test]
 fn a_turn_claude_keeps_running_after_its_interrupt_is_force_stopped_and_resumed() {
-    use alondra_core::views::action_id::Verb;
+    use alondra_views::action_id::Verb;
     let slice = Slice::new();
     let mut driver = slice.launch_with("ignore-interrupt");
     slice.until_working(&mut driver);
     let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
     let refused = slice.try_run(&user(), "force-too-soon", Command::ForceStopTurn { agent_id: driver.agent().clone() }).unwrap_err();
     let StoreError::Domain(refused) = refused else { panic!("{refused:?}") };
-    assert_eq!(refused.refusal, Some(alondra_core::domain::Refusal::InterruptNotAccepted), "a turn is interrupted before it is forced");
+    assert_eq!(refused.refusal, Some(alondra_domain_rules::Refusal::InterruptNotAccepted), "a turn is interrupted before it is forced");
     assert_eq!(press_interrupt(&slice, driver.agent())["outcome"], "applied");
     driver.step(&|| false).unwrap();
     assert_eq!(subtypes(&slice.controls()), ["interrupt"], "Claude got the interrupt");
@@ -335,15 +335,15 @@ fn cancelling_from_the_turn_end_card_after_a_failure_ends_the_task() {
 fn cancel_from_turn_end_card(slice: &Slice) -> serde_json::Value {
     let (card, _) = Slice::read_cards(&slice.domain).into_iter().find(|(card, answered)| !answered && card.starts_with(TURN_ENDED_PREFIX)).expect("an open turn-end card");
     let state = slice.domain.state().unwrap();
-    let action = alondra_core::views::action_id::ActionId::new(alondra_core::views::action_id::Verb::Ans, &card, state.revision, None).unwrap();
+    let action = alondra_views::action_id::ActionId::new(alondra_views::action_id::Verb::Ans, &card, state.revision, None).unwrap();
     let request = crate::views::actions::ActionRequest {
-        protocol: alondra_core::views::VIEWS_PROTOCOL,
+        protocol: alondra_views::VIEWS_PROTOCOL,
         command_id: "5d2c8e41-7a93-4f06-b1e8-3c9a0d4f6e27".into(),
         data_epoch: state.data_epoch.0.clone(),
         client: "tui".into(),
         lang: "en".into(),
         action_id: action.to_string(),
-        option_id: Some(alondra_core::domain::CANCEL_TASK.into()),
+        option_id: Some(alondra_domain_rules::CANCEL_TASK.into()),
         input: Default::default(),
     };
     tokio::runtime::Runtime::new().unwrap().block_on(async {
@@ -405,7 +405,7 @@ fn interrupting_a_working_sdk_node_from_its_task_reaches_claude_and_pauses_witho
     assert!(!node_offers(&slice.domain, driver.agent()).iter().any(|offer| offer.starts_with("interrupt:")), "nothing runs: no Interrupt");
     let again = slice.try_run(&user(), "interrupt-again", Command::InterruptTurn { agent_id: driver.agent().clone() }).unwrap_err();
     let StoreError::Domain(refusal) = again else { panic!("{again:?}") };
-    assert_eq!(alondra_core::views::refusal_text(&refusal.why(), alondra_core::views::text::Lang::En), "This node isn't running anything to interrupt.");
+    assert_eq!(alondra_views::refusal_text(&refusal.why(), alondra_views::text::Lang::En), "This node isn't running anything to interrupt.");
     driver.stop().unwrap();
 }
 
@@ -417,7 +417,7 @@ fn shown_context(prompt: &str) -> (Option<u32>, Option<u64>) {
     let client = crate::client_routes::Client::open(Arc::clone(&slice.domain), &slice._home, Default::default());
     let state = slice.domain.state().unwrap();
     let live = tokio::runtime::Runtime::new().unwrap()
-        .block_on(crate::views::live::gather(&client, &state, alondra_core::views::Lang::En, &[], false, false));
+        .block_on(crate::views::live::gather(&client, &state, alondra_views::Lang::En, &[], false, false));
     let node = live.nodes.iter().find(|node| node.agent_id == driver.agent().0).expect("the task's node is live");
     let shown = (node.context_percent, node.context_window);
     driver.stop().unwrap();
@@ -509,7 +509,7 @@ async fn an_actual_codex_cli_asks_enters_native_plan_and_presents_the_result_thr
 // «[From Alondra · 19:55] <text>» with nothing saying it answered its card.
 #[test]
 fn an_answer_reaches_the_sdk_node_from_the_user_with_its_card() {
-    use alondra_core::domain::{CardKind, CardSpec, LifecycleRecord, QuestionOption, Recipient, Scope};
+    use alondra_domain_rules::{CardKind, CardSpec, LifecycleRecord, QuestionOption, Recipient, Scope};
     let slice = Slice::new();
     let mut driver = slice.launch_working();
     let options = ["Short", "Long"].map(|label| QuestionOption { id: label.to_lowercase(), label: label.into(), description: None }).to_vec();

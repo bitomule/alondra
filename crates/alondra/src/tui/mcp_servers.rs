@@ -12,7 +12,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use alondra_core::views::{Action, Icon, Item, Row, View};
+use alondra_views::{Action, Icon, Item, Row, View};
 use alondra_core::accounts::AccountKey;
 use serde_json::json;
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -21,9 +21,9 @@ use ratatui::text::{Line, Span};
 use super::keys::Motion;
 use super::{App, Client, Flow, Key, Msg};
 
-pub const VIEW: &str = alondra_core::views::mcp_servers::KEY;
+pub const VIEW: &str = alondra_views::mcp_servers::KEY;
 pub const GENERAL: &str = "machine";
-pub const ACCOUNTS: &str = alondra_core::views::accounts::KEY;
+pub const ACCOUNTS: &str = alondra_views::accounts::KEY;
 const GENERAL_SECTION: &str = "settings";
 const SERVERS_ROW: &str = "mcp_servers";
 const REPORT_ROW: &str = "crash_report";
@@ -230,7 +230,7 @@ impl McpServers {
     }
 
     /// The user picked `option` of `action` on the General row `row`.
-    pub fn choose(&mut self, row: &Row, action: &Action, option: &alondra_core::views::ActionOption) {
+    pub fn choose(&mut self, row: &Row, action: &Action, option: &alondra_views::ActionOption) {
         let general = self.general.iter().flat_map(|view| &view.sections).filter(|section| section.id == GENERAL_SECTION)
             .flat_map(|section| &section.items).any(|item| matches!(item, Item::Row(general) if general.id == row.id));
         if !general {
@@ -283,11 +283,11 @@ pub fn button_label<'a>(row: &Row, action: &'a Action) -> &'a str {
 fn badge(row: &Row) -> Option<Span<'static>> {
     let label = row.badges.first()?;
     let color = match label.tone {
-        alondra_core::views::Tone::Success => Color::Green,
-        alondra_core::views::Tone::Critical => Color::Red,
-        alondra_core::views::Tone::YourTurn | alondra_core::views::Tone::Warning => Color::Yellow,
-        alondra_core::views::Tone::Info | alondra_core::views::Tone::Accent => Color::Cyan,
-        alondra_core::views::Tone::Neutral => Color::Gray,
+        alondra_views::Tone::Success => Color::Green,
+        alondra_views::Tone::Critical => Color::Red,
+        alondra_views::Tone::YourTurn | alondra_views::Tone::Warning => Color::Yellow,
+        alondra_views::Tone::Info | alondra_views::Tone::Accent => Color::Cyan,
+        alondra_views::Tone::Neutral => Color::Gray,
     };
     Some(Span::styled(format!("  {}", label.text), Style::new().fg(color)))
 }
@@ -521,7 +521,7 @@ impl App {
 fn account_detail(source: &Row) -> Row {
     let mut row = source.clone();
     let Some(account) = &source.account else { return row };
-    let provider = alondra_core::views::accounts::provider_name(account.key.provider);
+    let provider = alondra_views::accounts::provider_name(account.key.provider);
     let mut lines = vec![format!("{} · {} · {}", provider, account.key.account, account.availability.text), account.freshness.text.clone()];
     if let Some(email) = &account.email { lines.push(email.clone()); }
     if let Some(plan) = &account.plan { lines.push(plan.clone()); }

@@ -22,9 +22,9 @@ use crate::domain_runtime::DomainRuntime;
 use crate::pauses::{Pauses, Paused, Reason};
 use crate::machine_state::{MacState, NoRoom, WARNING_SPACING};
 use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
-use alondra_core::domain::{AgentId, Command, CommandEnvelope, DomainState, NodeEvent, PROTOCOL_VERSION, Pause, PauseCleanup, PauseReason, TaskId, TaskPriority, TaskState};
+use alondra_domain_rules::{AgentId, Command, CommandEnvelope, DomainState, NodeEvent, PROTOCOL_VERSION, Pause, PauseCleanup, PauseReason, TaskId, TaskPriority, TaskState};
 use alondra_core::machine_incident::bytes_text;
-use alondra_core::views::{Lang, LiveHold, LivePacing, LivePaused, LivePauseReason, LiveQueued};
+use alondra_view_model::{Lang, LiveHold, LivePacing, LivePaused, LivePauseReason, LiveQueued};
 use alondra_core::Millis;
 use alondra_core::options::{NodeLimit, NodeLimits};
 use serde::{Deserialize, Serialize};
@@ -611,7 +611,7 @@ impl Admission {
                     Reason::ApiError(_) => LivePauseReason::ApiError,
                 },
                 retry: match &entry.reason {
-                    Reason::ApiError(retry) => Some(alondra_core::views::LiveRetry {
+                    Reason::ApiError(retry) => Some(alondra_view_model::LiveRetry {
                         at: crate::usage_pause::clock_text(retry.at, now, false), attempt: retry.attempt,
                     }),
                     _ => None,
@@ -825,7 +825,7 @@ fn tell_to_go_on(domain: &DomainRuntime, session: &str, text: &str) -> bool {
 
 /// Whether the task of a node of the Agent SDK already has what it goes on with, as a pause by the
 /// user leaves it.
-fn waiting_input(domain: &DomainRuntime, task: &alondra_core::domain::TaskId) -> bool {
+fn waiting_input(domain: &DomainRuntime, task: &alondra_domain_rules::TaskId) -> bool {
     let read = domain.read();
     read.state().lifecycle_of(task).ok()
         .is_some_and(|lifecycle| !lifecycle.pending_inputs().is_empty())
@@ -989,7 +989,7 @@ fn priority_of(state: &DomainState, task: Option<&TaskId>) -> TaskPriority {
 }
 
 /// The priority a schedule asks its runs to start with: its `priority` option, Normal without one.
-pub(crate) fn run_priority(state: &DomainState, run: &alondra_core::domain::ScheduleRun) -> TaskPriority {
+pub(crate) fn run_priority(state: &DomainState, run: &alondra_domain_rules::ScheduleRun) -> TaskPriority {
     let chosen = state.schedule.schedules.get(&run.schedule_id).and_then(|schedule| match schedule.options.get("priority") {
         Some(alondra_core::options::Choice::Value(value)) => serde_json::from_value(serde_json::Value::String(value.clone())).ok(),
         _ => None,
@@ -999,7 +999,7 @@ pub(crate) fn run_priority(state: &DomainState, run: &alondra_core::domain::Sche
 
 /// The open task a session's node works on.
 pub(crate) fn open_task_of(state: &DomainState, session: &str) -> Option<TaskId> {
-    let agent = alondra_core::domain::AgentId(session.to_owned());
+    let agent = alondra_domain_rules::AgentId(session.to_owned());
     state.tasks.values().find(|task| task.agent_id.as_ref() == Some(&agent) && !task.archived && !task.state.terminal()
         && !matches!(task.state, TaskState::Closing)).map(|task| task.id.clone())
 }
@@ -1027,11 +1027,11 @@ pub(crate) fn working_tasks(domain: &DomainRuntime, state: &DomainState) -> BTre
     if read.index().describes(state) {
         return slot_tasks(state, read.index());
     }
-    slot_tasks(state, &alondra_core::domain::ReadIndex::build(state))
+    slot_tasks(state, &alondra_domain_rules::ReadIndex::build(state))
 }
 
 /// The open tasks whose node holds a slot in `index`, the read index of `state`.
-pub(crate) fn slot_tasks(state: &DomainState, index: &alondra_core::domain::ReadIndex) -> BTreeSet<TaskId> {
+pub(crate) fn slot_tasks(state: &DomainState, index: &alondra_domain_rules::ReadIndex) -> BTreeSet<TaskId> {
     index.slots().iter()
         .filter_map(|agent| state.node_task(agent).filter(|task| !task.over()).map(|task| task.id.clone()))
         .collect()
@@ -1414,7 +1414,7 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
         return Ok(());
     };
     let body = LaunchBody::from_queue(&row.body)?;
-    let choices = |request: &alondra_core::domain::RequestId| request_choices(domain, request).ok().flatten();
+    let choices = |request: &alondra_domain_rules::RequestId| request_choices(domain, request).ok().flatten();
     log!("the admission gate starts {task}, queued since {}", row.enqueued_at);
     match launch_from(domain, home, body, choices, Origin::Admitted).await {
         Ok(_) => {
@@ -1434,7 +1434,7 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
 /// A launch the gate let through and that did not start stays in the queue: a refusal that clears
 /// by itself (usage, disk) is tried again on a later turn, any other is a failed start, tried again
 /// by itself and then put to the user. `launch_from` records the failures it knows.
-fn refused(domain: &DomainRuntime, task: &TaskId, error: &alondra_core::domain::DomainError, now: Millis) -> anyhow::Result<()> {
+fn refused(domain: &DomainRuntime, task: &TaskId, error: &alondra_domain_rules::DomainError, now: Millis) -> anyhow::Result<()> {
     domain.live().gate.not_started(&Key::Task(task.clone()));
     if domain.live().is_launching(&task.0) || matches!(error.code.as_str(), "launch_failed" | "workspace_untrusted" | "usage_exhausted" | "worktrees_unavailable" | "disk_low" | "account_unavailable" | "account_check_in_progress") {
         return Ok(());
@@ -1457,8 +1457,8 @@ mod tests;
 pub(crate) struct PauseResume;
 
 impl crate::domain_runtime::CommitObserver for PauseResume {
-    fn carries_out<'a>(&'a self, domain: &'a DomainRuntime, actor: &alondra_core::domain::Actor, command: &Command) -> Option<crate::domain_runtime::Carried<'a>> {
-        use alondra_core::domain::{Actor, Scope, NODE_PAUSE_RESUME};
+    fn carries_out<'a>(&'a self, domain: &'a DomainRuntime, actor: &alondra_domain_rules::Actor, command: &Command) -> Option<crate::domain_runtime::Carried<'a>> {
+        use alondra_domain_rules::{Actor, Scope, NODE_PAUSE_RESUME};
         let (Actor::User { .. }, Command::AnswerQuestion { interaction_id, option_id, .. }) = (actor, command) else { return None };
         if option_id != NODE_PAUSE_RESUME {
             return None;
@@ -1469,10 +1469,10 @@ impl crate::domain_runtime::CommitObserver for PauseResume {
         let agent = state.tasks.get(task_id)?.agent_id.clone()?;
         Some(Box::new(move || {
             if !domain.live().gate.resume_now(domain, &agent.0, alondra_core::now_millis()) {
-                return Err(crate::domain_store::StoreError::Domain(alondra_core::domain::DomainError::new("conflict", "The node is no longer paused")));
+                return Err(crate::domain_store::StoreError::Domain(alondra_domain_rules::DomainError::new("conflict", "The node is no longer paused")));
             }
             let revision = domain.state().map_err(crate::domain_store::StoreError::Storage)?.revision;
-            Ok(alondra_core::domain::CommandOutcome { revision, changed: false, effects: vec![], created_ids: vec![], superseded_acceptances: vec![],
+            Ok(alondra_domain_rules::CommandOutcome { revision, changed: false, effects: vec![], created_ids: vec![], superseded_acceptances: vec![],
                 effect: vec!["The paused node resumes now.".into()] })
         }))
     }

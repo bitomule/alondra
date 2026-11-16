@@ -28,6 +28,7 @@ WORKSPACE_MEMBERS = [
     "daemon-engine-machine",
     "daemon-support",
     "domain",
+    "domain-rules",
     "engine-github",
     "engine-kernel",
     "engine-orchestrator",
@@ -42,6 +43,8 @@ WORKSPACE_MEMBERS = [
     "scenarios",
     "scenarios-transcript",
     "store",
+    "view-model",
+    "views",
 ]
 
 filegroup(

@@ -8,6 +8,8 @@ publish.workspace = true
 [dependencies]
 alondra-process-group.workspace = true
 alondra-core.workspace = true
+alondra-domain-rules.workspace = true
+alondra-views.workspace = true
 alondra-daemon-support.workspace = true
 alondra-daemon-engine.workspace = true
 alondra-engine-orchestrator.workspace = true

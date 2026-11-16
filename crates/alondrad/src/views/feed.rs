@@ -2,8 +2,8 @@ use alondra_daemon_engine::live::LiveOf as _;
 use alondra_core::clock;
 use alondra_core::clock::Instant;
 use crate::locks::Poisonable as _;
-use alondra_core::domain::DomainError;
-use alondra_core::views::{Client, ClientCapabilities, Lang, Transport, VIEWS_PROTOCOL};
+use alondra_domain_rules::DomainError;
+use alondra_views::{Client, ClientCapabilities, Lang, Transport, VIEWS_PROTOCOL};
 use axum::{
     Json,
     response::{IntoResponse, Response},
@@ -116,7 +116,7 @@ pub(crate) fn start_clock(client: &Arc<crate::client_routes::Client>) {
 
 async fn next_sample(
     periodic: impl std::future::Future<Output = ()>,
-    domain_changes: &mut watch::Receiver<alondra_core::domain::Revision>,
+    domain_changes: &mut watch::Receiver<alondra_domain_rules::Revision>,
     hook_changes: &mut watch::Receiver<()>,
     report_changes: &mut watch::Receiver<()>,
 ) -> Option<bool> {
@@ -130,7 +130,7 @@ async fn next_sample(
 
 pub(crate) async fn sample_live(
     client: &crate::client_routes::Client,
-    state: &Arc<alondra_core::domain::DomainState>,
+    state: &Arc<alondra_domain_rules::DomainState>,
     last: &mut Option<String>,
 ) -> bool {
     let keys = client.feeds.live_keys();
@@ -149,17 +149,17 @@ struct Reply {
     protocol: u32,
     cursor: String,
     data_epoch: String,
-    status: alondra_core::views::Status,
+    status: alondra_views::Status,
     stale: Vec<String>,
     reset: bool,
     superseded: bool,
-    service: alondra_core::views::Service,
+    service: alondra_views::Service,
 }
 
 #[derive(Clone)]
 struct Current {
     cursor: String,
-    status: alondra_core::views::Status,
+    status: alondra_views::Status,
     stale: Vec<String>,
     epoch: String,
     // Rendering is needed only when domain or displayed live data changed.
@@ -288,7 +288,7 @@ async fn current(
         cache_current(client, cache_key, &current);
         return Ok(current);
     }
-    let mut versions: HashMap<String, Result<super::cache::Version, alondra_core::views::BuildError>> = keys.iter()
+    let mut versions: HashMap<String, Result<super::cache::Version, alondra_views::BuildError>> = keys.iter()
         .filter_map(|key| Some((key.clone(), Ok(client.views.version(key, &input, kind, lang, transport)?))))
         .collect();
     if keys.iter().any(|key| !versions.contains_key(key)) {
@@ -350,7 +350,7 @@ fn status_view_key(kind: Client) -> &'static str {
     if kind == Client::Mac { "sidebar" } else { "home" }
 }
 
-fn live_revision(live: &alondra_core::views::LiveSnapshot) -> String {
+fn live_revision(live: &alondra_views::LiveSnapshot) -> String {
     let bytes = serde_json::to_vec(live).expect("live snapshot serialization");
     let digest = sha2::Sha256::digest(bytes);
     digest[..8]
@@ -477,7 +477,7 @@ fn remove_waiter(client: &crate::client_routes::Client, device: &str, generation
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_core::domain::{
+    use alondra_domain_rules::{
         Actor, Command, CommandEnvelope, QuestionOption, Recipient, Scope,
     };
     use std::{fs, sync::Arc};
@@ -561,7 +561,7 @@ mod tests {
                         review_prs: false,
                         dependencies: Default::default(),
                         stack: None,
-                        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+                        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
                     },
                 },
                 None,
@@ -591,7 +591,7 @@ mod tests {
                         review_prs: false,
                         dependencies: Default::default(),
                         stack: None,
-                        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+                        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
                     },
                 },
                 None,
@@ -616,7 +616,7 @@ mod tests {
                             id: "yes".into(),
                             label: "Yes".into(),
                             description: None,
-                        }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
+                        }], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Provide, "Answer the question"),
                     },
                 },
                 None,
@@ -688,10 +688,10 @@ mod tests {
         let feeds = Feeds::default();
         let current = Current {
             cursor: "cursor-1".into(),
-            status: alondra_core::views::Status {
+            status: alondra_views::Status {
                 version: "v0000000000000000".into(), summary: "Ready".into(), summary_parts: vec![], badge: 0,
-                counts: vec![], gauges: vec![], orchestrator: alondra_core::views::Label {
-                    text: "Idle".into(), tone: alondra_core::views::Tone::Neutral, elapsed: None,
+                counts: vec![], gauges: vec![], orchestrator: alondra_views::Label {
+                    text: "Idle".into(), tone: alondra_views::Tone::Neutral, elapsed: None,
                 }, update: None, usage_exhausted: None, session_wait: None,
             },
             stale: vec![], epoch: "epoch".into(), clock: ("epoch".into(), 4, "digest".into()),
@@ -724,7 +724,7 @@ mod tests {
         let fixture = FeedFixture::new();
         let state = fixture.client.domain.state().unwrap();
         let live = super::super::live::gather(&fixture.client, &state, Lang::En, &["home".into()], false, false).await;
-        let rendered = fixture.client.views.render("home", &alondra_core::domain::ReadSnapshot::build(state.clone()), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+        let rendered = fixture.client.views.render("home", &alondra_domain_rules::ReadSnapshot::build(state.clone()), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
         let open = vec![("home".to_owned(), rendered.version)];
         let first = fixture.initial(&open).await;
         fixture.create_visible_question("visible-change");
@@ -773,7 +773,7 @@ mod tests {
     }
 
     fn poll_sample(
-        domain_changes: &mut watch::Receiver<alondra_core::domain::Revision>,
+        domain_changes: &mut watch::Receiver<alondra_domain_rules::Revision>,
         hook_changes: &mut watch::Receiver<()>,
         report_changes: &mut watch::Receiver<()>,
     ) -> std::task::Poll<Option<bool>> {
@@ -813,7 +813,7 @@ mod tests {
             let mut report_changes = fixture.client.domain.live().mods.changed.subscribe();
             assert!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes).is_pending());
             let live = super::super::live::gather(&fixture.client, &state, Lang::En, &[key.clone()], false, false).await;
-            let rendered = fixture.client.views.render(&key, &alondra_core::domain::ReadSnapshot::build(state.clone()), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+            let rendered = fixture.client.views.render(&key, &alondra_domain_rules::ReadSnapshot::build(state.clone()), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
             let open = vec![(key.clone(), rendered.version)];
             let first = fixture.initial(&open).await;
             let _ = response_json(handle(&fixture.client, "device-report", &query(&first.cursor, 0, &open), Transport::Loopback).await).await;
@@ -836,7 +836,7 @@ mod tests {
             let reply = response_json(handle(&fixture.client, "device-report", &query(&first.cursor, 0, &open), Transport::Loopback).await).await;
             assert_eq!(reply["stale"], serde_json::json!([key]), "{reply}");
             let live = super::super::live::gather(&fixture.client, &state, Lang::En, &[key.clone()], false, false).await;
-            let rendered = fixture.client.views.render(&key, &alondra_core::domain::ReadSnapshot::build(state.clone()), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+            let rendered = fixture.client.views.render(&key, &alondra_domain_rules::ReadSnapshot::build(state.clone()), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
             assert!(serde_json::to_string(&rendered).unwrap().contains("echo burst-63"), "the final activity reaches the view");
             fixture.client.domain.report(report("echo burst-63"), 1_700_000_000_064);
             assert_eq!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes), std::task::Poll::Ready(Some(false)));
@@ -939,7 +939,7 @@ mod tests {
         fixture.client.domain.live().mods.apply_sdk(agent, &tool("echo first"), alondra_core::now_millis());
         let state = fixture.client.domain.state().unwrap();
         let live = super::super::live::gather(&fixture.client, &state, Lang::En, &[key.clone()], false, false).await;
-        let rendered = fixture.client.views.render(&key, &alondra_core::domain::ReadSnapshot::build(state.clone()), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+        let rendered = fixture.client.views.render(&key, &alondra_domain_rules::ReadSnapshot::build(state.clone()), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
         let open = vec![(key.clone(), rendered.version)];
         let first = fixture.initial(&open).await;
         let unchanged = response_json(handle(&fixture.client, "device-activity", &query(&first.cursor, 0, &open), Transport::Loopback).await).await;

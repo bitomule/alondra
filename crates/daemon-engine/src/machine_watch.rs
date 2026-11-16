@@ -3,13 +3,13 @@
 //! Disk incidents retain hysteresis; memory only paces new starts and never stops running work.
 use crate::sdk_owner::SdkOwners as _;
 use crate::live::LiveOf as _;
-use alondra_core::domain::SystemCard;
+use alondra_domain_rules::SystemCard;
 #[cfg(test)]
 use alondra_core::machine_incident::MACHINE_FIXED_LABEL;
 use crate::locks::Poisonable as _;
 use alondra_core::machine_incident::{ MACHINE_FIXED_OPTION, MACHINE_PREFIX, MachineCard, MachineCause, MachineResource};
-use alondra_core::views::Lang;
-use alondra_core::domain::TaskId;
+use alondra_view_model::Lang;
+use alondra_domain_rules::TaskId;
 use alondra_core::{Machine, MemoryPressure, Millis, now_millis};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -418,7 +418,7 @@ impl MachineWatch {
     }
 
     /// Keeps what each node measured at `now`; the gate reserves the new estimate from then on.
-    pub(crate) fn measure_node_memory(&self, now: Millis, footprints: BTreeMap<alondra_core::domain::AgentId, u64>) {
+    pub(crate) fn measure_node_memory(&self, now: Millis, footprints: BTreeMap<alondra_domain_rules::AgentId, u64>) {
         let mut record = self.record();
         if record.node_cost.due(now) {
             record.node_cost.record(now, footprints.values().copied());
@@ -879,7 +879,7 @@ fn waiters(domain: &DomainRuntime) -> Vec<Waiter> {
             continue;
         }
         let name = state.as_ref().and_then(|state| {
-            let agent = alondra_core::domain::AgentId(session.clone());
+            let agent = alondra_domain_rules::AgentId(session.clone());
             state.tasks.values().find(|task| task.agent_id.as_ref() == Some(&agent) && !task.archived).map(|task| task.title.clone())
                 .or_else(|| state.agents.get(&agent).map(|agent| agent.name.clone()))
         }).unwrap_or_else(|| session.chars().take(8).collect());
@@ -895,8 +895,8 @@ fn withdraw_strays(domain: &DomainRuntime) {
     let Ok(state) = domain.state() else { return };
     let current = domain.live().machine_watch.incident().filter(|incident| incident.cause != MachineCause::Declared).and_then(|incident| incident.card);
     for (id, card) in &state.interactions {
-        let open = !card.withdrawn && matches!(card.payload, alondra_core::domain::InteractionPayload::Question { answer: None, .. });
-        if open && card.author == alondra_core::domain::Author::System && card.system_card == Some(SystemCard::Machine) && current.as_deref() != Some(id.0.as_str()) {
+        let open = !card.withdrawn && matches!(card.payload, alondra_domain_rules::InteractionPayload::Question { answer: None, .. });
+        if open && card.author == alondra_domain_rules::Author::System && card.system_card == Some(SystemCard::Machine) && current.as_deref() != Some(id.0.as_str()) {
             log!("withdrawing the stray machine card {}", id.0);
             let _ = domain.withdraw_problem(id);
         }
@@ -905,7 +905,7 @@ fn withdraw_strays(domain: &DomainRuntime) {
 
 /// The answer "I've fixed it" on the open card, taken once.
 fn fixed(domain: &DomainRuntime, incident: Option<&Incident>) -> bool {
-    use alondra_core::domain::{InteractionId, InteractionPayload};
+    use alondra_domain_rules::{InteractionId, InteractionPayload};
     let Some(card) = incident.and_then(|incident| incident.card.as_ref()) else { return false };
     let Ok(state) = domain.state() else { return false };
     matches!(state.interactions.get(&InteractionId(card.clone())).map(|card| &card.payload),
@@ -922,7 +922,7 @@ async fn act(domain: &std::sync::Arc<DomainRuntime>, _alerts: &impl Alerts, acti
             }
             Action::Withdraw(id) => {
                 let withdrawing = domain.clone();
-                let _ = tokio::task::spawn_blocking(move || withdrawing.withdraw_problem(&alondra_core::domain::InteractionId(id))).await;
+                let _ = tokio::task::spawn_blocking(move || withdrawing.withdraw_problem(&alondra_domain_rules::InteractionId(id))).await;
             }
             Action::Release(sessions) => {
                 log!("the machine recovered: {} node(s) that waited come back through the admission gate", sessions.len());
@@ -1061,7 +1061,7 @@ async fn watch(domain: std::sync::Arc<DomainRuntime>, sample: impl Fn() -> Optio
 mod tests {
     use super::*;
     use crate::node_push::testing::Node;
-    use alondra_core::domain::{Actor, Command, CommandEnvelope, InteractionPayload, PROTOCOL_VERSION};
+    use alondra_domain_rules::{Actor, Command, CommandEnvelope, InteractionPayload, PROTOCOL_VERSION};
     use std::sync::Arc;
 
     const GB: u64 = 1_000_000_000;
@@ -2029,7 +2029,7 @@ mod tests {
         }
     }
 
-    fn open_machine_cards(domain: &DomainRuntime) -> Vec<alondra_core::domain::Interaction> {
+    fn open_machine_cards(domain: &DomainRuntime) -> Vec<alondra_domain_rules::Interaction> {
         let state = domain.state().unwrap();
         state.interactions.values().filter(|card| card.system_card == Some(SystemCard::Machine) && !card.withdrawn
             && matches!(card.payload, InteractionPayload::Question { answer: None, .. })).cloned().collect()
@@ -2135,7 +2135,7 @@ mod tests {
     #[tokio::test]
     async fn a_card_named_like_a_machine_card_is_not_one() {
         let (_home, domain) = world();
-        let options = || vec![alondra_core::domain::QuestionOption { id: "x".into(), label: "x".into(), description: None }];
+        let options = || vec![alondra_domain_rules::QuestionOption { id: "x".into(), label: "x".into(), description: None }];
         domain.raise_worded_problem("machine-setup", None, "setup", "Choose the setup".into(), "Two ways to set it up".into(), "{}".into(), options(), None).unwrap();
         domain.raise_worded_problem("machine-1", Some(SystemCard::Machine), MACHINE_CAUSE, "Free up memory".into(), "Nodes wait".into(), "{}".into(), options(), None).unwrap();
         withdraw_strays(&domain);
@@ -2270,7 +2270,7 @@ mod tests {
         let domain = Arc::new(crate::wiring::open(&home).unwrap());
         let body = r#"{"cause":"memory","disk_free":0,"memory_free_percent":38,"memory_pressure":true,"single_node":true}"#;
         domain.raise_worded_problem("machine-1000", Some(SystemCard::Machine), MACHINE_CAUSE, "Free up memory: macOS reports memory pressure (38% free) with a single node working".into(), "something outside Alondra uses the memory".into(), body.into(), vec![
-            alondra_core::domain::QuestionOption { id: MACHINE_FIXED_OPTION.into(), label: MACHINE_FIXED_LABEL.into(), description: None },
+            alondra_domain_rules::QuestionOption { id: MACHINE_FIXED_OPTION.into(), label: MACHINE_FIXED_LABEL.into(), description: None },
         ], None).unwrap();
         assert_eq!(open_machine_cards(&domain).len(), 1);
         assert!(domain.live().machine_watch.incident().is_none(), "the memory incident is dropped on load");

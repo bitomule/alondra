@@ -1,7 +1,7 @@
 //! What Alondra's own cards are and which hand-backs say a merge failed, as stored columns. A
 //! database written before they existed gets them once, read from the ids and bodies Alondra wrote
 //! then; nothing reads those again afterwards.
-use alondra_core::domain::{MergeFailure, SystemCard};
+use alondra_domain_rules::{MergeFailure, SystemCard};
 use rusqlite::{Transaction, params};
 
 const REFUSED_CARDS_CAUSE: &str = "refused-cards:";

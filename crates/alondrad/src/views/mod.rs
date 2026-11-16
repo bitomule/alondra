@@ -26,7 +26,7 @@ pub(crate) fn incompatible(message: &str) -> axum::response::Response {
 }
 
 pub(crate) fn serves(protocol: u32) -> bool {
-    (alondra_core::views::VIEWS_PROTOCOL_MIN..=alondra_core::views::VIEWS_PROTOCOL).contains(&protocol)
+    (alondra_views::VIEWS_PROTOCOL_MIN..=alondra_views::VIEWS_PROTOCOL).contains(&protocol)
 }
 
 /// Every answer says which daemon gave it, so a one-shot command notices it is older; a
@@ -61,8 +61,8 @@ fn note_client(version: &str) {
 }
 
 /// This daemon as it announces itself in views and refusals.
-pub(crate) fn this_service() -> alondra_core::views::Service {
-    alondra_core::views::Service::serving(env!("CARGO_PKG_VERSION"))
+pub(crate) fn this_service() -> alondra_views::Service {
+    alondra_views::service(env!("CARGO_PKG_VERSION"))
 }
 #[cfg(test)]
 mod measure_tests;

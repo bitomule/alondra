@@ -4,7 +4,7 @@
 use alondra_core::clock;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
-use alondra_core::domain::{
+use alondra_domain_rules::{
     Actor, Command, CommandEnvelope, DomainState, MergeAttemptState, MergeMethod, OpenPrPending, OpenPrStatus, OpenedPr,
     clip, hosted_pr_id, CardSpec, PrChecks, PrId, PrMergeable, PrState, PullRequest, Scope, TaskId, PROTOCOL_VERSION,
 };
@@ -100,7 +100,7 @@ impl GhCli {
 impl PrObserver for GhCli {
     fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Observed<'a> {
         Box::pin(async move {
-            let url = format!("https://{}/{repository}/pull/{number}", alondra_core::domain::normalize_pr_host(host));
+            let url = format!("https://{}/{repository}/pull/{number}", alondra_domain_rules::normalize_pr_host(host));
             let run = tokio::process::Command::new(&self.program)
                 .args(["pr", "view", &url, "--json", OBSERVED_FIELDS])
                 .kill_on_drop(true)
@@ -129,7 +129,7 @@ impl PrObserver for GhCli {
 impl GhCli {
     /// The merge methods the repository settings allow, squash first; empty when GitHub does not answer.
     async fn repository_methods(&self, host: &str, repository: &str) -> Vec<MergeMethod> {
-        let url = format!("https://{}/{repository}", alondra_core::domain::normalize_pr_host(host));
+        let url = format!("https://{}/{repository}", alondra_domain_rules::normalize_pr_host(host));
         let args = ["repo", "view", url.as_str(), "--json", "mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed"];
         let Ok(out) = self.run(&args, None, Duration::from_secs(30)).await else { return vec![] };
         let Ok(value) = serde_json::from_slice::<Value>(&out) else { return vec![] };
@@ -178,7 +178,7 @@ impl GhCli {
         }
         let (host, path) = value["url"].as_str()?.split_once("://")?.1.split_once('/')?;
         let (repository, number) = path.split_once("/pull/")?;
-        Some((alondra_core::domain::normalize_pr_host(host), repository.to_owned(), number.trim_end_matches('/').parse().ok()?))
+        Some((alondra_domain_rules::normalize_pr_host(host), repository.to_owned(), number.trim_end_matches('/').parse().ok()?))
     }
 }
 
@@ -277,7 +277,7 @@ impl HttpAnswer {
 }
 
 pub fn pr_url(host: &str, repository: &str, number: u64) -> String {
-    format!("https://{}/{repository}/pull/{number}", alondra_core::domain::normalize_pr_host(host))
+    format!("https://{}/{repository}/pull/{number}", alondra_domain_rules::normalize_pr_host(host))
 }
 
 fn parse_methods(value: &Value) -> Vec<MergeMethod> {
@@ -768,7 +768,7 @@ impl PrObserver for FakeObserver {
 #[cfg(any(test, feature = "test-hooks"))]
 pub mod tests {
     use super::*;
-    use alondra_core::domain::*;
+    use alondra_domain_rules::*;
     use std::collections::BTreeSet;
     use std::os::unix::fs::PermissionsExt;
 
@@ -809,7 +809,7 @@ pub mod tests {
         command(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
             task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),
             review_prs: true, dependencies: BTreeSet::new(), stack: None,
-            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
         });
         command(domain, Actor::Agent { agent_id: "a".into() }, "pr", Command::RegisterPr {
             task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(),
@@ -818,7 +818,7 @@ pub mod tests {
         command(domain, Actor::Agent { agent_id: "a".into() }, "present", Command::PresentResult {
             checklist: Vec::new(),
             attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Ready".into(),
-            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEAD.into() }], is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEAD.into() }], is_final: true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
         });
         command(domain, Actor::User { user_id: "u".into() }, "authorize", Command::AuthorizeMerge {
             authorization_id: "auth".into(), presentation_id: "d".into(), pr_id: "pr".into(),
@@ -832,7 +832,7 @@ pub mod tests {
         command(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
             task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),
             review_prs: true, dependencies: BTreeSet::new(), stack: None,
-            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
         });
         let register = Command::RegisterPr {
             task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(),
@@ -842,7 +842,7 @@ pub mod tests {
         command(domain, Actor::Agent { agent_id: "a".into() }, "present", Command::PresentResult {
             checklist: Vec::new(),
             attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Ready".into(),
-            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEAD.into() }], is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEAD.into() }], is_final: true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
         });
     }
 
@@ -933,7 +933,7 @@ pub mod tests {
         authorized(&domain);
         let worktree = crate::worktree::testing::task_worktree(&fixture.0.join("checkout"), "worktree");
         command(&domain, Actor::System, "worktree", Command::RecordTaskWorktree {
-            task_id: "t".into(), path: worktree.display().to_string(), origin: alondra_core::domain::WorktreeOrigin::Entered, branch: None,
+            task_id: "t".into(), path: worktree.display().to_string(), origin: alondra_domain_rules::WorktreeOrigin::Entered, branch: None,
         });
         let program = fixture.0.join("gh");
         std::fs::write(&program, format!("#!/bin/sh\ncase \"$*\" in\n\
@@ -958,7 +958,7 @@ pub mod tests {
         std::fs::set_permissions(&program, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         catch_up_task(&domain, &GhCli::at(program), &"t".into(), true).await.unwrap();
         assert_eq!(domain.state().unwrap().pull_requests[&"pr".into()].state, PrState::Closed);
-        assert!(alondra_core::domain::ReadIndex::build(&domain.state().unwrap()).cards_of(&"d".into()).is_empty());
+        assert!(alondra_domain_rules::ReadIndex::build(&domain.state().unwrap()).cards_of(&"d".into()).is_empty());
     }
 
     #[tokio::test]
@@ -975,9 +975,9 @@ pub mod tests {
         command(&domain, Actor::Agent { agent_id: "a".into() }, "reopened-result", Command::PresentResult {
             checklist: vec![], attachments: vec![], task_id: "t".into(), interaction_id: "reopened-result".into(), body: "Ready".into(),
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEAD.into() }], is_final: true, nothing_to_review: false,
-            card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+            card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
         });
-        assert_eq!(alondra_core::domain::ReadIndex::build(&domain.state().unwrap()).cards_of(&"reopened-result".into()).len(), 1);
+        assert_eq!(alondra_domain_rules::ReadIndex::build(&domain.state().unwrap()).cards_of(&"reopened-result".into()).len(), 1);
     }
 
     #[tokio::test]
@@ -1149,7 +1149,7 @@ pub mod tests {
                 review_prs: false,
                 dependencies: BTreeSet::new(),
                 stack: None,
-                launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+                launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
             },
         );
         command(
@@ -1250,7 +1250,7 @@ pub mod tests {
             attachments: vec![], task_id: "t".into(), interaction_id: "d2".into(), body: "Conflicts resolved".into(),
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: OTHER.into() }], is_final: true,
             nothing_to_review: false,
-            card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+            card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
         });
         let read = domain.read();
         let item = read.index().item(read.state(), &read.state().interactions[&"d2".into()]);
@@ -1299,7 +1299,7 @@ pub mod tests {
         observer.set(7, Err("error connecting to github".into()));
         let mut failures = ObservationFailures::default();
         let problems = |domain: &DomainRuntime| domain.state().unwrap().interactions.values().cloned()
-            .filter(|card| card.card.kind == alondra_core::domain::CardKind::Problem)
+            .filter(|card| card.card.kind == alondra_domain_rules::CardKind::Problem)
             .collect::<Vec<_>>();
         for _ in 0..4 {
             reconcile(&domain, &observer, &mut failures).await.unwrap();
@@ -1324,7 +1324,7 @@ pub mod tests {
         command(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
             task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),
             review_prs: true, dependencies: BTreeSet::new(), stack: None,
-            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
         });
         command(domain, Actor::Agent { agent_id: "a".into() }, "pr", Command::RegisterPr {
             task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(),
@@ -1367,8 +1367,8 @@ pub mod tests {
         let state = domain.state().unwrap();
         let t = &state.tasks[&"t".into()];
         assert_eq!((t.state, t.open_pr.clone()), (TaskState::ForYourReview, None), "an unreadable GitHub holds nothing");
-        let card = alondra_core::open_pr_delivery::OpenPrDelivery::from_body(&state.interactions[t.final_presentation.as_ref().unwrap()].body).unwrap();
-        assert_eq!(card.readiness, alondra_core::open_pr_delivery::PrReadiness::Unconfirmed);
+        let card = alondra_domain_rules::open_pr_delivery::OpenPrDelivery::from_body(&state.interactions[t.final_presentation.as_ref().unwrap()].body).unwrap();
+        assert_eq!(card.readiness, alondra_domain_rules::open_pr_delivery::PrReadiness::Unconfirmed);
     }
 
     #[tokio::test]
@@ -1385,9 +1385,9 @@ pub mod tests {
         let state = domain.state().unwrap();
         let t = &state.tasks[&"t".into()];
         assert_eq!((t.state, t.open_pr.clone()), (TaskState::ForYourReview, None), "the first read delivers it");
-        let card = alondra_core::open_pr_delivery::OpenPrDelivery::from_body(&state.interactions[t.final_presentation.as_ref().unwrap()].body).unwrap();
-        assert_eq!(card.readiness, alondra_core::open_pr_delivery::PrReadiness::ChecksRunning { names: vec!["lint".into()] });
-        assert!(card.text(alondra_core::views::Lang::En).1.contains("lint"));
+        let card = alondra_domain_rules::open_pr_delivery::OpenPrDelivery::from_body(&state.interactions[t.final_presentation.as_ref().unwrap()].body).unwrap();
+        assert_eq!(card.readiness, alondra_domain_rules::open_pr_delivery::PrReadiness::ChecksRunning { names: vec!["lint".into()] });
+        assert!(card.text(alondra_view_model::Lang::En).1.contains("lint"));
         assert!(observer.1.lock().unwrap().is_empty(), "Alondra closes no PR it delivers");
     }
 
@@ -1404,8 +1404,8 @@ pub mod tests {
         reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
         let state = domain.state().unwrap();
         let t = &state.tasks[&"t".into()];
-        let card = alondra_core::open_pr_delivery::OpenPrDelivery::from_body(&state.interactions[t.final_presentation.as_ref().unwrap()].body).unwrap();
-        assert_eq!(card.readiness, alondra_core::open_pr_delivery::PrReadiness::ChecksFailed { names: vec!["test".into()] });
+        let card = alondra_domain_rules::open_pr_delivery::OpenPrDelivery::from_body(&state.interactions[t.final_presentation.as_ref().unwrap()].body).unwrap();
+        assert_eq!(card.readiness, alondra_domain_rules::open_pr_delivery::PrReadiness::ChecksFailed { names: vec!["test".into()] });
     }
 
     #[tokio::test]
@@ -1470,7 +1470,7 @@ pub mod tests {
     fn cancelled_with_its_pr_reopened(domain: &DomainRuntime) {
         registered(domain);
         command(domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
-        command(domain, Actor::System, "node-end", Command::RecordNodeEnd { task_id: "t".into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: None });
+        command(domain, Actor::System, "node-end", Command::RecordNodeEnd { task_id: "t".into(), end: alondra_domain_rules::NodeEnd::Closed, agent_id: None });
         command(domain, Actor::System, "closed", Command::ObservePrState { pr_id: "pr".into(), head: HEAD.into(), base: "main".into(), state: PrState::Closed, merged_head: None });
         assert_eq!(domain.state().unwrap().tasks[&"t".into()].open_pr, None);
     }

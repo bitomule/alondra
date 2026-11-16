@@ -5,8 +5,8 @@ use crate::locks::Poisonable as _;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use alondra_core::domain::InteractionId;
-use alondra_core::views::{self, Lang};
+use alondra_domain_rules::InteractionId;
+use alondra_views::{self as views, Lang};
 use axum::extract::{ConnectInfo, Query, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
@@ -38,7 +38,7 @@ async fn local(
     if !crate::auth::is_local(&peer, &headers)
         || crate::domain_bootstrap::signed_device(state.client().home(), &signed).is_none()
     {
-        return crate::domain_api::domain_error(alondra_core::domain::DomainError::new(
+        return crate::domain_api::domain_error(alondra_domain_rules::DomainError::new(
             "forbidden",
             "signed local device required",
         ));
@@ -47,7 +47,7 @@ async fn local(
     let domain = state.domain();
     match tokio::task::spawn_blocking(move || notices(&domain, lang)).await {
         Ok(Ok(body)) => Json(body).into_response(),
-        _ => crate::domain_api::domain_error(alondra_core::domain::DomainError::new(
+        _ => crate::domain_api::domain_error(alondra_domain_rules::DomainError::new(
             "storage_unavailable",
             "notices could not be read",
         )),

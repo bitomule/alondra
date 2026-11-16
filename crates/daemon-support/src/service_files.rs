@@ -330,7 +330,7 @@ struct VerifiedCopy {
 impl StoredReads {
     pub fn attachment(&self, home: &Path, reference: &str, digest: &str,
         offset: u64, version: Option<String>) -> Result<Value> {
-        self.chunk(home, reference, Some(digest), offset, version, alondra_core::domain::MAX_ATTACHMENT_BYTES).map(|(chunk, _)| chunk)
+        self.chunk(home, reference, Some(digest), offset, version, alondra_domain_rules::MAX_ATTACHMENT_BYTES).map(|(chunk, _)| chunk)
     }
     pub fn verified(&self, home: &Path, reference: &str, digest: &str,
         offset: u64, version: Option<String>) -> Result<Value> {
@@ -407,7 +407,7 @@ impl StoredReads {
 
 /// The attachment a v2 command carries, for a file the daemon stored: its digest is
 /// computed from the stored copy and its reference is relative to this HOME.
-pub fn attachment_ref(home: &Path, id: String, name: String, stored: &Path) -> Result<alondra_core::domain::AttachmentRef> {
+pub fn attachment_ref(home: &Path, id: String, name: String, stored: &Path) -> Result<alondra_domain_rules::AttachmentRef> {
     let mut file = open_stored_file(home, stored)?;
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
@@ -421,7 +421,7 @@ pub fn attachment_ref(home: &Path, id: String, name: String, stored: &Path) -> R
         total += count as u64;
     }
     let reference = stored.strip_prefix(home).unwrap_or(stored);
-    Ok(alondra_core::domain::AttachmentRef {
+    Ok(alondra_domain_rules::AttachmentRef {
         id,
         name,
         content_digest: hex_digest(hasher.finalize().as_slice()),
@@ -641,11 +641,11 @@ mod tests {
         assert_eq!(URL_SAFE_NO_PAD.decode(end["data"].as_str().unwrap()).unwrap(), bytes[bytes.len() - 7..]);
         assert_eq!(end["eof"], true);
         let file = std::fs::OpenOptions::new().write(true).open(h.join("files/video.mp4")).unwrap();
-        file.set_len(alondra_core::domain::MAX_ATTACHMENT_BYTES + 1).unwrap();
+        file.set_len(alondra_domain_rules::MAX_ATTACHMENT_BYTES + 1).unwrap();
         let mut grown_hash = Sha256::new();
         grown_hash.update(&bytes);
         let zeros = [0u8; CHUNK];
-        let mut remaining = alondra_core::domain::MAX_ATTACHMENT_BYTES as usize + 1 - bytes.len();
+        let mut remaining = alondra_domain_rules::MAX_ATTACHMENT_BYTES as usize + 1 - bytes.len();
         while remaining > 0 {
             let count = remaining.min(zeros.len());
             grown_hash.update(&zeros[..count]);

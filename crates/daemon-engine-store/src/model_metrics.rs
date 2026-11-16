@@ -2,7 +2,7 @@
 //! is folded with.
 use super::DomainStore;
 use alondra_core::Millis;
-use alondra_core::domain::ModelChooser;
+use alondra_domain_rules::ModelChooser;
 use alondra_core::options::Approach;
 use alondra_core::task_tags::TaskTags;
 use anyhow::Result;

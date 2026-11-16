@@ -1,0 +1,407 @@
+//! Settings › provider accounts: each account in the user's order with its email, plan, weight,
+//! state, usage and nodes, as the committed read index holds them, never a folder; how new work
+//! is spread over them; and adding one, which only asks for a name. Alondra never signs an
+//! account in: a signed-out one says which command of the provider the user runs on the Mac.
+use super::action_id::Verb;
+use super::text::{t, tf};
+use super::{common, Action, Confirm, Icon, Input, Item, Label, Lang, Presentation, RenderContext, Role, Style, Tone, View};
+use alondra_core::accounts::{AccountBilling, AccountChange, AccountKey, AccountState, AccountStatus, Policy, Provider};
+pub use alondra_view_model::accounts::{decision_quota_summary, name, provider_name, quota_summary};
+use alondra_view_model::accounts::{native_limit_reported, percent, window_label};
+
+pub const KEY: &str = "accounts";
+
+const WEIGHTS: [u32; 7] = [1, 2, 3, 5, 10, 15, 20];
+
+/// `text` as one word for the shell, whatever it holds.
+pub fn shell_word(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
+}
+
+pub(super) fn list(context: &RenderContext<'_>) -> View {
+    let lang = context.lang;
+    let order = context.index.account_order();
+    let positions: std::collections::BTreeMap<_, _> = order.iter().enumerate().map(|(at, key)| (key.clone(), at)).collect();
+    let mut accounts: Vec<&AccountStatus> = context.index.accounts().iter().collect();
+    accounts.sort_by_key(|account| positions.get(&AccountKey { provider: account.provider, account: account.id.clone() }).copied().unwrap_or(usize::MAX));
+    let measured: std::collections::BTreeMap<_, _> = context.index.account_usage().iter()
+        .map(|usage| (AccountKey { provider: usage.provider, account: usage.account.clone() }, usage)).collect();
+    let mut rows: Vec<Item> = accounts.iter().enumerate().map(|(at, account)| {
+        let key = AccountKey { provider: account.provider, account: account.id.clone() };
+        account_row(account, at + 1, measured.get(&key).copied(), context)
+    }).collect();
+    let mut view = common::view(KEY, KEY, Some(t!(lang, "Accounts", "Cuentas").into()), context, vec![]);
+    view.account_configuration = (!context.index.account_config_version().is_empty()).then(|| super::AccountConfigurationPresentation { version: context.index.account_config_version().into() });
+    let mut section = list_style(common::section("accounts", None, std::mem::take(&mut rows)));
+    if accounts.len() > 1 && !context.index.account_config_version().is_empty() {
+        if let Some(mut reorder) = common::action(Verb::AccountOrder, "accounts", context.domain.revision, t!(lang, "Reorder accounts", "Reordenar cuentas"), Style::Secondary) {
+            reorder.id = super::action_id::ActionId::new(Verb::AccountOrder, "accounts", context.domain.revision,
+                Some(context.index.account_config_version().into())).expect("account config version is an action identifier").to_string();
+            section.actions.push(reorder);
+        }
+    }
+    if let Some(check) = common::action(Verb::AccountCheck, "accounts", context.domain.revision, t!(lang, "Check accounts", "Comprobar cuentas"), Style::Secondary) { section.actions.push(check); }
+    view.sections.push(section);
+    let provider_rows = [Provider::Claude, Provider::Codex].into_iter().map(|provider| {
+        if accounts.iter().any(|account| account.provider == provider) { add_row(provider, context) } else { connect_row(provider, context) }
+    }).collect();
+    view.sections.push(list_style(common::section("providers", Some(t!(lang, "Providers", "Proveedores").into()), provider_rows)));
+    if accounts.len() > 1 {
+        let mut policy = vec![policy_row(context)];
+        if has_claude_accounts(context) { policy.push(moves_row(context)); }
+        view.sections.push(list_style(common::section("policy", Some(t!(lang, "New work", "Trabajo nuevo").into()), policy)));
+    }
+    let profiles = super::model_controls::profile_rows(context);
+    if !profiles.is_empty() { view.sections.push(list_style(common::section("model_profiles", Some(t!(lang, "Models by role", "Modelos por función").into()), profiles))); }
+    view
+}
+
+fn list_style(mut section: super::Section) -> super::Section {
+    section.style = Some(super::SectionStyle::List);
+    section
+}
+
+
+pub fn state_label(state: AccountState, lang: Lang) -> &'static str {
+    match state {
+        AccountState::Unchecked => t!(lang, "not checked yet", "sin comprobar"),
+        AccountState::SignedIn => t!(lang, "signed in", "con sesión"),
+        AccountState::SignedOut => t!(lang, "signed out", "sin sesión"),
+        AccountState::Unavailable => t!(lang, "can't be checked", "no se puede comprobar"),
+        AccountState::Disabled => t!(lang, "disabled", "desactivada"),
+    }
+}
+
+/// Email, plan and state, each when known: `me@example.org · max · signed in`.
+pub fn subtitle(account: &AccountStatus, lang: Lang) -> String {
+    [account.email.clone(), billing(account, lang), Some(state_label(account.state, lang).to_owned())].into_iter().flatten().collect::<Vec<_>>().join(" · ")
+}
+
+fn billing(account: &AccountStatus, lang: Lang) -> Option<String> {
+    match &account.billing {
+        AccountBilling::PayPerUse => Some(t!(lang, "pay per use", "pago por uso").to_owned()),
+        AccountBilling::Subscription { .. } => account.plan.clone(),
+    }
+}
+
+/// `5 h 40 % · week 30 % · 2 nodes`, each part when known.
+pub(super) fn usage_line(account: &AccountStatus, measured: Option<&alondra_core::usage::AccountUsage>, context: &RenderContext<'_>) -> Option<String> {
+    let lang = context.lang;
+    let mut parts = vec![];
+    if account.provider == Provider::Codex {
+        parts.push(quota_summary(measured, context.live.observed_at, lang));
+    } else {
+        if native_limit_reported(measured) { parts.push(t!(lang, "Provider reported a usage limit", "El proveedor ha comunicado un límite de uso").into()); }
+        for window in measured.into_iter().flat_map(|usage| &usage.windows).filter(|window| !window.reading.kind.is_native_limit_marker()) {
+            let label = window_label(account.provider, &window.reading.kind, lang);
+            let used = percent(window.reading.used);
+            parts.push(format!("{label} {used} %"));
+        }
+    }
+    match context.index.nodes_on_account_key(&AccountKey { provider: account.provider, account: account.id.clone() }) {
+        0 => {}
+        1 => parts.push(t!(lang, "1 node", "1 nodo").into()),
+        nodes => parts.push(tf!(lang, "{nodes} nodes", "{nodes} nodos")),
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+fn state_badge(state: AccountState, lang: Lang) -> Label {
+    let (text, tone) = match state {
+        AccountState::SignedIn => (t!(lang, "Signed in", "Con sesión"), Tone::Success),
+        AccountState::SignedOut => (t!(lang, "Signed out", "Sin sesión"), Tone::YourTurn),
+        AccountState::Unavailable => (t!(lang, "Can't be checked", "No se puede comprobar"), Tone::Critical),
+        AccountState::Unchecked => (t!(lang, "Not checked yet", "Sin comprobar"), Tone::Neutral),
+        AccountState::Disabled => (t!(lang, "Off", "Desactivada"), Tone::Neutral),
+    };
+    Label { text: text.into(), tone, elapsed: None }
+}
+
+/// The weight the account counts for, and where it comes from.
+fn weight_text(account: &AccountStatus, measured_plan: Option<&str>, lang: Lang) -> Option<String> {
+    let weight = alondra_core::usage::weight(&account.billing, measured_plan.or(account.plan.as_deref()))?;
+    Some(match &account.billing {
+        AccountBilling::Subscription { weight: Some(_), .. } => tf!(lang, "weight {weight}, set by you", "peso {weight}, fijado por ti"),
+        _ => tf!(lang, "weight {weight}, by plan", "peso {weight}, por plan"),
+    })
+}
+
+
+
+
+fn allowed(context: &RenderContext<'_>, provider: Provider, change: AccountChange) -> Result<(), alondra_domain_rules::Refusal> {
+    let available = context.domain.account_action(provider, change);
+    match available.refusal {
+        Some(refusal) if !available.enabled => Err(refusal),
+        _ => Ok(()),
+    }
+}
+
+fn change_action(verb: Verb, account: &AccountStatus, change: AccountChange, label: &str, style: Style, context: &RenderContext<'_>) -> Option<Action> {
+    allowed(context, account.provider, change).ok()?;
+    scoped_action(verb, account, label, style, context)
+}
+
+fn account_row(account: &AccountStatus, position: usize, measured: Option<&alondra_core::usage::AccountUsage>, context: &RenderContext<'_>) -> Item {
+    let lang = context.lang;
+    let shown = name(account, lang);
+    let measured_plan = measured.and_then(|usage| usage.plan.as_deref());
+    let margin_weight = spread_by_margin(account, context).then(|| weight_text(account, measured_plan, lang)).flatten();
+    let about = [Some(provider_name(account.provider).into()), account.email.clone(), billing(account, lang), margin_weight].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+    let subtitle = [Some(about), usage_line(account, measured, context)].into_iter().flatten().filter(|line| !line.is_empty()).collect::<Vec<_>>().join("\n");
+    let id = format!("{}-{}", account.provider.as_str(), account.id);
+    let mut row = common::row(&id, KEY, Icon::Machine, shown.clone(), (!subtitle.is_empty()).then_some(subtitle));
+    row.link = None;
+    row.account = Some(account_presentation(account, position, measured, context));
+    row.badges.push(state_badge(account.state, lang));
+    if spread_by_margin(account, context) { row.actions.extend(weight_action(account, measured_plan, context)); }
+    let up = AccountChange::MoveUp { account: account.id.clone() };
+    row.actions.extend(change_action(Verb::AccountUp, account, up, t!(lang, "Move up", "Subir"), Style::Secondary, context));
+    let down = AccountChange::MoveDown { account: account.id.clone() };
+    row.actions.extend(change_action(Verb::AccountDown, account, down, t!(lang, "Move down", "Bajar"), Style::Secondary, context));
+    let enable = AccountChange::Enable { account: account.id.clone() };
+    row.actions.extend(change_action(Verb::AccountEnable, account, enable, t!(lang, "Turn on", "Activar"), Style::Secondary, context));
+    let disable = AccountChange::Disable { account: account.id.clone() };
+    if let Some(mut off) = change_action(Verb::AccountDisable, account, disable, t!(lang, "Turn off", "Desactivar"), Style::Secondary, context) {
+        off.description = Some(t!(lang, "No new work starts on it; what runs on it goes on", "No empieza trabajo nuevo en ella; lo que ya trabaja sigue").into());
+        row.actions.push(off);
+    }
+    if let Some(mut rename) = scoped_action(Verb::AccountRename, account, t!(lang, "Rename", "Renombrar"), Style::Secondary, context) {
+        rename.input = Input::Text { placeholder: shown.clone(), required: true, multiline: false, secret: false };
+        row.actions.push(rename);
+    }
+    if let Some(refresh) = scoped_action(Verb::AccountModels, account, t!(lang, "Refresh models", "Actualizar modelos"), Style::Secondary, context) { row.actions.push(refresh); }
+    row.actions.extend(remove_action(account, &shown, context));
+    Item::Row(row)
+}
+
+/// The weight to count the account for: its plan's, or one the user picks.
+fn weight_action(account: &AccountStatus, measured_plan: Option<&str>, context: &RenderContext<'_>) -> Option<Action> {
+    let lang = context.lang;
+    let mut action = scoped_action(Verb::AccountWeight, account, t!(lang, "Weight", "Peso"), Style::Secondary, context)?;
+    action.presentation = Presentation::Menu;
+    action.description = Some(t!(lang, "How much room it counts for when work is spread, as plans do: Pro 1, Max 5x 5, Max 20x 10",
+        "Cuánto margen cuenta al repartir el trabajo, como los planes: Pro 1, Max 5x 5, Max 20x 10").into());
+    let option = |id: String, label: String, description: Option<String>| super::ActionOption {
+        id, label, description, style: Style::Secondary, input: Input::None, key: None,
+    };
+    let by_plan = alondra_core::usage::plan_weight(measured_plan.or(account.plan.as_deref()));
+    if allowed(context, account.provider, AccountChange::SetWeight { account: account.id.clone(), weight: None }).is_ok() {
+        action.options.push(option("auto".into(), tf!(lang, "By plan ({by_plan})", "Por plan ({by_plan})"), None));
+    }
+    for weight in WEIGHTS {
+        if allowed(context, account.provider, AccountChange::SetWeight { account: account.id.clone(), weight: Some(weight) }).is_ok() {
+            action.options.push(option(weight.to_string(), weight.to_string(), None));
+        }
+    }
+    (!action.options.is_empty()).then_some(action)
+}
+
+/// Removing signs the account out and forgets it; while open tasks run on it, it says why it can't.
+fn remove_action(account: &AccountStatus, shown: &str, context: &RenderContext<'_>) -> Option<Action> {
+    let lang = context.lang;
+    let refused = allowed(context, account.provider, AccountChange::Remove { account: account.id.clone() }).err();
+    if refused.as_ref().is_some_and(|refusal| !matches!(refusal, alondra_domain_rules::Refusal::AccountInUse { .. })) {
+        return None;
+    }
+    let mut remove = scoped_action(Verb::AccountRemove, account, t!(lang, "Remove", "Quitar"), Style::Destructive, context)?;
+    if let Some(refusal) = refused {
+        remove.enabled = false;
+        remove.disabled_reason = Some(super::messages::refusal_text(&refusal, lang));
+        return Some(remove);
+    }
+    let provider = provider_name(account.provider);
+    remove.confirm = Some(Confirm { cancel: None,
+        title: tf!(lang, "Remove {shown}?", "¿Quitar {shown}?"),
+        message: tf!(lang,
+            "Alondra signs {shown} out of {provider} on this Mac and forgets it. Your provider account itself stays as it is.",
+            "Alondra cierra la sesión de {shown} en {provider} en este Mac y la olvida. Tu cuenta del proveedor sigue como está."),
+        button: t!(lang, "Remove", "Quitar").into(),
+    });
+    remove.stamp = Some(t!(lang, "Removed", "Quitada").into());
+    Some(remove)
+}
+
+fn add_row(provider: Provider, context: &RenderContext<'_>) -> Item {
+    let lang = context.lang;
+    let name = provider_name(provider);
+    let mut row = common::row(&format!("{}-add", provider.as_str()), KEY, Icon::Action, tf!(lang, "Add a {name} account", "Añadir una cuenta de {name}"),
+        Some(tf!(lang, "Choose a name; then sign it in to {name} in Terminal on the Mac", "Elige un nombre; luego inicia su sesión de {name} en Terminal en el Mac")));
+    row.link = None;
+    if let Some(mut add) = common::action(Verb::AccountAdd, provider.as_str(), context.domain.revision, t!(lang, "Add", "Añadir"), Style::Primary) {
+        add.role = Some(Role::Advance);
+        add.input = Input::Text { placeholder: t!(lang, "Account name", "Nombre de la cuenta").into(), required: true, multiline: false, secret: false };
+        add.stamp = Some(t!(lang, "Added", "Añadida").into());
+        row.actions.push(add);
+    }
+    Item::Row(row)
+}
+
+fn connect_row(provider: Provider, context: &RenderContext<'_>) -> Item {
+    let lang = context.lang;
+    let name = provider_name(provider);
+    let mut row = common::row(&format!("{}-connect", provider.as_str()), KEY, Icon::Machine,
+        tf!(lang, "Connect {name}", "Conectar {name}"), Some(tf!(lang, "Use the {name} session you signed in to on the Mac", "Usar la sesión de {name} que iniciaste en el Mac")));
+    row.link = None;
+    if allowed(context, provider, AccountChange::Connect).is_ok()
+        && let Some(mut connect) = common::action(Verb::ProviderConnect, provider.as_str(), context.domain.revision, t!(lang, "Connect", "Conectar"), Style::Primary)
+    {
+        connect.role = Some(Role::Advance);
+        connect.description = Some(sign_in_hint(provider, None, lang));
+        connect.stamp = Some(t!(lang, "Connected", "Conectado").into());
+        row.actions.push(connect);
+    }
+    Item::Row(row)
+}
+
+fn policy_text(policy: Policy, lang: Lang) -> (&'static str, &'static str) {
+    match policy {
+        Policy::Margin => (t!(lang, "Most room first", "Primero la de más margen"),
+            t!(lang, "Compare every provider by remaining quota; account order does not affect margin routing",
+                "Comparar todos los proveedores por cuota restante; el orden no afecta al reparto por margen")),
+        Policy::Chain => (t!(lang, "In list order", "En el orden de la lista"),
+            t!(lang, "Each new task starts on the first account in the list that has room left",
+                "Cada tarea nueva empieza en la primera cuenta de la lista que tenga margen")),
+    }
+}
+
+/// Whether a node whose account reaches its limit goes on with another account, off unless the user
+/// turns it on, always with what it risks.
+fn moves_row(context: &RenderContext<'_>) -> Item {
+    let lang = context.lang;
+    let on = context.index.account_moves();
+    let mut row = common::row("claude-moves", KEY, Icon::Node,
+        t!(lang, "Move a node when its account runs out", "Mover un nodo cuando su cuenta se agota").into(),
+        Some(t!(lang, "Continue with the next eligible account in your order when quota runs out",
+            "Continuar con la siguiente cuenta apta de tu orden cuando se agote la cuota").into()));
+    row.link = None;
+    row.badges.push(Label {
+        text: if on { t!(lang, "On", "Activado") } else { t!(lang, "Off", "Desactivado") }.into(),
+        tone: if on { Tone::Warning } else { Tone::Neutral },
+        elapsed: None,
+    });
+    if allowed(context, Provider::Claude, AccountChange::SetMoveWhenExhausted { on: !on }).is_ok() {
+        let label = if on { t!(lang, "Turn off", "Desactivar") } else { t!(lang, "Turn on", "Activar") };
+        if let Some(mut switch) = common::action(Verb::AccountMoves, "moves", context.domain.revision, label, Style::Secondary) {
+            switch.option_id = Some(if on { "off" } else { "on" }.into());
+            switch.description = Some(if on {
+                t!(lang, "A node whose account reaches its limit waits for it to reset", "Un nodo cuya cuenta llega al límite espera a que se reinicie")
+            } else {
+                t!(lang, "The node continues with saved context on the next eligible account", "El nodo continúa con el contexto guardado en la siguiente cuenta apta")
+            }.into());
+            row.actions.push(switch);
+        }
+    }
+    Item::Row(row)
+}
+
+fn has_claude_accounts(context: &RenderContext<'_>) -> bool { context.index.accounts().iter().any(|account| account.provider == Provider::Claude) }
+
+/// Margin spreads new work over the Claude accounts only, weighed by their plans.
+fn spread_by_margin(account: &AccountStatus, context: &RenderContext<'_>) -> bool { account.provider == Provider::Claude && context.index.account_policy() == Policy::Margin }
+
+fn policy_row(context: &RenderContext<'_>) -> Item {
+    let lang = context.lang;
+    let policy = context.index.account_policy();
+    let (title, about) = policy_text(policy, lang);
+    let mut row = common::row("claude-policy", KEY, Icon::Node, title.into(), Some(about.into()));
+    row.link = None;
+    let other = match policy {
+        Policy::Margin => Policy::Chain,
+        Policy::Chain => Policy::Margin,
+    };
+    if has_claude_accounts(context) && allowed(context, Provider::Claude, AccountChange::SetPolicy { policy: other }).is_ok()
+        && let Some(mut change) = common::action(Verb::AccountPolicy, "policy", context.domain.revision, t!(lang, "Change", "Cambiar"), Style::Secondary)
+    {
+        let (label, description) = policy_text(other, lang);
+        let id = match other {
+            Policy::Margin => "margin",
+            Policy::Chain => "chain",
+        };
+        change.presentation = Presentation::Menu;
+        change.options.push(super::ActionOption {
+            id: id.into(), label: label.into(), description: Some(description.into()), style: Style::Secondary, input: Input::None, key: None,
+        });
+        row.actions.push(change);
+    }
+    Item::Row(row)
+}
+
+
+
+pub fn action_provider(action: &super::action_id::ActionId) -> Option<Provider> {
+    match action.extra.as_deref() { None | Some("claude") => Some(Provider::Claude), Some("codex") => Some(Provider::Codex), _ => None }
+}
+
+fn scoped_action(verb: Verb, account: &AccountStatus, label: &str, style: Style, context: &RenderContext<'_>) -> Option<Action> {
+    let mut action = common::action(verb, account.id.as_str(), context.domain.revision, label, style)?;
+    if account.provider != Provider::Claude {
+        action.id = super::action_id::ActionId::new(verb, account.id.as_str(), context.domain.revision, Some(account.provider.as_str().into())).ok()?.to_string();
+    }
+    Some(action)
+}
+
+/// How the user signs an account in with the provider's own tool on the Mac, the command whole.
+pub fn sign_in_hint(provider: Provider, profile: Option<&str>, lang: Lang) -> String {
+    command_hint(provider, &alondra_core::accounts::sign_in_command(provider, profile), lang)
+}
+
+/// [`sign_in_hint`] for a command already built.
+pub fn command_hint(provider: Provider, command: &str, lang: Lang) -> String {
+    match provider {
+        Provider::Claude => tf!(lang, "Open Terminal on the Mac, run {command} and sign in with /login", "Abre Terminal en el Mac, ejecuta {command} e inicia sesión con /login"),
+        Provider::Codex => tf!(lang, "On the Mac, run {command}", "En el Mac, ejecuta {command}"),
+    }
+}
+
+/// [`sign_in_hint`] for `account`. A named account whose profile folder is not known yet is named
+/// instead, never sent to the default profile.
+pub fn account_sign_in_hint(account: &AccountStatus, lang: Lang) -> String {
+    match &account.profile {
+        _ if account.id.is_default() => sign_in_hint(account.provider, None, lang),
+        Some(profile) => sign_in_hint(account.provider, Some(profile), lang),
+        None => named_hint(account.provider, &account.name, lang),
+    }
+}
+
+/// How a named account whose profile folder is not known yet is signed in: by its name.
+pub fn named_hint(provider: Provider, name: &str, lang: Lang) -> String {
+    let provider = provider_name(provider);
+    tf!(lang, "Sign {name} in to {provider} in Terminal on the Mac, with its own profile", "Inicia la sesión de {name} en {provider} en Terminal en el Mac, con su propio perfil")
+}
+
+
+fn account_presentation(account: &AccountStatus, position: usize, measured: Option<&alondra_core::usage::AccountUsage>, context: &RenderContext<'_>) -> super::AccountPresentation {
+    let lang = context.lang;
+    let key = AccountKey { provider: account.provider, account: account.id.clone() };
+    let windows: Vec<super::AccountWindowPresentation> = measured.into_iter().flat_map(|usage| &usage.windows).filter(|window| !window.reading.kind.is_native_limit_marker()).map(|window| {
+        let reading = &window.reading;
+        super::AccountWindowPresentation {
+            kind: reading.kind.name().into(), label: window_label(account.provider, &reading.kind, lang), used_percent: percent(reading.used),
+            measured_at: window.measured_at, resets_at: reading.resets_at,
+            stale: context.live.observed_at.is_some_and(|now| reading.resets_at.is_some_and(|reset| reset <= now)), exhausted: reading.exhausted,
+        }
+    }).collect();
+    let last = measured.and_then(alondra_core::usage::AccountUsage::measured_at);
+    let text = match (last, context.live.observed_at) {
+        (None, _) => t!(lang, "Usage not reported", "Uso sin informar").into(),
+        (Some(at), Some(now)) if now.saturating_sub(at) >= 60_000 => {
+            let minutes = now.saturating_sub(at) / 60_000;
+            tf!(lang, "Reported {minutes} min ago", "Informado hace {minutes} min")
+        }
+        (Some(_), Some(_)) => t!(lang, "Reported just now", "Informado ahora").into(),
+        (Some(_), None) => t!(lang, "Last reported usage", "Último uso informado").into(),
+    };
+    let freshness = Label { text, tone: if windows.iter().any(|window| window.stale) { Tone::Warning } else { Tone::Neutral }, elapsed: None };
+    let reason = if native_limit_reported(measured) { Some(t!(lang, "The provider reported a usage limit. Check accounts again or choose another account; no usage percentage was reported.", "El proveedor ha comunicado un límite de uso. Vuelve a comprobar las cuentas o elige otra; no se ha informado un porcentaje de uso.").into()) } else { match account.state {
+        AccountState::SignedOut => Some(account_sign_in_hint(account, lang)),
+        AccountState::Unavailable => Some(t!(lang, "The native provider could not be checked", "No se pudo comprobar el proveedor nativo").into()),
+        AccountState::Disabled => Some(t!(lang, "New work is disabled; running work continues", "Trabajo nuevo desactivado; el trabajo en curso continúa").into()),
+        _ => None,
+    } };
+    let model_catalog = context.index.model_catalogs().iter().find(|catalog| catalog.account == key).cloned();
+    super::AccountPresentation { model_catalog, key: key.clone(), position: u32::try_from(position).unwrap_or(u32::MAX), availability: state_badge(account.state, lang), reason,
+        usage_summary: (account.provider == Provider::Codex).then(|| quota_summary(measured, context.live.observed_at, lang)),
+        quota_source: (account.provider == Provider::Codex && !windows.is_empty()).then(|| t!(lang, "Source: Codex account/rateLimits/read", "Origen: Codex account/rateLimits/read").into()),
+        email: account.email.clone(), plan: account.plan.clone(), active_nodes: u32::try_from(context.index.nodes_on_account_key(&key)).unwrap_or(u32::MAX), freshness, windows }
+}

@@ -466,7 +466,7 @@ async fn watchdog_keeps_monitoring_until_an_admitted_physical_writer_finishes() 
 #[test]
 fn account_usage_and_explicit_user_waits_do_not_trigger_the_watchdog() {
     use crate::domain_orchestrator::testing::fixture;
-    use alondra_core::domain::{CardKind, CardSpec};
+    use alondra_domain_rules::{CardKind, CardSpec};
     let f = fixture();
     f.tell("pending", "A request awaiting a legitimate dependency");
     let start = Instant::now();

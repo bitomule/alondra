@@ -2,10 +2,10 @@ use super::notices;
 use crate::domain_delivery::deliver_from_runtime;
 use crate::domain_runtime::DomainRuntime;
 use crate::push::Push;
-use alondra_core::domain::{
+use alondra_domain_rules::{
     Actor, CardKind, CardSpec, Command, CommandEnvelope, QuestionOption, Recipient, Scope,
 };
-use alondra_core::views::Lang;
+use alondra_views::Lang;
 use serde_json::{Value, json};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -37,7 +37,7 @@ impl Fixture {
         fixture.command(Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
             task_id: "task-a".into(), request_id: "request".into(), title: "Task".into(),
             agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
-            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
+            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
         fixture
     }
 

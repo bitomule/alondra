@@ -12,6 +12,8 @@ test-hooks = ["dep:tempfile", "alondra-daemon-engine-model/test-hooks", "alondra
 alondra-agent-application.workspace = true
 alondra-agent-runtime.workspace = true
 alondra-core.workspace = true
+alondra-domain-rules.workspace = true
+alondra-view-model.workspace = true
 alondra-daemon-engine-model.workspace = true
 alondra-daemon-engine-store.workspace = true
 alondra-daemon-engine-machine.workspace = true
@@ -44,6 +46,7 @@ url = "2.5"
 
 [dev-dependencies]
 alondra-engine-github = { workspace = true, features = ["test-hooks"] }
+alondra-views.workspace = true
 alondra-engine-kernel = { workspace = true, features = ["test-hooks"] }
 alondra-daemon-engine-machine = { workspace = true, features = ["test-hooks"] }
 alondra-daemon-engine-store = { workspace = true, features = ["test-hooks"] }

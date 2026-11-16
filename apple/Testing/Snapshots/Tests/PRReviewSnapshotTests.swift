@@ -42,7 +42,7 @@ final class PRReviewSnapshotTests: XCTestCase {
      "input":{"kind":"none"},"attachments":false,"enabled":true}
     """
 
-    /// The labels the daemon sends a Spanish phone (`crates/core/src/views/card.rs`); the fixture
+    /// The labels the daemon sends a Spanish phone (`crates/views/src/card.rs`); the fixture
     /// is the English document, so the Spanish variants swap them in to show what ships.
     private static let spanishLabels = [
         "Ask about the PR": "Preguntar por la PR",

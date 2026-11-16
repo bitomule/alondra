@@ -116,7 +116,7 @@ pub(crate) fn render(report: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_core::views::Lang;
+    use alondra_views::Lang;
 
     fn report(dry_run: bool) -> Value {
         let session = |name: &str, short: &str, why: &str| json!({"session": format!("{short}-0000"), "short_id": short, "name": name, "why": why, "task": null});

@@ -13,6 +13,7 @@ from musts_scopes import matches, parse_checks
 
 MAC_CHECKS = {
     "crate-agent-runtime", "crate-alondra", "crate-alondrad", "crate-core", "crate-daemon-engine",
+    "crate-domain-rules", "crate-view-model", "crate-views",
     "crate-daemon-engine-machine", "crate-daemon-engine-model", "crate-daemon-engine-store", "crate-engine-github", "crate-engine-kernel", "crate-engine-orchestrator", "crate-machine-model",
     "crate-daemon-support", "crate-process-group", "crate-provider-claude",
     "crate-provider-codex", "local-daemon", "build-from-source",

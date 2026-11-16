@@ -8,7 +8,7 @@
 use crate::sdk_owner::SdkOwners as _;
 use crate::live::LiveOf as _;
 use alondra_core::clock;
-use alondra_core::domain::SystemCard;
+use alondra_domain_rules::SystemCard;
 use crate::locks::Poisonable as _;
 use crate::domain_github::execute_system;
 use crate::domain_runtime::DomainRuntime;
@@ -16,9 +16,9 @@ use crate::domain_store::TaskClosing;
 use crate::node_close::{CloseOutcome, Sessions, close_node};
 use crate::task_worktrees::Unreachable;
 use crate::worktree::TaskWorktree;
-use alondra_core::close_problem::{CLOSE_PROBLEM_PREFIX, CloseProblem, CloseStop};
-use alondra_core::views::Lang;
-use alondra_core::domain::{
+use alondra_domain_rules::close_problem::{CLOSE_PROBLEM_PREFIX, CloseProblem, CloseStop};
+use alondra_view_model::Lang;
+use alondra_domain_rules::{
     AgentId, Command, DomainState, InteractionId, InteractionPayload, NodeEnd, Scope, Task, TaskId,
 };
 use anyhow::Result;
@@ -163,7 +163,7 @@ async fn finish_unattended(domain: &DomainRuntime, task: &Task) -> Result<()> {
     if let Some(dir) = dir.filter(|dir| crate::task_worktrees::may_handle(domain, dir).is_ok() && crate::task_worktrees::heir(domain, task, dir).is_ok_and(|heir| heir.is_none())) {
         match crate::worktree::release_task_worktree(Path::new(&dir), &crate::launch_worktree::slug(&task.id.0), true).await {
             Ok(TaskWorktree::Unsaved(left)) => anyhow::bail!("the worktree of {} has work that is not saved: {left}", task.id),
-            Ok(TaskWorktree::Removed { freed }) => log!("deleting the worktree {dir} freed {}", alondra_core::machine_incident::bytes_text(freed, alondra_core::views::Lang::En)),
+            Ok(TaskWorktree::Removed { freed }) => log!("deleting the worktree {dir} freed {}", alondra_core::machine_incident::bytes_text(freed, alondra_view_model::Lang::En)),
             Ok(TaskWorktree::Unavailable(why)) => return Err(Unreachable(why).into()),
             Ok(_) => {}
             Err(why) => anyhow::bail!("the worktree of {} could not be released: {why}", task.id),
@@ -293,7 +293,7 @@ async fn close_one(domain: &DomainRuntime, sessions: &dyn Sessions, timing: &Tim
     let Some(task) = state.tasks.get(task_id) else { return Ok(()) };
     let mut row = domain.store.lock_or_exit("the domain store").begin_task_closing(task_id, now)?;
     if matches!(kind, Due::Cleanup) && !task.cancelled()
-        && task.ending != Some(alondra_core::domain::TaskEnding::Cancelling)
+        && task.ending != Some(alondra_domain_rules::TaskEnding::Cancelling)
         && !state.unproved_checklist(task).is_empty()
     {
         if state.node_session_closed(task) {
@@ -584,7 +584,7 @@ async fn finish_with_worktree(
         Ok(TaskWorktree::Unavailable(why)) => Err(Unreachable(why).into()),
         Ok(released) => {
             if let TaskWorktree::Removed { freed } = released {
-                log!("deleting the worktree {dir} freed {}", alondra_core::machine_incident::bytes_text(freed, alondra_core::views::Lang::En));
+                log!("deleting the worktree {dir} freed {}", alondra_core::machine_incident::bytes_text(freed, alondra_view_model::Lang::En));
             }
             finish(domain, &row, Some(agent), end)
         }

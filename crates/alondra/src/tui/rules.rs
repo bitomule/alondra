@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use alondra_core::views::{Action, Item, Row, View};
+use alondra_views::{Action, Item, Row, View};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use serde_json::json;

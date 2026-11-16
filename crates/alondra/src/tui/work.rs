@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use alondra_core::issues::Issue;
-use alondra_core::views::{ChoiceItem, Field, FieldKind, Item, View};
+use alondra_views::{ChoiceItem, Field, FieldKind, Item, View};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::{Value, json};
 

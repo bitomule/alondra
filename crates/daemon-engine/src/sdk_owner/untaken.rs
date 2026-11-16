@@ -3,7 +3,7 @@
 //! the one clock (`obligation_watch`) acts on what is past its deadline. Both stage the same
 //! commands, so a step repeated by either is a repeat the domain recognises by its id.
 use crate::domain_store::{Attached, OwnerTransaction, StoreError};
-use alondra_core::domain::*;
+use alondra_domain_rules::*;
 use alondra_domain::ActivityView;
 use alondra_foundation::InputId;
 

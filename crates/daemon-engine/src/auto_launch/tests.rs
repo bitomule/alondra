@@ -4,7 +4,7 @@ use super::*;
 use crate::domain_orchestrator_tools::{LaunchBody, launch};
 use alondra_daemon_engine_model::LaunchPlan;
 use crate::sdk_owner::tests::SdkLaunches;
-use alondra_core::domain::{
+use alondra_domain_rules::{
     Actor, StartProblem,
     Command, CommandEnvelope, DeliveryTarget, InteractionId, MergeMethod, NodeEnd, PROTOCOL_VERSION, PrState, TaskId,
 };
@@ -100,7 +100,7 @@ fn finish(f: &Fixture, id: &str, body: &str, pull_request: bool) {
             repository: "me/app".into(), number: 7, head: "head1".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash] });
     }
     command(&f.domain, author, Command::PresentResult { checklist: Vec::new(), attachments: vec![], task_id: id.into(), interaction_id: format!("final-{id}").into(),
-        body: body.into(), targets: targets.clone(), is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
+        body: body.into(), targets: targets.clone(), is_final: true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true) });
     command(&f.domain, user(), Command::AcceptDelivery { presentation_id: format!("final-{id}").into(), targets });
     if pull_request {
         command(&f.domain, Actor::System, Command::ObservePrState { pr_id: format!("pr-{id}").into(), head: "head1".into(), base: "main".into(),
@@ -115,7 +115,7 @@ pub fn open_task(f: &Fixture, id: &str) {
     command(&f.domain, Actor::System, Command::RegisterAgent { agent_id: format!("seed-{id}").into(), name: format!("Seed {id}").into(), at: 0 });
     command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"),
         agent_id: Some(format!("seed-{id}").into()), review_prs: false, dependencies: Default::default(), stack: None,
-        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
+        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
 }
 
 /// A finished earlier task for the others to wait on.
@@ -151,7 +151,7 @@ fn auto(f: &Fixture, task: &str) -> Option<crate::domain_store::AutoLaunch> {
     f.domain.store.lock().unwrap().auto_launch(&task.into()).unwrap()
 }
 
-fn agent_of(f: &Fixture, task: &str) -> Option<alondra_core::domain::AgentId> {
+fn agent_of(f: &Fixture, task: &str) -> Option<alondra_domain_rules::AgentId> {
     f.domain.state().unwrap().tasks[&TaskId::from(task)].agent_id.clone()
 }
 
@@ -198,7 +198,7 @@ async fn a_review_starts_by_itself_when_the_task_it_reviews_delivers_and_its_mis
         repository: "me/app".into(), number: 9, head: "head1".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash] });
     command(&f.domain, author, Command::PresentResult { checklist: Vec::new(), attachments: vec![], task_id: "a".into(), interaction_id: "final-a".into(),
         body: "What a delivered".into(), targets: vec![DeliveryTarget::PullRequest { pr_id: "pr-a".into(), head: "head1".into() }],
-        is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
+        is_final: true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true) });
     pass(&f.domain, &f.home).await.unwrap();
     assert_eq!(launches(&f), 1, "the review starts at the delivery, not at the merge");
     let prompt = prompt(&f, "rev");
@@ -270,7 +270,7 @@ async fn while_the_disk_is_nearly_full_a_ready_task_waits_and_starts_once_there_
     assert_eq!(auto(&f, "f1"), None, "not claimed: it starts by itself once there is space");
     assert!(told(&f).iter().all(|id| !id.starts_with("auto-launch")), "the orchestrator is not told: the user has the disk card");
     let queued = f.domain.live().gate.live(&f.domain, alondra_core::now_millis()).unwrap().queued;
-    assert!(queued.iter().any(|queued| queued.task_id == "f1" && matches!(queued.hold, alondra_core::views::LiveHold::Disk { .. })),
+    assert!(queued.iter().any(|queued| queued.task_id == "f1" && matches!(queued.hold, alondra_views::LiveHold::Disk { .. })),
         "it waits at the gate for room on the disk: {queued:?}");
 
     f.domain.live().machine_watch.set_disk_low(false);
@@ -393,7 +393,7 @@ async fn a_task_cancelled_while_it_starts_leaves_without_a_retry_or_a_card_and_t
     create(&f, "a", &[], Some(&plan(&f, "app/a")));
     create(&f, "b", &[], Some(&plan(&f, "app/b")));
     let now = alondra_core::now_millis();
-    let waiting = crate::admission::Waiting { key: crate::admission::Key::Task("a".into()), priority: alondra_core::domain::TaskPriority::Normal,
+    let waiting = crate::admission::Waiting { key: crate::admission::Key::Task("a".into()), priority: alondra_domain_rules::TaskPriority::Normal,
         resuming: false, since: 0 };
     assert_eq!(f.domain.live().gate.ask(&f.domain, waiting, now), Ok(()));
     assert!(f.domain.store.lock().unwrap().claim_auto_launch(&"a".into(), now, false).unwrap());
@@ -436,7 +436,7 @@ async fn the_worktree_made_for_a_task_cancelled_while_it_starts_goes_when_it_clo
     f.domain.live().gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(1)) });
     create(&f, "a", &[], Some(&plan(&f, "app/a")));
     let now = alondra_core::now_millis();
-    let waiting = crate::admission::Waiting { key: crate::admission::Key::Task("a".into()), priority: alondra_core::domain::TaskPriority::Normal,
+    let waiting = crate::admission::Waiting { key: crate::admission::Key::Task("a".into()), priority: alondra_domain_rules::TaskPriority::Normal,
         resuming: false, since: 0 };
     assert_eq!(f.domain.live().gate.ask(&f.domain, waiting, now), Ok(()));
     assert!(f.domain.store.lock().unwrap().claim_auto_launch(&"a".into(), now, false).unwrap());
@@ -452,10 +452,10 @@ async fn the_worktree_made_for_a_task_cancelled_while_it_starts_goes_when_it_clo
     assert!(worktree.join(".git").is_file(), "the start made the task's worktree");
     crate::task_closer::pass(&f.domain, &NoSessions, &crate::task_closer::Timing::new(None), alondra_core::now_millis()).await.unwrap();
     assert!(!worktree.exists(), "the cancelled task's worktree goes with its close");
-    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("a")].state, alondra_core::domain::TaskState::Cancelled);
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("a")].state, alondra_domain_rules::TaskState::Cancelled);
 }
 
-pub fn problem(f: &Fixture, task: &str) -> Option<alondra_core::domain::Interaction> {
+pub fn problem(f: &Fixture, task: &str) -> Option<alondra_domain_rules::Interaction> {
     f.domain.state().unwrap().open_start_problem(&task.into()).cloned()
 }
 
@@ -476,25 +476,25 @@ fn retry_now(f: &Fixture, task: &str) {
 async fn a_task_of_a_scheduled_request_needs_its_plan_and_takes_the_schedules_model_and_effort() {
     let f = world();
     let options = BTreeMap::from([("effort".to_owned(), alondra_core::options::Choice::Value("hard".into()))]);
-    command(&f.domain, Actor::System, Command::CreateSchedule { schedule: alondra_core::domain::Schedule {
+    command(&f.domain, Actor::System, Command::CreateSchedule { schedule: alondra_domain_rules::Schedule {
         paid_account_grant: None,
         id: "weekly".into(), title: "BlurCamera · weekly improvement".into(), text: "Improve BlurCamera".into(), project: Some("App".into()),
-        options: options.clone(), disallowed_tools: vec![], frequency: alondra_core::domain::ScheduleFrequency::Daily, hour: 9, minute: 0,
+        options: options.clone(), disallowed_tools: vec![], frequency: alondra_domain_rules::ScheduleFrequency::Daily, hour: 9, minute: 0,
         weekday: None, interval: None, start_at: None, enabled: true, next_run: Some(100), revision: 1, deleted_at: None,
     } });
     command(&f.domain, Actor::System, Command::ClaimScheduleRun { schedule_id: "weekly".into(), run_id: "run".into(),
-        origin: alondra_core::domain::ScheduleRunOrigin::Due, now: 100, next_after_now: Some(200), expected_schedule_revision: None });
+        origin: alondra_domain_rules::ScheduleRunOrigin::Due, now: 100, next_after_now: Some(200), expected_schedule_revision: None });
     let resolved = alondra_core::options::OptionsFile::default().resolve(Some("App"), &options).unwrap();
-    let mut request = alondra_core::domain::Request::new("weekly".into(), "Improve BlurCamera".into());
+    let mut request = alondra_domain_rules::Request::new("weekly".into(), "Improve BlurCamera".into());
     request.title = Some("BlurCamera · weekly improvement".into());
-    let task = alondra_core::domain::Task {
+    let task = alondra_domain_rules::Task {
         id: "run".into(), request_id: "weekly".into(), agent_id: None, title: "BlurCamera · weekly improvement".into(), state: TaskState::NotStarted,
         revision: 0, started: false, review_prs: false, created_revision: 0, pending_user_inputs: Default::default(), final_presentation: None, pr_id: None, later_prs: vec![], opened_prs: Default::default(), dependencies: Default::default(), stack: None,
         documents: Default::default(), archived: false, model: None, waiting_for_tasks: Default::default(), ended_task_waits: Default::default(), delivered_dependencies: Default::default(), blocks: Default::default(),
         verdict: None, review_rounds: 0, wrap_up: Default::default(), priority: Default::default(), ending: None, stalls: 0, stall_closing: None, open_pr: None, continues: None, worktrees: Default::default(), account: None, provider: Default::default(), selection: None, pending_selection: None, move_refused: None, allowed: Default::default(), project: None,
     };
     command(&f.domain, Actor::System, Command::RecordScheduleRunSent { run_id: "run".into(), request, task, finished_at: 101,
-        launch: alondra_core::domain::ScheduleLaunchIntent { name: "scheduled/weekly-run".into(), cwd: f.project.to_str().unwrap().into(),
+        launch: alondra_domain_rules::ScheduleLaunchIntent { name: "scheduled/weekly-run".into(), cwd: f.project.to_str().unwrap().into(),
             prompt: "Improve BlurCamera".into(), options_json: serde_json::to_string(&resolved).unwrap() } });
     let choices = crate::domain_orchestrator_tools::request_choices(&f.domain, &"weekly".into()).unwrap().expect("the schedule's options are the request's");
     assert_eq!(choices.options.effort, "hard");
@@ -541,7 +541,7 @@ async fn a_failed_start_is_tried_again_by_itself_then_put_to_the_user_who_can_tr
     let f = world();
     create(&f, "f1", &[], Some(&plan(&f, "app/f1")));
     f.sdk.refuse_starts(true);
-    for attempt in 1..=alondra_core::domain::START_RETRIES.len() as u8 {
+    for attempt in 1..=alondra_domain_rules::START_RETRIES.len() as u8 {
         pass(&f.domain, &f.home).await.unwrap();
         assert_eq!(f.domain.store.lock().unwrap().start_retries().unwrap()[&TaskId::from("f1")].0, attempt);
         assert!(problem(&f, "f1").is_none(), "no card while Alondra tries again");
@@ -558,7 +558,7 @@ async fn a_failed_start_is_tried_again_by_itself_then_put_to_the_user_who_can_tr
     assert_eq!(f.domain.state().unwrap().interactions.keys().filter(|id| id.0.starts_with("start-problem-f1")).count(), 1, "one card");
 
     f.sdk.refuse_starts(false);
-    answer(&f, &card.id, alondra_core::domain::START_RETRY);
+    answer(&f, &card.id, alondra_domain_rules::START_RETRY);
     pass(&f.domain, &f.home).await.unwrap();
     pass(&f.domain, &f.home).await.unwrap();
     assert!(agent_of(&f, "f1").is_some(), "the user's try again starts it");
@@ -591,7 +591,7 @@ async fn trusting_an_untrusted_folder_from_its_card_starts_the_task() {
     let card = problem(&f, "f1").expect("only the user can trust it");
     assert_eq!(card.card.effective_title(), "Trust App so “Task f1” can start");
 
-    answer(&f, &card.id, alondra_core::domain::START_RETRY);
+    answer(&f, &card.id, alondra_domain_rules::START_RETRY);
     pass(&f.domain, &f.home).await.unwrap();
     pass(&f.domain, &f.home).await.unwrap();
 
@@ -614,7 +614,7 @@ async fn a_trust_alondra_cannot_save_comes_back_saying_why() {
     let lock = f.root.join(".claude.json.lock");
     std::fs::create_dir(&lock).unwrap();
 
-    answer(&f, &card.id, alondra_core::domain::START_RETRY);
+    answer(&f, &card.id, alondra_domain_rules::START_RETRY);
     pass(&f.domain, &f.home).await.unwrap();
     pass(&f.domain, &f.home).await.unwrap();
 
@@ -622,12 +622,12 @@ async fn a_trust_alondra_cannot_save_comes_back_saying_why() {
     assert!(!trusted(&f, &config));
     let again = problem(&f, "f1").expect("a new card with the reason");
     assert_ne!(again.id, card.id);
-    let Some(StartProblem::Untrusted { error: Some(error), .. }) = alondra_core::start_problem::from_body(&again.body) else { panic!("{}", again.body) };
+    let Some(StartProblem::Untrusted { error: Some(error), .. }) = alondra_domain_rules::start_problem::from_body(&again.body) else { panic!("{}", again.body) };
     assert!(error.contains("locked"), "{error}");
     assert!(again.card.why.starts_with("You chose to trust it, but Alondra could not save"), "{}", again.card.why);
 
     std::fs::remove_dir(&lock).unwrap();
-    answer(&f, &again.id, alondra_core::domain::START_RETRY);
+    answer(&f, &again.id, alondra_domain_rules::START_RETRY);
     pass(&f.domain, &f.home).await.unwrap();
     pass(&f.domain, &f.home).await.unwrap();
     assert!(trusted(&f, &config));
@@ -690,11 +690,11 @@ async fn a_node_the_user_closes_asks_to_relaunch_and_the_relaunch_starts_a_new_n
     assert!(agent_of(&f, "f1").is_none());
     let state = f.domain.state().unwrap();
     let cases: Vec<_> = state.interactions.values()
-        .filter(|card| card.scope == (alondra_core::domain::Scope::Task { task_id: "f1".into() }) && alondra_core::domain::is_stall_case(card) && state.open(card))
+        .filter(|card| card.scope == (alondra_domain_rules::Scope::Task { task_id: "f1".into() }) && alondra_domain_rules::is_stall_case(card) && state.open(card))
         .map(|card| card.id.clone()).collect();
     for case in cases {
         command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::SettleStall {
-            case_id: case, task_id: "f1".into(), outcome: alondra_core::domain::StallOutcome::Instruct { text: "Go on with your task".into() },
+            case_id: case, task_id: "f1".into(), outcome: alondra_domain_rules::StallOutcome::Instruct { text: "Go on with your task".into() },
         });
     }
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("f1")].state, TaskState::NotStarted);
@@ -704,7 +704,7 @@ async fn a_node_the_user_closes_asks_to_relaunch_and_the_relaunch_starts_a_new_n
     pass(&f.domain, &f.home).await.unwrap();
     assert_eq!(f.domain.state().unwrap().interactions.keys().filter(|id| id.0.starts_with("start-problem-f1")).count(), 1, "one card");
 
-    answer(&f, &card.id, alondra_core::domain::START_RETRY);
+    answer(&f, &card.id, alondra_domain_rules::START_RETRY);
     pass(&f.domain, &f.home).await.unwrap();
     assert_eq!(launches(&f), 2, "one original node and its replacement");
     assert!(agent_of(&f, "f1").is_some_and(|agent| agent != node));
@@ -816,11 +816,11 @@ async fn a_dependent_held_by_the_users_decision_starts_after_its_review_with_the
     command(&f.domain, Actor::Agent { agent_id: "seed-b".into() }, Command::StartTask { task_id: "b".into() });
     create(&f, "c", &["b"], Some(&LaunchPlan { mission: Some("Group with the 360 px copy".into()), ..plan(&f, "app/c") }));
     command(&f.domain, Actor::Agent { agent_id: "seed-b".into() }, Command::AskQuestion {
-        attachments: vec![], interaction_id: "decision".into(), scope: alondra_core::domain::Scope::Task { task_id: "b".into() },
-        recipient: alondra_core::domain::Recipient::User, body: "11 of 21 groups match".into(), blocking: true,
-        options: vec![alondra_core::domain::QuestionOption { id: "threshold".into(), label: "Adjust the threshold".into(), description: None },
-            alondra_core::domain::QuestionOption { id: "plan-512".into(), label: "512 px prints".into(), description: None }],
-        card: alondra_core::domain::CardSpec::new(alondra_core::domain::CardKind::Decide, "Decide the index's next step").why("Phase C starts after it"),
+        attachments: vec![], interaction_id: "decision".into(), scope: alondra_domain_rules::Scope::Task { task_id: "b".into() },
+        recipient: alondra_domain_rules::Recipient::User, body: "11 of 21 groups match".into(), blocking: true,
+        options: vec![alondra_domain_rules::QuestionOption { id: "threshold".into(), label: "Adjust the threshold".into(), description: None },
+            alondra_domain_rules::QuestionOption { id: "plan-512".into(), label: "512 px prints".into(), description: None }],
+        card: alondra_domain_rules::CardSpec::new(alondra_domain_rules::CardKind::Decide, "Decide the index's next step").why("Phase C starts after it"),
     });
     command(&f.domain, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "decision".into(),
         option_id: "plan-512".into(), inputs: Default::default() });
@@ -829,7 +829,7 @@ async fn a_dependent_held_by_the_users_decision_starts_after_its_review_with_the
     assert_eq!(launches(&f), 0, "its dependency is done but its plan is not reviewed");
     assert!(auto(&f, "c").is_none(), "nothing claims it while it is held");
     command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::SettlePlanReview { review_id: "decision".into(), task_id: "c".into(),
-        outcome: alondra_core::domain::PlanReviewOutcome::PlanChanged {
+        outcome: alondra_domain_rules::PlanReviewOutcome::PlanChanged {
             launch: LaunchPlan { mission: Some("Group with 512 px prints".into()), ..plan(&f, "app/c-512") }, reason: "The user chose 512 px".into() } });
     pass(&f.domain, &f.home).await.unwrap();
     assert_eq!(launches(&f), 1);
@@ -941,11 +941,11 @@ async fn a_node_alondra_closed_is_relaunched_by_itself_and_a_failed_relaunch_is_
         crate::live::Relaunch::ByItself).unwrap();
     let state = f.domain.state().unwrap();
     let cases: Vec<_> = state.interactions.values()
-        .filter(|card| card.scope == (alondra_core::domain::Scope::Task { task_id: "f1".into() }) && alondra_core::domain::is_stall_case(card) && state.open(card))
+        .filter(|card| card.scope == (alondra_domain_rules::Scope::Task { task_id: "f1".into() }) && alondra_domain_rules::is_stall_case(card) && state.open(card))
         .map(|card| card.id.clone()).collect();
     for case in cases {
         command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::SettleStall {
-            case_id: case, task_id: "f1".into(), outcome: alondra_core::domain::StallOutcome::Instruct { text: "Go on with your task".into() },
+            case_id: case, task_id: "f1".into(), outcome: alondra_domain_rules::StallOutcome::Instruct { text: "Go on with your task".into() },
         });
     }
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("f1")].state, TaskState::NotStarted);

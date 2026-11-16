@@ -3,7 +3,7 @@ use crate::domain_store::DomainStore;
 use crate::domain_store::tests::{Fixture, seeded};
 use crate::live::LiveOf as _;
 use crate::metrics_capture::node_turn;
-use alondra_core::domain::*;
+use alondra_domain_rules::*;
 use alondra_core::metrics::steps::StepCounts;
 use serde_json::{Value, json};
 

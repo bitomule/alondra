@@ -8,7 +8,6 @@ publish.workspace = true
 [dependencies]
 alondra-foundation.workspace = true
 alondra-domain.workspace = true
-rpds.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

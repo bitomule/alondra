@@ -1,7 +1,7 @@
 //! The keys of the state on screen, in one table: the key bar, the reader's panel, the help screen
 //! and the key handler all read it, so a key is shown exactly when it does something.
 
-use alondra_core::views::{Action, ActionOption, ContentKind, Item, View};
+use alondra_views::{Action, ActionOption, ContentKind, Item, View};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::keys::{Cmd, Motion};

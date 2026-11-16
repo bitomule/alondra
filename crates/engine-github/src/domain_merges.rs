@@ -11,7 +11,7 @@ use alondra_core::clock::Instant;
 use crate::domain_github::{GhCli, GhFailure, execute_system, pr_url};
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
-use alondra_core::domain::{
+use alondra_domain_rules::{
     AuthorizationId, CardSpec, Command, DeliveryTarget, DomainError, DomainState, Feedback, FeedbackTarget, Instruction, InteractionId, InteractionPayload,
     MergeAttemptState, MergeMethod, PrId, PrState, PullRequest, Scope, clip,
 };
@@ -161,7 +161,7 @@ impl GhCli {
 impl PrMerger for GhCli {
     fn default_branch<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, String> {
         Box::pin(async move {
-            let url = format!("https://{}/{}", alondra_core::domain::normalize_pr_host(&pr.host), pr.repository);
+            let url = format!("https://{}/{}", alondra_domain_rules::normalize_pr_host(&pr.host), pr.repository);
             let out = self.run(&["repo", "view", &url, "--json", "defaultBranchRef"], None, Duration::from_secs(30)).await?;
             let value: Value = serde_json::from_slice(&out).map_err(GhFailure::unreadable)?;
             value["defaultBranchRef"]["name"].as_str().filter(|name| !name.is_empty()).map(str::to_owned)
@@ -210,7 +210,7 @@ impl PrMerger for GhCli {
     }
     fn required_checks<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, Vec<String>> {
         Box::pin(async move {
-            let host = alondra_core::domain::normalize_pr_host(&pr.host);
+            let host = alondra_domain_rules::normalize_pr_host(&pr.host);
             let repo = format!("repos/{}", pr.repository);
             let rules = self.api(&["--hostname", &host, &format!("{repo}/rules/branches/{base}?per_page=100")], Duration::from_secs(30)).await?;
             let mut required = match rules_read(&rules)? {
@@ -229,7 +229,7 @@ impl PrMerger for GhCli {
     }
     fn bypassable_checks<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, Vec<String>> {
         Box::pin(async move {
-            let host = alondra_core::domain::normalize_pr_host(&pr.host);
+            let host = alondra_domain_rules::normalize_pr_host(&pr.host);
             let repo = format!("repos/{}", pr.repository);
             let rules = self.api(&["--hostname", &host, &format!("{repo}/rules/branches/{base}?per_page=100")], Duration::from_secs(30)).await?;
             let Some(rules) = rules_read(&rules)? else { return Ok(vec![]) };
@@ -247,7 +247,7 @@ impl PrMerger for GhCli {
     }
     fn can_merge<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
         Box::pin(async move {
-            let url = format!("https://{}/{}", alondra_core::domain::normalize_pr_host(&pr.host), pr.repository);
+            let url = format!("https://{}/{}", alondra_domain_rules::normalize_pr_host(&pr.host), pr.repository);
             let out = self.run(&["repo", "view", &url, "--json", "viewerPermission", "--jq", ".viewerPermission"], None,
                 Duration::from_secs(30)).await?;
             match String::from_utf8_lossy(&out).trim() {
@@ -261,7 +261,7 @@ impl PrMerger for GhCli {
         Box::pin(async move {
             let (owner, name) = pr.repository.split_once('/')
                 .ok_or_else(|| GhFailure::Unreadable("the PR's repository is not owner/name".into()))?;
-            let host = alondra_core::domain::normalize_pr_host(&pr.host);
+            let host = alondra_domain_rules::normalize_pr_host(&pr.host);
             let query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){isInMergeQueue}}}";
             let (owner, name, number) = (format!("owner={owner}"), format!("name={name}"), format!("number={}", pr.number));
             let query = format!("query={query}");
@@ -395,7 +395,7 @@ pub fn due(state: &DomainState) -> Vec<Due> {
                 a.valid && a.presentation_id == p.id && &a.pr_id == pr_id && &a.head == head
                     && matches!(a.attempt, MergeAttemptState::Unclaimed | MergeAttemptState::Claimed | MergeAttemptState::Uncertain)
             });
-            let authorized_by = authorization.map_or(alondra_core::domain::Feedback::ALONDRA, |a| a.user_id.as_str());
+            let authorized_by = authorization.map_or(alondra_domain_rules::Feedback::ALONDRA, |a| a.user_id.as_str());
             if state.authorized_merge_held(p, authorized_by, &feedback_target) {
                 continue;
             }
@@ -416,7 +416,7 @@ fn still_due(state: &DomainState, item: &Due, authorization: &AuthorizationId) -
     let Some(p) = task.final_presentation.as_ref().filter(|p| **p == item.presentation).and_then(|p| state.interactions.get(p)) else {
         return false;
     };
-    let authorized_by = state.merge_authorizations.get(authorization).map_or(alondra_core::domain::Feedback::ALONDRA, |a| a.user_id.as_str());
+    let authorized_by = state.merge_authorizations.get(authorization).map_or(alondra_domain_rules::Feedback::ALONDRA, |a| a.user_id.as_str());
     state.stack_ready_for_merge(&item.pr.id).is_ok()
         && !state.authorized_merge_held(p, authorized_by, &FeedbackTarget::PullRequest { pr_id: item.pr.id.clone(), head: item.head.clone() })
         && state.pull_requests.get(&item.pr.id).is_some_and(|pr| pr.state == PrState::Open && pr.head == item.head)
@@ -1031,12 +1031,12 @@ fn recorded(result: Result<(), StoreError>) -> Result<bool> {
 fn hand_back(domain: &DomainRuntime, item: &Due, reason: &str) -> Result<()> {
     log!("handing {} back to its node: {reason}", item.pr.id);
     let pr = &item.pr;
-    let body = alondra_core::domain::merge_failed_text(pr.number, &pr_url(&pr.host, &pr.repository, pr.number), &pr.base, reason);
+    let body = alondra_domain_rules::merge_failed_text(pr.number, &pr_url(&pr.host, &pr.repository, pr.number), &pr.base, reason);
     recorded(execute_system(domain, Command::SubmitFeedback {
         attachments: vec![], presentation_id: item.presentation.clone(),
         targets: vec![DeliveryTarget::PullRequest { pr_id: pr.id.clone(), head: item.head.clone() }],
         body, instruction: Instruction::Conflicts,
-        merge_failure: Some(alondra_core::domain::MergeFailure { number: pr.number, reason: reason.trim().trim_end_matches('.').to_owned() }),
+        merge_failure: Some(alondra_domain_rules::MergeFailure { number: pr.number, reason: reason.trim().trim_end_matches('.').to_owned() }),
     })).map(|_| ())
 }
 

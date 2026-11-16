@@ -9,9 +9,9 @@ use crate::domain_store::OutboxMessage;
 use crate::push::Push;
 use crate::service::Service;
 use alondra_core::delivery::State;
-use alondra_core::views::{self, Lang};
+use alondra_views::{self as views, Lang};
 use anyhow::Result;
-use alondra_core::domain::{AgentId, InteractionId, InteractionPayload, ReadSnapshot, TaskId};
+use alondra_domain_rules::{AgentId, InteractionId, InteractionPayload, ReadSnapshot, TaskId};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::Path;
@@ -155,13 +155,13 @@ fn tell_sdk_node(domain: &DomainRuntime, message: &OutboxMessage) -> std::result
 }
 
 /// The node's own card of `task` whose answer `message` carries.
-fn answered_card(state: &alondra_core::domain::DomainState, task: &TaskId, message: &OutboxMessage) -> Option<InteractionId> {
+fn answered_card(state: &alondra_domain_rules::DomainState, task: &TaskId, message: &OutboxMessage) -> Option<InteractionId> {
     let card = state.interactions.get(&InteractionId(message.interaction_id.clone()?))?;
     let node = state.tasks.get(task)?.agent_id.as_ref()?;
     let answered = matches!(&card.payload,
         InteractionPayload::Question { answer: Some(_), .. } | InteractionPayload::ActionRequest { answer: Some(_), .. });
-    let theirs = matches!(&card.author, alondra_core::domain::Author::Agent { agent_id } if agent_id == node)
-        && matches!(&card.scope, alondra_core::domain::Scope::Task { task_id } if task_id == task);
+    let theirs = matches!(&card.author, alondra_domain_rules::Author::Agent { agent_id } if agent_id == node)
+        && matches!(&card.scope, alondra_domain_rules::Scope::Task { task_id } if task_id == task);
     (answered && theirs && !state.holds.contains_key(&card.id)).then(|| card.id.clone())
 }
 
@@ -364,7 +364,7 @@ pub(crate) fn user_push_payload(read: &ReadSnapshot, interaction_id: Option<&str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_core::domain::*;
+    use alondra_domain_rules::*;
     use std::collections::BTreeSet;
 
     fn user_push_payload(state: &DomainState, interaction_id: Option<&str>, lang: Lang) -> Value {
@@ -521,7 +521,7 @@ mod tests {
                 review_prs: false,
                 dependencies: BTreeSet::new(),
                 stack: None,
-                launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+                launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
             },
         );
         apply_command(
@@ -543,7 +543,7 @@ mod tests {
                     id: "yes".into(),
                     label: "Yes".into(),
                     description: None,
-                }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
+                }], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Provide, "Answer the question"),
             },
         );
         let push = Push::open(&home).unwrap();
@@ -707,7 +707,7 @@ mod tests {
                 review_prs: false,
                 dependencies: BTreeSet::new(),
                 stack: None,
-                launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+                launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
             },
         );
         apply_command(
@@ -721,7 +721,7 @@ mod tests {
                     task_id: "task-a".into(),
                 },
                 recipient: Recipient::User,
-                body: "Information".into(), card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
+                body: "Information".into(), card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"),
             },
         );
         let message = domain
@@ -762,7 +762,7 @@ mod tests {
                     task_id: "task-a".into(),
                 },
                 recipient: Recipient::User,
-                body: "Another update".into(), card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
+                body: "Another update".into(), card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"),
             },
         );
         std::fs::write(home.join("service.toml"), "service unavailable").unwrap();
@@ -908,7 +908,7 @@ mod tests {
 
     fn push_fixture_state(data_epoch: &str) -> DomainState {
         let mut state = DomainState::new(data_epoch);
-        state.pull_requests.insert("pr-1".into(), alondra_core::domain::PullRequest {
+        state.pull_requests.insert("pr-1".into(), alondra_domain_rules::PullRequest {
             id: "pr-1".into(), task_id: "task-a".into(), host: "github.com".into(), repository: "example/parser".into(),
             number: 1, head: "abc".into(), base: "main".into(), state: PrState::Open,
             merged_head: None, allowed_methods: vec![], review: None,
@@ -1078,7 +1078,7 @@ mod tests {
                 attachments: vec![], id: id.into(), scope, author: Author::System,
                 recipient: Recipient::User, body: "Hecho".into(), blocking: false, subject: None,
                 payload: InteractionPayload::Question { options: vec![QuestionOption { id: "go".into(), label: "Go".into(), description: None }], answer: None },
-                revision: 1, order: 1, withdrawn: false, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Decide, "Choose"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
+                revision: 1, order: 1, withdrawn: false, card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Decide, "Choose"), clarification: None, snoozed_until: None, resurfaced_at_revision: None, shortened: false,
             });
         }
         assert_eq!(user_push_payload(&state, Some("info-2"), Lang::En)["aps"]["badge"], 3);
@@ -1153,7 +1153,7 @@ mod tests {
         apply_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
             task_id: "task-a".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("agent-a".into()),
             review_prs: false, dependencies: Default::default(), stack: None,
-            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
+            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
         (scratch_directory, home, domain)
     }
 
@@ -1234,7 +1234,7 @@ mod tests {
         apply_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
             task_id: "task-a".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("agent-a".into()),
             review_prs: false, dependencies: Default::default(), stack: None,
-            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
+            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
         apply_command(&domain, agent.clone(), "question", Command::AskQuestion {
             attachments: vec![], interaction_id: "question-a".into(), scope: Scope::Task { task_id: "task-a".into() },
             recipient: Recipient::User, body: "Choose".into(), blocking: true,
@@ -1270,7 +1270,7 @@ mod tests {
         apply_command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
             task_id: "task-a".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("agent-a".into()),
             review_prs: false, dependencies: Default::default(), stack: None,
-            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
+            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
         let plan = |domain: &DomainRuntime, call: &str, text: &str| {
             let card = serde_json::from_value(json!({"session_id": "agent-a", "id": call, "kind": "plan", "input": {"plan": text}})).unwrap();
             match crate::domain_holds::post(domain, &card, true).unwrap() {

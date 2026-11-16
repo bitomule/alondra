@@ -12,7 +12,7 @@
 use crate::sdk_owner::SdkOwners as _;
 use alondra_core::clock;
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain::{DomainState, TaskId};
+use alondra_domain_rules::{DomainState, TaskId};
 use alondra_core::{Millis, now_millis};
 use std::collections::BTreeMap;
 use std::sync::Arc;

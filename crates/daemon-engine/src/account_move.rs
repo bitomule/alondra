@@ -9,7 +9,7 @@ use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{AccountMove, AccountMovePlan, AccountMoveStep};
 use alondra_core::Millis;
 use alondra_core::accounts::{AccountId, Policy, Provider};
-use alondra_core::domain::*;
+use alondra_domain_rules::*;
 use std::sync::Arc;
 use std::time::Duration;
 

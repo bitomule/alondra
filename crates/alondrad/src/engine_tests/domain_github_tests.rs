@@ -1,6 +1,6 @@
 //! The notice an auto-merged pull request gives its node, which alondrad's API words.
 use alondra_daemon_engine::domain_github::tests::*;
-use alondra_core::domain::*;
+use alondra_domain_rules::*;
 
 #[test]
 fn the_auto_merge_notice_says_alondra_merges_without_protocol_or_git_metadata() {

@@ -1,6 +1,6 @@
 //! A node whose turn a Claude API error ended (Claude Code's `StopFailure` hook) never waits in
 //! nobody's hands. A transient error pauses it in the gate, which sends it back to its task once
-//! the retry is due (`alondra_core::domain::after_api_failure`); the usage limit waits for its
+//! the retry is due (`alondra_domain_rules::after_api_failure`); the usage limit waits for its
 //! reset; while the API looks down for every node they all wait, one of them probing it, with no
 //! card. A card asks the user only when trying again cannot help, or when the API answers other
 //! nodes and this one still fails after every retry. The hook itself cannot make Claude go on
@@ -8,7 +8,7 @@
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::pauses::{Paused, Reason};
-use alondra_core::domain::{AgentId, ApiHealth, OUTAGE_PROBE, InteractionPayload, NodePhase, START_RETRY, StartProblem};
+use alondra_domain_rules::{AgentId, ApiHealth, OUTAGE_PROBE, InteractionPayload, NodePhase, START_RETRY, StartProblem};
 use alondra_core::Millis;
 use anyhow::Result;
 use std::collections::BTreeMap;

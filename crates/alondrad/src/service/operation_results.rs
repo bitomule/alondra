@@ -1,5 +1,5 @@
 use super::*;
-use alondra_core::views::action_outcome::{UnknownReason, in_progress_body, unknown_body};
+use alondra_views::action_outcome::{UnknownReason, in_progress_body, unknown_body};
 use p256::elliptic_curve::sec1::ToSec1Point;
 
 pub(crate) struct Lookup {

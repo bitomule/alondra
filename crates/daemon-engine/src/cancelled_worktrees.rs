@@ -5,12 +5,12 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use alondra_core::discard_worktrees::{CancelledWorktree, DISCARD_WORKTREES_PREFIX, DiscardWorktrees};
-use alondra_core::domain::{
+use alondra_domain_rules::discard_worktrees::{CancelledWorktree, DISCARD_WORKTREES_PREFIX, DiscardWorktrees};
+use alondra_domain_rules::{
     Author, Command, DomainState, InteractionId, InteractionPayload, NodeEnd, PrState, Scope, SystemCard, Task, TaskId, TaskState,
     WorktreeEnd,
 };
-use alondra_core::views::Lang;
+use alondra_view_model::Lang;
 use anyhow::{Result, anyhow};
 
 use crate::domain_github::execute_system;
@@ -103,7 +103,7 @@ pub(crate) async fn release_cancelled(domain: &DomainRuntime, task: &Task) -> Re
     Ok(())
 }
 
-fn covering_cards(state: &DomainState) -> impl Iterator<Item = (&alondra_core::domain::Interaction, DiscardWorktrees)> {
+fn covering_cards(state: &DomainState) -> impl Iterator<Item = (&alondra_domain_rules::Interaction, DiscardWorktrees)> {
     state.interactions.values()
         .filter(|card| card.author == Author::System && card.system_card == Some(SystemCard::DiscardWorktrees) && !card.withdrawn)
         .filter_map(|card| Some((card, DiscardWorktrees::from_body(&card.body)?)))

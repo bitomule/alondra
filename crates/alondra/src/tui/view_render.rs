@@ -4,8 +4,8 @@
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 
-use alondra_core::domain::CardKind;
-use alondra_core::views::{
+use alondra_domain_rules::CardKind;
+use alondra_views::{
     Action, Card, CommentKind, Facts, FieldKind, Form, Icon, Input, Item, Label, Link, LocalLink, Notice, Presentation, Row,
     Section, Tone, Trailing, View,
 };
@@ -68,7 +68,7 @@ pub fn entries(
     view: &View,
     open: &BTreeSet<String>,
     open_rows: &BTreeSet<String>,
-) -> Vec<(String, bool, Option<alondra_core::views::Link>)> {
+) -> Vec<(String, bool, Option<alondra_views::Link>)> {
     let mut result = Vec::new();
     for section in &view.sections {
         if let Some(key) = header_key(view, section) {
@@ -131,7 +131,7 @@ pub fn lift_blocks(sections: &mut Vec<Section>) {
         _ => None,
     }).map(|block| {
         let count = match &block.trailing {
-            Some(alondra_core::views::Trailing::Text { text }) => text.parse().ok(),
+            Some(alondra_views::Trailing::Text { text }) => text.parse().ok(),
             _ => None,
         };
         let mut children = block.children;
@@ -143,8 +143,8 @@ pub fn lift_blocks(sections: &mut Vec<Section>) {
             title: Some(block.title),
             count,
             collapsed: false,
-            items: block.subtitle.map(|text| Item::Notice(alondra_core::views::Notice {
-                text, tone: alondra_core::views::Tone::Neutral, action: None,
+            items: block.subtitle.map(|text| Item::Notice(alondra_views::Notice {
+                text, tone: alondra_views::Tone::Neutral, action: None,
             })).into_iter().chain(children.into_iter().map(Item::Row)).collect(),
             card_ids: vec![],
             card_waits: vec![],
@@ -226,14 +226,14 @@ fn row_lines_at(row: &Row, width: usize, selected: bool, nested: bool, now: i64)
         .map(|badge| (label_text_at(badge, now), label_style(badge)))
         .collect();
     match &row.trailing {
-        Some(alondra_core::views::Trailing::Count { value }) if *value > 0 => {
+        Some(alondra_views::Trailing::Count { value }) if *value > 0 => {
             parts.push((value.to_string(), Style::new().fg(DIM)))
         }
-        Some(alondra_core::views::Trailing::Count { .. } | alondra_core::views::Trailing::Unsupported) | None => {}
-        Some(alondra_core::views::Trailing::Time { at, format }) => {
+        Some(alondra_views::Trailing::Count { .. } | alondra_views::Trailing::Unsupported) | None => {}
+        Some(alondra_views::Trailing::Time { at, format }) => {
             parts.push((format_time(at, *format), Style::new().fg(DIM)))
         }
-        Some(alondra_core::views::Trailing::Text { text }) => {
+        Some(alondra_views::Trailing::Text { text }) => {
             parts.push((text.clone(), Style::new().fg(DIM)))
         }
     }
@@ -334,7 +334,7 @@ fn card_glyph(card: &Card) -> (&'static str, Color) {
 fn card_age(card: &Card) -> Option<String> {
     card.timestamps
         .first()
-        .map(|stamp| format_time(&stamp.at, alondra_core::views::TimeFormat::Relative))
+        .map(|stamp| format_time(&stamp.at, alondra_views::TimeFormat::Relative))
 }
 
 /// One list item per card: its type's glyph, what it needs over as many lines as it takes, and on
@@ -403,13 +403,13 @@ fn pr_state(card: &Card) -> Option<&Label> {
 }
 
 /// The task or node a card came from, the way its header names it.
-pub fn card_agent(card: &Card) -> Option<&alondra_core::views::ContextLine> {
+pub fn card_agent(card: &Card) -> Option<&alondra_views::ContextLine> {
     card.context.iter().find(|line| matches!(line.icon, Icon::Task | Icon::Node))
 }
 
-pub fn card_task_id(card: &Card) -> Option<alondra_core::domain::TaskId> {
+pub fn card_task_id(card: &Card) -> Option<alondra_domain_rules::TaskId> {
     match card_agent(card)?.link.as_ref()? {
-        alondra_core::views::Link::View { key } => key.strip_prefix("task:").map(|id| alondra_core::domain::TaskId(id.to_owned())),
+        alondra_views::Link::View { key } => key.strip_prefix("task:").map(|id| alondra_domain_rules::TaskId(id.to_owned())),
         _ => None,
     }
 }
@@ -488,9 +488,9 @@ fn keycap_span(key: &str, background: Color) -> Span<'static> {
 
 fn role_color(action: &Action) -> Color {
     match action.role {
-        Some(alondra_core::views::Role::Advance) => Color::Green,
-        Some(alondra_core::views::Role::Risk) => Color::LightRed,
-        Some(alondra_core::views::Role::Neutral) | None => Color::Gray,
+        Some(alondra_views::Role::Advance) => Color::Green,
+        Some(alondra_views::Role::Risk) => Color::LightRed,
+        Some(alondra_views::Role::Neutral) | None => Color::Gray,
     }
 }
 
@@ -540,7 +540,7 @@ fn grey(line: Line<'static>, color: Color) -> Line<'static> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Menu {
     pub title: String,
-    pub entries: Vec<(Action, Option<alondra_core::views::ActionOption>)>,
+    pub entries: Vec<(Action, Option<alondra_views::ActionOption>)>,
     pub sel: usize,
 }
 
@@ -559,10 +559,10 @@ pub fn documents_menu(view: &View) -> Option<Menu> {
     let entries: Vec<_> = section.items.iter().flat_map(|item| match item {
         Item::Facts(facts) => facts.items.as_slice(),
         _ => &[],
-    }).filter(|fact| matches!(fact.link, Some(alondra_core::views::Link::View { .. }))).map(|fact| (Action {
-        id: String::new(), label: fact.value.clone(), style: alondra_core::views::Style::Plain, role: None, option_id: None,
-        description: Some(fact.label.clone()), presentation: alondra_core::views::Presentation::Button, options: vec![],
-        input: alondra_core::views::Input::None, attachments: false, comments: None, confirm: None, enabled: true,
+    }).filter(|fact| matches!(fact.link, Some(alondra_views::Link::View { .. }))).map(|fact| (Action {
+        id: String::new(), label: fact.value.clone(), style: alondra_views::Style::Plain, role: None, option_id: None,
+        description: Some(fact.label.clone()), presentation: alondra_views::Presentation::Button, options: vec![],
+        input: alondra_views::Input::None, attachments: false, comments: None, confirm: None, enabled: true,
         disabled_reason: None, stamp: None, key: None, link: fact.link.clone(), resolves_card: false,
     }, None)).collect();
     (!entries.is_empty()).then(|| Menu { title: section.title.clone().unwrap_or_default(), entries, sel: 0 })
@@ -640,21 +640,21 @@ pub fn menu_lines(menu: &Menu, room: usize) -> Vec<Line<'static>> {
 /// A diff says what it changes ("Changes · 4 files · +120 −30 · d view changes") and leaves its
 /// lines to the reader: the card's count, or else `changes`, the count of the diff once loaded.
 /// Another body says its size only when it has one.
-fn content_ref_label(view: &View, content: &alondra_core::views::ContentRef, changes: &dyn Fn(&str, &str) -> Option<String>) -> String {
+fn content_ref_label(view: &View, content: &alondra_views::ContentRef, changes: &dyn Fn(&str, &str) -> Option<String>) -> String {
     let summary = detail_card(view)
         .and_then(|card| card.content_row.as_ref())
-        .filter(|row| row.kind == "diff" && content.kind == alondra_core::views::ContentKind::Diff)
+        .filter(|row| row.kind == "diff" && content.kind == alondra_views::ContentKind::Diff)
         .map(|row| row.summary.clone())
         .filter(|summary| !summary.is_empty())
         .or_else(|| {
             let head = content.digest.as_deref()?;
-            changes(&content.fetch, head).filter(|_| content.kind == alondra_core::views::ContentKind::Diff)
+            changes(&content.fetch, head).filter(|_| content.kind == alondra_views::ContentKind::Diff)
         });
     let changes = tr!("Changes", "Cambios");
     let open = tr!("d view changes", "d ver cambios");
     match summary {
         Some(summary) => format!("{changes} · {summary} · {open}"),
-        None if content.kind == alondra_core::views::ContentKind::Diff => format!("{changes} · {open}"),
+        None if content.kind == alondra_views::ContentKind::Diff => format!("{changes} · {open}"),
         None if content.size == 0 => content.title.clone(),
         None => format!("{} · {} B", content.title, content.size),
     }
@@ -776,7 +776,7 @@ pub fn document_lines_with(
                 Item::Timeline(timeline) => {
                     for entry in &timeline.entries {
                         lines.push(Line::from(vec![
-                            Span::styled(format!("{}  ", format_time(&entry.at, alondra_core::views::TimeFormat::Absolute)), Style::new().fg(DIM)),
+                            Span::styled(format!("{}  ", format_time(&entry.at, alondra_views::TimeFormat::Absolute)), Style::new().fg(DIM)),
                             Span::raw(entry.title.clone()),
                         ]));
                         if let Some(text) = &entry.text {
@@ -961,12 +961,12 @@ fn label_text_at(label: &Label, now: i64) -> String {
         None => Some(now),
     };
     match (parse_utc(&elapsed.since), end) {
-        (Some(since), Some(end)) => alondra_core::views::text::short_duration(u64::try_from((end - since) / 1_000).unwrap_or(0)),
+        (Some(since), Some(end)) => alondra_views::text::short_duration(u64::try_from((end - since) / 1_000).unwrap_or(0)),
         _ => label.text.clone(),
     }
 }
 
-pub fn format_time(at: &str, format: alondra_core::views::TimeFormat) -> String {
+pub fn format_time(at: &str, format: alondra_views::TimeFormat) -> String {
     let Some(millis) = parse_utc(at) else {
         return at.to_owned();
     };
@@ -981,7 +981,7 @@ fn format_time_at(
     at: &str,
     millis: i64,
     utc_offset_seconds: i64,
-    format: alondra_core::views::TimeFormat,
+    format: alondra_views::TimeFormat,
     now: i64,
     now_offset_seconds: i64,
 ) -> String {
@@ -989,11 +989,11 @@ fn format_time_at(
         return at.to_owned();
     };
     match format {
-        alondra_core::views::TimeFormat::Relative => {
+        alondra_views::TimeFormat::Relative => {
             relative(millis, utc_offset_seconds, now, now_offset_seconds, &time)
         }
-        alondra_core::views::TimeFormat::Absolute => format!("{date} {time}"),
-        alondra_core::views::TimeFormat::Time => time,
+        alondra_views::TimeFormat::Absolute => format!("{date} {time}"),
+        alondra_views::TimeFormat::Time => time,
     }
 }
 
@@ -1171,7 +1171,7 @@ pub fn typed_card(view: &View) -> Option<&Card> {
 
 pub fn action_hint(action: &Action) -> &str {
     action.key.as_deref().unwrap_or_else(|| {
-        use alondra_core::views::action_id::{ActionId, Verb};
+        use alondra_views::action_id::{ActionId, Verb};
         match ActionId::parse(&action.id).map(|id| id.verb) {
             Ok(Verb::Merge) => "m",
             Ok(Verb::Conflicts) => "1",
@@ -1292,28 +1292,28 @@ pub fn tone_style(tone: Tone) -> Style {
 
 fn label_style(label: &Label) -> Style {
     Style::new().fg(match label.tone {
-        alondra_core::views::Tone::Neutral => DIM,
-        alondra_core::views::Tone::Info => Color::Cyan,
-        alondra_core::views::Tone::Accent => ACCENT,
-        alondra_core::views::Tone::Success => Color::LightGreen,
-        alondra_core::views::Tone::Warning | alondra_core::views::Tone::YourTurn => Color::Yellow,
-        alondra_core::views::Tone::Critical => Color::LightRed,
+        alondra_views::Tone::Neutral => DIM,
+        alondra_views::Tone::Info => Color::Cyan,
+        alondra_views::Tone::Accent => ACCENT,
+        alondra_views::Tone::Success => Color::LightGreen,
+        alondra_views::Tone::Warning | alondra_views::Tone::YourTurn => Color::Yellow,
+        alondra_views::Tone::Critical => Color::LightRed,
     })
 }
 
-fn check_style(state: alondra_core::views::CheckState) -> Style {
+fn check_style(state: alondra_views::CheckState) -> Style {
     Style::new().fg(match state {
-        alondra_core::views::CheckState::Pass => Color::LightGreen,
-        alondra_core::views::CheckState::Fail => Color::LightRed,
-        alondra_core::views::CheckState::Pending => Color::Cyan,
+        alondra_views::CheckState::Pass => Color::LightGreen,
+        alondra_views::CheckState::Fail => Color::LightRed,
+        alondra_views::CheckState::Pending => Color::Cyan,
     })
 }
 
-fn check_state(state: alondra_core::views::CheckState) -> &'static str {
+fn check_state(state: alondra_views::CheckState) -> &'static str {
     match state {
-        alondra_core::views::CheckState::Pass => "✓",
-        alondra_core::views::CheckState::Fail => "✗",
-        alondra_core::views::CheckState::Pending => "…",
+        alondra_views::CheckState::Pass => "✓",
+        alondra_views::CheckState::Fail => "✗",
+        alondra_views::CheckState::Pending => "…",
     }
 }
 
@@ -1336,11 +1336,11 @@ fn fit(spans: Vec<Span<'static>>, width: usize) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_core::views::{Input, Presentation, Style};
+    use alondra_views::{Input, Presentation, Style};
 
     #[test]
     fn view_times_are_formatted_for_people_instead_of_showing_wire_timestamps() {
-        use alondra_core::views::TimeFormat;
+        use alondra_views::TimeFormat;
         let at = "2026-10-01T23:55:00.000Z";
         let instant = parse_utc(at).unwrap();
         let format = |offset, format| format_time_at(at, instant, offset, format, instant, offset);
@@ -1371,7 +1371,7 @@ mod tests {
         let now = parse_utc("2026-10-03T19:54:18.945+02:00").unwrap();
         let ago = |at: &str| {
             let instant = parse_utc(at).unwrap();
-            format_time_at(at, instant, madrid, alondra_core::views::TimeFormat::Relative, now, madrid)
+            format_time_at(at, instant, madrid, alondra_views::TimeFormat::Relative, now, madrid)
         };
         assert_eq!(ago("2026-10-03T19:54:00.000+02:00"), "ahora");
         assert_eq!(ago("2026-10-03T19:49:18.945+02:00"), "hace 5 min");
@@ -1431,8 +1431,8 @@ mod tests {
     fn a_label_whose_times_cannot_be_read_keeps_its_text() {
         let label = Label {
             text: "running since 10:05".into(),
-            tone: alondra_core::views::Tone::Neutral,
-            elapsed: Some(alondra_core::views::Elapsed { since: "soon".into(), until: None }),
+            tone: alondra_views::Tone::Neutral,
+            elapsed: Some(alondra_views::Elapsed { since: "soon".into(), until: None }),
         };
         assert_eq!(label_text_at(&label, 0), "running since 10:05");
     }
@@ -1540,7 +1540,7 @@ mod tests {
 #[cfg(test)]
 mod action_tests {
     use super::*;
-    use alondra_core::views::{Input, Presentation, Style};
+    use alondra_views::{Input, Presentation, Style};
 
     fn action(id: &str, label: &str) -> Action {
         Action {

@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import unittest
 
-SPEED_TESTS = {"crates/core/BUILD.bazel:views_budget_test"}
+SPEED_TESTS = {"crates/views/BUILD.bazel:views_budget_test"}
 PLAIN_RUST_TEST = re.compile(r'^\s*(?:\[)?rust_test\(\s*name\s*=\s*"([^"]+)"', re.MULTILINE)
 
 

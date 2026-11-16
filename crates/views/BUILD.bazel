@@ -1,0 +1,126 @@
+load("//tools:tree.bzl", "repo_tree")
+load("@crates//:defs.bzl", "all_crate_deps")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("//tools:rust_sources.bzl", "production_sources")
+load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
+
+VIEWS_TEST_ONLY = ["src/domain_fixtures.rs"]
+
+VIEWS_DEPS = all_crate_deps(normal = True) + [
+    "//crates/core:alondra_core",
+    "//crates/domain:domain",
+    "//crates/domain-rules:domain_rules",
+    "//crates/foundation:foundation",
+    "//crates/view-model:view_model",
+]
+
+# The screens: every view and card the clients render, built from the domain and the live snapshot.
+rust_library(
+    name = "views",
+    srcs = production_sources(test_only = VIEWS_TEST_ONLY),
+    crate_name = "alondra_views",
+    edition = "2024",
+    version = "0.1.0",
+    visibility = ["//visibility:public"],
+    deps = VIEWS_DEPS,
+)
+
+low_opt_rust_test(
+    name = "views_test",
+    timeout = "moderate",
+    compile_data = ["//crates/view-model:report_sources", "//fixtures/views:all", "//fixtures/views:cards", "//fixtures/views:metrics", "//fixtures/accounts:recorded-rows.json"],
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    crate_name = "alondra_views",
+    crate_root = "src/lib.rs",
+    deps = VIEWS_DEPS + all_crate_deps(normal_dev = True),
+    edition = "2024",
+    version = "0.1.0",
+)
+
+low_opt_rust_test(
+    name = "foundation_contract_test",
+    size = "small",
+    crate_root = "tests/foundation.rs",
+    srcs = ["tests/foundation.rs"],
+    edition = "2024",
+    version = "0.1.0",
+    deps = [
+        ":views",
+        "//crates/core:alondra_core",
+        "//crates/domain-rules:domain_rules",
+        "//crates/foundation:foundation",
+        "@crates//:serde_json",
+    ],
+)
+
+# The domain and the screens never read what hooks deduced of a node: that deduction is kept only
+# for the `claude --bg` nodes still handed over to the Agent SDK.
+low_opt_rust_test(
+    name = "hook_deduction_boundary_test",
+    size = "small",
+    crate_root = "tests/hook_deduction_boundary.rs",
+    srcs = ["tests/hook_deduction_boundary.rs"],
+    data = [":report_sources", "//crates/domain-rules:report_sources", "//crates/view-model:report_sources"],
+    edition = "2024",
+    rustc_env = {"CARGO_MANIFEST_DIR": "crates"},
+)
+
+# What the screens show after the domain runs its commands, for every client.
+low_opt_rust_test(
+    name = "domain_screens_test",
+    size = "small",
+    crate_root = "tests/domain_screens/main.rs",
+    srcs = glob(["tests/domain_screens/*.rs"]),
+    edition = "2024",
+    deps = [
+        ":views",
+        "//crates/core:alondra_core",
+        "//crates/domain:domain",
+        "//crates/domain-rules:domain_rules",
+        "//crates/foundation:foundation",
+    ] + all_crate_deps(normal = True, normal_dev = True),
+)
+
+# Every family of views renders a real-size domain within its budget, with alondra_views built as
+# the daemon links it: without the checks only its own unit tests compile in.
+# It stays at the build's opt-level: the budget is a speed measurement.
+rust_test(
+    name = "views_budget_test",
+    size = "small",
+    crate_root = "tests/views_budget.rs",
+    srcs = ["tests/views_budget.rs"],
+    edition = "2024",
+    version = "0.1.0",
+    deps = [
+        ":views",
+        "//crates/core:alondra_core",
+        "//crates/domain:domain",
+        "//crates/domain-rules:domain_rules",
+        "@crates//:serde_json",
+    ],
+)
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+
+# The library compiles only production sources: a test file among its inputs would rebuild every
+# crate above it whenever the test changes.
+rust_inputs_test(
+    name = "production_inputs_test",
+    size = "small",
+    required_sources = ["crates/views/src/lib.rs", "crates/views/src/task_state.rs"],
+    source_dir = "crates/views/src/",
+    target_under_test = ":views",
+    test_only_sources = ["crates/views/src/tests.rs", "crates/views/src/domain_fixtures.rs", "crates/test_support.rs"],
+    test_sources = False,
+)
+
+# The crate's production sources: the crash report's log catalog reads them, and fails on a test
+# file among them.
+filegroup(
+    name = "report_sources",
+    srcs = production_sources(test_only = VIEWS_TEST_ONLY),
+    visibility = ["//crates/alondra:__pkg__", "//crates/views:__pkg__"],
+)
+
+repo_tree()

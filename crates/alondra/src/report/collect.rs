@@ -150,7 +150,7 @@ fn versions(host: &dyn Host, daemon: Option<&Value>) -> Section {
         "sdk_host": {"node": manifest_version("node"), "sdk": manifest_version("sdk")},
         "claude": version_in(host.run("claude", &["--version"]).as_deref()),
         "views_protocol": {
-            "cli": alondra_core::views::VIEWS_PROTOCOL,
+            "cli": alondra_views::VIEWS_PROTOCOL,
             "daemon": daemon.map(|d| json!({"min": views(&d["views_protocol"]["min"]), "max": views(&d["views_protocol"]["max"])})),
         },
     });

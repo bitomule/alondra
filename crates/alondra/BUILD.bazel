@@ -23,6 +23,9 @@ CATALOG_FRAGMENTS = [
     ("engine_kernel", "//crates/engine-kernel:report_sources", "--log --words"),
     ("engine_orchestrator", "//crates/engine-orchestrator:report_sources", "--log --words"),
     ("core", "//crates/core:report_sources", "--log --words"),
+    ("domain_rules", "//crates/domain-rules:report_sources", "--log --words"),
+    ("view_model", "//crates/view-model:report_sources", "--log --words"),
+    ("views", "//crates/views:report_sources", "--log --words"),
     ("provider_claude", "//crates/provider-claude:report_sources", "--log --words"),
     ("domain", "//crates/domain:report_sources", "--words"),
     ("foundation", "//crates/foundation:report_sources", "--words"),
@@ -83,7 +86,7 @@ rust_library(
     edition = "2024",
     version = VERSION,
     visibility = ["//crates/scenarios:__pkg__"],
-    deps = all_crate_deps(normal = True) + [":log_catalog", "//crates/core:alondra_core", "//crates/e2e:alondra_e2e"],
+    deps = all_crate_deps(normal = True) + [":log_catalog", "//crates/core:alondra_core", "//crates/domain-rules:domain_rules", "//crates/views:views", "//crates/e2e:alondra_e2e"],
 )
 
 rust_binary(
@@ -108,7 +111,7 @@ low_opt_rust_test(
         "//:plugin/skills/alondra/SKILL.md",
         "//:plugin-orchestrator/skills/alondra-orchestrator/SKILL.md",
     ],
-    deps = all_crate_deps(normal = True, normal_dev = True) + [":log_catalog", "//crates/core:alondra_core", "//crates/e2e:alondra_e2e"],
+    deps = all_crate_deps(normal = True, normal_dev = True) + [":log_catalog", "//crates/core:alondra_core", "//crates/domain-rules:domain_rules", "//crates/views:views", "//crates/e2e:alondra_e2e"],
     data = REPORT_SOURCES + ["//fixtures/report", "//fixtures/cli", "//fixtures/client-v2", "//fixtures/markdown", "//fixtures/views:all", "//fixtures/views:cards", "//fixtures/views:newer_daemon", "//fixtures/views:metrics", "//fixtures/domain-v2:text-completion.commands.json"],
     edition = "2024",
     version = VERSION,

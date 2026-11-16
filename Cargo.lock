@@ -63,7 +63,9 @@ name = "alondra"
 version = "0.3.47"
 dependencies = [
  "alondra-core",
+ "alondra-domain-rules",
  "alondra-e2e",
+ "alondra-views",
  "anyhow",
  "base64 0.23.1",
  "clap",
@@ -156,7 +158,6 @@ dependencies = [
  "libc",
  "proptest",
  "pulldown-cmark",
- "rpds",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -178,6 +179,7 @@ dependencies = [
  "alondra-daemon-engine-store",
  "alondra-daemon-support",
  "alondra-domain",
+ "alondra-domain-rules",
  "alondra-engine-github",
  "alondra-engine-kernel",
  "alondra-foundation",
@@ -186,6 +188,8 @@ dependencies = [
  "alondra-provider-codex",
  "alondra-provider-contract",
  "alondra-store",
+ "alondra-view-model",
+ "alondra-views",
  "anyhow",
  "axum",
  "base64 0.23.1",
@@ -213,6 +217,7 @@ dependencies = [
  "alondra-daemon-engine-model",
  "alondra-daemon-engine-store",
  "alondra-daemon-support",
+ "alondra-domain-rules",
  "anyhow",
  "libc",
  "serde_json",
@@ -227,6 +232,7 @@ version = "0.3.47"
 dependencies = [
  "alondra-core",
  "alondra-daemon-support",
+ "alondra-domain-rules",
  "alondra-store",
  "anyhow",
  "axum",
@@ -248,6 +254,7 @@ dependencies = [
  "alondra-daemon-engine-model",
  "alondra-daemon-support",
  "alondra-domain",
+ "alondra-domain-rules",
  "alondra-foundation",
  "alondra-provider-codex",
  "alondra-provider-contract",
@@ -268,10 +275,12 @@ name = "alondra-daemon-support"
 version = "0.3.47"
 dependencies = [
  "alondra-core",
+ "alondra-domain-rules",
  "alondra-e2e",
  "alondra-process-group",
  "alondra-provider-claude",
  "alondra-store",
+ "alondra-view-model",
  "anyhow",
  "axum",
  "base64 0.23.1",
@@ -301,6 +310,22 @@ dependencies = [
  "proptest",
  "rpds",
  "serde_json",
+]
+
+[[package]]
+name = "alondra-domain-rules"
+version = "0.3.47"
+dependencies = [
+ "alondra-core",
+ "alondra-domain",
+ "alondra-foundation",
+ "libc",
+ "proptest",
+ "rpds",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]
@@ -505,7 +530,10 @@ dependencies = [
  "alondra-core",
  "alondra-daemon-engine",
  "alondra-daemon-support",
+ "alondra-domain-rules",
  "alondra-scenarios-transcript",
+ "alondra-view-model",
+ "alondra-views",
  "alondrad",
  "base64 0.23.1",
  "libc",
@@ -541,6 +569,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "alondra-view-model"
+version = "0.3.47"
+dependencies = [
+ "alondra-core",
+ "alondra-domain-rules",
+ "alondra-foundation",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "alondra-views"
+version = "0.3.47"
+dependencies = [
+ "alondra-core",
+ "alondra-domain",
+ "alondra-domain-rules",
+ "alondra-foundation",
+ "alondra-view-model",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
 name = "alondrad"
 version = "0.3.47"
 dependencies = [
@@ -549,9 +605,11 @@ dependencies = [
  "alondra-daemon-engine",
  "alondra-daemon-support",
  "alondra-domain",
+ "alondra-domain-rules",
  "alondra-e2e",
  "alondra-engine-orchestrator",
  "alondra-process-group",
+ "alondra-views",
  "anyhow",
  "axum",
  "base64 0.23.1",

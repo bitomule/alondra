@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use alondra_core::views::Service;
+use alondra_views::Service;
 use crossterm::event::{KeyCode, KeyEvent};
 
 use super::restore::{OpenComposer, Restore};
@@ -436,7 +436,7 @@ mod tests {
 
     /// A daemon newer than this terminal, the same version on disk, and 10 s without a key.
     fn behind(app: &mut App) {
-        app.service_seen(Service { version: NEWER.into(), views_protocol: alondra_core::views::VIEWS_PROTOCOLS, capabilities: vec![] });
+        app.service_seen(Service { version: NEWER.into(), views_protocol: alondra_views::VIEWS_PROTOCOLS, capabilities: vec![] });
         app.version_tick();
         app.disk_checked(NEWER.into(), Disk::Version(NEWER.into()));
         app.updated.last_key_at = now_millis() - version_watch::IDLE_MS;

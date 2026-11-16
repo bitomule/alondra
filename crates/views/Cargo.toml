@@ -1,0 +1,20 @@
+[package]
+name = "alondra-views"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+alondra-core.workspace = true
+alondra-domain-rules.workspace = true
+alondra-view-model.workspace = true
+alondra-foundation.workspace = true
+alondra-domain.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true

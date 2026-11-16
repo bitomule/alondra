@@ -10,7 +10,7 @@ use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::model_metrics::{Decision, DecisionKind};
 use crate::launch_worktree::Workplace;
-use alondra_core::domain::{Actor, AgentId, DomainError, DomainState, ModelChooser, RequestId, TaskId};
+use alondra_domain_rules::{Actor, AgentId, DomainError, DomainState, ModelChooser, RequestId, TaskId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -272,7 +272,7 @@ pub(crate) fn ambiguous_model(model: &str, offering: &[alondra_core::accounts::P
     DomainError::new("invalid_input", format!("“{model}” is offered by {}: name it {}", names.join(" and "), qualified.join(" or ")))
 }
 
-fn native_launch(domain: &DomainRuntime, home: &Path, task: &alondra_core::domain::Task, requested: &alondra_core::options::Resolved, file: &alondra_core::options::OptionsFile, body: &LaunchBody, prior_native: bool, reopening: bool)
+fn native_launch(domain: &DomainRuntime, home: &Path, task: &alondra_domain_rules::Task, requested: &alondra_core::options::Resolved, file: &alondra_core::options::OptionsFile, body: &LaunchBody, prior_native: bool, reopening: bool)
     -> Result<Option<(alondra_core::options::Resolved, alondra_core::accounts::AccountKey, String)>, DomainError>
 {
     use alondra_core::accounts::Provider;
@@ -394,7 +394,7 @@ fn native_launch(domain: &DomainRuntime, home: &Path, task: &alondra_core::domai
     intent.reason = Some(decision.reason.clone());
     let read = domain.read();
     let snapshot = read.state();
-    decision.reason.push_str(&format!(" Quota: {}", alondra_core::views::accounts::decision_quota_summary(&snapshot.accounts, &snapshot.account_usage, Some(alondra_core::now_millis()), alondra_core::views::Lang::En)));
+    decision.reason.push_str(&format!(" Quota: {}", alondra_view_model::accounts::decision_quota_summary(&snapshot.accounts, &snapshot.account_usage, Some(alondra_core::now_millis()), alondra_view_model::Lang::En)));
     drop(read);
     let mut resolved = requested.clone();
     resolved.flags.model = (decision.account.provider == Provider::Claude).then(|| decision.selection.model.model.clone());
@@ -433,7 +433,7 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
     }
     let reopening = current.pending_reopening(&task.id).map(str::to_owned);
     let prior_native = reopening.is_none() && (task.started || current.lifecycle_journal.get(&task.id).is_some_and(|records|records.iter()
-        .any(|record|matches!(record,alondra_core::domain::LifecycleRecord::Admitted{execution:Some(_),..}|alondra_core::domain::LifecycleRecord::ResourceAvailable))));
+        .any(|record|matches!(record,alondra_domain_rules::LifecycleRecord::Admitted{execution:Some(_),..}|alondra_domain_rules::LifecycleRecord::ResourceAvailable))));
     let mut assigned_before = task.agent_id.clone();
     let replaced = match (&assigned_before, body.replace) {
         (Some(old), true) => Some(old.clone()),
@@ -501,7 +501,7 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
         && (original.account != selected.account || original.requested != selected.requested || original.allow_model_substitution != selected.allow_model_substitution)
     {
         let expected_selection = current.task_selection_stamp(&task.id).ok_or_else(|| conflict("The task's selection is unavailable".into()))?;
-        crate::domain_github::execute_system(domain, alondra_core::domain::Command::MoveTask {
+        crate::domain_github::execute_system(domain, alondra_domain_rules::Command::MoveTask {
             task_id: task.id.clone(), expected_selection, account: account.clone(),
         }).map_err(|error| match error {
             crate::domain_store::StoreError::Domain(error) => error,
@@ -664,7 +664,7 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
         }
         text
     });
-    let mission = format!("{mission}{}{}{}", prefixed("\n\n", approved_plan(&current, task)), prefixed("\n\n", follow_up_context(&current, task)), prefixed("\n\n", alondra_core::domain::asked_changes(&current, task)));
+    let mission = format!("{mission}{}{}{}", prefixed("\n\n", approved_plan(&current, task)), prefixed("\n\n", follow_up_context(&current, task)), prefixed("\n\n", alondra_domain_rules::asked_changes(&current, task)));
     let mission = match (&workplace, &replaced) {
         (Workplace::Made(dir), _) => format!("{mission}\n\n{}", made_for(dir).await),
         (Workplace::Reused(_), _) | (_, Some(_)) => format!("{mission}\n\n{}", continuing_in(Path::new(&cwd)).await),
@@ -850,7 +850,7 @@ pub async fn relaunch(domain: &DomainRuntime, home: &Path, task_id: &TaskId) -> 
 pub(crate) async fn relaunch_from(domain: &DomainRuntime, home: &Path, task_id: &TaskId, origin: Origin) -> Result<Value, DomainError> {
     let current = state(domain)?;
     let waiting = current.tasks.get(task_id)
-        .filter(|task| task.state == alondra_core::domain::TaskState::NotStarted && task.agent_id.is_none() && !task.archived);
+        .filter(|task| task.state == alondra_domain_rules::TaskState::NotStarted && task.agent_id.is_none() && !task.archived);
     let (Some(task), Some(closed)) = (waiting, domain.live().closed_task(&task_id.0)) else {
         return Err(DomainError::new("conflict", "This task is not waiting for a relaunch"));
     };
@@ -881,8 +881,8 @@ pub(crate) struct CanonicalTaskContext {
 /// What a task's next node must know to carry on, whole: its request, plan, every input the user
 /// and Alondra gave it, decisions, documents and the work it builds on. A source Alondra no longer
 /// has is missing; whether the whole fits the next model is for the handoff to decide.
-pub(crate) fn canonical_task_context(state: &DomainState, task: &alondra_core::domain::Task) -> CanonicalTaskContext {
-    use alondra_core::domain::{InteractionPayload, Recipient, Scope};
+pub(crate) fn canonical_task_context(state: &DomainState, task: &alondra_domain_rules::Task) -> CanonicalTaskContext {
+    use alondra_domain_rules::{InteractionPayload, Recipient, Scope};
     let mut text = format!("Task {}: {}\nRequest: {}", task.id, task.title, task.request_id);
     let mut missing_sources = vec![];
     let mut add = |part: String| {
@@ -896,9 +896,9 @@ pub(crate) fn canonical_task_context(state: &DomainState, task: &alondra_core::d
     let mut included_inputs = std::collections::BTreeSet::new();
     for record in state.lifecycle_journal.get(&task.id).into_iter().flat_map(|journal| journal.iter()) {
         let (input, said) = match record {
-            alondra_core::domain::LifecycleRecord::Told { input, text, .. }
-            | alondra_core::domain::LifecycleRecord::Answered { input, text, .. }
-            | alondra_core::domain::LifecycleRecord::HandedBack { input, text, .. } => (input, text),
+            alondra_domain_rules::LifecycleRecord::Told { input, text, .. }
+            | alondra_domain_rules::LifecycleRecord::Answered { input, text, .. }
+            | alondra_domain_rules::LifecycleRecord::HandedBack { input, text, .. } => (input, text),
             _ => continue,
         };
         if !included_inputs.insert(input) { continue; }
@@ -907,7 +907,7 @@ pub(crate) fn canonical_task_context(state: &DomainState, task: &alondra_core::d
             None => missing_sources.push(format!("task:{}:input:{input}", task.id)),
         }
     }
-    add(alondra_core::domain::asked_changes(state, task));
+    add(alondra_domain_rules::asked_changes(state, task));
     let mut public: Vec<_> = state.interactions.values().filter(|interaction| interaction.scope == (Scope::Task { task_id: task.id.clone() }) && interaction.recipient == Recipient::User).collect();
     public.sort_by_key(|interaction| interaction.order);
     for interaction in public {
@@ -943,22 +943,22 @@ fn prefixed(prefix: &str, text: String) -> String {
     if text.is_empty() { text } else { format!("{prefix}{text}") }
 }
 
-fn clipped(text: &str, limit: usize, mark: &str) -> alondra_core::domain::Clipped {
+fn clipped(text: &str, limit: usize, mark: &str) -> alondra_domain_rules::Clipped {
     if text.chars().count() <= limit {
-        return alondra_core::domain::Clipped { text: text.to_owned(), shortened: false };
+        return alondra_domain_rules::Clipped { text: text.to_owned(), shortened: false };
     }
-    alondra_core::domain::Clipped { text: format!("{}{mark}", text.chars().take(limit).collect::<String>()), shortened: true }
+    alondra_domain_rules::Clipped { text: format!("{}{mark}", text.chars().take(limit).collect::<String>()), shortened: true }
 }
 
 /// What a task that builds on others starts from: each earlier task's final result and its pull
 /// request, so its node does not need to be told by hand.
-fn follow_up_context(state: &DomainState, task: &alondra_core::domain::Task) -> String {
+fn follow_up_context(state: &DomainState, task: &alondra_domain_rules::Task) -> String {
     let mut sources: std::collections::BTreeSet<&TaskId> = task.dependencies.iter().chain(&task.delivered_dependencies).collect();
     if let Some(stack) = &task.stack {
         sources.insert(&stack.upstream_task);
     }
     let entries: Vec<String> = sources.into_iter().filter_map(|id| state.tasks.get(id)).map(|earlier| {
-        let status = if earlier.state == alondra_core::domain::TaskState::Done {
+        let status = if earlier.state == alondra_domain_rules::TaskState::Done {
             "done"
         } else if earlier.final_presentation.is_some() {
             "delivered, not finished yet"
@@ -966,15 +966,15 @@ fn follow_up_context(state: &DomainState, task: &alondra_core::domain::Task) -> 
             "not finished yet"
         };
         let body = match earlier.final_presentation.as_ref().and_then(|id| state.interactions.get(id)) {
-            Some(result) => alondra_core::domain::result_excerpt(&result.body).text,
+            Some(result) => alondra_domain_rules::result_excerpt(&result.body).text,
             None => "No final result was recorded for it.".to_owned(),
         };
         let mut entry = format!("### “{}” ({status})\n{body}", earlier.title);
         for pr in state.task_prs(earlier) {
             let pr_state = match pr.state {
-                alondra_core::domain::PrState::Merged => "merged",
-                alondra_core::domain::PrState::Open => "open",
-                alondra_core::domain::PrState::Closed => "closed",
+                alondra_domain_rules::PrState::Merged => "merged",
+                alondra_domain_rules::PrState::Open => "open",
+                alondra_domain_rules::PrState::Closed => "closed",
             };
             entry.push_str(&format!("\nPull request: https://{}/{}/pull/{} ({pr_state})", pr.host, pr.repository, pr.number));
         }
@@ -988,8 +988,8 @@ fn follow_up_context(state: &DomainState, task: &alondra_core::domain::Task) -> 
 
 /// The approved plan this node needs to implement, including its predecessor's own plan when
 /// the task reopens, with only this task's points assigned when the plan is in phases.
-fn approved_plan(state: &DomainState, task: &alondra_core::domain::Task) -> String {
-    use alondra_core::domain::{checklist_items, InteractionPayload, Scope};
+fn approved_plan(state: &DomainState, task: &alondra_domain_rules::Task) -> String {
+    use alondra_domain_rules::{checklist_items, InteractionPayload, Scope};
     let Some(checklist) = state.checklists.get(&task.id) else { return String::new() };
     let Some(source) = state.interactions.get(&checklist.plan) else { return String::new() };
     if source.scope == (Scope::Task { task_id: task.id.clone() }) && state.pending_reopening(&task.id).is_none() {
@@ -1143,7 +1143,7 @@ pub fn update_launch_plan(domain: &DomainRuntime, home: &Path, body: UpdateLaunc
     change_launch_plan(domain, home, &body.task_id, None, Some(changes))
 }
 
-fn editable_plan<'a>(state: &'a DomainState, task_id: &TaskId, launched: bool) -> Result<&'a alondra_core::domain::Task, DomainError> {
+fn editable_plan<'a>(state: &'a DomainState, task_id: &TaskId, launched: bool) -> Result<&'a alondra_domain_rules::Task, DomainError> {
     let task = state.tasks.get(task_id).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;
     if task.archived {
         return Err(DomainError::new("task_not_active", format!("{} is closed", task.id)));
@@ -1156,7 +1156,7 @@ fn editable_plan<'a>(state: &'a DomainState, task_id: &TaskId, launched: bool) -
         if !state.requests.get(&task.request_id).is_some_and(|request| !request.closed) {
             return Err(DomainError::new("task_not_active", "Open Request required to prepare a task for reopening"));
         }
-        let ended = matches!(task.wrap_up.node, Some(alondra_core::domain::NodeEnd::Closed | alondra_core::domain::NodeEnd::Gone))
+        let ended = matches!(task.wrap_up.node, Some(alondra_domain_rules::NodeEnd::Closed | alondra_domain_rules::NodeEnd::Gone))
             || (task.agent_id.is_none() && task.wrap_up.node.is_none());
         if task.ending.is_some() || !ended {
             return Err(DomainError::new("conflict", "The previous node must have ended before preparing this task's next launch choices"));
@@ -1167,8 +1167,8 @@ fn editable_plan<'a>(state: &'a DomainState, task_id: &TaskId, launched: bool) -
         return Err(DomainError::new("task_not_active", format!("{} is closed", task.id)));
     }
     let prior_native = state.lifecycle_journal.get(task_id).is_some_and(|records| records.iter().any(|record| matches!(record,
-        alondra_core::domain::LifecycleRecord::Admitted { execution: Some(_), .. } | alondra_core::domain::LifecycleRecord::ResourceAvailable)));
-    if !matches!(task.state, alondra_core::domain::TaskState::NotStarted | alondra_core::domain::TaskState::WaitingDependency) || task.started || task.agent_id.is_some() || ((launched || prior_native) && state.pending_reopening(task_id).is_none()) {
+        alondra_domain_rules::LifecycleRecord::Admitted { execution: Some(_), .. } | alondra_domain_rules::LifecycleRecord::ResourceAvailable)));
+    if !matches!(task.state, alondra_domain_rules::TaskState::NotStarted | alondra_domain_rules::TaskState::WaitingDependency) || task.started || task.agent_id.is_some() || ((launched || prior_native) && state.pending_reopening(task_id).is_none()) {
         return Err(DomainError::new("conflict", "the launch plan can only change before the task has started"));
     }
     Ok(task)

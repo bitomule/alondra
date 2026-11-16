@@ -19,7 +19,7 @@ const TOOL_REFUSALS: &[&str] = &[
 /// The domain's rules refuse before they commit, so such a call is settled and nothing is left to
 /// reconcile, except `delivery_uncertain`. Any code not known here leaves its effects unknown.
 pub fn refused_before_any_effect(code: Option<&str>) -> bool {
-    code.is_some_and(|code| code != "delivery_uncertain" && (alondra_core::domain::INTERNAL_CODES.contains(&code) || TOOL_REFUSALS.contains(&code)))
+    code.is_some_and(|code| code != "delivery_uncertain" && (alondra_domain_rules::INTERNAL_CODES.contains(&code) || TOOL_REFUSALS.contains(&code)))
 }
 
 fn error_code(error: Option<&str>) -> Option<String> {
@@ -78,7 +78,7 @@ pub struct BatchReport {
     pub failure: Option<String>,
     pub public_result: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stop: Option<alondra_core::orchestrator_batch::BatchStop>,
+    pub stop: Option<alondra_domain_rules::orchestrator_batch::BatchStop>,
 }
 
 pub(super) fn record(conn: &Connection, batch: &BatchCommand<'_>, actor: &str, envelope: &CommandEnvelope, digest: &[u8], outcome: &CommandOutcome) -> Result<()> {
@@ -101,7 +101,7 @@ impl DomainStore {
         Ok(completed.unwrap_or(false))
     }
 
-    pub fn batch_stop(&self, run: &str) -> Result<Option<(alondra_core::orchestrator_batch::BatchStop, String)>> {
+    pub fn batch_stop(&self, run: &str) -> Result<Option<(alondra_domain_rules::orchestrator_batch::BatchStop, String)>> {
         let report: Option<String> = self.conn.query_row("SELECT report FROM orchestrator_batch_reports WHERE run=?1 AND json_extract(report,'$.kind')!='diagnostic' ORDER BY cursor DESC LIMIT 1", [run], |row| row.get(0)).optional()?;
         let report = report.as_deref().map(serde_json::from_str::<BatchReport>).transpose()?;
         Ok(report.and_then(|report| report.stop.map(|stop| (stop, report.failure.unwrap_or_else(|| "The interrupted native batch requires reconciliation before retrying".into())))))
@@ -288,7 +288,7 @@ mod tests {
 
     #[test]
     fn every_refusal_of_the_domain_rules_settles_its_call() {
-        let refusals = alondra_core::domain::INTERNAL_CODES.iter().filter(|code| **code != "delivery_uncertain");
+        let refusals = alondra_domain_rules::INTERNAL_CODES.iter().filter(|code| **code != "delivery_uncertain");
         for code in refusals.chain(TOOL_REFUSALS) {
             assert!(!is_unconfirmed(&uncertain(code)), "{code} changed nothing");
         }

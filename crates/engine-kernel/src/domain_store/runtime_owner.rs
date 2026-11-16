@@ -1,5 +1,5 @@
 use super::*;
-use alondra_core::domain::*;
+use alondra_domain_rules::*;
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};

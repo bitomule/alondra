@@ -8,14 +8,14 @@ fn app() -> App {
 #[test]
 fn codex_login_verification_button_opens_only_the_provider_page() {
     let mut app = app();
-    let mut action: alondra_core::views::Action = serde_json::from_value(json!({
+    let mut action: alondra_views::Action = serde_json::from_value(json!({
         "id":"", "label":"Open verification page", "style":"primary", "presentation":"button", "input":{"kind":"none"}, "attachments":false, "enabled":true,
         "link":{"kind":"url","url":"https://auth.openai.com/codex/device"}
     })).unwrap();
     OPENED.with(|opened| opened.borrow_mut().clear());
     app.run_view_action_confirmed(&action, None, &Key("accounts".into()), "epoch".into());
     OPENED.with(|opened| assert_eq!(&*opened.borrow(), &["https://auth.openai.com/codex/device"]));
-    action.link = Some(alondra_core::views::Link::Url { url: "https://auth.openai.com.evil.test/codex/device".into() });
+    action.link = Some(alondra_views::Link::Url { url: "https://auth.openai.com.evil.test/codex/device".into() });
     app.run_view_action_confirmed(&action, None, &Key("accounts".into()), "epoch".into());
     OPENED.with(|opened| assert_eq!(opened.borrow().len(), 1));
 }
@@ -75,7 +75,7 @@ fn terminal_keys_and_paste_report_presence() {
 
 #[test]
 fn views_form_validates_choices_and_visible_required_fields() {
-    let fields: Vec<alondra_core::views::Field> = serde_json::from_value(json!([
+    let fields: Vec<alondra_views::Field> = serde_json::from_value(json!([
         {"id":"project","label":"Project","kind":{"kind":"choice","items":[{"id":"App","label":"App"}]},
          "value":"App","required":true,"reload_on_change":true},
         {"id":"repeat","label":"Repeat","kind":{"kind":"choice","items":[{"id":"daily","label":"Daily"},{"id":"weekly","label":"Weekly"}]},
@@ -87,7 +87,7 @@ fn views_form_validates_choices_and_visible_required_fields() {
     assert!(validate_view_fields(&fields, &json!({"project":"Other","repeat":"daily"})).is_err());
     assert!(validate_view_fields(&fields, &json!({"project":"App","repeat":"weekly"})).is_err());
 
-    let interval_fields: Vec<alondra_core::views::Field> = serde_json::from_value(json!([{
+    let interval_fields: Vec<alondra_views::Field> = serde_json::from_value(json!([{
         "id":"interval","label":"Interval","kind":{"kind":"stepper","min":1,"max":365},
         "value":1,"required":true,
         "visible_when":{"field":"repeat","any_of":["every_hours","every_days","every_months"]},
@@ -113,7 +113,7 @@ fn failed_views_feed_marks_cached_status_offline_until_recovery() {
     assert!(app.view_status.is_some());
     let status = app.view_status.clone().unwrap();
     app.on_msg(Msg::ViewFeed(Ok(crate::client::ViewsFeed {
-        protocol: alondra_core::views::VIEWS_PROTOCOL,
+        protocol: alondra_views::VIEWS_PROTOCOL,
         cursor: "1".into(),
         data_epoch: "epoch".into(),
         status,
@@ -206,7 +206,7 @@ fn a_failed_main_view_is_retried_when_the_feed_recovers() {
     assert!(app.screen_view_asked.is_none());
     let view: ViewDocument = serde_json::from_value(super::parity::view_fixture("home-tui.json")).unwrap();
     app.on_msg(Msg::ViewFeed(Ok(crate::client::ViewsFeed {
-        protocol: alondra_core::views::VIEWS_PROTOCOL,
+        protocol: alondra_views::VIEWS_PROTOCOL,
         cursor: "1".into(), data_epoch: view.data_epoch.clone(), status: view.status.clone(),
         stale: vec![], reset: false, superseded: false, service: None,
     })));
@@ -315,12 +315,12 @@ fn an_item_kind_from_a_newer_daemon_shows_as_a_row_asking_to_update() {
     let mut json = super::parity::view_fixture("home-tui.json");
     let section = json["sections"].as_array_mut().unwrap().iter_mut().find(|s| !s["items"].as_array().unwrap().is_empty()).unwrap();
     section["items"].as_array_mut().unwrap().push(serde_json::json!({"type": "gauge_wall"}));
-    let mut view: alondra_core::views::View = serde_json::from_value(json).unwrap();
+    let mut view: alondra_views::View = serde_json::from_value(json).unwrap();
 
     view_render::placeholders(&mut view);
 
     let rows: Vec<_> = view.sections.iter().flat_map(|s| &s.items).filter_map(|item| match item {
-        alondra_core::views::Item::Row(row) if row.id.starts_with("unknown-") => Some(row.title.as_str()),
+        alondra_views::Item::Row(row) if row.id.starts_with("unknown-") => Some(row.title.as_str()),
         _ => None,
     }).collect();
     assert_eq!(rows, ["Update the TUI to see this"]);
@@ -347,13 +347,13 @@ fn a_card_from_a_newer_daemon_loads_with_what_the_tui_cannot_use_disabled_or_lef
     }
     assert!(action("Go on without the calendar").enabled);
     let items: Vec<_> = view.sections.iter().flat_map(|section| &section.items).collect();
-    let alondra_core::views::Item::Card(card) = items[0] else { panic!("{items:?}") };
+    let alondra_views::Item::Card(card) = items[0] else { panic!("{items:?}") };
     assert_eq!(card.kind, None);
     assert!(card.context.iter().all(|line| line.link.is_none()));
-    let Some(alondra_core::views::Item::Facts(facts)) = items.iter().find(|item| matches!(item, alondra_core::views::Item::Facts(_))) else { panic!() };
+    let Some(alondra_views::Item::Facts(facts)) = items.iter().find(|item| matches!(item, alondra_views::Item::Facts(_))) else { panic!() };
     assert!(facts.items[0].link.is_some());
     assert_eq!(facts.items[1].link, None);
-    let Some(alondra_core::views::Item::Form(form)) = items.iter().find(|item| matches!(item, alondra_core::views::Item::Form(_))) else { panic!() };
+    let Some(alondra_views::Item::Form(form)) = items.iter().find(|item| matches!(item, alondra_views::Item::Form(_))) else { panic!() };
     assert_eq!(form.fields.iter().map(|field| field.id.as_str()).collect::<Vec<_>>(), ["note"]);
     assert!(!form.submit.enabled);
     assert_eq!(form.submit.disabled_reason.as_deref(), Some("Update the TUI to use this"));
@@ -844,7 +844,7 @@ fn every_node_limit_the_mac_offers_is_reached_with_the_arrows_and_picked_with_en
     press(&mut app, KeyCode::Char('9'));
     let sent = app.posted.borrow().last().unwrap().1.clone();
     assert_eq!(sent["option_id"], "8", "9 picks the ninth choice");
-    let done = alondra_core::views::Outcome { kind: alondra_core::views::OutcomeKind::Done, title: "Done".into(), body: None, next: None };
+    let done = alondra_views::Outcome { kind: alondra_views::OutcomeKind::Done, title: "Done".into(), body: None, next: None };
     app.on_msg(Msg::ViewAction { request: sent, result: Ok(ViewActionReply::Outcome(done)) });
     assert!(drawn(&mut app, 140, 40).contains("Nodes at once: 8"), "done, the pick stays until the Mac's view says how it is");
     let mut machine = super::parity::view_fixture("machine-settings-ios.json");
@@ -858,15 +858,15 @@ fn every_node_limit_the_mac_offers_is_reached_with_the_arrows_and_picked_with_en
 
 fn mixed_provider_accounts() -> ViewDocument {
     let mut view: ViewDocument = serde_json::from_value(super::parity::view_fixture("accounts-ios.json")).unwrap();
-    let template = view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item { alondra_core::views::Item::Row(row) => Some(row.clone()), _ => None }).unwrap();
-    view.account_configuration = Some(alondra_core::views::AccountConfigurationPresentation { version: "cfg-one".into() });
+    let template = view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item { alondra_views::Item::Row(row) => Some(row.clone()), _ => None }).unwrap();
+    view.account_configuration = Some(alondra_views::AccountConfigurationPresentation { version: "cfg-one".into() });
     view.sections.truncate(1);
     view.sections[0].items = ["codex", "claude"].into_iter().enumerate().map(|(position, provider)| {
         let mut row = template.clone(); row.id = format!("{provider}-work"); row.title = "Work".into(); row.actions.clear();
         row.account = Some(serde_json::from_value(json!({"key":{"provider":provider,"account":"work"},"position":position+1,
             "availability":{"text":"Signed in","tone":"success"},"active_nodes":2,"freshness":{"text":"Last reported usage","tone":"neutral"},
             "windows":[{"kind":"codex:account:primary:300","label":"Primary · 300 min","used_percent":42,"measured_at":1000,"resets_at":18000000,"stale":false,"exhausted":false}]})).unwrap());
-        alondra_core::views::Item::Row(row)
+        alondra_views::Item::Row(row)
     }).collect();
     view.sections[0].actions = vec![serde_json::from_value(json!({"id":"account_order:accounts@0~cfg-one","label":"Reorder accounts","style":"secondary","presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":true})).unwrap()];
     view
@@ -897,7 +897,7 @@ fn provider_account_details_and_order_keep_identity_and_send_one_atomic_save_unt
     assert_eq!(app.posted.borrow().len(), 1, "an uncertain save cannot become a second mutation");
     assert!(app.mcp_servers.as_ref().unwrap().order.as_ref().unwrap().command.is_some());
     let mut unrelated = request.clone(); unrelated["command_id"] = json!("another-command");
-    let done = || Ok(ViewActionReply::Outcome(alondra_core::views::Outcome { kind: alondra_core::views::OutcomeKind::Done, title: "Saved".into(), body: None, next: None }));
+    let done = || Ok(ViewActionReply::Outcome(alondra_views::Outcome { kind: alondra_views::OutcomeKind::Done, title: "Saved".into(), body: None, next: None }));
     app.view_action_done(unrelated, done());
     assert!(app.mcp_servers.as_ref().unwrap().order.is_some(), "another receipt cannot acknowledge this draft");
     app.view_action_done(request, done());
@@ -926,8 +926,8 @@ fn a_settings_profile_link_opens_the_generic_view_and_returns_to_the_selected_ro
     app.loaded = true;
     select(&mut app, "Claude · Orchestrator");
     let row = app.mcp_servers.as_mut().unwrap().accounts.as_mut().unwrap().sections.iter_mut()
-        .flat_map(|section| &mut section.items).find_map(|item| match item { alondra_core::views::Item::Row(row) if row.title == "Claude · Orchestrator" => Some(row), _ => None }).unwrap();
-    let navigation: alondra_core::views::Action = serde_json::from_value(serde_json::json!({
+        .flat_map(|section| &mut section.items).find_map(|item| match item { alondra_views::Item::Row(row) if row.title == "Claude · Orchestrator" => Some(row), _ => None }).unwrap();
+    let navigation: alondra_views::Action = serde_json::from_value(serde_json::json!({
         "id":"", "label":"Edit ordered candidates", "style":"plain", "presentation":"button", "input":{"kind":"none"},
         "attachments":false, "enabled":true, "link":{"kind":"view","key":"model_profile:claude-orchestrator"}
     })).unwrap();
@@ -1067,8 +1067,8 @@ fn a_file_dropped_on_what_happened_stays_text_because_the_report_attaches_nothin
 fn yes_sends_the_report_as_the_failure_it_was_opened_for() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let mut app = app();
-    let action = alondra_core::views::Action {
-        link: Some(alondra_core::views::Link::Local { local: alondra_core::views::LocalLink::CrashReport { failure: "not-resumed".into() } }),
+    let action = alondra_views::Action {
+        link: Some(alondra_views::Link::Local { local: alondra_views::LocalLink::CrashReport { failure: "not-resumed".into() } }),
         ..serde_json::from_value(json!({"id": "", "label": "Send crash report", "style": "secondary", "presentation": "button",
             "input": {"kind": "none"}, "attachments": false, "enabled": true})).unwrap()
     };

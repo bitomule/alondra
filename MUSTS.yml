@@ -60,7 +60,7 @@ checks:
       - "crates/store/src/**"
       - "crates/core/src/accounts.rs"
       - "crates/core/src/bonjour.rs"
-      - "crates/core/src/cited_file.rs"
+      - "crates/domain-rules/src/cited_file.rs"
       - "crates/core/src/claude_account.rs"
       - "crates/core/src/claude_code.rs"
       - "crates/core/src/codex_account.rs"
@@ -202,6 +202,9 @@ checks:
       - "crates/alondra/**"
       - "crates/alondrad/**"
       - "crates/core/**"
+      - "crates/domain-rules/**"
+      - "crates/view-model/**"
+      - "crates/views/**"
       - "crates/daemon-engine-machine/**"
       - "crates/daemon-engine-model/**"
       - "crates/daemon-engine-store/**"
@@ -271,6 +274,9 @@ checks:
       - "crates/alondrad/**"
       - "crates/codex-protocol/**"
       - "crates/core/**"
+      - "crates/domain-rules/**"
+      - "crates/view-model/**"
+      - "crates/views/**"
       - "crates/daemon-engine-machine/**"
       - "crates/daemon-engine-model/**"
       - "crates/daemon-engine-store/**"
@@ -336,19 +342,57 @@ checks:
       - "crates/domain/**"
       - "crates/foundation/**"
       - "crates/test_support.rs"
-      - "docs/architecture/cards.md"
-      - "fixtures/accounts/BUILD.bazel"
-      - "fixtures/accounts/recorded-rows.json"
-      - "fixtures/views/*.json"
-      - "fixtures/views/BUILD.bazel"
-      - "fixtures/views/cards/**"
-      - "fixtures/views/metrics/**"
       - "tools/BUILD.bazel"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
     with:
       targets:
         - //crates/core/...
+
+  crate-domain-rules:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "BUILD.bazel"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "clippy.toml"
+      - "crates/**"
+    with:
+      targets:
+        - //crates/domain-rules/...
+
+  crate-view-model:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "BUILD.bazel"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "clippy.toml"
+      - "crates/**"
+    with:
+      targets:
+        - //crates/view-model/...
+
+  crate-views:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "BUILD.bazel"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "clippy.toml"
+      - "crates/**"
+    with:
+      targets:
+        - //crates/views/...
 
   crate-daemon-engine:
     uses: bazel/test
@@ -379,6 +423,9 @@ checks:
       - "crates/alondrad/**"
       - "crates/codex-protocol/**"
       - "crates/core/**"
+      - "crates/domain-rules/**"
+      - "crates/view-model/**"
+      - "crates/views/**"
       - "crates/daemon-engine-machine/**"
       - "crates/daemon-engine-model/**"
       - "crates/daemon-engine-store/**"
@@ -424,6 +471,9 @@ checks:
       - "crates/agent-runtime/**"
       - "crates/codex-protocol/**"
       - "crates/core/**"
+      - "crates/domain-rules/**"
+      - "crates/view-model/**"
+      - "crates/views/**"
       - "crates/daemon-engine-machine/**"
       - "crates/daemon-engine-model/**"
       - "crates/daemon-engine-store/**"
@@ -471,6 +521,9 @@ checks:
       - "crates/alondrad/**"
       - "crates/codex-protocol/**"
       - "crates/core/**"
+      - "crates/domain-rules/**"
+      - "crates/view-model/**"
+      - "crates/views/**"
       - "crates/daemon-engine-machine/**"
       - "crates/daemon-engine-model/**"
       - "crates/daemon-engine-store/**"
@@ -546,6 +599,9 @@ checks:
       - "crates/alondrad/**"
       - "crates/codex-protocol/**"
       - "crates/core/**"
+      - "crates/domain-rules/**"
+      - "crates/view-model/**"
+      - "crates/views/**"
       - "crates/daemon-engine-model/**"
       - "crates/daemon-engine-store/**"
       - "crates/daemon-support/**"
@@ -635,6 +691,9 @@ checks:
       - "crates/alondrad/**"
       - "crates/codex-protocol/**"
       - "crates/core/**"
+      - "crates/domain-rules/**"
+      - "crates/view-model/**"
+      - "crates/views/**"
       - "crates/daemon-engine-model/**"
       - "crates/daemon-engine-store/**"
       - "crates/daemon-support/**"
@@ -675,6 +734,9 @@ checks:
       - "crates/agent-runtime/**"
       - "crates/alondrad/**"
       - "crates/core/**"
+      - "crates/domain-rules/**"
+      - "crates/view-model/**"
+      - "crates/views/**"
       - "crates/daemon-engine-model/**"
       - "crates/daemon-support/**"
       - "crates/domain/**"
@@ -709,6 +771,9 @@ checks:
       - "crates/agent-runtime/**"
       - "crates/alondrad/**"
       - "crates/core/**"
+      - "crates/domain-rules/**"
+      - "crates/view-model/**"
+      - "crates/views/**"
       - "crates/daemon-support/**"
       - "crates/domain/**"
       - "crates/e2e/**"
@@ -1217,6 +1282,9 @@ checks:
       - "crates/alondrad/**"
       - "crates/codex-protocol/**"
       - "crates/core/**"
+      - "crates/domain-rules/**"
+      - "crates/view-model/**"
+      - "crates/views/**"
       - "crates/daemon-engine-machine/**"
       - "crates/daemon-engine-model/**"
       - "crates/daemon-engine-store/**"
@@ -1516,6 +1584,9 @@ checks:
       - "crates/alondrad/**"
       - "crates/codex-protocol/**"
       - "crates/core/**"
+      - "crates/domain-rules/**"
+      - "crates/view-model/**"
+      - "crates/views/**"
       - "crates/daemon-engine-machine/**"
       - "crates/daemon-engine-model/**"
       - "crates/daemon-engine-store/**"
@@ -2028,6 +2099,9 @@ checks:
       - "crates/alondrad/**"
       - "crates/codex-protocol/**"
       - "crates/core/**"
+      - "crates/domain-rules/**"
+      - "crates/view-model/**"
+      - "crates/views/**"
       - "crates/daemon-engine*/**"
       - "crates/daemon-support/**"
       - "crates/domain/**"

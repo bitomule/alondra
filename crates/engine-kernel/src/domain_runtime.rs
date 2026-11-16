@@ -3,7 +3,7 @@ use crate::locks::{Poisonable as _, PoisonableRw as _};
 use crate::domain_authority::{Authority, Capability, Principal};
 use crate::runtime_mutex::RuntimeMutex;
 use crate::domain_store::{schedule_command, DomainStore, OwnerTransaction, StagedOutcome, StoreError, TransportIdentity};
-use alondra_core::domain::*;
+use alondra_domain_rules::*;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
@@ -44,7 +44,7 @@ pub struct DomainRuntime {
     /// User messages for sessions in the user's own terminal, handed at their next Stop hook.
     /// A holder that panics leaves it whole, so it is recovered: one remove or lookup each.
     pub held:
-        Mutex<std::collections::BTreeMap<alondra_core::domain::AgentId, Vec<String>>>,
+        Mutex<std::collections::BTreeMap<alondra_domain_rules::AgentId, Vec<String>>>,
     rejections: rejections::Rejections,
     /// Store seals of commits whose state readers already see, for the SDK owners to claim,
     /// send and acknowledge.
@@ -1352,7 +1352,7 @@ mod producer_revision_tests {
                         review_prs: false,
                         dependencies: Default::default(),
                         stack: None,
-                        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+                        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
                     },
                 ),
                 None,
@@ -1378,7 +1378,7 @@ mod producer_revision_tests {
                     task_id: "task-a".into(),
                 },
                 recipient: Recipient::Orchestrator,
-                body: "Progress".into(), card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
+                body: "Progress".into(), card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"),
             },
         );
         let revision = runtime.state().unwrap().revision;

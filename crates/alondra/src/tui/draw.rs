@@ -452,7 +452,7 @@ fn update_notice(update: &alondra_core::update::Status) -> Option<Span<'static>>
 
 /// The header bars, named when there is room (`Claude week ▰▰▱▱ 53%`) and bare when not.
 fn bars(
-    gauges: &[alondra_core::views::Gauge],
+    gauges: &[alondra_views::Gauge],
     tallies: &[(u32, String)],
     named: bool,
 ) -> Vec<Span<'static>> {
@@ -467,11 +467,11 @@ fn bars(
             out.extend(usage_badge(gauge));
             continue;
         }
-        let hot = gauge.level == alondra_core::views::Level::Hot;
+        let hot = gauge.level == alondra_views::Level::Hot;
         let color = match gauge.level {
-            alondra_core::views::Level::Calm => ACCENT,
-            alondra_core::views::Level::Warm => Color::Yellow,
-            alondra_core::views::Level::Hot => Color::LightRed,
+            alondra_views::Level::Calm => ACCENT,
+            alondra_views::Level::Warm => Color::Yellow,
+            alondra_views::Level::Hot => Color::LightRed,
         };
         out.push(Span::raw(if named { "  " } else { " " }));
         if named {
@@ -505,17 +505,17 @@ const BAR_CELLS: usize = 4;
 
 pub(super) const USAGE: &str = "usage";
 
-fn usage_color(level: alondra_core::views::Level) -> Color {
+fn usage_color(level: alondra_views::Level) -> Color {
     match level {
-        alondra_core::views::Level::Calm => Color::Green,
-        alondra_core::views::Level::Warm => Color::Yellow,
-        alondra_core::views::Level::Hot => Color::LightRed,
+        alondra_views::Level::Calm => Color::Green,
+        alondra_views::Level::Warm => Color::Yellow,
+        alondra_views::Level::Hot => Color::LightRed,
     }
 }
 
 /// `● Claude: over pace`: the colour and the word of the provider in the worst state.
-fn usage_badge(gauge: &alondra_core::views::Gauge) -> Vec<Span<'static>> {
-    let hot = gauge.level == alondra_core::views::Level::Hot;
+fn usage_badge(gauge: &alondra_views::Gauge) -> Vec<Span<'static>> {
+    let hot = gauge.level == alondra_views::Level::Hot;
     vec![
         Span::styled("● ", Style::new().fg(usage_color(gauge.level))),
         Span::styled(format!("{}: ", gauge.label), Style::new().fg(SOFT)),
@@ -523,7 +523,7 @@ fn usage_badge(gauge: &alondra_core::views::Gauge) -> Vec<Span<'static>> {
     ]
 }
 
-fn usage_sheet_lines(gauge: &alondra_core::views::Gauge) -> Vec<Line<'static>> {
+fn usage_sheet_lines(gauge: &alondra_views::Gauge) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(usage_badge(gauge))];
     if let Some(detail) = &gauge.detail {
         lines.push(Line::from(detail.clone()).fg(SOFT));
@@ -581,9 +581,9 @@ fn draw_usage_sheet(f: &mut Frame, app: &mut App) {
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).scroll((app.usage_scroll as u16, 0)).block(block), r);
 }
 
-fn draw_views_inbox(f: &mut Frame, app: &mut App, home: &alondra_core::views::View, area: Rect) {
+fn draw_views_inbox(f: &mut Frame, app: &mut App, home: &alondra_views::View, area: Rect) {
     if !app.view_navigation.is_empty() && app.current_view().is_some_and(|view|
-        view.sections.iter().flat_map(|section| &section.items).any(|item| matches!(item, alondra_core::views::Item::Form(_)))) {
+        view.sections.iter().flat_map(|section| &section.items).any(|item| matches!(item, alondra_views::Item::Form(_)))) {
         app.detail_view.shown = true;
         draw_views_card(f, app, area);
         return;
@@ -680,7 +680,7 @@ fn empty_list(app: &App) -> Vec<Line<'static>> {
 fn draw_views_inbox_list(
     f: &mut Frame,
     app: &mut App,
-    home: &alondra_core::views::View,
+    home: &alondra_views::View,
     area: Rect,
 ) {
     let focused = app.focus == Pane::List || !app.detail_view.shown;
@@ -730,11 +730,11 @@ fn draw_views_inbox_list(
             continue;
         }
         for item in &section.items {
-            if let alondra_core::views::Item::Notice(notice) = item {
+            if let alondra_views::Item::Notice(notice) = item {
                 lines.push(Line::from(Span::styled(format!("  {}", notice.text), Style::new().fg(DIM))));
                 continue;
             }
-            if let alondra_core::views::Item::Card(card) = item {
+            if let alondra_views::Item::Card(card) = item {
                 let selected = app.sel.as_ref().is_some_and(|key| key.0 == card.id);
                 let start = lines.len();
                 lines.extend(super::view_render::card_row_lines(
@@ -747,7 +747,7 @@ fn draw_views_inbox_list(
                 }
                 continue;
             }
-            let alondra_core::views::Item::Row(row) = item else {
+            let alondra_views::Item::Row(row) = item else {
                 continue;
             };
             let selected = app.sel.as_ref().is_some_and(|key| key.0 == row.id);
@@ -1790,7 +1790,7 @@ pub(super) fn action_menu(table: &super::bindings::Table) -> Vec<Line<'static>> 
 }
 
 /// A section header's actions, each with its key, pushed to the right edge of the line.
-fn header_actions(section: &alondra_core::views::Section, header: &[Span], width: usize) -> Vec<Span<'static>> {
+fn header_actions(section: &alondra_views::Section, header: &[Span], width: usize) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     for action in section.actions.iter().filter(|action| action.enabled) {
         let hint = super::view_render::action_hint(action);
@@ -1810,12 +1810,12 @@ fn header_actions(section: &alondra_core::views::Section, header: &[Span], width
 
 /// The actions a list screen offers whatever is selected, such as clearing the completed work: each
 /// with the section whose header shows it, if it is one.
-pub(super) fn screen_actions(view: &alondra_core::views::View) -> Vec<(Option<String>, alondra_core::views::Action)> {
+pub(super) fn screen_actions(view: &alondra_views::View) -> Vec<(Option<String>, alondra_views::Action)> {
     view.sections
         .iter()
         .flat_map(|section| {
             let bars = section.items.iter().filter_map(|item| match item {
-                alondra_core::views::Item::Actions(bar) => Some(bar.actions.iter()),
+                alondra_views::Item::Actions(bar) => Some(bar.actions.iter()),
                 _ => None,
             }).flatten().map(|action| (None, action));
             bars.chain(section.actions.iter().map(|action| (Some(section.id.clone()), action)))
@@ -1825,7 +1825,7 @@ pub(super) fn screen_actions(view: &alondra_core::views::View) -> Vec<(Option<St
         .collect()
 }
 
-pub(super) fn option_label(option: &alondra_core::views::ActionOption) -> String {
+pub(super) fn option_label(option: &alondra_views::ActionOption) -> String {
     option.label.clone()
 }
 

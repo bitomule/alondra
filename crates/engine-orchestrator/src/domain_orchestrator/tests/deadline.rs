@@ -4,10 +4,10 @@
 use crate::live::LiveOf as _;
 use super::testing::fixture;
 use super::*;
-use alondra_core::domain::{
+use alondra_domain_rules::{
     LaunchPlan, LifecycleRecord, Recipient, TaskId, RuntimeObservation, STALL_ATTEMPTS, StallClosing, StallOutcome, UNSETTLED_INSTRUCT, is_stall_case,
 };
-use alondra_core::orchestrator_cards::STALL_NOTICE_PREFIX;
+use alondra_domain_rules::orchestrator_cards::STALL_NOTICE_PREFIX;
 
 const MINUTE: i64 = 60_000;
 

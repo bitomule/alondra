@@ -5,7 +5,7 @@
 use crate::domain_github::{Closed, GhFailure, Observed, PrFacts, PrObserver};
 use crate::domain_merges::{Checks, MergeState, Pending, PrMerger, Status};
 use crate::pr_images::{Failure, Fetch, GitHubImages};
-use alondra_core::domain::{MergeMethod, PrChecks, PrMergeable, PrState, PullRequest};
+use alondra_domain_rules::{MergeMethod, PrChecks, PrMergeable, PrState, PullRequest};
 use alondra_daemon_support::prs::Gh;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};

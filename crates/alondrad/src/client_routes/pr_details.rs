@@ -2,12 +2,12 @@
 //! title, checks and whether it merges cleanly. Refreshed in the background and read from
 //! memory, so a client's poll never waits on `gh`.
 use crate::locks::Poisonable as _;
-use alondra_core::domain::{
+use alondra_domain_rules::{
     Actor, Command, CommandEnvelope, DeliveryTarget, DomainError, DomainState, Instruction, InteractionPayload,
     PrState, PullRequest, PROTOCOL_VERSION,
 };
 use alondra_core::pr::Check;
-use alondra_core::views::pr_images::{PrImage, Shown};
+use alondra_views::pr_images::{PrImage, Shown};
 use crate::pr_images::GitHubImages;
 use serde::Serialize;
 use serde_json::Value;
@@ -430,7 +430,7 @@ const PRESENT_PAUSE: Duration = Duration::from_secs(2);
 const HEAD_ATTEMPTS: usize = 3;
 const HEAD_PAUSE: Duration = if cfg!(test) { Duration::ZERO } else { Duration::from_secs(2) };
 
-fn presentation_conflicts_text(pr: &PullRequest, update: alondra_core::domain::BranchUpdate) -> String {
+fn presentation_conflicts_text(pr: &PullRequest, update: alondra_domain_rules::BranchUpdate) -> String {
     let url = crate::domain_github::pr_url(&pr.host, &pr.repository, pr.number);
     let base = &pr.base;
     format!("GitHub reports that {url} conflicts with {base}, so nothing was presented: {how}, then present the PR again \
@@ -440,11 +440,11 @@ fn presentation_conflicts_text(pr: &PullRequest, update: alondra_core::domain::B
 fn missing_images_text(pr: &PullRequest, missing: &[PrImage]) -> String {
     let url = crate::domain_github::pr_url(&pr.host, &pr.repository, pr.number);
     let mut each: Vec<String> = missing.iter().map(|image| match &image.shown {
-        Shown::Unavailable { problem, .. } => format!("{} ({})", image.url, problem.text(alondra_core::views::Lang::En)),
+        Shown::Unavailable { problem, .. } => format!("{} ({})", image.url, problem.text(alondra_views::Lang::En)),
         Shown::Stored { .. } => image.url.clone(),
     }).collect();
     each.dedup();
-    let host = alondra_core::domain::normalize_pr_host(&pr.host);
+    let host = alondra_domain_rules::normalize_pr_host(&pr.host);
     format!("The description of {url} cites images that do not exist, so nothing was presented: {}. Commit each image to the \
         branch and cite it at the commit you present (https://{host}/{}/blob/<commit>/<path>?raw=true), or take it out of \
         the description with gh pr edit, then present the PR again.", each.join("; "), pr.repository)
@@ -486,7 +486,7 @@ pub(crate) fn hand_back_conflicts(domain: &crate::domain_runtime::DomainRuntime,
     }
 }
 
-fn conflicts_sent(state: &DomainState, pr: &alondra_core::domain::PullRequest) -> bool {
+fn conflicts_sent(state: &DomainState, pr: &alondra_domain_rules::PullRequest) -> bool {
     state.interactions.values().any(|interaction| matches!(&interaction.payload,
         InteractionPayload::Delivery { targets, feedback, .. }
             if feedback.iter().any(|f| f.instruction == Instruction::Conflicts && f.merge_failure.is_none())
@@ -520,7 +520,7 @@ fn parse(id: &str, number: u64, view: &Value) -> Details {
 #[cfg(test)]
 mod tests {
     use super::{Details, PrDetails, hand_back_conflicts, parse};
-    use alondra_core::domain::{
+    use alondra_domain_rules::{
         Actor, Command, CommandEnvelope, DeliveryTarget, Instruction, InteractionPayload, MergeMethod, PrState,
     };
     use serde_json::json;
@@ -539,7 +539,7 @@ mod tests {
     fn present(domain: &crate::domain_runtime::DomainRuntime, id: &str, head: &str) {
         run(domain, Actor::Agent { agent_id: "agent".into() }, id, Command::PresentResult { checklist: Vec::new(), attachments: vec![],
             task_id: "task".into(), interaction_id: id.into(), body: "Ready".into(), is_final: true, nothing_to_review: false,
-            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: head.into() }], card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
+            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: head.into() }], card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true) });
     }
 
     fn conflicts_told(domain: &crate::domain_runtime::DomainRuntime) -> Vec<(String, String)> {
@@ -562,7 +562,7 @@ mod tests {
         run(&domain, user.clone(), "request", Command::CreateRequest { request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         run(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None, task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
             agent_id: Some("agent".into()), review_prs: false, dependencies: Default::default(), stack: None,
-            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
+            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
         run(&domain, Actor::Agent { agent_id: "agent".into() }, "pr", Command::RegisterPr { task_id: "task".into(),
             pr_id: "pr".into(), host: "github.com".into(), repository: "me/app".into(), number: 7, head: "head1".into(),
             base: "main".into(), allowed_methods: vec![MergeMethod::Squash] });
@@ -603,15 +603,15 @@ mod tests {
         run(&domain, user.clone(), "request", Command::CreateRequest { request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         run(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None, task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
             agent_id: Some("agent".into()), review_prs: false, dependencies: Default::default(), stack: None,
-            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
+            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
         run(&domain, Actor::Agent { agent_id: "agent".into() }, "pr", Command::RegisterPr { task_id: "task".into(),
             pr_id: "pr".into(), host: "github.com".into(), repository: "me/app".into(), number: 7, head: "head1".into(),
             base: "main".into(), allowed_methods: vec![MergeMethod::Squash] });
         present(&domain, "first", "head1");
         run(&domain, Actor::System, "merge-failed", Command::SubmitFeedback {
-            merge_failure: Some(alondra_core::domain::MergeFailure { number: 7, reason: "review required".into() }), attachments: vec![], presentation_id: "first".into(),
+            merge_failure: Some(alondra_domain_rules::MergeFailure { number: 7, reason: "review required".into() }), attachments: vec![], presentation_id: "first".into(),
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
-            body: alondra_core::domain::merge_failed_text(7, "https://github.com/me/app/pull/7", "main", "review required"),
+            body: alondra_domain_rules::merge_failed_text(7, "https://github.com/me/app/pull/7", "main", "review required"),
             instruction: Instruction::Conflicts });
         present(&domain, "again", "head1");
         let details = PrDetails::default();
@@ -699,8 +699,8 @@ mod tests {
         }
     }
 
-    fn watched_prs(count: u64) -> alondra_core::domain::DomainState {
-        let mut state = alondra_core::domain::DomainState::new("provider-fixture");
+    fn watched_prs(count: u64) -> alondra_domain_rules::DomainState {
+        let mut state = alondra_domain_rules::DomainState::new("provider-fixture");
         let mut apply = |actor, command| {
             state.execute(&actor, &CommandEnvelope {
                 protocol_version: 2, data_epoch: state.data_epoch.clone(),
@@ -722,7 +722,7 @@ mod tests {
             apply(Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
                 task_id: task.clone().into(), request_id: "request".into(), title: "Review".into(),
                 agent_id: Some(agent.clone().into()), review_prs: true, dependencies: Default::default(), stack: None,
-                launch: Some(alondra_core::domain::LaunchPlan::new("node", "/synthetic")),
+                launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/synthetic")),
             });
             apply(Actor::Agent { agent_id: agent.into() }, Command::RegisterPr {
                 task_id: task.into(), pr_id: format!("pr-{number}").into(), host: "github.com".into(),
@@ -739,7 +739,7 @@ mod tests {
         assert!(future.poll(&mut std::task::Context::from_waker(waker)).is_pending());
     }
 
-    fn foreground_fixture() -> (crate::test_support::Directory, std::sync::Arc<crate::client_routes::Client>, alondra_core::domain::PullRequest) {
+    fn foreground_fixture() -> (crate::test_support::Directory, std::sync::Arc<crate::client_routes::Client>, alondra_domain_rules::PullRequest) {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         let domain = std::sync::Arc::new(alondra_daemon_engine::wiring::open(&home).unwrap());
@@ -750,7 +750,7 @@ mod tests {
         run(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Review".into(), agent_id: Some("agent".into()),
             review_prs: true, dependencies: Default::default(), stack: None,
-            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/synthetic")),
+            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/synthetic")),
         });
         run(&domain, Actor::Agent { agent_id: "agent".into() }, "pr", Command::RegisterPr {
             task_id: "task".into(), pr_id: "pr-1".into(), host: "github.com".into(), repository: "fixture/repo".into(),
@@ -765,13 +765,13 @@ mod tests {
         (home, client, pr)
     }
 
-    fn foreground_presentation(pr: &alondra_core::domain::PullRequest) -> Command {
+    fn foreground_presentation(pr: &alondra_domain_rules::PullRequest) -> Command {
         let targets = vec![DeliveryTarget::PullRequest { pr_id: pr.id.clone(), head: pr.head.clone() }];
         Command::PresentResult {
             checklist: Vec::new(),
             attachments: vec![], task_id: pr.task_id.clone(), interaction_id: "candidate".into(), body: "Ready".into(),
             is_final: true, nothing_to_review: false,
-            card: alondra_core::domain::CardSpec::delivery("Review", &targets, true), targets,
+            card: alondra_domain_rules::CardSpec::delivery("Review", &targets, true), targets,
         }
     }
 
@@ -792,13 +792,13 @@ mod tests {
         assert!(error.message.contains("docs/gone.png (not in the branch (aaaaaaa))"), "{}", error.message);
         assert!(!error.message.contains("areas.png") && !error.message.contains("secret/repo"), "{}", error.message);
         let shown = client.details.get(&pr.id.0).unwrap().images;
-        assert!(matches!(shown[0].shown, alondra_core::views::pr_images::Shown::Stored { .. }), "{shown:?}");
+        assert!(matches!(shown[0].shown, alondra_views::pr_images::Shown::Stored { .. }), "{shown:?}");
 
         view.answer(Some(answer("![areas](docs/areas.png)\n\n![](https://github.com/secret/repo/blob/main/a.png)")));
         client.verify_presentation(&foreground_presentation(&pr)).await.unwrap();
         let shown = client.details.get(&pr.id.0).unwrap();
         assert!(!shown.body.as_deref().unwrap().contains("gone"), "the description read to present it shows at once: {:?}", shown.body);
-        assert!(matches!(shown.images[0].shown, alondra_core::views::pr_images::Shown::Stored { .. }), "{:?}", shown.images);
+        assert!(matches!(shown.images[0].shown, alondra_views::pr_images::Shown::Stored { .. }), "{:?}", shown.images);
     }
 
     #[tokio::test]
@@ -923,7 +923,7 @@ mod tests {
         *details.clock.lock().unwrap() = Some(std::sync::Arc::new(move || read.load(std::sync::atomic::Ordering::SeqCst)));
         clock
     }
-    fn cached_clean(client: &crate::client_routes::Client, pr: &alondra_core::domain::PullRequest) {
+    fn cached_clean(client: &crate::client_routes::Client, pr: &alondra_domain_rules::PullRequest) {
         client.details.record(&pr.id.0, Details { title: Some("Cached clean".into()), body: Some("Preserved body".into()),
             head_sha: Some(pr.head.clone()), base_ref: Some(pr.base.clone()), ..Default::default() });
     }
@@ -1204,7 +1204,7 @@ mod tests {
         run(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
             task_id: "task".into(), request_id: "request".into(), title: "Review".into(), agent_id: Some("agent".into()),
             review_prs: true, dependencies: Default::default(), stack: None,
-            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/synthetic")),
+            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/synthetic")),
         });
         run(&domain, Actor::Agent { agent_id: "agent".into() }, "pr", Command::RegisterPr {
             task_id: "task".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "fixture/repo".into(),
@@ -1238,7 +1238,7 @@ mod tests {
             run(&domain, Actor::Orchestrator { generation: 0 }, &task, Command::CreateTask { plan_items: None, continues: None,
                 task_id: task.clone().into(), request_id: request.into(), title: "Review".into(),
                 agent_id: Some(agent.clone().into()), review_prs: true, dependencies: Default::default(), stack: None,
-                launch: Some(alondra_core::domain::LaunchPlan::new("node", "/synthetic")),
+                launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/synthetic")),
             });
             run(&domain, Actor::Agent { agent_id: agent.into() }, &format!("pr-{number}"), Command::RegisterPr {
                 task_id: task.into(), pr_id: format!("pr-{number}").into(), host: "github.com".into(),

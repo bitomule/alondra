@@ -7,7 +7,7 @@
 //! - `uploads/`, `images/`, `domain-v2/` and `documents/` hold what cards show: each stays while a
 //!   card that names it is in the inbox or its task is open, and `STORED_KEPT_FOR` after.
 //! - Anything else has no owner: it is listed, and goes once it is older than `STORED_KEPT_FOR`.
-use alondra_core::domain::{DomainState, InteractionId, Scope};
+use alondra_domain_rules::{DomainState, InteractionId, Scope};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;

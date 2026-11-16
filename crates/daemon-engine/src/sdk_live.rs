@@ -8,7 +8,7 @@ use crate::node_reports::{Report, Reported, short_label};
 use crate::node_work::StepIn;
 use alondra_core::activity::Activity;
 use alondra_core::metrics::steps::StepCounts;
-use alondra_core::views::RunOutcome;
+use alondra_view_model::RunOutcome;
 use alondra_core::{BackgroundItem, BackgroundKind, Millis, ToolInFlight};
 use serde::Deserialize;
 use serde_json::Value;
@@ -58,7 +58,7 @@ pub fn wait_file(domain: &crate::domain_runtime::DomainRuntime, provider: alondr
 }
 
 /// Called before publishing a committed turn boundary, including host loss and interruptions.
-pub(crate) fn clear_ended_waits(domain: &crate::domain_runtime::DomainRuntime, before: &alondra_core::domain::DomainState, after: &alondra_core::domain::DomainState) {
+pub(crate) fn clear_ended_waits(domain: &crate::domain_runtime::DomainRuntime, before: &alondra_domain_rules::DomainState, after: &alondra_domain_rules::DomainState) {
     if domain.sdk().is_none() { return; }
     for (id, journal) in &before.lifecycle_journal {
         if after.lifecycle_journal.get(id).is_some_and(|new| new.len() == journal.len()) { continue; }
@@ -441,7 +441,7 @@ fn progress(name: &str, input: &Value, result: &Value) -> Option<Report> {
 }
 
 /// What one observation of a node's host says, kept with what its node mod would have reported.
-pub(crate) fn feed(domain: &crate::domain_runtime::DomainRuntime, agent: &alondra_core::domain::AgentId, observation: &alondra_provider_contract::OrderedObservation) {
+pub(crate) fn feed(domain: &crate::domain_runtime::DomainRuntime, agent: &alondra_domain_rules::AgentId, observation: &alondra_provider_contract::OrderedObservation) {
     if let Some(message) = alondra_provider_claude::sdk_message(observation) {
         let now = alondra_core::now_millis();
         if let Some(steps) = domain.live().mods.apply_sdk(&agent.0, &message, now) {
@@ -457,19 +457,19 @@ mod tests {
     use crate::node_work::StepStatus;
     use serde_json::json;
 
-    fn wait_row(path: &std::path::Path) -> alondra_core::views::now_fact::NowFact {
-        use alondra_core::views::{Lang, LiveNode, LiveReportedWait, now_fact::now_fact};
+    fn wait_row(path: &std::path::Path) -> alondra_view_model::now_fact::NowFact {
+        use alondra_view_model::{Lang, LiveNode, LiveReportedWait, now_fact::now_fact};
         let reported_wait = read_wait_file(path).map(|wait| {
             assert_eq!(wait.since_ms, 1_794_324_000_000);
             LiveReportedWait { what: wait.what, detail: wait.detail, progress: wait.progress, since: "15:38".into() }
         });
         let node = LiveNode { reported_wait, tool: Some("deploy".into()), tool_since: Some("15:30".into()), ..Default::default() };
-        now_fact(Some(&node), &alondra_core::domain::Doing::Turn, "15:00", Lang::Es)
+        now_fact(Some(&node), &alondra_domain_rules::Doing::Turn, "15:00", Lang::Es)
     }
 
     #[test]
     fn a_reported_wait_of_a_live_process_reaches_the_row() {
-        use alondra_core::views::{Lang, now_fact::NowDoing};
+        use alondra_view_model::{Lang, now_fact::NowDoing};
         let root = crate::test_support::Directory::new();
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("wait.json");
@@ -486,7 +486,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("wait.json");
         std::fs::write(&path, br#"{"what":"the server","since_ms":1794324000000}"#).unwrap();
-        assert_eq!(wait_row(&path).text(alondra_core::views::Lang::Es), "Espera a the server · desde las 15:38");
+        assert_eq!(wait_row(&path).text(alondra_view_model::Lang::Es), "Espera a the server · desde las 15:38");
     }
 
     #[test]
@@ -500,7 +500,7 @@ mod tests {
         child.wait().unwrap();
         std::fs::write(&path, serde_json::to_vec(&json!({"what": "the server", "since_ms": 1_794_324_000_000i64, "pid": pid})).unwrap()).unwrap();
         assert!(read_wait_file(&path).is_none());
-        assert!(matches!(wait_row(&path).doing, alondra_core::views::now_fact::NowDoing::Command { .. }));
+        assert!(matches!(wait_row(&path).doing, alondra_view_model::now_fact::NowDoing::Command { .. }));
     }
 
     #[test]
@@ -754,7 +754,7 @@ mod tests {
 pub(crate) struct EndedWaits;
 
 impl crate::domain_runtime::CommitObserver for EndedWaits {
-    fn published(&self, domain: &crate::domain_runtime::DomainRuntime, before: &alondra_core::domain::DomainState, after: &alondra_core::domain::DomainState) {
+    fn published(&self, domain: &crate::domain_runtime::DomainRuntime, before: &alondra_domain_rules::DomainState, after: &alondra_domain_rules::DomainState) {
         clear_ended_waits(domain, before, after);
     }
 }

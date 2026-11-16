@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use alondra_core::views::VIEWS_PROTOCOL;
+use alondra_views::VIEWS_PROTOCOL;
 use anyhow::Result;
 use serde_json::{Value, json};
 

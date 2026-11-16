@@ -726,7 +726,7 @@ impl Service {
         authorize: impl Fn() -> Result<()> + Send + Sync,
     ) -> Result<Value> {
         if authorize().is_err() {
-            return Ok(json!({"status":403, "body":alondra_core::domain::DomainError::new("forbidden", "device approval was revoked")}));
+            return Ok(json!({"status":403, "body":alondra_domain_rules::DomainError::new("forbidden", "device approval was revoked")}));
         }
         let result = if crate::views::actions::approved_path(&request.method, &request.path) {
             let routes = routes.as_ref().context("client routes unavailable")?;
@@ -1247,7 +1247,7 @@ impl Service {
                 if let Some(operation) = RegistrationOperation::for_request(&request) {
                     RegistrationRejection::Expired.log(operation, transport);
                 }
-                let response=self.encode_response(e,&device,&json!({"status":410,"body":alondra_core::views::action_outcome::unknown_body(alondra_core::views::action_outcome::UnknownReason::Expired)}),&request)?;
+                let response=self.encode_response(e,&device,&json!({"status":410,"body":alondra_views::action_outcome::unknown_body(alondra_views::action_outcome::UnknownReason::Expired)}),&request)?;
                 return Ok((response,device,guard));
             },
             Err(error)=>return Err(error),
@@ -1272,7 +1272,7 @@ impl Service {
                 if let Some(operation) = RegistrationOperation::for_request(&request) {
                     RegistrationRejection::Expired.log(operation, transport);
                 }
-                self.encode_response(e,&device,&json!({"status":410,"body":alondra_core::views::action_outcome::unknown_body(alondra_core::views::action_outcome::UnknownReason::Expired)}),&request)?
+                self.encode_response(e,&device,&json!({"status":410,"body":alondra_views::action_outcome::unknown_body(alondra_views::action_outcome::UnknownReason::Expired)}),&request)?
             }
             Disposition::Completed(bytes) => bytes,
             Disposition::ExecutingLocal => {
@@ -1494,7 +1494,7 @@ impl Service {
         let user_home = crate::options::user_home();
         let work: Box<dyn FnOnce() -> crate::client_routes::Reply + Send> = if request.method == "PUT" && request.path == crate::settings::PATH {
             let body = request.body.clone().context("settings body required")?;
-            let lang = self.routes.as_ref().map_or(alondra_core::views::Lang::En, |client| client.language_for_device(sender));
+            let lang = self.routes.as_ref().map_or(alondra_views::Lang::En, |client| client.language_for_device(sender));
             Box::new(move || crate::settings::write(&home, &user_home, relay, &body, lang))
         } else if request.method == "GET" && request.path == crate::settings::PATH {
             Box::new(move || crate::settings::read(&home, &user_home, relay))
@@ -2190,7 +2190,7 @@ fn domain_read_route(request: &LocalRequest) -> bool {
 }
 
 /// The agent a relayed `POST /agents/{id}/messages` writes to.
-fn agent_message(path: &str) -> Option<alondra_core::domain::AgentId> {
+fn agent_message(path: &str) -> Option<alondra_domain_rules::AgentId> {
     path.strip_prefix("/agents/")?
         .strip_suffix("/messages")
         .filter(|id| domain_read_id(id))
@@ -6365,13 +6365,13 @@ agreement_key = "{}"
         let state = domain.state().unwrap();
         domain
             .execute(
-                &alondra_core::domain::Actor::System,
-                &alondra_core::domain::CommandEnvelope {
-                    protocol_version: alondra_core::domain::PROTOCOL_VERSION,
+                &alondra_domain_rules::Actor::System,
+                &alondra_domain_rules::CommandEnvelope {
+                    protocol_version: alondra_domain_rules::PROTOCOL_VERSION,
                     data_epoch: state.data_epoch.clone(),
                     command_id: "agent".into(),
                     expected_revision: state.revision,
-                    command: alondra_core::domain::Command::RegisterAgent {
+                    command: alondra_domain_rules::Command::RegisterAgent {
                         agent_id: "agent-a".into(),
                         name: "Instance A".into(), at: 0
                     },
@@ -6545,7 +6545,7 @@ agreement_key = "{}"
             .await
             .unwrap();
         assert_eq!(finished["status"], 200, "{finished}");
-        let attachment: alondra_core::domain::AttachmentRef =
+        let attachment: alondra_domain_rules::AttachmentRef =
             serde_json::from_value(finished["body"]["attachment"].clone()).unwrap();
         assert_eq!(
             (

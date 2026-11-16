@@ -3,7 +3,7 @@
 //! orchestrator's inbox it reads from `engine-orchestrator`. Only the `test-hooks` feature opens
 //! these functions; the daemon keeps them crate-private.
 use alondra_core::Millis;
-use alondra_core::domain::{AgentId, Command, DomainError, DomainState, ReadIndex, TaskId};
+use alondra_domain_rules::{AgentId, Command, DomainError, DomainState, ReadIndex, TaskId};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub mod admission {

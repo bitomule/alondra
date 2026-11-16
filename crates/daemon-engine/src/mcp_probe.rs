@@ -3,8 +3,8 @@
 //! called, and Claude keeps no session of it. Each check is the user's: nothing checks on its own.
 use crate::locks::Poisonable as _;
 use crate::sdk_owner::SdkBackend;
-use alondra_core::domain::{McpServerState, McpStatus};
-use alondra_core::views::{LiveMcpProbe, LiveMcpRemoval};
+use alondra_domain_rules::{McpServerState, McpStatus};
+use alondra_view_model::{LiveMcpProbe, LiveMcpRemoval};
 use alondra_foundation::McpOrigin;
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -95,7 +95,7 @@ fn parse(output: &str) -> Result<Vec<McpServerState>, String> {
             transport,
             url: text(server, "url"),
         })
-    }).take(alondra_core::domain::MAX_MCP_SERVERS).collect())
+    }).take(alondra_domain_rules::MAX_MCP_SERVERS).collect())
 }
 
 /// Starts the host in `directory` as a check and reads what it answers, within `DEADLINE`.

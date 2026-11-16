@@ -323,14 +323,14 @@ pub(crate) fn next_local_midnight(now: Millis) -> Millis {
     local_at(now, 1, 0, 0)
 }
 
-fn option(id: &str, label: &str) -> alondra_core::domain::QuestionOption {
-    alondra_core::domain::QuestionOption { id: id.into(), label: label.into(), description: None }
+fn option(id: &str, label: &str) -> alondra_domain_rules::QuestionOption {
+    alondra_domain_rules::QuestionOption { id: id.into(), label: label.into(), description: None }
 }
 
 /// A launch going ahead over today's slice of the week puts a card in front of the user, once
 /// per local day: pause until tomorrow or keep going. The launch is never refused.
 pub(crate) fn raise_over_pace_card(domain: &crate::domain_runtime::DomainRuntime, now: Millis) {
-    use alondra_core::domain::SystemCard;
+    use alondra_domain_rules::SystemCard;
     use alondra_core::usage::{OVER_PACE_KEEP_OPTION, OVER_PACE_PAUSE_OPTION, OVER_PACE_PREFIX, PaceNumbers};
     let Some(usage) = crate::usage_probe::usage(domain, now).filter(|usage| usage.over_pace) else { return };
     let numbers = PaceNumbers::of(&usage);
@@ -343,7 +343,7 @@ pub(crate) fn raise_over_pace_card(domain: &crate::domain_runtime::DomainRuntime
     log_unless_repeated(raised, "the usage pace");
 }
 
-fn log_unless_repeated(result: Result<alondra_core::domain::CommandOutcome, crate::domain_store::StoreError>, what: &str) {
+fn log_unless_repeated(result: Result<alondra_domain_rules::CommandOutcome, crate::domain_store::StoreError>, what: &str) {
     if let Err(error) = result
         && !matches!(&error, crate::domain_store::StoreError::Domain(domain) if domain.code == "invalid_input")
     {
@@ -356,8 +356,8 @@ fn log_unless_repeated(result: Result<alondra_core::domain::CommandOutcome, crat
 /// pause. A resume card that no longer has a pause behind it is withdrawn. After a restart the
 /// answered cards bring the pause back as the user left it.
 pub(crate) fn settle_pace_cards(domain: &crate::domain_runtime::DomainRuntime, now: Millis) {
-    use alondra_core::domain::InteractionPayload;
-    use alondra_core::domain::SystemCard;
+    use alondra_domain_rules::InteractionPayload;
+    use alondra_domain_rules::SystemCard;
     use alondra_core::usage::{OVER_PACE_PAUSE_OPTION, PACE_RESUME_OPTION, PACE_RESUME_PREFIX, PACE_STAY_OPTION};
     let Ok(state) = domain.state() else { return };
     let pause = &domain.live().usage_pause;
@@ -468,7 +468,7 @@ fn wake_legacy_nodes(domain: &crate::domain_runtime::DomainRuntime, require_capa
     let now = now_millis();
     let Ok(state) = domain.state() else { return };
     for node in domain.live().nodes().into_iter().filter(|node| node.usage_limited && !node.busy) {
-        if !legacy_wake_ready(&state, &alondra_core::domain::AgentId(node.session_id.clone()), now, require_capacity) {
+        if !legacy_wake_ready(&state, &alondra_domain_rules::AgentId(node.session_id.clone()), now, require_capacity) {
             continue;
         }
         if !domain.live().gate.hold_back(domain, &node.session_id, crate::pauses::Reason::Usage, now) {
@@ -477,7 +477,7 @@ fn wake_legacy_nodes(domain: &crate::domain_runtime::DomainRuntime, require_capa
     }
 }
 
-fn legacy_wake_ready(state: &alondra_core::domain::DomainState, agent: &alondra_core::domain::AgentId, now: Millis, require_capacity: bool) -> bool {
+fn legacy_wake_ready(state: &alondra_domain_rules::DomainState, agent: &alondra_domain_rules::AgentId, now: Millis, require_capacity: bool) -> bool {
     use alondra_core::accounts::{AccountKey, Provider};
     if crate::sdk_owner::runs_through_sdk(state, agent) { return false; }
     let mut tasks = state.tasks.values().filter(|task| task.agent_id.as_ref() == Some(agent));
@@ -493,11 +493,11 @@ fn legacy_wake_ready(state: &alondra_core::domain::DomainState, agent: &alondra_
     account_retry_ready(state, &key, now, now, require_capacity)
 }
 
-pub(crate) fn task_usage_ready(state: &alondra_core::domain::DomainState, task: &alondra_core::domain::TaskId, since: Millis, now: Millis) -> bool {
+pub(crate) fn task_usage_ready(state: &alondra_domain_rules::DomainState, task: &alondra_domain_rules::TaskId, since: Millis, now: Millis) -> bool {
     state.tasks.get(task).is_some_and(|task| account_retry_ready(state, &task.account_key(), since, now, true))
 }
 
-fn account_retry_ready(state: &alondra_core::domain::DomainState, key: &alondra_core::accounts::AccountKey, since: Millis, now: Millis, require_capacity: bool) -> bool {
+fn account_retry_ready(state: &alondra_domain_rules::DomainState, key: &alondra_core::accounts::AccountKey, since: Millis, now: Millis, require_capacity: bool) -> bool {
     use alondra_core::accounts::{AccountState, Provider};
     if key.provider == Provider::Codex { return crate::claude_access::native_capacity_ready(state, key, since); }
     let Some(account) = state.accounts.iter().find(|account| account.provider == key.provider && account.id == key.account) else {
@@ -574,7 +574,7 @@ mod tests {
     fn an_unbound_legacy_session_is_not_assumed_to_belong_to_a_codex_or_named_account() {
         let (domain, _home) = domain();
         let mut state = (*domain.state().unwrap()).clone();
-        let agent = alondra_core::domain::AgentId("unbound".into());
+        let agent = alondra_domain_rules::AgentId("unbound".into());
         assert!(legacy_wake_ready(&state, &agent, 1_000, true));
         state.account_usage.push(alondra_core::usage::AccountUsage {
             provider: alondra_core::accounts::Provider::Claude, account: alondra_core::accounts::AccountId::default_account(),
@@ -703,9 +703,9 @@ mod tests {
         std::fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(crate::wiring::open(&home).unwrap());
         let state = domain.state().unwrap();
-        domain.execute_as_system(alondra_core::domain::CommandEnvelope {
-            protocol_version: alondra_core::domain::PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "fixture-claude-account".into(),
-            expected_revision: state.revision, command: alondra_core::domain::Command::RecordAccounts {
+        domain.execute_as_system(alondra_domain_rules::CommandEnvelope {
+            protocol_version: alondra_domain_rules::PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "fixture-claude-account".into(),
+            expected_revision: state.revision, command: alondra_domain_rules::Command::RecordAccounts {
                 accounts: vec![alondra_core::accounts::AccountStatus { provider: alondra_core::accounts::Provider::Claude,
                     id: alondra_core::accounts::AccountId::default_account(), name: "Personal".into(), state: alondra_core::accounts::AccountState::SignedIn,
                     native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0, profile: None }], reserve: alondra_core::usage::default_reserve(),
@@ -836,18 +836,18 @@ mod tests {
         (domain, home)
     }
 
-    fn the_card(domain: &DomainRuntime, prefix: &str) -> Option<alondra_core::domain::Interaction> {
+    fn the_card(domain: &DomainRuntime, prefix: &str) -> Option<alondra_domain_rules::Interaction> {
         domain.state().unwrap().interactions.values().find(|card| card.id.0.starts_with(prefix) && !card.withdrawn).cloned()
     }
 
     fn answer(domain: &DomainRuntime, card: &str, option: &str) {
         let state = domain.state().unwrap();
-        domain.execute(&alondra_core::domain::Actor::User { user_id: "device:phone".into() }, &alondra_core::domain::CommandEnvelope {
-            protocol_version: alondra_core::domain::PROTOCOL_VERSION,
+        domain.execute(&alondra_domain_rules::Actor::User { user_id: "device:phone".into() }, &alondra_domain_rules::CommandEnvelope {
+            protocol_version: alondra_domain_rules::PROTOCOL_VERSION,
             data_epoch: state.data_epoch.clone(),
             command_id: format!("answer-{card}-{option}").into(),
             expected_revision: state.revision,
-            command: alondra_core::domain::Command::AnswerQuestion {
+            command: alondra_domain_rules::Command::AnswerQuestion {
                 attachments: vec![], interaction_id: card.into(), option_id: option.into(), inputs: Default::default(),
             },
         }, None, || Ok(())).unwrap();
@@ -855,16 +855,16 @@ mod tests {
 
     #[test]
     fn the_over_pace_card_has_the_numbers_and_two_options_and_reads_in_each_devices_language() {
-        use alondra_core::views::{Lang, push_content};
+        use alondra_views::{Lang, push_content};
         let (domain, home) = over_pace_domain();
         raise_over_pace_card(&domain, now_millis());
         let card = the_card(&domain, "over-pace-").expect("a card for the day");
         assert_eq!(card.id.0, format!("over-pace-{}", alondra_daemon_engine_model::local_day(now_millis())));
-        assert_eq!(card.card.kind, alondra_core::domain::CardKind::Decide);
-        assert_eq!(card.author, alondra_core::domain::Author::System);
+        assert_eq!(card.card.kind, alondra_domain_rules::CardKind::Decide);
+        assert_eq!(card.author, alondra_domain_rules::Author::System);
         assert!(!card.blocking);
         assert_eq!(card.card.recommended.as_deref(), Some("keep_going"));
-        let alondra_core::domain::InteractionPayload::Question { options, .. } = &card.payload else { panic!("a question") };
+        let alondra_domain_rules::InteractionPayload::Question { options, .. } = &card.payload else { panic!("a question") };
         assert_eq!(options.iter().map(|option| option.id.as_str()).collect::<Vec<_>>(), ["pause_until_tomorrow", "keep_going"]);
 
         let read = domain.read();

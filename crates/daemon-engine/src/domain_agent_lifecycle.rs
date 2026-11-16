@@ -8,7 +8,7 @@
 
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
-use alondra_core::domain::{
+use alondra_domain_rules::{
     Actor, AgentId, Command, CommandEnvelope, CommandId, CommandOutcome, DataEpoch, DomainError, DomainState,
     Millis, NodeEvent, Revision, PROTOCOL_VERSION,
 };
@@ -148,7 +148,7 @@ fn submit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_core::domain::NodePhase;
+    use alondra_domain_rules::NodePhase;
 
     struct Fixture(crate::test_support::Directory);
     impl Fixture {

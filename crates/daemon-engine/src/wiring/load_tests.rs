@@ -3,7 +3,7 @@
 use super::owner_tests::{running, scope_of};
 use crate::domain_store::tests::Fixture;
 use crate::domain_store::*;
-use alondra_core::domain::*;
+use alondra_domain_rules::*;
 use rusqlite::Connection;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;

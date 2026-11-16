@@ -1,5 +1,5 @@
 //! What a route answers, and the HTTP status of each domain refusal.
-use alondra_core::domain::DomainError;
+use alondra_domain_rules::DomainError;
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};

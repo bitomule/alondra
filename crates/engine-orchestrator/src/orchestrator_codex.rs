@@ -139,7 +139,7 @@ impl NativeTurn {
                             stream.error = Some("Alondra refused a required permission; another provider cannot bypass that decision".into());
                         }
                         let tool = item["tool"].as_str().unwrap_or("unknown");
-                        if alondra_core::orchestrator_batch::changes_something(tool) {
+                        if alondra_domain_rules::orchestrator_batch::changes_something(tool) {
                             stream.acted = true;
                             if method == "item/started" { stream.alondra_calls.push(tool.into()); }
                         }
@@ -283,8 +283,8 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
             output.stream.error = Some(bounded(error.to_string()));
             BatchReport { kind: "invalid_native_transition".into(), failure: output.stream.error.clone(), ..BatchReport::default() }
         }};
-        report.stop = if output.stream.denied { Some(alondra_core::orchestrator_batch::BatchStop::Denied) }
-            else if output.stream.native_request_rejected { Some(alondra_core::orchestrator_batch::BatchStop::Interrupted) }
+        report.stop = if output.stream.denied { Some(alondra_domain_rules::orchestrator_batch::BatchStop::Denied) }
+            else if output.stream.native_request_rejected { Some(alondra_domain_rules::orchestrator_batch::BatchStop::Interrupted) }
             else { None };
         if let Err(error) = batch.domain.publish_batch_report(&run, pending.cursor, &pending.evidence, &report) {
             output.stream.storage_failure=true;
@@ -581,7 +581,7 @@ mod tests {
 mod policy_integration{
     use super::*;
     use alondra_core::accounts::{AccountId,AccountKey,AccountState,AccountStatus,Provider};
-    use alondra_core::domain::{Actor,Command};
+    use alondra_domain_rules::{Actor,Command};
     use alondra_core::model_selection::{AccountModelCatalog,CatalogModel};
     use std::os::unix::fs::PermissionsExt;
 

@@ -1,7 +1,7 @@
 //! The last look before a user push leaves: a push only ever announces a card the user can act
 //! on when it arrives.
 use crate::client_routes::{Client, Merge};
-use alondra_core::domain::{
+use alondra_domain_rules::{
     DeliveryTarget, DomainState, InteractionId, InteractionPayload, PrState, ReadSnapshot,
 };
 use std::time::Duration;
@@ -81,7 +81,7 @@ mod tests {
     use super::{Gate, UNKNOWN_MERGE_PATIENCE, check};
     use crate::domain_runtime::DomainRuntime;
     use crate::client_routes::{Client, FakePrView};
-    use alondra_core::domain::{
+    use alondra_domain_rules::{
         Actor, CardSpec, Command, CommandEnvelope, DeliveryTarget, Instruction, InteractionPayload, MergeMethod,
     };
     use serde_json::json;
@@ -118,7 +118,7 @@ mod tests {
             fixture.run(user.clone(), "request", Command::CreateRequest { request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
             fixture.run(Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None, task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
                 agent_id: Some("agent".into()), review_prs: false, dependencies: Default::default(), stack: None,
-                launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
+                launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
             fixture.run(agent.clone(), "pr", Command::RegisterPr { task_id: "task".into(), pr_id: "pr".into(),
                 host: "github.com".into(), repository: "me/app".into(), number: 7, head: HEAD.into(), base: "main".into(),
                 allowed_methods: vec![MergeMethod::Squash] });

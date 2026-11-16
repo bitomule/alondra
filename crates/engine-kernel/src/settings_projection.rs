@@ -2,7 +2,7 @@ use crate::domain_store::provider_settings::{PendingProjection, ProjectionIdenti
 use crate::domain_store::{Attached, StoreError};
 use crate::domain_runtime::DomainRuntime;
 use crate::locks::Poisonable as _;
-use alondra_core::domain::{Actor, Command, CommandEnvelope, DomainError, PROTOCOL_VERSION};
+use alondra_domain_rules::{Actor, Command, CommandEnvelope, DomainError, PROTOCOL_VERSION};
 use anyhow::Result;
 use std::path::Path;
 
@@ -17,7 +17,7 @@ pub fn apply(domain: &DomainRuntime, home: &Path, actor: &Actor, command: Comman
 
 #[allow(clippy::too_many_arguments)]
 pub fn apply_authorized(domain: &DomainRuntime, home: &Path, actor: &Actor, command: CommandEnvelope, previous: Option<String>, target: String, recorded: Vec<Command>,
-    authorize: impl Fn() -> anyhow::Result<()>, prepare_accounts: impl FnOnce(&alondra_core::domain::DomainState) -> Result<(), StoreError>) -> Result<(), StoreError>
+    authorize: impl Fn() -> anyhow::Result<()>, prepare_accounts: impl FnOnce(&alondra_domain_rules::DomainState) -> Result<(), StoreError>) -> Result<(), StoreError>
 {
     recover(domain, home)?;
     let identity = ProjectionIdentity::new(actor, &command, previous.as_deref(), &target)?;

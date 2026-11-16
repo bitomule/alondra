@@ -5,7 +5,7 @@ use crate::sdk_owner::SdkOwners as _;
 use crate::live::LiveOf as _;
 use super::*;
 use crate::obligation_watch::{Watch, pass};
-use alondra_core::domain::obligation_policy::Millis;
+use alondra_domain_rules::obligation_policy::Millis;
 use alondra_domain::{Owed, Party};
 
 const S: Millis = 1000;

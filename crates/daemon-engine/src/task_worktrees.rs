@@ -2,7 +2,7 @@
 //! launched: recorded from what Claude Code says it made, and settled when the task closes.
 use std::path::Path;
 
-use alondra_core::domain::{AgentId, Command, Task, TaskId, WorktreeEnd, WorktreeOrigin};
+use alondra_domain_rules::{AgentId, Command, Task, TaskId, WorktreeEnd, WorktreeOrigin};
 use crate::worktree::TaskWorktree;
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -167,7 +167,7 @@ pub(crate) async fn release_all(domain: &DomainRuntime, task: &Task) -> Result<V
         } else {
             match crate::worktree::release_recorded_worktree(Path::new(path), worktree.discard).await {
                 Ok(TaskWorktree::Removed { freed }) => {
-                    log!("deleting the worktree {path} freed {}", alondra_core::machine_incident::bytes_text(freed, alondra_core::views::Lang::En));
+                    log!("deleting the worktree {path} freed {}", alondra_core::machine_incident::bytes_text(freed, alondra_view_model::Lang::En));
                     WorktreeEnd::Removed
                 }
                 Ok(TaskWorktree::Absent) => WorktreeEnd::Removed,

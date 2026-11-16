@@ -1,7 +1,7 @@
 //! How a `claude --bg` session of an earlier release holds its domain v2 bearer: in the private
 //! settings file it was launched with, whose `env` block reaches the session and `alondra mcp`
 //! reads. A session that reconnects gets its bearer again; the file goes when the session ends.
-use alondra_core::domain::AgentId;
+use alondra_domain_rules::AgentId;
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::io::Write;

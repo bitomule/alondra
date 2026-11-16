@@ -73,7 +73,7 @@ pub struct Live {
     pub(crate) obligations: Mutex<crate::obligation_watch::Watch>,
     /// When each task's node process last wrote anything. A holder that panics leaves it whole:
     /// one insert.
-    pub(crate) outputs: Mutex<std::collections::BTreeMap<alondra_core::domain::TaskId, alondra_core::Millis>>,
+    pub(crate) outputs: Mutex<std::collections::BTreeMap<alondra_domain_rules::TaskId, alondra_core::Millis>>,
     /// A holder that panics leaves it whole, so it is recovered: one insert or remove of a marker.
     watching: Mutex<std::collections::HashSet<String>>,
     launching: tokio::sync::watch::Sender<std::collections::HashSet<String>>,
@@ -231,9 +231,9 @@ impl Live {
 
     /// A hook a session sent. What a node of the Agent SDK does is its task's lifecycle, so its
     /// hooks never feed the deduction kept for `claude --bg` nodes.
-    pub(crate) fn observe_hook(&self, state: &alondra_core::domain::DomainState, payload: &Value) {
+    pub(crate) fn observe_hook(&self, state: &alondra_domain_rules::DomainState, payload: &Value) {
         let session = payload.get("session_id").and_then(Value::as_str).unwrap_or_default();
-        if !through_sdk(state, &alondra_core::domain::AgentId(session.into())) {
+        if !through_sdk(state, &alondra_domain_rules::AgentId(session.into())) {
             self.observe(payload);
         }
     }
@@ -341,8 +341,8 @@ fn hook_event(payload: &Value) -> Option<HookEvent> {
 /// The nodes `/runtime` lists. A node of the Agent SDK reads its state from its task's lifecycle,
 /// never from what the deduction kept for `claude --bg` nodes made of it, and is listed even when
 /// that deduction never saw it. `since` is when a task last changed state.
-pub fn runtime_nodes(deduced: Vec<Node>, state: &alondra_core::domain::DomainState, since: impl Fn(&alondra_core::domain::TaskId) -> Option<i64>) -> Vec<Value> {
-    use alondra_core::domain::AgentId;
+pub fn runtime_nodes(deduced: Vec<Node>, state: &alondra_domain_rules::DomainState, since: impl Fn(&alondra_domain_rules::TaskId) -> Option<i64>) -> Vec<Value> {
+    use alondra_domain_rules::AgentId;
     let sdk = |agent: &AgentId| through_sdk(state, agent);
     let mut nodes: Vec<Node> = deduced.into_iter().filter(|node| state.agents.contains_key(&AgentId(node.session_id.clone()))).collect();
     let unseen: Vec<Node> = state.agents.keys()
@@ -354,10 +354,10 @@ pub fn runtime_nodes(deduced: Vec<Node>, state: &alondra_core::domain::DomainSta
     nodes.iter().map(|node| client_node(node, state.agents.get(&AgentId(node.session_id.clone())).map(|agent| agent.name.as_str()))).collect()
 }
 
-fn from_lifecycle(node: &mut Node, state: &alondra_core::domain::DomainState) {
+fn from_lifecycle(node: &mut Node, state: &alondra_domain_rules::DomainState) {
     use alondra_core::{NodeState, NodeStatus, StateSource};
     use alondra_domain::LiveState;
-    let agent = alondra_core::domain::AgentId(node.session_id.clone());
+    let agent = alondra_domain_rules::AgentId(node.session_id.clone());
     let result = state.node_task(&agent).and_then(|task| task.final_presentation.as_ref());
     node.state = match state.sdk_live(&agent) {
         Some(LiveState::Working(_)) => NodeState::Working,
@@ -377,8 +377,8 @@ fn from_lifecycle(node: &mut Node, state: &alondra_core::domain::DomainState) {
     node.evidence = None;
 }
 
-fn through_sdk(state: &alondra_core::domain::DomainState, agent: &alondra_core::domain::AgentId) -> bool {
-    state.through_sdk(agent) || state.node_phase(agent) == Some(&alondra_core::domain::NodePhase::ThroughSdk)
+fn through_sdk(state: &alondra_domain_rules::DomainState, agent: &alondra_domain_rules::AgentId) -> bool {
+    state.through_sdk(agent) || state.node_phase(agent) == Some(&alondra_domain_rules::NodePhase::ThroughSdk)
 }
 
 /// A node as a client reads it: what the daemon keeps for itself stays out.
@@ -398,7 +398,7 @@ pub(crate) fn client_node(node: &Node, name: Option<&str>) -> Value {
 #[cfg(test)]
 mod sdk_node_tests {
     use super::*;
-    use alondra_core::domain::{Actor, Command, CommandEnvelope, DomainState, LaunchPlan, PROTOCOL_VERSION};
+    use alondra_domain_rules::{Actor, Command, CommandEnvelope, DomainState, LaunchPlan, PROTOCOL_VERSION};
     use std::collections::BTreeSet;
 
     fn apply(state: &mut DomainState, actor: Actor, command: Command) {
@@ -414,7 +414,7 @@ mod sdk_node_tests {
         for agent in ["sdk-seen", "sdk-unseen", "bg"] {
             apply(&mut state, Actor::System, Command::RegisterAgent { agent_id: agent.into(), name: agent.into(), at: 0 });
         }
-        state.agents.get_mut(&"bg".into()).unwrap().phase = alondra_core::domain::NodePhase::Closed;
+        state.agents.get_mut(&"bg".into()).unwrap().phase = alondra_domain_rules::NodePhase::Closed;
         for agent in ["sdk-seen", "sdk-unseen"] {
             let (request, task) = (format!("r-{agent}"), format!("t-{agent}"));
             apply(&mut state, Actor::User { user_id: "u".into() }, Command::CreateRequest { request_id: request.clone().into(), body: "Notes".into(), auto_merge: false, maintenance: false, message: false });
@@ -509,7 +509,7 @@ pub trait LiveOf {
     fn report(&self, envelope: crate::node_reports::Envelope, at: alondra_core::Millis);
 
     /// Whether Alondra launched this session: a recorded launch, or a scheduled run it started.
-    fn launched_by_alondra(&self, agent: &alondra_core::domain::AgentId) -> anyhow::Result<bool>;
+    fn launched_by_alondra(&self, agent: &alondra_domain_rules::AgentId) -> anyhow::Result<bool>;
 
     /// What Alondra kept about a session only while it lives: the worktree it inherited and why
     /// its replacement stopped short.
@@ -532,7 +532,7 @@ impl LiveOf for crate::domain_runtime::DomainRuntime {
         self.live().mods.apply(envelope, at);
     }
 
-    fn launched_by_alondra(&self, agent: &alondra_core::domain::AgentId) -> anyhow::Result<bool> {
+    fn launched_by_alondra(&self, agent: &alondra_domain_rules::AgentId) -> anyhow::Result<bool> {
         if self.store.lock_or_exit("the domain store").launched_by_alondra(&agent.0)? || self.live().mods.started_with_a_launch_key(&agent.0) {
             return Ok(true);
         }

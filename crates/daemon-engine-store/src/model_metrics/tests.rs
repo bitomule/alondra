@@ -1,6 +1,6 @@
 use super::*;
 use crate::tests::{Fixture, seeded};
-use alondra_core::domain::*;
+use alondra_domain_rules::*;
 
 fn store() -> (Fixture, DomainStore) {
     let fixture = Fixture::new();

@@ -2,7 +2,7 @@
 //! `task_metrics` that stays when the samples it came from are pruned (`model_metrics.sql`).
 use super::DomainStore;
 use alondra_core::Millis;
-use alondra_core::domain::Feedback;
+use alondra_domain_rules::Feedback;
 use alondra_core::metrics::fold::{Decision, DecisionKind, TaskFacts, fold_task};
 use alondra_core::metrics::steps::StepCounts;
 use alondra_core::metrics::{Role, Usage};

@@ -1,4 +1,5 @@
-use alondra_core::{Millis, accounts::AccountKey, domain::InteractionId, model_selection::ModelSelection};
+use alondra_core::{Millis, accounts::AccountKey, model_selection::ModelSelection};
+use alondra_domain_rules::InteractionId;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 use alondra_core::tasks::{RequestState, TaskState};
 use alondra_core::{BackgroundItem, BackgroundKind, Node, NodeState, OrchestratorState, ReportKind};
 
-pub use alondra_core::views::Lang;
+pub use alondra_views::Lang;
 
 static DETECTED: OnceLock<Lang> = OnceLock::new();
 

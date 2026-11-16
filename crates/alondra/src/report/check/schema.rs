@@ -120,10 +120,10 @@ fn value_at(section: &str, path: &[&str], value: &str, root: &Value, frame: &Val
         }
         ("manifest.json", ["sections", "*", "empty"]) => return empty_reason(value),
         ("tasks.jsonl", ["state"] | ["states_in_window", "*", "state"]) => {
-            return serde_json::from_value::<alondra_core::domain::TaskState>(Value::String(value.into())).is_ok();
+            return serde_json::from_value::<alondra_domain_rules::TaskState>(Value::String(value.into())).is_ok();
         }
         ("tasks.jsonl", ["pull_request"]) => {
-            return serde_json::from_value::<alondra_core::domain::PrState>(Value::String(value.into())).is_ok();
+            return serde_json::from_value::<alondra_domain_rules::PrState>(Value::String(value.into())).is_ok();
         }
         ("tasks.jsonl", ["message_deliveries", "*", "state"]) => &["dispatching", "uncertain", "handed", "retryable", "discarded"],
         ("tasks.jsonl", ["open_questions", "*", "kind"]) => &["question", "action_request"],

@@ -105,7 +105,7 @@ pub fn seeded(store: &mut DomainStore) {
             review_prs: true,
             dependencies: BTreeSet::new(),
             stack: None,
-            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
         },
     );
 }
@@ -124,7 +124,7 @@ fn present(store: &mut DomainStore) {
             }],
             is_final: true,
             nothing_to_review: false,
-            attachments: vec![], card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+            attachments: vec![], card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
         },
     );
 }
@@ -158,21 +158,21 @@ fn feedback(store: &mut DomainStore) -> CommandEnvelope {
 
 #[test]
 fn feedback_targets_roundtrip_and_older_databases_default_to_the_whole_delivery() {
-    use alondra_core::domain::{FeedbackTarget, InteractionPayload};
+    use alondra_domain_rules::{FeedbackTarget, InteractionPayload};
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
-    let pr = alondra_core::domain::hosted_pr_id("github.com", "acme/widgets", 7);
+    let pr = alondra_domain_rules::hosted_pr_id("github.com", "acme/widgets", 7);
     let head = "1".repeat(40);
     execute(&mut store, &agent(), "register", Command::RegisterPr {
         task_id: "task-1".into(), pr_id: pr.clone(), host: "github.com".into(), repository: "acme/widgets".into(), number: 7,
-        head: head.clone(), base: "main".into(), allowed_methods: vec![alondra_core::domain::MergeMethod::Squash],
+        head: head.clone(), base: "main".into(), allowed_methods: vec![alondra_domain_rules::MergeMethod::Squash],
     });
     let targets = vec![DeliveryTarget::PullRequest { pr_id: pr.clone(), head: head.clone() }];
     execute(&mut store, &agent(), "present", Command::PresentResult {
         checklist: vec![], task_id: "task-1".into(), interaction_id: "delivery-1".into(), body: "Review the change".into(),
         targets: targets.clone(), is_final: true, nothing_to_review: false, attachments: vec![],
-        card: alondra_core::domain::CardSpec::delivery("Review the change", &[], true),
+        card: alondra_domain_rules::CardSpec::delivery("Review the change", &[], true),
     });
     let command = envelope(&mut store, "feedback", Command::SubmitFeedback { merge_failure: None, attachments: vec![],
         presentation_id: "delivery-1".into(), targets, body: "Explain the change".into(), instruction: Instruction::Question });
@@ -223,7 +223,7 @@ fn reads_share_one_snapshot_until_a_commit_replaces_it() {
             recipient: Recipient::User,
             body: "Progress".into(),
             attachments: vec![],
-            card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
+            card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"),
         },
     );
     let after = store.load().unwrap();
@@ -248,7 +248,7 @@ fn sql_restart_roundtrip_receipts_and_read_has_no_communication() {
             },
             recipient: Recipient::User,
             body: "Progress".into(),
-            attachments: vec![attachment("info-file")], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
+            attachments: vec![attachment("info-file")], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"),
         },
     );
     let task_before = store.load().unwrap().tasks[&TaskId::from("task-1")].clone();
@@ -370,7 +370,7 @@ fn replay_returns_the_first_outcome() {
             interaction_id: "info-1".into(),
             scope: Scope::Task { task_id: "task-1".into() },
             recipient: Recipient::User,
-            body: "Progress".into(), card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
+            body: "Progress".into(), card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"),
         },
     );
     e.expected_revision = 0;
@@ -814,7 +814,7 @@ fn restart_preserves_existing_outbox_and_user_notifications_claim_normally() {
             },
             recipient: Recipient::User,
             body: "Ready".into(),
-            attachments: vec![], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
+            attachments: vec![], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"),
         },
     );
     let user_message = upgraded
@@ -847,7 +847,7 @@ fn a_withdrawn_question_a_retitled_task_and_a_closed_requests_answer_survive_res
     execute(&mut store, &agent(), "question", Command::AskQuestion {
         attachments: vec![], interaction_id: "question-1".into(), scope: Scope::Task { task_id: "task-1".into() },
         recipient: Recipient::User, body: "Ship?".into(), blocking: true,
-        options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
+        options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Provide, "Answer the question"),
     });
     execute(&mut store, &agent(), "withdraw", Command::Withdraw { interaction_id: "question-1".into() });
     let orchestrator = Actor::Orchestrator { generation: 0 };
@@ -913,7 +913,7 @@ fn the_merge_method_set_in_settings_survives_restart_and_a_database_without_one_
 
 #[test]
 fn the_branch_update_set_in_settings_survives_restart_and_a_database_without_one_rebases() {
-    use alondra_core::domain::BranchUpdate;
+    use alondra_domain_rules::BranchUpdate;
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     assert_eq!(store.load().unwrap().branch_update, BranchUpdate::Rebase);
@@ -962,7 +962,7 @@ fn restart_preserves_decisions_documents_and_relations() {
                 id: "continue".into(),
                 label: "Continue".into(),
                 description: None,
-            }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
+            }], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Provide, "Answer the question"),
         },
     );
     execute(
@@ -1022,7 +1022,7 @@ fn restart_preserves_decisions_documents_and_relations() {
                     revision_id: "revision-1".into(),
                 },
             ],
-            is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+            is_final: true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
         },
     );
     execute(
@@ -1109,7 +1109,7 @@ fn attachments_of_interaction_answer_feedback_and_delivery_survive_restart() {
                 label: "Yes".into(),
                 description: None,
             }],
-            attachments: vec![attachment("question-file")], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
+            attachments: vec![attachment("question-file")], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Provide, "Answer the question"),
         },
     );
     execute(
@@ -1137,7 +1137,7 @@ fn attachments_of_interaction_answer_feedback_and_delivery_survive_restart() {
             }],
             is_final: true,
             nothing_to_review: false,
-            attachments: vec![attachment("delivery-file")], card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+            attachments: vec![attachment("delivery-file")], card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
         },
     );
     execute(
@@ -1192,7 +1192,7 @@ fn a_second_users_read_is_refused_and_leaves_no_receipt_and_no_delivery() {
             },
             recipient: Recipient::User,
             body: "Info".into(),
-            attachments: vec![], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
+            attachments: vec![], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"),
         },
     );
     execute(
@@ -1324,7 +1324,7 @@ fn document_package(store: &mut DomainStore, pr: bool) -> Vec<DeliveryTarget> {
             body: "Finished the design".into(),
             targets: targets.clone(),
             is_final: true, nothing_to_review: false,
-            attachments: vec![], card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+            attachments: vec![], card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
         },
     );
     targets
@@ -1460,7 +1460,7 @@ fn a_new_final_reports_the_acceptance_it_superseded_and_feedback_does_not() {
             }],
             is_final: true,
             nothing_to_review: false,
-            attachments: vec![], card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+            attachments: vec![], card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
         },
     );
     represent.expected_revision = 0;
@@ -1572,7 +1572,7 @@ fn a_tasks_model_survives_restart_and_a_store_made_before_models_still_opens() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
-    let launched = alondra_core::domain::TaskModel { model: "opus".into(), chosen_by: alondra_core::domain::ModelChooser::Orchestrator };
+    let launched = alondra_domain_rules::TaskModel { model: "opus".into(), chosen_by: alondra_domain_rules::ModelChooser::Orchestrator };
     execute(&mut store, &user(), "model", Command::AssignTask { task_id: "task-1".into(), agent_id: "agent-1".into(), model: Some(launched.clone()) });
     drop(store);
     let mut store = DomainStore::open(&fixture.path()).unwrap();
@@ -1614,7 +1614,7 @@ fn a_task_saved_without_its_model_gets_the_one_its_launches_or_its_sessions_name
     assert_eq!(store.fill_task_models().unwrap(), 1);
     drop(store);
     let mut reopened = DomainStore::open(&fixture.path()).unwrap();
-    assert_eq!(model(&mut reopened), Some(("opus".into(), alondra_core::domain::ModelChooser::Orchestrator)), "the model its last launch chose comes first and survives a restart");
+    assert_eq!(model(&mut reopened), Some(("opus".into(), alondra_domain_rules::ModelChooser::Orchestrator)), "the model its last launch chose comes first and survives a restart");
 }
 
 #[test]
@@ -1829,7 +1829,7 @@ fn task_relations_a_verdict_and_the_split_review_states_survive_a_restart() {
     execute(&mut store, &Actor::Orchestrator { generation: 0 }, "task-2", Command::CreateTask { plan_items: None, continues: None,
         task_id: "task-2".into(), request_id: "request-1".into(), title: "Review".into(), agent_id: Some("agent-2".into()),
         review_prs: false, dependencies: BTreeSet::new(), stack: None,
-        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
     });
     execute(&mut store, &user(), "relations", Command::SetRelations {
         task_id: "task-2".into(), delivered_dependencies: BTreeSet::from(["task-1".into()]), blocks: BTreeSet::from(["task-1".into()]),
@@ -1842,7 +1842,7 @@ fn task_relations_a_verdict_and_the_split_review_states_survive_a_restart() {
         checklist: Vec::new(),
         task_id: "task-2".into(), interaction_id: "delivery-2".into(), body: "Reviewed".into(),
         targets: vec![DeliveryTarget::Text { text: "The review".into() }], is_final: true, nothing_to_review: false, attachments: vec![],
-        card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+        card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
     });
     execute(&mut store, &reviewer, "changes", Command::RecordVerdict {
         task_id: "task-2".into(), presentation_id: "delivery-2".into(), verdict: Verdict::ChangesRequested { text: "Fix it".into(), serious_findings: Some(1) },
@@ -1867,13 +1867,13 @@ fn task_relations_a_verdict_and_the_split_review_states_survive_a_restart() {
         checklist: Vec::new(),
         task_id: "task-1".into(), interaction_id: "delivery-1b".into(), body: "Fixed".into(),
         targets: vec![DeliveryTarget::Text { text: "The answer".into() }], is_final: true, nothing_to_review: false, attachments: vec![],
-        card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+        card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
     });
     execute(&mut store, &reviewer, "present-review-again", Command::PresentResult {
         checklist: Vec::new(),
         task_id: "task-2".into(), interaction_id: "delivery-2b".into(), body: "Reviewed again".into(),
         targets: vec![DeliveryTarget::Text { text: "The review".into() }], is_final: true, nothing_to_review: false, attachments: vec![],
-        card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+        card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
     });
     execute(&mut store, &reviewer, "approve", Command::RecordVerdict {
         task_id: "task-2".into(), presentation_id: "delivery-2b".into(),
@@ -1931,11 +1931,11 @@ fn task_closings_keep_their_wait_failures_and_card_across_a_restart() {
 fn plan() -> alondra_daemon_engine_model::LaunchPlan {
     alondra_daemon_engine_model::LaunchPlan {
         name: "app/next".into(), cwd: "/synthetic/App".into(), mission: None, model: Some("sonnet".into()), effort: None,
-        approach: None, reason: Some("clear".into()), role: Some(alondra_core::domain::TaskRole::Implementation), tags: None, project: None,
+        approach: None, reason: Some("clear".into()), role: Some(alondra_domain_rules::TaskRole::Implementation), tags: None, project: None,
     }
 }
 
-fn planned_task(id: &str, request: &str, epoch: &alondra_core::domain::DataEpoch, plan: alondra_daemon_engine_model::LaunchPlan) -> CommandEnvelope {
+fn planned_task(id: &str, request: &str, epoch: &alondra_domain_rules::DataEpoch, plan: alondra_daemon_engine_model::LaunchPlan) -> CommandEnvelope {
     CommandEnvelope {
         protocol_version: 2, data_epoch: epoch.clone(), command_id: format!("plan-{id}").into(), expected_revision: 0,
         command: Command::CreateTask { plan_items: None, continues: None, task_id: id.into(), request_id: request.into(), title: "Next".into(), agent_id: None,
@@ -2212,7 +2212,7 @@ fn the_lifecycle_journal_is_persisted_append_only_and_read_back_on_restart() {
     execute(&mut store, &user(), "cancel", Command::CancelTask { task_id: "task-1".into(), reason: None });
     let state = store.load().unwrap();
     let task = &state.tasks[&TaskId::from("task-1")];
-    assert_eq!((task.state, task.ending), (TaskState::Closing, Some(alondra_core::domain::TaskEnding::Cancelling)));
+    assert_eq!((task.state, task.ending), (TaskState::Closing, Some(alondra_domain_rules::TaskEnding::Cancelling)));
     assert_eq!(count(&store, "lifecycle_events") + 1, state.lifecycle_journal[&TaskId::from("task-1")].len() as i64, "every record after the plan is one event of the store");
     let expected = store.load().unwrap();
     drop(store);
@@ -2312,7 +2312,7 @@ fn launched_tasks_answers_for_every_task_in_one_statement() {
     seeded(&mut store);
     for kind in [DecisionKind::Send, DecisionKind::Relaunch] {
         store.record_model_decision(&Decision { task_id: "task-1".into(), request_id: "request-1".into(), agent_id: None,
-            at: 1, kind, model: None, effort: None, approach: None, chosen_by: alondra_core::domain::ModelChooser::Orchestrator,
+            at: 1, kind, model: None, effort: None, approach: None, chosen_by: alondra_domain_rules::ModelChooser::Orchestrator,
             reason: None, title: "task-1".into(), provider: None, tags: None }).unwrap();
     }
     let asked: Vec<TaskId> = ["task-1", "never"].map(TaskId::from).into();
@@ -2363,7 +2363,7 @@ fn snooze_survives_reopening_an_old_store_and_clears_its_sql_column_on_return() 
 
 #[test]
 fn a_database_from_before_typed_cards_gets_them_once_from_what_alondra_wrote() {
-    use alondra_core::domain::{CardKind, CardSpec, MergeFailure, QuestionOption, Recipient, Scope, SystemCard};
+    use alondra_domain_rules::{CardKind, CardSpec, MergeFailure, QuestionOption, Recipient, Scope, SystemCard};
     let fixture = Fixture::new();
     let text = || vec![DeliveryTarget::Text { text: "The answer".into() }];
     let options = || vec![
@@ -2379,7 +2379,7 @@ fn a_database_from_before_typed_cards_gets_them_once_from_what_alondra_wrote() {
         let mut store = DomainStore::open(&fixture.path()).unwrap();
         seeded(&mut store);
         present(&mut store);
-        let body = alondra_core::domain::merge_failed_text(7, "https://github.com/o/r/pull/7", "main", "review required");
+        let body = alondra_domain_rules::merge_failed_text(7, "https://github.com/o/r/pull/7", "main", "review required");
         execute(&mut store, &Actor::System, "hand-back", Command::SubmitFeedback {
             merge_failure: Some(MergeFailure { number: 7, reason: "review required".into() }),
             attachments: vec![], presentation_id: "delivery-1".into(), targets: text(), body, instruction: Instruction::Conflicts,
@@ -2394,7 +2394,7 @@ fn a_database_from_before_typed_cards_gets_them_once_from_what_alondra_wrote() {
     let state = store.load().unwrap();
     assert_eq!(state.interactions[&"pace-resume-2026-11-02".into()].system_card, Some(resume.clone()), "Alondra's card gets its kind");
     assert_eq!(state.interactions[&"which-database".into()].system_card, None, "a node's card is never one of Alondra's");
-    let alondra_core::domain::InteractionPayload::Delivery { feedback, .. } = &state.interactions[&"delivery-1".into()].payload else { panic!("a delivery") };
+    let alondra_domain_rules::InteractionPayload::Delivery { feedback, .. } = &state.interactions[&"delivery-1".into()].payload else { panic!("a delivery") };
     assert_eq!(feedback.last().unwrap().merge_failure, Some(MergeFailure { number: 7, reason: "review required".into() }), "the hand-back says which merge failed");
     store.conn.execute("UPDATE interactions SET system_card=NULL WHERE id='pace-resume-2026-11-02'", []).unwrap();
     drop(store);
@@ -2559,27 +2559,27 @@ fn a_folded_request_the_batch_base_and_each_tasks_creation_survive_a_restart() {
 
 #[test]
 fn reply_windows_roundtrip_and_legacy_rows_keep_the_last_reply_only() {
-    use alondra_core::domain::{FeedbackTarget, InboxSubject, InteractionId, InteractionPayload, ReadIndex};
+    use alondra_domain_rules::{FeedbackTarget, InboxSubject, InteractionId, InteractionPayload, ReadIndex};
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
     let prs = [
-        alondra_core::domain::hosted_pr_id("github.com", "acme/widgets", 7),
-        alondra_core::domain::hosted_pr_id("github.com", "acme/widgets", 8),
+        alondra_domain_rules::hosted_pr_id("github.com", "acme/widgets", 7),
+        alondra_domain_rules::hosted_pr_id("github.com", "acme/widgets", 8),
     ];
     let heads = ["1".repeat(40), "2".repeat(40)];
     for (index, (pr, head)) in prs.iter().zip(&heads).enumerate() {
         execute(&mut store, &agent(), &format!("register-{index}"), Command::RegisterPr {
             task_id: "task-1".into(), pr_id: pr.clone(), host: "github.com".into(), repository: "acme/widgets".into(),
             number: 7 + index as u64, head: head.clone(), base: "main".into(),
-            allowed_methods: vec![alondra_core::domain::MergeMethod::Squash],
+            allowed_methods: vec![alondra_domain_rules::MergeMethod::Squash],
         });
     }
     execute(&mut store, &agent(), "present", Command::PresentResult {
         checklist: vec![], task_id: "task-1".into(), interaction_id: "delivery-1".into(), body: "Review both changes".into(),
         targets: prs.iter().zip(&heads).map(|(pr, head)| DeliveryTarget::PullRequest { pr_id: pr.clone(), head: head.clone() }).collect(),
         is_final: true, nothing_to_review: false, attachments: vec![],
-        card: alondra_core::domain::CardSpec::delivery("Review both changes", &[], true),
+        card: alondra_domain_rules::CardSpec::delivery("Review both changes", &[], true),
     });
     for (index, (pr, head)) in prs.iter().zip(&heads).enumerate() {
         execute(&mut store, &user(), &format!("reply-{index}"), Command::SubmitFeedback {

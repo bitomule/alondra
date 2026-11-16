@@ -2,8 +2,8 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use alondra_core::config::Config;
-use alondra_core::domain::{AttachmentRef, Command, CommandEnvelope, CommandOutcome, DataEpoch, DomainError, PROTOCOL_VERSION, Revision};
-use alondra_core::views::{View as ViewDocument, VIEWS_PROTOCOL};
+use alondra_domain_rules::{AttachmentRef, Command, CommandEnvelope, CommandOutcome, DataEpoch, DomainError, PROTOCOL_VERSION, Revision};
+use alondra_views::{View as ViewDocument, VIEWS_PROTOCOL};
 use anyhow::{Context, Result, anyhow};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -39,7 +39,7 @@ pub struct Client {
     timeout: Duration,
     protocol: u32,
     mcp_operation: Option<String>,
-    capabilities: std::sync::Arc<std::sync::Mutex<alondra_core::views::ClientCapabilities>>,
+    capabilities: std::sync::Arc<std::sync::Mutex<alondra_views::ClientCapabilities>>,
     response_observer: Option<availability::ResponseObserver>,
 }
 
@@ -70,7 +70,7 @@ pub struct ViewsFeed {
     pub protocol: u32,
     pub cursor: String,
     pub data_epoch: String,
-    pub status: alondra_core::views::Status,
+    pub status: alondra_views::Status,
     #[serde(default)]
     pub stale: Vec<String>,
     #[serde(default)]
@@ -78,7 +78,7 @@ pub struct ViewsFeed {
     #[serde(default)]
     pub superseded: bool,
     #[serde(default)]
-    pub service: Option<alondra_core::views::Service>,
+    pub service: Option<alondra_views::Service>,
 }
 
 pub struct PullRequestDiff {
@@ -480,9 +480,9 @@ impl Client {
         Ok(reply)
     }
 
-    fn observe_capabilities(&self, service: Option<&alondra_core::views::Service>) -> bool {
+    fn observe_capabilities(&self, service: Option<&alondra_views::Service>) -> bool {
         let supported = service.map(|service| service.capabilities.iter().filter(|cap| matches!(cap.as_str(), "provider_accounts" | "model_selection" | "account_presentation")).cloned().collect::<Vec<_>>().join(",")).unwrap_or_default();
-        let next = alondra_core::views::ClientCapabilities::parse(&supported).unwrap_or_default();
+        let next = alondra_views::ClientCapabilities::parse(&supported).unwrap_or_default();
         let mut capabilities = self.capabilities.lock().unwrap_or_else(|poison| poison.into_inner());
         if *capabilities == next { return false; }
         *capabilities = next;
@@ -656,10 +656,10 @@ pub fn document_content(revision: &str) -> String {
 }
 
 fn pull_request_diff_via(id: &str, expected_head: &str, mut get: impl FnMut(&str) -> Result<Value>) -> Result<PullRequestDiff> {
-    if !alondra_core::views::id::valid(id) {
+    if !alondra_core::id::valid(id) {
         return Err(anyhow!("invalid pull request ID"));
     }
-    let route = format!("/pull-requests/{}/diff", alondra_core::views::id::path_segment(id));
+    let route = format!("/pull-requests/{}/diff", alondra_core::id::path_segment(id));
     let response = get(&route)?;
     if response["pr_id"].as_str() != Some(id) {
         return Err(anyhow!("the pull request diff response has the wrong PR ID"));
@@ -675,10 +675,10 @@ fn pull_request_diff_via(id: &str, expected_head: &str, mut get: impl FnMut(&str
 }
 
 fn set_file_viewed_via(id: &str, head: &str, path: &str, viewed: bool, post: impl FnOnce(&str, &Value) -> Result<Value>) -> Result<FileViewed> {
-    if !alondra_core::views::id::valid(id) {
+    if !alondra_core::id::valid(id) {
         return Err(anyhow!("invalid pull request ID"));
     }
-    let route = format!("/pull-requests/{}/viewed-files", alondra_core::views::id::path_segment(id));
+    let route = format!("/pull-requests/{}/viewed-files", alondra_core::id::path_segment(id));
     let response = post(&route, &serde_json::json!({"path": path, "viewed": viewed, "head": head}))?;
     if response["pr_id"].as_str() != Some(id) || response["head"].as_str() != Some(head) || response["path"].as_str() != Some(path) {
         return Err(anyhow!("the viewed mark response is for another file"));
@@ -692,7 +692,7 @@ fn content_via(route: &str, mut get: impl FnMut(&str) -> Result<Value>) -> Resul
     let mut bytes = Vec::new();
     let mut version: Option<String> = None;
     let sep = if route.contains('?') { '&' } else { '?' };
-    let limit = if route.starts_with("/interactions/") { alondra_core::domain::MAX_ATTACHMENT_BYTES } else { MAX_ATTACHMENT_BYTES };
+    let limit = if route.starts_with("/interactions/") { alondra_domain_rules::MAX_ATTACHMENT_BYTES } else { MAX_ATTACHMENT_BYTES };
     loop {
         let path = match &version {
             Some(v) => format!("{route}{sep}offset={}&version={}", bytes.len(), crate::mcp::urlencode(v)),
@@ -782,9 +782,9 @@ fn failure(status: u16, body: &Value) -> anyhow::Error {
         let service = serde_json::from_value(body["service"].clone()).ok();
         return anyhow::Error::new(Incompatible { service });
     }
-    match alondra_core::views::action_outcome::Pending::of(body) {
-        Some(alondra_core::views::action_outcome::Pending::InProgress) => return anyhow::Error::new(Running),
-        Some(alondra_core::views::action_outcome::Pending::Unknown(reason)) => return anyhow::Error::new(OutcomeUnknown(reason)),
+    match alondra_views::action_outcome::Pending::of(body) {
+        Some(alondra_views::action_outcome::Pending::InProgress) => return anyhow::Error::new(Running),
+        Some(alondra_views::action_outcome::Pending::Unknown(reason)) => return anyhow::Error::new(OutcomeUnknown(reason)),
         None => {}
     }
     if let Ok(error) = serde_json::from_value::<DomainError>(body.clone()) {
@@ -801,7 +801,7 @@ fn failure(status: u16, body: &Value) -> anyhow::Error {
 /// that announces itself says its version and range.
 #[derive(Debug)]
 pub struct Incompatible {
-    pub service: Option<alondra_core::views::Service>,
+    pub service: Option<alondra_views::Service>,
 }
 
 impl std::fmt::Display for Incompatible {
@@ -817,9 +817,9 @@ impl std::fmt::Display for Incompatible {
 impl std::error::Error for Incompatible {}
 
 /// The newest protocol this terminal speaks inside the range the daemon serves.
-pub fn pick_protocol(serves: alondra_core::views::ProtocolRange) -> Option<u32> {
+pub fn pick_protocol(serves: alondra_views::ProtocolRange) -> Option<u32> {
     let top = VIEWS_PROTOCOL.min(serves.max);
-    (top >= alondra_core::views::VIEWS_PROTOCOL_MIN.max(serves.min)).then_some(top)
+    (top >= alondra_views::VIEWS_PROTOCOL_MIN.max(serves.min)).then_some(top)
 }
 
 /// alondrad was reached and answered with an error of its own.
@@ -852,11 +852,11 @@ impl std::error::Error for Running {}
 
 /// alondrad cannot tell whether this action happened, and says why.
 #[derive(Debug)]
-pub struct OutcomeUnknown(pub alondra_core::views::action_outcome::UnknownReason);
+pub struct OutcomeUnknown(pub alondra_views::action_outcome::UnknownReason);
 
 impl std::fmt::Display for OutcomeUnknown {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let outcome = alondra_core::views::unknown_outcome(self.0, crate::i18n::lang());
+        let outcome = alondra_views::unknown_outcome(self.0, crate::i18n::lang());
         write!(f, "{} {}", outcome.title, outcome.body.unwrap_or_default())
     }
 }
@@ -895,7 +895,7 @@ pub enum Delivery {
     /// The daemon is still running it: asked again, it answers how it ended.
     Running,
     /// The daemon cannot tell whether it happened.
-    Unknown(alondra_core::views::action_outcome::UnknownReason),
+    Unknown(alondra_views::action_outcome::UnknownReason),
     /// The daemon answered; its words, when it gave any.
     Answered(Option<String>),
 }
@@ -1072,7 +1072,7 @@ mod tests {
         let thirty = 30 * 1024 * 1024;
         assert_eq!(content_via(video, first(thirty)).unwrap_err().to_string(), "second chunk asked");
         assert_eq!(content_via("/files/chunk?path=a", first(thirty)).unwrap_err().to_string(), "the file is larger than 20 MB");
-        assert_eq!(content_via(video, first(alondra_core::domain::MAX_ATTACHMENT_BYTES + 1)).unwrap_err().to_string(), "the file is larger than 64 MB");
+        assert_eq!(content_via(video, first(alondra_domain_rules::MAX_ATTACHMENT_BYTES + 1)).unwrap_err().to_string(), "the file is larger than 64 MB");
     }
 
     #[test]
@@ -1338,7 +1338,7 @@ mod wire_tests {
 
     #[test]
     fn still_running_and_unknown_outcomes_are_read_from_their_kind_never_shown_as_their_code() {
-        use alondra_core::views::action_outcome::{UnknownReason, in_progress_body, unknown_body};
+        use alondra_views::action_outcome::{UnknownReason, in_progress_body, unknown_body};
         assert_eq!(delivery(&failure(503, &in_progress_body())), Delivery::Running);
         assert_eq!(delivery(&failure(409, &unknown_body(UnknownReason::Interrupted))), Delivery::Unknown(UnknownReason::Interrupted));
         let older = serde_json::json!({"error": "outcome_unknown", "kind": "outcome_unknown"});

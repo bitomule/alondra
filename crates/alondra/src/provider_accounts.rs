@@ -104,19 +104,19 @@ fn status(row: &Row) -> AccountStatus {
     }
 }
 
-fn lang() -> alondra_core::views::Lang {
+fn lang() -> alondra_views::Lang {
     match crate::i18n::lang() {
-        crate::i18n::Lang::En => alondra_core::views::Lang::En,
-        crate::i18n::Lang::Es => alondra_core::views::Lang::Es,
+        crate::i18n::Lang::En => alondra_views::Lang::En,
+        crate::i18n::Lang::Es => alondra_views::Lang::Es,
     }
 }
 
 fn state_text(row: &Row) -> String {
-    alondra_core::views::accounts::subtitle(&status(row), lang())
+    alondra_views::accounts::subtitle(&status(row), lang())
 }
 
 fn shown_name(row: &Row) -> String {
-    alondra_core::views::accounts::name(&status(row), lang())
+    alondra_views::accounts::name(&status(row), lang())
 }
 
 /// One line per account: its name, then its email, plan and state.
@@ -173,7 +173,7 @@ fn add_with(client: &Client, provider: Provider, name: &str) -> Result<Vec<Strin
     let state = state_text(row);
     let mut lines = vec![trf!("Added {name}: {state}", "Añadida {name}: {state}")];
     if row.state != AccountState::SignedIn {
-        lines.push(alondra_core::views::accounts::account_sign_in_hint(&status(row), lang()));
+        lines.push(alondra_views::accounts::account_sign_in_hint(&status(row), lang()));
     }
     Ok(lines)
 }
@@ -189,7 +189,7 @@ pub fn connect(provider: Provider) -> Result<Option<String>> {
         seen = save(&client, &seen, &next)?;
     }
     let row = seen.accounts.iter().find(|row| row.provider == provider && row.default).context("the provider's own account is not in the listing")?;
-    Ok((row.state != AccountState::SignedIn).then(|| alondra_core::views::accounts::account_sign_in_hint(&status(row), lang())))
+    Ok((row.state != AccountState::SignedIn).then(|| alondra_views::accounts::account_sign_in_hint(&status(row), lang())))
 }
 
 pub fn set_enabled(name: &str, enabled: bool) -> Result<()> {

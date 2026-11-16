@@ -2,7 +2,7 @@ use super::*;
 use crate::domain_store::tests::{Fixture, seeded};
 use crate::domain_store::retention_fixtures::{agent, ended_task, envelope, long};
 use crate::domain_store::DomainStore;
-use alondra_core::domain::*;
+use alondra_domain_rules::*;
 use rusqlite::Connection;
 
 const DAY: i64 = 24 * 60 * 60 * 1_000;
@@ -312,7 +312,7 @@ pub fn with_an_ended_task(test: impl FnOnce(&crate::domain_runtime::DomainRuntim
 }
 /// What the apps show: the task's detail, its cards, the home and the task list, on every client.
 fn shown(state: &DomainState) -> Vec<serde_json::Value> {
-    use alondra_core::views::{Client, Lang, LiveSnapshot, RenderContext, Transport};
+    use alondra_views::{Client, Lang, LiveSnapshot, RenderContext, Transport};
     let index = ReadIndex::build(state);
     let live = LiveSnapshot::default();
     let mut keys = vec!["task:task-1".to_owned(), "home".into(), "tasks".into()];
@@ -320,7 +320,7 @@ fn shown(state: &DomainState) -> Vec<serde_json::Value> {
     let mut shown = vec![];
     for key in &keys {
         for client in [Client::Ios, Client::Mac, Client::Tui] {
-            let view = alondra_core::views::build(key, RenderContext {
+            let view = alondra_views::build(key, RenderContext {
                 domain: state, index: &index, live: &live, client, lang: Lang::Es, transport: Transport::Loopback, cursor: "", rendered_at: "",
             });
             let Ok(view) = view else { continue };

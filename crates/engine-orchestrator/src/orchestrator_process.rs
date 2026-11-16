@@ -373,7 +373,7 @@ impl Stream {
                     .filter(|block| block["type"] == "tool_use")
                     .filter_map(|block| block["name"].as_str().filter(|name| alondra_tool(name)))
                     .filter_map(|name| name.rsplit("__").next())
-                    .filter(|tool| alondra_core::orchestrator_batch::changes_something(tool));
+                    .filter(|tool| alondra_domain_rules::orchestrator_batch::changes_something(tool));
                 self.alondra_calls.extend(calls.map(str::to_owned));
                 if v["error"] == "rate_limit" {
                     self.limited = true;

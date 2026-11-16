@@ -13,7 +13,7 @@
 use crate::sdk_owner::SdkOwners as _;
 use crate::live::LiveOf as _;
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain::{ApiRetry, DomainState, TaskId, TaskState};
+use alondra_domain_rules::{ApiRetry, DomainState, TaskId, TaskState};
 use alondra_core::Millis;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -140,7 +140,7 @@ pub(crate) fn session_of(state: &DomainState, task: &TaskId) -> Option<String> {
 /// Whether `session` is a node that runs through the Agent SDK: its processes are its owner's to
 /// stop, never a push's or the process table's.
 pub(crate) fn through_sdk(domain: &DomainRuntime, session: &str) -> bool {
-    domain.read().index().node(&alondra_core::domain::AgentId(session.to_owned())).is_some_and(|node| node.through_sdk)
+    domain.read().index().node(&alondra_domain_rules::AgentId(session.to_owned())).is_some_and(|node| node.through_sdk)
 }
 
 /// Stops a node's turn and records it as paused. A node of the Agent SDK is only recorded here:
@@ -171,17 +171,17 @@ pub(crate) fn hold_sdk_turn(domain: &DomainRuntime, session: &str, paused: &Paus
         log!("pausing {session}: what it goes on with was not recorded ({error:?})");
     }
     interrupt_sdk_node(domain, session);
-    crate::sdk_owner::halt(domain, paused.task.clone(), alondra_core::domain::AgentId(session.to_owned()));
+    crate::sdk_owner::halt(domain, paused.task.clone(), alondra_domain_rules::AgentId(session.to_owned()));
 }
 
 fn interrupt_sdk_node(domain: &DomainRuntime, session: &str) {
     let Ok(state) = domain.state() else { return };
-    let envelope = alondra_core::domain::CommandEnvelope {
-        protocol_version: alondra_core::domain::PROTOCOL_VERSION,
+    let envelope = alondra_domain_rules::CommandEnvelope {
+        protocol_version: alondra_domain_rules::PROTOCOL_VERSION,
         data_epoch: state.data_epoch.clone(),
         command_id: format!("pause-{session}-{}", crate::auth::random_hex(8)).into(),
         expected_revision: state.revision,
-        command: alondra_core::domain::Command::InterruptTurn { agent_id: alondra_core::domain::AgentId(session.to_owned()) },
+        command: alondra_domain_rules::Command::InterruptTurn { agent_id: alondra_domain_rules::AgentId(session.to_owned()) },
     };
     if let Err(error) = domain.execute_as_system(envelope) {
         log!("pausing {session}: its turn was not interrupted ({error:?}); what it is told waits all the same");
@@ -193,7 +193,7 @@ fn interrupt_sdk_node(domain: &DomainRuntime, session: &str) {
 pub(crate) fn to_halt(domain: &DomainRuntime, state: &DomainState, pauses: &Pauses) -> Vec<(String, Paused)> {
     pauses.paused.iter()
         .filter(|(session, paused)| paused.reason.holds() && through_sdk(domain, session) && !state.host_ended_since_pause(&paused.task)
-            && domain.owns_sdk_host(&alondra_core::domain::AgentId((*session).clone())))
+            && domain.owns_sdk_host(&alondra_domain_rules::AgentId((*session).clone())))
         .map(|(session, paused)| (session.clone(), paused.clone())).collect()
 }
 
@@ -221,7 +221,7 @@ pub(crate) fn look(domain: &DomainRuntime, state: &DomainState, pauses: &mut Pau
         }
         open && !went_on
     });
-    pauses.owed.retain(|session, _| pauses.paused.contains_key(session) || state.agents.contains_key(&alondra_core::domain::AgentId(session.clone())));
+    pauses.owed.retain(|session, _| pauses.paused.contains_key(session) || state.agents.contains_key(&alondra_domain_rules::AgentId(session.clone())));
     pauses.resumed.retain(|session, _| pauses.paused.contains_key(session));
     clean_up(domain, pauses, now);
 }

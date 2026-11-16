@@ -1,5 +1,5 @@
 use super::*;
-use alondra_core::domain::*;
+use alondra_domain_rules::*;
 use std::os::unix::fs::DirBuilderExt;
 
 struct Fixture {
@@ -27,7 +27,7 @@ fn publish(runtime: &DomainRuntime, task: &str, id: &str, body: String) {
                     interaction_id: id.into(),
                     scope: Scope::Task { task_id: task.into() },
                     recipient: Recipient::User,
-                    body, card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
+                    body, card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"),
                 },
             },
             None,
@@ -76,7 +76,7 @@ fn live_shaped() -> Fixture {
             review_prs: true,
             dependencies: Default::default(),
             stack: None,
-            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
         });
     }
     let mut index = 0;

@@ -61,7 +61,7 @@ pub fn seed(store: &mut DomainStore, nodes: usize) {
             review_prs: true,
             dependencies: BTreeSet::new(),
             stack: None,
-            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
         });
     }
     for i in 0..INTERACTIONS {

@@ -14,8 +14,8 @@ use alondra_core::clock;
 use alondra_core::clock::Instant;
 use crate::domain_runtime::DomainRuntime;
 use crate::service::Service;
-use alondra_core::domain::ReadIndex;
-use alondra_core::views;
+use alondra_domain_rules::ReadIndex;
+use alondra_views as views;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -203,7 +203,7 @@ mod tests {
     }
 
     fn index_waiting(ids: &[String]) -> ReadIndex {
-        use alondra_core::domain::*;
+        use alondra_domain_rules::*;
         let mut state = DomainState::new("epoch-1");
         for (order, id) in ids.iter().enumerate() {
             state.interactions.insert(id.as_str().into(), Interaction { system_card: None,

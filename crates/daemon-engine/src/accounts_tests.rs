@@ -376,7 +376,7 @@ fn a_settings_change_writes_the_file_and_the_domain_and_survives_a_restart() {
 
         let before = std::fs::read_to_string(alondra_core::options::path_in(&f.home)).unwrap();
         let refused = change(&domain, &f.home, &user, &AccountChange::Remove { account: AccountId::default_account() });
-        assert!(matches!(refused, Err(ChangeRefused::Domain(ref e)) if e.why() == alondra_core::domain::Refusal::DefaultAccountStays { name: "Default".into() }), "{refused:?}");
+        assert!(matches!(refused, Err(ChangeRefused::Domain(ref e)) if e.why() == alondra_domain_rules::Refusal::DefaultAccountStays { name: "Default".into() }), "{refused:?}");
         assert_eq!(std::fs::read_to_string(alondra_core::options::path_in(&f.home)).unwrap(), before, "a refused change writes nothing");
         let refused = change(&domain, &f.home, &Actor::System, &AccountChange::SetPolicy { policy: Policy::Margin });
         assert!(matches!(refused, Err(ChangeRefused::Domain(ref e)) if e.code == "forbidden"), "only the user changes the accounts: {refused:?}");

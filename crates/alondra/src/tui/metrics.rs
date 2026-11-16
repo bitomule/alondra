@@ -7,14 +7,14 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use alondra_core::views::{Item, Link, Notice, Row, Tone, View};
+use alondra_views::{Item, Link, Notice, Row, Tone, View};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::keys::Motion;
 use super::{App, Client, Msg, view_render};
 
-pub const KEY: &str = alondra_core::views::metrics::KEY;
+pub const KEY: &str = alondra_views::metrics::KEY;
 const ACCENT: Color = Color::LightYellow;
 /// The sections that choose what the figures cover: they stay on screen while a new key loads.
 const CHOOSERS: [&str; 3] = ["period", "compare", "filter"];

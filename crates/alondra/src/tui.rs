@@ -116,7 +116,7 @@ fn diff_pull_request(route: &str) -> Option<String> {
         }
     }
     let id = String::from_utf8(bytes).ok()?;
-    (alondra_core::views::id::valid(&id) && alondra_core::views::id::path_segment(&id) == segment).then_some(id)
+    (alondra_core::id::valid(&id) && alondra_core::id::path_segment(&id) == segment).then_some(id)
 }
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -124,13 +124,13 @@ use std::io::stdout;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::time::{Duration, Instant};
 
-use alondra_core::domain::{
+use alondra_domain_rules::{
     AgentId, AttachmentRef, AvailableAction, Command, DeliveryTarget, Interaction, InteractionId,
     PrId, Revision, TaskId,
 };
 use alondra_core::now_millis;
 use crate::client::Delivery;
-use alondra_core::views::{AttachmentKind, Outcome, OutcomeKind, Status as ViewStatus, View as ViewDocument};
+use alondra_views::{AttachmentKind, Outcome, OutcomeKind, Status as ViewStatus, View as ViewDocument};
 use anyhow::Result;
 use crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -216,7 +216,7 @@ pub struct Modal {
 #[derive(Clone, Debug)]
 enum ModalThen {
     Action {
-        action: Box<alondra_core::views::Action>,
+        action: Box<alondra_views::Action>,
         option_id: Option<String>,
         selected: Key,
         epoch: String,
@@ -344,7 +344,7 @@ pub enum Part {
 }
 
 impl Part {
-    fn attachment(attachment: &alondra_core::views::Attachment) -> Self {
+    fn attachment(attachment: &alondra_views::Attachment) -> Self {
         Part::File {
             name: attachment.name.clone(),
             route: attachment.fetch.clone(),
@@ -367,7 +367,7 @@ pub struct Reader {
     pub key: Key,
     pub agent: String,
     /// The task the card came from, so comments still reach its node if the card goes away.
-    task_id: Option<alondra_core::domain::TaskId>,
+    task_id: Option<alondra_domain_rules::TaskId>,
     pub title: String,
     pub kind: String,
     pub glyph: &'static str,
@@ -643,7 +643,7 @@ enum Msg {
     },
     ViewFeed(Result<crate::client::ViewsFeed, crate::client::availability::ViewFailure>),
     /// The daemon said which version it is and which views protocols it serves.
-    Service(alondra_core::views::Service),
+    Service(alondra_views::Service),
     /// What the binary a restart would run says it is, for that daemon version.
     DiskVersion {
         version: String,
@@ -849,7 +849,7 @@ pub struct App {
     /// Views whose folded sections the user opened.
     pub open_folds: BTreeSet<String>,
     /// The rows of each opened section, fetched apart: the list view only says how many there are.
-    pub section_pages: BTreeMap<String, alondra_core::views::Section>,
+    pub section_pages: BTreeMap<String, alondra_views::Section>,
     /// The selected task's controls as the daemon computed them, by the revision they were read at.
     pub task_actions: HashMap<TaskId, (Revision, Vec<AvailableAction>)>,
     task_actions_asked: HashSet<(TaskId, Revision)>,
@@ -1063,8 +1063,8 @@ fn restart(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
     repaint(terminal, app)
 }
 
-fn validate_view_fields(fields: &[alondra_core::views::Field], values: &Value) -> Result<()> {
-    use alondra_core::views::FieldKind;
+fn validate_view_fields(fields: &[alondra_views::Field], values: &Value) -> Result<()> {
+    use alondra_views::FieldKind;
     for field in fields {
         let label = &field.label;
         if field
@@ -1504,7 +1504,7 @@ impl App {
                 .find(|(id, _, _)| *id == selected.0);
             if let Some((_, _, link)) = entry {
                 return match link {
-                    Some(alondra_core::views::Link::View { key }) => Some(key),
+                    Some(alondra_views::Link::View { key }) => Some(key),
                     _ => None,
                 };
             }
@@ -1675,7 +1675,7 @@ impl App {
     fn card_title(&self, key: &Key) -> String {
         let from_home = self.home_view.as_ref().and_then(|home| {
             home.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
-                alondra_core::views::Item::Card(card) if card.id == key.0 => Some(card.title.clone()),
+                alondra_views::Item::Card(card) if card.id == key.0 => Some(card.title.clone()),
                 _ => None,
             })
         });
@@ -1907,9 +1907,9 @@ impl App {
                 {
                     let action = view_render::actions(view).into_iter().find(|action| {
                         action.enabled
-                            && alondra_core::views::action_id::ActionId::parse(&action.id)
+                            && alondra_views::action_id::ActionId::parse(&action.id)
                                 .is_ok_and(|id| {
-                                    id.verb == alondra_core::views::action_id::Verb::Changes
+                                    id.verb == alondra_views::action_id::Verb::Changes
                                 })
                     });
                     if let Some(action) = action {
@@ -2125,7 +2125,7 @@ impl App {
                 if metrics::reads(&key) {
                     self.metrics_loaded(&key, Ok(&view));
                 }
-                if view.view == alondra_core::views::SETTLED_VIEW {
+                if view.view == alondra_views::SETTLED_VIEW {
                     if self.selected_view_key().as_deref() == Some(&key) {
                         self.close_settled_card(&key, view);
                     }
@@ -2363,7 +2363,7 @@ impl App {
                 self.optimistic.failed(command, now_millis());
                 return;
             }
-            Err(Delivery::Unknown(reason)) => alondra_core::views::unknown_outcome(reason, crate::i18n::lang()),
+            Err(Delivery::Unknown(reason)) => alondra_views::unknown_outcome(reason, crate::i18n::lang()),
             Err(Delivery::Answered(message)) => Outcome {
                 kind: OutcomeKind::Failed,
                 title: tr!("Your Mac couldn't do it.", "Tu Mac no pudo hacerlo.").to_owned(),
@@ -2522,7 +2522,7 @@ impl App {
     /// The home view as the user sees it: cards whose action is in flight are not there.
     pub(super) fn shown_home(&self) -> Option<std::borrow::Cow<'_, ViewDocument>> {
         let home = self.home_view.as_ref()?;
-        let paged = |section: &alondra_core::views::Section| section.collapsed && section.items.is_empty()
+        let paged = |section: &alondra_views::Section| section.collapsed && section.items.is_empty()
             && self.open_sections.contains(&section.id) && self.section_pages.contains_key(&section.id);
         let blocks = home.sections.iter().any(view_render::has_blocks);
         if self.optimistic.is_empty() && !home.sections.iter().any(paged) && !blocks {
@@ -2544,7 +2544,7 @@ impl App {
             }
             let before = section.items.len();
             section.items.retain(|item| match item {
-                alondra_core::views::Item::Card(card) => !self.optimistic.hides(&Key(card.id.clone())),
+                alondra_views::Item::Card(card) => !self.optimistic.hides(&Key(card.id.clone())),
                 _ => true,
             });
             let gone = (before - section.items.len()) as u32;
@@ -2856,13 +2856,13 @@ impl App {
                         .iter()
                         .flat_map(|section| &section.items)
                         .filter_map(|item| {
-                            let alondra_core::views::Item::Row(row) = item else {
+                            let alondra_views::Item::Row(row) = item else {
                                 return None;
                             };
                             let (repo, number) = row.id.rsplit_once('#')?;
                             let number = number.parse().ok()?;
                             let updated_at = match &row.trailing {
-                                Some(alondra_core::views::Trailing::Time { at, .. }) => {
+                                Some(alondra_views::Trailing::Time { at, .. }) => {
                                     Some(at.clone())
                                 }
                                 _ => None,
@@ -3100,8 +3100,8 @@ impl App {
             .iter()
             .flat_map(|section| &section.items)
             .filter_map(|item| match item {
-                alondra_core::views::Item::ContentRef(content)
-                    if content.kind == alondra_core::views::ContentKind::Diff =>
+                alondra_views::Item::ContentRef(content)
+                    if content.kind == alondra_views::ContentKind::Diff =>
                 {
                     Some((content.fetch.clone(), diff_pull_request(&content.fetch)?, content.digest.clone()?))
                 }
@@ -3127,13 +3127,13 @@ impl App {
             for section in &view.sections {
                 for item in &section.items {
                     match item {
-                        alondra_core::views::Item::Markdown(markdown) => {
+                        alondra_views::Item::Markdown(markdown) => {
                             if !markdown.text.is_empty() {
                                 text.push_str(&format!("\n\n{}", markdown.text));
                             }
                         }
-                        alondra_core::views::Item::ContentRef(content)
-                            if content.kind == alondra_core::views::ContentKind::Diff =>
+                        alondra_views::Item::ContentRef(content)
+                            if content.kind == alondra_views::ContentKind::Diff =>
                         {
                             if let (Some(id), Some(head)) = (diff_pull_request(&content.fetch), content.digest.as_ref()) {
                                 parts.push(Part::Diff {
@@ -3143,7 +3143,7 @@ impl App {
                                 });
                             }
                         }
-                        alondra_core::views::Item::ContentRef(content) => {
+                        alondra_views::Item::ContentRef(content) => {
                             parts.push(Part::File {
                                 name: content.title.clone(),
                                 route: content.fetch.clone(),
@@ -3151,7 +3151,7 @@ impl App {
                                 size: None,
                             });
                         }
-                        alondra_core::views::Item::Card(card) => {
+                        alondra_views::Item::Card(card) => {
                             text.push_str(&format!("\n\n## {}", card.title));
                             if let Some(why) = card.why.as_ref().filter(|why| !why.is_empty()) {
                                 text.push_str(&format!("\n\n{why}"));
@@ -3181,7 +3181,7 @@ impl App {
                 .iter()
                 .flat_map(|section| section.items.iter())
                 .find_map(|item| match item {
-                    alondra_core::views::Item::Card(card) => Some(card),
+                    alondra_views::Item::Card(card) => Some(card),
                     _ => None,
                 });
             let (glyph, kind, color) = match first_card {
@@ -3560,15 +3560,15 @@ impl App {
     }
 
     /// The action the reader's comments are sent with: feedback on a delivery, a reply otherwise.
-    fn review_action(&self, view: &ViewDocument) -> Option<alondra_core::views::Action> {
+    fn review_action(&self, view: &ViewDocument) -> Option<alondra_views::Action> {
         view_render::actions(view).into_iter().find(|action| {
             action.enabled
-                && matches!(action.input, alondra_core::views::Input::Text { .. })
-                && alondra_core::views::action_id::ActionId::parse(&action.id).is_ok_and(|id| {
+                && matches!(action.input, alondra_views::Input::Text { .. })
+                && alondra_views::action_id::ActionId::parse(&action.id).is_ok_and(|id| {
                     matches!(
                         id.verb,
-                        alondra_core::views::action_id::Verb::Changes
-                            | alondra_core::views::action_id::Verb::Reply
+                        alondra_views::action_id::Verb::Changes
+                            | alondra_views::action_id::Verb::Reply
                     )
                 })
         })
@@ -3589,7 +3589,7 @@ impl App {
                 return;
             };
             let required = match &action.input {
-                alondra_core::views::Input::Text { required, .. } => *required,
+                alondra_views::Input::Text { required, .. } => *required,
                 _ => return,
             };
             let epoch = view.data_epoch.clone();
@@ -3719,10 +3719,10 @@ impl App {
 }
 
 /// The node working on a task, read from the message action its detail offers.
-fn task_node(client: &Client, task: &alondra_core::domain::TaskId) -> Result<AgentId, String> {
+fn task_node(client: &Client, task: &alondra_domain_rules::TaskId) -> Result<AgentId, String> {
     let view = client.views(&format!("task:{task}"), None).map_err(|e| format!("{e:#}"))?;
     crate::cli::view_action(&view, |action| action.id.starts_with("msg:") && !action.id.starts_with("msg:view@"))
-        .and_then(|action| alondra_core::views::action_id::ActionId::parse(&action.id).ok())
+        .and_then(|action| alondra_views::action_id::ActionId::parse(&action.id).ok())
         .map(|id| AgentId(id.subject))
         .ok_or_else(|| tr!("This task has no node to send your comments to: they stay here.",
             "Esta tarea no tiene nodo al que enviar tus comentarios: se quedan aquí.").to_owned())

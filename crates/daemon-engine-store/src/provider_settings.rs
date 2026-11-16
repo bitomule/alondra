@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-use alondra_core::domain::{Actor, CommandEnvelope};
+use alondra_domain_rules::{Actor, CommandEnvelope};
 use anyhow::{Context, Result, ensure};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};

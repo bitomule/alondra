@@ -2,7 +2,7 @@
 //! Viewed boxes as github.com, and clears one by itself when a push changes its file: Alondra
 //! only reads and sets them, for the account `gh` is signed in with.
 use crate::domain_github::GhCli;
-use alondra_core::domain::PullRequest;
+use alondra_domain_rules::PullRequest;
 use serde::Serialize;
 use serde_json::Value;
 use std::time::Duration;
@@ -41,7 +41,7 @@ const UNMARK: &str = "mutation($id:ID!,$path:String!){unmarkFileAsViewed(input:{
 
 pub async fn read(gh: &GhCli, pr: &PullRequest) -> Result<Marks, String> {
     let (owner, name) = pr.repository.split_once('/').ok_or("the repository is not owner/name")?;
-    let host = alondra_core::domain::normalize_pr_host(&pr.host);
+    let host = alondra_domain_rules::normalize_pr_host(&pr.host);
     let query = format!("query={READ}");
     let (owner, name, number) = (format!("owner={owner}"), format!("name={name}"), format!("number={}", pr.number));
     let mut marks: Option<Marks> = None;
@@ -67,7 +67,7 @@ pub async fn read(gh: &GhCli, pr: &PullRequest) -> Result<Marks, String> {
 }
 
 pub async fn set(gh: &GhCli, host: &str, node: &str, path: &str, viewed: bool) -> Result<(), String> {
-    let host = alondra_core::domain::normalize_pr_host(host);
+    let host = alondra_domain_rules::normalize_pr_host(host);
     let query = format!("query={}", if viewed { MARK } else { UNMARK });
     let (id, path) = (format!("id={node}"), format!("path={path}"));
     let answer = gh.run(&["api", "graphql", "--hostname", &host, "-f", &query, "-f", &id, "-f", &path], None, LIMIT).await?;
@@ -116,7 +116,7 @@ mod tests {
     fn pr() -> PullRequest {
         PullRequest {
             id: "github.com/me/app#7".into(), task_id: "task-1".into(), host: "github.com".into(), repository: "me/app".into(),
-            number: 7, head: HEAD.into(), base: "main".into(), state: alondra_core::domain::PrState::Open,
+            number: 7, head: HEAD.into(), base: "main".into(), state: alondra_domain_rules::PrState::Open,
             merged_head: None, allowed_methods: vec![], review: None,
         }
     }

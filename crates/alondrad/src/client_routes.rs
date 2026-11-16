@@ -13,7 +13,7 @@ mod viewed;
 
 use crate::auth::Signed;
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain::{
+use alondra_domain_rules::{
     AgentId, DomainError, DomainState, InteractionPayload, Recipient, Scope, TaskId,
 };
 use axum::extract::rejection::JsonRejection;
@@ -49,7 +49,7 @@ pub(crate) struct Client {
     home: PathBuf,
     pub(crate) gauges: crate::machine::Gauges,
     /// A holder that panics leaves it whole, so it is recovered: `views::live` empties it instead.
-    pub(crate) views_gauges: std::sync::Mutex<Option<(alondra_core::clock::Instant, Vec<alondra_core::views::Gauge>, Vec<alondra_core::views::Gauge>)>>,
+    pub(crate) views_gauges: std::sync::Mutex<Option<(alondra_core::clock::Instant, Vec<alondra_views::Gauge>, Vec<alondra_views::Gauge>)>>,
     pub(crate) details: pr_details::PrDetails,
     /// A holder that panics leaves it whole, so it is recovered: one `Arc` swapped or cloned.
     pr_view: std::sync::Mutex<Arc<dyn PrView>>,
@@ -72,7 +72,7 @@ pub(crate) struct Client {
     pub(crate) mcp_probes: Arc<crate::mcp_probe::McpProbes>,
     /// A holder that panics leaves it whole, so it is recovered: assigned only after the file is
     /// saved.
-    device_languages: std::sync::Mutex<std::collections::HashMap<String, alondra_core::views::Lang>>,
+    device_languages: std::sync::Mutex<std::collections::HashMap<String, alondra_views::Lang>>,
     device_languages_path: PathBuf,
     /// A holder that panics leaves it whole, so it is recovered: one assignment or clone.
     report_cli: std::sync::Mutex<Option<PathBuf>>,
@@ -236,7 +236,7 @@ impl Client {
         self.shared.upgrade().expect("client still owned")
     }
 
-    pub(crate) fn remember_language(&self, device: &str, lang: alondra_core::views::Lang) {
+    pub(crate) fn remember_language(&self, device: &str, lang: alondra_views::Lang) {
         let mut languages = self.device_languages.lock_or_recover("the device languages");
         if languages.get(device) == Some(&lang) {
             return;
@@ -253,9 +253,9 @@ impl Client {
         }
     }
 
-    pub(crate) fn language_for_device(&self, device: &str) -> alondra_core::views::Lang {
+    pub(crate) fn language_for_device(&self, device: &str) -> alondra_views::Lang {
         self.device_languages.lock_or_recover("the device languages").get(device).copied()
-            .unwrap_or(alondra_core::views::Lang::En)
+            .unwrap_or(alondra_views::Lang::En)
     }
 
     pub(crate) async fn cached_issues(&self) -> Option<crate::issues::IssueList> {
@@ -359,7 +359,7 @@ impl Client {
         if !body.as_object().is_some_and(|fields| fields.is_empty()) {
             return Reply::error(DomainError::new("invalid_input", "invalid request"));
         }
-        let user = alondra_core::domain::Actor::User { user_id: user_id.to_owned() };
+        let user = alondra_domain_rules::Actor::User { user_id: user_id.to_owned() };
         match crate::domain_messages::resolve_conflicts(&self.domain, &self.home, &user, &crate::domain_messages::user_name(), &pr.into()).await {
             Ok(answer) => Reply::ok(answer),
             Err(error) => Reply::error(error),
@@ -432,7 +432,7 @@ impl Client {
     fn runtime(&self) -> Response {
         let read = self.domain.read();
         let state = read.state();
-        let orders: Vec<(String, alondra_core::domain::Revision)> = read.index().queue().iter()
+        let orders: Vec<(String, alondra_domain_rules::Revision)> = read.index().queue().iter()
             .filter_map(|id| state.interactions.get(id).map(|card| (format!("interaction:{}", id.0), card.order)))
             .collect();
         let revisions: Vec<_> = orders.iter().map(|(_, order)| *order).collect();

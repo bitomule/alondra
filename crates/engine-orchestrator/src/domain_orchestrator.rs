@@ -4,18 +4,18 @@
 //! and finished as handed, retryable or uncertain afterwards; finishing an
 //! invocation never completes a Task.
 use crate::engine::OrchestratorOf as _;
-use alondra_core::domain::SystemCard;
+use alondra_domain_rules::SystemCard;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::OutboxMessage;
 use crate::orchestrator_process::{self as process, BatchEnd, Ownership};
 use alondra_core::accounts::{AccountState, AccountStatus, Provider};
 use alondra_core::delivery::State;
-use alondra_core::domain::{Actor, Author, Command, CommandEnvelope, DomainError, DomainState, InteractionId, InteractionPayload, PROTOCOL_VERSION, QuestionOption, Recipient, RequestId, Scope};
+use alondra_domain_rules::{Actor, Author, Command, CommandEnvelope, DomainError, DomainState, InteractionId, InteractionPayload, PROTOCOL_VERSION, QuestionOption, Recipient, RequestId, Scope};
 use alondra_core::now_millis;
-use alondra_core::orchestrator_batch::{BATCH_CONTINUE, BATCH_CONTINUE_LABEL, BATCH_PROBLEM_PREFIX, BATCH_RETRY, BATCH_RETRY_LABEL, BatchProblem, BatchStop};
+use alondra_domain_rules::orchestrator_batch::{BATCH_CONTINUE, BATCH_CONTINUE_LABEL, BATCH_PROBLEM_PREFIX, BATCH_RETRY, BATCH_RETRY_LABEL, BatchProblem, BatchStop};
 #[cfg(test)]
-use alondra_core::orchestrator_cards::{STUCK_PROBLEM_PREFIX, STUCK_RETRY, STUCK_RETRY_LABEL, StuckProblem};
+use alondra_domain_rules::orchestrator_cards::{STUCK_PROBLEM_PREFIX, STUCK_RETRY, STUCK_RETRY_LABEL, StuckProblem};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -788,7 +788,7 @@ impl Executor {
     fn raise_stuck_problem(&self, run_id: &str, failures: u32, error: &str) -> Option<String> {
         let id = format!("{STUCK_PROBLEM_PREFIX}{run_id}");
         let problem = StuckProblem { failures, error: error.to_owned() };
-        let (need, why) = problem.text(alondra_core::views::Lang::En);
+        let (need, why) = problem.text(alondra_view_model::Lang::En);
         let option = QuestionOption { id: STUCK_RETRY.into(), label: STUCK_RETRY_LABEL.into(), description: None };
         match self.domain.raise_worded_problem(&id, Some(SystemCard::StuckProblem), STUCK_CAUSE, need, why, problem.to_body(), vec![option], Some(STUCK_RETRY)) {
             Ok(_) => Some(id),
@@ -804,7 +804,7 @@ impl Executor {
     fn raise_batch_problem(&self, run_id: &str, mut problem: BatchProblem, error: &str) {
         let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None };
         problem.error = error.to_owned();
-        let (need, why) = problem.text(alondra_core::views::Lang::En);
+        let (need, why) = problem.text(alondra_view_model::Lang::En);
         let raised = self.domain.raise_worded_problem(
             &format!("{PROBLEM_PREFIX}{run_id}"), Some(SystemCard::BatchProblem { run: run_id.to_string() }),
             BATCH_CAUSE,
@@ -866,11 +866,11 @@ impl Executor {
 /// When each Request was made, and now, so the prompt can say how long every open one has waited.
 struct Ages {
     now: i64,
-    opened: std::collections::BTreeMap<alondra_core::domain::RequestId, i64>,
+    opened: std::collections::BTreeMap<alondra_domain_rules::RequestId, i64>,
 }
 
 impl Ages {
-    fn of(&self, request: &alondra_core::domain::RequestId) -> Option<String> {
+    fn of(&self, request: &alondra_domain_rules::RequestId) -> Option<String> {
         const HOUR: i64 = 60 * 60 * 1_000;
         let waited = self.now.saturating_sub(*self.opened.get(request).filter(|at| **at > 0)?).max(0);
         Some(match waited / HOUR {
@@ -884,10 +884,10 @@ impl Ages {
 /// The durable domain as the orchestrator needs it to act on a batch, which starts a new
 /// conversation: every open Request, every question it asked that waits for its answer, and
 /// every Task not archived travel in the prompt.
-fn summary(state: &DomainState, ages: &Ages, choices: impl Fn(&alondra_core::domain::RequestId) -> Option<String>) -> String {
+fn summary(state: &DomainState, ages: &Ages, choices: impl Fn(&alondra_domain_rules::RequestId) -> Option<String>) -> String {
     let mut text = String::from("\nDURABLE DOMAIN (open Requests and Tasks not archived):\n");
     let one_line = |body: &str| body.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(SUMMARY_LINE).collect::<String>();
-    let state_name = |task: &alondra_core::domain::Task| serde_json::to_value(task.state).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
+    let state_name = |task: &alondra_domain_rules::Task| serde_json::to_value(task.state).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
     let open: Vec<_> = state.requests.values().filter(|request| !request.closed).collect();
     let whole: usize = open.iter().map(|request| request.body.len()).sum();
     let tight = whole > MAX_SUMMARY_BYTES;
@@ -1061,7 +1061,7 @@ pub mod testing {
     use super::*;
     use crate::orchestrator_process::Ownership;
     use crate::test_support::Directory;
-    use alondra_core::domain::{CardKind, CardSpec, LaunchPlan};
+    use alondra_domain_rules::{CardKind, CardSpec, LaunchPlan};
     use std::collections::{BTreeMap, BTreeSet};
     use std::io::{Read, Write};
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -1375,7 +1375,7 @@ mod tests {
     use super::testing::{Fixture, fixture};
     use crate::live::LiveOf as _;
     use super::*;
-    use alondra_core::domain::*;
+    use alondra_domain_rules::*;
     use alondra_core::accounts::{AccountBilling, AccountId};
 
     fn command(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
@@ -1398,7 +1398,7 @@ mod tests {
 
     /// The reminders `settle` sent back to the orchestrator when a batch left something open.
     fn reminders(domain: &DomainRuntime) -> Vec<String> {
-        use alondra_core::orchestrator_cards::{UNANSWERED_NOTICE_PREFIX, UNSETTLED_NOTICE_PREFIX, UNSPLIT_NOTICE_PREFIX};
+        use alondra_domain_rules::orchestrator_cards::{UNANSWERED_NOTICE_PREFIX, UNSETTLED_NOTICE_PREFIX, UNSPLIT_NOTICE_PREFIX};
         domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
             .filter(|m| m.recipient_kind == "orchestrator")
             .filter_map(|m| m.interaction_id)
@@ -1803,9 +1803,9 @@ mod tests {
     }
 
     fn announced(f: &Fixture) -> Vec<Vec<String>> {
-        use alondra_core::request_outcome::TasksCard;
+        use alondra_domain_rules::request_outcome::TasksCard;
         let state = f.domain().state().unwrap();
-        f.cards(alondra_core::request_outcome::TASKS_PREFIX).iter()
+        f.cards(alondra_domain_rules::request_outcome::TASKS_PREFIX).iter()
             .map(|id| TasksCard::from_body(&state.interactions[&InteractionId::from(id.as_str())].body).unwrap())
             .map(|card| card.tasks.into_iter().map(|task| task.id).collect())
             .collect()
@@ -1848,11 +1848,11 @@ mod tests {
             f.run(orchestrator.clone(), id, Command::CreateTask {
                 task_id: id.into(), request_id: "pair".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
                 dependencies: after.into_iter().map(|d: &str| TaskId::from(d)).collect(), stack: None,
-                launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), plan_items: None, continues: None,
+                launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), plan_items: None, continues: None,
             });
         }
         f.run(Actor::User { user_id: "u".into() }, "cancel-first", Command::CancelTask { task_id: "first".into(), reason: None });
-        let notices = || f.cards(alondra_core::orchestrator_cards::DEPENDENCY_CANCELLED_NOTICE_PREFIX).len();
+        let notices = || f.cards(alondra_domain_rules::orchestrator_cards::DEPENDENCY_CANCELLED_NOTICE_PREFIX).len();
         for failure in 1..=3 {
             f.tick().await;
             assert!(load(&f.executor.home).unwrap().last_error.is_some() || load(&f.executor.home).unwrap().retry_at.is_some(), "the turn failed");
@@ -2041,7 +2041,7 @@ mod tests {
     /// orchestrator's batch, already creating them, had finished.
     #[tokio::test]
     async fn an_accepted_plan_in_phases_reaches_the_orchestrator_at_once_and_one_left_without_tasks_is_flagged() {
-        use alondra_core::orchestrator_cards::{UNSPLIT_NOTICE_PREFIX, UNSPLIT_PROBLEM_PREFIX};
+        use alondra_domain_rules::orchestrator_cards::{UNSPLIT_NOTICE_PREFIX, UNSPLIT_PROBLEM_PREFIX};
         let f = fixture();
         let domain = &f.executor.domain;
         command(domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into(), at: 0 });

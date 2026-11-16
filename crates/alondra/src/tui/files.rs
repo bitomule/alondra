@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use alondra_core::views::{Attachment, AttachmentKind};
+use alondra_views::{Attachment, AttachmentKind};
 
 #[derive(Clone)]
 pub enum FileBody {

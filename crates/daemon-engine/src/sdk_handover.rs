@@ -14,7 +14,7 @@ use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{Handover, HandoverProcess, HandoverStep};
 use crate::node_close::Answer;
 use crate::node_push::Unreachable;
-use alondra_core::domain::*;
+use alondra_domain_rules::*;
 use serde::Serialize;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;

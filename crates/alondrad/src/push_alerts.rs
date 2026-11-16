@@ -19,11 +19,11 @@ impl crate::usage_pause::Alerts for PushAlerts {
                 "interruption-level": if passive { "passive" } else { "active" },
                 "mutable-content": 1,
             },
-            "alondra": {"protocol": alondra_core::views::VIEWS_PROTOCOL, "data_epoch": epoch, "actions": []},
+            "alondra": {"protocol": alondra_views::VIEWS_PROTOCOL, "data_epoch": epoch, "actions": []},
         });
         if let Some(service) = &self.service {
             let sent = service.broadcast_push_report_for_device(!passive, |device| {
-                payload(self.client.language_for_device(device) == alondra_core::views::Lang::Es)
+                payload(self.client.language_for_device(device) == alondra_views::Lang::Es)
             }).await;
             if let Err(error) = sent {
                 log!("could not push the notice: {error:#}");

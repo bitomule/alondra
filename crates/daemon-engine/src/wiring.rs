@@ -8,7 +8,7 @@ use crate::locks::Poisonable as _;
 use crate::ports::{AccountWait, Exhausted, OrchestratorEngine};
 use alondra_core::Millis;
 use alondra_core::accounts::{AccountId, AccountKey, Provider};
-use alondra_core::domain::{AgentId, DomainError, DomainState};
+use alondra_domain_rules::{AgentId, DomainError, DomainState};
 use alondra_core::model_selection::{SelectionDecision, TaskSelection};
 use anyhow::Result;
 use std::path::Path;
