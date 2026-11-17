@@ -67,12 +67,21 @@ pub struct SentPush {
 
 /// A transport that keeps every push instead of sending it: the phone of a scenario.
 #[derive(Clone, Default)]
-pub struct RecordedPushes(Arc<std::sync::Mutex<Vec<SentPush>>>);
+pub struct RecordedPushes {
+    sent: Arc<std::sync::Mutex<Vec<SentPush>>>,
+    lost: Arc<std::sync::atomic::AtomicBool>,
+}
 
 impl RecordedPushes {
+    /// From now on every push is answered as sent and kept nowhere: the lie a scenario's checks
+    /// must catch.
+    pub fn lose_every_push(&self) {
+        self.lost.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// The pushes sent since the last call.
     pub fn take(&self) -> Vec<SentPush> {
-        std::mem::take(&mut *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+        std::mem::take(&mut *self.sent.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
     }
 }
 
@@ -87,7 +96,10 @@ impl PushTransport for RecordedPushes {
             PushDelivery::Background => "background",
             PushDelivery::Badge => "badge",
         };
-        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(SentPush {
+        if self.lost.load(std::sync::atomic::Ordering::SeqCst) {
+            return Box::pin(async { Ok(()) });
+        }
+        self.sent.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(SentPush {
             device: push.device.to_owned(),
             delivery,
             with_sound: push.with_sound,

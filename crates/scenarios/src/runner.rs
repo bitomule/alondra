@@ -69,13 +69,28 @@ impl HostLauncher for RefusingLauncher {
     }
 }
 
+/// The fake edges of a scenario's world, for a test of the harness to make lie.
+pub struct Edges {
+    pub github: Arc<GithubWorld>,
+    pub pushes: RecordedPushes,
+}
+
 pub fn run(scenario: &Scenario, accepted: Option<&Path>) -> Result<Outcome, ScenarioError> {
     run_with(scenario, accepted, |_| ())
 }
 
+/// `run`, with `lie` handed the fake edges before the daemon starts: a control that the checks of
+/// a scenario catch an edge that answers falsely.
+pub fn run_lying(scenario: &Scenario, accepted: Option<&Path>, lie: impl FnOnce(&Edges)) -> Result<Outcome, ScenarioError> {
+    match run_inner(scenario, accepted, |_| (), lie)? {
+        (outcome, None) => Ok(outcome),
+        (_, Some(failure)) => Err(failure),
+    }
+}
+
 /// Runs the scenario as far as it goes: the checkpoints it passed, and the failure that stopped it.
 pub fn run_partial(scenario: &Scenario) -> (Outcome, Option<ScenarioError>) {
-    match run_inner(scenario, None, |_| ()) {
+    match run_inner(scenario, None, |_| (), |_| ()) {
         Ok((outcome, failure)) => (outcome, failure),
         Err(error) => (Outcome { checkpoints: Vec::new() }, Some(error)),
     }
@@ -84,7 +99,7 @@ pub fn run_partial(scenario: &Scenario) -> (Outcome, Option<ScenarioError>) {
 /// `run`, with `probe` handed the launcher the daemon starts processes through, once it is
 /// assembled: how a test of the harness makes something reach for a process.
 pub fn run_with(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnce(&Launcher)) -> Result<Outcome, ScenarioError> {
-    match run_inner(scenario, accepted, probe)? {
+    match run_inner(scenario, accepted, probe, |_| ())? {
         (outcome, None) => Ok(outcome),
         (_, Some(failure)) => Err(failure),
     }
@@ -94,12 +109,13 @@ fn run_inner(
     scenario: &Scenario,
     accepted: Option<&Path>,
     probe: impl FnOnce(&Launcher),
+    lie: impl FnOnce(&Edges),
 ) -> Result<(Outcome, Option<ScenarioError>), ScenarioError> {
     if std::env::var("TZ").as_deref() != Ok("UTC") {
         return Err(ScenarioError::Invalid("scenarios run with TZ=UTC: the views show local time, which differs from Mac to Mac".into()));
     }
     let runtime = alondra_core::clock::VirtualRuntime::new(EPOCH_MILLIS).map_err(|error| ScenarioError::Invalid(error.to_string()))?;
-    runtime.block_on(execute(scenario, accepted, probe))
+    runtime.block_on(execute(scenario, accepted, probe, lie))
 }
 
 /// 2026-11-15 09:00 UTC: every scenario starts at the same instant.
@@ -154,7 +170,7 @@ struct Context<'a> {
     outcome: Outcome,
 }
 
-async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnce(&Launcher)) -> Result<(Outcome, Option<ScenarioError>), ScenarioError> {
+async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnce(&Launcher), lie: impl FnOnce(&Edges)) -> Result<(Outcome, Option<ScenarioError>), ScenarioError> {
     // Tokio jumps a paused clock to its next timer whenever the runtime waits, as it does on a view
     // read over HTTP, unless a blocking task runs: one runs for the whole scenario, so virtual time
     // moves only when a step moves it.
@@ -200,6 +216,7 @@ async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnc
         (launcher, Backend::Given(Some(backend)), Some(Peer { seen, activity, hosts: codex.len() }))
     };
     probe(&launcher);
+    lie(&Edges { github: github.clone(), pushes: pushes.clone() });
     let mac = CalmMac::default();
     let seams = seams_of(&github, &pushes, &mac, launcher, backend);
     alondrad::scenario_phone::prepare(&config.home).map_err(|e| invalid(&format!("{e:#}")))?;

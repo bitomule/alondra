@@ -2447,6 +2447,7 @@ checks:
         - //crates/scenarios:scenarios_test
         - //crates/scenarios:scenarios_harness_test
         - //crates/scenarios:from_report_bin_test
+        - //crates/scenarios:ablate_bin_test
         - //crates/scenarios-transcript:scenarios_transcript_test
 
   transcript-guard:

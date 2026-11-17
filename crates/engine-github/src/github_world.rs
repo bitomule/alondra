@@ -38,6 +38,7 @@ struct World {
     merges: Vec<(u64, String, MergeMethod)>,
     retargets: Vec<(u64, String)>,
     closes: Vec<(u64, String)>,
+    merges_never_land: bool,
 }
 
 pub struct GithubWorld(Mutex<World>);
@@ -59,6 +60,7 @@ impl GithubWorld {
             merges: Vec::new(),
             retargets: Vec::new(),
             closes: Vec::new(),
+            merges_never_land: false,
         }))
     }
 
@@ -138,6 +140,11 @@ impl GithubWorld {
         let mut world = self.world();
         merge(&mut world, number);
     }
+    /// From now on GitHub answers every merge with success and leaves the PR open: the lie a
+    /// scenario's checks must catch.
+    pub fn answer_merges_without_merging(&self) {
+        self.world().merges_never_land = true;
+    }
     /// Someone else closes the PR on GitHub.
     pub fn close_externally(&self, number: u64) {
         self.change(number, |pr| pr.state = PrState::Closed);
@@ -185,7 +192,9 @@ impl GithubWorld {
         };
         if result.is_ok() {
             world.merges.push((pr.number, head.to_owned(), method));
-            merge(&mut world, pr.number);
+            if !world.merges_never_land {
+                merge(&mut world, pr.number);
+            }
         }
         result
     }
