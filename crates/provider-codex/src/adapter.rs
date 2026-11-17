@@ -312,16 +312,25 @@ impl CodexWorker {
     }
     /// Reads definitive receipts from completed archives without sending or touching a host lock.
     pub fn archived_handoffs(&self, grant: &OwnerGrant, state: &AdapterState, commands: &[&[u8]]) -> Result<Vec<alondra_provider_contract::HandoffProof>, AdapterError> {
+        self.handoffs(grant, state, commands, false)
+    }
+    /// Reads definitive receipts from the folder of the host that ended there, which `find_host`
+    /// holds claimed: a host a move ends is never archived.
+    pub fn ended_handoffs(&self, grant: &OwnerGrant, state: &AdapterState, commands: &[&[u8]]) -> Result<Vec<alondra_provider_contract::HandoffProof>, AdapterError> {
+        self.handoffs(grant, state, commands, true)
+    }
+    fn handoffs(&self, grant: &OwnerGrant, state: &AdapterState, commands: &[&[u8]], ended: bool) -> Result<Vec<alondra_provider_contract::HandoffProof>, AdapterError> {
         if grant.binding() != &self.adapter.binding || state.validate_owner(grant).is_err() {
             return Err(AdapterError::InvalidObservation);
         }
         if commands.is_empty() { return Ok(Vec::new()); }
         let stored: SessionRecord = serde_json::from_slice(state.conversation()).map_err(|_| AdapterError::InvalidObservation)?;
-        let proofs = alondra_codex_protocol::archived_receipts(
-            &self.adapter.configuration.state_directory, &fence(grant, &self.adapter.control), &execution(grant), commands,
-            |bytes| self.adapter.retained(grant, bytes, &stored).map(|retained| retained.control.host_instance_id)
-                .map_err(|_| alondra_codex_protocol::Error::Invalid("archive bootstrap scope")),
-        ).map_err(|_| AdapterError::InvalidObservation)?;
+        let validate = |bytes: &[u8]| self.adapter.retained(grant, bytes, &stored).map(|retained| retained.control.host_instance_id)
+            .map_err(|_| alondra_codex_protocol::Error::Invalid("archive bootstrap scope"));
+        let (directory, fence, execution) = (&self.adapter.configuration.state_directory, fence(grant, &self.adapter.control), execution(grant));
+        let proofs = if ended { alondra_codex_protocol::ended_receipts(directory, &fence, &execution, commands, validate) }
+            else { alondra_codex_protocol::archived_receipts(directory, &fence, &execution, commands, validate) }
+            .map_err(|_| AdapterError::InvalidObservation)?;
         proofs.into_iter().map(|proof| {
             let handoff = match proof.outcome {
                 alondra_codex_protocol::ReceiptOutcome::Accepted { .. } => Handoff::Offered,
