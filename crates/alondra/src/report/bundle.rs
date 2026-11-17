@@ -88,6 +88,7 @@ pub fn assemble(draft: &mut Draft) -> (Files, Vec<Trim>) {
         let share = (size - MAX_COMPRESSED) as f64 / size as f64;
         let cut = ((lines as f64 * share * 1.1).ceil() as usize).clamp(1, lines);
         let kept: Vec<&str> = section.text.lines().skip(cut).collect();
+        adjust_masked_for_cut(&mut draft.masked, section.name, cut);
         section.text = if kept.is_empty() { String::new() } else { kept.join("\n") + "\n" };
         if section.text.is_empty() {
             section.status = Status::Empty("cut so the report fits in 5 MB".into());
@@ -96,6 +97,14 @@ pub fn assemble(draft: &mut Draft) -> (Files, Vec<Trim>) {
             Some(trim) => trim.lines += cut,
             None => trims.push(Trim { section: section.name.to_owned(), lines: cut }),
         }
+    }
+}
+
+/// Keeps each masked entry of `section` pointing at its line after its oldest `cut` lines went.
+pub(super) fn adjust_masked_for_cut(masked: &mut Vec<Masked>, section: &str, cut: usize) {
+    masked.retain(|m| m.section != section || m.line > cut);
+    for entry in masked.iter_mut().filter(|m| m.section == section) {
+        entry.line -= cut;
     }
 }
 
