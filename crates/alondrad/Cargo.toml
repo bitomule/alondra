@@ -10,6 +10,7 @@ alondra-process-group.workspace = true
 alondra-core.workspace = true
 alondra-daemon-support.workspace = true
 alondra-daemon-engine.workspace = true
+alondra-engine-orchestrator.workspace = true
 alondra-agent-runtime.workspace = true
 alondra-e2e = { path = "../e2e" }
 alondra-domain.workspace = true
@@ -36,6 +37,7 @@ toml.workspace = true
 [dev-dependencies]
 alondra-daemon-support = { workspace = true, features = ["test-hooks"] }
 alondra-daemon-engine = { workspace = true, features = ["test-hooks"] }
+alondra-engine-orchestrator = { workspace = true, features = ["test-hooks"] }
 h2 = "0.4.19"
 tempfile.workspace = true
 

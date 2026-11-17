@@ -2,10 +2,11 @@
 //! The batch's claim owns the host; its one prompt is the batch, and the host takes no other, so
 //! a message that arrives during the turn waits for the next batch. What Claude reported goes
 //! through the same parser as `claude -p`, and `domain_orchestrator::tick` decides from its end.
+use crate::engine::OrchestratorOf as _;
 use crate::orchestrator_provider::ProviderOwner;
 use crate::domain_store::batch_effects::BatchReport;
 use crate::orchestrator_process::{self as process, Output, ProcessOwner, Stream, bounded};
-use crate::sdk_owner::SdkBackend;
+use crate::sdk_backend::SdkBackend;
 use alondra_agent_runtime::owned_host::VerifiedArtifact;
 use alondra_provider_claude::{BatchHost, ClaudeConfiguration, HostEvent, McpServer, OrchestratorProfile};
 use std::collections::BTreeMap;
@@ -121,7 +122,7 @@ fn stop(host: BatchHost<ProviderOwner>, directory: &Path) {
 
 fn configuration(batch: &Batch) -> Result<ClaudeConfiguration, String> {
     let backend = &batch.backend.for_provider(alondra_core::accounts::Provider::Claude,&batch.home).and_then(|backend|backend.for_start())
-        .and_then(|backend| backend.for_account(&batch.home, &batch.selection.account.account, &crate::accounts::registered(&batch.home)))
+        .and_then(|backend| backend.for_account(&batch.home, &batch.selection.account.account, &batch.domain.engine().registered_accounts(&batch.home, alondra_core::accounts::Provider::Claude)))
         .map_err(|error| format!("{error:#}"))?;
     std::fs::create_dir_all(&backend.state_root).map_err(|error| format!("creating the SDK state root: {error}"))?;
     let state_directory = backend.state_root.join(format!("o-{}", crate::auth::random_hex(8)));

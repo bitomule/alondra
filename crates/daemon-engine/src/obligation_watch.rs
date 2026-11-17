@@ -111,7 +111,7 @@ impl Watch {
             .tasks
             .iter()
             .filter(|(_, task)| !task.over())
-            .filter_map(|(id, _)| Some((id.clone(), crate::orchestrator_inbox::obligation_of(state, id)?)))
+            .filter_map(|(id, _)| Some((id.clone(), state.obligation_of(id)?)))
             .collect();
         self.observe(obligations, world, now)
     }
@@ -231,10 +231,18 @@ pub fn pass(domain: &DomainRuntime, watch: &mut Watch, now: Millis) {
         }
     }
     if !answers.is_empty() {
-        crate::orchestrator_inbox::settle_answers(domain, &state, &answers);
+        settle_answers(domain, &state, &answers);
     }
     for line in watch.summary(now) {
         log!("{line}");
+    }
+}
+
+/// The orchestrator settles what it owes past its deadline.
+fn settle_answers(domain: &DomainRuntime, state: &DomainState, due: &std::collections::BTreeSet<TaskId>) {
+    match domain.port::<dyn crate::ports::OrchestratorAnswers>() {
+        Some(orchestrator) => orchestrator.settle_answers(domain, state, due),
+        None => log!("no orchestrator settles what it owes {} past its deadline", due.iter().map(|task| task.0.as_str()).collect::<Vec<_>>().join(", ")),
     }
 }
 
@@ -257,7 +265,7 @@ pub fn apply(domain: &DomainRuntime, task: &TaskId, action: Action) -> Result<()
                 domain.seals.wake();
             }
         }
-        Action::Answer => crate::orchestrator_inbox::settle_answers(domain, &state, &[task.clone()].into()),
+        Action::Answer => settle_answers(domain, &state, &[task.clone()].into()),
     }
     Ok(())
 }

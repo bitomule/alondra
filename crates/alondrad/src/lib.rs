@@ -61,7 +61,6 @@ use alondra_daemon_engine::{
     domain_holds,
     domain_merges,
     domain_messages,
-    domain_orchestrator,
     domain_orchestrator_reads,
     domain_orchestrator_tools,
     domain_runtime,
@@ -99,6 +98,7 @@ use alondra_daemon_engine::{
     usage_pause,
     usage_probe,
 };
+use alondra_engine_orchestrator::domain_orchestrator;
 #[cfg(test)]
 use alondra_daemon_engine::{domain_agent_lifecycle, machine_state};
 
@@ -223,7 +223,7 @@ async fn run(diagnostic: Option<String>) -> Result<()> {
     let config = Config::load().map_err(|e| anyhow!("config.toml unreadable: {e}"))?;
     log::rotate_when_full(&config.home);
     relaunch::record_supervision(&config.service_label);
-    home_renames::apply(&config.home)?;
+    home_renames::apply(&config.home, domain_orchestrator::RECORDS)?;
     domain_cutover::refuse_legacy_home(&config.home)?;
     let (database_migrated, _source_fence) =
         domain_database_migration::migrate_and_fence(&config.home)?;

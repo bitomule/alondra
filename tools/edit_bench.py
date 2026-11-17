@@ -25,8 +25,7 @@ from pathlib import Path
 
 BAZEL = os.environ.get("BAZEL", "bazelisk")
 LIBRARIES = "rust_library|rust_binary|rust_proc_macro"
-COMMENT = {".rs": "// edit-bench\n", ".py": "# edit-bench\n", ".swift": "// edit-bench\n", ".ts": "// edit-bench\n"}
-EDIT = {".rs": "\n#[used]\nstatic EDIT_BENCH: u8 = 0;\n"}
+COMMENT = {".rs": "//", ".py": "#", ".swift": "//", ".ts": "//"}
 QUEUE_RAN = re.compile(r"^bazelqueue: finished \S+ exit=\d+ queued=\S+ ran=(\S+)", re.M)
 DURATION = re.compile(r"(\d+(?:\.\d+)?)(h|ms|m|s)")
 
@@ -78,6 +77,14 @@ def bazel_seconds(output, wall):
     return sum(seconds_of(value) for value in ran) if ran else wall
 
 
+def edit_text(suffix, nonce):
+    """A one-line change unique to this run: the same text twice would be served from the cache of
+    the run before, and the bench would measure nothing."""
+    if suffix == ".rs":
+        return f"\n#[used]\nstatic EDIT_BENCH: u64 = {nonce};\n"
+    return f"{COMMENT[suffix]} edit-bench {nonce}\n"
+
+
 def attempts(output):
     return max(1, output.count("INFO: Elapsed time:"))
 
@@ -117,7 +124,7 @@ def measure(root, relative, query_only):
     with tempfile.TemporaryDirectory() as directory:
         log = Path(directory) / "execution.json"
         try:
-            path.write_bytes(original + EDIT.get(path.suffix, COMMENT[path.suffix]).encode())
+            path.write_bytes(original + edit_text(path.suffix, time.time_ns()).encode())
             code, seconds, tries = bazel_test(root, tests, f"--execution_log_json_file={log}")
         finally:
             path.write_bytes(original)

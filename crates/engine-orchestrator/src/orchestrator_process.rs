@@ -1,4 +1,5 @@
 //! Claude's print protocol and owned process. No terminal or background-agent transport.
+pub use crate::auth::uuid;
 use std::path::Path;
 use std::os::fd::AsRawFd;
 use anyhow::{Context as _, Result, bail};
@@ -446,16 +447,6 @@ pub(crate) fn bounded(mut text: String) -> String {
         text.truncate(at);
     }
     text
-}
-
-pub fn uuid() -> Result<String> {
-    use ring::rand::{SecureRandom, SystemRandom};
-    let mut bytes = [0u8; 16];
-    SystemRandom::new().fill(&mut bytes).map_err(|_| anyhow::anyhow!("cannot generate execution identity"))?;
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let h: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    Ok(format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..]))
 }
 
 pub struct Output { pub stream: Stream, pub diagnostic: String, pub exit_ok: bool }

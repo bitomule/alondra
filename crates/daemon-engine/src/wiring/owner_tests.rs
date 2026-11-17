@@ -30,10 +30,10 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::os::unix::fs::OpenOptionsExt;
 use std::sync::mpsc;
 
-const TASK: &str = "task-1";
+pub const TASK: &str = "task-1";
 
 /// No fixture here asks for a decision, so no «allow always» is ever judged under a home.
-fn no_home() -> &'static std::path::Path {
+pub fn no_home() -> &'static std::path::Path {
     std::path::Path::new("/nonexistent")
 }
 const CATALOG: &str = include_str!("../../../../fixtures/domain-v2/acceptance.json");
@@ -46,10 +46,10 @@ fn agent() -> Actor {
 fn orchestrator() -> Actor {
     Actor::Orchestrator { generation: 0 }
 }
-fn task() -> TaskId {
+pub fn task() -> TaskId {
     TASK.into()
 }
-fn envelope(state: &DomainState, id: &str, command: Command) -> CommandEnvelope {
+pub fn envelope(state: &DomainState, id: &str, command: Command) -> CommandEnvelope {
     CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,
         data_epoch: state.data_epoch.clone(),
@@ -94,7 +94,7 @@ fn schedule() -> Command {
         schedule: serde_json::from_value(catalog["schedule_base"].clone()).unwrap(),
     }
 }
-fn binding() -> ProviderBinding {
+pub fn binding() -> ProviderBinding {
     binding_with(BTreeSet::from([Capability::OfferInput]))
 }
 fn binding_with(capabilities: BTreeSet<Capability>) -> ProviderBinding {
@@ -111,7 +111,7 @@ fn binding_with(capabilities: BTreeSet<Capability>) -> ProviderBinding {
     )
     .unwrap()
 }
-fn batch(execution: &ExecutionStamp, cursor: u64) -> OrderedObservation {
+pub fn batch(execution: &ExecutionStamp, cursor: u64) -> OrderedObservation {
     OrderedObservation {
         owner_generation: 1,
         execution: execution.clone(),
@@ -119,11 +119,11 @@ fn batch(execution: &ExecutionStamp, cursor: u64) -> OrderedObservation {
         evidence: format!("raw observation {cursor}").into_bytes(),
     }
 }
-pub(crate) fn scope_of(state: &DomainState) -> AuthorityScope {
+pub fn scope_of(state: &DomainState) -> AuthorityScope {
     AuthorityScope::new(state.data_epoch.clone()).unwrap()
 }
 
-enum Normalizer {
+pub enum Normalizer {
     Available,
     SwallowsMetadataError,
     Released,
@@ -194,7 +194,7 @@ pub(crate) use crate::domain_store::admit_through_sdk;
 
 /// The Task runs an execution the SDK host owns at generation 1, whose provider has observed
 /// nothing yet: its `claude --bg` node was released and the domain admitted the SDK's.
-pub(crate) fn running() -> (Fixture, DomainStore, ExecutionStamp) {
+pub fn running() -> (Fixture, DomainStore, ExecutionStamp) {
     running_with(&binding())
 }
 fn running_with(binding: &ProviderBinding) -> (Fixture, DomainStore, ExecutionStamp) {
@@ -224,7 +224,7 @@ fn installed() -> (Fixture, DomainStore) {
         .unwrap();
     (fixture, store)
 }
-fn runtime(fixture: &Fixture, store: DomainStore) -> DomainRuntime {
+pub fn runtime(fixture: &Fixture, store: DomainStore) -> DomainRuntime {
     drop(store);
     crate::wiring::open_at(&fixture.0, &fixture.path()).unwrap()
 }
@@ -275,7 +275,7 @@ fn counts(conn: &Connection) -> [i64; 8] {
     TABLES.map(|table| conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0)).unwrap())
 }
 /// The daemon restarts: the runtime closes and opens again on the same database.
-fn runtime_reopened(fixture: &Fixture, runtime: DomainRuntime) -> DomainRuntime {
+pub fn runtime_reopened(fixture: &Fixture, runtime: DomainRuntime) -> DomainRuntime {
     drop(runtime);
     crate::wiring::open_at(&fixture.0, &fixture.path()).unwrap()
 }
@@ -399,7 +399,7 @@ fn a_native_plan_repeated_at_a_new_epoch_reuses_its_exact_approved_decision() {
     }
 }
 
-fn observer(fixture: &Fixture) -> Connection {
+pub fn observer(fixture: &Fixture) -> Connection {
     Connection::open(fixture.path()).unwrap()
 }
 fn card(conn: &Connection, id: &str) -> Option<(Option<String>, bool)> {
@@ -898,13 +898,13 @@ fn turn_ended_card_of(turn: &str) -> InteractionId {
     InteractionId::from(format!("{TURN_ENDED_PREFIX}{TASK}-2-{turn}").as_str())
 }
 /// The case the orchestrator gets when turn `turn` of the running execution ends as a stop.
-fn stall_case_of(turn: &str) -> InteractionId {
+pub fn stall_case_of(turn: &str) -> InteractionId {
     alondra_core::domain::stalled_card_id(&task(), 2, turn)
 }
 /// Ends the first turn of the running execution with nothing that explains its next step (the
 /// fixture's question withdrawn first), which wakes its node, ends empty the turns of its other
 /// wakes, and returns the normalizer of the turn the last wake opens, `turn-2`, ending the same way.
-fn woken(store: &mut DomainStore, execution: &ExecutionStamp) -> Normalizer {
+pub fn woken(store: &mut DomainStore, execution: &ExecutionStamp) -> Normalizer {
     let state = store.load().unwrap();
     let withdraw = Command::Withdraw { interaction_id: "composite-card".into() };
     store.execute_filling_revision(&agent(), &envelope(&state, "withdraw-composite", withdraw)).unwrap();
@@ -928,7 +928,7 @@ fn woken(store: &mut DomainStore, execution: &ExecutionStamp) -> Normalizer {
     empty(store, "turn-2")
 }
 /// The cursor of the observation `woken` returns: the turns of the node's other wakes came before.
-const WOKEN_CURSOR: u64 = alondra_domain::EMPTY_TURN_WAKES as u64 + 1;
+pub const WOKEN_CURSOR: u64 = alondra_domain::EMPTY_TURN_WAKES as u64 + 1;
 
 // 3d: a new task's turn ends with nothing that explains its next step, and so does the turn the
 // wake opens. The raw observation, its facts, the case for the orchestrator, the journal and the
@@ -964,65 +964,6 @@ fn a_turn_end_commits_its_one_card_with_the_raw_observation_and_is_acknowledged_
     assert_eq!(counts(&observer), committed, "no second card, fact or row");
     let count = |pattern: &str| observer.query_row("SELECT count(*) FROM interactions WHERE id LIKE ?1", [pattern], |r| r.get::<_, i64>(0)).unwrap();
     assert_eq!((count("stalled-%"), count("turn-ended-%")), (1, 0), "one case, and no card for the user");
-}
-
-/// A stopped node's case the orchestrator leaves unsettled comes back to it once, and after that
-/// Alondra hands the node its turn back itself; the count of stops and the case outlive a restart,
-/// and no card ever asks the user.
-#[test]
-fn a_stop_left_unsettled_is_reminded_once_then_handed_back_and_both_outlive_a_restart() {
-    use alondra_core::domain::{STALL_ATTEMPTS, UNSETTLED_INSTRUCT};
-    use alondra_core::orchestrator_cards::STALL_NOTICE_PREFIX;
-    const MINUTE: i64 = 60_000;
-    let (fixture, mut store, execution) = running();
-    let normalizer = woken(&mut store, &execution);
-    let runtime = runtime(&fixture, store);
-    let state = Arc::clone(runtime.read().state());
-    runtime.own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, WOKEN_CURSOR), &normalizer, no_home(), false)).unwrap();
-    let case = stall_case_of("turn-2");
-    crate::orchestrator_inbox::settle(&runtime);
-    crate::orchestrator_inbox::settle_overdue(&runtime, 0);
-    assert!(!runtime.state().unwrap().interactions.keys().any(|id| id.0.starts_with(STALL_NOTICE_PREFIX)), "nothing before its deadline");
-    crate::orchestrator_inbox::settle_overdue(&runtime, 10 * MINUTE);
-    let state = runtime.state().unwrap();
-    assert!(state.interactions.contains_key(&InteractionId::from(format!("{STALL_NOTICE_PREFIX}{case}").as_str())), "the orchestrator is reminded");
-    assert!(state.open(&state.interactions[&case]) && !state.tasks[&task()].over(), "it gets one more go first");
-    assert_eq!(state.tasks[&task()].stalls, 1);
-    assert!(STALL_ATTEMPTS > state.tasks[&task()].stalls);
-    let runtime = runtime_reopened(&fixture, runtime);
-    let state = runtime.state().unwrap();
-    assert_eq!(state.tasks[&task()].stalls, 1, "the count outlives the restart");
-    assert!(state.open(&state.interactions[&case]), "and so does the case");
-    crate::orchestrator_inbox::settle_overdue(&runtime, 30 * MINUTE);
-    crate::orchestrator_inbox::settle_overdue(&runtime, 40 * MINUTE);
-    let runtime = runtime_reopened(&fixture, runtime);
-    let state = runtime.state().unwrap();
-    assert!(!state.open(&state.interactions[&case]), "Alondra settled it, and that outlives the restart");
-    assert!(matches!(state.lifecycle_journal[&task()].iter().rev().find(|record| matches!(record, LifecycleRecord::Answered { .. })),
-        Some(LifecycleRecord::Answered { text: Some(text), .. }) if text == UNSETTLED_INSTRUCT), "the node is told to go on");
-    assert!(!state.tasks[&task()].over());
-    let observer = observer(&fixture);
-    let asked: i64 = observer.query_row("SELECT count(*) FROM interactions WHERE task_id=?1 AND recipient_kind='user' AND (id LIKE 'turn-ended-%' OR id LIKE 'stalled-%' OR id LIKE 'problem-%')",
-        [TASK], |r| r.get(0)).unwrap();
-    assert_eq!(asked, 0, "no card ever asked the user");
-}
-
-/// The orchestrator's instruction settles the case for good: no reminder follows it.
-#[test]
-fn a_stop_the_orchestrator_settles_gets_no_reminder() {
-    use alondra_core::orchestrator_cards::STALL_NOTICE_PREFIX;
-    let (fixture, mut store, execution) = running();
-    let normalizer = woken(&mut store, &execution);
-    let runtime = runtime(&fixture, store);
-    let state = Arc::clone(runtime.read().state());
-    runtime.own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, WOKEN_CURSOR), &normalizer, no_home(), false)).unwrap();
-    crate::orchestrator_inbox::settle_overdue(&runtime, 0);
-    let state = Arc::clone(runtime.read().state());
-    let settle = Command::SettleStall { case_id: stall_case_of("turn-2"), task_id: task(), outcome: alondra_core::domain::StallOutcome::Instruct { text: "Present it".into() } };
-    let fresh = CommandEnvelope { expected_revision: state.revision, ..envelope(&state, "orchestrator-instructs", settle) };
-    runtime.execute(&Actor::Orchestrator { generation: state.orchestrator_generation }, &fresh, None, || Ok(())).unwrap();
-    crate::orchestrator_inbox::settle_overdue(&runtime, 11 * 60_000);
-    assert!(!runtime.state().unwrap().interactions.keys().any(|id| id.0.starts_with(STALL_NOTICE_PREFIX)));
 }
 
 // 3d: a turn that ends behind work of its own asks nothing, and the work keeps its slot.

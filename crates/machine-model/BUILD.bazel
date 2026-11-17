@@ -18,6 +18,7 @@ low_opt_rust_test(
     deps = [
         "//crates/core:alondra_core",
         "//crates/daemon-engine:daemon_engine_test_hooks",
+        "//crates/engine-orchestrator:engine_orchestrator_test_hooks",
         "//crates/domain:domain",
         "//crates/foundation:foundation",
         "@crates//:proptest",

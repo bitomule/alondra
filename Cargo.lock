@@ -340,6 +340,7 @@ name = "alondra-engine-kernel"
 version = "0.3.47"
 dependencies = [
  "alondra-agent-application",
+ "alondra-agent-runtime",
  "alondra-core",
  "alondra-daemon-engine-model",
  "alondra-daemon-engine-store",
@@ -357,6 +358,35 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "alondra-engine-orchestrator"
+version = "0.3.47"
+dependencies = [
+ "alondra-agent-runtime",
+ "alondra-codex-protocol",
+ "alondra-core",
+ "alondra-daemon-engine",
+ "alondra-daemon-engine-model",
+ "alondra-daemon-support",
+ "alondra-domain",
+ "alondra-engine-kernel",
+ "alondra-process-group",
+ "alondra-provider-claude",
+ "alondra-provider-codex",
+ "alondra-provider-contract",
+ "alondra-store",
+ "anyhow",
+ "libc",
+ "proptest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "sysinfo",
  "tempfile",
  "tokio",
 ]
@@ -520,6 +550,7 @@ dependencies = [
  "alondra-daemon-support",
  "alondra-domain",
  "alondra-e2e",
+ "alondra-engine-orchestrator",
  "alondra-process-group",
  "anyhow",
  "axum",

@@ -1,4 +1,3 @@
-use crate::live::LiveOf as _;
 use super::*;
 
 impl Executor {
@@ -112,8 +111,8 @@ impl Executor {
                         .lock_or_exit("the domain store")
                         .finish_batch(&batch.run)?;
                     self.domain
-                        .live()
-                        .orchestrator_runs
+                        .orchestrator()
+                        .runs
                         .lock_or_recover("the orchestrator runs")
                         .remove(&batch.run);
                     continue;
@@ -233,8 +232,8 @@ impl Executor {
                         .any(|handoff| handoff.run_id == run.id)
                     && !self
                         .domain
-                        .live()
-                        .orchestrator_runs
+                        .orchestrator()
+                        .runs
                         .lock_or_recover("the orchestrator runs")
                         .contains(&run.id)
                     && !self
@@ -322,8 +321,8 @@ impl Executor {
                         .lock_or_exit("the domain store")
                         .finish_batch(&run.id)?;
                     self.domain
-                        .live()
-                        .orchestrator_runs
+                        .orchestrator()
+                        .runs
                         .lock_or_recover("the orchestrator runs")
                         .remove(&run.id);
                 }

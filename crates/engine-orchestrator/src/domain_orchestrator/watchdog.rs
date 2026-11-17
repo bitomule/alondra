@@ -1,4 +1,3 @@
-use crate::live::LiveOf as _;
 use alondra_core::clock;
 use alondra_core::clock::Instant;
 use super::*;
@@ -18,8 +17,8 @@ impl HostGuard {
     ) -> Result<Self> {
         {
             let mut current = domain
-                .live()
-                .orchestrator_host
+                .orchestrator()
+                .host
                 .lock_or_recover("the orchestrator host");
             anyhow::ensure!(
                 current.is_none(),
@@ -37,8 +36,8 @@ impl Drop for HostGuard {
     fn drop(&mut self) {
         let mut current = self
             .domain
-            .live()
-            .orchestrator_host
+            .orchestrator()
+            .host
             .lock_or_recover("the orchestrator host");
         if current.as_ref().is_some_and(|(run, _)| *run == self.run) {
             *current = None;
@@ -107,8 +106,8 @@ impl Executor {
     pub(super) fn interrupt_host(&self) -> Result<()> {
         let current = self
             .domain
-            .live()
-            .orchestrator_host
+            .orchestrator()
+            .host
             .lock_or_recover("the orchestrator host")
             .clone();
         if let Some((_, stop)) = current {
@@ -154,8 +153,8 @@ impl Executor {
 
     fn watchdog_due(&self, watchdog: &mut Watchdog, now: Instant) -> bool {
         let requests = self.waiting_requests();
-        let suspended = self.domain.live().usage_pause.is_active()
-            || self.domain.live().account_wait.is_waiting()
+        let suspended = self.domain.engine().usage_pause().is_some()
+            || self.domain.engine().account_wait().is_waiting()
             || load(&self.home).is_ok_and(|runtime| {
                 runtime.active_run.is_some()
                     && runtime.last_error.is_some()

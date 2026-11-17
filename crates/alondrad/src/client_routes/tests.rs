@@ -769,9 +769,9 @@ async fn a_new_request_reaches_the_orchestrators_next_batch() {
     assert_eq!(batch.len(), 1, "{pending:?}");
     assert!(batch[0].message.contains("request-1"), "{}", batch[0].message);
 
-    let root = crate::test_support::Directory::new();
+    let root = alondra_engine_orchestrator::test_support::Directory::new();
     std::fs::create_dir(&root).unwrap();
-    let orchestrator = crate::domain_orchestrator::testing::Fixture::over(root, fixture.domain.clone(), fixture.home.to_path_buf());
+    let orchestrator = crate::domain_orchestrator::testing::Fixture::over(root, fixture.domain.clone(), fixture.home.to_path_buf(), alondra_daemon_engine::sdk_owner::tests::HostRoot::new());
     orchestrator.tick().await;
     let prompt = orchestrator.prompts().pop().expect("the batch reached Claude");
     assert!(prompt.contains("The user created Request request-1") && prompt.contains("(no task of its own): Make the editor readable"), "{prompt}");

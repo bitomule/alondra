@@ -22,6 +22,7 @@ use alondra_daemon_support::{
     files_retention,
     hook_text,
     locks,
+    plugins,
     prs,
     runtime_mutex,
     save,
@@ -36,5 +37,7 @@ pub mod domain_runtime;
 pub mod domain_sessions;
 pub mod domain_store;
 pub mod metrics_capture;
+pub mod ports;
 pub mod retention;
+pub mod sdk_backend;
 pub mod settings_projection;

@@ -7,7 +7,8 @@ crates. Reads sources only; nothing is built.
     python3 tools/module_graph.py --production crates/daemon-engine/src
 
 `--production` counts only what the library compiles outside its tests: the files `lib.rs` reaches
-through its `mod` declarations, without `#[cfg(test)]` items or comments. That is the graph a crate
+through its `mod` declarations, without comments or the items only tests or the `test-hooks` feature
+compile. That is the graph a crate
 split has to cut."""
 import collections
 import os
@@ -15,7 +16,7 @@ import re
 import sys
 from pathlib import Path
 
-TEST_ONLY = "#[cfg(test)]"
+TEST_ONLY = re.compile(r'#\[cfg\((?:test|any\(test,\s*feature\s*=\s*"test-hooks"\))\)\]')
 MOD = re.compile(r"((?:#\[[^\]]*\]\s*)*)(?:pub(?:\([^)]*\))?\s+)?mod\s+([a-z_0-9]+)\s*;")
 PATH = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
 
@@ -92,33 +93,51 @@ def code_only(text):
     return "".join(out)
 
 
+ITEM = re.compile(r"\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?(?:(?:async|unsafe|const|extern)\s+)*(?:fn|impl|mod|struct|enum|trait|use|static|const|type|macro_rules!|union)\b")
+OPENING, CLOSING = "{([", "})]"
+
+
 def item_end(code, at):
-    """Where the item starting at `at` ends: its `;` outside braces, or the brace closing its body."""
-    depth = 0
+    """Where what the attribute at `at` marks ends. An item ends at its `;` outside braces or at the
+    brace closing its body; a field, variant, match arm or statement also ends at a `,` outside any
+    bracket, or where the brackets around it close."""
+    item = ITEM.match(code, at) is not None
+    depth = angles = 0
     for index in range(at, len(code)):
         char = code[index]
-        if char == "{":
+        if char in OPENING:
             depth += 1
-        elif char == "}":
+        elif char in CLOSING:
             depth -= 1
-            if depth == 0:
+            if depth < 0:
+                return index
+            if depth == 0 and char == "}" and (item or code[index + 1:].lstrip()[:1] != ","):
                 return index + 1
+        elif char == "<" and not item:
+            angles += 1
+        elif char == ">" and not item and code[index - 1] not in "-=":
+            angles = max(angles - 1, 0)
         elif char == ";" and depth == 0:
+            return index + 1
+        elif char == "," and depth == 0 and angles == 0 and not item:
             return index + 1
     return len(code)
 
 
-def without_tests(code):
-    """`code` with the items under `#[cfg(test)]` blanked, attributes after it included."""
+def without_tests(code, text):
+    """`code` with the items under `#[cfg(test)]` or `#[cfg(any(test, feature = "test-hooks"))]`
+    blanked, attributes after it included. `text` is the source `code` blanked its literals of, so the
+    feature's name can be read."""
     out, index = [], 0
-    while True:
-        start = code.find(TEST_ONLY, index)
-        if start < 0:
-            out.append(code[index:])
-            return "".join(out)
+    for found in TEST_ONLY.finditer(text):
+        start = found.start()
+        if start < index or not code.startswith("#[cfg(", start):
+            continue
         out.append(code[index:start])
-        index = item_end(code, start + len(TEST_ONLY))
+        index = item_end(code, found.end())
         out.append(blank(code[start:index]))
+    out.append(code[index:])
+    return "".join(out)
 
 
 def child_file(parent, name, path):
@@ -139,7 +158,7 @@ def production_modules(root):
 
     def visit(file, module):
         text = file.read_text()
-        code = without_tests(code_only(text))
+        code = without_tests(code_only(text), text)
         if module is not None:
             found[module]["files"].append(code)
             found[module]["lines"] += sum(1 for line in code.splitlines() if line.strip())

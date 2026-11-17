@@ -16,7 +16,8 @@ mod world;
 use alondra_daemon_engine::machine_hooks::admission::{self, Key, Waiting};
 use alondra_daemon_engine::machine_hooks::obligation_watch::{self, Watch};
 use alondra_daemon_engine::machine_hooks::provider_transition::{self, MoveStart};
-use alondra_daemon_engine::machine_hooks::{orchestrator_inbox, problems, sdk_owner};
+use alondra_daemon_engine::machine_hooks::{problems, sdk_owner};
+use alondra_engine_orchestrator::orchestrator_inbox;
 use alondra_core::domain::obligation_policy;
 use alondra_core::domain::{
     Actor, AgentId, CardKind, CardSpec, ContentKind, Command, CommandEnvelope, CommandOutcome, DecisionPrompt, DomainEffect, DeliveryTarget, DomainState, Hold,

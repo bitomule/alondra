@@ -1,5 +1,3 @@
-use crate::sdk_owner::SdkOwners as _;
-use crate::live::LiveOf as _;
 use super::testing::{Fixture, fixture};
 use super::*;
 
@@ -97,8 +95,8 @@ fn batch_with_confirmed_effect(f: &Fixture, selected: bool) -> Run {
     );
     if selected {
         f.domain()
-            .live()
-            .orchestrator_runs
+            .orchestrator()
+            .runs
             .lock()
             .unwrap()
             .insert(run.id.clone());
@@ -420,8 +418,8 @@ async fn persisted_handoff_survives_reconcile_failure_and_restart_without_a_cold
         assert!(
             !restarted
                 .domain
-                .live()
-                .orchestrator_runs
+                .orchestrator()
+                .runs
                 .lock()
                 .unwrap()
                 .contains(&run.id)
@@ -709,7 +707,7 @@ async fn explicit_decisions_finish_after_runtime_save_failure_without_a_second_u
             assert_eq!(response["status"], 409, "{decision:?}/{messages}");
             assert_eq!(fault.hits(), 1);
             assert!(
-                f.domain().live().orchestrator_stop.lock().unwrap().is_none(),
+                f.domain().orchestrator().stop.lock().unwrap().is_none(),
                 "{decision:?}/{messages}"
             );
             drop(fault);
@@ -768,7 +766,7 @@ async fn failed_explicit_decision_commit_leaves_every_claim_uncertain() {
     let fault = faults::Injection::at(&f.executor.home, "delivery_commit", 1);
     assert!(f.executor.retry(&run.id).is_err());
     drop(fault);
-    assert!(f.domain().live().orchestrator_stop.lock().unwrap().is_some());
+    assert!(f.domain().orchestrator().stop.lock().unwrap().is_some());
     let attempts = f
         .domain()
         .store

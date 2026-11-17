@@ -68,9 +68,10 @@ one.
 `bazel test //tools:module_cycles_test` fails when the main cycle of a crate's production modules
 grows past its limit in `tools/module_cycles.tsv`. `python3 tools/module_graph.py --production
 <crate>/src` prints the graph it counts: the files `lib.rs` reaches through its `mod` declarations
-(`#[path]` included), without `#[cfg(test)]` items, comments or literals. It only sees a dependency
-written as a path (`crate::live::…`, an import): a method defined in another module and called on
-the runtime used to be invisible to it.
+(`#[path]` included), without comments, literals or what only tests or the `test-hooks` feature
+compile (`#[cfg(test)]`, `#[cfg(any(test, feature = "test-hooks"))]`), down to a single field. It
+only sees a dependency written as a path (`crate::live::…`, an import): a method defined in another
+module and called on the runtime used to be invisible to it.
 
 | `daemon-engine` | Main cycle | Lines in it |
 |---|---:|---:|
@@ -78,14 +79,46 @@ the runtime used to be invisible to it.
 | Runtime without subsystems, as first measured | 34 modules | 28,654 |
 | Kernel in its own crate | 45 modules | 32,053 |
 | GitHub in its own crate | 42 modules | 30,333 |
+| The same, without what only the `test-hooks` feature compiles (`main` at 70324de) | 39 modules | 17,312 |
+| Orchestrator in its own crate | 31 modules | 14,023 |
 
 The 54 above counted modules by file name; the same graph through `#[path]` declarations holds one
 more. The 34 missed what each module reached through methods the subsystems added to the runtime:
 with the kernel in its own crate those are traits each caller imports, so the graph sees them, and
 11 modules more depend on each other than that count showed (`domain.live()`, `domain.sdk()`, and
 the engine's fixtures that open a wired runtime). Their dependencies were always there; they are
-what phases 7 to 10 cut. The kernel's only cycle is `domain_runtime` with `domain_store`, inside the
+what phases 7 to 10 cut. The kernel's only cycle was `domain_runtime` with `domain_store`, inside the
 crate.
+
+Until the orchestrator's crate the graph also counted what only the `test-hooks` feature compiles
+(`sdk_owner::tests`, `domain_orchestrator_tools::tests`, the fixtures of `domain_store`…), about half
+the lines it reported, and a `#[cfg(test)]` field hid the rest of its file. Without them the
+kernel has no cycle and the engine's main cycle measures 39 modules on `main` at 70324de.
+
+## The orchestrator
+
+`engine-orchestrator` holds the process that runs the orchestrator agent: `domain_orchestrator` with
+its recovery and watchdog, `orchestrator_inbox`, `orchestrator_process`, `orchestrator_provider`,
+`orchestrator_sdk`, `orchestrator_codex` and `stall_context`. It depends on `engine-kernel` and the
+crates below it, never on `daemon-engine`, and nothing but `alondrad` depends on it (Bazel
+visibility on both).
+
+- The two crates call each other through ports, traits of `engine-kernel/src/ports.rs`. The runtime
+  holds one implementation of each: `domain.provide::<dyn P>(…)` gives it, `domain.port::<dyn P>()`
+  asks for it (`domain_runtime/ports.rs`). `OrchestratorEngine` is what the orchestrator asks of the
+  engine (choose an account, the usage pause, the account wait, the obligation clock, a message's
+  text, a node's last words); `daemon-engine`'s `wiring::open` provides it.
+  `OrchestratorAnswers` is what the obligation clock asks of the orchestrator; `alondrad` provides it
+  through `alondra_engine_orchestrator::wire` when it puts the daemon together.
+- What both read and is only data moved below them: the SDK backend (`engine-kernel/src/sdk_backend.rs`,
+  with `domain.sdk()`), the account wait and the usage pause's value (`ports.rs`), the count of the
+  orchestrator's rests (a field of the runtime) and `auth::uuid` (`daemon-support`).
+- The orchestrator's own state (its host, its stop, its runs) is an extension of its crate
+  (`engine.rs`), no longer a field of the engine's `Live`.
+- Its tests are `//crates/engine-orchestrator:engine_orchestrator_test`, one target with the real
+  hosts and fake Claude and Codex they run. They open the engine through `daemon-engine`'s test
+  hooks, and the engine's tests of the orchestrator's inbox moved into it, so the engine's test binary
+  does not link the orchestrator. Neither production library sees the other.
 
 ## Subsystem crates
 

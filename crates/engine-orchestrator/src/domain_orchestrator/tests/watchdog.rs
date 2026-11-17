@@ -1,3 +1,4 @@
+#[cfg(test)]
 use crate::live::LiveOf as _;
 use super::*;
 use alondra_core::clock::Instant;
@@ -332,8 +333,8 @@ async fn a_watchdog_cancels_a_held_provider_and_the_next_request_runs_without_a_
     let (_notice, drained) = on_drain(&run);
     let stop = f
         .domain()
-        .live()
-        .orchestrator_host
+        .orchestrator()
+        .host
         .lock()
         .unwrap()
         .as_ref()
@@ -362,7 +363,7 @@ async fn a_watchdog_cancels_a_held_provider_and_the_next_request_runs_without_a_
             .join("runtime/orchestrator/owner.json")
             .exists()
     );
-    assert!(f.domain().live().orchestrator_host.lock().unwrap().is_none());
+    assert!(f.domain().orchestrator().host.lock().unwrap().is_none());
     assert!(load(&f.executor.home).unwrap().active_run.is_none());
     assert!(f.cards(PROBLEM_PREFIX).is_empty());
     f.tell("fresh", "Process the next request");
@@ -391,8 +392,8 @@ async fn watchdog_keeps_monitoring_until_an_admitted_physical_writer_finishes() 
     let (_notice, drained) = on_drain(&run);
     let stop = f
         .domain()
-        .live()
-        .orchestrator_host
+        .orchestrator()
+        .host
         .lock()
         .unwrap()
         .as_ref()
@@ -430,7 +431,7 @@ async fn watchdog_keeps_monitoring_until_an_admitted_physical_writer_finishes() 
         stop.process_group().is_none(),
         "the host is reaped before admitted operations drain"
     );
-    assert!(f.domain().live().orchestrator_host.lock().unwrap().is_none());
+    assert!(f.domain().orchestrator().host.lock().unwrap().is_none());
     f.tell("fresh", "Run after the old writer has finished");
     clock.check(start + STALLED_AFTER * 2).await;
     assert!(
@@ -479,7 +480,7 @@ fn account_usage_and_explicit_user_waits_do_not_trigger_the_watchdog() {
         !f.executor
             .watchdog_due(&mut watchdog, start + STALLED_AFTER * 2)
     );
-    f.domain().live().account_wait.end();
+    f.domain().engine().account_wait().end();
     f.domain().live().usage_pause.exhaust(Some(1_000), 0);
     assert!(
         !f.executor

@@ -39,7 +39,7 @@ fn run_for(config: &Config, user_home: &Path) -> Result<String> {
 
 /// The same canonical bootstrap `run` performs, on a HOME it may freely write.
 fn start(config: &Config) -> Result<String> {
-    crate::home_renames::apply(&config.home)?;
+    crate::home_renames::apply(&config.home, crate::domain_orchestrator::RECORDS)?;
     let (_, _source_fence) = crate::domain_database_migration::migrate_and_fence(&config.home)?;
     crate::retire_empty_older_sidecar(&config.home)?;
     crate::ensure_domain_protocol(&config.home)?;

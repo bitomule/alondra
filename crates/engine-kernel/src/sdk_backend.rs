@@ -5,6 +5,7 @@
 //! HOME and with the Claude profile the daemon was set up with (`claude_account::configured_profile`),
 //! so it signs in as the user does and as setup and doctor check; Seatbelt confinement stays
 //! optional.
+use crate::domain_runtime::DomainRuntime;
 use crate::locks::Poisonable as _;
 use alondra_core::accounts::AccountId;
 use anyhow::{Context, Result, bail, ensure};
@@ -16,7 +17,7 @@ use std::time::Duration;
 
 pub const FILE: &str = "sdk-backend.json";
 /// The release's host: one executable, Node and the bundle together, in `libexec/alondra/sdk`.
-pub(crate) const HOST: &str = "alondra-host";
+pub const HOST: &str = "alondra-host";
 /// Setting either selects another credential namespace than the user's default profile, even when
 /// it names the default folder: they come only from the profile the daemon was set up with.
 const DEFAULT_PROFILE: [&str; 2] = ["CLAUDE_CONFIG_DIR", "CLAUDE_HOME"];
@@ -42,6 +43,28 @@ fn is_native_variable(key: &str) -> bool {
     NATIVE_ENVIRONMENT.contains(&key) || key.starts_with("LC_")
 }
 const VERSION_TIMEOUT: Duration = Duration::from_secs(20);
+
+pub const NO_HOST: &str = "this Alondra has no Agent SDK host, so no task or orchestrator batch starts: reinstall Alondra (`brew reinstall alondra`)";
+
+/// Set at startup only in a daemon that has an SDK backend: otherwise no task ever runs through the
+/// SDK.
+#[derive(Default)]
+struct Enabled(std::sync::OnceLock<(SdkBackend, std::sync::Weak<DomainRuntime>)>);
+
+crate::extension!(Enabled);
+
+impl DomainRuntime {
+    /// Only a daemon whose configuration names an SDK backend calls this, once.
+    pub fn enable_sdk(self: &std::sync::Arc<Self>, backend: SdkBackend) {
+        let _ = self.extension::<Enabled>().0.set((backend, std::sync::Arc::downgrade(self)));
+    }
+
+    /// The SDK backend and the runtime its owners run on, when this daemon has one.
+    pub fn sdk(&self) -> Option<(&SdkBackend, std::sync::Arc<DomainRuntime>)> {
+        let (backend, runtime) = self.extension::<Enabled>().0.get()?;
+        Some((backend, runtime.upgrade()?))
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -85,7 +108,7 @@ pub fn resolve(home: &Path, sandbox: bool, user_home: &Path, daemon: &Path, envi
 
 /// The host beside `daemon`: `<keg>/libexec/alondra/sdk/alondra-host`, through Homebrew's `opt`
 /// link, so the next start after an upgrade verifies the new release's host.
-pub(crate) fn installed_host(daemon: &Path) -> PathBuf {
+pub fn installed_host(daemon: &Path) -> PathBuf {
     let cli = crate::plugins::cli_beside(daemon);
     let bin = cli.parent().unwrap_or(Path::new("/"));
     bin.parent().unwrap_or(bin).join("libexec/alondra/sdk").join(HOST)
@@ -167,7 +190,7 @@ impl SdkBackend {
     /// The backend one host starts with. The user's Claude Code is found on the PATH it runs with
     /// and taken as it is now, by its SHA256, and refused unless it is a release the SDK runs; a
     /// configuration file's native Claude is pinned and was checked when it was read.
-    pub(crate) fn for_start(&self) -> Result<SdkBackend> {
+    pub fn for_start(&self) -> Result<SdkBackend> {
         if !self.installed_native {
             return Ok(self.clone());
         }
@@ -192,7 +215,7 @@ impl SdkBackend {
     /// the daemon was set up with, none for Claude's default one; any other runs Claude with its folder inside
     /// `home`, which Alondra made when the user added it. An account `registered` does not name,
     /// or whose folder is missing or a link, is refused: no other folder is ever handed to Claude.
-    pub(crate) fn for_account(&self, home: &Path, account: &AccountId, registered: &[AccountId]) -> Result<SdkBackend> {
+    pub fn for_account(&self, home: &Path, account: &AccountId, registered: &[AccountId]) -> Result<SdkBackend> {
         if account.is_default() {
             return Ok(self.clone());
         }
@@ -576,7 +599,7 @@ mod tests {
 
 impl SdkBackend {
     /// Selects a provider before checking its native executable. A Codex-only start never probes Claude.
-    pub(crate) fn for_provider(&self, provider: alondra_core::accounts::Provider, home: &Path) -> Result<Self> {
+    pub fn for_provider(&self, provider: alondra_core::accounts::Provider, home: &Path) -> Result<Self> {
         if self.provider == provider {
             let mut selected=self.clone();
             if provider==alondra_core::accounts::Provider::Codex {remove_codex_auth_environment(&mut selected.native_environment);}
@@ -627,7 +650,7 @@ impl SdkBackend {
         })
     }
 
-    pub(crate) fn for_account_provider(&self, home: &Path, provider: alondra_core::accounts::Provider, account: &AccountId, registered: &[AccountId]) -> Result<Self> {
+    pub fn for_account_provider(&self, home: &Path, provider: alondra_core::accounts::Provider, account: &AccountId, registered: &[AccountId]) -> Result<Self> {
         if provider == alondra_core::accounts::Provider::Claude { return self.for_account(home, account, registered); }
         if account.is_default() { return Ok(self.clone()); }
         ensure!(registered.contains(account), "the Codex account is not registered in options.toml");

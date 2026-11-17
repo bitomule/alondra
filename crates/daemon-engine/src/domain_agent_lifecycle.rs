@@ -50,9 +50,9 @@ pub(crate) fn new_identity() -> Result<ManagedIdentity, StoreError> {
     Ok(ManagedIdentity {
         agent_id: AgentId(format!(
             "agent-{}",
-            crate::orchestrator_process::uuid().map_err(StoreError::Storage)?
+            crate::auth::uuid().map_err(StoreError::Storage)?
         )),
-        claude_session_id: crate::orchestrator_process::uuid().map_err(StoreError::Storage)?,
+        claude_session_id: crate::auth::uuid().map_err(StoreError::Storage)?,
     })
 }
 

@@ -6,10 +6,11 @@ load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
 
-# The kernel sits below every engine subsystem: it depends on none of them, and only the engine
-# that wires them and the subsystems split into their own crates see it.
+# The kernel sits below every engine subsystem: it depends on none of them, and only the crates of
+# the engine see it.
 WORKSPACE_DEPS = [
     "//crates/agent-application:agent_application",
+    "//crates/agent-runtime:agent_runtime",
     "//crates/core:alondra_core",
     "//crates/domain:domain",
     "//crates/foundation:foundation",
@@ -32,7 +33,7 @@ rust_library(
     crate_name = "alondra_engine_kernel",
     edition = "2024",
     version = VERSION,
-    visibility = ["//crates/daemon-engine:__pkg__", "//crates/engine-github:__pkg__"],
+    visibility = ["//crates/daemon-engine:__pkg__", "//crates/engine-github:__pkg__", "//crates/engine-orchestrator:__pkg__"],
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-engine-store:daemon_engine_store",
@@ -50,7 +51,7 @@ rust_library(
     edition = "2024",
     rustc_flags = [LOW_OPT_LEVEL],
     version = VERSION,
-    visibility = ["//crates/daemon-engine:__pkg__", "//crates/engine-github:__pkg__"],
+    visibility = ["//crates/daemon-engine:__pkg__", "//crates/engine-github:__pkg__", "//crates/engine-orchestrator:__pkg__"],
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
         "//crates/daemon-engine-store:daemon_engine_store_test_hooks",

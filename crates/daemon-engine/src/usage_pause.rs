@@ -23,7 +23,6 @@ use crate::live::LiveOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use alondra_core::{Millis, now_millis};
-use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -36,17 +35,7 @@ const BACKOFF_CAP_MS: Millis = 30 * 60_000;
 const JITTER_MAX_MS: u64 = 45_000;
 pub(crate) const RESUME_MESSAGE: &str = "Your Claude usage limit has reset. Carry on with what you were doing.";
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Exhausted {
-    pub until: Millis,
-    pub since: Millis,
-    /// The user paused until tomorrow; Claude did not run out.
-    #[serde(default)]
-    pub by_user: bool,
-    /// No provider account is available: `until` is no time at all, only an account becoming available ends the wait.
-    #[serde(default)]
-    pub no_session: bool,
-}
+pub use crate::ports::Exhausted;
 
 #[derive(Default)]
 struct Record {
@@ -63,7 +52,7 @@ struct Record {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Change {
+pub enum Change {
     Started,
     Extended,
     Unchanged,
@@ -112,7 +101,7 @@ impl UsagePause {
     /// Claude said usage is out; `until` is the reset it reported, when known. A later reset
     /// extends the standing exhaustion. One that returns right after a resume waits longer
     /// each time.
-    pub(crate) fn exhaust(&self, until: Option<Millis>, now: Millis) -> Change {
+    pub fn exhaust(&self, until: Option<Millis>, now: Millis) -> Change {
         self.exhaust_as(until, now, false)
     }
 
@@ -156,7 +145,7 @@ impl UsagePause {
         change
     }
 
-    pub(crate) fn waits_for_session(&self) -> bool {
+    pub fn waits_for_session(&self) -> bool {
         self.current().is_some_and(|standing| standing.no_session)
     }
 
@@ -217,7 +206,7 @@ impl UsagePause {
 
     /// The user chose to pause until `until`. A standing pause or exhaustion is kept, lasting at
     /// least until then.
-    pub(crate) fn pause_by_user(&self, until: Millis, now: Millis) -> Change {
+    pub fn pause_by_user(&self, until: Millis, now: Millis) -> Change {
         let mut record = self.record.lock_or_recover("the usage pause");
         let change = match record.exhausted.as_mut() {
             Some(standing) => {
@@ -263,7 +252,7 @@ impl UsagePause {
     }
 
     /// Clears the exhaustion; true when the user was told about it, so they hear it is over.
-    pub(crate) fn resume(&self, now: Millis) -> Option<bool> {
+    pub fn resume(&self, now: Millis) -> Option<bool> {
         self.resume_matching(now, false)
     }
 

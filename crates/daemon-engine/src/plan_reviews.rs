@@ -1,25 +1,23 @@
 //! What the orchestrator reads when a decision of the user holds the tasks that wait for the one
 //! decided on, and why a launch of one of them is refused until it reviews their plans.
-pub(crate) use crate::domain_store::wording::orchestrator_text;
 use alondra_core::domain::{DomainState, TaskId};
 
 /// Why a held task does not start now, or nothing if no decision holds it.
-pub(crate) fn held(state: &DomainState, task: &TaskId) -> Option<String> {
+pub fn held(state: &DomainState, task: &TaskId) -> Option<String> {
     let (_, review) = state.plan_reviews_holding(task).next()?;
     let source = state.tasks.get(&review.task_id).map_or("", |t| t.title.as_str());
     Some(format!(
         "{task} waits for the orchestrator to review its plan after the user's decision on «{source}»: it starts once settle_plan_review settles it"))
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "test-hooks"))]
+pub mod tests {
     use super::*;
     use alondra_daemon_engine_model::LaunchPlan;
     use crate::domain_runtime::DomainRuntime;
     use alondra_core::domain::{
         Actor, CardKind, CardSpec, Command, CommandEnvelope, PROTOCOL_VERSION, PlanReviewOutcome, QuestionOption, Recipient, Scope, SuggestionDecision,
     };
-    use alondra_core::orchestrator_cards::PLAN_REVIEW_NOTICE_PREFIX;
     use std::collections::{BTreeMap, BTreeSet};
 
     fn run(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) -> Result<(), alondra_core::domain::DomainError> {
@@ -44,7 +42,7 @@ mod tests {
         Actor::Orchestrator { generation: 0 }
     }
 
-    fn plan(name: &str, mission: &str) -> LaunchPlan {
+    pub fn plan(name: &str, mission: &str) -> LaunchPlan {
         LaunchPlan { mission: Some(mission.into()), ..LaunchPlan::new(name, "/tmp") }
     }
 
@@ -57,7 +55,7 @@ mod tests {
     }
 
     /// 15 October: phase B of Redraft's index, with C, D and E waiting on plans written for the 360 px copy.
-    fn redraft() -> (crate::test_support::Directory, DomainRuntime) {
+    pub fn redraft() -> (crate::test_support::Directory, DomainRuntime) {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
         let domain = crate::wiring::open(&home).unwrap();
@@ -89,7 +87,7 @@ mod tests {
         store.pending_messages().unwrap().into_iter().filter(|m| m.recipient_kind == "orchestrator").map(|m| m.message).collect()
     }
 
-    fn settle(domain: &DomainRuntime, id: &str, task: &str, outcome: PlanReviewOutcome) -> Result<(), alondra_core::domain::DomainError> {
+    pub fn settle(domain: &DomainRuntime, id: &str, task: &str, outcome: PlanReviewOutcome) -> Result<(), alondra_core::domain::DomainError> {
         run(domain, orchestrator(), id, Command::SettlePlanReview { review_id: "decision-1".into(), task_id: task.into(), outcome })
     }
 
@@ -155,40 +153,4 @@ mod tests {
         } });
         assert_eq!(domain.launch_plan(&"readme".into()).unwrap().unwrap().mission.as_deref(), Some("Replace the old flag in the README"));
     }
-
-    fn reminders(domain: &DomainRuntime) -> usize {
-        domain.state().unwrap().interactions.keys().filter(|id| id.0.starts_with(PLAN_REVIEW_NOTICE_PREFIX)).count()
-    }
-
-    const MINUTE: i64 = 60_000;
-
-    #[test]
-    fn an_unreviewed_plan_is_released_unchanged_and_its_node_is_told() {
-        let (_home, domain) = redraft();
-        let queued = alondra_daemon_engine_model::LaunchBody::from_plan("d".into(), &plan("d", "Phase D: 360 px everywhere")).to_queue();
-        domain.store.lock().unwrap().enqueue_launch(&"d".into(), &queued, "auto", 1).unwrap();
-        settle(&domain, "c-same", "c", PlanReviewOutcome::Unchanged { reason: "Phase C does not depend on the print size".into() }).unwrap();
-        crate::orchestrator_inbox::settle(&domain);
-        assert_eq!(reminders(&domain), 0, "a handled batch reminds of nothing");
-        for minutes in [0, 10] {
-            crate::orchestrator_inbox::settle_overdue(&domain, minutes * MINUTE);
-        }
-        assert_eq!(reminders(&domain), 1, "reminded at its deadline");
-        let reminder = domain.state().unwrap().interactions.values().find(|i| i.id.0.starts_with(PLAN_REVIEW_NOTICE_PREFIX)).unwrap().body.clone();
-        assert!(reminder.contains("Phase D: 360 px everywhere") && !reminder.contains("Phase C: group"), "only what is still held: {reminder}");
-        assert!(held(&domain.state().unwrap(), &"d".into()).is_some(), "one more go for the orchestrator first");
-        crate::orchestrator_inbox::settle_overdue(&domain, 21 * MINUTE);
-        let state = domain.state().unwrap();
-        assert!(held(&state, &"d".into()).is_none() && held(&state, &"e".into()).is_none(), "released");
-        assert!(matches!(state.plan_reviews[&"decision-1".into()].dependents[&TaskId::from("d")].as_ref().unwrap().outcome, PlanReviewOutcome::Unchanged { .. }));
-        let note = "The user decided “Decide the index's next step: Alternative plan: 512 px prints” on “Redraft index · Phase B” after your plan was written: check that your plan still holds before you start.";
-        assert_eq!(domain.launch_plan(&"d".into()).unwrap().unwrap().mission.as_deref(), Some(format!("{note}\n\nPhase D: 360 px everywhere").as_str()));
-        assert!(domain.launch_plan(&"e".into()).unwrap().unwrap().mission.unwrap().starts_with(note));
-        assert_eq!(domain.launch_plan(&"c".into()).unwrap().unwrap().mission.as_deref(), Some("Phase C: group with prints of the 360 px copy"), "what the orchestrator reviewed is left as it is");
-        let queue = domain.store.lock().unwrap().launch_queue().unwrap();
-        let body = alondra_daemon_engine_model::LaunchBody::from_queue(&queue.iter().find(|row| row.task_id == "d".into()).unwrap().body).unwrap();
-        assert!(body.to_queue()["body"]["prompt"].as_str().unwrap().starts_with(note), "its first input carries the note");
-        assert!(state.interactions.values().all(|i| i.id.0 == "decision-1" || i.recipient != Recipient::User), "no card for the user");
-    }
 }
-

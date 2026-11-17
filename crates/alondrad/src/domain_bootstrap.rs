@@ -55,6 +55,7 @@ impl DomainDaemon {
 
     pub(crate) fn over_shared(home: &Path, domain: Arc<DomainRuntime>) -> Result<Arc<Self>> {
         require_database(home)?;
+        alondra_engine_orchestrator::wire(&domain);
         let gauges = crate::machine::Gauges::default();
         Ok(Arc::new(Self {
             home: home.to_owned(),
