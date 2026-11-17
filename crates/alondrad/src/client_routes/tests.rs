@@ -1524,6 +1524,12 @@ async fn a_screen_builds_reads_and_sends_a_crash_report_through_the_macs_own_cli
     let (_, built) = post("/reports", json!({"app_section": "the app section"})).await;
     assert_eq!((built["args"].as_str(), built["stdin"].as_str()),
         (Some("--json --no-input report --app-section -"), Some("the app section")), "the app's section goes to the CLI on stdin");
+    let (_, built) = post("/reports", json!({"without": ["machine.json", "apps.jsonl"]})).await;
+    assert_eq!(built["args"], "--json --no-input report --without machine.json --without apps.jsonl", "the rest of a refused report is built again without what failed");
+    for without in [json!("machine.json"), json!(["../x"]), json!([""]), json!([1])] {
+        let (status, refused) = post("/reports", json!({"without": without})).await;
+        assert_eq!((status, refused["kind"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid")), "{without}: {refused}");
+    }
     let (status, refused) = post("/reports", json!({"failure": "crash"})).await;
     assert_eq!((status, refused["kind"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid")), "{refused}");
 

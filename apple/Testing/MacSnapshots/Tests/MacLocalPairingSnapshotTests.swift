@@ -143,6 +143,24 @@ final class MacLocalPairingSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 560, height: 1000), spanish: true, variants: light) { crashReport(crashReportPreview) }
     }
 
+    private func crashReportRefused(_ what: String) -> CrashReportFeature.State {
+        guard case .ready(var report) = crashReportPreview.stage else { return crashReportPreview }
+        report.passed = false
+        report.hits = [.init(section: "machine.json", line: 14, what: what)]
+        report.sendRestWithout = ["machine.json"]
+        return CrashReportFeature.State(whatHappened: "The node stopped after the Mac slept", stage: .ready(report))
+    }
+
+    func test_crashReport_refused() {
+        assertWindow(size: CGSize(width: 560, height: 1100)) { crashReport(crashReportRefused("an email, in the field launchd_job.ana@example.com")) }
+    }
+
+    func test_crashReport_refused_spanish() {
+        assertWindow(size: CGSize(width: 560, height: 1100), spanish: true, variants: light) {
+            crashReport(crashReportRefused("un email, en el campo launchd_job.ana@example.com"))
+        }
+    }
+
     func test_crashReport_whatHappened() {
         assertWindow(size: CGSize(width: 560, height: 360)) { crashReport(.init()) }
     }

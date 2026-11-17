@@ -28,6 +28,8 @@ pub struct Built {
     pub repo: Option<String>,
     pub passed: bool,
     pub hits: Vec<String>,
+    /// The sections to leave out so the rest of a refused report can leave the Mac.
+    pub send_rest_without: Vec<String>,
     /// Every file of the package, in order: its name and size, or why it has nothing.
     pub files: Vec<(String, Result<u64, String>)>,
     pub left_out: Vec<String>,
@@ -67,6 +69,8 @@ impl Built {
             repo: answer["repo"].as_str().filter(|repo| alondra_core::config::is_github_repo(repo)).map(str::to_owned),
             passed: answer["check"]["passed"] == true,
             hits,
+            send_rest_without: answer["check"]["send_rest_without"].as_array().into_iter().flatten()
+                .filter_map(Value::as_str).filter(|name| crate::report::bundle::SECTIONS.contains(name)).map(str::to_owned).collect(),
             files,
             left_out,
         })
@@ -80,6 +84,11 @@ impl Built {
     /// Whether the one question can be asked: the final check passed and there is somewhere to send it.
     pub fn sendable(&self) -> bool {
         self.passed && self.repo.is_some()
+    }
+
+    /// Whether the rest of a refused report can be built again without the files that failed.
+    pub fn rest_sendable(&self) -> bool {
+        !self.passed && !self.send_rest_without.is_empty()
     }
 }
 
@@ -101,6 +110,8 @@ pub struct Viewing {
 pub struct CrashReport {
     pub failure: String,
     pub description: Option<String>,
+    /// The sections this report was built without, at the user's request.
+    pub without: Vec<String>,
     pub stage: Stage,
     pub sel: usize,
     pub scroll: usize,
@@ -138,6 +149,16 @@ pub fn sent_message(id: &str, result: Result<Value, String>) -> String {
 
 pub fn later(id: &str) -> String {
     trf!("To send it later: alondra report send {id}", "Para enviarlo luego: alondra report send {id}")
+}
+
+pub fn send_rest_question(without: &[String]) -> String {
+    let files = without.join(", ");
+    trf!("Leave {files} out and send the rest? You see the new report before anything is sent.", "¿Dejo fuera {files} y envío el resto? Verás el informe nuevo antes de que se envíe nada.")
+}
+
+pub fn send_rest_label(without: &[String]) -> String {
+    let files = without.join(", ");
+    trf!("Send the rest without {files}", "Enviar el resto sin {files}")
 }
 
 pub fn question(repo: &str) -> String {
@@ -207,9 +228,16 @@ pub fn lines(report: &CrashReport, width: usize) -> (Vec<Line<'static>>, Option<
             "Esto es exactamente lo que se envía. Cualquiera con el enlace del issue podrá leerlo, también lo que escribiste en «¿Qué pasó?», que va tal cual."
         ).into(), Style::new());
     } else {
-        wrap(&mut lines, tr!("The report cannot leave this Mac; the final check found:", "El informe no puede salir de este Mac; la comprobación final encontró:").into(), Style::new().fg(Color::Red));
+        wrap(&mut lines, tr!(
+            "The report cannot leave this Mac: the final check found values it cannot mask, because they sit in a field's name or in a file that is one JSON document, and masking them would break that file:",
+            "El informe no puede salir de este Mac: la comprobación final encontró valores que no puede enmascarar, porque están en el nombre de un campo o en un fichero que es un único documento JSON, y enmascararlos rompería ese fichero:"
+        ).into(), Style::new().fg(Color::Red));
         for hit in &built.hits {
             wrap(&mut lines, format!("  {hit}"), Style::new().fg(Color::Red));
+        }
+        if built.rest_sendable() {
+            lines.push(Line::default());
+            wrap(&mut lines, send_rest_question(&built.send_rest_without), Style::new().fg(ACCENT).add_modifier(Modifier::BOLD));
         }
     }
     lines.push(Line::default());
@@ -274,8 +302,22 @@ impl App {
     /// The user wrote what happened, or nothing: the daemon builds the report.
     pub(super) fn build_crash_report(&mut self, failure: String, description: String) {
         let description = Some(description).filter(|text| !text.trim().is_empty());
-        let body = json!({"failure": failure, "description": description, "lang": lang()});
-        self.crash_report = Some(CrashReport { failure, description, stage: Stage::Building, sel: 0, scroll: 0, viewing: None });
+        self.request_crash_report(CrashReport { failure, description, without: Vec::new(), stage: Stage::Building, sel: 0, scroll: 0, viewing: None });
+    }
+
+    /// “Send the rest”: the report is built again without the files the final check refused.
+    pub(super) fn build_rest_of_crash_report(&mut self) {
+        let Some(report) = self.crash_report.as_ref() else { return };
+        let Some(rest) = report.built().filter(|built| built.rest_sendable()).map(|built| built.send_rest_without.clone()) else { return };
+        let mut without = report.without.clone();
+        without.extend(rest.into_iter().filter(|name| !report.without.contains(name)));
+        let rest = CrashReport { failure: report.failure.clone(), description: report.description.clone(), without, stage: Stage::Building, sel: 0, scroll: 0, viewing: None };
+        self.request_crash_report(rest);
+    }
+
+    fn request_crash_report(&mut self, report: CrashReport) {
+        let body = json!({"failure": report.failure, "description": report.description, "without": report.without, "lang": lang()});
+        self.crash_report = Some(report);
         self.spawn(move |tx, target| {
             let result = Client::for_target(target, BUILD).post("/reports", &body).map_err(|e| format!("{e:#}"));
             let _ = tx.send(Msg::Report(Answer::Built(result)));

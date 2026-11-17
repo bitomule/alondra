@@ -17,8 +17,8 @@ public extension Connection {
                                       operationID: "report-" + UUID().uuidString.lowercased())
         }
         return CrashReportClient(
-            build: { description, failure, section in
-                var body: [String: Any] = ["failure": failure, "lang": lang, "app_section": section]
+            build: { description, failure, section, without in
+                var body: [String: Any] = ["failure": failure, "lang": lang, "app_section": section, "without": without]
                 if let description { body["description"] = description }
                 guard let report = CrashReport(daemonReply: try await post(["reports"], body)) else { throw CrashReportUnreadable() }
                 return report
