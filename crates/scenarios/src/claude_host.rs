@@ -672,8 +672,7 @@ impl HostLauncher for ClaudeEdge {
         self.tick();
         let edge = self.clone();
         std::thread::spawn(move || {
-            let _clock = edge.0.clock.enter();
-            let _runtime = edge.0.runtime.as_ref().map(tokio::runtime::Handle::enter);
+            let _entered = alondra_core::clock::enter(edge.0.clock, edge.0.runtime.as_ref());
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { return };
                 if lock(&host.state).ended {

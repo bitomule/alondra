@@ -7,8 +7,8 @@
 //!
 //! A clock is current for a thread. A virtual runtime installs its clock in every thread it owns,
 //! blocking ones included. A thread of its own starts with [`spawn_thread`], which hands it the
-//! clock and the runtime of the thread that starts it, or enters both with [`VirtualRuntime::enter`]:
-//! a virtual clock without its runtime would read the real time.
+//! clock and the runtime of the thread that starts it, or enters both with [`enter`]: a virtual
+//! clock without its runtime would read the real time.
 //!
 //! The runtime sees its tasks and its blocking pool, never a thread of its own: while such a thread
 //! works, an idle runtime still jumps to its next timer. Work that virtual time must wait for runs
@@ -155,8 +155,7 @@ where
         None => std::thread::Builder::new(),
     };
     builder.spawn(move || {
-        let _clock = clock.enter();
-        let _runtime = runtime.as_ref().map(tokio::runtime::Handle::enter);
+        let _entered = enter(clock, runtime.as_ref());
         work()
     })
 }
@@ -184,8 +183,7 @@ impl<'scope> Scope<'scope, '_> {
     {
         let (clock, runtime) = (self.clock, self.runtime.clone());
         self.inner.spawn(move || {
-            let _clock = clock.enter();
-            let _runtime = runtime.as_ref().map(tokio::runtime::Handle::enter);
+            let _entered = enter(clock, runtime.as_ref());
             work()
         })
     }
@@ -351,7 +349,7 @@ impl VirtualRuntime {
 
     /// Makes this runtime and its clock the current ones of the calling thread until the guard drops.
     pub fn enter(&self) -> EnteredRuntime<'_> {
-        EnteredRuntime { _clock: self.clock.enter(), _runtime: self.runtime.enter() }
+        enter(self.clock, Some(self.runtime.handle()))
     }
 
     pub fn block_on<F: Future>(&self, future: F) -> F::Output {
@@ -361,8 +359,14 @@ impl VirtualRuntime {
 }
 
 pub struct EnteredRuntime<'a> {
+    _runtime: Option<tokio::runtime::EnterGuard<'a>>,
     _clock: Entered,
-    _runtime: tokio::runtime::EnterGuard<'a>,
+}
+
+/// Makes `clock` and the runtime it runs on the current ones of the calling thread until the guard
+/// drops: a virtual clock reads its runtime's paused time.
+pub fn enter(clock: Clock, runtime: Option<&tokio::runtime::Handle>) -> EnteredRuntime<'_> {
+    EnteredRuntime { _clock: clock.enter(), _runtime: runtime.map(tokio::runtime::Handle::enter) }
 }
 
 /// Moves the paused time forward by `duration`, running every timer that falls inside it.
