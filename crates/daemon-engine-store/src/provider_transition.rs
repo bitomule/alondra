@@ -56,13 +56,16 @@ pub struct Plan {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all="snake_case")]
-pub enum Phase { Requested, Draining, SourceFenced, ContextReady, TargetAdmitted, TargetReady, Consumed, Done, Aborted, Uncertain }
+/// `StartRefused` follows a move that ended before its target started, `Done` with `deferred_start`,
+/// once that start is refused for a reason that trying again does not change: no pass tries it
+/// again until the user asks to, which puts it back at `Done`.
+pub enum Phase { Requested, Draining, SourceFenced, ContextReady, TargetAdmitted, TargetReady, Consumed, Done, Aborted, Uncertain, StartRefused }
 impl Phase {
     pub fn key(self) -> &'static str { match self {
-        Self::Requested=>"requested",Self::Draining=>"draining",Self::SourceFenced=>"source_fenced",Self::ContextReady=>"context_ready",Self::TargetAdmitted=>"target_admitted",Self::TargetReady=>"target_ready",Self::Consumed=>"consumed",Self::Done=>"done",Self::Aborted=>"aborted",Self::Uncertain=>"uncertain",
+        Self::Requested=>"requested",Self::Draining=>"draining",Self::SourceFenced=>"source_fenced",Self::ContextReady=>"context_ready",Self::TargetAdmitted=>"target_admitted",Self::TargetReady=>"target_ready",Self::Consumed=>"consumed",Self::Done=>"done",Self::Aborted=>"aborted",Self::Uncertain=>"uncertain",Self::StartRefused=>"start_refused",
     }}
     fn parse(value:&str)->Result<Self>{Ok(match value {
-        "requested"=>Self::Requested,"draining"=>Self::Draining,"source_fenced"=>Self::SourceFenced,"context_ready"=>Self::ContextReady,"target_admitted"=>Self::TargetAdmitted,"target_ready"=>Self::TargetReady,"consumed"=>Self::Consumed,"done"=>Self::Done,"aborted"=>Self::Aborted,"uncertain"=>Self::Uncertain,_=>anyhow::bail!("unknown provider transition phase"),
+        "requested"=>Self::Requested,"draining"=>Self::Draining,"source_fenced"=>Self::SourceFenced,"context_ready"=>Self::ContextReady,"target_admitted"=>Self::TargetAdmitted,"target_ready"=>Self::TargetReady,"consumed"=>Self::Consumed,"done"=>Self::Done,"aborted"=>Self::Aborted,"uncertain"=>Self::Uncertain,"start_refused"=>Self::StartRefused,_=>anyhow::bail!("unknown provider transition phase"),
     })}
 }
 #[derive(Clone, Debug)]
@@ -81,7 +84,7 @@ fn open(c:&Connection,task:&TaskId)->Result<Option<Transition>> {
 /// The prepared context a move keeps: its facts at `ContextReady`, or under `context` once it
 /// ended waiting for its target to start.
 pub fn prepared_facts(change:Transition)->serde_json::Value {
-    if change.phase==Phase::Done{change.facts["context"].clone()}else{change.facts}
+    if matches!(change.phase,Phase::Done|Phase::StartRefused){change.facts["context"].clone()}else{change.facts}
 }
 fn insert(c:&Connection,plan:&Plan)->Result<()> {
     anyhow::ensure!(!plan.id.is_empty() && plan.reason.len()<=2000,"invalid provider transition");
@@ -102,8 +105,9 @@ fn append(c:&Connection,id:&str,expected:Phase,next:Phase,facts:&serde_json::Val
         (Phase::TargetReady,Phase::Consumed|Phase::Done)=>true,
         (Phase::Consumed,Phase::Done)=>true,
         (Phase::ContextReady,Phase::Done)=>true,
-        (_,Phase::Aborted) if !matches!(expected,Phase::Done|Phase::Aborted)=>true,
-        (_,Phase::Uncertain) if !matches!(expected,Phase::Done|Phase::Aborted)=>true,
+        (Phase::Done,Phase::StartRefused)=>current.facts["deferred_start"].as_bool()==Some(true),
+        (Phase::StartRefused,Phase::Done)=>true,
+        (_,Phase::Aborted|Phase::Uncertain) if !matches!(expected,Phase::Done|Phase::Aborted|Phase::StartRefused)=>true,
         _=>false,
     };
     anyhow::ensure!(allowed,"provider transition step is out of order");
@@ -120,6 +124,12 @@ fn deferred(c:&Connection,task:&TaskId)->Result<Option<Transition>> {
     let Some(id)=id else{return Ok(None)};
     Ok(load(c,&id)?.filter(|change|change.plan.kind==Kind::Move && change.phase==Phase::Done && change.facts["deferred_start"].as_bool()==Some(true)))
 }
+/// The task's latest move when the start of its target was refused, until the user asks to try again.
+fn refused(c:&Connection,task:&TaskId)->Result<Option<Transition>> {
+    let id:Option<String>=c.query_row("SELECT transition_id FROM provider_transition_steps WHERE task_id=?1 AND phase='requested' ORDER BY sequence DESC LIMIT 1",[&task.0],|r|r.get(0)).optional()?;
+    let Some(id)=id else{return Ok(None)};
+    Ok(load(c,&id)?.filter(|change|change.plan.kind==Kind::Move && change.phase==Phase::StartRefused))
+}
 /// What the next node of a move starts from: the context it prepared, at its target's admission.
 fn handoff(c:&Connection,task:&TaskId)->Result<Option<Transition>> {
     Ok(match open(c,task)? { Some(change)=>Some(change), None=>deferred(c,task)? })
@@ -133,6 +143,12 @@ impl DomainStore {
         let mut statement=self.conn.prepare("SELECT DISTINCT task_id FROM provider_transition_steps WHERE phase='done' AND json_extract(facts,'$.deferred_start')=1 ORDER BY task_id")?;
         let ids=statement.query_map([],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         ids.into_iter().map(|id|deferred(&self.conn,&TaskId(id))).collect::<Result<Vec<_>>>().map(|rows|rows.into_iter().flatten().collect())
+    }
+    pub fn refused_move(&self,task:&TaskId)->Result<Option<Transition>> {refused(&self.conn,task)}
+    pub fn refused_moves(&self)->Result<Vec<Transition>> {
+        let mut statement=self.conn.prepare("SELECT DISTINCT task_id FROM provider_transition_steps WHERE phase='start_refused' ORDER BY task_id")?;
+        let ids=statement.query_map([],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        ids.into_iter().map(|id|refused(&self.conn,&TaskId(id))).collect::<Result<Vec<_>>>().map(|rows|rows.into_iter().flatten().collect())
     }
     pub fn provider_transitions(&self)->Result<Vec<Transition>> {
         let mut statement=self.conn.prepare("SELECT DISTINCT task_id FROM provider_transition_steps WHERE phase='requested' ORDER BY task_id")?;
@@ -169,8 +185,9 @@ impl OwnerTransaction<'_> {
         let change=self.sql(|c|handoff(c,task))?.context("transfer context missing")?;
         let prepared:alondra_store::PreparedHandoff=serde_json::from_value(prepared_facts(change.clone())).map_err(|error|StoreError::Storage(error.into()))?;
         let window=self.state().model_catalogs.iter().find(|catalog|catalog.account==change.plan.target_account).and_then(|catalog|catalog.models.iter().find(|model|model.model==change.plan.target_model.model.model)).and_then(|model|model.context_window);
-        let available=window.and_then(|window|window.checked_sub(4096)).unwrap_or(alondra_store::HANDOFF_TOKEN_CAP);
-        if prepared.estimated_context_tokens.saturating_add(alondra_store::estimated_tokens(&text))>available{return Err(DomainError::new("handoff_budget","The exact queued user input and retained context exceed the target's transfer budget").into())}
+        let available=alondra_store::handoff_capacity(alondra_store::HandoffBudget{destination_context_tokens:window,reserved_tokens:alondra_store::HANDOFF_RESERVED_TOKENS}).unwrap_or(0);
+        let needed=prepared.estimated_context_tokens.saturating_add(alondra_store::estimated_tokens(&text));
+        if needed>available{return Err(DomainError::new("handoff_budget",format!("The task's context and the message that continues it do not fit the destination model: they need about {needed} tokens and {available} are available")).into())}
         Ok(text)
     }
     pub fn source_inputs_unoffered(&mut self,task:&TaskId)->std::result::Result<bool,StoreError>{

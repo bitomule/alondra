@@ -1530,15 +1530,19 @@ fn stop_codex_host(pid: libc::pid_t) {
 
 /// Claude signed in on its own account, with a model the moved task can run.
 pub fn claude_ready(slice:&Slice){
-    use alondra_core::model_selection::{AccountModelCatalog,CatalogModel};
     let state=slice.domain.state().unwrap();
     let mut accounts=state.accounts.clone();
     accounts.retain(|account|!(account.provider==Provider::Claude && account.id.is_default()));
     accounts.push(alondra_core::accounts::AccountStatus{provider:Provider::Claude,id:AccountId::default_account(),name:"Claude fixture".into(),state:alondra_core::accounts::AccountState::SignedIn,native_identity:None,email:None,plan:None,billing:Default::default(),sign_ins:0,profile:None});
     slice.run(&system(),"claude-fixture-account",Command::RecordAccounts{accounts,reserve:state.account_reserve});
-    slice.run(&system(),"claude-fixture-catalog",Command::RecordModelCatalog{catalog:AccountModelCatalog{
-        account:AccountKey::native(Provider::Claude),revision:"claude-catalog".into(),measured_at:1,native_default:Some("claude-fixture".into()),
-        models:vec![CatalogModel{model:"claude-fixture".into(),display_name:"Claude fixture".into(),reasoning_efforts:vec!["high".into()],default_reasoning_effort:Some("high".into()),context_window:Some(200_000),input_modalities:vec!["text".into()],is_default:true,hidden:false}],
+    claude_window(slice,Some(200_000),1);
+}
+/// The context window Claude's catalog gives its model, as measured at `measured_at`.
+pub fn claude_window(slice:&Slice,window:Option<u64>,measured_at:alondra_core::Millis){
+    use alondra_core::model_selection::{AccountModelCatalog,CatalogModel};
+    slice.run(&system(),&format!("claude-fixture-catalog-{measured_at}"),Command::RecordModelCatalog{catalog:AccountModelCatalog{
+        account:AccountKey::native(Provider::Claude),revision:format!("claude-catalog-{measured_at}"),measured_at,native_default:Some("claude-fixture".into()),
+        models:vec![CatalogModel{model:"claude-fixture".into(),display_name:"Claude fixture".into(),reasoning_efforts:vec!["high".into()],default_reasoning_effort:Some("high".into()),context_window:window,input_modalities:vec!["text".into()],is_default:true,hidden:false}],
     }});
 }
 pub fn git(worktree:&Path,arguments:&[&str])->String{
@@ -2293,6 +2297,82 @@ async fn a_paused_task_moves_at_once_and_starts_on_the_new_account_when_resumed(
     let state=slice.domain.state().unwrap();
     assert_eq!(state.tasks[&task].account_key(),AccountKey::native(Provider::Claude));
     assert!(!crate::provider_transition::moving(&slice.domain,&task));
+    slice.domain.stop_sdk_owners();
+}
+
+/// Claude's catalog gives no window for its models: the move prepares a context sized against
+/// 64,000 tokens, and the node on the new account starts from it with the message that resumes
+/// the task, never refused against the 16,000 tokens the earlier conversation alone may add.
+#[tokio::test]
+async fn a_moved_task_starts_with_a_long_message_when_the_destination_window_is_unknown(){
+    let slice=Slice::new();let task:TaskId=TASK.into();
+    let source=working_on_codex(&slice);
+    claude_window(&slice,None,2);
+    slice.domain.admission().ignore_mac();
+    slice.domain.gate().pause_by_user(&source.0,alondra_core::now_millis()).unwrap();
+    slice.domain.subscribe().wait_for(|_|paused_by_the_user(&slice)).await.unwrap();
+    let brief="Read the whole volume layout before changing it. ".repeat(1_200);
+    crate::domain_messages::tell_sdk_node(&slice.domain,&task,crate::node_push::ALONDRA,&brief,"tell-long-brief",false).unwrap();
+    request_move(&slice);
+    assert_eq!(settled_move(&slice).await,"done");
+    let pause=Slice::lifecycle(&slice.domain).cards().into_iter().find(|(_,reason)|*reason==alondra_domain::WaitReason::Pause).unwrap().0.clone();
+    slice.run(&user(),"resume-moved",Command::AnswerQuestion{attachments:vec![],interaction_id:pause,option_id:alondra_domain_rules::NODE_PAUSE_RESUME.into(),inputs:Default::default()});
+    let mut changed=slice.domain.subscribe();
+    while admissions(&slice)<2{
+        crate::provider_transition::pass(&slice.domain).await;
+        if admissions(&slice)<2{tokio::time::timeout(std::time::Duration::from_secs(60),changed.changed()).await.expect("the moved task never started").unwrap();}
+    }
+    assert_eq!(slice.domain.state().unwrap().tasks[&task].account_key(),AccountKey::native(Provider::Claude));
+    slice.domain.stop_sdk_owners();
+}
+
+/// A moved task whose start on the new account is refused for good, here because its context
+/// leaves no room in the destination's window for the message that resumes it, is tried once: the
+/// move waits at `start_refused` and one card asks the user. Trying again from the card tries
+/// once more; cancelling closes the task.
+#[tokio::test]
+async fn a_moved_task_refused_on_its_new_account_waits_for_the_user_instead_of_starting_again_and_again(){
+    let slice=Slice::new();let task:TaskId=TASK.into();
+    let source=working_on_codex(&slice);
+    slice.domain.admission().ignore_mac();
+    slice.domain.gate().pause_by_user(&source.0,alondra_core::now_millis()).unwrap();
+    slice.domain.subscribe().wait_for(|_|paused_by_the_user(&slice)).await.unwrap();
+    request_move(&slice);
+    assert_eq!(settled_move(&slice).await,"done");
+    let context:i64=slice.observer().query_row("SELECT json_extract(facts,'$.context.estimated_context_tokens') FROM provider_transition_steps WHERE task_id=?1 AND phase='done'",[TASK],|row|row.get(0)).unwrap();
+    let context=u64::try_from(context).unwrap();
+    claude_window(&slice,Some(context+alondra_store::HANDOFF_RESERVED_TOKENS),2);
+    let pause=Slice::lifecycle(&slice.domain).cards().into_iter().find(|(_,reason)|*reason==alondra_domain::WaitReason::Pause).unwrap().0.clone();
+    slice.run(&user(),"resume-moved",Command::AnswerQuestion{attachments:vec![],interaction_id:pause,option_id:alondra_domain_rules::NODE_PAUSE_RESUME.into(),inputs:Default::default()});
+    let refusals=||move_steps(&slice).iter().filter(|step|*step=="start_refused").count();
+    let refused=|count:usize|{let slice=&slice;async move{
+        let mut changed=slice.domain.subscribe();
+        while move_steps(slice).iter().filter(|step|*step=="start_refused").count()<count{
+            crate::provider_transition::pass(&slice.domain).await;
+            if move_steps(slice).iter().filter(|step|*step=="start_refused").count()<count{tokio::time::timeout(std::time::Duration::from_secs(60),changed.changed()).await.expect("the moved start was never refused").unwrap();}
+        }
+    }};
+    refused(1).await;
+    for _ in 0..5{crate::provider_transition::pass(&slice.domain).await;}
+    assert_eq!(refusals(),1,"no pass tries the refused start again by itself: {:?}",move_steps(&slice));
+    assert_eq!(admissions(&slice),1,"nothing started on the new account");
+    let state=slice.domain.state().unwrap();
+    let refusal=state.tasks[&task].move_refused.clone().expect("the task says why it did not move");
+    assert_eq!(refusal.account,AccountKey::native(Provider::Claude));
+    let card=state.open_start_problem(&task).expect("a card asks the user").id.clone();
+    assert!(matches!(alondra_domain_rules::start_problem::from_body(&state.interactions[&card].body),Some(StartProblem::MoveStartRefused{account,..}) if account==AccountKey::native(Provider::Claude)));
+    assert!(crate::provider_transition::moving(&slice.domain,&task),"no other node starts it meanwhile");
+    slice.run(&user(),"retry-moved",Command::AnswerQuestion{attachments:vec![],interaction_id:card.clone(),option_id:alondra_domain_rules::START_RETRY.into(),inputs:Default::default()});
+    refused(2).await;
+    for _ in 0..5{crate::provider_transition::pass(&slice.domain).await;}
+    assert_eq!(refusals(),2,"trying again tries once: {:?}",move_steps(&slice));
+    let state=slice.domain.state().unwrap();
+    let again=state.open_start_problem(&task).expect("the refused retry asks again").id.clone();
+    assert_ne!(again,card);
+    slice.run(&user(),"cancel-moved",Command::AnswerQuestion{attachments:vec![],interaction_id:again,option_id:alondra_domain_rules::START_CANCEL.into(),inputs:Default::default()});
+    assert!(slice.domain.state().unwrap().tasks[&task].over(),"cancelling closes the task");
+    for _ in 0..3{crate::provider_transition::pass(&slice.domain).await;}
+    assert_eq!(admissions(&slice),1);
     slice.domain.stop_sdk_owners();
 }
 
