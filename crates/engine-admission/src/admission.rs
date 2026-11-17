@@ -248,6 +248,16 @@ impl Snapshot {
     fn next_start(&self) -> Option<&Waiting> {
         self.queue.iter().find(|waiting| !matches!(waiting.key, Key::Turn(_)))
     }
+
+    /// The head of the whole queue and why it waits: a turn only for a slot, a start for every
+    /// check of the gate.
+    pub fn next_held(&self) -> Option<(&Waiting, Hold)> {
+        let head = self.queue.first()?;
+        match head.key {
+            Key::Turn(_) => (self.working >= self.limit as usize).then(|| (head, Hold::Slots { working: self.working, limit: self.limit })),
+            _ => Some((head, self.hold.clone()?)),
+        }
+    }
 }
 
 impl Admission {
@@ -343,11 +353,18 @@ impl Admission {
         true
     }
 
-    /// The user paused a working node: it stops at once and only the user brings it back.
+    /// The user paused a node: it stops at once and only the user brings it back. One the user
+    /// resumed that still waits in the queue to come back leaves it and keeps its pause.
     pub fn pause_by_user(&self, domain: &DomainRuntime, session: &str, now: Millis) -> Result<(), &'static str> {
         let task = domain.state().ok().and_then(|state| open_task_of(&state, session)).ok_or("This node has no open task")?;
         let mut inner = self.lock_with(domain);
-        inner.saved.pauses.resumed.remove(session);
+        let coming_back = inner.saved.pauses.resumed.remove(session).is_some();
+        if coming_back && inner.saved.pauses.paused.get(session).is_some_and(|paused| paused.reason == Reason::ByUser) {
+            self.save_with(domain, &mut inner);
+            drop(inner);
+            self.poke();
+            return Ok(());
+        }
         crate::pauses::stop(domain, &mut inner.saved.pauses, session, task, Reason::ByUser, now);
         self.save_with(domain, &mut inner);
         let paused = inner.saved.pauses.paused.get(session).cloned();
@@ -380,14 +397,6 @@ impl Admission {
     /// The reason of a pause that holds the node until Alondra or the user ends it, if it has one.
     pub(crate) fn holding(&self, domain: &DomainRuntime, session: &str) -> Option<Reason> {
         self.lock_with(domain).saved.pauses.paused.get(session).map(|paused| paused.reason.clone()).filter(Reason::holds)
-    }
-
-    /// The user wrote to a node of the Agent SDK they paused: their message waits with its task's
-    /// inputs, and the node comes back through the queue as their Resume brings it.
-    pub(crate) fn resume_by_user_message(&self, domain: &DomainRuntime, session: &str, now: Millis) {
-        if self.paused_by_user(domain, session) {
-            self.resume_now(domain, session, now);
-        }
     }
 
     /// The user wrote to a `claude --bg` node paused by them, or for memory by an older daemon: the
@@ -561,7 +570,17 @@ impl Admission {
                 Key::Turn(_) => LiveHold::Slots { working: snapshot.working, limit: snapshot.limit },
                 _ => hold.clone().unwrap_or(LiveHold::Next),
             };
-            Some(LiveQueued { task_id: task.0, position: index + 1, of: total, hold, pausable: matches!(waiting.key, Key::Task(_)) })
+            let pausable = match &waiting.key {
+                Key::Resume(session) => pauses.paused.get(session).is_some_and(|paused| paused.reason == Reason::ByUser),
+                Key::Run(_) => false,
+                Key::Task(_) | Key::Turn(_) => true,
+            };
+            let node = match &waiting.key {
+                Key::Resume(session) => Some(session.clone()),
+                Key::Turn(task) => state.tasks.get(task).and_then(|task| task.agent_id.as_ref()).map(|agent| agent.0.clone()),
+                Key::Task(_) | Key::Run(_) => None,
+            };
+            Some(LiveQueued { task_id: task.0, position: index + 1, of: total, hold, pausable, node })
         }).collect();
         let mut order: Vec<String> = snapshot.queue.iter().filter(|waiting| is_paused(waiting))
             .filter_map(|waiting| match &waiting.key { Key::Resume(session) => Some(session.clone()), _ => None }).collect();
@@ -924,7 +943,7 @@ fn key_text(state: &DomainState, key: &Key) -> String {
         Key::Task(task) => task.0.clone(),
         Key::Run(run) => format!("scheduled run {run}"),
         Key::Resume(session) => format!("{} coming back", open_task_of(state, session).map_or_else(|| session.clone(), |task| task.0)),
-        Key::Turn(task) => format!("the next turn of {task}"),
+        Key::Turn(task) => format!("{task} waiting for its turn"),
     }
 }
 
@@ -1315,8 +1334,8 @@ pub async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) -> anyhow
         granted = grant_turns(domain, &state, &mut inner, queued.clone(), now);
         let snapshot = snapshot_locked(domain, &state, &inner, queued, now);
         gate.save_with(domain, &mut inner);
-        let held = snapshot.next_start().zip(snapshot.hold.as_ref());
-        if inner.told.due(held.and_then(|(_, hold)| Cause::of(hold)), now) && let Some((head, hold)) = held {
+        let held = snapshot.next_held();
+        if inner.told.due(held.as_ref().and_then(|(_, hold)| Cause::of(hold)), now) && let Some((head, hold)) = &held {
             let working: Vec<TaskId> = snapshot.working_tasks.iter().cloned().collect();
             let on_user: Vec<TaskId> = state.agents.values().filter(|agent| state.node_waits_on_user(&agent.id))
                 .filter_map(|agent| state.node_task(&agent.id).map(|task| task.id.clone())).collect();

@@ -48,10 +48,12 @@ fn pause_label(lang: super::Lang) -> &'static str {
     t!(lang, "Pause", "Pausar")
 }
 
-/// Takes a queued task out of the queue; it stays out until the user resumes it.
+/// Takes a queued task out of the queue, its node too when it has one waiting to come back or for
+/// its turn; it stays out until the user resumes it.
 pub(super) fn pause_queued_action(task: &Task, context: &RenderContext<'_>) -> Option<super::Action> {
-    common::queued(task, context).filter(|queued| queued.pausable)?;
-    let mut action = common::action(Verb::Pause, &task.id.0, task.revision, pause_label(context.lang), Style::Secondary)?;
+    let queued = common::gate_queued(task, context).filter(|queued| queued.pausable && !task.state.terminal())?;
+    let subject = queued.node.as_deref().unwrap_or(&task.id.0);
+    let mut action = common::action(Verb::Pause, subject, task.revision, pause_label(context.lang), Style::Secondary)?;
     action.key = (context.client == super::Client::Tui).then(|| "p".into());
     action.stamp = Some(t!(context.lang, "Paused", "En pausa").into());
     Some(action)

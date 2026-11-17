@@ -750,7 +750,7 @@ fn tasks_fixture() -> (DomainState, LiveSnapshot) {
     add_request(&mut state, "r-copy", None, "Refresh the App Store screenshots with the new onboarding.");
     add_task(&mut state, "t-copy-screens", "r-copy", "Refresh the App Store screenshots", TaskState::NotStarted, &[]);
     live.pacing = Some(LivePacing { working: 2, limit: 6, fixed: None, auto: 6, most: 12, memory_free: Some(11), tight: true, paused: vec![],
-        queued: vec![LiveQueued { pausable: true, task_id: "t-copy-screens".into(), position: 1, of: 1, hold: LiveHold::Memory { free: Some(11) } }] });
+        queued: vec![LiveQueued { node: None, pausable: true, task_id: "t-copy-screens".into(), position: 1, of: 1, hold: LiveHold::Memory { free: Some(11) } }] });
     add_request(&mut state, "r-new", None, "Import lists from Notes. Keep the order and the checked items.");
     add_request(&mut state, "r-message", None, "[From Claude, for Alice · 09:58] Launch two more from the queue.");
     state.requests.get_mut(&"r-message".into()).unwrap().message = true;
@@ -2061,7 +2061,7 @@ fn a_reopened_task_waiting_in_the_queue_says_its_place_and_why_never_that_it_sto
     state.interactions.clear();
     let task = state.tasks.get_mut(&"t-1".into()).unwrap();
     (task.state, task.started, task.agent_id, task.final_presentation) = (TaskState::NotStarted, false, None, None);
-    let mut live = pacing_live(vec![LiveQueued { pausable: true, task_id: "t-1".into(), position: 2, of: 5, hold: LiveHold::Slots { working: 4, limit: 4 } }], vec![], None);
+    let mut live = pacing_live(vec![LiveQueued { node: None, pausable: true, task_id: "t-1".into(), position: 2, of: 5, hold: LiveHold::Slots { working: 4, limit: 4 } }], vec![], None);
     live.closed_tasks.push("t-1".into());
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         let (block, row) = active_row(&state, &live, client, Lang::Es, "t-1");
@@ -2072,7 +2072,7 @@ fn a_reopened_task_waiting_in_the_queue_says_its_place_and_why_never_that_it_sto
         let detail = detail_state_text(&state, &live, client, Lang::Es);
         assert!(detail.contains("2.º de 5 · 4 de 4 huecos ocupados"), "{client:?}: {detail}");
     }
-    let held = pacing_live(vec![LiveQueued { pausable: true, task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Memory { free: Some(9) } }], vec![], None);
+    let held = pacing_live(vec![LiveQueued { node: None, pausable: true, task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Memory { free: Some(9) } }], vec![], None);
     let detail = detail_state_text(&state, &held, Client::Ios, Lang::Es);
     assert!(detail.contains("1.º de 1") && detail.contains("memoria"), "{detail}");
 }
@@ -2214,13 +2214,14 @@ fn a_paused_task_the_gate_queues_reads_waiting_for_a_slot_in_icon_label_and_deta
     let mut state = fixture();
     node_in(&mut state, NodePhase::ThroughSdk);
     hold_pause(&mut state, "t-1", "a-1", PauseReason::ByUser);
-    let queued = LiveQueued { pausable: true, task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Slots { working: 6, limit: 6 } };
+    let queued = LiveQueued { node: Some("a-1".into()), pausable: true, task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Slots { working: 6, limit: 6 } };
     let live = pacing_live(vec![queued], vec![], None);
     let (block, row) = active_row(&state, &live, Client::Mac, Lang::En, "t-1");
     assert_eq!((block.as_str(), row.icon), ("block:queued", Icon::Task));
     assert_eq!(row.badges.first().map(|badge| badge.text.as_str()), Some("Waiting"));
-    let detail = serde_json::to_string(&render(&state, &live, Client::Mac, Lang::En, "task:t-1", "")).unwrap();
+    let detail = detail_state_text(&state, &live, Client::Mac, Lang::En);
     assert!(!detail.contains("Paused"), "{detail}");
+    assert!(action_ids(&render(&state, &live, Client::Mac, Lang::En, "task:t-1", "")).contains(&"pause:a-1".to_owned()), "it can be paused again");
     let alone = pacing_live(vec![], vec![], None);
     assert_eq!(task_state_text(&state, &alone, Lang::En), "Paused", "without the queue it is still the user's pause");
 }
@@ -3352,7 +3353,7 @@ fn the_blocks_of_the_active_list_add_up_to_its_count() {
     let state = guided_install();
     let mut live = LiveSnapshot::default();
     live.pacing = Some(LivePacing { working: 1, limit: 1, fixed: None, auto: 1, most: 12, memory_free: Some(40), tight: false, paused: vec![],
-        queued: vec![LiveQueued { pausable: true, task_id: "t-3".into(), position: 1, of: 1, hold: LiveHold::Slots { working: 1, limit: 1 } }] });
+        queued: vec![LiveQueued { node: None, pausable: true, task_id: "t-3".into(), position: 1, of: 1, hold: LiveHold::Slots { working: 1, limit: 1 } }] });
     let (listed, listed_live) = tasks_fixture();
     for (state, live) in [(&state, &live), (&golden_fixture(), &golden_live()), (&listed, &listed_live)] {
         let tab = render(state, live, Client::Tui, Lang::En, "tasks", "").status.counts.into_iter().find(|count| count.id == "tasks").unwrap().value;
@@ -5701,7 +5702,7 @@ fn a_pr_sent_back_leaves_waiting_for_you_and_its_task_says_what_alondra_asked() 
     let english = task(&state, Lang::En);
     assert!(english.contains("Couldn't merge") && english.contains("Resolving conflicts") && english.contains("Turn running since"), "{english}");
     assert!(task(&state, Lang::Es).contains("No se pudo hacer merge"));
-    let turn_queued = pacing_live(vec![LiveQueued { pausable: false, task_id: "t".into(), position: 1, of: 1, hold: LiveHold::Slots { working: 8, limit: 8 } }], vec![], None);
+    let turn_queued = pacing_live(vec![LiveQueued { node: None, pausable: false, task_id: "t".into(), position: 1, of: 1, hold: LiveHold::Slots { working: 8, limit: 8 } }], vec![], None);
     for client in [Client::Tui, Client::Ios] {
         for view in ["task:t", "home"] {
             let shown = serde_json::to_string(&render(&state, &turn_queued, client, Lang::Es, view, "")).unwrap();
@@ -6358,7 +6359,7 @@ fn the_sidebar_lists_only_tasks_whose_node_has_a_session() {
     state.agents.insert("orchestrator".into(), Agent { id: "orchestrator".into(), name: "orchestrator".into(), phase: NodePhase::ThroughSdk, since: 0 });
     live.pacing = Some(LivePacing {
         working: 1, limit: 2, fixed: None, auto: 2, most: 12, memory_free: Some(40), tight: false,
-        queued: vec![LiveQueued { pausable: true, task_id: "t-alpha-waiting".into(), position: 1, of: 1, hold: LiveHold::Slots { working: 1, limit: 2 } }],
+        queued: vec![LiveQueued { node: None, pausable: true, task_id: "t-alpha-waiting".into(), position: 1, of: 1, hold: LiveHold::Slots { working: 1, limit: 2 } }],
         paused: vec![],
     });
     for lang in [Lang::En, Lang::Es] {
@@ -6842,14 +6843,14 @@ fn a_queued_task_says_its_place_and_why_in_its_task() {
     let live = LiveSnapshot {
         pacing: Some(LivePacing {
             working: 6, limit: 6, fixed: None, auto: 6, most: 12, memory_free: Some(12), tight: true,
-            queued: vec![LiveQueued { pausable: true, task_id: "t-1".into(), position: 2, of: 3, hold: LiveHold::Slots { working: 6, limit: 6 } }],
+            queued: vec![LiveQueued { node: None, pausable: true, task_id: "t-1".into(), position: 2, of: 3, hold: LiveHold::Slots { working: 6, limit: 6 } }],
             paused: vec![],
         }),
         ..LiveSnapshot::default()
     };
     let task = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::En, "task:t-1", "")).unwrap();
     assert!(task.contains("2nd of 3 · 6 of 6 slots taken"), "{task}");
-    let memory = LiveQueued { pausable: true, task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Memory { free: Some(12) } };
+    let memory = LiveQueued { node: None, pausable: true, task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Memory { free: Some(12) } };
     let load = LiveQueued { hold: LiveHold::Cpu { load: 52, cpus: 11 }, ..memory };
 }
 
@@ -6858,7 +6859,7 @@ fn a_queued_task_says_its_place_and_why_in_its_task() {
 /// its row and on its screen, whether it never started or its node waits to come back.
 #[test]
 fn a_task_held_for_the_disk_waits_for_capacity_with_the_free_space_and_what_is_needed() {
-    let held = LiveQueued { pausable: true, task_id: "t-1".into(), position: 1, of: 2, hold: LiveHold::Disk { free: 3_500_000_000, needed: 13_000_000_000, volume: None } };
+    let held = LiveQueued { node: None, pausable: true, task_id: "t-1".into(), position: 1, of: 2, hold: LiveHold::Disk { free: 3_500_000_000, needed: 13_000_000_000, volume: None } };
     let mut unstarted = fixture();
     unstarted.interactions.clear();
     let task = unstarted.tasks.get_mut(&alondra_domain_rules::TaskId::from("t-1")).unwrap();
@@ -7002,7 +7003,7 @@ fn a_queued_task_offers_pause_and_a_paused_one_offers_resume_in_its_task() {
     let mut state = fixture();
     let task = state.tasks.get_mut(&alondra_domain_rules::TaskId::from("t-1")).unwrap();
     (task.state, task.final_presentation) = (TaskState::NotStarted, None);
-    let queued = LiveQueued { pausable: true, task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Slots { working: 6, limit: 6 } };
+    let queued = LiveQueued { node: None, pausable: true, task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Slots { working: 6, limit: 6 } };
     let live = pacing_live(vec![queued], vec![], None);
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         let detail = render(&state, &live, client, Lang::En, "task:t-1", "");
@@ -7021,15 +7022,36 @@ fn a_queued_task_offers_pause_and_a_paused_one_offers_resume_in_its_task() {
 }
 
 #[test]
-fn a_queued_scheduled_run_or_returning_node_the_user_cannot_take_out_of_the_queue_offers_no_pause() {
+fn a_queued_scheduled_run_the_user_cannot_take_out_of_the_queue_offers_no_pause() {
     let mut state = fixture();
     let task = state.tasks.get_mut(&alondra_domain_rules::TaskId::from("t-1")).unwrap();
     (task.state, task.final_presentation) = (TaskState::NotStarted, None);
-    let queued = LiveQueued { pausable: false, task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Slots { working: 6, limit: 6 } };
+    let queued = LiveQueued { node: None, pausable: false, task_id: "t-1".into(), position: 1, of: 1, hold: LiveHold::Slots { working: 6, limit: 6 } };
     let live = pacing_live(vec![queued], vec![], None);
     for client in [Client::Ios, Client::Mac, Client::Tui] {
         let detail = render(&state, &live, client, Lang::En, "task:t-1", "");
         assert!(!action_ids(&detail).iter().any(|id| id.starts_with("pause:")), "{client:?}: {:?}", action_ids(&detail));
+    }
+}
+
+/// 17 November: four tasks the user had resumed waited in the queue coming back from their pause,
+/// and neither the Tasks list nor their detail offered any action, not even Pause, so the user
+/// could not take them out of the queue. A node waiting in the queue, coming back or for its next
+/// turn, offers Pause by its session.
+#[test]
+fn a_node_waiting_in_the_queue_to_come_back_offers_pause_by_its_session_in_the_list_and_its_task() {
+    let mut state = fixture();
+    node_in(&mut state, NodePhase::ThroughSdk);
+    hold_pause(&mut state, "t-1", "a-1", PauseReason::ByUser);
+    let queued = LiveQueued { node: Some("a-1".into()), pausable: true, task_id: "t-1".into(), position: 2, of: 16, hold: LiveHold::Slots { working: 6, limit: 6 } };
+    let live = pacing_live(vec![queued], vec![], None);
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        for view in ["tasks", "task:t-1"] {
+            let shown = render(&state, &live, client, Lang::En, view, "");
+            let ids = action_ids(&shown);
+            assert!(ids.contains(&"pause:a-1".to_owned()), "{client:?} {view}: {ids:?}");
+            assert!(!ids.contains(&"pause:t-1".to_owned()), "{client:?} {view}: the node is what stops, not a start: {ids:?}");
+        }
     }
 }
 
@@ -7097,8 +7119,8 @@ fn pacing_fixture() -> (DomainState, LiveSnapshot) {
     live.pacing = Some(LivePacing {
         working: 6, limit: 6, fixed: None, auto: 6, most: 12, memory_free: Some(12), tight: true,
         queued: vec![
-            LiveQueued { pausable: true, task_id: "t-queued-next".into(), position: 1, of: 2, hold: LiveHold::Memory { free: Some(12) } },
-            LiveQueued { pausable: true, task_id: "t-queued-later".into(), position: 2, of: 2, hold: LiveHold::Memory { free: Some(12) } },
+            LiveQueued { node: None, pausable: true, task_id: "t-queued-next".into(), position: 1, of: 2, hold: LiveHold::Memory { free: Some(12) } },
+            LiveQueued { node: None, pausable: true, task_id: "t-queued-later".into(), position: 2, of: 2, hold: LiveHold::Memory { free: Some(12) } },
         ],
         paused: vec![
             LivePaused { task_id: "t-zeta-worker".into(), session: Some("zeta-worker".into()), at: "14:05".into(),
@@ -7219,7 +7241,7 @@ fn the_active_list_is_for_you_then_in_progress_then_waiting_each_in_its_own_orde
     }
     live.pacing = Some(LivePacing { working: 2, limit: 2, fixed: None, auto: 2, most: 12, memory_free: Some(40), tight: false, paused: vec![],
         queued: ["t-q1", "t-q2"].iter().enumerate().map(|(index, id)| LiveQueued {
-            pausable: true, task_id: (*id).into(), position: index + 1, of: 2, hold: LiveHold::Slots { working: 2, limit: 2 } }).collect() });
+            node: None, pausable: true, task_id: (*id).into(), position: index + 1, of: 2, hold: LiveHold::Slots { working: 2, limit: 2 } }).collect() });
     assert_eq!(block_ids(&state, &live), [
         ("block:for-you".to_owned(), vec!["t-old".to_owned(), "t-new".to_owned()]),
         ("block:working".to_owned(), vec!["t-busy".to_owned(), "t-run2".to_owned()]),
@@ -8833,7 +8855,7 @@ fn a_waiting_task_says_its_real_place_and_current_reason_whatever_was_refused_be
         (LiveHold::Memory { free: Some(12) }, "short of memory", "justo de memoria"),
         (LiveHold::Cpu { load: 52, cpus: 11 }, "very busy", "muy cargado"),
     ] {
-        let mut live = pacing_live(vec![LiveQueued { task_id: "t-1".into(), position: 3, of: 63, hold, pausable: false }], vec![], None);
+        let mut live = pacing_live(vec![LiveQueued { task_id: "t-1".into(), position: 3, of: 63, hold, pausable: false, node: None }], vec![], None);
         live.launch_refusals.insert("t-1".into(), LiveLaunchRefusal { reason: "disk_low".into(), detail: None });
         for (lang, rank, reason) in [(Lang::En, "3rd of 63", en), (Lang::Es, "3.º de 63", es)] {
             for client in [Client::Ios, Client::Mac, Client::Tui] {

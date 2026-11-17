@@ -73,10 +73,6 @@ impl Gate<'_> {
         self.port.resume_now(self.domain, session, now)
     }
 
-    pub fn resume_by_user_message(&self, session: &str, now: Millis) {
-        self.port.resume_by_user_message(self.domain, session, now);
-    }
-
     pub fn release_by_user_message(&self, session: &str) {
         self.port.release_by_user_message(self.domain, session);
     }
@@ -185,7 +181,6 @@ mod open {
         fn resume_now(&self, _: &DomainRuntime, _: &str, _: Millis) -> bool {
             false
         }
-        fn resume_by_user_message(&self, _: &DomainRuntime, _: &str, _: Millis) {}
         fn release_by_user_message(&self, _: &DomainRuntime, _: &str) {}
         fn paused(&self, _: &DomainRuntime, _: &str) -> Option<Paused> {
             None

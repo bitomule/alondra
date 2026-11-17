@@ -216,10 +216,15 @@ pub struct LiveQueued {
     pub position: usize,
     pub of: usize,
     pub hold: LiveHold,
-    /// The user can take it out of the queue: a task waiting to start, not a scheduled run or a
-    /// node coming back.
+    /// The user can take it out of the queue: a task waiting to start or for its node's next turn,
+    /// or a node the user paused and resumed. Not a scheduled run, nor a node coming back by itself
+    /// from a pause of Alondra's.
     #[serde(default)]
     pub pausable: bool,
+    /// The session of the node that waits, coming back from a pause or for its next turn: Pause
+    /// stops that node. None for a task waiting to start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
 }
 
 /// What the queue waits for.

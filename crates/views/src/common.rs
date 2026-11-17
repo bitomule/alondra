@@ -108,12 +108,6 @@ pub(super) fn folder_name(path: &str) -> String {
     path.trim_end_matches('/').rsplit('/').find(|part| !part.is_empty()).unwrap_or(path).to_owned()
 }
 
-/// The task's place in the queue of starts waiting for the gate, if it waits there.
-pub(super) fn queued<'a>(task: &alondra_domain_rules::Task, context: &'a RenderContext<'_>) -> Option<&'a super::LiveQueued> {
-    if task.agent_id.is_some() || task.state.terminal() { return None; }
-    context.live.pacing.as_ref()?.queued.iter().find(|queued| queued.task_id == task.id.0)
-}
-
 /// The place in the gate's queue of a task that waits there, whether it has a node or not.
 pub(super) fn gate_queued<'a>(task: &alondra_domain_rules::Task, context: &'a RenderContext<'_>) -> Option<&'a super::LiveQueued> {
     context.live.pacing.as_ref()?.queued.iter().find(|queued| queued.task_id == task.id.0)

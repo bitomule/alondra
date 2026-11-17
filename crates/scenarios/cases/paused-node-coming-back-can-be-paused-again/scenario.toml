@@ -1,0 +1,95 @@
+name = "a node the user resumed that waits to come back can be paused again, and a message never ends the pause"
+max_virtual = "1h"
+
+[[step]]
+do = "request"
+text = "Write the release notes"
+task = "t1"
+title = "Write the release notes"
+
+[[step]]
+do = "task"
+id = "t2"
+title = "Add the changelog"
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "node"
+task = "t2"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "press_task"
+task = "t2"
+action = "pause"
+
+[[step]]
+do = "node_limit"
+count = 1
+
+[[step]]
+do = "press_task"
+task = "t2"
+action = "resume"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "coming-back"
+screens = ["tasks", "task:t2"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "task:t2"
+text = "Pause"
+
+[[step]]
+do = "press_task"
+task = "t2"
+action = "pause"
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "paused-again"
+screens = ["tasks", "task:t2"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "task:t2"
+text = "Resume"
+
+[[step]]
+do = "tell"
+task = "t2"
+text = "Use the short changelog format"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "message-while-paused"
+screens = ["tasks", "task:t2"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "task:t2"
+text = "Resume"

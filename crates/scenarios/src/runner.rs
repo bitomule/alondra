@@ -512,6 +512,11 @@ impl Context<'_> {
                 self.edge(index)?.kill(task);
                 self.settle().await?;
             }
+            Step::PressTask { task, action } => self.press_task(index, task, action).await?,
+            Step::NodeLimit { count } => {
+                self.daemon().limit_nodes(*count);
+                self.settle().await?;
+            }
             Step::Tell { task, text } => self.tell(index, task, text).await?,
             Step::ReadMessage { task } => {
                 let text = self.message_waiting(index, task)?;
@@ -886,6 +891,21 @@ impl Context<'_> {
             return Err(ScenarioError::ActionMissing { presentation: presentation.to_owned(), action: verb.to_owned(), view: checkpoint::render(&view) });
         };
         self.send_action(index, &view, &action, verb, typed_input(typed), client, lang).await.map(drop)
+    }
+
+    /// The user presses `verb` on the task's screen, whether the action names the task or its node.
+    async fn press_task(&mut self, index: usize, task: &str, verb: &str) -> Result<(), ScenarioError> {
+        let (client, lang) = ("ios", "en");
+        let screen = format!("task:{task}");
+        let view = self.view(&screen, client, lang).await?;
+        let state = self.daemon().domain.state().map_err(|e| Self::failed(index, e))?;
+        let node = state.tasks.get(&task.to_owned().into()).and_then(|task| task.agent_id.clone()).map(|agent| agent.0);
+        let found = std::iter::once(task.to_owned()).chain(node).find_map(|subject| find_action(&view, &subject, verb));
+        let Some(action) = found else {
+            return Err(ScenarioError::ActionMissing { presentation: screen, action: verb.to_owned(), view: checkpoint::render(&view) });
+        };
+        self.send_action(index, &view, &action, verb, json!({}), client, lang).await?;
+        self.settle().await
     }
 
     /// The user writes a request on the app's new request screen; the daemon names it by the
