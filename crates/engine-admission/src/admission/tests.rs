@@ -264,6 +264,28 @@ impl Drop for Home {
     }
 }
 
+/// A task moved to another account asks the gate on every look until its node starts, and the start
+/// may keep failing after the gate let it through. Once the user pauses it in the queue, no later
+/// ask lets it start, neither while its last admission still counts nor after, until they resume it.
+#[test]
+fn a_task_the_user_paused_in_the_queue_is_never_let_start_until_they_resume_it() {
+    let (_home, domain) = world();
+    create(&domain, "t1");
+    let body: LaunchBody = serde_json::from_value(serde_json::json!({"task": "t1", "name": "app/t1", "cwd": "/tmp"})).unwrap();
+    crate::domain_orchestrator_tools::enqueue(&domain, &body, "orchestrator", 5).unwrap();
+    let gate = domain.admission();
+    let t1 = Waiting { key: Key::Task("t1".into()), priority: TaskPriority::Normal, resuming: false, since: 5 };
+    assert_eq!(gate.ask(&domain, t1.clone(), 10), Ok(()), "the queue is empty, so t1 goes");
+
+    hold_queued(&domain, &"t1".into(), 20).unwrap();
+    assert!(gate.ask(&domain, t1.clone(), 30).is_err(), "its last admission no longer lets it start");
+    assert!(gate.ask(&domain, t1.clone(), 30 + IN_FLIGHT).is_err(), "nor a later ask");
+    assert!(gate.snapshot(&domain, 30 + IN_FLIGHT).unwrap().queue.is_empty(), "it is out of the queue");
+
+    release_queued(&domain, &"t1".into()).unwrap();
+    assert_eq!(gate.ask(&domain, t1, 40 + IN_FLIGHT), Ok(()), "resumed, it starts again");
+}
+
 fn world() -> (Home, Arc<DomainRuntime>) {
     let world = unmeasured_world();
     healthy(&world.1);

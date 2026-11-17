@@ -115,8 +115,11 @@ fn value_at(section: &str, path: &[&str], value: &str, root: &Value, frame: &Val
         }
         ("doctor.json", ["checks", "*", "status"]) => &["pass", "warn", "fail"],
         ("manifest.json", ["format"]) => &["alondra.report"],
-        ("manifest.json", ["sections", "*", "name"] | ["trimmed", "*", "section"] | ["masked", "*", "section"]) => {
+        ("manifest.json", ["sections", "*", "name"] | ["trimmed", "*", "section"]) => {
             return super::super::bundle::SECTIONS.contains(&value);
+        }
+        ("manifest.json", ["masked", "*", "section"]) => {
+            return super::super::bundle::SECTIONS.contains(&value) || value == super::super::bundle::DESCRIPTION;
         }
         ("manifest.json", ["sections", "*", "empty"]) => return empty_reason(value),
         ("tasks.jsonl", ["state"] | ["states_in_window", "*", "state"]) => {
@@ -130,8 +133,7 @@ fn value_at(section: &str, path: &[&str], value: &str, root: &Value, frame: &Val
         ("tasks.jsonl", ["open_questions", "*", "for"]) => &["user", "orchestrator"],
         ("tasks.jsonl", ["executions", "*", "backend"]) => &["sdk", "claude_bg"],
         ("tasks.jsonl", ["executions", "*", "host"]) => &["claude-bg"],
-        ("tasks.jsonl" | "nodes.jsonl", ["model"]) => &["haiku", "sonnet", "opus", "fable", super::super::MASKED],
-        ("manifest.json", ["masked", "*", "field"]) => super::super::MASKABLE_FIELDS,
+        ("tasks.jsonl" | "nodes.jsonl", ["model"]) => &["haiku", "sonnet", "opus", "fable"],
         ("nodes.jsonl", ["effort"]) => &["low", "medium", "high", "xhigh", "max"],
         ("nodes.jsonl", ["phase", "kind"]) => &[
             "starting",

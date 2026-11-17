@@ -34,27 +34,23 @@ use self::templates::Catalog;
 /// The most an app's own section may weigh.
 pub const MAX_APP_SECTION: usize = 512 * 1024;
 
-/// The fields whose value the report masks, instead of refusing to go, when the final check finds a
-/// private value in them: the model a task or node runs on.
-pub(crate) const MASKABLE_FIELDS: &[&str] = &["model"];
-const MASKABLE_SECTIONS: &[&str] = &["tasks.jsonl", "nodes.jsonl"];
+/// What a value the final check would refuse becomes in the report.
 pub(crate) const MASKED: &str = "masked";
 
-fn mask_private_fields(sections: &mut [collect::Section], private: &canary::Private) -> Vec<bundle::Masked> {
+fn mask_section(name: &str, text: &mut String, private: &canary::Private, masked: &mut Vec<bundle::Masked>) {
+    let (rewritten, found) = check::mask(name, text, private);
+    *text = rewritten;
+    masked.extend(found.into_iter().map(|m| bundle::Masked { section: name.to_owned(), line: m.line, field: m.field }));
+}
+
+fn mask_draft(sections: &mut [collect::Section], description: &mut Option<String>, private: &canary::Private) -> Vec<bundle::Masked> {
     let mut masked = Vec::new();
-    for section in sections.iter_mut().filter(|s| MASKABLE_SECTIONS.contains(&s.name)) {
-        let mut text = String::new();
-        for (index, line) in section.text.lines().enumerate() {
-            let mut row: Value = serde_json::from_str(line).unwrap_or(Value::Null);
-            for field in MASKABLE_FIELDS {
-                if row[*field].as_str().is_some_and(|value| value != MASKED && !canary::scan(section.name, value, Some(private)).is_empty()) {
-                    row[*field] = Value::from(MASKED);
-                    masked.push(bundle::Masked { section: section.name.to_owned(), line: index + 1, field: (*field).to_owned() });
-                }
-            }
-            text.push_str(&(if row.is_null() { line.to_owned() } else { row.to_string() } + "\n"));
-        }
-        section.text = text;
+    if let Some(text) = description.as_mut().filter(|d| !d.trim().is_empty()) {
+        *text = text.trim().to_owned() + "\n";
+        mask_section(bundle::DESCRIPTION, text, private, &mut masked);
+    }
+    for section in sections.iter_mut().filter(|s| !s.text.is_empty()) {
+        mask_section(section.name, &mut section.text, private, &mut masked);
     }
     masked
 }
@@ -97,7 +93,8 @@ pub fn build_without(host: &dyn Host, window: Window, description: Option<String
         section.text.clear();
         section.status = Status::Empty(tr!("left out at your request", "quitada a petición tuya").into());
     }
-    let masked = mask_private_fields(&mut collected.sections, &private::of_this_mac(host, &catalog.vocabulary));
+    let mut description = description;
+    let masked = mask_draft(&mut collected.sections, &mut description, &final_private(host, &redactor.pseudonyms, catalog));
     let now = host.now();
     let mut draft = Draft {
         id: bundle::new_id(now),
@@ -120,12 +117,16 @@ pub fn build_without(host: &dyn Host, window: Window, description: Option<String
     Ok(Built { id: draft.id, dir, files, sections: draft.sections, hits, compressed })
 }
 
-fn final_check(host: &dyn Host, files: &Files, pseudonyms: &redact::Pseudonyms, catalog: &Catalog) -> Vec<Hit> {
+fn final_private(host: &dyn Host, pseudonyms: &redact::Pseudonyms, catalog: &Catalog) -> canary::Private {
     let mut private = private::of_this_mac(host, &catalog.vocabulary);
     for (original, pseudonym) in pseudonyms.replacements() {
         private.add(&format!("a value the report replaced by {pseudonym}"), original, &catalog.vocabulary);
     }
-    bundle::check(files, &private)
+    private
+}
+
+fn final_check(host: &dyn Host, files: &Files, pseudonyms: &redact::Pseudonyms, catalog: &Catalog) -> Vec<Hit> {
+    bundle::check(files, &final_private(host, pseudonyms, catalog))
 }
 
 /// The report's final check over files that came out of a report, such as a scenario drafted from
@@ -518,11 +519,11 @@ pub fn run(window_text: &str, description: Option<String>, app: Option<&Path>, w
     if let Some(spinner) = &collecting {
         spinner.start(tr!("Collecting the report: the logs, the tasks and the nodes of the last hours…", "Recogiendo el informe: los logs, las tareas y los nodos de las últimas horas…"));
     }
-    let built = build_without(&host, window, description, app.as_deref(), without);
+    let built = build_without(&host, window, description.clone(), app.as_deref(), without);
     if let Some(spinner) = collecting {
         spinner.clear();
     }
-    let built = built?;
+    let mut built = built?;
     if json {
         let repo = if built.hits.is_empty() { host.report_repo() } else { None };
         println!("{}", serde_json::to_string_pretty(&summary_json(&built, repo.as_deref()))?);
@@ -533,7 +534,21 @@ pub fn run(window_text: &str, description: Option<String>, app: Option<&Path>, w
         return Ok(());
     }
     if !built.hits.is_empty() {
-        return Ok(());
+        let rest = send_rest_without(&built);
+        if rest.is_empty() {
+            return Ok(());
+        }
+        let files = rest.join(", ");
+        let send_rest = cliclack::confirm(trf!("Send the rest of the report without {files}?", "¿Envío el resto del informe sin {files}?")).initial_value(true).interact()?;
+        if !send_rest {
+            return Ok(());
+        }
+        let without: Vec<String> = without.iter().cloned().chain(rest).collect();
+        built = build_without(&host, window, description, app.as_deref(), &without)?;
+        print!("\n{}", summary(&built));
+        if !built.hits.is_empty() {
+            return Ok(());
+        }
     }
     let id = built.id.as_str();
     let Some(repo) = host.report_repo() else {
@@ -608,16 +623,35 @@ pub fn summary(built: &Built) -> String {
         let (lines, section) = (trim["lines"].as_u64().unwrap_or_default(), trim["section"].as_str().unwrap_or_default());
         out.push_str(&trf!("Cut to fit in 5 MB: the oldest {lines} lines of {section}\n", "Recortado para que quepa en 5 MB: las {lines} líneas más antiguas de {section}\n"));
     }
+    let masked = manifest["masked"].as_array().cloned().unwrap_or_default();
+    if !masked.is_empty() {
+        let count = masked.len();
+        out.push_str(&trf!(
+            "\nMasked {count} private values, each now reads \"{MASKED}\" (also listed in manifest.json):\n",
+            "\nEnmascarados {count} valores privados, cada uno ahora dice \"{MASKED}\" (también en manifest.json):\n"
+        ));
+        for entry in &masked {
+            let (section, line, field) = (entry["section"].as_str().unwrap_or_default(), entry["line"].as_u64().unwrap_or_default(), entry["field"].as_str().unwrap_or_default());
+            out.push_str(&if field == check::WHOLE_LINE {
+                trf!("  {section}, line {line}: the whole line\n", "  {section}, línea {line}: la línea entera\n")
+            } else {
+                trf!("  {section}, line {line}: {field}\n", "  {section}, línea {line}: {field}\n")
+            });
+        }
+    }
     out.push('\n');
     if built.hits.is_empty() {
         out.push_str(tr!("The final check found nothing private.\n", "La comprobación final no encontró nada privado.\n"));
     } else {
-        out.push_str(tr!("The report cannot leave this Mac; the final check found:\n", "El informe no puede salir de este Mac; la comprobación final encontró:\n"));
+        out.push_str(tr!(
+            "The report cannot leave this Mac: the final check found values it cannot mask, because they sit in a field's name or in a file that is one JSON document, and masking them would break that file:\n",
+            "El informe no puede salir de este Mac: la comprobación final encontró valores que no puede enmascarar, porque están en el nombre de un campo o en un fichero que es un único documento JSON, y enmascararlos rompería ese fichero:\n"
+        ));
         for hit in &built.hits {
             let (section, line, what) = (&hit.section, hit.line, &hit.what);
             out.push_str(&trf!("  {section}, line {line}: {what}\n", "  {section}, línea {line}: {what}\n"));
         }
-        let removable: BTreeSet<&str> = built.hits.iter().map(|hit| hit.section.as_str()).filter(|section| bundle::SECTIONS.contains(section)).collect();
+        let removable = send_rest_without(built);
         if !removable.is_empty() {
             let sections = removable.iter().map(|section| format!("--without {section}")).collect::<Vec<_>>().join(" ");
             out.push_str(&trf!(
@@ -627,6 +661,12 @@ pub fn summary(built: &Built) -> String {
         }
     }
     out
+}
+
+/// The sections to leave out so the rest of a refused report can leave the Mac.
+pub fn send_rest_without(built: &Built) -> Vec<String> {
+    let removable: BTreeSet<&str> = built.hits.iter().map(|hit| hit.section.as_str()).filter(|section| bundle::SECTIONS.contains(section)).collect();
+    removable.into_iter().map(str::to_owned).collect()
 }
 
 /// What a counter of the manifest's `omitted` counts, for the user.
@@ -650,7 +690,7 @@ pub fn summary_json(built: &Built, repo: Option<&str>) -> Value {
         "dir": built.dir,
         "compressed_bytes": built.compressed,
         "manifest": manifest_of(&built.files),
-        "check": {"passed": built.hits.is_empty(), "hits": built.hits},
+        "check": {"passed": built.hits.is_empty(), "hits": built.hits, "send_rest_without": send_rest_without(built)},
         "repo": repo,
         "summary": summary(built),
     })
