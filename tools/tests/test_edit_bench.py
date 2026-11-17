@@ -41,6 +41,18 @@ class EditBenchTest(unittest.TestCase):
         log = "\n".join(json.dumps(spawn, indent=1) for spawn in spawns)
         self.assertEqual(dict(bench.executed(log)), {"Rustc": 1, "TestRunner": 1})
 
+    def test_spawns_a_cache_answered_are_counted(self):
+        spawns = [{"mnemonic": "Rustc", "cacheHit": True}, {"mnemonic": "Clippy", "remoteCacheHit": True}, {"mnemonic": "Rustc"}]
+        self.assertEqual(bench.from_cache("\n".join(json.dumps(spawn) for spawn in spawns)), 2)
+
+    def test_the_critical_path_comes_from_the_last_invocation(self):
+        output = (
+            "INFO: Elapsed time: 40.1s, Critical Path: 35.7s\n"
+            "INFO: Elapsed time: 228.1s, Critical Path: 220.2s\n"
+        )
+        self.assertEqual(bench.critical_path(output), 220.2)
+        self.assertIsNone(bench.critical_path("no summary"))
+
     def test_the_time_is_what_bazel_ran_never_the_queue_wait(self):
         output = (
             "bazelqueue: finished 1-2 exit=0 queued=15m34s ran=2m49s failed=unreported\n"
