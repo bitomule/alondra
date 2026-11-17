@@ -1,5 +1,4 @@
-use crate::live::LiveOf as _;
-use crate::idle_compaction::ContextsOf as _;
+use crate::contexts::ContextsOf as _;
 use crate::node_reports::{Answer, Report, Reported, short_label};
 use alondra_core::activity::Activity;
 use alondra_view_model::RunOutcome;
@@ -22,13 +21,13 @@ pub struct Readings {
 fn text<'a>(value: &'a Value, key: &str) -> Option<&'a str> { value.get(key).and_then(Value::as_str) }
 fn clipped(text: &str) -> String { text.chars().take(8_000).collect() }
 
-pub(crate) fn restore_scope(session:&mut Reported,scope:alondra_provider_codex::LiveScope,now:Millis){
+pub fn restore_scope(session:&mut Reported,scope:alondra_provider_codex::LiveScope,now:Millis){
     let mut readings=session.codex.take().filter(|readings|readings.thread.as_deref()==Some(&scope.thread)).unwrap_or_default();
     readings.thread=Some(scope.thread);readings.turn=scope.turn;readings.model=scope.model;readings.model_turn=scope.model_turn;readings.rerouted_turn=scope.rerouted_turn;readings.since=now;
     session.cwd=scope.cwd;session.model=readings.model.clone();session.working_since=readings.turn.as_ref().map(|_|now);session.codex=Some(readings);
 }
 
-pub(crate) fn observe(session: &mut Reported, message: &Value, now: Millis) {
+pub fn observe(session: &mut Reported, message: &Value, now: Millis) {
     let mut readings = session.codex.take().unwrap_or_default();
     let params = message.get("params").unwrap_or(&Value::Null);
     let method = text(message, "method").unwrap_or("");
@@ -128,19 +127,19 @@ pub(crate) fn observe(session: &mut Reported, message: &Value, now: Millis) {
     }
     session.codex = Some(readings);
 }
-pub(crate) fn activity(session: &Reported) -> Option<Vec<Activity>> {
+pub fn activity(session: &Reported) -> Option<Vec<Activity>> {
     let readings = session.codex.as_ref()?;
     let main = (readings.turn.is_some() || session.tool.is_some()).then(|| Activity { agent_id: None, agent_type: None, task: None, tool: session.tool.as_ref().map(|tool| tool.name.clone()), summary: session.tool.as_ref().and_then(|tool| tool.summary.clone()), since: session.tool.as_ref().map_or(readings.since, |tool| tool.since) });
     let children = session.work.agents.iter().filter(|agent| agent.end.is_none()).map(|agent| Activity { agent_id: Some(agent.id.clone()), agent_type: Some("codex".into()), task: None, tool: None, summary: Some(agent.description.clone()), since: agent.started_at });
     Some(main.into_iter().chain(children).collect())
 }
-pub(crate) fn ended(session: &mut Reported, now: Millis) {
+pub fn ended(session: &mut Reported, now: Millis) {
     if session.codex.is_none() { return; }
     session.tool = None; session.working_since = None;
     session.end_background(|_| true, RunOutcome::Stopped, now); session.work.ended(now);
     if let Some(readings) = session.codex.as_mut() { readings.calls.clear(); readings.turn = None; readings.deltas.clear(); }
 }
-fn update_context(contexts:&crate::idle_compaction::Contexts,task:&alondra_domain_rules::TaskId,before:Option<&Readings>,session:&Reported,message:&Value,now:Millis){
+fn update_context(contexts:&crate::contexts::Contexts,task:&alondra_domain_rules::TaskId,before:Option<&Readings>,session:&Reported,message:&Value,now:Millis){
     use alondra_provider_claude::ContextEvent;
     let Some(current)=session.codex.as_ref() else{return};
     if before.is_some_and(|prior|prior.thread!=current.thread || prior.model!=current.model || (prior.turn!=current.turn && current.turn.is_some() && current.model_turn.is_none())){contexts.forget(task);}
@@ -160,12 +159,12 @@ fn update_context(contexts:&crate::idle_compaction::Contexts,task:&alondra_domai
         _=>{}
     }
 }
-pub fn feed(domain: &crate::domain_runtime::DomainRuntime, agent: &alondra_domain_rules::AgentId, observation: &alondra_provider_contract::OrderedObservation) {
+pub fn feed(domain: &crate::domain_runtime::DomainRuntime, reports: &crate::node_reports::Reports, agent: &alondra_domain_rules::AgentId, observation: &alondra_provider_contract::OrderedObservation) {
     if let Some(message) = alondra_provider_codex::native_message(observation) {
-        let before=domain.live().mods.session(&agent.0).and_then(|session|session.codex);
-        let now=alondra_core::now_millis();domain.live().mods.apply_codex(&agent.0,&message,now);
+        let before=reports.session(&agent.0).and_then(|session|session.codex);
+        let now=alondra_core::now_millis();reports.apply_codex(&agent.0,&message,now);
         let task=domain.read().state().tasks.values().find(|task|task.agent_id.as_ref()==Some(agent)).map(|task|task.id.clone());
-        if let (Some(task),Some(session))=(task,domain.live().mods.session(&agent.0)){update_context(domain.contexts(),&task,before.as_ref(),&session,&message,now);}
+        if let (Some(task),Some(session))=(task,reports.session(&agent.0)){update_context(domain.contexts(),&task,before.as_ref(),&session,&message,now);}
     }
 }
 
@@ -189,7 +188,7 @@ mod tests {
     }
     #[test]
     fn current_native_model_changes_and_reroutes_invalidate_previous_model_context(){
-        let mut session=Reported::default();let contexts=crate::idle_compaction::Contexts::default();let task="native-live".into();
+        let mut session=Reported::default();let contexts=crate::contexts::Contexts::default();let task="native-live".into();
         let mut apply=|method:&str,params:Value,now|{let before=session.codex.clone();let message=json!({"method":method,"params":params});observe(&mut session,&message,now);update_context(&contexts,&task,before.as_ref(),&session,&message,now);};
         apply("alondra/threadReady",json!({"threadId":"root","model":"first"}),1);
         apply("alondra/inputAccepted",json!({"threadId":"root","turnId":"one","model":"first"}),2);
@@ -221,7 +220,7 @@ mod tests {
         let mut session=Reported::default();restore_scope(&mut session,alondra_provider_codex::LiveScope{thread:"root".into(),turn:Some("active".into()),model:Some("actual".into()),model_turn:Some("active".into()),rerouted_turn:Some("active".into()),cwd:Some("/workspace".into())},1);
         send(&mut session,"item/agentMessage/delta",json!({"threadId":"child","turnId":"active","itemId":"private-child","delta":"must not enter parent"}),2);assert!(session.answer.is_none());
         send(&mut session,"item/agentMessage/delta",json!({"threadId":"root","turnId":"active","itemId":"public","delta":"Continued public answer"}),3);assert_eq!(session.answer.as_ref().unwrap().text,"Continued public answer");assert_eq!(session.model.as_deref(),Some("actual"));assert_eq!(session.cwd.as_deref(),Some("/workspace"));
-        let contexts=crate::idle_compaction::Contexts::default();let task="adopted".into();let message=json!({"method":"thread/tokenUsage/updated","params":{"threadId":"root","turnId":"active","tokenUsage":{"last":{"totalTokens":31},"modelContextWindow":32768}}});update_context(&contexts,&task,None,&session,&message,4);
+        let contexts=crate::contexts::Contexts::default();let task="adopted".into();let message=json!({"method":"thread/tokenUsage/updated","params":{"threadId":"root","turnId":"active","tokenUsage":{"last":{"totalTokens":31},"modelContextWindow":32768}}});update_context(&contexts,&task,None,&session,&message,4);
         assert!(contexts.used(&task).is_some(),"new current-turn usage is scoped immediately after adoption");
     }
 

@@ -3,7 +3,6 @@
 //! background, its subagents, workflows and task list. The SDK's messages say all of it (the
 //! `SDKMessage` types of `@anthropic-ai/claude-agent-sdk`); nothing here makes a node connected,
 //! starts its turn or moves its state, which the domain alone decides for a node of the SDK.
-use crate::live::LiveOf as _;
 use crate::node_reports::{Report, Reported, short_label};
 use crate::node_work::StepIn;
 use alondra_core::activity::Activity;
@@ -70,7 +69,7 @@ pub fn wait_file(domain: &crate::domain_runtime::DomainRuntime, provider: alondr
 }
 
 /// Called before publishing a committed turn boundary, including host loss and interruptions.
-pub(crate) fn clear_ended_waits(domain: &crate::domain_runtime::DomainRuntime, before: &alondra_domain_rules::DomainState, after: &alondra_domain_rules::DomainState) {
+pub fn clear_ended_waits(domain: &crate::domain_runtime::DomainRuntime, before: &alondra_domain_rules::DomainState, after: &alondra_domain_rules::DomainState) {
     if domain.sdk().is_none() { return; }
     for (id, journal) in &before.lifecycle_journal {
         if after.lifecycle_journal.get(id).is_some_and(|new| new.len() == journal.len()) { continue; }
@@ -146,7 +145,7 @@ pub struct Readings {
 }
 
 impl Readings {
-    pub(crate) fn last_message(&self) -> Option<(&str, Millis)> {
+    pub fn last_message(&self) -> Option<(&str, Millis)> {
         self.last_message.as_ref().map(|(text, at)| (text.as_str(), *at))
     }
 
@@ -167,7 +166,7 @@ fn remember<T>(items: &mut Vec<T>, item: T) {
 }
 
 /// The steps of the turn a `result` ends, counted, and nothing for any other message.
-pub(crate) fn observe(session: &mut Reported, message: &Value, now: Millis) -> Option<StepCounts> {
+pub fn observe(session: &mut Reported, message: &Value, now: Millis) -> Option<StepCounts> {
     let mut readings = session.sdk.take().unwrap_or_default();
     let mut counted = None;
     let parent = message.get("parent_tool_use_id").and_then(Value::as_str).map(str::to_owned);
@@ -246,7 +245,7 @@ fn outcome(status: Option<&str>) -> Option<RunOutcome> {
 }
 
 /// The host ended, and every call and background task its Claude ran ended with it.
-pub(crate) fn ended(session: &mut Reported, now: Millis) {
+pub fn ended(session: &mut Reported, now: Millis) {
     session.tool = None;
     session.end_background(|_| true, RunOutcome::Stopped, now);
     session.work.ended(now);
@@ -261,7 +260,7 @@ pub(crate) fn ended(session: &mut Reported, now: Millis) {
 
 /// What each thread of a node of the SDK does now: its main thread while its turn or a call runs,
 /// then each subagent running.
-pub(crate) fn activity(session: &Reported) -> Option<Vec<Activity>> {
+pub fn activity(session: &Reported) -> Option<Vec<Activity>> {
     let readings = session.sdk.as_ref()?;
     let main = (readings.in_turn || session.tool.is_some()).then(|| Activity {
         agent_id: None,
@@ -453,10 +452,10 @@ fn progress(name: &str, input: &Value, result: &Value) -> Option<Report> {
 }
 
 /// What one observation of a node's host says, kept with what its node mod would have reported.
-pub fn feed(domain: &crate::domain_runtime::DomainRuntime, agent: &alondra_domain_rules::AgentId, observation: &alondra_provider_contract::OrderedObservation) {
+pub fn feed(domain: &crate::domain_runtime::DomainRuntime, reports: &crate::node_reports::Reports, agent: &alondra_domain_rules::AgentId, observation: &alondra_provider_contract::OrderedObservation) {
     if let Some(message) = alondra_provider_claude::sdk_message(observation) {
         let now = alondra_core::now_millis();
-        if let Some(steps) = domain.live().mods.apply_sdk(&agent.0, &message, now) {
+        if let Some(steps) = reports.apply_sdk(&agent.0, &message, now) {
             crate::metrics_capture::node_turn(domain, agent, &message, steps, now);
         }
     }

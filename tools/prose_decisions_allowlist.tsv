@@ -165,7 +165,7 @@ crates/store/src/journal_format.rs	let (kind, remaining) = if let Some(value) = 
 crates/store/src/journal_format.rs	} else if let Some(value) = body.strip_prefix("VIEW IF NOT EXISTS ") {	own-grammar	migration by equality with our own DDL (G-10)
 crates/store/src/journal_format.rs	} else if let Some(value) = body.strip_prefix("UNIQUE INDEX IF NOT EXISTS ") {	own-grammar	migration by equality with our own DDL (G-10)
 crates/store/src/journal_format.rs	} else if let Some(value) = body.strip_prefix("TRIGGER IF NOT EXISTS ") {	own-grammar	migration by equality with our own DDL (G-10)
-crates/daemon-engine/src/mcp_waits.rs	Some(if id.starts_with(MCP_SERVER_PREFIX) { Self::Server(id.to_owned()) } else { Self::Card(InteractionId::from(id)) })	own-grammar	McpServerKey id grammar; a card target is checked by its system_card
+crates/engine-mcp/src/mcp_waits.rs	Some(if id.starts_with(MCP_SERVER_PREFIX) { Self::Server(id.to_owned()) } else { Self::Card(InteractionId::from(id)) })	own-grammar	McpServerKey id grammar; a card target is checked by its system_card
 crates/daemon-engine-store/src/typed_cards.rs	let owner = cause.as_deref().and_then(|cause| cause.strip_prefix(REFUSED_CARDS_CAUSE));	own-grammar	one-time upgrade of refused-cards problems stored before system_card
 crates/alondra/src/account.rs	if header_host.is_none_or(|h| h.trim() != format!("127.0.0.1:{expected_port}")) {	security-parse	Host header of the loopback callback
 crates/alondra/src/report/canary.rs	let lowered = value.to_lowercase();	security-parse	privacy check of a failure report before it is sent

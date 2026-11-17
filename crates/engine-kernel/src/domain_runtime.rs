@@ -685,7 +685,11 @@ impl DomainRuntime {
     pub fn set_task_worktree(&self, task: &TaskId, dir: &str) -> Result<()> {
         self.store.lock_or_exit("the domain store").set_task_worktree(task, dir, alondra_core::now_millis())?;
         let command = Command::RecordTaskWorktree { task_id: task.clone(), path: dir.to_owned(), origin: WorktreeOrigin::Task, branch: None };
-        let state = self.state()?;
+        self.execute_system_command(command).map_err(|error| anyhow::anyhow!("{error}"))
+    }
+    /// Carries out `command` as the system, against the state it reads now.
+    pub fn execute_system_command(&self, command: Command) -> Result<(), StoreError> {
+        let state = self.state().map_err(StoreError::Storage)?;
         let envelope = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
             data_epoch: state.data_epoch.clone(),
@@ -693,7 +697,7 @@ impl DomainRuntime {
             expected_revision: state.revision,
             command,
         };
-        self.execute_as_system(envelope).map(drop).map_err(|error| anyhow::anyhow!("{error}"))
+        self.execute_as_system(envelope).map(drop)
     }
     pub fn forget_inherited_worktree(&self, agent: &str) -> Result<()> {
         self.store.lock_or_exit("the domain store").forget_inherited_worktree(agent)

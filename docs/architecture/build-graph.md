@@ -88,6 +88,7 @@ module and called on the runtime used to be invisible to it.
 | Orchestrator in its own crate | 31 modules | 14,023 |
 | Admission gate in its own crate | 26 modules | 11,640 |
 | The SDK and the launching of tasks in their own crate | 18 modules | 5,489 |
+| MCP, live nodes and worktrees in their own crates | 13 modules | 4,071 |
 
 The 54 above counted modules by file name; the same graph through `#[path]` declarations holds one
 more. The 34 missed what each module reached through methods the subsystems added to the runtime:
@@ -185,6 +186,15 @@ observers; a test that needs another subsystem runs with the engine.
   the sweep that adopts open PRs left without a live owner (`open_pr_sweep`) and the fake GitHub
   the tests and scenarios share (`github_world`, test hooks only). Its tests are
   `//crates/engine-github:engine_github_test`.
+- `engine-mcp`: what a node waits for while an MCP server signs in (`mcp_waits`, `mcp_sign_in`)
+  and the checks and deletions of the MCP servers screen (`mcp_probe`, `mcp_remove`).
+- `engine-live`: what each node's mod reports or its Agent SDK or Codex host observes
+  (`node_reports`, `node_work`, `sdk_live`, `codex_live`) and what each SDK task measured of its
+  conversation (`contexts`). The feeds take the node reports they write as an argument instead
+  of reaching them through the engine's live state; `idle_compaction` re-exports `contexts`.
+- `engine-worktrees`: each task's worktree (`task_worktrees`), those of cancelled tasks
+  (`cancelled_worktrees`) and the startup moves of HOME files (`home_renames`). They carry out
+  system commands through the kernel's `DomainRuntime::execute_system_command`.
 
 ## Where it starts (2026-11-15, main at bc73a80)
 
