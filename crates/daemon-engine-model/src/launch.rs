@@ -1,9 +1,26 @@
-use alondra_core::accounts::Provider;
 use alondra_domain_rules::TaskId;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub use alondra_domain_rules::LaunchPlan;
+pub use alondra_engine_ports::launch::{Failed, LaunchOptions};
+
+/// Where a launch keeps its options: beside the execution's host.
+pub trait LaunchOptionsFile: Sized {
+    fn save(&self, state_directory: &std::path::Path) -> Result<(), Failed>;
+    fn load(state_directory: &std::path::Path) -> Result<Self, Failed>;
+}
+
+/// A failure of a write, which knows whether the disk was full.
+pub trait WrittenFailure {
+    fn written(why: String, error: &std::io::Error) -> Self;
+}
+
+impl WrittenFailure for Failed {
+    fn written(why: String, error: &std::io::Error) -> Self {
+        Self { why, no_space: crate::disk::io_no_space(error), refusal: None }
+    }
+}
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -106,23 +123,6 @@ impl LaunchBody {
     }
 }
 
-/// What the task's Claude is launched with besides its prompt: the model and effort the launch
-/// resolved and the tools its request denies. Kept beside the execution's host, so a host that
-/// resumes the session launches Claude the same way.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct LaunchOptions {
-    #[serde(default)]
-    pub provider: Provider,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub selection: Option<alondra_core::model_selection::TaskSelection>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effort: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub disallowed_tools: Vec<String>,
-}
-
 pub fn retain_selection_options(directory:&std::path::Path,selection:alondra_core::model_selection::TaskSelection)->Result<(),Failed>{
     let mut options=LaunchOptions::load(directory)?;
     let effective=selection.effective.as_ref().ok_or_else(||Failed::new("The effective selection is unknown".into()))?;
@@ -132,18 +132,13 @@ pub fn retain_selection_options(directory:&std::path::Path,selection:alondra_cor
 
 const LAUNCH_OPTIONS: &str = "launch-options.json";
 
-impl LaunchOptions {
-    /// The effort levels the Agent SDK takes; any other a launch resolved is left to Claude.
-    pub fn effort(&self) -> Option<String> {
-        self.effort.clone().filter(|effort| matches!(effort.as_str(), "low" | "medium" | "high" | "xhigh" | "max"))
-    }
-
-    pub fn save(&self, state_directory: &std::path::Path) -> Result<(), Failed> {
+impl LaunchOptionsFile for LaunchOptions {
+    fn save(&self, state_directory: &std::path::Path) -> Result<(), Failed> {
         let text = serde_json::to_vec(self).map_err(|error| Failed::new(format!("the launch options: {error}")))?;
         crate::save::atomic(&state_directory.join(LAUNCH_OPTIONS), &text).map_err(|error| Failed::written(format!("keeping the launch options: {error}"), &error))
     }
 
-    pub fn load(state_directory: &std::path::Path) -> Result<Self, Failed> {
+    fn load(state_directory: &std::path::Path) -> Result<Self, Failed> {
         match std::fs::read(state_directory.join(LAUNCH_OPTIONS)) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| Failed::new(format!("reading the launch options: {error}"))),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
@@ -152,25 +147,4 @@ impl LaunchOptions {
     }
 }
 
-#[derive(Debug)]
-pub struct Failed {
-    pub why: String,
-    /// A write it needed found the disk full: once there is space it can go on as it was.
-    pub no_space: bool,
-    /// The domain's refusal, when the domain refused it.
-    pub refusal: Option<alondra_domain_rules::DomainError>,
-}
-impl Failed {
-    pub fn new(why: String) -> Self {
-        Self { why, no_space: false, refusal: None }
-    }
 
-    pub fn written(why: String, error: &std::io::Error) -> Self {
-        Self { why, no_space: crate::disk::io_no_space(error), refusal: None }
-    }
-}
-impl std::fmt::Display for Failed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.why)
-    }
-}

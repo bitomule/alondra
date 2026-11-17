@@ -52,7 +52,7 @@ pub fn world_using_sdk(enable: fn(&Arc<DomainRuntime>, &Path) -> SdkLaunches) ->
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&project).unwrap();
     let domain = Arc::new(crate::wiring::open(&home).unwrap());
-    domain.gate().measure_machine(&alondra_core::Machine { at: 1, memory_total: 16 << 30,
+    alondra_engine_admission::measure_machine(&domain, &alondra_core::Machine { at: 1, memory_total: 16 << 30,
         memory_available: 12 << 30, memory_free_percent: Some(75), cpus: 11,
         disk_total: 500_000_000_000, disk_available: 400_000_000_000, ..Default::default() }, crate::disk::Space { total: 500_000_000_000, free: 400_000_000_000, purgeable: 0 });
     let sdk = enable(&domain, &home);
@@ -787,7 +787,7 @@ async fn a_task_cancelled_while_it_starts_leaves_without_a_retry_or_a_card_and_t
     create(&f, "a", &[], Some(&plan(&f, "app/a")));
     create(&f, "b", &[], Some(&plan(&f, "app/b")));
     let now = alondra_core::now_millis();
-    let waiting = crate::ports::admission::Waiting { key: crate::ports::admission::Key::Task("a".into()), priority: alondra_domain_rules::TaskPriority::Normal,
+    let waiting = alondra_engine_ports::admission::Waiting { key: alondra_engine_ports::admission::Key::Task("a".into()), priority: alondra_domain_rules::TaskPriority::Normal,
         resuming: false, since: 0 };
     assert_eq!(f.domain.gate().ask(waiting, now), Ok(()));
     assert!(f.domain.store.lock().unwrap().claim_auto_launch(&"a".into(), now, false).unwrap());
@@ -820,7 +820,7 @@ async fn the_worktree_made_for_a_task_cancelled_while_it_starts_goes_when_it_clo
     f.domain.admission().tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(1)) });
     create(&f, "a", &[], Some(&plan(&f, "app/a")));
     let now = alondra_core::now_millis();
-    let waiting = crate::ports::admission::Waiting { key: crate::ports::admission::Key::Task("a".into()), priority: alondra_domain_rules::TaskPriority::Normal,
+    let waiting = alondra_engine_ports::admission::Waiting { key: alondra_engine_ports::admission::Key::Task("a".into()), priority: alondra_domain_rules::TaskPriority::Normal,
         resuming: false, since: 0 };
     assert_eq!(f.domain.gate().ask(waiting, now), Ok(()));
     assert!(f.domain.store.lock().unwrap().claim_auto_launch(&"a".into(), now, false).unwrap());

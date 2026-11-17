@@ -1,4 +1,5 @@
 //! Append-only selection changes share the task's owner transaction and native execution fence.
+use alondra_daemon_engine_model::LaunchOptionsFile as _;
 use super::*;
 use alondra_core::accounts::AccountKey;
 use alondra_core::model_selection::{ModelSelection, TaskSelection};

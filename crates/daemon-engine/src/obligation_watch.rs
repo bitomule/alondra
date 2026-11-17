@@ -241,7 +241,7 @@ pub fn pass(domain: &DomainRuntime, watch: &mut Watch, now: Millis) {
 
 /// The orchestrator settles what it owes past its deadline.
 fn settle_answers(domain: &DomainRuntime, state: &DomainState, due: &std::collections::BTreeSet<TaskId>) {
-    match domain.port::<dyn crate::ports::OrchestratorAnswers>() {
+    match domain.ports().port::<dyn alondra_engine_ports::orchestrator::OrchestratorAnswers>() {
         Some(orchestrator) => orchestrator.settle_answers(domain, state, due),
         None => log!("no orchestrator settles what it owes {} past its deadline", due.iter().map(|task| task.0.as_str()).collect::<Vec<_>>().join(", ")),
     }

@@ -142,7 +142,7 @@ fn answer_first(domain: &DomainRuntime, payload: &Value) -> Option<Value> {
 /// A PreToolUse answered without recording the hook: a node the gate holds, and Alondra's own tools.
 fn unrecorded_pre_tool_use(domain: &DomainRuntime, session_id: &str, tool: Option<&str>) -> Option<Value> {
     if let Some(reason) = domain.gate().holding(session_id) {
-        let why = if reason == crate::ports::admission::Reason::ByUser { PAUSED_BY_USER } else { PAUSED_FOR_MEMORY };
+        let why = if reason == alondra_engine_ports::admission::Reason::ByUser { PAUSED_BY_USER } else { PAUSED_FOR_MEMORY };
         return Some(pre_tool_use_denied(why));
     }
     tool.is_some_and(|t| t.starts_with("mcp__plugin_alondra")).then(|| json!({"hookSpecificOutput": {"hookEventName": "PreToolUse",

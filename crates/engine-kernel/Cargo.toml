@@ -9,6 +9,7 @@ publish.workspace = true
 test-hooks = ["dep:tempfile", "alondra-daemon-engine-machine/test-hooks", "alondra-daemon-engine-model/test-hooks", "alondra-daemon-engine-store/test-hooks", "alondra-daemon-support/test-hooks"]
 
 [dependencies]
+alondra-engine-ports.workspace = true
 alondra-agent-application.workspace = true
 alondra-agent-runtime.workspace = true
 alondra-core.workspace = true

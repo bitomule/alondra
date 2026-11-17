@@ -1,6 +1,6 @@
 //! The orchestrator: the process that runs the orchestrator agent over its inbox, its recovery and
 //! its watchdog. It knows the engine only through `engine-kernel`: what it asks of the rest of the
-//! engine goes through the kernel's ports, which `alondrad` connects when it puts the daemon
+//! engine goes through the ports of engine-ports, which `alondrad` connects when it puts the daemon
 //! together.
 #![cfg_attr(all(feature = "test-hooks", not(test)), allow(dead_code, unused_imports))]
 
@@ -27,12 +27,13 @@ pub mod orchestrator_sdk;
 pub mod stall_context;
 
 use alondra_engine_kernel::domain_runtime::DomainRuntime;
-use alondra_engine_kernel::ports::OrchestratorAnswers;
+use alondra_engine_ports::Registry;
+use alondra_engine_ports::orchestrator::OrchestratorAnswers;
 use std::sync::Arc;
 
-/// Gives `domain` what the rest of the engine asks of the orchestrator.
-pub fn wire(domain: &DomainRuntime) {
-    domain.provide::<dyn OrchestratorAnswers>(Arc::new(orchestrator_inbox::Answers));
+/// Gives the registry what the rest of the engine asks of the orchestrator.
+pub fn wire(registry: &Registry) {
+    registry.provide::<dyn OrchestratorAnswers>(Arc::new(orchestrator_inbox::Answers));
 }
 
 /// The engine as `alondrad` puts it together, for the orchestrator's tests.
@@ -40,7 +41,7 @@ pub fn wire(domain: &DomainRuntime) {
 mod wiring {
     pub fn open(home: &std::path::Path) -> anyhow::Result<super::DomainRuntime> {
         let domain = alondra_daemon_engine::wiring::open(home)?;
-        crate::wire(&domain);
+        crate::wire(domain.ports());
         Ok(domain)
     }
 }

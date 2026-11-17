@@ -8,6 +8,7 @@ load("//tools:rust_sources.bzl", "production_sources")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 
 WORKSPACE_DEPS = [
+    "//crates/engine-ports:engine_ports",
     "//crates/core:alondra_core", "//crates/domain-rules:domain_rules",
     "//crates/store:store",
 ]

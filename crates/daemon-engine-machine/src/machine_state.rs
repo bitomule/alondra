@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, VecDeque};
 use alondra_domain_rules::AgentId;
 
 use alondra_core::{Machine, MemoryCompressor, MemoryPressure, Millis};
+pub use alondra_engine_ports::machine::NoRoom;
 
 /// How long memory must have had room before one more node starts.
 pub const ROOM_WINDOW: Millis = 60_000;
@@ -28,32 +29,6 @@ const SWAPPING_FLOOR: u32 = 30;
 /// What macOS must swap out within `ROOM_WINDOW` to count as swapping.
 const SWAPPING: u64 = 64 * MIB;
 
-/// Why one more node may not start.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NoRoom {
-    Unmeasured,
-    /// macOS reports critical pressure.
-    Pressure(MemoryPressure),
-    /// Free memory, and what it must be for `nodes` more at `cost` each to leave `floor` free.
-    Free { free: u32, needed: u32, floor: u32, nodes: usize, cost: i64 },
-    /// What macOS swapped out in the last minute, in bytes, with `free` memory, `needed` to start.
-    Swapping { swapped: u64, free: u32, needed: u32 },
-    Available { available: u64, needed: u64 },
-    SwapGrowth { used: u64, allocated: u64, swapped: u64 },
-}
-
-impl std::fmt::Display for NoRoom {
-    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            NoRoom::Unmeasured => write!(out, "waiting for a valid system memory measurement"),
-            NoRoom::Available { available, needed } => write!(out, "{available} bytes available, {needed} bytes needed including the memory floor and pending nodes"),
-            NoRoom::SwapGrowth { used, allocated, swapped } => write!(out, "positive swap growth of {used} bytes used and {allocated} bytes allocated with {swapped} bytes swapped out; waiting for a stable minute"),
-            NoRoom::Pressure(pressure) => write!(out, "macOS reports {pressure:?} memory pressure"),
-            NoRoom::Free { free, needed, floor, nodes, cost } => write!(out, "{free}% free, {needed}% needed to keep {floor}% free with {nodes} node(s) at {:.2} GiB each", *cost as f64 / GIB as f64),
-            NoRoom::Swapping { swapped, free, needed } => write!(out, "macOS swapped out {} MiB in the last minute with {free}% free, {needed}% needed while it swaps", swapped / MIB),
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Sample {

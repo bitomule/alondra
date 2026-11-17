@@ -562,7 +562,7 @@ pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBod
             return Err(DomainError::new("main_checkout", format!("{why}. {} stays as it is and was not launched", task.id)));
         }
         Err(crate::launch_worktree::LaunchError::Storage(why)) => {
-            domain.gate().not_started(&crate::ports::admission::Key::Task(task.id.clone()));
+            domain.gate().not_started(&alondra_engine_ports::admission::Key::Task(task.id.clone()));
             remember_refusal(domain, &task.id, Some(("worktrees_unavailable", None)));
             if origin == Origin::Orchestrator && replaced.is_none() {
                 return queue_at_gate(domain, &body, &task.id, &task.title);
@@ -574,7 +574,7 @@ pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBod
         return Err(DomainError::new("invalid_input", format!("directory {cwd} does not exist")));
     }
     if let Some(why) = domain.gate().refuse_launch(&storage) {
-        domain.gate().not_started(&crate::ports::admission::Key::Task(task.id.clone()));
+        domain.gate().not_started(&alondra_engine_ports::admission::Key::Task(task.id.clone()));
         if origin == Origin::Orchestrator && replaced.is_none() {
             return queue_at_gate(domain, &body, &task.id, &task.title);
         }
@@ -582,9 +582,9 @@ pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBod
         return Err(DomainError::new("disk_low", format!("{why}. {} stays as it is and can be launched after that", body.task)));
     }
     if prior_native {
-        let (backend, runtime) = domain.sdk().ok_or_else(|| DomainError::new("unavailable", crate::sdk_backend::NO_HOST))?;
+        let (_, runtime) = domain.sdk().ok_or_else(|| DomainError::new("unavailable", crate::sdk_backend::NO_HOST))?;
         let original_directory = known.clone().unwrap_or_else(|| PathBuf::from(&cwd));
-        runtime.hosts().require_recoverable_session(backend, &task.id, provider, &account, original_directory.to_string_lossy().as_ref())
+        runtime.hosts().require_recoverable_session(&task.id, provider, &account, original_directory.to_string_lossy().as_ref())
             .map_err(|error| DomainError::new("native_session_required", error.to_string()))?;
         if !crate::launch_worktree::recovery_directory_matches(Path::new(&cwd), &original_directory).await {
             return Err(DomainError::new("native_session_required", "Recover this node in its original native directory. Create another node to choose a different workspace"));
@@ -604,14 +604,14 @@ pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBod
     let (workplace, recover_directory) = match isolation {
         Ok(workplace) => workplace,
         Err(crate::launch_worktree::LaunchError::Storage(why)) => {
-            domain.gate().not_started(&crate::ports::admission::Key::Task(task.id.clone()));
+            domain.gate().not_started(&alondra_engine_ports::admission::Key::Task(task.id.clone()));
             remember_refusal(domain, &task.id, Some(("worktrees_unavailable", None)));
             return Err(DomainError::new("worktrees_unavailable", why));
         }
         Err(why) => {
             if let Some(known) = &known
                 && let Err(unavailable) = crate::task_worktrees::ready(domain, &known.to_string_lossy()).await {
-                domain.gate().not_started(&crate::ports::admission::Key::Task(task.id.clone()));
+                domain.gate().not_started(&alondra_engine_ports::admission::Key::Task(task.id.clone()));
                 remember_refusal(domain, &task.id, Some(("worktrees_unavailable", None)));
                 return Err(DomainError::new("worktrees_unavailable", unavailable.to_string()));
             }
@@ -620,13 +620,13 @@ pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBod
     };
 
     let reopening = reopening.map(|input| {
-        let (backend, _) = domain.sdk().ok_or_else(|| DomainError::new("unavailable", crate::sdk_backend::NO_HOST))?;
-        domain.hosts().prepare_reopening(backend, &task.id, provider, &account, workplace.dir(), input, recover_directory)
+        domain.sdk().ok_or_else(|| DomainError::new("unavailable", crate::sdk_backend::NO_HOST))?;
+        domain.hosts().prepare_reopening(&task.id, provider, &account, workplace.dir(), input, recover_directory)
             .map_err(|error| DomainError::new("native_session_required", error.to_string()))
     }).transpose()?;
     if prior_native {
-        let (backend, runtime) = domain.sdk().ok_or_else(|| DomainError::new("unavailable", crate::sdk_backend::NO_HOST))?;
-        runtime.hosts().require_recoverable_session(backend, &task.id, provider, &account, workplace.dir().to_string_lossy().as_ref())
+        let (_, runtime) = domain.sdk().ok_or_else(|| DomainError::new("unavailable", crate::sdk_backend::NO_HOST))?;
+        runtime.hosts().require_recoverable_session(&task.id, provider, &account, workplace.dir().to_string_lossy().as_ref())
             .map_err(|error| DomainError::new("native_session_required", error.to_string()))?;
     }
     own_worktree(domain, &task.id, &workplace).await?;
@@ -650,7 +650,7 @@ pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBod
         return Err(DomainError::new("invalid_input", "effort is auto for this request: pass reason, one short line on what the task is and why this model fits it"));
     }
     if origin == Origin::Orchestrator && replaced.is_none() {
-        use crate::ports::admission::{Key, Waiting};
+        use alondra_engine_ports::admission::{Key, Waiting};
         let now = alondra_core::now_millis();
         let key = Key::Task(task.id.clone());
         let waiting = Waiting { key: key.clone(), priority: task.priority, resuming: false, since: now };
@@ -688,11 +688,9 @@ pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBod
     {
         match &replaced {
             Some(old) if crate::sdk_live::runs_through_sdk(&current, old) => {
-                let (backend, runtime) = domain.sdk().expect("the SDK backend was just found");
-                let backend = backend.clone();
                 crate::blocking_work::blocking(|| {
                     domain.hosts().stop(old)?;
-                    domain.hosts().end_unowned_host(runtime, &backend, task.id.clone())
+                    domain.hosts().end_unowned_host(task.id.clone())
                 })
                 .map_err(|alondra_daemon_engine_model::Failed { why, .. }| conflict(format!("the node of {} could not be stopped to replace it: {why}", task.id)))?;
                 crate::node_exit::take_out(domain, &old.0, "node replaced by the orchestrator", Some(cwd.clone()), crate::live::Relaunch::ByItself)

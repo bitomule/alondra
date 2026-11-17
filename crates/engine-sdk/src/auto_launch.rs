@@ -146,7 +146,7 @@ pub async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
             block(AutoLaunchReason::UsageExhausted, None)?;
             continue;
         }
-        let waiting = crate::ports::admission::Waiting { key: crate::ports::admission::Key::Task(task.id.clone()), priority: task.priority, resuming: false,
+        let waiting = alondra_engine_ports::admission::Waiting { key: alondra_engine_ports::admission::Key::Task(task.id.clone()), priority: task.priority, resuming: false,
             since: planned.get(&task.id).copied().unwrap_or(now) };
         if domain.gate().ask(waiting, now).is_err() {
             continue;
@@ -187,7 +187,7 @@ pub fn settle(domain: &DomainRuntime, task: &TaskId, cwd: Option<&str>, launched
         Err(error) => match error.code.as_str() {
             "usage_exhausted" => block(AutoLaunchReason::UsageExhausted)?,
             "account_unavailable" | "account_check_in_progress" => {
-                domain.gate().not_started(&crate::ports::admission::Key::Task(task.clone()));
+                domain.gate().not_started(&alondra_engine_ports::admission::Key::Task(task.clone()));
                 domain.store.lock_or_exit("the domain store").forget_auto_launch(task)?;
             }
             "worktrees_unavailable" | "disk_low" | "plan_review_pending" => domain.store.lock_or_exit("the domain store").forget_auto_launch(task)?,
@@ -201,7 +201,7 @@ pub fn settle(domain: &DomainRuntime, task: &TaskId, cwd: Option<&str>, launched
                 }
             }
             code => {
-                domain.gate().not_started(&crate::ports::admission::Key::Task(task.clone()));
+                domain.gate().not_started(&alondra_engine_ports::admission::Key::Task(task.clone()));
                 if let Some(problem) = crate::start_failures::problem_of(code, &error.message, cwd) {
                     crate::start_failures::failed(domain, task, problem, now)?;
                 }

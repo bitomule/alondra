@@ -7,7 +7,7 @@
 //! (code.claude.com/docs/en/hooks), so going on is always a message to the node.
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
-use crate::ports::admission::{Paused, Reason};
+use alondra_engine_ports::admission::{Paused, Reason};
 use alondra_domain_rules::{AgentId, ApiHealth, OUTAGE_PROBE, InteractionPayload, NodePhase, START_RETRY, StartProblem};
 use alondra_core::Millis;
 use anyhow::Result;
@@ -119,7 +119,7 @@ pub fn settle_cards(domain: &DomainRuntime) -> Result<()> {
             continue;
         }
         let retried = !card.withdrawn && matches!(&card.payload, InteractionPayload::Question { answer: Some(answer), .. } if answer.option_id == START_RETRY);
-        let live = state.node_phase(&agent).is_some_and(NodePhase::live) && crate::ports::admission::open_task_of(&state, &agent.0).is_some();
+        let live = state.node_phase(&agent).is_some_and(NodePhase::live) && alondra_engine_ports::admission::open_task_of(&state, &agent.0).is_some();
         if retried && live {
             let text = match serde_json::from_str::<StartProblem>(&card.body) {
                 Ok(StartProblem::ApiFailed { error, detail, .. }) => resume_text(&error, detail.as_deref()),

@@ -1,9 +1,9 @@
 //! What the engine asks of the admission gate, which `engine-admission` provides, and the values
 //! both speak in: what waits at the gate, why it waits, and the pauses the gate keeps.
-use crate::domain_runtime::DomainRuntime;
+use crate::Runtime;
+use crate::machine::NoRoom;
 use alondra_core::Millis;
 use alondra_domain_rules::{ApiRetry, DomainState, ScheduleRun, TaskId, TaskPriority, TaskState};
-use alondra_daemon_engine_machine::machine_state::NoRoom;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -161,45 +161,41 @@ pub fn priority_of(state: &DomainState, task: Option<&TaskId>) -> TaskPriority {
 pub trait AdmissionGate: Send + Sync {
     /// Whether `waiting` may start now. If it may, the start is counted at once; if not, it waits in
     /// the queue and `changes` wakes its caller when its turn may have come.
-    fn ask(&self, domain: &DomainRuntime, waiting: Waiting, now: Millis) -> Result<(), Hold>;
+    fn ask(&self, runtime: &dyn Runtime, waiting: Waiting, now: Millis) -> Result<(), Hold>;
     /// A start that no longer waits: its task ended, or its caller gave up on it.
-    fn forget(&self, domain: &DomainRuntime, key: &Key);
+    fn forget(&self, runtime: &dyn Runtime, key: &Key);
     /// A start the gate let through that did not start: it holds no slot.
-    fn not_started(&self, domain: &DomainRuntime, key: &Key);
+    fn not_started(&self, runtime: &dyn Runtime, key: &Key);
     /// Something the gate decides on changed.
-    fn poke(&self, domain: &DomainRuntime);
+    fn poke(&self, runtime: &dyn Runtime);
     /// Bumped whenever a waiting start may go.
-    fn changes(&self, domain: &DomainRuntime) -> watch::Receiver<u64>;
+    fn changes(&self, runtime: &dyn Runtime) -> watch::Receiver<u64>;
     /// Whether the node of `task` may go on with what waits for a slot, counted at once when it may.
-    fn may_take_turn(&self, domain: &DomainRuntime, task: &TaskId, now: Millis) -> bool;
+    fn may_take_turn(&self, runtime: &dyn Runtime, task: &TaskId, now: Millis) -> bool;
     /// Whether what `task` goes on with still waits for a slot.
-    fn waits_for_slot(&self, domain: &DomainRuntime, state: &DomainState, task: &TaskId) -> bool;
+    fn waits_for_slot(&self, runtime: &dyn Runtime, state: &DomainState, task: &TaskId) -> bool;
     /// The owner of `task` ended: nothing of it holds a slot.
-    fn owner_ended(&self, domain: &DomainRuntime, task: &TaskId);
+    fn owner_ended(&self, runtime: &dyn Runtime, task: &TaskId);
     /// A node stopped for a reason of its own waits with it and comes back through the queue. False
     /// for a session with no open task.
-    fn hold_back(&self, domain: &DomainRuntime, session: &str, reason: Reason, now: Millis) -> bool;
+    fn hold_back(&self, runtime: &dyn Runtime, session: &str, reason: Reason, now: Millis) -> bool;
     /// The user paused a working node: it stops at once and only the user brings it back.
-    fn pause_by_user(&self, domain: &DomainRuntime, session: &str, now: Millis) -> Result<(), &'static str>;
+    fn pause_by_user(&self, runtime: &dyn Runtime, session: &str, now: Millis) -> Result<(), &'static str>;
     /// The user resumed a paused node: it waits in the queue like a start. False if it is not paused.
-    fn resume_now(&self, domain: &DomainRuntime, session: &str, now: Millis) -> bool;
+    fn resume_now(&self, runtime: &dyn Runtime, session: &str, now: Millis) -> bool;
     /// The user wrote to a `claude --bg` node a holding pause stopped: the pause ends.
-    fn release_by_user_message(&self, domain: &DomainRuntime, session: &str);
-    fn paused(&self, domain: &DomainRuntime, session: &str) -> Option<Paused>;
-    fn paused_by_user(&self, domain: &DomainRuntime, session: &str) -> bool;
+    fn release_by_user_message(&self, runtime: &dyn Runtime, session: &str);
+    fn paused(&self, runtime: &dyn Runtime, session: &str) -> Option<Paused>;
+    fn paused_by_user(&self, runtime: &dyn Runtime, session: &str) -> bool;
     /// The reason of a pause that holds the node until Alondra or the user ends it, if it has one.
-    fn holding(&self, domain: &DomainRuntime, session: &str) -> Option<Reason>;
-    fn pauses(&self, domain: &DomainRuntime) -> Pauses;
+    fn holding(&self, runtime: &dyn Runtime, session: &str) -> Option<Reason>;
+    fn pauses(&self, runtime: &dyn Runtime) -> Pauses;
     /// A queued task the user paused: nothing starts it until the user resumes it.
-    fn held_by_user(&self, domain: &DomainRuntime, task: &TaskId) -> bool;
+    fn held_by_user(&self, runtime: &dyn Runtime, task: &TaskId) -> bool;
     /// The place and the wait of a queued task, worded for the orchestrator.
-    fn queued_text(&self, domain: &DomainRuntime, task: &TaskId, now: Millis) -> String;
+    fn queued_text(&self, runtime: &dyn Runtime, task: &TaskId, now: Millis) -> String;
     /// Why no node may start in `cwd` now, if the disk is nearly full there or on the Mac.
-    fn refuse_launch(&self, domain: &DomainRuntime, cwd: &Path) -> Option<String>;
+    fn refuse_launch(&self, runtime: &dyn Runtime, cwd: &Path) -> Option<String>;
     /// Whether the Mac's disk is under its floor.
-    fn disk_low(&self, domain: &DomainRuntime) -> bool;
-    /// Takes `machine` as a sample of the Mac and `disk` as its own disk's space: a test's fixture
-    /// makes the Mac healthy, short or full with it.
-    #[cfg(any(test, feature = "test-hooks"))]
-    fn measure_machine(&self, _domain: &DomainRuntime, _machine: &alondra_core::Machine, _disk: alondra_daemon_support::disk::Space) {}
+    fn disk_low(&self, runtime: &dyn Runtime) -> bool;
 }

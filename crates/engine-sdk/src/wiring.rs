@@ -4,7 +4,7 @@
 //! itself knows none of them; `alondrad` adds the orchestrator's.
 use crate::domain_runtime::{CommitObserver, DomainRuntime};
 use crate::hosts::SdkHosts;
-use crate::ports::OrchestratorEngine;
+use alondra_engine_ports::Registry;
 use anyhow::Result;
 use std::path::Path;
 use std::sync::Arc;
@@ -15,10 +15,15 @@ pub fn open(home: &Path) -> Result<DomainRuntime> {
 
 pub fn open_at(home: &Path, database: &Path) -> Result<DomainRuntime> {
     let runtime = DomainRuntime::open_observed(home, database, Some(alondra_daemon_engine::wiring::held_cards()), observers())?;
-    runtime.provide::<dyn OrchestratorEngine>(Arc::new(alondra_daemon_engine::wiring::Engine));
-    runtime.provide::<dyn SdkHosts>(Arc::new(crate::sdk_owner::Hosts));
-    alondra_engine_admission::wire(&runtime);
+    alondra_daemon_engine::wiring::wire(runtime.ports());
+    wire(runtime.ports());
+    alondra_engine_admission::wire(runtime.ports());
     Ok(runtime)
+}
+
+/// Gives the registry the owner of the SDK hosts the rest of the engine asks.
+pub fn wire(registry: &Registry) {
+    registry.provide::<dyn SdkHosts>(Arc::new(crate::sdk_owner::Hosts));
 }
 
 /// Every subsystem that hears of the runtime's commits, in the order they hear of each one.

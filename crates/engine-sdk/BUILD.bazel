@@ -10,6 +10,7 @@ load("//tools:rust_sources.bzl", "production_sources")
 # The SDK's crate is the top of the engine: it depends on daemon-engine and engine-admission, which
 # ask it only through the port SdkHosts, and only alondrad, which puts the daemon together, sees it.
 WORKSPACE_DEPS = [
+    "//crates/engine-ports:engine_ports",
     "//crates/agent-application:agent_application",
     "//crates/agent-runtime:agent_runtime",
     "//crates/core:alondra_core",

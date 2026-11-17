@@ -42,6 +42,7 @@ CRATE_LAYERS = {
     # Mixed: its accounts, launcher and update code moves to the `system` adapter.
     "crates/core": DOMAIN,
     "crates/provider-contract": PORTS,
+    "crates/engine-ports": PORTS,
     "crates/view-model": PORTS,
     "crates/store": PORTS,
     "crates/agent-application": PORTS,
@@ -81,6 +82,9 @@ PRIVATE_TO = {
 # The dependencies that break the rule today, by dependent package. This list only shrinks: a
 # change that removes a dependency removes its entry, `crate_layers_test` fails on an entry no
 # dependency uses, and its ceiling drops with every entry removed.
+#
+# Every `crates/agent-runtime` entry goes in phase 3b, when the local host processes are reached
+# only through the port `AgentHost` of `crates/engine-ports`.
 LAYER_EXCEPTIONS = {
     "crates/daemon-engine": [
         "crates/agent-runtime",

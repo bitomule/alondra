@@ -398,14 +398,14 @@ async fn dispatch_pending(
     if !ready || paused || domain.gate().disk_low() {
         return Ok(());
     }
-    let key = crate::ports::admission::Key::Run(run_id.0.clone());
+    let key = alondra_engine_ports::admission::Key::Run(run_id.0.clone());
     if state.scheduled_launch_guard(run_id).is_err() {
         domain.gate().forget(&key);
         return Ok(());
     }
-    let waiting = crate::ports::admission::Waiting {
+    let waiting = alondra_engine_ports::admission::Waiting {
         key: key.clone(),
-        priority: crate::ports::admission::run_priority(&state, run),
+        priority: alondra_engine_ports::admission::run_priority(&state, run),
         resuming: false,
         since: run.claimed_at.unwrap_or(now),
     };
@@ -1736,8 +1736,8 @@ pub mod tests {
         let run = &state.schedule.runs[&ScheduleRunId::from("stuck")];
         assert_eq!((run.state, run.launch.as_ref().unwrap().state), (ScheduleRunState::Sent, ScheduleLaunchState::Pending));
         assert_eq!(state.tasks[&task].state, TaskState::Cancelled);
-        let waiting = crate::ports::admission::Waiting {
-            key: crate::ports::admission::Key::Run("stuck".into()),
+        let waiting = alondra_engine_ports::admission::Waiting {
+            key: alondra_engine_ports::admission::Key::Run("stuck".into()),
             priority: alondra_domain_rules::TaskPriority::High,
             resuming: false,
             since: 0,

@@ -36,7 +36,7 @@ const BACKOFF_CAP_MS: Millis = 30 * 60_000;
 const JITTER_MAX_MS: u64 = 45_000;
 pub(crate) const RESUME_MESSAGE: &str = "Your Claude usage limit has reset. Carry on with what you were doing.";
 
-pub use crate::ports::Exhausted;
+pub use alondra_engine_ports::orchestrator::Exhausted;
 
 #[derive(Default)]
 struct Record {
@@ -472,7 +472,7 @@ fn wake_legacy_nodes(domain: &crate::domain_runtime::DomainRuntime, require_capa
         if !legacy_wake_ready(&state, &alondra_domain_rules::AgentId(node.session_id.clone()), now, require_capacity) {
             continue;
         }
-        if !domain.gate().hold_back(&node.session_id, crate::ports::admission::Reason::Usage, now) {
+        if !domain.gate().hold_back(&node.session_id, alondra_engine_ports::admission::Reason::Usage, now) {
             let _ = crate::sdk_handover::tell(domain, &node.session_id, crate::node_push::ALONDRA, RESUME_MESSAGE, true);
         }
     }

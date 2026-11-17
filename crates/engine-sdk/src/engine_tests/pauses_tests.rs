@@ -434,7 +434,7 @@ async fn a_disk_hold_the_node_rested_through_ends_once_there_is_room_by_telling_
     let domain = Arc::clone(&node.domain);
     domain.admission().tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
     assert!(domain.admission().hold_back(&domain, &node.agent(), Reason::Disk, alondra_core::now_millis()));
-    interrupt_sdk_node(&domain, &node.agent());
+    interrupt_sdk_node(&*domain, &node.agent());
     node.step_until(SdkNode::turn_ended);
     assert_eq!(node.lifecycle().activity(), alondra_domain::ActivityView::Resting);
     assert_eq!(node.pending_inputs(), 0, "nothing waits for it");
@@ -523,7 +523,7 @@ async fn an_interrupted_task_waits_for_instruction_instead_of_being_woken_by_the
     let domain = Arc::clone(&node.domain);
     domain.admission().tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
     node.deliver();
-    interrupt_sdk_node(&domain, &node.agent());
+    interrupt_sdk_node(&*domain, &node.agent());
     node.step_until(SdkNode::turn_ended);
     node.get_it_back();
     assert_eq!(node.lifecycle().awaits(), Some(&alondra_domain::Await::Instruction));
@@ -573,7 +573,7 @@ async fn ten_nodes_the_disk_held_come_back_one_by_one_on_19_gb_free_before_a_new
 
     let mut end_turn = |index: usize| {
         let (task, driver) = &mut drivers[index];
-        interrupt_sdk_node(&domain, &driver.agent().0);
+        interrupt_sdk_node(&*domain, &driver.agent().0);
         while node.activity(task) != alondra_domain::ActivityView::Resting {
             driver.step(&|| true).unwrap();
         }
@@ -662,7 +662,7 @@ async fn under_the_disks_floor_the_heavier_nodes_next_turn_waits_for_room_withou
     assert_eq!(node.prompts(), ["consume-and-hold"]);
     assert!(!crate::admission::working_tasks(&domain, &domain.state().unwrap()).contains(&TaskId::from(SDK_TASK)), "the disk holds it: its turn runs but it takes no slot");
 
-    interrupt_sdk_node(&domain, &node.agent());
+    interrupt_sdk_node(&*domain, &node.agent());
     node.step_until(SdkNode::turn_ended);
     crate::domain_messages::tell_sdk_node(&domain, &SDK_TASK.into(), crate::node_push::ALONDRA, "Use the short changelog format", "tell-while-held", false).unwrap();
     node.gate_look().await;
@@ -839,7 +839,7 @@ async fn resume_on_the_card_of_a_paused_sdk_node_is_taken_while_the_card_is_open
             node.pause();
         } else {
             assert!(domain.admission().hold_back(&domain, &node.agent(), reason.clone(), alondra_core::now_millis()));
-            interrupt_sdk_node(&domain, &node.agent());
+            interrupt_sdk_node(&*domain, &node.agent());
             node.step_until(SdkNode::turn_ended);
         }
         let card = node_pause_card(&domain).unwrap_or_else(|| panic!("{reason:?}: the pause has its card"));
@@ -874,13 +874,13 @@ async fn every_pause_with_its_host_lost_or_not_keeps_a_working_task_owned_and_it
                 Reason::Disk => {
                     assert!(domain.admission().hold_back(&domain, &node.agent(), Reason::Disk, alondra_core::now_millis()));
                     if !host_lost {
-                        interrupt_sdk_node(&domain, &node.agent());
+                        interrupt_sdk_node(&*domain, &node.agent());
                         node.step_until(SdkNode::turn_ended);
                     }
                 }
                 declared => {
                     assert!(domain.admission().hold_back(&domain, &node.agent(), declared.clone(), alondra_core::now_millis()));
-                    interrupt_sdk_node(&domain, &node.agent());
+                    interrupt_sdk_node(&*domain, &node.agent());
                     node.step_until(SdkNode::turn_ended);
                 }
             }
