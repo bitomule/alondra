@@ -10,6 +10,8 @@ load("//tools:rust_sources.bzl", "production_sources")
 # engine that wires them sees it.
 WORKSPACE_DEPS = [
     "//crates/core:alondra_core",
+    "//crates/domain-rules:domain_rules",
+    "//crates/view-model:view_model",
 ]
 
 # Compiled only under `#[cfg(test)]` or the `test-hooks` feature, though its name does not say so.

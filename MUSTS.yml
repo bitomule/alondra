@@ -594,6 +594,8 @@ checks:
       - "crates/alondrad/**"
       - "crates/codex-protocol/**"
       - "crates/core/**"
+      - "crates/domain-rules/**"
+      - "crates/view-model/**"
       - "crates/daemon-engine-model/**"
       - "crates/daemon-engine-store/**"
       - "crates/daemon-support/**"
