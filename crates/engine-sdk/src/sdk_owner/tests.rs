@@ -3284,7 +3284,7 @@ fn allowed_in_task(slice: &Slice) -> Vec<(String, u32)> {
 fn a_command_allowed_in_the_task_runs_again_only_as_the_same_command_from_the_same_folder() {
     let slice = Slice::new();
     let worktree = slice.worktree.to_str().unwrap().to_owned();
-    let reset = "git reset --hard origin/main";
+    let reset = "git clean -fd build";
     let (mut driver, card) = slice.asked(&format!("decide:bash@{worktree} {reset}"));
     assert_eq!(slice.options(&card), [Hold::ALLOW, Hold::FOR_TASK, Hold::DENY], "no «allow always» outside a repo, «allow in this task» inside the worktree");
     slice.answer(&card, Hold::FOR_TASK, None).unwrap();
@@ -3297,7 +3297,7 @@ fn a_command_allowed_in_the_task_runs_again_only_as_the_same_command_from_the_sa
     let stored: (String, i64) = observer.query_row("SELECT card,uses FROM task_permission_grants WHERE task_id=?1", [TASK], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
     assert_eq!(stored, (card.clone(), 1), "what the user allowed is kept with the task");
     for (cwd, command, why) in [
-        (worktree.clone(), "git reset --hard HEAD~1", "another target"),
+        (worktree.clone(), "git clean -fd dist", "another target"),
         (format!("{worktree}/crates"), reset, "another folder"),
     ] {
         let card = asks_again(&slice, &mut driver, &cwd, command).unwrap_or_else(|| panic!("{why} asks again"));
@@ -3314,7 +3314,7 @@ fn a_command_allowed_in_the_task_runs_again_only_as_the_same_command_from_the_sa
     assert_eq!(slice.options(&outside), [Hold::ALLOW, Hold::DENY], "and cannot be allowed in the task");
     let state = slice.domain.state().unwrap();
     assert_eq!(state.interactions[&InteractionId(outside.clone())].card.allow_for_task,
-        Some(alondra_core::allow_for_task::AllowForTask::Refused { why: alondra_core::allow_for_task::NotForTask::Outside, part: "/Users/someone/Desktop/app".into() }));
+        Some(alondra_core::allow_for_task::AllowForTask::Refused { why: alondra_core::allow_for_task::NotForTask::Outside, part: "/Users/someone/Desktop/app".into(), cwd: worktree.clone() }));
     slice.answer(&outside, Hold::DENY, None).unwrap();
     slice.rest(&mut driver);
     slice.run(&user(), "revoke", Command::RevokeTaskGrant { task_id: TASK.into(), card: card.as_str().into() });

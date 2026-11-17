@@ -3,6 +3,7 @@
 use super::*;
 use alondra_core::allow_for_task::AllowForTask;
 use alondra_core::node_guard::forbidden_for_nodes;
+use alondra_core::task_git::{TaskBranch, Verdict};
 
 /// The MCP server the Alondra plugin registers in a node's Claude Code.
 pub const ALONDRA_MCP_SERVER: &str = "plugin:alondra:alondra";
@@ -113,6 +114,11 @@ impl DomainState {
         if let Some(decision) = decision_policy(hold, tool, input, mcp_server, plan).or(waiting) {
             return self.decide(lifecycles, task, LifecycleRecord::DecidedByPolicy { epoch, decision });
         }
+        if hold == Hold::Permission {
+            if let Some(decision) = self.task_git_decision(task, tool, input, prompt) {
+                return self.decide(lifecycles, task, LifecycleRecord::DecidedByPolicy { epoch, decision });
+            }
+        }
         if hold == Hold::Permission && self.allowed_in_task(task, prompt) {
             return self.decide(lifecycles, task, LifecycleRecord::DecidedByPolicy { epoch, decision: DecisionRecord::Allow });
         }
@@ -162,6 +168,23 @@ impl DomainState {
             effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card_id });
         }
         self.decide(lifecycles, task, LifecycleRecord::DecisionAsked { card: held, epoch, reason: reason_of(hold) })
+    }
+
+    /// What Alondra decides by itself for a git command of the conflict flow: allowed in the
+    /// task's own worktree on its own branch, denied when it would throw work away.
+    fn task_git_decision(&self, task: &TaskId, tool: Option<&str>, input: &serde_json::Value, prompt: &DecisionPrompt) -> Option<DecisionRecord> {
+        let command = input.get("command").and_then(serde_json::Value::as_str).filter(|_| tool == Some("Bash"))?;
+        let cwd = match prompt {
+            DecisionPrompt::Card { card, .. } => card.allow_for_task.as_ref().and_then(AllowForTask::cwd),
+            _ => None,
+        };
+        let branches: Vec<TaskBranch> = self.tasks.get(task)?.open_worktrees()
+            .filter_map(|(path, worktree)| Some(TaskBranch { worktree: path.into(), branch: worktree.branch.clone()? }))
+            .collect();
+        match alondra_core::task_git::judge(command, cwd, &branches)? {
+            Verdict::Allow => Some(DecisionRecord::Allow),
+            Verdict::Deny(message) => Some(DecisionRecord::Deny { message }),
+        }
     }
 
     /// Whether something the user allowed in the open task covers this prompt; the grant that

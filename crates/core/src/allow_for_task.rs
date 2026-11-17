@@ -40,6 +40,9 @@ pub enum AllowForTask {
         /// The folder or path that leaves the task's folders, or the part that cannot be read.
         #[serde(default, skip_serializing_if = "String::is_empty")]
         part: String,
+        /// The folder the command was asked to run from, when the prompt said it.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        cwd: String,
     },
 }
 
@@ -65,6 +68,13 @@ pub enum NotForTask {
 impl AllowForTask {
     pub fn offered(&self) -> bool {
         !matches!(self, AllowForTask::Refused { .. })
+    }
+
+    /// The folder the prompt's command runs from, offered or not.
+    pub fn cwd(&self) -> Option<&str> {
+        match self {
+            AllowForTask::Exact { cwd, .. } | AllowForTask::Shape { cwd, .. } | AllowForTask::Refused { cwd, .. } => Some(cwd.as_str()).filter(|cwd| !cwd.is_empty()),
+        }
     }
 
     /// Whether this grant lets `asked` run without asking: the same command from the same folder,
@@ -99,7 +109,14 @@ pub struct Prompt<'a> {
 /// What «allow in this task» offers for `prompt` in a task whose folders are `folders`: its open
 /// worktrees and Alondra's files folder. The sandbox's temporary folders always count.
 pub fn assess(prompt: &Prompt, folders: &[PathBuf]) -> AllowForTask {
-    let refused = |why: NotForTask, part: &str| AllowForTask::Refused { why, part: part.to_owned() };
+    match assess_folders(prompt, folders) {
+        AllowForTask::Refused { why, part, .. } => AllowForTask::Refused { why, part, cwd: prompt.cwd.unwrap_or_default().to_owned() },
+        offered => offered,
+    }
+}
+
+fn assess_folders(prompt: &Prompt, folders: &[PathBuf]) -> AllowForTask {
+    let refused = |why: NotForTask, part: &str| AllowForTask::Refused { why, part: part.to_owned(), cwd: String::new() };
     if prompt.tool != Some(allow_always::TOOL) {
         return refused(NotForTask::NotCommand, "");
     }
@@ -151,8 +168,8 @@ impl Scope<'_> {
 
     /// Every folder the command moves to and every path it names stays in the task's folders.
     fn check(&self, parts: &[Part], mut base: PathBuf) -> Result<(), AllowForTask> {
-        let outside = |part: &str| AllowForTask::Refused { why: NotForTask::Outside, part: part.to_owned() };
-        let unreadable = |part: String| AllowForTask::Refused { why: NotForTask::Unreadable, part };
+        let outside = |part: &str| AllowForTask::Refused { why: NotForTask::Outside, part: part.to_owned(), cwd: String::new() };
+        let unreadable = |part: String| AllowForTask::Refused { why: NotForTask::Unreadable, part, cwd: String::new() };
         for part in parts {
             let words = allow_always::strip(&part.words).map_err(|_| unreadable(part.shown()))?;
             let program = words.first().ok_or_else(|| unreadable(part.shown()))?;

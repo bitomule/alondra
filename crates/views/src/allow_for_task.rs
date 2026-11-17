@@ -54,7 +54,7 @@ pub fn chosen(offer: &AllowForTask, lang: Lang) -> Option<String> {
 
 /// The one line a card without «allow in this task» says about why.
 pub fn refusal(offer: &AllowForTask, lang: Lang) -> Option<String> {
-    let AllowForTask::Refused { why, part } = offer else { return None };
+    let AllowForTask::Refused { why, part, .. } = offer else { return None };
     let reason = match why {
         NotForTask::NotCommand => t!(lang, "only terminal commands can be.", "solo se puede con comandos de terminal.").into(),
         NotForTask::Persistent => t!(lang, "Claude Code says this request can only be allowed once.",

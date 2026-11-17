@@ -244,3 +244,7 @@ crates/scenarios-transcript/src/guard.rs	let allowed = if key { is_key(text) } e
 crates/scenarios/src/bin/from_report.rs	let (place, rule) = line.split_once(": ")?;	format	reads the documented `file:line: rule` output of tools/public_data_guard.py --files
 crates/scenarios/src/claude_host.rs	if taken.iter().any(|input| state.prompts.get(input).is_some_and(|prompt| prompt.contains(text))) {	user-search	the scenario's Claude finds the message the case wrote by its words, as the reader of the prompt it is
 crates/scenarios/src/claude_host.rs	let Some(position) = state.queued.iter().position(|(_, prompt)| prompt.contains(text)) else {	user-search	the scenario's Claude finds the message the case wrote by its words, as the reader of the prompt it is
+crates/core/src/task_git.rs	&& !text.starts_with(['-', '/'])	security-parse	shell command policy that parses the command it judges (G-12)
+crates/core/src/task_git.rs	&& !text.contains("..")	security-parse	shell command policy that parses the command it judges (G-12)
+crates/core/src/task_git.rs	text.strip_prefix("origin/").is_some_and(safe_ref)	security-parse	shell command policy that parses the command it judges (G-12)
+crates/core/src/task_git.rs	let own_source = source.is_none_or(|s| s == "HEAD" || s == branch || s == format!("refs/heads/{branch}"));	security-parse	shell command policy that parses the command it judges (G-12)
