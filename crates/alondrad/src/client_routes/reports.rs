@@ -88,6 +88,20 @@ fn app_section_of(body: &Value) -> Result<Option<String>, Reply> {
     }
 }
 
+/// The sections to leave out of a new report, as `alondra report --without` takes them; the CLI
+/// refuses a name that is not a section.
+fn without_of(body: &Value) -> Result<Vec<String>, Reply> {
+    let section = |name: &str| (1..=40).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_lowercase() || matches!(b, b'.' | b'-'));
+    match body.get("without") {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(names)) if names.len() <= 16 => names
+            .iter()
+            .map(|name| name.as_str().filter(|name| section(name)).map(str::to_owned).ok_or_else(|| invalid("invalid section to leave out")))
+            .collect(),
+        Some(_) => Err(invalid("invalid sections to leave out")),
+    }
+}
+
 fn lang_of(body: &Value) -> &'static str {
     if body.get("lang").and_then(Value::as_str) == Some("es") { "es" } else { "en" }
 }
@@ -136,8 +150,9 @@ impl Client {
         *self.report_cli.lock_or_recover("the report CLI") = Some(cli);
     }
 
-    /// `POST /reports`: builds a new report, with `description` as the user wrote it, and answers
-    /// its summary, where it would be sent and the kind of failure it goes as.
+    /// `POST /reports`: builds a new report, with `description` as the user wrote it and without the
+    /// sections in `without`, and answers its summary, where it would be sent and the kind of failure
+    /// it goes as.
     pub(super) async fn new_report(&self, body: &Value) -> Reply {
         let (failure, cli) = match (failure_of(body), self.report_cli()) {
             (Ok(failure), Ok(cli)) => (failure, cli),
@@ -159,6 +174,10 @@ impl Client {
         };
         if app.is_some() {
             args.extend(["--app-section".to_owned(), "-".to_owned()]);
+        }
+        match without_of(body) {
+            Ok(without) => args.extend(without.into_iter().flat_map(|section| ["--without".to_owned(), section])),
+            Err(reply) => return reply,
         }
         match run(cli, &self.home, lang_of(body), args, app, BUILD).await {
             Ok(mut summary) => {
