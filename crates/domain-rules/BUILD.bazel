@@ -1,7 +1,8 @@
+load("//tools/bazel:crates.bzl", "domain_crate")
 load("//tools:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_doc_test", "rust_library")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_doc_test")
 load("//tools:rust_sources.bzl", "production_sources")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 
@@ -12,13 +13,12 @@ DOMAIN_RULES_DEPS = all_crate_deps(normal = True) + [
 ]
 
 # The rules of the domain: every command, the state it changes and the cards it raises.
-rust_library(
+domain_crate(
     name = "domain_rules",
     srcs = production_sources(),
     crate_name = "alondra_domain_rules",
-    edition = "2024",
     version = "0.1.0",
-    visibility = ["//visibility:public"],
+    test_visibility = ["//crates/machine-model:__pkg__"],
     deps = DOMAIN_RULES_DEPS,
 )
 

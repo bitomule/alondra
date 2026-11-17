@@ -1,3 +1,4 @@
+load("//tools/bazel:crates.bzl", "root_binary")
 load("//tools:tree.bzl", "repo_tree")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
@@ -135,11 +136,10 @@ low_opt_rust_test(
 # `bazel run //crates/scenarios:capture -- --task <id> --out .scratch/<name>.ndjson` anonymizes the
 # frames the hosts of a task, Claude's or Codex's, wrote on this Mac into transcripts for a reviewer
 # to read, in the worktree's `.scratch`.
-rust_binary(
+root_binary(
     name = "capture",
     srcs = ["src/bin/capture.rs"],
     crate_root = "src/bin/capture.rs",
-    edition = "2024",
     version = VERSION,
     deps = all_crate_deps(normal = True) + ["//crates/scenarios-transcript:scenarios_transcript"],
 )

@@ -1,7 +1,7 @@
+load("//tools/bazel:crates.bzl", "adapter_out_crate")
 load("//tools:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
-load("@rules_rust//rust:defs.bzl", "rust_library")
 
 _DEPS = [
     "//crates/codex-protocol:codex_protocol",
@@ -13,13 +13,11 @@ _DEPS = [
     "//crates/process-group:process_group",
 ] + all_crate_deps(normal = True)
 
-rust_library(
+adapter_out_crate(
     name = "provider_codex",
     srcs = glob(["src/*.rs"], exclude = ["src/*_tests.rs"]),
     crate_name = "alondra_provider_codex",
-    edition = "2024",
     version = "0.1.0",
-    visibility = ["//crates:__subpackages__"],
     deps = _DEPS,
 )
 low_opt_rust_test(

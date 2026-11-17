@@ -1,14 +1,13 @@
+load("//tools/bazel:crates.bzl", "port_crate")
 load("//tools:tree.bzl", "repo_tree")
-load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//tools:rust_sources.bzl", "production_sources")
 
-rust_library(
+port_crate(
     name = "provider_contract",
     srcs = ["src/lib.rs"],
     crate_name = "alondra_provider_contract",
-    edition = "2024",
     version = "0.1.0",
-    visibility = ["//crates:__subpackages__"],
+    test_visibility = ["//crates/provider-conformance:__pkg__"],
     deps = ["//crates/foundation:foundation"],
 )
 

@@ -1,7 +1,7 @@
+load("//tools/bazel:crates.bzl", "port_crate")
 load("//tools:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
-load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//tools:rust_sources.bzl", "production_sources")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 
@@ -12,13 +12,11 @@ VIEW_MODEL_DEPS = all_crate_deps(normal = True) + [
 ]
 
 # What the daemon hands the screens: the wire types of a view and what it observes of live nodes.
-rust_library(
+port_crate(
     name = "view_model",
     srcs = production_sources(),
     crate_name = "alondra_view_model",
-    edition = "2024",
     version = "0.1.0",
-    visibility = ["//visibility:public"],
     deps = VIEW_MODEL_DEPS,
 )
 

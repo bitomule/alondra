@@ -1,3 +1,4 @@
+load("//tools/bazel:crates.bzl", "application_crate")
 load("//tools:tree.bzl", "repo_tree")
 load("//tools:rust_test.bzl", "LOW_OPT_LEVEL", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
@@ -23,13 +24,11 @@ WORKSPACE_DEPS = [
     "//crates/view-model:view_model",
 ]
 
-rust_library(
+application_crate(
     name = "engine_sdk",
     srcs = production_sources(test_only = ["src/machine_hooks.rs"]),
     crate_name = "alondra_engine_sdk",
-    edition = "2024",
     version = VERSION,
-    visibility = ["//crates/alondrad:__pkg__"],
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine:daemon_engine",
         "//crates/daemon-engine-machine:daemon_engine_machine",

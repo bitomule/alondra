@@ -1,17 +1,15 @@
+load("//tools/bazel:crates.bzl", "foundation_crate")
 load("//tools:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
-load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//tools:rust_sources.bzl", "production_sources")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 
-rust_library(
+foundation_crate(
     name = "alondra_e2e",
     srcs = production_sources(),
     crate_name = "alondra_e2e",
-    edition = "2024",
     version = "0.1.0",
-    visibility = ["//visibility:public"],
     deps = all_crate_deps(normal = True),
 )
 

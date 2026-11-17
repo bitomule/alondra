@@ -1,16 +1,16 @@
+load("//tools/bazel:crates.bzl", "domain_crate")
 load("//tools:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
-load("@rules_rust//rust:defs.bzl", "rust_doc_test", "rust_library")
+load("@rules_rust//rust:defs.bzl", "rust_doc_test")
 load("//tools:rust_sources.bzl", "production_sources")
 
-rust_library(
+domain_crate(
     name = "domain",
     srcs = glob(["src/**/*.rs"]),
     crate_name = "alondra_domain",
-    edition = "2024",
     version = "0.1.0",
-    visibility = ["//crates:__subpackages__", "//tests:__subpackages__"],
+    test_visibility = ["//crates/machine-model:__pkg__", "//crates/provider-conformance:__pkg__"],
     deps = ["//crates/foundation:foundation"] + all_crate_deps(normal = True),
 )
 

@@ -1,3 +1,4 @@
+load("//tools/bazel:crates.bzl", "application_crate")
 load("//tools:tree.bzl", "repo_tree")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 load("//tools:rust_test.bzl", "LOW_OPT_LEVEL", "low_opt_rust_test")
@@ -19,13 +20,11 @@ WORKSPACE_DEPS = [
     "//crates/store:store",
 ]
 
-rust_library(
+application_crate(
     name = "daemon_engine",
     srcs = production_sources(test_only = ["src/host_fixtures.rs", "src/machine_hooks.rs"]),
     crate_name = "alondra_daemon_engine",
-    edition = "2024",
     version = VERSION,
-    visibility = ["//crates/alondrad:__pkg__", "//crates/engine-admission:__pkg__", "//crates/engine-sdk:__pkg__"],
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-engine-store:daemon_engine_store",
