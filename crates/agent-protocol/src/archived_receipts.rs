@@ -17,18 +17,7 @@ pub fn archived_receipts(
     validate: impl Fn(&[u8]) -> Result<String, Error>,
 ) -> Result<Vec<ArchivedReceipt>, Error> {
     if commands.is_empty() { return Ok(Vec::new()); }
-    let mut expected = BTreeMap::new();
-    for &bytes in commands {
-        let mut reader = FramedReader::new(Cursor::new(bytes));
-        let frame = reader.read_received()?.ok_or(Error::Invalid("missing archived command"))?;
-        let Body::Command(command) = &frame.frame().body else { return Err(Error::Invalid("archived command type")); };
-        if &command.fence != fence || &command.execution != execution || reader.read_received()?.is_some() {
-            return Err(Error::Invalid("archived command scope"));
-        }
-        if expected.insert(command.command_id.0.clone(), (bytes, frame)).is_some() {
-            return Err(Error::Invalid("duplicate archived command"));
-        }
-    }
+    let expected = expected_commands(fence, execution, commands)?;
     let parent = state_dir.parent().ok_or(Error::Invalid("archive parent"))?;
     let prefix = format!("{}.ended-", state_dir.file_name().and_then(|name| name.to_str()).ok_or(Error::Invalid("archive name"))?);
     let entries = match std::fs::read_dir(parent) {
@@ -46,16 +35,49 @@ pub fn archived_receipts(
     paths.sort();
     let mut proofs = Vec::new();
     for path in paths {
-        if path.join("uncertain").try_exists().map_err(Error::Io)? { continue; }
-        let Some(bootstrap) = regular_file(&path.join("host.lock"))? else { continue };
-        let mut bytes = Vec::new();
-        bootstrap.take(65_537).read_to_end(&mut bytes).map_err(Error::Io)?;
-        if bytes.len() > 65_536 { return Err(Error::Invalid("archive bootstrap capacity")); }
-        let instance = validate(&bytes)?;
-        let Some(outbox) = regular_file(&path.join("outbox"))? else { continue };
-        proofs.extend(read_archive(BufReader::new(outbox), fence, execution, &instance, &expected)?);
+        proofs.extend(receipts_in(&path, fence, execution, &expected, &validate)?);
     }
     Ok(proofs)
+}
+
+/// `archived_receipts` of the host that ended in `state_dir` itself, before anything archives its
+/// folder: a host a move ends is never archived, and what it received is only proven there.
+pub fn ended_receipts(
+    state_dir: &Path, fence: &Fence, execution: &Execution, commands: &[&[u8]],
+    validate: impl Fn(&[u8]) -> Result<String, Error>,
+) -> Result<Vec<ArchivedReceipt>, Error> {
+    if commands.is_empty() { return Ok(Vec::new()); }
+    receipts_in(state_dir, fence, execution, &expected_commands(fence, execution, commands)?, &validate)
+}
+
+fn expected_commands<'a>(fence: &Fence, execution: &Execution, commands: &[&'a [u8]]) -> Result<BTreeMap<String, (&'a [u8], ReceivedFrame)>, Error> {
+    let mut expected = BTreeMap::new();
+    for &bytes in commands {
+        let mut reader = FramedReader::new(Cursor::new(bytes));
+        let frame = reader.read_received()?.ok_or(Error::Invalid("missing archived command"))?;
+        let Body::Command(command) = &frame.frame().body else { return Err(Error::Invalid("archived command type")); };
+        if &command.fence != fence || &command.execution != execution || reader.read_received()?.is_some() {
+            return Err(Error::Invalid("archived command scope"));
+        }
+        if expected.insert(command.command_id.0.clone(), (bytes, frame)).is_some() {
+            return Err(Error::Invalid("duplicate archived command"));
+        }
+    }
+    Ok(expected)
+}
+
+fn receipts_in(
+    path: &Path, fence: &Fence, execution: &Execution, expected: &BTreeMap<String, (&[u8], ReceivedFrame)>,
+    validate: &impl Fn(&[u8]) -> Result<String, Error>,
+) -> Result<Vec<ArchivedReceipt>, Error> {
+    if path.join("uncertain").try_exists().map_err(Error::Io)? { return Ok(Vec::new()); }
+    let Some(bootstrap) = regular_file(&path.join("host.lock"))? else { return Ok(Vec::new()) };
+    let mut bytes = Vec::new();
+    bootstrap.take(65_537).read_to_end(&mut bytes).map_err(Error::Io)?;
+    if bytes.len() > 65_536 { return Err(Error::Invalid("archive bootstrap capacity")); }
+    let instance = validate(&bytes)?;
+    let Some(outbox) = regular_file(&path.join("outbox"))? else { return Ok(Vec::new()) };
+    read_archive(BufReader::new(outbox), fence, execution, &instance, expected)
 }
 
 fn regular_file(path: &Path) -> Result<Option<std::fs::File>, Error> {

@@ -796,8 +796,8 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
     let (adapter_state, _) = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
     domain.seals.take(&task);
     let commands: Vec<&[u8]> = adoption.receipt_candidates.iter().map(|candidate| candidate.command.as_slice()).collect();
-    let proofs = worker.archived_handoffs(&grant, &adapter_state, &commands).map_err(adapter("reading archived handoff receipts"))?;
-    if !proofs.is_empty() {
+    let retain = |proofs: Vec<alondra_provider_contract::HandoffProof>| -> Result<(), Failed> {
+        if proofs.is_empty() { return Ok(()) }
         domain.own(scope.clone(), |owner| {
             for proof in &proofs {
                 let candidate = adoption.receipt_candidates.iter().find(|candidate| candidate.command == proof.command())
@@ -805,13 +805,17 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
                 owner.record_handoff_proof(&grant, candidate.intent_id, proof)?;
             }
             Ok(())
-        }).map_err(failed("retaining archived handoff receipts"))?;
-    }
+        }).map(drop).map_err(failed("retaining handoff receipts"))
+    };
+    retain(worker.archived_handoffs(&grant, &adapter_state, &commands).map_err(adapter("reading archived handoff receipts"))?)?;
     let stopped_by_alondra = worker.state_directory().join(STOPPED_BY_ALONDRA);
     let journal = match worker.find_host(&grant, &adapter_state).map_err(adapter("finding the SDK host"))? {
         Found::Live => None,
         Found::Ended(journal) => Some(journal),
     };
+    if journal.is_some() {
+        retain(worker.ended_handoffs(&grant, &adapter_state, &commands).map_err(adapter("reading the ended host's handoff receipts"))?)?;
+    }
     let by_alondra = stopped_by_alondra.exists();
     if journal.is_none() {
         remove_stop_mark(&stopped_by_alondra);
@@ -2115,6 +2119,26 @@ impl Driver {
         self.domain.own(self.scope.clone(), |owner| owner.record_command(attempt, generation, worker)).unwrap();
         let command = self.sealed().commands.pop().expect("the command left a seal");
         assert_eq!(self.worker.submit(&command).unwrap(), Handoff::Offered, "the host offered the input");
+        true
+    }
+
+    /// Claims, records and sends the next waiting dispatch, and records its receipt as uncertain: an
+    /// owner stopped while the host read the input never learns that the host took it.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn claim_record_and_offer_with_an_uncertain_receipt(&mut self) -> bool {
+        self.sealed();
+        let Some(permit) = self.permits.pop_front() else {
+            return false;
+        };
+        self.domain.own(self.scope.clone(), |owner| owner.claim(permit)).unwrap();
+        let attempt = self.sealed().attempts.pop().expect("the claim issued an attempt");
+        let generation = self.worker.owner_generation().unwrap();
+        let worker = &mut self.worker;
+        self.domain.own(self.scope.clone(), |owner| owner.record_command(attempt, generation, worker)).unwrap();
+        let command = self.sealed().commands.pop().expect("the command left a seal");
+        assert_eq!(self.worker.submit(&command).unwrap(), Handoff::Offered, "the host offered the input");
+        self.domain.own(self.scope.clone(), |owner| owner.record_receipt(command, receipt(Handoff::Uncertain))).unwrap();
+        self.sealed();
         true
     }
 
