@@ -5,6 +5,7 @@
 //! Hooks observe sessions the domain already knows. They never create an
 //! Agent, a Task or a decision. The one transition they make is the one a
 //! session's own activity proves: its assigned Task has started.
+use crate::gate::GateOf as _;
 use crate::live::LiveOf as _;
 #[cfg(any(test, feature = "test-hooks"))]
 use crate::allow_always::AllowAlwaysWait as _;
@@ -140,8 +141,8 @@ fn answer_first(domain: &DomainRuntime, payload: &Value) -> Option<Value> {
 
 /// A PreToolUse answered without recording the hook: a node the gate holds, and Alondra's own tools.
 fn unrecorded_pre_tool_use(domain: &DomainRuntime, session_id: &str, tool: Option<&str>) -> Option<Value> {
-    if let Some(reason) = domain.live().gate.holding(domain, session_id) {
-        let why = if reason == crate::pauses::Reason::ByUser { PAUSED_BY_USER } else { PAUSED_FOR_MEMORY };
+    if let Some(reason) = domain.gate().holding(session_id) {
+        let why = if reason == crate::ports::admission::Reason::ByUser { PAUSED_BY_USER } else { PAUSED_FOR_MEMORY };
         return Some(pre_tool_use_denied(why));
     }
     tool.is_some_and(|t| t.starts_with("mcp__plugin_alondra")).then(|| json!({"hookSpecificOutput": {"hookEventName": "PreToolUse",
@@ -510,7 +511,7 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
     }
     match event.as_str() {
         "SessionStart" | "SessionEnd" => Ok(Reply::Plain(json!({}))),
-        "Stop" if domain.live().gate.paused_by_user(domain, &session_id) => Ok(Reply::Plain(json!({}))),
+        "Stop" if domain.gate().paused_by_user(&session_id) => Ok(Reply::Plain(json!({}))),
         "Stop" => {
             if let Some(said) = text(payload, "last_assistant_message") {
                 lifecycle::record_last_words(domain, &agent_id, &said)?;
@@ -533,7 +534,7 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
 
 /// A node the user paused may run nothing until the user resumes it or writes to it, whatever
 /// started its turn.
-pub(crate) const PAUSED_BY_USER: &str = "The user paused you: do nothing and end your turn; only the user can resume you.";
+pub const PAUSED_BY_USER: &str = "The user paused you: do nothing and end your turn; only the user can resume you.";
 pub(crate) const PAUSED_FOR_MEMORY: &str = "Alondra paused you because the Mac is out of memory: do nothing and end your turn; Alondra tells you when to carry on.";
 
 /// The session bound to a Task works on it: its first hook after the assignment starts the
@@ -609,7 +610,7 @@ pub(crate) fn stopped_without_delivering(domain: &DomainRuntime, state: &DomainS
         && (reported.job.as_ref().is_some_and(|job| job.phase == crate::job_state::Phase::Blocked)
             || reported.working_since.is_none() && reported.halt().is_none()));
     if !idle || driven_by_user(domain, agent_id) || paused(state, agent_id)
-        || domain.live().is_closed(session) || domain.live().gate.paused(domain, session).is_some()
+        || domain.live().is_closed(session) || domain.gate().paused(session).is_some()
         || crate::domain_holds::waits_on_user(state, session)
     {
         return None;
@@ -1295,34 +1296,13 @@ pub mod tests {
         assert_eq!(guarded.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 
-    #[test]
-    fn runtime_progress_machine_watch_persists_off_the_async_worker() {
-        let fixture = Fixture::new();
-        let domain = fixture.open();
-        let driver = std::thread::current().id();
-        let gauges = std::sync::Arc::new(std::sync::Mutex::new(Some((alondra_core::Machine {
-            at: 1_700_000_000_000, memory_total: 100, memory_available: 50, memory_free_percent: Some(50),
-            disk_total: 500_000_000_000, disk_available: 400_000_000_000, cpus: 8, ..Default::default()
-        }, None, vec![]))));
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        runtime.block_on(async {
-            let watcher = tokio::spawn(crate::machine_watch::run(domain.clone(), gauges, Silent));
-            domain.live().machine_watch.sampled.notified().await;
-            let threads = domain.live().machine_watch.sample_threads.lock().unwrap().clone();
-            watcher.abort();
-            assert!(watcher.await.unwrap_err().is_cancelled());
-            assert!(!threads.is_empty());
-            assert!(threads.iter().all(|thread| *thread != driver), "machine file sampling occupied the async worker: {threads:?}");
-            assert!(std::fs::read_dir(fixture.0.join(crate::machine_state::SAMPLES_DIR)).unwrap().next().is_some());
-        });
-    }
 
     pub struct Silent;
     impl crate::usage_pause::Alerts for Silent {
         async fn tell(&self, _: impl Fn(bool) -> String + Send + Sync, _: bool) {}
     }
 
-    async fn hook(domain: &Arc<DomainRuntime>, payload: Value, ack: Option<u8>) -> (Value, Result<()>) {
+    pub async fn hook(domain: &Arc<DomainRuntime>, payload: Value, ack: Option<u8>) -> (Value, Result<()>) {
         let (mut client, server) = UnixStream::pair().unwrap();
         let body = serde_json::to_vec(&json!({"launched": true, "payload": payload})).unwrap();
         client.write_u32(body.len() as u32).await.unwrap();
@@ -1617,27 +1597,6 @@ pub mod tests {
         assert!(problems(&domain).is_empty());
     }
 
-    /// Whatever starts a turn of a node the user paused (a background command ending, a queued
-    /// message), it may run no tool, Alondra's included, and its turn end is not held back.
-    #[tokio::test]
-    async fn a_node_the_user_paused_runs_no_tool_and_may_end_its_turn() {
-        let fixture = Fixture::new();
-        let domain = fixture.open();
-        node_with_task(&domain);
-        domain.live().gate.pause_by_user(&domain, "agent-a", alondra_core::now_millis()).unwrap();
-        for tool in ["Bash", "mcp__plugin_alondra_alondra__present_result"] {
-            let (reply, result) = hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "PreToolUse", "tool_name": tool}), Some(6)).await;
-            result.unwrap();
-            assert_eq!(reply["hookSpecificOutput"]["permissionDecision"], "deny", "{tool}: {reply}");
-            assert_eq!(reply["hookSpecificOutput"]["permissionDecisionReason"], PAUSED_BY_USER);
-        }
-        assert_eq!(hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop"}), Some(6)).await.0, json!({}));
-
-        domain.live().gate.release_by_user_message(&domain, "agent-a");
-        let (reply, _) = hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "PreToolUse", "tool_name": "Bash"}), Some(6)).await;
-        assert_ne!(reply["hookSpecificOutput"]["permissionDecision"], "deny", "{reply}");
-        assert_eq!(hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop"}), Some(6)).await.0["decision"], "block");
-    }
 
     #[tokio::test]
     async fn a_session_the_user_drives_is_never_held() {

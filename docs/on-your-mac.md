@@ -71,7 +71,7 @@ its own open-file soft limit when needed. These probes do not require walking th
 See [process watch](../crates/daemon-support/src/process_watch.rs),
 [machine measurements](../crates/daemon-engine-machine/src/machine.rs),
 [disk measurements](../crates/daemon-support/src/disk.rs),
-[incident records](../crates/daemon-engine/src/machine_watch.rs) and
+[incident records](../crates/engine-admission/src/machine_watch.rs) and
 [file limit](../crates/daemon-support/src/open_files.rs).
 
 ## Credentials and authority

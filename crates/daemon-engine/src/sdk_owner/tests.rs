@@ -1,8 +1,8 @@
 //! The vertical slice through the real owner: the daemon's store, commands and `own`, the pinned
 //! Node host with the official SDK, and a fake native Claude that answers each prompt with a
 //! result. Each step waits on the host's next event, never on a clock.
+use crate::gate::GateOf as _;
 use crate::sdk_owner::SdkOwners as _;
-use crate::live::LiveOf as _;
 use crate::idle_compaction::ContextsOf as _;
 use super::*;
 use crate::test_support::Directory;
@@ -163,7 +163,7 @@ impl Drop for HostRoot {
 
 /// The pinned Node host with the official SDK and a fake native Claude that records what it is
 /// launched with in the returned capture, its hosts' folders under `state`.
-pub(crate) fn fixture_backend(home: &Path, state: &HostRoot) -> (SdkBackend, PathBuf) {
+pub fn fixture_backend(home: &Path, state: &HostRoot) -> (SdkBackend, PathBuf) {
     let native = home.join("native");
     std::fs::copy(runfile("FIXTURE_NATIVE"), &native).unwrap();
     std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -195,7 +195,7 @@ pub(crate) fn fixture_backend(home: &Path, state: &HostRoot) -> (SdkBackend, Pat
 /// before the directories it lives in, so its hosts stop first.
 pub struct SdkLaunches {
     domain: Arc<DomainRuntime>,
-    pub(crate) capture: PathBuf,
+    pub capture: PathBuf,
     state_root: PathBuf,
     _state: HostRoot,
 }
@@ -216,7 +216,7 @@ impl SdkLaunches {
     }
 
     /// The value the last native Claude got for `flag`.
-    pub(crate) fn flag(&self, flag: &str) -> Option<String> {
+    pub fn flag(&self, flag: &str) -> Option<String> {
         let args = self.args();
         args.iter().position(|arg| arg == flag).and_then(|at| args.get(at + 1)).cloned()
             .or_else(|| args.iter().find_map(|arg| arg.strip_prefix(&format!("{flag}=")).map(str::to_owned)))
@@ -229,7 +229,7 @@ impl SdkLaunches {
     }
 
     /// Each native Claude the hosts started: its session, the one it resumed and its folder.
-    pub(crate) fn starts(&self) -> Vec<serde_json::Value> {
+    pub fn starts(&self) -> Vec<serde_json::Value> {
         std::fs::read_to_string(format!("{}.starts", self.capture.display())).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
     }
 
@@ -239,7 +239,7 @@ impl SdkLaunches {
     }
 
     /// Waits on the domain until `task`'s turns have ended on `turns` cards it rested on.
-    pub(crate) async fn until_turns_ended(&self, task: &str, turns: usize) {
+    pub async fn until_turns_ended(&self, task: &str, turns: usize) {
         let mut changed = self.domain.subscribe();
         let ended = |domain: &DomainRuntime| domain.read().state().interactions.keys()
             .filter(|card| rests_on(task, card)).count() >= turns;
@@ -255,7 +255,7 @@ impl SdkLaunches {
 }
 
 /// One move of the owner: send what the store issued, else read the host.
-fn advance(driver: &mut Driver) {
+pub fn advance(driver: &mut Driver) {
     if driver.pending_permits() > 0 {
         driver.step(&|| false).unwrap();
     } else {
@@ -269,7 +269,7 @@ pub(crate) fn rests_on(task: &str, card: &InteractionId) -> bool {
     card.0.starts_with(&format!("{STALLED_PREFIX}{task}-")) || card.0.starts_with(&format!("{TURN_ENDED_PREFIX}{task}-"))
 }
 
-pub(crate) fn not_wakes(prompts: impl Iterator<Item = String>) -> Vec<String> {
+pub fn not_wakes(prompts: impl Iterator<Item = String>) -> Vec<String> {
     prompts.filter(|prompt| !prompt.starts_with(alondra_domain_rules::WAKE_INSTRUCTION)).collect()
 }
 
@@ -311,7 +311,7 @@ impl SdkLaunches {
 impl SdkLaunches {
     /// While `refused`, no new host gets the folder it needs, so every start fails before the
     /// domain registers a node; hosts that run already go on.
-    pub(crate) fn refuse_starts(&self, refused: bool) {
+    pub fn refuse_starts(&self, refused: bool) {
         std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&self.state_root).unwrap();
         std::fs::set_permissions(&self.state_root, std::fs::Permissions::from_mode(if refused { 0o500 } else { 0o700 })).unwrap();
     }
@@ -320,7 +320,7 @@ impl SdkLaunches {
 pub struct Slice {
     pub domain: Arc<DomainRuntime>,
     database: PathBuf,
-    capture: PathBuf,
+    pub capture: PathBuf,
     pub worktree: PathBuf,
     pub plugin: PathBuf,
     pub backend: SdkBackend,
@@ -352,14 +352,13 @@ pub fn user() -> Actor {
     Actor::User { user_id: "slice-user".into() }
 }
 
-fn envelope(state: &DomainState, id: &str, command: Command) -> CommandEnvelope {
+pub fn envelope(state: &DomainState, id: &str, command: Command) -> CommandEnvelope {
     CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: id.into(), expected_revision: state.revision, command }
 }
 
 pub fn measure_healthy_machine(domain: &DomainRuntime) {
-    crate::machine_watch::pace(domain, &alondra_core::Machine { memory_total: 16 << 30, memory_available: 12 << 30,
-        memory_free_percent: Some(75), cpus: 11, disk_total: 500_000_000_000, disk_available: 100_000_000_000, ..Default::default() });
-    domain.live().machine_watch.measure_disk(crate::disk::Space { total: 500_000_000_000, free: 100_000_000_000, purgeable: 0 });
+    domain.gate().measure_machine(&alondra_core::Machine { memory_total: 16 << 30, memory_available: 12 << 30,
+        memory_free_percent: Some(75), cpus: 11, disk_total: 500_000_000_000, disk_available: 100_000_000_000, ..Default::default() }, crate::disk::Space { total: 500_000_000_000, free: 100_000_000_000, purgeable: 0 });
 }
 
 impl Slice {
@@ -413,7 +412,7 @@ impl Slice {
         self.domain.execute_fixture(actor, envelope(&state, id, command))
     }
 
-    fn launch(&self) -> Driver {
+    pub fn launch(&self) -> Driver {
         self.launch_told("Write the release notes", capabilities())
     }
 
@@ -572,7 +571,7 @@ fn host_left_running(slice: &Slice) -> Vec<alondra_process_group::Member> {
     processes
 }
 
-fn survivors(processes: &[alondra_process_group::Member]) -> Vec<String> {
+pub fn survivors(processes: &[alondra_process_group::Member]) -> Vec<String> {
     processes.iter().filter(|process| alondra_process_group::alive(process).unwrap()).map(ToString::to_string).collect()
 }
 
@@ -1363,13 +1362,13 @@ pub fn assert_told_the_work_ended(slice: &Slice, domain: &Arc<DomainRuntime>, mu
 }
 
 /// Ends what a test's background commands left, on success and on failure alike.
-struct BackgroundCommands(Vec<alondra_process_group::Member>);
+pub struct BackgroundCommands(Vec<alondra_process_group::Member>);
 
 impl BackgroundCommands {
-    fn of(slice: &Slice) -> Self {
+    pub fn of(slice: &Slice) -> Self {
         Self(background_commands(slice).into_iter().filter_map(|pid| alondra_process_group::process(pid).unwrap()).collect())
     }
-    fn running(&self) -> Vec<String> {
+    pub fn running(&self) -> Vec<String> {
         survivors(&self.0)
     }
 }
@@ -1380,24 +1379,8 @@ impl Drop for BackgroundCommands {
     }
 }
 
-/// A node with a background command in a group of its own, a shell with a child of its own, under
-/// an owner that runs by itself, as a daemon's are.
-fn node_with_a_background_group(slice: &Slice) -> (AgentId, String, BackgroundCommands, Vec<alondra_process_group::Member>) {
-    slice.domain.enable_sdk(slice.backend.clone());
-    slice.domain.live().gate.ignore_mac();
-    slice.domain.live().gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(6)) });
-    let mut driver = slice.launch_with("background-group");
-    until_own_work(slice, &mut driver);
-    let commands = BackgroundCommands::of(slice);
-    assert_eq!(commands.running().len(), 2, "the shell and its child run");
-    let host = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
-    let agent = driver.agent().clone();
-    let session = slice.starts().last().unwrap()["session"].as_str().unwrap().to_owned();
-    slice.domain.add_sdk_owner(Owner::spawn(driver));
-    (agent, session, commands, host)
-}
 
-fn assert_stopped_whole(slice: &Slice, agent: &AgentId, commands: &BackgroundCommands, host: &[alondra_process_group::Member]) {
+pub fn assert_stopped_whole(slice: &Slice, agent: &AgentId, commands: &BackgroundCommands, host: &[alondra_process_group::Member]) {
     assert_eq!(commands.running(), Vec::<String>::new(), "the background command and its child ended");
     assert_eq!(survivors(host), Vec::<String>::new(), "the host and its Claude ended");
     assert_eq!(slice.starts().len(), 1, "no Claude runs: nothing can wake a turn");
@@ -1410,70 +1393,12 @@ fn assert_stopped_whole(slice: &Slice, agent: &AgentId, commands: &BackgroundCom
 // the background. The script's end woke Claude, a turn no input of Alondra's opens, and it ran the
 // script again, three times, until its process ended 13 minutes later. Of 161 pauses by the user
 // in the journals, 60 went on like that. A pause stops the host, so nothing is left to wake.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_pause_by_the_user_stops_the_host_its_background_commands_and_every_turn_until_it_resumes() {
-    let slice = Slice::new();
-    let (agent, session, commands, host) = node_with_a_background_group(&slice);
-    let gate = &slice.domain.live().gate;
-    gate.pause_by_user(&slice.domain, &agent.0, alondra_core::now_millis()).unwrap();
-    slice.domain.join_retakes();
-    assert_stopped_whole(&slice, &agent, &commands, &host);
-    assert!(slice.domain.state().unwrap().host_ended_since_pause(&TASK.into()));
-    crate::admission::pass_at(&slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
-    slice.domain.join_retakes();
-    assert!(gate.paused(&slice.domain, &agent.0).is_some(), "only the user ends it");
-    assert_eq!(slice.starts().len(), 1, "a later look at the pauses starts nothing");
-
-    assert!(gate.resume_now(&slice.domain, &agent.0, alondra_core::now_millis()));
-    crate::admission::pass_at(&slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
-    until_last_prompt_ends_with(&slice.domain, &slice.capture, "run again what was cut.").await;
-    slice.domain.stop_sdk_owners();
-    assert_eq!(slice.starts().last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session goes on: {:?}", slice.starts());
-    assert!(open_card(&slice.domain, SESSION_ENDED_PREFIX).is_none(), "no card asks the user");
-}
 
 // Only a pause by the user cuts what a node runs. A build that uses a lot of the disk or the Mac
 // would only run again, and the usage limit stops Claude's turns, never its commands.
-#[tokio::test(flavor = "multi_thread")]
-async fn no_pause_but_the_users_kills_what_the_node_runs() {
-    use crate::pauses::Reason;
-    for reason in [Reason::Disk, Reason::Declared { reason: "Waiting for a full machine".into() }, Reason::Usage] {
-        let slice = Slice::new();
-        let (agent, _, commands, host) = node_with_a_background_group(&slice);
-        slice.domain.live().gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(0)) });
-        assert!(slice.domain.live().gate.hold_back(&slice.domain, &agent.0, reason.clone(), alondra_core::now_millis()));
-        crate::admission::pass_at(&slice.domain, &slice._home, alondra_core::now_millis()).await.unwrap();
-        slice.domain.join_retakes();
-        assert_eq!(commands.running().len(), 2, "{reason:?}: the background command and its child go on");
-        assert_eq!(survivors(&host).len(), host.len(), "{reason:?}: the host and its Claude go on");
-        assert_eq!(slice.starts().len(), 1, "{reason:?}: the same Claude goes on");
-        slice.domain.stop_sdk_owners();
-    }
-}
 
 // A daemon that restarts with a node paused by the user adopts its live host: the gate stops it at
 // its next look.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_host_a_restarted_daemon_adopts_for_a_paused_node_stops_at_the_gates_next_look() {
-    let slice = Slice::new();
-    let mut driver = slice.launch_with("background-group");
-    until_own_work(&slice, &mut driver);
-    let commands = BackgroundCommands::of(&slice);
-    let host = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
-    let agent = driver.agent().clone();
-    assert!(slice.domain.live().gate.hold_back(&slice.domain, &agent.0, crate::pauses::Reason::ByUser, alondra_core::now_millis()));
-    drop(driver);
-    let restarted = slice.restart();
-    restarted.enable_sdk(slice.backend.clone());
-    restarted.live().gate.ignore_mac();
-    adopt_all(&restarted, &slice.backend);
-    assert_eq!(commands.running().len(), 2, "the adopted host still runs them");
-    crate::admission::pass_at(&restarted, &slice._home, alondra_core::now_millis()).await.unwrap();
-    restarted.join_retakes();
-    assert_eq!(commands.running(), Vec::<String>::new(), "the background command and its child ended");
-    assert_eq!(survivors(&host), Vec::<String>::new());
-    restarted.stop_sdk_owners();
-}
 
 // t-parcel-open-issues-widget, 22 October: the session ended its turn on «I go on when it ends»
 // with `bazel test` running in the background, and the 0.3.5 daemon ended its 0.3.4 host, which
@@ -1874,7 +1799,7 @@ fn a_second_task_starts_through_the_same_sdk_host() {
 
 impl Slice {
     /// A second task of the request, ready to launch in the slice's worktree.
-    fn task(&self, task: &str) {
+    pub fn task(&self, task: &str) {
         self.run(&Actor::Orchestrator { generation: 0 }, &format!("task-{task}"), Command::CreateTask {
             plan_items: None, continues: None,
             task_id: task.into(),
@@ -2205,7 +2130,7 @@ fn the_tasks_claude_loads_the_users_profile_and_alondras_plugin_settings_and_cap
 
 /// The Mac goes down: every process of the host's group is killed, its native Claude included, and
 /// the daemon with them.
-fn kill_host_and_daemon(driver: Driver) {
+pub fn kill_host_and_daemon(driver: Driver) {
     kill_host(&driver);
     drop(driver);
 }
@@ -2235,7 +2160,7 @@ impl Slice {
         domain
     }
 
-    fn take_over(&self, domain: &Arc<DomainRuntime>) -> Driver {
+    pub fn take_over(&self, domain: &Arc<DomainRuntime>) -> Driver {
         adopt(Arc::clone(domain), &self.backend, TASK.into(), Some(&self.plugin)).unwrap()
     }
 
@@ -2829,46 +2754,6 @@ async fn a_turn_claude_starts_while_its_task_rests_is_read_as_it_comes() {
 // and each was given up with a card, though nothing about the task had failed. A takeover that
 // finds the disk full now waits with no card; a sample of the machine that still measures it full
 // takes nothing over, and the first that measures space again takes it over with the same session.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_takeover_the_full_disk_refused_waits_for_space_and_then_resumes_the_same_session() {
-    let slice = Slice::new();
-    let mut driver = slice.launch_with("consume-and-hold");
-    slice.until_working(&mut driver);
-    let session = slice.starts()[0]["session"].as_str().unwrap().to_owned();
-    kill_host_and_daemon(driver);
-    let restarted = slice.restart();
-    restarted.enable_sdk(slice.backend.clone());
-    restarted.full_disk.store(true, std::sync::atomic::Ordering::SeqCst);
-    adopt_all(&restarted, &slice.backend);
-    let task = TaskId::from(TASK);
-    let agent = restarted.state().unwrap().tasks[&task].agent_id.clone().unwrap();
-    assert!(open_card(&restarted, HOST_LOST_PREFIX).is_none(), "a full disk is not the task's failure: no card");
-    assert_ne!(restarted.state().unwrap().tasks[&task].state, TaskState::NeedsYou);
-    assert!(!restarted.owns_sdk_host(&agent));
-    assert!(restarted.sdk_owners().waiting_for_space.lock().unwrap().contains(&task), "the takeover waits for space");
-    restarted.full_disk.store(false, std::sync::atomic::Ordering::SeqCst);
-    let disk = |free: u64| alondra_core::Machine { disk_total: 500_000_000_000, disk_available: free, ..alondra_core::Machine::default() };
-    crate::machine_watch::look(&restarted, disk(900_000_000));
-    restarted.join_retakes();
-    assert!(!restarted.owns_sdk_host(&agent), "a sample that measures the disk full takes nothing over");
-    assert!(restarted.sdk_owners().waiting_for_space.lock().unwrap().contains(&task));
-    loop {
-        crate::machine_watch::look(&restarted, disk(400_000_000_000));
-        if !restarted.live().machine_watch.disk_low() {
-            break;
-        }
-    }
-    restarted.join_retakes();
-    assert!(restarted.owns_sdk_host(&agent), "the sample that measured space took the execution over");
-    assert!(restarted.sdk_owners().waiting_for_space.lock().unwrap().is_empty());
-    assert!(open_card(&restarted, HOST_LOST_PREFIX).is_none());
-    let mut changed = restarted.subscribe();
-    let capture = slice.capture.clone();
-    changed.wait_for(|_| prompts_at(&capture).last().is_some_and(|prompt| prompt.starts_with("Your session was cut off when its host stopped"))).await.unwrap();
-    restarted.stop_sdk_owners();
-    let starts = slice.starts();
-    assert_eq!(starts.last().unwrap()["resume"].as_str(), Some(session.as_str()), "the same session is resumed: {starts:?}");
-}
 
 // The task of 2026-10-21 as its «Try again» card left it: its host ended with Claude's request to
 // leave plan mode with 41 points in its journal, unread, asked from a turn Claude opened by itself
@@ -2909,7 +2794,7 @@ async fn try_again_on_a_task_whose_ended_host_left_a_refused_plan_resumes_its_se
     assert!(refused, "the plan the ended host left was refused for its length");
 }
 
-fn prompts_at(capture: &Path) -> Vec<String> {
+pub fn prompts_at(capture: &Path) -> Vec<String> {
     let path = PathBuf::from(format!("{}.prompts", capture.display()));
     std::fs::read_to_string(path).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
 }
@@ -3102,7 +2987,7 @@ fn a_host_whose_state_folder_is_removed_ends_its_group() {
     assert!(left.is_empty(), "the unadoptable host's group survived: {left:?}");
 }
 
-fn system() -> Actor {
+pub fn system() -> Actor {
     Actor::System
 }
 
@@ -3377,7 +3262,7 @@ struct DecisionCard {
 
 impl Slice {
     /// What the fake Claude got for each decision it asked for, in order.
-    fn decisions(&self) -> Vec<serde_json::Value> {
+    pub fn decisions(&self) -> Vec<serde_json::Value> {
         let path = PathBuf::from(format!("{}.decisions", self.capture.display()));
         std::fs::read_to_string(path).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
     }
@@ -3417,7 +3302,7 @@ impl Slice {
     }
 
     /// Launches the task asking Claude for `scenario` and runs it until the user is asked.
-    fn asked(&self, scenario: &str) -> (Driver, String) {
+    pub fn asked(&self, scenario: &str) -> (Driver, String) {
         let mut driver = self.launch_with(scenario);
         self.until(&mut driver, |slice| !Slice::open_decision_cards(&slice.domain).is_empty());
         let card = Slice::open_decision_cards(&self.domain).remove(0);
@@ -3436,7 +3321,7 @@ impl Slice {
 
     /// Runs the owner until nothing is left to send and the task, as its owner's daemon reads it,
     /// rests.
-    fn rest(&self, driver: &mut Driver) {
+    pub fn rest(&self, driver: &mut Driver) {
         while driver.pending_controls() > 0 || driver.pending_permits() > 0 || driver.waits_for_host() {
             driver.step(&|| false).unwrap();
         }
@@ -3456,7 +3341,7 @@ fn decided_or_asked(slice: &Slice) -> bool {
 }
 
 /// The response the SDK gave Claude for its one decision, as the fake Claude received it.
-fn only_response(slice: &Slice) -> serde_json::Value {
+pub fn only_response(slice: &Slice) -> serde_json::Value {
     let decisions = slice.decisions();
     assert_eq!(decisions.len(), 1, "Claude got one answer: {decisions:?}");
     assert_eq!(decisions[0]["cancelled"], false, "{decisions:?}");
@@ -3951,7 +3836,7 @@ fn the_orchestrator_closes_a_task_stopped_after_an_approved_plan_from_its_case()
 
 impl Slice {
     /// Launches task `task` of the request told `prompt`, and reads its host until `done`.
-    fn launch_until(&self, task: &str, prompt: &str, done: impl Fn(&DomainState, &AgentId) -> bool) -> Driver {
+    pub fn launch_until(&self, task: &str, prompt: &str, done: impl Fn(&DomainState, &AgentId) -> bool) -> Driver {
         let mut driver = start_bound(Arc::clone(&self.domain), &self.backend, Launch {
             task: task.into(), name: format!("Work on {task}"), directory: self.worktree.to_str().unwrap().into(), prompt: prompt.into(),
             plugin: self.plugin.clone(), options: LaunchOptions::default(), model: None, account: AccountId::default_account(),
@@ -3965,66 +3850,6 @@ impl Slice {
     }
 }
 
-/// The nodes of 2026-10-22: five nodes of the Agent SDK wait inside their turn for the user to
-/// approve a plan or answer a question, one works, and a High task waits in the queue with a limit
-/// of 6. They hold no slot, so it starts, and the gate, the log's "waiting on the user" and the
-/// apps' count agree on who works. A plan approved once every slot is taken again waits for a
-/// slot like any turn, and goes on when one frees.
-#[test]
-fn nodes_waiting_on_the_user_inside_their_turn_leave_their_slots_to_the_queue() {
-    use crate::admission::{Hold as Held, Key, Limit, Tuning, Waiting};
-    let slice = Slice::new();
-    let gate = &slice.domain.live().gate;
-    gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
-    let task_of = |state: &DomainState, agent: &AgentId| state.tasks.values().find(|task| task.agent_id.as_ref() == Some(agent)).map(|task| task.id.clone());
-    let activity = move |state: &DomainState, agent: &AgentId| task_of(state, agent)
-        .and_then(|task| state.lifecycle_of(&task).ok()).map(|lifecycle| (lifecycle.activity(), !lifecycle.cards().is_empty()));
-    let waits_on_user = move |state: &DomainState, agent: &AgentId| activity(state, agent) == Some((ActivityView::Working, true));
-    let works = move |state: &DomainState, agent: &AgentId| activity(state, agent) == Some((ActivityView::Working, false));
-    let mut drivers = vec![];
-    for (task, prompt) in [("p1", "decide:plan"), ("p2", "decide:plan"), ("p3", "decide:plan"), ("q1", "decide:question"), ("q2", "decide:question")] {
-        slice.task(task);
-        drivers.push(slice.launch_until(task, prompt, waits_on_user));
-    }
-    slice.task("busy");
-    drivers.push(slice.launch_until("busy", "consume-and-hold", works));
-    let state = slice.domain.state().unwrap();
-    for driver in &drivers[..5] {
-        assert!(state.node_waits_on_user(driver.agent()), "the log lists it as waiting on the user");
-    }
-    assert_eq!(crate::admission::working_tasks(&slice.domain, &state), BTreeSet::from([TaskId::from("busy")]), "only busy works");
-    let now = alondra_core::now_millis();
-    assert_eq!(gate.snapshot(&slice.domain, now).unwrap().working, 1);
-    assert_eq!(gate.live(&slice.domain, now).unwrap().working, 1, "the apps show the gate's count");
-
-    slice.task("high");
-    slice.run(&user(), "priority-high", Command::SetPriority { task_id: "high".into(), priority: TaskPriority::High });
-    let high = Waiting { key: Key::Task("high".into()), priority: TaskPriority::High, resuming: false, since: now };
-    assert_eq!(gate.ask(&slice.domain, high, now), Ok(()), "the queued High task starts");
-    drivers.push(slice.launch_until("high", "consume-and-hold", works));
-
-    gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(2)) });
-    let plan = slice.domain.state().unwrap().lifecycle_of(&"p1".into()).unwrap().cards()[0].0.clone();
-    slice.answer(&plan.0, Hold::APPROVE, None).unwrap();
-    let p1 = &mut drivers[0];
-    for _ in 0..3 {
-        p1.step(&|| false).unwrap();
-    }
-    assert!(!slice.decisions().iter().any(|decision| decision["response"]["behavior"] == "allow"), "the approval waits for a slot");
-    slice.task("next");
-    let next = Waiting { key: Key::Task("next".into()), priority: TaskPriority::High, resuming: false, since: now };
-    assert_eq!(gate.ask(&slice.domain, next, now), Err(Held::Slots { working: 2, limit: 2 }), "the waiting approval takes no slot");
-    gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(3)) });
-    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
-        .block_on(crate::admission::pass_at(&slice.domain, slice.worktree.as_path(), now)).unwrap();
-    let p1 = &mut drivers[0];
-    while !slice.decisions().iter().any(|decision| decision["response"]["behavior"] == "allow") {
-        p1.step(&|| false).unwrap();
-    }
-    for mut driver in drivers {
-        driver.stop().unwrap();
-    }
-}
 
 /// The owner of a node that just started, held on the first thing its host says until every
 /// process of that host has exited: it is in the middle of reading its host when the host ends.
@@ -4083,7 +3908,7 @@ fn assert_ended_quietly(slice: &Slice, agent: &AgentId, failures: &std::sync::mp
     assert!(left.is_empty(), "the host's processes survived: {left:?}");
 }
 
-fn deliver_and_accept(slice: &Slice, agent: &AgentId, targets: Vec<DeliveryTarget>) {
+pub fn deliver_and_accept(slice: &Slice, agent: &AgentId, targets: Vec<DeliveryTarget>) {
     slice.run(&Actor::Agent { agent_id: agent.clone() }, "deliver", Command::PresentResult {
         checklist: Vec::new(), attachments: vec![], task_id: TASK.into(), interaction_id: "final".into(), body: "Done".into(),
         targets: targets.clone(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the notes", &[], true),
@@ -4091,7 +3916,7 @@ fn deliver_and_accept(slice: &Slice, agent: &AgentId, targets: Vec<DeliveryTarge
     slice.run(&user(), "accept", Command::AcceptDelivery { presentation_id: "final".into(), targets });
 }
 
-async fn close_pass(slice: &Slice) {
+pub async fn close_pass(slice: &Slice) {
     crate::task_closer::pass(&slice.domain, &NoClaudeSessions, &crate::task_closer::Timing::new(None), alondra_core::now_millis()).await.unwrap();
 }
 
@@ -4393,8 +4218,6 @@ pub mod codex_tests;
 
 #[path = "untaken_tests.rs"]
 pub mod untaken;
-#[path = "release_tests.rs"]
-mod release_tests;
 
 #[test]
 fn fixture_current_revision_keeps_actor_fences_and_client_staleness() {
@@ -4418,7 +4241,7 @@ async fn tell_as_user(domain: &DomainRuntime, home: &Path, agent: &AgentId, text
 
 /// Waits until the last prompt Claude got ends with `text`, or fails once a minute passed: a
 /// message that never arrives is a failure, never a hang.
-async fn until_last_prompt_ends_with(domain: &DomainRuntime, capture: &Path, text: &str) {
+pub async fn until_last_prompt_ends_with(domain: &DomainRuntime, capture: &Path, text: &str) {
     let mut changed = domain.subscribe();
     let arrived = changed.wait_for(|_| prompts_at(capture).last().is_some_and(|prompt| prompt.ends_with(text)));
     tokio::time::timeout(std::time::Duration::from_secs(60), arrived).await
@@ -4876,166 +4699,17 @@ async fn a_claude_that_never_starts_in_its_resumed_session_ends_on_the_lost_host
     drop(owner);
 }
 
-/// The answer to a decision lets a turn go on that took no slot while it waited on the user: the
-/// answer waits for one with the turn held, an interrupt never does.
-#[test]
-fn an_approved_plan_reaches_claude_only_when_the_gate_has_a_slot() {
-    let slice = Slice::new();
-    let (mut driver, card) = slice.asked("decide:plan");
-    slice.domain.sdk_owners().driven_by_hand.lock().unwrap().insert(driver.agent().clone());
-    slice.domain.live().gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(0)) });
-    slice.answer(&card, Hold::APPROVE, None).unwrap();
-    for _ in 0..3 {
-        driver.step(&|| true).unwrap();
-    }
-    assert!(slice.control_rows().iter().all(|(kind, _, status)| kind != "respond" || status == "prepared"), "{:?}", slice.control_rows());
-    slice.domain.live().gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(1)) });
-    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
-        .block_on(crate::admission::pass_at(&slice.domain, slice.worktree.as_path(), alondra_core::now_millis())).unwrap();
-    slice.rest(&mut driver);
-    assert_eq!(only_response(&slice)["behavior"], "allow");
-    driver.stop().unwrap();
-}
 
-fn gate_pass(domain: &DomainRuntime, home: &std::path::Path) {
-    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
-        .block_on(crate::admission::pass_at(domain, home, alondra_core::now_millis())).unwrap();
-}
 
-fn slots(domain: &DomainRuntime, limit: u32) {
-    domain.live().gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(limit)) });
-}
 
-/// 11 November, 00:21: a permission answered inside an open turn got no slot until 03:25, because
-/// only an owner that asked waited in the queue, and the turn kept counting as working meanwhile.
-/// The answer waits in the queue because the domain says so, takes no slot while it waits, and goes
-/// on when one frees though nobody asked.
-#[test]
-fn an_answered_permission_goes_on_when_a_slot_frees_with_nobody_asking() {
-    let slice = Slice::new();
-    let (mut driver, card) = slice.asked("decide:bash make test");
-    slice.domain.sdk_owners().driven_by_hand.lock().unwrap().insert(driver.agent().clone());
-    let gate = &slice.domain.live().gate;
-    slots(&slice.domain, 0);
-    slice.answer(&card, Hold::ALLOW, None).unwrap();
-    gate_pass(&slice.domain, slice.worktree.as_path());
-    let snapshot = gate.snapshot(&slice.domain, alondra_core::now_millis()).unwrap();
-    assert!(!snapshot.working_tasks.contains(&TaskId::from(TASK)), "a turn whose answer has not reached it takes no slot: {:?}", snapshot.working_tasks);
-    assert!(snapshot.queue.iter().any(|waiting| waiting.key == crate::admission::Key::Turn(TASK.into())), "its answer waits for a slot, though its owner never asked");
-    assert!(slice.decisions().is_empty());
 
-    slots(&slice.domain, 1);
-    gate_pass(&slice.domain, slice.worktree.as_path());
-    assert!(gate.gave_slot(&TASK.into()), "the slot that freed went to the answer in that pass");
-    assert_eq!(gate.snapshot(&slice.domain, alondra_core::now_millis()).unwrap().working, 1, "the slot given counts until the answer reaches its turn");
-    slice.rest(&mut driver);
-    assert_eq!(only_response(&slice)["behavior"], "allow");
-    driver.stop().unwrap();
-}
 
-/// With a free slot, the pass that sees the answer gives it the slot: its owner need not ask first.
-#[test]
-fn an_answered_permission_with_room_goes_on_in_the_same_pass() {
-    let slice = Slice::new();
-    let (mut driver, card) = slice.asked("decide:bash make test");
-    slice.domain.sdk_owners().driven_by_hand.lock().unwrap().insert(driver.agent().clone());
-    slots(&slice.domain, 1);
-    slice.answer(&card, Hold::ALLOW, None).unwrap();
-    gate_pass(&slice.domain, slice.worktree.as_path());
-    assert!(slice.domain.live().gate.gave_slot(&TASK.into()), "the pass that saw the answer gave it a slot");
-    slice.rest(&mut driver);
-    assert_eq!(only_response(&slice)["behavior"], "allow");
-    driver.stop().unwrap();
-}
 
-/// An answer whose task has no owner in this daemon is not left waiting for one: the pass that
-/// gives it a slot has a host take the task over, without waiting for the minute between takeovers
-/// of tasks that read as working with no owner.
-#[test]
-fn an_answered_permission_of_a_task_without_an_owner_is_retaken() {
-    let slice = Slice::new();
-    let (driver, card) = slice.asked("decide:bash make test");
-    let agent = driver.agent().clone();
-    drop(driver);
-    slice.domain.enable_sdk(slice.backend.clone());
-    slots(&slice.domain, 1);
-    slice.answer(&card, Hold::ALLOW, None).unwrap();
-    let revision = Slice::lifecycle(&slice.domain).revision();
-    slice.domain.sdk_owners().unowned_takes.lock().unwrap().insert(TASK.into(), (alondra_core::now_millis(), revision));
-    assert!(!slice.domain.owns_sdk_host(&agent));
-    gate_pass(&slice.domain, slice.worktree.as_path());
-    assert!(slice.domain.sdk_owners().retakes.lock().unwrap().iter().any(|(task, _)| *task == TaskId::from(TASK)), "the pass that gave the answer its slot had a host take its task over");
-    slice.domain.stop_sdk_owners();
-}
 
-/// The owner of a turn the gate gave a slot ends before it starts it: the slot goes back.
-#[test]
-fn a_host_that_ends_with_a_slot_it_never_used_gives_it_back() {
-    let slice = Slice::new();
-    let mut driver = slice.launch();
-    slice.settle(&mut driver);
-    let gate = &slice.domain.live().gate;
-    gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(0)) });
-    slice.run(&Actor::System, "tell", Command::TellNode { task_id: TASK.into(), text: "Go on".into(), from_user: false, answers: None });
-    assert!(!gate.may_take_turn(&slice.domain, &TASK.into(), alondra_core::now_millis()));
-    gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(1)) });
-    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
-        .block_on(crate::admission::pass_at(&slice.domain, slice.worktree.as_path(), alondra_core::now_millis())).unwrap();
-    assert_eq!(gate.snapshot(&slice.domain, alondra_core::now_millis()).unwrap().working, 1, "the slot is given and not taken yet");
-    kill_host(&driver);
-    drop(driver);
-    assert_eq!(gate.snapshot(&slice.domain, alondra_core::now_millis()).unwrap().working, 0);
-}
-
-/// The orchestrator's answer to a node that stopped is one more input: it waits for a slot like any
-/// turn, and reaches Claude as written once one frees.
-#[test]
-fn the_orchestrators_instruction_waits_for_a_slot_like_any_turn() {
-    let slice = Slice::new();
-    let mut driver = slice.launch();
-    slice.settle(&mut driver);
-    let (case, _) = Slice::read_cards(&slice.domain).pop().unwrap();
-    let gate = &slice.domain.live().gate;
-    gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(0)) });
-    let state = slice.domain.state().unwrap();
-    let settle = Command::SettleStall { case_id: case.as_str().into(), task_id: TASK.into(), outcome: StallOutcome::Instruct { text: "Add the tests first".into() } };
-    let orchestrator = Actor::Orchestrator { generation: state.orchestrator_generation };
-    slice.domain.execute_with(&orchestrator, &envelope(&state, "orchestrator-instructs", settle), None, None, || Ok(())).unwrap();
-    for _ in 0..3 {
-        driver.step(&|| false).unwrap();
-    }
-    assert_eq!(slice.prompts(), ["Write the release notes"], "nothing reaches Claude without a slot");
-    gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(1)) });
-    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
-        .block_on(crate::admission::pass_at(&slice.domain, slice.worktree.as_path(), alondra_core::now_millis())).unwrap();
-    slice.settle(&mut driver);
-    assert_eq!(slice.prompts(), ["Write the release notes", "Add the tests first"]);
-    driver.stop().unwrap();
-}
 
 // 2026-11-10, 12:14:37: every host a daemon adopted read as «no pid», and one whose process was
 // gone kept its task working and in a slot. An adopted host knows its process; one whose process
 // is gone has its end recorded at its adoption, and its task holds no slot for it.
-#[test]
-fn an_adopted_host_without_a_process_is_ended_at_adoption() {
-    let slice = Slice::new();
-    let mut driver = slice.launch();
-    slice.settle(&mut driver);
-    let processes = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
-    drop(driver);
-    let restarted = slice.restart();
-    let live = slice.take_over(&restarted);
-    assert!(live.worker.host_group().is_some(), "an adopted host knows its process");
-    drop(live);
-    let restarted = slice.restart();
-    ADOPTED_PROCESS_GONE.with(|gone| gone.set(true));
-    let replaced = slice.take_over(&restarted);
-    let journal = restarted.state().unwrap().lifecycle_journal[&TaskId::from(TASK)].clone();
-    assert!(journal.iter().any(|record| matches!(record, alondra_domain_rules::LifecycleRecord::HostEnded { .. })), "{journal:?}");
-    assert!(!crate::admission::working_tasks(&restarted, &restarted.state().unwrap()).contains(&TaskId::from(TASK)));
-    assert!(processes.iter().all(|process| !alondra_process_group::alive(process).unwrap()), "nothing of the host is left running");
-    kill_host_and_daemon(replaced);
-}
 
 // A task working with no owner is taken over once; while its lifecycle stands where that take
 // over left it, ten minutes of looks take it over no more, and a new fact makes it due again.

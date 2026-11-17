@@ -22,13 +22,22 @@ pub fn open(home: &Path) -> Result<DomainRuntime> {
 pub fn open_at(home: &Path, database: &Path) -> Result<DomainRuntime> {
     let runtime = DomainRuntime::open_observed(home, database, Some(Arc::new(crate::domain_holds::HeldCards)), observers())?;
     runtime.provide::<dyn OrchestratorEngine>(Arc::new(Engine));
+    #[cfg(any(test, feature = "test-hooks"))]
+    if let Some(wire) = TEST_WIRING.get() {
+        wire(&runtime);
+    }
     Ok(runtime)
 }
+
+/// What the tests of a crate above the engine give every runtime the engine's fixtures open: that
+/// crate's ports, as `alondrad` gives them when it puts the daemon together.
+#[cfg(any(test, feature = "test-hooks"))]
+pub static TEST_WIRING: std::sync::OnceLock<fn(&DomainRuntime)> = std::sync::OnceLock::new();
 
 /// Every subsystem that hears of the runtime's commits, in the order they hear of each one.
 fn observers() -> Vec<Box<dyn CommitObserver>> {
     vec![
-        Box::new(crate::admission::PauseResume),
+        Box::new(crate::gate::PauseResume),
         Box::new(crate::sdk_live::EndedWaits),
         Box::new(crate::task_closer::Unattended),
         Box::new(crate::allow_always::ChosenAlways),

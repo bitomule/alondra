@@ -1,3 +1,4 @@
+use alondra_engine_admission::AdmissionOf as _;
 use alondra_daemon_engine::sdk_owner::SdkOwners as _;
 use alondra_daemon_engine::live::LiveOf as _;
 // The engine's fixtures take its `Directory`, so alondrad's tests share that one.
@@ -50,7 +51,6 @@ use alondra_daemon_support::{disk};
 use alondra_daemon_engine::{
     account_move,
     accounts,
-    admission,
     allow_always,
     auto_launch,
     claude_access,
@@ -75,7 +75,6 @@ use alondra_daemon_engine::{
     launch_plans,
     local_network_card,
     machine,
-    machine_watch,
     mcp_probe,
     mcp_remove,
     mcp_waits,
@@ -85,7 +84,6 @@ use alondra_daemon_engine::{
     node_work,
     obligation_watch,
     options,
-    pauses,
     pr_images,
     pr_viewed,
     provider_transition,
@@ -98,6 +96,7 @@ use alondra_daemon_engine::{
     usage_pause,
     usage_probe,
 };
+use alondra_engine_admission::{admission, machine_watch, pauses};
 use alondra_engine_orchestrator::domain_orchestrator;
 #[cfg(test)]
 use alondra_daemon_engine::{domain_agent_lifecycle, machine_state};
@@ -547,14 +546,14 @@ async fn prepare_workers(
         }).await.ok();
     }
     if config.fast_timing {
-        domain.live().gate.tune(admission::Tuning { spacing: 1_000, limit: Some(admission::Limit::Fixed(admission::UNPACED)) });
-        domain.live().gate.ignore_mac();
-        domain.live().machine_watch.ignore_peaks();
+        domain.admission().tune(admission::Tuning { spacing: 1_000, limit: Some(admission::Limit::Fixed(admission::UNPACED)) });
+        domain.admission().ignore_mac();
+        domain.machine_watch().ignore_peaks();
     } else {
-        domain.live().machine_watch.discover_volumes();
+        domain.machine_watch().discover_volumes();
     }
     if config.ignore_mac_load {
-        domain.live().gate.ignore_mac();
+        domain.admission().ignore_mac();
     }
     PreparedWorkers(domain)
 }

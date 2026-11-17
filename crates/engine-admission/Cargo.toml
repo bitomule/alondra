@@ -1,0 +1,39 @@
+[package]
+name = "alondra-engine-admission"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+test-hooks = ["dep:tempfile", "alondra-daemon-engine/test-hooks", "alondra-daemon-engine-machine/test-hooks", "alondra-daemon-engine-model/test-hooks", "alondra-daemon-support/test-hooks", "alondra-engine-kernel/test-hooks"]
+
+[dependencies]
+alondra-core.workspace = true
+alondra-daemon-engine.workspace = true
+alondra-daemon-engine-machine.workspace = true
+alondra-daemon-engine-model.workspace = true
+alondra-daemon-support.workspace = true
+alondra-domain.workspace = true
+alondra-domain-rules.workspace = true
+alondra-engine-kernel.workspace = true
+alondra-process-group.workspace = true
+anyhow.workspace = true
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sysinfo.workspace = true
+tempfile = { workspace = true, optional = true }
+tokio.workspace = true
+alondra-view-model.workspace = true
+
+[dev-dependencies]
+alondra-views.workspace = true
+proptest.workspace = true
+rusqlite.workspace = true
+alondra-daemon-engine = { workspace = true, features = ["test-hooks"] }
+alondra-daemon-engine-machine = { workspace = true, features = ["test-hooks"] }
+alondra-daemon-engine-model = { workspace = true, features = ["test-hooks"] }
+alondra-daemon-support = { workspace = true, features = ["test-hooks"] }
+alondra-engine-kernel = { workspace = true, features = ["test-hooks"] }
+tempfile.workspace = true

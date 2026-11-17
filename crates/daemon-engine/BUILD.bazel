@@ -25,7 +25,7 @@ rust_library(
     crate_name = "alondra_daemon_engine",
     edition = "2024",
     version = VERSION,
-    visibility = ["//crates/alondrad:__pkg__"],
+    visibility = ["//crates/alondrad:__pkg__", "//crates/engine-admission:__pkg__"],
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-engine-store:daemon_engine_store",
@@ -48,7 +48,7 @@ rust_library(
     edition = "2024",
     rustc_flags = [LOW_OPT_LEVEL],
     version = VERSION,
-    visibility = ["//crates/alondrad:__pkg__", "//crates/engine-orchestrator:__pkg__", "//crates/machine-model:__pkg__", "//crates/scenarios:__pkg__"],
+    visibility = ["//crates/alondrad:__pkg__", "//crates/engine-admission:__pkg__", "//crates/engine-orchestrator:__pkg__", "//crates/machine-model:__pkg__", "//crates/scenarios:__pkg__"],
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
         "//crates/codex-protocol:codex_protocol",
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
@@ -73,7 +73,6 @@ INTEGRATION_FILTERS = [
     "domain_orchestrator_tools::tests::",
     "domain_schedule_api::tests::",
     "domain_schedule_runner::tests::",
-    "pauses::tests::",
     "sdk_handover::tests::",
     "sdk_owner::codex_process_tests::",
     "sdk_owner::codex_tests::",

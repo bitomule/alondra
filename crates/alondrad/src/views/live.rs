@@ -1,3 +1,4 @@
+use alondra_engine_admission::AdmissionOf as _;
 use alondra_daemon_engine::live::LiveOf as _;
 use alondra_daemon_engine::idle_compaction::ContextsOf as _;
 use crate::locks::Poisonable as _;
@@ -87,7 +88,7 @@ impl Facts {
         let hooks = live.changed.subscribe();
         let reports = live.mods.changed.subscribe();
         let usage = live.usage_pause.subscribe();
-        let gate = live.gate.subscribe();
+        let gate = client.domain.admission().subscribe();
         let sampled = client.feeds.subscribe();
         let pull_requests = client.details.version();
         let contexts = client.domain.contexts().version();
@@ -686,7 +687,7 @@ async fn gather_inner(
         waits_for_session,
         launch_refusals,
         start_waits,
-        pacing: client.domain.live().gate.live(&client.domain, now),
+        pacing: client.domain.admission().live(&client.domain, now),
         allowed_rules: keyed.allowed_rules,
         allow_always_missing: keyed.allow_always_missing,
         mcp_probes: keyed.mcp_probes,
@@ -1470,7 +1471,7 @@ mod cache_tests {
         let home = crate::test_support::Directory::new();
         fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(alondra_daemon_engine::wiring::open(&home).unwrap());
-        domain.live().gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(2)) });
+        domain.admission().tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(2)) });
         let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
         execute(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
@@ -1492,12 +1493,12 @@ mod cache_tests {
             ] });
             domain.report(Envelope { session_id: agent, report: Report::TurnStart }, now);
         }
-        assert!(domain.live().gate.hold_back(&domain, "agent-harness", crate::pauses::Reason::Declared {
+        assert!(domain.admission().hold_back(&domain, "agent-harness", crate::pauses::Reason::Declared {
             reason: "The build ran out of memory".into(),
         }, now));
 
         let state = domain.state().unwrap();
-        let gate = domain.live().gate.snapshot(&domain, now).unwrap();
+        let gate = domain.admission().snapshot(&domain, now).unwrap();
         let live = gather_at(&client, &state, Lang::En, &[], false, false, now).await;
         let tasks = client.views.render("tasks", &alondra_domain_rules::ReadSnapshot::build(state.clone()), &live, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         let mut listed = vec![];
@@ -1608,13 +1609,13 @@ mod cache_tests {
         let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
         let state = domain.state().unwrap();
         assert!(gather(&client, &state, Lang::En, &["home".into()], false, false).await.pacing.is_some());
-        domain.live().gate.poison();
-        domain.live().machine_watch.poison();
+        domain.admission().poison();
+        domain.machine_watch().poison();
         crate::locks::poison(&client.live_snapshots.entries);
         crate::locks::poison(&client.live_reads.0);
         crate::locks::poison(&client.views_gauges);
         crate::locks::poison(&client.gauges);
-        domain.live().gate.poke();
+        domain.admission().poke();
         let live = gather(&client, &state, Lang::En, &["home".into()], false, false).await;
         assert!(live.pacing.is_some());
         assert!(client.live_snapshots.entries.lock().is_ok_and(|entries| !entries.is_empty()));

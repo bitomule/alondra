@@ -2,7 +2,7 @@
 //! left under the old ones once they are no longer a way back, and of files no reader uses any
 //! more.
 use alondra_core::clock;
-use crate::{admission, domain_cutover, domain_database_migration as database};
+use crate::{ports::admission, domain_cutover, domain_database_migration as database};
 use anyhow::Result;
 use std::fs;
 use std::io::ErrorKind;

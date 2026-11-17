@@ -2,6 +2,7 @@
 //! tried again by itself a few times and then put in front of the user, and a node the user closed
 //! asks whether to relaunch. The decisions are the domain's (`after_failure`, `DomainState::react`);
 //! this carries them out.
+use crate::gate::GateOf as _;
 use crate::live::LiveOf as _;
 use crate::locks::Poisonable as _;
 use crate::live::Relaunch;
@@ -16,7 +17,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 /// A start of the task failed: Alondra tries again later, or asks the user.
-pub(crate) fn failed(domain: &DomainRuntime, task: &TaskId, problem: StartProblem, now: i64) -> Result<()> {
+pub fn failed(domain: &DomainRuntime, task: &TaskId, problem: StartProblem, now: i64) -> Result<()> {
     if ended(domain, task)? {
         return Ok(());
     }
@@ -57,14 +58,14 @@ pub(crate) fn plan_changed(domain: &DomainRuntime, task: &TaskId) -> Result<()> 
         store.set_start_retry(task, None)?;
         store.set_launch_refusal(task, None, alondra_core::now_millis())?;
     }
-    domain.live().gate.poke();
+    domain.gate().poke();
     Ok(())
 }
 
 /// Whether the task ended (cancelled, done or archived) while it was starting: then its start did
 /// not fail, it no longer waits. It leaves without a retry or a card, and its slot at the gate goes
 /// to the next one at once.
-pub(crate) fn ended(domain: &DomainRuntime, task: &TaskId) -> Result<bool> {
+pub fn ended(domain: &DomainRuntime, task: &TaskId) -> Result<bool> {
     let state = domain.state()?;
     if state.tasks.get(task).is_some_and(|task| !task.over() && !task.archived) {
         return Ok(false);
@@ -75,17 +76,17 @@ pub(crate) fn ended(domain: &DomainRuntime, task: &TaskId) -> Result<bool> {
         store.forget_auto_launch(task)?;
         store.dequeue_launch(task)?;
     }
-    let key = crate::admission::Key::Task(task.clone());
-    domain.live().gate.forget(&key);
-    domain.live().gate.not_started(&key);
-    domain.live().gate.poke();
+    let key = crate::ports::admission::Key::Task(task.clone());
+    domain.gate().forget(&key);
+    domain.gate().not_started(&key);
+    domain.gate().poke();
     Ok(true)
 }
 
 /// The problem a refused launch is, by the code it was refused with; none for refusals that clear
 /// by themselves (usage, disk, a launch already under way). A refusal of the task's own plan or
 /// choices is the same on every try.
-pub(crate) fn problem_of(code: &str, message: &str, cwd: Option<&str>) -> Option<StartProblem> {
+pub fn problem_of(code: &str, message: &str, cwd: Option<&str>) -> Option<StartProblem> {
     match code {
         "usage_exhausted" | "worktrees_unavailable" | "disk_low" | "conflict" => None,
         "invalid_input" | "model_is_binding" | "unsupported_capability" | "selection_transition_required" | "active_account_immutable" =>
@@ -110,8 +111,8 @@ pub(crate) fn raise(domain: &DomainRuntime, task: &TaskId, problem: StartProblem
 }
 
 /// What the daemon knows of how every open task gets going.
-pub(crate) fn facts(domain: &DomainRuntime, state: &DomainState) -> Result<BTreeMap<TaskId, StartFacts>> {
-    let held = domain.live().gate.pauses(domain).held;
+pub fn facts(domain: &DomainRuntime, state: &DomainState) -> Result<BTreeMap<TaskId, StartFacts>> {
+    let held = domain.gate().pauses().held;
     let store = domain.store.lock_or_exit("the domain store");
     let planned = store.planned_tasks()?;
     let autos = store.auto_launches()?;

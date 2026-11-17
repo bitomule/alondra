@@ -2,6 +2,7 @@
 //! Agent for a Task, type a message into an Agent's session, press Esc in it and read the
 //! machine. Each call carries the orchestrator execution's bearer; the domain changes a call
 //! implies (the new Agent, an assignment, a reopened Task) are that orchestrator's commands.
+use crate::gate::GateOf as _;
 use crate::sdk_owner::SdkOwners as _;
 use crate::live::LiveOf as _;
 use crate::sdk_handover::HandoversOf as _;
@@ -59,7 +60,7 @@ pub use alondra_daemon_engine_model::LaunchBody;
 
 /// Who starts a launch: the orchestrator, or Alondra itself for a task whose time has come.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Origin {
+pub enum Origin {
     Orchestrator,
     Auto,
     /// A launch the orchestrator or the user asked for, which waited at the gate for its turn.
@@ -68,13 +69,13 @@ pub(crate) enum Origin {
 
 /// Launches a Claude session for a Task with the options its Request was asked for, gives it its
 /// bearer through its settings file and assigns it the Task.
-pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, body: LaunchBody,
+pub async fn launch(domain: &DomainRuntime, home: &Path, body: LaunchBody,
     choices: impl FnOnce(&RequestId) -> Option<Choices>) -> Result<Value, DomainError> {
     launch_from(domain, home, body, choices, Origin::Orchestrator).await
 }
 
 /// `launch`, for either origin. An automatic launch holds the task's launch guard already.
-pub(crate) async fn launch_from(domain: &DomainRuntime, home: &Path, body: LaunchBody,
+pub async fn launch_from(domain: &DomainRuntime, home: &Path, body: LaunchBody,
     choices: impl FnOnce(&RequestId) -> Option<Choices>, origin: Origin) -> Result<Value, DomainError> {
     let task = body.task.clone();
     let cwd = body.cwd.clone().or_else(|| domain.launch_plan(&task).ok().flatten().map(|plan| plan.cwd));
@@ -111,13 +112,20 @@ pub(crate) async fn launch_from(domain: &DomainRuntime, home: &Path, body: Launc
     launched
 }
 
+/// Queues a launch the orchestrator or the user asked for; the gate starts it when its turn comes.
+pub fn enqueue(domain: &DomainRuntime, body: &LaunchBody, origin: &str, now: alondra_core::Millis) -> anyhow::Result<()> {
+    domain.store.lock_or_exit("the domain store").enqueue_launch(body.task_id(), &body.to_queue(), origin, now)?;
+    domain.gate().poke();
+    Ok(())
+}
+
 /// What the Tasks list says about a task that did not start: kept until it starts.
 /// The orchestrator's launch waits in the gate's queue, which starts it by itself once there is room.
 fn queue_at_gate(domain: &DomainRuntime, body: &LaunchBody, task: &TaskId, title: &str) -> Result<Value, DomainError> {
     let now = alondra_core::now_millis();
-    crate::admission::enqueue(domain, body, "orchestrator", now)
+    enqueue(domain, body, "orchestrator", now)
         .map_err(|error| DomainError::new("storage_unavailable", format!("could not queue the launch: {error:#}")))?;
-    Ok(json!({"task": task, "queued": true, "message": format!("“{title}” is queued. {}", crate::admission::queued_text(domain, task, now))}))
+    Ok(json!({"task": task, "queued": true, "message": format!("“{title}” is queued. {}", domain.gate().queued_text(task, now))}))
 }
 
 fn remember_refusal(domain: &DomainRuntime, task: &TaskId, refusal: Option<(&str, Option<&str>)>) {
@@ -272,7 +280,7 @@ pub(crate) fn ambiguous_model(model: &str, offering: &[alondra_core::accounts::P
     DomainError::new("invalid_input", format!("“{model}” is offered by {}: name it {}", names.join(" and "), qualified.join(" or ")))
 }
 
-fn native_launch(domain: &DomainRuntime, home: &Path, task: &alondra_domain_rules::Task, requested: &alondra_core::options::Resolved, file: &alondra_core::options::OptionsFile, body: &LaunchBody, prior_native: bool, reopening: bool)
+pub fn native_launch(domain: &DomainRuntime, home: &Path, task: &alondra_domain_rules::Task, requested: &alondra_core::options::Resolved, file: &alondra_core::options::OptionsFile, body: &LaunchBody, prior_native: bool, reopening: bool)
     -> Result<Option<(alondra_core::options::Resolved, alondra_core::accounts::AccountKey, String)>, DomainError>
 {
     use alondra_core::accounts::Provider;
@@ -422,7 +430,7 @@ fn tell_replace_failed(domain: &DomainRuntime, task: &TaskId, error: &DomainErro
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBody,
+pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBody,
     choices: impl FnOnce(&RequestId) -> Option<Choices>, origin: Origin,
     checked: Option<Box<dyn FnOnce() + Send>>) -> Result<Value, DomainError> {
     let conflict = |message: String| DomainError::new("conflict", message);
@@ -470,7 +478,7 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
     if let Some(why) = crate::plan_reviews::held(&current, &task.id) {
         return Err(DomainError::new("plan_review_pending", why));
     }
-    if origin != Origin::Admitted && crate::admission::held_by_user(domain, &task.id) {
+    if origin != Origin::Admitted && domain.gate().held_by_user(&task.id) {
         return Err(conflict(format!("The user paused “{}” in the queue: only the user resumes it", task.title)));
     }
     if replaced.is_none() && task.agent_id.as_ref().and_then(|id| current.agents.get(id)).is_some_and(|a| a.phase.live()) {
@@ -554,7 +562,7 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
             return Err(DomainError::new("main_checkout", format!("{why}. {} stays as it is and was not launched", task.id)));
         }
         Err(crate::launch_worktree::LaunchError::Storage(why)) => {
-            domain.live().gate.not_started(&crate::admission::Key::Task(task.id.clone()));
+            domain.gate().not_started(&crate::ports::admission::Key::Task(task.id.clone()));
             remember_refusal(domain, &task.id, Some(("worktrees_unavailable", None)));
             if origin == Origin::Orchestrator && replaced.is_none() {
                 return queue_at_gate(domain, &body, &task.id, &task.title);
@@ -565,8 +573,8 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
     if reopening.is_none() && !Path::new(&cwd).is_dir() {
         return Err(DomainError::new("invalid_input", format!("directory {cwd} does not exist")));
     }
-    if let Some(why) = domain.live().machine_watch.refuse_launch(&storage) {
-        domain.live().gate.not_started(&crate::admission::Key::Task(task.id.clone()));
+    if let Some(why) = domain.gate().refuse_launch(&storage) {
+        domain.gate().not_started(&crate::ports::admission::Key::Task(task.id.clone()));
         if origin == Origin::Orchestrator && replaced.is_none() {
             return queue_at_gate(domain, &body, &task.id, &task.title);
         }
@@ -596,14 +604,14 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
     let (workplace, recover_directory) = match isolation {
         Ok(workplace) => workplace,
         Err(crate::launch_worktree::LaunchError::Storage(why)) => {
-            domain.live().gate.not_started(&crate::admission::Key::Task(task.id.clone()));
+            domain.gate().not_started(&crate::ports::admission::Key::Task(task.id.clone()));
             remember_refusal(domain, &task.id, Some(("worktrees_unavailable", None)));
             return Err(DomainError::new("worktrees_unavailable", why));
         }
         Err(why) => {
             if let Some(known) = &known
                 && let Err(unavailable) = crate::task_worktrees::ready(domain, &known.to_string_lossy()).await {
-                domain.live().gate.not_started(&crate::admission::Key::Task(task.id.clone()));
+                domain.gate().not_started(&crate::ports::admission::Key::Task(task.id.clone()));
                 remember_refusal(domain, &task.id, Some(("worktrees_unavailable", None)));
                 return Err(DomainError::new("worktrees_unavailable", unavailable.to_string()));
             }
@@ -642,12 +650,12 @@ pub(crate) async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: La
         return Err(DomainError::new("invalid_input", "effort is auto for this request: pass reason, one short line on what the task is and why this model fits it"));
     }
     if origin == Origin::Orchestrator && replaced.is_none() {
-        use crate::admission::{Key, Waiting};
+        use crate::ports::admission::{Key, Waiting};
         let now = alondra_core::now_millis();
         let key = Key::Task(task.id.clone());
         let waiting = Waiting { key: key.clone(), priority: task.priority, resuming: false, since: now };
-        if domain.live().gate.ask(domain, waiting, now).is_err() {
-            domain.live().gate.forget(&key);
+        if domain.gate().ask(waiting, now).is_err() {
+            domain.gate().forget(&key);
             return queue_at_gate(domain, &body, &task.id, &task.title);
         }
     }

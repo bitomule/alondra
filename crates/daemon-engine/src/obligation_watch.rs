@@ -5,6 +5,7 @@
 //! whose work ended with no turn to take up its notice is told, and what the orchestrator owes is
 //! reminded to it and then settled by Alondra. Nothing it does opens a card. The daemon keeps one
 //! clock, in `Live`: its own loop and every pass of the orchestrator step that one.
+use crate::gate::GateOf as _;
 use crate::sdk_owner::SdkOwners as _;
 use crate::live::LiveOf as _;
 use alondra_core::clock;
@@ -202,7 +203,7 @@ struct GateWorld<'a> {
 
 impl World for GateWorld<'_> {
     fn waits_for_slot(&self, task: &TaskId) -> bool {
-        self.domain.live().gate.waits_for_slot(self.domain, self.state, task)
+        self.domain.gate().waits_for_slot(self.state, task)
     }
 
     fn orchestrator_held(&self) -> bool {

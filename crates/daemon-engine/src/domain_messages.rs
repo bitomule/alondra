@@ -1,5 +1,6 @@
 //! User messages reach a node through its task lifecycle, or through its mod for legacy nodes.
 //! A task with no node keeps its inputs until its first execution starts.
+use crate::gate::GateOf as _;
 use crate::live::LiveOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
@@ -124,7 +125,7 @@ pub async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, name: &s
     if scheduled || crate::sdk_owner::runs_through_sdk(&state, agent) {
         let told = tell_through_sdk(domain, &state, home, user, name, agent, body, as_user);
         if as_user && !scheduled && told.is_ok() {
-            domain.live().gate.resume_by_user_message(domain, &agent.0, alondra_core::now_millis());
+            domain.gate().resume_by_user_message(&agent.0, alondra_core::now_millis());
         }
         return told;
     }
@@ -166,7 +167,7 @@ pub async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, name: &s
     let told = crate::sdk_handover::tell(domain, &agent.0, &author, &text, as_user)
         .map_err(|_| refused("session_unreachable", "the node is not connected to Alondra: its session is stopped or its Claude Code mod is not running. Nothing was sent"))?;
     if as_user {
-        domain.live().gate.release_by_user_message(domain, &agent.0);
+        domain.gate().release_by_user_message(&agent.0);
     }
     let delivered = match told {
         crate::sdk_handover::Told::Pushed(acked) => match clock::timeout(ACK_WAIT, acked).await {

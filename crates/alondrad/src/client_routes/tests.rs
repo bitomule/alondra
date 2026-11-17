@@ -1,5 +1,6 @@
 //! Public routes are exercised with signed requests. Views use the same client
 //! in-process, so their reads and actions exercise that client directly.
+use alondra_engine_admission::AdmissionOf as _;
 use alondra_daemon_engine::sdk_owner::SdkOwners as _;
 use alondra_daemon_engine::live::LiveOf as _;
 use super::*;
@@ -1080,8 +1081,8 @@ async fn a_task_waits_for_room_on_the_disk_and_starts_once_the_disk_has_it() {
         agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
         launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
     });
-    let watch = &fixture.domain.live().machine_watch;
-    let ask = || fixture.domain.live().gate.ask(&fixture.domain, Waiting { key: Key::Task("task-9".into()), priority: alondra_domain_rules::TaskPriority::Normal, resuming: false, since: 0 }, alondra_core::now_millis());
+    let watch = &fixture.domain.machine_watch();
+    let ask = || fixture.domain.admission().ask(&fixture.domain, Waiting { key: Key::Task("task-9".into()), priority: alondra_domain_rules::TaskPriority::Normal, resuming: false, since: 0 }, alondra_core::now_millis());
     watch.measure_disk(crate::disk::Space { free: 6 * GB, purgeable: 0, total: 500 * GB });
     assert_eq!(ask(), Err(Hold::Disk { free: 6 * GB, needed: 21 * GB, volume: None }),
         "projects never measured: 8 GB for the build of the node at work and 8 GB for this one, on top of the 5 GB line");

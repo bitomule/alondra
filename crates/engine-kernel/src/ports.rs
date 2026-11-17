@@ -14,6 +14,8 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use tokio::sync::watch;
 
+pub mod admission;
+
 /// What the orchestrator asks of the rest of the engine, which `daemon-engine` provides.
 pub trait OrchestratorEngine: Send + Sync {
     /// The account and model a batch of the orchestrator runs with now.

@@ -34,8 +34,9 @@ rust_library(
     crate_name = "alondra_engine_kernel",
     edition = "2024",
     version = VERSION,
-    visibility = ["//crates/daemon-engine:__pkg__", "//crates/engine-github:__pkg__", "//crates/engine-orchestrator:__pkg__"],
+    visibility = ["//crates/daemon-engine:__pkg__", "//crates/engine-admission:__pkg__", "//crates/engine-github:__pkg__", "//crates/engine-orchestrator:__pkg__"],
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
+        "//crates/daemon-engine-machine:daemon_engine_machine",
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-engine-store:daemon_engine_store",
         "//crates/daemon-support:daemon_support",
@@ -52,8 +53,9 @@ rust_library(
     edition = "2024",
     rustc_flags = [LOW_OPT_LEVEL],
     version = VERSION,
-    visibility = ["//crates/daemon-engine:__pkg__", "//crates/engine-github:__pkg__", "//crates/engine-orchestrator:__pkg__"],
+    visibility = ["//crates/daemon-engine:__pkg__", "//crates/engine-admission:__pkg__", "//crates/engine-github:__pkg__", "//crates/engine-orchestrator:__pkg__"],
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
+        "//crates/daemon-engine-machine:daemon_engine_machine_test_hooks",
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
         "//crates/daemon-engine-store:daemon_engine_store_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",
@@ -71,6 +73,7 @@ low_opt_rust_test(
     env = {"HOME": "."},
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
+        "//crates/daemon-engine-machine:daemon_engine_machine_test_hooks",
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
         "//crates/daemon-engine-store:daemon_engine_store_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",

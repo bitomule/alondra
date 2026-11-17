@@ -23,6 +23,7 @@ fn string(value: &Value) -> &str {
 /// pending scenarios say which layer they wait for.
 #[test]
 fn catalog_execution_status_is_explicit_and_evidenced() {
+    super::wired();
     let catalog: Value = serde_json::from_str(CATALOG).unwrap();
     let legend = field(&catalog, "execution_status_legend")
         .as_object()

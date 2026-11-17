@@ -8,7 +8,7 @@ use crate::obligation_watch::{Watch, pass};
 use alondra_domain_rules::obligation_policy::Millis;
 use alondra_domain::{Owed, Party};
 
-const S: Millis = 1000;
+pub const S: Millis = 1000;
 
 pub fn enforcing_every_deadline() -> Watch {
     Watch::enforcing(|owed| matches!(owed, Owed::HandInput | Owed::Wake))
@@ -46,7 +46,7 @@ fn dispatch_status(slice: &Slice, input: &str) -> Option<String> {
     slice.observer().query_row("SELECT status FROM lifecycle_dispatches WHERE task_id=?1 AND input_id=?2", [TASK, input], |row| row.get(0)).ok()
 }
 
-fn journal(slice: &Slice) -> Vec<LifecycleRecord> {
+pub fn journal(slice: &Slice) -> Vec<LifecycleRecord> {
     slice.domain.state().unwrap().lifecycle_journal[&TaskId::from(TASK)].iter().cloned().collect()
 }
 
@@ -59,39 +59,8 @@ pub fn drive_by_hand(slice: &Slice, driver: &Driver) {
     slice.domain.sdk_owners().driven_by_hand.lock().unwrap().insert(driver.agent().clone());
 }
 
-/// The owner gives its host up on its next step and, with the gate full, a host that resumes the
-/// same session takes its place.
-pub fn replaced_with_the_gate_full(slice: &Slice, mut driver: Driver) -> Driver {
-    assert!(driver.host_to_replace() || driver.step(&|| false).is_err(), "the owner gives its host up");
-    slice.domain.live().gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(0)) });
-    assert!(driver.host_to_replace());
-    let mut next = driver.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
-    drive_by_hand(slice, &next);
-    next.step(&|| false).unwrap();
-    next
-}
 
-/// The task holds no slot and its input waits in the gate's queue like any other, with no card.
-pub fn assert_waits_for_a_slot(slice: &Slice, driver: &mut Driver) {
-    assert_eq!(driver.pending_permits(), 1, "its input waits for the gate");
-    let gate = slice.domain.live().gate.snapshot(&slice.domain, alondra_core::now_millis()).unwrap();
-    assert!(gate.queue.iter().any(|waiting| waiting.key == crate::admission::Key::Turn(TASK.into())), "its turn is queued: {:?}", gate.queue);
-    assert!(!gate.working_tasks.contains(&TaskId::from(TASK)), "it holds no slot: {:?}", gate.working_tasks);
-    assert!(lifecycle(&slice.domain).cards().is_empty(), "no card asks the user");
-}
 
-/// The gate has room again: the host that took the place of the old one gets the input, Claude
-/// starts on it, and every host resumed the session the first one opened.
-pub fn goes_on_when_the_gate_has_room(slice: &Slice, driver: &mut Driver, text: &str, times: usize) {
-    slice.let_claude_start();
-    slice.domain.live().gate.tune(crate::admission::Tuning::default());
-    tokio::runtime::Runtime::new().unwrap().block_on(crate::admission::pass(&slice.domain, &slice._home)).unwrap();
-    until_prompted(slice, driver, text, times);
-    slice.settle(driver);
-    let starts = slice.starts();
-    assert!(starts[1..].iter().all(|start| start["resume"] == starts[0]["session"]), "every host resumed the same session: {starts:?}");
-    assert_ne!(lifecycle(&slice.domain).activity(), ActivityView::Starting, "Claude started on it");
-}
 
 // E1, 10 November: the host refused an input before offering it, the dispatch stayed `rejected`, and
 // no later input of the task went either; the task read «Waiting for Claude to start» until its host
@@ -112,56 +81,13 @@ fn a_refused_input_is_prepared_again_at_once_and_later_inputs_still_go() {
     driver.stop().unwrap();
 }
 
-#[test]
-fn an_input_refused_twice_goes_back_to_the_queue() {
-    let slice = Slice::new();
-    let mut driver = slice.launch_with("Write the release notes");
-    slice.settle(&mut driver);
-    drive_by_hand(&slice, &driver);
-    driver.refuse_offers = 2;
-    tell(&slice, "Add the tests first", "tell-first");
-    while driver.refuse_offers == 2 {
-        driver.step(&|| false).unwrap();
-    }
-    let mut queued = replaced_with_the_gate_full(&slice, driver);
-    assert_eq!(told(&slice, "Add the tests first"), 0, "nothing reached Claude");
-    assert_waits_for_a_slot(&slice, &mut queued);
-    goes_on_when_the_gate_has_room(&slice, &mut queued, "Add the tests first", 1);
-    queued.stop().unwrap();
-}
 
 // Claude Code refuses an input before queueing it: nobody is asked, the same text goes again at
 // once as a new input, and when the same session refuses that one too a host that resumes the
 // same session takes the message when the gate gives the task a slot.
-#[test]
-fn an_input_the_provider_refuses_goes_again_and_a_second_refusal_goes_to_a_resuming_host() {
-    let slice = Slice::new();
-    let text = "Add the tests first refused-by-claude";
-    let mut driver = slice.launch_with("Write the release notes");
-    slice.settle(&mut driver);
-    drive_by_hand(&slice, &driver);
-    let cards = slice.domain.state().unwrap().interactions.len();
-    tell(&slice, text, "tell-refused");
-    for _ in 0..5000 {
-        if driver.step(&|| false).is_err() {
-            break;
-        }
-    }
-    assert!(driver.host_to_replace(), "the second refusal made the owner give its host up");
-    assert_eq!(told(&slice, text), 2, "the refused text went again once: {:?}", slice.prompts());
-    assert_eq!(journal(&slice).iter().filter(|record| matches!(record, LifecycleRecord::HandoffResent { .. })).count(), 2, "each refusal staged its resend");
-    let mut queued = replaced_with_the_gate_full(&slice, driver);
-    let gate = slice.domain.live().gate.snapshot(&slice.domain, alondra_core::now_millis()).unwrap();
-    assert!(gate.queue.iter().any(|waiting| waiting.key == crate::admission::Key::Turn(TASK.into())), "its turn is queued: {:?}", gate.queue);
-    assert_eq!(lifecycle(&slice.domain).pending_inputs().len(), 1, "one input waits for the resuming host");
-    assert_eq!(slice.domain.state().unwrap().interactions.len(), cards, "no card asks the user");
-    goes_on_when_the_gate_has_room(&slice, &mut queued, text, 3);
-    assert_eq!(told(&slice, text), 3, "the resuming host got the message once: {:?}", slice.prompts());
-    queued.stop().unwrap();
-}
 
 /// The process of the node wrote at `at`, the last time the clock sees it write.
-fn wrote_at(slice: &Slice, at: Millis) {
+pub fn wrote_at(slice: &Slice, at: Millis) {
     slice.domain.live().outputs.lock().unwrap().insert(TASK.into(), at);
 }
 
@@ -169,30 +95,6 @@ fn wrote_at(slice: &Slice, at: Millis) {
 // input. Past the deadline since its last output the task gives up its slot, waits in the queue
 // with its input, and the host the gate admits next resumes the same session and takes it up,
 // flagged as possibly received. No card asks the user.
-#[test]
-fn a_hung_process_that_wrote_nothing_is_given_up_for_a_host_that_resumes_the_session() {
-    let slice = Slice::new();
-    let text = "Add the tests first hung-silent";
-    let mut driver = hand(&slice, text);
-    drive_by_hand(&slice, &driver);
-    wrote_at(&slice, 0);
-    let cards = slice.domain.state().unwrap().interactions.len();
-    let mut watch = enforcing_every_deadline();
-    pass(&slice.domain, &mut watch, 0);
-    pass(&slice.domain, &mut watch, 299 * S);
-    driver.step(&|| false).unwrap();
-    assert!(!driver.host_to_replace(), "nothing before the deadline");
-
-    wrote_at(&slice, 0);
-    pass(&slice.domain, &mut watch, 301 * S);
-    assert!(slice.domain.sdk_owners().requeues.lock().unwrap().contains(&TaskId::from(TASK)), "the watch gave the process up; the task owes {:?}", lifecycle(&slice.domain).obligation());
-    let mut queued = replaced_with_the_gate_full(&slice, driver);
-    assert_waits_for_a_slot(&slice, &mut queued);
-    assert_eq!(slice.domain.state().unwrap().interactions.len(), cards, "no card asks the user");
-    assert!(journal(&slice).iter().any(|record| matches!(record, LifecycleRecord::DoubtResent { text: Some(again), .. } if again.contains(text))), "the input goes again flagged as possibly received");
-    goes_on_when_the_gate_has_room(&slice, &mut queued, text, 2);
-    queued.stop().unwrap();
-}
 
 // Production, 2026-11-13 (t-message-delivery-fresh-codex): every commit that touched the task while
 // its input waited issued a permit, and the owner took them oldest first. After a takeover that
@@ -217,25 +119,6 @@ fn an_owner_claims_only_the_permit_the_last_commit_issued() {
 // resumed the session was given up by the watch like a first one, but its owner, a replacement,
 // gave the task up as lost and put a card, though two seconds later Alondra took it over again by
 // itself. A replacement the watch gives up is replaced, as a first host is.
-#[test]
-fn a_replacement_the_watch_gives_up_is_replaced_with_no_card() {
-    let slice = Slice::new();
-    let text = "Add the tests first hung-silent";
-    let mut driver = hand(&slice, text);
-    drive_by_hand(&slice, &driver);
-    wrote_at(&slice, 0);
-    let mut watch = enforcing_every_deadline();
-    pass(&slice.domain, &mut watch, 0);
-    pass(&slice.domain, &mut watch, 301 * S);
-    let mut replacement = replaced_with_the_gate_full(&slice, driver);
-    let cards = slice.domain.state().unwrap().interactions.len();
-    slice.domain.sdk_owners().requeues.lock().unwrap().insert(TASK.into());
-    assert!(replacement.step(&|| false).is_err(), "the watch gave the replacement's process up");
-    assert!(replacement.host_to_replace(), "a host that resumes the same session takes its place");
-    let mut next = replacement.replace_ended_host(&slice.backend, Some(&slice.plugin)).unwrap();
-    assert_eq!(slice.domain.state().unwrap().interactions.len(), cards, "no card asks the user");
-    next.stop().unwrap();
-}
 
 // A process that wrote recently is not hung, whatever the input did not get.
 #[test]

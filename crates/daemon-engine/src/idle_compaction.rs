@@ -39,7 +39,7 @@ impl Timing {
 
 /// The conversation's size after its last request, and when that request's cache expires.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Reading {
+pub struct Reading {
     pub tokens: u64,
     pub expires_at: Millis,
 }
@@ -128,7 +128,7 @@ impl Contexts {
         Some(Used { tokens: measured.tokens?, window })
     }
 
-    pub(crate) fn readings(&self) -> Vec<(TaskId, Reading)> {
+    pub fn readings(&self) -> Vec<(TaskId, Reading)> {
         self.measured.lock_or_recover("the measured contexts").iter().filter_map(|(task, measured)| Some((task.clone(), measured.reading?))).collect()
     }
 
@@ -176,7 +176,7 @@ pub(crate) fn resting(state: &DomainState, task: &TaskId) -> bool {
 }
 
 /// Asks for the compaction of every task due at `now`, and says when to look again.
-pub(crate) fn compact_due(domain: &DomainRuntime, now: Millis, timing: &Timing) -> Option<Millis> {
+pub fn compact_due(domain: &DomainRuntime, now: Millis, timing: &Timing) -> Option<Millis> {
     if domain.live().usage_pause.is_active() {
         return Some(now + 60_000);
     }

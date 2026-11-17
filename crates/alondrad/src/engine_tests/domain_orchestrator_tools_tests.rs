@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 /// the daemon's own routes.
 #[tokio::test]
 async fn a_review_that_asks_for_changes_twice_shows_its_rounds_in_the_metrics() {
+    super::wired();
     let root = Directory::new();
     let home = root.join("home");
     std::fs::create_dir_all(&home).unwrap();

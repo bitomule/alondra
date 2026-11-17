@@ -1,4 +1,5 @@
 //! A requested selection stays durable while its current execution drains, is fenced and hands off.
+use crate::gate::GateOf as _;
 use crate::sdk_owner::SdkOwners as _;
 use crate::live::LiveOf as _;
 use alondra_core::clock;
@@ -97,7 +98,7 @@ pub fn request_move(domain:&DomainRuntime,actor:&Actor,task:&TaskId,account:Acco
 }
 
 /// Whether a move holds the task: no node but the one it moves to may start for it.
-pub(crate) fn moving(domain:&DomainRuntime,task:&TaskId)->bool{
+pub fn moving(domain:&DomainRuntime,task:&TaskId)->bool{
     (domain.read().state().moving_to(task).is_some() && matches!(current(domain,task),Ok(Some(change)) if change.plan.kind==Kind::Move))
         || starts_elsewhere(domain,task)
 }
@@ -263,7 +264,7 @@ pub(crate) async fn start_moved(domain:&Arc<DomainRuntime>,task:&TaskId)->Result
 fn admitted(domain:&DomainRuntime,task:&TaskId)->bool{
     let Some(priority)=domain.read().state().tasks.get(task).map(|task|task.priority) else{return false};
     let now=alondra_core::now_millis();
-    domain.live().gate.ask(domain,crate::admission::Waiting{key:crate::admission::Key::Task(task.clone()),priority,resuming:false,since:now},now).is_ok()
+    domain.gate().ask(crate::ports::admission::Waiting{key:crate::ports::admission::Key::Task(task.clone()),priority,resuming:false,since:now},now).is_ok()
 }
 /// Whether the task has something to go on with and nobody else to wait for: the moment its next
 /// node starts, as the node it moved from would have resumed then. A delivery goes on once the
@@ -309,7 +310,7 @@ fn ensure_fence(domain:&DomainRuntime,plan:&Plan)->Result<(),DomainError>{
     Ok(())
 }
 
-pub(crate) async fn advance(domain:&Arc<DomainRuntime>,task:&TaskId)->Result<Phase,DomainError>{
+pub async fn advance(domain:&Arc<DomainRuntime>,task:&TaskId)->Result<Phase,DomainError>{
     let _advance=domain.selection_changes().advancing.lock().await;
     loop{
         let change=current(domain,task)?.ok_or_else(||failure("No selection change is pending"))?;
@@ -411,7 +412,7 @@ pub async fn run(domain:Arc<DomainRuntime>){
 
 /// One look at every selection change: each advances as far as it can, ends aborted when a step
 /// fails, and a task a move left waiting starts on its new account once it can.
-pub(crate) async fn pass(domain:&Arc<DomainRuntime>){
+pub async fn pass(domain:&Arc<DomainRuntime>){
     release_finished_fences(domain);
     let pending=domain.store.lock_or_exit("the domain store").provider_transitions();
     for change in pending.unwrap_or_default(){

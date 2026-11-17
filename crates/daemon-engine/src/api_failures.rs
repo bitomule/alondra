@@ -7,7 +7,7 @@
 //! (code.claude.com/docs/en/hooks), so going on is always a message to the node.
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
-use crate::pauses::{Paused, Reason};
+use crate::ports::admission::{Paused, Reason};
 use alondra_domain_rules::{AgentId, ApiHealth, OUTAGE_PROBE, InteractionPayload, NodePhase, START_RETRY, StartProblem};
 use alondra_core::Millis;
 use anyhow::Result;
@@ -20,7 +20,7 @@ const OUTAGE_WINDOW: Millis = 10 * 60_000;
 
 /// When the model last answered each node, and when an API error last cut each one's turn.
 #[derive(Default)]
-pub(crate) struct ApiWatch {
+pub struct ApiWatch {
     /// A holder that panics leaves it whole, so it is recovered: health hints, each change an
     /// insert and a remove that the next answer or failure writes again.
     inner: Mutex<Watch>,
@@ -45,12 +45,12 @@ impl ApiWatch {
     }
 
     /// A node waiting for the API was sent back to try it.
-    pub(crate) fn probed(&self, at: Millis) {
+    pub fn probed(&self, at: Millis) {
         self.lock().probed = Some(at);
     }
 
     /// The model answered some node after `at`.
-    pub(crate) fn answered_since(&self, at: Millis) -> bool {
+    pub fn answered_since(&self, at: Millis) -> bool {
         self.lock().answered.values().any(|answered| *answered > at)
     }
 
@@ -80,7 +80,7 @@ pub(crate) fn proves_an_answer(event: &str) -> bool {
 
 /// While the API looks down, the one node waiting for it that tries it next: the first whose
 /// probe is due. The others wait for an answer.
-pub(crate) fn outage_probe(paused: &BTreeMap<String, Paused>, watch: &ApiWatch, now: Millis) -> Option<String> {
+pub fn outage_probe(paused: &BTreeMap<String, Paused>, watch: &ApiWatch, now: Millis) -> Option<String> {
     if watch.lock().probed.is_some_and(|at| now - at < OUTAGE_PROBE) {
         return None;
     }
@@ -93,7 +93,7 @@ pub(crate) fn outage_probe(paused: &BTreeMap<String, Paused>, watch: &ApiWatch, 
         .map(|(_, session)| session.clone())
 }
 
-pub(crate) fn resume_text(error: &str, detail: Option<&str>) -> String {
+pub fn resume_text(error: &str, detail: Option<&str>) -> String {
     let what = detail.map(str::trim).filter(|detail| !detail.is_empty()).unwrap_or(error);
     format!("Your previous turn was cut by a Claude API error ({what}), not by anything you did. Carry on where you left off: check the state of your branch and of the work in progress, then continue your task.")
 }
@@ -119,7 +119,7 @@ pub(crate) fn settle_cards(domain: &DomainRuntime) -> Result<()> {
             continue;
         }
         let retried = !card.withdrawn && matches!(&card.payload, InteractionPayload::Question { answer: Some(answer), .. } if answer.option_id == START_RETRY);
-        let live = state.node_phase(&agent).is_some_and(NodePhase::live) && crate::admission::open_task_of(&state, &agent.0).is_some();
+        let live = state.node_phase(&agent).is_some_and(NodePhase::live) && crate::ports::admission::open_task_of(&state, &agent.0).is_some();
         if retried && live {
             let text = match serde_json::from_str::<StartProblem>(&card.body) {
                 Ok(StartProblem::ApiFailed { error, detail, .. }) => resume_text(&error, detail.as_deref()),

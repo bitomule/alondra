@@ -5,6 +5,7 @@
 //! It runs when the daemon starts, every 15 minutes for an account nothing else measured meanwhile,
 //! and right after Claude refused work for running out. A probe that fails keeps the last good
 //! reading, which says how old it is. A stale reading retries at once, then backs off up to 30 seconds.
+use crate::gate::GateOf as _;
 use crate::live::LiveOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
@@ -64,7 +65,7 @@ pub fn record(domain: &DomainRuntime, account: &AccountId, reading: UsageReading
     record_for_provider(domain, &alondra_core::accounts::AccountKey::new(Provider::Claude, account.clone()), reading, now);
 }
 
-pub(crate) fn record_for_provider(domain: &DomainRuntime, account: &alondra_core::accounts::AccountKey, reading: UsageReading, now: Millis) {
+pub fn record_for_provider(domain: &DomainRuntime, account: &alondra_core::accounts::AccountKey, reading: UsageReading, now: Millis) {
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,
         data_epoch: domain.read().state().data_epoch.clone(),
@@ -225,7 +226,7 @@ pub(crate) fn follow(domain: &DomainRuntime, now: Millis) {
         status.provider == key.provider && status.id == key.account && status.billing == AccountBilling::PayPerUse));
     drop(read);
     if other_capacity {
-        if domain.live().usage_pause.provider_account_back(now) { domain.live().gate.poke(); }
+        if domain.live().usage_pause.provider_account_back(now) { domain.gate().poke(); }
     } else if !ready.is_empty() {
         crate::usage_pause::session_is_back(domain);
         domain.live().usage_pause.margin_back(now);

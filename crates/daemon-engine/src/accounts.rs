@@ -4,6 +4,7 @@
 //! it. An added account gets its folder, linked to the user's `~/.claude`; a removed one is signed
 //! out and its folder deleted. `~/.claude` itself is never changed. Each launch starts on the
 //! account the user's distribution picks (`choose_for_launch`).
+use crate::gate::GateOf as _;
 use crate::live::LiveOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
@@ -619,7 +620,7 @@ fn check_current(domain: &DomainRuntime, home: &Path) -> crate::native_probe::Ou
             }
             correct_crossed_sessions(domain, &known);
             if domain.live().initial_account_check_pending.swap(false, std::sync::atomic::Ordering::AcqRel) {
-                domain.live().gate.poke();
+                domain.gate().poke();
             }
             let refresh: Vec<_> = domain.read().state().accounts.iter().filter(|account| account.provider == Provider::Claude && account.state == AccountState::SignedIn)
                 .filter(|account| {

@@ -1,5 +1,5 @@
 //! The producer transport while a client reads views and the feed through alondrad's routes.
-use alondra_daemon_engine::live::LiveOf as _;
+use alondra_engine_admission::AdmissionOf as _;
 use alondra_daemon_engine::domain_transport::tests::*;
 use alondra_daemon_engine::domain_transport::*;
 use alondra_domain_rules::*;
@@ -15,6 +15,7 @@ impl Drop for ReleaseRead {
 
 #[test]
 fn runtime_progress_view_and_feed_sql_and_render_run_outside_the_async_worker() {
+    super::wired();
     let fixture = Fixture::new();
     let domain = fixture.open();
     working_agent(&domain, "isolation");
@@ -48,6 +49,7 @@ fn runtime_progress_view_and_feed_sql_and_render_run_outside_the_async_worker() 
 
 #[test]
 fn runtime_progress_a_held_view_and_hook_recording_do_not_stop_guards_or_machine_samples() {
+    super::wired();
     let fixture = Fixture::new();
     let domain = fixture.open();
     working_agent(&domain, "progress");
@@ -102,8 +104,8 @@ fn runtime_progress_a_held_view_and_hook_recording_do_not_stop_guards_or_machine
             ..Default::default()
         }, None, vec![]))));
         let watcher = tokio::spawn(crate::machine_watch::run(domain.clone(), gauges, Silent));
-        domain.live().machine_watch.sampled.notified().await;
-        let threads = domain.live().machine_watch.sample_threads.lock().unwrap().clone();
+        domain.machine_watch().sampled.notified().await;
+        let threads = domain.machine_watch().sample_threads.lock().unwrap().clone();
         assert!(!threads.is_empty());
         assert!(threads.iter().all(|thread| *thread != driver));
         let samples = fixture.0.join(crate::machine_state::SAMPLES_DIR);
@@ -120,6 +122,7 @@ fn runtime_progress_a_held_view_and_hook_recording_do_not_stop_guards_or_machine
 
 #[test]
 fn an_answer_the_node_cannot_take_yet_waits_instead_of_being_dropped() {
+    super::wired();
     let fixture = Fixture::new();
     let domain = fixture.open();
     node_with_task(&domain);

@@ -230,7 +230,7 @@ pub(crate) fn holds_messages(domain: &DomainRuntime, agent: &AgentId) -> bool {
 }
 
 /// How `tell` reached the node.
-pub(crate) enum Told {
+pub enum Told {
     /// Down its node mod's connection: resolved once the session takes it.
     Pushed(tokio::sync::oneshot::Receiver<()>),
     /// Through the SDK: it opens the node's session there, or follows it to the SDK node.
@@ -239,7 +239,7 @@ pub(crate) enum Told {
 
 /// Tells the `claude --bg` node `session` `text` from `from`: down its connection, or to the SDK
 /// node its move leads to.
-pub(crate) fn tell(domain: &DomainRuntime, session: &str, from: &str, text: &str, as_user: bool) -> Result<Told, Unreachable> {
+pub fn tell(domain: &DomainRuntime, session: &str, from: &str, text: &str, as_user: bool) -> Result<Told, Unreachable> {
     let agent = AgentId(session.to_owned());
     if domain.sdk().is_some() {
         let stamped = crate::node_push::stamped(from, alondra_core::now_millis(), text);

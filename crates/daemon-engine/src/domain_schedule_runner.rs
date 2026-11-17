@@ -1,6 +1,7 @@
 //! Schedule v2's local-calendar and launch preparation adapter. The command
 //! carrying this intent must be committed with its Run, Request, and Task before
 //! a technical launch claim can call Claude.
+use crate::gate::GateOf as _;
 use crate::live::LiveOf as _;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
@@ -279,7 +280,7 @@ async fn prepare_claimed(
     Ok((workplace, plugin, resolved))
 }
 
-fn execute_system(domain: &DomainRuntime, command: Command) -> Result<CommandOutcome, StoreError> {
+pub fn execute_system(domain: &DomainRuntime, command: Command) -> Result<CommandOutcome, StoreError> {
     let state = domain.state().map_err(StoreError::Storage)?;
     domain.execute_as_system(CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,
@@ -357,7 +358,7 @@ fn fail_run(domain: &DomainRuntime, run_id: &ScheduleRunId, reason: String) -> R
 
 /// A persisted Run claim either reaches an atomic Request/Task/intent commit or
 /// receives an explicit failure. A crash before either is interrupted on open.
-fn finish_claim(domain: &DomainRuntime, home: &Path, run_id: &ScheduleRunId) -> Result<()> {
+pub fn finish_claim(domain: &DomainRuntime, home: &Path, run_id: &ScheduleRunId) -> Result<()> {
     let state = domain.state()?;
     let Some(run) = state
         .schedule
@@ -452,21 +453,21 @@ async fn dispatch_pending(
         }
     } else { crate::accounts::choose_for_launch(domain, home, now).is_some() };
     let paused = domain.live().usage_pause.current().is_some_and(|pause| pause.by_user || resolved.selection.is_none());
-    if !ready || paused || domain.live().machine_watch.disk_low() {
+    if !ready || paused || domain.gate().disk_low() {
         return Ok(());
     }
-    let key = crate::admission::Key::Run(run_id.0.clone());
+    let key = crate::ports::admission::Key::Run(run_id.0.clone());
     if state.scheduled_launch_guard(run_id).is_err() {
-        domain.live().gate.forget(&key);
+        domain.gate().forget(&key);
         return Ok(());
     }
-    let waiting = crate::admission::Waiting {
+    let waiting = crate::ports::admission::Waiting {
         key: key.clone(),
-        priority: crate::admission::run_priority(&state, run),
+        priority: crate::ports::admission::run_priority(&state, run),
         resuming: false,
         since: run.claimed_at.unwrap_or(now),
     };
-    if domain.live().gate.ask(domain, waiting, now).is_err() {
+    if domain.gate().ask(waiting, now).is_err() {
         return Ok(());
     }
     let root = options_at(home)?.worktrees_root;
@@ -481,16 +482,16 @@ async fn dispatch_pending(
     if configured {
         if let Some(path) = &known {
             if crate::task_worktrees::ready(domain, path).await.is_err() {
-                domain.live().gate.not_started(&key);
+                domain.gate().not_started(&key);
                 domain.store.lock_or_exit("the domain store").set_launch_refusal(&task, Some(("worktrees_unavailable", None)), now)?;
                 return Ok(());
             }
         }
         match crate::launch_worktree::storage_for(Path::new(&launch.intent.cwd), &crate::launch_worktree::slug(&task.0), known.as_deref().map(Path::new), None, root.as_ref()).await {
-            Ok(storage) if domain.live().machine_watch.refuse_launch(&storage).is_none() => {},
+            Ok(storage) if domain.gate().refuse_launch(&storage).is_none() => {},
             Err(crate::launch_worktree::LaunchError::Workspace(why)) => return fail_run(domain, run_id, why),
             result => {
-                domain.live().gate.not_started(&key);
+                domain.gate().not_started(&key);
                 if result.is_err() {
                     domain.store.lock_or_exit("the domain store").set_launch_refusal(&task, Some(("worktrees_unavailable", None)), now)?;
                 }
@@ -503,7 +504,7 @@ async fn dispatch_pending(
         match prepare_sdk(domain, &intent, &task, &policy, home).await {
             Ok(prepared) => Some(prepared),
             Err(error) if error.code == "worktrees_unavailable" => {
-                domain.live().gate.not_started(&key);
+                domain.gate().not_started(&key);
                 domain.store.lock_or_exit("the domain store").set_launch_refusal(&task, Some(("worktrees_unavailable", None)), now)?;
                 return Ok(());
             }
@@ -519,11 +520,11 @@ async fn dispatch_pending(
     ) {
         Ok(_) => (),
         Err(error) if ordinary_conflict(&error) => {
-            domain.live().gate.not_started(&key);
+            domain.gate().not_started(&key);
             return Ok(());
         }
         Err(error) => {
-            domain.live().gate.not_started(&key);
+            domain.gate().not_started(&key);
             return Err(error.into());
         }
     }
@@ -653,7 +654,7 @@ fn retry_launch(
     }
 }
 
-pub(crate) async fn run_cycle(
+pub async fn run_cycle(
     domain: &DomainRuntime,
     home: &Path,
     due_enabled: bool,
@@ -690,7 +691,7 @@ pub(crate) async fn run_cycle(
         fail_run(domain, &run_id, reason.into())?;
     }
     answer_failed_launches(domain, home)?;
-    let paused = domain.live().usage_pause.is_active() || domain.live().machine_watch.disk_low();
+    let paused = domain.live().usage_pause.is_active() || domain.gate().disk_low();
     if due_enabled && !paused {
         let now = alondra_core::now_millis();
         let state = domain.state()?;
@@ -849,7 +850,7 @@ pub async fn run(
 ) -> Result<()> {
     let mut schedule_changes = domain.subscribe_schedules();
     let mut usage_changes = domain.live().usage_pause.subscribe();
-    let mut turn = domain.live().gate.subscribe();
+    let mut turn = domain.gate().subscribe();
     let mut system_clock = crate::schedule_clock::ClockChanges::new();
     loop {
         run_cycle(&domain, &home, due_enabled).await?;
@@ -876,8 +877,8 @@ pub async fn run(
     }
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, feature = "test-hooks"))]
+pub mod tests {
     use crate::sdk_owner::SdkOwners as _;
     use super::*;
     use crate::sdk_owner::tests::SdkLaunches;
@@ -1106,17 +1107,17 @@ mod tests {
 
     pub struct Fixture {
         root: crate::test_support::Directory,
-        home: PathBuf,
-        domain: std::sync::Arc<DomainRuntime>,
+        pub home: PathBuf,
+        pub domain: std::sync::Arc<DomainRuntime>,
     }
     impl Fixture {
-        fn open(home: &Path) -> DomainRuntime {
+        pub fn open(home: &Path) -> DomainRuntime {
             let domain = crate::wiring::open(home).unwrap();
             crate::sdk_owner::tests::measure_healthy_machine(&domain);
             domain
         }
 
-        fn new() -> Self {
+        pub fn new() -> Self {
             let root = crate::test_support::Directory::new();
             let home = root.join("home");
             let projects = root.join("projects");
@@ -1155,7 +1156,7 @@ mod tests {
             .unwrap();
             Self { root, home, domain }
         }
-        fn claim(&self, id: &str) {
+        pub fn claim(&self, id: &str) {
             execute_system(
                 &self.domain,
                 Command::ClaimScheduleRun {
@@ -1196,7 +1197,7 @@ mod tests {
         }
 
         /// How many nodes were started: each SDK launch registers its own.
-        fn launches(&self) -> usize {
+        pub fn launches(&self) -> usize {
             self.domain.state().unwrap().agents.len()
         }
     }
@@ -1478,7 +1479,7 @@ mod tests {
 
     /// Puts a run back as a daemon before the fix left it: still waiting to launch after its Task
     /// was cancelled.
-    fn leave_launch_waiting(domain: &DomainRuntime, run: &str) {
+    pub fn leave_launch_waiting(domain: &DomainRuntime, run: &str) {
         let store = domain.store.lock().unwrap();
         let conn = store.conn_for_test();
         let triggers: Vec<(String, String)> = conn
@@ -1504,39 +1505,6 @@ mod tests {
 
     // On 0.3.14 four cancelled High-priority scheduled tasks kept their launch waiting: the gate
     // let them through every minute, their claim was refused, and nothing else ever started.
-    #[tokio::test]
-    async fn a_launch_left_waiting_by_a_cancelled_task_never_passes_the_gate_and_ends_on_the_next_start() {
-        let fixture = Fixture::new();
-        fixture.claim("stuck");
-        finish_claim(&fixture.domain, &fixture.home, &"stuck".into()).unwrap();
-        let task = fixture.domain.state().unwrap().schedule.runs[&ScheduleRunId::from("stuck")].task_id.clone().unwrap();
-        execute_system(&fixture.domain, Command::CancelTask { task_id: task.clone(), reason: None }).unwrap();
-        leave_launch_waiting(&fixture.domain, "stuck");
-
-        let restarted = Fixture::open(&fixture.home);
-        let state = restarted.state().unwrap();
-        let run = &state.schedule.runs[&ScheduleRunId::from("stuck")];
-        assert_eq!((run.state, run.launch.as_ref().unwrap().state), (ScheduleRunState::Sent, ScheduleLaunchState::Pending));
-        assert_eq!(state.tasks[&task].state, TaskState::Cancelled);
-        let waiting = crate::admission::Waiting {
-            key: crate::admission::Key::Run("stuck".into()),
-            priority: alondra_domain_rules::TaskPriority::High,
-            resuming: false,
-            since: 0,
-        };
-        assert!(restarted.live().gate.ask(&restarted, waiting, alondra_core::now_millis()).is_err(), "the gate never lets a launch of a cancelled task through");
-
-        run_cycle(&restarted, &fixture.home, false).await.unwrap();
-        let state = restarted.state().unwrap();
-        let run = &state.schedule.runs[&ScheduleRunId::from("stuck")];
-        assert_eq!(run.state, ScheduleRunState::Failed);
-        assert_eq!(run.launch.as_ref().unwrap().state, ScheduleLaunchState::Failed);
-        assert_eq!(run.error.as_deref(), Some(alondra_domain_rules::SCHEDULED_TASK_CANCELLED));
-        assert!(!state.interactions.contains_key(&InteractionId::from("problem-launch-stuck")), "no Problem on a cancelled Task");
-        let revision = state.revision;
-        run_cycle(&restarted, &fixture.home, false).await.unwrap();
-        assert_eq!(restarted.state().unwrap().revision, revision, "it is settled once");
-    }
 
     #[tokio::test]
     async fn cancelling_a_scheduled_task_before_it_launches_ends_its_run_for_good() {
@@ -1785,29 +1753,4 @@ mod tests {
         assert_eq!(fixture.domain.state().unwrap().schedule.runs[&ScheduleRunId::from("storage-run")].launch.as_ref().unwrap().state, ScheduleLaunchState::Handed);
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_due_schedule_and_a_pending_launch_wait_while_the_disk_is_nearly_full() {
-        let fixture = Fixture::new();
-        let _sdk = SdkLaunches::enable(&fixture.domain, &fixture.home);
-        fixture.claim("manual-1");
-        let now = alondra_core::now_millis();
-        fixture.domain.live().machine_watch.set_disk_low(true);
-        run_cycle(&fixture.domain, &fixture.home, false).await.unwrap();
-        let mut due = fixture.domain.state().unwrap().schedule.schedules[&ScheduleId::from("schedule-1")].clone();
-        due.enabled = true;
-        due.next_run = Some(now);
-        due.revision += 1;
-        execute_system(&fixture.domain, Command::UpdateSchedule { schedule: due }).unwrap();
-
-        run_cycle(&fixture.domain, &fixture.home, true).await.unwrap();
-        run_cycle(&fixture.domain, &fixture.home, true).await.unwrap();
-        assert_eq!(fixture.launches(), 0, "no node starts on a nearly full disk");
-        let state = fixture.domain.state().unwrap();
-        assert_eq!(state.schedule.runs[&ScheduleRunId::from("manual-1")].launch.as_ref().unwrap().state, ScheduleLaunchState::Pending);
-        assert!(state.schedule.runs.values().all(|run| run.state != ScheduleRunState::Failed), "nothing is recorded as failed");
-
-        fixture.domain.live().machine_watch.set_disk_low(false);
-        run_cycle(&fixture.domain, &fixture.home, true).await.unwrap();
-        assert_eq!(fixture.launches(), 2, "space again: the deferred launch and the due schedule go");
-    }
 }

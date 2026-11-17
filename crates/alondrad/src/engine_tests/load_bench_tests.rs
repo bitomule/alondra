@@ -6,6 +6,7 @@ use alondra_daemon_engine::domain_store::*;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "opt-in isolated signed card request measurement; no production service"]
 async fn repeated_card_requests() {
+    super::wired();
     use alondra_views::{Client, Lang, Transport, View};
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use p256::ecdsa::{SigningKey, Signature, signature::Signer};
@@ -148,6 +149,7 @@ async fn repeated_card_requests() {
 #[tokio::test]
 #[ignore = "opt-in isolated live store read trace; no production service"]
 async fn trace_card_live_store_reads() {
+    super::wired();
     use alondra_views::Lang;
     let home = crate::test_support::Directory::new();
     std::fs::create_dir_all(&home).unwrap();

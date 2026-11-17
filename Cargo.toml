@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/agent-protocol", "crates/codex-protocol", "crates/foundation", "crates/daemon-support", "crates/daemon-engine", "crates/daemon-engine-model", "crates/daemon-engine-store", "crates/daemon-engine-machine", "crates/engine-kernel", "crates/engine-github", "crates/engine-orchestrator", "crates/domain", "crates/store", "crates/provider-contract", "crates/agent-application", "crates/process-group", "crates/agent-runtime", "crates/provider-claude", "crates/provider-codex", "crates/provider-conformance", "crates/core", "crates/domain-rules", "crates/view-model", "crates/views", "crates/alondrad", "crates/alondra", "crates/e2e", "crates/relay", "crates/scenarios-transcript", "crates/scenarios"]
+members = ["crates/agent-protocol", "crates/codex-protocol", "crates/foundation", "crates/daemon-support", "crates/daemon-engine", "crates/daemon-engine-model", "crates/daemon-engine-store", "crates/daemon-engine-machine", "crates/engine-kernel", "crates/engine-github", "crates/engine-orchestrator", "crates/engine-admission", "crates/domain", "crates/store", "crates/provider-contract", "crates/agent-application", "crates/process-group", "crates/agent-runtime", "crates/provider-claude", "crates/provider-codex", "crates/provider-conformance", "crates/core", "crates/domain-rules", "crates/view-model", "crates/views", "crates/alondrad", "crates/alondra", "crates/e2e", "crates/relay", "crates/scenarios-transcript", "crates/scenarios"]
 
 [workspace.package]
 version = "0.3.47"
@@ -31,6 +31,7 @@ alondra-daemon-engine-machine = { path = "crates/daemon-engine-machine" }
 alondra-engine-kernel = { path = "crates/engine-kernel" }
 alondra-engine-github = { path = "crates/engine-github" }
 alondra-engine-orchestrator = { path = "crates/engine-orchestrator" }
+alondra-engine-admission = { path = "crates/engine-admission" }
 alondra-daemon-engine-model = { path = "crates/daemon-engine-model" }
 alondra-daemon-engine = { path = "crates/daemon-engine" }
 alondra-scenarios-transcript = { path = "crates/scenarios-transcript" }

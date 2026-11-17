@@ -1,5 +1,6 @@
 //! The SDK owner's journeys that go through alondrad: an answer delivered to the node, a
 //! button pressed in a client, the context a view shows.
+use alondra_engine_admission::AdmissionOf as _;
 use alondra_daemon_engine::sdk_owner::SdkOwners as _;
 use alondra_daemon_engine::live::LiveOf as _;
 use alondra_domain::ActivityView;
@@ -14,6 +15,7 @@ use std::sync::Arc;
 
 #[test]
 fn a_reported_wait_reaches_every_client_task_screen_without_changing_slots_or_the_list() {
+    super::wired();
     use alondra_views::{Client, Lang, Transport, now_fact::NowDoing};
     for background in [false, true] {
         let slice = Slice::new();
@@ -53,6 +55,7 @@ fn a_reported_wait_reaches_every_client_task_screen_without_changing_slots_or_th
 // card says it stopped; the user's answer reaches Claude as its next input and ends the wait.
 #[test]
 fn a_turn_that_ends_with_the_nodes_question_open_shows_only_that_question_and_the_answer_reaches_claude() {
+    super::wired();
     use alondra_domain_rules::{CardKind, CardSpec, QuestionOption, Recipient, Scope};
     let slice = Slice::new();
     let mut driver = slice.launch_working();
@@ -87,6 +90,7 @@ fn a_turn_that_ends_with_the_nodes_question_open_shows_only_that_question_and_th
 // mod; nothing took it for a node of the SDK.
 #[tokio::test(flavor = "multi_thread")]
 async fn alondras_cleanup_request_reaches_the_sdk_node_as_its_next_input() {
+    super::wired();
     let slice = Slice::new();
     let mut driver = slice.launch_working();
     let agent = driver.agent().clone();
@@ -116,6 +120,7 @@ async fn alondras_cleanup_request_reaches_the_sdk_node_as_its_next_input() {
 // was still answering the request.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_sdk_node_asked_to_clean_up_is_closed_only_once_it_says_it_did() {
+    super::wired();
     let slice = Slice::new();
     let mut driver = slice.launch_working();
     let agent = driver.agent().clone();
@@ -150,6 +155,7 @@ async fn an_sdk_node_asked_to_clean_up_is_closed_only_once_it_says_it_did() {
 // nothing ever woke it: the task read «Answering you» for 12 hours.
 #[test]
 fn background_work_for_the_users_reply_that_its_replaced_host_ended_is_reported_to_the_resumed_session() {
+    super::wired();
     let slice = Slice::new();
     let mut driver = slice.launch_working();
     let node = Actor::Agent { agent_id: driver.agent().clone() };
@@ -185,6 +191,7 @@ fn background_work_for_the_users_reply_that_its_replaced_host_ended_is_reported_
 // no deadline gives the host up.
 #[test]
 fn a_reply_claude_holds_reads_as_being_delivered_with_no_deadline() {
+    super::wired();
     use alondra_views::{Client, RenderContext, Transport, build, live::LiveSnapshot, text::Lang};
     use alondra_daemon_engine::obligation_watch::pass;
     use alondra_daemon_engine::sdk_owner::tests::untaken::{drive_by_hand, enforcing_every_deadline, until_prompted};
@@ -208,7 +215,7 @@ fn a_reply_claude_holds_reads_as_being_delivered_with_no_deadline() {
     assert_eq!(lifecycle(&slice.domain).activity(), ActivityView::Starting, "Claude holds the reply and starts no turn");
     let shown = |lang| {
         let read = slice.domain.read();
-        let live = LiveSnapshot { pacing: slice.domain.live().gate.live(&slice.domain, alondra_core::now_millis()), ..LiveSnapshot::default() };
+        let live = LiveSnapshot { pacing: slice.domain.admission().live(&slice.domain, alondra_core::now_millis()), ..LiveSnapshot::default() };
         let view = build(&format!("task:{TASK}"), RenderContext {
             domain: read.state(), index: read.index(), live: &live, client: Client::Tui, lang,
             transport: Transport::Loopback, cursor: "test", rendered_at: "",
@@ -262,6 +269,7 @@ fn press(slice: &Slice, verb: alondra_views::action_id::Verb, agent: &AgentId) -
 // host. Before, the node stayed «working» with nothing that could stop it.
 #[test]
 fn a_turn_claude_keeps_running_after_its_interrupt_is_force_stopped_and_resumed() {
+    super::wired();
     use alondra_views::action_id::Verb;
     let slice = Slice::new();
     let mut driver = slice.launch_with("ignore-interrupt");
@@ -308,6 +316,7 @@ fn a_turn_claude_keeps_running_after_its_interrupt_is_force_stopped_and_resumed(
 // Claude ends waits for another instruction without a card.
 #[test]
 fn an_accepted_interrupt_alondra_cannot_record_leaves_the_owner_going() {
+    super::wired();
     let slice = Slice::new();
     let mut driver = slice.launch_working();
     press_interrupt(&slice, driver.agent());
@@ -323,6 +332,7 @@ fn an_accepted_interrupt_alondra_cannot_record_leaves_the_owner_going() {
 
 #[test]
 fn cancelling_from_the_turn_end_card_after_a_failure_ends_the_task() {
+    super::wired();
     let slice = Slice::new();
     let mut driver = slice.launch_with("max-turns");
     slice.settle(&mut driver);
@@ -356,6 +366,7 @@ fn cancel_from_turn_end_card(slice: &Slice) -> serde_json::Value {
 // that waited for it pauses without a card.
 #[test]
 fn interrupting_a_command_claude_code_tracks_as_work_pauses_without_a_card() {
+    super::wired();
     let slice = Slice::new();
     let mut driver = slice.launch_with("foreground-command-hold");
     while slice.observations_with("\"subtype\":\"task_started\"") == 0 {
@@ -381,6 +392,7 @@ fn interrupting_a_command_claude_code_tracks_as_work_pauses_without_a_card() {
 // pauses without a card.
 #[test]
 fn interrupting_a_working_sdk_node_from_its_task_reaches_claude_and_pauses_without_a_card() {
+    super::wired();
     let slice = Slice::new();
     let mut driver = slice.launch_working();
     let offered = node_offers(&slice.domain, driver.agent());
@@ -428,6 +440,7 @@ fn shown_context(prompt: &str) -> (Option<u32>, Option<u64>) {
 // tokens of the million Claude said its model has.
 #[test]
 fn an_sdk_node_shows_the_context_its_last_answer_used_of_its_models_window() {
+    super::wired();
     assert_eq!(shown_context("large-context"), (Some(25), Some(1_000_000)));
 }
 
@@ -435,6 +448,7 @@ fn an_sdk_node_shows_the_context_its_last_answer_used_of_its_models_window() {
 // than one against a window nobody said.
 #[test]
 fn an_sdk_node_without_its_models_window_shows_no_context() {
+    super::wired();
     assert_eq!(shown_context("large-context-unsized"), (None, None), "Claude sized only another model");
     assert_eq!(shown_context("Write the release notes"), (None, None), "Claude sized no model");
 }
@@ -442,6 +456,7 @@ fn an_sdk_node_without_its_models_window_shows_no_context() {
 #[tokio::test(flavor="multi_thread",worker_threads=4)]
 #[ignore="opt-in: real pinned Codex, real Alondra MCP CLI and authenticated loopback daemon; no credentials or external inference"]
 async fn an_actual_codex_cli_asks_enters_native_plan_and_presents_the_result_through_alondra(){
+    super::wired();
     let slice=Slice::with_database_name(HostRoot::new(),crate::domain_database_migration::DATABASE);configured(&slice,"complete");
     for args in [vec!["init","-b","main"],vec!["config","user.name","Alondra fixture"],vec!["config","user.email","fixture@example.invalid"],vec!["commit","--allow-empty","-m","Initial fixture"]] {
         let output=std::process::Command::new("/usr/bin/git").args(args).current_dir(&slice.worktree).env_clear().env("HOME",&*slice._home).env("PATH","/usr/bin:/bin").env("GIT_CONFIG_NOSYSTEM","1").env("GIT_CONFIG_GLOBAL","/dev/null").output().unwrap();
@@ -466,8 +481,8 @@ async fn an_actual_codex_cli_asks_enters_native_plan_and_presents_the_result_thr
         let slice=scope.lock().await;
         let (pulse,mut changed)=tokio::sync::watch::channel(0_u64);slice.on_acknowledge(move||pulse.send_modify(|count|*count+=1));
         let effective=selected.effective.clone().unwrap();let backend=slice.backend.clone();let owner_domain=Arc::clone(&slice.domain);
-        let launch=Launch{task:TASK.into(),name:"Native report journey".into(),directory:slice.worktree.display().to_string(),prompt:"Write a report. Ask which language it should use, prepare a plan for approval, then present the completed report through Alondra.".into(),plugin:slice.plugin.clone(),options:LaunchOptions{provider:Provider::Codex,selection:Some(selected),model:Some(effective.model.model),effort:effective.reasoning_effort,disallowed_tools:vec![]},model:None,account:AccountId::default_account()};
-        let driver=tokio::task::spawn_blocking(move||start(owner_domain,&backend,launch).unwrap()).await.unwrap();slice.domain.add_sdk_owner(Owner::spawn(driver));
+        let native=Launch{task:TASK.into(),name:"Native report journey".into(),directory:slice.worktree.display().to_string(),prompt:"Write a report. Ask which language it should use, prepare a plan for approval, then present the completed report through Alondra.".into(),plugin:slice.plugin.clone(),options:LaunchOptions{provider:Provider::Codex,selection:Some(selected),model:Some(effective.model.model),effort:effective.reasoning_effort,disallowed_tools:vec![]},model:None,account:AccountId::default_account()};
+        let driver=tokio::task::spawn_blocking(move||start(owner_domain,&backend,native).unwrap()).await.unwrap();slice.domain.add_sdk_owner(Owner::spawn(driver));
         native_business_until(&slice,&mut changed,"language question",&model_trace,|state|state.interactions.contains_key(&InteractionId::from("native-language-decision"))).await;
         assert!(!slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].over());slice.answer("native-language-decision","english",None).unwrap();
         native_business_until(&slice,&mut changed,"native plan after answered question",&model_trace,|state|state.lifecycle_of(&TASK.into()).unwrap().cards().iter().any(|(id,_)|state.interactions.get(id).and_then(|interaction|interaction.card.content.as_ref()).is_some_and(|content|serde_json::to_value(&content.kind).unwrap()==serde_json::json!("plan")))).await;
@@ -509,6 +524,7 @@ async fn an_actual_codex_cli_asks_enters_native_plan_and_presents_the_result_thr
 // «[From Alondra · 19:55] <text>» with nothing saying it answered its card.
 #[test]
 fn an_answer_reaches_the_sdk_node_from_the_user_with_its_card() {
+    super::wired();
     use alondra_domain_rules::{CardKind, CardSpec, LifecycleRecord, QuestionOption, Recipient, Scope};
     let slice = Slice::new();
     let mut driver = slice.launch_working();
@@ -536,6 +552,7 @@ fn an_answer_reaches_the_sdk_node_from_the_user_with_its_card() {
 
 #[test]
 fn a_refused_interrupted_turn_end_keeps_the_host_without_waking_another_turn() {
+    super::wired();
     let slice = Slice::new();
     let mut driver = slice.launch_working();
     let group = driver.worker.host_group();
@@ -559,7 +576,7 @@ fn a_refused_interrupted_turn_end_keeps_the_host_without_waking_another_turn() {
 /// The node presents its PR #7 and its turn ends; the user accepts it; every slot of the gate is
 /// taken; GitHub then reports the PR conflicting with main and Alondra hands it back.
 async fn accepted_then_conflicting(slice: &Slice, driver: &mut Driver) {
-    use alondra_daemon_engine::admission::{Limit, Tuning};
+    use alondra_engine_admission::admission::{Limit, Tuning};
     use alondra_daemon_engine::domain_merges::{Checks, FakeGithub, MergeState, Merger};
     let node = Actor::Agent { agent_id: driver.agent().clone() };
     slice.run(&node, "register", Command::RegisterPr {
@@ -575,7 +592,7 @@ async fn accepted_then_conflicting(slice: &Slice, driver: &mut Driver) {
     driver.step(&|| false).unwrap();
     slice.settle(driver);
     slice.run(&user(), "accept", Command::AcceptDelivery { presentation_id: "final".into(), targets });
-    slice.domain.live().gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(0)) });
+    slice.domain.admission().tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(0)) });
     let github = FakeGithub::new();
     github.open(7, "head-a", Checks::Passed);
     if let Some(Ok(status)) = github.statuses.lock().unwrap().get_mut(&7) {
@@ -595,6 +612,7 @@ fn conflict_prompts(slice: &Slice) -> Vec<String> {
 /// capacity. The work the user already accepted goes on at once.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_accepted_pr_that_turns_conflicting_goes_back_to_its_node_with_a_conflict_turn() {
+    super::wired();
     let slice = Slice::new();
     let mut driver = slice.launch_working();
     accepted_then_conflicting(&slice, &mut driver).await;
@@ -608,7 +626,7 @@ async fn an_accepted_pr_that_turns_conflicting_goes_back_to_its_node_with_a_conf
     assert!(!conflict_prompts(&slice).is_empty(), "the conflict turn reaches the node with no slot free: {:?}", slice.prompts());
     slice.settle(&mut driver);
     assert_eq!(conflict_prompts(&slice).len(), 1, "the node is told once to resolve the conflicts: {:?}", slice.prompts());
-    let snapshot = slice.domain.live().gate.snapshot(&slice.domain, alondra_core::now_millis()).unwrap();
+    let snapshot = slice.domain.admission().snapshot(&slice.domain, alondra_core::now_millis()).unwrap();
     assert!(snapshot.queue.is_empty(), "nothing of the task waits in the gate: {:?}", snapshot.queue.iter().map(|waiting| format!("{:?}", waiting.key)).collect::<Vec<_>>());
     driver.stop().unwrap();
 }
@@ -617,6 +635,7 @@ async fn an_accepted_pr_that_turns_conflicting_goes_back_to_its_node_with_a_conf
 /// node's session takes the conflict turn.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_accepted_pr_that_turns_conflicting_after_its_host_died_reaches_a_host_that_resumes_the_session() {
+    super::wired();
     let slice = Slice::new();
     let mut driver = slice.launch_working();
     accepted_then_conflicting(&slice, &mut driver).await;
