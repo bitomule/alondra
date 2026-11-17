@@ -682,6 +682,8 @@ checks:
       - "crates/BUILD.bazel"
       - "crates/codex-protocol/**"
       - "crates/core/**"
+      - "crates/domain-rules/**"
+      - "crates/view-model/**"
       - "crates/daemon-engine-machine/**"
       - "crates/daemon-engine-model/**"
       - "crates/daemon-engine-store/**"
