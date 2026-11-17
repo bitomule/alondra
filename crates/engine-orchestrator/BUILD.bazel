@@ -1,3 +1,4 @@
+load("//tools/bazel:crates.bzl", "application_crate")
 load("//tools:tree.bzl", "repo_tree")
 load("//tools:rust_test.bzl", "LOW_OPT_LEVEL", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
@@ -20,13 +21,11 @@ WORKSPACE_DEPS = [
     "//crates/store:store",
 ]
 
-rust_library(
+application_crate(
     name = "engine_orchestrator",
     srcs = production_sources(),
     crate_name = "alondra_engine_orchestrator",
-    edition = "2024",
     version = VERSION,
-    visibility = ["//crates/alondrad:__pkg__"],
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-support:daemon_support",

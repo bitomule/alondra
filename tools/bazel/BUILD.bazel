@@ -1,0 +1,40 @@
+load("//tools:tree.bzl", "repo_tree")
+load(":crate_layers.bzl", "CRATE_LAYERS", "LAYERS")
+load(":crates.bzl", "layer_table")
+
+# One group per layer, holding its packages: the role macros let a layer's crates see a crate by
+# naming the groups of the layers allowed to depend on it.
+[
+    package_group(
+        name = layer.replace("-", "_"),
+        packages = ["//" + package for package, owner in CRATE_LAYERS.items() if owner == layer],
+    )
+    for layer in LAYERS
+]
+
+layer_table(name = "crate_layers")
+
+# Every Rust target of the repository with its attributes: the packages under `//:tree` are all of
+# them, so a new package joins the census without being listed.
+genquery(
+    name = "rust_targets",
+    expression = 'kind("rust_(library|binary|proc_macro|shared_library|static_library)", siblings(deps(//:tree)))',
+    opts = ["--output=xml"],
+    scope = ["//:tree"],
+)
+
+sh_test(
+    name = "crate_layers_test",
+    size = "small",
+    srcs = ["crate_layers_test.py"],
+    data = [
+        ":crate_layers",
+        ":rust_targets",
+    ],
+    env = {
+        "CRATE_LAYERS": "$(rootpath :crate_layers)",
+        "RUST_TARGETS": "$(rootpath :rust_targets)",
+    },
+)
+
+repo_tree()

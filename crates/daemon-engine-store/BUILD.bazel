@@ -1,3 +1,4 @@
+load("//tools/bazel:crates.bzl", "adapter_out_crate")
 load("//tools:tree.bzl", "repo_tree")
 load("//tools:rust_test.bzl", "LOW_OPT_LEVEL", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
@@ -17,14 +18,12 @@ TEST_DATA = SQL + ["//fixtures/domain-v2:acceptance.json"]
 # The tests alondrad's check of the acceptance catalog finds its evidence in.
 exports_files(["src/tests.rs", "src/schedule_acceptance_tests.rs"], visibility = ["//crates/alondrad:__pkg__"])
 
-rust_library(
+adapter_out_crate(
     name = "daemon_engine_store",
     srcs = production_sources(test_only = ["src/acceptance_cases.rs", "src/live_read_trace.rs", "src/load_bench.rs", "src/testing.rs"]),
     compile_data = SQL,
     crate_name = "alondra_daemon_engine_store",
-    edition = "2024",
     version = VERSION,
-    visibility = ["//crates:__subpackages__"],
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-support:daemon_support",

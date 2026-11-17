@@ -28,7 +28,7 @@ LINUX_CHECKS = {
     "plugin-mod", "cargo-bazel-deps", "load-bench-oracles", "buildbuddy-credential-helper",
     "public-build-inputs", "bazel-test-tmpdir", "musts-scopes", "test-durations", "test-limits", "clock-guard",
     "worktree-setup", "public-data-guard", "transcript-guard", "worktree-volume-bench", "ci",
-    "hermetic-tests", "no-old-commands", "edit-bench", "module-cycles",
+    "hermetic-tests", "no-old-commands", "edit-bench", "module-cycles", "crate-layers",
 }
 BOOTSTRAP = {
     "MUSTS.yml", "tools/ci.py", "tools/musts_scopes.py", ".github/workflows/ci.yml",

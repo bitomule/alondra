@@ -1,7 +1,8 @@
+load("//tools/bazel:crates.bzl", "application_crate")
 load("//tools:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_test")
 load("//tools:rust_sources.bzl", "production_sources")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 
@@ -16,13 +17,12 @@ VIEWS_DEPS = all_crate_deps(normal = True) + [
 ]
 
 # The screens: every view and card the clients render, built from the domain and the live snapshot.
-rust_library(
+application_crate(
     name = "views",
     srcs = production_sources(test_only = VIEWS_TEST_ONLY),
     crate_name = "alondra_views",
-    edition = "2024",
     version = "0.1.0",
-    visibility = ["//visibility:public"],
+    test_visibility = ["//crates/daemon-engine:__pkg__", "//crates/engine-admission:__pkg__", "//crates/engine-kernel:__pkg__", "//crates/engine-sdk:__pkg__"],
     deps = VIEWS_DEPS,
 )
 

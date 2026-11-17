@@ -1,19 +1,18 @@
+load("//tools/bazel:crates.bzl", "adapter_out_crate")
 load("//tools:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
+load("@rules_rust//rust:defs.bzl", "rust_binary")
 load("//tools:rust_sources.bzl", "production_sources")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 
 RUNTIME_DEPS = ["//crates/process-group:process_group", "//crates/store:store"] + all_crate_deps(normal = True)
 
-rust_library(
+adapter_out_crate(
     name = "agent_runtime",
     srcs = production_sources(),
     crate_name = "alondra_agent_runtime",
-    edition = "2024",
     version = "0.1.0",
-    visibility = ["//crates:__subpackages__"],
     deps = RUNTIME_DEPS,
 )
 
@@ -31,6 +30,7 @@ low_opt_rust_test(
 
 rust_binary(
     name = "owned_host_fixture",
+    testonly = True,
     crate_root = "tests/fixtures/owned_host.rs",
     srcs = ["tests/fixtures/owned_host.rs", "tests/support/mod.rs", "//crates:test_support.rs"],
     compile_data = ["//crates/domain-store-schema:schema.sql"],

@@ -1,3 +1,4 @@
+load("//tools/bazel:crates.bzl", "application_crate")
 load("//tools:tree.bzl", "repo_tree")
 load("//tools:rust_test.bzl", "LOW_OPT_LEVEL", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
@@ -28,13 +29,11 @@ TEST_ONLY = [
     "src/domain_store/runtime_retention.rs",
 ]
 
-rust_library(
+application_crate(
     name = "engine_kernel",
     srcs = production_sources(test_only = TEST_ONLY),
     crate_name = "alondra_engine_kernel",
-    edition = "2024",
     version = VERSION,
-    visibility = ["//crates/engine-sdk:__pkg__", "//crates/daemon-engine:__pkg__", "//crates/engine-live:__pkg__", "//crates/engine-mcp:__pkg__", "//crates/engine-worktrees:__pkg__", "//crates/engine-admission:__pkg__", "//crates/engine-github:__pkg__", "//crates/engine-orchestrator:__pkg__"],
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-machine:daemon_engine_machine",
         "//crates/daemon-engine-model:daemon_engine_model",

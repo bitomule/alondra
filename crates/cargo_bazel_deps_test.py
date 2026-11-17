@@ -6,7 +6,12 @@ import os
 import re
 import sys
 
-PRODUCTION_RULES = {"rust_binary", "rust_library", "rust_proc_macro", "rust_shared_library", "rust_static_library"}
+PRODUCTION_RULES = {
+    "rust_binary", "rust_library", "rust_proc_macro", "rust_shared_library", "rust_static_library",
+    # The layer macros of tools/bazel/crates.bzl, which declare every production crate.
+    "foundation_crate", "domain_crate", "port_crate", "application_crate", "adapter_in_crate",
+    "adapter_out_crate", "adapter_private_crate", "root_library", "root_binary",
+}
 SECTION = re.compile(r"^\[([^\]]+)\]\s*$")
 ENTRY = re.compile(r"^([A-Za-z0-9_-]+)(\.workspace)?\s*=\s*(.*)$")
 PATH = re.compile(r"path\s*=\s*\"([^\"]+)\"")

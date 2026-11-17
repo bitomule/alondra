@@ -1,29 +1,26 @@
+load("//tools/bazel:crates.bzl", "root_binary", "root_library")
 load("//tools:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps", "crate_deps")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
 load("//tools:rust_sources.bzl", "production_sources")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 
 RELAY_DEPS = all_crate_deps(normal = True) + ["//crates/e2e:alondra_e2e"]
 
-rust_library(
+root_library(
     name = "alondra_relay_lib",
     srcs = production_sources(exclude = ["src/main.rs"]),
     compile_data = glob(["migrations/*.sql"]),
     crate_name = "alondra_relay",
     crate_root = "src/lib.rs",
-    edition = "2024",
     version = "0.1.0",
-    visibility = ["//visibility:public"],
     deps = RELAY_DEPS,
 )
 
-rust_binary(
+root_binary(
     name = "alondra-relay",
     srcs = ["src/main.rs"],
     crate_root = "src/main.rs",
-    edition = "2024",
     version = "0.1.0",
     visibility = ["//visibility:public"],
     deps = crate_deps(["anyhow", "tokio"]) + [":alondra_relay_lib"],

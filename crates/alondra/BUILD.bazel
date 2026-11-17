@@ -1,8 +1,9 @@
+load("//tools/bazel:crates.bzl", "root_binary", "root_library")
 load("//tools:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps", "crate_deps")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@rules_rust//cargo:defs.bzl", "cargo_build_script")
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
+load("@rules_rust//rust:defs.bzl", "rust_binary")
 load("//tools:rust_sources.bzl", "production_sources")
 load("//:version.bzl", "VERSION")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
@@ -50,11 +51,10 @@ REPORT_SOURCES = [sources for _, sources, _ in CATALOG_FRAGMENTS if sources.star
 # production sources in its own action, which fails on a test file, and the parts are joined in
 # another: a test never reaches the CLI, and a change that leaves every part the same never
 # recompiles it, because a build script's data are compile inputs of the crate it builds for.
-rust_binary(
+root_binary(
     name = "log_catalog_extract",
     srcs = ["log_catalog.rs", "src/report/extract.rs"],
     crate_root = "log_catalog.rs",
-    edition = "2024",
 )
 
 [genrule(
@@ -82,23 +82,21 @@ cargo_build_script(
     edition = "2024",
 )
 
-rust_library(
+root_library(
     name = "alondra_lib",
     srcs = production_sources(test_only = ["src/account_native_smoke.rs", "src/service_client/live_transfer_test.rs", "src/tui/md/corpus.rs"], exclude = ["src/main.rs"]),
     compile_data = ["//launchd:alondra.plist.in"],
     crate_name = "alondra",
     crate_root = "src/lib.rs",
-    edition = "2024",
     version = VERSION,
-    visibility = ["//crates/scenarios:__pkg__"],
+    test_visibility = ["//crates/scenarios:__pkg__"],
     deps = all_crate_deps(normal = True) + [":log_catalog", "//crates/core:alondra_core", "//crates/domain-rules:domain_rules", "//crates/views:views", "//crates/e2e:alondra_e2e"],
 )
 
-rust_binary(
+root_binary(
     name = "alondra",
     srcs = ["src/main.rs"],
     crate_root = "src/main.rs",
-    edition = "2024",
     version = VERSION,
     visibility = ["//visibility:public"],
     deps = crate_deps(["anyhow"]) + [":alondra_lib"],

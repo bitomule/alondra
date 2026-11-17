@@ -1,3 +1,4 @@
+load("//tools/bazel:crates.bzl", "application_crate")
 load("//tools:tree.bzl", "repo_tree")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
@@ -14,13 +15,11 @@ WORKSPACE_DEPS = [
     "//crates/store:store",
 ]
 
-rust_library(
+application_crate(
     name = "daemon_support",
     srcs = glob(["src/**/*.rs"]),
     crate_name = "alondra_daemon_support",
-    edition = "2024",
     version = VERSION,
-    visibility = ["//crates:__subpackages__"],
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS,
 )
 
