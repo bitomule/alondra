@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """What one-line edits cost: the crates and test targets each reopens, and what Bazel really reruns.
 
-`bazel run //tools:edit_bench -- [--edit PATH ...] [--query-only]`. Without --edit it measures the
-source files edited most often in the last two weeks. For each edit it tests the affected targets
-once so the cache is warm, makes a one-line change that reaches the binaries (a `#[used]` static in
-Rust, a comment elsewhere), times `bazel test` over the same targets with an execution log, and puts
-the file back exactly as it was, also when interrupted.
+`bazel run //tools:edit_bench -- [--edit PATH ...] [--tracked] [--build-only] [--bazel-flag FLAG ...]
+[--query-only]`. Without --edit it measures the source files edited most often in the last two
+weeks; --tracked measures the edits the build graph's targets are set for. For each edit it makes a
+first one-line change and builds the affected targets, so rustc's incremental state exists for every
+crate the edit reaches, as it does in a real edit loop (a crate taken from a cache has none). Then it
+makes a second change that reaches the binaries (a `#[used]` static in Rust, a comment elsewhere),
+times `bazel test` (or `bazel build`) over the same targets with an execution log, and puts the file
+back exactly as it was, also when interrupted.
 
 Under bazelqueue a `bazel run` holds its build slot while the bench runs, so on a shared Mac build
 the script and run it outside Bazel:
@@ -26,6 +29,14 @@ from pathlib import Path
 BAZEL = os.environ.get("BAZEL", "bazelisk")
 LIBRARIES = "rust_library|rust_binary|rust_proc_macro"
 COMMENT = {".rs": "//", ".py": "#", ".swift": "//", ".ts": "//"}
+TRACKED = [
+    "crates/views/src/task_state.rs",
+    "crates/engine-admission/src/admission.rs",
+    "crates/engine-orchestrator/src/domain_orchestrator.rs",
+    "crates/engine-live/src/node_reports.rs",
+    "crates/domain-rules/src/rules.rs",
+]
+CRITICAL = re.compile(r"Critical Path: (\d+(?:\.\d+)?)s")
 QUEUE_RAN = re.compile(r"^bazelqueue: finished \S+ exit=\d+ queued=\S+ ran=(\S+)", re.M)
 DURATION = re.compile(r"(\d+(?:\.\d+)?)(h|ms|m|s)")
 
@@ -49,10 +60,8 @@ def frequent_edits(log, root, count):
     return [path for path, _ in commits.most_common(count)]
 
 
-def executed(log_text):
-    """Spawns the execution log ran instead of taking from a cache, counted by mnemonic."""
+def spawns(log_text):
     decoder = json.JSONDecoder()
-    found = collections.Counter()
     index = 0
     while index < len(log_text):
         while index < len(log_text) and log_text[index].isspace():
@@ -60,9 +69,27 @@ def executed(log_text):
         if index >= len(log_text):
             break
         spawn, index = decoder.raw_decode(log_text, index)
-        if not spawn.get("cacheHit") and not spawn.get("remoteCacheHit"):
-            found[spawn.get("mnemonic", "?")] += 1
-    return found
+        yield spawn
+
+
+def cached(spawn):
+    return bool(spawn.get("cacheHit") or spawn.get("remoteCacheHit"))
+
+
+def executed(log_text):
+    """Spawns the execution log ran instead of taking from a cache, counted by mnemonic."""
+    return collections.Counter(spawn.get("mnemonic", "?") for spawn in spawns(log_text) if not cached(spawn))
+
+
+def from_cache(log_text):
+    """Spawns the disk or remote cache answered."""
+    return sum(1 for spawn in spawns(log_text) if cached(spawn))
+
+
+def critical_path(output):
+    """Bazel's critical path of the last invocation in the output, in seconds."""
+    found = CRITICAL.findall(output)
+    return float(found[-1]) if found else None
 
 
 def seconds_of(text):
@@ -102,35 +129,41 @@ def reopened(root, label):
     return crates, tests
 
 
-def bazel_test(root, targets, *extra):
+def bazel(root, verb, targets, *extra):
     started = time.monotonic()
     result = subprocess.run(
-        [BAZEL, "test", "--test_output=errors", *extra, "--", *targets],
+        [BAZEL, verb, "--test_output=errors", *extra, "--", *targets],
         cwd=root, capture_output=True, text=True,
     )
     output = result.stdout + result.stderr
-    return result.returncode, bazel_seconds(output, time.monotonic() - started), attempts(output)
+    return result.returncode, bazel_seconds(output, time.monotonic() - started), attempts(output), output
 
 
-def measure(root, relative, query_only):
+def measure(root, relative, query_only, build_only=False, flags=()):
     label = label_of(root, relative)
     crates, tests = reopened(root, label)
     row = {"edit": relative, "crates": len(crates), "tests": len(tests)}
     if query_only or not tests:
         return row
-    bazel_test(root, tests)
+    verb = "build" if build_only else "test"
     path = Path(root) / relative
     original = path.read_bytes()
     with tempfile.TemporaryDirectory() as directory:
         log = Path(directory) / "execution.json"
         try:
             path.write_bytes(original + edit_text(path.suffix, time.time_ns()).encode())
-            code, seconds, tries = bazel_test(root, tests, f"--execution_log_json_file={log}")
+            bazel(root, "build", tests, *flags)
+            path.write_bytes(original + edit_text(path.suffix, time.time_ns()).encode())
+            code, seconds, tries, output = bazel(root, verb, tests, *flags, f"--execution_log_json_file={log}")
         finally:
             path.write_bytes(original)
-        ran = executed(log.read_text()) if log.exists() else collections.Counter()
+        text = log.read_text() if log.exists() else ""
+        ran = executed(text)
     row.update(
+        verb=verb,
         seconds=round(seconds),
+        critical=critical_path(output),
+        cached=from_cache(text),
         passed=code == 0,
         retried=tries > 1,
         rustc=ran.get("Rustc", 0),
@@ -143,17 +176,20 @@ def measure(root, relative, query_only):
 
 def table(rows):
     lines = [
-        "| Edit | Crates reopened | Test targets reopened | Actions run (rustc / clippy / tests) | Edit + test |",
-        "|---|---:|---:|---|---:|",
+        "| Edit | Crates reopened | Test targets reopened | Actions run (rustc / clippy / tests) | From cache"
+        " | Critical path | Edit + build or test |",
+        "|---|---:|---:|---|---:|---:|---:|",
     ]
     for row in rows:
         if "seconds" in row:
             ran = f"{row['actions']} ({row['rustc']} / {row['clippy']} / {row['test_runs']})"
-            took = f"{row['seconds']} s" + ("" if row["passed"] else " (failed)")
+            took = f"{row['seconds']} s ({row['verb']})" + ("" if row["passed"] else " (failed)")
             took += " (retried: actions count only the last attempt)" if row["retried"] else ""
+            critical = "-" if row["critical"] is None else f"{round(row['critical'])} s"
+            cache = str(row["cached"])
         else:
-            ran = took = "-"
-        lines.append(f"| `{row['edit']}` | {row['crates']} | {row['tests']} | {ran} | {took} |")
+            ran = took = critical = cache = "-"
+        lines.append(f"| `{row['edit']}` | {row['crates']} | {row['tests']} | {ran} | {cache} | {critical} | {took} |")
     return "\n".join(lines)
 
 
@@ -163,16 +199,19 @@ def main(argv):
     parser.add_argument("--count", type=int, default=12, help="how many frequent edits without --edit")
     parser.add_argument("--since", default="14.days", help="the git history the frequent edits come from")
     parser.add_argument("--query-only", action="store_true", help="count what each edit reopens; run nothing")
+    parser.add_argument("--tracked", action="store_true", help="measure the edits the build graph's targets are set for")
+    parser.add_argument("--build-only", action="store_true", help="time `bazel build` of the targets instead of `bazel test`")
+    parser.add_argument("--bazel-flag", action="append", default=[], help="a flag every Bazel invocation gets, as --bazel-flag=--compilation_mode=opt")
     args = parser.parse_args(argv)
     root = os.environ.get("BUILD_WORKSPACE_DIRECTORY") or os.getcwd()
-    edits = args.edit
+    edits = args.edit + (TRACKED if args.tracked else [])
     if not edits:
         log = subprocess.run(
             ["git", "log", f"--since={args.since}", "--name-only", "--format=@@%h", "--", "crates"],
             cwd=root, capture_output=True, text=True, check=True,
         ).stdout
         edits = frequent_edits(log, root, args.count)
-    rows = [measure(root, edit, args.query_only) for edit in edits]
+    rows = [measure(root, edit, args.query_only, args.build_only, args.bazel_flag) for edit in edits]
     print(table(rows))
     return 0 if all(row.get("passed", True) for row in rows) else 1
 

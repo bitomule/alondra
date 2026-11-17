@@ -322,3 +322,35 @@ changed between runs (the actions are the stable figure):
   compilations. Iterating on the domain alone is cheaper: a line in `rules.rs` with `bazel test` of
   its own target took 41 s (`//crates/domain-rules:domain_rules_test`) against 59 s for
   `//crates/core:alondra_core_test`.
+
+## The cheap levers, measured (2026-11-17)
+
+`edit_bench` now primes rustc's incremental state with a first edit before the edit it times. A crate
+taken from the disk or remote cache has no incremental state, so the first edit after a cache hit
+recompiles it from scratch: unprimed, the screen edit took 228 s to build with `alondra_lib` alone at
+196 s; primed, as in a real edit loop, 59 s. `--build-only` times `bazel build` of the same targets,
+`--bazel-flag` passes a configuration to every invocation, and `--tracked` measures the five edits
+below. Bazel's own time, without the queue's wait, on the shared Mac while it swapped; each figure is
+one run, so the actions and the critical path are the stable part.
+
+| Edit (main at 815dff6) | Build: as is (`-c opt`, clippy) | Build: no clippy | Build: `-c fastbuild` | Build: fastbuild, no clippy | Edit + test: as is | Edit + test: fastbuild, no clippy |
+|---|---:|---:|---:|---:|---:|---:|
+| `views/src/task_state.rs` | 59 s (21 rustc, 13 clippy) | 35 s | 34 s | 28 s | 261 s | 363 s, `relaunch_test` fails |
+| `engine-admission/src/admission.rs` | 39 s (16 / 7) | - | - | 20 s | 321 s | 384 s, a test fails |
+| `engine-orchestrator/src/domain_orchestrator.rs` | 19 s (12 / 5) | - | - | 27 s | - | - |
+| `engine-live/src/node_reports.rs` | 22 s (22 / 9) | - | - | 26 s | 321 s | 396 s, a test fails |
+| `domain-rules/src/rules.rs` | 47 s (62 / 26) | 43 s | - | 53 s | - | - |
+
+- Building is no longer the cost: with incremental state every edit builds in under a minute. Edit +
+  test is the time the test targets take to run: the critical path of every edit + test run is a test
+  (`engine_sdk_test`, `scenarios_test`, `engine_orchestrator_test`, the daemon's binary tests), and
+  the 44 to 58 test targets an engine or screen edit reaches run 550 to 650 s of tests between them.
+  They rerun because each links the edited crate.
+- `-c fastbuild` builds faster but makes edit + test slower: the libraries the tests link lose their
+  optimizations, and `relaunch_test`'s timing fails. Kept at `-c opt`.
+- Clippy off the build saves time only when building alone (59 → 35 s for the screen); with tests
+  its actions run beside the tests and none is on the critical path. Kept in every build.
+- `--@rules_rust//rust/settings:pipelined_compilation=True` fails on this Mac with
+  `output file … .rmeta is not writeable` (bazelbuild/rules_rust#3662). Not enabled.
+- What reruns is decided by the graph: a test target reruns whenever a crate it links changes, and
+  today most test targets link most of the engine. Cutting that is the work of the layering phases.
