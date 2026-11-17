@@ -121,7 +121,7 @@ impl Gate<'_> {
 
 /// The user's Resume on the card of a pause the gate holds a node of the Agent SDK in: the gate,
 /// not the domain, ends that pause, so it is the Resume of the node's task.
-pub(crate) struct PauseResume;
+pub struct PauseResume;
 
 impl crate::domain_runtime::CommitObserver for PauseResume {
     fn carries_out<'a>(&'a self, domain: &'a DomainRuntime, actor: &alondra_domain_rules::Actor, command: &alondra_domain_rules::Command) -> Option<crate::domain_runtime::Carried<'a>> {

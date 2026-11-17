@@ -31,7 +31,7 @@ impl Ran {
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn failed(stderr: impl Into<String>) -> Self {
+    pub fn failed(stderr: impl Into<String>) -> Self {
         Self { success: false, stdout: String::new(), stderr: stderr.into() }
     }
 
@@ -83,9 +83,9 @@ impl Sessions for Machine {
 /// language instead of the English `error` string.
 #[derive(Serialize, Debug, PartialEq)]
 pub struct Reason {
-    pub(crate) kind: &'static str,
+    pub kind: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) detail: Option<String>,
+    pub detail: Option<String>,
 }
 
 /// Real risks a close must not paper over: the session still doing something (busy or a live

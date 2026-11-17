@@ -11,7 +11,7 @@ use crate::domain_runtime::DomainRuntime;
 use crate::locks::Poisonable as _;
 
 /// Mounts a recorded worktree's volume from metadata kept on the daemon's own disk.
-pub(crate) async fn ready(domain: &DomainRuntime, path: &str) -> Result<()> {
+pub async fn ready(domain: &DomainRuntime, path: &str) -> Result<()> {
     let storage = domain.store.lock_or_exit("the domain store").worktree_storage_at(path)?;
     if let Some((path, storage)) = storage {
         tokio::task::spawn_blocking(move || alondra_daemon_support::worktrees_root::restore(&path, &storage))
@@ -86,7 +86,7 @@ fn record(domain: &DomainRuntime, task: &TaskId, made: Made) -> Result<()> {
 /// The open task that goes on working in the worktree at `path` once `task` lets it go: one that
 /// holds it, or one whose launch plan starts it there, which then takes it. A folder that cannot
 /// be a worktree, as a projects root other tasks were launched in, is nobody's to take.
-pub(crate) fn heir(domain: &DomainRuntime, task: &Task, path: &str) -> Result<Option<TaskId>> {
+pub fn heir(domain: &DomainRuntime, task: &Task, path: &str) -> Result<Option<TaskId>> {
     let state = domain.state()?;
     if let Some(heir) = state.worktree_held_by_other(path, &task.id) {
         return Ok(Some(heir.clone()));
@@ -114,7 +114,7 @@ pub(crate) fn heir(domain: &DomainRuntime, task: &Task, path: &str) -> Result<Op
 /// Worktrees of a task that are links to folders that cannot be reached now, as on a volume that is
 /// not mounted: the close leaves them as they are and tries again later, without a card.
 #[derive(Debug)]
-pub(crate) struct Unreachable(pub String);
+pub struct Unreachable(pub String);
 
 impl std::fmt::Display for Unreachable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -151,7 +151,7 @@ pub async fn leftovers(domain: &DomainRuntime, task: &Task) -> Vec<(String, Stri
 
 /// Deletes every worktree of the task that can go, the ones the node gave up as they are, and
 /// records how each ended. What could not go is returned, by path.
-pub(crate) async fn release_all(domain: &DomainRuntime, task: &Task) -> Result<Vec<(String, String)>> {
+pub async fn release_all(domain: &DomainRuntime, task: &Task) -> Result<Vec<(String, String)>> {
     let (mut left, mut unreachable) = (vec![], vec![]);
     for (path, worktree) in task.open_worktrees() {
         if let Err(why) = ready(domain, path).await {
@@ -197,7 +197,7 @@ pub(crate) async fn release_all(domain: &DomainRuntime, task: &Task) -> Result<V
 
 /// Whether Alondra may look into or delete the recorded `path`: it is gone, or still a worktree.
 /// Why not, otherwise.
-pub(crate) fn may_handle(domain: &DomainRuntime, path: &str) -> std::result::Result<(), String> {
+pub fn may_handle(domain: &DomainRuntime, path: &str) -> std::result::Result<(), String> {
     match Path::new(path).exists() {
         true => domain.registrable_worktree(Path::new(path)),
         false => Ok(()),

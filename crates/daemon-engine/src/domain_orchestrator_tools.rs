@@ -3,7 +3,7 @@
 //! machine. Each call carries the orchestrator execution's bearer; the domain changes a call
 //! implies (the new Agent, an assignment, a reopened Task) are that orchestrator's commands.
 use crate::gate::GateOf as _;
-use crate::sdk_owner::SdkOwners as _;
+use crate::hosts::HostsOf as _;
 use crate::live::LiveOf as _;
 use crate::sdk_handover::HandoversOf as _;
 use alondra_core::clock;
@@ -21,7 +21,7 @@ use std::sync::Arc;
 const DEFAULT_MODEL: &str = "sonnet";
 
 /// What the user chose when asking for a Request: its project, options, issue and files.
-pub(crate) type Choices = crate::domain_store::RequestLaunch;
+pub type Choices = crate::domain_store::RequestLaunch;
 
 pub fn request_choices(domain: &DomainRuntime, request: &RequestId) -> anyhow::Result<Option<Choices>> {
     domain.request_launch(request)
@@ -150,13 +150,13 @@ fn usage_refusal(domain: &DomainRuntime, task: &TaskId, exhausted: &crate::usage
 }
 
 /// The right to launch a task's node, given back however the launch ends, a panic included.
-pub(crate) struct Launching<'a> {
+pub struct Launching<'a> {
     domain: &'a DomainRuntime,
     task: String,
 }
 
 impl<'a> Launching<'a> {
-    pub(crate) fn begin(domain: &'a DomainRuntime, task: &TaskId) -> Result<Self, DomainError> {
+    pub fn begin(domain: &'a DomainRuntime, task: &TaskId) -> Result<Self, DomainError> {
         if !domain.live().begin_launch(&task.0) {
             return Err(DomainError::new("conflict", format!("{task} is being launched already")));
         }
@@ -186,7 +186,7 @@ pub async fn launch_replacing(domain: Arc<DomainRuntime>, home: PathBuf,
     }).await
 }
 
-async fn launch_replacement_work<F, W>(domain: Arc<DomainRuntime>, task: TaskId, work: F) -> Result<Value, DomainError>
+pub async fn launch_replacement_work<F, W>(domain: Arc<DomainRuntime>, task: TaskId, work: F) -> Result<Value, DomainError>
 where F: FnOnce(Box<dyn FnOnce() + Send>) -> W + Send + 'static,
       W: std::future::Future<Output = Result<Value, DomainError>> + Send + 'static,
 {
@@ -258,7 +258,7 @@ pub fn authorize_user_request_selection(domain: &DomainRuntime, resolved: &mut a
     }
 }
 
-pub(crate) fn validate_native_requirements(intent: Option<&alondra_core::model_selection::TaskSelection>, denied_tools: &[String]) -> Result<(), DomainError> {
+pub fn validate_native_requirements(intent: Option<&alondra_core::model_selection::TaskSelection>, denied_tools: &[String]) -> Result<(), DomainError> {
     if !denied_tools.is_empty() && intent.is_some_and(|intent| intent.account.as_ref().is_some_and(|account| account.provider == alondra_core::accounts::Provider::Codex)
         || (!intent.allow_model_substitution && intent.requested.as_ref().is_some_and(|model| model.provider == alondra_core::accounts::Provider::Codex)))
     { return Err(DomainError::new("unsupported_capability", "Codex cannot enforce this task's denied tools; choose a compatible provider or permit model substitution with Automatic accounts")); }
@@ -436,7 +436,7 @@ pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBod
     let conflict = |message: String| DomainError::new("conflict", message);
     let current = state(domain)?;
     let task = current.tasks.get(&body.task).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;
-    if crate::provider_transition::moving(domain, &task.id) {
+    if domain.hosts().moving(&task.id) {
         return Err(DomainError::new("task_moving", format!("{} is moving to another account: Alondra starts its next node there itself", task.id)));
     }
     let reopening = current.pending_reopening(&task.id).map(str::to_owned);
@@ -485,7 +485,7 @@ pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBod
         return Err(conflict(format!("{} already has a connected agent; send it what to do", body.task)));
     }
     let choices = choices(&task.request_id);
-    let file = crate::domain_schedule_runner::options_at(home).map_err(|error| DomainError::new("invalid_input", format!("options.toml: {error}")))?;
+    let file = crate::options::options_at(home).map_err(|error| DomainError::new("invalid_input", format!("options.toml: {error}")))?;
     let requested = match &choices {
         Some(choices) => choices.options.clone(),
         None => {
@@ -535,12 +535,12 @@ pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBod
     if let Some(exhausted) = domain.live().usage_pause.current().filter(|exhausted| exhausted.by_user || (native.is_none() && pinned.is_none())) {
         return Err(usage_refusal(domain, &task.id, &exhausted));
     }
-    let projects_root = crate::domain_schedule_runner::options_at(home).ok().map(|file| file.projects_root(&crate::options::user_home()));
+    let projects_root = crate::options::options_at(home).ok().map(|file| file.projects_root(&crate::options::user_home()));
     let account = account.unwrap_or_else(alondra_core::accounts::AccountId::default_account);
     let key = alondra_core::accounts::AccountKey::new(provider, account.clone());
     if !prior_native { crate::accounts::log_choice(domain, &format!("node for {}", task.id), &key, alondra_core::now_millis()); }
     let known = if reopening.is_some() {
-        crate::sdk_owner::original_directory(domain, &task.id)
+        domain.hosts().original_directory(&task.id)
             .map_err(|error| DomainError::new("storage_unavailable", error.to_string()))?
             .or(domain.task_worktree(&task.id).map_err(plan_storage)?)
     } else { domain.task_worktree(&task.id).map_err(plan_storage)? }.map(PathBuf::from);
@@ -582,9 +582,9 @@ pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBod
         return Err(DomainError::new("disk_low", format!("{why}. {} stays as it is and can be launched after that", body.task)));
     }
     if prior_native {
-        let (backend, runtime) = domain.sdk().ok_or_else(|| DomainError::new("unavailable", crate::sdk_owner::NO_HOST))?;
+        let (backend, runtime) = domain.sdk().ok_or_else(|| DomainError::new("unavailable", crate::sdk_backend::NO_HOST))?;
         let original_directory = known.clone().unwrap_or_else(|| PathBuf::from(&cwd));
-        crate::sdk_owner::require_recoverable_session(&runtime, backend, &task.id, provider, &account, original_directory.to_string_lossy().as_ref())
+        runtime.hosts().require_recoverable_session(backend, &task.id, provider, &account, original_directory.to_string_lossy().as_ref())
             .map_err(|error| DomainError::new("native_session_required", error.to_string()))?;
         if !crate::launch_worktree::recovery_directory_matches(Path::new(&cwd), &original_directory).await {
             return Err(DomainError::new("native_session_required", "Recover this node in its original native directory. Create another node to choose a different workspace"));
@@ -620,13 +620,13 @@ pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBod
     };
 
     let reopening = reopening.map(|input| {
-        let (backend, _) = domain.sdk().ok_or_else(|| DomainError::new("unavailable", crate::sdk_owner::NO_HOST))?;
-        crate::sdk_owner::prepare_reopening(domain, backend, &task.id, provider, &account, workplace.dir(), input, recover_directory)
+        let (backend, _) = domain.sdk().ok_or_else(|| DomainError::new("unavailable", crate::sdk_backend::NO_HOST))?;
+        domain.hosts().prepare_reopening(backend, &task.id, provider, &account, workplace.dir(), input, recover_directory)
             .map_err(|error| DomainError::new("native_session_required", error.to_string()))
     }).transpose()?;
     if prior_native {
-        let (backend, runtime) = domain.sdk().ok_or_else(|| DomainError::new("unavailable", crate::sdk_owner::NO_HOST))?;
-        crate::sdk_owner::require_recoverable_session(&runtime, backend, &task.id, provider, &account, workplace.dir().to_string_lossy().as_ref())
+        let (backend, runtime) = domain.sdk().ok_or_else(|| DomainError::new("unavailable", crate::sdk_backend::NO_HOST))?;
+        runtime.hosts().require_recoverable_session(backend, &task.id, provider, &account, workplace.dir().to_string_lossy().as_ref())
             .map_err(|error| DomainError::new("native_session_required", error.to_string()))?;
     }
     own_worktree(domain, &task.id, &workplace).await?;
@@ -678,23 +678,23 @@ pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBod
         (Workplace::Reused(_), _) | (_, Some(_)) => format!("{mission}\n\n{}", continuing_in(Path::new(&cwd)).await),
         (Workplace::Given(_), None) => mission,
     };
-    let prompt = crate::domain_schedule_runner::producer_prompt(&mission, crate::domain_schedule_runner::MissionAuthor::Orchestrator, &resolved, &task.id, body.approach.unwrap_or_default());
+    let prompt = crate::domain_orchestrator_tools::producer_prompt(&mission, crate::domain_orchestrator_tools::MissionAuthor::Orchestrator, &resolved, &task.id, body.approach.unwrap_or_default());
     if domain.sdk().is_none() {
-        return Err(DomainError::new("unavailable", crate::sdk_owner::NO_HOST));
+        return Err(DomainError::new("unavailable", crate::sdk_backend::NO_HOST));
     }
     if let Some(checked) = checked {
         checked();
     }
     {
         match &replaced {
-            Some(old) if crate::sdk_owner::runs_through_sdk(&current, old) => {
+            Some(old) if crate::sdk_live::runs_through_sdk(&current, old) => {
                 let (backend, runtime) = domain.sdk().expect("the SDK backend was just found");
                 let backend = backend.clone();
-                crate::task_closer::blocking(|| {
-                    domain.stop_sdk_host(old)?;
-                    crate::sdk_owner::end_unowned_host(runtime, &backend, task.id.clone())
+                crate::blocking_work::blocking(|| {
+                    domain.hosts().stop(old)?;
+                    domain.hosts().end_unowned_host(runtime, &backend, task.id.clone())
                 })
-                .map_err(|crate::sdk_owner::Failed { why, .. }| conflict(format!("the node of {} could not be stopped to replace it: {why}", task.id)))?;
+                .map_err(|alondra_daemon_engine_model::Failed { why, .. }| conflict(format!("the node of {} could not be stopped to replace it: {why}", task.id)))?;
                 crate::node_exit::take_out(domain, &old.0, "node replaced by the orchestrator", Some(cwd.clone()), crate::live::Relaunch::ByItself)
                     .map_err(|error| DomainError::new("storage_unavailable", format!(
                         "the Agent SDK node of {} was stopped, but Alondra could not free the task from it: {error:#}", task.id)))?;
@@ -717,7 +717,7 @@ pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBod
             disallowed_tools: domain.schedule_request_tools(&task.request_id).ok().flatten().unwrap_or_default(),
         };
         let name = body.title.clone().unwrap_or(name);
-        let launched = crate::sdk_owner::launch_prepared(domain, crate::sdk_owner::Launch { task: task.id.clone(), name, directory: cwd.clone(), prompt, plugin, options,
+        let launched = domain.hosts().launch(crate::hosts::Launch { task: task.id.clone(), name, directory: cwd.clone(), prompt, plugin, options,
             model: resolved.launch_model(), account }, reopening)
             .await
             .map_err(|error| match &replaced {
@@ -749,7 +749,7 @@ pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBod
 /// runs in it: it is cleaned with the task and its subagents' worktrees go beside it, even when the
 /// launch fails. A task that ended while the worktree was being made already had its close, so the
 /// worktree goes at once, unless it holds work not saved.
-pub(crate) async fn own_worktree(domain: &DomainRuntime, task: &TaskId, workplace: &Workplace) -> Result<(), DomainError> {
+pub async fn own_worktree(domain: &DomainRuntime, task: &TaskId, workplace: &Workplace) -> Result<(), DomainError> {
     let Some(dir) = workplace.chosen() else { return Ok(()) };
     if !dir.join(".git").is_file() {
         return Ok(());
@@ -785,7 +785,7 @@ fn record_worktree(domain: &DomainRuntime, agent: Option<&str>, workplace: &Work
 /// Stops the `claude --bg` node being replaced once its turn ends, so it is not cut mid-edit: past
 /// the turn deadline it is interrupted, and then stopped either way. Its watch keeps the revival off
 /// it meanwhile; if the stop fails it is handed back to the revival and the task keeps it.
-async fn stop_replaced(domain: &DomainRuntime, old: &AgentId) -> Result<(), String> {
+pub async fn stop_replaced(domain: &DomainRuntime, old: &AgentId) -> Result<(), String> {
     let busy = || domain.live().node(&old.0).is_some_and(|node| node.busy);
     let deadline = domain.handovers().turn_deadline();
     if !until_idle(busy, deadline).await {
@@ -835,7 +835,7 @@ async fn made_for(dir: &Path) -> String {
 
 /// The worktree Alondra may delete with the node: the one Claude Code made for it, or the one it
 /// inherited from the node it replaced. Never a folder it was only launched in.
-fn owned_worktree(domain: &DomainRuntime, session: &str) -> Option<String> {
+pub fn owned_worktree(domain: &DomainRuntime, session: &str) -> Option<String> {
     match crate::worktree::origin_in(&crate::watcher::claude_home(), session) {
         Some(crate::worktree::WorktreeOrigin::Made(dir)) => dir.to_str().map(str::to_owned),
         _ => domain.inherited_worktree(session).ok().flatten(),
@@ -855,7 +855,7 @@ pub async fn relaunch(domain: &DomainRuntime, home: &Path, task_id: &TaskId) -> 
 }
 
 /// `relaunch`, for either origin. An automatic relaunch holds the task's launch guard already.
-pub(crate) async fn relaunch_from(domain: &DomainRuntime, home: &Path, task_id: &TaskId, origin: Origin) -> Result<Value, DomainError> {
+pub async fn relaunch_from(domain: &DomainRuntime, home: &Path, task_id: &TaskId, origin: Origin) -> Result<Value, DomainError> {
     let current = state(domain)?;
     let waiting = current.tasks.get(task_id)
         .filter(|task| task.state == alondra_domain_rules::TaskState::NotStarted && task.agent_id.is_none() && !task.archived);
@@ -863,7 +863,7 @@ pub(crate) async fn relaunch_from(domain: &DomainRuntime, home: &Path, task_id: 
         return Err(DomainError::new("conflict", "This task is not waiting for a relaunch"));
     };
     let asked = request_choices(domain, &task.request_id).ok().flatten();
-    let root = crate::domain_schedule_runner::options_at(home).ok().map(|file| file.projects_root(&crate::options::user_home()));
+    let root = crate::options::options_at(home).ok().map(|file| file.projects_root(&crate::options::user_home()));
     let project_dir = asked.as_ref().and_then(|choices| choices.project.as_ref()).zip(root.as_ref()).map(|(project, root)| root.join(project));
     let original = domain.task_worktree(task_id).map_err(|error| DomainError::new("storage_unavailable", error.to_string()))?;
     let cwd = original.map(PathBuf::from).filter(|dir| dir.is_dir())
@@ -881,7 +881,7 @@ pub(crate) async fn relaunch_from(domain: &DomainRuntime, home: &Path, task_id: 
 const FOLLOW_UP_LIMIT: usize = 12_000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct CanonicalTaskContext {
+pub struct CanonicalTaskContext {
     pub text: String,
     pub missing_sources: Vec<String>,
 }
@@ -889,7 +889,7 @@ pub(crate) struct CanonicalTaskContext {
 /// What a task's next node must know to carry on, whole: its request, plan, every input the user
 /// and Alondra gave it, decisions, documents and the work it builds on. A source Alondra no longer
 /// has is missing; whether the whole fits the next model is for the handoff to decide.
-pub(crate) fn canonical_task_context(state: &DomainState, task: &alondra_domain_rules::Task) -> CanonicalTaskContext {
+pub fn canonical_task_context(state: &DomainState, task: &alondra_domain_rules::Task) -> CanonicalTaskContext {
     use alondra_domain_rules::{InteractionPayload, Recipient, Scope};
     let mut text = format!("Task {}: {}\nRequest: {}", task.id, task.title, task.request_id);
     let mut missing_sources = vec![];
@@ -951,7 +951,7 @@ fn prefixed(prefix: &str, text: String) -> String {
     if text.is_empty() { text } else { format!("{prefix}{text}") }
 }
 
-fn clipped(text: &str, limit: usize, mark: &str) -> alondra_domain_rules::Clipped {
+pub fn clipped(text: &str, limit: usize, mark: &str) -> alondra_domain_rules::Clipped {
     if text.chars().count() <= limit {
         return alondra_domain_rules::Clipped { text: text.to_owned(), shortened: false };
     }
@@ -960,7 +960,7 @@ fn clipped(text: &str, limit: usize, mark: &str) -> alondra_domain_rules::Clippe
 
 /// What a task that builds on others starts from: each earlier task's final result and its pull
 /// request, so its node does not need to be told by hand.
-fn follow_up_context(state: &DomainState, task: &alondra_domain_rules::Task) -> String {
+pub fn follow_up_context(state: &DomainState, task: &alondra_domain_rules::Task) -> String {
     let mut sources: std::collections::BTreeSet<&TaskId> = task.dependencies.iter().chain(&task.delivered_dependencies).collect();
     if let Some(stack) = &task.stack {
         sources.insert(&stack.upstream_task);
@@ -996,7 +996,7 @@ fn follow_up_context(state: &DomainState, task: &alondra_domain_rules::Task) -> 
 
 /// The approved plan this node needs to implement, including its predecessor's own plan when
 /// the task reopens, with only this task's points assigned when the plan is in phases.
-fn approved_plan(state: &DomainState, task: &alondra_domain_rules::Task) -> String {
+pub fn approved_plan(state: &DomainState, task: &alondra_domain_rules::Task) -> String {
     use alondra_domain_rules::{checklist_items, InteractionPayload, Scope};
     let Some(checklist) = state.checklists.get(&task.id) else { return String::new() };
     let Some(source) = state.interactions.get(&checklist.plan) else { return String::new() };
@@ -1151,7 +1151,7 @@ pub fn update_launch_plan(domain: &DomainRuntime, home: &Path, body: UpdateLaunc
     change_launch_plan(domain, home, &body.task_id, None, Some(changes))
 }
 
-fn editable_plan<'a>(state: &'a DomainState, task_id: &TaskId, launched: bool) -> Result<&'a alondra_domain_rules::Task, DomainError> {
+pub fn editable_plan<'a>(state: &'a DomainState, task_id: &TaskId, launched: bool) -> Result<&'a alondra_domain_rules::Task, DomainError> {
     let task = state.tasks.get(task_id).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;
     if task.archived {
         return Err(DomainError::new("task_not_active", format!("{} is closed", task.id)));
@@ -1240,5 +1240,65 @@ pub fn interrupt(domain: &DomainRuntime, body: NodeBody) -> Result<Value, Domain
     Ok(json!({"interrupted": agent_id.0}))
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
-pub mod tests;
+#[cfg(test)]
+mod tests;
+
+/// Who wrote the text a node starts with: a decision the orchestrator attributes to the user in a
+/// mission is its account of it, while a schedule's text is the user's own.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum MissionAuthor {
+    Orchestrator,
+    Schedule,
+}
+
+/// The mission a node starts with, followed by the choices made for it.
+pub fn producer_prompt(
+    text: &str,
+    author: MissionAuthor,
+    resolved: &alondra_core::options::Resolved,
+    task: &TaskId,
+    approach: alondra_core::options::Approach,
+) -> String {
+    let user = crate::domain_messages::user_name();
+    let planning = if resolved.selected_provider() == Some(alondra_core::accounts::Provider::Claude) {
+        format!("a plan goes through plan mode (`EnterPlanMode`, then `ExitPlanMode`, which {user} approves or sends back in Alondra), never a document or an `ask`")
+    } else {
+        "submit plans through the Alondra planning tools advertised for this execution and wait for the user approval; use only native planning tools available in this session".to_owned()
+    };
+    let mut lines = vec![
+        text.trim_end().to_owned(),
+        String::new(),
+        "## Your Alondra task".into(),
+        String::new(),
+        format!("This work is Alondra task {task}; pass it as task_id to the Alondra tools. Your terminal does not reach {user}: only the Alondra tools do, and {user}'s answers are typed into this session. Use `ask` for a decision and end your turn after it; {planning}. Use `request_action` for something {user} does outside Alondra, and `publish_information` for a finding {user} should read now. When you are done, deliver it with `present_result` and is_final true (the answer in body, files in attachments, a PR you registered or a document revision in targets) and end your turn: {user} accepts it in Alondra. A file or a final message left in this session is not a delivery."),
+        String::new(),
+    ];
+    if author == MissionAuthor::Orchestrator {
+        lines.push(format!("The orchestrator wrote this mission: a decision it attributes to {user} is its account of it, not {user}'s answer. Present a decision as {user}'s only from {user}'s own answer or message; ask {user} for one you do not have."));
+        lines.push(String::new());
+    }
+    lines.extend([
+        "## Choices for this work".into(),
+        String::new(),
+        "The user chose these options for this work:".into(),
+    ]);
+    if resolved.auto_merge {
+        lines.push("- PR handling: auto-merge. Register the PR and deliver it with present_result as your final result: once its checks pass, Alondra merges it and tells you. Do not merge it yourself.".into());
+    }
+    for picked in resolved
+        .picked
+        .iter()
+        .filter(|p| p.id != alondra_core::options::PR && p.id != alondra_core::options::EFFORT)
+    {
+        lines.push(match &picked.mission {
+            Some(mission) => format!("- {}: {}. {mission}", picked.label, picked.value_label),
+            None => format!("- {}: {}.", picked.label, picked.value_label),
+        });
+    }
+    if let Some(issue) = &resolved.issue {
+        lines.push(format!("- This work comes from issue {issue}: write `Fixes {issue}` in the body of the PR that solves it."));
+    }
+    lines.push(String::new());
+    lines.extend(approach.how_to_work_for(if resolved.selection.is_some() { None } else { resolved.selected_provider() }));
+    lines.join("\n")
+}

@@ -81,7 +81,7 @@ pub struct Contexts {
 
 impl Contexts {
     /// The driver handed the host an input at `at`.
-    pub(crate) fn handed(&self, task: &TaskId, at: Millis) {
+    pub fn handed(&self, task: &TaskId, at: Millis) {
         let mut contexts = self.measured.lock_or_recover("the measured contexts");
         let measured = contexts.entry(task.clone()).or_default();
         measured.handed = true;
@@ -90,7 +90,7 @@ impl Contexts {
 
     /// The host said `event` at `at`. Only a conversation this driver handed an input to times its
     /// requests; any says its size.
-    pub(crate) fn observed(&self, task: &TaskId, event: ContextEvent, at: Millis) {
+    pub fn observed(&self, task: &TaskId, event: ContextEvent, at: Millis) {
         let mut contexts = self.measured.lock_or_recover("the measured contexts");
         let measured = contexts.entry(task.clone()).or_default();
         match event {
@@ -112,7 +112,7 @@ impl Contexts {
         self.version.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn forget(&self, task: &TaskId) {
+    pub fn forget(&self, task: &TaskId) {
         self.measured.lock_or_recover("the measured contexts").remove(task);
         self.version.fetch_add(1, Ordering::Relaxed);
     }

@@ -1,6 +1,7 @@
 //! The node transport meets the gate: its watch samples the Mac off the async worker, and a node the
 //! user paused runs no tool.
 use super::*;
+use serde_json::json;
 use alondra_daemon_engine::domain_transport::PAUSED_BY_USER;
 use alondra_daemon_engine::domain_transport::tests::*;
 

@@ -1,7 +1,7 @@
 //! Carries a scenario out: assembles the daemon over fake edges on a virtual clock, runs the
 //! steps, and reads the checkpoints.
 
-use alondra_daemon_engine::sdk_owner::SdkOwners as _;
+use alondra_engine_sdk::sdk_owner::SdkOwners as _;
 use crate::checkpoint::{self, Files};
 use crate::claude_peer::{Activity, Seen};
 use crate::error::ScenarioError;
@@ -296,12 +296,12 @@ fn short_root() -> std::path::PathBuf {
     }
 }
 
-fn codex_backend(home: &Path, launcher: Launcher) -> Result<alondra_daemon_engine::sdk_owner::backend::SdkBackend, String> {
-    sdk_backend(home, launcher, alondra_core::accounts::Provider::Codex, "codex", &alondra_daemon_engine::sdk_owner::backend::this_release())
+fn codex_backend(home: &Path, launcher: Launcher) -> Result<alondra_engine_sdk::sdk_owner::backend::SdkBackend, String> {
+    sdk_backend(home, launcher, alondra_core::accounts::Provider::Codex, "codex", &alondra_engine_sdk::sdk_owner::backend::this_release())
 }
 
 /// The backend of a daemon whose Claude nodes start through `launcher`, of `release`.
-fn claude_backend(home: &Path, launcher: Launcher, release: &str) -> Result<alondra_daemon_engine::sdk_owner::backend::SdkBackend, String> {
+fn claude_backend(home: &Path, launcher: Launcher, release: &str) -> Result<alondra_engine_sdk::sdk_owner::backend::SdkBackend, String> {
     sdk_backend(home, launcher, alondra_core::accounts::Provider::Claude, "claude", release)
 }
 
@@ -314,8 +314,8 @@ fn sdk_backend(
     provider: alondra_core::accounts::Provider,
     name: &str,
     release: &str,
-) -> Result<alondra_daemon_engine::sdk_owner::backend::SdkBackend, String> {
-    use alondra_daemon_engine::sdk_owner::backend::{SdkBackend, digest};
+) -> Result<alondra_engine_sdk::sdk_owner::backend::SdkBackend, String> {
+    use alondra_engine_sdk::sdk_owner::backend::{SdkBackend, digest};
     let file = |kind: &str| -> Result<(std::path::PathBuf, String), String> {
         let path = home.join(format!("{name}-{kind}-{release}"));
         std::fs::write(&path, format!("{name} {kind} {release}")).map_err(|e| e.to_string())?;
@@ -525,7 +525,7 @@ impl Context<'_> {
                 self.command(index, Actor::System, Command::RecordNodeEnd { task_id: task.clone().into(), end: NodeEnd::Closed, agent_id: Some(agent_of(task).into()) })?;
             }
             Step::Restart { lose } => self.restart(index, lose, None).await?,
-            Step::Update => self.restart(index, &[], Some(alondra_daemon_engine::sdk_owner::backend::this_release())).await?,
+            Step::Update => self.restart(index, &[], Some(alondra_engine_sdk::sdk_owner::backend::this_release())).await?,
             Step::HostCanStart { task } => self.edge(index)?.set_startable(task, true),
             Step::Advance { by } => self.pass(parse_duration(by)?, index).await?,
             Step::Rest { max } => self.rest(parse_duration(max)?, index).await?,
@@ -676,11 +676,11 @@ impl Context<'_> {
         std::fs::write(plugin.join("skills/alondra/SKILL.md"), "You are an Alondra task node. Follow the task request and report the result through Alondra.")
             .map_err(|e| Self::failed(index, e))?;
         let title = state.tasks.get(&task.to_owned().into()).map(|task| task.title.clone()).unwrap_or_default();
-        let options = alondra_daemon_engine::sdk_owner::LaunchOptions {
+        let options = alondra_engine_sdk::sdk_owner::LaunchOptions {
             provider: Provider::Codex, model: Some("demo-model".into()), effort: Some("high".into()), selection: Some(selection),
             ..Default::default()
         };
-        alondra_daemon_engine::sdk_owner::launch(&self.daemon().domain, alondra_daemon_engine::sdk_owner::Launch {
+        alondra_engine_sdk::sdk_owner::launch(&self.daemon().domain, alondra_engine_sdk::sdk_owner::Launch {
             task: task.to_owned().into(), name: task.to_owned(), directory: directory.display().to_string(), prompt: title, plugin, options,
             model: None, account: AccountId::default_account(),
         })
@@ -772,8 +772,8 @@ impl Context<'_> {
             .map_err(|e| Self::failed(index, e))?;
         let state = self.daemon().domain.state().map_err(|e| Self::failed(index, e))?;
         let title = state.tasks.get(&task.to_owned().into()).map(|task| task.title.clone()).unwrap_or_default();
-        let options = alondra_daemon_engine::sdk_owner::LaunchOptions { provider: Provider::Claude, ..Default::default() };
-        alondra_daemon_engine::sdk_owner::launch(&self.daemon().domain, alondra_daemon_engine::sdk_owner::Launch {
+        let options = alondra_engine_sdk::sdk_owner::LaunchOptions { provider: Provider::Claude, ..Default::default() };
+        alondra_engine_sdk::sdk_owner::launch(&self.daemon().domain, alondra_engine_sdk::sdk_owner::Launch {
             task: task.to_owned().into(), name: task.to_owned(), directory: directory.display().to_string(), prompt: title, plugin, options,
             model: None, account,
         })
@@ -818,7 +818,7 @@ impl Context<'_> {
             None => (Launcher::new(RefusingLauncher(self.leaks.clone())), Backend::Given(None)),
         };
         let seams = seams_of(&self.github, &self.pushes, &self.mac, launcher, backend);
-        let domain = alondra_daemon_engine::wiring::open(&self.config.home).map_err(|e| Self::failed(index, format!("{e:#}")))?;
+        let domain = alondra_engine_sdk::wiring::open(&self.config.home).map_err(|e| Self::failed(index, format!("{e:#}")))?;
         let daemon = assemble::start_over(&self.config, domain, seams).await.map_err(|e| Self::failed(index, format!("{e:#}")))?;
         self.daemon = Some(daemon);
         self.pass(Duration::from_secs(1), index).await

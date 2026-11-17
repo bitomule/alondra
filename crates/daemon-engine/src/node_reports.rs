@@ -405,14 +405,14 @@ impl Reports {
         self.changed.publish();
     }
 
-    pub(crate) fn restore_codex_scope(&self,session_id:&str,scope:alondra_provider_codex::LiveScope,now:Millis){
+    pub fn restore_codex_scope(&self,session_id:&str,scope:alondra_provider_codex::LiveScope,now:Millis){
         let mut sessions=self.sessions.lock_or_exit("the node reports");
         crate::codex_live::restore_scope(sessions.entry(session_id.to_owned()).or_default(),scope,now);
         drop(sessions);self.changed.publish();
     }
 
     /// The node's Agent SDK host is gone, and with it everything it ran.
-    pub(crate) fn sdk_ended(&self, session_id: &str, now: Millis) {
+    pub fn sdk_ended(&self, session_id: &str, now: Millis) {
         if let Some(session) = self.sessions.lock_or_exit("the node reports").get_mut(session_id) {
             crate::sdk_live::ended(session, now);
             crate::codex_live::ended(session, now);

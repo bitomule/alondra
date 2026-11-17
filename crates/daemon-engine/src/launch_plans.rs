@@ -36,7 +36,7 @@ fn validate_with_directory(domain: &DomainRuntime, home: &Path, request_id: &Req
     if let Some(Err(why)) = plan.tags.as_ref().map(alondra_core::task_tags::TaskTags::validate) {
         return Err(invalid(format!("launch.{why}")));
     }
-    let file = crate::domain_schedule_runner::options_at(home).map_err(|error| invalid(format!("options.toml: {error}")))?;
+    let file = crate::options::options_at(home).map_err(|error| invalid(format!("options.toml: {error}")))?;
     let requested = match crate::domain_orchestrator_tools::request_choices(domain, request_id).ok().flatten() {
         Some(choices) => choices.options,
         None => {
@@ -99,7 +99,19 @@ pub fn stamp_project(domain: &DomainRuntime, home: &Path, command: &mut Command)
     };
     let chosen = domain.request_launch(request_id).ok().flatten().and_then(|launch| launch.project);
     plan.project = chosen.or_else(|| {
-        let file = crate::domain_schedule_runner::options_at(home).unwrap_or_default();
+        let file = crate::options::options_at(home).unwrap_or_default();
         crate::options::project_of(&file, Path::new(&plan.cwd))
     });
+}
+
+/// A task the automatic launch may start: not started, with no node, its request open, no plan review
+/// pending and no schedule run behind it.
+pub fn candidate(state: &alondra_domain_rules::DomainState, task: &alondra_domain_rules::Task) -> bool {
+    task.state == alondra_domain_rules::TaskState::NotStarted
+        && !task.started
+        && task.agent_id.is_none()
+        && !task.archived
+        && !state.plan_review_pending(&task.id)
+        && state.requests.get(&task.request_id).is_some_and(|request| !request.closed)
+        && !state.schedule.runs.values().any(|run| run.task_id.as_ref() == Some(&task.id))
 }

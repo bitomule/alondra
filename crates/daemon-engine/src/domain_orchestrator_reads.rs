@@ -1,7 +1,7 @@
 //! The orchestrator's reads, as the `tasks_in_progress` and `node` tools give them: the live
 //! sessions the daemon observes next to the domain's Requests, Tasks, questions, results and
 //! undelivered messages. Each answer has the shape the MCP's summaries already read.
-use crate::sdk_owner::SdkOwners as _;
+use crate::hosts::HostsOf as _;
 use crate::live::LiveOf as _;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
@@ -99,7 +99,7 @@ fn sdk_node_row(agent: &Agent, state: &DomainState, domain: &DomainRuntime) -> V
     node.last_message_at = reported.answer.as_ref().map(|answer| answer.at);
     node.background = reported.background.iter().map(|(_, item)| item.clone()).collect();
     let mut row = node_row(&node, state, domain);
-    row["sdk_host"] = json!(domain.owns_sdk_host(&agent.id));
+    row["sdk_host"] = json!(domain.hosts().owns(&agent.id));
     row["last_event_at"] = json!(reported.last_event_at);
     row["task"] = json!(state.node_task(&agent.id).map(|task| json!({
         "id": task.id, "state": wire(&task.state), "activity": state.task_activity(task).map(|activity| activity.key()),
@@ -114,7 +114,7 @@ fn node_rows(domain: &DomainRuntime, state: &DomainState) -> Vec<Value> {
         .filter(|n| state.agents.contains_key(&AgentId(n.session_id.clone())))
         .map(|n| node_row(n, state, domain)).collect();
     rows.extend(state.agents.values()
-        .filter(|agent| !live.iter().any(|n| n.session_id == agent.id.0) && crate::sdk_owner::runs_through_sdk(state, &agent.id))
+        .filter(|agent| !live.iter().any(|n| n.session_id == agent.id.0) && crate::sdk_live::runs_through_sdk(state, &agent.id))
         .map(|agent| sdk_node_row(agent, state, domain)));
     rows
 }
@@ -220,7 +220,7 @@ pub fn node(domain: &DomainRuntime, key: &str) -> Result<Value, DomainError> {
     let live = domain.live().node(&agent.0);
     let mut node = match live {
         Some(live) => node_row(&live, &state, domain),
-        None if crate::sdk_owner::runs_through_sdk(&state, &agent) || state.agents[&agent].phase == NodePhase::ThroughSdk =>
+        None if crate::sdk_live::runs_through_sdk(&state, &agent) || state.agents[&agent].phase == NodePhase::ThroughSdk =>
             sdk_node_row(&state.agents[&agent], &state, domain),
         None => json!({"session_id": agent.0, "alive": false}),
     };

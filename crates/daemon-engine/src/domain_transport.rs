@@ -459,7 +459,7 @@ fn text(payload: &Value, key: &str) -> Option<String> {
 
 /// The bearer of a session that ended is revoked. Its settings file goes with it unless the Agent
 /// still has work: then `claude respawn` finds the file it passes again.
-pub(crate) fn session_ended(domain: &DomainRuntime, agent: &AgentId) -> Result<()> {
+pub fn session_ended(domain: &DomainRuntime, agent: &AgentId) -> Result<()> {
     domain.revoke_agent(&agent.0)?;
     if crate::node_exit::has_open_task(domain, &agent.0) {
         crate::domain_sessions::suspend_for(domain.home(), agent)

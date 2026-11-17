@@ -53,7 +53,7 @@ impl Fixture {
     async fn start() -> Self {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir(&home).unwrap();
-        let store = alondra_daemon_engine::wiring::open(&home).unwrap();
+        let store = alondra_engine_sdk::wiring::open(&home).unwrap();
         let epoch = store.state().unwrap().data_epoch.0.clone();
         drop(store);
         let auth = Auth::open(&home).unwrap();
@@ -345,7 +345,7 @@ async fn http_producer_answer_and_document_are_persisted() {
     );
     fixture.end_node("doc-task");
     assert_eq!(fixture.domain.state().unwrap().tasks[&"doc-task".into()].state, TaskState::Done);
-    let reopened = alondra_daemon_engine::wiring::open(&fixture.home).unwrap();
+    let reopened = alondra_engine_sdk::wiring::open(&fixture.home).unwrap();
     let persisted = reopened.state().unwrap();
     assert_eq!(
         persisted.tasks[&"answer-task".into()].state,
@@ -406,7 +406,7 @@ async fn http_pr_flow_replays_same_receipt_and_rejects_old_epoch() {
         fixture.domain.state().unwrap().tasks[&"pr-task".into()].state,
         TaskState::Done
     );
-    let reopened = alondra_daemon_engine::wiring::open(&fixture.home).unwrap();
+    let reopened = alondra_engine_sdk::wiring::open(&fixture.home).unwrap();
     let persisted = reopened.state().unwrap();
     assert_eq!(persisted.pull_requests[&"github.com/example/project#7".into()].task_id.0, "pr-task");
     assert!(persisted.interactions.contains_key(&"pr-delivery".into()));

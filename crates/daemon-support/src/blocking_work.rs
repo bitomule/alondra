@@ -70,3 +70,11 @@ mod tests {
         assert_eq!(lane.0.available_permits(), 1);
     }
 }
+
+/// Runs `wait`, which waits for processes to exit, without stalling the runtime's other tasks.
+pub fn blocking<T>(wait: impl FnOnce() -> T) -> T {
+    match tokio::runtime::Handle::try_current().map(|handle| handle.runtime_flavor()) {
+        Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(wait),
+        _ => wait(),
+    }
+}

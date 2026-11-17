@@ -10,7 +10,7 @@
 //! gate's queue ahead of new starts of their priority and come back as starts do, one a minute,
 //! when there is a slot and room. A pause an older daemon made for memory returns at once and
 //! comes back the same way.
-use crate::sdk_owner::SdkOwners as _;
+use crate::hosts::HostsOf as _;
 use crate::live::LiveOf as _;
 use crate::domain_runtime::DomainRuntime;
 use alondra_domain_rules::{ApiRetry, DomainState, TaskId, TaskState};
@@ -82,10 +82,10 @@ pub(crate) fn hold_sdk_turn(domain: &DomainRuntime, session: &str, paused: &Paus
         log!("pausing {session}: what it goes on with was not recorded ({error:?})");
     }
     interrupt_sdk_node(domain, session);
-    crate::sdk_owner::halt(domain, paused.task.clone(), alondra_domain_rules::AgentId(session.to_owned()));
+    domain.hosts().halt(paused.task.clone(), alondra_domain_rules::AgentId(session.to_owned()));
 }
 
-fn interrupt_sdk_node(domain: &DomainRuntime, session: &str) {
+pub fn interrupt_sdk_node(domain: &DomainRuntime, session: &str) {
     let Ok(state) = domain.state() else { return };
     let envelope = alondra_domain_rules::CommandEnvelope {
         protocol_version: alondra_domain_rules::PROTOCOL_VERSION,
@@ -104,7 +104,7 @@ fn interrupt_sdk_node(domain: &DomainRuntime, session: &str) {
 pub(crate) fn to_halt(domain: &DomainRuntime, state: &DomainState, pauses: &Pauses) -> Vec<(String, Paused)> {
     pauses.paused.iter()
         .filter(|(session, paused)| paused.reason.holds() && through_sdk(domain, session) && !state.host_ended_since_pause(&paused.task)
-            && domain.owns_sdk_host(&alondra_domain_rules::AgentId((*session).clone())))
+            && domain.hosts().owns(&alondra_domain_rules::AgentId((*session).clone())))
         .map(|(session, paused)| (session.clone(), paused.clone())).collect()
 }
 

@@ -6,12 +6,12 @@
 //! reminded to it and then settled by Alondra. Nothing it does opens a card. The daemon keeps one
 //! clock, in `Live`: its own loop and every pass of the orchestrator step that one.
 use crate::gate::GateOf as _;
-use crate::sdk_owner::SdkOwners as _;
+use crate::hosts::HostsOf as _;
 use crate::live::LiveOf as _;
 use alondra_core::clock;
 use crate::domain_runtime::DomainRuntime;
 use crate::locks::Poisonable as _;
-use crate::sdk_owner::untaken;
+use crate::untaken;
 use alondra_store::AuthorityScope;
 use alondra_domain_rules::obligation_policy::{self, Millis};
 use alondra_domain_rules::{DomainState, TaskId};
@@ -212,7 +212,7 @@ impl World for GateWorld<'_> {
 
     fn last_output(&self, task: &TaskId) -> Option<Millis> {
         let agent = self.state.tasks.get(task)?.agent_id.clone()?;
-        self.domain.owns_sdk_host(&agent).then(|| self.domain.live().outputs.lock_or_recover("the node outputs").get(task).copied().unwrap_or_default())
+        self.domain.hosts().owns(&agent).then(|| self.domain.live().outputs.lock_or_recover("the node outputs").get(task).copied().unwrap_or_default())
     }
 }
 
@@ -261,9 +261,8 @@ pub fn apply(domain: &DomainRuntime, task: &TaskId, action: Action) -> Result<()
             }
         }
         Action::Requeue => {
-            if agent.is_some_and(|agent| domain.owns_sdk_host(&agent)) {
-                domain.sdk_owners().requeues.lock_or_recover("the requeued tasks").insert(task.clone());
-                domain.seals.wake();
+            if agent.is_some_and(|agent| domain.hosts().owns(&agent)) {
+                domain.hosts().requeue(task);
             }
         }
         Action::Answer => settle_answers(domain, &state, &[task.clone()].into()),

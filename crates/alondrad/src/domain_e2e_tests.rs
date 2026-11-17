@@ -29,7 +29,7 @@ struct Daemon {
 
 impl Daemon {
     async fn start(home: &Path) -> Self {
-        drop(alondra_daemon_engine::wiring::open(home).unwrap());
+        drop(alondra_engine_sdk::wiring::open(home).unwrap());
         let state = DomainDaemon::open(home).unwrap();
         let domain = state.domain();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -1,4 +1,3 @@
-use crate::sdk_owner::SdkOwners as _;
 use crate::live::LiveOf as _;
 use super::*;
 use crate::test_support::Directory;
@@ -115,7 +114,7 @@ async fn a_usage_retry_rechecks_settings_before_launching_a_disabled_account() {
     config.claude = vec![ProviderAccount { enabled: false, ..ProviderAccount::implicit_default() },
         ProviderAccount { id: id("work"), name: "Work".into(), enabled: true, billing: AccountBilling::default() }];
     std::fs::write(alondra_core::options::path_in(&home), config.to_toml()).unwrap();
-    let state = crate::sdk_owner::tests::HostRoot::new();
+    let state = crate::host_fixtures::HostRoot::new();
     let mut backend = probe_backend(&home, &state);
     let count = home.join("probe-count");
     backend.native_environment.insert("PROBE_COUNT".into(), count.display().to_string());
@@ -157,12 +156,12 @@ for raw in sys.stdin:
     sys.stdout.flush()
 "#;
 
-fn probe_backend(home: &Path, state: &crate::sdk_owner::tests::HostRoot) -> SdkBackend {
+fn probe_backend(home: &Path, state: &crate::host_fixtures::HostRoot) -> SdkBackend {
     use std::os::unix::fs::PermissionsExt;
-    let (mut backend, _) = crate::sdk_owner::tests::fixture_backend(home, state);
+    let (mut backend, _) = crate::host_fixtures::fixture_backend(home, state);
     std::fs::write(&backend.native, PROBE_NATIVE).unwrap();
     std::fs::set_permissions(&backend.native, std::fs::Permissions::from_mode(0o700)).unwrap();
-    backend.native_sha256 = crate::sdk_owner::backend::digest(&backend.native).unwrap();
+    backend.native_sha256 = crate::sdk_backend::digest(&backend.native).unwrap();
     backend
 }
 
@@ -173,7 +172,7 @@ async fn a_stale_usage_probe_retries_with_a_fresh_fence_and_makes_the_account_se
     let home = Directory::new();
     std::fs::create_dir_all(&home).unwrap();
     let domain = Arc::new(crate::wiring::open(&home).unwrap());
-    let state = crate::sdk_owner::tests::HostRoot::new();
+    let state = crate::host_fixtures::HostRoot::new();
     let mut backend = probe_backend(&home, &state);
     let mut config = AccountsConfig::fresh();
     config.connect(Provider::Claude);
@@ -230,7 +229,7 @@ async fn a_stale_usage_probe_retries_with_a_fresh_fence_and_makes_the_account_se
 fn the_probe_runs_the_released_host_without_a_prompt_and_reads_each_accounts_folder() {
     let home = Directory::new();
     std::fs::create_dir_all(&home).unwrap();
-    let state = crate::sdk_owner::tests::HostRoot::new();
+    let state = crate::host_fixtures::HostRoot::new();
     let backend = probe_backend(&home, &state);
 
     let default = probe(&backend, None).expect("the default profile answers");
@@ -252,7 +251,7 @@ fn a_probe_that_fails_keeps_the_last_good_reading_and_its_age() {
     let home = Directory::new();
     std::fs::create_dir_all(&home).unwrap();
     let domain = crate::wiring::open(&home).unwrap();
-    let state = crate::sdk_owner::tests::HostRoot::new();
+    let state = crate::host_fixtures::HostRoot::new();
     let backend = probe_backend(&home, &state);
     let reading = probe(&backend, None).unwrap();
     record(&domain, &AccountId::default_account(), reading, NOW);

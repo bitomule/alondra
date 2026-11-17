@@ -1162,7 +1162,7 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
         let home = root.join("home");
         std::fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(crate::wiring::open(&home).unwrap());
-        Fixture::over(root, domain, home, alondra_daemon_engine::sdk_owner::tests::HostRoot::new())
+        Fixture::over(root, domain, home, alondra_daemon_engine::host_fixtures::HostRoot::new())
     }
 
     fn seed_command(domain:&DomainRuntime,id:&str,command:Command) {

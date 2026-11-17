@@ -22,7 +22,7 @@ rust_library(
     crate_name = "alondra_engine_admission",
     edition = "2024",
     version = VERSION,
-    visibility = ["//crates/alondrad:__pkg__"],
+    visibility = ["//crates/alondrad:__pkg__", "//crates/engine-sdk:__pkg__"],
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine:daemon_engine",
         "//crates/daemon-engine-machine:daemon_engine_machine",
@@ -43,7 +43,7 @@ rust_library(
     edition = "2024",
     rustc_flags = [LOW_OPT_LEVEL],
     version = VERSION,
-    visibility = ["//crates/alondrad:__pkg__", "//crates/machine-model:__pkg__", "//crates/scenarios:__pkg__"],
+    visibility = ["//crates/alondrad:__pkg__", "//crates/engine-sdk:__pkg__", "//crates/machine-model:__pkg__", "//crates/scenarios:__pkg__"],
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine:daemon_engine_test_hooks",
         "//crates/daemon-engine-machine:daemon_engine_machine_test_hooks",
@@ -55,26 +55,13 @@ rust_library(
 
 low_opt_rust_test(
     name = "engine_admission_test",
-    size = "large",
+    size = "medium",
     srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
     crate_name = "alondra_engine_admission",
     crate_root = "src/lib.rs",
-    data = [
-        "//agent-host:alondra-codex-host",
-        "//agent-host:alondra-host",
-        "//agent-host:fake-codex.py",
-        "//agent-host:persistent-fake-claude.py",
-    ],
     edition = "2024",
     # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
-    env = {
-        "FIXTURE_CODEX_HOST": "$(rootpath //agent-host:alondra-codex-host)",
-        "FIXTURE_CODEX_NATIVE": "$(rootpath //agent-host:fake-codex.py)",
-        "FIXTURE_HOST": "$(rootpath //agent-host:alondra-host)",
-        "FIXTURE_NATIVE": "$(rootpath //agent-host:persistent-fake-claude.py)",
-        "FIXTURE_NODE": "$(rootpath //agent-host:alondra-host)",
-        "HOME": ".",
-    },
+    env = {"HOME": "."},
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
         "//crates/views:views",

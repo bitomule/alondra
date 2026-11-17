@@ -129,7 +129,7 @@ impl Assembled {
 
 /// Opens the domain at `config.home` and assembles the daemon over it: what a scenario starts.
 pub async fn start(config: &Config, seams: Seams) -> Result<Assembled> {
-    start_over(config, alondra_daemon_engine::wiring::open(&config.home)?, seams).await
+    start_over(config, alondra_engine_sdk::wiring::open(&config.home)?, seams).await
 }
 
 /// `start` over a domain the caller opened at `config.home`, so it can prepare the domain before
@@ -302,7 +302,7 @@ pub(crate) async fn assemble_with(
     if real && accounts::config(&config.home).is_ok_and(|accounts| accounts.connected_providers().contains(&alondra_core::accounts::Provider::Claude)) {
         tasks.spawn(claude_check::run(plugins::node()));
     }
-    tasks.spawn(sdk_handover::run(state_domain.clone()));
+    tasks.spawn(bg_handover::run(state_domain.clone()));
     tasks.spawn(account_move::run(state_domain.clone()));
     tasks.spawn(provider_transition::run(state_domain.clone()));
     tasks.spawn(obligation_watch::run(state_domain.clone()));

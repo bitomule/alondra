@@ -23,7 +23,7 @@ use alondra_core::{Millis, now_millis};
 use serde::Deserialize;
 
 use crate::domain_runtime::DomainRuntime;
-use crate::sdk_owner::SdkBackend;
+use crate::sdk_backend::SdkBackend;
 
 pub(crate) const EVERY: Millis = 15 * 60_000;
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -55,7 +55,7 @@ impl Measured {
 }
 
 /// The accounts' usage together at `now`, as the gauges and the pace card read it.
-pub(crate) fn usage(domain: &DomainRuntime, now: Millis) -> Option<alondra_core::usage::Usage> {
+pub fn usage(domain: &DomainRuntime, now: Millis) -> Option<alondra_core::usage::Usage> {
     domain.read().index().usage(now, &alondra_daemon_engine_model::local_day(now))
 }
 
@@ -194,7 +194,7 @@ fn available_accounts(state: &DomainState, now: Millis) -> Vec<alondra_core::acc
     eligible
 }
 
-pub(crate) fn follow(domain: &DomainRuntime, now: Millis) {
+pub fn follow(domain: &DomainRuntime, now: Millis) {
     let read = domain.read();
     let state = read.state();
     domain.live().measured.sync(state);
@@ -230,7 +230,7 @@ pub(crate) fn hold(domain: &DomainRuntime, now: Millis) {
 
 /// Records that Claude refused `account` work for its usage, until `until` when Claude said: its
 /// readings say it ran out, so no new work starts on it, and the next probe measures the rest.
-pub(crate) fn record_limit(domain: &DomainRuntime, account: &AccountId, until: Option<Millis>, now: Millis) {
+pub fn record_limit(domain: &DomainRuntime, account: &AccountId, until: Option<Millis>, now: Millis) {
     let until = until.or_else(|| domain.live().measured.reset_after_limit(account, now)).filter(|until| *until > now);
     let window = WindowReading { kind: WindowKind::Session, used: Share::FULL, resets_at: until, exhausted: true };
     record(domain, account, UsageReading { windows: vec![window], plan: None, complete: false }, now);

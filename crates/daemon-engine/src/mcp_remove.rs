@@ -6,7 +6,7 @@
 //! stops listing it for them meanwhile.
 use alondra_core::clock;
 use crate::mcp_probe::McpProbes;
-use crate::sdk_owner::SdkBackend;
+use crate::sdk_backend::SdkBackend;
 use alondra_domain_rules::{McpNodeReading, McpServerKey, McpServerState};
 use alondra_core::options::ProjectEntry;
 use alondra_view_model::mcp::project_target;

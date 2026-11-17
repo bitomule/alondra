@@ -295,7 +295,7 @@ fn open(domain: &DomainRuntime, session_id: &str, id: InteractionId, hold: Hold,
 
 pub(crate) use crate::domain_store::wording::SdkDecision;
 
-pub(crate) struct HeldCards;
+pub struct HeldCards;
 
 impl crate::domain_store::wording::SdkDecisions for HeldCards {
     fn decide(&self, task_title: &str, kind: DecisionKind, payload: &Value, worktree: Option<&str>, worktrees: &[String], home: &Path) -> SdkDecision {
@@ -474,7 +474,7 @@ fn asked_by(state: &DomainState, id: &InteractionId, session_id: &str) -> bool {
 
 /// The session has a held card still open: it waits for the user, however silent it is. Read
 /// from the domain, so it holds across a daemon restart that forgot which call the session is in.
-pub(crate) fn waits_on_user(state: &DomainState, session_id: &str) -> bool {
+pub fn waits_on_user(state: &DomainState, session_id: &str) -> bool {
     state.holds.keys().any(|id| asked_by(state, id, session_id) && state.interactions.get(id).is_some_and(|interaction| {
         !interaction.withdrawn && matches!(interaction.payload, InteractionPayload::Question { answer: None, .. })
     }))

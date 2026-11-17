@@ -12,15 +12,10 @@ pub mod test_support;
 extern crate alondra_daemon_support;
 
 use alondra_daemon_engine::{
-    api_failures, auto_launch, domain_agent_lifecycle, domain_messages, domain_orchestrator_tools, domain_schedule_runner, live, machine,
-    node_push, node_reports, sdk_handover, sdk_owner, start_failures, usage_pause, usage_probe,
+    api_failures, domain_agent_lifecycle, hosts, launch_plans, options, domain_messages, domain_orchestrator_tools, live, machine, node_push, node_reports, sdk_handover, start_failures, usage_pause,
 };
 #[cfg(test)]
-use alondra_daemon_engine::{
-    domain_holds, domain_transport, home_renames, idle_compaction, idle_release, launch_plans, options, ports, provider_transition, task_closer,
-};
-#[cfg(test)]
-use alondra_daemon_support::worktree;
+use alondra_daemon_engine::{domain_holds, domain_transport, home_renames, usage_probe};
 use alondra_daemon_support::{auth, disk, disk_peaks, locks, node_cost, process_watch, runtime_mutex, save};
 use alondra_daemon_engine_machine::{machine_state, swap_disk};
 pub use alondra_engine_kernel::{domain_database_migration, domain_runtime, domain_store};

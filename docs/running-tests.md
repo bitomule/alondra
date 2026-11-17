@@ -102,7 +102,7 @@ The slowest targets, measured in a full run on a busy machine:
 
 | Target | Seconds | Limit |
 |---|---:|---:|
-| `//crates/daemon-engine:daemon_engine_integration_test` | 203.5 | 600 |
+| `//crates/engine-sdk:engine_sdk_test` | 226.7 | 600 |
 | `//apple/Testing/TriageTouch:TriageTouchUITests` | 200.0 | 600 |
 | `//apple/Testing/Snapshots:AlondraTriageSnapshotTests` | 140.3 | 300 |
 | `//apple/Testing/Snapshots:AlondraDetailSnapshotTests` | 110.1 | 300 |

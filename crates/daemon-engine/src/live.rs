@@ -71,7 +71,7 @@ pub struct Live {
     pub(crate) obligations: Mutex<crate::obligation_watch::Watch>,
     /// When each task's node process last wrote anything. A holder that panics leaves it whole:
     /// one insert.
-    pub(crate) outputs: Mutex<std::collections::BTreeMap<alondra_domain_rules::TaskId, alondra_core::Millis>>,
+    pub outputs: Mutex<std::collections::BTreeMap<alondra_domain_rules::TaskId, alondra_core::Millis>>,
     /// A holder that panics leaves it whole, so it is recovered: one insert or remove of a marker.
     watching: Mutex<std::collections::HashSet<String>>,
     launching: tokio::sync::watch::Sender<std::collections::HashSet<String>>,
@@ -135,7 +135,7 @@ impl Live {
 
     /// The orchestrator's replacement of this session's node stopped short because the node could
     /// not be stopped: if it ends later, that is why, not the user closing it.
-    pub(crate) fn note_aborted_replace(&self, session_id: &str, why: &str) {
+    pub fn note_aborted_replace(&self, session_id: &str, why: &str) {
         let mut aborted = self.aborted_replaces.lock_or_recover("the closed sessions");
         aborted.insert(session_id.to_owned(), why.to_owned());
         if let Some(file) = &self.aborted_replaces_file {
@@ -143,7 +143,7 @@ impl Live {
         }
     }
 
-    pub(crate) fn take_aborted_replace(&self, session_id: &str) -> Option<String> {
+    pub fn take_aborted_replace(&self, session_id: &str) -> Option<String> {
         let mut aborted = self.aborted_replaces.lock_or_recover("the closed sessions");
         let why = aborted.remove(session_id)?;
         if let Some(file) = &self.aborted_replaces_file {
@@ -199,7 +199,7 @@ impl Live {
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) async fn until_launch_ends(&self, task_id: &str) {
+    pub async fn until_launch_ends(&self, task_id: &str) {
         let mut launching = self.launching.subscribe();
         launching.wait_for(|launching| !launching.contains(task_id)).await.expect("Live owns the sender");
     }
@@ -213,11 +213,11 @@ impl Live {
     }
 
     /// When Alondra last cut the session's turn to close it, if it did.
-    pub(crate) fn close_interrupted_at(&self, session_id: &str) -> Option<i64> {
+    pub fn close_interrupted_at(&self, session_id: &str) -> Option<i64> {
         self.close_interrupts.lock_or_recover("the close interrupts").get(session_id).copied()
     }
 
-    pub(crate) fn set_close_interrupted(&self, session_id: &str, at: Option<i64>) {
+    pub fn set_close_interrupted(&self, session_id: &str, at: Option<i64>) {
         let mut interrupts = self.close_interrupts.lock_or_recover("the close interrupts");
         match at {
             Some(at) => interrupts.insert(session_id.to_owned(), at),
@@ -417,7 +417,7 @@ mod sdk_node_tests {
             apply(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: task.clone().into(), request_id: request.into(), title: "Notes".into(),
                 agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")) });
             apply(&mut state, Actor::System, Command::AdmitExecution { provider: alondra_core::accounts::Provider::Claude, task_id: task.clone().into(), agent_id: agent.into(),
-                conversation: format!("conversation-{task}"), instance: format!("instance-{task}"), host: crate::sdk_owner::HOST.into(), model: None, account: None, leaves_limit: None });
+                conversation: format!("conversation-{task}"), instance: format!("instance-{task}"), host: crate::sdk_live::HOST.into(), model: None, account: None, leaves_limit: None });
         }
         state
     }

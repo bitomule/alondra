@@ -38,7 +38,7 @@ pub struct World {
     #[serde(default = "World::default_accounts")]
     pub accounts: Vec<String>,
     /// The release the daemon runs until an `update` installs this one.
-    #[serde(default = "alondra_daemon_engine::sdk_owner::backend::this_release")]
+    #[serde(default = "alondra_engine_sdk::sdk_owner::backend::this_release")]
     pub release: String,
 }
 
@@ -76,7 +76,7 @@ impl Default for World {
             langs: Self::default_langs(),
             repository: Self::default_repository(),
             accounts: Self::default_accounts(),
-            release: alondra_daemon_engine::sdk_owner::backend::this_release(),
+            release: alondra_engine_sdk::sdk_owner::backend::this_release(),
         }
     }
 }

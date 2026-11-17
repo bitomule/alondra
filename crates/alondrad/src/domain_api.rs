@@ -1424,7 +1424,7 @@ mod tests {
     fn task_wait_reply_distinguishes_a_pending_wait_and_survives_reopening_the_store() {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let domain = alondra_daemon_engine::wiring::open(&home).unwrap();
+        let domain = alondra_engine_sdk::wiring::open(&home).unwrap();
         let apply = |actor: Actor, command: Command| {
             let state = domain.state().unwrap();
             domain.execute(&actor, &CommandEnvelope {
@@ -1449,7 +1449,7 @@ mod tests {
         apply(node, wait.clone());
         assert!(task_wait_notice(&domain, &wait).unwrap().contains("End your turn"));
         drop(domain);
-        let domain = alondra_daemon_engine::wiring::open(&home).unwrap();
+        let domain = alondra_engine_sdk::wiring::open(&home).unwrap();
         assert_eq!(domain.state().unwrap().tasks[&TaskId::from("t")].state, TaskState::WaitingDependency);
         let state = domain.state().unwrap();
         domain.execute(&user, &CommandEnvelope {
@@ -1465,7 +1465,7 @@ mod tests {
         }
         assert!(task_wait_notice(&domain, &wait).unwrap().contains("Go on with your task"));
         drop(domain);
-        let domain = alondra_daemon_engine::wiring::open(&home).unwrap();
+        let domain = alondra_engine_sdk::wiring::open(&home).unwrap();
         assert!(task_wait_notice(&domain, &wait).unwrap().contains("Go on with your task"));
         assert_eq!(domain.state().unwrap().tasks[&TaskId::from("t")].state, TaskState::Running);
     }
@@ -1538,7 +1538,7 @@ mod tests {
     fn runtime_progress_producer_capability_resolution_and_commit_run_off_worker() {
         let directory = crate::test_support::Directory::new();
         std::fs::create_dir_all(&directory).unwrap();
-        drop(alondra_daemon_engine::wiring::open(&directory).unwrap());
+        drop(alondra_engine_sdk::wiring::open(&directory).unwrap());
         let host = crate::domain_bootstrap::DomainDaemon::open(&directory).unwrap();
         let domain = host.domain();
         let state = domain.state().unwrap();
@@ -1580,7 +1580,7 @@ mod tests {
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir(&home).unwrap();
-        drop(alondra_daemon_engine::wiring::open(&home).unwrap());
+        drop(alondra_engine_sdk::wiring::open(&home).unwrap());
         let auth = crate::auth::Auth::open(&home).unwrap();
         let key = SigningKey::from_slice(&[7u8; 32]).unwrap();
         let device = auth.pair(&auth.new_pairing_code(), "test-device",
@@ -1965,7 +1965,7 @@ mod tests {
     fn fixture() -> (std::path::PathBuf, Arc<Host>) {
         let directory = crate::test_support::Directory::new();
         std::fs::create_dir_all(&directory).unwrap();
-        drop(alondra_daemon_engine::wiring::open(&directory).unwrap());
+        drop(alondra_engine_sdk::wiring::open(&directory).unwrap());
         let daemon = crate::domain_bootstrap::DomainDaemon::open(&directory).unwrap();
         let host = Arc::new(Host {
             domain: daemon.domain(),
@@ -2489,7 +2489,7 @@ mod domain_encrypted_tests {
         let scratch_directory = crate::test_support::Directory::new();
         let home = scratch_directory.parent().unwrap().join(format!("alondra-relay-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
-        let domain = alondra_daemon_engine::wiring::open(&home).unwrap();
+        let domain = alondra_engine_sdk::wiring::open(&home).unwrap();
         let epoch = domain.state().unwrap().data_epoch.clone();
         let envelope = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,

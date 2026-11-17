@@ -52,6 +52,7 @@ pub use alondra_engine_kernel::{
     metrics_capture,
     ports,
     retention,
+    sdk_backend,
     settings_projection,
 };
 
@@ -59,11 +60,9 @@ pub use alondra_engine_github::{domain_github, domain_merges, open_pr_sweep, pr_
 #[cfg(any(test, feature = "test-hooks"))]
 pub use alondra_engine_github::github_world;
 
-pub mod account_move;
 pub mod accounts;
 pub mod allow_always;
 pub mod api_failures;
-pub mod auto_launch;
 pub mod claude_access;
 pub mod claude_trust;
 pub mod cleanup;
@@ -74,15 +73,15 @@ pub mod domain_holds;
 pub mod domain_messages;
 pub mod domain_orchestrator_reads;
 pub mod domain_orchestrator_tools;
-pub mod domain_schedule_api;
-pub mod domain_schedule_runner;
 pub mod domain_transport;
 pub mod gate;
 pub mod home_renames;
+#[cfg(any(test, feature = "test-hooks"))]
+pub mod host_fixtures;
+pub mod hosts;
 pub mod idle_compaction;
 pub mod obligation_watch;
 pub use alondra_daemon_engine_model::issues;
-pub mod idle_release;
 pub mod launch_plans;
 pub mod live;
 pub mod local_actions;
@@ -103,18 +102,16 @@ pub mod node_reports;
 pub mod node_work;
 pub use alondra_daemon_engine_model::options;
 pub mod plan_reviews;
-pub mod provider_transition;
 pub use alondra_daemon_engine_model::reply;
 pub mod sdk_handover;
 pub mod sdk_live;
-pub mod sdk_owner;
 pub use alondra_daemon_engine_model::settings_file;
 pub mod start_failures;
 pub use alondra_daemon_engine_machine::swap_disk;
 pub mod cancelled_worktrees;
-pub mod task_closer;
 pub mod task_context;
 pub mod task_worktrees;
+pub mod untaken;
 pub mod usage_pause;
 pub mod usage_probe;
 pub mod wiring;

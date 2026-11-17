@@ -13,6 +13,18 @@ use alondra_core::{BackgroundItem, BackgroundKind, Millis, ToolInFlight};
 use serde::Deserialize;
 use serde_json::Value;
 
+/// The host an SDK execution runs on, as the domain records it: never `claude-bg`.
+pub const HOST: &str = "alondra-sdk";
+
+/// Whether `agent` holds the current execution of a task that runs through the SDK.
+pub fn runs_through_sdk(state: &alondra_domain_rules::DomainState, agent: &alondra_domain_rules::AgentId) -> bool {
+    state.tasks.values().filter(|task| task.agent_id.as_ref() == Some(agent)).any(|task| {
+        state
+            .lifecycle_of(&task.id).ok()
+            .is_some_and(|lifecycle| lifecycle.execution().is_some_and(|execution| execution.host().as_str() == HOST))
+    })
+}
+
 const ANSWER_LIMIT: usize = 8_000;
 const SUMMARY_LIMIT: usize = 300;
 const REMEMBERED: usize = 50;
@@ -441,7 +453,7 @@ fn progress(name: &str, input: &Value, result: &Value) -> Option<Report> {
 }
 
 /// What one observation of a node's host says, kept with what its node mod would have reported.
-pub(crate) fn feed(domain: &crate::domain_runtime::DomainRuntime, agent: &alondra_domain_rules::AgentId, observation: &alondra_provider_contract::OrderedObservation) {
+pub fn feed(domain: &crate::domain_runtime::DomainRuntime, agent: &alondra_domain_rules::AgentId, observation: &alondra_provider_contract::OrderedObservation) {
     if let Some(message) = alondra_provider_claude::sdk_message(observation) {
         let now = alondra_core::now_millis();
         if let Some(steps) = domain.live().mods.apply_sdk(&agent.0, &message, now) {
@@ -751,7 +763,7 @@ mod tests {
 }
 
 /// Ends the waits of SDK nodes whose lifecycle a commit moved on.
-pub(crate) struct EndedWaits;
+pub struct EndedWaits;
 
 impl crate::domain_runtime::CommitObserver for EndedWaits {
     fn published(&self, domain: &crate::domain_runtime::DomainRuntime, before: &alondra_domain_rules::DomainState, after: &alondra_domain_rules::DomainState) {
