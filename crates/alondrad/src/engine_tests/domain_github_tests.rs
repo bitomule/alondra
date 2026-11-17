@@ -4,6 +4,7 @@ use alondra_domain_rules::*;
 
 #[test]
 fn the_auto_merge_notice_says_alondra_merges_without_protocol_or_git_metadata() {
+    super::wired();
     let (_fixture, domain) = open("notice");
     presented(&domain, true);
     let register = Command::RegisterPr {
@@ -19,6 +20,7 @@ fn the_auto_merge_notice_says_alondra_merges_without_protocol_or_git_metadata() 
 
 #[test]
 fn only_a_request_that_merges_by_itself_gets_the_auto_merge_notice() {
+    super::wired();
     for auto_merge in [true, false] {
         let (_fixture, domain) = open("presented");
         presented(&domain, auto_merge);

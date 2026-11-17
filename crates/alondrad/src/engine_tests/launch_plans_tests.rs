@@ -48,6 +48,7 @@ fn create(deps: &[&str], launch: Option<LaunchPlan>) -> Command {
 
 #[test]
 fn a_new_task_belongs_to_the_project_its_request_asked_for_or_else_to_the_folder_it_works_in() {
+    super::wired();
     let w = world();
     std::fs::write(alondra_core::options::path_in(&w.home), format!("projects_root = {:?}\n", w.root.to_str().unwrap())).unwrap();
     let stamped = |command: Command| {
@@ -77,6 +78,7 @@ fn a_new_task_belongs_to_the_project_its_request_asked_for_or_else_to_the_folder
 
 #[test]
 fn a_new_tasks_plan_is_checked_against_the_disk_and_the_request() {
+    super::wired();
     let w = world();
     check_launch_plan(&w.domain, &w.home, &create(&[], Some(plan(&w, json!({}))))).unwrap();
     let missing = check_launch_plan(&w.domain, &w.home, &create(&[], Some(plan(&w, json!({"cwd": "/no/such/folder"}))))).unwrap_err();
@@ -87,6 +89,7 @@ fn a_new_tasks_plan_is_checked_against_the_disk_and_the_request() {
 
 #[test]
 fn a_suggestion_that_becomes_a_task_has_its_plan_checked_like_any_new_task() {
+    super::wired();
     let w = world();
     let settle = |launch: LaunchPlan| Command::SettleSuggestion {
         interaction_id: "p".into(),
@@ -103,6 +106,7 @@ fn a_suggestion_that_becomes_a_task_has_its_plan_checked_like_any_new_task() {
 
 #[test]
 fn a_launch_plan_needs_model_and_reason_with_auto_effort_and_an_existing_folder() {
+    super::wired();
     let w = world();
     let request = alondra_domain_rules::RequestId::from("r");
     validate(&w.domain, &w.home, &request, &plan(&w, json!({}))).unwrap();
@@ -123,6 +127,7 @@ fn a_launch_plan_needs_model_and_reason_with_auto_effort_and_an_existing_folder(
 
 #[test]
 fn preparing_reopening_uses_the_retained_project_defaults_without_the_directory_and_keeps_explicit_request_choices_binding() {
+    super::wired();
     let w = world();
     std::fs::write(alondra_core::options::path_in(&w.home), "[projects.App]\ndefaults = { effort = \"hard\" }\n").unwrap();
     let saved = plan(&w, json!({"project": "App", "model": null}));
@@ -151,6 +156,7 @@ fn preparing_reopening_uses_the_retained_project_defaults_without_the_directory_
 
 #[test]
 fn a_malformed_plan_is_refused_saying_what_is_wrong_with_it() {
+    super::wired();
     let body = json!({"data_epoch": "e", "title": "Next", "launch": {"name": "app/next", "cwd": "/tmp"}});
     check_launch_shape("POST", "/requests/r/tasks", &body).unwrap();
     check_launch_shape("POST", "/questions", &json!({"launch": {"name": "x"}})).unwrap();
@@ -163,6 +169,7 @@ fn a_malformed_plan_is_refused_saying_what_is_wrong_with_it() {
 
 #[test]
 fn set_launch_plan_replaces_the_plan() {
+    super::wired();
     let w = world();
     let state = w.domain.state().unwrap();
     w.domain.execute(&Actor::Orchestrator { generation: 0 }, &CommandEnvelope {

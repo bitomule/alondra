@@ -34,7 +34,7 @@ fn startup_admission_keeps_starts_and_resumes_queued_until_measured() {
             create(&domain, "queued");
             Key::Task("queued".into())
         };
-        let gate = &domain.live().gate;
+        let gate = &domain.admission();
         let waiting = Waiting { key, priority: TaskPriority::Normal, resuming, since: now };
         assert!(gate.ask(&domain, waiting.clone(), now).is_err(), "the fresh gate must not admit {waiting:?}");
         assert_eq!(gate.snapshot(&domain, now).unwrap().in_flight, 0);
@@ -42,7 +42,7 @@ fn startup_admission_keeps_starts_and_resumes_queued_until_measured() {
         assert!(gate.ask(&domain, waiting.clone(), now + SAMPLE).is_err(), "an empty sample cannot open the gate");
         crate::machine_watch::pace(&domain, &Machine { at: now + 2 * SAMPLE, memory_total: 16 << 30, memory_available: 8 << 30,
             memory_free_percent: Some(50), disk_total: 500 << 30, disk_available: 100 << 30, ..Machine::default() });
-        domain.live().machine_watch.measure_disk(crate::disk::Space { total: 500 << 30, free: 100 << 30, purgeable: 0 });
+        domain.machine_watch().measure_disk(crate::disk::Space { total: 500 << 30, free: 100 << 30, purgeable: 0 });
         assert_eq!(gate.ask(&domain, waiting, now + 2 * SAMPLE), Ok(()));
         assert_eq!(gate.snapshot(&domain, now + 2 * SAMPLE).unwrap().in_flight, 1);
     }
@@ -53,13 +53,13 @@ fn startup_admission_explicit_memory_bypass_keeps_disk_and_slot_checks() {
     let (_home, domain) = unmeasured_world();
     create(&domain, "t1");
     create(&domain, "t2");
-    let gate = &domain.live().gate;
+    let gate = &domain.admission();
     gate.ignore_mac();
-    domain.live().machine_watch.ignore_peaks();
+    domain.machine_watch().ignore_peaks();
     gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(1)) });
     let now = alondra_core::now_millis();
     assert!(matches!(ask(&domain, "t1", now), Err(Hold::Disk { .. })));
-    domain.live().machine_watch.measure_disk(crate::disk::Space { total: 500 << 30, free: 100 << 30, purgeable: 0 });
+    domain.machine_watch().measure_disk(crate::disk::Space { total: 500 << 30, free: 100 << 30, purgeable: 0 });
     assert_eq!(ask(&domain, "t1", now), Ok(()));
     assert!(matches!(ask(&domain, "t2", now), Err(Hold::Slots { .. })));
 }
@@ -69,9 +69,9 @@ fn startup_admission_granted_work_keeps_disk_reserves_until_new_bytes() {
     const GB: u64 = 1_000_000_000;
     for resuming in [false, true] {
         let (_home, domain) = world();
-        let gate = &domain.live().gate;
+        let gate = &domain.admission();
         gate.ignore_mac();
-        let watch = &domain.live().machine_watch;
+        let watch = &domain.machine_watch();
         let disk = |free| crate::disk::Space { total: 500 * GB, free, purgeable: 0 };
         watch.measure_disk(disk(36 * GB));
         let base = alondra_core::now_millis();
@@ -103,10 +103,10 @@ fn startup_admission_granted_work_keeps_disk_reserves_until_new_bytes() {
 #[test]
 fn startup_admission_missing_memory_cannot_cancel_pending_reserves() {
     let (_home, domain) = world();
-    domain.live().gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(4)) });
+    domain.admission().tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(4)) });
     for id in ["t1", "t2"] { create(&domain, id); }
     let base = alondra_core::now_millis();
-    let watch = &domain.live().machine_watch;
+    let watch = &domain.machine_watch();
     watch.measure_nodes(base - MIN, vec![GIB as u64; 30]);
     watch.measure_disk(crate::disk::Space { total: 500 << 30, free: 100 << 30, purgeable: 0 });
     let sample = |at| Machine { at, memory_total: 18 << 30, memory_available: 5 << 30,
@@ -119,7 +119,7 @@ fn startup_admission_missing_memory_cannot_cancel_pending_reserves() {
     let footprints = BTreeMap::from([("agent-t1".into(), GIB as u64)]);
     watch.measure_node_memory(base + SAMPLE, footprints.clone());
     crate::machine_watch::pace(&domain, &Machine { at: base + 2 * SAMPLE, ..Machine::default() });
-    assert_eq!(domain.live().gate.snapshot(&domain, base + 2 * SAMPLE).unwrap().mac.observed_in_flight, 0,
+    assert_eq!(domain.admission().snapshot(&domain, base + 2 * SAMPLE).unwrap().mac.observed_in_flight, 0,
         "a missing system budget cannot include a newer node footprint");
     assert!(matches!(ask(&domain, "t2", base + 2 * SAMPLE), Err(Hold::Memory { why: NoRoom::Available { .. }, .. })));
 
@@ -273,7 +273,7 @@ fn world() -> (Home, Arc<DomainRuntime>) {
 fn healthy(domain: &DomainRuntime) {
     crate::machine_watch::pace(domain, &Machine { at: 1, memory_total: 16 << 30, memory_available: 12 << 30,
         memory_free_percent: Some(75), cpus: 11, ..Machine::default() });
-    domain.live().machine_watch.measure_disk(crate::disk::Space { total: 500 << 30, free: 100 << 30, purgeable: 0 });
+    domain.machine_watch().measure_disk(crate::disk::Space { total: 500 << 30, free: 100 << 30, purgeable: 0 });
 }
 
 fn unmeasured_world() -> (Home, Arc<DomainRuntime>) {
@@ -323,7 +323,7 @@ fn next_input(domain: &DomainRuntime, id: &str) -> String {
 #[test]
 fn eight_starts_with_a_limit_of_6_leave_2_queued_in_order_until_a_node_finishes() {
     let (_home, domain) = world();
-    let gate = &domain.live().gate;
+    let gate = &domain.admission();
     gate.tune(Tuning { spacing: SPACING, limit: Some(Limit::Fixed(6)) });
     let ids = ["t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8"];
     for id in ids {
@@ -369,17 +369,17 @@ fn a_launch_the_orchestrator_queued_is_kept_across_a_restart_and_leaves_when_its
     let (home, domain) = world();
     create(&domain, "t1");
     let body: LaunchBody = serde_json::from_value(serde_json::json!({"task": "t1", "name": "app/t1", "cwd": "/tmp"})).unwrap();
-    enqueue(&domain, &body, "orchestrator", 5).unwrap();
+    crate::domain_orchestrator_tools::enqueue(&domain, &body, "orchestrator", 5).unwrap();
     let reopened = crate::wiring::open(&home.0).unwrap();
     let queue = reopened.store.lock().unwrap().launch_queue().unwrap();
     assert_eq!(queue.len(), 1);
     assert_eq!(LaunchBody::from_queue(&queue[0].body).unwrap().task_id(), &TaskId::from("t1"));
-    let snapshot = reopened.live().gate.snapshot(&reopened, 10).unwrap();
+    let snapshot = reopened.admission().snapshot(&reopened, 10).unwrap();
     assert_eq!(keys(&snapshot.queue), ["t1"]);
     drop(reopened);
 
     run(&domain, Actor::User { user_id: "u".into() }, Command::CancelTask { task_id: "t1".into(), reason: None });
-    assert!(domain.live().gate.snapshot(&domain, 10).unwrap().queue.is_empty());
+    assert!(domain.admission().snapshot(&domain, 10).unwrap().queue.is_empty());
 }
 
 #[test]
@@ -403,7 +403,7 @@ fn a_review_follows_the_priority_of_the_task_it_reviews() {
 #[test]
 fn macos_warning_with_36_to_51_percent_free_and_up_to_3_nodes_working_admits_a_start_every_3_minutes() {
     let (_home, domain) = world();
-    domain.live().gate.tune(Tuning { spacing: SPACING, limit: Some(Limit::Auto { max: 11 }) });
+    domain.admission().tune(Tuning { spacing: SPACING, limit: Some(Limit::Auto { max: 11 }) });
     for id in ["t1", "t2", "t3", "t4", "t5"] {
         create(&domain, id);
     }
@@ -428,15 +428,15 @@ fn macos_warning_with_36_to_51_percent_free_and_up_to_3_nodes_working_admits_a_s
             warned(now, now + MIN);
             now += MIN;
         }
-        assert_eq!(domain.live().gate.snapshot(&domain, now).unwrap().working, working);
+        assert_eq!(domain.admission().snapshot(&domain, now).unwrap().working, working);
         assert_eq!(ask(&domain, id, now), Ok(()), "{id} starts with {working} node(s) working");
         start(&domain, id, now);
     }
     warned(now, now + 3 * MIN);
     now += 3 * MIN;
-    let snapshot = domain.live().gate.snapshot(&domain, now).unwrap();
+    let snapshot = domain.admission().snapshot(&domain, now).unwrap();
     assert_eq!((snapshot.mac.room(0, now), snapshot.working), (Ok(()), 3));
-    assert!(!domain.live().gate.live(&domain, now).unwrap().tight, "the Mac is not short of memory");
+    assert!(!domain.admission().live(&domain, now).unwrap().tight, "the Mac is not short of memory");
     assert_eq!(ask(&domain, "t4", now), Ok(()), "a fourth starts with 3 working");
 }
 
@@ -449,7 +449,7 @@ fn a_daemon_that_ignores_the_mac_starts_a_task_under_critical_memory_pressure_an
     let ask = |ignores: bool| {
         let (_home, domain) = world();
         if ignores {
-            domain.live().gate.ignore_mac();
+            domain.admission().ignore_mac();
         }
         create(&domain, "t-fresh");
         let mut now = base;
@@ -459,7 +459,7 @@ fn a_daemon_that_ignores_the_mac_starts_a_task_under_critical_memory_pressure_an
             crate::machine_watch::pace(&domain, &machine);
             now += SAMPLE;
         }
-        domain.live().gate.ask(&domain, waiting("t-fresh", TaskPriority::Normal, false, base), now)
+        domain.admission().ask(&domain, waiting("t-fresh", TaskPriority::Normal, false, base), now)
     };
     assert!(matches!(ask(false), Err(Hold::Memory { why: NoRoom::Pressure(alondra_core::MemoryPressure::Critical), .. })), "the live daemon waits for room");
     assert_eq!(ask(true), Ok(()), "the rehearsal's daemon starts it");
@@ -468,7 +468,7 @@ fn a_daemon_that_ignores_the_mac_starts_a_task_under_critical_memory_pressure_an
 #[test]
 fn a_node_waiting_for_the_user_to_approve_its_plan_leaves_its_slot_to_the_queue_until_the_user_answers() {
     let (_home, domain) = world();
-    let gate = &domain.live().gate;
+    let gate = &domain.admission();
     gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(1)) });
     let now = alondra_core::now_millis();
     for id in ["t1", "t2", "t3"] {
@@ -552,13 +552,13 @@ fn finish(domain: &DomainRuntime, id: &str, now: Millis) {
 }
 
 fn ask(domain: &DomainRuntime, id: &str, now: Millis) -> Result<(), Hold> {
-    domain.live().gate.ask(domain, Waiting { key: Key::Task(id.into()), priority: TaskPriority::Normal, resuming: false, since: 0 }, now)
+    domain.admission().ask(domain, Waiting { key: Key::Task(id.into()), priority: TaskPriority::Normal, resuming: false, since: 0 }, now)
 }
 
 #[test]
 fn with_a_fixed_4_an_afternoon_of_memory_pressure_ends_with_4_working_once_the_mac_is_fine() {
     let (_home, domain) = world();
-    domain.live().gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(4)) });
+    domain.admission().tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(4)) });
     for id in ["t1", "t2", "t3", "t4", "t5", "t6"] {
         create(&domain, id);
     }
@@ -574,14 +574,14 @@ fn with_a_fixed_4_an_afternoon_of_memory_pressure_ends_with_4_working_once_the_m
     finish(&domain, "t3", base + 11 * MIN);
     let now = base + 20 * MIN;
     sample(&domain, 50, base + 11 * MIN, now);
-    let snapshot = domain.live().gate.snapshot(&domain, now).unwrap();
+    let snapshot = domain.admission().snapshot(&domain, now).unwrap();
     assert_eq!((snapshot.mac.room(0, now), snapshot.working, snapshot.limit), (Ok(()), 2, 4),
         "memory short with 4 and then 3 working never lowers the number the user chose");
     for id in ["t5", "t6"] {
         assert_eq!(ask(&domain, id, now), Ok(()), "{id} takes a free slot of the 4");
         start(&domain, id, now);
     }
-    assert_eq!(domain.live().gate.snapshot(&domain, now).unwrap().working, 4);
+    assert_eq!(domain.admission().snapshot(&domain, now).unwrap().working, 4);
 }
 
 /// An 18 GiB Mac with `free` % of its memory free, sampled every 10 s from `from` until `to`.
@@ -600,13 +600,13 @@ fn free_of_18_gib(domain: &DomainRuntime, free: u32, from: Millis, to: Millis) {
 #[test]
 fn each_node_admitted_in_the_last_3_minutes_reserves_what_a_node_measured() {
     let (_home, domain) = world();
-    domain.live().gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(10)) });
+    domain.admission().tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(10)) });
     for id in ["t1", "t2", "t3", "t4", "t5", "t6"] {
         create(&domain, id);
     }
     let base = alondra_core::now_millis();
     let cost: i64 = 410_000_000;
-    domain.live().machine_watch.measure_nodes(base - MIN, vec![cost as u64; 30]);
+    domain.machine_watch().measure_nodes(base - MIN, vec![cost as u64; 30]);
     free_of_18_gib(&domain, 32, base - MIN, base + SAMPLE);
     for id in ["t1", "t2", "t3", "t4", "t5"] {
         assert_eq!(ask(&domain, id, base), Ok(()), "{id}");
@@ -622,11 +622,11 @@ fn each_node_admitted_in_the_last_3_minutes_reserves_what_a_node_measured() {
 #[test]
 fn an_admitted_nodes_observed_memory_replaces_its_reserve_once_and_only_while_fresh() {
     let (_home, domain) = world();
-    domain.live().gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(4)) });
+    domain.admission().tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(4)) });
     create(&domain, "t1");
     create(&domain, "t2");
     let base = alondra_core::now_millis();
-    domain.live().machine_watch.measure_nodes(base - MIN, vec![GIB as u64; 30]);
+    domain.machine_watch().measure_nodes(base - MIN, vec![GIB as u64; 30]);
     let sample = |at| Machine { at, memory_total: 18 << 30, memory_available: 5 << 30,
         memory_free_percent: Some(60), ..Machine::default() };
     crate::machine_watch::pace(&domain, &sample(base));
@@ -634,23 +634,23 @@ fn an_admitted_nodes_observed_memory_replaces_its_reserve_once_and_only_while_fr
     start(&domain, "t1", base);
     assert!(matches!(ask(&domain, "t2", base), Err(Hold::Memory { why: NoRoom::Available { .. }, .. })));
 
-    domain.live().machine_watch.measure_node_memory(base, BTreeMap::from([("agent-t1".into(), GIB as u64)]));
+    domain.machine_watch().measure_node_memory(base, BTreeMap::from([("agent-t1".into(), GIB as u64)]));
     crate::machine_watch::pace(&domain, &sample(base + SAMPLE));
-    let snapshot = domain.live().gate.snapshot(&domain, base + SAMPLE).unwrap();
+    let snapshot = domain.admission().snapshot(&domain, base + SAMPLE).unwrap();
     assert_eq!(snapshot.mac.observed_in_flight, GIB as u64);
     assert_eq!(ask(&domain, "t2", base + SAMPLE), Ok(()));
 
-    domain.live().gate.lock().admitted.push((Key::Resume("agent-t1".into()), base));
-    let snapshot = domain.live().gate.snapshot(&domain, base + SAMPLE).unwrap();
+    domain.admission().lock().admitted.push((Key::Resume("agent-t1".into()), base));
+    let snapshot = domain.admission().snapshot(&domain, base + SAMPLE).unwrap();
     assert_eq!(snapshot.mac.observed_in_flight, GIB as u64, "two references never credit the same node twice");
-    let snapshot = domain.live().gate.snapshot(&domain, base + MIN).unwrap();
+    let snapshot = domain.admission().snapshot(&domain, base + MIN).unwrap();
     assert_eq!(snapshot.mac.observed_in_flight, 0, "stale footprints cannot cancel a pending reserve");
 }
 
 #[test]
 fn a_node_waiting_for_the_machine_leaves_its_slot_and_comes_back_through_the_gate() {
     let (_home, domain) = world();
-    let gate = &domain.live().gate;
+    let gate = &domain.admission();
     gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(1)) });
     create(&domain, "t1");
     create(&domain, "t2");
@@ -718,7 +718,7 @@ fn reading_start_facts_hands_pauses_an_older_daemon_saved_without_holding_the_st
     create(&domain, "t1");
     run(&domain, Actor::System, Command::RegisterAgent { agent_id: AgentId("agent-t1".into()), name: "agent-t1".into(), at: 0 });
     run(&domain, Actor::User { user_id: "u".into() }, Command::AssignTask { task_id: "t1".into(), agent_id: AgentId("agent-t1".into()), model: None });
-    assert!(!domain.live().gate.lock().legacy.is_empty(), "the old pause is still waiting to be handed over");
+    assert!(!domain.admission().lock().legacy.is_empty(), "the old pause is still waiting to be handed over");
     let (sent, received) = std::sync::mpsc::channel();
     let reading = Arc::clone(&domain);
     std::thread::spawn(move || {
@@ -733,7 +733,7 @@ fn reading_start_facts_hands_pauses_an_older_daemon_saved_without_holding_the_st
 #[test]
 fn a_waiting_task_raised_to_high_goes_ahead_before_it_asks_again() {
     let (_home, domain) = world();
-    let gate = &domain.live().gate;
+    let gate = &domain.admission();
     gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(1)) });
     for id in ["busy", "older", "raised"] {
         create(&domain, id);
@@ -782,7 +782,7 @@ fn setting_the_priority_a_task_already_has_is_refused() {
 #[test]
 fn a_started_node_already_waiting_on_the_user_leaves_its_slot_although_it_was_admitted_a_moment_ago() {
     let (_home, domain) = world();
-    let gate = &domain.live().gate;
+    let gate = &domain.admission();
     gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(1)) });
     let now = alondra_core::now_millis();
     for id in ["t1", "t2"] {
@@ -805,7 +805,7 @@ fn a_started_node_already_waiting_on_the_user_leaves_its_slot_although_it_was_ad
 #[test]
 fn a_task_cancelled_after_the_gate_let_it_through_is_not_let_through_again_and_leaves_its_slot() {
     let (_home, domain) = world();
-    domain.live().gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(1)) });
+    domain.admission().tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(1)) });
     create(&domain, "t1");
     create(&domain, "t2");
     let now = alondra_core::now_millis();
@@ -855,10 +855,10 @@ fn settings_offer_the_automatic_limit_the_gate_applies_and_the_most_it_takes() {
     let over_4_gb = memory.saturating_sub(4 << 30);
     for (cost, auto) in [(over_4_gb / 2, 2), (128 << 20, NodeLimits::of(cores, memory, 128 << 20).auto)] {
         let (home, domain) = world();
-        domain.live().gate.tune(Tuning { spacing: 0, limit: None });
+        domain.admission().tune(Tuning { spacing: 0, limit: None });
         let now = alondra_core::now_millis();
-        domain.live().machine_watch.measure_nodes(now - MIN, vec![cost; 30]);
-        let pacing = domain.live().gate.live(&domain, now).unwrap();
+        domain.machine_watch().measure_nodes(now - MIN, vec![cost; 30]);
+        let pacing = domain.admission().live(&domain, now).unwrap();
         assert_eq!((pacing.fixed, pacing.auto, pacing.limit, pacing.most), (None, auto, auto, most), "{cost} bytes a node");
 
         let state = domain.state().unwrap();
@@ -877,7 +877,7 @@ fn settings_offer_the_automatic_limit_the_gate_applies_and_the_most_it_takes() {
         assert_eq!(menu.options[0].label, format!("Automatic ({auto}) · now"));
 
         std::fs::write(alondra_core::options::path_in(&home.0), format!("max_working_nodes = {}\n", most + 5)).unwrap();
-        let pacing = domain.live().gate.live(&domain, now).unwrap();
+        let pacing = domain.admission().live(&domain, now).unwrap();
         assert_eq!((pacing.fixed, pacing.limit), (Some(most + 5), most), "a number over the most works as the most");
     }
 }
@@ -885,7 +885,7 @@ fn settings_offer_the_automatic_limit_the_gate_applies_and_the_most_it_takes() {
 #[test]
 fn a_full_disk_neither_breaks_the_gate_nor_fills_the_log() {
     let (home, domain) = world();
-    let gate = &domain.live().gate;
+    let gate = &domain.admission();
     gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
     gate.ignore_mac();
     for id in ["t1", "t2", "t3", "t4"] {
@@ -911,13 +911,13 @@ fn a_full_disk_neither_breaks_the_gate_nor_fills_the_log() {
 #[test]
 fn a_thread_that_panicked_holding_the_gate_does_not_stop_it() {
     let (_home, domain) = world();
-    domain.live().gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
-    domain.live().gate.ignore_mac();
+    domain.admission().tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
+    domain.admission().ignore_mac();
     create(&domain, "t1");
-    domain.live().gate.poison();
+    domain.admission().poison();
     let now = alondra_core::now_millis();
     assert_eq!(ask(&domain, "t1", now), Ok(()));
-    assert_eq!(domain.live().gate.live(&domain, now).unwrap().working, 1);
+    assert_eq!(domain.admission().live(&domain, now).unwrap().working, 1);
 }
 
 #[test]
@@ -925,7 +925,7 @@ fn another_providers_capacity_does_not_admit_a_usage_paused_node() {
     use alondra_core::accounts::{AccountId, AccountKey, AccountState, AccountStatus, Provider};
     use alondra_core::usage::{Share, UsageReading, WindowKind, WindowReading};
     let (_home, domain) = world();
-    domain.live().gate.ignore_mac();
+    domain.admission().ignore_mac();
     create(&domain, "t1");
     start(&domain, "t1", 1_000);
     let status = |provider| AccountStatus { provider, id: AccountId::default_account(), name: "Personal".into(), state: AccountState::SignedIn,
@@ -939,10 +939,10 @@ fn another_providers_capacity_does_not_admit_a_usage_paused_node() {
         WindowReading { kind: WindowKind::Other("codex:account:secondary:10080".into()), used: Share::of(0.2), resets_at: Some(9_000), exhausted: false },
     ]);
     domain.live().usage_pause.resume(2_000);
-    assert!(domain.live().gate.hold_back(&domain, "agent-t1", Reason::Usage, 2_000));
-    assert!(!domain.live().gate.snapshot(&domain, 2_000).unwrap().queue.iter().any(|waiting| waiting.key == Key::Resume("agent-t1".into())),
+    assert!(domain.admission().hold_back(&domain, "agent-t1", Reason::Usage, 2_000));
+    assert!(!domain.admission().snapshot(&domain, 2_000).unwrap().queue.iter().any(|waiting| waiting.key == Key::Resume("agent-t1".into())),
         "global Codex capacity cannot release this Claude account");
-    assert!(domain.live().gate.snapshot(&domain, 9_000).unwrap().queue.iter().any(|waiting| waiting.key == Key::Resume("agent-t1".into())),
+    assert!(domain.admission().snapshot(&domain, 9_000).unwrap().queue.iter().any(|waiting| waiting.key == Key::Resume("agent-t1".into())),
         "its own declared reset admits the same node");
 }
 
@@ -952,7 +952,7 @@ fn another_providers_capacity_does_not_admit_a_usage_paused_node() {
 #[test]
 fn a_resume_the_node_machine_refused_lets_the_queue_go_on_until_its_task_moves() {
     let (_home, domain) = world();
-    let gate = &domain.live().gate;
+    let gate = &domain.admission();
     gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(1)) });
     gate.ignore_mac();
     let base = alondra_core::now_millis();
@@ -983,7 +983,7 @@ fn paused_by_user(domain: &DomainRuntime, id: &str, priority: TaskPriority, at: 
         run(domain, Actor::User { user_id: "u".into() }, Command::SetPriority { task_id: id.into(), priority });
     }
     start(domain, id, at);
-    domain.live().gate.pause_by_user(domain, &format!("agent-{id}"), at).unwrap();
+    domain.admission().pause_by_user(domain, &format!("agent-{id}"), at).unwrap();
     domain.report(Envelope { session_id: format!("agent-{id}"), report: Report::TurnComplete { answer: String::new(), aborted: true } }, at);
 }
 
@@ -999,7 +999,7 @@ fn goes_on(domain: &DomainRuntime, id: &str, now: Millis) {
 }
 
 fn still_paused(domain: &DomainRuntime, id: &str) -> bool {
-    domain.live().gate.paused(domain, &format!("agent-{id}")).is_some()
+    domain.admission().paused(domain, &format!("agent-{id}")).is_some()
 }
 
 /// One look of the gate at `now`, outside an async test.
@@ -1028,7 +1028,7 @@ proptest::proptest! {
         ends in proptest::collection::vec(proptest::prelude::any::<bool>(), 0..64),
     ) {
         let (home, domain) = world();
-        let gate = &domain.live().gate;
+        let gate = &domain.admission();
         gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(limit)) });
         gate.ignore_mac();
         let base = alondra_core::now_millis();
@@ -1051,7 +1051,7 @@ proptest::proptest! {
         while back.len() < ids.len() {
             proptest::prop_assert!(step < 400, "{} of {} came back", back.len(), ids.len());
             let now = resumed_at + step as Millis * SAMPLE;
-            domain.live().machine_watch.measure_disk(crate::disk::Space { total: 500 << 30, free: 100 << 30, purgeable: 0 });
+            domain.machine_watch().measure_disk(crate::disk::Space { total: 500 << 30, free: 100 << 30, purgeable: 0 });
             look(&domain, &home.0, now);
             let gone_on: Vec<&String> = ids.iter().filter(|id| !back.contains(id) && !still_paused(&domain, id)).collect();
             for id in gone_on {
@@ -1075,12 +1075,12 @@ proptest::proptest! {
 fn a_resume_waits_while_the_disk_has_no_room_for_one_more_build() {
     const GB: u64 = 1_000_000_000;
     let (home, domain) = world();
-    let gate = &domain.live().gate;
+    let gate = &domain.admission();
     gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
     gate.ignore_mac();
     let base = alondra_core::now_millis();
     paused_by_user(&domain, "t1", TaskPriority::Normal, base);
-    let watch = &domain.live().machine_watch;
+    let watch = &domain.machine_watch();
     watch.measure_disk(crate::disk::Space { free: 4 * GB, purgeable: 0, total: 500 * GB });
     assert!(gate.resume_now(&domain, "agent-t1", base + MIN));
     look(&domain, &home.0, base + MIN);
@@ -1107,13 +1107,13 @@ fn nodes_the_user_resumed_still_wait_for_a_slot_after_the_daemon_restarts() {
     create(&domain, "t4");
     start(&domain, "t4", base);
     for id in ["t1", "t2", "t3"] {
-        assert!(domain.live().gate.resume_now(&domain, &format!("agent-{id}"), base + MIN));
+        assert!(domain.admission().resume_now(&domain, &format!("agent-{id}"), base + MIN));
     }
     drop(domain);
 
     let domain = crate::wiring::open(&home.0).unwrap();
     healthy(&domain);
-    let gate = &domain.live().gate;
+    let gate = &domain.admission();
     gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(1)) });
     gate.ignore_mac();
     let now = base + 2 * MIN;
@@ -1146,7 +1146,7 @@ fn create_in(domain: &DomainRuntime, id: &str, project: &str) {
 fn disk_sample(domain: &DomainRuntime, usable: u64, now: Millis) {
     crate::machine_watch::pace(domain, &Machine { at: now, memory_total: 16 << 30, memory_available: 12 << 30, memory_free_percent: Some(50), cpus: 11, load: [5.0; 3],
         disk_total: 500 * GB, disk_available: usable, ..Machine::default() });
-    domain.live().machine_watch.measure_disk(crate::disk::Space { free: usable, purgeable: 0, total: 500 * GB });
+    domain.machine_watch().measure_disk(crate::disk::Space { free: usable, purgeable: 0, total: 500 * GB });
 }
 
 fn machine_cards(domain: &DomainRuntime) -> usize {
@@ -1164,15 +1164,15 @@ fn swap_sample_with_total(domain: &DomainRuntime, free: u64, used: u64, total: u
         memory_available: 32 << 30,
         memory_free_percent: Some(29), cpus: 11, load: [5.0; 3], compressor: Some(compressor),
         disk_total: 500 * GB, disk_available: free, ..Machine::default() });
-    domain.live().machine_watch.measure_disk(crate::disk::Space { free, purgeable: 0, total: 500 * GB });
+    domain.machine_watch().measure_disk(crate::disk::Space { free, purgeable: 0, total: 500 * GB });
 }
 
 #[test]
 fn growing_swap_holds_a_resume_in_the_queue_and_a_quiet_minute_releases_it() {
     let (home, domain) = world();
-    let gate = &domain.live().gate;
+    let gate = &domain.admission();
     gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
-    domain.live().machine_watch.seed_peaks("app", &[GB; 3]);
+    domain.machine_watch().seed_peaks("app", &[GB; 3]);
     create_in(&domain, "t1", "app");
     start(&domain, "t1", 1_000);
     gate.pause_by_user(&domain, "agent-t1", 1_000).unwrap();
@@ -1205,7 +1205,7 @@ fn growing_swap_holds_a_resume_in_the_queue_and_a_quiet_minute_releases_it() {
 #[test]
 fn swap_does_not_spend_the_build_reserve_and_its_log_names_the_whole_budget() {
     let (_home, domain) = world();
-    let watch = &domain.live().machine_watch;
+    let watch = &domain.machine_watch();
     watch.seed_peaks("build", &[4 * GB; 3]);
     watch.seed_peaks("next", &[GB; 3]);
     create_in(&domain, "build", "build");
@@ -1231,8 +1231,8 @@ fn swap_does_not_spend_the_build_reserve_and_its_log_names_the_whole_budget() {
 fn stable_and_shrinking_swap_leave_the_disk_gate_open_on_the_same_small_disk() {
     for change in [-10_000_000i64, 0, 10_000_000] {
         let (_home, domain) = world();
-        domain.live().gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
-        domain.live().machine_watch.seed_peaks("app", &[GB; 3]);
+        domain.admission().tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
+        domain.machine_watch().seed_peaks("app", &[GB; 3]);
         create_in(&domain, "next", "app");
         for step in 0..=30 {
             let used = (20 * GB) as i64 + step * change;
@@ -1253,9 +1253,9 @@ fn stable_and_shrinking_swap_leave_the_disk_gate_open_on_the_same_small_disk() {
 fn growing_swap_holds_starts_even_when_the_disk_budget_has_room() {
     for (extra_gb, roomy) in [(0, false), (0, true), (1, false), (1, true)] {
         let (_home, domain) = world();
-        let gate = &domain.live().gate;
+        let gate = &domain.admission();
         gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
-        let watch = &domain.live().machine_watch;
+        let watch = &domain.machine_watch();
         watch.seed_peaks("build", &[2 * GB; 3]);
         watch.seed_peaks("next", &[GB; 3]);
         create_in(&domain, "build", "build");
@@ -1295,10 +1295,10 @@ fn growing_swap_holds_starts_even_when_the_disk_budget_has_room() {
 #[test]
 fn a_start_waits_while_the_nodes_at_work_may_still_take_the_disk_and_goes_once_one_ends() {
     let (_home, domain) = world();
-    let gate = &domain.live().gate;
+    let gate = &domain.admission();
     gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
     gate.ignore_mac();
-    domain.live().machine_watch.seed_peaks("app", &[6 * GB; 3]);
+    domain.machine_watch().seed_peaks("app", &[6 * GB; 3]);
     let base = alondra_core::now_millis();
     disk_sample(&domain, 20 * GB, base);
     for id in ["t1", "t2", "t3"] {
@@ -1343,12 +1343,12 @@ fn a_node_the_disks_floor_held_still_waits_after_a_restart_and_goes_on_once_ther
     let base = alondra_core::now_millis();
     create_in(&domain, "t1", "app");
     start(&domain, "t1", base);
-    assert!(domain.live().gate.hold_back(&domain, "agent-t1", Reason::Disk, base));
+    assert!(domain.admission().hold_back(&domain, "agent-t1", Reason::Disk, base));
     finish(&domain, "t1", base + SAMPLE);
     drop(domain);
 
     let domain = crate::wiring::open(&home.0).unwrap();
-    let gate = &domain.live().gate;
+    let gate = &domain.admission();
     gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
     gate.ignore_mac();
     let now = base + MIN;
@@ -1402,13 +1402,13 @@ proptest::proptest! {
         stays in proptest::collection::vec(proptest::prelude::any::<bool>(), 1..64),
     ) {
         let (_home, domain) = world();
-        let gate = &domain.live().gate;
+        let gate = &domain.admission();
         gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(12)) });
         gate.ignore_mac();
         let projects = ["app", "web", "docs"];
         for (index, project) in projects.iter().enumerate() {
             let truest = builds.iter().filter(|(of, _, _)| *of == index).map(|(_, peak, _)| *peak).max().unwrap_or(1);
-            domain.live().machine_watch.seed_peaks(project, &[(truest + extra[index]) * GB; 3]);
+            domain.machine_watch().seed_peaks(project, &[(truest + extra[index]) * GB; 3]);
         }
         let ids: Vec<String> = (0..builds.len()).map(|index| format!("t{index}")).collect();
         for (id, (project, _, _)) in ids.iter().zip(&builds) {
@@ -1464,10 +1464,10 @@ proptest::proptest! {
 fn eighteen_paused_and_forty_four_waiting_with_14_5_gb_free_all_get_to_work() {
     const FREE: u64 = 14_500_000_000;
     let (home, domain) = world();
-    let gate = &domain.live().gate;
+    let gate = &domain.admission();
     gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(8)) });
     gate.ignore_mac();
-    let watch = &domain.live().machine_watch;
+    let watch = &domain.machine_watch();
     watch.seed_peaks("app", &[GB; 3]);
     let base = alondra_core::now_millis();
     disk_sample(&domain, FREE, base);
@@ -1532,10 +1532,10 @@ fn eighteen_paused_and_forty_four_waiting_with_14_5_gb_free_all_get_to_work() {
 #[test]
 fn with_no_other_node_at_work_the_next_one_comes_back_whatever_its_estimate() {
     let (home, domain) = world();
-    let gate = &domain.live().gate;
+    let gate = &domain.admission();
     gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(8)) });
     gate.ignore_mac();
-    domain.live().machine_watch.seed_peaks("app", &[7_850_000_000; 3]);
+    domain.machine_watch().seed_peaks("app", &[7_850_000_000; 3]);
     let base = alondra_core::now_millis();
     create_in(&domain, "t1", "app");
     start(&domain, "t1", base);
@@ -1555,7 +1555,7 @@ fn with_no_other_node_at_work_the_next_one_comes_back_whatever_its_estimate() {
 #[test]
 fn the_gate_names_as_many_tasks_as_it_counts() {
     let (_home, domain) = world();
-    let gate = &domain.live().gate;
+    let gate = &domain.admission();
     gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
     let now = alondra_core::now_millis();
     for id in ["t1", "t2", "t3", "t4"] {

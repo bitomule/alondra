@@ -3,6 +3,7 @@
 //! Action IDs deliberately carry the subject revision. The renderer keeps no action table;
 //! every submission is checked against the current domain snapshot and then committed through
 //! the same command path as the resource API.
+use alondra_engine_admission::AdmissionOf as _;
 
 use alondra_daemon_engine::sdk_owner::SdkOwners as _;
 use alondra_daemon_engine::live::LiveOf as _;
@@ -682,7 +683,7 @@ async fn execute_external(
         Verb::Pause => {
             let now = alondra_core::now_millis();
             let paused = if state.agents.contains_key(&AgentId(action.subject.clone())) {
-                domain.live().gate.pause_by_user(domain, &action.subject, now)
+                domain.admission().pause_by_user(domain, &action.subject, now)
             } else {
                 crate::admission::hold_queued(domain, &TaskId(action.subject.clone()), now)
             };
@@ -693,7 +694,7 @@ async fn execute_external(
         }
         Verb::Resume => {
             let now = alondra_core::now_millis();
-            if domain.live().gate.resume_now(domain, &action.subject, now) {
+            if domain.admission().resume_now(domain, &action.subject, now) {
                 return Ok(to_applied(200, json!({"resumed": action.subject})));
             }
             match crate::admission::release_queued(domain, &TaskId(action.subject.clone())) {
@@ -2422,7 +2423,7 @@ for line in sys.stdin:
         let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetLimit, "limit", "4", "es"), None, || Ok(())).await.unwrap();
         assert_eq!(reply["outcome"], "applied", "{reply}");
         assert_eq!(fs::read_to_string(&options).unwrap(), "# mine\nmax_working_nodes = 4\n\n[defaults]\neffort = \"light\"\n");
-        assert_eq!(domain.live().gate.live(&domain, alondra_core::now_millis()).unwrap().fixed, Some(4));
+        assert_eq!(domain.admission().live(&domain, alondra_core::now_millis()).unwrap().fixed, Some(4));
         let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetLimit, "limit", "auto", "en"), None, || Ok(())).await.unwrap();
         assert_eq!(reply["outcome"], "applied", "{reply}");
         assert!(fs::read_to_string(&options).unwrap().contains("max_working_nodes = \"auto\""));

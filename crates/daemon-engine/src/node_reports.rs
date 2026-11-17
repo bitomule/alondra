@@ -155,7 +155,7 @@ pub struct Reported {
 
 const LABEL_LIMIT: usize = 80;
 
-pub(crate) fn short_label(text: &str) -> String {
+pub fn short_label(text: &str) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() <= LABEL_LIMIT {
         return flat;

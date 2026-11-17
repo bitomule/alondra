@@ -37,7 +37,7 @@ struct Rest {
 }
 
 #[derive(Default)]
-pub(crate) struct Rests {
+pub struct Rests {
     resting: BTreeMap<TaskId, Rest>,
 }
 
@@ -76,7 +76,7 @@ fn resting(domain: &DomainRuntime, state: &DomainState) -> Vec<(TaskId, u64)> {
 /// Asks to close what rested long enough, and says when to look again. A closed node with work
 /// comes back through the gate: its turn waits for a slot (`Admission::may_take_turn`), and the gate
 /// takes the task over when it gives one.
-pub(crate) fn pass(domain: &DomainRuntime, rests: &mut Rests, now: Millis, timing: &Timing) -> Option<Millis> {
+pub fn pass(domain: &DomainRuntime, rests: &mut Rests, now: Millis, timing: &Timing) -> Option<Millis> {
     let read = domain.read();
     let state = read.state();
     let (due, next) = rests.due(resting(domain, state), now, timing);

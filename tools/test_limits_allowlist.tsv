@@ -1,4 +1,5 @@
 # Tests that keep a generous limit and run in every validation: target, a tab, and why.
 //apple/Testing/TriageTouch:TriageTouchUITests	Creates and boots a simulator of its own every run, about 140 seconds, because the shared pool cannot install the UI test runner with Xcode 27.
-//crates/daemon-engine:daemon_engine_integration_test	613 tests that start real hosts and binaries, about 200 seconds under load; they move into the crates they test as daemon-engine is split.
+//crates/daemon-engine:daemon_engine_integration_test	434 tests that start real hosts and binaries, about 200 seconds under load; they move into the crates they test as daemon-engine is split.
+//crates/engine-admission:engine_admission_test	202 tests, some of them through a real Agent SDK host or a fake Claude or Codex, about 75 seconds; the admission crate keeps one test target.
 //crates/engine-orchestrator:engine_orchestrator_test	151 tests, most of them through a real Agent SDK host or a fake Claude or Codex, about 60 seconds; the orchestrator crate keeps one test target.

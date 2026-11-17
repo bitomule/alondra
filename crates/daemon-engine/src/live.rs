@@ -65,9 +65,7 @@ pub struct Live {
     /// it just wrote, whose first run waits while macOS checks the new executable.
     pub(crate) unbounded_claude_status: std::sync::atomic::AtomicBool,
     pub(crate) measured: crate::usage_probe::Measured,
-    pub(crate) api_watch: crate::api_failures::ApiWatch,
-    pub machine_watch: crate::machine_watch::MachineWatch,
-    pub gate: crate::admission::Admission,
+    pub api_watch: crate::api_failures::ApiWatch,
     /// The one clock over what live tasks are owed. A holder that panics leaves it whole: each pass
     /// replaces whole entries.
     pub(crate) obligations: Mutex<crate::obligation_watch::Watch>,
@@ -106,8 +104,6 @@ impl Live {
             closed_tasks: Mutex::new(closed_tasks),
             closed_tasks_file: Some(closed_tasks_file),
             usage_pause: crate::usage_pause::UsagePause::default(),
-            machine_watch: crate::machine_watch::MachineWatch::persisted_in(home),
-            gate: crate::admission::Admission::persisted_in(home),
             outputs: Default::default(),
             closed: Mutex::new(closed),
             closed_file: Some(file),
@@ -190,15 +186,15 @@ impl Live {
 
     /// False when something is watching the session's connection back already.
     /// Takes the right to launch a node for a task; false while another launch of it runs.
-    pub(crate) fn begin_launch(&self, task_id: &str) -> bool {
+    pub fn begin_launch(&self, task_id: &str) -> bool {
         self.launching.send_if_modified(|launching| launching.insert(task_id.to_owned()))
     }
 
-    pub(crate) fn is_launching(&self, task_id: &str) -> bool {
+    pub fn is_launching(&self, task_id: &str) -> bool {
         self.launching.borrow().contains(task_id)
     }
 
-    pub(crate) fn end_launch(&self, task_id: &str) {
+    pub fn end_launch(&self, task_id: &str) {
         self.launching.send_if_modified(|launching| launching.remove(task_id));
     }
 

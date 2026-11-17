@@ -19,6 +19,7 @@ CATALOG_FRAGMENTS = [
     ("daemon_engine_model", "//crates/daemon-engine-model:report_sources", "--log --words"),
     ("daemon_engine_store", "//crates/daemon-engine-store:report_sources", "--log --words"),
     ("daemon_engine_machine", "//crates/daemon-engine-machine:report_sources", "--log --words"),
+    ("engine_admission", "//crates/engine-admission:report_sources", "--log --words"),
     ("engine_github", "//crates/engine-github:report_sources", "--log --words"),
     ("engine_kernel", "//crates/engine-kernel:report_sources", "--log --words"),
     ("engine_orchestrator", "//crates/engine-orchestrator:report_sources", "--log --words"),

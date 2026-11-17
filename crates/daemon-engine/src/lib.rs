@@ -1,6 +1,6 @@
-//! The daemon's engine: the domain runtime and its store, the nodes and their Agent SDK hosts,
-//! admission and the transports, everything below the routes and views that
-//! `alondrad` serves.
+//! The daemon's engine: the domain runtime and its store, the nodes and their Agent SDK hosts and
+//! the transports, everything below the admission gate and the routes and views that `alondrad`
+//! serves. It asks the gate through the kernel's port (`gate`).
 #![cfg_attr(all(feature = "test-hooks", not(test)), allow(dead_code, unused_imports))]
 
 #[cfg(any(test, feature = "test-hooks"))]
@@ -61,7 +61,6 @@ pub use alondra_engine_github::github_world;
 
 pub mod account_move;
 pub mod accounts;
-pub mod admission;
 pub mod allow_always;
 pub mod api_failures;
 pub mod auto_launch;
@@ -78,6 +77,7 @@ pub mod domain_orchestrator_tools;
 pub mod domain_schedule_api;
 pub mod domain_schedule_runner;
 pub mod domain_transport;
+pub mod gate;
 pub mod home_renames;
 pub mod idle_compaction;
 pub mod obligation_watch;
@@ -89,7 +89,6 @@ pub mod local_actions;
 pub mod local_network_card;
 pub mod machine;
 pub use alondra_daemon_engine_machine::machine_state;
-pub mod machine_watch;
 #[cfg(feature = "test-hooks")]
 pub mod machine_hooks;
 pub mod mcp_probe;
@@ -103,7 +102,6 @@ pub mod node_push;
 pub mod node_reports;
 pub mod node_work;
 pub use alondra_daemon_engine_model::options;
-pub mod pauses;
 pub mod plan_reviews;
 pub mod provider_transition;
 pub use alondra_daemon_engine_model::reply;

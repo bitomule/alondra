@@ -6,6 +6,7 @@
 //! again by itself and then put in front of the user (`start_failures`). A task whose node Alondra
 //! closed for a reason of its own (a replacement that stopped short, a node closed while the user
 //! asked for changes) is relaunched the same way, in the folder that node worked in.
+use crate::gate::GateOf as _;
 use crate::live::LiveOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
@@ -28,7 +29,7 @@ pub async fn run(domain: Arc<DomainRuntime>, home: PathBuf) {
         log!("could not look at the automatic launches a restart interrupted: {error:#}");
     }
     let mut changed = domain.subscribe();
-    let mut turn = domain.live().gate.subscribe();
+    let mut turn = domain.gate().subscribe();
     let mut backoff = FIRST_BACKOFF;
     loop {
         let pause = match pass(&domain, &home).await {
@@ -95,7 +96,7 @@ fn cancel_planless(domain: &DomainRuntime, state: &DomainState) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn candidate(state: &DomainState, task: &Task) -> bool {
+pub fn candidate(state: &DomainState, task: &Task) -> bool {
     task.state == TaskState::NotStarted
         && !task.started
         && task.agent_id.is_none()
@@ -121,7 +122,7 @@ pub async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
             Some(Relaunch::ByItself) => true,
             None => false,
         };
-        if crate::admission::held_by_user(domain, &task.id) || (!relaunching && domain.store.lock_or_exit("the domain store").task_was_launched(&task.id)?) {
+        if domain.gate().held_by_user(&task.id) || (!relaunching && domain.store.lock_or_exit("the domain store").task_was_launched(&task.id)?) {
             continue;
         }
         let (row, plan) = {
@@ -153,9 +154,9 @@ pub async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
             block(AutoLaunchReason::UsageExhausted, None)?;
             continue;
         }
-        let waiting = crate::admission::Waiting { key: crate::admission::Key::Task(task.id.clone()), priority: task.priority, resuming: false,
+        let waiting = crate::ports::admission::Waiting { key: crate::ports::admission::Key::Task(task.id.clone()), priority: task.priority, resuming: false,
             since: planned.get(&task.id).copied().unwrap_or(now) };
-        if domain.live().gate.ask(domain, waiting, now).is_err() {
+        if domain.gate().ask(waiting, now).is_err() {
             continue;
         }
         if !domain.store.lock_or_exit("the domain store").claim_auto_launch(&task.id, now, retry)? {
@@ -184,7 +185,7 @@ pub async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
 
 /// What an automatic launch leaves behind: a refusal that clears by itself waits for a later pass,
 /// a task that ended while it started just leaves, and any other refusal is a failed start.
-fn settle(domain: &DomainRuntime, task: &TaskId, cwd: Option<&str>, launched: Result<serde_json::Value, DomainError>, now: i64) -> Result<()> {
+pub fn settle(domain: &DomainRuntime, task: &TaskId, cwd: Option<&str>, launched: Result<serde_json::Value, DomainError>, now: i64) -> Result<()> {
     let block = |reason: AutoLaunchReason| -> Result<()> {
         domain.store.lock_or_exit("the domain store").set_auto_launch(task, AutoLaunchState::Blocked, Some(reason), None, now)
     };
@@ -194,7 +195,7 @@ fn settle(domain: &DomainRuntime, task: &TaskId, cwd: Option<&str>, launched: Re
         Err(error) => match error.code.as_str() {
             "usage_exhausted" => block(AutoLaunchReason::UsageExhausted)?,
             "account_unavailable" | "account_check_in_progress" => {
-                domain.live().gate.not_started(&crate::admission::Key::Task(task.clone()));
+                domain.gate().not_started(&crate::ports::admission::Key::Task(task.clone()));
                 domain.store.lock_or_exit("the domain store").forget_auto_launch(task)?;
             }
             "worktrees_unavailable" | "disk_low" | "plan_review_pending" => domain.store.lock_or_exit("the domain store").forget_auto_launch(task)?,
@@ -208,7 +209,7 @@ fn settle(domain: &DomainRuntime, task: &TaskId, cwd: Option<&str>, launched: Re
                 }
             }
             code => {
-                domain.live().gate.not_started(&crate::admission::Key::Task(task.clone()));
+                domain.gate().not_started(&crate::ports::admission::Key::Task(task.clone()));
                 if let Some(problem) = crate::start_failures::problem_of(code, &error.message, cwd) {
                     crate::start_failures::failed(domain, task, problem, now)?;
                 }

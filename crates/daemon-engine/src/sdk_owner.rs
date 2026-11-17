@@ -2,6 +2,7 @@
 //! `AdmitExecution`, launches the host, sends each dispatch the store issued for its task,
 //! stages what the host observes and acknowledges it only once readers see the commit.
 //! Every step commits through `DomainRuntime::own`; nothing here writes the store itself.
+use crate::gate::GateOf as _;
 use crate::live::LiveOf as _;
 use crate::idle_compaction::ContextsOf as _;
 use crate::account_move::MovesOf as _;
@@ -61,7 +62,7 @@ fn pause_before_relaunch(earlier: usize) -> Duration {
 }
 
 /// What an SDK execution's binding lets the domain ask of it.
-fn capabilities() -> BTreeSet<Capability> {
+pub fn capabilities() -> BTreeSet<Capability> {
     BTreeSet::from([
         Capability::OfferInput,
         Capability::Interrupt,
@@ -212,7 +213,7 @@ impl Drop for InHand {
 }
 
 pub struct Driver {
-    in_hand: Option<InHand>,
+    pub in_hand: Option<InHand>,
     domain: Arc<DomainRuntime>,
     pub worker: Worker,
     scope: AuthorityScope,
@@ -228,7 +229,7 @@ pub struct Driver {
     /// Controls the host took whose answer is an event of its own, until that event is staged.
     results: Vec<alondra_foundation::CommandId>,
     /// The host closed its end while this daemon ran: the fact that ends this driver.
-    host_closed: bool,
+    pub host_closed: bool,
     /// A step of this owner failed: its host is stopped and replaced like one that closed.
     owner_failed: bool,
     native_account_refusal:Option<String>,
@@ -243,7 +244,7 @@ pub struct Driver {
     moves_to_this_release: bool,
     /// The node rests with nothing in its host: the host closes and no other takes its place until
     /// the task has something to do.
-    releases: bool,
+    pub releases: bool,
     /// This host resumes a released session and has not been handed its work yet: since when.
     resuming_since: Option<Instant>,
     /// This host resumes a released session that has not started a turn: what it was handed may
@@ -271,7 +272,7 @@ pub struct Driver {
     /// Inputs that are themselves the resend of one this host refused before offering it.
     refused: BTreeSet<InputId>,
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) refuse_offers: usize,
+    pub refuse_offers: usize,
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fail_next_step: bool,
     #[cfg(any(test, feature = "test-hooks"))]
@@ -308,7 +309,7 @@ pub(crate) fn original_directory(domain: &DomainRuntime, task: &TaskId) -> Resul
         .map_err(|error| Failed::new(format!("Reading the original native worktree: {error:#}")))
 }
 
-pub(crate) struct Reopening {
+pub struct Reopening {
     task: TaskId,
     account: AccountKey,
     directory: PathBuf,
@@ -341,7 +342,7 @@ pub(crate) fn prepare_reopening(
     Ok(Reopening { task: task.clone(), account: AccountKey::new(provider, account.clone()), directory: directory.to_path_buf(), input, recovery })
 }
 
-pub(crate) fn require_recoverable_session(domain: &DomainRuntime, backend: &SdkBackend, task: &TaskId, provider: Provider, account: &alondra_core::accounts::AccountId, directory: &str) -> Result<(), Failed> {
+pub fn require_recoverable_session(domain: &DomainRuntime, backend: &SdkBackend, task: &TaskId, provider: Provider, account: &alondra_core::accounts::AccountId, directory: &str) -> Result<(), Failed> {
     native_recovery(domain, backend, task, provider, account, directory).map(drop)
 }
 
@@ -435,7 +436,7 @@ fn require_native_thread_mapping(backend:&SdkBackend,session:&str,account:&alond
 }
 
 /// The existing Claude session an SDK execution continues instead of starting one.
-pub(crate) enum Continuation {
+pub enum Continuation {
     /// A `claude --bg` node's: its id is the session.
     Node(AgentId),
     Native { session: String },
@@ -465,7 +466,7 @@ pub(crate) fn continue_session(domain: Arc<DomainRuntime>, backend: &SdkBackend,
     start_bound(domain, backend, launch, offered, Some(continuation), None)
 }
 
-fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch, capabilities: BTreeSet<Capability>, continuation: Option<Continuation>, mut reopening: Option<Reopening>) -> Result<Driver, Failed> {
+pub fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Launch, capabilities: BTreeSet<Capability>, continuation: Option<Continuation>, mut reopening: Option<Reopening>) -> Result<Driver, Failed> {
     let _in_hand = InHand::new(&domain, &launch.task);
     crate::accounts::require_initial_check(&domain).map_err(|error| Failed::new(error.message))?;
     let provider = launch.options.provider;
@@ -1065,7 +1066,7 @@ fn not_taken(domain: &DomainRuntime, task: &TaskId, failed: Failed) {
 
 /// The machine watch measured space on the disk: each execution whose takeover found it full is
 /// taken over again, unless it ended or another owner took it meanwhile.
-pub(crate) fn retake_waiting_for_space(domain: &DomainRuntime) {
+pub fn retake_waiting_for_space(domain: &DomainRuntime) {
     let waiting = std::mem::take(&mut *domain.sdk_owners().waiting_for_space.lock_or_recover("the tasks waiting for space"));
     if waiting.is_empty() {
         return;
@@ -1104,7 +1105,7 @@ fn close_host_lost_card(domain: &DomainRuntime, task: &TaskId) {
 /// paused gets no card: its resume takes it over (`take_if_unowned`), and puts the card if that
 /// fails too. The user hears of an outage once: until a takeover works, another failure leaves its
 /// card without a push.
-pub(crate) fn lost(domain: &DomainRuntime, task: &TaskId, why: &str) {
+pub fn lost(domain: &DomainRuntime, task: &TaskId, why: &str) {
     log!("the SDK execution of {task} was not taken over: {why}");
     end_dead_host_claims(domain, task);
     let Ok(state) = domain.state() else { return };
@@ -1161,7 +1162,7 @@ fn node_paused(state: &DomainState, task: &TaskId) -> bool {
 /// The gate ended the pause of a task whose execution no owner of this daemon holds, as one whose
 /// host was lost while it was paused: a host that resumes the same session takes it over and is
 /// handed what the task goes on with.
-pub(crate) fn take_if_unowned(domain: &DomainRuntime, task: &TaskId) {
+pub fn take_if_unowned(domain: &DomainRuntime, task: &TaskId) {
     let Ok(state) = domain.state() else { return };
     if to_take(domain, &state, task) {
         log!("{task} was resumed with no SDK host of its own: one that resumes its session takes it over");
@@ -1179,7 +1180,7 @@ const UNOWNED_TAKE_EVERY: alondra_core::Millis = 60_000;
 /// one held by a pause waits for it, and is told to go on when the pause ends. A task the user
 /// holds on a pause, as when its host was lost, waits for their answer, and one a pause holds
 /// after it was taken over is taken over again when that pause ends.
-pub(crate) fn take_working_unowned(domain: &DomainRuntime, state: &DomainState, now: alondra_core::Millis) {
+pub fn take_working_unowned(domain: &DomainRuntime, state: &DomainState, now: alondra_core::Millis) {
     let working: Vec<(TaskId, u64)> = reads_as_working(state).into_iter()
         .filter(|task| to_take(domain, state, task))
         .filter_map(|task| Some((task.clone(), state.lifecycle_of(&task).ok()?.revision())))
@@ -1194,7 +1195,7 @@ pub(crate) fn take_working_unowned(domain: &DomainRuntime, state: &DomainState, 
 /// Every host this daemon owns whose node Alondra already recorded as closed or gone is closed:
 /// a closed task never keeps a host, whatever started it after its close. A node the user kept is
 /// theirs and stays.
-pub(crate) fn close_hosts_of_ended_nodes(domain: &DomainRuntime, state: &DomainState) {
+pub fn close_hosts_of_ended_nodes(domain: &DomainRuntime, state: &DomainState) {
     for (task, agent) in ended_nodes_with_hosts(domain, state) {
         let Some((_, runtime)) = domain.sdk() else { return };
         let mut retakes = domain.sdk_owners().retakes.lock_or_recover("the retakes");
@@ -1252,7 +1253,7 @@ fn adopted_without_process(group: Option<i32>) -> std::io::Result<bool> {
 thread_local! {
     /// The next host this thread adopts reads as having no process, as a host whose process died
     /// while its endpoint still answered.
-    pub(crate) static ADOPTED_PROCESS_GONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    pub static ADOPTED_PROCESS_GONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The tasks of `working` to take over now: each at most every `UNOWNED_TAKE_EVERY`, and never
@@ -1281,7 +1282,7 @@ pub(crate) fn wake_released(domain: &DomainRuntime, task: &TaskId) {
 
 /// The user chose «Try again» on the card of a task whose execution was lost: it is taken over
 /// again, on a thread of its own, as at the daemon's start; another failure puts a new card.
-pub(crate) fn retake(domain:&DomainRuntime,task:TaskId){retake_with_policy(domain,task,false)}
+pub fn retake(domain:&DomainRuntime,task:TaskId){retake_with_policy(domain,task,false)}
 pub(crate) fn retake_manually(domain:&DomainRuntime,task:TaskId){retake_with_policy(domain,task,true)}
 fn retake_with_policy(domain: &DomainRuntime, task: TaskId,explicit_account_retry:bool) {
     if crate::provider_transition::holds_execution(domain,&task){return}
@@ -1380,7 +1381,7 @@ fn take_again(runtime: &Arc<DomainRuntime>, backend: &SdkBackend, task: &TaskId,
 /// and puts in its place a host whose Claude opens only on its next input, which the pause holds:
 /// with no Claude running nothing wakes a turn, and the end of the host settles what the task's
 /// lifecycle waited for. A task an owner of this daemon does not hold has nothing to stop.
-pub(crate) fn halt(domain: &DomainRuntime, task: TaskId, agent: AgentId) {
+pub fn halt(domain: &DomainRuntime, task: TaskId, agent: AgentId) {
     if !domain.owns_sdk_host(&agent) || crate::provider_transition::holds_execution(domain, &task) || crate::account_move::holds_execution(domain, &task) {
         return;
     }
@@ -1411,7 +1412,7 @@ pub(crate) fn being_retaken(domain: &DomainRuntime, task: &TaskId) -> bool {
 /// takeover or retake under way, or move to another account holds its execution.
 fn to_take(domain: &DomainRuntime, state: &DomainState, task: &TaskId) -> bool {
     unowned(domain, state, task) && state.lifecycle_of(task).ok().is_none_or(|lifecycle| !lifecycle.host_released()
-        || !lifecycle.pending_inputs().is_empty() && !domain.live().gate.waits_for_slot(domain, state, task))
+        || !lifecycle.pending_inputs().is_empty() && !domain.gate().waits_for_slot(state, task))
 }
 
 fn unowned(domain: &DomainRuntime, state: &DomainState, task: &TaskId) -> bool {
@@ -1586,7 +1587,7 @@ impl Driver {
 
     /// The driver no longer holds its execution, as one whose owner is gone though its value lives.
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn let_go(&mut self) {
+    pub fn let_go(&mut self) {
         self.in_hand = None;
     }
 
@@ -1900,7 +1901,7 @@ impl Driver {
         Ok(())
     }
 
-    fn paused(&self) -> bool {
+    pub fn paused(&self) -> bool {
         self.domain.read().state().node_pause(&self.agent).is_some_and(|pause| !pause.released)
     }
 
@@ -1912,7 +1913,7 @@ impl Driver {
             let state = read.state();
             state.turn_passes_gate(&self.task) && state.lifecycle_of(&self.task).is_ok_and(|lifecycle| lifecycle.input_starts_turn())
         };
-        !starts || self.domain.live().gate.may_take_turn(&self.domain, &self.task, alondra_core::now_millis())
+        !starts || self.domain.gate().may_take_turn(&self.task, alondra_core::now_millis())
     }
 
     /// The user's answer to a decision lets a turn go on that held no slot while it waited on them.
@@ -1923,7 +1924,7 @@ impl Driver {
             let state = read.state();
             state.turn_passes_gate(&self.task) && state.lifecycle_of(&self.task).is_ok_and(|lifecycle| lifecycle.answer_goes_on())
         };
-        !goes_on || self.domain.live().gate.may_take_turn(&self.domain, &self.task, alondra_core::now_millis())
+        !goes_on || self.domain.gate().may_take_turn(&self.task, alondra_core::now_millis())
     }
 
     /// Whether the task's lifecycle waits for the host: an input it was handed and has not taken
@@ -1983,7 +1984,7 @@ impl Driver {
 
     /// `idle_release` asked to close this host. What the host said last can move the task on, so
     /// all of it is read first: `false` until nothing is left to read and the answer is known.
-    fn settle_release(&mut self) -> Result<bool, Failed> {
+    pub fn settle_release(&mut self) -> Result<bool, Failed> {
         self.sealed();
         if self.worker.readable(Duration::ZERO).unwrap_or(true) {
             return self.observe().map(|_| false);
@@ -1996,7 +1997,7 @@ impl Driver {
 
     /// Ends the host and every process under it, as a pause does, and records that the session
     /// waits with no host. Refused because the task moved on meanwhile, the caller replaces it.
-    fn release_host(&mut self) -> Result<(), Failed> {
+    pub fn release_host(&mut self) -> Result<(), Failed> {
         let tree = self.worker.host_group().map_or(Ok(vec![]), alondra_process_group::tree)
             .map_err(|error| Failed::new(format!("listing the processes of the host: {error}")))?;
         mark_stopped_by_alondra(self.worker.state_directory());
@@ -2168,7 +2169,7 @@ impl Driver {
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn waits_for_host(&mut self) -> bool {
+    pub fn waits_for_host(&mut self) -> bool {
         self.expects_host().unwrap()
     }
 
@@ -2211,7 +2212,7 @@ impl Driver {
 
 impl Drop for Driver {
     fn drop(&mut self) {
-        self.domain.live().gate.owner_ended(&self.task);
+        self.domain.gate().owner_ended(&self.task);
         if !self.releases {
             self.domain.contexts().forget(&self.task);
         }
@@ -2514,7 +2515,7 @@ impl Owner {
 
     /// Stops the host as `close` does and ends every process under it. Each command Claude runs
     /// has a group of its own, so the end of the host's group leaves those running.
-    pub(crate) fn halt(&mut self) -> Result<(), Failed> {
+    pub fn halt(&mut self) -> Result<(), Failed> {
         let tree = self.host_group().map_or(Ok(vec![]), alondra_process_group::tree);
         let closed = self.close();
         let ended = tree.and_then(|tree| alondra_process_group::end_tree(&tree, HALT_GRACE));
@@ -2560,11 +2561,11 @@ pub struct Owners {
     /// The executions being taken over again, each with its task, while that runs.
     /// A holder that panics leaves it whole, so it is recovered: a retain and then one push of a
     /// thread already spawned.
-    pub(crate) retakes: Mutex<Vec<(TaskId, std::thread::JoinHandle<()>)>>,
+    pub retakes: Mutex<Vec<(TaskId, std::thread::JoinHandle<()>)>>,
     /// The tasks whose SDK execution is in hand, with how many hold it: a launch or a takeover
     /// under way, or the driver of its host. Nothing takes over an execution in hand.
     /// A holder that panics leaves it whole, so it is recovered: one count up or down.
-    pub(crate) in_hand: Mutex<BTreeMap<TaskId, usize>>,
+    pub in_hand: Mutex<BTreeMap<TaskId, usize>>,
     /// The tasks whose execution a takeover is taking now: another takeover of the same task waits
     /// for it on `takeover_done`, so two never reserve an owner and start a host at once.
     /// A holder that panics leaves it whole, so it is recovered: one insert or one remove.
@@ -2573,14 +2574,14 @@ pub struct Owners {
     /// The executions whose takeover found the disk full: taken over again once the machine watch
     /// measures space, never given up for it.
     /// A holder that panics leaves it whole, so it is recovered: one insert or one take.
-    pub(crate) waiting_for_space: Mutex<BTreeSet<TaskId>>,
+    pub waiting_for_space: Mutex<BTreeSet<TaskId>>,
     /// The tasks whose lost host the user already heard of, until a takeover works again.
     pub(crate) host_losses_told: Mutex<BTreeSet<TaskId>>,
     /// When the gate last took over each task it found working with no owner of this daemon.
-    pub(crate) unowned_takes: Mutex<BTreeMap<TaskId, (alondra_core::Millis, u64)>>,
+    pub unowned_takes: Mutex<BTreeMap<TaskId, (alondra_core::Millis, u64)>>,
     /// The tasks whose session took no turn on the input offered again: their owner puts a host
     /// that resumes the same session in place of its own, and the input waits for a slot.
-    pub(crate) requeues: Mutex<BTreeSet<TaskId>>,
+    pub requeues: Mutex<BTreeSet<TaskId>>,
     #[cfg(any(test, feature = "test-hooks"))]
     after_owner_reserved: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     #[cfg(any(test, feature = "test-hooks"))]
@@ -2589,7 +2590,7 @@ pub struct Owners {
     owner_failures: Mutex<Option<Box<dyn Fn(String) + Send>>>,
     /// The nodes whose driver a test steps by hand, with no owner thread: they count as owned.
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) driven_by_hand: Mutex<BTreeSet<AgentId>>,
+    pub driven_by_hand: Mutex<BTreeSet<AgentId>>,
 }
 
 crate::extension!(Owners);

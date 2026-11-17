@@ -1,6 +1,6 @@
 # Admission of agents
 
-The gate (`crates/daemon-engine/src/admission.rs`) decides when a waiting task's node starts or a
+The gate (`crates/engine-admission/src/admission.rs`) decides when a waiting task's node starts or a
 paused one comes back. It measures the system's available memory and swap, and the memory of
 Alondra's nodes. Other programs affect the system totals; the daemon does not classify them.
 

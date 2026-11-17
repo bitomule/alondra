@@ -19,6 +19,7 @@
 //! stream says it with a `rate_limit_event` whose `rate_limit_info.status` is `rejected` and
 //! whose `resetsAt` is Unix seconds, and with an assistant message whose `error` is `rate_limit`
 //! (code.claude.com/docs/en/agent-sdk/python, RateLimitEvent).
+use crate::gate::GateOf as _;
 use crate::live::LiveOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
@@ -90,7 +91,7 @@ impl UsagePause {
         self.record.lock_or_recover("the usage pause").exhausted.clone()
     }
 
-    pub(crate) fn is_active(&self) -> bool {
+    pub fn is_active(&self) -> bool {
         self.current().is_some()
     }
 
@@ -471,7 +472,7 @@ fn wake_legacy_nodes(domain: &crate::domain_runtime::DomainRuntime, require_capa
         if !legacy_wake_ready(&state, &alondra_domain_rules::AgentId(node.session_id.clone()), now, require_capacity) {
             continue;
         }
-        if !domain.live().gate.hold_back(domain, &node.session_id, crate::pauses::Reason::Usage, now) {
+        if !domain.gate().hold_back(&node.session_id, crate::ports::admission::Reason::Usage, now) {
             let _ = crate::sdk_handover::tell(domain, &node.session_id, crate::node_push::ALONDRA, RESUME_MESSAGE, true);
         }
     }
@@ -493,7 +494,7 @@ fn legacy_wake_ready(state: &alondra_domain_rules::DomainState, agent: &alondra_
     account_retry_ready(state, &key, now, now, require_capacity)
 }
 
-pub(crate) fn task_usage_ready(state: &alondra_domain_rules::DomainState, task: &alondra_domain_rules::TaskId, since: Millis, now: Millis) -> bool {
+pub fn task_usage_ready(state: &alondra_domain_rules::DomainState, task: &alondra_domain_rules::TaskId, since: Millis, now: Millis) -> bool {
     state.tasks.get(task).is_some_and(|task| account_retry_ready(state, &task.account_key(), since, now, true))
 }
 

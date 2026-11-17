@@ -6,6 +6,7 @@ use std::fs;
 
 #[test]
 fn preflight_reports_a_rejected_journal_event_without_changing_the_home() {
+    super::wired();
     let fixture = Fixture::new();
     let path = fixture.0.join("domain.db");
     let mut store = DomainStore::open(&path).unwrap();

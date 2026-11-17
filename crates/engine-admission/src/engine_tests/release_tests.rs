@@ -1,18 +1,19 @@
 //! A node that rests holds no process, its session goes on when its task has something to do, and a
 //! node with anything of the task in its host keeps it.
-use crate::sdk_owner::SdkOwners as _;
-use crate::live::LiveOf as _;
-use crate::idle_compaction::ContextsOf as _;
-use super::codex_tests::{claude_ready, configured, git, launch, request_move, resumed_threads, transcript, until_moved};
 use super::*;
-use crate::idle_release::{Rests, Timing, pass};
+use super::sdk_owner_tests::node_with_a_background_group;
+use alondra_daemon_engine::idle_compaction::ContextsOf as _;
+use alondra_daemon_engine::idle_release::{Rests, Timing, pass};
+use alondra_daemon_engine::sdk_owner::*;
+use alondra_daemon_engine::sdk_owner::tests::*;
+use alondra_daemon_engine::sdk_owner::tests::codex_tests::{claude_ready, configured, git, launch, request_move, resumed_threads, transcript, until_moved};
 
 const WAIT: Timing = Timing { wait: 1_000 };
 
 fn enable(slice: &Slice) {
     slice.domain.enable_sdk(slice.backend.clone());
-    slice.domain.live().gate.ignore_mac();
-    slice.domain.live().gate.tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(6)) });
+    slice.domain.admission().ignore_mac();
+    slice.domain.admission().tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(6)) });
 }
 
 /// Two looks a wait apart: the second finds every resting host due.
@@ -93,6 +94,7 @@ fn launch_task(slice: &Slice, task: &str) -> Driver {
 // every start for the swap they caused.
 #[tokio::test(flavor = "multi_thread")]
 async fn nodes_that_wait_keep_no_process_and_a_restarted_daemon_starts_none() {
+    wired();
     let slice = Slice::new();
     enable(&slice);
     let tasks = ["t-rests-one", "t-rests-two", "t-rests-three"];
@@ -121,48 +123,10 @@ async fn nodes_that_wait_keep_no_process_and_a_restarted_daemon_starts_none() {
 
 // 7 November, 07:45: 39 nodes worked under a limit of 8, since a resume took no slot, and the memory
 // ran out. A closed node with work waits its turn for a slot, as a state with no card.
-#[tokio::test(flavor = "multi_thread")]
-async fn resumes_over_the_node_limit_wait_for_capacity_with_no_process_and_no_card() {
-    let slice = Slice::new();
-    enable(&slice);
-    let tasks = ["t-over-one", "t-over-two", "t-over-three"];
-    for task in tasks {
-        let mut driver = launch_task(&slice, task);
-        slice.settle(&mut driver);
-        slice.domain.add_sdk_owner(Owner::spawn(driver));
-    }
-    look_after_the_wait(&slice.domain);
-    until_released(&slice.domain, &tasks).await;
-    std::fs::write(format!("{}.hold", slice.capture.display()), "").unwrap();
-    let limit = |slots| slice.domain.live().gate.tune(crate::admission::Tuning { spacing: 60_000, limit: Some(crate::admission::Limit::Fixed(slots)) });
-    let working = || crate::admission::working_tasks(&slice.domain, &slice.domain.read().state());
-    limit(1);
-    let started = slice.starts().len();
-    for task in tasks {
-        crate::domain_messages::tell_sdk_node(&slice.domain, &task.into(), crate::node_push::ALONDRA, "Go on.", &format!("tell-{task}"), false).unwrap();
-    }
-    assert_eq!(slice.domain.node_groups(), Vec::<i32>::new(), "a message alone brings no host back past the gate");
-
-    gate_look(&slice).await;
-    until_working(&slice, 1).await;
-    gate_look(&slice).await;
-
-    assert_eq!(working().len(), 1, "the limit holds whatever the number of nodes with work");
-    let waits = |task: &str| slice.domain.live().gate.waits_for_slot(&slice.domain, &slice.domain.read().state(), &task.into());
-    assert_eq!(tasks.iter().filter(|task| waits(task)).count(), 2, "the others wait for a slot");
-    assert_eq!(slice.domain.node_groups().len(), 1, "with no host of their own");
-    assert!(slice.starts().len() <= started + 1, "and no Claude: {:?}", slice.starts());
-    assert!(open_card(&slice.domain, SESSION_ENDED_PREFIX).is_none(), "no card asks the user");
-
-    limit(3);
-    gate_look(&slice).await;
-    until_working(&slice, 3).await;
-    assert_eq!(tasks.iter().filter(|task| waits(task)).count(), 0, "a free slot resumes them, with the spacing of starts still at a minute");
-    slice.domain.stop_sdk_owners();
-}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_node_rests_with_its_host_until_the_wait_passes() {
+    wired();
     let slice = Slice::new();
     let (_, host) = resting_node(&slice);
     let mut rests = Rests::default();
@@ -176,6 +140,7 @@ async fn a_node_rests_with_its_host_until_the_wait_passes() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn work_for_a_closed_node_resumes_its_session_with_no_card_and_no_turn_of_its_own() {
+    wired();
     let slice = Slice::new();
     let (session, host) = resting_node(&slice);
     let told_before = slice.prompts().len();
@@ -209,6 +174,7 @@ fn archived_hosts(slice: &Slice) -> Vec<String> {
 // finds the task owned and the session goes on.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_finished_task_whose_closed_host_is_taken_over_twice_at_once_resumes_once_and_asks_nobody() {
+    wired();
     use std::sync::mpsc::channel;
     let slice = Slice::new();
     let (session, _) = resting_node(&slice);
@@ -253,6 +219,7 @@ async fn a_finished_task_whose_closed_host_is_taken_over_twice_at_once_resumes_o
 // keeps what was measured of its conversation, so the cache can still be saved before it expires.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_large_closed_conversation_is_resumed_to_compact_before_its_cache_expires() {
+    wired();
     use crate::idle_compaction::{Timing as Compaction, compact_due};
     let slice = Slice::new();
     enable(&slice);
@@ -279,6 +246,7 @@ async fn a_large_closed_conversation_is_resumed_to_compact_before_its_cache_expi
 // No host to stop: the task ends as one whose host ended, and no Claude starts just to end it.
 #[tokio::test(flavor = "multi_thread")]
 async fn cancelling_a_closed_node_ends_the_task_without_starting_anything() {
+    wired();
     let slice = Slice::new();
     resting_node(&slice);
     look_after_the_wait(&slice.domain);
@@ -295,6 +263,7 @@ async fn cancelling_a_closed_node_ends_the_task_without_starting_anything() {
 
 #[tokio::test]
 async fn a_closed_node_moves_to_another_provider_like_a_resting_one() {
+    wired();
     use crate::domain_store::provider_transition::Phase;
     let slice = Slice::new();
     let task: TaskId = TASK.into();
@@ -321,6 +290,7 @@ async fn a_closed_node_moves_to_another_provider_like_a_resting_one() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_model_chosen_for_a_closed_node_reaches_it_and_stays_when_it_closes_again() {
+    wired();
     let slice = Slice::new();
     resting_node(&slice);
     look_after_the_wait(&slice.domain);
@@ -346,6 +316,7 @@ async fn a_model_chosen_for_a_closed_node_reaches_it_and_stays_when_it_closes_ag
 // the task is taken over as after any host that ended.
 #[test]
 fn an_input_that_arrives_while_the_host_closes_reaches_the_host_that_replaces_it() {
+    wired();
     let slice = Slice::new();
     enable(&slice);
     let mut driver = slice.launch();
@@ -365,6 +336,7 @@ fn an_input_that_arrives_while_the_host_closes_reaches_the_host_that_replaces_it
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_node_whose_own_work_runs_after_its_turn_keeps_its_host() {
+    wired();
     let slice = Slice::new();
     let (_, _, commands, host) = node_with_a_background_group(&slice);
     look_after_the_wait(&slice.domain);
@@ -377,6 +349,7 @@ async fn a_node_whose_own_work_runs_after_its_turn_keeps_its_host() {
 
 #[test]
 fn a_node_in_plan_mode_keeps_its_host_since_a_resumed_session_opens_out_of_it() {
+    wired();
     let slice = Slice::new();
     let mut driver = slice.launch();
     slice.settle(&mut driver);
@@ -388,6 +361,7 @@ fn a_node_in_plan_mode_keeps_its_host_since_a_resumed_session_opens_out_of_it() 
 
 #[test]
 fn a_node_with_work_owed_after_its_merge_keeps_its_host() {
+    wired();
     let slice = Slice::new();
     let mut driver = slice.launch();
     slice.settle(&mut driver);
@@ -399,12 +373,13 @@ fn a_node_with_work_owed_after_its_merge_keeps_its_host() {
 
 #[test]
 fn a_paused_node_keeps_what_its_pause_decided() {
+    wired();
     let slice = Slice::new();
     enable(&slice);
     let mut driver = slice.launch();
     slice.settle(&mut driver);
     let agent = driver.agent().clone();
-    assert!(slice.domain.live().gate.hold_back(&slice.domain, &agent.0, crate::pauses::Reason::Disk, alondra_core::now_millis()));
+    assert!(slice.domain.gate().hold_back(&agent.0, crate::ports::admission::Reason::Disk, alondra_core::now_millis()));
     assert!(!slice.domain.read().state().host_releasable(&TASK.into()));
     driver.stop().unwrap();
 }
@@ -412,6 +387,7 @@ fn a_paused_node_keeps_what_its_pause_decided() {
 // Codex: its thread resumes through `thread/resume`, as Claude's session through `--resume`.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_closed_codex_node_resumes_the_same_thread() {
+    wired();
     let slice = Slice::new();
     let trace = configured(&slice, "complete");
     enable(&slice);
@@ -436,6 +412,7 @@ async fn a_closed_codex_node_resumes_the_same_thread() {
 // Codex reports its own work as a child agent or as a command with a process: neither closes.
 #[test]
 fn a_codex_node_with_a_child_agent_keeps_its_host() {
+    wired();
     let slice = Slice::new();
     configured(&slice, "child");
     let mut driver = launch(&slice);
@@ -450,6 +427,7 @@ fn a_codex_node_with_a_child_agent_keeps_its_host() {
 
 #[test]
 fn a_codex_node_with_a_command_running_after_its_turn_keeps_its_host() {
+    wired();
     keeps_its_host_while_its_command_runs("blocked_command");
 }
 
@@ -457,6 +435,7 @@ fn a_codex_node_with_a_command_running_after_its_turn_keeps_its_host() {
 // write_stdin confirmed: that session is the node's own work, so its host stays.
 #[test]
 fn a_codex_node_whose_exec_session_runs_on_after_its_turn_keeps_its_host() {
+    wired();
     keeps_its_host_while_its_command_runs("session_command");
 }
 
@@ -478,4 +457,46 @@ fn keeps_its_host_while_its_command_runs(mode: &str) {
     assert!(!driver.releases);
     std::fs::write(&release, "").unwrap();
     driver.stop().unwrap();
+}
+
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resumes_over_the_node_limit_wait_for_capacity_with_no_process_and_no_card() {
+    wired();
+    let slice = Slice::new();
+    enable(&slice);
+    let tasks = ["t-over-one", "t-over-two", "t-over-three"];
+    for task in tasks {
+        let mut driver = launch_task(&slice, task);
+        slice.settle(&mut driver);
+        slice.domain.add_sdk_owner(Owner::spawn(driver));
+    }
+    look_after_the_wait(&slice.domain);
+    until_released(&slice.domain, &tasks).await;
+    std::fs::write(format!("{}.hold", slice.capture.display()), "").unwrap();
+    let limit = |slots| slice.domain.admission().tune(crate::admission::Tuning { spacing: 60_000, limit: Some(crate::admission::Limit::Fixed(slots)) });
+    let working = || crate::admission::working_tasks(&slice.domain, &slice.domain.read().state());
+    limit(1);
+    let started = slice.starts().len();
+    for task in tasks {
+        crate::domain_messages::tell_sdk_node(&slice.domain, &task.into(), crate::node_push::ALONDRA, "Go on.", &format!("tell-{task}"), false).unwrap();
+    }
+    assert_eq!(slice.domain.node_groups(), Vec::<i32>::new(), "a message alone brings no host back past the gate");
+
+    gate_look(&slice).await;
+    until_working(&slice, 1).await;
+    gate_look(&slice).await;
+
+    assert_eq!(working().len(), 1, "the limit holds whatever the number of nodes with work");
+    let waits = |task: &str| slice.domain.gate().waits_for_slot(&slice.domain.read().state(), &task.into());
+    assert_eq!(tasks.iter().filter(|task| waits(task)).count(), 2, "the others wait for a slot");
+    assert_eq!(slice.domain.node_groups().len(), 1, "with no host of their own");
+    assert!(slice.starts().len() <= started + 1, "and no Claude: {:?}", slice.starts());
+    assert!(open_card(&slice.domain, SESSION_ENDED_PREFIX).is_none(), "no card asks the user");
+
+    limit(3);
+    gate_look(&slice).await;
+    until_working(&slice, 3).await;
+    assert_eq!(tasks.iter().filter(|task| waits(task)).count(), 0, "a free slot resumes them, with the spacing of starts still at a minute");
+    slice.domain.stop_sdk_owners();
 }

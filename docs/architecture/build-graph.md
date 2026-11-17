@@ -55,8 +55,9 @@ one.
   `HandoversOf::handovers`…), created on first use.
 - A commit tells every `CommitObserver` (`domain_runtime/observers.rs`), in the order they were
   registered: the state readers are about to see, the change once the writer lock is released, and
-  the command that made it. An observer may also carry out a command in place of the store, as the
-  admission gate does with Resume on the card of a pause it holds.
+  the command that made it. An observer may also carry out a command in place of the store, as
+  `daemon-engine` does with Resume on the card of a pause the admission gate holds, which it hands to
+  the gate.
 - `daemon-engine/src/wiring.rs` puts the engine together: `wiring::open` opens the runtime with the
   decisions of the cards a node's mod holds and the observers of the SDK owners, the admission gate,
   the SDK nodes' waits, the task closer and «Allow always». The kernel's own constructor,
@@ -81,6 +82,7 @@ module and called on the runtime used to be invisible to it.
 | GitHub in its own crate | 42 modules | 30,333 |
 | The same, without what only the `test-hooks` feature compiles (`main` at 70324de) | 39 modules | 17,312 |
 | Orchestrator in its own crate | 31 modules | 14,023 |
+| Admission gate in its own crate | 26 modules | 11,640 |
 
 The 54 above counted modules by file name; the same graph through `#[path]` declarations holds one
 more. The 34 missed what each module reached through methods the subsystems added to the runtime:
@@ -119,6 +121,29 @@ visibility on both).
   hosts and fake Claude and Codex they run. They open the engine through `daemon-engine`'s test
   hooks, and the engine's tests of the orchestrator's inbox moved into it, so the engine's test binary
   does not link the orchestrator. Neither production library sees the other.
+
+## The admission gate
+
+`engine-admission` holds the gate every start, resume and turn passes through (`admission`), the
+pauses it holds nodes in (`pauses`) and the watch over the Mac's memory and disk it decides on
+(`machine_watch`). It sits above `daemon-engine`: it depends on it, and only `alondrad`, the machine
+model and the scenarios see it (Bazel visibility).
+
+- `daemon-engine` asks the gate through the port `AdmissionGate` (`engine-kernel/src/ports/admission.rs`):
+  ask for a start, take a turn, hold back or resume a node, the pauses it keeps, the place of a queued
+  task and the disk's room for a launch. `domain.gate()` (`daemon-engine/src/gate.rs`) is that port
+  for one runtime; `alondrad` provides it through `alondra_engine_admission::wire`.
+- What the port speaks in is only data and moved below both crates, with the port: what waits at the
+  gate (`Key`, `Waiting`), why it waits (`Hold`), the pauses (`Reason`, `Paused`, `Pauses`) and two
+  reads of the domain's state (`open_task_of`, `run_priority`). The record of the usage pause stays
+  in `daemon-engine` (`usage_pause`): the usage probe and the accounts keep it, and only one of its
+  calls reaches the gate.
+- The gate and the machine watch are extensions of `engine-admission` instead of fields of `Live`.
+- Its tests are `//crates/engine-admission:engine_admission_test`, with the real hosts some of them
+  run. The engine's tests that need the gate itself (its slots, its pauses, the disk's floor, the
+  resting hosts it brings back) moved into it under `engine_tests/`, over the engine's test-hooks
+  fixtures; `wiring::TEST_WIRING` gives the runtimes those fixtures open the gate. The engine's own
+  test binary does not link the gate: a runtime without one lets every start and turn through.
 
 ## Subsystem crates
 

@@ -1,4 +1,5 @@
 //! Local HTTP bootstrap: the routes are the shared domain handlers.
+use alondra_engine_admission::AdmissionOf as _;
 use alondra_daemon_engine::sdk_owner::SdkOwners as _;
 use alondra_daemon_engine::live::LiveOf as _;
 use alondra_core::clock;
@@ -55,6 +56,7 @@ impl DomainDaemon {
 
     pub(crate) fn over_shared(home: &Path, domain: Arc<DomainRuntime>) -> Result<Arc<Self>> {
         require_database(home)?;
+        alondra_engine_admission::wire(&domain);
         alondra_engine_orchestrator::wire(&domain);
         let gauges = crate::machine::Gauges::default();
         Ok(Arc::new(Self {
@@ -1207,8 +1209,8 @@ async fn agent_waiting_machine(
     let live = state.domain.live();
     let turn = live.node(&session_id).map_or(0, |node| node.turn);
     let now = alondra_core::now_millis();
-    live.machine_watch.declare(&session_id, body.resource, &body.reason, turn, now);
-    live.gate.hold_back(&state.domain, &session_id, crate::pauses::Reason::Declared { reason: body.reason.clone() }, now);
+    state.domain.machine_watch().declare(&session_id, body.resource, &body.reason, turn, now);
+    state.domain.admission().hold_back(&state.domain, &session_id, crate::pauses::Reason::Declared { reason: body.reason.clone() }, now);
     live.apply(&alondra_core::Event::WaitingMachine {
         session_id,
         reason: body.reason,
@@ -2284,7 +2286,7 @@ mod tests {
             StatusCode::OK,
             "the words of the reason never refuse a wait"
         );
-        let declared = |session: &str| domain.live().machine_watch.declared()[session].resource;
+        let declared = |session: &str| domain.machine_watch().declared()[session].resource;
         assert_eq!(declared("test-agent"), Some(alondra_core::machine_incident::MachineResource::BuildQueue));
         let post = |body: Value| client.post(format!("{base}/agents/waiting-machine")).bearer_auth(&bearer).json(&body).send();
         assert_eq!(post(json!({"reason": "disk full"})).await.unwrap().status(), StatusCode::OK, "a CLI older than resource");

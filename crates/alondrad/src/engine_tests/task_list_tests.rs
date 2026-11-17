@@ -175,6 +175,7 @@ fn play(turn: &Turn, at: Millis, event: &Value) {
 
 #[test]
 fn an_open_turn_moves_its_task_detail_and_never_the_task_list() {
+    super::wired();
     let mut turn = Turn::open();
     turn.observe(&json!({"type": "system", "subtype": "session_state_changed", "state": "running"}), 1_794_299_990_000);
     let first = turn.every_view();
@@ -218,6 +219,7 @@ fn an_open_turn_moves_its_task_detail_and_never_the_task_list() {
 
 #[test]
 fn a_state_change_and_the_reason_of_a_waiting_state_move_the_task_list() {
+    super::wired();
     let mut turn = Turn::open();
     let working = turn.render("tasks", Client::Ios, Lang::En, Transport::Loopback);
     let ask = |id: &str| Command::AskQuestion {
@@ -240,6 +242,7 @@ fn a_state_change_and_the_reason_of_a_waiting_state_move_the_task_list() {
 #[test]
 #[ignore = "measures a recorded turn named by ALONDRA_TURN_TRANSCRIPT"]
 fn measure_list_revisions_of_a_recorded_turn() {
+    super::wired();
     let path = std::env::var("ALONDRA_TURN_TRANSCRIPT").expect("ALONDRA_TURN_TRANSCRIPT");
     let events: Vec<(Millis, Value)> = std::fs::read_to_string(path).unwrap().lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
