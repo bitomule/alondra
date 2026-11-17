@@ -300,7 +300,7 @@ pub fn answered(domain: &DomainRuntime) {
     }
 }
 
-pub use crate::ports::AccountWait;
+pub use alondra_engine_ports::orchestrator::AccountWait;
 
 /// Every account the user registered, on or off: the folders an execution may run Claude with.
 pub fn registered(home: &Path) -> Vec<AccountId> {

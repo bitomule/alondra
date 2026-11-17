@@ -9,6 +9,7 @@ publish.workspace = true
 test-hooks = ["alondra-daemon-support/test-hooks"]
 
 [dependencies]
+alondra-engine-ports.workspace = true
 alondra-core.workspace = true
 alondra-domain-rules.workspace = true
 alondra-daemon-support.workspace = true

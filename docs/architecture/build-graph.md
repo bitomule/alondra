@@ -103,6 +103,32 @@ Until the orchestrator's crate the graph also counted what only the `test-hooks`
 the lines it reported, and a `#[cfg(test)]` field hid the rest of its file. Without them the
 kernel has no cycle and the engine's main cycle measures 39 modules on `main` at 70324de.
 
+## The ports
+
+`engine-ports` holds the ports the pieces of the engine call each other through, the values they
+speak in, and the registry that holds one implementation of each. It depends only on `core` and
+`domain-rules`: every piece depends on it, and none on the piece that implements a port it uses.
+
+- The ports: `AdmissionGate` (`admission.rs`), `OrchestratorEngine` and `OrchestratorAnswers`
+  (`orchestrator.rs`) and `SdkHosts` (`hosts.rs`). The values they carry moved with them:
+  `LaunchOptions` and `Failed` (`launch.rs`), `NoRoom` (`machine.rs`) and `OutboxMessage`
+  (`outbox.rs`). The crates they came from re-export them, so their callers did not change.
+- The registry (`Registry`) maps each port's type to its implementation: `provide::<dyn P>(…)`
+  gives it, `port::<dyn P>()` asks for it, and `missing()` names every port nothing implements. The
+  runtime holds one (`domain.ports()`).
+- Each piece that implements a port exposes `pub fn wire(&Registry)`: `daemon-engine`
+  (`wiring::wire`), `engine-sdk` (`wiring::wire`), `engine-admission` and `engine-orchestrator`.
+  `alondrad` calls all of them (`domain_bootstrap::wire`), and its test
+  `the_daemon_implements_every_port` fails when a port is left without an implementation.
+- Every port is called on a `&dyn Runtime`, the context the engine keeps its state in, as
+  rust-analyzer's queries take `db: &dyn HirDatabase`. The context says what a piece may ask of the
+  kernel: its home, the committed state, a command as Alondra itself, the registry and the wake-up of
+  the SDK hosts' owners. `DomainRuntime` implements it. Most implementations are still written
+  against `DomainRuntime` and reach it through one bridge, `DomainRuntime::of`; each piece moves to
+  the context's methods as it stops depending on the kernel (phase 4), and the bridge then goes.
+  Generics would compile each piece into its callers and stop the ports being `dyn` in the registry.
+- `agent-runtime` is not behind a port yet: the port `AgentHost` that hides it is the next phase.
+
 ## The orchestrator
 
 `engine-orchestrator` holds the process that runs the orchestrator agent: `domain_orchestrator` with
@@ -111,15 +137,13 @@ its recovery and watchdog, `orchestrator_inbox`, `orchestrator_process`, `orches
 crates below it, never on `daemon-engine`, and nothing but `alondrad` depends on it (Bazel
 visibility on both).
 
-- The two crates call each other through ports, traits of `engine-kernel/src/ports.rs`. The runtime
-  holds one implementation of each: `domain.provide::<dyn P>(…)` gives it, `domain.port::<dyn P>()`
-  asks for it (`domain_runtime/ports.rs`). `OrchestratorEngine` is what the orchestrator asks of the
-  engine (choose an account, the usage pause, the account wait, the obligation clock, a message's
-  text, a node's last words); `daemon-engine`'s `wiring::open` provides it.
-  `OrchestratorAnswers` is what the obligation clock asks of the orchestrator; `alondrad` provides it
-  through `alondra_engine_orchestrator::wire` when it puts the daemon together.
+- The two crates call each other through ports, traits of `engine-ports` (see "The ports" below).
+  `OrchestratorEngine` is what the orchestrator asks of the engine (choose an account, the usage
+  pause, the account wait, the obligation clock, a message's text, a node's last words);
+  `alondra_daemon_engine::wiring::wire` provides it. `OrchestratorAnswers` is what the obligation
+  clock asks of the orchestrator; `alondra_engine_orchestrator::wire` provides it.
 - What both read and is only data moved below them: the SDK backend (`engine-kernel/src/sdk_backend.rs`,
-  with `domain.sdk()`), the account wait and the usage pause's value (`ports.rs`), the count of the
+  with `domain.sdk()`), the account wait and the usage pause's value (`engine-ports/src/orchestrator.rs`), the count of the
   orchestrator's rests (a field of the runtime) and `auth::uuid` (`daemon-support`).
 - The orchestrator's own state (its host, its stop, its runs) is an extension of its crate
   (`engine.rs`), no longer a field of the engine's `Live`.
@@ -135,10 +159,10 @@ pauses it holds nodes in (`pauses`) and the watch over the Mac's memory and disk
 (`machine_watch`). It sits above `daemon-engine`: it depends on it, and only `alondrad`, the machine
 model and the scenarios see it (Bazel visibility).
 
-- `daemon-engine` asks the gate through the port `AdmissionGate` (`engine-kernel/src/ports/admission.rs`):
+- `daemon-engine` asks the gate through the port `AdmissionGate` (`engine-ports/src/admission.rs`):
   ask for a start, take a turn, hold back or resume a node, the pauses it keeps, the place of a queued
   task and the disk's room for a launch. `domain.gate()` (`daemon-engine/src/gate.rs`) is that port
-  for one runtime; `alondrad` provides it through `alondra_engine_admission::wire`.
+  for one runtime; `alondra_engine_admission::wire` provides it.
 - What the port speaks in is only data and moved below both crates, with the port: what waits at the
   gate (`Key`, `Waiting`), why it waits (`Hold`), the pauses (`Reason`, `Paused`, `Pauses`) and two
   reads of the domain's state (`open_task_of`, `run_priority`). The record of the usage pause stays

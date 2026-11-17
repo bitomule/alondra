@@ -14,6 +14,7 @@
 //! is idle) the open item is handed to it again, once per rest.
 use crate::engine::OrchestratorOf as _;
 use crate::domain_runtime::DomainRuntime;
+use alondra_engine_ports::Runtime;
 use alondra_domain_rules::obligation_policy::{ANSWER, Millis};
 use alondra_domain_rules::{
     Author, CardKind, Command, DomainState, InboxCard, Interaction, InteractionId, InteractionPayload, PlanReview, PlanReviewOutcome, QuestionOption,
@@ -375,8 +376,9 @@ pub fn settle_overdue(domain: &DomainRuntime, now: Millis) {
 /// What the clock over every task's obligations asks of the orchestrator.
 pub struct Answers;
 
-impl alondra_engine_kernel::ports::OrchestratorAnswers for Answers {
-    fn settle_answers(&self, domain: &DomainRuntime, state: &DomainState, due: &BTreeSet<TaskId>) {
+impl alondra_engine_ports::orchestrator::OrchestratorAnswers for Answers {
+    fn settle_answers(&self, runtime: &dyn Runtime, state: &DomainState, due: &BTreeSet<TaskId>) {
+        let domain = DomainRuntime::of(runtime);
         settle_answers(domain, state, due);
     }
 }

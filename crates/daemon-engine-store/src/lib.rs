@@ -1169,16 +1169,7 @@ fn ensure_no_effects(outcome: &CommandOutcome) -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OutboxMessage {
-    pub id: i64,
-    pub recipient_kind: String,
-    pub agent_id: Option<String>,
-    pub task_id: Option<String>,
-    pub interaction_id: Option<String>,
-    pub message: String,
-    pub state: String,
-}
+pub use alondra_engine_ports::outbox::OutboxMessage;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct UserPushHistory {
     pub card_pushed_at: Option<u64>,

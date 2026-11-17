@@ -1,6 +1,7 @@
 //! The vertical slice through the real owner: the daemon's store, commands and `own`, the pinned
 //! Node host with the official SDK, and a fake native Claude that answers each prompt with a
 //! result. Each step waits on the host's next event, never on a clock.
+use alondra_daemon_engine_model::LaunchOptionsFile as _;
 use crate::gate::GateOf as _;
 use crate::sdk_owner::SdkOwners as _;
 use crate::idle_compaction::ContextsOf as _;
@@ -186,7 +187,7 @@ pub fn envelope(state: &DomainState, id: &str, command: Command) -> CommandEnvel
 }
 
 pub fn measure_healthy_machine(domain: &DomainRuntime) {
-    domain.gate().measure_machine(&alondra_core::Machine { memory_total: 16 << 30, memory_available: 12 << 30,
+    alondra_engine_admission::measure_machine(&domain, &alondra_core::Machine { memory_total: 16 << 30, memory_available: 12 << 30,
         memory_free_percent: Some(75), cpus: 11, disk_total: 500_000_000_000, disk_available: 100_000_000_000, ..Default::default() }, crate::disk::Space { total: 500_000_000_000, free: 100_000_000_000, purgeable: 0 });
 }
 
@@ -4579,7 +4580,7 @@ async fn a_pause_by_the_user_stops_the_host_its_background_commands_and_every_tu
 
 #[tokio::test(flavor = "multi_thread")]
 async fn no_pause_but_the_users_kills_what_the_node_runs() {
-    use crate::ports::admission::Reason;
+    use alondra_engine_ports::admission::Reason;
     for reason in [Reason::Disk, Reason::Declared { reason: "Waiting for a full machine".into() }, Reason::Usage] {
         let slice = Slice::new();
         let (agent, _, commands, host) = node_with_a_background_group(&slice);
@@ -4602,7 +4603,7 @@ async fn a_host_a_restarted_daemon_adopts_for_a_paused_node_stops_at_the_gates_n
     let commands = BackgroundCommands::of(&slice);
     let host = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();
     let agent = driver.agent().clone();
-    assert!(slice.domain.gate().hold_back(&agent.0, crate::ports::admission::Reason::ByUser, alondra_core::now_millis()));
+    assert!(slice.domain.gate().hold_back(&agent.0, alondra_engine_ports::admission::Reason::ByUser, alondra_core::now_millis()));
     drop(driver);
     let restarted = slice.restart();
     restarted.enable_sdk(slice.backend.clone());
@@ -4754,7 +4755,7 @@ fn an_answered_permission_goes_on_when_a_slot_frees_with_nobody_asking() {
     gate_pass(&slice.domain, slice.worktree.as_path());
     let snapshot = gate.snapshot(&slice.domain, alondra_core::now_millis()).unwrap();
     assert!(!snapshot.working_tasks.contains(&TaskId::from(TASK)), "a turn whose answer has not reached it takes no slot: {:?}", snapshot.working_tasks);
-    assert!(snapshot.queue.iter().any(|waiting| waiting.key == crate::ports::admission::Key::Turn(TASK.into())), "its answer waits for a slot, though its owner never asked");
+    assert!(snapshot.queue.iter().any(|waiting| waiting.key == alondra_engine_ports::admission::Key::Turn(TASK.into())), "its answer waits for a slot, though its owner never asked");
     assert!(slice.decisions().is_empty());
 
     slots(&slice.domain, 1);

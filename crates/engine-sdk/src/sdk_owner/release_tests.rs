@@ -367,7 +367,7 @@ fn a_paused_node_keeps_what_its_pause_decided() {
     let mut driver = slice.launch();
     slice.settle(&mut driver);
     let agent = driver.agent().clone();
-    assert!(slice.domain.gate().hold_back(&agent.0, crate::ports::admission::Reason::Disk, alondra_core::now_millis()));
+    assert!(slice.domain.gate().hold_back(&agent.0, alondra_engine_ports::admission::Reason::Disk, alondra_core::now_millis()));
     assert!(!slice.domain.read().state().host_releasable(&TASK.into()));
     driver.stop().unwrap();
 }

@@ -8,8 +8,9 @@ load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
 
 # The admission gate sits above the engine: it depends on daemon-engine, and daemon-engine asks it
-# only through the kernel's port. Only alondrad, which puts the daemon together, sees it.
+# only through the port of engine-ports. Only alondrad, which puts the daemon together, sees it.
 WORKSPACE_DEPS = [
+    "//crates/engine-ports:engine_ports",
     "//crates/core:alondra_core",
     "//crates/domain:domain",
     "//crates/domain-rules:domain_rules",

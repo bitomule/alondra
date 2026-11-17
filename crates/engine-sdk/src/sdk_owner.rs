@@ -2,7 +2,9 @@
 //! `AdmitExecution`, launches the host, sends each dispatch the store issued for its task,
 //! stages what the host observes and acknowledges it only once readers see the commit.
 //! Every step commits through `DomainRuntime::own`; nothing here writes the store itself.
+use alondra_daemon_engine_model::{LaunchOptionsFile as _, WrittenFailure as _};
 use crate::gate::GateOf as _;
+use alondra_engine_ports::Runtime;
 use crate::live::LiveOf as _;
 use crate::idle_compaction::ContextsOf as _;
 use crate::account_move::MovesOf as _;
@@ -2900,65 +2902,82 @@ pub fn drive_by_hand(domain: &DomainRuntime, agent: &AgentId) {
 pub struct Hosts;
 
 impl crate::hosts::SdkHosts for Hosts {
-    fn owns(&self, domain: &DomainRuntime, agent: &AgentId) -> bool {
+    fn owns(&self, runtime: &dyn Runtime, agent: &AgentId) -> bool {
+        let domain = DomainRuntime::of(runtime);
         domain.owns_sdk_host(agent)
     }
 
-    fn node_groups_by_agent(&self, domain: &DomainRuntime) -> Vec<(AgentId, i32)> {
+    fn node_groups_by_agent(&self, runtime: &dyn Runtime) -> Vec<(AgentId, i32)> {
+        let domain = DomainRuntime::of(runtime);
         domain.node_groups_by_agent()
     }
 
-    fn stop(&self, domain: &DomainRuntime, agent: &AgentId) -> Result<(), Failed> {
+    fn stop(&self, runtime: &dyn Runtime, agent: &AgentId) -> Result<(), Failed> {
+        let domain = DomainRuntime::of(runtime);
         domain.stop_sdk_host(agent)
     }
 
-    fn requeue(&self, domain: &DomainRuntime, task: &TaskId) {
+    fn requeue(&self, runtime: &dyn Runtime, task: &TaskId) {
+        let domain = DomainRuntime::of(runtime);
         domain.sdk_owners().requeues.lock_or_recover("the requeued tasks").insert(task.clone());
-        domain.seals.wake();
+        runtime.wake_seals();
     }
 
-    fn halt(&self, domain: &DomainRuntime, task: TaskId, agent: AgentId) {
+    fn halt(&self, runtime: &dyn Runtime, task: TaskId, agent: AgentId) {
+        let domain = DomainRuntime::of(runtime);
         halt(domain, task, agent);
     }
 
-    fn take_if_unowned(&self, domain: &DomainRuntime, task: &TaskId) {
+    fn take_if_unowned(&self, runtime: &dyn Runtime, task: &TaskId) {
+        let domain = DomainRuntime::of(runtime);
         take_if_unowned(domain, task);
     }
 
-    fn take_working_unowned(&self, domain: &DomainRuntime, state: &DomainState, now: alondra_core::Millis) {
+    fn take_working_unowned(&self, runtime: &dyn Runtime, state: &DomainState, now: alondra_core::Millis) {
+        let domain = DomainRuntime::of(runtime);
         take_working_unowned(domain, state, now);
     }
 
-    fn close_hosts_of_ended_nodes(&self, domain: &DomainRuntime, state: &DomainState) {
+    fn close_hosts_of_ended_nodes(&self, runtime: &dyn Runtime, state: &DomainState) {
+        let domain = DomainRuntime::of(runtime);
         close_hosts_of_ended_nodes(domain, state);
     }
 
-    fn retake_waiting_for_space(&self, domain: &DomainRuntime) {
+    fn retake_waiting_for_space(&self, runtime: &dyn Runtime) {
+        let domain = DomainRuntime::of(runtime);
         retake_waiting_for_space(domain);
     }
 
-    fn original_directory(&self, domain: &DomainRuntime, task: &TaskId) -> Result<Option<String>, Failed> {
+    fn original_directory(&self, runtime: &dyn Runtime, task: &TaskId) -> Result<Option<String>, Failed> {
+        let domain = DomainRuntime::of(runtime);
         original_directory(domain, task)
     }
 
-    fn require_recoverable_session(&self, domain: &DomainRuntime, backend: &SdkBackend, task: &TaskId, provider: Provider, account: &alondra_core::accounts::AccountId, directory: &str) -> Result<(), Failed> {
+    fn require_recoverable_session(&self, runtime: &dyn Runtime, task: &TaskId, provider: Provider, account: &alondra_core::accounts::AccountId, directory: &str) -> Result<(), Failed> {
+        let domain = DomainRuntime::of(runtime);
+        let (backend, _) = domain.sdk().ok_or_else(|| Failed::new(crate::sdk_backend::NO_HOST.into()))?;
         require_recoverable_session(domain, backend, task, provider, account, directory)
     }
 
-    fn prepare_reopening(&self, domain: &DomainRuntime, backend: &SdkBackend, task: &TaskId, provider: Provider, account: &alondra_core::accounts::AccountId, directory: &std::path::Path, input: String, recover_directory: bool) -> Result<crate::hosts::Reopening, Failed> {
+    fn prepare_reopening(&self, runtime: &dyn Runtime, task: &TaskId, provider: Provider, account: &alondra_core::accounts::AccountId, directory: &std::path::Path, input: String, recover_directory: bool) -> Result<crate::hosts::Reopening, Failed> {
+        let domain = DomainRuntime::of(runtime);
+        let (backend, _) = domain.sdk().ok_or_else(|| Failed::new(crate::sdk_backend::NO_HOST.into()))?;
         prepare_reopening(domain, backend, task, provider, account, directory, input, recover_directory).map(|reopening| crate::hosts::Reopening(Box::new(reopening)))
     }
 
-    fn end_unowned_host(&self, domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId) -> Result<(), Failed> {
+    fn end_unowned_host(&self, runtime: &dyn Runtime, task: TaskId) -> Result<(), Failed> {
+        let (backend, domain) = DomainRuntime::of(runtime).sdk().ok_or_else(|| Failed::new(crate::sdk_backend::NO_HOST.into()))?;
         end_unowned_host(domain, backend, task)
     }
 
-    fn launch<'a>(&'a self, domain: &'a DomainRuntime, launch: Launch, reopening: Option<crate::hosts::Reopening>) -> crate::hosts::Launched<'a> {
+    fn launch<'a>(&'a self, runtime: &'a dyn Runtime, launch: Launch, reopening: Option<crate::hosts::Reopening>) -> crate::hosts::Launched<'a> {
+        let domain = DomainRuntime::of(runtime);
         let reopening = reopening.map(|reopening| *reopening.0.downcast::<Reopening>().expect("a reopening the hosts' owner prepared"));
         Box::pin(launch_prepared(domain, launch, reopening))
     }
 
-    fn moving(&self, domain: &DomainRuntime, task: &TaskId) -> bool {
+    fn moving(&self, runtime: &dyn Runtime, task: &TaskId) -> bool {
+        let domain = DomainRuntime::of(runtime);
         crate::provider_transition::moving(domain, task)
     }
 }

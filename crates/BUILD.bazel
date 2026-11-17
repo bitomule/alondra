@@ -35,6 +35,7 @@ WORKSPACE_MEMBERS = [
     "engine-mcp",
     "engine-worktrees",
     "engine-kernel",
+    "engine-ports",
     "engine-orchestrator",
     "engine-sdk",
     "e2e",

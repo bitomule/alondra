@@ -1,3 +1,4 @@
+use crate::WrittenFailure as _;
 use super::Failed;
 use alondra_core::accounts::{AccountBilling,AccountStatus};
 use std::path::{Path,PathBuf};

@@ -246,7 +246,7 @@ fn an_input_the_provider_refuses_goes_again_and_a_second_refusal_goes_to_a_resum
     assert_eq!(journal(&slice).iter().filter(|record| matches!(record, LifecycleRecord::HandoffResent { .. })).count(), 2, "each refusal staged its resend");
     let mut queued = replaced_with_the_gate_full(&slice, driver);
     let gate = slice.domain.admission().snapshot(&slice.domain, alondra_core::now_millis()).unwrap();
-    assert!(gate.queue.iter().any(|waiting| waiting.key == crate::ports::admission::Key::Turn(TASK.into())), "its turn is queued: {:?}", gate.queue);
+    assert!(gate.queue.iter().any(|waiting| waiting.key == alondra_engine_ports::admission::Key::Turn(TASK.into())), "its turn is queued: {:?}", gate.queue);
     assert_eq!(lifecycle(&slice.domain).pending_inputs().len(), 1, "one input waits for the resuming host");
     assert_eq!(slice.domain.state().unwrap().interactions.len(), cards, "no card asks the user");
     goes_on_when_the_gate_has_room(&slice, &mut queued, text, 3);
@@ -333,7 +333,7 @@ pub fn replaced_with_the_gate_full(slice: &Slice, mut driver: Driver) -> Driver 
 pub fn assert_waits_for_a_slot(slice: &Slice, driver: &mut Driver) {
     assert_eq!(driver.pending_permits(), 1, "its input waits for the gate");
     let gate = slice.domain.admission().snapshot(&slice.domain, alondra_core::now_millis()).unwrap();
-    assert!(gate.queue.iter().any(|waiting| waiting.key == crate::ports::admission::Key::Turn(TASK.into())), "its turn is queued: {:?}", gate.queue);
+    assert!(gate.queue.iter().any(|waiting| waiting.key == alondra_engine_ports::admission::Key::Turn(TASK.into())), "its turn is queued: {:?}", gate.queue);
     assert!(!gate.working_tasks.contains(&TaskId::from(TASK)), "it holds no slot: {:?}", gate.working_tasks);
     assert!(lifecycle(&slice.domain).cards().is_empty(), "no card asks the user");
 }

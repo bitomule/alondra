@@ -7,9 +7,10 @@ load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
 
-# The orchestrator knows the engine only through the kernel's ports: it depends on no engine
+# The orchestrator knows the engine only through the ports of engine-ports: it depends on no engine
 # subsystem, no subsystem depends on it, and only alondrad, which puts the daemon together, sees it.
 WORKSPACE_DEPS = [
+    "//crates/engine-ports:engine_ports",
     "//crates/agent-runtime:agent_runtime",
     "//crates/core:alondra_core",
     "//crates/domain-rules:domain_rules",

@@ -43,6 +43,14 @@ fn require_database(home: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Gives the registry every port's implementation: each piece of the engine wires its own.
+pub(crate) fn wire(registry: &alondra_engine_ports::Registry) {
+    alondra_daemon_engine::wiring::wire(registry);
+    alondra_engine_sdk::wiring::wire(registry);
+    alondra_engine_admission::wire(registry);
+    alondra_engine_orchestrator::wire(registry);
+}
+
 impl DomainDaemon {
     pub(crate) fn open(home: &Path) -> Result<Arc<Self>> {
         require_database(home)?;
@@ -56,8 +64,7 @@ impl DomainDaemon {
 
     pub(crate) fn over_shared(home: &Path, domain: Arc<DomainRuntime>) -> Result<Arc<Self>> {
         require_database(home)?;
-        alondra_engine_admission::wire(&domain);
-        alondra_engine_orchestrator::wire(&domain);
+        wire(domain.ports());
         let gauges = crate::machine::Gauges::default();
         Ok(Arc::new(Self {
             home: home.to_owned(),
@@ -1409,6 +1416,15 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use p256::ecdsa::{Signature, SigningKey, signature::Signer};
     use std::net::SocketAddr;
+
+    #[test]
+    fn the_daemon_implements_every_port() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        drop(alondra_engine_sdk::wiring::open(&home).unwrap());
+        let daemon = DomainDaemon::over(&home, DomainRuntime::open_unwired_at(&home, &crate::domain_database_migration::active_path(&home)).unwrap()).unwrap();
+        assert_eq!(daemon.domain.ports().missing(), Vec::<&str>::new(), "a port nothing implements");
+    }
 
     #[test]
     fn account_margin_table_keeps_native_quota_separate_from_availability() {

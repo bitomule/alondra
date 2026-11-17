@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 const TERMINATE_AFTER: Millis = 10_000;
 const KILL_AFTER: Millis = 20_000;
 
-pub use alondra_engine_kernel::ports::admission::{Cleanup, Held, Paused, Pauses, Reason};
+pub use alondra_engine_ports::admission::{Cleanup, Held, Paused, Pauses, Reason};
 
 /// What a node is told when it comes back.
 pub(crate) fn resume_text(paused: &Paused, now: Millis) -> String {
@@ -85,8 +85,8 @@ pub(crate) fn hold_sdk_turn(domain: &DomainRuntime, session: &str, paused: &Paus
     domain.hosts().halt(paused.task.clone(), alondra_domain_rules::AgentId(session.to_owned()));
 }
 
-pub fn interrupt_sdk_node(domain: &DomainRuntime, session: &str) {
-    let Ok(state) = domain.state() else { return };
+pub fn interrupt_sdk_node(runtime: &dyn alondra_engine_ports::Runtime, session: &str) {
+    let state = runtime.state();
     let envelope = alondra_domain_rules::CommandEnvelope {
         protocol_version: alondra_domain_rules::PROTOCOL_VERSION,
         data_epoch: state.data_epoch.clone(),
@@ -94,7 +94,7 @@ pub fn interrupt_sdk_node(domain: &DomainRuntime, session: &str) {
         expected_revision: state.revision,
         command: alondra_domain_rules::Command::InterruptTurn { agent_id: alondra_domain_rules::AgentId(session.to_owned()) },
     };
-    if let Err(error) = domain.execute_as_system(envelope) {
+    if let Err(error) = runtime.system_command(envelope) {
         log!("pausing {session}: its turn was not interrupted ({error:?}); what it is told waits all the same");
     }
 }

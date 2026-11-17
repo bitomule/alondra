@@ -76,7 +76,7 @@ pub fn ended(domain: &DomainRuntime, task: &TaskId) -> Result<bool> {
         store.forget_auto_launch(task)?;
         store.dequeue_launch(task)?;
     }
-    let key = crate::ports::admission::Key::Task(task.clone());
+    let key = alondra_engine_ports::admission::Key::Task(task.clone());
     domain.gate().forget(&key);
     domain.gate().not_started(&key);
     domain.gate().poke();

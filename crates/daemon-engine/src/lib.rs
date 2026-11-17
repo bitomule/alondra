@@ -1,6 +1,6 @@
 //! The daemon's engine: the domain runtime and its store, the nodes and their Agent SDK hosts and
 //! the transports, everything below the admission gate and the routes and views that `alondrad`
-//! serves. It asks the gate through the kernel's port (`gate`).
+//! serves. It asks the gate through the port of engine-ports (`gate`).
 #![cfg_attr(all(feature = "test-hooks", not(test)), allow(dead_code, unused_imports))]
 
 #[cfg(any(test, feature = "test-hooks"))]
@@ -50,7 +50,6 @@ pub use alondra_engine_kernel::{
     domain_store,
     extension,
     metrics_capture,
-    ports,
     retention,
     sdk_backend,
     settings_projection,

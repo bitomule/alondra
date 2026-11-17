@@ -118,7 +118,7 @@ mod refused_plans {
     #[tokio::test]
     async fn a_refused_plan_the_orchestrator_leaves_is_handed_back_at_every_rest_and_never_cancelled_for_it() {
         let f = world();
-        crate::wire(&f.domain);
+        crate::wire(f.domain.ports());
         refused_plan(&f);
         refuse_its_start(&f).await;
         let reminders = || f.domain.state().unwrap().interactions.values()
@@ -162,7 +162,7 @@ mod stopped_nodes {
         let (fixture, mut store, execution) = running();
         let normalizer = woken(&mut store, &execution);
         let runtime = runtime(&fixture, store);
-        crate::wire(&runtime);
+        crate::wire(runtime.ports());
         let state = Arc::clone(runtime.read().state());
         runtime.own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, WOKEN_CURSOR), &normalizer, no_home(), false)).unwrap();
         let case = stall_case_of("turn-2");
@@ -176,14 +176,14 @@ mod stopped_nodes {
         assert_eq!(state.tasks[&task()].stalls, 1);
         assert!(STALL_ATTEMPTS > state.tasks[&task()].stalls);
         let runtime = runtime_reopened(&fixture, runtime);
-        crate::wire(&runtime);
+        crate::wire(runtime.ports());
         let state = runtime.state().unwrap();
         assert_eq!(state.tasks[&task()].stalls, 1, "the count outlives the restart");
         assert!(state.open(&state.interactions[&case]), "and so does the case");
         crate::orchestrator_inbox::settle_overdue(&runtime, 30 * MINUTE);
         crate::orchestrator_inbox::settle_overdue(&runtime, 40 * MINUTE);
         let runtime = runtime_reopened(&fixture, runtime);
-        crate::wire(&runtime);
+        crate::wire(runtime.ports());
         let state = runtime.state().unwrap();
         assert!(!state.open(&state.interactions[&case]), "Alondra settled it, and that outlives the restart");
         assert!(matches!(state.lifecycle_journal[&task()].iter().rev().find(|record| matches!(record, LifecycleRecord::Answered { .. })),
@@ -202,7 +202,7 @@ mod stopped_nodes {
         let (fixture, mut store, execution) = running();
         let normalizer = woken(&mut store, &execution);
         let runtime = runtime(&fixture, store);
-        crate::wire(&runtime);
+        crate::wire(runtime.ports());
         let state = Arc::clone(runtime.read().state());
         runtime.own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, WOKEN_CURSOR), &normalizer, no_home(), false)).unwrap();
         crate::orchestrator_inbox::settle_overdue(&runtime, 0);
@@ -232,7 +232,7 @@ mod held_plans {
     #[test]
     fn an_unreviewed_plan_is_released_unchanged_and_its_node_is_told() {
         let (_home, domain) = redraft();
-        crate::wire(&domain);
+        crate::wire(domain.ports());
         let queued = alondra_daemon_engine_model::LaunchBody::from_plan("d".into(), &plan("d", "Phase D: 360 px everywhere")).to_queue();
         domain.store.lock().unwrap().enqueue_launch(&"d".into(), &queued, "auto", 1).unwrap();
         settle(&domain, "c-same", "c", PlanReviewOutcome::Unchanged { reason: "Phase C does not depend on the print size".into() }).unwrap();

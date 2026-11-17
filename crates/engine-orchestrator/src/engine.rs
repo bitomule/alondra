@@ -1,12 +1,12 @@
 //! What the orchestrator keeps for as long as the runtime lives, and what it asks of the rest of
-//! the engine through the kernel's port.
+//! the engine through the port of engine-ports.
 use alondra_core::Millis;
 use alondra_core::accounts::{AccountId, AccountKey, Provider};
 use alondra_domain_rules::{AgentId, DomainError, DomainState};
 use alondra_core::model_selection::{SelectionDecision, TaskSelection};
 use alondra_engine_kernel::domain_runtime::DomainRuntime;
 use alondra_engine_kernel::domain_store::OutboxMessage;
-use alondra_engine_kernel::ports::{AccountWait, Exhausted, OrchestratorEngine};
+use alondra_engine_ports::orchestrator::{AccountWait, Exhausted, OrchestratorEngine};
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -36,7 +36,7 @@ impl OrchestratorOf for DomainRuntime {
     }
 
     fn engine(&self) -> Engine<'_> {
-        let port = self.port::<dyn OrchestratorEngine>().expect("the engine gives the runtime what the orchestrator asks of it");
+        let port = self.ports().port::<dyn OrchestratorEngine>().expect("the engine gives the runtime what the orchestrator asks of it");
         Engine { domain: self, port }
     }
 }

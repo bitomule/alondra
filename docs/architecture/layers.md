@@ -29,7 +29,7 @@ the application: they talk through ports, and the roots wire them together.
 |---|---|
 | foundation | `foundation`, `process-group`, `e2e`, `scenarios-transcript` |
 | domain | `domain`, `domain-rules`, `core` (mixed: its accounts, launcher and update code goes to the `system` adapter) |
-| ports | `provider-contract`, `view-model`, `store`, `agent-application` |
+| ports | `engine-ports`, `provider-contract`, `view-model`, `store`, `agent-application` |
 | application | `engine-kernel`, `daemon-engine`, `daemon-engine-model`, `daemon-engine-machine`, `engine-admission`, `engine-orchestrator`, `engine-sdk`, `engine-github`, `engine-live`, `engine-mcp`, `engine-worktrees`, `daemon-support` (mixed: most of it goes to the `system` adapter), `views` |
 | adapter-in | none yet: `alondrad` and `alondra` hold theirs |
 | adapter-out | `provider-claude`, `provider-codex`, `daemon-engine-store`, `agent-runtime` |
@@ -92,4 +92,4 @@ that ceiling in the same change, in plain sight of review.
 
 The phases of the build-graph plan empty it: `engine-ports` (phase 3) and the wide application
 (phase 4) remove the application's dependencies on its sisters, and moving `agent-runtime` behind
-the `AgentHost` port removes its uses from the providers and the engine.
+the `AgentHost` port of `engine-ports` (phase 3b) removes its uses from the providers and the engine.

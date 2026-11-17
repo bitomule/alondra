@@ -10,6 +10,7 @@ load("//tools:rust_sources.bzl", "production_sources")
 # The kernel sits below every engine subsystem: it depends on none of them, and only the crates of
 # the engine see it.
 WORKSPACE_DEPS = [
+    "//crates/engine-ports:engine_ports",
     "//crates/agent-application:agent_application",
     "//crates/agent-runtime:agent_runtime",
     "//crates/core:alondra_core",

@@ -184,6 +184,7 @@ dependencies = [
  "alondra-engine-kernel",
  "alondra-engine-live",
  "alondra-engine-mcp",
+ "alondra-engine-ports",
  "alondra-engine-worktrees",
  "alondra-foundation",
  "alondra-process-group",
@@ -221,6 +222,7 @@ dependencies = [
  "alondra-daemon-engine-store",
  "alondra-daemon-support",
  "alondra-domain-rules",
+ "alondra-engine-ports",
  "anyhow",
  "libc",
  "serde_json",
@@ -236,6 +238,7 @@ dependencies = [
  "alondra-core",
  "alondra-daemon-support",
  "alondra-domain-rules",
+ "alondra-engine-ports",
  "alondra-store",
  "anyhow",
  "axum",
@@ -258,6 +261,7 @@ dependencies = [
  "alondra-daemon-support",
  "alondra-domain",
  "alondra-domain-rules",
+ "alondra-engine-ports",
  "alondra-foundation",
  "alondra-provider-codex",
  "alondra-provider-contract",
@@ -357,6 +361,7 @@ dependencies = [
  "alondra-domain",
  "alondra-domain-rules",
  "alondra-engine-kernel",
+ "alondra-engine-ports",
  "alondra-process-group",
  "alondra-view-model",
  "alondra-views",
@@ -404,6 +409,7 @@ dependencies = [
  "alondra-daemon-support",
  "alondra-domain",
  "alondra-domain-rules",
+ "alondra-engine-ports",
  "alondra-foundation",
  "alondra-provider-contract",
  "alondra-store",
@@ -473,6 +479,7 @@ dependencies = [
  "alondra-domain",
  "alondra-domain-rules",
  "alondra-engine-kernel",
+ "alondra-engine-ports",
  "alondra-engine-sdk",
  "alondra-process-group",
  "alondra-provider-claude",
@@ -489,6 +496,17 @@ dependencies = [
  "sha2 0.11.0",
  "sysinfo",
  "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "alondra-engine-ports"
+version = "0.3.47"
+dependencies = [
+ "alondra-core",
+ "alondra-domain-rules",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 
@@ -510,6 +528,7 @@ dependencies = [
  "alondra-engine-admission",
  "alondra-engine-github",
  "alondra-engine-kernel",
+ "alondra-engine-ports",
  "alondra-foundation",
  "alondra-process-group",
  "alondra-provider-claude",
@@ -545,6 +564,7 @@ dependencies = [
  "alondra-daemon-support",
  "alondra-domain-rules",
  "alondra-engine-kernel",
+ "alondra-engine-ports",
  "alondra-view-model",
  "anyhow",
  "serde_json",
@@ -746,6 +766,7 @@ dependencies = [
  "alondra-e2e",
  "alondra-engine-admission",
  "alondra-engine-orchestrator",
+ "alondra-engine-ports",
  "alondra-engine-sdk",
  "alondra-process-group",
  "alondra-views",

@@ -5,7 +5,8 @@ use crate::domain_runtime::{CommitObserver, DomainRuntime};
 use crate::domain_store::OutboxMessage;
 use crate::live::LiveOf as _;
 use crate::locks::Poisonable as _;
-use crate::ports::{AccountWait, Exhausted, OrchestratorEngine};
+use alondra_engine_ports::orchestrator::{AccountWait, Exhausted, OrchestratorEngine};
+use alondra_engine_ports::{Registry, Runtime};
 use alondra_core::Millis;
 use alondra_core::accounts::{AccountId, AccountKey, Provider};
 use alondra_domain_rules::{AgentId, DomainError, DomainState};
@@ -38,7 +39,7 @@ pub fn open_engine_at(home: &Path, database: &Path) -> Result<DomainRuntime> {
         Box::new(crate::sdk_live::EndedWaits),
         Box::new(crate::allow_always::ChosenAlways),
     ])?;
-    runtime.provide::<dyn OrchestratorEngine>(Arc::new(Engine));
+    wire(runtime.ports());
     Ok(runtime)
 }
 
@@ -52,11 +53,17 @@ pub fn held_cards() -> Arc<crate::domain_holds::HeldCards> {
     Arc::new(crate::domain_holds::HeldCards)
 }
 
+/// Gives the registry what the orchestrator asks of the engine.
+pub fn wire(registry: &Registry) {
+    registry.provide::<dyn OrchestratorEngine>(Arc::new(Engine));
+}
+
 /// What the orchestrator asks of the engine.
 pub struct Engine;
 
 impl OrchestratorEngine for Engine {
-    fn select_account(&self, domain: &DomainRuntime, home: &Path, intent: &TaskSelection, now: Millis) -> Result<SelectionDecision, DomainError> {
+    fn select_account(&self, runtime: &dyn Runtime, home: &Path, intent: &TaskSelection, now: Millis) -> Result<SelectionDecision, DomainError> {
+        let domain = DomainRuntime::of(runtime);
         crate::accounts::select_for_launch(domain, home, intent, now)
     }
 
@@ -64,31 +71,38 @@ impl OrchestratorEngine for Engine {
         crate::accounts::registered_provider(home, provider)
     }
 
-    fn log_account_choice(&self, domain: &DomainRuntime, what: &str, account: &AccountKey, now: Millis) {
+    fn log_account_choice(&self, runtime: &dyn Runtime, what: &str, account: &AccountKey, now: Millis) {
+        let domain = DomainRuntime::of(runtime);
         crate::accounts::log_choice(domain, what, account, now);
     }
 
-    fn account_wait<'a>(&self, domain: &'a DomainRuntime) -> &'a AccountWait {
+    fn account_wait<'a>(&self, runtime: &'a dyn Runtime) -> &'a AccountWait {
+        let domain = DomainRuntime::of(runtime);
         &domain.live().account_wait
     }
 
-    fn follow_usage(&self, domain: &DomainRuntime, now: Millis) {
+    fn follow_usage(&self, runtime: &dyn Runtime, now: Millis) {
+        let domain = DomainRuntime::of(runtime);
         crate::usage_probe::follow(domain, now);
     }
 
-    fn reset_after_limit(&self, domain: &DomainRuntime, account: &AccountId, now: Millis) -> Option<Millis> {
+    fn reset_after_limit(&self, runtime: &dyn Runtime, account: &AccountId, now: Millis) -> Option<Millis> {
+        let domain = DomainRuntime::of(runtime);
         domain.live().measured.reset_after_limit(account, now)
     }
 
-    fn usage_pause(&self, domain: &DomainRuntime) -> Option<Exhausted> {
+    fn usage_pause(&self, runtime: &dyn Runtime) -> Option<Exhausted> {
+        let domain = DomainRuntime::of(runtime);
         domain.live().usage_pause.current()
     }
 
-    fn usage_changes(&self, domain: &DomainRuntime) -> watch::Receiver<Option<Exhausted>> {
+    fn usage_changes(&self, runtime: &dyn Runtime) -> watch::Receiver<Option<Exhausted>> {
+        let domain = DomainRuntime::of(runtime);
         domain.live().usage_pause.subscribe()
     }
 
-    fn settle_overdue(&self, domain: &DomainRuntime, now: Millis) {
+    fn settle_overdue(&self, runtime: &dyn Runtime, now: Millis) {
+        let domain = DomainRuntime::of(runtime);
         crate::obligation_watch::pass(domain, &mut domain.live().obligations.lock_or_recover("the obligation watch"), now);
     }
 
@@ -96,7 +110,8 @@ impl OrchestratorEngine for Engine {
         crate::domain_transport::render(state, message)
     }
 
-    fn last_words(&self, domain: &DomainRuntime, agent: &AgentId) -> Option<String> {
+    fn last_words(&self, runtime: &dyn Runtime, agent: &AgentId) -> Option<String> {
+        let domain = DomainRuntime::of(runtime);
         domain.live().mods.session(&agent.0).and_then(|reported| reported.answer).map(|answer| answer.text)
     }
 }

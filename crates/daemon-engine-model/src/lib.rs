@@ -20,5 +20,5 @@ pub mod settings_file;
 
 pub use account::{account_of, local_day};
 pub use account_identity::NativeAccountIdentity;
-pub use launch::{Failed, LaunchBody, LaunchOptions, LaunchPlan, retain_selection_options};
+pub use launch::{Failed, LaunchBody, LaunchOptions, LaunchOptionsFile, LaunchPlan, WrittenFailure, retain_selection_options};
 pub use state::{AllowedRule, BatchSelection, RuleState, Streak};

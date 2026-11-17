@@ -1,0 +1,44 @@
+load("//tools/bazel:crates.bzl", "port_crate")
+load("//tools:tree.bzl", "repo_tree")
+load("@crates//:defs.bzl", "all_crate_deps")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("//:version.bzl", "VERSION")
+load("//tools:rust_sources.bzl", "production_sources")
+
+# The ports the engine's pieces call each other through, and their registry. It depends on no piece
+# of the engine: every piece depends on it, and only the root sees which piece implements which.
+WORKSPACE_DEPS = [
+    "//crates/core:alondra_core",
+    "//crates/domain-rules:domain_rules",
+]
+
+port_crate(
+    name = "engine_ports",
+    srcs = production_sources(),
+    crate_name = "alondra_engine_ports",
+    version = VERSION,
+    deps = all_crate_deps(normal = True) + WORKSPACE_DEPS,
+)
+
+low_opt_rust_test(
+    name = "engine_ports_test",
+    size = "small",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "alondra_engine_ports",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    version = VERSION,
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS,
+)
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+
+# The crate's production sources: the crash report's log catalog reads them, and fails on a test
+# file among them.
+filegroup(
+    name = "report_sources",
+    srcs = production_sources(),
+    visibility = ["//crates/alondra:__pkg__"],
+)
+
+repo_tree()

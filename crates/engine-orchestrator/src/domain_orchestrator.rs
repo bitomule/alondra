@@ -1203,7 +1203,7 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
         /// The orchestrator of `domain`, whose daemon home is `home`, through the SDK; its fakes live
         /// in `root` and its hosts in `hosts`, which it keeps until it is dropped.
         pub fn over<H: AsRef<Path> + Send + 'static>(root: Directory, domain: Arc<DomainRuntime>, home: PathBuf, hosts: H) -> Self {
-            crate::wire(&domain);
+            crate::wire(domain.ports());
             let claude_home = registered_plugins(&root);
             let fake = root.join("orchestrator-fake-claude.py");
             std::fs::copy(runfile("FIXTURE_ORCHESTRATOR_NATIVE"), &fake).unwrap();

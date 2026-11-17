@@ -9,7 +9,7 @@ mod transport_tests;
 pub fn wired() {
     alondra_daemon_engine::wiring::TEST_OPEN.get_or_init(|| |home, database| {
         let domain = alondra_daemon_engine::wiring::open_engine_at(home, database)?;
-        crate::wire(&domain);
+        crate::wire(domain.ports());
         Ok(domain)
     });
 }

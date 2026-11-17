@@ -56,8 +56,8 @@ pub struct DomainRuntime {
     extensions: extensions::Extensions,
     /// The subsystems that hear of every commit, in the order the engine registered them.
     observers: Vec<Box<dyn CommitObserver>>,
-    /// The interfaces the crates of the engine offer each other, given when the engine is put together.
-    ports: ports::Ports,
+    /// The ports the pieces of the engine call each other through, given when the engine is put together.
+    ports: alondra_engine_ports::Registry,
     /// How many turns the orchestrator has ended, as its own record says: the evidence Alondra hands
     /// it what it still has to re-plan by.
     pub orchestrator_rests: std::sync::atomic::AtomicU64,
@@ -79,13 +79,45 @@ pub use alondra_daemon_engine_model::retention::Retained;
 pub mod batch_operations;
 pub mod extensions;
 pub mod observers;
-mod ports;
 pub mod seals;
 
 pub use extensions::{Extension, Slot};
 pub use observers::{Carried, CommitObserver};
 
+impl alondra_engine_ports::Runtime for DomainRuntime {
+    fn ports(&self) -> &alondra_engine_ports::Registry {
+        &self.ports
+    }
+
+    fn home(&self) -> &Path {
+        &self.home
+    }
+
+    fn state(&self) -> Arc<DomainState> {
+        Arc::clone(self.read().state())
+    }
+
+    fn system_command(&self, envelope: CommandEnvelope) -> Result<CommandOutcome, DomainError> {
+        self.execute_as_system(envelope.clone()).map_err(|error| error.into_domain_error(&envelope))
+    }
+
+    fn wake_seals(&self) {
+        self.seals.wake();
+    }
+}
+
 impl DomainRuntime {
+    pub fn ports(&self) -> &alondra_engine_ports::Registry {
+        &self.ports
+    }
+
+    /// The runtime a port was called on: a daemon runs no other kind. A bridge while the pieces of
+    /// the engine are still written against this type; each asks the [`alondra_engine_ports::Runtime`]
+    /// context instead once it no longer depends on the kernel.
+    pub fn of(runtime: &dyn alondra_engine_ports::Runtime) -> &DomainRuntime {
+        (runtime as &dyn std::any::Any).downcast_ref().expect("ports are called on the engine's domain runtime")
+    }
+
     pub fn note_orchestrator_progress(&self) {
         self.orchestrator_progress.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
