@@ -1416,8 +1416,15 @@ pub(crate) fn being_retaken(domain: &DomainRuntime, task: &TaskId) -> bool {
 /// Whether the task runs through the SDK, has not ended, and no owner of this daemon, launch,
 /// takeover or retake under way, or move to another account holds its execution.
 fn to_take(domain: &DomainRuntime, state: &DomainState, task: &TaskId) -> bool {
-    unowned(domain, state, task) && state.lifecycle_of(task).ok().is_none_or(|lifecycle| !lifecycle.host_released()
+    unowned(domain, state, task) && !closing_without_folder(domain, state, task) && state.lifecycle_of(task).ok().is_none_or(|lifecycle| !lifecycle.host_released()
         || !lifecycle.pending_inputs().is_empty() && !domain.gate().waits_for_slot(state, task))
+}
+
+/// A task whose node is closing and whose folder is gone: no host can start there, so none is
+/// given to it; the closer ends it.
+pub(crate) fn closing_without_folder(domain: &DomainRuntime, state: &DomainState, task: &TaskId) -> bool {
+    state.tasks.get(task).is_some_and(|task| state.in_cleanup(task) || state.node_closing(task))
+        && domain.task_worktree(task).ok().flatten().is_some_and(|dir| !std::path::Path::new(&dir).exists())
 }
 
 fn unowned(domain: &DomainRuntime, state: &DomainState, task: &TaskId) -> bool {
