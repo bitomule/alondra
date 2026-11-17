@@ -322,13 +322,13 @@ fn a_task_resting_after_a_move_leaves_the_usage_limit_when_it_moves_again() {
     must(&mut s, Actor::System, Command::RecordHostEnded { task_id: "t".into(), generation: 1, resumes: false, by_alondra: true, ended_work: vec![] });
     must(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![
         account(Provider::Claude, "default", AccountState::SignedOut), account(Provider::Codex, "default", AccountState::SignedIn),
-    ], reserve: crate::usage::default_reserve() });
+    ], reserve: alondra_core::usage::default_reserve() });
     must(&mut s, Actor::System, Command::DeferTaskMove { task_id: "t".into(), account: claude() });
     assert_eq!(usage_holds(&s).len(), 1, "the task rests after its move, still held by Codex's limit");
     assert!(s.lifecycle_of(&"t".into()).unwrap().execution().is_none());
     must(&mut s, Actor::System, Command::RecordAccounts { accounts: vec![
         account(Provider::Claude, "default", AccountState::SignedIn), account(Provider::Codex, "default", AccountState::SignedIn), account(Provider::Claude, "second", AccountState::SignedIn),
-    ], reserve: crate::usage::default_reserve() });
+    ], reserve: alondra_core::usage::default_reserve() });
     must(&mut s, Actor::System, Command::RecordModelCatalog { catalog: catalog(Provider::Claude, "second", "opus") });
     let second = AccountKey::new(Provider::Claude, AccountId::parse("second").unwrap());
     move_to(&mut s, second.clone()).unwrap();
