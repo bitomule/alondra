@@ -319,7 +319,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-engine-github"
-version = "0.3.46"
+version = "0.3.47"
 dependencies = [
  "alondra-core",
  "alondra-daemon-engine-model",
