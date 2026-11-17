@@ -110,10 +110,6 @@ impl AdmissionGate for Gate {
         domain.admission().resume_now(domain, session, now)
     }
 
-    fn resume_by_user_message(&self, domain: &DomainRuntime, session: &str, now: Millis) {
-        domain.admission().resume_by_user_message(domain, session, now);
-    }
-
     fn release_by_user_message(&self, domain: &DomainRuntime, session: &str) {
         domain.admission().release_by_user_message(domain, session);
     }

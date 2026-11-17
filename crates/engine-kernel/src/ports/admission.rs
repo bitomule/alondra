@@ -183,8 +183,6 @@ pub trait AdmissionGate: Send + Sync {
     fn pause_by_user(&self, domain: &DomainRuntime, session: &str, now: Millis) -> Result<(), &'static str>;
     /// The user resumed a paused node: it waits in the queue like a start. False if it is not paused.
     fn resume_now(&self, domain: &DomainRuntime, session: &str, now: Millis) -> bool;
-    /// The user wrote to a node of the Agent SDK they paused: it comes back through the queue.
-    fn resume_by_user_message(&self, domain: &DomainRuntime, session: &str, now: Millis);
     /// The user wrote to a `claude --bg` node a holding pause stopped: the pause ends.
     fn release_by_user_message(&self, domain: &DomainRuntime, session: &str);
     fn paused(&self, domain: &DomainRuntime, session: &str) -> Option<Paused>;

@@ -125,6 +125,12 @@ impl Assembled {
         let service = self.service.as_ref().context("the home has no service: call scenario_phone::prepare before starting")?;
         service.register_phone_push(phone, binding).await
     }
+
+    /// The most nodes that work at once, fixed from now on as the user sets it in Settings.
+    pub fn limit_nodes(&self, count: u32) {
+        self.domain.admission().tune(admission::Tuning { spacing: 1_000, limit: Some(admission::Limit::Fixed(count)) });
+        self.domain.admission().poke();
+    }
 }
 
 /// Opens the domain at `config.home` and assembles the daemon over it: what a scenario starts.

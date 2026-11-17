@@ -134,6 +134,11 @@ pub enum Step {
     LoginRestored { #[serde(default = "Step::default_account")] account: String },
     /// The process of the SDK host of `task` dies.
     HostExit { task: String },
+    /// The user presses `action` (`pause`, `resume`...) that the task's screen offers for `task` or
+    /// its node.
+    PressTask { task: String, action: String },
+    /// The user sets how many nodes work at once.
+    NodeLimit { count: u32 },
     /// The user writes to the node of `task` from the task's screen of the app.
     Tell { task: String, text: String },
     /// The node of `task` reads the oldest message the user wrote to it that it has not read, in

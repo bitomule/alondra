@@ -345,41 +345,30 @@ async fn pausing_an_sdk_node_raises_no_card_and_its_task_shows_it_paused() {
     assert_eq!(node.prompts().len(), 2, "{:?}", node.prompts());
 }
 
-/// The user's own message to a node they paused resumes it like their Resume: it waits in the
-/// queue while every slot is taken, nothing reaches Claude meanwhile, and the gate lets it go on.
+/// 17 November, 16:28: a message sent as the user's words to a node the user paused at 15:28 queued
+/// its return, and the node started again at 16:51 with nobody pressing Resume. A pause of the user
+/// ends only with a later Resume of the user's: the message waits with the task's inputs, the node
+/// stays paused whatever slots free, and the Resume brings it back with the message.
 #[tokio::test]
-async fn the_users_own_message_to_a_paused_sdk_node_waits_for_a_slot_and_then_reaches_claude() {
+async fn the_users_own_message_to_a_paused_sdk_node_waits_for_the_users_resume() {
     super::wired();
     let mut node = SdkNode::working();
     node.pause();
-    node.domain.admission().tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(0)) });
+    node.set_limit(1);
     let body = serde_json::from_value(serde_json::json!({"text": "Use the short changelog format"})).unwrap();
     crate::domain_messages::deliver(&node.domain, &node.home, &user(), "The user", &AgentId(node.agent()), body, true).await.unwrap();
     node.gate_look().await;
     node.step();
-    assert!(node.domain.admission().paused(&node.domain, &node.agent()).is_some(), "no slot: it still waits");
-    assert_eq!(node.dispatched_inputs(), 0, "nothing reaches the host before the gate lets it go on");
-    let pacing = node.domain.admission().live(&node.domain, alondra_core::now_millis()).unwrap();
-    assert_eq!(pacing.queued.iter().map(|queued| queued.task_id.as_str()).collect::<Vec<_>>(), [SDK_TASK], "it waits in the queue");
-    let read = node.domain.read();
-    let live = alondra_views::live::LiveSnapshot { pacing: Some(pacing), ..Default::default() };
-    let shown = |key: &str| serde_json::to_string(&alondra_views::build(key, alondra_views::RenderContext {
-        domain: read.state(), index: read.index(), live: &live, client: alondra_views::Client::Tui,
-        lang: alondra_views::text::Lang::En, transport: alondra_views::Transport::Loopback, cursor: "test", rendered_at: "",
-    }).unwrap()).unwrap();
-    let tasks = shown("tasks");
-    assert!(tasks.contains("Starts when there is room") && !tasks.contains("\"text\":\"Paused") && !tasks.contains("\"resume:"),
-        "its task shows it queued, with no Resume: {tasks}");
-    let screen = shown(&format!("task:{SDK_TASK}"));
-    assert!(screen.contains("1st of 1 · 0 of 0 slots taken"), "its own screen says its place: {screen}");
-    drop(read);
+    assert!(node.domain.admission().paused(&node.domain, &node.agent()).is_some(), "the message does not end the user's pause");
+    assert!(!node.gate().queue.iter().any(|waiting| waiting.key == Key::Resume(node.agent())), "nor does it queue the node's return");
+    assert_eq!(node.dispatched_inputs(), 0, "nothing reaches the host while it is paused");
+    let tasks = tasks_view(&node);
+    assert!(offered(&tasks, &format!("resume:{}", node.agent())).is_some(), "its task offers Resume: {tasks}");
 
-    node.domain.admission().tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(1)) });
+    assert!(node.domain.admission().resume_now(&node.domain, &node.agent(), alondra_core::now_millis()));
     node.gate_look().await;
-    assert!(node.domain.admission().paused(&node.domain, &node.agent()).is_none(), "a slot is free: it goes on");
+    assert!(node.domain.admission().paused(&node.domain, &node.agent()).is_none(), "the user's Resume brings it back");
     node.until_told("Use the short changelog format");
-    let resumed = node.prompts().iter().filter(|prompt| prompt.contains("resumed you")).count();
-    assert!(resumed <= 1, "{:?}", node.prompts());
 }
 
 /// The user paused the node and its host died with no owner left to replace it, as when a daemon's
@@ -1085,4 +1074,98 @@ async fn a_node_back_from_a_pause_starts_its_turn_on_the_slot_of_its_resume() {
     }
     assert!(node.prompts().iter().any(|prompt| prompt.contains("resumed you")), "{:?}", node.waiting_turns());
     assert!(node.gate().working <= 1);
+}
+
+#[cfg(test)]
+fn tasks_view(node: &SdkNode) -> String {
+    let read = node.domain.read();
+    let live = alondra_views::live::LiveSnapshot { pacing: node.domain.admission().live(&node.domain, alondra_core::now_millis()), ..Default::default() };
+    serde_json::to_string(&alondra_views::build("tasks", alondra_views::RenderContext {
+        domain: read.state(), index: read.index(), live: &live, client: alondra_views::Client::Tui,
+        lang: alondra_views::text::Lang::En, transport: alondra_views::Transport::Loopback, cursor: "test", rendered_at: "",
+    }).unwrap()).unwrap()
+}
+
+#[cfg(test)]
+fn offered(view: &str, prefix: &str) -> Option<alondra_views::action_id::ActionId> {
+    let start = view.find(&format!("\"{prefix}@"))? + 1;
+    alondra_views::action_id::ActionId::parse(&view[start..start + view[start..].find('"')?]).ok()
+}
+
+/// 17 November, 15:15: the user's answer to a task of high priority waited for a slot while the
+/// gate's log named a normal task coming back from a pause as the next. The high task's turn is the
+/// head of the queue, the log names it, and the first slot that frees is its.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_high_tasks_input_goes_before_a_normal_node_coming_back_and_the_log_names_it_next() {
+    super::wired();
+    let mut node = SdkNode::working();
+    node.pause();
+    let mut high = node.beside_resting("t-high");
+    run(&node.domain, user(), Command::SetPriority { task_id: "t-high".into(), priority: TaskPriority::High });
+    node.set_limit(0);
+    let now = alondra_core::now_millis();
+    assert!(node.domain.admission().resume_now(&node.domain, &node.agent(), now));
+    node.tell("t-high", "The user's answer");
+    assert!(!node.domain.admission().may_take_turn(&node.domain, &"t-high".into(), now));
+    node.gate_look().await;
+
+    let gate = node.gate();
+    let keys: Vec<Key> = gate.queue.iter().map(|waiting| waiting.key.clone()).collect();
+    assert_eq!(keys, [Key::Turn("t-high".into()), Key::Resume(node.agent())], "priority goes before coming back");
+    let (head, hold) = gate.next_held().expect("the queue waits");
+    assert_eq!((&head.key, head.priority, hold), (&Key::Turn("t-high".into()), TaskPriority::High, Hold::Slots { working: 0, limit: 0 }),
+        "the log names the high task's turn as the next, not the node coming back");
+
+    node.set_limit(1);
+    node.gate_look().await;
+    assert!(node.domain.admission().may_take_turn(&node.domain, &"t-high".into(), alondra_core::now_millis()), "the slot is the high task's");
+    assert!(node.gate().queue.iter().any(|waiting| waiting.key == Key::Resume(node.agent())), "the normal node still waits");
+    high.stop().unwrap();
+}
+
+/// 17 November: four tasks the user had resumed waited to come back and their task offered no
+/// action, not even Pause. Pause takes a node coming back out of the queue, and only the user's
+/// Resume puts it back.
+#[tokio::test]
+async fn a_node_coming_back_from_a_pause_offers_pause_and_pausing_it_takes_it_out_of_the_queue() {
+    super::wired();
+    let mut node = SdkNode::working();
+    node.pause();
+    node.set_limit(0);
+    let agent = node.agent();
+    assert!(node.domain.admission().resume_now(&node.domain, &agent, alondra_core::now_millis()));
+    node.gate_look().await;
+    assert!(node.gate().queue.iter().any(|waiting| waiting.key == Key::Resume(agent.clone())), "it waits to come back");
+
+    let tasks = tasks_view(&node);
+    let pause = offered(&tasks, &format!("pause:{agent}")).unwrap_or_else(|| panic!("a node coming back offers Pause: {tasks}"));
+    node.domain.admission().pause_by_user(&node.domain, &pause.subject, alondra_core::now_millis()).unwrap();
+    node.gate_look().await;
+    assert!(!node.gate().queue.iter().any(|waiting| waiting.key == Key::Resume(agent.clone())), "it left the queue");
+    assert_eq!(node.domain.admission().paused(&node.domain, &agent).map(|paused| paused.reason), Some(Reason::ByUser));
+    node.set_limit(1);
+    node.gate_look().await;
+    assert!(node.domain.admission().paused(&node.domain, &agent).is_some(), "a free slot does not bring it back");
+    let tasks = tasks_view(&node);
+    assert!(offered(&tasks, &format!("resume:{agent}")).is_some(), "it offers Resume: {tasks}");
+}
+
+/// A resting node whose next turn waits for a slot is in the queue too: Pause takes it out.
+#[tokio::test]
+async fn a_node_waiting_for_its_turn_offers_pause_and_pausing_it_takes_it_out_of_the_queue() {
+    super::wired();
+    let mut node = SdkNode::resting();
+    node.set_limit(0);
+    node.tell(SDK_TASK, "Go on");
+    node.step();
+    assert_eq!(node.waiting_turns(), [SDK_TASK]);
+    let agent = node.agent();
+    let tasks = tasks_view(&node);
+    let pause = offered(&tasks, &format!("pause:{agent}")).unwrap_or_else(|| panic!("a node waiting for its turn offers Pause: {tasks}"));
+    node.domain.admission().pause_by_user(&node.domain, &pause.subject, alondra_core::now_millis()).unwrap();
+    node.gate_look().await;
+    assert!(node.waiting_turns().is_empty(), "it left the queue");
+    node.set_limit(1);
+    node.gate_look().await;
+    assert!(node.domain.admission().paused(&node.domain, &agent).is_some(), "a free slot does not bring it back");
 }
