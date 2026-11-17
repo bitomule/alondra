@@ -157,14 +157,16 @@ pub struct Failed {
     pub why: String,
     /// A write it needed found the disk full: once there is space it can go on as it was.
     pub no_space: bool,
+    /// The domain's refusal, when the domain refused it.
+    pub refusal: Option<alondra_domain_rules::DomainError>,
 }
 impl Failed {
     pub fn new(why: String) -> Self {
-        Self { why, no_space: false }
+        Self { why, no_space: false, refusal: None }
     }
 
     pub fn written(why: String, error: &std::io::Error) -> Self {
-        Self { why, no_space: crate::disk::io_no_space(error) }
+        Self { why, no_space: crate::disk::io_no_space(error), refusal: None }
     }
 }
 impl std::fmt::Display for Failed {

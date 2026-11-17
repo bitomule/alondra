@@ -99,6 +99,7 @@ fn failed(what: &str) -> impl Fn(StoreError) -> Failed + '_ {
     move |error| Failed {
         why: format!("{what}: {}", store_text(&error)),
         no_space: matches!(&error, StoreError::Storage(error) if crate::disk::no_space(error)),
+        refusal: match &error { StoreError::Domain(error) => Some(error.clone()), StoreError::Storage(_) => None },
     }
 }
 fn store_text(error: &StoreError) -> String {
@@ -492,6 +493,7 @@ pub fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Lau
         }))
         .map_err(failed("registering the node"))?;
     let capability = domain.bind_agent(&agent.0).map_err(failed("issuing the node's capability"))?;
+    let unadmitted = Unadmitted { domain: Some(Arc::clone(&domain)), agent: agent.clone() };
     configuration.native_environment.extend(node_environment(domain.home(), &agent, capability.expose_for_child_environment()));
     let mut worker = Worker::configured(binding.clone(), configuration).map_err(adapter("configuring the SDK worker"))?;
     if let Some(session) = continuation.as_ref().and_then(Continuation::session) {
@@ -554,6 +556,7 @@ pub fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Lau
             Ok(lifecycle.pending_inputs().first().map(|input| (*input).clone()))
         })
         .map_err(failed("admitting the execution"))?;
+    unadmitted.admitted();
     #[cfg(any(test, feature = "test-hooks"))]
     if match &continuation {
         Some(Continuation::Node(_)) => *domain.handovers().crash_after.lock().unwrap() == Some(crate::domain_store::HandoverStep::SdkAdmitted),
@@ -578,6 +581,23 @@ pub fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Lau
     }
     driver.awaiting = first;
     Ok(driver)
+}
+
+/// The capability of a node whose execution was not admitted: a launch that stops before its
+/// admission commits revokes it, so a start refused again and again leaves none behind.
+struct Unadmitted { domain: Option<Arc<DomainRuntime>>, agent: AgentId }
+impl Unadmitted {
+    fn admitted(mut self) {
+        self.domain = None;
+    }
+}
+impl Drop for Unadmitted {
+    fn drop(&mut self) {
+        if let Some(domain) = &self.domain
+            && let Err(error) = domain.revoke_agent(&self.agent.0) {
+            log!("the capability of {} could not be revoked: {error:#}", self.agent.0);
+        }
+    }
 }
 
 /// One binding per SDK configuration, account and generation of its credential, named by them:
@@ -696,6 +716,7 @@ pub(crate) fn launch_admitted(domain: Arc<DomainRuntime>, backend: &SdkBackend, 
     let backend = &on_account_provider(&domain, backend, Provider::from_driver(grant.binding().driver()).ok_or_else(|| Failed::new("unknown execution provider".into()))?, &account_of(grant.binding()))?;
     let mut configuration = configuration(backend, grant.binding(), &adoption.directory, &instance, false, Some(worker_profile(plugin, &options, &adoption.directory)?))?;
     let capability = domain.bind_agent(&agent.0).map_err(failed("issuing the node's capability"))?;
+    let unadmitted = Unadmitted { domain: Some(Arc::clone(&domain)), agent: agent.clone() };
     configuration.native_environment.extend(node_environment(domain.home(), &agent, capability.expose_for_child_environment()));
     let mut worker = Worker::configured(grant.binding().clone(), configuration).map_err(adapter("configuring the SDK worker"))?;
     let identity=NativeAccountIdentity::load(worker.state_directory())?;
@@ -967,6 +988,7 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
     let resume = domain.read().state().lifecycle_of(&task).ok()
         .is_some_and(|lifecycle| lifecycle.resource() == Some(alondra_domain::ResourceEvidence::Available));
     let capability = domain.bind_agent(&agent.0).map_err(failed("issuing the node's capability"))?;
+    let unadmitted = Unadmitted { domain: Some(Arc::clone(&domain)), agent: agent.clone() };
     let environment = node_environment(domain.home(), &agent, capability.expose_for_child_environment());
     domain.own(scope.clone(),|owner|owner.require_native_identity(grant.binding(),identity.as_ref())).map_err(failed("Alondra cannot resume this session"))?;
     worker.relaunch(grant, adapter_state, base, resume, retaken, environment).map_err(|error| Failed::new(format!("its new host could not start ({error:?})")))?;

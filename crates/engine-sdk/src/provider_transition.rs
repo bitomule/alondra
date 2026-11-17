@@ -105,7 +105,8 @@ pub fn moving(domain:&DomainRuntime,task:&TaskId)->bool{
 /// Whether the task moved before a node started on its new account and none has started there
 /// yet: its last execution is still the one it moved from.
 fn starts_elsewhere(domain:&DomainRuntime,task:&TaskId)->bool{
-    let Ok(Some(change))=domain.store.lock_or_exit("the domain store").deferred_move(task) else{return false};
+    let held={let store=domain.store.lock_or_exit("the domain store");store.deferred_move(task).and_then(|deferred|match deferred{Some(change)=>Ok(Some(change)),None=>store.refused_move(task)})};
+    let Ok(Some(change))=held else{return false};
     let read=domain.read();let state=read.state();
     let open=state.lifecycle_of(task).is_ok_and(|lifecycle|!matches!(lifecycle.phase(),alondra_domain::TaskPhase::Finishing|alondra_domain::TaskPhase::Completed|alondra_domain::TaskPhase::Cancelled));
     let last=state.lifecycle_journal.get(task).and_then(|journal|journal.iter().rev().find_map(|record|match record{LifecycleRecord::Admitted{execution:Some(execution),..}=>Some(execution.instance.as_str().to_owned()),_=>None}));
@@ -207,7 +208,7 @@ fn prepare_context(domain:&DomainRuntime,plan:&Plan)->Result<PreparedHandoff,Dom
         }
         if plan.source.selection.as_ref().and_then(|selection|selection.effective.as_ref()).is_none(){return Err(failure("This older execution has no complete retained public history; continue its current native session").into())}
         let window=owner.state().model_catalogs.iter().find(|catalog|catalog.account==plan.target_account).and_then(|catalog|catalog.models.iter().find(|model|model.model==plan.target_model.model.model)).and_then(|model|model.context_window);
-        let prepared=alondra_store::prepare_context_handoff(&canonical,"Continue this Alondra task from its public records. The user changed its provider or model. Preserve completed work and answer through Alondra.",&entries,&coverage,None,HandoffBudget{destination_context_tokens:window,reserved_tokens:4096}).map_err(|error|failure(handoff_refusal(error)))?;
+        let prepared=alondra_store::prepare_context_handoff(&canonical,"Continue this Alondra task from its public records. The user changed its provider or model. Preserve completed work and answer through Alondra.",&entries,&coverage,None,HandoffBudget{destination_context_tokens:window,reserved_tokens:alondra_store::HANDOFF_RESERVED_TOKENS}).map_err(|error|failure(handoff_refusal(error)))?;
         if let Some(through)=&prepared.coverage.through{owner.pin_context(&plan.id,through)?;}
         owner.provider_transition_phase(&plan.id,Phase::SourceFenced,Phase::ContextReady,serde_json::to_value(&prepared).map_err(failure)?)?;
         Ok(prepared)
@@ -246,7 +247,8 @@ fn start_target(domain:&Arc<DomainRuntime>,plan:&Plan,prepared:PreparedHandoff)-
     let (backend,_)=domain.sdk().ok_or_else(||failure("Provider runtime missing"))?;
     let plugin=crate::plugins::node_in(domain.home()).filter(|plugin|plugin.is_dir()).or_else(||Some(domain.home().join(crate::plugins::NODE)).filter(|plugin|plugin.is_dir())).ok_or_else(||failure("Alondra's task plugin is unavailable; run alondra doctor --fix"))?;
     let launch=crate::sdk_owner::Launch{task:task.clone(),name:domain.read().state().tasks[task].title.clone(),directory:plan.source.directory.clone(),prompt:prepared.new_input,plugin,options:alondra_daemon_engine_model::LaunchOptions{provider:plan.target_account.provider,selection:Some(applied(plan)),model:Some(plan.target_model.model.model.clone()),effort:plan.target_model.reasoning_effort.clone(),disallowed_tools:plan.source.disallowed_tools.clone()},model:None,account:plan.target_account.account.clone()};
-    let driver=crate::sdk_owner::continue_session(Arc::clone(domain),backend,launch,crate::sdk_owner::Continuation::Transition{id:plan.id.clone()}).map_err(failure)?;
+    let driver=crate::sdk_owner::continue_session(Arc::clone(domain),backend,launch,crate::sdk_owner::Continuation::Transition{id:plan.id.clone()})
+        .map_err(|failed|failed.refusal.unwrap_or_else(||failure(failed.why)))?;
     domain.add_sdk_owner(crate::sdk_owner::Owner::spawn(driver));
     Ok(())
 }
@@ -256,7 +258,51 @@ pub(crate) async fn start_moved(domain:&Arc<DomainRuntime>,task:&TaskId)->Result
     if !starts_elsewhere(domain,task) || !ready_to_start(domain,task)? || !admitted(domain,task){return Ok(false)}
     let change=domain.store.lock_or_exit("the domain store").deferred_move(task).map_err(failure)?.ok_or_else(||failure("The move is missing"))?;
     let prepared=serde_json::from_value(prepared_facts(change.clone())).map_err(failure)?;
-    start_target(domain,&change.plan,prepared)?;
+    let started=current_target_model(domain,&change.plan).and_then(|target_model|start_target(domain,&Plan{target_model,..change.plan.clone()},prepared));
+    match started{
+        Err(error) if REFUSED_STARTS.contains(&error.code.as_str())=>{refuse_start(domain,&change,&error.message)?;Ok(false)}
+        started=>started.map(|()|true),
+    }
+}
+/// The model a moved task starts with, read again from its account's catalog: the catalog may have
+/// been refreshed since the move resolved it, and a selection of an older catalog is refused.
+fn current_target_model(domain:&DomainRuntime,plan:&Plan)->Result<ModelSelection,DomainError>{
+    let read=domain.read();
+    let catalog=read.state().model_catalogs.iter().find(|catalog|catalog.account==plan.target_account)
+        .ok_or_else(||DomainError::new("model_catalog_unavailable","Refresh the models of the account the task moved to"))?;
+    catalog.resolve(&alondra_core::model_selection::ModelCandidate{model:plan.target_model.model.model.clone(),reasoning_effort:plan.target_model.reasoning_effort.clone()})
+        .map_err(|reason|DomainError::new("model_unavailable",reason))
+}
+/// The refusals a moved task's start gets again however often it is tried: its context does not
+/// fit the destination, its model is no longer offered there, or the account cannot take it until
+/// the user acts.
+const REFUSED_STARTS:[&str;4]=["handoff_budget","model_unavailable","account_unavailable","paid_authorization_required"];
+/// Ends the start of a moved task that is refused for good: the move waits at `StartRefused`, the
+/// task says why it did not move, and a card asks the user to try again or cancel the task.
+fn refuse_start(domain:&DomainRuntime,change:&Transition,reason:&str)->Result<(),DomainError>{
+    let plan=&change.plan;
+    let reason:String=reason.chars().take(1900).collect();
+    log!("{} cannot start on {}; it waits for the user: {reason}",plan.task,plan.target_account.wire_id());
+    domain.own(scope(domain)?,|owner|{
+        let selection=owner.state().tasks.get(&plan.task).ok_or_else(||failure("Task missing"))?.selection.clone();
+        let refused=MoveRefused{account:plan.target_account.clone(),reason:reason.clone()};
+        owner.stage_command(&Actor::System,&envelope(domain,&format!("{}-start-refused-{}",plan.id,alondra_core::now_millis()),Command::AbortTaskSelection{task_id:plan.task.clone(),selection,refused:Some(refused)}),Attached::None)?;
+        owner.stage_command(&Actor::System,&envelope(domain,&format!("{}-start-problem-{}",plan.id,alondra_core::now_millis()),Command::RaiseStartProblem{task_id:plan.task.clone(),problem:StartProblem::MoveStartRefused{account:plan.target_account.clone(),error:reason.clone()}}),Attached::None)?;
+        owner.provider_transition_phase(&plan.id,Phase::Done,Phase::StartRefused,json!({"reason":reason,"context":change.facts["context"]}))
+    }).map_err(store_failure).map(drop)
+}
+/// The user chose to try again the refused start of a moved task: its move goes back to waiting
+/// for its target to start, and the next pass tries it once more.
+fn retry_refused(domain:&DomainRuntime,change:&Transition)->Result<bool,DomainError>{
+    let retry={
+        let read=domain.read();let state=read.state();
+        state.open_start_problem(&change.plan.task).is_none() && state.last_start_problem(&change.plan.task).is_some_and(|card|!card.withdrawn && matches!(&card.payload,
+            InteractionPayload::Question{answer:Some(answer),..} if answer.option_id==START_RETRY)
+            && matches!(alondra_domain_rules::start_problem::from_body(&card.body),Some(StartProblem::MoveStartRefused{..})))
+    };
+    if !retry{return Ok(false)}
+    log!("{} tries again to start on {}, as the user asked",change.plan.task,change.plan.target_account.wire_id());
+    phase(domain,change,Phase::Done,json!({"deferred_start":true,"context":change.facts["context"]}))?;
     Ok(true)
 }
 /// Whether the gate lets the moved task's next node start, as it lets a queued task: a free slot,
@@ -393,7 +439,7 @@ pub async fn advance(domain:&Arc<DomainRuntime>,task:&TaskId)->Result<Phase,Doma
                 return Ok(change.phase)
             }
             Phase::Consumed=>{phase(domain,&change,Phase::Done,change.facts.clone())?;}
-            Phase::Done|Phase::Aborted=>{domain.selection_changes().fences.lock_or_recover("the provider transition fences").remove(&plan.id);return Ok(change.phase)}
+            Phase::Done|Phase::Aborted|Phase::StartRefused=>{domain.selection_changes().fences.lock_or_recover("the provider transition fences").remove(&plan.id);return Ok(change.phase)}
             Phase::Uncertain=>{
                 abort(domain,task,change.facts["reason"].as_str().unwrap_or("The move was left without an outcome"))?;
                 return Ok(Phase::Aborted)
@@ -420,6 +466,10 @@ pub async fn pass(domain:&Arc<DomainRuntime>){
             log!("selection change of {} could not finish: {}",change.plan.task,error.message);
             if let Err(failed)=abort(domain,&change.plan.task,&error.message){log!("selection change of {} could not be aborted: {}",change.plan.task,failed.message);}
         }
+    }
+    let refused=domain.store.lock_or_exit("the domain store").refused_moves();
+    for change in refused.unwrap_or_default(){
+        if let Err(error)=retry_refused(domain,&change){log!("the refused start of {} could not be tried again: {}",change.plan.task,error.message);}
     }
     let moved=domain.store.lock_or_exit("the domain store").deferred_moves();
     for change in moved.unwrap_or_default(){

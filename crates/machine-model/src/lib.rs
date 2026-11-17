@@ -88,6 +88,9 @@ struct Machine {
     /// The tasks whose move to another account was deferred to their next start, and that account:
     /// saved, as the store keeps a deferred move.
     deferred: BTreeMap<TaskId, AccountKey>,
+    /// The deferred moves whose start was refused: each waits for the user's answer on its card,
+    /// and goes back to `deferred` when the user asks to try again. Saved, as the store keeps it.
+    refused_starts: BTreeMap<TaskId, AccountKey>,
     /// The revision at which a task's admission was refused: it is tried again once something changed.
     unadmitted: BTreeMap<TaskId, Revision>,
     /// The turns the orchestrator ended: it rests every ten minutes, answering or failing.
@@ -168,7 +171,7 @@ impl Machine {
             domain: Arc::new(DomainState::new("machine")), world: World::new(history.script.clone(), history.slots), watch: Watch::default(),
             granted: BTreeSet::new(), wakes: BTreeMap::new(), rearms: BTreeMap::new(), agents: 0, commands: 0, refused: BTreeMap::new(),
             cursors: BTreeMap::new(), messages: Vec::new(), owing: BTreeMap::new(), taken: BTreeMap::new(),
-            deferred: BTreeMap::new(), unadmitted: BTreeMap::new(), rests: 0, last_rest: 0, seen: Seen::default(), trace: Vec::new(),
+            deferred: BTreeMap::new(), refused_starts: BTreeMap::new(), unadmitted: BTreeMap::new(), rests: 0, last_rest: 0, seen: Seen::default(), trace: Vec::new(),
         };
         let user = Actor::User { user_id: "u".into() };
         let orchestrator = Actor::Orchestrator { generation: 0 };
@@ -739,6 +742,14 @@ impl Machine {
         }
         let state = self.state();
         self.deferred.retain(|task, _| state.tasks.get(task).is_some_and(|held| !held.over()));
+        self.refused_starts.retain(|task, _| state.tasks.get(task).is_some_and(|held| !held.over()));
+        let retried: Vec<TaskId> = self.refused_starts.keys().filter(|task| state.open_start_problem(task).is_none()
+            && state.last_start_problem(task).is_some_and(|card| matches!(&card.payload, InteractionPayload::Question { answer: Some(answer), .. } if answer.option_id == alondra_domain_rules::START_RETRY)))
+            .cloned().collect();
+        for task in retried {
+            let account = self.refused_starts.remove(&task).expect("listed above");
+            self.deferred.insert(task, account);
+        }
         let ready: Vec<(TaskId, AccountKey)> = self.deferred.iter().filter(|(task, _)| provider_transition::ready_in(&state, task).unwrap_or(false))
             .map(|(task, account)| (task.clone(), account.clone())).collect();
         let mut moved = false;
@@ -752,7 +763,12 @@ impl Machine {
                 conversation: format!("conversation-{task}-{}", self.agents), instance: format!("instance-{task}-{}", self.agents),
                 host: sdk_owner::HOST.into(), model: None, account: Some(account.account.clone()), leaves_limit: None,
             });
-            if admitted.is_err() {
+            if let Err(reason) = admitted {
+                self.deferred.remove(&task);
+                let selection = self.state().tasks[&task].selection.clone();
+                let _ = self.run(Actor::System, Command::AbortTaskSelection { task_id: task.clone(), selection, refused: Some(MoveRefused { account: account.clone(), reason: reason.clone() }) });
+                let _ = self.run(Actor::System, Command::RaiseStartProblem { task_id: task.clone(), problem: alondra_domain_rules::StartProblem::MoveStartRefused { account: account.clone(), error: reason } });
+                self.refused_starts.insert(task, account);
                 continue;
             }
             self.deferred.remove(&task);
