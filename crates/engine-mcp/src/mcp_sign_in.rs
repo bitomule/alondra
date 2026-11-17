@@ -12,7 +12,7 @@ use std::time::Duration;
 const EXCHANGE: Duration = Duration::from_secs(30);
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum SignInError {
+pub enum SignInError {
     /// Not the address a sign-in comes back to: `http://localhost:<port>/callback?…`.
     NotAReturn,
     /// The domain refuses it: no sign-in open to that server, or another sign-in's return.
@@ -60,7 +60,7 @@ fn deliver(back: &Return) -> Result<u16, String> {
 
 /// Hands `address`, where the browser came back to after the user signed in to `server` for the
 /// task's node, to Claude's listener; then the sign-in is no longer open.
-pub(crate) fn complete(domain: &DomainRuntime, task: &TaskId, server: &str, address: &str) -> Result<(), SignInError> {
+pub fn complete(domain: &DomainRuntime, task: &TaskId, server: &str, address: &str) -> Result<(), SignInError> {
     let back = parse(address)?;
     let state = domain.state().map_err(|error| SignInError::Refused(error.to_string()))?;
     let envelope = CommandEnvelope {

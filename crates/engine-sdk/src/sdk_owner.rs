@@ -2246,7 +2246,7 @@ impl Drop for Driver {
 }
 
 fn feed(provider: Provider, domain: &DomainRuntime, agent: &AgentId, batch: &OrderedObservation) {
-    match provider { Provider::Claude => crate::sdk_live::feed(domain, agent, batch), Provider::Codex => crate::codex_live::feed(domain, agent, batch) }
+    match provider { Provider::Claude => crate::sdk_live::feed(domain, &domain.live().mods, agent, batch), Provider::Codex => crate::codex_live::feed(domain, &domain.live().mods, agent, batch) }
 }
 
 /// Marks, in the host's folder, that Alondra itself ends the host: the daemon stops it, or its

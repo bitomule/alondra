@@ -7,9 +7,9 @@ use alondra_core::{BackgroundItem, BackgroundKind, Millis};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-pub(crate) const STEPS_LIMIT: usize = 50;
-pub(crate) const FINISHED_LIMIT: usize = 5;
-pub(crate) const RUNNING_LIMIT: usize = 20;
+pub const STEPS_LIMIT: usize = 50;
+pub const FINISHED_LIMIT: usize = 5;
+pub const RUNNING_LIMIT: usize = 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -79,7 +79,7 @@ pub struct Step {
 }
 
 /// A background task as Claude Code lists it at the end of a turn.
-pub(crate) struct Listed<'a> {
+pub struct Listed<'a> {
     pub id: &'a str,
     pub kind: &'a str,
     pub description: &'a str,
@@ -109,7 +109,7 @@ fn keep_recent<T>(items: &mut Vec<T>, started: impl Fn(&T) -> Millis, finished: 
 }
 
 impl NodeWork {
-    pub(crate) fn agent_started(&mut self, id: String, description: Option<String>, kind: Option<String>, model: Option<String>, now: Millis) {
+    pub fn agent_started(&mut self, id: String, description: Option<String>, kind: Option<String>, model: Option<String>, now: Millis) {
         match self.agents.iter_mut().find(|agent| agent.id == id) {
             Some(agent) => {
                 if let Some(description) = description.filter(|text| !text.trim().is_empty()) { agent.description = short_label(&description); }
@@ -128,20 +128,20 @@ impl NodeWork {
         self.trim();
     }
 
-    pub(crate) fn agent_model(&mut self, id: &str, model: String) {
+    pub fn agent_model(&mut self, id: &str, model: String) {
         if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id) {
             agent.model = Some(model);
         }
     }
 
-    pub(crate) fn agent_finished(&mut self, id: &str, outcome: RunOutcome, now: Millis) {
+    pub fn agent_finished(&mut self, id: &str, outcome: RunOutcome, now: Millis) {
         if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == id && agent.end.is_none()) {
             agent.end = Some(End { at: now, outcome });
         }
         self.trim();
     }
 
-    pub(crate) fn workflow_started(&mut self, id: String, name: String, transcript_dir: Option<PathBuf>, now: Millis) {
+    pub fn workflow_started(&mut self, id: String, name: String, transcript_dir: Option<PathBuf>, now: Millis) {
         match self.workflows.iter_mut().find(|workflow| workflow.id == id) {
             Some(workflow) => {
                 workflow.name = short_label(&name);
@@ -152,7 +152,7 @@ impl NodeWork {
         self.trim();
     }
 
-    pub(crate) fn workflow_finished(&mut self, id: &str, outcome: RunOutcome, now: Millis) {
+    pub fn workflow_finished(&mut self, id: &str, outcome: RunOutcome, now: Millis) {
         if let Some(workflow) = self.workflows.iter_mut().find(|workflow| workflow.id == id && workflow.end.is_none()) {
             workflow.end = Some(End { at: now, outcome });
         }
@@ -161,7 +161,7 @@ impl NodeWork {
 
     /// The whole list of background work Claude Code gives at the end of a turn: what is in it
     /// runs, and a subagent or workflow that ran and is no longer in it has finished.
-    pub(crate) fn listed(&mut self, tasks: &[Listed<'_>], now: Millis) {
+    pub fn listed(&mut self, tasks: &[Listed<'_>], now: Millis) {
         for task in tasks {
             match task.kind {
                 "subagent" => self.agent_started(task.id.to_owned(), Some(task.description.to_owned()),
@@ -189,7 +189,7 @@ impl NodeWork {
     }
 
     /// The session ended, and stopped everything it still ran.
-    pub(crate) fn ended(&mut self, now: Millis) {
+    pub fn ended(&mut self, now: Millis) {
         let stopped = Some(End { at: now, outcome: RunOutcome::Stopped });
         for agent in self.agents.iter_mut().filter(|agent| agent.end.is_none()) {
             agent.end = stopped;
@@ -201,7 +201,7 @@ impl NodeWork {
     }
 
     /// A shell or other background task ended; a subagent or workflow ends in its own run.
-    pub(crate) fn task_ended(&mut self, id: &str, item: BackgroundItem, end: End) {
+    pub fn task_ended(&mut self, id: &str, item: BackgroundItem, end: End) {
         if item.kind == BackgroundKind::Agent || self.agents.iter().any(|agent| agent.id == id) || self.workflows.iter().any(|workflow| workflow.id == id) {
             return;
         }
@@ -217,7 +217,7 @@ impl NodeWork {
             || self.workflows.iter().any(|workflow| workflow.id == id && workflow.end.is_none())
     }
 
-    pub(crate) fn step_created(&mut self, mut step: StepIn) {
+    pub fn step_created(&mut self, mut step: StepIn) {
         step.status = step.status.filter(|status| *status != StepStatus::Unknown);
         if self.steps.iter().any(|known| known.id == step.id) {
             return self.step_updated(step);
@@ -233,7 +233,7 @@ impl NodeWork {
         self.steps.push(Step { id: step.id, subject: short_label(&subject), status: step.status.unwrap_or(StepStatus::Pending), active_form: step.active_form.map(|text| short_label(&text)) });
     }
 
-    pub(crate) fn step_updated(&mut self, mut step: StepIn) {
+    pub fn step_updated(&mut self, mut step: StepIn) {
         step.status = step.status.filter(|status| *status != StepStatus::Unknown);
         if step.status == Some(StepStatus::Deleted) {
             self.steps.retain(|known| known.id != step.id);
@@ -248,7 +248,7 @@ impl NodeWork {
     }
 
     /// The whole list, as `TaskList` or `TodoWrite` gives it: it replaces what was reconstructed.
-    pub(crate) fn steps_listed(&mut self, steps: Vec<StepIn>) {
+    pub fn steps_listed(&mut self, steps: Vec<StepIn>) {
         let known = std::mem::take(&mut self.steps);
         for step in steps.into_iter().take(STEPS_LIMIT) {
             let Some(subject) = step.subject.filter(|subject| !subject.is_empty()) else { continue };

@@ -24,7 +24,7 @@ const ANSWER: Duration = Duration::from_secs(20);
 const LISTENER: Duration = Duration::from_secs(2);
 /// Claude keeps what it read of its stored sign-ins this long: a reconnect inside it may read the
 /// old one, so another follows once it is over.
-pub(crate) const SIGN_IN_CACHE: Millis = 30_000;
+pub const SIGN_IN_CACHE: Millis = 30_000;
 const RECONNECTS: u32 = 3;
 
 /// What Connect hands the user.
@@ -277,7 +277,7 @@ pub fn sign_out(domain: &DomainRuntime, target: &Target) -> Result<String, Domai
 /// or whose sign-in ended: one at once, and again after Claude's cache of stored sign-ins is over,
 /// at most `RECONNECTS`.
 #[derive(Default)]
-pub(crate) struct Reconnects {
+pub struct Reconnects {
     tried: HashMap<(TaskId, String), (u32, Millis)>,
     signed_in: BTreeSet<McpServerKey>,
 }
@@ -285,12 +285,12 @@ pub(crate) struct Reconnects {
 impl Reconnects {
     /// A sign-in to `server` ended: it is owed as if a node reported it connected, until no node
     /// that reports it signed out has a reconnect left.
-    pub(crate) fn signed_in(&mut self, server: McpServerKey) {
+    pub fn signed_in(&mut self, server: McpServerKey) {
         self.signed_in.insert(server);
     }
 
     /// What is due now, from the servers each open task's node reported.
-    pub(crate) fn due(&mut self, nodes: &[(TaskId, &[McpServerState])], now: Millis) -> (Vec<(TaskId, String)>, Option<Millis>) {
+    pub fn due(&mut self, nodes: &[(TaskId, &[McpServerState])], now: Millis) -> (Vec<(TaskId, String)>, Option<Millis>) {
         let connected: BTreeSet<McpServerKey> = nodes.iter()
             .flat_map(|(_, servers)| servers.iter().filter(|server| server.status == McpStatus::Connected).map(McpServerKey::of))
             .chain(self.signed_in.iter().cloned())
@@ -349,7 +349,7 @@ type Returning = (TaskId, String, String);
 /// The sign-ins handed back to Claude. Handing one back ends it in the state at once, so the
 /// watcher takes them from here too, whether or not it ever saw them open.
 #[derive(Default)]
-pub(crate) struct Returns(Mutex<Vec<Returning>>);
+pub struct Returns(Mutex<Vec<Returning>>);
 
 /// The open sign-ins that come back to Claude's listener, with its port: those of a card's waiting
 /// tasks and those the MCP servers screen opened alike.

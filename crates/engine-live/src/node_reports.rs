@@ -177,7 +177,7 @@ pub enum Activity {
 /// still works until it is back. A call or a turn that runs for hours is still work until it, its
 /// own timeout or Claude ends it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Halt {
+pub enum Halt {
     /// The Bash call it waits on has no shell left: two looks after it started found none.
     ShellGone,
     /// The session's own process is gone while its turn was under way.
@@ -207,7 +207,7 @@ impl Reported {
     }
 
     /// What stopped the node's turn under way, if a fact says one did.
-    pub(crate) fn halt(&self) -> Option<Halt> {
+    pub fn halt(&self) -> Option<Halt> {
         if self.ended || !self.in_turn() || self.job.as_ref().is_some_and(|job| job.phase == crate::job_state::Phase::Failed) {
             return None;
         }
@@ -230,7 +230,7 @@ impl Reported {
 
     /// Moves the background tasks `gone` picks out of the running list into the ended ones: a
     /// shell already seen gone ended then, any other with `outcome` now.
-    pub(crate) fn end_background(&mut self, gone: impl Fn(&str) -> bool, outcome: RunOutcome, now: Millis) {
+    pub fn end_background(&mut self, gone: impl Fn(&str) -> bool, outcome: RunOutcome, now: Millis) {
         let (ended, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.background).into_iter().partition(|(id, _)| gone(id));
         self.background = kept;
         for (id, item) in ended {
@@ -241,7 +241,7 @@ impl Reported {
 
     /// Everything the node left running is known to be over: Claude Code's whole list is empty, or
     /// holds only commands whose shells are gone.
-    pub(crate) fn work_gone(&self) -> bool {
+    pub fn work_gone(&self) -> bool {
         self.background_known && self.background.iter().all(|(_, item)| self.shell_gone(item))
     }
 
@@ -252,7 +252,7 @@ impl Reported {
     }
 
     /// What one report says of the session, but its start, which only `Reports` records.
-    pub(crate) fn record(&mut self, report: Report, now: Millis) {
+    pub fn record(&mut self, report: Report, now: Millis) {
         match report {
             Report::SessionStart { .. } | Report::PromptSubmit { .. } => {}
             Report::SessionEnd => {
@@ -341,7 +341,7 @@ impl Default for LiveChanges {
 }
 
 impl LiveChanges {
-    pub(crate) fn publish(&self) { self.0.send_replace(()); }
+    pub fn publish(&self) { self.0.send_replace(()); }
     pub fn subscribe(&self) -> tokio::sync::watch::Receiver<()> { self.0.subscribe() }
 }
 
@@ -359,7 +359,7 @@ pub struct Reports {
 }
 
 impl Reports {
-    pub(crate) fn apply(&self, envelope: Envelope, now: Millis) {
+    pub fn apply(&self, envelope: Envelope, now: Millis) {
         self.apply_on(envelope, now);
         self.changed.publish();
     }
@@ -396,7 +396,7 @@ impl Reports {
         steps
     }
 
-    pub(crate) fn apply_codex(&self, session_id: &str, message: &Value, now: Millis) {
+    pub fn apply_codex(&self, session_id: &str, message: &Value, now: Millis) {
         let mut sessions = self.sessions.lock_or_exit("the node reports");
         let session = sessions.entry(session_id.to_owned()).or_default();
         session.last_event_at = Some(now);
@@ -420,7 +420,7 @@ impl Reports {
         self.changed.publish();
     }
 
-    pub(crate) fn connect(&self, hello: Hello, now: Millis) -> u64 {
+    pub fn connect(&self, hello: Hello, now: Millis) -> u64 {
         let number = self.connections.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         let mut sessions = self.sessions.lock_or_exit("the node reports");
         if let Some(key) = hello.launch_key {
@@ -456,7 +456,7 @@ impl Reports {
         }
     }
 
-    pub(crate) fn set_peer(&self, session_id: &str, pid: u32) {
+    pub fn set_peer(&self, session_id: &str, pid: u32) {
         self.sessions.lock_or_exit("the node reports").entry(session_id.to_owned()).or_default().peer_pid = Some(pid);
     }
 
@@ -476,33 +476,33 @@ impl Reports {
         if changed { self.changed.publish(); }
     }
 
-    pub(crate) fn connected(&self, session_id: &str) -> bool {
+    pub fn connected(&self, session_id: &str) -> bool {
         self.sessions.lock_or_exit("the node reports").get(session_id).is_some_and(|session| session.connection.is_some())
     }
 
     /// What a session whose mod loaded reports first, for tests that launch through a fake Claude.
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn loaded_in(&self, session_id: &str) {
+    pub fn loaded_in(&self, session_id: &str) {
         self.loaded_for(session_id, None);
     }
 
     /// A fake Claude's launch whose mod loads: the session reports the key of the settings file
     /// the launch passed with `--settings`, as the real mod reports `ALONDRA_DOMAIN_SETTINGS`.
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn loaded_by(&self, session_id: &str, launch_args: &[String]) {
+    pub fn loaded_by(&self, session_id: &str, launch_args: &[String]) {
         let settings = launch_args.windows(2).find(|pair| pair[0] == "--settings").expect("a launch passes --settings");
         let key = std::path::Path::new(&settings[1]).file_stem().and_then(|stem| stem.to_str()).expect("a settings file name");
         self.loaded_for(session_id, Some(key));
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn loaded_for(&self, session_id: &str, launch_key: Option<&str>) {
+    pub fn loaded_for(&self, session_id: &str, launch_key: Option<&str>) {
         let report = Report::SessionStart { version: "2.1.287".into(), cwd: None, launch_key: launch_key.map(str::to_owned) };
         self.apply(Envelope { session_id: session_id.into(), report }, alondra_core::now_millis());
     }
 
     /// The session started with a launch key, which only Alondra's own launches carry.
-    pub(crate) fn started_with_a_launch_key(&self, session_id: &str) -> bool {
+    pub fn started_with_a_launch_key(&self, session_id: &str) -> bool {
         self.launches.lock_or_recover("the launch keys").values().any(|session| session == session_id)
     }
 
@@ -511,13 +511,12 @@ impl Reports {
     }
 
     /// Whether the session's mod said it loaded: only Alondra's launches carry the node mod.
-    pub(crate) fn is_node(&self, session_id: &str) -> bool {
+    pub fn is_node(&self, session_id: &str) -> bool {
         self.sessions.lock_or_exit("the node reports").get(session_id).is_some_and(|session| session.started_at.is_some())
     }
 
 }
 
-pub use alondra_daemon_engine_model::local_day;
 
 #[cfg(test)]
 mod tests {
