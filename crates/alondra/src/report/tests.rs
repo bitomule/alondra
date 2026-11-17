@@ -843,22 +843,13 @@ macro_rules! secret_format_test {
             let home = Directory::new();
             let mac = FakeMac::new(&home);
             let built = build(&mac, hours_before(24), Some(text), None).unwrap();
-            assert_eq!(
-                (hits.len(), built.hits.len()),
-                (1, 1),
-                "the final check must catch the secret in both daemon.log and What happened?"
-            );
+            assert_eq!(hits.len(), 1, "the final check must catch the secret in daemon.log");
             assert_eq!(hits[0].line, 2);
-            assert_eq!(built.hits[0].section, bundle::DESCRIPTION);
-            assert_eq!(built.hits[0].line, 2);
-            assert!(
-                !built.hits[0].what.contains($secret),
-                "the reason must not repeat the secret"
-            );
-            assert!(
-                checked(&mac, &built.id).is_err(),
-                "a report containing the secret must not be sendable"
-            );
+            assert!(built.hits.is_empty(), "the secret in What happened? is masked, not refused: {:?}", built.hits);
+            let description = &built.files.iter().find(|(n, _)| n == bundle::DESCRIPTION).unwrap().1;
+            assert_eq!(description, "What happened?\nmasked\n");
+            assert_eq!(manifest_masked(&built), json!([{"section": bundle::DESCRIPTION, "line": 2, "field": "(line)"}]));
+            assert!(!files_text(&checked(&mac, &built.id).unwrap()).contains($secret), "what is sent never holds the secret");
         }
     };
 }
@@ -921,8 +912,10 @@ fn the_section_an_app_sends_goes_through_the_final_check_like_the_rest() {
     assert_eq!(bundle::read(&built.dir).unwrap(), built.files, "a report with the app's section reads back for sending");
     let leaked = "{\"message\":\"opened /Users/ana.lopez/Code\"}\n";
     let built = build(&mac, hours_before(72), None, Some(leaked)).unwrap();
-    assert!(built.hits.iter().any(|hit| hit.section == "apps.jsonl"), "{:?}", built.hits);
-    assert!(checked(&mac, &built.id).is_err(), "it never leaves the Mac");
+    assert!(built.hits.is_empty(), "{:?}", built.hits);
+    assert_eq!(built.files.last().unwrap(), &("apps.jsonl".to_owned(), "{\"message\":\"masked\"}\n".to_owned()));
+    assert_eq!(manifest_masked(&built), json!([{"section": "apps.jsonl", "line": 1, "field": "message"}]));
+    checked(&mac, &built.id).expect("the masked report leaves the Mac");
     let built = build(&mac, hours_before(72), None, Some("not json\n")).unwrap();
     assert!(built.files.iter().all(|(name, _)| name != "apps.jsonl"));
     assert!(built.files[0].1.contains("not one JSON object per line"));
@@ -1087,17 +1080,144 @@ fn a_refused_report_can_be_made_again_without_the_section_that_failed() {
     let home = Directory::new();
     full_home(&home);
     let mac = FakeMac::new(&home);
-    let leaked = "{\"message\":\"opened /Users/ana.lopez/Code\"}\n";
-    let refused = build(&mac, hours_before(72), None, Some(leaked)).unwrap();
+    let mut refused = build(&mac, hours_before(72), None, None).unwrap();
+    refused.hits.push(Hit { section: "machine.json".into(), line: 3, what: "an IP address, in the field launchd_job.203.0.113.7".into() });
     let summary = summary(&refused);
-    assert!(summary.contains("alondra report --without apps.jsonl"), "{summary}");
-    let rest = build_without(&mac, hours_before(72), None, Some(leaked), &["apps.jsonl".to_owned()]).unwrap();
+    assert!(summary.contains("machine.json, line 3: an IP address"), "{summary}");
+    assert!(summary.contains("in a field's name or in a file that is one JSON document"), "{summary}");
+    assert!(summary.contains("alondra report --without machine.json"), "{summary}");
+    assert_eq!(summary_json(&refused, None)["check"]["send_rest_without"], json!(["machine.json"]));
+    let rest = build_without(&mac, hours_before(72), None, None, &["machine.json".to_owned()]).unwrap();
     assert!(rest.hits.is_empty(), "{:?}", rest.hits);
-    assert!(rest.files.iter().all(|(name, _)| name != "apps.jsonl"));
+    assert!(rest.files.iter().all(|(name, _)| name != "machine.json"));
     assert!(rest.files.iter().any(|(name, _)| name == "tasks.jsonl"));
     assert_eq!(checked(&mac, &rest.id).unwrap(), rest.files, "the rest is allowed to leave the Mac");
+    assert_eq!(summary_json(&rest, None)["check"]["send_rest_without"], json!([]));
     let error = build_without(&mac, hours_before(72), None, None, &["secrets.txt".to_owned()]).err().unwrap().to_string();
     assert!(error.contains("secrets.txt"), "{error}");
+}
+
+fn manifest_masked(built: &Built) -> Value {
+    let manifest: Value = serde_json::from_str(&built.files.iter().find(|(n, _)| n == bundle::MANIFEST).unwrap().1).unwrap();
+    manifest["masked"].clone()
+}
+
+fn invented_private() -> Private {
+    let mut private = Private::default();
+    for value in ["acme-ops", "Globex payroll export", "initech"] {
+        private.add("a private value", value, &Default::default());
+    }
+    private
+}
+
+#[test]
+fn a_flagged_value_in_any_json_lines_section_is_masked_field_by_field() {
+    let private = invented_private();
+    for (section, text, field) in [
+        ("lifecycle.jsonl", "{\"event\":\"admit\",\"at\":\"2026-10-25T05:00:00.000Z\"}\n{\"event\":\"admit\",\"account\":\"acme-ops\"}\n", "account"),
+        ("sdk-host.jsonl", "{\"frames\":[{\"type\":\"event\"}]}\n{\"frames\":[{\"type\":\"event\",\"error\":\"Globex payroll export failed\"}]}\n", "frames.0.error"),
+        ("tasks.jsonl", "{\"id\":\"task-1\"}\n{\"id\":\"task-2\",\"open_questions\":[{\"for\":\"user\",\"why\":\"ask ana@example.com\"}]}\n", "open_questions.0.why"),
+        ("nodes.jsonl", "{\"id\":\"node-1\"}\n{\"id\":\"node-2\",\"host\":\"203.0.113.7\"}\n", "host"),
+    ] {
+        assert!(!check::section(section, text, &private).is_empty(), "{section} starts with something the check refuses");
+        let (masked, found) = check::mask(section, text, &private);
+        assert_eq!(found, vec![check::Masked { line: 2, field: field.to_owned() }], "{section}");
+        assert_eq!(masked.lines().next(), text.lines().next(), "{section}: the clean line stays as it was");
+        let row: Value = serde_json::from_str(masked.lines().nth(1).unwrap()).unwrap();
+        assert_eq!(row.pointer(&format!("/{}", field.replace('.', "/"))).unwrap(), "masked", "{section}");
+        assert!(check::section(section, &masked, &private).is_empty(), "{section}: {masked}");
+    }
+}
+
+#[test]
+fn a_line_that_cannot_lose_one_field_is_masked_whole() {
+    let private = invented_private();
+    let text = "{\"ok\":\"yes\"}\n{\"initech\":\"value\",\"note\":\"acme-ops\"}\n";
+    let (masked, found) = check::mask("apps.jsonl", text, &private);
+    assert_eq!(masked, "{\"ok\":\"yes\"}\n{}\n");
+    assert_eq!(found, vec![check::Masked { line: 2, field: check::WHOLE_LINE.to_owned() }], "a field masked inside a line masked whole is not listed twice");
+    let log = "2026-10-25T05:00:00.000Z alondrad: started\n2026-10-25T05:00:01.000Z mail ana@example.com bounced\n";
+    let (masked, found) = check::mask("daemon.log", log, &private);
+    assert_eq!(masked, "2026-10-25T05:00:00.000Z alondrad: started\n2026-10-25T05:00:01.000Z masked\n");
+    assert_eq!(found, vec![check::Masked { line: 2, field: check::WHOLE_LINE.to_owned() }]);
+    assert!(check::section("daemon.log", &masked, &private).is_empty());
+}
+
+#[test]
+fn a_flagged_value_in_a_json_document_or_a_sample_column_is_masked_in_place() {
+    let private = invented_private();
+    let machine = serde_json::to_string_pretty(&json!({"model": "Mac15,8", "launchd_job": {"program": "/opt/initech/alondrad"}})).unwrap() + "\n";
+    let (masked, found) = check::mask("machine.json", &machine, &private);
+    let line = machine.lines().position(|l| l.contains("initech")).unwrap() + 1;
+    assert_eq!(found, vec![check::Masked { line, field: "launchd_job.program".to_owned() }]);
+    assert_eq!(masked, machine.replace("/opt/initech/alondrad", "masked"), "the document keeps its shape and its line numbers");
+    assert!(check::section("machine.json", &masked, &private).is_empty());
+    let header = collect::SAMPLE_COLUMNS.join(",");
+    let health = collect::SAMPLE_COLUMNS.iter().position(|c| *c == "health").unwrap();
+    let mut row: Vec<String> = collect::SAMPLE_COLUMNS.iter().map(|_| String::new()).collect();
+    row[health] = "acme-ops".into();
+    let samples = format!("{header}\n{}\n", row.join(","));
+    let (masked, found) = check::mask("machine-samples.csv", &samples, &private);
+    assert_eq!(found, vec![check::Masked { line: 2, field: "health".to_owned() }]);
+    assert_eq!(masked, samples.replace("acme-ops", "masked"));
+    assert!(check::section("machine-samples.csv", &masked, &private).is_empty());
+}
+
+#[test]
+fn a_private_field_name_in_a_json_document_cannot_be_masked_and_still_refuses() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let private = invented_private();
+    let machine = serde_json::to_string_pretty(&json!({"launchd_job": {"initech": "running"}})).unwrap() + "\n";
+    let (masked, found) = check::mask("machine.json", &machine, &private);
+    assert_eq!((masked.as_str(), found), (machine.as_str(), Vec::new()));
+    let hits = check::section("machine.json", &masked, &private);
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert!(hits[0].what.contains("in the field launchd_job.initech"), "{hits:?}");
+}
+
+#[test]
+fn every_section_of_a_built_report_is_masked_and_the_report_still_goes() {
+    let home = home_with_account_and_model("claude", "claude");
+    let mac = FakeMac::new(&home);
+    let app = "{\"app\":\"iPhone\",\"message\":\"opened /Users/ana.lopez/Code\"}\n";
+    let built = build(&mac, hours_before(72), Some("It broke, token ghp_0123456789abcdef".into()), Some(app)).unwrap();
+    assert!(built.hits.is_empty(), "{:?}", built.hits);
+    let all = files_text(&built.files);
+    for leaked in ["ana.lopez", "ghp_0123456789abcdef", "\"model\":\"claude\""] {
+        assert!(!all.contains(leaked), "{leaked} left in the report");
+    }
+    let masked = manifest_masked(&built);
+    let sections: std::collections::BTreeSet<&str> = masked.as_array().unwrap().iter().map(|m| m["section"].as_str().unwrap()).collect();
+    assert_eq!(sections, ["apps.jsonl", bundle::DESCRIPTION, "nodes.jsonl", "tasks.jsonl"].into(), "{masked}");
+    assert_eq!(checked(&mac, &built.id).unwrap(), built.files, "the saved report passes the check again when it is sent");
+    let summary = summary(&built);
+    assert!(summary.contains("Masked 4 private values") && summary.contains("description.txt, line 1: the whole line"), "{summary}");
+}
+
+#[test]
+fn trimming_the_oldest_lines_keeps_the_masked_lines_pointing_at_the_same_text() {
+    let log: String = (0..10).map(|at| if at == 7 { format!("{at:02} masked\n") } else { format!("{at:02} fine\n") }).collect();
+    let mut draft = Draft {
+        id: "r-20261025-00000000".into(),
+        created_at: NOW,
+        window: hours_before(72),
+        sections: vec![Section { name: "daemon.log", text: log, status: Status::Ok }],
+        description: None,
+        omitted: Default::default(),
+        masked: vec![
+            bundle::Masked { section: "daemon.log".into(), line: 2, field: "(line)".into() },
+            bundle::Masked { section: "daemon.log".into(), line: 8, field: "(line)".into() },
+        ],
+        log_capped: false,
+        daemon_running: true,
+    };
+    let section = &mut draft.sections[0];
+    let cut = 3;
+    let kept: Vec<&str> = section.text.lines().skip(cut).collect();
+    section.text = kept.join("\n") + "\n";
+    bundle::adjust_masked_for_cut(&mut draft.masked, "daemon.log", cut);
+    assert_eq!(draft.masked, vec![bundle::Masked { section: "daemon.log".into(), line: 5, field: "(line)".into() }]);
+    assert_eq!(draft.sections[0].text.lines().nth(4), Some("07 masked"));
 }
 
 fn home_with_account_and_model(account: &str, model: &str) -> Directory {

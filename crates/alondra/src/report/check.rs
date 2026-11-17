@@ -73,14 +73,23 @@ struct Occurrence {
     line: usize,
     trusted: bool,
     field: String,
+    path: Vec<String>,
+    key: bool,
+}
+
+/// Every string of a JSON object with whether the report's structure vouches for it, or `None` when
+/// the text is not one object with unique keys.
+fn occurrences(name: &str, text: &str, offset: usize) -> Option<(Value, Vec<Occurrence>)> {
+    let root = serde_json::from_str::<Value>(text).ok().filter(Value::is_object)?;
+    let mut parser = JsonStrings { name, text, root: Some(&root), at: 0, line: offset + 1, strings: Vec::new(), duplicate: false };
+    parser.value(&mut Vec::new(), name != "apps.jsonl")?;
+    let (strings, duplicate) = (std::mem::take(&mut parser.strings), parser.duplicate);
+    (!duplicate).then_some((root, strings))
 }
 
 fn json(name: &str, text: &str, offset: usize, private: &Private, hits: &mut Vec<Hit>) {
-    let root = serde_json::from_str::<Value>(text);
-    let mut parser = JsonStrings { name, text, root: root.as_ref().ok(), at: 0, line: offset + 1, strings: Vec::new(), duplicate: false };
-    let parsed = root.as_ref().is_ok_and(Value::is_object) && parser.value(&mut Vec::new(), name != "apps.jsonl").is_some() && !parser.duplicate;
-    if parsed {
-        for occurrence in parser.strings {
+    if let Some((_, strings)) = occurrences(name, text, offset) {
+        for occurrence in strings {
             if !occurrence.trusted {
                 let before = hits.len();
                 add_private(hits, name, &occurrence.value, occurrence.line, private);
@@ -94,6 +103,122 @@ fn json(name: &str, text: &str, offset: usize, private: &Private, hits: &mut Vec
     } else {
         hits.push(Hit { section: name.to_owned(), line: offset + 1, what: tr!("invalid report JSON", "JSON de informe no válido").to_owned() });
     }
+}
+
+/// What a section's value or line became after masking: where it was and which field held it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Masked {
+    pub line: usize,
+    pub field: String,
+}
+
+/// The field recorded for a line masked whole, when no single field of it could be masked.
+pub(super) const WHOLE_LINE: &str = "(line)";
+
+/// The section with every value the final check would flag replaced by `MASKED`: a field when the
+/// structure allows it, else its whole line. A single JSON document cannot lose a line, so what is
+/// left there still fails the check.
+pub(super) fn mask(name: &str, text: &str, private: &Private) -> (String, Vec<Masked>) {
+    let (mut text, mut masked) = if name == "machine-samples.csv" {
+        mask_samples(text, private)
+    } else if name.ends_with(".json") {
+        return mask_json(name, text, 0, private).unwrap_or_else(|| (text.to_owned(), Vec::new()));
+    } else if name.ends_with(".jsonl") {
+        let mut masked = Vec::new();
+        let lines: Vec<String> = text
+            .lines()
+            .enumerate()
+            .map(|(index, line)| match mask_json(name, line, index, private) {
+                Some((row, fields)) => {
+                    masked.extend(fields);
+                    row
+                }
+                None => line.to_owned(),
+            })
+            .collect();
+        (if masked.is_empty() { text.to_owned() } else { joined(&lines) }, masked)
+    } else {
+        (text.to_owned(), Vec::new())
+    };
+    let flagged: HashSet<usize> = section(name, &text, private).iter().map(|hit| hit.line).collect();
+    if !flagged.is_empty() {
+        masked.retain(|m| !flagged.contains(&m.line));
+        let lines: Vec<String> = text
+            .lines()
+            .enumerate()
+            .map(|(index, line)| {
+                if !flagged.contains(&(index + 1)) {
+                    return line.to_owned();
+                }
+                masked.push(Masked { line: index + 1, field: WHOLE_LINE.to_owned() });
+                whole_line_masked(name, line)
+            })
+            .collect();
+        text = joined(&lines);
+        masked.sort_by(|a, b| (a.line, &a.field).cmp(&(b.line, &b.field)));
+    }
+    (text, masked)
+}
+
+fn joined(lines: &[String]) -> String {
+    lines.iter().map(|line| line.clone() + "\n").collect()
+}
+
+fn whole_line_masked(name: &str, line: &str) -> String {
+    let masked = super::MASKED;
+    if name.ends_with(".jsonl") {
+        return "{}".to_owned();
+    }
+    match line.split_once(' ') {
+        Some((stamp, _)) if name == "daemon.log" && redact::is_iso_time(stamp.strip_prefix('~').unwrap_or(stamp)) => format!("{stamp} {masked}"),
+        _ => masked.to_owned(),
+    }
+}
+
+/// The JSON text with each value the check flags masked, and where; `None` when nothing changed or
+/// the text cannot be read as one object.
+fn mask_json(name: &str, text: &str, offset: usize, private: &Private) -> Option<(String, Vec<Masked>)> {
+    let (mut root, strings) = occurrences(name, text, offset)?;
+    let mut masked = Vec::new();
+    for occurrence in strings.iter().filter(|o| !o.trusted && !o.key && o.value != super::MASKED) {
+        if canary::scan(name, &occurrence.value, Some(private)).is_empty() {
+            continue;
+        }
+        let pointer: String = occurrence.path.iter().map(|part| format!("/{}", part.replace('~', "~0").replace('/', "~1"))).collect();
+        if let Some(value) = root.pointer_mut(&pointer) {
+            *value = Value::from(super::MASKED);
+            masked.push(Masked { line: occurrence.line, field: occurrence.field.clone() });
+        }
+    }
+    if masked.is_empty() {
+        return None;
+    }
+    let rewritten = if name.ends_with(".jsonl") { root.to_string() } else { serde_json::to_string_pretty(&root).ok()? + "\n" };
+    Some((rewritten, masked))
+}
+
+fn mask_samples(text: &str, private: &Private) -> (String, Vec<Masked>) {
+    let mut lines = text.lines();
+    if lines.next() != Some(collect::SAMPLE_COLUMNS.join(",").as_str()) {
+        return (text.to_owned(), Vec::new());
+    }
+    let mut masked = Vec::new();
+    let mut out = vec![collect::SAMPLE_COLUMNS.join(",")];
+    for (index, line) in lines.enumerate() {
+        let mut fields: Vec<String> = line.split(',').map(str::to_owned).collect();
+        if fields.len() == collect::SAMPLE_COLUMNS.len() {
+            for (column, field) in collect::SAMPLE_COLUMNS.iter().zip(fields.iter_mut()) {
+                let mut hits = Vec::new();
+                add_private(&mut hits, "machine-samples.csv", field, index + 2, private);
+                if !hits.is_empty() {
+                    *field = super::MASKED.to_owned();
+                    masked.push(Masked { line: index + 2, field: (*column).to_owned() });
+                }
+            }
+        }
+        out.push(fields.join(","));
+    }
+    (if masked.is_empty() { text.to_owned() } else { joined(&out) }, masked)
 }
 
 fn field_of(path: &[String], key: &str) -> String {
@@ -165,7 +290,7 @@ impl JsonStrings<'_> {
                     let refs: Vec<&str> = path.iter().map(String::as_str).collect();
                     let trusted = known && self.root.is_some_and(|root| schema::key(self.name, &refs, &key, root));
                     let field = field_of(path, &key);
-                    self.strings.push(Occurrence { value: key.clone(), line, trusted, field });
+                    self.strings.push(Occurrence { value: key.clone(), line, trusted, field, path: path.clone(), key: true });
                     self.take(b':')?;
                     path.push(key);
                     self.value(path, trusted)?;
@@ -202,7 +327,7 @@ impl JsonStrings<'_> {
                 let refs: Vec<&str> = path.iter().map(String::as_str).collect();
                 let trusted = known && (redact::is_pseudonym(&value) || self.root.is_some_and(|root| schema::value(self.name, &refs, &value, root)));
                 let field = field_of(path, "");
-                self.strings.push(Occurrence { value, line, trusted, field });
+                self.strings.push(Occurrence { value, line, trusted, field, path: path.clone(), key: false });
             }
             _ => {
                 let length = self.text[self.at..].find(|c: char| c.is_ascii_whitespace() || matches!(c, ',' | ']' | '}')).unwrap_or(self.text.len() - self.at);
