@@ -1,3 +1,4 @@
+load("//tools/bazel:crates.bzl", "application_crate")
 load("//tools:tree.bzl", "repo_tree")
 load("//tools:rust_test.bzl", "LOW_OPT_LEVEL", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
@@ -11,13 +12,11 @@ WORKSPACE_DEPS = [
     "//crates/store:store",
 ]
 
-rust_library(
+application_crate(
     name = "daemon_engine_model",
     srcs = production_sources(test_only = ["src/faults.rs"]),
     crate_name = "alondra_daemon_engine_model",
-    edition = "2024",
     version = VERSION,
-    visibility = ["//crates:__subpackages__"],
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + ["//crates/daemon-support:daemon_support"],
 )
 

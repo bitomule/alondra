@@ -1,20 +1,19 @@
+load("//tools/bazel:crates.bzl", "domain_crate")
 load("//tools:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
-load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//tools:rust_sources.bzl", "production_sources")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 
 CORE_DEPS = all_crate_deps(normal = True) + ["//crates/foundation:foundation", "//crates/domain:domain"]
 
-rust_library(
+domain_crate(
     name = "alondra_core",
     srcs = production_sources(test_only = ["src/recorded.rs", "src/model_decider/properties.rs"]),
     compile_data = ["src/model_sheets.toml"],
     crate_name = "alondra_core",
-    edition = "2024",
     version = "0.1.0",
-    visibility = ["//visibility:public"],
+    test_visibility = ["//crates/machine-model:__pkg__"],
     deps = CORE_DEPS,
 )
 

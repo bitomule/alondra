@@ -1,13 +1,12 @@
+load("//tools/bazel:crates.bzl", "root_binary")
 load("//tools:tree.bzl", "repo_tree")
-load("@rules_rust//rust:defs.bzl", "rust_binary")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
 
-rust_binary(
+root_binary(
     name = "alondra-sandbox",
     srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
     compile_data = glob(["fixtures/**"]),
     crate_name = "alondra_sandbox",
-    edition = "2024",
     visibility = ["//visibility:public"],
     deps = [
         "//crates/e2e:alondra_e2e",

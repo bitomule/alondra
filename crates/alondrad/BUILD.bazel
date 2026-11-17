@@ -1,19 +1,19 @@
+load("//tools/bazel:crates.bzl", "root_binary", "root_library")
 load("//tools:tree.bzl", "repo_tree")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps", "crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
+load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
 
 exports_files(["Info.plist"], visibility = ["//deploy/brew:__pkg__"])
 
-rust_library(
+root_library(
     name = "alondrad_lib",
     srcs = production_sources(test_only = ["src/operation_journal/process_fixture.rs"], exclude = ["src/main.rs"]),
     crate_name = "alondrad",
     crate_root = "src/lib.rs",
-    edition = "2024",
     version = VERSION,
     deps = all_crate_deps(normal = True) + [
         "//crates/agent-runtime:agent_runtime",
@@ -54,12 +54,11 @@ rust_library(
     ],
 )
 
-rust_binary(
+root_binary(
     name = "alondrad",
     srcs = ["src/main.rs"],
     compile_data = ["Info.plist"],
     crate_root = "src/main.rs",
-    edition = "2024",
     # macOS asks for Local Network access before alondrad may advertise on Bonjour; a
     # standalone executable carries the reason in an embedded Info.plist (TN3179).
     rustc_flags = ["-Clink-arg=-Wl,-sectcreate,__TEXT,__info_plist,$(execpath Info.plist)"],
@@ -70,12 +69,11 @@ rust_binary(
 
 # launchd runs this at a fixed path so macOS keeps alondrad's Local Network permission across
 # updates; it carries the same Info.plist because the permission prompt shows its reason.
-rust_binary(
+root_binary(
     name = "alondrad-launcher",
     srcs = ["launcher/main.rs"],
     compile_data = ["Info.plist"],
     crate_root = "launcher/main.rs",
-    edition = "2024",
     rustc_flags = ["-Clink-arg=-Wl,-sectcreate,__TEXT,__info_plist,$(execpath Info.plist)"],
     version = VERSION,
     visibility = ["//visibility:public"],

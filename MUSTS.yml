@@ -1488,6 +1488,16 @@ checks:
       targets:
         - //tools:edit_bench_test
 
+  crate-layers:
+    uses: bazel/test
+    paths:
+      - "**/BUILD.bazel"
+      - "tools/bazel/**"
+      - "tools/tree.bzl"
+    with:
+      targets:
+        - //tools/bazel:crate_layers_test
+
   module-cycles:
     uses: bazel/test
     paths:

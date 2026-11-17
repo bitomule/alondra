@@ -1,15 +1,14 @@
+load("//tools/bazel:crates.bzl", "adapter_private_crate")
 load("//tools:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
-load("@rules_rust//rust:defs.bzl", "rust_library")
 
-rust_library(
+adapter_private_crate(
     name = "codex_protocol",
     srcs = ["src/lib.rs", "//crates/agent-protocol:transport_sources"],
     crate_name = "alondra_codex_protocol",
-    edition = "2024",
     version = "0.1.0",
-    visibility = ["//crates:__subpackages__"],
+    test_visibility = ["//crates/daemon-engine:__pkg__", "//crates/engine-orchestrator:__pkg__", "//crates/engine-sdk:__pkg__"],
     deps = all_crate_deps(normal = True) + ["//crates/foundation:foundation"],
 )
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

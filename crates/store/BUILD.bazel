@@ -1,17 +1,17 @@
+load("//tools/bazel:crates.bzl", "port_crate")
 load("//tools:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
-load("@rules_rust//rust:defs.bzl", "rust_doc_test", "rust_library")
+load("@rules_rust//rust:defs.bzl", "rust_doc_test")
 load("//tools:rust_sources.bzl", "production_sources")
 
-rust_library(
+port_crate(
     name = "store",
     srcs = glob(["src/**/*.rs"]),
     compile_data = ["src/controls.sql", "src/controls_before_mcp.sql", "src/controls_before_force_stop.sql", "src/controls_before_clear_auth.sql", "src/observations_before_retention.sql", "src/inputs_and_commands_before_compaction.sql", "src/cards_before_orchestrator.sql", "src/schema.sql"],
     crate_name = "alondra_store",
-    edition = "2024",
     version = "0.1.0",
-    visibility = ["//crates:__subpackages__", "//tests:__subpackages__"],
+    test_visibility = ["//crates/provider-conformance:__pkg__"],
     deps = ["//crates/domain:domain", "//crates/foundation:foundation", "//crates/provider-contract:provider_contract"] + all_crate_deps(normal = True),
 )
 

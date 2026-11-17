@@ -1,3 +1,4 @@
+load("//tools/bazel:crates.bzl", "application_crate")
 load("//tools:tree.bzl", "repo_tree")
 load("//tools:rust_test.bzl", "LOW_OPT_LEVEL", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
@@ -17,13 +18,11 @@ WORKSPACE_DEPS = [
 # Compiled only under `#[cfg(test)]` or the `test-hooks` feature, though its name does not say so.
 TEST_ONLY = ["src/github_world.rs"]
 
-rust_library(
+application_crate(
     name = "engine_github",
     srcs = production_sources(test_only = TEST_ONLY),
     crate_name = "alondra_engine_github",
-    edition = "2024",
     version = VERSION,
-    visibility = ["//crates/engine-sdk:__pkg__", "//crates/daemon-engine:__pkg__"],
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-support:daemon_support",
