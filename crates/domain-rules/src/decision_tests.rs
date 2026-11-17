@@ -539,7 +539,7 @@ fn allowed(s: &DomainState) -> Vec<(String, u32)> {
 fn a_deletion_allowed_in_the_task_runs_again_only_as_the_same_command_from_the_same_folder() {
     let mut s = world();
     sdk_turn(&mut s, "t", "a");
-    let reset = "git reset --hard origin/main";
+    let reset = "git clean -fd build";
     let card = ask(&mut s, 1, reset, WORKTREE).expect("the first time it asks");
     let options: Vec<String> = match &s.interactions[&InteractionId::from(card.as_str())].payload {
         InteractionPayload::Question { options, .. } => options.iter().map(|option| option.id.clone()).collect(),
@@ -550,7 +550,7 @@ fn a_deletion_allowed_in_the_task_runs_again_only_as_the_same_command_from_the_s
     assert_eq!(allowed(&s), [(card.clone(), 0)]);
     assert_eq!(ask(&mut s, 2, reset, WORKTREE), None, "the same command from the same folder is allowed");
     assert_eq!(allowed(&s), [(card.clone(), 1)]);
-    let other = ask(&mut s, 3, "git reset --hard HEAD~1", WORKTREE).expect("another target asks again");
+    let other = ask(&mut s, 3, "git clean -fd dist", WORKTREE).expect("another target asks again");
     decide(&mut s, 3, &other, Hold::ALLOW);
     let elsewhere = ask(&mut s, 4, reset, &format!("{WORKTREE}/crates")).expect("the same command from another folder asks again");
     decide(&mut s, 4, &elsewhere, Hold::ALLOW);
@@ -563,6 +563,38 @@ fn a_deletion_allowed_in_the_task_runs_again_only_as_the_same_command_from_the_s
     let next = ask(&mut s, 8, "rm -rf build/b", WORKTREE).expect("a deletion never covers another");
     decide(&mut s, 8, &next, Hold::ALLOW);
     assert_eq!(allowed(&s).len(), 3);
+    assert_aggregate_rules(&s);
+}
+
+fn denied_by_policy(s: &mut DomainState, epoch: u64, command: &str) -> String {
+    let outcome = must(s, Actor::System, bash_in(epoch, command, WORKTREE));
+    assert!(outcome.created_ids.is_empty(), "{command} asks no one");
+    let LifecycleRecord::DecidedByPolicy { decision: DecisionRecord::Deny { message }, .. } = last(s, "t") else { panic!("{command} is denied") };
+    settle(s, epoch);
+    message
+}
+
+#[test]
+fn the_conflict_flow_runs_on_the_task_branch_and_what_throws_work_away_is_denied_with_no_card() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    let before = ask(&mut s, 1, "git rebase origin/main", WORKTREE).expect("with no worktree recorded for the task it asks");
+    decide(&mut s, 1, &before, Hold::ALLOW);
+    must(&mut s, Actor::System, Command::RecordTaskWorktree {
+        task_id: "t".into(), path: WORKTREE.into(), origin: WorktreeOrigin::Task, branch: Some("worktree-t".into()),
+    });
+    for (epoch, command) in [(2, "git fetch origin main"), (3, "git rebase origin/main"), (4, "git rebase --continue"), (5, "git rebase --abort"),
+        (6, "git push --force-with-lease")] {
+        assert_eq!(ask(&mut s, epoch, command, WORKTREE), None, "{command}");
+    }
+    assert!(denied_by_policy(&mut s, 7, "git reset --hard origin/main").contains("Rebase on the base branch"));
+    assert!(denied_by_policy(&mut s, 8, "git push --force-with-lease origin main").contains("only your task's own branch"));
+    for (epoch, command) in [(9, "git push --force origin worktree-t"), (10, "git push --force-with-lease upstream worktree-t")] {
+        let card = ask(&mut s, epoch, command, WORKTREE).unwrap_or_else(|| panic!("{command} asks the user"));
+        decide(&mut s, epoch, &card, Hold::ALLOW);
+    }
+    let elsewhere = ask(&mut s, 11, "git rebase origin/main", "/repo").expect("outside the worktree it asks");
+    decide(&mut s, 11, &elsewhere, Hold::ALLOW);
     assert_aggregate_rules(&s);
 }
 
@@ -595,7 +627,7 @@ fn a_command_outside_the_worktree_cannot_be_allowed_in_the_task() {
 fn a_revoked_grant_asks_again_and_a_task_that_ends_forgets_what_it_allowed() {
     let mut s = world();
     sdk_turn(&mut s, "t", "a");
-    let reset = "git reset --hard origin/main";
+    let reset = "git clean -fd build";
     let card = ask(&mut s, 1, reset, WORKTREE).unwrap();
     decide(&mut s, 1, &card, Hold::FOR_TASK);
     let revoke = Command::RevokeTaskGrant { task_id: "t".into(), card: card.as_str().into() };

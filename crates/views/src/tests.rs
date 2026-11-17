@@ -5368,7 +5368,7 @@ fn a_permission_card_offers_allow_in_this_task_saying_exactly_what_stays_allowed
 #[test]
 fn a_permission_card_without_allow_in_this_task_says_why_in_one_line() {
     use alondra_core::allow_for_task::{AllowForTask, NotForTask};
-    let state = held_for_task(AllowForTask::Refused { why: NotForTask::Outside, part: "/Users/me/Desktop/app".into() });
+    let state = held_for_task(AllowForTask::Refused { why: NotForTask::Outside, part: "/Users/me/Desktop/app".into(), cwd: String::new() });
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "card:i-1", "");
     assert_eq!(answers(card_of(&view)).iter().map(|a| a.option_id.as_deref().unwrap()).collect::<Vec<_>>(), ["allow", "deny"]);
     let text = serde_json::to_string(&view).unwrap();
@@ -5381,7 +5381,7 @@ fn a_permission_card_without_allow_in_this_task_says_why_in_one_line() {
 fn the_task_screen_lists_what_was_allowed_in_the_task_with_a_revoke_button() {
     use alondra_core::allow_for_task::AllowForTask;
     use alondra_domain_rules::TaskGrant;
-    let mut state = held_for_task(AllowForTask::Refused { why: alondra_core::allow_for_task::NotForTask::NoFolder, part: String::new() });
+    let mut state = held_for_task(AllowForTask::Refused { why: alondra_core::allow_for_task::NotForTask::NoFolder, part: String::new(), cwd: String::new() });
     let task = state.tasks.get_mut(&"t-1".into()).unwrap();
     task.allowed.insert("decision-t-1-1-1".into(), TaskGrant {
         allows: AllowForTask::Exact { command: "git branch -D scratch".into(), cwd: "/repo/.claude/worktrees/t-1".into() }, uses: 3 });

@@ -98,7 +98,7 @@ fn what_could_run_or_write_anything_is_never_a_shape() {
 #[test]
 fn a_folder_or_path_outside_the_task_is_not_offered_and_says_which() {
     let refused = |cwd: &str, command: &str| match asked_from(cwd, command) {
-        AllowForTask::Refused { why: NotForTask::Outside, part } => part,
+        AllowForTask::Refused { why: NotForTask::Outside, part, .. } => part,
         other => panic!("{command}: {other:?}"),
     };
     assert_eq!(refused(WORKTREE, "rm -rf /Users/me/Downloads/x"), "/Users/me/Downloads/x");
