@@ -9,7 +9,7 @@ use crate::sdk_handover::HandoversOf as _;
 use alondra_core::clock;
 use alondra_core::clock::Instant;
 use crate::locks::Poisonable as _;
-pub mod backend;
+pub use alondra_engine_kernel::sdk_backend as backend;
 mod worker;
 mod claude_history;
 mod node_environment;
@@ -86,7 +86,7 @@ fn receipt(handoff: Handoff) -> DispatchReceipt {
 }
 
 /// Why nothing starts on a daemon without an SDK backend, which only a broken install has.
-pub(crate) const NO_HOST: &str = "this Alondra has no Agent SDK host, so no task or orchestrator batch starts: reinstall Alondra (`brew reinstall alondra`)";
+pub use backend::NO_HOST;
 
 /// Whether `agent` holds the current execution of a task that runs through the SDK.
 pub fn runs_through_sdk(state: &DomainState, agent: &AgentId) -> bool {
@@ -2581,9 +2581,6 @@ pub struct Owners {
     /// The tasks whose session took no turn on the input offered again: their owner puts a host
     /// that resumes the same session in place of its own, and the input waits for a slot.
     pub(crate) requeues: Mutex<BTreeSet<TaskId>>,
-    /// Set at startup only in a sandbox daemon whose configuration names one: otherwise no task
-    /// ever runs through the SDK.
-    backend: std::sync::OnceLock<(SdkBackend, std::sync::Weak<DomainRuntime>)>,
     #[cfg(any(test, feature = "test-hooks"))]
     after_owner_reserved: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     #[cfg(any(test, feature = "test-hooks"))]
@@ -2599,12 +2596,6 @@ crate::extension!(Owners);
 
 pub trait SdkOwners {
     fn sdk_owners(&self) -> &Owners;
-
-    /// Only a sandbox daemon whose configuration names an SDK backend calls this, once.
-    fn enable_sdk(self: &Arc<Self>, backend: SdkBackend);
-
-    /// The SDK backend and the runtime its owners run on, when this daemon has one.
-    fn sdk(&self) -> Option<(&SdkBackend, Arc<DomainRuntime>)>;
 
     /// Stops every SDK owner and waits for each host's exit; nothing of an SDK host outlives the
     /// daemon that owns it.
@@ -2670,15 +2661,6 @@ pub trait SdkOwners {
 impl SdkOwners for crate::domain_runtime::DomainRuntime {
     fn sdk_owners(&self) -> &Owners {
         self.extension()
-    }
-
-    fn enable_sdk(self: &Arc<Self>, backend: SdkBackend) {
-        let _ = self.sdk_owners().backend.set((backend, Arc::downgrade(self)));
-    }
-
-    fn sdk(&self) -> Option<(&SdkBackend, Arc<DomainRuntime>)> {
-        let (backend, runtime) = self.sdk_owners().backend.get()?;
-        Some((backend, runtime.upgrade()?))
     }
 
     fn stop_sdk_owners(&self) {

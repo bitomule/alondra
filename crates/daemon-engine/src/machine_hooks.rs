@@ -1,7 +1,7 @@
 //! What the model of the whole machine (`crates/machine-model`) runs of the daemon's loops: the
-//! decisions the gate, the hosts' owners, the orchestrator's inbox and the obligation watch take,
-//! called as they are. Only the `test-hooks` feature opens these functions; the daemon keeps them
-//! crate-private.
+//! decisions the gate, the hosts' owners and the obligation watch take, called as they are. The
+//! orchestrator's inbox it reads from `engine-orchestrator`. Only the `test-hooks` feature opens
+//! these functions; the daemon keeps them crate-private.
 use alondra_core::Millis;
 use alondra_core::domain::{AgentId, Command, DomainError, DomainState, ReadIndex, TaskId};
 use std::collections::{BTreeMap, BTreeSet};
@@ -29,21 +29,6 @@ pub mod admission {
 
 pub mod obligation_watch {
     pub use crate::obligation_watch::{Action, Watch, World};
-}
-
-pub mod orchestrator_inbox {
-    use super::*;
-    pub use crate::orchestrator_inbox::Step;
-
-    pub fn command_of(step: &Step) -> Option<Command> {
-        crate::orchestrator_inbox::command_of(step)
-    }
-    pub fn overdue(state: &DomainState, due: &BTreeSet<TaskId>) -> Vec<(Step, Vec<TaskId>)> {
-        crate::orchestrator_inbox::overdue(state, due)
-    }
-    pub fn replans(state: &DomainState, rest: u64) -> Vec<Step> {
-        crate::orchestrator_inbox::replans(state, rest)
-    }
 }
 
 pub mod problems {

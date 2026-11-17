@@ -202,13 +202,13 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 /// A task «Editor colours» of a request, a `claude --bg` node agent-b of the previous release, and
 /// the project folder App. Its launches start through the SDK fixture when it has one.
-struct Fixture {
+pub struct Fixture {
     sdk: Option<SdkLaunches>,
     sessions: Arc<FakeSessions>,
     root: Directory,
-    home: PathBuf,
+    pub home: PathBuf,
     project: PathBuf,
-    domain: Arc<DomainRuntime>,
+    pub domain: Arc<DomainRuntime>,
 }
 
 pub fn command(domain: &DomainRuntime, actor: Actor, command: Command) {
@@ -225,7 +225,7 @@ pub fn user() -> Actor {
 }
 
 /// A world whose launches start through the SDK fixture.
-fn world() -> Fixture {
+pub fn world() -> Fixture {
     let mut f = bare_world();
     f.sdk = Some(SdkLaunches::enable(&f.domain, &f.home));
     f
@@ -640,15 +640,6 @@ fn the_choices_are_the_ones_recorded_with_the_request() {
     f.domain.execute_with(&user(), &envelope, None, Some(&hard_choices()), || Ok(())).unwrap();
     assert_eq!(request_choices(&f.domain, &"r2".into()).unwrap(), Some(hard_choices()));
     assert_eq!(request_choices(&f.domain, &"r".into()).unwrap(), None);
-}
-
-#[test]
-fn the_requests_choices_read_as_8ccd131_told_the_orchestrator() {
-    let home = Path::new("/h");
-    let text = choices_text("Ana", home, &hard_choices());
-    assert!(text.contains("options: project App") && text.contains("Effort hard was chosen by Ana and is binding"), "{text}");
-    assert!(text.contains("issue me/App#3: Crash on launch"), "{text}");
-    assert!(text.contains("attached shot.png: /h/files/att-1") && text.contains("paths in the mission"), "{text}");
 }
 
 /// Claude measures the default account's week at each of `week_percents`, all with the same reset,
@@ -2489,14 +2480,14 @@ async fn a_plan_with_a_native_effort_and_no_model_is_refused_when_it_is_written(
 /// A plan an older daemon stored as the one that stopped “Triage legible en AX3”. Its start is
 /// refused the same way every time, so it is never retried. The orchestrator gets it at once, the
 /// user's inbox gets nothing, and the plan the orchestrator fixes starts the task.
-fn refused_plan(f: &Fixture) {
+pub fn refused_plan(f: &Fixture) {
     connect_claude_and_codex(f);
     let stored = alondra_daemon_engine_model::LaunchPlan { effort: Some("medium".into()), reason: Some("Layout fix".into()),
         ..alondra_daemon_engine_model::LaunchPlan::new("app/editor", f.project.to_str().unwrap()) };
     f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &stored, 1).unwrap();
 }
 
-async fn refuse_its_start(f: &Fixture) -> alondra_core::domain::Interaction {
+pub async fn refuse_its_start(f: &Fixture) -> alondra_core::domain::Interaction {
     crate::auto_launch::pass(&f.domain, &f.home).await.unwrap();
     assert!(f.sdk().starts().is_empty());
     assert!(f.domain.store.lock().unwrap().start_retries().unwrap().is_empty(), "no retry is promised for a start that cannot work");
@@ -2537,34 +2528,6 @@ async fn the_orchestrator_cancels_a_refused_plan_with_its_reason() {
     crate::auto_launch::pass(&f.domain, &f.home).await.unwrap();
     assert!(f.domain.state().unwrap().tasks[&TaskId::from("t")].cancelled());
     assert_eq!(f.domain.store.lock().unwrap().cancel_reasons().unwrap()[&TaskId::from("t")], "The editor no longer needs it");
-}
-
-#[tokio::test]
-async fn a_refused_plan_the_orchestrator_leaves_is_handed_back_at_every_rest_and_never_cancelled_for_it() {
-    let f = world();
-    refused_plan(&f);
-    refuse_its_start(&f).await;
-    let reminders = || f.domain.state().unwrap().interactions.values()
-        .filter(|i| i.id.0.starts_with(alondra_core::orchestrator_cards::PLAN_REFUSED_NOTICE_PREFIX)).count();
-    crate::orchestrator_inbox::hand_replans(&f.domain);
-    crate::orchestrator_inbox::hand_replans(&f.domain);
-    assert_eq!(reminders(), 1, "once per rest");
-    for _ in 0..3 {
-        f.domain.live().orchestrator_rests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        crate::orchestrator_inbox::hand_replans(&f.domain);
-    }
-    assert_eq!(reminders(), 4);
-    for hour in 0..30 {
-        crate::orchestrator_inbox::settle_overdue(&f.domain, hour * 3_600_000);
-    }
-    let state = f.domain.state().unwrap();
-    assert!(!state.tasks[&TaskId::from("t")].cancelled(), "no clock cancels it for the orchestrator");
-    assert!(state.open_plan_refusal(&"t".into()).is_some(), "it stays open until the orchestrator decides");
-    let reminder = state.interactions.values().find(|i| i.id.0.ends_with("-3") && i.id.0.starts_with(alondra_core::orchestrator_cards::PLAN_REFUSED_NOTICE_PREFIX)).unwrap();
-    assert_eq!(reminder.recipient, alondra_core::domain::Recipient::Orchestrator);
-    assert!(reminder.body.starts_with("Still open, reminder 3:"), "{}", reminder.body);
-    assert!(state.interactions.values().all(|i| i.recipient != alondra_core::domain::Recipient::User
-        || !matches!(&i.scope, alondra_core::domain::Scope::Task { task_id } if task_id.0 == "t")), "the user is never asked");
 }
 
 fn partial_plan(f: &Fixture, task: &str, changes: Value) -> Result<Value, DomainError> {

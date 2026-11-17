@@ -2,7 +2,7 @@
 //! left under the old ones once they are no longer a way back, and of files no reader uses any
 //! more.
 use alondra_core::clock;
-use crate::{admission, domain_cutover, domain_database_migration as database, domain_orchestrator};
+use crate::{admission, domain_cutover, domain_database_migration as database};
 use anyhow::Result;
 use std::fs;
 use std::io::ErrorKind;
@@ -16,15 +16,18 @@ const RECOVERY_WINDOW: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const RETIRED: [&str; 4] = ["usage.json", "usage.next", "usage-exhausted.json", "usage-exhausted.next"];
 
 /// Run before anything reads HOME. Without the HOME lock (another daemon owns it)
-/// nothing moves; readers still accept the old names.
-pub fn apply(home: &Path) -> Result<()> {
+/// nothing moves; readers still accept the old names. `records` are the previous and current names
+/// of the records kept by the crates above the engine, moved first.
+pub fn apply(home: &Path, records: &[(&str, &str)]) -> Result<()> {
     if !home.exists() {
         return Ok(());
     }
     let Ok(_lock) = alondra_core::home_lock::HomeLock::recovery(home) else {
         return Ok(());
     };
-    rename(home, domain_orchestrator::PREVIOUS_FILE, domain_orchestrator::FILE)?;
+    for (previous, current) in records {
+        rename(home, previous, current)?;
+    }
     rename(home, domain_cutover::PREVIOUS_MARKER, domain_cutover::MARKER)?;
     remove(&home.join(admission::PREVIOUS_FILE).with_extension("next"))?;
     rename(home, admission::PREVIOUS_FILE, admission::FILE)?;
@@ -117,6 +120,13 @@ mod tests {
         }
     }
 
+    const ORCHESTRATOR_RECORD: &[(&str, &str)] = &[("orchestrator-v2.json", "orchestrator.json")];
+
+    fn session_of(home: &Home) -> String {
+        let record: serde_json::Value = serde_json::from_slice(&fs::read(home.0.join("orchestrator.json")).unwrap()).unwrap();
+        record["session_id"].as_str().unwrap().to_owned()
+    }
+
     const ORCHESTRATOR: &str = r#"{"session_id":"d6ec6dac-9169-4dc0-ab34-0e05a07d7417","active_run":null,"last_run_id":null,"last_error":null,"retry_at":null,"consecutive_failures":0,"cancel_requested":false,"pending_resolutions":[]}"#;
 
     fn cutover_marker() -> String {
@@ -141,10 +151,10 @@ mod tests {
         home.write("orchestrator-v2.json", ORCHESTRATOR);
         home.write("orchestrator-v2.json.next", ORCHESTRATOR);
 
-        apply(&home.0).unwrap();
+        apply(&home.0, ORCHESTRATOR_RECORD).unwrap();
 
         assert_eq!(home.names(), ["orchestrator.json"]);
-        assert_eq!(domain_orchestrator::load(&home.0).unwrap().session_id.as_deref(), Some("d6ec6dac-9169-4dc0-ab34-0e05a07d7417"));
+        assert_eq!(session_of(&home), "d6ec6dac-9169-4dc0-ab34-0e05a07d7417");
     }
 
     #[test]
@@ -153,10 +163,10 @@ mod tests {
         home.write("orchestrator-v2.json", ORCHESTRATOR);
         home.write("orchestrator.json", &ORCHESTRATOR.replace("d6ec6dac", "0000aaaa"));
 
-        apply(&home.0).unwrap();
+        apply(&home.0, ORCHESTRATOR_RECORD).unwrap();
 
         assert_eq!(home.names(), ["orchestrator.json"]);
-        assert!(domain_orchestrator::load(&home.0).unwrap().session_id.unwrap().starts_with("0000aaaa"));
+        assert!(session_of(&home).starts_with("0000aaaa"));
     }
 
     #[test]
@@ -165,7 +175,7 @@ mod tests {
         home.write("domain-v2-cutover.json", &cutover_marker());
         assert!(domain_cutover::read_marker(&home.0).unwrap().is_some());
 
-        apply(&home.0).unwrap();
+        apply(&home.0, ORCHESTRATOR_RECORD).unwrap();
 
         assert_eq!(home.names(), ["domain-cutover.json"]);
         assert_eq!(domain_cutover::read_marker(&home.0).unwrap().unwrap().phase, domain_cutover::Phase::Committed);
@@ -180,7 +190,7 @@ mod tests {
         home.write("usage-exhausted.next", "{");
         home.write("device-usage.json", r#"{"tracking_since_ms":0}"#);
 
-        apply(&home.0).unwrap();
+        apply(&home.0, ORCHESTRATOR_RECORD).unwrap();
 
         assert_eq!(home.names(), ["device-usage.json"], "another file named for usage stays");
     }
@@ -202,7 +212,7 @@ mod tests {
         migrated(&home);
         let before = home.names();
 
-        apply(&home.0).unwrap();
+        apply(&home.0, ORCHESTRATOR_RECORD).unwrap();
 
         assert_eq!(home.names(), before);
     }

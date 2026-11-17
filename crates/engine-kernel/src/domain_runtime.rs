@@ -56,6 +56,11 @@ pub struct DomainRuntime {
     extensions: extensions::Extensions,
     /// The subsystems that hear of every commit, in the order the engine registered them.
     observers: Vec<Box<dyn CommitObserver>>,
+    /// The interfaces the crates of the engine offer each other, given when the engine is put together.
+    ports: ports::Ports,
+    /// How many turns the orchestrator has ended, as its own record says: the evidence Alondra hands
+    /// it what it still has to re-plan by.
+    pub orchestrator_rests: std::sync::atomic::AtomicU64,
     /// Counts what the orchestrator did, for the watchdog that tells a working orchestrator from a
     /// stuck one.
     orchestrator_progress: std::sync::atomic::AtomicU64,
@@ -74,6 +79,7 @@ pub use alondra_daemon_engine_model::retention::Retained;
 pub mod batch_operations;
 pub mod extensions;
 pub mod observers;
+mod ports;
 pub mod seals;
 
 pub use extensions::{Extension, Slot};
@@ -159,6 +165,8 @@ impl DomainRuntime {
             full_disk: Default::default(),
             extensions: Default::default(),
             observers,
+            ports: Default::default(),
+            orchestrator_rests: Default::default(),
             orchestrator_progress: Default::default(),
             #[cfg(any(test, feature = "test-hooks"))]
             before_owner_publish: Default::default(),

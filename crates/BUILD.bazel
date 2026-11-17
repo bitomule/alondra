@@ -30,6 +30,7 @@ WORKSPACE_MEMBERS = [
     "domain",
     "engine-github",
     "engine-kernel",
+    "engine-orchestrator",
     "e2e",
     "foundation",
     "process-group",

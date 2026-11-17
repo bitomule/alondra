@@ -31,7 +31,7 @@ class CheckoutTest(unittest.TestCase):
         root = checkout()
         for source, most in limits(root):
             with self.subTest(source):
-                declared = graph.MOD.findall(graph.without_tests(graph.code_only((root / source / "lib.rs").read_text())))
+                declared = graph.MOD.findall(graph.without_tests(graph.code_only(text := (root / source / "lib.rs").read_text()), text))
                 self.assertGreaterEqual(len(graph.production_modules(root / source)), len(declared) // 2,
                     f"{source}: most modules lib.rs declares were not read, so no cycle could be measured")
                 cycle, lines = graph.main_cycle(root / source)
@@ -85,6 +85,25 @@ class GraphTest(unittest.TestCase):
         })
         self.assertEqual(graph.main_cycle(self.source), ([], 0))
         self.assertNotIn("fixtures", graph.production_modules(self.source))
+
+    def test_what_only_the_test_hooks_feature_compiles_never_makes_a_cycle(self):
+        self.crate({
+            "lib.rs": "mod a;\nmod b;\n#[cfg(any(test, feature = \"test-hooks\"))]\npub mod hooks;\n",
+            "a.rs": "use crate::b;\n",
+            "b.rs": "#[cfg(any(test, feature = \"test-hooks\"))]\npub mod tests { use crate::a; }\n#[cfg(feature = \"other\")]\nfn f() { crate::hooks::g(); }\n",
+            "hooks.rs": "use crate::a; use crate::b;\n",
+            "c.rs": "pub struct S {\n    #[cfg(any(test, feature = \"test-hooks\"))]\n    hook: Option<Box<dyn Fn(u8, u8)>>,\n    kept: u8,\n}\nfn g() { crate::a::f(); }\n",
+        })
+        self.assertEqual(graph.main_cycle(self.source), ([], 0))
+        self.assertNotIn("hooks", graph.production_modules(self.source))
+
+    def test_a_field_only_tests_compile_hides_only_that_field(self):
+        self.crate({
+            "lib.rs": "mod a;\nmod b;\n",
+            "a.rs": "pub struct S {\n    #[cfg(any(test, feature = \"test-hooks\"))]\n    hook: Option<Box<dyn Fn(u8, u8) -> u8>>,\n    #[cfg(test)]\n    seen: std::collections::BTreeMap<u8, u8>,\n    kept: u8,\n}\nfn f() { crate::b::g(); }\n",
+            "b.rs": "use crate::a;\n",
+        })
+        self.assertEqual(graph.main_cycle(self.source)[0], ["a", "b"])
 
     def test_a_production_module_declared_in_a_directory_counts(self):
         self.crate({

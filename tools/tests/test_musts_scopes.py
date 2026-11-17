@@ -179,7 +179,7 @@ INVENTORY_SURFACES = (
     "crates/alondrad/Info.plist",
     "crates/alondrad/src/iroh_endpoint.rs",
     "crates/alondrad/src/service/relay.rs",
-    "crates/daemon-engine/src/sdk_owner/backend.rs",
+    "crates/engine-kernel/src/sdk_backend.rs",
     "crates/daemon-support/src/launch_worktree.rs",
     "crates/daemon-support/src/codex_credentials.rs",
     "crates/daemon-support/src/new_runtime_surface.rs",

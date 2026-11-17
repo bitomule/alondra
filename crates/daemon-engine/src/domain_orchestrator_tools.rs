@@ -26,22 +26,6 @@ pub fn request_choices(domain: &DomainRuntime, request: &RequestId) -> anyhow::R
     domain.request_launch(request)
 }
 
-/// 8ccd131's request text for the orchestrator: the options the user chose, the effort rule, the
-/// issue the work comes from and where the attached files are.
-pub(crate) fn choices_text(user: &str, home: &Path, choices: &Choices) -> String {
-    let mut lines = vec![format!("  options: {}. {}", choices.options.summary(), choices.options.effort_note(user))];
-    if let Some(issue) = &choices.issue {
-        lines.push(format!("  issue {issue}{}", choices.issue_text.as_deref().map(|text| format!(": {text}")).unwrap_or_default()));
-    }
-    for attachment in &choices.attachments {
-        lines.push(format!("  attached {}: {}", attachment.name, home.join(&attachment.content_reference).display()));
-    }
-    if !choices.attachments.is_empty() {
-        lines.push("  Put the attached files' paths in the mission of the Task that needs them so its Agent can open them.".into());
-    }
-    lines.join("\n")
-}
-
 /// The orchestrator a local bearer belongs to, while its generation is current. A call that may
 /// change `what` is recorded against its execution before it acts.
 pub fn orchestrator(domain: &DomainRuntime, bearer: Option<&str>, what: Option<&str>) -> Result<Actor, DomainError> {

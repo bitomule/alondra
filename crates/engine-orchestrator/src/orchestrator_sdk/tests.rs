@@ -1,8 +1,6 @@
 //! Orchestrator batches through the real SDK host: the pinned Node host with the official SDK and
 //! a fake native Claude that answers each prompt as its marker says. A held turn waits on a FIFO
 //! the test writes, never on a clock.
-use crate::sdk_owner::SdkOwners as _;
-use crate::live::LiveOf as _;
 use super::*;
 use crate::domain_orchestrator::testing::{Fixture, fixture};
 use crate::domain_orchestrator::{Failure, Run, Runtime, load, save};
@@ -276,7 +274,7 @@ async fn a_result_of_another_input_is_not_the_batch_handled() {
 #[tokio::test]
 async fn a_batch_that_ran_out_of_usage_before_answering_pauses_and_waits_without_a_card() {
     let f = ended("fixture:limited").await;
-    assert!(f.domain().live().usage_pause.is_active(), "usage pauses everything");
+    assert!(f.domain().engine().usage_pause().is_some(), "usage pauses everything");
     let runtime = load(&f.executor.home).unwrap();
     assert!(runtime.active_run.is_none() && runtime.failure.is_none(), "{runtime:?}");
     assert_eq!(f.attempts(), ["retryable"]);
@@ -323,7 +321,7 @@ async fn a_no_effect_cancellation_retires_its_remembered_logical_stop() {
     let during = async {
         f.held().await;
         let run = load(&f.executor.home).unwrap().active_run.unwrap();
-        *f.domain().live().orchestrator_stop.lock().unwrap() = Some((run.clone(), BatchProblem {
+        *f.domain().orchestrator().stop.lock().unwrap() = Some((run.clone(), BatchProblem {
             stop: BatchStop::Denied,
             calls: vec![],
             subjects: vec![],
@@ -333,7 +331,7 @@ async fn a_no_effect_cancellation_retires_its_remembered_logical_stop() {
     };
     let (result, ()) = tokio::join!(f.executor.tick(), during);
     result.unwrap();
-    assert!(f.domain().live().orchestrator_stop.lock().unwrap().is_none(),
+    assert!(f.domain().orchestrator().stop.lock().unwrap().is_none(),
         "a completed cancellation cannot leave a logical stop to resurrect");
     let runtime = load(&f.executor.home).unwrap();
     assert!(runtime.active_run.is_none() && runtime.failure.is_none());

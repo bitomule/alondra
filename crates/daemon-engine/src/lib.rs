@@ -1,5 +1,5 @@
 //! The daemon's engine: the domain runtime and its store, the nodes and their Agent SDK hosts,
-//! admission, the orchestrator and the transports, everything below the routes and views that
+//! admission and the transports, everything below the routes and views that
 //! `alondrad` serves.
 #![cfg_attr(all(feature = "test-hooks", not(test)), allow(dead_code, unused_imports))]
 
@@ -50,6 +50,7 @@ pub use alondra_engine_kernel::{
     domain_store,
     extension,
     metrics_capture,
+    ports,
     retention,
     settings_projection,
 };
@@ -72,7 +73,6 @@ pub mod database_check;
 pub mod domain_agent_lifecycle;
 pub mod domain_holds;
 pub mod domain_messages;
-pub mod domain_orchestrator;
 pub mod domain_orchestrator_reads;
 pub mod domain_orchestrator_tools;
 pub mod domain_schedule_api;
@@ -103,11 +103,6 @@ pub mod node_push;
 pub mod node_reports;
 pub mod node_work;
 pub use alondra_daemon_engine_model::options;
-pub mod orchestrator_codex;
-pub mod orchestrator_inbox;
-pub mod orchestrator_process;
-pub mod orchestrator_provider;
-pub mod orchestrator_sdk;
 pub mod pauses;
 pub mod plan_reviews;
 pub mod provider_transition;
@@ -116,7 +111,6 @@ pub mod sdk_handover;
 pub mod sdk_live;
 pub mod sdk_owner;
 pub use alondra_daemon_engine_model::settings_file;
-pub mod stall_context;
 pub mod start_failures;
 pub use alondra_daemon_engine_machine::swap_disk;
 pub mod cancelled_worktrees;

@@ -105,7 +105,7 @@ pub(crate) fn candidate(state: &DomainState, task: &Task) -> bool {
         && !state.schedule.runs.values().any(|run| run.task_id.as_ref() == Some(&task.id))
 }
 
-pub(crate) async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
+pub async fn pass(domain: &DomainRuntime, home: &Path) -> Result<()> {
     crate::start_failures::react(domain, home).await?;
     let state = domain.state()?;
     let now = alondra_core::now_millis();
@@ -225,5 +225,5 @@ fn tell(domain: &DomainRuntime, id: &str, body: String) {
     }
 }
 
-#[cfg(test)]
-mod tests;
+#[cfg(any(test, feature = "test-hooks"))]
+pub mod tests;

@@ -57,19 +57,9 @@ pub struct Live {
     /// probe node can be sent to.
     pub sandbox: std::sync::atomic::AtomicBool,
     pub usage_pause: crate::usage_pause::UsagePause,
-    pub(crate) account_wait: crate::accounts::AccountWait,
-    /// How many turns the orchestrator has ended, as `Runtime::rests` says: the evidence Alondra
-    /// hands it what it still has to re-plan by.
-    pub(crate) orchestrator_rests: AtomicU64,
-    /// Recovered after panic: each holder only reads or replaces one complete host lease.
-    pub(crate) orchestrator_host: Mutex<Option<(String, alondra_agent_runtime::owned_host::HostStop)>>,
-    /// Retain a logical stop while storage is unavailable, until its finalization commits.
-    /// Recovered after panic: one complete stop is assigned, cloned or cleared.
-    pub(crate) orchestrator_stop: Mutex<Option<(crate::domain_orchestrator::Run, alondra_core::orchestrator_batch::BatchProblem)>>,
-    /// Recovered after panic: each holder inserts or removes one completed-run marker.
-    pub(crate) orchestrator_runs: Mutex<std::collections::BTreeSet<String>>,
+    pub account_wait: crate::accounts::AccountWait,
     /// Asks the accounts check to run now.
-    pub(crate) account_check: tokio::sync::Notify,
+    pub account_check: tokio::sync::Notify,
     pub(crate) initial_account_check_pending: std::sync::atomic::AtomicBool,
     /// Sign-in checks wait for Claude to end instead of its deadline: a test's Claude is a script
     /// it just wrote, whose first run waits while macOS checks the new executable.

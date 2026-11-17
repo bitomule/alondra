@@ -12,9 +12,8 @@
 //! orchestrator's to decide, so no clock settles them and no card asks the user. Alondra reads the
 //! orchestrator's own state instead: every time it rests (a turn ended, handled or failed, or it
 //! is idle) the open item is handed to it again, once per rest.
-use crate::live::LiveOf as _;
+use crate::engine::OrchestratorOf as _;
 use crate::domain_runtime::DomainRuntime;
-use crate::locks::Poisonable as _;
 use alondra_core::domain::obligation_policy::{ANSWER, Millis};
 use alondra_core::domain::{
     Author, CardKind, Command, DomainState, InboxCard, Interaction, InteractionId, InteractionPayload, PlanReview, PlanReviewOutcome, QuestionOption,
@@ -25,7 +24,6 @@ use alondra_core::orchestrator_cards::{
     UNSPLIT_PROBLEM_PREFIX, UNSPLIT_RETRY, UNSPLIT_RETRY_LABEL, UnsplitProblem,
     PLAN_REVIEW_NOTICE_PREFIX, PLAN_REFUSED_NOTICE_PREFIX, STALL_NOTICE_PREFIX,
 };
-use alondra_domain::Obligation;
 use std::collections::BTreeSet;
 
 const UNSPLIT_CAUSE: &str = "request_unsplit";
@@ -74,7 +72,7 @@ pub(crate) fn steps(state: &DomainState) -> Vec<Step> {
 
 /// What the orchestrator owes past its deadline, each step with the tasks whose clock it acts on:
 /// a reminder the first time, then Alondra's own outcome.
-pub(crate) fn overdue(state: &DomainState, due: &BTreeSet<TaskId>) -> Vec<(Step, Vec<TaskId>)> {
+pub fn overdue(state: &DomainState, due: &BTreeSet<TaskId>) -> Vec<(Step, Vec<TaskId>)> {
     let late = |i: &Interaction| task_of(state, i).filter(|task| !task.over() && due.contains(&task.id));
     let mut steps = vec![];
     for case in state.interactions.values().filter(|i| state.unsettled_stall(i)) {
@@ -100,7 +98,7 @@ pub(crate) fn overdue(state: &DomainState, due: &BTreeSet<TaskId>) -> Vec<(Step,
 /// ended: a task that waits for a cancelled task, and a launch plan the start refused. Each is
 /// handed to it once per rest, with the open item, until it decides; Alondra never decides it,
 /// and no clock counts.
-pub(crate) fn replans(state: &DomainState, rest: u64) -> Vec<Step> {
+pub fn replans(state: &DomainState, rest: u64) -> Vec<Step> {
     state.tasks.values().filter(|task| !task.over() && !task.archived)
         .filter_map(|task| dependency_cancelled(state, task, rest).or_else(|| plan_refused(state, task, rest)))
         .collect()
@@ -108,17 +106,12 @@ pub(crate) fn replans(state: &DomainState, rest: u64) -> Vec<Step> {
 
 /// Hands the orchestrator what it has still to re-plan. Called each time it rests, whatever its
 /// last turn did, and whether or not other messages wait for it: it only adds a reminder.
-pub(crate) fn hand_replans(domain: &DomainRuntime) {
+pub fn hand_replans(domain: &DomainRuntime) {
     let Ok(state) = domain.state() else { return };
-    let rest = domain.live().orchestrator_rests.load(std::sync::atomic::Ordering::Relaxed);
+    let rest = domain.orchestrator_rests.load(std::sync::atomic::Ordering::Relaxed);
     for step in replans(&state, rest) {
         carry_out(domain, &state, &step);
     }
-}
-
-/// What the task is owed, the wait of a task the orchestrator has to re-plan included.
-pub(crate) fn obligation_of(state: &DomainState, task: &TaskId) -> Option<Obligation> {
-    state.obligation_of(task)
 }
 
 /// The problems Alondra no longer raises: what they asked the user is settled by time now.
@@ -365,7 +358,7 @@ fn dependency_cancelled(state: &DomainState, task: &Task, rest: u64) -> Option<S
 }
 
 /// Carries the steps out; one that fails is tried again on the next pass.
-pub(crate) fn settle(domain: &DomainRuntime) {
+pub fn settle(domain: &DomainRuntime) {
     let Ok(state) = domain.state() else { return };
     for step in steps(&state) {
         carry_out(domain, &state, &step);
@@ -375,13 +368,22 @@ pub(crate) fn settle(domain: &DomainRuntime) {
 /// Steps the daemon's one clock at `now`. What the orchestrator owes past its deadline is settled
 /// on every pass of the orchestrator, busy or failing, so nothing a task waits for from it lasts
 /// for ever.
-pub(crate) fn settle_overdue(domain: &DomainRuntime, now: Millis) {
-    crate::obligation_watch::pass(domain, &mut domain.live().obligations.lock_or_recover("the obligation watch"), now);
+pub fn settle_overdue(domain: &DomainRuntime, now: Millis) {
+    domain.engine().settle_overdue(now);
+}
+
+/// What the clock over every task's obligations asks of the orchestrator.
+pub struct Answers;
+
+impl alondra_engine_kernel::ports::OrchestratorAnswers for Answers {
+    fn settle_answers(&self, domain: &DomainRuntime, state: &DomainState, due: &BTreeSet<TaskId>) {
+        settle_answers(domain, state, due);
+    }
 }
 
 /// What the orchestrator owes the `due` tasks past its deadline: a reminder the first time, then
 /// Alondra's own outcome.
-pub(crate) fn settle_answers(domain: &DomainRuntime, state: &DomainState, due: &BTreeSet<TaskId>) {
+fn settle_answers(domain: &DomainRuntime, state: &DomainState, due: &BTreeSet<TaskId>) {
     for (step, tasks) in overdue(state, due) {
         if carry_out(domain, state, &step) {
             log!("the orchestrator owed {} past its deadline: {step:?}", tasks.iter().map(|task| task.0.as_str()).collect::<Vec<_>>().join(", "));
@@ -390,7 +392,7 @@ pub(crate) fn settle_answers(domain: &DomainRuntime, state: &DomainState, due: &
 }
 
 /// The command that carries out `step`, for the steps one command settles.
-pub(crate) fn command_of(step: &Step) -> Option<Command> {
+pub fn command_of(step: &Step) -> Option<Command> {
     Some(match step {
         Step::Tell { id, card, text } | Step::Remind { id, card, text, .. } => crate::domain_runtime::problems::tell_command(id, Some(card.clone()), text.clone()),
         Step::Withdraw { question } => Command::Withdraw { interaction_id: question.clone() },
@@ -422,7 +424,7 @@ fn carry_out(domain: &DomainRuntime, state: &DomainState, step: &Step) -> bool {
         Step::TellPlanReview { id, card, review, number } => {
             let plan_of = |task: &alondra_core::domain::TaskId| domain.launch_plan(task).ok().flatten();
             let text = format!("Reminder {number}: these plans are still not reviewed. If they are still not in {} minutes, Alondra starts each with the plan it has and tells its node what the user decided. {}",
-                ANSWER / 60_000, crate::plan_reviews::orchestrator_text(state, review, &plan_of));
+                ANSWER / 60_000, crate::domain_store::wording::orchestrator_text(state, review, &plan_of));
             domain.tell_orchestrator(id, Some(card.clone()), text).map(drop)
         }
         Step::ReleaseUnreviewed { review, task, note } => {
@@ -561,14 +563,14 @@ mod tests {
         let state = domain.state().unwrap();
         assert!(!state.requests[&"pair".into()].closed, "its other task still waits");
         assert!(state.open_start_problem(&"second".into()).is_none(), "the user is not asked first");
-        let owed = obligation_of(&state, &"second".into()).expect("it is still owed something");
+        let owed = state.obligation_of(&"second".into()).expect("it is still owed something");
         assert_eq!((owed.party, owed.owed), (Party::Alondra, Owed::Replan), "the orchestrator re-plans the task that waited for it");
         assert!(matches!(&replans(&state, 0)[..], [Step::Tell { text, .. }] if text.contains("it is yours to decide")), "{:?}", replans(&state, 0));
         assert_eq!(overdue(&state, &BTreeSet::from(["second".into()])), [], "no clock acts on it");
     }
 
     fn rest(domain: &DomainRuntime) {
-        domain.live().orchestrator_rests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        domain.orchestrator_rests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         hand_replans(domain);
     }
 
@@ -620,7 +622,7 @@ mod tests {
         assert!(text.contains("Still open, reminder 3: Task “Task second” (second) waits for “Task first” (first), which was cancelled"), "{text}");
         assert!(state.open_start_problem(&task).is_none(), "the user is never asked");
         assert!(!state.tasks[&task].cancelled(), "and the task is never cancelled for the orchestrator");
-        let owed = obligation_of(&state, &task).expect("still owed");
+        let owed = state.obligation_of(&task).expect("still owed");
         assert_eq!((owed.party, owed.owed), (Party::Alondra, Owed::Replan));
     }
 
@@ -638,7 +640,7 @@ mod tests {
         run(&domain, Actor::Orchestrator { generation: 0 }, "repoint", Command::SetDependencies {
             task_id: "second".into(), dependencies: ["other".into()].into(), stack: None, reason: None,});
         let state = domain.state().unwrap();
-        let owed = obligation_of(&state, &"second".into()).expect("owed");
+        let owed = state.obligation_of(&"second".into()).expect("owed");
         assert_ne!(owed.owed, Owed::Replan);
         assert!(matches!(&replans(&state, 0)[..], [Step::Withdraw { .. }]), "{:?}", replans(&state, 0));
         rest(&domain);
@@ -893,3 +895,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "orchestrator_inbox/engine_tests.rs"]
+mod engine_tests;

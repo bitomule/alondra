@@ -19,6 +19,7 @@ rust_library(
         "//crates/agent-runtime:agent_runtime",
         "//crates/core:alondra_core",
         "//crates/daemon-engine:daemon_engine",
+        "//crates/engine-orchestrator:engine_orchestrator",
         "//crates/daemon-support:daemon_support",
         "//crates/domain:domain",
         "//crates/e2e:alondra_e2e",
@@ -41,6 +42,7 @@ rust_library(
         "//crates/agent-runtime:agent_runtime",
         "//crates/core:alondra_core",
         "//crates/daemon-engine:daemon_engine_test_hooks",
+        "//crates/engine-orchestrator:engine_orchestrator_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",
         "//crates/domain:domain",
         "//crates/e2e:alondra_e2e",
@@ -130,6 +132,7 @@ low_opt_rust_test(
         "//crates/agent-runtime:agent_runtime",
         "//crates/core:alondra_core",
         "//crates/daemon-engine:daemon_engine_test_hooks",
+        "//crates/engine-orchestrator:engine_orchestrator_test_hooks",
         "//crates/daemon-engine-store:daemon_engine_store_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",
         "//crates/domain:domain",
@@ -180,7 +183,7 @@ low_opt_rust_test(
     name = "lock_policy_test",
     size = "small",
     srcs = ["tests/lock_policy.rs"],
-    data = [":report_sources", "//crates/daemon-engine:report_sources", "//crates/daemon-engine-model:report_sources", "//crates/daemon-engine-store:report_sources", "//crates/daemon-engine-machine:report_sources", "//crates/engine-github:report_sources", "//crates/engine-kernel:report_sources", "//crates/daemon-support:report_sources"],
+    data = [":report_sources", "//crates/daemon-engine:report_sources", "//crates/daemon-engine-model:report_sources", "//crates/daemon-engine-store:report_sources", "//crates/daemon-engine-machine:report_sources", "//crates/engine-github:report_sources", "//crates/engine-kernel:report_sources", "//crates/engine-orchestrator:report_sources", "//crates/daemon-support:report_sources"],
     edition = "2024",
 )
 

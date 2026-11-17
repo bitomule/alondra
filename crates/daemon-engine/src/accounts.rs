@@ -4,7 +4,6 @@
 //! it. An added account gets its folder, linked to the user's `~/.claude`; a removed one is signed
 //! out and its folder deleted. `~/.claude` itself is never changed. Each launch starts on the
 //! account the user's distribution picks (`choose_for_launch`).
-use crate::sdk_owner::SdkOwners as _;
 use crate::live::LiveOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
@@ -180,7 +179,7 @@ pub(crate) fn observe(home: &Path, claude: Option<&Claude>, config: &AccountsCon
 /// from what the domain knows at `now`. When none can work, the Mac waits until the soonest one can
 /// again, or until one has a session when none has: every launch, batch and schedule holds until
 /// then, as for a usage limit. One that can work ends a wait for a session.
-pub(crate) fn choose_for_launch(domain: &DomainRuntime, home: &Path, now: alondra_core::Millis) -> Option<AccountId> {
+pub fn choose_for_launch(domain: &DomainRuntime, home: &Path, now: alondra_core::Millis) -> Option<AccountId> {
     let policy = config(home).map(|config| config.distribution.policy).unwrap_or_default();
     let read = domain.read();
     let state = read.state();
@@ -289,60 +288,13 @@ pub(crate) fn select_for_node_with_tools(domain: &DomainRuntime, home: &Path, in
 
 /// Claude answered while no account had a session: the accounts are checked now, not at the next
 /// round, so the wait ends as soon as the check sees the session.
-pub(crate) fn answered(domain: &DomainRuntime) {
+pub fn answered(domain: &DomainRuntime) {
     if domain.live().usage_pause.waits_for_session() {
         domain.live().account_check.notify_one();
     }
 }
 
-/// The Claude accounts as the domain last checked them, when none has a session to start work
-/// with: `default (signed out), work (off)`. None while one may have it: signed in, not checked
-/// yet, or not checkable.
-pub(crate) fn none_signed_in(accounts: &[AccountStatus]) -> Option<String> {
-    let claude: Vec<&AccountStatus> = accounts.iter().filter(|account| account.provider == Provider::Claude).collect();
-    if claude.is_empty() || !claude.iter().all(|account| matches!(account.state, AccountState::SignedOut | AccountState::Disabled)) {
-        return None;
-    }
-    let state = |state: AccountState| if state == AccountState::Disabled { "off" } else { "signed out" };
-    Some(claude.iter().map(|account| format!("{} ({})", account.id, state(account.state))).collect::<Vec<_>>().join(", "))
-}
-
-/// Whether the orchestrator waits for an account or a model, and why: set and cleared once per
-/// change, so the log and the screens say each reason once.
-/// A holder that panics leaves it whole, so it is recovered: one assignment or take.
-#[derive(Default)]
-pub(crate) struct AccountWait(std::sync::Mutex<Option<String>>);
-
-impl AccountWait {
-    pub(crate) fn is_waiting(&self) -> bool {
-        self.0.lock_or_recover("the account wait").is_some()
-    }
-
-    /// True when the wait starts now.
-    pub(crate) fn start(&self) -> bool {
-        let mut wait = self.0.lock_or_recover("the account wait");
-        if wait.is_some() { return false; }
-        *wait = Some(String::new());
-        true
-    }
-
-    /// True when the wait starts now or its reason changed.
-    pub(crate) fn wait_for(&self, reason: &str) -> bool {
-        let mut wait = self.0.lock_or_recover("the account wait");
-        if wait.as_deref() == Some(reason) { return false; }
-        *wait = Some(reason.to_owned());
-        true
-    }
-
-    pub(crate) fn reason(&self) -> Option<String> {
-        self.0.lock_or_recover("the account wait").clone()
-    }
-
-    /// True when a standing wait ends now.
-    pub(crate) fn end(&self) -> bool {
-        self.0.lock_or_recover("the account wait").take().is_some()
-    }
-}
+pub use crate::ports::AccountWait;
 
 /// Every account the user registered, on or off: the folders an execution may run Claude with.
 pub(crate) fn registered(home: &Path) -> Vec<AccountId> {

@@ -12,12 +12,12 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-struct Fixture {
+pub struct Fixture {
     sdk: SdkLaunches,
     root: crate::test_support::Directory,
-    home: PathBuf,
+    pub home: PathBuf,
     project: PathBuf,
-    domain: Arc<DomainRuntime>,
+    pub domain: Arc<DomainRuntime>,
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -27,11 +27,11 @@ impl Drop for Fixture {
     }
 }
 
-fn user() -> Actor {
+pub fn user() -> Actor {
     Actor::User { user_id: "u".into() }
 }
 
-fn command(domain: &DomainRuntime, actor: Actor, command: Command) {
+pub fn command(domain: &DomainRuntime, actor: Actor, command: Command) {
     let state = domain.state().unwrap();
     domain.execute(&actor, &CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: format!("c-{}", crate::auth::random_hex(8)).into(),
@@ -39,7 +39,7 @@ fn command(domain: &DomainRuntime, actor: Actor, command: Command) {
     }, None, || Ok(())).unwrap();
 }
 
-fn world() -> Fixture {
+pub fn world() -> Fixture {
     world_using_sdk(SdkLaunches::enable_holding)
 }
 
@@ -60,7 +60,7 @@ fn world_using_sdk(enable: fn(&Arc<DomainRuntime>, &Path) -> SdkLaunches) -> Fix
     Fixture { sdk, root, home, project, domain }
 }
 
-fn plan(f: &Fixture, name: &str) -> LaunchPlan {
+pub fn plan(f: &Fixture, name: &str) -> LaunchPlan {
     LaunchPlan {
         name: name.into(), cwd: f.project.to_str().unwrap().into(), mission: None, model: Some("sonnet".into()), effort: None,
         approach: None, reason: Some("A clear, mechanical change".into()), role: None, tags: None, project: None,
@@ -68,7 +68,7 @@ fn plan(f: &Fixture, name: &str) -> LaunchPlan {
 }
 
 /// A task created the way the orchestrator creates one: with its plan, through its capability.
-fn create(f: &Fixture, id: &str, after: &[&str], plan: Option<&LaunchPlan>) {
+pub fn create(f: &Fixture, id: &str, after: &[&str], plan: Option<&LaunchPlan>) {
     let bearer = f.domain.bind_orchestrator(&format!("execution-{id}")).unwrap().expose_for_child_environment().to_owned();
     let state = f.domain.state().unwrap();
     let envelope = CommandEnvelope {
@@ -111,7 +111,7 @@ fn finish(f: &Fixture, id: &str, body: &str, pull_request: bool) {
 }
 
 /// A task an earlier node works on, which was never launched by Alondra.
-fn open_task(f: &Fixture, id: &str) {
+pub fn open_task(f: &Fixture, id: &str) {
     command(&f.domain, Actor::System, Command::RegisterAgent { agent_id: format!("seed-{id}").into(), name: format!("Seed {id}").into(), at: 0 });
     command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"),
         agent_id: Some(format!("seed-{id}").into()), review_prs: false, dependencies: Default::default(), stack: None,
@@ -125,7 +125,7 @@ fn done_task(f: &Fixture, id: &str) {
 }
 
 /// How many nodes Alondra started through the SDK.
-fn launches(f: &Fixture) -> usize {
+pub fn launches(f: &Fixture) -> usize {
     f.domain.state().unwrap().agents.keys().filter(|agent| agent.0.starts_with("sdk-")).count()
 }
 
@@ -143,7 +143,7 @@ fn node_name(f: &Fixture, task: &str) -> String {
     f.domain.state().unwrap().agents[&agent].name.clone()
 }
 
-fn told(f: &Fixture) -> Vec<String> {
+pub fn told(f: &Fixture) -> Vec<String> {
     f.domain.state().unwrap().interactions.keys().map(|id| id.0.clone()).collect()
 }
 
@@ -455,7 +455,7 @@ async fn the_worktree_made_for_a_task_cancelled_while_it_starts_goes_when_it_clo
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("a")].state, alondra_core::domain::TaskState::Cancelled);
 }
 
-fn problem(f: &Fixture, task: &str) -> Option<alondra_core::domain::Interaction> {
+pub fn problem(f: &Fixture, task: &str) -> Option<alondra_core::domain::Interaction> {
     f.domain.state().unwrap().open_start_problem(&task.into()).cloned()
 }
 
@@ -651,67 +651,6 @@ async fn a_folder_inside_the_projects_folder_starts_without_a_card() {
     assert!(problem(&f, "f1").is_none());
 }
 
-/// 20 October: a cancelled dependency put a card in front of the user at once. The task never
-/// starts while it waits for a cancelled task; it is the orchestrator's to decide, and it is
-/// handed back at every rest of the orchestrator, never to the user. Letting it start without the
-/// cancelled task is the orchestrator's decision.
-#[tokio::test]
-async fn a_cancelled_dependency_is_the_orchestrators_to_decide_and_never_the_users() {
-    let f = world();
-    open_task(&f, "f0");
-    create(&f, "f1", &["f0"], Some(&plan(&f, "app/f1")));
-    command(&f.domain, user(), Command::CancelTask { task_id: "f0".into(), reason: None });
-    pass(&f.domain, &f.home).await.unwrap();
-    pass(&f.domain, &f.home).await.unwrap();
-    assert_eq!(launches(&f), 0);
-    assert!(problem(&f, "f1").is_none(), "the orchestrator re-plans it first");
-
-    crate::orchestrator_inbox::hand_replans(&f.domain);
-    let notices = || told(&f).into_iter().filter(|id| id.starts_with("dependency-cancelled-f1--f0-")).collect::<Vec<_>>();
-    assert_eq!(notices(), ["dependency-cancelled-f1--f0-0"]);
-    let state = f.domain.state().unwrap();
-    let notice = &state.interactions[&"dependency-cancelled-f1--f0-0".into()].body;
-    assert!(notice.contains("“Task f1” (f1) waits for “Task f0” (f0), which was cancelled") && notice.contains("set_dependencies")
-        && notice.contains("cancel_task") && notice.contains("yours to decide"), "{notice}");
-    crate::orchestrator_inbox::hand_replans(&f.domain);
-    assert_eq!(notices().len(), 1, "once per rest");
-    for _ in 0..3 {
-        rest(&f);
-    }
-    assert_eq!(notices().len(), 4);
-    assert!(problem(&f, "f1").is_none(), "the user is never asked");
-    pass(&f.domain, &f.home).await.unwrap();
-    assert_eq!(launches(&f), 0);
-
-    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::SetDependencies { task_id: "f1".into(), dependencies: Default::default(), stack: None, reason: None });
-    pass(&f.domain, &f.home).await.unwrap();
-    assert_eq!(launches(&f), 1, "the orchestrator let it start without the cancelled task");
-}
-
-/// The orchestrator replaces the cancelled task: the task follows its new dependencies, nobody is
-/// asked, and a card from before that asked the user is withdrawn.
-#[tokio::test]
-async fn a_task_the_orchestrator_re_points_follows_its_replacement_and_its_old_card_is_withdrawn() {
-    let f = world();
-    open_task(&f, "f0");
-    open_task(&f, "f2");
-    create(&f, "f1", &["f0"], Some(&plan(&f, "app/f1")));
-    command(&f.domain, user(), Command::CancelTask { task_id: "f0".into(), reason: None });
-    command(&f.domain, Actor::System, Command::RaiseStartProblem { task_id: "f1".into(), problem: alondra_core::domain::StartProblem::DependencyCancelled { dependency: "f0".into() } });
-    let card = problem(&f, "f1").expect("a card from before the orchestrator decided");
-    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::SetDependencies {
-        task_id: "f1".into(), dependencies: ["f2".into()].into(), stack: None, reason: None,});
-    rest(&f);
-    assert!(f.domain.state().unwrap().interactions[&card.id].withdrawn, "the card no longer asks anything");
-    assert!(problem(&f, "f1").is_none());
-    pass(&f.domain, &f.home).await.unwrap();
-    assert_eq!(launches(&f), 0, "it waits for its replacement");
-    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("f1")].state, TaskState::WaitingDependency);
-    let before = told(&f).len();
-    rest(&f);
-    assert_eq!(told(&f).len(), before, "nothing more for the orchestrator or the user");
-}
-
 /// The orchestrator's decision about a task that waited for a cancelled one carries its reason:
 /// a cancel shows it beside the task, and letting the task start without the dependency puts it
 /// first in what its node reads.
@@ -731,41 +670,6 @@ async fn the_orchestrators_reason_for_a_task_that_waited_for_a_cancelled_one_is_
     let mission = store.launch_plan(&"g1".into()).unwrap().expect("its plan").mission.expect("its mission");
     assert!(mission.starts_with("Why its dependencies changed: The cancelled task only prepared data this one does not need"), "{mission}");
     assert_eq!(store.cancel_reasons().unwrap()[&TaskId::from("g2")], "Its whole purpose was the cancelled task");
-}
-
-/// The orchestrator cancels a task and re-points the one that waited for it in the same batch:
-/// nobody is told anything.
-#[tokio::test]
-async fn cancelling_and_re_pointing_in_the_same_batch_tells_nobody() {
-    let f = world();
-    open_task(&f, "f0");
-    open_task(&f, "f2");
-    create(&f, "f1", &["f0"], Some(&plan(&f, "app/f1")));
-    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CancelTask { task_id: "f0".into(), reason: None });
-    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::SetDependencies {
-        task_id: "f1".into(), dependencies: ["f2".into()].into(), stack: None, reason: None,});
-    rest(&f);
-    assert!(!told(&f).iter().any(|id| id.starts_with("dependency-cancelled-")));
-    assert!(problem(&f, "f1").is_none());
-}
-
-#[tokio::test]
-async fn a_delivery_dependency_cancelled_stays_with_the_orchestrator_and_its_cancel_closes_the_task() {
-    let f = world();
-    open_task(&f, "a");
-    create(&f, "after", &[], Some(&plan(&f, "app/after")));
-    command(&f.domain, user(), Command::SetRelations { task_id: "after".into(), delivered_dependencies: ["a".into()].into(), blocks: Default::default() });
-    command(&f.domain, user(), Command::CancelTask { task_id: "a".into(), reason: None });
-    pass(&f.domain, &f.home).await.unwrap();
-    assert!(problem(&f, "after").is_none());
-    for _ in 0..4 {
-        rest(&f);
-    }
-    assert!(problem(&f, "after").is_none(), "the user is never asked");
-    command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CancelTask { task_id: "after".into(), reason: None });
-    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("after")].state, TaskState::Cancelled);
-    pass(&f.domain, &f.home).await.unwrap();
-    assert_eq!(launches(&f), 0);
 }
 
 /// The user closed the node of an open task: they are asked to relaunch it or cancel it, and a
@@ -824,12 +728,6 @@ async fn a_node_the_user_closes_asks_to_relaunch_and_the_relaunch_starts_a_new_n
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("f1")].account_key(), original_account);
     pass(&f.domain, &f.home).await.unwrap();
     assert!(problem(&f, "f1").is_none(), "nothing more to ask");
-}
-
-/// The orchestrator ended a turn: what it still has to re-plan is handed to it again.
-fn rest(f: &Fixture) {
-    f.domain.live().orchestrator_rests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    crate::orchestrator_inbox::hand_replans(&f.domain);
 }
 
 fn queued(f: &Fixture) -> Vec<(String, i64)> {

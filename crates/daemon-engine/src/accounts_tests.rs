@@ -1,5 +1,3 @@
-use crate::sdk_owner::SdkOwners as _;
-use crate::live::LiveOf as _;
 use super::*;
 use crate::test_support::Directory;
 use alondra_core::accounts::{Distribution, Policy, ProviderAccount};
@@ -402,19 +400,6 @@ fn the_default_account_can_be_disabled_while_another_stays_on_but_never_the_last
 }
 
 #[test]
-fn the_orchestrator_waits_for_a_sign_in_only_when_no_account_may_have_a_session() {
-    let seen = |states: &[(&str, AccountState)]| none_signed_in(&states.iter().map(|(id, state)| AccountStatus {
-        provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: (*id).into(), state: *state,
-        native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None,
-    }).collect::<Vec<_>>());
-    assert_eq!(seen(&[("default", AccountState::SignedOut), ("work", AccountState::Disabled)]).as_deref(), Some("default (signed out), work (off)"));
-    assert_eq!(seen(&[("default", AccountState::SignedOut), ("work", AccountState::SignedIn)]), None);
-    assert_eq!(seen(&[("default", AccountState::SignedOut), ("work", AccountState::Unavailable)]), None, "an account that could not be checked may still work");
-    assert_eq!(seen(&[("default", AccountState::Unchecked)]), None);
-    assert_eq!(seen(&[]), None, "no account recorded yet is the implicit default, not a missing sign-in");
-}
-
-#[test]
 fn native_claude_api_key_auth_overrides_a_configured_subscription_before_automatic_selection() {
     let mut f = fixture();
     f.claude.environment.insert("ANTHROPIC_API_KEY".into(),"fake-api-key".into());
@@ -568,7 +553,7 @@ fn cached_authentication_cannot_launch_new_work_until_a_current_roster_is_commit
     assert!(select_for_launch(&domain, &f.home, &intent, 100).is_ok());
     begin_initial_check(&domain);
     assert_eq!(select_for_launch(&domain, &f.home, &intent, 100).unwrap_err().code, "account_check_in_progress");
-    assert_eq!(crate::orchestrator_provider::selection(&domain, &f.home, 100).unwrap_err().code, "account_check_in_progress");
+    assert_eq!(select_for_launch(&domain, &f.home, &alondra_core::model_selection::TaskSelection::automatic(alondra_core::model_selection::ModelProfile::Orchestrator), 100).unwrap_err().code, "account_check_in_progress");
     assert_eq!(domain.read().state().accounts[0].state, AccountState::SignedIn, "cached presentation remains readable while work waits");
     let (stale, _) = probe_fence(&domain, &f.home).unwrap();
     let path = alondra_core::options::path_in(&f.home);
@@ -743,8 +728,8 @@ fn connecting_claude_on_a_fresh_install_gives_the_orchestrator_a_model_claude_ad
         context_window: None, input_modalities: vec![], is_default: false, hidden: false };
     record_account_command(&domain, Command::RecordModelCatalog { catalog: AccountModelCatalog { account: key, revision: "no-native-default".into(),
         models: vec![model("sonnet"), model("opus")], native_default: None, measured_at: 2 } });
-    let selection = crate::orchestrator_provider::selection(&domain, &f.home, 100).expect("the orchestrator has a model");
-    assert_eq!(selection.model.model.model, "opus");
+    let selection = select_for_launch(&domain, &f.home, &alondra_core::model_selection::TaskSelection::automatic(alondra_core::model_selection::ModelProfile::Orchestrator), 100).expect("the orchestrator has a model");
+    assert_eq!(selection.selection.model.model, "opus");
 
     let text = std::fs::read_to_string(&options).unwrap();
     let mut profiles = alondra_core::options::OptionsFile::parse(&text).unwrap().model_profiles;

@@ -829,7 +829,7 @@ fn home_with_previous_gate_file() -> crate::test_support::Directory {
 fn a_home_with_the_previous_gate_file_starts_with_its_pauses_under_the_new_name() {
     let home = home_with_previous_gate_file();
 
-    crate::home_renames::apply(&home).unwrap();
+    crate::home_renames::apply(&home, &[]).unwrap();
 
     assert!(!home.join(PREVIOUS_FILE).exists() && !home.join("fleet-gate.next").exists());
     assert!(home.join(FILE).exists());

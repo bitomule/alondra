@@ -1,7 +1,6 @@
 //! Schedule v2's local-calendar and launch preparation adapter. The command
 //! carrying this intent must be committed with its Run, Request, and Task before
 //! a technical launch claim can call Claude.
-use crate::sdk_owner::SdkOwners as _;
 use crate::live::LiveOf as _;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
@@ -879,6 +878,7 @@ pub async fn run(
 
 #[cfg(test)]
 mod tests {
+    use crate::sdk_owner::SdkOwners as _;
     use super::*;
     use crate::sdk_owner::tests::SdkLaunches;
     use alondra_core::domain::{InteractionId, InteractionPayload, Schedule, ScheduleFrequency};

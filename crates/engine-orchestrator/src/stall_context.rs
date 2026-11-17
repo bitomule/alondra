@@ -1,6 +1,6 @@
 //! What the orchestrator reads with the case of a stopped node: the task's mission, the node's
 //! last words and its worktree, read when the case reaches it.
-use crate::live::LiveOf as _;
+use crate::engine::OrchestratorOf as _;
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain::{DomainState, Interaction, Scope, Task, WorktreeOrigin};
 use std::path::Path;
@@ -22,9 +22,7 @@ pub(crate) fn context(domain: &DomainRuntime, state: &DomainState, case: &Intera
         .or_else(|| state.requests.get(&task.request_id).map(|request| request.body.clone()))
         .unwrap_or_default();
     let words = task.agent_id.as_ref()
-        .and_then(|agent| domain.live().mods.session(&agent.0))
-        .and_then(|reported| reported.answer)
-        .map(|answer| answer.text)
+        .and_then(|agent| domain.engine().last_words(agent))
         .filter(|text| !text.trim().is_empty());
     let worktree = own_worktree(task).or_else(|| plan.as_ref().map(|plan| plan.cwd.clone()));
     format!(

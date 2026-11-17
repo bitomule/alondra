@@ -1,4 +1,4 @@
-use crate::live::LiveOf as _;
+use crate::engine::OrchestratorOf as _;
 use crate::domain_store::BatchOwner;
 use alondra_core::accounts::AccountKey;
 use alondra_core::model_selection::ModelSelection;
@@ -43,7 +43,7 @@ pub struct BatchHandoff {
 pub(crate) struct Batch {
     pub(crate) owner: BatchOwner,
     pub(crate) domain: std::sync::Arc<crate::domain_runtime::DomainRuntime>,
-    pub(crate) backend: crate::sdk_owner::SdkBackend,
+    pub(crate) backend: crate::sdk_backend::SdkBackend,
     pub(crate) home: std::path::PathBuf,
     pub(crate) directory: std::path::PathBuf,
     pub(crate) node_plugin: std::path::PathBuf,
@@ -60,7 +60,7 @@ pub(crate) fn selection(domain: &crate::domain_runtime::DomainRuntime, home: &st
     let before = domain.read();
     let policy_revision = format!("{}:{}", before.state().account_config_version, before.state().model_profiles_version);
     drop(before);
-    let decision = crate::accounts::select_for_launch(domain, home, &TaskSelection::automatic(ModelProfile::Orchestrator), now)?;
+    let decision = domain.engine().select_account(home, &TaskSelection::automatic(ModelProfile::Orchestrator), now)?;
     let read = domain.read();
     if policy_revision != format!("{}:{}",read.state().account_config_version,read.state().model_profiles_version) {
         return Err(alondra_core::domain::DomainError::new("stale_configuration","Account/model policy changed during selection"));
@@ -82,7 +82,7 @@ pub(crate) fn record_limit(domain: &crate::domain_runtime::DomainRuntime, select
     use alondra_core::usage::{Share, UsageReading, WindowKind, WindowReading};
     let account = &selection.account;
     let Some(source) = selection.account_status.as_ref() else { return };
-    let reset = until.or_else(|| (account.provider == alondra_core::accounts::Provider::Claude).then(|| domain.live().measured.reset_after_limit(&account.account, now)).flatten()).filter(|reset| *reset > now);
+    let reset = until.or_else(|| (account.provider == alondra_core::accounts::Provider::Claude).then(|| domain.engine().reset_after_limit(&account.account, now)).flatten()).filter(|reset| *reset > now);
     let read = domain.read();
     let scope = match alondra_store::AuthorityScope::new(read.state().data_epoch.clone()) { Ok(scope) => scope, Err(_) => return };
     let envelope = CommandEnvelope {
@@ -100,7 +100,7 @@ pub(crate) fn record_limit(domain: &crate::domain_runtime::DomainRuntime, select
         Ok(true)
     });
     match result {
-        Ok((true, _)) => crate::usage_probe::follow(domain, now),
+        Ok((true, _)) => domain.engine().follow_usage(now),
         Ok((false, _)) => {},
         Err(error) => log!("Cannot record the native account limit: {error}"),
     }

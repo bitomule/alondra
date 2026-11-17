@@ -49,6 +49,11 @@ class EditBenchTest(unittest.TestCase):
         self.assertAlmostEqual(bench.bazel_seconds(output, 1104), 169.85)
         self.assertEqual(bench.bazel_seconds("INFO: Elapsed time: 3.0s", 42), 42)
 
+    def test_every_run_edits_differently_so_no_cache_serves_it(self):
+        self.assertNotEqual(bench.edit_text(".rs", 1), bench.edit_text(".rs", 2))
+        self.assertIn("static EDIT_BENCH: u64 = 7;", bench.edit_text(".rs", 7))
+        self.assertEqual(bench.edit_text(".py", 7), "# edit-bench 7\n")
+
     def test_a_retried_invocation_is_told_apart(self):
         self.assertEqual(bench.attempts("INFO: Elapsed time: 1s\nINFO: Elapsed time: 2s\n"), 2)
         self.assertEqual(bench.attempts(""), 1)

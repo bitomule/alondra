@@ -3,13 +3,13 @@
 //! execution. The batch is claimed from the domain outbox before Claude runs
 //! and finished as handed, retryable or uncertain afterwards; finishing an
 //! invocation never completes a Task.
-use crate::sdk_owner::SdkOwners as _;
-use crate::live::LiveOf as _;
+use crate::engine::OrchestratorOf as _;
 use alondra_core::domain::SystemCard;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::OutboxMessage;
 use crate::orchestrator_process::{self as process, BatchEnd, Ownership};
+use alondra_core::accounts::{AccountState, AccountStatus, Provider};
 use alondra_core::delivery::State;
 use alondra_core::domain::{Actor, Author, Command, CommandEnvelope, DomainError, DomainState, InteractionId, InteractionPayload, PROTOCOL_VERSION, QuestionOption, Recipient, RequestId, Scope};
 use alondra_core::now_millis;
@@ -26,7 +26,9 @@ const MAX_BATCH_MESSAGES: usize = 32;
 const MAX_BATCH_BYTES: usize = 128 * 1024;
 pub const FILE: &str = "orchestrator.json";
 /// The runtime record's name before it was renamed; startup moves it to `FILE`.
-pub(crate) const PREVIOUS_FILE: &str = "orchestrator-v2.json";
+const PREVIOUS_FILE: &str = "orchestrator-v2.json";
+/// The previous and current name of each record the orchestrator keeps in HOME.
+pub const RECORDS: &[(&str, &str)] = &[(PREVIOUS_FILE, FILE)];
 const SUMMARY_LINE: usize = 200;
 const MAX_SUMMARY_BYTES: usize = 32 * 1024;
 /// The most of its final words a batch hands to the next one.
@@ -199,6 +201,34 @@ fn read_handed(domain: &DomainRuntime, pause: impl Fn(Duration)) {
     }
 }
 
+/// The Claude accounts as the domain last checked them, when none has a session to start work
+/// with: `default (signed out), work (off)`. None while one may have it: signed in, not checked
+/// yet, or not checkable.
+fn none_signed_in(accounts: &[AccountStatus]) -> Option<String> {
+    let claude: Vec<&AccountStatus> = accounts.iter().filter(|account| account.provider == Provider::Claude).collect();
+    if claude.is_empty() || !claude.iter().all(|account| matches!(account.state, AccountState::SignedOut | AccountState::Disabled)) {
+        return None;
+    }
+    let state = |state: AccountState| if state == AccountState::Disabled { "off" } else { "signed out" };
+    Some(claude.iter().map(|account| format!("{} ({})", account.id, state(account.state))).collect::<Vec<_>>().join(", "))
+}
+
+/// 8ccd131's request text for the orchestrator: the options the user chose, the effort rule, the
+/// issue the work comes from and where the attached files are.
+fn choices_text(user: &str, home: &Path, choices: &crate::domain_store::RequestLaunch) -> String {
+    let mut lines = vec![format!("  options: {}. {}", choices.options.summary(), choices.options.effort_note(user))];
+    if let Some(issue) = &choices.issue {
+        lines.push(format!("  issue {issue}{}", choices.issue_text.as_deref().map(|text| format!(": {text}")).unwrap_or_default()));
+    }
+    for attachment in &choices.attachments {
+        lines.push(format!("  attached {}: {}", attachment.name, home.join(&attachment.content_reference).display()));
+    }
+    if !choices.attachments.is_empty() {
+        lines.push("  Put the attached files' paths in the mission of the Task that needs them so its Agent can open them.".into());
+    }
+    lines.join("\n")
+}
+
 impl Executor {
     fn pending(&self) -> Result<Vec<OutboxMessage>> {
         let store = self.domain.store.lock_or_exit("the domain store");
@@ -283,10 +313,10 @@ impl Executor {
         }
         drop(store);
         {
-            let mut pending = self.domain.live().orchestrator_stop.lock_or_recover("the orchestrator stop");
+            let mut pending = self.domain.orchestrator().stop.lock_or_recover("the orchestrator stop");
             if pending.as_ref().is_some_and(|(stopped, _)| stopped.id == run.id) { *pending = None; }
         }
-        self.domain.live().orchestrator_runs.lock_or_recover("the orchestrator runs").remove(&run.id);
+        self.domain.orchestrator().runs.lock_or_recover("the orchestrator runs").remove(&run.id);
         runtime.pending_resolutions.push(Resolution { run_id: run.id, message_ids: run.message_ids });
         runtime.last_error = None;
         runtime.failure = None;
@@ -310,10 +340,10 @@ impl Executor {
         }
         drop(store);
         {
-            let mut pending = self.domain.live().orchestrator_stop.lock_or_recover("the orchestrator stop");
+            let mut pending = self.domain.orchestrator().stop.lock_or_recover("the orchestrator stop");
             if pending.as_ref().is_some_and(|(stopped, _)| stopped.id == run.id) { *pending = None; }
         }
-        self.domain.live().orchestrator_runs.lock_or_recover("the orchestrator runs").remove(&run.id);
+        self.domain.orchestrator().runs.lock_or_recover("the orchestrator runs").remove(&run.id);
         runtime.last_error = None;
         runtime.failure = None;
         runtime.retry_at = None;
@@ -360,12 +390,12 @@ impl Executor {
             }
         }
         text.push_str(&transfer);
-        let user = crate::domain_messages::user_name();
+        let user = alondra_daemon_support::worktree::user_name();
         let opened = self.domain.store.lock_or_exit("the domain store").request_times()?;
-        text.push_str(&summary(&state, &Ages { now: now_millis(), opened }, |request| crate::domain_orchestrator_tools::request_choices(&self.domain, request).ok().flatten()
-            .map(|choices| crate::domain_orchestrator_tools::choices_text(&user, &self.home, &choices))));
+        text.push_str(&summary(&state, &Ages { now: now_millis(), opened }, |request| self.domain.request_launch(request).ok().flatten()
+            .map(|choices| choices_text(&user, &self.home, &choices))));
         for message in messages {
-            text.push_str(&format!("\n{}\n", crate::domain_transport::render(&state, message)));
+            text.push_str(&format!("\n{}\n", self.domain.engine().render_message(&state, message)));
             if let Some(case) = message.interaction_id.as_ref().and_then(|id| state.interactions.get(&InteractionId(id.clone()))) {
                 text.push_str(&crate::stall_context::context(&self.domain, &state, case));
             }
@@ -383,8 +413,8 @@ impl Executor {
     /// Records for the screens that no batch starts because no Claude account has a session, or
     /// that one has it again, and the line the log says it with: only when that changes.
     fn account_wait_change(&self) -> Option<String> {
-        let checked = crate::accounts::none_signed_in(&self.domain.read().state().accounts);
-        let wait = &self.domain.live().account_wait;
+        let checked = none_signed_in(&self.domain.read().state().accounts);
+        let wait = &self.domain.engine().account_wait();
         match checked {
             Some(checked) if wait.start() => {
                 Some(format!("orchestrator waits: no Claude account has a session ({checked}); requests stay unprocessed until one is signed in"))
@@ -416,9 +446,9 @@ impl Executor {
         if *stop.borrow() { return Ok(()); }
         self.apply_problem_answers()?;
         let mut runtime = load(&self.home)?;
-        self.domain.live().orchestrator_rests.store(runtime.rests, std::sync::atomic::Ordering::Relaxed);
-        crate::usage_probe::follow(&self.domain, now);
-        if self.domain.live().usage_pause.current().is_some_and(|pause|pause.by_user) { return Ok(()); }
+        self.domain.orchestrator_rests.store(runtime.rests, std::sync::atomic::Ordering::Relaxed);
+        self.domain.engine().follow_usage(now);
+        if self.domain.engine().usage_pause().is_some_and(|pause|pause.by_user) { return Ok(()); }
         if runtime.active_run.is_none() {
             crate::orchestrator_inbox::hand_replans(&self.domain);
         }
@@ -428,12 +458,12 @@ impl Executor {
         let selection = match crate::orchestrator_provider::selection(&self.domain, &self.home, now) {
             Ok(selection) => selection,
             Err(error) => {
-                if self.domain.live().account_wait.wait_for(&error.message) { log!("orchestrator waits for account/model selection: {}", error.message); }
+                if self.domain.engine().account_wait().wait_for(&error.message) { log!("orchestrator waits for account/model selection: {}", error.message); }
                 return Ok(());
             }
         };
-        if self.domain.live().account_wait.end() { log!("orchestrator resumes with {}", selection.account.wire_id()); }
-        if self.domain.live().usage_pause.is_active() { return Ok(()); }
+        if self.domain.engine().account_wait().end() { log!("orchestrator resumes with {}", selection.account.wire_id()); }
+        if self.domain.engine().usage_pause().is_some() { return Ok(()); }
         {
             let mut store = self.domain.store.lock_or_exit("the domain store");
             store.discard_expired_orchestrator_messages(
@@ -469,13 +499,13 @@ impl Executor {
         let ids: Vec<i64> = pending.iter().map(|message| message.id).collect();
         let (claims, owner) = self.domain.store.lock_or_exit("the domain store")
             .claim_selected_orchestrator_batch(&ids, &run_id, &session, epoch, Some(&selection))?;
-        self.domain.live().orchestrator_runs.lock_or_recover("the orchestrator runs").insert(run_id.clone());
+        self.domain.orchestrator().runs.lock_or_recover("the orchestrator runs").insert(run_id.clone());
         let attempts: Vec<(i64, u64)> = claims.iter().map(|claim| (claim.attempt_id, claim.version)).collect();
         let claimed: Vec<OutboxMessage> = claims.into_iter().map(|claim| claim.message).collect();
         if claimed.is_empty() && runtime.pending_resolutions.is_empty() {
             return Ok(());
         }
-        crate::accounts::log_choice(&self.domain, "orchestrator batch", &selection.account, now);
+        self.domain.engine().log_account_choice("orchestrator batch", &selection.account, now);
         let run = Run {
             id: run_id.clone(), message_ids: claimed.iter().map(|m| m.id).collect(),
             attempts, started_at: now, spawned: false,
@@ -490,7 +520,7 @@ impl Executor {
         self.domain.orchestrator_progress();
         save(&self.home, &runtime)?;
         self.bind_session(&session);
-        let projects_root = crate::domain_schedule_runner::options_at(&self.home).ok()
+        let projects_root = crate::options::options_at(&self.home).ok()
             .map(|file| file.projects_root(&crate::options::user_home()))
             .filter(|root| root.is_dir());
         let prepared = self.domain.bind_orchestrator(&run_id)
@@ -535,7 +565,7 @@ impl Executor {
             }, mark_spawned, cancel).await,
             None => {
                 drop(owner);
-                process::Output::not_started(crate::sdk_owner::NO_HOST)
+                process::Output::not_started(crate::sdk_backend::NO_HOST)
             }
         };
         let changes = self.domain.end_execution(&run_id);
@@ -635,7 +665,7 @@ impl Executor {
     /// remind about a request the orchestrator has not seen yet.
     fn handled(&self, mut runtime: Runtime, run: &Run, (requests, suggestions): &(Vec<RequestId>, Vec<InteractionId>)) -> Result<()> {
         self.domain.store.lock_or_exit("the domain store").finish_batch(&run.id)?;
-        self.domain.live().orchestrator_runs.lock_or_recover("the orchestrator runs").remove(&run.id);
+        self.domain.orchestrator().runs.lock_or_recover("the orchestrator runs").remove(&run.id);
         let settled = self.domain.store.lock_or_exit("the domain store").settle_orchestrator_batch(&run.id, State::Handed, None)?;
         if !settled { self.finish(run, State::Handed, None)?; }
         read_handed_notices(&self.domain);
@@ -655,7 +685,7 @@ impl Executor {
         }
         for handoff in prior_handoffs {
             self.domain.store.lock_or_exit("the domain store").finish_batch(&handoff.run_id)?;
-            self.domain.live().orchestrator_runs.lock_or_recover("the orchestrator runs").remove(&handoff.run_id);
+            self.domain.orchestrator().runs.lock_or_recover("the orchestrator runs").remove(&handoff.run_id);
         }
         save(&self.home, &runtime)?;
         self.domain.orchestrator_progress();
@@ -702,7 +732,7 @@ impl Executor {
     /// re-plan is handed to it again.
     fn rested(&self, runtime: &mut Runtime) {
         runtime.rests = runtime.rests.saturating_add(1);
-        self.domain.live().orchestrator_rests.store(runtime.rests, std::sync::atomic::Ordering::Relaxed);
+        self.domain.orchestrator_rests.store(runtime.rests, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn failed(&self, mut runtime: Runtime, run: &Run, error: String, problem: Option<BatchProblem>) -> Result<()> {
@@ -732,16 +762,16 @@ impl Executor {
         save(&self.home, &runtime)?;
         self.finish(run, State::Uncertain, Some("orchestrator_execution_ambiguous"))?;
         self.raise_batch_problem(&run.id, problem, runtime.last_error.as_deref().unwrap_or_default());
-        *self.domain.live().orchestrator_stop.lock_or_recover("the orchestrator stop") = None;
+        *self.domain.orchestrator().stop.lock_or_recover("the orchestrator stop") = None;
         Ok(())
     }
 
     fn remember_stop(&self, run: &Run, problem: BatchProblem) {
-        *self.domain.live().orchestrator_stop.lock_or_recover("the orchestrator stop") = Some((run.clone(), problem));
+        *self.domain.orchestrator().stop.lock_or_recover("the orchestrator stop") = Some((run.clone(), problem));
     }
 
     fn resume_stopped(&self) -> Result<()> {
-        let pending = self.domain.live().orchestrator_stop.lock_or_recover("the orchestrator stop").clone();
+        let pending = self.domain.orchestrator().stop.lock_or_recover("the orchestrator stop").clone();
         if let Some((run, mut problem)) = pending {
             let mut runtime = load(&self.home)?;
             if runtime.cancel_requested {
@@ -936,7 +966,7 @@ pub fn status(executor: &Executor) -> Result<serde_json::Value> {
         "cancel_requested": runtime.cancel_requested,
         "active_run_id": runtime.active_run.as_ref().map(|run| run.id.clone()),
         "queue_depth": queue_depth, "last_error": runtime.last_error, "failure": runtime.failure, "retry_at": runtime.retry_at,
-        "waits_for_sign_in": executor.domain.live().account_wait.is_waiting(),
+        "waits_for_sign_in": executor.domain.engine().account_wait().is_waiting(),
     }))
 }
 
@@ -1004,7 +1034,7 @@ pub async fn run(domain: Arc<DomainRuntime>, home: PathBuf, claude_home: PathBuf
         executor.bind_session(&session);
     }
     let mut changed = executor.domain.subscribe();
-    let mut usage = executor.domain.live().usage_pause.subscribe();
+    let mut usage = executor.domain.engine().usage_changes();
     let mut watchdog = watchdog::Watchdog::default();
     loop {
         if let Err(error) = executor.supervised_tick(&mut watchdog).await {
@@ -1120,18 +1150,19 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
         pub(crate) held: PathBuf,
         pub(crate) release: PathBuf,
         pub(crate) claude_home: PathBuf,
-        _state: crate::sdk_owner::tests::HostRoot,
+        _hosts: Box<dyn Send>,
         pub(crate) root: Directory,
     }
 
     /// A daemon home of its own whose orchestrator runs through the SDK.
+    #[cfg(test)]
     pub(crate) fn fixture() -> Fixture {
         let root = Directory::new();
         std::fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         let home = root.join("home");
         std::fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(crate::wiring::open(&home).unwrap());
-        Fixture::over(root, domain, home)
+        Fixture::over(root, domain, home, alondra_daemon_engine::sdk_owner::tests::HostRoot::new())
     }
 
     fn seed_command(domain:&DomainRuntime,id:&str,command:Command) {
@@ -1169,8 +1200,10 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
     }
 
     impl Fixture {
-        /// The orchestrator of `domain`, whose daemon home is `home`, through the SDK; its fakes live in `root`.
-        pub fn over(root: Directory, domain: Arc<DomainRuntime>, home: PathBuf) -> Self {
+        /// The orchestrator of `domain`, whose daemon home is `home`, through the SDK; its fakes live
+        /// in `root` and its hosts in `hosts`, which it keeps until it is dropped.
+        pub fn over<H: AsRef<Path> + Send + 'static>(root: Directory, domain: Arc<DomainRuntime>, home: PathBuf, hosts: H) -> Self {
+            crate::wire(&domain);
             let claude_home = registered_plugins(&root);
             let fake = root.join("orchestrator-fake-claude.py");
             std::fs::copy(runfile("FIXTURE_ORCHESTRATOR_NATIVE"), &fake).unwrap();
@@ -1186,18 +1219,17 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
                 native_environment.insert(name.into(), path.to_str().unwrap().into());
             }
             let (node, host) = (runfile("FIXTURE_NODE"), runfile("FIXTURE_HOST"));
-            let state = crate::sdk_owner::tests::HostRoot::new();
-            let backend = crate::sdk_owner::SdkBackend {
-                node_sha256: crate::sdk_owner::backend::digest(&node).unwrap(),
-                host_sha256: crate::sdk_owner::backend::digest(&host).unwrap(),
-                native_sha256: crate::sdk_owner::backend::digest(&native).unwrap(),
+            let backend = crate::sdk_backend::SdkBackend {
+                node_sha256: crate::sdk_backend::digest(&node).unwrap(),
+                host_sha256: crate::sdk_backend::digest(&host).unwrap(),
+                native_sha256: crate::sdk_backend::digest(&native).unwrap(),
                 node,
                 host,
                 native,
                 host_environment: environment,
                 native_environment,
                 confinement: None,
-                state_root: state.join("h"),
+                state_root: hosts.as_ref().join("h"),
                 io_timeout_seconds: 30,
                 installed_native: false, launcher: Default::default(),
             provider: alondra_core::accounts::Provider::Claude, origin: None,
@@ -1205,7 +1237,7 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
             domain.enable_sdk(backend);
             seed_native_metadata(&domain,&home);
             let ownership = Ownership::acquire(&home.join("runtime/orchestrator")).unwrap().unwrap();
-            Self { executor: Executor { domain, home, claude_home: claude_home.clone() }, _ownership: ownership, capture, held, release, claude_home, _state: state, root }
+            Self { executor: Executor { domain, home, claude_home: claude_home.clone() }, _ownership: ownership, capture, held, release, claude_home, _hosts: Box::new(hosts), root }
         }
 
         pub(crate) fn domain(&self) -> &DomainRuntime {
@@ -1341,8 +1373,10 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
 #[cfg(test)]
 mod tests {
     use super::testing::{Fixture, fixture};
+    use crate::live::LiveOf as _;
     use super::*;
     use alondra_core::domain::*;
+    use alondra_core::accounts::{AccountBilling, AccountId};
 
     fn command(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
         let state = domain.state().unwrap();
@@ -2199,14 +2233,14 @@ mod tests {
         f.tick().await;
         assert_eq!(f.starts().len(), 0, "no account can run the batch");
         assert_eq!(status(&f.executor).unwrap()["waits_for_sign_in"], true, "the screens hear why the request sits");
-        assert!(domain.live().usage_pause.waits_for_session(), "launches wait for a session, not for usage: {:?}", domain.live().usage_pause.current());
+        assert!(domain.live().usage_pause.waits_for_session(), "launches wait for a session, not for usage: {:?}", domain.engine().usage_pause());
 
         f.tick().await;
         assert_eq!(f.starts().len(), 0);
         assert!(domain.live().usage_pause.waits_for_session(), "nothing but a session ends the wait");
         assert_eq!(f.executor.account_wait_change(), None, "the log says it once, not on every tick");
 
-        domain.live().account_wait.end();
+        domain.engine().account_wait().end();
         let line = f.executor.account_wait_change().expect("a new wait is said");
         assert!(line.contains("no Claude account has a session (default (signed out))") && line.contains("until one is signed in"), "{line}");
         assert!(!line.contains("next try"), "no time in the wait: {line}");
@@ -2214,7 +2248,7 @@ mod tests {
         accounts_seen(&f, "accounts-in", AccountState::SignedIn);
         f.tick().await;
         assert_eq!(f.starts().len(), 1, "the account check seeing a session runs the batch at once");
-        assert!(!domain.live().usage_pause.is_active(), "and nothing holds new work any more");
+        assert!(!domain.engine().usage_pause().is_some(), "and nothing holds new work any more");
         assert_eq!(status(&f.executor).unwrap()["waits_for_sign_in"], false, "and the wait is gone from the screens");
     }
 
@@ -2231,13 +2265,13 @@ mod tests {
 
         f.tick().await;
         assert_eq!(f.starts().len(), 0);
-        let checking = domain.live().account_wait.reason().expect("the request waits");
+        let checking = domain.engine().account_wait().reason().expect("the request waits");
         assert!(checking.contains("Accounts are being checked"), "{checking}");
 
         crate::accounts::check(domain, &f.executor.home);
         f.tick().await;
         assert_eq!(f.starts().len(), 0, "no provider is connected");
-        let unconnected = domain.live().account_wait.reason().expect("the request still waits");
+        let unconnected = domain.engine().account_wait().reason().expect("the request still waits");
         assert_ne!(unconnected, checking, "the wait says why it waits now, not why it waited at startup");
         assert!(unconnected.contains("open Accounts to connect"), "{unconnected}");
 
@@ -2249,7 +2283,7 @@ mod tests {
         command(domain, Actor::System, "connected-order", Command::RecordAccountConfiguration { order: vec![AccountKey::native(Provider::Claude)], version: "connected".into() });
         f.tick().await;
         assert_eq!(f.starts().len(), 1, "connecting Claude runs the request that waited");
-        assert_eq!(domain.live().account_wait.reason(), None);
+        assert_eq!(domain.engine().account_wait().reason(), None);
     }
 
     #[tokio::test]
@@ -2297,7 +2331,7 @@ mod tests {
         f.tick().await;
         let after = now_millis() / 1000;
         assert_eq!(f.starts().len(), 1);
-        let until = domain.live().usage_pause.current().map(|e| e.until).expect("usage pauses everything");
+        let until = domain.engine().usage_pause().map(|e| e.until).expect("usage pauses everything");
         assert!(until % 1000 == 0 && ((before + 3_600) * 1000..=(after + 3_600) * 1000).contains(&until),
             "until is the reset Claude reported, an hour after the run: {until}");
         let runtime = load(&f.executor.home).unwrap();
@@ -2338,8 +2372,37 @@ mod tests {
         executor.tick().await.unwrap();
         let runtime = load(&home).unwrap();
         assert_eq!(runtime.failure, Some(Failure::Launch), "{runtime:?}");
-        assert_eq!(runtime.last_error.as_deref(), Some(crate::sdk_owner::NO_HOST));
+        assert_eq!(runtime.last_error.as_deref(), Some(crate::sdk_backend::NO_HOST));
         assert!(runtime.active_run.is_none() && runtime.retry_at.is_some(), "{runtime:?}");
         assert!(attempts(&domain).iter().all(|(_, state, _)| state == "retryable"));
+    }
+
+    #[test]
+    fn the_orchestrator_waits_for_a_sign_in_only_when_no_account_may_have_a_session() {
+        let seen = |states: &[(&str, AccountState)]| none_signed_in(&states.iter().map(|(id, state)| AccountStatus {
+            provider: Provider::Claude, id: AccountId::parse(id).unwrap(), name: (*id).into(), state: *state,
+            native_identity: None, email: None, plan: None, billing: AccountBilling::default(), sign_ins: 0, profile: None,
+        }).collect::<Vec<_>>());
+        assert_eq!(seen(&[("default", AccountState::SignedOut), ("work", AccountState::Disabled)]).as_deref(), Some("default (signed out), work (off)"));
+        assert_eq!(seen(&[("default", AccountState::SignedOut), ("work", AccountState::SignedIn)]), None);
+        assert_eq!(seen(&[("default", AccountState::SignedOut), ("work", AccountState::Unavailable)]), None, "an account that could not be checked may still work");
+        assert_eq!(seen(&[("default", AccountState::Unchecked)]), None);
+        assert_eq!(seen(&[]), None, "no account recorded yet is the implicit default, not a missing sign-in");
+    }
+
+    #[test]
+    fn the_requests_choices_read_as_8ccd131_told_the_orchestrator() {
+        let choices = crate::domain_store::RequestLaunch {
+            project: Some("App".into()),
+            options: alondra_core::options::OptionsFile::default().orchestrator_defaults(Some("App"), Some("hard")),
+            issue: Some("me/App#3".into()),
+            issue_text: Some("Crash on launch".into()),
+            attachments: vec![AttachmentRef { id: "att-1".into(), name: "shot.png".into(), content_digest: "d".repeat(64),
+                content_reference: "files/att-1".into(), bytes: 3 }],
+        };
+        let text = choices_text("Ana", Path::new("/h"), &choices);
+        assert!(text.contains("options: project App") && text.contains("Effort hard was chosen by Ana and is binding"), "{text}");
+        assert!(text.contains("issue me/App#3: Crash on launch"), "{text}");
+        assert!(text.contains("attached shot.png: /h/files/att-1") && text.contains("paths in the mission"), "{text}");
     }
 }
