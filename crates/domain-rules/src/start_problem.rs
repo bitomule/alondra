@@ -60,6 +60,13 @@ pub fn card(title: &str, problem: &StartProblem, dependency: Option<&str>, lang:
             };
             card.content(ContentKind::Diagnosis, &diagnosis)
         }
+        StartProblem::MoveStartRefused { account, error } => {
+            let account = account.wire_id();
+            CardSpec::new(CardKind::Problem, need(tf!(lang, "“{title}” does not start on {account}", "«{title}» no arranca en {account}")))
+                .why(why(tf!(lang, "It moved to {account}, and its start there is refused. Alondra does not try again by itself: the same start gets the same refusal.",
+                    "Se movió a {account} y allí se rechaza su arranque. Alondra no lo reintenta sola: el mismo arranque recibe el mismo rechazo.")))
+                .content(ContentKind::Diagnosis, error.trim())
+        }
         StartProblem::DependencyCancelled { .. } => {
             let other = dependency.unwrap_or(t!(lang, "A task it depends on", "Una tarea de la que depende"));
             CardSpec::new(CardKind::Problem, need(tf!(lang, "“{other}” was cancelled: start “{title}” without it?", "«{other}» se canceló: ¿arrancar «{title}» sin ella?")))
@@ -96,6 +103,12 @@ pub fn options(problem: &StartProblem, lang: Lang) -> Vec<QuestionOption> {
                 t!(lang, "Its node carries on where it left off; if the API cuts it again, Alondra retries by itself again",
                     "Su nodo sigue donde lo dejó; si la API vuelve a cortarlo, Alondra lo reintenta sola otra vez")),
             option(START_CANCEL, t!(lang, "Cancel the task", "Cancelar la tarea"), t!(lang, "The task is cancelled and its node closes", "La tarea se cancela y su nodo se cierra")),
+        ],
+        StartProblem::MoveStartRefused { account, .. } => vec![
+            option(START_RETRY, &tf!(lang, "Try again on {account}", "Reintentar en {account}", account = account.wire_id()),
+                t!(lang, "Alondra tries to start it there once more; if it is refused again, this card comes back",
+                    "Alondra intenta arrancarla allí una vez más; si se rechaza otra vez, vuelve esta tarjeta")),
+            option(START_CANCEL, t!(lang, "Cancel the task", "Cancelar la tarea"), t!(lang, "The task is cancelled and does not start", "La tarea se cancela y no arranca")),
         ],
         StartProblem::DependencyCancelled { .. } => vec![
             option(START_WITHOUT, t!(lang, "Start without it", "Arrancar sin ella"), t!(lang, "It no longer waits for that task and starts when there is room", "Deja de esperar a esa tarea y arranca cuando haya hueco")),

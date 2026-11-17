@@ -9,6 +9,8 @@ pub const HANDOFF_TOKEN_CAP: u64 = 16_000;
 /// What a handoff may take when the destination model's window is unknown: well under the
 /// smallest window of the models Alondra runs, 200,000 tokens.
 pub const UNKNOWN_WINDOW_TOKENS: u64 = 64_000;
+/// What a handoff leaves free in the destination's window for its answer.
+pub const HANDOFF_RESERVED_TOKENS: u64 = 4_096;
 
 #[derive(Clone, Copy, Debug)]
 pub struct HandoffBudget {
@@ -31,6 +33,16 @@ pub struct PreparedHandoff {
     pub destination_window_known: bool,
 }
 
+/// What the context and the message that continues the task may take together in the destination:
+/// its window less the reserve, or `UNKNOWN_WINDOW_TOKENS` when the window is unknown. `None` when
+/// the reserve alone does not fit.
+pub fn handoff_capacity(budget: HandoffBudget) -> Option<u64> {
+    match budget.destination_context_tokens {
+        Some(window) => window.checked_sub(budget.reserved_tokens),
+        None => Some(UNKNOWN_WINDOW_TOKENS),
+    }
+}
+
 pub fn estimated_tokens(text: &str) -> u64 {
     // Three UTF-8 bytes per token is deliberately below the usual four-byte text heuristic.
     (text.len() as u64).div_ceil(3)
@@ -48,7 +60,7 @@ pub fn prepare_context_handoff(canonical: &str, new_input: &str, entries: &[Cont
     }
     let input_tokens = estimated_tokens(new_input);
     let window = match budget.destination_context_tokens {
-        Some(window) => window.checked_sub(budget.reserved_tokens).and_then(|tokens| tokens.checked_sub(input_tokens)).ok_or(HandoffError::NewInputTooLarge)?,
+        Some(_) => handoff_capacity(budget).and_then(|tokens| tokens.checked_sub(input_tokens)).ok_or(HandoffError::NewInputTooLarge)?,
         None => UNKNOWN_WINDOW_TOKENS,
     };
     let header = format!("Alondra task context (public records)\n{canonical}\n");

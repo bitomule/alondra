@@ -5434,11 +5434,10 @@ impl DomainState {
                 }
                 let task=self.task(task_id)?;
                 let previously_admitted=self.lifecycle_journal.get(task_id).is_some_and(|records|records.iter().any(|record|matches!(record,LifecycleRecord::Admitted{execution:Some(_),..}|LifecycleRecord::ResourceAvailable)));
-                if (previously_admitted || task.started) && self.pending_reopening(task_id).is_none() {
-                    let target=alondra_core::accounts::AccountKey::new(*provider,account.clone().unwrap_or_else(alondra_core::accounts::AccountId::default_account));
-                    let moved_here=task.selection.as_ref().and_then(|selection|selection.account.as_ref())==Some(&target) && task.pending_selection.is_none() && self.lifecycle_of(task_id).is_ok_and(|lifecycle|lifecycle.execution().is_none());
-                    if target!=task.account_key() && self.moving_to(task_id)!=Some(&target) && !moved_here{return fail("active_account_immutable","Choose an account and provider when creating a new node. This task keeps its original native session and account")}
-                }
+                let target=alondra_core::accounts::AccountKey::new(*provider,account.clone().unwrap_or_else(alondra_core::accounts::AccountId::default_account));
+                let moved_here=target!=task.account_key() && task.selection.as_ref().and_then(|selection|selection.account.as_ref())==Some(&target) && task.pending_selection.is_none() && self.lifecycle_of(task_id).is_ok_and(|lifecycle|lifecycle.execution().is_none());
+                if (previously_admitted || task.started) && self.pending_reopening(task_id).is_none()
+                    && target!=task.account_key() && self.moving_to(task_id)!=Some(&target) && !moved_here{return fail("active_account_immutable","Choose an account and provider when creating a new node. This task keeps its original native session and account")}
                 self.invalidate(task_id);
                 if let Some(card) = leaves_limit {
                     let to = account.clone().unwrap_or_else(alondra_core::accounts::AccountId::default_account);
@@ -5452,6 +5451,9 @@ impl DomainState {
                 }
                 task.account = account.clone().filter(|account| !account.is_default());
                 task.provider = *provider;
+                if moved_here {
+                    task.move_refused = None;
+                }
             }
             Command::RecordRuntimeFacts { task_id, generation, facts } => {
                 system(actor)?;
