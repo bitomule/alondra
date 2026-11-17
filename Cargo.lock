@@ -182,6 +182,9 @@ dependencies = [
  "alondra-domain-rules",
  "alondra-engine-github",
  "alondra-engine-kernel",
+ "alondra-engine-live",
+ "alondra-engine-mcp",
+ "alondra-engine-worktrees",
  "alondra-foundation",
  "alondra-process-group",
  "alondra-provider-claude",
@@ -419,6 +422,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "alondra-engine-live"
+version = "0.3.47"
+dependencies = [
+ "alondra-core",
+ "alondra-daemon-support",
+ "alondra-domain-rules",
+ "alondra-engine-kernel",
+ "alondra-provider-claude",
+ "alondra-provider-codex",
+ "alondra-provider-contract",
+ "alondra-view-model",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "alondra-engine-mcp"
+version = "0.3.47"
+dependencies = [
+ "alondra-core",
+ "alondra-daemon-support",
+ "alondra-domain-rules",
+ "alondra-engine-kernel",
+ "alondra-foundation",
+ "alondra-provider-claude",
+ "alondra-store",
+ "alondra-view-model",
+ "anyhow",
+ "libc",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "alondra-engine-orchestrator"
 version = "0.3.47"
 dependencies = [
@@ -493,6 +535,21 @@ dependencies = [
  "tokio",
  "toml",
  "url",
+]
+
+[[package]]
+name = "alondra-engine-worktrees"
+version = "0.3.47"
+dependencies = [
+ "alondra-core",
+ "alondra-daemon-support",
+ "alondra-domain-rules",
+ "alondra-engine-kernel",
+ "alondra-view-model",
+ "anyhow",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

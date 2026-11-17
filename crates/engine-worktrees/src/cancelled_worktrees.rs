@@ -13,7 +13,6 @@ use alondra_domain_rules::{
 use alondra_view_model::Lang;
 use anyhow::{Result, anyhow};
 
-use crate::domain_github::execute_system;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::worktree::TaskWorktree;
@@ -98,7 +97,7 @@ pub async fn release_cancelled(domain: &DomainRuntime, task: &Task) -> Result<()
         raise_card(domain, &id, Scope::Orchestrator { request_id: Some(task.request_id.clone()) }, vec![held])?;
     }
     for (path, end) in ends {
-        execute_system(domain, Command::ReleaseTaskWorktree { task_id: task.id.clone(), path, end }).map_err(|error| anyhow!("{error}"))?;
+        domain.execute_system_command(Command::ReleaseTaskWorktree { task_id: task.id.clone(), path, end }).map_err(|error| anyhow!("{error}"))?;
     }
     Ok(())
 }

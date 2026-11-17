@@ -1,9 +1,12 @@
 # The most modules the main cycle of each crate may hold, counted by `tools/module_graph.py --production`.
 # A crate can only be split along modules outside its cycles: lower a limit when a change shrinks a
 # cycle, never raise it to let one grow.
-crates/daemon-engine/src	18
+crates/daemon-engine/src	13
 crates/engine-admission/src	0
 crates/engine-github/src	0
 crates/engine-kernel/src	0
+crates/engine-live/src	4
+crates/engine-mcp/src	0
 crates/engine-orchestrator/src	8
 crates/engine-sdk/src	3
+crates/engine-worktrees/src	0

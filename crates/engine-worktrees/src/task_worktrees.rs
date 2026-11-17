@@ -22,7 +22,7 @@ pub async fn ready(domain: &DomainRuntime, path: &str) -> Result<()> {
 
 /// A worktree a tool result says Claude Code made.
 #[derive(Debug, PartialEq)]
-pub(crate) enum Made {
+pub enum Made {
     At { path: String, branch: Option<String>, subagent: bool },
     /// A subagent with an isolated worktree that went on in the background: Claude Code names
     /// its worktree after the subagent's id.
@@ -32,7 +32,7 @@ pub(crate) enum Made {
 /// What a `PostToolUse` says about a worktree: EnterWorktree's and a kept isolated subagent's
 /// `worktreePath`, or the id of an isolated subagent that went on in the background. ExitWorktree
 /// settles nothing: its `remove` can keep the worktree, so only the disk tells whether it is gone.
-pub(crate) fn made_by_tool(payload: &Value) -> Option<Made> {
+pub fn made_by_tool(payload: &Value) -> Option<Made> {
     let response = payload.get("tool_response").filter(|response| response.get("action").is_none())?;
     let text = |key: &str| response.get(key).and_then(Value::as_str);
     let at = |subagent: bool| {
@@ -60,7 +60,7 @@ fn subagent_id(agent: &str) -> bool {
 }
 
 /// Records the worktree a `claude --bg` node's tool made as its task's.
-pub(crate) fn record_from_hook(domain: &DomainRuntime, agent: &AgentId, payload: &Value) -> Result<()> {
+pub fn record_from_hook(domain: &DomainRuntime, agent: &AgentId, payload: &Value) -> Result<()> {
     let Some(made) = made_by_tool(payload) else { return Ok(()) };
     let state = domain.state()?;
     let Some(task) = state.tasks.values().find(|t| t.agent_id.as_ref() == Some(agent) && !t.state.terminal()).map(|t| t.id.clone()) else {
@@ -80,7 +80,7 @@ fn record(domain: &DomainRuntime, task: &TaskId, made: Made) -> Result<()> {
         }
     };
     let command = Command::RecordTaskWorktree { task_id: task.clone(), path, origin, branch };
-    crate::domain_github::execute_system(domain, command).map_err(|error| anyhow::anyhow!("{error}"))
+    domain.execute_system_command(command).map_err(|error| anyhow::anyhow!("{error}"))
 }
 
 /// The open task that goes on working in the worktree at `path` once `task` lets it go: one that
@@ -107,7 +107,7 @@ pub fn heir(domain: &DomainRuntime, task: &Task, path: &str) -> Result<Option<Ta
     };
     let branch = task.worktrees.get(path).and_then(|worktree| worktree.branch.clone());
     let command = Command::RecordTaskWorktree { task_id: heir.clone(), path: path.to_owned(), origin: WorktreeOrigin::Inherited, branch };
-    crate::domain_github::execute_system(domain, command).map_err(|error| anyhow::anyhow!("{error}"))?;
+    domain.execute_system_command(command).map_err(|error| anyhow::anyhow!("{error}"))?;
     Ok(Some(heir))
 }
 
@@ -187,7 +187,7 @@ pub async fn release_all(domain: &DomainRuntime, task: &Task) -> Result<Vec<(Str
             }
         };
         let command = Command::ReleaseTaskWorktree { task_id: task.id.clone(), path: path.clone(), end };
-        crate::domain_github::execute_system(domain, command).map_err(|error| anyhow::anyhow!("{error}"))?;
+        domain.execute_system_command(command).map_err(|error| anyhow::anyhow!("{error}"))?;
     }
     if !unreachable.is_empty() {
         return Err(Unreachable(unreachable.join("; ")).into());

@@ -43,7 +43,7 @@ impl McpProbes {
 
     /// Keeps that the user deleted a server: of `project`'s own settings, or of their own for every
     /// project. The checks that found it there no longer list it.
-    pub(crate) fn removed(&self, removal: LiveMcpRemoval, project: Option<&str>) {
+    pub fn removed(&self, removal: LiveMcpRemoval, project: Option<&str>) {
         for (checked, probe) in self.probes.lock_or_recover("the MCP probes").iter_mut() {
             let origin = match project {
                 None => McpOrigin::UserSettings,
@@ -69,7 +69,7 @@ impl McpProbes {
         true
     }
 
-    pub(crate) fn finish(&self, project: &str, probe: LiveMcpProbe) {
+    pub fn finish(&self, project: &str, probe: LiveMcpProbe) {
         self.probes.lock_or_recover("the MCP probes").insert(project.to_owned(), probe);
     }
 }
