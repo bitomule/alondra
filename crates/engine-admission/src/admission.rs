@@ -502,6 +502,10 @@ impl Admission {
             Key::Run(_) => !still_waits(&state, &key),
             Key::Resume(_) | Key::Turn(_) => false,
         };
+        if matches!(&key, Key::Task(task) if inner.saved.pauses.held.contains_key(task)) {
+            let snapshot = snapshot_locked(domain, &state, &inner, queued, now);
+            return Err(snapshot.hold.unwrap_or(Hold::Slots { working: snapshot.working, limit: snapshot.limit }));
+        }
         if !ended && inner.admitted.iter().any(|(admitted, at)| *admitted == key && now - at < IN_FLIGHT) {
             return Ok(());
         }
@@ -1219,7 +1223,9 @@ pub fn hold_queued(domain: &DomainRuntime, task: &TaskId, now: Millis) -> Result
     };
     let gate = &domain.admission();
     let mut inner = gate.lock();
-    inner.asking.remove(&Key::Task(task.clone()));
+    let key = Key::Task(task.clone());
+    inner.asking.remove(&key);
+    inner.admitted.retain(|(admitted, _)| *admitted != key);
     inner.saved.pauses.held.insert(task.clone(), crate::pauses::Held { body, origin, since: now });
     gate.save(&inner);
     drop(inner);
