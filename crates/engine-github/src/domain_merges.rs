@@ -71,7 +71,7 @@ impl MergeState {
     }
 }
 
-pub(crate) type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, GhFailure>> + Send + 'a>>;
+pub type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, GhFailure>> + Send + 'a>>;
 
 pub trait PrMerger: Send + Sync + 'static {
     fn status<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, Status>;
@@ -277,25 +277,25 @@ impl PrMerger for GhCli {
 }
 
 /// The checks the active rulesets of a branch require (`GET /repos/{owner}/{repo}/rules/branches/{branch}`).
-pub(crate) fn ruleset_checks(rules: &Value) -> Vec<String> {
+pub fn ruleset_checks(rules: &Value) -> Vec<String> {
     rules.as_array().into_iter().flatten().filter(|rule| rule["type"].as_str() == Some("required_status_checks"))
         .flat_map(|rule| rule["parameters"]["required_status_checks"].as_array().into_iter().flatten())
         .filter_map(|check| check["context"].as_str().map(str::to_owned)).collect()
 }
 
 /// The rulesets whose `required_status_checks` rules apply to the branch.
-pub(crate) fn check_rulesets(rules: &Value) -> BTreeSet<u64> {
+pub fn check_rulesets(rules: &Value) -> BTreeSet<u64> {
     rules.as_array().into_iter().flatten().filter(|rule| rule["type"].as_str() == Some("required_status_checks"))
         .filter_map(|rule| rule["ruleset_id"].as_u64()).collect()
 }
 
 /// A ruleset's `current_user_can_bypass` lets the signed-in account merge a PR past it.
-pub(crate) fn viewer_bypasses(ruleset: &Value) -> bool {
+pub fn viewer_bypasses(ruleset: &Value) -> bool {
     matches!(ruleset["current_user_can_bypass"].as_str(), Some("always" | "pull_requests_only" | "exempt"))
 }
 
 /// The required checks every requiring ruleset lets the account bypass and classic protection does not require.
-pub(crate) fn bypassable(rules: &Value, can_bypass: &BTreeMap<u64, bool>, classic: &[String]) -> Vec<String> {
+pub fn bypassable(rules: &Value, can_bypass: &BTreeMap<u64, bool>, classic: &[String]) -> Vec<String> {
     let mut held = BTreeSet::new();
     let mut bypassed = BTreeSet::new();
     for rule in rules.as_array().into_iter().flatten().filter(|rule| rule["type"].as_str() == Some("required_status_checks")) {
@@ -322,7 +322,7 @@ fn rules_read(answer: &crate::domain_github::HttpAnswer) -> Result<Option<Value>
 }
 
 /// The checks a branch's classic protection requires (`.../protection/required_status_checks`).
-pub(crate) fn classic_checks(protection: &Value) -> Vec<String> {
+pub fn classic_checks(protection: &Value) -> Vec<String> {
     let contexts = protection["contexts"].as_array().into_iter().flatten().filter_map(|c| c.as_str().map(str::to_owned));
     let checks = protection["checks"].as_array().into_iter().flatten().filter_map(|c| c["context"].as_str().map(str::to_owned));
     contexts.chain(checks).collect()
@@ -330,7 +330,7 @@ pub(crate) fn classic_checks(protection: &Value) -> Vec<String> {
 
 /// The checks GitHub reports for a PR's head. Only a check that failed sends the PR back;
 /// cancelled, stale, skipped and neutral checks neither fail nor hold the merge.
-pub(crate) fn rollup(value: &Value) -> Checks {
+pub fn rollup(value: &Value) -> Checks {
     let Some(list) = value["statusCheckRollup"].as_array().filter(|list| !list.is_empty()) else { return Checks::None };
     let (mut failed, mut action, mut pending) = (vec![], vec![], false);
     for check in list {
@@ -545,7 +545,7 @@ impl Merger {
     }
 
     /// How long the loop sleeps while something waits: the poll, or less when a merge retry is due sooner.
-    pub(crate) fn pause(&self) -> Duration {
+    pub fn pause(&self) -> Duration {
         let now = clock::instant();
         self.transient.values().filter(|retry| retry.at > now).map(|retry| retry.at - now).fold(self.poll, Duration::min)
     }
@@ -949,7 +949,7 @@ impl Merger {
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn tracked(&self) -> usize {
+    pub fn tracked(&self) -> usize {
         self.waited.len() + self.pressed.len() + self.transient.len() + self.queued.len() + self.bypass_refused.len() + self.trouble.len()
             + self.merge_trouble.len() + self.action.len()
     }
@@ -1124,7 +1124,7 @@ impl FakeGithub {
             passed: BTreeSet::new(), merge_state: MergeState::Clean }));
     }
     /// An open PR whose `mergeStateStatus` is BLOCKED.
-    pub(crate) fn open_blocked(&self, number: u64, head: &str, checks: Checks) {
+    pub fn open_blocked(&self, number: u64, head: &str, checks: Checks) {
         self.open(number, head, checks);
         if let Some(Ok(status)) = self.statuses.lock().unwrap().get_mut(&number) {
             status.merge_state = MergeState::Other;

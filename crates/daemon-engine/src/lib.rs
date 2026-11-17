@@ -54,6 +54,10 @@ pub use alondra_engine_kernel::{
     settings_projection,
 };
 
+pub use alondra_engine_github::{domain_github, domain_merges, open_pr_sweep, pr_images, pr_viewed};
+#[cfg(any(test, feature = "test-hooks"))]
+pub use alondra_engine_github::github_world;
+
 pub mod account_move;
 pub mod accounts;
 pub mod admission;
@@ -66,12 +70,7 @@ pub mod cleanup;
 pub mod codex_live;
 pub mod database_check;
 pub mod domain_agent_lifecycle;
-pub mod domain_github;
-pub mod open_pr_sweep;
 pub mod domain_holds;
-pub mod domain_merges;
-#[cfg(any(test, feature = "test-hooks"))]
-pub mod github_world;
 pub mod domain_messages;
 pub mod domain_orchestrator;
 pub mod domain_orchestrator_reads;
@@ -111,8 +110,6 @@ pub mod orchestrator_provider;
 pub mod orchestrator_sdk;
 pub mod pauses;
 pub mod plan_reviews;
-pub mod pr_images;
-pub mod pr_viewed;
 pub mod provider_transition;
 pub use alondra_daemon_engine_model::reply;
 pub mod sdk_handover;

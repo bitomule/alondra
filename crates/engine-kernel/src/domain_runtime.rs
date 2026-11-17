@@ -105,7 +105,8 @@ impl DomainRuntime {
         Self::open_unwired_at(home, &crate::domain_database_migration::active_path(home))
     }
 
-    #[cfg(test)]
+    /// The same at `database`, for the tests of the kernel and of the subsystem crates.
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn open_unwired_at(home: &Path, database: &Path) -> Result<Self> {
         Self::open_observed(home, database, None, vec![])
     }

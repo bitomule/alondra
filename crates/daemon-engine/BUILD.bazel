@@ -21,10 +21,7 @@ WORKSPACE_DEPS = [
 
 rust_library(
     name = "daemon_engine",
-    srcs = production_sources(test_only = [
-        "src/github_world.rs",
-        "src/machine_hooks.rs",
-    ]),
+    srcs = production_sources(test_only = ["src/machine_hooks.rs"]),
     crate_name = "alondra_daemon_engine",
     edition = "2024",
     version = VERSION,
@@ -34,6 +31,7 @@ rust_library(
         "//crates/daemon-engine-store:daemon_engine_store",
         "//crates/daemon-engine-machine:daemon_engine_machine",
         "//crates/daemon-support:daemon_support",
+        "//crates/engine-github:engine_github",
         "//crates/engine-kernel:engine_kernel",
     ],
 )
@@ -57,6 +55,7 @@ rust_library(
         "//crates/daemon-engine-store:daemon_engine_store_test_hooks",
         "//crates/daemon-engine-machine:daemon_engine_machine_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",
+        "//crates/engine-github:engine_github_test_hooks",
         "//crates/engine-kernel:engine_kernel_test_hooks",
     ],
 )
@@ -102,6 +101,7 @@ ENGINE_TEST_DEPS = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_
     "//crates/daemon-engine-store:daemon_engine_store_test_hooks",
     "//crates/daemon-engine-machine:daemon_engine_machine_test_hooks",
     "//crates/daemon-support:daemon_support_test_hooks",
+    "//crates/engine-github:engine_github_test_hooks",
     "//crates/engine-kernel:engine_kernel_test_hooks",
 ]
 
@@ -165,7 +165,7 @@ rust_inputs_test(
     required_sources = ["crates/daemon-engine/src/lib.rs", "crates/daemon-engine/src/wiring.rs"],
     source_dir = "crates/daemon-engine/src/",
     target_under_test = ":daemon_engine",
-    test_only_sources = ["crates/daemon-engine/src/github_world.rs", "crates/daemon-engine/src/machine_hooks.rs", "crates/daemon-engine/src/wiring/owner_tests.rs", "crates/test_support.rs"],
+    test_only_sources = ["crates/daemon-engine/src/machine_hooks.rs", "crates/daemon-engine/src/wiring/owner_tests.rs", "crates/test_support.rs"],
     test_sources = False,
 )
 
@@ -175,7 +175,7 @@ rust_inputs_test(
     required_sources = ["crates/daemon-engine/src/lib.rs", "crates/daemon-engine/src/wiring.rs"],
     source_dir = "crates/daemon-engine/src/",
     target_under_test = ":daemon_engine_test_hooks",
-    test_only_sources = ["crates/daemon-engine/src/github_world.rs", "crates/daemon-engine/src/machine_hooks.rs", "crates/daemon-engine/src/wiring/owner_tests.rs", "crates/test_support.rs"],
+    test_only_sources = ["crates/daemon-engine/src/machine_hooks.rs", "crates/daemon-engine/src/wiring/owner_tests.rs", "crates/test_support.rs"],
     test_sources = True,
 )
 
@@ -185,7 +185,7 @@ exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 # file among them; alondrad's lock policy test reads them too.
 filegroup(
     name = "report_sources",
-    srcs = production_sources(test_only = ["src/github_world.rs", "src/machine_hooks.rs"]),
+    srcs = production_sources(test_only = ["src/machine_hooks.rs"]),
     visibility = ["//crates/alondra:__pkg__", "//crates/alondrad:__pkg__"],
 )
 

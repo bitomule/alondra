@@ -79,7 +79,7 @@ fn origin_repository(checkout: &Path) -> Option<String> {
     None
 }
 
-pub(crate) async fn sweep(domain: &DomainRuntime, gh: &GhCli, options: &OptionsFile, user_home: &Path) -> Result<()> {
+pub async fn sweep(domain: &DomainRuntime, gh: &GhCli, options: &OptionsFile, user_home: &Path) -> Result<()> {
     let repositories = checkout_repositories(&options.projects_root(user_home));
     let output = gh.run(&["search", "prs", "--author", "@me", "--state", "open", "--limit", "1000", "--json", "repository,number,url"],
         None, GH_LIMIT).await.map_err(|e| anyhow::anyhow!(e.to_string()))?;
@@ -126,7 +126,7 @@ pub async fn run(domain: Arc<DomainRuntime>, home: std::path::PathBuf) {
     let gh = GhCli::new();
     loop {
         interval.tick().await;
-        let options = crate::domain_schedule_runner::options_at(&home);
+        let options = crate::options::options_at(&home);
         match options {
             Ok(options) => {
                 if let Err(error) = sweep(&domain, &gh, &options, &crate::options::user_home()).await {
