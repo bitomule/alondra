@@ -1,7 +1,7 @@
 //! The harness tests itself: it sees a failure and names it, it runs a scenario twice to the same
 //! bytes, and nothing it runs reaches a real service.
 
-use crate::{Outcome, Scenario, ScenarioError, checkpoint, run, run_with};
+use crate::{Outcome, Scenario, ScenarioError, checkpoint, run, run_lying, run_with};
 
 const SMALL: &str = r#"
 name = "a request and its task"
@@ -43,9 +43,78 @@ fn a_checkpoint_reads_each_screen_by_client_and_language() {
     );
 }
 
+/// A scenario with a provider: a node admitted on its host, a turn cut by an outage and the tasks
+/// going on when it ends, so its checkpoints depend on the host threads and the virtual clock.
+const WITH_A_PROVIDER: &str = r#"
+name = "a task whose provider goes down and comes back"
+max_virtual = "4h"
+
+[[step]]
+do = "request"
+text = "Export the report as CSV"
+task = "t1"
+title = "Add the CSV export"
+
+[[step]]
+do = "task"
+id = "t2"
+title = "Add the PDF export"
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "node"
+task = "t2"
+
+[[step]]
+do = "provider_down"
+error = "authentication_failed"
+status = 403
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "turn_end"
+task = "t2"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "during-the-outage"
+screens = ["home", "tasks", "task:t1"]
+pushes = true
+
+[[step]]
+do = "provider_up"
+
+[[step]]
+do = "advance"
+by = "3m"
+
+[[step]]
+do = "rest"
+max = "1h"
+
+[[step]]
+do = "checkpoint"
+name = "after-the-outage"
+screens = ["home", "tasks", "task:t2"]
+pushes = true
+"#;
+
 #[test]
 fn the_same_scenario_twice_reads_the_same_bytes() {
-    let (first, second) = (recorded(), recorded());
+    let scenario = scenario(WITH_A_PROVIDER);
+    let (first, second) = (run(&scenario, None).expect("the scenario runs"), run(&scenario, None).expect("the scenario runs again"));
+    let names: Vec<&str> = first.checkpoints.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["during-the-outage", "after-the-outage"]);
     assert_eq!(first.checkpoints, second.checkpoints);
 }
 
@@ -244,4 +313,90 @@ screens = [\"task:t2\"]
     let read = |checkpoint: usize, file: &str| outcome.checkpoints[checkpoint].1[file].clone();
     assert!(read(0, "task-t1.ios.en.json").contains("\"2026-11-15T09:00:10.000+00:00\""), "{}", read(0, "task-t1.ios.en.json"));
     assert!(read(1, "task-t2.ios.en.json").contains("\"2026-11-15T09:25:10.000+00:00\""), "{}", read(1, "task-t2.ios.en.json"));
+}
+
+const MERGED: &str = r#"
+name = "a delivery the user merges"
+max_virtual = "1h"
+
+[[step]]
+do = "request"
+text = "Export the report"
+task = "t1"
+title = "Add the export"
+
+[[step]]
+do = "github"
+event = "open_pr"
+number = 7
+head = "export"
+base = "main"
+
+[[step]]
+do = "register_pr"
+task = "t1"
+number = 7
+
+[[step]]
+do = "present"
+task = "t1"
+id = "d1"
+prs = [7]
+body = "The export is ready"
+
+[[step]]
+do = "rest"
+max = "1m"
+
+[[step]]
+do = "press"
+presentation = "d1"
+action = "merge"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "merged"
+screens = ["home"]
+pushes = true
+
+[[step.expect]]
+check = "pr_merged_into"
+pr = 7
+branch = "main"
+"#;
+
+#[test]
+fn control_the_world_the_scenario_was_written_for_passes_its_checks() {
+    run(&scenario(MERGED), None).expect("an honest GitHub and an honest phone pass the checks");
+}
+
+#[test]
+fn control_a_github_that_answers_a_merge_without_merging_fails_the_check_on_the_merge() {
+    match run_lying(&scenario(MERGED), None, |edges| edges.github.answer_merges_without_merging()) {
+        Err(ScenarioError::ExpectFailed { checkpoint, expected, .. }) => {
+            assert_eq!(checkpoint, "merged");
+            assert!(expected.contains("main"), "{expected}");
+        }
+        other => panic!("a GitHub that lies about the merge passed the scenario: {:?}", other.map(|_| ())),
+    }
+}
+
+#[test]
+fn control_a_push_transport_that_loses_every_push_is_a_checkpoint_diff_on_the_pushes() {
+    let case = tempfile::tempdir().unwrap();
+    let honest = run(&scenario(MERGED), None).expect("the scenario runs");
+    let (name, files) = &honest.checkpoints[0];
+    assert!(files["pushes.json"].contains("alert"), "the honest phone received nothing: {}", files["pushes.json"]);
+    checkpoint::write(case.path(), name, files).unwrap();
+    match run_lying(&scenario(MERGED), Some(case.path()), |edges| edges.pushes.lose_every_push()) {
+        Err(ScenarioError::CheckpointDiff { checkpoint, differences }) => {
+            assert_eq!(checkpoint, "merged");
+            assert_eq!(differences.keys().map(String::as_str).collect::<Vec<_>>(), ["pushes.json"]);
+        }
+        other => panic!("a phone that lost every push passed the scenario: {:?}", other.map(|_| ())),
+    }
 }

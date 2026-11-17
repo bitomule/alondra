@@ -164,13 +164,16 @@ a Mac. The world decides what the provider answers:
 
 - `bazel test //crates/scenarios:scenarios_test` runs every case; `--test_arg=<name>` runs the
   cases whose name contains it. `//crates/scenarios:scenarios_harness_test` tests the harness
-  itself: it names each failure with its own error, runs a scenario twice to the same bytes, and
-  refuses anything that reaches a real process.
+  itself: it names each failure with its own error, runs a scenario with a provider (nodes, an
+  outage, a recovery) twice to the same bytes, refuses anything that reaches a real process, and
+  holds the control scenarios: one run with a GitHub that answers a merge without merging and one
+  with a phone that loses every push, which the checks of the scenario must catch.
 - `bazel run //crates/scenarios:accept -- <case>...` writes what the checkpoints read into each
   case's folder; the pull request shows that diff for a reviewer to read.
 - `bazel run //crates/scenarios:ablate -- <case> --revert <file>...` runs only that case without
-  the fix (those files as they were on the base of the branch) and with it, and prints the block
-  the pull request shows.
+  the fix (those files as they were on the base of the branch; a file the fix added is taken away)
+  and with it, and prints the block the pull request shows. Every file comes back byte for byte
+  whatever happens, also when the run fails or is interrupted.
 - The scenario's phone is a service device of the daemon: it registers its push destination through
   the same encrypted request the app sends, so every push the daemon sends it is recorded. A
   checkpoint with `pushes = true` writes them to `pushes.json` (every alert; of the badge and

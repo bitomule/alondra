@@ -117,6 +117,17 @@ rust_binary(
     deps = all_crate_deps(normal = True),
 )
 
+# The files of a fix go back to the base and come back as they were, whatever the run does.
+low_opt_rust_test(
+    name = "ablate_bin_test",
+    size = "small",
+    srcs = ["src/bin/ablate.rs", "src/bin/ablate_tests.rs"],
+    crate_root = "src/bin/ablate.rs",
+    edition = "2024",
+    version = VERSION,
+    deps = all_crate_deps(normal = True, normal_dev = True),
+)
+
 # Every transcript the repository keeps, wherever it is and whatever its name, is anonymized. It
 # reads the private literals file ALONDRA_PRIVATE_LITERALS names, outside the checkout, so it is
 # never cached; without that list it fails, unless the variable says `none` (the public CI).
