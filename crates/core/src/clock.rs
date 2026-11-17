@@ -7,7 +7,12 @@
 //!
 //! A clock is current for a thread. A virtual runtime installs its clock in every thread it owns,
 //! blocking ones included. A thread of its own starts with [`spawn_thread`], which hands it the
-//! clock and the runtime of the thread that starts it.
+//! clock and the runtime of the thread that starts it, or enters both with [`VirtualRuntime::enter`]:
+//! a virtual clock without its runtime would read the real time.
+//!
+//! The runtime sees its tasks and its blocking pool, never a thread of its own: while such a thread
+//! works, an idle runtime still jumps to its next timer. Work that virtual time must wait for runs
+//! on the blocking pool, which holds virtual time until it ends.
 
 use std::cell::Cell;
 use std::future::Future;
@@ -43,8 +48,7 @@ impl Clock {
         CURRENT.with(Cell::get)
     }
 
-    /// Makes this clock the current one of the calling thread until the guard drops.
-    pub fn enter(self) -> Entered {
+    fn enter(self) -> Entered {
         Entered { previous: CURRENT.with(|current| current.replace(self)) }
     }
 
@@ -345,10 +349,20 @@ impl VirtualRuntime {
         self.clock
     }
 
+    /// Makes this runtime and its clock the current ones of the calling thread until the guard drops.
+    pub fn enter(&self) -> EnteredRuntime<'_> {
+        EnteredRuntime { _clock: self.clock.enter(), _runtime: self.runtime.enter() }
+    }
+
     pub fn block_on<F: Future>(&self, future: F) -> F::Output {
         let _entered = self.clock.enter();
         self.runtime.block_on(future)
     }
+}
+
+pub struct EnteredRuntime<'a> {
+    _clock: Entered,
+    _runtime: tokio::runtime::EnterGuard<'a>,
 }
 
 /// Moves the paused time forward by `duration`, running every timer that falls inside it.

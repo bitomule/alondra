@@ -62,13 +62,15 @@ fn a_blocking_thread_of_the_runtime_reads_the_virtual_clock() {
 #[test]
 fn a_thread_of_its_own_reads_the_clock_it_enters() {
     let runtime = VirtualRuntime::new(EPOCH).unwrap();
-    let clock = runtime.block_on(async { Clock::current() });
-    let read = std::thread::spawn(move || {
-        let _entered = clock.enter();
-        now_millis()
-    })
-    .join()
-    .unwrap();
+    let read = std::thread::scope(|threads| {
+        threads
+            .spawn(|| {
+                let _entered = runtime.enter();
+                now_millis()
+            })
+            .join()
+            .unwrap()
+    });
     assert_eq!(read, EPOCH);
 }
 
@@ -124,9 +126,9 @@ fn a_receiver_times_out_when_virtual_time_reaches_its_timeout() {
 fn a_message_ends_the_wait_at_once_and_a_gone_sender_ends_it_too() {
     let (message, gone, at) = on_its_own_thread(|| {
         let (sender, receiver) = channel();
-        let sending = spawn_thread(move || sender.send(7).unwrap());
+        let sending = tokio::task::spawn_blocking(move || sender.send(7).unwrap());
         let message = recv_timeout(&receiver, HOUR);
-        sending.join().unwrap();
+        tokio::runtime::Handle::current().block_on(sending).unwrap();
         (message, recv_timeout(&receiver, HOUR), now_millis())
     });
     assert_eq!(message, Ok(7));
