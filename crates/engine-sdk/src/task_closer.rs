@@ -20,7 +20,7 @@ use crate::worktree::TaskWorktree;
 use alondra_domain_rules::close_problem::{CLOSE_PROBLEM_PREFIX, CloseProblem, CloseStop};
 use alondra_view_model::Lang;
 use alondra_domain_rules::{
-    AgentId, Command, DomainState, InteractionId, InteractionPayload, NodeEnd, Scope, Task, TaskId,
+    Actor, AgentId, Command, CommandEnvelope, PROTOCOL_VERSION, DomainState, InteractionId, InteractionPayload, NodeEnd, Scope, Task, TaskId,
 };
 use anyhow::Result;
 use std::path::Path;
@@ -63,6 +63,13 @@ pub async fn run(domain: Arc<DomainRuntime>, sessions: Arc<dyn Sessions>, timing
             }
         }
         Err(error) => log!("could not keep the attachments of old cards: {error:#}"),
+    }
+    if let Some((backend, _)) = domain.sdk() {
+        match crate::ended_hosts::sweep(&domain, &backend.state_root) {
+            Ok(0) => {}
+            Ok(removed) => log!("deleted the folders of {removed} ended hosts whose task is over or has a later host"),
+            Err(error) => log!("could not delete the folders of ended hosts: {error}"),
+        }
     }
     if let Err(error) = crate::cancelled_worktrees::sweep(&domain).await {
         log!("could not settle the worktrees of cancelled tasks: {error:#}");
@@ -448,7 +455,8 @@ async fn close_sdk_node(
 ) -> Result<()> {
     let cleanup = matches!(kind, Due::Cleanup);
     let user_closed = state.post_merge_closed_by_user(&task.id);
-    let owes_nothing = !cleanup || task.wrap_up.cleaned_at.is_some() || user_closed;
+    let folder_gone = crate::sdk_owner::closing_without_folder(domain, state, &task.id);
+    let owes_nothing = !cleanup || task.wrap_up.cleaned_at.is_some() || user_closed || folder_gone;
     let cleaned_at = task.wrap_up.cleaned_at.map(|revision| revision as i64);
     let confirmed = cleaned_at.is_some() && cleaned_at > row.attempted_cleaned_at;
     if !owned && !owes_nothing && sdk_working(state, task) {
@@ -473,9 +481,9 @@ async fn close_sdk_node(
         if state.post_merge_owed(task) && !user_closed {
             forget_post_merge_check(domain, &task.id)?;
             return hold_while_working_after_merge(domain, now, row);
-        } else if working && task.wrap_up.cleaned_at.is_none() && !user_closed {
+        } else if !folder_gone && working && task.wrap_up.cleaned_at.is_none() && !user_closed {
             return hold_while_working_after_merge(domain, now, row);
-        } else if task.wrap_up.cleaned_at.is_none() && !user_closed && !timing.wait.is_some_and(|wait| now >= row.since + millis(wait)) {
+        } else if !folder_gone && task.wrap_up.cleaned_at.is_none() && !user_closed && !timing.wait.is_some_and(|wait| now >= row.since + millis(wait)) {
             // The node was asked to clean up: it closes once it says it did, or after the same
             // wait as a node of `claude --bg`.
             return Ok(());
@@ -550,7 +558,8 @@ fn sdk_working(state: &DomainState, task: &Task) -> bool {
 
 /// The session is gone; the worktree Alondra made for the task goes too, which `claude rm` leaves
 /// because Claude Code did not make it. The task finishes only once it is gone, so a worktree with
-/// work not saved is a failed close and is tried again, never forgotten.
+/// work not saved is a failed close and is tried again, never forgotten. Nothing is deleted while
+/// the domain would refuse the end of the node: a task that stays open keeps its folder.
 #[allow(clippy::too_many_arguments)]
 async fn finish_with_worktree(
     domain: &DomainRuntime, timing: &Timing, now: i64, task: &Task, agent: &AgentId, row: TaskClosing, cleanup: bool, end: NodeEnd,
@@ -558,6 +567,9 @@ async fn finish_with_worktree(
     if task.cancelled() {
         crate::cancelled_worktrees::release_cancelled(domain, task).await?;
         return finish(domain, &row, Some(agent), end);
+    }
+    if let Some(reason) = refused_end(domain, task, agent, end) {
+        return failure(domain, timing, now, task, agent, row, &reason, (CloseStop::Error, &reason), cleanup);
     }
     let left = crate::task_worktrees::release_all(domain, task).await?;
     if !left.is_empty() {
@@ -584,6 +596,21 @@ async fn finish_with_worktree(
         }
         Err(why) => failure(domain, timing, now, task, agent, row, &why, (CloseStop::Error, &why), cleanup),
     }
+}
+
+/// Why the domain would refuse to record `end` for the node of `task` once its worktrees are
+/// released, found on a copy of the state, before anything is deleted.
+fn refused_end(domain: &DomainRuntime, task: &Task, agent: &AgentId, end: NodeEnd) -> Option<String> {
+    let mut probe = domain.state().ok()?.as_ref().clone();
+    for worktree in probe.tasks.get_mut(&task.id)?.worktrees.values_mut().filter(|worktree| worktree.end.is_none()) {
+        worktree.end = Some(alondra_domain_rules::WorktreeEnd::Removed);
+    }
+    let envelope = CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION, data_epoch: probe.data_epoch.clone(), command_id: "probe-node-end".into(),
+        expected_revision: probe.revision,
+        command: Command::RecordNodeEnd { task_id: task.id.clone(), end, agent_id: Some(agent.clone()) },
+    };
+    probe.execute(&Actor::System, &envelope).err().map(|error| format!("the domain refuses to end its node: {}", error.message))
 }
 
 /// A check an earlier daemon kept on the work after the merge, with the card it may have raised:
