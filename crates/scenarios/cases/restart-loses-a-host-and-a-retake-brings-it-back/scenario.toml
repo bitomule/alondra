@@ -1,0 +1,77 @@
+name = "a restart that loses a node's host asks the user, and trying again starts a host that resumes the same session"
+max_virtual = "1h"
+
+[[step]]
+do = "request"
+text = "Export the report as CSV"
+task = "t1"
+title = "Add the CSV export"
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "restart"
+lose = ["t1"]
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "host-lost"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "host-lost-t1"
+
+[[step.expect]]
+check = "hosts"
+task = "t1"
+started = 1
+running = 0
+sessions = 1
+
+[[step]]
+do = "host_can_start"
+task = "t1"
+
+[[step]]
+do = "answer"
+card = "host-lost-t1"
+option = "retake"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "taken-again"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "host-lost-t1"
+present = false
+
+[[step.expect]]
+check = "hosts"
+task = "t1"
+started = 2
+running = 1
+sessions = 1
+
+[[step.expect]]
+check = "task_state"
+task = "t1"
+state = "running"

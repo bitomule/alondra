@@ -35,6 +35,59 @@ pub struct HostSpawn<'a> {
 /// scenario starts a stand-in that speaks the same protocol.
 pub trait HostLauncher: Send + Sync + 'static {
     fn spawn(&self, spawn: HostSpawn<'_>) -> io::Result<Child>;
+
+    /// Runs the provider's own command line, or its host in a probe mode, to its end: what the
+    /// checks of an account's sign-in, usage and models read. It goes through the same edge as the
+    /// hosts, so a scenario answers it from the world it plays.
+    fn run(&self, run: ProbeRun) -> io::Result<ProbeOutput> {
+        run_to_end(run)
+    }
+}
+
+/// A command run to its end, with what it reads on its input and how long it may take.
+pub struct ProbeRun {
+    pub command: Command,
+    pub input: Vec<u8>,
+    /// `None` waits for as long as it runs.
+    pub timeout: Option<Duration>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProbeOutput {
+    pub success: bool,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+}
+
+/// Starts the command in a process group of its own and keeps what it prints. Past its timeout
+/// the group is killed together, with whatever it started, and the run ends as `TimedOut`.
+pub fn run_to_end(mut run: ProbeRun) -> io::Result<ProbeOutput> {
+    let mut child = run.command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0).spawn()?;
+    let mut stdin = child.stdin.take().ok_or_else(|| io::Error::other("piped stdin"))?;
+    let input = std::mem::take(&mut run.input);
+    let writer = thread::spawn(move || stdin.write_all(&input));
+    let (mut stdout, mut stderr) = (child.stdout.take().ok_or_else(|| io::Error::other("piped stdout"))?, child.stderr.take().ok_or_else(|| io::Error::other("piped stderr"))?);
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let read = stdout.read_to_end(&mut out).and_then(|_| stderr.read_to_end(&mut err));
+        let _ = sender.send(read.map(|_| (out, err)));
+    });
+    let read = match run.timeout {
+        Some(timeout) => match receiver.recv_timeout(timeout) {
+            Ok(read) => read,
+            Err(_) => {
+                let _ = rustix::process::kill_process_group(rustix::process::Pid::from_child(&child), rustix::process::Signal::KILL);
+                let _ = child.wait();
+                return Err(io::Error::new(io::ErrorKind::TimedOut, format!("no answer within {} s", timeout.as_secs())));
+            }
+        },
+        None => receiver.recv().map_err(|_| io::Error::other("the reader of the output ended"))?,
+    };
+    let status = child.wait()?;
+    let _ = writer.join();
+    let (stdout, stderr) = read?;
+    Ok(ProbeOutput { success: status.success(), stdout, stderr })
 }
 
 /// Starts the host executable as a child in its own process group, under Seatbelt when asked.

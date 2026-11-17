@@ -61,6 +61,7 @@ fn fixture() -> Fixture {
         username: claude_account::effective_username().unwrap(),
         environment: BTreeMap::new(),
         timeout: None,
+        launcher: Default::default(),
     };
     Fixture { _scratch: scratch, home, user_home, claude }
 }
@@ -79,7 +80,7 @@ fn claude_account_probes_keep_the_native_deadline_for_installed_and_pinned_backe
             native, native_sha256: String::new(),
             host_environment: BTreeMap::new(),
             native_environment: BTreeMap::from([("HOME".into(), f.user_home.display().to_string()), ("PATH".into(), f.claude.path.clone())]),
-            confinement: None, state_root: f.home.join("hosts"), io_timeout_seconds: 30, installed_native, launcher: Default::default(),
+            confinement: None, state_root: f.home.join("hosts"), io_timeout_seconds: 30, installed_native, launcher: Default::default(), release: crate::sdk_owner::backend::this_release(),
         });
         let claude = Claude::of(&domain).unwrap();
         assert_eq!(claude.executable, f.claude.executable);
@@ -271,7 +272,7 @@ fn accounts_sharing_one_email_are_checked_before_their_sessions_are_taken_over()
         native, native_sha256: String::new(),
         host_environment: BTreeMap::new(),
         native_environment: BTreeMap::from([("HOME".into(), f.user_home.display().to_string()), ("PATH".into(), f.claude.path.clone())]),
-        confinement: None, state_root: f.home.join("hosts"), io_timeout_seconds: 30, installed_native: false, launcher: Default::default(),
+        confinement: None, state_root: f.home.join("hosts"), io_timeout_seconds: 30, installed_native: false, launcher: Default::default(), release: crate::sdk_owner::backend::this_release(),
     });
     let stored = |email: &str| vec![probe_account(email), AccountStatus { id: AccountId::parse("work").unwrap(), ..probe_account("work@example.org") }];
     let default = || domain.read().state().accounts[0].email.clone();

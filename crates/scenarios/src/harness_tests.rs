@@ -110,7 +110,7 @@ fn a_scenario_that_is_not_valid_never_starts() {
 }
 
 #[test]
-fn a_process_started_through_the_launcher_is_a_leak() {
+fn a_process_run_through_the_launcher_is_a_leak() {
     let result = run_with(&scenario(SMALL), None, |launcher| {
         let state = tempfile::tempdir().unwrap();
         let bootstrap = tempfile::tempfile().unwrap();
@@ -122,7 +122,9 @@ fn a_process_started_through_the_launcher_is_a_leak() {
             confinement: None,
             stdin: bootstrap,
         };
-        assert!(launcher.get().spawn(spawn).is_err());
+        assert!(launcher.get().spawn(spawn).is_err(), "a host starts only from a daemon's bootstrap");
+        let run = alondra_agent_runtime::owned_host::ProbeRun { command: std::process::Command::new("/usr/bin/true"), input: Vec::new(), timeout: None };
+        assert!(launcher.get().run(run).is_err());
     });
     match result {
         Err(ScenarioError::Leak(what)) => assert_eq!(what, "process /usr/bin/true"),
@@ -219,7 +221,8 @@ fn a_check_on_pushes_needs_the_checkpoint_to_read_them() {
 }
 
 /// Virtual time moves only when a step moves it: reading the views of a checkpoint over HTTP lets
-/// no daemon timer jump the clock, so a checkpoint keeps the exact instant of what happened.
+/// no daemon timer jump the clock, so a checkpoint keeps the exact instant of what happened. The
+/// scenario starts once the daemon checked its accounts and sampled the Mac after it, 10 s in.
 #[test]
 fn a_checkpoint_keeps_the_instants_the_steps_set() {
     let text = format!("{SMALL}
@@ -239,6 +242,6 @@ screens = [\"task:t2\"]
 ");
     let outcome = run(&scenario(&text), None).expect("the scenario runs");
     let read = |checkpoint: usize, file: &str| outcome.checkpoints[checkpoint].1[file].clone();
-    assert!(read(0, "task-t1.ios.en.json").contains("\"2026-11-15T09:00:00.000+00:00\""), "{}", read(0, "task-t1.ios.en.json"));
-    assert!(read(1, "task-t2.ios.en.json").contains("\"2026-11-15T09:25:00.000+00:00\""), "{}", read(1, "task-t2.ios.en.json"));
+    assert!(read(0, "task-t1.ios.en.json").contains("\"2026-11-15T09:00:10.000+00:00\""), "{}", read(0, "task-t1.ios.en.json"));
+    assert!(read(1, "task-t2.ios.en.json").contains("\"2026-11-15T09:25:10.000+00:00\""), "{}", read(1, "task-t2.ios.en.json"));
 }

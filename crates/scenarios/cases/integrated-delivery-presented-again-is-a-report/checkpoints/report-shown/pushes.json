@@ -1,18 +1,5 @@
 [
   {
-    "delivery": "badge",
-    "device": "<phone>",
-    "payload": {
-      "alondra": {
-        "kind": "badge"
-      },
-      "aps": {
-        "badge": 0
-      }
-    },
-    "with_sound": false
-  },
-  {
     "delivery": "background",
     "device": "<phone>",
     "payload": {
@@ -21,6 +8,19 @@
         "kind": "retract",
         "open": [],
         "protocol": 1
+      },
+      "aps": {
+        "badge": 0
+      }
+    },
+    "with_sound": false
+  },
+  {
+    "delivery": "badge",
+    "device": "<phone>",
+    "payload": {
+      "alondra": {
+        "kind": "badge"
       },
       "aps": {
         "badge": 0

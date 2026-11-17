@@ -32,24 +32,13 @@ prs = [7]
 body = "The CSV export is ready"
 
 [[step]]
-do = "api_error"
+do = "turn_end"
 task = "t1"
-error = "rate_limit"
-status = 429
 
 [[step]]
 do = "provider_down"
 error = "rate_limit"
 status = 429
-
-[[step]]
-do = "rest"
-max = "5m"
-
-[[step]]
-do = "checkpoint"
-name = "held-by-the-limit"
-screens = ["home", "task:t1"]
 
 [[step]]
 do = "press"
@@ -61,8 +50,18 @@ do = "rest"
 max = "10m"
 
 [[step]]
+do = "checkpoint"
+name = "held-by-the-limit"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "task:t1"
+text = "Claude limit"
+
+[[step]]
 do = "advance"
-by = "30m"
+by = "40m"
 
 [[step]]
 do = "rest"
@@ -71,7 +70,6 @@ max = "10m"
 [[step]]
 do = "checkpoint"
 name = "closed"
-screens = ["home"]
 pushes = true
 
 [[step.expect]]

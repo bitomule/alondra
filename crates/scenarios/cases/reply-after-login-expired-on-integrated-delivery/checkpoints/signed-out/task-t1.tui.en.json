@@ -30,7 +30,7 @@
           "badges": [
             {
               "elapsed": {
-                "since": "2026-11-15T09:00:00.000+00:00"
+                "since": "2026-11-15T09:00:10.000+00:00"
               },
               "text": "since 09:00",
               "tone": "neutral"
@@ -56,7 +56,7 @@
           "struck": false,
           "title": "Since",
           "trailing": {
-            "at": "2026-11-15T09:01:00.000+00:00",
+            "at": "2026-11-15T09:01:10.000+00:00",
             "format": "relative",
             "kind": "time"
           },
@@ -73,7 +73,7 @@
           "icon": "history",
           "id": "now",
           "link": {
-            "key": "card:claude-signed-out-t1-12",
+            "key": "card:claude-signed-out-t1-17",
             "kind": "view"
           },
           "struck": false,
@@ -81,6 +81,32 @@
           "type": "row"
         }
       ]
+    },
+    {
+      "collapsed": false,
+      "id": "last_message",
+      "items": [
+        {
+          "commentable": false,
+          "text": "Working on it",
+          "truncated": false,
+          "type": "markdown"
+        },
+        {
+          "depth": 0,
+          "icon": "history",
+          "id": "last_message_time",
+          "struck": false,
+          "title": "Last message",
+          "trailing": {
+            "at": "2026-11-15T09:01:10.000+00:00",
+            "format": "relative",
+            "kind": "time"
+          },
+          "type": "row"
+        }
+      ],
+      "title": "What it said last"
     },
     {
       "collapsed": false,
@@ -107,10 +133,10 @@
             "tone": "critical"
           },
           "icon": "warning",
-          "id": "claude-signed-out-t1-12",
+          "id": "claude-signed-out-t1-17",
           "kind": "problem",
           "link": {
-            "key": "card:claude-signed-out-t1-12",
+            "key": "card:claude-signed-out-t1-17",
             "kind": "view"
           },
           "meta": "Alondra",
@@ -122,7 +148,7 @@
           "subtitle": "Claude Code's sign-in expired and a task waits. Open Terminal on the Mac, run claude and sign in with /login, then press I signed in.",
           "timestamps": [
             {
-              "at": "2026-11-15T09:01:00.000+00:00",
+              "at": "2026-11-15T09:01:10.000+00:00",
               "format": "relative",
               "role": "created"
             }
@@ -202,7 +228,7 @@
             {
               "attachments": true,
               "enabled": true,
-              "id": "msg:agent-t1@<revision>~t1",
+              "id": "msg:<node>@<revision>~t1",
               "input": {
                 "kind": "text",
                 "multiline": true,
@@ -277,6 +303,20 @@
               "resolves_card": false,
               "role": "risk",
               "style": "destructive"
+            },
+            {
+              "attachments": false,
+              "disabled_reason": "Update Alondra to use this feature",
+              "enabled": false,
+              "id": "",
+              "input": {
+                "kind": "none"
+              },
+              "label": "Change model",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "neutral",
+              "style": "plain"
             }
           ],
           "type": "actions"
@@ -336,6 +376,27 @@
       }
     ],
     "gauges": [
+      {
+        "detail": "You can go on: Claude has room",
+        "id": "usage",
+        "label": "Claude",
+        "level": "calm",
+        "parts": [
+          {
+            "detail": "Not measured yet",
+            "group": "Claude",
+            "label": "Default",
+            "level": "calm",
+            "lines": [
+              "Not measured yet"
+            ],
+            "text": "with room",
+            "value": 1.0
+          }
+        ],
+        "text": "with room",
+        "value": 0.0
+      },
       {
         "id": "memory",
         "label": "RAM",

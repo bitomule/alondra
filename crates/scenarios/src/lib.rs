@@ -4,6 +4,7 @@
 //! pushes sent are compared with what a reviewer accepted.
 
 pub mod checkpoint;
+pub mod claude_host;
 pub mod claude_peer;
 pub mod codex_peer;
 pub mod error;

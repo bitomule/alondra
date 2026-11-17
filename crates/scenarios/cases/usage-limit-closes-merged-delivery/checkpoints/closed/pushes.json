@@ -38,14 +38,21 @@
     "with_sound": true
   },
   {
-    "delivery": "badge",
+    "delivery": "alert",
     "device": "<phone>",
     "payload": {
       "alondra": {
-        "kind": "badge"
+        "actions": [],
+        "data_epoch": "<data_epoch>",
+        "protocol": 1
       },
       "aps": {
-        "badge": 0
+        "alert": {
+          "body": "No usage capacity until 10:00",
+          "title": "Alondra"
+        },
+        "interruption-level": "passive",
+        "mutable-content": 1
       }
     },
     "with_sound": false
@@ -59,6 +66,19 @@
         "kind": "retract",
         "open": [],
         "protocol": 1
+      },
+      "aps": {
+        "badge": 0
+      }
+    },
+    "with_sound": false
+  },
+  {
+    "delivery": "badge",
+    "device": "<phone>",
+    "payload": {
+      "alondra": {
+        "kind": "badge"
       },
       "aps": {
         "badge": 0

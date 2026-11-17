@@ -243,7 +243,7 @@ fn a_reported_wait_without_a_pid_lasts_until_the_turn_ends() {
         host: "/fixture/host".into(), host_sha256: String::new(),
         native: "/fixture/claude".into(), native_sha256: String::new(),
         host_environment: BTreeMap::new(), native_environment: BTreeMap::new(),
-        confinement: None, state_root: root.clone(), io_timeout_seconds: 30, installed_native: false, launcher: Default::default(),
+        confinement: None, state_root: root.clone(), io_timeout_seconds: 30, installed_native: false, launcher: Default::default(), release: crate::sdk_owner::backend::this_release(),
     });
     let observe = |cursor, facts| {
         let state = runtime.state().unwrap();

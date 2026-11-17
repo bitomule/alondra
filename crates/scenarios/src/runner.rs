@@ -8,9 +8,9 @@ use crate::error::ScenarioError;
 use crate::format::{Checkpoint, Expect, GithubChange, Scenario, Step, parse_duration};
 use crate::http::{PHONE_SECRET, Phone};
 use alondra_agent_runtime::owned_host::{HostLauncher, HostSpawn, Launcher};
+use crate::claude_host::{ApiError, ClaudeEdge};
 use alondra_domain_rules::{
-    Actor, CardSpec, Command, CommandEnvelope, DeliveryTarget, LaunchPlan, MergeMethod, NodeEnd, PROTOCOL_VERSION,
-    RuntimeObservation, SdkApiFailure, StackDependency,
+    Actor, CardSpec, Command, CommandEnvelope, DeliveryTarget, LaunchPlan, MergeMethod, NodeEnd, PROTOCOL_VERSION, StackDependency,
 };
 use alondra_views::action_id::ActionId;
 use alondra_daemon_engine::github_world::GithubWorld;
@@ -35,10 +35,13 @@ pub struct Outcome {
     pub checkpoints: Vec<(String, Files)>,
 }
 
-/// The Mac of a scenario: always rested, with room for everything.
-struct CalmMac;
+/// The Mac of a scenario: always rested, with room for everything. It counts the samples the
+/// daemon takes of it.
+#[derive(Clone, Default)]
+struct CalmMac(Arc<std::sync::atomic::AtomicU64>);
 impl MachineSampler for CalmMac {
     fn sample(&self) -> alondra_core::Machine {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         alondra_core::Machine {
             at: alondra_core::now_millis(),
             memory_total: 16 << 30,
@@ -113,21 +116,27 @@ struct Peer {
 /// naming what is left, instead of waiting for the test's own limit.
 const WATCHDOG: Duration = Duration::from_secs(120);
 
-/// The SDK host of a task as the scenario plays it: what its provider process reports to the
-/// daemon, through the commands the daemon records the host's observations with.
-struct Host {
-    generation: u64,
-    turn: Option<String>,
-    turns: u64,
-}
+/// Real milliseconds a wait for the Claude hosts may last: a daemon that never comes to rest ends
+/// the run with what kept moving, not a hang.
+const PATIENCE_MS: u64 = 20_000;
+/// How often the daemon samples the Mac and the accounts' usage for the gauges the apps show: by
+/// then a scenario has started.
+const MACHINE_SAMPLE: Duration = Duration::from_secs(10);
+/// The 2 ms polls with no frame between the daemon and the hosts, and no commit of the daemon, that
+/// make a moment of calm.
+const CALM_POLLS: u64 = 25;
+/// The polls that outlast the longest wait of a host's owner between two looks at the inputs it
+/// holds (250 ms, while a turn runs).
+const OWNER_WAKE_POLLS: u64 = 150;
 
 struct Context<'a> {
     peer: Option<Peer>,
     scenario: &'a Scenario,
     accepted: Option<&'a Path>,
     config: alondra_core::config::Config,
-    outage: Option<(SdkApiFailure, Vec<String>)>,
-    hosts: BTreeMap<String, Host>,
+    /// The provider of the Claude nodes, when the case runs any.
+    claude: Option<ClaudeEdge>,
+    mac: CalmMac,
     daemon: Option<Assembled>,
     github: Arc<GithubWorld>,
     pushes: RecordedPushes,
@@ -137,7 +146,7 @@ struct Context<'a> {
     /// The capability the daemon issued to each task's node, by task.
     capabilities: BTreeMap<String, String>,
     /// The inputs the user's messages became, by task, in the order the user wrote them.
-    told: BTreeMap<String, std::collections::VecDeque<String>>,
+    told: BTreeMap<String, std::collections::VecDeque<(String, String)>>,
     request: Option<String>,
     commands: u64,
     spent: Duration,
@@ -174,8 +183,14 @@ async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnc
     let pushes = RecordedPushes::default();
     let leaks = Arc::new(Mutex::new(Vec::new()));
     let codex = codex_transcripts(scenario);
+    write_accounts(&config.home, &scenario.world.accounts).map_err(|e| invalid(&e))?;
+    let mut claude = None;
     let (launcher, backend, peer) = if codex.is_empty() {
-        (Launcher::new(RefusingLauncher(leaks.clone())), Backend::Given(None), None)
+        let edge = ClaudeEdge::new(&config.home, leaks.clone());
+        let launcher = Launcher::new(edge.clone());
+        let backend = claude_backend(&config.home, launcher.clone(), &scenario.world.release).map_err(|e| invalid(&e))?;
+        claude = Some(edge);
+        (launcher, Backend::Given(Some(backend)), None)
     } else {
         let case = scenario.case.as_deref().ok_or_else(|| ScenarioError::Invalid("a step that starts a provider reads the transcripts of its case".into()))?;
         let peer = crate::codex_peer::launcher(case, &codex)?;
@@ -185,7 +200,8 @@ async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnc
         (launcher, Backend::Given(Some(backend)), Some(Peer { seen, activity, hosts: codex.len() }))
     };
     probe(&launcher);
-    let seams = seams_of(&github, &pushes, launcher, backend);
+    let mac = CalmMac::default();
+    let seams = seams_of(&github, &pushes, &mac, launcher, backend);
     alondrad::scenario_phone::prepare(&config.home).map_err(|e| invalid(&format!("{e:#}")))?;
     let daemon = assemble::start(&config, seams).await.map_err(|e| invalid(&format!("{e:#}")))?;
     let phone = Phone::pair(&daemon, std::net::SocketAddr::new(config.listen, config.port)).map_err(|e| invalid(&e))?;
@@ -196,8 +212,8 @@ async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnc
         scenario,
         accepted,
         config,
-        outage: None,
-        hosts: BTreeMap::new(),
+        claude,
+        mac,
         daemon: Some(daemon),
         github,
         pushes,
@@ -212,7 +228,10 @@ async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnc
         budget,
         outcome: Outcome { checkpoints: Vec::new() },
     };
-    let result = steps(&mut context).await;
+    let result = match context.accounts_checked().await {
+        Ok(()) => steps(&mut context).await,
+        Err(error) => Err(error),
+    };
     drop(thaw);
     freeze.await.ok();
     if let Some(daemon) = &context.daemon {
@@ -220,14 +239,17 @@ async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnc
         let domain = daemon.domain.clone();
         tokio::task::spawn_blocking(move || domain.stop_sdk_owners()).await.ok();
     }
+    if let Some(edge) = &context.claude {
+        edge.end_all();
+    }
     Ok((context.outcome, result.err()))
 }
 
-fn seams_of(github: &Arc<GithubWorld>, pushes: &RecordedPushes, launcher: Launcher, backend: Backend) -> Seams {
+fn seams_of(github: &Arc<GithubWorld>, pushes: &RecordedPushes, mac: &CalmMac, launcher: Launcher, backend: Backend) -> Seams {
     Seams {
         github: GithubSeams::of(github.clone()),
         push: Pushes::new(pushes.clone()),
-        machine: Arc::new(CalmMac),
+        machine: Arc::new(mac.clone()),
         launcher,
         backend,
         world: assemble::World::Isolated,
@@ -237,6 +259,9 @@ fn seams_of(github: &Arc<GithubWorld>, pushes: &RecordedPushes, launcher: Launch
 async fn steps(context: &mut Context<'_>) -> Result<(), ScenarioError> {
     for (index, step) in context.scenario.steps.iter().enumerate() {
         context.step(index, step).await?;
+        if context.daemon.is_some() {
+            context.settle().await?;
+        }
         context.peer_failure()?;
         if let Some(what) = context.leaks.lock().unwrap_or_else(std::sync::PoisonError::into_inner).first() {
             return Err(ScenarioError::Leak(what.clone()));
@@ -271,20 +296,36 @@ fn short_root() -> std::path::PathBuf {
     }
 }
 
-/// The backend of a daemon whose Codex nodes start through `launcher`: three files that stand where
-/// the host and the native executable stand, named by their digests as a real configuration names them.
 fn codex_backend(home: &Path, launcher: Launcher) -> Result<alondra_daemon_engine::sdk_owner::backend::SdkBackend, String> {
+    sdk_backend(home, launcher, alondra_core::accounts::Provider::Codex, "codex", &alondra_daemon_engine::sdk_owner::backend::this_release())
+}
+
+/// The backend of a daemon whose Claude nodes start through `launcher`, of `release`.
+fn claude_backend(home: &Path, launcher: Launcher, release: &str) -> Result<alondra_daemon_engine::sdk_owner::backend::SdkBackend, String> {
+    sdk_backend(home, launcher, alondra_core::accounts::Provider::Claude, "claude", release)
+}
+
+/// The backend of a daemon whose nodes start through `launcher`: three files that stand where the
+/// host and the native executable stand, named by their digests as a real configuration names them.
+/// Each release installs its own host, so the files of two releases differ.
+fn sdk_backend(
+    home: &Path,
+    launcher: Launcher,
+    provider: alondra_core::accounts::Provider,
+    name: &str,
+    release: &str,
+) -> Result<alondra_daemon_engine::sdk_owner::backend::SdkBackend, String> {
     use alondra_daemon_engine::sdk_owner::backend::{SdkBackend, digest};
-    let file = |name: &str| -> Result<(std::path::PathBuf, String), String> {
-        let path = home.join(name);
-        std::fs::write(&path, name).map_err(|e| e.to_string())?;
+    let file = |kind: &str| -> Result<(std::path::PathBuf, String), String> {
+        let path = home.join(format!("{name}-{kind}-{release}"));
+        std::fs::write(&path, format!("{name} {kind} {release}")).map_err(|e| e.to_string())?;
         let sha = digest(&path).map_err(|e| format!("{e:#}"))?;
         Ok((path, sha))
     };
-    let ((node, node_sha256), (native, native_sha256)) = (file("codex-host")?, file("codex-native")?);
+    let ((node, node_sha256), (native, native_sha256)) = (file("host")?, file("native")?);
     let environment = BTreeMap::from([("HOME".to_owned(), home.display().to_string()), ("PATH".to_owned(), "/usr/bin:/bin".to_owned())]);
     Ok(SdkBackend {
-        provider: alondra_core::accounts::Provider::Codex,
+        provider,
         origin: None,
         host: node.clone(),
         host_sha256: node_sha256.clone(),
@@ -299,7 +340,26 @@ fn codex_backend(home: &Path, launcher: Launcher) -> Result<alondra_daemon_engin
         io_timeout_seconds: 30,
         installed_native: false,
         launcher,
+        release: release.to_owned(),
     })
+}
+
+/// The accounts of the scenario's world, as the user set them up in Settings: each but the
+/// default one has its own folder for Claude's configuration.
+fn write_accounts(home: &Path, accounts: &[String]) -> Result<(), String> {
+    use alondra_core::accounts::{AccountId, AccountsConfig, Provider, ProviderAccount};
+    let mut settings = AccountsConfig::fresh();
+    settings.connect(Provider::Claude);
+    for id in accounts {
+        let id = AccountId::parse(id)?;
+        if let Some(folder) = alondra_core::accounts::folder(home, &id) {
+            std::fs::create_dir_all(folder).map_err(|e| e.to_string())?;
+        }
+        let mut name = id.as_str().to_owned();
+        name[..1].make_ascii_uppercase();
+        settings.claude.push(ProviderAccount { id, name, enabled: true, billing: Default::default() });
+    }
+    std::fs::write(alondra_core::options::path_in(home), settings.to_toml()).map_err(|e| e.to_string())
 }
 
 fn agent_of(task: &str) -> String {
@@ -431,43 +491,42 @@ impl Context<'_> {
             },
             Step::Press { presentation, action, text, screen } => self.press(index, presentation, action, text.as_deref(), screen.as_deref().unwrap_or("home")).await?,
             Step::Answer { card, option, text } => self.answer(index, card, option, text.as_deref()).await?,
-            Step::Node { task } => self.start_node(index, task)?,
+            Step::Node { task, account } => self.start_claude_node(index, task, account).await?,
             Step::TurnEnd { task } => {
-                let failure = self.failure_for(task);
-                self.end_turn(index, task, failure)?;
+                self.edge(index)?.end_turn(task, None).map_err(|why| Self::failed(index, why))?;
+                self.settle().await?;
             }
             Step::ApiError { task, error, status } => {
-                self.end_turn(index, task, Some(SdkApiFailure { error: error.clone(), status: *status, resets_at: None }))?;
+                let error = api_error(index, error, *status)?;
+                self.edge(index)?.end_turn(task, Some(error)).map_err(|why| Self::failed(index, why))?;
+                self.settle().await?;
             }
             Step::ProviderDown { error, status, tasks } => {
-                self.outage = Some((SdkApiFailure { error: error.clone(), status: *status, resets_at: None }, tasks.clone()));
+                let error = api_error(index, error, *status)?;
+                self.edge(index)?.set_outage(Some((error, tasks.clone())));
             }
-            Step::LoginExpired => {
-                self.outage = Some((SdkApiFailure { error: "authentication_failed".into(), status: Some(401), resets_at: None }, Vec::new()));
+            Step::ProviderUp => self.edge(index)?.set_outage(None),
+            Step::LoginExpired { account } => self.edge(index)?.set_signed_in(account, false),
+            Step::LoginRestored { account } => self.edge(index)?.set_signed_in(account, true),
+            Step::HostExit { task } => {
+                self.edge(index)?.kill(task);
+                self.settle().await?;
             }
-            Step::ProviderUp | Step::LoginRestored => self.outage = None,
-            Step::HostExit { task, resumes } => self.host_exit(index, task, *resumes)?,
             Step::Tell { task, text } => self.tell(index, task, text).await?,
             Step::ReadMessage { task } => {
-                let input = self.message_waiting(index, task)?;
-                let generation = self.hosts.get(task).map_or(1, |host| host.generation);
-                self.command(index, Actor::System, Command::RecordRuntimeFacts { task_id: task.clone().into(), generation, facts: vec![RuntimeObservation::InputConsumed { input }] })?;
+                let text = self.message_waiting(index, task)?;
+                self.edge(index)?.read(task, &text).map_err(|why| Self::failed(index, why))?;
+                self.settle().await?;
             }
             Step::CleanupDone { task } => {
                 self.node_command(index, task, &format!("/tasks/{task}/cleanup"), None, Command::ConfirmCleanup { task_id: task.clone().into(), discard: Vec::new() }).await?;
             }
             Step::NodeEnd { task } => {
                 self.command(index, Actor::System, Command::RecordNodeEnd { task_id: task.clone().into(), end: NodeEnd::Closed, agent_id: Some(agent_of(task).into()) })?;
-                self.hosts.remove(task);
             }
-            Step::Restart => self.restart(index).await?,
-            Step::Update => {
-                let running: Vec<String> = self.hosts.keys().cloned().collect();
-                self.restart(index).await?;
-                for task in running {
-                    self.host_exit(index, &task, true)?;
-                }
-            }
+            Step::Restart { lose } => self.restart(index, lose, None).await?,
+            Step::Update => self.restart(index, &[], Some(alondra_daemon_engine::sdk_owner::backend::this_release())).await?,
+            Step::HostCanStart { task } => self.edge(index)?.set_startable(task, true),
             Step::Advance { by } => self.pass(parse_duration(by)?, index).await?,
             Step::Rest { max } => self.rest(parse_duration(max)?, index).await?,
             Step::Checkpoint(checkpoint) => self.checkpoint(index, checkpoint).await?,
@@ -482,6 +541,73 @@ impl Context<'_> {
             Some(error) => Err(error.into()),
             None => Ok(()),
         }
+    }
+
+    /// The Claude hosts answer the daemon in real time, beside the virtual clock: waits, in the
+    /// runtime's blocking pool (which keeps the clock where it is), until no takeover of a host is
+    /// under way, the daemon is attached to every host that runs and acknowledged what each said,
+    /// and neither a frame nor a commit moved for a moment, so the next step reads what the daemon
+    /// did with them. Past the patience the run ends, naming what kept moving.
+    async fn settle(&self) -> Result<(), ScenarioError> {
+        if let Some(edge) = &self.claude {
+            let edge = edge.clone();
+            let domain = self.daemon.as_ref().map(|daemon| daemon.domain.clone());
+            let watched = edge.clone();
+            let retaking = {
+                let domain = domain.clone();
+                move || domain.as_ref().is_some_and(|domain| domain.retaking())
+            };
+            // While a turn runs, the owner of its host looks for new inputs only between reads of
+            // the host, which wait up to `OWNER_WAKE`: an input the daemon holds for a host that
+            // was not offered it yet may still go out once that wait ends.
+            let undelivered = move || {
+                let Some(state) = domain.as_ref().and_then(|domain| domain.state().ok()) else { return false };
+                watched.turns().into_iter().any(|(task, offered)| {
+                    state.lifecycle_of(&task.into()).is_ok_and(|lifecycle| lifecycle.pending_inputs().len() > offered)
+                })
+            };
+            let revision = {
+                let domain = self.daemon.as_ref().map(|daemon| daemon.domain.clone());
+                move || domain.as_ref().map_or(0, |domain| domain.read().state().revision)
+            };
+            let unsettled = tokio::task::spawn_blocking(move || {
+                let (mut last, mut calm, mut patience) = ((edge.activity(), revision()), 0, PATIENCE_MS);
+                loop {
+                    std::thread::sleep(Duration::from_millis(2));
+                    let now = (edge.activity(), revision());
+                    if now != last {
+                        (last, calm) = (now, 0);
+                    } else {
+                        calm += 1;
+                    }
+                    let enough = if undelivered() { OWNER_WAKE_POLLS } else { CALM_POLLS };
+                    let (committed, retaking) = (edge.committed(), retaking());
+                    if calm >= enough && committed && !retaking {
+                        return None;
+                    }
+                    patience = patience.saturating_sub(2);
+                    if patience == 0 {
+                        let mut moving = Vec::new();
+                        if calm < enough {
+                            moving.push("frames or commits");
+                        }
+                        if !committed {
+                            moving.push("a host the daemon did not attach to or acknowledge");
+                        }
+                        if retaking {
+                            moving.push("a takeover of a host");
+                        }
+                        return Some(moving.join(", "));
+                    }
+                }
+            })
+            .await
+            .unwrap_or_else(|error| Some(error.to_string()));
+            if let Some(what) = unsettled {
+                return Err(ScenarioError::Unsettled(format!("{what}, after {} s", PATIENCE_MS / 1000)));
+            }
+        }
+        self.settle_peer().await
     }
 
     /// The hosts and the daemon's owners of them answer each other at once, without virtual time
@@ -579,94 +705,120 @@ impl Context<'_> {
         })
     }
 
-    fn failure_for(&self, task: &str) -> Option<SdkApiFailure> {
-        let (failure, tasks) = self.outage.as_ref()?;
-        (tasks.is_empty() || tasks.iter().any(|named| named == task)).then(|| failure.clone())
-    }
-
-    /// The pending input the task's node has not taken yet, if any.
-    fn pending_input(&self, index: usize, task: &str) -> Result<Option<String>, ScenarioError> {
-        Ok(self.pending_inputs(index, task)?.into_iter().next())
-    }
-
     fn pending_inputs(&self, index: usize, task: &str) -> Result<Vec<String>, ScenarioError> {
         let state = self.daemon().domain.state().map_err(|e| Self::failed(index, e))?;
         let lifecycle = state.lifecycle_of(&task.to_owned().into()).map_err(|e| Self::failed(index, e))?;
         Ok(lifecycle.pending_inputs().into_iter().map(|input| input.as_str().to_owned()).collect())
     }
 
-    fn start_node(&mut self, index: usize, task: &str) -> Result<(), ScenarioError> {
-        alondra_daemon_engine::sdk_owner::drive_by_hand(&self.daemon().domain, &agent_of(task).into());
-        alondra_daemon_engine::domain_store::admit_through_sdk_with_host(&self.daemon().domain, &task.to_owned().into(), &agent_of(task), alondra_daemon_engine::sdk_owner::HOST);
-        let input = self
-            .pending_input(index, task)?
-            .ok_or_else(|| Self::failed(index, format!("the admitted task {task} has no input to take")))?;
-        self.hosts.insert(task.to_owned(), Host { generation: 1, turn: None, turns: 0 });
-        self.take_input(index, task, input, true)
-    }
-
-    fn take_input(&mut self, index: usize, task: &str, input: String, first: bool) -> Result<(), ScenarioError> {
-        let host = self.hosts.get_mut(task).ok_or_else(|| Self::failed(index, format!("{task} has no node: start it with `node`")))?;
-        host.turns += 1;
-        let turn = format!("turn-{}", host.turns);
-        host.turn = Some(turn.clone());
-        let generation = host.generation;
-        let mut facts = Vec::new();
-        if first {
-            facts.push(RuntimeObservation::ResourceAvailable);
+    /// The daemon's first look at the sign-in of the Claude accounts goes through the edge as it
+    /// starts: the scenario begins once it is done and the machine was sampled after it, which is
+    /// when the apps' gauges show those accounts.
+    async fn accounts_checked(&mut self) -> Result<(), ScenarioError> {
+        use alondra_core::accounts::{AccountState, Provider};
+        if self.claude.is_none() {
+            return Ok(());
         }
-        facts.push(RuntimeObservation::TurnStarted { turn, input });
-        self.command(index, Actor::System, Command::RecordRuntimeFacts { task_id: task.to_owned().into(), generation, facts })
-    }
-
-    fn end_turn(&mut self, index: usize, task: &str, failure: Option<SdkApiFailure>) -> Result<(), ScenarioError> {
-        let host = self.hosts.get_mut(task).ok_or_else(|| Self::failed(index, format!("{task} has no node: start it with `node`")))?;
-        let turn = host.turn.take().ok_or_else(|| Self::failed(index, format!("{task} has no turn running")))?;
-        let generation = host.generation;
-        if failure.is_none() {
-            self.command(index, Actor::System, Command::RecordRuntimeFacts { task_id: task.to_owned().into(), generation, facts: vec![RuntimeObservation::ModelAnswered] })?;
-        }
-        self.command(index, Actor::System, Command::RecordTurnBoundary { task_id: task.to_owned().into(), generation, turn, failure, failed: None })
-    }
-
-    fn host_exit(&mut self, index: usize, task: &str, resumes: bool) -> Result<(), ScenarioError> {
-        let host = self.hosts.get_mut(task).ok_or_else(|| Self::failed(index, format!("{task} has no node: start it with `node`")))?;
-        host.turn = None;
-        let generation = host.generation;
-        self.command(index, Actor::System, Command::RecordHostEnded { task_id: task.to_owned().into(), generation, resumes, by_alondra: false, ended_work: Vec::new() })
-    }
-
-    /// What the nodes do between steps: one with an input waiting takes it as a turn, and while the
-    /// provider is down that turn ends at once on the provider's error.
-    fn play_nodes(&mut self, index: usize) -> Result<(), ScenarioError> {
-        let tasks: Vec<String> = self.hosts.iter().filter(|(_, host)| host.turn.is_none()).map(|(task, _)| task.clone()).collect();
-        for task in tasks {
-            let Some(input) = self.pending_input(index, &task)? else { continue };
-            self.take_input(index, &task, input, false)?;
-            if let Some(failure) = self.failure_for(&task) {
-                self.end_turn(index, &task, Some(failure))?;
+        let domain = self.daemon().domain.clone();
+        let checked = tokio::task::spawn_blocking(move || {
+            let done = || {
+                alondra_daemon_engine::accounts::require_initial_check(&domain).is_ok()
+                    && domain.read().state().accounts.iter().any(|account| account.provider == Provider::Claude && account.state != AccountState::Unchecked)
+            };
+            for _ in 0..PATIENCE_MS / 2 {
+                if done() {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(2));
             }
+            done()
+        })
+        .await
+        .unwrap_or(false);
+        if !checked {
+            return Err(ScenarioError::Invalid("the daemon never finished its first look at the Claude accounts".into()));
+        }
+        // The daemon samples the Mac as it starts, and again a sampling period later: that second
+        // sample comes after the accounts were checked, whenever the first one came.
+        while self.mac.0.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+            if self.spent > MACHINE_SAMPLE * 2 {
+                return Err(ScenarioError::Invalid("the daemon did not sample the Mac a second time".into()));
+            }
+            self.pass(Duration::from_secs(1), 0).await?;
         }
         Ok(())
     }
 
-    /// Stops the daemon and starts it again over the same home, with the same edges. The hosts the
-    /// scenario plays outlive it, and the new daemon counts them as its own before it takes over
-    /// the SDK executions.
-    async fn restart(&mut self, index: usize) -> Result<(), ScenarioError> {
+    fn edge(&self, index: usize) -> Result<&ClaudeEdge, ScenarioError> {
+        self.claude.as_ref().ok_or_else(|| Self::failed(index, "a case with Codex nodes plays no Claude"))
+    }
+
+    /// The task's node starts on Claude as a launch in production starts it, on `account`: the
+    /// daemon picks the model, writes the mission and starts the host it supervises, after the
+    /// accounts were checked through the same edge.
+    async fn start_claude_node(&mut self, index: usize, task: &str, account: &str) -> Result<(), ScenarioError> {
+        use alondra_core::accounts::{AccountId, Provider};
+        for _ in 0..30 {
+            if alondra_daemon_engine::accounts::require_initial_check(&self.daemon().domain).is_ok() {
+                break;
+            }
+            self.pass(Duration::from_secs(1), index).await?;
+        }
+        let account = AccountId::parse(account).map_err(|why| Self::failed(index, why))?;
+        let home = &self.config.home;
+        let (directory, plugin) = (home.join("work"), home.join("plugin"));
+        std::fs::create_dir_all(plugin.join("skills/alondra")).and_then(|()| std::fs::create_dir_all(&directory)).map_err(|e| Self::failed(index, e))?;
+        std::fs::write(plugin.join("skills/alondra/SKILL.md"), "You are an Alondra task node. Follow the task request and report the result through Alondra.")
+            .map_err(|e| Self::failed(index, e))?;
+        let state = self.daemon().domain.state().map_err(|e| Self::failed(index, e))?;
+        let title = state.tasks.get(&task.to_owned().into()).map(|task| task.title.clone()).unwrap_or_default();
+        let options = alondra_daemon_engine::sdk_owner::LaunchOptions { provider: Provider::Claude, ..Default::default() };
+        alondra_daemon_engine::sdk_owner::launch(&self.daemon().domain, alondra_daemon_engine::sdk_owner::Launch {
+            task: task.to_owned().into(), name: task.to_owned(), directory: directory.display().to_string(), prompt: title, plugin, options,
+            model: None, account,
+        })
+        .await
+        .map_err(|error| Self::failed(index, format!("the node did not start: {}", error.message)))?;
+        self.settle().await?;
+        if self.edge(index)?.running(task).is_none() {
+            return Err(Self::failed(index, format!("the daemon started no host for {task}")));
+        }
+        Ok(())
+    }
+
+    /// The daemon stops as a crash stops it: its loops end and its owners let go of their hosts
+    /// without stopping them, which run on. A daemon starts over the same home, of `release` when
+    /// an update installs one (its hosts are files of their own), and takes the hosts over. The
+    /// hosts of `lose` die with the first daemon, and no new one can start for their tasks.
+    async fn restart(&mut self, index: usize, lose: &[String], release: Option<String>) -> Result<(), ScenarioError> {
         if let Some(old) = self.daemon.take() {
             old.tasks.abort();
+            let domain = old.domain.clone();
             drop(old);
+            tokio::task::spawn_blocking(move || domain.crash_sdk_owners()).await.ok();
         }
         for _ in 0..64 {
             tokio::task::yield_now().await;
         }
-        let launcher = Launcher::new(RefusingLauncher(self.leaks.clone()));
-        let seams = seams_of(&self.github, &self.pushes, launcher, Backend::Given(None));
-        let domain = alondra_daemon_engine::wiring::open(&self.config.home).map_err(|e| Self::failed(index, format!("{e:#}")))?;
-        for task in self.hosts.keys() {
-            alondra_daemon_engine::sdk_owner::drive_by_hand(&domain, &agent_of(task).into());
+        for task in lose {
+            let edge = self.edge(index)?;
+            edge.kill(task);
+            edge.set_startable(task, false);
         }
+        let backend = match (&self.claude, self.peer.is_some()) {
+            (Some(edge), _) => {
+                let release = release.unwrap_or_else(|| self.scenario.world.release.clone());
+                let launcher = Launcher::new(edge.clone());
+                Some(claude_backend(&self.config.home, launcher.clone(), &release).map(|backend| (launcher, backend)).map_err(|e| Self::failed(index, e))?)
+            }
+            (None, _) => None,
+        };
+        let (launcher, backend) = match backend {
+            Some((launcher, backend)) => (launcher, Backend::Given(Some(backend))),
+            None => (Launcher::new(RefusingLauncher(self.leaks.clone())), Backend::Given(None)),
+        };
+        let seams = seams_of(&self.github, &self.pushes, &self.mac, launcher, backend);
+        let domain = alondra_daemon_engine::wiring::open(&self.config.home).map_err(|e| Self::failed(index, format!("{e:#}")))?;
         let daemon = assemble::start_over(&self.config, domain, seams).await.map_err(|e| Self::failed(index, format!("{e:#}")))?;
         self.daemon = Some(daemon);
         self.pass(Duration::from_secs(1), index).await
@@ -674,7 +826,7 @@ impl Context<'_> {
 
     /// Whether the scenario starts a node of the task on the provider, which then admits it.
     fn runs_on_a_provider(&self, task: &str) -> bool {
-        self.scenario.steps.iter().any(|step| matches!(step, Step::Node { task: named } if named == task))
+        self.scenario.steps.iter().any(|step| matches!(step, Step::Node { task: named, .. } if named == task))
     }
 
     /// Lets virtual time pass, with the daemon's loops running through it.
@@ -687,8 +839,12 @@ impl Context<'_> {
         for _ in 0..16 {
             tokio::task::yield_now().await;
         }
-        self.settle_peer().await?;
-        self.play_nodes(index)
+        self.settle().await?;
+        self.peer_failure()?;
+        match self.claude.as_ref().and_then(ClaudeEdge::trouble) {
+            Some(trouble) => Err(Self::failed(index, format!("the Claude host: {}", trouble.0))),
+            None => Ok(()),
+        }
     }
 
     async fn rest(&mut self, max: Duration, index: usize) -> Result<(), ScenarioError> {
@@ -759,14 +915,14 @@ impl Context<'_> {
             .into_iter()
             .find(|input| !before.contains(input))
             .ok_or_else(|| Self::failed(index, format!("the message to {task} left no input for its node")))?;
-        self.told.entry(task.to_owned()).or_default().push_back(input);
+        self.told.entry(task.to_owned()).or_default().push_back((input, text.to_owned()));
         Ok(())
     }
 
-    /// The input of the oldest message the user wrote to `task` that its node has not read: it
-    /// must still wait for the node, whatever happened since it was written.
+    /// The text of the oldest message the user wrote to `task` that its node has not read: the
+    /// input it became must still wait for the node, whatever happened since it was written.
     fn message_waiting(&mut self, index: usize, task: &str) -> Result<String, ScenarioError> {
-        let input = self
+        let (input, text) = self
             .told
             .get_mut(task)
             .and_then(std::collections::VecDeque::pop_front)
@@ -774,12 +930,15 @@ impl Context<'_> {
         if !self.pending_inputs(index, task)?.contains(&input) {
             return Err(Self::failed(index, format!("the message the user wrote to {task} no longer waits for its node")));
         }
-        Ok(input)
+        Ok(text)
     }
 
     /// The capability the daemon issues to the node of `task` when it binds its session: once,
     /// kept by the node for as long as it runs, across restarts of the daemon.
     fn capability(&mut self, index: usize, task: &str) -> Result<String, ScenarioError> {
+        if let Some(host) = self.claude.as_ref().and_then(|edge| edge.running(task)) {
+            return Ok(host.capability.clone());
+        }
         if let Some(capability) = self.capabilities.get(task) {
             return Ok(capability.clone());
         }
@@ -929,6 +1088,18 @@ impl Context<'_> {
                     return Err(failed(format!("{screen} {verb} {wanted:?}"), rendered));
                 }
             }
+            Expect::Hosts { task, started, running, sessions } => {
+                let edge = self.claude.as_ref().ok_or_else(|| ScenarioError::Invalid("a case with Codex nodes plays no Claude host".into()))?;
+                let hosts = edge.hosts_of(task);
+                let alive = hosts.iter().filter(|host| host.alive()).count();
+                let held: BTreeSet<&str> = hosts.iter().map(|host| host.session.as_str()).collect();
+                if (hosts.len(), alive, held.len()) != (*started, *running, *sessions) {
+                    return Err(failed(
+                        format!("{started} hosts started for {task}, {running} running, {sessions} sessions"),
+                        format!("{} started, {alive} running, {} sessions", hosts.len(), held.len()),
+                    ));
+                }
+            }
             Expect::TaskState { task, state } => {
                 let domain_state = self.daemon().domain.state().map_err(|e| ScenarioError::Invalid(e.to_string()))?;
                 let actual = domain_state.tasks.get(&task.clone().into()).map(|task| task.state);
@@ -941,21 +1112,16 @@ impl Context<'_> {
     }
 }
 
-/// The pushes a phone is left with: every alert, and of the badge and retraction pushes only the
-/// last of each, which carry the whole queue. Whether a burst of cards leaving the queue settles
-/// into one of those pushes or two depends on how the daemon's threads race the paused clock; the
-/// one the phone ends with does not.
+/// The pushes a phone is left with: every alert in the order sent, then the last retraction and
+/// the last badge, which carry the whole queue. Whether a burst of cards leaving the queue settles
+/// into one of those pushes or two, and which of the two goes last, depends on how the daemon's
+/// threads race the paused clock; what the phone ends with does not.
 fn settled(sent: &[SentPush]) -> Vec<&SentPush> {
-    let last_of = |delivery: &str| sent.iter().rposition(|push| push.delivery == delivery);
-    let (badge, background) = (last_of("badge"), last_of("background"));
+    let last_of = |delivery: &str| sent.iter().rev().find(|push| push.delivery == delivery);
     sent.iter()
-        .enumerate()
-        .filter(|(at, push)| match push.delivery {
-            "badge" => Some(*at) == badge,
-            "background" => Some(*at) == background,
-            _ => true,
-        })
-        .map(|(_, push)| push)
+        .filter(|push| !matches!(push.delivery, "badge" | "background"))
+        .chain(last_of("background"))
+        .chain(last_of("badge"))
         .collect()
 }
 
@@ -1010,6 +1176,14 @@ fn find_option(view: &Value, card: &str, option: &str) -> Option<Value> {
                 && candidate["id"].as_str().and_then(|id| ActionId::parse(id).ok()).is_some_and(|id| id.subject.starts_with(card))
         })
         .cloned()
+}
+
+/// An error the API answers with, as the SDK names it: only one of the SDK's own.
+fn api_error(index: usize, error: &str, status: Option<u16>) -> Result<ApiError, ScenarioError> {
+    if !crate::claude_host::assistant_errors().iter().any(|known| known == error) {
+        return Err(Context::failed(index, format!("`{error}` is no error the SDK reports (sdk-errors.json)")));
+    }
+    Ok(ApiError { error: error.to_owned(), status })
 }
 
 fn typed_input(typed: Option<&str>) -> Value {

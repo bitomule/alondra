@@ -54,7 +54,7 @@
           "badges": [
             {
               "elapsed": {
-                "since": "2026-11-15T09:00:06.000+00:00"
+                "since": "2026-11-15T09:00:05.000+00:00"
               },
               "text": "since 09:00",
               "tone": "neutral"
@@ -80,7 +80,7 @@
           "struck": false,
           "title": "Since",
           "trailing": {
-            "at": "2026-11-15T09:00:06.000+00:00",
+            "at": "2026-11-15T09:00:05.000+00:00",
             "format": "relative",
             "kind": "time"
           },
@@ -95,11 +95,11 @@
         {
           "depth": 0,
           "icon": "history",
-          "id": "2026-11-15T09:00:06.000+00:00",
+          "id": "2026-11-15T09:00:05.000+00:00",
           "struck": false,
           "title": "Working",
           "trailing": {
-            "at": "2026-11-15T09:00:06.000+00:00",
+            "at": "2026-11-15T09:00:05.000+00:00",
             "format": "relative",
             "kind": "time"
           },
@@ -125,7 +125,7 @@
           "struck": false,
           "title": "Last message",
           "trailing": {
-            "at": "2026-11-15T09:00:06.000+00:00",
+            "at": "2026-11-15T09:00:05.000+00:00",
             "format": "relative",
             "kind": "time"
           },
@@ -364,6 +364,27 @@
     ],
     "gauges": [
       {
+        "detail": "You can go on: Claude has room",
+        "id": "usage",
+        "label": "Claude",
+        "level": "calm",
+        "parts": [
+          {
+            "detail": "Not measured yet",
+            "group": "Claude",
+            "label": "Default",
+            "level": "calm",
+            "lines": [
+              "Not measured yet"
+            ],
+            "text": "with room",
+            "value": 1.0
+          }
+        ],
+        "text": "with room",
+        "value": 0.0
+      },
+      {
         "id": "memory",
         "label": "RAM",
         "level": "calm",
@@ -388,6 +409,10 @@
     "orchestrator": {
       "text": "idle",
       "tone": "neutral"
+    },
+    "session_wait": {
+      "text": "No provider account is available · check Accounts",
+      "tone": "warning"
     },
     "summary": "1 task working",
     "summary_parts": [

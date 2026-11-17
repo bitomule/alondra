@@ -226,10 +226,19 @@ pub fn output(mut command: Command, timeout: Option<Duration>) -> Result<(ExitSt
 
 /// The sign-in of the account whose folder is `folder` (`None`: the default one).
 pub fn status(executable: &Path, environment: &BTreeMap<String, String>, user_home: &Path, path: &str, username: &str, folder: Option<&Path>, timeout: Option<Duration>) -> Result<AuthStatus, String> {
+    let (status, bytes) = output(status_command(executable, environment, user_home, path, username, folder), timeout)?;
+    read_status(status.success(), &bytes)
+}
+
+/// The `claude auth status --json` that tells the sign-in of the account whose folder is `folder`.
+pub fn status_command(executable: &Path, environment: &BTreeMap<String, String>, user_home: &Path, path: &str, username: &str, folder: Option<&Path>) -> Command {
     let mut command = command(executable, environment, user_home, path, username, folder);
     command.args(["auth", "status", "--json"]);
-    let (status, bytes) = output(command, timeout)?;
-    parse_status(status.success(), &bytes).ok_or_else(|| "Claude Code's answer about its sign-in could not be read".to_owned())
+    command
+}
+
+pub fn read_status(success: bool, bytes: &[u8]) -> Result<AuthStatus, String> {
+    parse_status(success, bytes).ok_or_else(|| "Claude Code's answer about its sign-in could not be read".to_owned())
 }
 
 /// Signs the account out of Claude, which removes its sign-in from the Keychain.

@@ -10,9 +10,8 @@ use crate::live::LiveOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use std::collections::HashMap;
-use std::io::{Read, Write};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -161,39 +160,17 @@ fn run_probe(backend: &SdkBackend, folder: Option<&Path>, flag: &str) -> Result<
         }
         None => Command::new(artifact.executable()),
     };
-    use std::os::unix::process::CommandExt;
-    let mut child = command
-        .arg(artifact.artifact())
-        .arg(flag)
-        .current_dir(&started.state_root)
-        .env_clear()
-        .envs(&started.host_environment)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0)
-        .spawn()
-        .map_err(|error| format!("starting the SDK host: {error}"))?;
-    let written = child.stdin.take().expect("piped stdin").write_all(request.to_string().as_bytes());
-    let (mut stdout, mut stderr) = (child.stdout.take().expect("piped stdout"), child.stderr.take().expect("piped stderr"));
-    let (sender, receiver) = alondra_core::clock::channel();
-    alondra_core::clock::spawn_thread(move || {
-        let (mut out, mut err) = (String::new(), String::new());
-        let _ = stdout.read_to_string(&mut out);
-        let _ = stderr.read_to_string(&mut err);
-        let _ = sender.send((out, err));
-    });
-    let Ok((out, err)) = alondra_core::clock::recv_timeout(&receiver, TIMEOUT + Duration::from_secs(5)) else {
-        // The probe leads its own process group: it and the Claude it started go together.
-        unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) };
-        let _ = child.wait();
-        return Err(format!("the probe did not answer within {} s", TIMEOUT.as_secs()));
+    command.arg(artifact.artifact()).arg(flag).current_dir(&started.state_root).env_clear().envs(&started.host_environment);
+    let run = alondra_agent_runtime::owned_host::ProbeRun { command, input: request.to_string().into_bytes(), timeout: Some(TIMEOUT + Duration::from_secs(5)) };
+    let output = match started.launcher.get().run(run) {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::TimedOut => return Err(format!("the probe did not answer within {} s", TIMEOUT.as_secs())),
+        Err(error) => return Err(format!("starting the SDK host: {error}")),
     };
-    let status = child.wait().map_err(|error| format!("waiting for the probe: {error}"))?;
-    written.map_err(|error| format!("giving the probe its request: {error}"))?;
-    if !status.success() {
-        return Err(format!("the probe failed: {}", err.trim().chars().take(300).collect::<String>()));
+    if !output.success {
+        return Err(format!("the probe failed: {}", String::from_utf8_lossy(&output.stderr).trim().chars().take(300).collect::<String>()));
     }
+    let out = String::from_utf8_lossy(&output.stdout);
     serde_json::from_str(out.trim()).map_err(|error| format!("the probe's answer: {error}"))
 }
 

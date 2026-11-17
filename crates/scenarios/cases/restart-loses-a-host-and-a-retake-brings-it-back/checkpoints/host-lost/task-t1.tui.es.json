@@ -1,0 +1,446 @@
+{
+  "client": "tui",
+  "cursor": "<cursor>",
+  "data_epoch": "<data_epoch>",
+  "key": "task:t1",
+  "protocol": 1,
+  "sections": [
+    {
+      "collapsed": false,
+      "id": "header",
+      "items": [
+        {
+          "items": [
+            {
+              "kind": "state",
+              "label": "Estado",
+              "tone": "warning",
+              "value": "Te necesita · «Add the CSV export» se paró: Alondra no pudo retomar su sesión"
+            }
+          ],
+          "type": "facts"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "id": "elapsed",
+      "items": [
+        {
+          "badges": [
+            {
+              "elapsed": {
+                "since": "2026-11-15T09:00:10.000+00:00"
+              },
+              "text": "desde las 09:00",
+              "tone": "neutral"
+            }
+          ],
+          "depth": 0,
+          "icon": "history",
+          "id": "elapsed",
+          "struck": false,
+          "title": "En marcha",
+          "type": "row"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "id": "since",
+      "items": [
+        {
+          "depth": 0,
+          "icon": "history",
+          "id": "since",
+          "struck": false,
+          "title": "Desde",
+          "trailing": {
+            "at": "2026-11-15T09:00:40.000+00:00",
+            "format": "relative",
+            "kind": "time"
+          },
+          "type": "row"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "id": "now",
+      "items": [
+        {
+          "depth": 0,
+          "icon": "history",
+          "id": "now",
+          "link": {
+            "key": "card:host-lost-t1-16",
+            "kind": "view"
+          },
+          "struck": false,
+          "title": "pregunta: Add the CSV export",
+          "type": "row"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "id": "waiting",
+      "items": [
+        {
+          "content_row": {
+            "icon": "document",
+            "kind": "document",
+            "label": "Detalle",
+            "summary": "Alondra no ha podido continuar esta tarea. Puedes reintenta…"
+          },
+          "context": [
+            {
+              "icon": "task",
+              "link": {
+                "key": "task:t1",
+                "kind": "view"
+              },
+              "state": {
+                "text": "Te necesita",
+                "tone": "warning"
+              },
+              "text": "Add the CSV export"
+            }
+          ],
+          "detail": "reference",
+          "eyebrow": {
+            "text": "Problema",
+            "tone": "critical"
+          },
+          "icon": "warning",
+          "id": "host-lost-t1-16",
+          "kind": "problem",
+          "link": {
+            "key": "card:host-lost-t1-16",
+            "kind": "view"
+          },
+          "meta": "Alondra",
+          "need": "Resuelve el problema",
+          "state": {
+            "text": "Bloquea a Add the CSV export",
+            "tone": "warning"
+          },
+          "subtitle": "Alondra no pudo retomar esta tarea. Puedes reintentarlo o cancelar la tarea.",
+          "timestamps": [
+            {
+              "at": "2026-11-15T09:00:40.000+00:00",
+              "format": "relative",
+              "role": "created"
+            }
+          ],
+          "title": "«Add the CSV export» se paró: Alondra no pudo retomar su sesión",
+          "title_is_separate": true,
+          "type": "card",
+          "why": "Alondra no pudo retomar esta tarea. Puedes reintentarlo o cancelar la tarea."
+        }
+      ],
+      "title": "Te espera"
+    },
+    {
+      "collapsed": true,
+      "id": "request",
+      "items": [
+        {
+          "commentable": false,
+          "text": "Export the report as CSV",
+          "truncated": false,
+          "type": "markdown"
+        }
+      ],
+      "title": "Solicitud"
+    },
+    {
+      "collapsed": false,
+      "id": "options",
+      "items": [
+        {
+          "items": [
+            {
+              "kind": "priority",
+              "label": "Prioridad",
+              "value": "Normal"
+            },
+            {
+              "label": "Gestión de PR",
+              "value": "La revisas tú; al aceptarla, Alondra hace el merge"
+            },
+            {
+              "label": "Esfuerzo",
+              "value": "Automático"
+            }
+          ],
+          "type": "facts"
+        }
+      ],
+      "title": "Opciones"
+    },
+    {
+      "collapsed": false,
+      "id": "actions",
+      "items": [
+        {
+          "actions": [
+            {
+              "attachments": true,
+              "enabled": true,
+              "id": "msg:<node>@<revision>~t1",
+              "input": {
+                "kind": "text",
+                "multiline": true,
+                "placeholder": "Escribe al nodo de esta tarea…",
+                "required": true
+              },
+              "key": "r",
+              "label": "Mensaje",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "neutral",
+              "style": "secondary"
+            },
+            {
+              "attachments": false,
+              "confirm": {
+                "button": "Interrumpir",
+                "message": "¿Detener lo que hace ahora este nodo? Conserva su tarea y te espera.",
+                "title": "Interrumpir"
+              },
+              "enabled": true,
+              "id": "interrupt:<node>@<revision>",
+              "input": {
+                "kind": "none"
+              },
+              "key": "i",
+              "label": "Interrumpir",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "neutral",
+              "style": "secondary"
+            },
+            {
+              "attachments": false,
+              "enabled": true,
+              "id": "set_priority:t1@<revision>",
+              "input": {
+                "kind": "none"
+              },
+              "key": "P",
+              "label": "Prioridad",
+              "options": [
+                {
+                  "description": "Arranca antes que Normal y Baja",
+                  "id": "high",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "Alta",
+                  "style": "secondary"
+                },
+                {
+                  "description": "La de siempre",
+                  "id": "normal",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "Normal · ahora",
+                  "style": "secondary"
+                },
+                {
+                  "description": "Arranca cuando no espera nada más",
+                  "id": "low",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "Baja",
+                  "style": "secondary"
+                }
+              ],
+              "presentation": "menu",
+              "resolves_card": false,
+              "role": "neutral",
+              "style": "secondary"
+            },
+            {
+              "attachments": false,
+              "confirm": {
+                "button": "Cancelar tarea",
+                "message": "¿Cancelar esta tarea?",
+                "title": "Cancelar tarea"
+              },
+              "enabled": true,
+              "id": "cancel:t1@<revision>",
+              "input": {
+                "kind": "none"
+              },
+              "key": "x",
+              "label": "Cancelar tarea",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "risk",
+              "style": "destructive"
+            },
+            {
+              "attachments": false,
+              "disabled_reason": "Actualiza Alondra para usar esta función",
+              "enabled": false,
+              "id": "",
+              "input": {
+                "kind": "none"
+              },
+              "label": "Cambiar modelo",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "neutral",
+              "style": "plain"
+            },
+            {
+              "attachments": false,
+              "enabled": true,
+              "id": "",
+              "input": {
+                "kind": "none"
+              },
+              "key": "!",
+              "label": "Enviar informe del fallo",
+              "link": {
+                "kind": "local",
+                "local": {
+                  "failure": "session-ended",
+                  "kind": "crash_report"
+                }
+              },
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "neutral",
+              "style": "secondary"
+            }
+          ],
+          "type": "actions"
+        }
+      ]
+    }
+  ],
+  "service": {
+    "capabilities": [
+      "account_presentation",
+      "model_selection",
+      "provider_accounts"
+    ],
+    "version": "<version>",
+    "views_protocol": {
+      "max": 1,
+      "min": 1
+    }
+  },
+  "status": {
+    "badge": 1,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 1
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 0
+      },
+      {
+        "id": "needs_you",
+        "label": "esperando por ti",
+        "value": 1
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
+        "value": 0
+      }
+    ],
+    "gauges": [
+      {
+        "detail": "Puedes seguir: Claude tiene margen",
+        "id": "usage",
+        "label": "Claude",
+        "level": "calm",
+        "parts": [
+          {
+            "detail": "Le queda el 90 % de la semana",
+            "group": "Claude",
+            "label": "Default",
+            "level": "calm",
+            "lines": [
+              "Le queda el 90 % de la semana"
+            ],
+            "text": "con margen",
+            "value": 0.9
+          }
+        ],
+        "text": "con margen",
+        "value": 0.8
+      },
+      {
+        "id": "memory",
+        "label": "RAM",
+        "level": "calm",
+        "text": "25%",
+        "value": 0.25
+      },
+      {
+        "id": "cpu",
+        "label": "CPU",
+        "level": "calm",
+        "text": "5%",
+        "value": 0.05
+      },
+      {
+        "id": "disk",
+        "label": "Disco",
+        "level": "calm",
+        "text": "550 GB libres",
+        "value": 0.5
+      }
+    ],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    },
+    "summary": "1 pregunta · 0 tareas trabajando",
+    "summary_parts": [
+      {
+        "count": 1,
+        "id": "questions",
+        "one": "{count} pregunta",
+        "other": "{count} preguntas"
+      },
+      {
+        "count": 0,
+        "id": "working",
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
+    "version": "<version>"
+  },
+  "title": "Add the CSV export",
+  "version": "<version>",
+  "view": "task"
+}

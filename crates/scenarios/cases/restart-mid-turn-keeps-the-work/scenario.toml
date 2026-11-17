@@ -37,6 +37,13 @@ check = "task_state"
 task = "t1"
 state = "running"
 
+[[step.expect]]
+check = "hosts"
+task = "t1"
+started = 1
+running = 1
+sessions = 1
+
 [[step]]
 do = "provider_down"
 error = "server_error"

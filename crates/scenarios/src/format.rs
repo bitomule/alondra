@@ -34,11 +34,20 @@ pub struct World {
     /// `owner/name` of the repository whose pull requests the scenario opens.
     #[serde(default = "World::default_repository")]
     pub repository: String,
+    /// The Claude accounts set up in Settings, by id, each signed in: `default` is Claude's own.
+    #[serde(default = "World::default_accounts")]
+    pub accounts: Vec<String>,
+    /// The release the daemon runs until an `update` installs this one.
+    #[serde(default = "alondra_daemon_engine::sdk_owner::backend::this_release")]
+    pub release: String,
 }
 
 impl Step {
     fn server_error() -> String {
         "server_error".into()
+    }
+    fn default_account() -> String {
+        World::default_account()
     }
 }
 
@@ -52,11 +61,23 @@ impl World {
     fn default_repository() -> String {
         "demo/app".into()
     }
+    fn default_accounts() -> Vec<String> {
+        vec![Self::default_account()]
+    }
+    fn default_account() -> String {
+        alondra_core::accounts::AccountId::DEFAULT.into()
+    }
 }
 
 impl Default for World {
     fn default() -> Self {
-        Self { clients: Self::default_clients(), langs: Self::default_langs(), repository: Self::default_repository() }
+        Self {
+            clients: Self::default_clients(),
+            langs: Self::default_langs(),
+            repository: Self::default_repository(),
+            accounts: Self::default_accounts(),
+            release: alondra_daemon_engine::sdk_owner::backend::this_release(),
+        }
     }
 }
 
@@ -93,25 +114,26 @@ pub enum Step {
     /// The user presses `action` (a verb of the action ids: `merge`, `accept`, `changes`...) on the
     /// card of the presentation, as the app does it from the view.
     Press { presentation: String, action: String, #[serde(default)] text: Option<String>, #[serde(default)] screen: Option<String> },
-    /// The node of `task` starts on its provider: its SDK host is admitted and takes the planned
-    /// input as a turn.
-    Node { task: String },
-    /// The turn of the node of `task` ends. While the provider is down it ends on the error the
-    /// provider answers with.
+    /// The node of `task` starts on Claude, on `account`, as a launch in production starts it: the
+    /// daemon starts its SDK host, which takes the task's first input as a turn.
+    Node { task: String, #[serde(default = "Step::default_account")] account: String },
+    /// The turn of the node of `task` ends: on the error the API answers while it fails for the
+    /// node's account, with Claude's answer otherwise. A node with an input waiting takes it next.
     TurnEnd { task: String },
-    /// The turn of the node of `task` ends on this API error, whatever the provider's state.
+    /// The turn of the node of `task` ends on this error of the SDK's (`sdk-errors.json`), whatever
+    /// the API does for others.
     ApiError { task: String, error: String, #[serde(default)] status: Option<u16> },
-    /// The provider answers every turn with this error, until `provider_up`; only the turns of
-    /// `tasks` when it names any, and the others' turns get answers. A node with an input waiting
-    /// takes it and its turn ends on the error.
+    /// Claude's API fails every turn with this error, for every account, until `provider_up`; only
+    /// the turns of `tasks` when it names any. A turn that starts meanwhile ends on it at once.
     ProviderDown { #[serde(default = "Step::server_error")] error: String, #[serde(default)] status: Option<u16>, #[serde(default)] tasks: Vec<String> },
     ProviderUp,
-    /// The sign-in of the provider expired: every turn ends on `authentication_failed`.
-    LoginExpired,
-    /// The user signed in again: the provider answers.
-    LoginRestored,
-    /// The SDK host of `task` ended. `resumes`: another host resumes the same session.
-    HostExit { task: String, #[serde(default)] resumes: bool },
+    /// The sign-in of `account` expired: Claude says it is signed out, and every turn on it ends on
+    /// `authentication_failed`. Other accounts go on.
+    LoginExpired { #[serde(default = "Step::default_account")] account: String },
+    /// The user signed in to `account` again.
+    LoginRestored { #[serde(default = "Step::default_account")] account: String },
+    /// The process of the SDK host of `task` dies.
+    HostExit { task: String },
     /// The user writes to the node of `task` from the task's screen of the app.
     Tell { task: String, text: String },
     /// The node of `task` reads the oldest message the user wrote to it that it has not read, in
@@ -121,11 +143,15 @@ pub enum Step {
     CleanupDone { task: String },
     /// The node of `task` ended and Alondra recorded it.
     NodeEnd { task: String },
-    /// The daemon stops and starts again over the same home, as a restart does.
-    Restart,
-    /// The daemon is replaced by a newer release: every SDK host of the older one is refused, ends,
-    /// and one that resumes its session takes its place.
+    /// The daemon goes as a crash takes it and starts again over the same home: the SDK hosts
+    /// run on, and the new daemon takes them over. The hosts of the tasks of `lose` die with it,
+    /// and no new host can start for those tasks until `host_can_start`.
+    Restart { #[serde(default)] lose: Vec<String> },
+    /// The daemon is replaced by this release, which installs its own host: the hosts the older
+    /// release started run on, and the new daemon takes them over or refuses them.
     Update,
+    /// A new host can start for `task` again.
+    HostCanStart { task: String },
     /// The user presses the option `option` of the card the daemon shows for `task` whose id starts
     /// with `card`, as the app does it from the view.
     Answer { card: String, option: String, #[serde(default)] text: Option<String> },
@@ -179,6 +205,9 @@ pub enum Expect {
     /// The view `screen` as the iOS app reads it in English shows (or, with `present = false`, does
     /// not show) this text.
     ViewShows { screen: String, text: String, #[serde(default = "Expect::shown")] present: bool },
+    /// How many SDK hosts the daemon started for `task`, how many of them run now, and how many
+    /// Claude sessions they held between them.
+    Hosts { task: String, started: usize, running: usize, sessions: usize },
 }
 
 impl Expect {
@@ -273,10 +302,10 @@ do = "login_expired"
 [[step]]
 do = "host_exit"
 task = "t1"
-resumes = true
 
 [[step]]
 do = "restart"
+lose = ["t1"]
 
 [[step]]
 do = "update"
@@ -284,7 +313,8 @@ do = "update"
         )
         .unwrap();
         assert!(matches!(&scenario.steps[0], Step::ProviderDown { error, status: Some(529), tasks } if error == "server_error" && tasks.is_empty()));
-        assert!(matches!(scenario.steps[3], Step::HostExit { resumes: true, .. }));
+        assert!(matches!(&scenario.steps[2], Step::LoginExpired { account } if account == "default"));
+        assert!(matches!(&scenario.steps[4], Step::Restart { lose } if lose == &["t1"]));
         assert!(matches!(scenario.steps[5], Step::Update));
     }
 

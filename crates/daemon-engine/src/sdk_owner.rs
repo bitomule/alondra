@@ -1500,7 +1500,7 @@ fn configuration(backend: &SdkBackend, binding: &ProviderBinding, directory: &st
         native_environment,
         profile_id: "alondra".into(),
         account_id: binding.credential().into(),
-        host_release: env!("CARGO_PKG_VERSION").into(),
+        host_release: backend.release.clone(),
         io_timeout: Duration::from_secs(backend.io_timeout_seconds),
         confinement: backend.confinement.clone(),
         launcher: backend.launcher.clone(),
@@ -2340,6 +2340,8 @@ pub struct Owner {
     /// The host's folder, where its stop is marked as Alondra's own.
     state_directory: std::path::PathBuf,
     thread: Option<std::thread::JoinHandle<Result<(), Failed>>>,
+    /// The daemon went as a crash takes it: the owner lets go of its host without stopping it.
+    crashed: Arc<AtomicBool>,
 }
 
 impl Owner {
@@ -2358,6 +2360,8 @@ impl Owner {
         let domain_of_owner = Arc::clone(&domain);
         let ended = Arc::new(AtomicBool::new(false));
         let ending = Arc::clone(&ended);
+        let crashed = Arc::new(AtomicBool::new(false));
+        let crashing = Arc::clone(&crashed);
         let thread = alondra_core::clock::spawn_named_thread(Some(format!("sdk-owner-{}", driver.task)), move || {
             let told = || flag.load(Ordering::SeqCst);
             let mut lost_because = None;
@@ -2453,6 +2457,9 @@ impl Owner {
                     }
                 }
             }
+            if crashing.load(Ordering::SeqCst) {
+                return Ok(());
+            }
             // Told to stop, or ended by its own failure, the owner stops its host and waits for
             // it: no host is left running with no owner. Only a daemon that exits whole leaves
             // its hosts running, for the daemon that comes back to adopt.
@@ -2473,7 +2480,7 @@ impl Owner {
             stopped
         })
         .expect("spawning the SDK owner");
-        Self { stopped, ended, interrupt, release, domain, host, agent, state_directory, thread: Some(thread) }
+        Self { stopped, ended, interrupt, release, domain, host, agent, state_directory, thread: Some(thread), crashed }
     }
 
     /// Asks the owner to close its host once its task rests with nothing in it.
@@ -2484,6 +2491,18 @@ impl Owner {
 
     pub(crate) fn agent(&self) -> &AgentId {
         &self.agent
+    }
+
+    /// The owner goes as a daemon that crashes takes it: its connection to the host closes and
+    /// nothing is recorded or stopped, so the host runs on for the daemon that comes back.
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn crash(mut self) {
+        self.crashed.store(true, Ordering::SeqCst);
+        self.stopped.store(true, Ordering::SeqCst);
+        self.domain.seals.wake();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 
     /// The owner ended on its own, or its thread is gone, a panic included: it owns nothing.
@@ -2543,7 +2562,9 @@ impl Owner {
 
 impl Drop for Owner {
     fn drop(&mut self) {
-        let _ = self.stop();
+        if !self.crashed.load(Ordering::SeqCst) {
+            let _ = self.stop();
+        }
     }
 }
 
@@ -2613,6 +2634,14 @@ pub trait SdkOwners {
 
     #[cfg(any(test, feature = "test-hooks"))]
     fn node_groups(&self) -> Vec<i32>;
+
+    /// Every owner goes as a crash of the daemon takes it, leaving its host running.
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn crash_sdk_owners(&self);
+
+    /// Whether a takeover, retake or halt of an SDK execution is under way on a thread of its own.
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn retaking(&self) -> bool;
 
     /// Keeps `owner` as the owner of its node's host, in place of any of that node that ended on
     /// its own. Those are joined once the list is released: their end may read it.
@@ -2699,6 +2728,20 @@ impl SdkOwners for crate::domain_runtime::DomainRuntime {
     #[cfg(any(test, feature = "test-hooks"))]
     fn node_groups(&self) -> Vec<i32> {
         self.node_groups_by_agent().into_iter().map(|(_, group)| group).collect()
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn retaking(&self) -> bool {
+        self.sdk_owners().retakes.lock_or_recover("the retakes").iter().any(|(_, retake)| !retake.is_finished())
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn crash_sdk_owners(&self) {
+        self.join_retakes();
+        let owners = std::mem::take(&mut *self.sdk_owners().held.lock_or_recover("the SDK owners"));
+        for owner in owners {
+            owner.crash();
+        }
     }
 
     fn add_sdk_owner(&self, owner: Owner) {

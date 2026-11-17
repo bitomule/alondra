@@ -32,12 +32,12 @@
       {
         "id": "tasks",
         "label": "Tasks",
-        "value": 0
+        "value": 1
       },
       {
         "id": "working",
         "label": "working",
-        "value": 0
+        "value": 1
       },
       {
         "id": "needs_you",
@@ -61,6 +61,27 @@
       }
     ],
     "gauges": [
+      {
+        "detail": "You can go on: Claude has room",
+        "id": "usage",
+        "label": "Claude",
+        "level": "calm",
+        "parts": [
+          {
+            "detail": "90% of the week left",
+            "group": "Claude",
+            "label": "Default",
+            "level": "calm",
+            "lines": [
+              "90% of the week left"
+            ],
+            "text": "with room",
+            "value": 0.9
+          }
+        ],
+        "text": "with room",
+        "value": 0.8
+      },
       {
         "id": "memory",
         "label": "RAM",
@@ -87,14 +108,10 @@
       "text": "idle",
       "tone": "neutral"
     },
-    "session_wait": {
-      "text": "No provider account is available · check Accounts",
-      "tone": "warning"
-    },
-    "summary": "0 tasks working",
+    "summary": "1 task working",
     "summary_parts": [
       {
-        "count": 0,
+        "count": 1,
         "id": "working",
         "one": "{count} task working",
         "other": "{count} tasks working"

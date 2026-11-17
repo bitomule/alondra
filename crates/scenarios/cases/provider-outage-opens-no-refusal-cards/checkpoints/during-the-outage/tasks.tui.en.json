@@ -38,7 +38,7 @@
                 },
                 {
                   "elapsed": {
-                    "since": "2026-11-15T09:00:00.000+00:00"
+                    "since": "2026-11-15T09:00:10.000+00:00"
                   },
                   "text": "since 09:00",
                   "tone": "neutral"
@@ -77,7 +77,7 @@
                 },
                 {
                   "elapsed": {
-                    "since": "2026-11-15T09:00:00.000+00:00"
+                    "since": "2026-11-15T09:00:10.000+00:00"
                   },
                   "text": "since 09:00",
                   "tone": "neutral"
@@ -102,7 +102,7 @@
                 },
                 {
                   "elapsed": {
-                    "since": "2026-11-15T09:00:00.000+00:00"
+                    "since": "2026-11-15T09:00:10.000+00:00"
                   },
                   "text": "since 09:00",
                   "tone": "neutral"
@@ -195,6 +195,27 @@
     ],
     "gauges": [
       {
+        "detail": "You can go on: Claude has room",
+        "id": "usage",
+        "label": "Claude",
+        "level": "calm",
+        "parts": [
+          {
+            "detail": "Not measured yet",
+            "group": "Claude",
+            "label": "Default",
+            "level": "calm",
+            "lines": [
+              "Not measured yet"
+            ],
+            "text": "with room",
+            "value": 1.0
+          }
+        ],
+        "text": "with room",
+        "value": 0.0
+      },
+      {
         "id": "memory",
         "label": "RAM",
         "level": "calm",
@@ -219,10 +240,6 @@
     "orchestrator": {
       "text": "idle",
       "tone": "neutral"
-    },
-    "session_wait": {
-      "text": "No provider account is available · check Accounts",
-      "tone": "warning"
     },
     "summary": "1 question · 0 tasks working",
     "summary_parts": [

@@ -15,7 +15,7 @@
               "kind": "state",
               "label": "State",
               "tone": "neutral",
-              "value": "Waiting · Claude limit"
+              "value": "Waiting · Claude limit until 10:00"
             }
           ],
           "type": "facts"
@@ -30,7 +30,7 @@
           "badges": [
             {
               "elapsed": {
-                "since": "2026-11-15T09:00:00.000+00:00"
+                "since": "2026-11-15T09:00:10.000+00:00"
               },
               "text": "since 09:00",
               "tone": "neutral"
@@ -56,7 +56,7 @@
           "struck": false,
           "title": "Since",
           "trailing": {
-            "at": "2026-11-15T09:00:00.000+00:00",
+            "at": "2026-11-15T09:00:10.000+00:00",
             "format": "relative",
             "kind": "time"
           },
@@ -66,60 +66,29 @@
     },
     {
       "collapsed": false,
-      "id": "waiting",
+      "id": "last_message",
       "items": [
         {
-          "content_row": {
-            "icon": "notice",
-            "kind": "report",
-            "label": "Report",
-            "summary": "1 point"
+          "commentable": false,
+          "text": "Done",
+          "truncated": false,
+          "type": "markdown"
+        },
+        {
+          "depth": 0,
+          "icon": "history",
+          "id": "last_message_time",
+          "struck": false,
+          "title": "Last message",
+          "trailing": {
+            "at": "2026-11-15T09:00:10.000+00:00",
+            "format": "relative",
+            "kind": "time"
           },
-          "context": [
-            {
-              "icon": "task",
-              "link": {
-                "key": "task:t1",
-                "kind": "view"
-              },
-              "state": {
-                "text": "Waiting",
-                "tone": "neutral"
-              },
-              "text": "Add the CSV export"
-            }
-          ],
-          "detail": "reference",
-          "eyebrow": {
-            "text": "Review · PR #7",
-            "tone": "accent"
-          },
-          "icon": "pull_request",
-          "id": "d1",
-          "kind": "review",
-          "link": {
-            "key": "card:d1",
-            "kind": "view"
-          },
-          "meta": "Add the CSV export",
-          "need": "Review the result",
-          "state": {
-            "text": "Ready to merge",
-            "tone": "success"
-          },
-          "timestamps": [
-            {
-              "at": "2026-11-15T09:00:00.000+00:00",
-              "format": "relative",
-              "role": "created"
-            }
-          ],
-          "title": "Review the result",
-          "title_is_separate": true,
-          "type": "card"
+          "type": "row"
         }
       ],
-      "title": "Waiting for You"
+      "title": "What it said last"
     },
     {
       "collapsed": true,
@@ -188,7 +157,7 @@
             {
               "attachments": true,
               "enabled": true,
-              "id": "msg:agent-t1@<revision>~t1",
+              "id": "msg:<node>@<revision>~t1",
               "input": {
                 "kind": "text",
                 "multiline": true,
@@ -263,6 +232,20 @@
               "resolves_card": false,
               "role": "risk",
               "style": "destructive"
+            },
+            {
+              "attachments": false,
+              "disabled_reason": "Update Alondra to use this feature",
+              "enabled": false,
+              "id": "",
+              "input": {
+                "kind": "none"
+              },
+              "label": "Change model",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "neutral",
+              "style": "plain"
             }
           ],
           "type": "actions"
@@ -283,12 +266,12 @@
     }
   },
   "status": {
-    "badge": 1,
+    "badge": 0,
     "counts": [
       {
         "id": "inbox",
         "label": "Inbox",
-        "value": 1
+        "value": 0
       },
       {
         "id": "tasks",
@@ -323,6 +306,27 @@
     ],
     "gauges": [
       {
+        "detail": "You can go on: Claude has room",
+        "id": "usage",
+        "label": "Claude",
+        "level": "calm",
+        "parts": [
+          {
+            "detail": "Not measured yet",
+            "group": "Claude",
+            "label": "Default",
+            "level": "calm",
+            "lines": [
+              "Not measured yet"
+            ],
+            "text": "with room",
+            "value": 1.0
+          }
+        ],
+        "text": "with room",
+        "value": 0.0
+      },
+      {
         "id": "memory",
         "label": "RAM",
         "level": "calm",
@@ -348,18 +352,8 @@
       "text": "idle",
       "tone": "neutral"
     },
-    "session_wait": {
-      "text": "No provider account is available · check Accounts",
-      "tone": "warning"
-    },
-    "summary": "1 to read · 0 tasks working",
+    "summary": "0 tasks working",
     "summary_parts": [
-      {
-        "count": 1,
-        "id": "to_read",
-        "one": "{count} to read",
-        "other": "{count} to read"
-      },
       {
         "count": 0,
         "id": "working",
@@ -367,6 +361,13 @@
         "other": "{count} tasks working"
       }
     ],
+    "usage_exhausted": {
+      "macs_exhausted": 1,
+      "macs_total": 1,
+      "paused_by_user": false,
+      "scope": "this_mac",
+      "until": "2026-11-15T10:00:10.000+00:00"
+    },
     "version": "<version>"
   },
   "title": "Add the CSV export",

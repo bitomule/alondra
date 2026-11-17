@@ -62,6 +62,27 @@
     ],
     "gauges": [
       {
+        "detail": "You can go on: Claude has room",
+        "id": "usage",
+        "label": "Claude",
+        "level": "calm",
+        "parts": [
+          {
+            "detail": "90% of the week left",
+            "group": "Claude",
+            "label": "Default",
+            "level": "calm",
+            "lines": [
+              "90% of the week left"
+            ],
+            "text": "with room",
+            "value": 0.9
+          }
+        ],
+        "text": "with room",
+        "value": 0.8
+      },
+      {
         "id": "memory",
         "label": "RAM",
         "level": "calm",
@@ -86,10 +107,6 @@
     "orchestrator": {
       "text": "idle",
       "tone": "neutral"
-    },
-    "session_wait": {
-      "text": "No provider account is available · check Accounts",
-      "tone": "warning"
     },
     "summary": "1 task working",
     "summary_parts": [
