@@ -25,14 +25,14 @@ const MAX_OUTPUT: u64 = 64 * 1024;
 
 /// What deleting a server the screen names takes.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Removal {
-    pub(crate) key: McpServerKey,
-    pub(crate) traits: McpTraits,
-    pub(crate) arguments: Vec<String>,
+pub struct Removal {
+    pub key: McpServerKey,
+    pub traits: McpTraits,
+    pub arguments: Vec<String>,
     /// The project whose own settings hold it; none for the user's settings of every project.
-    pub(crate) project: Option<ProjectEntry>,
+    pub project: Option<ProjectEntry>,
     /// Each node that has it loaded now, by agent, with its execution.
-    pub(crate) loaded: BTreeMap<String, u64>,
+    pub loaded: BTreeMap<String, u64>,
 }
 
 /// Why a server is not deleted.
@@ -71,7 +71,7 @@ impl Refused {
 /// The server `subject` names (its target, and its project's after a dot) as the open tasks'
 /// `nodes` and the checks report it, and what deleting it takes. `Err` carries the server's name
 /// when it is known.
-pub(crate) fn resolve(
+pub fn resolve(
     nodes: &[McpNodeReading],
     probes: &BTreeMap<String, LiveMcpProbe>,
     projects: &[ProjectEntry],
@@ -114,7 +114,7 @@ pub(crate) fn resolve(
 /// Runs the provider's deletion in `directory` with the native agent the nodes run, within
 /// `DEADLINE`. When Claude fails, the server counts as deleted only if its settings, read again,
 /// no longer have it.
-pub(crate) fn run(backend: &SdkBackend, removal: &Removal, directory: &Path) -> Result<(), String> {
+pub fn run(backend: &SdkBackend, removal: &Removal, directory: &Path) -> Result<(), String> {
     let backend = backend.for_start().map_err(|error| error.to_string())?;
     let mut command = match &backend.confinement {
         Some(profile) => {
