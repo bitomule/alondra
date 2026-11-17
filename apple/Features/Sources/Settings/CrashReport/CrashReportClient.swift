@@ -5,8 +5,9 @@ import Foundation
 /// Building, reading and sending a crash report on the Mac this app talks to. Nothing is sent
 /// until `send`.
 public struct CrashReportClient: Sendable {
-    /// Builds a new report with what the user wrote (sent as written) and the app's own section.
-    public var build: @Sendable (_ description: String?, _ failure: String, _ appSection: String) async throws -> CrashReport
+    /// Builds a new report with what the user wrote (sent as written) and the app's own section,
+    /// leaving out the sections in `without`.
+    public var build: @Sendable (_ description: String?, _ failure: String, _ appSection: String, _ without: [String]) async throws -> CrashReport
     /// One file of the report, whole, exactly as it would leave the Mac.
     public var file: @Sendable (_ id: String, _ name: String) async throws -> String
     public var send: @Sendable (_ id: String, _ failure: String) async throws -> CrashReportSent
@@ -16,7 +17,7 @@ public struct CrashReportClient: Sendable {
     /// The Mac is the one this app runs on, so what to do when it does not answer is said for it.
     public var onThisMac: Bool
 
-    public init(build: @escaping @Sendable (String?, String, String) async throws -> CrashReport,
+    public init(build: @escaping @Sendable (String?, String, String, [String]) async throws -> CrashReport,
                 file: @escaping @Sendable (String, String) async throws -> String,
                 send: @escaping @Sendable (String, String) async throws -> CrashReportSent,
                 appSection: @escaping @Sendable () async -> String = { "" },
@@ -33,7 +34,7 @@ public struct CrashReportUnreadable: Error, Equatable {
 }
 
 extension CrashReportClient: DependencyKey {
-    public static let liveValue = Self(build: { _, _, _ in throw CancellationError() },
+    public static let liveValue = Self(build: { _, _, _, _ in throw CancellationError() },
                                        file: { _, _ in throw CancellationError() },
                                        send: { _, _ in throw CancellationError() })
 }

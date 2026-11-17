@@ -122,7 +122,7 @@ public struct CrashReportScreen: View {
                     .foregroundStyle(Palette.sage)
                 Text("This is exactly what is sent. Anyone with the link of its issue will be able to read it, also what you wrote in “What happened?”, which goes as you wrote it.")
             } else {
-                Label("The report cannot leave your Mac; the final check found:", systemImage: "xmark.shield.fill")
+                Label("The report cannot leave your Mac: the final check found values it cannot mask, because they sit in a field's name or in a file that is one JSON document, and masking them would break that file:", systemImage: "xmark.shield.fill")
                     .foregroundStyle(Palette.rose)
                 ForEach(report.hits.indices, id: \.self) { index in
                     let hit = report.hits[index]
@@ -157,6 +157,15 @@ public struct CrashReportScreen: View {
                 Text("No report repository is set up, so the report stays on your Mac.")
             }
             .accessibilityIdentifier("crashReport.noRepository")
+        } else if report.restSendable {
+            let files = report.sendRestWithout.joined(separator: ", ")
+            Section {
+                Button("Send the rest without \(files)") { store.send(.sendRest) }
+                    .bold()
+                    .accessibilityIdentifier("crashReport.sendRest")
+            } header: {
+                Text("Leave \(files) out and send the rest? You see the new report before anything is sent.")
+            }
         }
     }
 

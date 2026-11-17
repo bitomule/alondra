@@ -100,6 +100,35 @@ fn usage(lang: crate::i18n::Lang, sheet: bool) -> App {
     app
 }
 
+/// A crash report the final check refused, offering to build the rest without the file that failed.
+fn crash_report_refused(lang: crate::i18n::Lang) -> App {
+    let mut app = tasks(lang);
+    let es = lang == crate::i18n::Lang::Es;
+    app.build_crash_report("other".into(), if es { "El nodo se paró tras dormir el Mac" } else { "The node stopped after the Mac slept" }.into());
+    let built = serde_json::json!({
+        "schema": "alondra.report/1",
+        "id": "r-20261027-0a1b2c3d",
+        "dir": "/Users/ana/.alondra/reports/r-20261027-0a1b2c3d",
+        "compressed_bytes": 48_000,
+        "manifest": {
+            "window": {"hours": 72},
+            "sections": [
+                {"name": "versions.json", "bytes": 210, "sha256": "a"},
+                {"name": "machine.json", "bytes": 1_204, "sha256": "b"},
+                {"name": "daemon.log", "bytes": 180_000, "sha256": "c"},
+            ],
+        },
+        "check": {
+            "passed": false,
+            "hits": [{"section": "machine.json", "line": 14, "what": if es { "un email, en el campo launchd_job.ana@example.com" } else { "an email, in the field launchd_job.ana@example.com" }}],
+            "send_rest_without": ["machine.json"],
+        },
+        "repo": "owner/reports",
+    });
+    app.on_msg(Msg::Report(super::crash_report::Answer::Built(Ok(built))));
+    app
+}
+
 #[test]
 #[ignore = "writes the review pictures: make tui-shots"]
 fn tui_shots() {
@@ -136,6 +165,8 @@ fn tui_shots() {
             let html = page(&mut app);
             std::fs::write(out.join(format!("{shot}-{name}.html")), html).unwrap();
         }
+        let html = page(&mut crash_report_refused(lang));
+        std::fs::write(out.join(format!("12-crash-report-refused-{name}.html")), html).unwrap();
         let html = page(&mut task_on_another_model(lang));
         std::fs::write(out.join(format!("9-task-model-{name}.html")), html).unwrap();
         let unknown = alondra_views::unknown_outcome(alondra_views::action_outcome::UnknownReason::Interrupted, view_lang);

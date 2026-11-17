@@ -40,17 +40,22 @@ public struct CrashReport: Equatable, Sendable {
     public var repo: String?
     public var passed: Bool
     public var hits: [Hit]
+    /// The sections to leave out so the rest of a refused report can leave the Mac.
+    public var sendRestWithout: [String]
     public var files: [File]
     public var leftOut: [LeftOut]
 
     public init(id: String, compressedBytes: Int, hours: Int = 72, repo: String?, passed: Bool, hits: [Hit] = [],
-                files: [File], leftOut: [LeftOut] = []) {
+                sendRestWithout: [String] = [], files: [File], leftOut: [LeftOut] = []) {
         self.id = id; self.compressedBytes = compressedBytes; self.hours = hours; self.repo = repo
-        self.passed = passed; self.hits = hits; self.files = files; self.leftOut = leftOut
+        self.passed = passed; self.hits = hits; self.sendRestWithout = sendRestWithout; self.files = files; self.leftOut = leftOut
     }
 
     /// Whether the one question can be asked: the final check passed and there is somewhere to send it.
     public var sendable: Bool { passed && repo != nil }
+
+    /// Whether the rest of a refused report can be built again without the files that failed.
+    public var restSendable: Bool { !passed && !sendRestWithout.isEmpty }
 
     public static func isID(_ id: String) -> Bool {
         let parts = id.split(separator: "-", omittingEmptySubsequences: false)
@@ -86,12 +91,16 @@ public struct CrashReport: Equatable, Sendable {
         let hits = (check["hits"] as? [[String: Any]] ?? []).map {
             Hit(section: $0["section"] as? String ?? "", line: $0["line"] as? Int ?? 0, what: $0["what"] as? String ?? "")
         }
+        let sendRestWithout = (check["send_rest_without"] as? [String] ?? []).filter { name in
+            !name.isEmpty && name.count <= 40 && name.allSatisfy { ("a"..."z").contains($0) || $0 == "." || $0 == "-" }
+        }
         let repo = (answer["repo"] as? String).flatMap { repo -> String? in
             let parts = repo.split(separator: "/", omittingEmptySubsequences: false)
             return parts.count == 2 && parts.allSatisfy { !$0.isEmpty } ? repo : nil
         }
         self.init(id: id, compressedBytes: answer["compressed_bytes"] as? Int ?? 0,
                   hours: (manifest["window"] as? [String: Any])?["hours"] as? Int ?? 72, repo: repo,
-                  passed: check["passed"] as? Bool == true, hits: hits, files: files, leftOut: leftOut)
+                  passed: check["passed"] as? Bool == true, hits: hits, sendRestWithout: sendRestWithout,
+                  files: files, leftOut: leftOut)
     }
 }

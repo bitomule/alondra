@@ -50,6 +50,8 @@ import Foundation
         public var whatHappened = ""
         public var stage: Stage = .describing
         public var viewing: Viewing?
+        /// The sections the report is built without, after the user chose to send the rest.
+        public var without: [String] = []
 
         public init(whatHappened: String = "", stage: Stage = .describing, viewing: Viewing? = nil) {
             self.whatHappened = whatHappened; self.stage = stage; self.viewing = viewing
@@ -76,6 +78,8 @@ import Foundation
         case fileLoaded(String, text: String?, error: String?)
         case closeFile
         case send
+        /// Builds the report again without the files the final check refused.
+        case sendRest
         case sent(CrashReportSent)
         case keep
         case failed(Failure, report: String?)
@@ -96,17 +100,12 @@ import Foundation
                 return .none
             case .build:
                 guard state.stage == .describing || state.isFailedBeforeBuilding else { return .none }
-                state.stage = .building
-                let (description, failure) = (state.writtenDescription, state.failure)
-                return .run { [client] send in
-                    do {
-                        let section = await client.appSection()
-                        let report = try await client.build(description, failure, section)
-                        await send(.built(report))
-                    } catch {
-                        await send(.failed(Self.failure(error, client), report: nil))
-                    }
-                }.cancellable(id: ID.work, cancelInFlight: true)
+                return build(&state)
+            case .sendRest:
+                guard case .ready(let report) = state.stage, report.restSendable else { return .none }
+                state.without += report.sendRestWithout.filter { !state.without.contains($0) }
+                state.viewing = nil
+                return .merge(.cancel(id: ID.file), build(&state))
             case .built(let report):
                 guard state.stage == .building else { return .none }
                 state.stage = .ready(report)
@@ -161,6 +160,20 @@ import Foundation
                 return .merge(.cancel(id: ID.work), .cancel(id: ID.file))
             }
         }
+    }
+
+    private func build(_ state: inout State) -> Effect<Action> {
+        state.stage = .building
+        let (description, failure, without) = (state.writtenDescription, state.failure, state.without)
+        return .run { [client] send in
+            do {
+                let section = await client.appSection()
+                let report = try await client.build(description, failure, section, without)
+                await send(.built(report))
+            } catch {
+                await send(.failed(Self.failure(error, client), report: nil))
+            }
+        }.cancellable(id: ID.work, cancelInFlight: true)
     }
 
     static func failure(_ error: any Error, _ client: CrashReportClient) -> Failure {

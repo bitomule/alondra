@@ -991,7 +991,8 @@ fn built_report(repo: Option<&str>, passed: bool) -> Value {
             ],
             "omitted": {"daemon_log_lines_without_template": 4},
         },
-        "check": {"passed": passed, "hits": if passed { json!([]) } else { json!([{"section": "daemon.log", "line": 7, "what": "a path of this Mac"}]) }},
+        "check": {"passed": passed, "hits": if passed { json!([]) } else { json!([{"section": "machine.json", "line": 7, "what": "a path of this Mac, in the field launchd_job.program"}]) },
+            "send_rest_without": if passed { json!([]) } else { json!(["machine.json"]) }},
         "repo": repo,
         "failure": "session-ended",
     })
@@ -1089,7 +1090,7 @@ fn yes_sends_the_report_as_the_failure_it_was_opened_for() {
 fn a_report_with_nowhere_to_go_or_something_private_offers_no_send() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     for (repo, passed, says) in [(None, true, "This Mac knows no report repository, so it stays here. To save it as a file: alondra report save r-20261027-0a1b2c3d"),
-        (Some("owner/reports"), false, "The report cannot leave this Mac; the final check found:")] {
+        (Some("owner/reports"), false, "The report cannot leave this Mac: the final check found values it cannot mask")] {
         let mut app = app();
         app.open_crash_report("session-ended");
         press(&mut app, KeyCode::Enter);
@@ -1100,6 +1101,28 @@ fn a_report_with_nowhere_to_go_or_something_private_offers_no_send() {
         press(&mut app, KeyCode::Char('y'));
         assert!(matches!(app.crash_report.as_ref().unwrap().stage, crash_report::Stage::Ready(_)), "y sends nothing");
     }
+}
+
+#[test]
+fn a_refused_report_builds_the_rest_without_the_file_that_failed_with_one_key() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let mut app = app();
+    app.open_crash_report("session-ended");
+    type_and_enter(&mut app, "The node stopped after the Mac slept");
+    app.on_msg(Msg::Report(crash_report::Answer::Built(Ok(built_report(Some("owner/reports"), false)))));
+    let screen = drawn(&mut app, 140, 50);
+    for shown in ["machine.json, line 7: a path of this Mac, in the field launchd_job.program", "The report cannot leave this Mac: the final check found values it cannot mask",
+        "Leave machine.json out and send the rest? You see the new report before anything is sent.", "Send the rest without machine.json"] {
+        assert!(screen.contains(shown), "{shown}\n{screen}");
+    }
+    press(&mut app, KeyCode::Char('r'));
+    let report = app.crash_report.as_ref().unwrap();
+    assert!(matches!(report.stage, crash_report::Stage::Building), "r builds the rest");
+    assert_eq!(report.without, ["machine.json"]);
+    assert_eq!(report.description.as_deref(), Some("The node stopped after the Mac slept"), "what the user wrote goes with the rest");
+    app.on_msg(Msg::Report(crash_report::Answer::Built(Ok(built_report(Some("owner/reports"), true)))));
+    let screen = drawn(&mut app, 140, 50);
+    assert!(screen.contains("Yes, send it") && !screen.contains("Send the rest"), "{screen}");
 }
 
 #[test]

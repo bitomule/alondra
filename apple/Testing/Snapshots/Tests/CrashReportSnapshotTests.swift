@@ -50,11 +50,22 @@ final class CrashReportSnapshotTests: XCTestCase {
         assertScreen([.light], inWindow: true) { ScreenFrame(height: 1_320) { screen(.init(stage: .ready(report))) } }
     }
 
-    func test_crashReport_somethingPrivateFound() {
+    private var refused: CrashReport {
         var report = Self.report
         report.passed = false
-        report.hits = [.init(section: "apps.jsonl", line: 14, what: "an email address")]
-        assertScreen([.light], inWindow: true) { ScreenFrame(height: 1_320) { screen(.init(stage: .ready(report))) } }
+        report.hits = [.init(section: "machine.json", line: 14, what: "an email, in the field launchd_job.ana@example.com")]
+        report.sendRestWithout = ["machine.json"]
+        return report
+    }
+
+    func test_crashReport_somethingPrivateFound() {
+        assertScreen([.light, .dark], inWindow: true) { ScreenFrame(height: 1_480) { screen(.init(stage: .ready(refused))) } }
+    }
+
+    func test_crashReport_somethingPrivateFound_spanish() {
+        var report = refused
+        report.hits = [.init(section: "machine.json", line: 14, what: "un email, en el campo launchd_job.ana@example.com")]
+        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 1_480) { screen(.init(stage: .ready(report))) } }
     }
 
     func test_crashReport_macNotAnswering() {

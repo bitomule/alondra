@@ -41,6 +41,7 @@ pub(super) enum Act {
     ReportOpen,
     ReportSend,
     ReportKeep,
+    ReportSendRest,
     CloseReport,
     Metrics,
     MetricsOpen,
@@ -492,6 +493,9 @@ impl App {
                 t.add(vec![char('y')], "y", tr!("Yes, send it", "Sí, enviarlo"), Act::ReportSend);
                 t.add(vec![char('n')], "n", tr!("No, keep it on this Mac", "No, que se quede en este Mac"), Act::ReportKeep);
             }
+            if built.rest_sendable() {
+                t.add(vec![char('r')], "r", super::crash_report::send_rest_label(&built.send_rest_without), Act::ReportSendRest);
+            }
         }
         t.add(vec![plain(KeyCode::Esc), char('q')], "Esc", tr!("close", "cerrar"), Act::CloseReport);
     }
@@ -749,6 +753,7 @@ impl App {
             Act::ReportOpen => self.open_report_file(),
             Act::ReportSend => self.send_crash_report(),
             Act::ReportKeep => self.keep_crash_report(),
+            Act::ReportSendRest => self.build_rest_of_crash_report(),
             Act::CloseReport => self.close_crash_report(),
             Act::Metrics => self.open_metrics(),
             Act::MetricsOpen => self.metrics_open_row(),

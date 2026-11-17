@@ -40,7 +40,8 @@ final class CrashReportFeatureTests: XCTestCase {
         let built = LockIsolated<[String?]>([])
         let sent = LockIsolated<[String]>([])
         let client = CrashReportClient(
-            build: { description, failure, section in
+            build: { description, failure, section, without in
+                XCTAssertEqual(without, [], "a new report leaves nothing out")
                 built.withValue { $0 = [description, failure, section] }
                 return Self.report
             },
@@ -73,7 +74,7 @@ final class CrashReportFeatureTests: XCTestCase {
         noRepo.repo = nil
         var blocked = Self.report
         blocked.passed = false
-        let client = CrashReportClient(build: { _, _, _ in Self.report }, file: { _, _ in "" },
+        let client = CrashReportClient(build: { _, _, _, _ in Self.report }, file: { _, _ in "" },
                                        send: { _, _ in XCTFail("never sent"); throw CancellationError() })
         for report in [noRepo, blocked] {
             let store = TestStore(initialState: CrashReportFeature.State(stage: .ready(report))) { CrashReportFeature() } withDependencies: {
@@ -89,7 +90,7 @@ final class CrashReportFeatureTests: XCTestCase {
 
     func testAMacThatDoesNotAnswerIsToldWhereToRunTheReport() async {
         for onThisMac in [true, false] {
-            let client = CrashReportClient(build: { _, _, _ in throw OperationError.outcomeUnknown }, file: { _, _ in "" },
+            let client = CrashReportClient(build: { _, _, _, _ in throw OperationError.outcomeUnknown }, file: { _, _ in "" },
                                            send: { _, _ in throw CancellationError() },
                                            problem: { _ in .macNotAnswering }, onThisMac: onThisMac)
             let store = store(client)
@@ -104,7 +105,7 @@ final class CrashReportFeatureTests: XCTestCase {
     }
 
     func testTheMacsOwnReasonIsShownWhenItRefusesAndTheReportStaysThere() async {
-        let client = CrashReportClient(build: { _, _, _ in Self.report }, file: { _, _ in "" },
+        let client = CrashReportClient(build: { _, _, _, _ in Self.report }, file: { _, _ in "" },
                                        send: { _, _ in throw APIError.conflict(kind: nil, detail: "GitHub said no", reasons: []) },
                                        problem: { _ in .macNotAnswering })
         let store = TestStore(initialState: CrashReportFeature.State(stage: .ready(Self.report))) { CrashReportFeature() } withDependencies: {
@@ -124,7 +125,7 @@ final class CrashReportFeatureTests: XCTestCase {
             (.server(status: 404, kind: "gone", detail: nil, reasons: []), .refused("Alondra on your Mac could not do it.")),
         ]
         for (error, failure) in cases {
-            let client = CrashReportClient(build: { _, _, _ in Self.report }, file: { _, _ in "" },
+            let client = CrashReportClient(build: { _, _, _, _ in Self.report }, file: { _, _ in "" },
                                            send: { _, _ in throw error }, problem: { _ in .macNotAnswering }, onThisMac: true)
             let store = TestStore(initialState: CrashReportFeature.State(stage: .ready(Self.report))) { CrashReportFeature() } withDependencies: {
                 $0.crashReports = client
@@ -132,5 +133,36 @@ final class CrashReportFeatureTests: XCTestCase {
             await store.send(.send) { $0.stage = .sending(Self.report) }
             await store.receive(\.failed) { $0.stage = .failed(failure, report: "r-20261027-0000abcd") }
         }
+    }
+
+    func testARefusedReportIsBuiltAgainWithoutTheFilesThatFailedWithWhatTheUserWrote() async {
+        var refused = Self.report
+        refused.passed = false
+        refused.hits = [.init(section: "machine.json", line: 7, what: "a path of this Mac, in the field launchd_job.program")]
+        refused.sendRestWithout = ["machine.json"]
+        XCTAssertFalse(refused.sendable)
+        XCTAssertTrue(refused.restSendable)
+        let reply = Self.reply.replacingOccurrences(of: #""check":{"passed":true,"hits":[]}"#,
+                                                    with: #""check":{"passed":false,"hits":[],"send_rest_without":["machine.json","../x"]}"#)
+        XCTAssertEqual(CrashReport(daemonReply: Data(reply.utf8))?.sendRestWithout, ["machine.json"], "only section names are kept")
+        let builds = LockIsolated<[[String]]>([])
+        let client = CrashReportClient(
+            build: { description, _, _, without in
+                XCTAssertEqual(description, "It stopped after the Mac slept")
+                builds.withValue { $0.append(without) }
+                return Self.report
+            },
+            file: { _, _ in "" }, send: { _, _ in XCTFail("never sent"); throw CancellationError() })
+        let store = TestStore(initialState: CrashReportFeature.State(whatHappened: "It stopped after the Mac slept", stage: .ready(refused))) {
+            CrashReportFeature()
+        } withDependencies: { $0.crashReports = client }
+        await store.send(.send)
+        await store.send(.sendRest) {
+            $0.without = ["machine.json"]
+            $0.stage = .building
+        }
+        await store.receive(\.built) { $0.stage = .ready(Self.report) }
+        XCTAssertEqual(builds.value, [["machine.json"]])
+        await store.send(.sendRest)
     }
 }
