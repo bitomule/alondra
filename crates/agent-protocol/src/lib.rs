@@ -8,7 +8,7 @@ mod ownership;
 mod schema;
 
 pub use codec::{FramedReader, FramedWriter, ReceivedFrame, command_digest, encode};
-pub use archived_receipts::{ArchivedReceipt, archived_receipts};
+pub use archived_receipts::{ArchivedReceipt, archived_receipts, ended_receipts};
 pub use correlation::{CommandRegistry, CommandStatus, EventSequence, SequenceStatus};
 pub use schema::*;
 pub use ownership::{host_proof, owner_proof, verify_host_proof, verify_owner_proof};

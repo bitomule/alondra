@@ -974,6 +974,20 @@ pub fn resumed_threads(trace: &Path) -> Vec<serde_json::Value> {
     transcript(trace).into_iter().filter(|message| message["method"] == "thread/resume").collect()
 }
 
+/// How many times the fake app-servers received `method`, counted on complete lines of their trace.
+fn traced(trace: &Path, method: &str) -> usize {
+    std::fs::read_to_string(trace).unwrap_or_default().lines()
+        .filter(|line| serde_json::from_str::<serde_json::Value>(line).is_ok_and(|message| message["method"] == method)).count()
+}
+
+fn until_traced(trace: &Path, method: &str, times: usize) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while traced(trace, method) < times {
+        assert!(std::time::Instant::now() < deadline, "the app-servers never received {method} {times} times");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 pub fn native_process(driver: &mut Driver) -> alondra_process_group::Member {
     match driver.worker.native_liveness().unwrap() {
         Some(alondra_provider_codex::NativeLiveness::Alive(native)) => native,
@@ -1074,6 +1088,7 @@ fn an_admitted_codex_replacement_without_a_committed_observation_is_not_mistaken
     let observer = slice.observer();
     let checkpoint = || u64::try_from(observer.query_row("SELECT cursor FROM provider_normalization_checkpoints WHERE task_id=?1", [TASK], |row| row.get::<_, i64>(0)).unwrap()).unwrap();
     assert_eq!(checkpoint(), base);
+    let turns = traced(&trace, "turn/start");
     replacement.step(&|| true).unwrap();
     assert!(!replacement.replacement, "the continuation was offered to the new native session");
     assert_eq!(checkpoint(), base, "no observation of this host has committed");
@@ -1081,6 +1096,9 @@ fn an_admitted_codex_replacement_without_a_committed_observation_is_not_mistaken
     slice.run(&system(), "unobserved-legacy-mcp-status", Command::ReadMcpStatus { task_id: TASK.into() });
     assert!(replacement.claim_and_record_control_without_sending());
     let old_host = replacement.worker.stopper().unwrap();
+    // The native dies once it verified its account and started the turn: a death during the check
+    // reads as a refused account.
+    until_traced(&trace, "turn/start", turns + 1);
     kill_native(&native_process(&mut replacement));
     assert!(old_host.process().unwrap().is_some(), "the legacy host stays available for attachment");
     drop(replacement);
@@ -1554,7 +1572,12 @@ pub fn request_move(slice:&Slice)->serde_json::Value{
     crate::provider_transition::request_move(&slice.domain,&user(),&TASK.into(),AccountKey::native(Provider::Claude),&stamp,||Ok(())).unwrap()
 }
 pub async fn until_moved(slice:&Slice,changed:&mut tokio::sync::watch::Receiver<u64>){
-    while !move_steps(slice).iter().any(|step|step=="done"){changed.changed().await.unwrap();}
+    let moved=async{while !move_steps(slice).iter().any(|step|step=="done"){changed.changed().await.unwrap();}};
+    if tokio::time::timeout(std::time::Duration::from_secs(60),moved).await.is_err(){panic!("the move never ended: {:?}, {}",move_steps(slice),where_the_task_is(slice))}
+}
+fn where_the_task_is(slice:&Slice)->String{
+    let lifecycle=Slice::lifecycle(&slice.domain);
+    format!("{:?} {:?} with inputs {:?}",lifecycle.phase(),lifecycle.live(),lifecycle.pending_inputs())
 }
 /// Advances the move after every owner commit, as the daemon's transition loop does, until it is
 /// done. A step that fails or aborts the move fails the test with the steps it reached.
@@ -1637,11 +1660,15 @@ async fn a_task_whose_host_was_resumed_after_it_ended_moves_too(){
     working_on_codex(&slice);
     slice.domain.stop_sdk_owners();
     let resumed=adopt(Arc::clone(&slice.domain),&slice.backend,task.clone(),Some(&slice.plugin)).unwrap();
-    slice.domain.add_sdk_owner(Owner::spawn(resumed));
     assert!(slice.domain.state().unwrap().lifecycle_journal[&task].iter().any(|record|matches!(record,LifecycleRecord::HostEnded{..})),"the first host's end is recorded and a host that resumes the same execution runs");
+    // The move is requested before the resumed host's owner runs: an owner that ran first could hand
+    // the continuation to the host, whose held turn then leaves the task with nothing to start from.
     request_move(&slice);
-    // Its replacement owner queues the continuation on its next cycle after the host is ready.
-    slice.domain.subscribe().wait_for(|_|crate::provider_transition::ready_in(slice.domain.read().state(),&task).unwrap()).await.unwrap();
+    slice.domain.add_sdk_owner(Owner::spawn(resumed));
+    // Its owner queues the continuation on its next cycle after the host is ready, and the move holds it.
+    let mut published=slice.domain.subscribe();
+    let ready=published.wait_for(|_|crate::provider_transition::ready_in(slice.domain.read().state(),&task).unwrap());
+    if tokio::time::timeout(std::time::Duration::from_secs(60),ready).await.is_err(){panic!("the resumed task never became ready to start: {}",where_the_task_is(&slice))}
     let(pulse,mut changed)=tokio::sync::watch::channel(0_u64);slice.domain.before_owner_publish(move||pulse.send_modify(|count|*count+=1));
     assert_eq!(crate::provider_transition::advance(&slice.domain,&task).await.unwrap(),Phase::TargetAdmitted);
     until_moved(&slice,&mut changed).await;
@@ -1649,6 +1676,31 @@ async fn a_task_whose_host_was_resumed_after_it_ended_moves_too(){
     assert_eq!(state.tasks[&task].account_key(),AccountKey::native(Provider::Claude));
     assert_eq!(state.lifecycle_journal[&task].iter().filter(|record|matches!(record,LifecycleRecord::Admitted{..})).count(),2);
     slice.domain.stop_sdk_owners();
+}
+
+// 16 November: the owner of a task's resumed host handed it the task's next message and was stopped
+// before the host's receipt reached it, so the handoff stayed uncertain. A move to another provider
+// ended that host, which is never archived: nothing read the receipt its folder kept, and the new
+// node's admission was refused for an unresolved dispatch, again on every try.
+#[tokio::test]
+async fn a_move_requested_while_the_resumed_host_takes_its_message_admits_the_new_node(){
+    use crate::domain_store::provider_transition::Phase;
+    for handoff in ["claimed","offered","uncertain"]{
+        let slice=Slice::new();let task:TaskId=TASK.into();
+        working_on_codex(&slice);
+        slice.domain.stop_sdk_owners();
+        let mut resumed=adopt(Arc::clone(&slice.domain),&slice.backend,task.clone(),Some(&slice.plugin)).unwrap();
+        let claimed=match handoff{"claimed"=>resumed.claim_and_record_without_sending(),"offered"=>resumed.claim_record_and_offer_without_receipt(),_=>resumed.claim_record_and_offer_with_an_uncertain_receipt()};
+        assert!(claimed,"the resumed host's owner claimed the continuation");
+        request_move(&slice);
+        let(pulse,mut changed)=tokio::sync::watch::channel(0_u64);slice.domain.before_owner_publish(move||pulse.send_modify(|count|*count+=1));
+        let advanced=crate::provider_transition::advance(&slice.domain,&task).await;
+        assert!(advanced.is_ok(),"{handoff}: the move went on after {:?}: {advanced:?}, {}",move_steps(&slice),where_the_task_is(&slice));
+        until_moved(&slice,&mut changed).await;
+        assert_eq!(slice.domain.state().unwrap().tasks[&task].account_key(),AccountKey::native(Provider::Claude));
+        drop(resumed);
+        slice.domain.stop_sdk_owners();
+    }
 }
 
 // 10 November: a task's replacement host claimed its next message and died before the command was
