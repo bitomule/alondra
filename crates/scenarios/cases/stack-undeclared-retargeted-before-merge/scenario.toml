@@ -67,7 +67,7 @@ max = "10m"
 
 [[step]]
 do = "advance"
-by = "90s"
+by = "120s"
 
 [[step]]
 do = "cleanup_done"

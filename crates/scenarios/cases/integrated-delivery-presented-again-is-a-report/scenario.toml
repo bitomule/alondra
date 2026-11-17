@@ -107,6 +107,10 @@ text = "Merge"
 present = false
 
 [[step]]
+do = "advance"
+by = "60s"
+
+[[step]]
 do = "cleanup_done"
 task = "t1"
 
