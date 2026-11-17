@@ -111,14 +111,15 @@ speak in, and the registry that holds one implementation of each. It depends onl
 none on the piece that implements a port it uses.
 
 - The ports: `AdmissionGate` (`admission.rs`), `OrchestratorEngine` and `OrchestratorAnswers`
-  (`orchestrator.rs`), `SdkHosts` (`hosts.rs`) and `AgentHost` (`agent_host.rs`). The values they carry moved with them:
+  (`orchestrator.rs`), `SdkHosts` (`hosts.rs`), `AgentHost` (`agent_host.rs`) and `GitHub` (`github.rs`, see "Output adapters"). The values they carry moved with them:
   `LaunchOptions` and `Failed` (`launch.rs`), `NoRoom` (`machine.rs`) and `OutboxMessage`
   (`outbox.rs`). The crates they came from re-export them, so their callers did not change.
 - The registry (`Registry`) maps each port's type to its implementation: `provide::<dyn P>(…)`
   gives it, `port::<dyn P>()` asks for it, and `missing()` names every port nothing implements. The
   runtime holds one (`domain.ports()`).
 - Each piece that implements a port exposes `pub fn wire(&Registry)`: `daemon-engine`
-  (`wiring::wire`), `engine-sdk` (`wiring::wire`), `engine-admission` and `engine-orchestrator`.
+  (`wiring::wire`), `engine-sdk` (`wiring::wire`), `engine-admission`, `engine-orchestrator` and
+  the adapter `github-gh`.
   `alondrad` calls all of them (`domain_bootstrap::wire`), and its test
   `the_daemon_implements_every_port` fails when a port is left without an implementation.
 - Every port is called on a `&dyn Runtime`, the context the engine keeps its state in, as
@@ -207,6 +208,18 @@ moves of a task to another provider or account (`provider_transition`, `account_
   Claude and Codex and binaries they need; the engine's own target needs only the Node host and a
   fake native Claude, and no test runs on a name filter any more.
 
+## Output adapters
+
+An output adapter implements a port of `engine-ports` against the world outside the daemon. It
+depends only on ports, the domain and foundation; only the roots see it, and editing it rebuilds the
+adapter, its test and the roots' link.
+
+- `github-gh`: GitHub through the Mac's `gh` (`GhCli`). It implements every trait of the `GitHub`
+  port (`PrObserver`, `PrMerger`, `GitHubImages`, `Gh`), parses what `gh` answers and reads the
+  viewed files of a PR (`pr_viewed`). `wire` gives the registry `github()`; `alondrad`'s assembly
+  replaces it with its seams' GitHub, which a scenario fills with `GithubWorld`. `engine-github`,
+  `engine-kernel` (PR sizes) and `daemon-engine` (a branch's PR) ask the registry for it.
+
 ## Subsystem crates
 
 Each subsystem crate sits on `engine-kernel` beside the others: it names none of them, and only
@@ -214,9 +227,8 @@ Each subsystem crate sits on `engine-kernel` beside the others: it names none of
 their paths. Its tests open the runtime with `DomainRuntime::open_unwired`, without the engine's
 observers; a test that needs another subsystem runs with the engine.
 
-- `engine-github`: reading pull requests with `gh` (`domain_github`), merging them
-  (`domain_merges`), the images and viewed files of their descriptions (`pr_images`, `pr_viewed`),
-  the sweep that adopts open PRs left without a live owner (`open_pr_sweep`) and the fake GitHub
+- `engine-github`: what Alondra decides from GitHub's pull requests (`domain_github`), merging
+  them (`domain_merges`), the images of their descriptions (`pr_images`), the sweep that adopts open PRs left without a live owner (`open_pr_sweep`) and the fake GitHub
   the tests and scenarios share (`github_world`, test hooks only). Its tests are
   `//crates/engine-github:engine_github_test`.
 - `engine-mcp`: what a node waits for while an MCP server signs in (`mcp_waits`, `mcp_sign_in`)

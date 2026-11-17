@@ -4,40 +4,14 @@
 //! copies from the daemon, through the same channel as any attachment. Nothing is sent anywhere.
 use alondra_core::markdown::images::{self as markdown, IMAGE_MAX_BYTES};
 use alondra_view_model::pr_images::{ImageProblem, PrImage, Shown};
+use alondra_engine_ports::github::{SIGNED_IMAGE_HOST, encoded_path};
 use std::collections::BTreeMap;
-use std::future::Future;
 use std::path::Path;
-use std::pin::Pin;
-use std::time::Duration;
 
 /// More images than this in one description are not brought.
 pub const MOST: usize = 30;
-const SIGNED_HOST: &str = "private-user-images.githubusercontent.com";
-const LIMIT: Duration = Duration::from_secs(30);
 
-/// Why GitHub did not give something.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Failure {
-    NotFound,
-    SignedOut,
-    TooLarge(u64),
-    Transient,
-}
-
-pub type Fetch<'a, T> = Pin<Box<dyn Future<Output = Result<T, Failure>> + Send + 'a>>;
-
-/// What the daemon asks GitHub for, behind a pointer so a test can answer for it.
-pub trait GitHubImages: Send + Sync + 'static {
-    /// The size of a file of `repository` at `reference`.
-    fn size<'a>(&'a self, host: &'a str, repository: &'a str, path: &'a str, reference: &'a str) -> Fetch<'a, u64>;
-    fn file<'a>(&'a self, host: &'a str, repository: &'a str, path: &'a str, reference: &'a str) -> Fetch<'a, Vec<u8>>;
-    /// Whether `repository` can be read at all.
-    fn repository<'a>(&'a self, host: &'a str, repository: &'a str) -> Fetch<'a, ()>;
-    /// The description as GitHub renders it, whose uploaded images carry short-lived signed links.
-    fn body_html<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Fetch<'a, String>;
-    /// A signed link, fetched without any credential.
-    fn download<'a>(&'a self, url: &'a str) -> Fetch<'a, Vec<u8>>;
-}
+pub use alondra_engine_ports::github::{Failure, Fetch, GitHubImages};
 
 /// The pull request whose description is read.
 pub struct Target<'a> {
@@ -127,7 +101,7 @@ fn source(target: &Target<'_>, url: &str) -> Option<Source> {
     let path = path.split(['?', '#']).next()?;
     let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     let pr_host = alondra_domain_rules::normalize_pr_host(target.host);
-    if host == SIGNED_HOST {
+    if host == SIGNED_IMAGE_HOST {
         let name = parts.last()?;
         let stem = name.split('.').next()?;
         let uuid = stem.get(stem.len().checked_sub(36)?..)?;
@@ -182,7 +156,7 @@ async fn fetch(github: &dyn GitHubImages, target: &Target<'_>, source: &Source, 
         Source::File { repository, segments, relative } => {
             let readings = readings(target, segments, *relative);
             for (reference, path) in &readings {
-                let path = encoded(path);
+                let path = encoded_path(path);
                 match github.size(target.host, repository, &path, reference).await {
                     Ok(bytes) if bytes > IMAGE_MAX_BYTES => return Err(ImageProblem::TooLarge { bytes }),
                     Ok(_) => return github.file(target.host, repository, &path, reference).await.map_err(|failure| problem(failure, repository)),
@@ -235,21 +209,11 @@ fn keep(home: &Path, bytes: &[u8]) -> Result<String, ImageProblem> {
 fn unavailable(target: &Target<'_>, url: &str, source: &Source, problem: ImageProblem) -> Shown {
     let link = match source {
         Source::File { repository, segments, relative: true } => {
-            format!("https://{}/{repository}/blob/{}/{}", alondra_domain_rules::normalize_pr_host(target.host), target.head, encoded(&segments.join("/")))
+            format!("https://{}/{repository}/blob/{}/{}", alondra_domain_rules::normalize_pr_host(target.host), target.head, encoded_path(&segments.join("/")))
         }
         _ => url.to_owned(),
     };
     Shown::Unavailable { link, problem }
-}
-
-/// A path as a URL holds it: what is already escaped stays as it is.
-fn encoded(path: &str) -> String {
-    path.bytes()
-        .map(|b| match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' | b'%' => (b as char).to_string(),
-            _ => format!("%{b:02X}"),
-        })
-        .collect()
 }
 
 /// The signed link of each uploaded image of a rendered description, by the upload's UUID.
@@ -257,7 +221,7 @@ fn signed_links(html: &str) -> BTreeMap<String, String> {
     let mut links = BTreeMap::new();
     for quoted in html.split('"').skip(1).step_by(2) {
         let link = quoted.replace("&amp;", "&");
-        let Some(rest) = link.strip_prefix("https://").and_then(|rest| rest.strip_prefix(SIGNED_HOST)) else { continue };
+        let Some(rest) = link.strip_prefix("https://").and_then(|rest| rest.strip_prefix(SIGNED_IMAGE_HOST)) else { continue };
         let name = rest.split('?').next().unwrap_or_default().rsplit('/').next().unwrap_or_default();
         let stem = name.split('.').next().unwrap_or_default();
         if let Some(uuid) = stem.get(stem.len().saturating_sub(36)..).filter(|uuid| uuid_like(uuid)) {
@@ -265,107 +229,6 @@ fn signed_links(html: &str) -> BTreeMap<String, String> {
         }
     }
     links
-}
-
-/// GitHub through the Mac's `gh`, and a signed link through a request without credentials.
-pub struct Gh {
-    cli: crate::domain_github::GhCli,
-    web: std::sync::OnceLock<reqwest::Client>,
-}
-
-impl Gh {
-    pub fn new() -> Self {
-        Self { cli: crate::domain_github::GhCli::new(), web: std::sync::OnceLock::new() }
-    }
-
-    #[cfg(any(test, feature = "test-hooks"))]
-    pub fn at(program: std::path::PathBuf) -> Self {
-        Self { cli: crate::domain_github::GhCli::at(program), web: std::sync::OnceLock::new() }
-    }
-
-    fn web(&self) -> &reqwest::Client {
-        self.web.get_or_init(|| {
-            reqwest::Client::builder()
-                .timeout(LIMIT)
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .unwrap_or_default()
-        })
-    }
-
-    async fn api(&self, host: &str, endpoint: &str, accept: &str) -> Result<Vec<u8>, Failure> {
-        let host = alondra_domain_rules::normalize_pr_host(host);
-        let accept = format!("Accept: {accept}");
-        let args = ["--hostname", host.as_str(), "-H", accept.as_str(), endpoint];
-        match self.cli.api(&args, LIMIT).await {
-            Ok(answer) if answer.success() => Ok(answer.body),
-            Ok(answer) => Err(match answer.status {
-                404 => Failure::NotFound,
-                401 => Failure::SignedOut,
-                _ => Failure::Transient,
-            }),
-            Err(failure) if failure.signed_out() => Err(Failure::SignedOut),
-            Err(_) => Err(Failure::Transient),
-        }
-    }
-}
-
-impl GitHubImages for Gh {
-    fn size<'a>(&'a self, host: &'a str, repository: &'a str, path: &'a str, reference: &'a str) -> Fetch<'a, u64> {
-        Box::pin(async move {
-            let endpoint = format!("repos/{repository}/contents/{path}?ref={}", encoded(reference));
-            let out = self.api(host, &endpoint, "application/vnd.github.object+json").await?;
-            let value: serde_json::Value = serde_json::from_slice(&out).map_err(|_| Failure::Transient)?;
-            match value["type"].as_str() {
-                Some("file") => value["size"].as_u64().ok_or(Failure::Transient),
-                _ => Err(Failure::NotFound),
-            }
-        })
-    }
-
-    fn file<'a>(&'a self, host: &'a str, repository: &'a str, path: &'a str, reference: &'a str) -> Fetch<'a, Vec<u8>> {
-        Box::pin(async move {
-            let endpoint = format!("repos/{repository}/contents/{path}?ref={}", encoded(reference));
-            self.api(host, &endpoint, "application/vnd.github.raw").await
-        })
-    }
-
-    fn repository<'a>(&'a self, host: &'a str, repository: &'a str) -> Fetch<'a, ()> {
-        Box::pin(async move { self.api(host, &format!("repos/{repository}"), "application/vnd.github+json").await.map(|_| ()) })
-    }
-
-    fn body_html<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Fetch<'a, String> {
-        Box::pin(async move {
-            let out = self.api(host, &format!("repos/{repository}/pulls/{number}"), "application/vnd.github.full+json").await?;
-            let value: serde_json::Value = serde_json::from_slice(&out).map_err(|_| Failure::Transient)?;
-            Ok(value["body_html"].as_str().unwrap_or_default().to_owned())
-        })
-    }
-
-    fn download<'a>(&'a self, url: &'a str) -> Fetch<'a, Vec<u8>> {
-        Box::pin(async move {
-            if !url.strip_prefix("https://").is_some_and(|rest| rest.starts_with(&format!("{SIGNED_HOST}/"))) {
-                return Err(Failure::NotFound);
-            }
-            let mut response = self.web().get(url).send().await.map_err(|_| Failure::Transient)?;
-            match response.status().as_u16() {
-                200 => {}
-                403 | 404 | 410 => return Err(Failure::NotFound),
-                _ => return Err(Failure::Transient),
-            }
-            if let Some(bytes) = response.content_length().filter(|bytes| *bytes > IMAGE_MAX_BYTES) {
-                return Err(Failure::TooLarge(bytes));
-            }
-            let mut bytes = vec![];
-            while let Some(chunk) = response.chunk().await.map_err(|_| Failure::Transient)? {
-                bytes.extend_from_slice(&chunk);
-                if bytes.len() as u64 > IMAGE_MAX_BYTES {
-                    return Err(Failure::TooLarge(bytes.len() as u64));
-                }
-            }
-            Ok(bytes)
-        })
-    }
 }
 
 #[cfg(any(test, feature = "test-hooks"))]

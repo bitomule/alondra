@@ -6,7 +6,7 @@ use crate::domain_github::{Closed, GhFailure, Observed, PrFacts, PrObserver};
 use crate::domain_merges::{Checks, MergeState, Pending, PrMerger, Status};
 use crate::pr_images::{Failure, Fetch, GitHubImages};
 use alondra_domain_rules::{MergeMethod, PrChecks, PrMergeable, PrState, PullRequest};
-use alondra_daemon_support::prs::Gh;
+use alondra_engine_ports::github::{Gh, Read};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
@@ -335,7 +335,13 @@ fn rollup(checks: &Checks) -> Vec<Value> {
 }
 
 impl Gh for GithubWorld {
-    async fn view(&self, url: &str) -> Option<Value> {
+    fn view<'a>(&'a self, url: &'a str) -> Read<'a, Option<Value>> {
+        Box::pin(async move { self.viewed(url) })
+    }
+}
+
+impl GithubWorld {
+    fn viewed(&self, url: &str) -> Option<Value> {
         let world = self.world();
         let pr = world.prs.get(&number_of(url)?)?;
         let (mergeable, status) = match pr.merge_state {

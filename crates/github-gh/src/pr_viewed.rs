@@ -1,7 +1,7 @@
 //! Which files of a pull request the user marked as viewed. GitHub keeps the marks, the same
 //! Viewed boxes as github.com, and clears one by itself when a push changes its file: Alondra
 //! only reads and sets them, for the account `gh` is signed in with.
-use crate::domain_github::GhCli;
+use crate::cli::GhCli;
 use alondra_domain_rules::PullRequest;
 use serde::Serialize;
 use serde_json::Value;

@@ -47,11 +47,11 @@ struct Sizes {
     asked: AtomicUsize,
 }
 
-impl crate::prs::Gh for Sizes {
-    async fn view(&self, url: &str) -> Option<Value> {
+impl alondra_engine_ports::github::Gh for Sizes {
+    fn view<'a>(&'a self, url: &'a str) -> alondra_engine_ports::github::Read<'a, Option<Value>> {
         assert_eq!(url, "https://github.com/owner/repository/pull/7");
         let asked = self.asked.fetch_add(1, Ordering::SeqCst);
-        self.answers.get(asked).cloned().flatten()
+        Box::pin(std::future::ready(self.answers.get(asked).cloned().flatten()))
     }
 }
 

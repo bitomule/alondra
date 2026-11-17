@@ -51,13 +51,13 @@ pub struct ViaGh<G>(pub Arc<G>);
 
 impl<G: crate::prs::Gh + Send + Sync + 'static> PrView for ViaGh<G> {
     fn view<'a>(&'a self, url: &'a str) -> Viewed<'a> {
-        Box::pin(self.0.view(url))
+        self.0.view(url)
     }
 }
 
 impl PrView for GhView {
     fn view<'a>(&'a self, url: &'a str) -> Viewed<'a> {
-        Box::pin(crate::prs::Gh::view(&crate::prs::GhCli, url))
+        Box::pin(async move { crate::prs::Gh::view(&alondra_github_gh::GhCli::new(), url).await })
     }
 }
 
@@ -68,7 +68,7 @@ impl crate::domain_github::PrObserver for PrViewObserver {
         Box::pin(async move {
             let url = crate::domain_github::pr_url(host, repository, number);
             let answer = self.0.view(&url).await.ok_or_else(|| "GitHub did not report the pull request".to_owned())?;
-            crate::domain_github::parse(&answer)
+            alondra_github_gh::cli::parse(&answer)
         })
     }
 }
@@ -383,7 +383,9 @@ impl super::Client {
             return Ok(());
         }
         let source = PrViewObserver(self.pr_view.lock_or_recover("the pull request view").clone());
-        if let Err(error) = crate::domain_github::catch_up_task_using(&self.domain, &crate::domain_github::GhCli::new(), &source, task_id, *is_final).await {
+        let github = self.domain.ports().port::<alondra_engine_ports::github::GitHub>()
+            .ok_or_else(|| DomainError::new("github_unreachable", "Alondra has no GitHub to confirm the task's pull requests"))?;
+        if let Err(error) = crate::domain_github::catch_up_task_using(&self.domain, &github, &source, task_id, *is_final).await {
             log!("could not read the PRs of {task_id} from GitHub: {error:#}");
             return Err(DomainError::new("github_unreachable", "GitHub could not confirm the task's pull requests: present the result again when it answers"));
         }
@@ -412,7 +414,7 @@ impl super::Client {
                 if attempt > 0 {
                     alondra_core::clock::sleep(HEAD_PAUSE).await;
                 }
-                let Some(facts) = view.view(&url).await.and_then(|answer| crate::domain_github::parse(&answer).ok()) else { continue };
+                let Some(facts) = view.view(&url).await.and_then(|answer| alondra_github_gh::cli::parse(&answer).ok()) else { continue };
                 if let Err(error) = crate::domain_github::observe(&self.domain, pr_id, &facts) {
                     log!("could not record what GitHub reports of {}: {error}", pr.id);
                     return;

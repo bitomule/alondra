@@ -23,7 +23,6 @@ use alondra_daemon_support::{
     hook_text,
     locks,
     plugins,
-    prs,
     runtime_mutex,
     save,
     service_files,

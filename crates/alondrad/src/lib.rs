@@ -1,3 +1,4 @@
+use alondra_github_gh::{pr_viewed, prs};
 use alondra_engine_admission::AdmissionOf as _;
 use alondra_engine_sdk::sdk_owner::SdkOwners as _;
 use alondra_daemon_engine::live::LiveOf as _;
@@ -30,7 +31,6 @@ use alondra_daemon_support::{
     plugins,
     pr_heads,
     pr_ids,
-    prs,
     push,
     relaunch,
     reports,
@@ -80,7 +80,6 @@ use alondra_daemon_engine::{
     obligation_watch,
     options,
     pr_images,
-    pr_viewed,
     retention,
     sdk_handover,
     sdk_live,

@@ -95,7 +95,7 @@ fn target() -> Target<'static> {
 }
 
 fn signed(uuid: &str) -> String {
-    format!("https://{SIGNED_HOST}/42989/589621123-{uuid}.png?jwt=eyJ0eXAi&X-Amz-Expires=300")
+    format!("https://{SIGNED_IMAGE_HOST}/42989/589621123-{uuid}.png?jwt=eyJ0eXAi&X-Amz-Expires=300")
 }
 
 async fn brought(github: &FakeGitHub, home: &Path, body: &str) -> Brought {
@@ -279,12 +279,12 @@ fn signed_links_are_read_from_the_rendered_description_by_the_uploads_uuid() {
 
 /// A `gh` that answers every call with `stdout` on its standard output, `stderr` on its error
 /// output and exits with `code`.
-fn answering_gh(dir: &Path, stdout: &str, stderr: &str, code: i32) -> Gh {
+fn answering_gh(dir: &Path, stdout: &str, stderr: &str, code: i32) -> alondra_github_gh::GhCli {
     use std::os::unix::fs::PermissionsExt;
     let program = dir.join("gh");
     std::fs::write(&program, format!("#!/bin/sh\nprintf '{stdout}'\nprintf '%s\\n' '{stderr}' >&2\nexit {code}\n")).unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-    Gh::at(program)
+    alondra_github_gh::GhCli::at(program)
 }
 
 #[tokio::test]

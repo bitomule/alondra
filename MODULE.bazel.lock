@@ -749,7 +749,7 @@
           "@@//crates/agent-protocol/Cargo.toml": "125620e279bdef7b2ce0d2b3c57edcfd5296897a2ea47d3d4331f290adc3408b",
           "@@//crates/agent-runtime/Cargo.toml": "1a738fa9446cb8dd9f3be4fe19741a3ac04629759498108c72d319240e6c923c",
           "@@//crates/alondra/Cargo.toml": "519d89fa714eefef53ff618e759a5c359b80ef2bd82eee22b48748fb1ddd02f3",
-          "@@//crates/alondrad/Cargo.toml": "477d69fbcab57bfcbeefbd0adbbfed54d5f6a3d244da0fd918ac621b8952acdd",
+          "@@//crates/alondrad/Cargo.toml": "6f70039e117ecac3d1db2e3f3fdc326d90b8ef44ab6203762a87cf148ebe0db1",
           "@@//crates/codex-protocol/Cargo.toml": "eaaca013cf0f3f626a20346a2804f46da2935fc16efe60114d0bc984ff8fcf05",
           "@@//crates/core/Cargo.toml": "f2a8b30505858cd5ed44be9541b6fee6c0e14ae1dc4bf8ec5e70ccd2d4f3a20e",
           "@@//crates/daemon-engine-machine/Cargo.toml": "5fce25f02a3045d9b4b4a8c6c823887451f89322bab0d2a83b31089196a166fe",

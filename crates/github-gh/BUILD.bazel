@@ -1,0 +1,47 @@
+load("//tools/bazel:crates.bzl", "adapter_out_crate")
+load("//tools:tree.bzl", "repo_tree")
+load("@crates//:defs.bzl", "all_crate_deps")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("//:version.bzl", "VERSION")
+load("//tools:rust_sources.bzl", "production_sources")
+
+# GitHub through the Mac's `gh`. It implements the `GitHub` port of engine-ports and depends on no
+# piece of the engine: only the roots see it, and editing it rebuilds this crate and their link.
+WORKSPACE_DEPS = [
+    "//crates/core:alondra_core",
+    "//crates/domain-rules:domain_rules",
+    "//crates/engine-ports:engine_ports",
+]
+
+adapter_out_crate(
+    name = "github_gh",
+    srcs = production_sources(),
+    crate_name = "alondra_github_gh",
+    version = VERSION,
+    deps = all_crate_deps(normal = True) + WORKSPACE_DEPS,
+    # engine-github's tests drive its logic with a scripted `gh`.
+    test_visibility = ["//crates/engine-github:__pkg__"],
+)
+
+low_opt_rust_test(
+    name = "github_gh_test",
+    size = "small",
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    crate_name = "alondra_github_gh",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    version = VERSION,
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS,
+)
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+
+# The crate's production sources: the crash report's log catalog reads them, and fails on a test
+# file among them.
+filegroup(
+    name = "report_sources",
+    srcs = production_sources(),
+    visibility = ["//crates/alondra:__pkg__"],
+)
+
+repo_tree()

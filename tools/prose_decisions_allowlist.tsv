@@ -215,7 +215,7 @@ crates/core/src/options.rs	let mut out: Vec<String> = ranked.iter().filter(|n| q
 crates/views/src/misc.rs	.to_ascii_lowercase();	user-search	search or sort over text the user filters
 crates/views/src/misc.rs	.filter(|task| task.title.to_ascii_lowercase().contains(&q))	user-search	search or sort over text the user filters
 crates/alondra/src/report/github.rs	.map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned())).collect();	format	HTTP header names from gh api --include, case-insensitive by RFC 9110
-crates/engine-github/src/domain_github.rs	.map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned())).collect();	format	HTTP header names from gh api --include, case-insensitive by RFC 9110
+crates/engine-ports/src/github.rs	.map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned())).collect();	format	HTTP header names from gh api --include, case-insensitive by RFC 9110
 crates/engine-sdk/src/sdk_owner/node_environment.rs	WITHHELD.contains(&name) || name.starts_with(WITHHELD_PREFIX)	format	Environment variable names are a documented format, not prose.
 crates/domain-rules/src/rules.rs	if need.is_empty() || card.need.contains(['\n', '\r']) {	format	a card's request is one line: a field shape check, not an interpretation of what it says
 crates/alondrad/src/public_content.rs	let lower = text.to_lowercase();	security-parse	case-insensitive matching of configured private identifiers before a public PR delivery

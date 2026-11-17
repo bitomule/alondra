@@ -60,6 +60,7 @@ CRATE_LAYERS = {
     # Mixed: most of it is git, disk and process code that moves to the `system` adapter.
     "crates/daemon-support": APPLICATION,
     "crates/views": APPLICATION,
+    "crates/github-gh": ADAPTER_OUT,
     "crates/provider-claude": ADAPTER_OUT,
     "crates/provider-codex": ADAPTER_OUT,
     "crates/daemon-engine-store": ADAPTER_OUT,

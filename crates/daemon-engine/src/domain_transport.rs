@@ -679,7 +679,8 @@ pub(crate) fn block_text(user: &str, title: &str) -> String {
 /// and deliver. GitHub gets three seconds: the Stop hook waits on this answer.
 async fn unregistered_pr(domain: &DomainRuntime, session: &str) -> Option<String> {
     let dir = crate::worktree::worktree_of(session)?;
-    let (host, repository, number) = crate::domain_github::GhCli::new().branch_pr(&dir, Duration::from_secs(3)).await?;
+    let github = domain.ports().port::<alondra_engine_ports::github::GitHub>()?;
+    let (host, repository, number) = github.reads.branch_pr(&dir).await?;
     unregistered_pr_text(&*domain.state().ok()?, &host, &repository, number)
 }
 

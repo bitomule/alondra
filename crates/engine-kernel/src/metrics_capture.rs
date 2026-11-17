@@ -68,7 +68,7 @@ pub fn orchestrator_provider_batch(domain: &DomainRuntime, session: &str, provid
 }
 
 /// Asks GitHub once per pass for the size of each merged PR folded without it.
-pub async fn pr_sizes(domain: &DomainRuntime, gh: &impl crate::prs::Gh, now: Millis) {
+pub async fn pr_sizes(domain: &DomainRuntime, gh: &dyn alondra_engine_ports::github::Gh, now: Millis) {
     let prs = match domain.prs_without_size(now, PR_SIZES_PER_PASS) {
         Ok(prs) => prs,
         Err(error) => {

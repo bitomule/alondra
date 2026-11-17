@@ -31,4 +31,3 @@ pub mod domain_merges;
 pub mod github_world;
 pub mod open_pr_sweep;
 pub mod pr_images;
-pub mod pr_viewed;

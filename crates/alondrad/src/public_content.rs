@@ -9,7 +9,7 @@ use alondra_domain_rules::{
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::domain_github::GhCli;
+use alondra_github_gh::GhCli;
 
 const QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){visibility pullRequest(number:$number){title body headRefOid baseRefOid baseRefName changedFiles}}}";
 const LIMIT: Duration = Duration::from_secs(30);
