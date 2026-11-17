@@ -1,5 +1,5 @@
 use alondra_engine_admission::AdmissionOf as _;
-use alondra_daemon_engine::sdk_owner::SdkOwners as _;
+use alondra_engine_sdk::sdk_owner::SdkOwners as _;
 use alondra_daemon_engine::live::LiveOf as _;
 // The engine's fixtures take its `Directory`, so alondrad's tests share that one.
 #[cfg(test)]
@@ -49,10 +49,8 @@ use alondra_daemon_support::{
 #[cfg(test)]
 use alondra_daemon_support::{disk};
 use alondra_daemon_engine::{
-    account_move,
     accounts,
     allow_always,
-    auto_launch,
     claude_access,
     cleanup,
     database_check,
@@ -64,13 +62,10 @@ use alondra_daemon_engine::{
     domain_orchestrator_reads,
     domain_orchestrator_tools,
     domain_runtime,
-    domain_schedule_api,
-    domain_schedule_runner,
     domain_store,
     domain_transport,
     home_renames,
     idle_compaction,
-    idle_release,
     issues,
     launch_plans,
     local_network_card,
@@ -86,16 +81,15 @@ use alondra_daemon_engine::{
     options,
     pr_images,
     pr_viewed,
-    provider_transition,
     retention,
     sdk_handover,
-    sdk_owner,
-    task_closer,
+    sdk_live,
     task_context,
     task_worktrees,
     usage_pause,
     usage_probe,
 };
+use alondra_engine_sdk::{account_move, auto_launch, bg_handover, domain_schedule_api, domain_schedule_runner, idle_release, provider_transition, sdk_owner, task_closer};
 use alondra_engine_admission::{admission, machine_watch, pauses};
 use alondra_engine_orchestrator::domain_orchestrator;
 #[cfg(test)]
@@ -248,7 +242,7 @@ async fn run(diagnostic: Option<String>) -> Result<()> {
     }
     ensure_domain_protocol(&config.home)?;
     sdk_owner::backend::load(&config.home, config.sandbox, &options::user_home())?;
-    let domain = alondra_daemon_engine::wiring::open(&config.home)?;
+    let domain = alondra_engine_sdk::wiring::open(&config.home)?;
     if let Some(device) = diagnostic {
         // Diagnostic delivery uses the same canonical domain store but does not
         // start the long-running workers or HTTP listener.
@@ -806,7 +800,7 @@ mod argument_tests {
         std::fs::create_dir(&home).unwrap();
         domain_cutover::refuse_legacy_home(&home).unwrap();
         ensure_domain_protocol(&home).unwrap();
-        let _domain = alondra_daemon_engine::wiring::open(&home).unwrap();
+        let _domain = alondra_engine_sdk::wiring::open(&home).unwrap();
         domain_bootstrap::DomainDaemon::open(&home).unwrap();
         assert!(home.join("domain.db").is_file());
         assert!(!home.join("alondra.db").exists());

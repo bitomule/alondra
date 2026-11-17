@@ -9,7 +9,7 @@ use crate::live::Relaunch;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{AutoLaunchReason, AutoLaunchState};
 use alondra_domain_rules::{
-    AfterFailure, Command, CommandEnvelope, DomainState, NodeFact, Reaction, Start, StartFacts, StartProblem, TaskId,
+    AfterFailure, Command, CommandEnvelope, DomainState, NodeFact, Start, StartFacts, StartProblem, TaskId,
     PROTOCOL_VERSION, after_failure,
 };
 use anyhow::Result;
@@ -48,7 +48,7 @@ pub fn failed(domain: &DomainRuntime, task: &TaskId, problem: StartProblem, now:
 
 /// The plan a start was refused for changed: the orchestrator's card about it no longer holds, and
 /// the task goes back to the gate to start with the new plan.
-pub(crate) fn plan_changed(domain: &DomainRuntime, task: &TaskId) -> Result<()> {
+pub fn plan_changed(domain: &DomainRuntime, task: &TaskId) -> Result<()> {
     let state = domain.state()?;
     let Some(card) = state.open_plan_refusal(task) else { return Ok(()) };
     domain.withdraw_problem(&card.id).map_err(|error| anyhow::anyhow!("{error:?}"))?;
@@ -99,7 +99,7 @@ pub fn problem_of(code: &str, message: &str, cwd: Option<&str>) -> Option<StartP
     }
 }
 
-pub(crate) fn raise(domain: &DomainRuntime, task: &TaskId, problem: StartProblem) -> Result<()> {
+pub fn raise(domain: &DomainRuntime, task: &TaskId, problem: StartProblem) -> Result<()> {
     let state = domain.state()?;
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
@@ -152,78 +152,4 @@ pub fn facts(domain: &DomainRuntime, state: &DomainState) -> Result<BTreeMap<Tas
     Ok(out)
 }
 
-/// Carries out what must happen now so no open task is left in nobody's hands.
-pub(crate) async fn react(domain: &DomainRuntime, home: &Path) -> Result<()> {
-    crate::api_failures::settle_cards(domain)?;
-    let state = domain.state()?;
-    record_plan_cancels(domain, &state)?;
-    let facts = facts(domain, &state)?;
-    for reaction in state.react(&facts) {
-        match reaction {
-            Reaction::Ask(task, problem) => {
-                raise(domain, &task, problem)?;
-            }
-            Reaction::Retry(task) => retry(domain, home, &task, facts.get(&task).is_some_and(|f| f.closed)).await?,
-        }
-    }
-    Ok(())
-}
-
-/// The orchestrator cancelled a task whose plan was refused: the reason it wrote is the task's.
-fn record_plan_cancels(domain: &DomainRuntime, state: &DomainState) -> Result<()> {
-    let cancels: Vec<(TaskId, String)> = state.interactions.values()
-        .filter(|i| alondra_domain_rules::is_plan_refusal(i))
-        .filter_map(|i| match (&i.scope, &i.payload) {
-            (alondra_domain_rules::Scope::Task { task_id }, alondra_domain_rules::InteractionPayload::Question { answer: Some(answer), .. })
-                if answer.option_id == alondra_domain_rules::START_CANCEL && state.tasks.get(task_id).is_some_and(|task| task.cancelled()) =>
-                answer.inputs.values().find_map(|value| match value {
-                    alondra_domain_rules::InputValue::Text(text) if !text.trim().is_empty() => Some((task_id.clone(), text.trim().to_owned())),
-                    _ => None,
-                }),
-            _ => None,
-        })
-        .collect();
-    if cancels.is_empty() {
-        return Ok(());
-    }
-    let store = domain.store.lock_or_exit("the domain store");
-    let recorded = store.cancel_reasons()?;
-    for (task, reason) in cancels.into_iter().filter(|(task, _)| !recorded.contains_key(task)) {
-        store.set_cancel_reason(&task, &reason)?;
-    }
-    Ok(())
-}
-
-/// The user asked to try again: a task whose node they closed gets a new node in that node's
-/// folder; any other goes back to the gate, which starts it with its plan, or relaunches it when
-/// Alondra closed its node. A relaunch refused
-/// for a reason of its own is a failed start like any other. Trying again a folder Claude Code
-/// did not trust is the user trusting it, so Alondra records that first, or says why it could not.
-async fn retry(domain: &DomainRuntime, home: &Path, task: &TaskId, closed: bool) -> Result<()> {
-    let untrusted = domain.state()?.last_start_problem(task).and_then(|problem| serde_json::from_str::<StartProblem>(&problem.body).ok());
-    if let Some(StartProblem::Untrusted { folder, .. }) = untrusted
-        && let Err(error) = crate::claude_trust::grant(Path::new(&folder), &crate::accounts::profiles(home))
-    {
-        log!("could not trust {folder} in Claude Code for {task}: {error}");
-        return failed(domain, task, StartProblem::Untrusted { folder, error: Some(error) }, alondra_core::now_millis());
-    }
-    {
-        let mut store = domain.store.lock_or_exit("the domain store");
-        store.forget_auto_launch(task)?;
-        store.set_start_retry(task, None)?;
-        store.set_launch_refusal(task, None, alondra_core::now_millis())?;
-    }
-    if !closed {
-        return Ok(());
-    }
-    match crate::domain_orchestrator_tools::relaunch(domain, home, task).await {
-        Err(error) if !matches!(error.code.as_str(), "launch_failed" | "workspace_untrusted") => {
-            if let Some(problem) = problem_of(&error.code, &error.message, None) {
-                failed(domain, task, problem, alondra_core::now_millis())?;
-            }
-        }
-        _ => {}
-    }
-    Ok(())
-}
 

@@ -2,7 +2,7 @@
 //! project and only asks it how its servers are: no message reaches Claude, so the model is never
 //! called, and Claude keeps no session of it. Each check is the user's: nothing checks on its own.
 use crate::locks::Poisonable as _;
-use crate::sdk_owner::SdkBackend;
+use crate::sdk_backend::SdkBackend;
 use alondra_domain_rules::{McpServerState, McpStatus};
 use alondra_view_model::{LiveMcpProbe, LiveMcpRemoval};
 use alondra_foundation::McpOrigin;

@@ -15,7 +15,7 @@ use alondra_core::allow_always::{self as rules, AllowAlways, Mode, Place, Refusa
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
-pub(crate) const SETTINGS: &str = ".claude/settings.local.json";
+pub const SETTINGS: &str = ".claude/settings.local.json";
 
 /// The repo a node works in: its main checkout, which keeps the local settings every worktree
 /// shares, and the worktree the session runs in.
@@ -226,7 +226,7 @@ pub fn remove_rule(domain: &crate::domain_runtime::DomainRuntime, id: i64) -> Re
 }
 
 /// The `permissions.allow` entries of a settings file; none when it does not exist.
-pub(crate) fn allowed(settings: &Path) -> Result<Vec<String>> {
+pub fn allowed(settings: &Path) -> Result<Vec<String>> {
     let text = match std::fs::read_to_string(settings) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
@@ -528,7 +528,7 @@ mod tests {
 
 /// Writes the rules of «Allow always», chosen on the card of a decision Claude asked for through
 /// the SDK, once the answer is committed as its decision.
-pub(crate) struct ChosenAlways;
+pub struct ChosenAlways;
 
 impl crate::domain_runtime::CommitObserver for ChosenAlways {
     fn committed(&self, domain: &crate::domain_runtime::DomainRuntime, command: &alondra_domain_rules::Command, state: &alondra_domain_rules::DomainState) {

@@ -33,7 +33,7 @@ fn open_task(state: &alondra_domain_rules::DomainState, session: &str) -> bool {
 /// the node is kept.
 /// A session whose replacement stopped short because it could not be stopped ends for that
 /// reason, and Alondra starts its tasks' next node by itself.
-pub(crate) fn user_closed(domain: &DomainRuntime, session: &str) -> anyhow::Result<()> {
+pub fn user_closed(domain: &DomainRuntime, session: &str) -> anyhow::Result<()> {
     let cwd = domain.live().mods.session(session).and_then(|reported| reported.cwd);
     let Some(why) = domain.live().take_aborted_replace(session) else {
         take_out(domain, session, "node closed by the user", cwd, Relaunch::AskUser)?;
@@ -45,11 +45,11 @@ pub(crate) fn user_closed(domain: &DomainRuntime, session: &str) -> anyhow::Resu
     Ok(())
 }
 
-pub(crate) const REPLACE_ABORTED: &str = "node ended after the orchestrator's replacement could not stop it";
+pub const REPLACE_ABORTED: &str = "node ended after the orchestrator's replacement could not stop it";
 
 /// `user_closed` for a session that ends for `reason`; a relaunch of its tasks starts in `cwd`,
 /// by whoever `relaunch` names. The tasks it frees.
-pub(crate) fn take_out(domain: &DomainRuntime, session: &str, reason: &str, cwd: Option<String>, relaunch: Relaunch) -> anyhow::Result<Vec<TaskId>> {
+pub fn take_out(domain: &DomainRuntime, session: &str, reason: &str, cwd: Option<String>, relaunch: Relaunch) -> anyhow::Result<Vec<TaskId>> {
     let agent = AgentId(session.to_owned());
     let state = domain.state()?;
     let name = state.agents.get(&agent).map_or_else(|| format!("node/{}", &session[..session.len().min(8)]), |known| known.name.clone());

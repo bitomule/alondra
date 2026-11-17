@@ -84,6 +84,7 @@ low_opt_rust_test(
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
         "//crates/codex-protocol:codex_protocol",
         "//crates/daemon-engine:daemon_engine_test_hooks",
+        "//crates/engine-sdk:engine_sdk_test_hooks",
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",
         "//crates/engine-kernel:engine_kernel_test_hooks",

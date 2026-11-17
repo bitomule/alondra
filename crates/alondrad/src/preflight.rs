@@ -24,7 +24,7 @@ pub fn run(config: &Config) -> Result<String> {
 fn run_for(config: &Config, user_home: &Path) -> Result<String> {
     crate::domain_cutover::refuse_legacy_home(&config.home)?;
     alondra_core::home_lock::ensure_ready(&config.home)?;
-    let backend = crate::sdk_owner::backend::load(&config.home, config.sandbox, user_home)
+    let backend = alondra_daemon_engine::sdk_backend::load(&config.home, config.sandbox, user_home)
         .context("the SDK backend configuration is not one this build admits")?;
     let scratch = Scratch::new()?;
     snapshot(&config.home, &scratch.0)?;
@@ -43,7 +43,7 @@ fn start(config: &Config) -> Result<String> {
     let (_, _source_fence) = crate::domain_database_migration::migrate_and_fence(&config.home)?;
     crate::retire_empty_older_sidecar(&config.home)?;
     crate::ensure_domain_protocol(&config.home)?;
-    let domain = alondra_daemon_engine::wiring::open(&config.home)?;
+    let domain = alondra_engine_sdk::wiring::open(&config.home)?;
     crate::domain_bootstrap::DomainDaemon::over(&config.home, domain)?;
     Ok("canonical domain state starts".into())
 }
@@ -250,12 +250,12 @@ mod tests {
         let user = home.join("user");
         let artifact = home.join("artifact");
         std::fs::write(&artifact, b"artifact").unwrap();
-        let sha256 = crate::sdk_owner::backend::digest(&artifact).unwrap();
+        let sha256 = alondra_daemon_engine::sdk_backend::digest(&artifact).unwrap();
         let backend = serde_json::json!({
             "node": artifact, "node_sha256": sha256, "host": artifact, "host_sha256": sha256, "native": artifact, "native_sha256": sha256,
             "host_environment": {}, "native_environment": {"HOME": user}, "state_root": home.join("state"), "io_timeout_seconds": 30,
         });
-        std::fs::write(home.join(crate::sdk_owner::backend::FILE), backend.to_string()).unwrap();
+        std::fs::write(home.join(alondra_daemon_engine::sdk_backend::FILE), backend.to_string()).unwrap();
         let before = contents(&home);
         let admitted = run_for(&config, &user).unwrap();
         assert!(admitted.contains("SDK backend configuration") && admitted.contains("admitted"), "{admitted}");

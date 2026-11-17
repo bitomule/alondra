@@ -330,7 +330,7 @@ fn option(id: &str, label: &str) -> alondra_domain_rules::QuestionOption {
 
 /// A launch going ahead over today's slice of the week puts a card in front of the user, once
 /// per local day: pause until tomorrow or keep going. The launch is never refused.
-pub(crate) fn raise_over_pace_card(domain: &crate::domain_runtime::DomainRuntime, now: Millis) {
+pub fn raise_over_pace_card(domain: &crate::domain_runtime::DomainRuntime, now: Millis) {
     use alondra_domain_rules::SystemCard;
     use alondra_core::usage::{OVER_PACE_KEEP_OPTION, OVER_PACE_PAUSE_OPTION, OVER_PACE_PREFIX, PaceNumbers};
     let Some(usage) = crate::usage_probe::usage(domain, now).filter(|usage| usage.over_pace) else { return };
@@ -460,7 +460,7 @@ pub(crate) fn session_is_back(domain: &crate::domain_runtime::DomainRuntime) {
 /// Puts every node the limit stopped in the admission gate's queue, which tells them to carry on one
 /// at a time, brings back the ones whose connection was lost meanwhile, and probes Claude with a
 /// task of each account whose limit holds tasks of the Agent SDK.
-pub(crate) fn wake_nodes(domain: &crate::domain_runtime::DomainRuntime) {
+pub fn wake_nodes(domain: &crate::domain_runtime::DomainRuntime) {
     crate::claude_access::probe_usage_holds(domain);
     wake_legacy_nodes(domain, true);
 }
@@ -480,7 +480,7 @@ fn wake_legacy_nodes(domain: &crate::domain_runtime::DomainRuntime, require_capa
 
 fn legacy_wake_ready(state: &alondra_domain_rules::DomainState, agent: &alondra_domain_rules::AgentId, now: Millis, require_capacity: bool) -> bool {
     use alondra_core::accounts::{AccountKey, Provider};
-    if crate::sdk_owner::runs_through_sdk(state, agent) { return false; }
+    if crate::sdk_live::runs_through_sdk(state, agent) { return false; }
     let mut tasks = state.tasks.values().filter(|task| task.agent_id.as_ref() == Some(agent));
     let key = if let Some(task) = tasks.next() {
         let key = task.account_key();

@@ -74,6 +74,7 @@ crate.from_cargo(
         "//crates/engine-github:Cargo.toml",
         "//crates/engine-orchestrator:Cargo.toml",
         "//crates/engine-admission:Cargo.toml",
+        "//crates/engine-sdk:Cargo.toml",
         "//crates/alondrad:Cargo.toml",
         "//crates/e2e:Cargo.toml",
         "//crates/alondra:Cargo.toml",

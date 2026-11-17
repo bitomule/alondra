@@ -32,6 +32,7 @@ tokio.workspace = true
 [dev-dependencies]
 alondra-codex-protocol.workspace = true
 alondra-daemon-engine = { workspace = true, features = ["test-hooks"] }
+alondra-engine-sdk = { workspace = true, features = ["test-hooks"] }
 alondra-daemon-engine-model = { workspace = true, features = ["test-hooks"] }
 alondra-daemon-support = { workspace = true, features = ["test-hooks"] }
 alondra-engine-kernel = { workspace = true, features = ["test-hooks"] }

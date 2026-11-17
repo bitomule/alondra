@@ -1,0 +1,138 @@
+load("//tools:tree.bzl", "repo_tree")
+load("//tools:rust_test.bzl", "LOW_OPT_LEVEL", "low_opt_rust_test")
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
+load("//:version.bzl", "VERSION")
+load("//tools:rust_sources.bzl", "production_sources")
+
+# The SDK's crate is the top of the engine: it depends on daemon-engine and engine-admission, which
+# ask it only through the port SdkHosts, and only alondrad, which puts the daemon together, sees it.
+WORKSPACE_DEPS = [
+    "//crates/agent-application:agent_application",
+    "//crates/agent-runtime:agent_runtime",
+    "//crates/core:alondra_core",
+    "//crates/domain:domain",
+    "//crates/domain-rules:domain_rules",
+    "//crates/foundation:foundation",
+    "//crates/process-group:process_group",
+    "//crates/provider-claude:provider_claude",
+    "//crates/provider-codex:provider_codex",
+    "//crates/provider-contract:provider_contract",
+    "//crates/store:store",
+    "//crates/view-model:view_model",
+]
+
+rust_library(
+    name = "engine_sdk",
+    srcs = production_sources(test_only = ["src/machine_hooks.rs"]),
+    crate_name = "alondra_engine_sdk",
+    edition = "2024",
+    version = VERSION,
+    visibility = ["//crates/alondrad:__pkg__"],
+    deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
+        "//crates/daemon-engine:daemon_engine",
+        "//crates/daemon-engine-machine:daemon_engine_machine",
+        "//crates/daemon-engine-model:daemon_engine_model",
+        "//crates/daemon-engine-store:daemon_engine_store",
+        "//crates/daemon-support:daemon_support",
+        "//crates/engine-admission:engine_admission",
+        "//crates/engine-github:engine_github",
+        "//crates/engine-kernel:engine_kernel",
+    ],
+)
+
+TEST_HOOKS_DEPS = [
+    "//crates/codex-protocol:codex_protocol",
+    "//crates/daemon-engine:daemon_engine_test_hooks",
+    "//crates/daemon-engine-machine:daemon_engine_machine_test_hooks",
+    "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
+    "//crates/daemon-engine-store:daemon_engine_store_test_hooks",
+    "//crates/daemon-support:daemon_support_test_hooks",
+    "//crates/engine-admission:engine_admission_test_hooks",
+    "//crates/engine-github:engine_github_test_hooks",
+    "//crates/engine-kernel:engine_kernel_test_hooks",
+]
+
+# alondrad's tests, the machine model and the scenarios build against it: the SDK slice with a fake
+# native Claude, the automatic launch's world, the hosts' owners' decisions.
+rust_library(
+    name = "engine_sdk_test_hooks",
+    testonly = True,
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    crate_features = ["test-hooks"],
+    crate_name = "alondra_engine_sdk",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    rustc_flags = [LOW_OPT_LEVEL],
+    version = VERSION,
+    visibility = ["//crates/alondrad:__pkg__", "//crates/engine-orchestrator:__pkg__", "//crates/machine-model:__pkg__", "//crates/scenarios:__pkg__"],
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + TEST_HOOKS_DEPS,
+)
+
+# Most of the SDK's tests run a real Agent SDK host, a fake Claude or Codex, or the alondra and
+# alondrad binaries, so its one test target carries them.
+low_opt_rust_test(
+    name = "engine_sdk_test",
+    size = "large",
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    compile_data = [
+        "//fixtures/client-v2",
+        "//fixtures/accounts:recorded-rows.json",
+        "//fixtures/domain-v2:acceptance.json",
+    ],
+    crate_name = "alondra_engine_sdk",
+    crate_root = "src/lib.rs",
+    data = [
+        "//agent-host:alondra-codex-host",
+        "//agent-host:alondra-host",
+        "//agent-host:alondra-codex-plan-legacy-fixture-host",
+        "//agent-host:codex-legacy-fixture",
+        "//agent-host:codex-model-double.py",
+        "//agent-host:fake-codex-mcp.py",
+        "//agent-host:fake-codex.py",
+        "//agent-host:persistent-fake-claude.py",
+        "//crates/alondra:alondra",
+        "//crates/alondrad:alondrad",
+    ],
+    edition = "2024",
+    # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
+    env = {
+        "FIXTURE_CLI": "$(rootpath //crates/alondra:alondra)",
+        "FIXTURE_CODEX_HOST": "$(rootpath //agent-host:alondra-codex-host)",
+        "FIXTURE_CODEX_LEGACY_HOST": "$(rootpath //agent-host:codex-legacy-fixture)",
+        "FIXTURE_CODEX_MCP_NATIVE": "$(rootpath //agent-host:fake-codex-mcp.py)",
+        "FIXTURE_CODEX_MODEL_DOUBLE": "$(rootpath //agent-host:codex-model-double.py)",
+        "FIXTURE_CODEX_NATIVE": "$(rootpath //agent-host:fake-codex.py)",
+        "FIXTURE_CODEX_PLAN_LEGACY_HOST": "$(rootpath //agent-host:alondra-codex-plan-legacy-fixture-host)",
+        "FIXTURE_DAEMON": "$(rootpath //crates/alondrad:alondrad)",
+        "FIXTURE_HOST": "$(rootpath //agent-host:alondra-host)",
+        "FIXTURE_NATIVE": "$(rootpath //agent-host:persistent-fake-claude.py)",
+        "FIXTURE_NODE": "$(rootpath //agent-host:alondra-host)",
+        "HOME": ".",
+    },
+    version = VERSION,
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + TEST_HOOKS_DEPS + ["//crates/views:views"],
+)
+
+rust_inputs_test(
+    name = "production_inputs_test",
+    size = "small",
+    required_sources = ["crates/engine-sdk/src/lib.rs", "crates/engine-sdk/src/wiring.rs"],
+    source_dir = "crates/engine-sdk/src/",
+    target_under_test = ":engine_sdk",
+    test_only_sources = ["crates/engine-sdk/src/machine_hooks.rs", "crates/test_support.rs"],
+    test_sources = False,
+)
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+
+# The crate's production sources: the crash report's log catalog reads them, and fails on a test
+# file among them; alondrad's lock policy test reads them too.
+filegroup(
+    name = "report_sources",
+    srcs = production_sources(test_only = ["src/machine_hooks.rs"]),
+    visibility = ["//crates/alondra:__pkg__", "//crates/alondrad:__pkg__"],
+)
+
+repo_tree()

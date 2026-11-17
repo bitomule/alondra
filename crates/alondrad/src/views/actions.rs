@@ -5,7 +5,7 @@
 //! the same command path as the resource API.
 use alondra_engine_admission::AdmissionOf as _;
 
-use alondra_daemon_engine::sdk_owner::SdkOwners as _;
+use alondra_engine_sdk::sdk_owner::SdkOwners as _;
 use alondra_daemon_engine::live::LiveOf as _;
 use alondra_daemon_engine::local_actions::LocalActionsOf as _;
 use alondra_core::clock;
@@ -2239,7 +2239,7 @@ mod tests {
         use base64::{Engine as _, engine::general_purpose::STANDARD};
         let directory = crate::test_support::Directory::new();
         std::fs::create_dir_all(&directory).unwrap();
-        drop(alondra_daemon_engine::wiring::open(&directory).unwrap());
+        drop(alondra_engine_sdk::wiring::open(&directory).unwrap());
         let daemon = crate::domain_bootstrap::DomainDaemon::open(&directory).unwrap();
         let key = p256::ecdsa::SigningKey::from_slice(&[21u8; 32]).unwrap();
         let public_key = STANDARD.encode(key.verifying_key().to_sec1_bytes());
@@ -2284,7 +2284,7 @@ mod tests {
         use std::future::Future;
         let directory = crate::test_support::Directory::new();
         std::fs::create_dir_all(&directory).unwrap();
-        drop(alondra_daemon_engine::wiring::open(&directory).unwrap());
+        drop(alondra_engine_sdk::wiring::open(&directory).unwrap());
         let daemon = crate::domain_bootstrap::DomainDaemon::open(&directory).unwrap();
         let domain = daemon.domain();
         apply_seed_command(&domain, Actor::User { user_id: "fixture".into() }, "request", Command::CreateRequest {
@@ -2373,11 +2373,11 @@ for line in sys.stdin:
         std::fs::write(&native, SIGNED_IN_CODEX).unwrap();
         std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::write(alondra_core::options::path_in(&home), alondra_core::accounts::AccountsConfig::fresh().to_toml()).unwrap();
-        let domain = std::sync::Arc::new(alondra_daemon_engine::wiring::open(&home).unwrap());
-        domain.enable_sdk(crate::sdk_owner::SdkBackend { provider: Provider::Codex, origin: None, native,
+        let domain = std::sync::Arc::new(alondra_engine_sdk::wiring::open(&home).unwrap());
+        domain.enable_sdk(alondra_daemon_engine::sdk_backend::SdkBackend { provider: Provider::Codex, origin: None, native,
             node: directory.join("unused-node"), host: directory.join("unused-host"), node_sha256: String::new(), host_sha256: String::new(), native_sha256: String::new(),
             host_environment: Default::default(), native_environment: crate::test_support::fixture_environment(&user),
-            confinement: None, state_root: directory.join("host-state"), io_timeout_seconds: 30, installed_native: false, launcher: Default::default(), release: alondra_daemon_engine::sdk_owner::backend::this_release() });
+            confinement: None, state_root: directory.join("host-state"), io_timeout_seconds: 30, installed_native: false, launcher: Default::default(), release: alondra_daemon_engine::sdk_backend::this_release() });
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         let request = |verb: Verb, subject: &str, extra: Option<&str>| {
             let state = domain.state().unwrap();
@@ -2416,7 +2416,7 @@ for line in sys.stdin:
         let _home = TestHome(home.clone());
         let options = alondra_core::options::path_in(&home);
         fs::write(&options, "# mine\n[defaults]\neffort = \"light\"\n").unwrap();
-        let domain = std::sync::Arc::new(alondra_daemon_engine::wiring::open(&home).unwrap());
+        let domain = std::sync::Arc::new(alondra_engine_sdk::wiring::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         let state = domain.state().unwrap();
 
@@ -2485,7 +2485,7 @@ for line in sys.stdin:
         let home = crate::test_support::Directory::new();
         fs::create_dir(&home).unwrap();
         let _home = TestHome(home.to_path_buf());
-        let domain = std::sync::Arc::new(alondra_daemon_engine::wiring::open(&home).unwrap());
+        let domain = std::sync::Arc::new(alondra_engine_sdk::wiring::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
             agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
@@ -2911,7 +2911,7 @@ for line in sys.stdin:
     fn action_home() -> (ActionHome, std::sync::Arc<crate::domain_runtime::DomainRuntime>, std::sync::Arc<crate::client_routes::Client>) {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir(&home).unwrap();
-        let domain = std::sync::Arc::new(alondra_daemon_engine::wiring::open(&home).unwrap());
+        let domain = std::sync::Arc::new(alondra_engine_sdk::wiring::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         (ActionHome(home), domain, client)
     }

@@ -65,7 +65,7 @@ fn raise_card(domain: &DomainRuntime, id: &str, scope: Scope, tasks: Vec<Cancell
 
 /// Settles every worktree of a task that is being cancelled: the ones without unsaved files are
 /// deleted, the ones with them are left as they are and one card asks the user about them.
-pub(crate) async fn release_cancelled(domain: &DomainRuntime, task: &Task) -> Result<()> {
+pub async fn release_cancelled(domain: &DomainRuntime, task: &Task) -> Result<()> {
     let mut paths: Vec<(String, bool)> = task.open_worktrees().map(|(path, _)| (path.clone(), true)).collect();
     paths.extend(domain.task_worktree(&task.id)?.filter(|dir| !task.worktrees.contains_key(dir)).map(|dir| (dir, false)));
     let mut held = CancelledWorktree { task_id: task.id.0.clone(), title: task.title.clone(), files: 0, paths: vec![] };
@@ -124,7 +124,7 @@ fn in_use(domain: &DomainRuntime, state: &DomainState, task: &TaskId, path: &str
 /// Deletes the worktrees the user chose to delete on each answered card: all of them, or only
 /// the ones ticked. Keep needs nothing: the answered card is what stops anyone from asking again.
 /// A worktree already gone is nothing to do.
-pub(crate) async fn apply_answers(domain: &DomainRuntime) -> Result<()> {
+pub async fn apply_answers(domain: &DomainRuntime) -> Result<()> {
     let state = domain.state()?;
     for (card, listed) in covering_cards(&state) {
         let InteractionPayload::Question { answer: Some(answer), .. } = &card.payload else { continue };
@@ -147,7 +147,7 @@ pub(crate) async fn apply_answers(domain: &DomainRuntime) -> Result<()> {
 
 /// The worktrees cancelled tasks left behind before this rule: the clean ones go, and one card
 /// lists the tasks whose worktrees hold unsaved files that no earlier card asked about.
-pub(crate) async fn sweep(domain: &DomainRuntime) -> Result<()> {
+pub async fn sweep(domain: &DomainRuntime) -> Result<()> {
     let state = domain.state()?;
     let asked = asked_paths(&state);
     let stored: std::collections::BTreeMap<TaskId, String> = domain.store.lock_or_exit("the domain store").task_worktrees()?.into_iter().collect();

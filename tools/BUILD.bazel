@@ -143,6 +143,7 @@ sh_test(
         "//crates/engine-github:tree",
         "//crates/engine-kernel:tree",
         "//crates/engine-orchestrator:tree",
+        "//crates/engine-sdk:tree",
     ],
     size = "small",
 )
@@ -159,6 +160,7 @@ sh_test(
         "//crates/engine-github:tree",
         "//crates/engine-kernel:tree",
         "//crates/engine-orchestrator:tree",
+        "//crates/engine-sdk:tree",
         "//crates/daemon-engine-model:tree",
         "//crates/daemon-engine-store:tree",
         "//crates/daemon-support:tree",

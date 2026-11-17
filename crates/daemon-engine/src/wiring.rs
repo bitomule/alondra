@@ -1,6 +1,6 @@
-//! Where the engine is put together: the domain runtime of `engine-kernel` opens with the decisions
-//! of the cards a node's mod holds, with every subsystem that hears of its commits and with what
-//! the orchestrator asks of the engine. The kernel itself knows none of them.
+//! What the engine gives the runtime it runs in: what the orchestrator asks of it
+//! (`OrchestratorEngine`) and the subsystems of the engine that hear of its commits. `engine-sdk`
+//! puts the whole engine together; the engine's own tests open a runtime with only its part.
 use crate::domain_runtime::{CommitObserver, DomainRuntime};
 use crate::domain_store::OutboxMessage;
 use crate::live::LiveOf as _;
@@ -15,38 +15,45 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::watch;
 
+/// The engine as its tests open it: the engine's own observers and the orchestrator's port, or
+/// the whole daemon's when a crate above it set `TEST_OPEN`.
+#[cfg(any(test, feature = "test-hooks"))]
 pub fn open(home: &Path) -> Result<DomainRuntime> {
     open_at(home, &crate::domain_database_migration::active_path(home))
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
 pub fn open_at(home: &Path, database: &Path) -> Result<DomainRuntime> {
-    let runtime = DomainRuntime::open_observed(home, database, Some(Arc::new(crate::domain_holds::HeldCards)), observers())?;
-    runtime.provide::<dyn OrchestratorEngine>(Arc::new(Engine));
-    #[cfg(any(test, feature = "test-hooks"))]
-    if let Some(wire) = TEST_WIRING.get() {
-        wire(&runtime);
+    match TEST_OPEN.get() {
+        Some(open) => open(home, database),
+        None => open_engine_at(home, database),
     }
+}
+
+/// The engine alone, with its own observers and the orchestrator's port.
+#[cfg(any(test, feature = "test-hooks"))]
+pub fn open_engine_at(home: &Path, database: &Path) -> Result<DomainRuntime> {
+    let runtime = DomainRuntime::open_observed(home, database, Some(held_cards()), vec![
+        Box::new(crate::gate::PauseResume),
+        Box::new(crate::sdk_live::EndedWaits),
+        Box::new(crate::allow_always::ChosenAlways),
+    ])?;
+    runtime.provide::<dyn OrchestratorEngine>(Arc::new(Engine));
     Ok(runtime)
 }
 
-/// What the tests of a crate above the engine give every runtime the engine's fixtures open: that
-/// crate's ports, as `alondrad` gives them when it puts the daemon together.
+/// How the tests of a crate above the engine open the runtime the engine's fixtures open: with
+/// that crate's observers and ports, as `alondrad` does when it puts the daemon together.
 #[cfg(any(test, feature = "test-hooks"))]
-pub static TEST_WIRING: std::sync::OnceLock<fn(&DomainRuntime)> = std::sync::OnceLock::new();
+pub static TEST_OPEN: std::sync::OnceLock<fn(&Path, &Path) -> Result<DomainRuntime>> = std::sync::OnceLock::new();
 
-/// Every subsystem that hears of the runtime's commits, in the order they hear of each one.
-fn observers() -> Vec<Box<dyn CommitObserver>> {
-    vec![
-        Box::new(crate::gate::PauseResume),
-        Box::new(crate::sdk_live::EndedWaits),
-        Box::new(crate::task_closer::Unattended),
-        Box::new(crate::allow_always::ChosenAlways),
-        Box::new(crate::sdk_owner::Retakes),
-    ]
+/// The decisions of the cards a node's mod holds.
+pub fn held_cards() -> Arc<crate::domain_holds::HeldCards> {
+    Arc::new(crate::domain_holds::HeldCards)
 }
 
 /// What the orchestrator asks of the engine.
-struct Engine;
+pub struct Engine;
 
 impl OrchestratorEngine for Engine {
     fn select_account(&self, domain: &DomainRuntime, home: &Path, intent: &TaskSelection, now: Millis) -> Result<SelectionDecision, DomainError> {
@@ -97,9 +104,6 @@ impl OrchestratorEngine for Engine {
 #[cfg(any(test, feature = "test-hooks"))]
 #[path = "wiring/owner_tests.rs"]
 pub mod owner_tests;
-#[cfg(test)]
-#[path = "wiring/system_command_tests.rs"]
-mod system_command_tests;
 #[cfg(test)]
 #[path = "wiring/load_tests.rs"]
 mod load_tests;

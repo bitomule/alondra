@@ -338,7 +338,7 @@ fn code_hole(template: &Template, name: &str, value: &str) -> bool {
     let source = template.origin.rsplit_once(':').map_or(template.origin.as_str(), |(source, _)| source);
     match (source, name) {
         ("crates/engine-admission/src/admission.rs", "priority") => matches!(value, "High" | "Normal" | "Low"),
-        ("crates/daemon-engine/src/sdk_owner.rs", "handoff") => matches!(value, "Offered" | "RefusedBeforeOffer" | "Uncertain"),
+        ("crates/engine-sdk/src/sdk_owner.rs", "handoff") => matches!(value, "Offered" | "RefusedBeforeOffer" | "Uncertain"),
         ("crates/engine-admission/src/pauses.rs", "reason" | "") => {
             let reason_slot = template.pieces.iter().any(|piece| matches!(piece, Piece::Text(text) if text == ") for " || text == " started a turn while paused for "));
             reason_slot && matches!(value, "Memory" | "Usage" | "ByUser" | "Disk")

@@ -19,7 +19,7 @@ fn a_relay_action_and_a_feed_read_finish_while_a_delivery_holds_the_lease() {
     let directory = crate::test_support::Directory::new();
     std::fs::create_dir_all(&*directory).unwrap();
     let home = directory.to_path_buf();
-    let domain = Arc::new(alondra_daemon_engine::wiring::open(&home).unwrap());
+    let domain = Arc::new(alondra_engine_sdk::wiring::open(&home).unwrap());
     let state = domain.state().unwrap();
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,

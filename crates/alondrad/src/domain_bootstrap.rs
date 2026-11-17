@@ -1,6 +1,6 @@
 //! Local HTTP bootstrap: the routes are the shared domain handlers.
 use alondra_engine_admission::AdmissionOf as _;
-use alondra_daemon_engine::sdk_owner::SdkOwners as _;
+use alondra_engine_sdk::sdk_owner::SdkOwners as _;
 use alondra_daemon_engine::live::LiveOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
@@ -46,7 +46,7 @@ fn require_database(home: &Path) -> Result<()> {
 impl DomainDaemon {
     pub(crate) fn open(home: &Path) -> Result<Arc<Self>> {
         require_database(home)?;
-        Self::over(home, alondra_daemon_engine::wiring::open(home)?)
+        Self::over(home, alondra_engine_sdk::wiring::open(home)?)
     }
 
     /// The daemon over the domain its start already opened, so the journal is replayed once.
@@ -673,7 +673,7 @@ async fn sdk_handover(
         return refused;
     }
     let domain = state.domain();
-    match tokio::task::spawn_blocking(move || crate::sdk_handover::dry_run(&domain).map(|rows| (domain.sdk().is_some(), rows))).await {
+    match tokio::task::spawn_blocking(move || crate::bg_handover::dry_run(&domain).map(|rows| (domain.sdk().is_some(), rows))).await {
         Ok(Ok((backend, rows))) => Json(json!({"sdk_backend": backend, "tasks": rows})).into_response(),
         _ => crate::domain_api::domain_error(DomainError::new("storage_unavailable", "the tasks in progress could not be read")),
     }
@@ -917,7 +917,7 @@ async fn orchestrator_read(
     let Ok(Json(query)) = body else { return crate::domain_api::domain_error(DomainError::new("invalid_input", "Invalid bounded read request")); };
     let home = state.home.clone();
     let result = state.domain.read_work.run(move || {
-        let options = crate::domain_schedule_runner::options_at(&home).map_err(|_| DomainError::new("invalid_input", "Project settings could not be read"))?;
+        let options = crate::options::options_at(&home).map_err(|_| DomainError::new("invalid_input", "Project settings could not be read"))?;
         let root = options.projects_root(&crate::options::user_home());
         crate::scoped_reads::execute(&root, query).map_err(|error| DomainError::new("read_unavailable", format!("{error}")))
     }).await;
@@ -1441,7 +1441,7 @@ mod tests {
         use crate::device_usage::{EXPIRED_KEPT_MS, Expired, ExpiryReason};
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&*home).unwrap();
-        drop(alondra_daemon_engine::wiring::open(&home).unwrap());
+        drop(alondra_engine_sdk::wiring::open(&home).unwrap());
         let state = DomainDaemon::open(&home).unwrap();
         let key = STANDARD.encode(SigningKey::from_slice(&[7u8; 32]).unwrap().verifying_key().to_sec1_bytes());
         state.auth.pair(&state.auth.new_pairing_code(), "iPhone", &key).unwrap();
@@ -1476,7 +1476,7 @@ mod tests {
         }
         let home = scratch_directory.parent().unwrap().join(format!("alondra-cleanup-route-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
-        drop(alondra_daemon_engine::wiring::open(&home).unwrap());
+        drop(alondra_engine_sdk::wiring::open(&home).unwrap());
         let state = DomainDaemon::open(&home).unwrap();
         let sessions = Arc::new(Untouchable(Default::default()));
         state.client().use_sessions(sessions.clone());
@@ -1501,7 +1501,7 @@ mod tests {
         use axum::extract::connect_info::MockConnectInfo;
         let home = scratch_directory.parent().unwrap().join(format!("alondra-pair-loopback-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
-        drop(alondra_daemon_engine::wiring::open(&home).unwrap());
+        drop(alondra_engine_sdk::wiring::open(&home).unwrap());
         for (peer, refused) in [("192.168.1.5:5000", true), ("127.0.0.1:5000", false)] {
             let state = DomainDaemon::open(&home).unwrap();
             let auth = state.auth();
@@ -1531,7 +1531,7 @@ mod tests {
         use axum::extract::connect_info::MockConnectInfo;
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        drop(alondra_daemon_engine::wiring::open(&home).unwrap());
+        drop(alondra_engine_sdk::wiring::open(&home).unwrap());
         let state = DomainDaemon::open(&home).unwrap();
         let auth = state.auth();
         let app = router(state)
@@ -1610,7 +1610,7 @@ mod tests {
         let mac = SigningKey::from_slice(&[7u8; 32]).unwrap();
         std::fs::write(home.join("service-keys/public.json"), json!({"mac_id": "mac-test",
             "signing_key": URL_SAFE_NO_PAD.encode(mac.verifying_key().to_sec1_bytes())}).to_string()).unwrap();
-        drop(alondra_daemon_engine::wiring::open(&home).unwrap());
+        drop(alondra_engine_sdk::wiring::open(&home).unwrap());
         let state = DomainDaemon::open(&home).unwrap();
         let auth = state.auth();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1664,7 +1664,7 @@ mod tests {
             "relay_url = \"http://127.0.0.1:1/\"\nmac_id = \"mac-test\"\nowner_sub = \"owner\"\nsigning_key_path = \"service-keys/mac-signing.key\"\nagreement_key_path = \"service-keys/mac-agreement.key\"\n{devices}"
         );
         std::fs::write(home.join("service.toml"), config("devices = []\n")).unwrap();
-        drop(alondra_daemon_engine::wiring::open(&home).unwrap());
+        drop(alondra_engine_sdk::wiring::open(&home).unwrap());
         let state = DomainDaemon::open(&home).unwrap();
         let auth = state.auth();
         let service = Arc::new(crate::service::Service::open(&home, 0, auth.clone()).unwrap().unwrap());
@@ -1732,7 +1732,7 @@ mod tests {
         let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-domain-bootstrap-schema-{}", crate::auth::random_hex(8)));
         std::fs::create_dir(&home).unwrap();
-        let domain = alondra_daemon_engine::wiring::open(&home).unwrap();
+        let domain = alondra_engine_sdk::wiring::open(&home).unwrap();
         let before = domain.state().unwrap();
         domain.execute(&Actor::User { user_id: "bootstrap-test".into() }, &CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: before.data_epoch.clone(),
@@ -1770,7 +1770,7 @@ mod tests {
     async fn views_and_changes_answer_while_a_writer_holds_the_domain_store() {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        drop(alondra_daemon_engine::wiring::open(&home).unwrap());
+        drop(alondra_engine_sdk::wiring::open(&home).unwrap());
         let auth = Auth::open(&home).unwrap();
         let key = SigningKey::from_slice(&[9u8; 32]).unwrap();
         let pairing = auth.new_pairing_code();
@@ -1884,7 +1884,7 @@ mod tests {
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir(&home).unwrap();
-        let domain = alondra_daemon_engine::wiring::open(&home).unwrap();
+        let domain = alondra_engine_sdk::wiring::open(&home).unwrap();
         let epoch = domain.state().unwrap().data_epoch.0.clone();
         drop(domain);
         let auth = Auth::open(&home).unwrap();
@@ -2395,7 +2395,7 @@ mod tests {
             format!("projects_root = {:?}\n", home.to_str().unwrap()),
         )
         .unwrap();
-        let _domain_epoch = alondra_daemon_engine::wiring::open(&home)
+        let _domain_epoch = alondra_engine_sdk::wiring::open(&home)
             .unwrap()
             .state()
             .unwrap()

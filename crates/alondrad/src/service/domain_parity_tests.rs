@@ -124,7 +124,7 @@ async fn attachments_and_resources_match_on_signed_loopback_and_sealed_service()
         crate::auth::random_hex(8)
     ));
     std::fs::create_dir_all(&home).unwrap();
-    drop(alondra_daemon_engine::wiring::open(&home).unwrap());
+    drop(alondra_engine_sdk::wiring::open(&home).unwrap());
     let daemon = crate::domain_bootstrap::DomainDaemon::open(&home).unwrap();
     let domain = daemon.domain();
     execute(

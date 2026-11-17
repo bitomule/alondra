@@ -122,7 +122,7 @@ pub async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, name: &s
     }
     let scheduled = as_user && message_task(&state, agent, body.task_id.as_ref())
         .is_some_and(|task| state.is_scheduled_task(&task.id));
-    if scheduled || crate::sdk_owner::runs_through_sdk(&state, agent) {
+    if scheduled || crate::sdk_live::runs_through_sdk(&state, agent) {
         let told = tell_through_sdk(domain, &state, home, user, name, agent, body, as_user);
         if as_user && !scheduled && told.is_ok() {
             domain.gate().resume_by_user_message(&agent.0, alondra_core::now_millis());

@@ -10,7 +10,7 @@ mod load_bench_tests;
 mod sdk_owner_tests;
 mod task_list_tests;
 
-/// Gives every runtime the engine's fixtures open the admission gate, as the daemon does.
+/// Opens every runtime the engine's fixtures open as the daemon does.
 fn wired() {
-    alondra_daemon_engine::wiring::TEST_WIRING.get_or_init(|| alondra_engine_admission::wire);
+    alondra_daemon_engine::wiring::TEST_OPEN.get_or_init(|| alondra_engine_sdk::wiring::open_at);
 }

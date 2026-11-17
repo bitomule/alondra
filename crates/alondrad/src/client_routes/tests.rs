@@ -1,7 +1,7 @@
 //! Public routes are exercised with signed requests. Views use the same client
 //! in-process, so their reads and actions exercise that client directly.
 use alondra_engine_admission::AdmissionOf as _;
-use alondra_daemon_engine::sdk_owner::SdkOwners as _;
+use alondra_engine_sdk::sdk_owner::SdkOwners as _;
 use alondra_daemon_engine::live::LiveOf as _;
 use super::*;
 use crate::auth::Auth;
@@ -47,7 +47,7 @@ impl Fixture {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir(&home).unwrap();
         if let Some(accounts)=accounts { std::fs::write(alondra_core::options::path_in(&home),accounts.to_toml()).unwrap(); }
-        drop(alondra_daemon_engine::wiring::open(&home).unwrap());
+        drop(alondra_engine_sdk::wiring::open(&home).unwrap());
         let auth = Auth::open(&home).unwrap();
         let key = SigningKey::from_slice(&[31u8; 32]).unwrap();
         let device = auth.pair(&auth.new_pairing_code(), "terminal", &STANDARD.encode(key.verifying_key().to_sec1_bytes())).unwrap();
@@ -307,7 +307,7 @@ async fn times_are_the_commits_own_and_survive_a_restart() {
     assert_eq!(history.len(), 3, "one step per state the task entered, closing while its node is closed: {history:?}");
     assert_eq!(history.last().map(|step| step.at), cancelled["tasks"]["task-1"]["state_since"].as_i64());
 
-    let reopened = alondra_daemon_engine::wiring::open(&fixture.home).unwrap();
+    let reopened = alondra_engine_sdk::wiring::open(&fixture.home).unwrap();
     assert_eq!(reopened.store.lock().unwrap().task_state_times().unwrap(), fixture.domain.store.lock().unwrap().task_state_times().unwrap(), "times are in the database");
     assert_eq!(reopened.store.lock().unwrap().request_times().unwrap().len(), 3);
 }
@@ -772,7 +772,7 @@ async fn a_new_request_reaches_the_orchestrators_next_batch() {
 
     let root = alondra_engine_orchestrator::test_support::Directory::new();
     std::fs::create_dir(&root).unwrap();
-    let orchestrator = crate::domain_orchestrator::testing::Fixture::over(root, fixture.domain.clone(), fixture.home.to_path_buf(), alondra_daemon_engine::sdk_owner::tests::HostRoot::new());
+    let orchestrator = crate::domain_orchestrator::testing::Fixture::over(root, fixture.domain.clone(), fixture.home.to_path_buf(), alondra_engine_sdk::sdk_owner::tests::HostRoot::new());
     orchestrator.tick().await;
     let prompt = orchestrator.prompts().pop().expect("the batch reached Claude");
     assert!(prompt.contains("The user created Request request-1") && prompt.contains("(no task of its own): Make the editor readable"), "{prompt}");
@@ -1290,7 +1290,7 @@ fn runtime_progress_slow_issue_refreshes_leave_the_view_read_lane_free() {
     let directory = crate::test_support::Directory::new();
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::write(alondra_core::options::path_in(&directory), "[issues]\nowners = [\"fixture\"]\n").unwrap();
-    let domain = Arc::new(alondra_daemon_engine::wiring::open(&directory).unwrap());
+    let domain = Arc::new(alondra_engine_sdk::wiring::open(&directory).unwrap());
     let client = Client::open(domain, &directory, Default::default());
     let (entered, started) = tokio::sync::oneshot::channel();
     let release = Arc::new(tokio::sync::Semaphore::new(0));

@@ -141,7 +141,7 @@ The existing store retention also logs its allocated bytes before and after spac
 ## A resting node holds no process
 
 A node that rests for two minutes with nothing in its host loses its host and its native process and
-keeps its session (`crates/daemon-engine/src/idle_release.rs`). The decision reads the task's
+keeps its session (`crates/engine-sdk/src/idle_release.rs`). The decision reads the task's
 lifecycle alone: no turn, own work, continuation, callback, effect, input or work owed after a merge,
 no pause, no move of account or provider, and no plan mode, which a resumed session would open
 without.

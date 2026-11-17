@@ -100,7 +100,7 @@ pub(crate) fn probe_usage_holds(domain: &DomainRuntime) {
     }
 }
 
-pub(crate) fn probe(domain: &DomainRuntime, hold: ClaudeHold, account: Option<AccountId>) {
+pub fn probe(domain: &DomainRuntime, hold: ClaudeHold, account: Option<AccountId>) {
     probe_for(domain,Provider::Claude,hold,account)
 }
 

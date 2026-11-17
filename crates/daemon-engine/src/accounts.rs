@@ -117,7 +117,7 @@ impl Codex {
 }
 
 /// Whether a session one account started resumes with the other: both read the same conversations.
-pub(crate) fn share_sessions(domain: &DomainRuntime, one: &AccountId, other: &AccountId) -> bool {
+pub fn share_sessions(domain: &DomainRuntime, one: &AccountId, other: &AccountId) -> bool {
     let default_profile = domain.sdk().and_then(|(backend, _)| claude_account::configured_profile(&|key: &str| backend.native_environment.get(key).cloned()));
     claude_account::shares_sessions(domain.home(), &Claude::user_home(domain), default_profile.as_deref(), one, other)
 }
@@ -206,12 +206,12 @@ pub(crate) fn selection_evidence(domain: &DomainRuntime, account: &AccountKey, n
 }
 
 /// Full provider provenance and timestamps stay in the daemon log.
-pub(crate) fn log_choice(domain: &DomainRuntime, what: &str, account: &AccountKey, now: alondra_core::Millis) {
+pub fn log_choice(domain: &DomainRuntime, what: &str, account: &AccountKey, now: alondra_core::Millis) {
     let line = selection_evidence(domain, account, now);
     log!("{what}: {line}");
 }
 
-pub(crate) fn select_for_launch(domain: &DomainRuntime, home: &Path, intent: &alondra_core::model_selection::TaskSelection, now: alondra_core::Millis)
+pub fn select_for_launch(domain: &DomainRuntime, home: &Path, intent: &alondra_core::model_selection::TaskSelection, now: alondra_core::Millis)
     -> Result<alondra_core::model_selection::SelectionDecision, alondra_domain_rules::DomainError>
 {
     select_for_node(domain, home, intent, None, None, now)
@@ -234,13 +234,13 @@ pub fn select_for_active_model(domain: &DomainRuntime, task_id: &alondra_domain_
     Ok(decision)
 }
 
-pub(crate) fn select_for_launch_with_tools(domain: &DomainRuntime, home: &Path, intent: &alondra_core::model_selection::TaskSelection,
+pub fn select_for_launch_with_tools(domain: &DomainRuntime, home: &Path, intent: &alondra_core::model_selection::TaskSelection,
     denied_tools: &[String], now: alondra_core::Millis) -> Result<alondra_core::model_selection::SelectionDecision, alondra_domain_rules::DomainError>
 {
     select_for_node_with_tools(domain, home, intent, None, None, denied_tools, now)
 }
 
-pub(crate) fn select_for_node(domain: &DomainRuntime, home: &Path, intent: &alondra_core::model_selection::TaskSelection,
+pub fn select_for_node(domain: &DomainRuntime, home: &Path, intent: &alondra_core::model_selection::TaskSelection,
     preferred_account: Option<&AccountKey>, provider: Option<Provider>, now: alondra_core::Millis) -> Result<alondra_core::model_selection::SelectionDecision, alondra_domain_rules::DomainError>
 {
     select_for_node_with_tools(domain, home, intent, preferred_account, provider, &[], now)
@@ -303,16 +303,16 @@ pub fn answered(domain: &DomainRuntime) {
 pub use crate::ports::AccountWait;
 
 /// Every account the user registered, on or off: the folders an execution may run Claude with.
-pub(crate) fn registered(home: &Path) -> Vec<AccountId> {
+pub fn registered(home: &Path) -> Vec<AccountId> {
     registered_provider(home, Provider::Claude)
 }
 
-pub(crate) fn registered_provider(home: &Path, provider: Provider) -> Vec<AccountId> {
+pub fn registered_provider(home: &Path, provider: Provider) -> Vec<AccountId> {
     config(home).map_or_else(|_| vec![], |config| config.accounts(provider).into_iter().map(|account| account.id).collect())
 }
 
 /// The folders of every account but the default one: where each keeps its Claude settings.
-pub(crate) fn profiles(home: &Path) -> Vec<PathBuf> {
+pub fn profiles(home: &Path) -> Vec<PathBuf> {
     registered(home).iter().filter_map(|account| alondra_core::accounts::folder(home, account)).collect()
 }
 
@@ -322,7 +322,7 @@ pub(crate) fn generation(state: &alondra_domain_rules::DomainState, account: &Ac
     generation_provider(state, &AccountKey::new(Provider::Claude, account.clone()))
 }
 
-pub(crate) use crate::domain_store::generation_provider;
+pub use crate::domain_store::generation_provider;
 
 /// What the domain keeps of the accounts but a check never sees: the generations of their credentials.
 fn unchecked(accounts: &[AccountStatus]) -> Vec<AccountStatus> {
@@ -423,7 +423,7 @@ impl NativeAuthAccount {
 }
 
 /// Refreshes only the account of this existing native session, including when disabled for new work.
-pub(crate) fn probe_current_codex(domain: &DomainRuntime, task_id: &alondra_domain_rules::TaskId, hold: Option<alondra_domain_rules::ClaudeHold>) -> Result<bool, String> {
+pub fn probe_current_codex(domain: &DomainRuntime, task_id: &alondra_domain_rules::TaskId, hold: Option<alondra_domain_rules::ClaudeHold>) -> Result<bool, String> {
     use alondra_domain_rules::{ClaudeHold, DomainError};
     use crate::domain_store::{Attached, StoreError};
     if hold == Some(ClaudeHold::SignedOut) { return Err("Only the user's answer checks a signed-out native session".into()); }
@@ -501,7 +501,7 @@ pub(crate) fn probe_current_codex(domain: &DomainRuntime, task_id: &alondra_doma
 
 /// Records how new work is spread, and whether nodes move between accounts, when the domain
 /// holds another way.
-pub(crate) fn record_distribution(domain: &DomainRuntime, policy: Policy, move_when_exhausted: bool) {
+pub fn record_distribution(domain: &DomainRuntime, policy: Policy, move_when_exhausted: bool) {
     let state = domain.read();
     if state.state().account_policy == policy && state.state().account_moves == move_when_exhausted {
         return;
@@ -556,7 +556,7 @@ pub fn check(domain: &DomainRuntime, home: &Path) {
     }
 }
 
-fn check_current(domain: &DomainRuntime, home: &Path) -> crate::native_probe::Outcome {
+pub fn check_current(domain: &DomainRuntime, home: &Path) -> crate::native_probe::Outcome {
     if let Err(why) = migrate_legacy_settings(domain, home) { log!("Provider settings migration needs repair: {why}"); return crate::native_probe::Outcome::Finished; }
     match probe_fence(domain, home) {
         Ok((fence, file)) => {
@@ -662,7 +662,7 @@ fn uncrossed(before: &[AccountStatus], now: &[AccountStatus]) -> Vec<(AccountKey
 
 /// While an account answered with another's profile, its sessions recorded that other identity:
 /// they ran on it. Their conversations are shared, so they go on, under the account's own identity.
-pub(crate) fn correct_crossed_sessions(domain: &DomainRuntime, before: &[AccountStatus]) {
+pub fn correct_crossed_sessions(domain: &DomainRuntime, before: &[AccountStatus]) {
     let state = domain.read().state().clone();
     let crossed = uncrossed(before, &state.accounts);
     if crossed.is_empty() { return; }
@@ -738,11 +738,11 @@ pub enum ChangeRefused {
 
 /// Makes a change the user asked for from Settings: judged by the guard of its command, written
 /// to `options.toml`, recorded in the domain, and the accounts checked again.
-pub(crate) fn change(domain: &DomainRuntime, home: &Path, actor: &Actor, change: &AccountChange) -> Result<(), ChangeRefused> {
+pub fn change(domain: &DomainRuntime, home: &Path, actor: &Actor, change: &AccountChange) -> Result<(), ChangeRefused> {
     change_for_provider(domain, home, actor, Provider::Claude, change)
 }
 
-pub(crate) fn change_for_provider(domain: &DomainRuntime, home: &Path, actor: &Actor, provider: Provider, change: &AccountChange) -> Result<(), ChangeRefused> {
+pub fn change_for_provider(domain: &DomainRuntime, home: &Path, actor: &Actor, provider: Provider, change: &AccountChange) -> Result<(), ChangeRefused> {
     change_for_provider_authorized(domain, home, actor, provider, change, || Ok(()))
 }
 
@@ -1139,6 +1139,6 @@ fn sign_out(home: &Path, claude: Option<&Claude>, id: &AccountId) -> Result<(), 
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-hooks"))]
 #[path = "accounts_tests.rs"]
-mod tests;
+pub mod tests;

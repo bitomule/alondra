@@ -1,7 +1,7 @@
 //! Machine pressure is recorded as samples, incidents and admission state. No incident creates
 //! a user card or a fallback push. The admission gate resumes waiting nodes after recovery.
 //! Disk incidents retain hysteresis; memory only paces new starts and never stops running work.
-use crate::sdk_owner::SdkOwners as _;
+use crate::hosts::HostsOf as _;
 use crate::live::LiveOf as _;
 use crate::AdmissionOf as _;
 use alondra_domain_rules::SystemCard;
@@ -209,7 +209,7 @@ pub(crate) struct Waiter {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Action {
+pub enum Action {
     Log { id: String, card: MachineCard },
     Withdraw(String),
     /// The incident is over: its declared waits are left to the admission gate.
@@ -453,7 +453,7 @@ impl MachineWatch {
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn set_disk_low(&self, low: bool) {
+    pub fn set_disk_low(&self, low: bool) {
         let disk = Machine { disk_total: 500_000_000_000, disk_available: if low { 1_000_000_000 } else { 400_000_000_000 }, ..Machine::default() };
         self.measure_disk(disk_space(&disk));
         self.set_incident(step(None, &disk, &[], false, 0).0);
@@ -520,13 +520,13 @@ impl MachineWatch {
 
     /// Volumes alone on their disk: what they hold grows by what their free space falls.
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn give_volumes(&self, volumes: Vec<(PathBuf, crate::disk::Space)>) {
+    pub fn give_volumes(&self, volumes: Vec<(PathBuf, crate::disk::Space)>) {
         let volumes = volumes.into_iter().map(|(mount, space)| (mount, space, space.total.saturating_sub(space.usable()))).collect();
         self.record().candidates = Candidates::Given(volumes);
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn give_volumes_holding(&self, volumes: Vec<(PathBuf, crate::disk::Space, u64)>) {
+    pub fn give_volumes_holding(&self, volumes: Vec<(PathBuf, crate::disk::Space, u64)>) {
         self.record().candidates = Candidates::Given(volumes);
     }
 
@@ -565,7 +565,7 @@ impl MachineWatch {
     /// stretch took `disk_peaks::LEARNED_BYTES` from becomes a volume builds write to: watched, its
     /// card raised when it runs low, and its room reserved like the Mac's own disk's. Returns
     /// whether a stretch ended or the confirmed set of mounts changed.
-    pub(crate) fn measure_volumes(&self, working: &BTreeMap<TaskId, Option<String>>, now: Millis) -> bool {
+    pub fn measure_volumes(&self, working: &BTreeMap<TaskId, Option<String>>, now: Millis) -> bool {
         if self.record().peaks_ignored {
             return false;
         }
@@ -617,7 +617,7 @@ impl MachineWatch {
     /// Takes a sample of the usable space of the Mac's own disk with the tasks at work, by
     /// project; returns whether one stopped working or one whose start went unseen began, which
     /// frees what they reserved.
-    pub(crate) fn measure_peaks(&self, usable: u64, working: &BTreeMap<TaskId, Option<String>>, now: Millis) -> bool {
+    pub fn measure_peaks(&self, usable: u64, working: &BTreeMap<TaskId, Option<String>>, now: Millis) -> bool {
         let mut record = self.record();
         if record.peaks_ignored {
             return false;
@@ -633,7 +633,7 @@ impl MachineWatch {
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) fn seed_peaks(&self, project: &str, peaks: &[u64]) {
+    pub fn seed_peaks(&self, project: &str, peaks: &[u64]) {
         self.record().peaks.seed(project, peaks);
     }
 
@@ -660,7 +660,7 @@ impl MachineWatch {
         }
     }
 
-    pub(crate) fn disk_reserved(&self, working: &BTreeMap<TaskId, Option<String>>) -> u64 {
+    pub fn disk_reserved(&self, working: &BTreeMap<TaskId, Option<String>>) -> u64 {
         self.disk_reserved_for(working, None)
     }
 
@@ -686,7 +686,7 @@ impl MachineWatch {
     /// The disk short of room for the next node, of `project`, on top of what the `working` tasks
     /// may still take: the Mac's own disk, or else a volume builds write to, named. Also while the
     /// disk's card is open, when no node starts. Once short, a disk needs margin to have room again.
-    pub(crate) fn disk_room(&self, working: &BTreeMap<TaskId, Option<String>>, project: Option<&str>, now: Millis) -> Option<crate::disk::Room> {
+    pub fn disk_room(&self, working: &BTreeMap<TaskId, Option<String>>, project: Option<&str>, now: Millis) -> Option<crate::disk::Room> {
         self.disk_room_for(working, project, None, now)
     }
 
@@ -750,7 +750,7 @@ impl MachineWatch {
     }
 
     /// Whether the fullest disk fell under its floor.
-    pub(crate) fn under_floor(&self) -> bool {
+    pub fn under_floor(&self) -> bool {
         self.record().disk.is_some_and(|space| space.under_floor())
     }
 
@@ -767,8 +767,8 @@ impl MachineWatch {
         self.refuse_launch_on(mount, self.space_where_it_works(cwd))
     }
 
-    #[cfg(test)]
-    pub(crate) fn give_launch_space(&self, path: PathBuf, space: crate::disk::Space) {
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn give_launch_space(&self, path: PathBuf, space: crate::disk::Space) {
         self.launch_space.lock().unwrap().insert(path, space);
     }
 
@@ -943,7 +943,7 @@ pub fn pace(domain: &DomainRuntime, machine: &Machine) {
     let now = if machine.at == 0 { now_millis() } else { machine.at };
     let Some(before) = watch.sample(machine, now) else { return };
     let mut seen = BTreeSet::new();
-    let footprints = domain.node_groups_by_agent().into_iter().filter(|(_, group)| seen.insert(*group))
+    let footprints = domain.hosts().node_groups_by_agent().into_iter().filter(|(_, group)| seen.insert(*group))
         .map(|(agent, group)| alondra_process_group::footprint(group).map(|bytes| (agent, bytes)))
         .collect::<std::io::Result<BTreeMap<_, _>>>();
     match footprints {
@@ -976,7 +976,7 @@ pub fn pace(domain: &DomainRuntime, machine: &Machine) {
 
 /// One look at a sample of the machine: the incident it opens, keeps or ends, and the actions that
 /// follow. A sample that measures space on the disk takes over the executions that found it full.
-pub(crate) fn look(domain: &DomainRuntime, machine: Machine) -> Vec<Action> {
+pub fn look(domain: &DomainRuntime, machine: Machine) -> Vec<Action> {
     let watch = &domain.machine_watch();
     watch.record().volume_readings_fresh = false;
     pace(domain, &machine);
@@ -1021,7 +1021,7 @@ pub(crate) fn look(domain: &DomainRuntime, machine: Machine) -> Vec<Action> {
         domain.admission().release_declared(domain);
     }
     if space {
-        crate::sdk_owner::retake_waiting_for_space(domain);
+        domain.hosts().retake_waiting_for_space();
     }
     domain.admission().poke();
     #[cfg(any(test, feature = "test-hooks"))]

@@ -160,7 +160,7 @@ fn update_context(contexts:&crate::idle_compaction::Contexts,task:&alondra_domai
         _=>{}
     }
 }
-pub(crate) fn feed(domain: &crate::domain_runtime::DomainRuntime, agent: &alondra_domain_rules::AgentId, observation: &alondra_provider_contract::OrderedObservation) {
+pub fn feed(domain: &crate::domain_runtime::DomainRuntime, agent: &alondra_domain_rules::AgentId, observation: &alondra_provider_contract::OrderedObservation) {
     if let Some(message) = alondra_provider_codex::native_message(observation) {
         let before=domain.live().mods.session(&agent.0).and_then(|session|session.codex);
         let now=alondra_core::now_millis();domain.live().mods.apply_codex(&agent.0,&message,now);

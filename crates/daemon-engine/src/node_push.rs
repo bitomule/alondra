@@ -144,8 +144,8 @@ pub mod testing {
     /// Records every line written down its connection and acknowledges each message, the way the
     /// mod does once its session takes it, unless told to stay silent.
     pub struct Node {
-        pub(crate) lines: Arc<Mutex<Vec<Value>>>,
-        pub(crate) silent: Arc<AtomicBool>,
+        pub lines: Arc<Mutex<Vec<Value>>>,
+        pub silent: Arc<AtomicBool>,
     }
 
     impl Node {
@@ -166,7 +166,7 @@ pub mod testing {
         }
 
         /// What each message said, without the `[From … · …]` stamp in front of it.
-        pub(crate) fn texts(&self) -> Vec<String> {
+        pub fn texts(&self) -> Vec<String> {
             self.stamped().into_iter().map(|(_, text)| text).collect()
         }
 

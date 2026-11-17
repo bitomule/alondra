@@ -14,7 +14,7 @@
 //! gate starts them; the automatic launches, the scheduled runs and the revival of lost nodes keep
 //! their own durable claims and only ask the gate, which wakes them when their turn comes. Nodes
 //! paused for the machine (`pauses`) wait here too and the gate tells them to carry on.
-use crate::sdk_owner::SdkOwners as _;
+use crate::hosts::HostsOf as _;
 use crate::live::LiveOf as _;
 use crate::AdmissionOf as _;
 use crate::locks::Poisonable as _;
@@ -36,7 +36,7 @@ use std::sync::Arc;
 use crate::runtime_mutex::RuntimeMutex as Mutex;
 use std::time::Duration;
 
-pub(crate) const SPACING: Millis = 60_000;
+pub const SPACING: Millis = 60_000;
 /// The limit of tests and of a sandbox with fast timing, in place of automatic.
 pub const UNPACED: u32 = 12;
 /// A node admitted this recently counts as working even before its mod reports a turn, and its
@@ -316,11 +316,11 @@ impl Admission {
         self.turn.subscribe()
     }
 
-    pub(crate) fn paused(&self, domain: &DomainRuntime, session: &str) -> Option<Paused> {
+    pub fn paused(&self, domain: &DomainRuntime, session: &str) -> Option<Paused> {
         self.lock_with(domain).saved.pauses.paused.get(session).cloned()
     }
 
-    pub(crate) fn pauses(&self, domain: &DomainRuntime) -> Pauses {
+    pub fn pauses(&self, domain: &DomainRuntime) -> Pauses {
         self.lock_with(domain).saved.pauses.clone()
     }
 
@@ -423,7 +423,7 @@ impl Admission {
     /// gate gives it the slot. The queue comes from the domain's state, so a node waits there whether
     /// or not its owner asked; asking only lets it go on in the same look when there is room. A slot
     /// given counts from then on until what the node goes on with reaches it.
-    pub(crate) fn may_take_turn(&self, domain: &DomainRuntime, task: &TaskId, now: Millis) -> bool {
+    pub fn may_take_turn(&self, domain: &DomainRuntime, task: &TaskId, now: Millis) -> bool {
         if fixes_accepted_pr(domain, task) {
             let mut inner = self.lock();
             inner.turns.remove(task);
@@ -473,8 +473,8 @@ impl Admission {
     }
 
     /// Whether the gate gave `task` a slot that still counts for it.
-    #[cfg(test)]
-    pub(crate) fn gave_slot(&self, task: &TaskId) -> bool {
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn gave_slot(&self, task: &TaskId) -> bool {
         let inner = self.lock();
         inner.turns.contains(task) || inner.taken.contains_key(task)
     }
@@ -743,7 +743,7 @@ fn hand_pauses(domain: &DomainRuntime, wanted: &BTreeMap<String, Paused>) -> BTr
         domain.seals.wake();
     }
     for task in resumed {
-        crate::sdk_owner::take_if_unowned(domain, &task);
+        domain.hosts().take_if_unowned(&task);
     }
     refused
 }
@@ -869,7 +869,7 @@ fn go_on(domain: &DomainRuntime, state: &DomainState, granted: &[TaskId]) {
     }
     domain.seals.wake();
     for task in granted.iter().filter(|task| !has_host(domain, state, task)) {
-        crate::sdk_owner::take_if_unowned(domain, task);
+        domain.hosts().take_if_unowned(task);
     }
 }
 
@@ -894,7 +894,7 @@ fn settle_turns(state: &DomainState, inner: &mut Inner, now: Millis) {
 }
 
 fn has_host(domain: &DomainRuntime, state: &DomainState, task: &TaskId) -> bool {
-    state.tasks.get(task).and_then(|task| task.agent_id.as_ref()).is_some_and(|agent| domain.owns_sdk_host(agent))
+    state.tasks.get(task).and_then(|task| task.agent_id.as_ref()).is_some_and(|agent| domain.hosts().owns(agent))
 }
 
 /// Remembers the resumes the gate let through whose node now holds a slot of its own.
@@ -971,7 +971,7 @@ fn still_waits(state: &DomainState, key: &Key) -> bool {
 /// was lost and waits for the gate hold none, whatever their session still reports, and so does one
 /// the disk's floor held while the turn it runs ends; one the gate let back and Alondra is
 /// restarting holds one.
-pub(crate) fn working_tasks(domain: &DomainRuntime, state: &DomainState) -> BTreeSet<TaskId> {
+pub fn working_tasks(domain: &DomainRuntime, state: &DomainState) -> BTreeSet<TaskId> {
     let read = domain.read();
     if read.index().describes(state) {
         return slot_tasks(state, read.index());
@@ -993,13 +993,13 @@ fn turns_held_for_disk(state: &DomainState) -> impl Iterator<Item = TaskId> + '_
 }
 
 /// `working_tasks` with the project each one works on.
-pub(crate) fn working_projects(domain: &DomainRuntime, state: &DomainState) -> BTreeMap<TaskId, Option<String>> {
+pub fn working_projects(domain: &DomainRuntime, state: &DomainState) -> BTreeMap<TaskId, Option<String>> {
     projects_of(state, working_tasks(domain, state).iter())
 }
 
 /// Those of `tasks` the disk is reserved for: a paused node reserves nothing, whatever its held turn
 /// still runs, so the nodes the disk stopped never keep each other from coming back.
-pub(crate) fn reserving_tasks<'a>(state: &DomainState, tasks: impl Iterator<Item = &'a TaskId>) -> BTreeMap<TaskId, Option<String>> {
+pub fn reserving_tasks<'a>(state: &DomainState, tasks: impl Iterator<Item = &'a TaskId>) -> BTreeMap<TaskId, Option<String>> {
     let held: BTreeSet<TaskId> = turns_held_for_disk(state).collect();
     projects_of(state, tasks.filter(|task| !held.contains(*task)))
 }
@@ -1011,7 +1011,7 @@ fn projects_of<'a>(state: &DomainState, tasks: impl Iterator<Item = &'a TaskId>)
 /// The disk fell under its floor: the next turn of every node at work but the one that took least
 /// waits for room, with no card, and comes back through the queue. The turns they run go on, and a
 /// node of `claude --bg`, whose next turn cannot wait, goes on too.
-pub(crate) fn hold_for_disk(domain: &DomainRuntime, now: Millis) {
+pub fn hold_for_disk(domain: &DomainRuntime, now: Millis) {
     let Ok(state) = domain.state() else { return };
     let gate = &domain.admission();
     let pauses = gate.pauses(domain);
@@ -1057,7 +1057,7 @@ fn queued_launches(domain: &DomainRuntime, state: &DomainState, now: Millis) -> 
 
 /// What `options.toml` sets and what this Mac takes with its nodes measured at what `mac` says.
 fn node_limits(domain: &DomainRuntime, mac: &MacState) -> (NodeLimit, NodeLimits) {
-    let file = crate::domain_schedule_runner::options_at(domain.home()).unwrap_or_default();
+    let file = crate::options::options_at(domain.home()).unwrap_or_default();
     let (cores, memory) = if mac.cpus > 0 && mac.memory_total > 0 { (mac.cpus, mac.memory_total) } else { machine_size() };
     (file.max_working_nodes, NodeLimits::of(cores, memory, mac.node_cost.unwrap_or(crate::node_cost::DEFAULT)))
 }
@@ -1210,7 +1210,7 @@ pub fn hold_queued(domain: &DomainRuntime, task: &TaskId, now: Millis) -> Result
             let state = domain.state().map_err(|_| NOT_QUEUED)?;
             let key = Key::Task(task.clone());
             let waits = domain.admission().lock().asking.contains_key(&key)
-                && state.tasks.get(task).is_some_and(|task| crate::auto_launch::candidate(&state, task));
+                && state.tasks.get(task).is_some_and(|task| crate::launch_plans::candidate(&state, task));
             if !waits {
                 return Err(NOT_QUEUED);
             }
@@ -1289,7 +1289,7 @@ pub async fn pass(domain: &DomainRuntime, home: &Path) -> anyhow::Result<()> {
 
 /// `pass` at `now`: looks at the pauses, then lets the head of the queue go, a paused node by
 /// telling it to carry on. It never pauses a working node.
-pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) -> anyhow::Result<()> {
+pub async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) -> anyhow::Result<()> {
     let state = domain.state()?;
     let rows = domain.store.lock_or_exit("the domain store").launch_queue()?;
     for row in rows.iter().filter(|row| !still_waits(&state, &Key::Task(row.task_id.clone()))) {
@@ -1349,8 +1349,8 @@ pub(crate) async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) ->
     for (session, paused) in to_halt {
         crate::pauses::hold_sdk_turn(domain, &session, &paused);
     }
-    crate::sdk_owner::take_working_unowned(domain, &state, now);
-    crate::sdk_owner::close_hosts_of_ended_nodes(domain, &state);
+    domain.hosts().take_working_unowned(&state, now);
+    domain.hosts().close_hosts_of_ended_nodes(&state);
     let Some(Key::Task(task)) = head else { return Ok(()) };
     let Some(row) = domain.store.lock_or_exit("the domain store").launch_queue()?.into_iter().find(|row| row.task_id == task) else {
         return Ok(());

@@ -24,7 +24,7 @@ fn world() -> World {
     let project = root.join("App");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&project).unwrap();
-    let domain = alondra_daemon_engine::wiring::open(&home).unwrap();
+    let domain = alondra_engine_sdk::wiring::open(&home).unwrap();
     let state = domain.state().unwrap();
     domain.execute(&Actor::User { user_id: "u".into() }, &CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "request".into(), expected_revision: state.revision,
@@ -132,7 +132,7 @@ fn preparing_reopening_uses_the_retained_project_defaults_without_the_directory_
     std::fs::write(alondra_core::options::path_in(&w.home), "[projects.App]\ndefaults = { effort = \"hard\" }\n").unwrap();
     let saved = plan(&w, json!({"project": "App", "model": null}));
     std::fs::remove_dir(&w.project).unwrap();
-    assert!(crate::options::project_of(&crate::domain_schedule_runner::options_at(&w.home).unwrap(), &w.project).is_none(),
+    assert!(crate::options::project_of(&crate::options::options_at(&w.home).unwrap(), &w.project).is_none(),
         "the retained workspace cannot infer its original project from the current project root");
     validate_reopening(&w.domain, &w.home, &"r".into(), &saved).unwrap();
     assert!(!w.project.exists());

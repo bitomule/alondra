@@ -1,13 +1,13 @@
 //! The SDK owner's journeys that go through alondrad: an answer delivered to the node, a
 //! button pressed in a client, the context a view shows.
 use alondra_engine_admission::AdmissionOf as _;
-use alondra_daemon_engine::sdk_owner::SdkOwners as _;
+use alondra_engine_sdk::sdk_owner::SdkOwners as _;
 use alondra_daemon_engine::live::LiveOf as _;
 use alondra_domain::ActivityView;
 use crate::domain_store::StoreError;
-use alondra_daemon_engine::sdk_owner::tests::codex_tests::*;
-use alondra_daemon_engine::sdk_owner::tests::*;
-use alondra_daemon_engine::sdk_owner::*;
+use alondra_engine_sdk::sdk_owner::tests::codex_tests::*;
+use alondra_engine_sdk::sdk_owner::tests::*;
+use alondra_engine_sdk::sdk_owner::*;
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::accounts::{AccountId, Provider};
 use alondra_domain_rules::*;
@@ -194,7 +194,7 @@ fn a_reply_claude_holds_reads_as_being_delivered_with_no_deadline() {
     super::wired();
     use alondra_views::{Client, RenderContext, Transport, build, live::LiveSnapshot, text::Lang};
     use alondra_daemon_engine::obligation_watch::pass;
-    use alondra_daemon_engine::sdk_owner::tests::untaken::{drive_by_hand, enforcing_every_deadline, until_prompted};
+    use alondra_engine_sdk::sdk_owner::tests::untaken::{drive_by_hand, enforcing_every_deadline, until_prompted};
     let slice = Slice::new();
     let mut driver = slice.launch_working();
     let node = Actor::Agent { agent_id: driver.agent().clone() };

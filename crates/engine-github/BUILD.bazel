@@ -23,7 +23,7 @@ rust_library(
     crate_name = "alondra_engine_github",
     edition = "2024",
     version = VERSION,
-    visibility = ["//crates/daemon-engine:__pkg__"],
+    visibility = ["//crates/engine-sdk:__pkg__", "//crates/daemon-engine:__pkg__"],
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-support:daemon_support",
@@ -41,7 +41,7 @@ rust_library(
     edition = "2024",
     rustc_flags = [LOW_OPT_LEVEL],
     version = VERSION,
-    visibility = ["//crates/daemon-engine:__pkg__"],
+    visibility = ["//crates/engine-sdk:__pkg__", "//crates/daemon-engine:__pkg__"],
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",

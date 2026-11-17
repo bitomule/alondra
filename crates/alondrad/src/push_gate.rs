@@ -107,7 +107,7 @@ mod tests {
         fn presented() -> Self {
             let home = crate::test_support::Directory::new();
             std::fs::create_dir(&home).unwrap();
-            let domain = Arc::new(alondra_daemon_engine::wiring::open(&home).unwrap());
+            let domain = Arc::new(alondra_engine_sdk::wiring::open(&home).unwrap());
             let client = Client::open(domain.clone(), &home, Default::default());
             let github = Arc::new(FakePrView::default());
             client.use_pr_view(github.clone());

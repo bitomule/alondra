@@ -58,13 +58,17 @@ one.
   the command that made it. An observer may also carry out a command in place of the store, as
   `daemon-engine` does with Resume on the card of a pause the admission gate holds, which it hands to
   the gate.
-- `daemon-engine/src/wiring.rs` puts the engine together: `wiring::open` opens the runtime with the
-  decisions of the cards a node's mod holds and the observers of the SDK owners, the admission gate,
-  the SDK nodes' waits, the task closer and «Allow always». The kernel's own constructor,
-  `open_observed`, takes them as arguments; its tests open it with none.
+- `engine-sdk/src/wiring.rs` puts the engine together: `wiring::open` opens the runtime with the
+  decisions of the cards a node's mod holds and the observers of the admission gate's pauses, the
+  SDK nodes' waits, the task closer, «Allow always» and the SDK owners, in that order, and gives it
+  the ports the crates of the engine ask each other through. The kernel's own constructor,
+  `open_observed`, takes them as arguments; its tests open it with none. `daemon-engine/src/wiring.rs`
+  keeps what the orchestrator asks of the engine and, for the engine's tests, a runtime with only
+  the engine's own observers (`TEST_OPEN` lets a crate above open the whole daemon in its place).
 - The kernel's tests are `//crates/engine-kernel:engine_kernel_test`. The few that need a subsystem
   (owner transactions, journal loading, commands racing retention, a node's turn read by its live
-  session) run with the engine, under `daemon-engine/src/wiring/`.
+  session) run with the engine, under `daemon-engine/src/wiring/`, or with the SDK's crate when
+  they need its owners.
 
 `bazel test //tools:module_cycles_test` fails when the main cycle of a crate's production modules
 grows past its limit in `tools/module_cycles.tsv`. `python3 tools/module_graph.py --production
@@ -83,6 +87,7 @@ module and called on the runtime used to be invisible to it.
 | The same, without what only the `test-hooks` feature compiles (`main` at 70324de) | 39 modules | 17,312 |
 | Orchestrator in its own crate | 31 modules | 14,023 |
 | Admission gate in its own crate | 26 modules | 11,640 |
+| The SDK and the launching of tasks in their own crate | 18 modules | 5,489 |
 
 The 54 above counted modules by file name; the same graph through `#[path]` declarations holds one
 more. The 34 missed what each module reached through methods the subsystems added to the runtime:
@@ -139,11 +144,34 @@ model and the scenarios see it (Bazel visibility).
   in `daemon-engine` (`usage_pause`): the usage probe and the accounts keep it, and only one of its
   calls reaches the gate.
 - The gate and the machine watch are extensions of `engine-admission` instead of fields of `Live`.
-- Its tests are `//crates/engine-admission:engine_admission_test`, with the real hosts some of them
-  run. The engine's tests that need the gate itself (its slots, its pauses, the disk's floor, the
-  resting hosts it brings back) moved into it under `engine_tests/`, over the engine's test-hooks
-  fixtures; `wiring::TEST_WIRING` gives the runtimes those fixtures open the gate. The engine's own
-  test binary does not link the gate: a runtime without one lets every start and turn through.
+- Its tests are `//crates/engine-admission:engine_admission_test`. The ones that also start nodes
+  through the SDK run with `engine-sdk`. The engine's own test binary does not link the gate: a
+  runtime without one lets every start and turn through.
+
+## The SDK and the launching of tasks
+
+`engine-sdk` is the top of the engine. It holds the owners of the Agent SDK hosts (`sdk_owner`), the
+moves of a task to another provider or account (`provider_transition`, `account_move`) and of the
+`claude --bg` nodes an earlier release left (`bg_handover`), the automatic launch and its retries
+(`auto_launch`, `start_retries`), the scheduled runs (`domain_schedule_runner`,
+`domain_schedule_api`), the closing of tasks and the release of resting hosts (`task_closer`,
+`idle_release`) and the wiring. It depends on `daemon-engine` and `engine-admission`; only
+`alondrad`, the machine model and the scenarios see it.
+
+- The engine and the gate ask it through the port `SdkHosts` (`daemon-engine/src/hosts.rs`): whether
+  a node's host runs, stop or halt it, take over the tasks no owner runs, check and prepare the
+  reopening of a session, launch a node, and whether a task moves to another provider.
+  `domain.hosts()` is that port for one runtime; `engine-sdk`'s wiring provides it.
+- What is only data or a read of the domain's state moved down instead: the launch itself
+  (`hosts::Launch`), which tasks run through the SDK (`sdk_live::runs_through_sdk`), which tasks the
+  automatic launch may start (`launch_plans::candidate`), the text a node starts with, the wake of a
+  node whose input was not taken (`untaken`) and the record of a failed start (`start_failures`).
+- `sdk_handover` keeps in the engine what reaches a `claude --bg` node that is moving and how Alondra
+  stops one; the moves themselves are `bg_handover`.
+- Each crate of the engine has one test target. The engine's and the gate's tests that start nodes
+  through the SDK run in `//crates/engine-sdk:engine_sdk_test`, next to its own, with the hosts, fake
+  Claude and Codex and binaries they need; the engine's own target needs only the Node host and a
+  fake native Claude, and no test runs on a name filter any more.
 
 ## Subsystem crates
 

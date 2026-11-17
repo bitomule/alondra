@@ -68,7 +68,7 @@ impl ApiWatch {
         }
     }
 
-    pub(crate) fn down(&self, now: Millis) -> bool {
+    pub fn down(&self, now: Millis) -> bool {
         self.health("", now, now) == ApiHealth::Down
     }
 }
@@ -110,7 +110,7 @@ pub(crate) fn turn_ended(domain: &DomainRuntime, agent: &AgentId) -> Result<()> 
 /// Carries out the user's answer on the card of a node Alondra stopped sending back: "try again
 /// now" sends it back at once; any other end of the card (the task cancelled, the card gone)
 /// only forgets the streak.
-pub(crate) fn settle_cards(domain: &DomainRuntime) -> Result<()> {
+pub fn settle_cards(domain: &DomainRuntime) -> Result<()> {
     let streaks = domain.store.lock_or_exit("the domain store").api_failures()?;
     let state = domain.state()?;
     for (agent, streak) in streaks {

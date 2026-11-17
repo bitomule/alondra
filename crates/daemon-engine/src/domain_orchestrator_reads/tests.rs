@@ -196,7 +196,7 @@ fn the_orchestrator_reads_a_node_of_the_agent_sdk_from_its_task_s_lifecycle() {
     apply(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: "t4".into(), request_id: "r".into(), title: "Notes".into(),
         agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")) });
     apply(&mut state, Actor::System, Command::AdmitExecution { provider: alondra_core::accounts::Provider::Claude, task_id: "t4".into(), agent_id: "agent-s".into(), conversation: "conversation-t4".into(),
-        instance: "instance-t4".into(), host: crate::sdk_owner::HOST.into(), model: None, account: None, leaves_limit: None });
+        instance: "instance-t4".into(), host: crate::sdk_live::HOST.into(), model: None, account: None, leaves_limit: None });
     let read = |state: &DomainState| {
         let mut row = json!({});
         live_fields(&mut row, state, &"agent-s".into());
