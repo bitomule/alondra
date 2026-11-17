@@ -15,7 +15,7 @@ use tokio::sync::watch;
 #[derive(Default)]
 pub struct Orchestrator {
     /// Recovered after panic: each holder only reads or replaces one complete host lease.
-    pub host: Mutex<Option<(String, alondra_agent_runtime::owned_host::HostStop)>>,
+    pub host: Mutex<Option<(String, alondra_engine_ports::agent_host::HostStop)>>,
     /// Retain a logical stop while storage is unavailable, until its finalization commits.
     /// Recovered after panic: one complete stop is assigned, cloned or cleared.
     pub stop: Mutex<Option<(crate::domain_orchestrator::Run, alondra_domain_rules::orchestrator_batch::BatchProblem)>>,

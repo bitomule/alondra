@@ -186,7 +186,7 @@ async fn stop(domain: &Arc<DomainRuntime>, moving: &AccountMove) -> Result<(), S
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         runtime.stop_sdk_host(&node).map_err(|crate::sdk_owner::Failed { why, .. }| format!("its host did not stop: {why}"))?;
         if folder.join("host.lock").exists() {
-            alondra_agent_runtime::owned_host::EndedHost::end_holders(&folder).map_err(|error| format!("its host did not stop: {error}"))?;
+            alondra_engine_ports::agent_host::of(runtime.ports()).and_then(|hosts| hosts.end_holders(&folder)).map_err(|error| format!("its host did not stop: {error}"))?;
         }
         Ok(())
     })

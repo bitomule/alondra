@@ -1,3 +1,5 @@
+use alondra_engine_ports::agent_host::{AdoptedEndpoint, AgentHost, HostLaunch, LaunchedHost, StopHandle};
+pub use alondra_engine_ports::agent_host::{DiagnosticCode, EndedHost, HostFolder, HostStop, LaunchIdentity, ProbeOutput, ProbeRun, Retained, VerifiedArtifact};
 use alondra_store::OwnerGrant;
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
@@ -6,7 +8,7 @@ use std::os::fd::AsFd;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::os::unix::process::ExitStatusExt;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
@@ -42,21 +44,6 @@ pub trait HostLauncher: Send + Sync + 'static {
     fn run(&self, run: ProbeRun) -> io::Result<ProbeOutput> {
         run_to_end(run)
     }
-}
-
-/// A command run to its end, with what it reads on its input and how long it may take.
-pub struct ProbeRun {
-    pub command: Command,
-    pub input: Vec<u8>,
-    /// `None` waits for as long as it runs.
-    pub timeout: Option<Duration>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ProbeOutput {
-    pub success: bool,
-    pub stdout: Vec<u8>,
-    pub stderr: Vec<u8>,
 }
 
 /// Starts the command in a process group of its own and keeps what it prints. Past its timeout
@@ -137,112 +124,10 @@ impl std::fmt::Debug for Launcher {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct VerifiedArtifact {
-    executable: PathBuf,
-    artifact: PathBuf,
-    executable_sha256: String,
-    artifact_sha256: String,
-}
-impl VerifiedArtifact {
-    pub fn verify(
-        executable: &Path,
-        artifact: &Path,
-        executable_sha256: &str,
-        artifact_sha256: &str,
-    ) -> io::Result<Self> {
-        for digest in [executable_sha256, artifact_sha256] {
-            if digest.len() != 64
-                || !digest
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-            {
-                return Err(refused("invalid artifact digest"));
-            }
-        }
-        let value = Self {
-            executable: executable.canonicalize()?,
-            artifact: artifact.canonicalize()?,
-            executable_sha256: executable_sha256.into(),
-            artifact_sha256: artifact_sha256.into(),
-        };
-        value.revalidate()?;
-        Ok(value)
-    }
-    fn revalidate(&self) -> io::Result<()> {
-        if crate::artifact_digest::digest(&self.executable)? != self.executable_sha256
-            || crate::artifact_digest::digest(&self.artifact)? != self.artifact_sha256
-        {
-            return Err(refused("owned artifact hash mismatch"));
-        }
-        Ok(())
-    }
-    pub fn executable(&self) -> &Path {
-        &self.executable
-    }
-    pub fn artifact(&self) -> &Path {
-        &self.artifact
-    }
-    pub fn executable_sha256(&self) -> &str {
-        &self.executable_sha256
-    }
-    pub fn artifact_sha256(&self) -> &str {
-        &self.artifact_sha256
-    }
-}
-/// Where a host of one execution keeps its lock and its endpoint.
-#[derive(Debug)]
-pub struct HostFolder {
-    state_dir: PathBuf,
-    ownership_path: PathBuf,
-    socket_path: PathBuf,
-}
-impl HostFolder {
-    fn at(state_dir: PathBuf) -> Self {
-        Self { ownership_path: state_dir.join("host.lock"), socket_path: state_dir.join("s"), state_dir }
-    }
-    pub fn state_dir(&self) -> &Path {
-        &self.state_dir
-    }
-    pub fn ownership_path(&self) -> &Path {
-        &self.ownership_path
-    }
-    pub fn socket_path(&self) -> &Path {
-        &self.socket_path
-    }
-}
-#[derive(Debug)]
-pub struct LaunchIdentity {
-    folder: HostFolder,
-    artifact: VerifiedArtifact,
-}
-impl LaunchIdentity {
-    pub fn state_dir(&self) -> &Path {
-        self.folder.state_dir()
-    }
-    pub fn ownership_path(&self) -> &Path {
-        self.folder.ownership_path()
-    }
-    pub fn socket_path(&self) -> &Path {
-        self.folder.socket_path()
-    }
-    pub fn artifact(&self) -> &VerifiedArtifact {
-        &self.artifact
-    }
-}
 #[derive(Clone, Copy)]
 enum Wake {
     Hint,
     Closed,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
-pub enum DiagnosticCode {
-    OutputDiscarded,
-    ReadinessHint,
-    PipeClosed,
-    ReaderFailed,
-    ReapFailed,
 }
 struct DiagnosticDrain {
     cancel: UnixStream,
@@ -319,7 +204,7 @@ impl<O> OwnedHost<O> {
     ) -> io::Result<Self> {
         private_directory(state_dir)?;
         let state_dir = state_dir.canonicalize()?;
-        let identity = LaunchIdentity { folder: HostFolder::at(state_dir), artifact };
+        let identity = LaunchIdentity::new(HostFolder::at(state_dir), artifact);
         use std::os::unix::ffi::OsStrExt;
         if identity.socket_path().as_os_str().as_bytes().len() > 103 {
             return Err(refused("owned Unix endpoint path is too long"));
@@ -361,7 +246,7 @@ impl<O> OwnedHost<O> {
             file.write_all(&bootstrap)?;
             file.sync_all()?;
             file.seek(SeekFrom::Start(0))?;
-            identity.artifact.revalidate()?;
+            identity.artifact().revalidate()?;
             let lock_identity = (metadata.dev(), metadata.ino());
             let (sender, wake) = mpsc::sync_channel(CONNECT_LIMIT);
             let tail = Arc::new(Mutex::new(VecDeque::with_capacity(TAIL_LIMIT)));
@@ -387,8 +272,8 @@ impl<O> OwnedHost<O> {
                 }
             };
             let spawned = launcher.spawn(HostSpawn {
-                executable: identity.artifact.executable(),
-                artifact: identity.artifact.artifact(),
+                executable: identity.artifact().executable(),
+                artifact: identity.artifact().artifact(),
                 state_dir: identity.state_dir(),
                 environment,
                 confinement,
@@ -505,7 +390,7 @@ impl<O> OwnedHost<O> {
         }
     }
     fn connect(&self, deadline: Instant) -> io::Result<UnixStream> {
-        connect_identity(&self.identity.folder, self.lock_identity, deadline)
+        connect_identity(self.identity.folder(), self.lock_identity, deadline)
     }
     /// The host's exit, including the status retained after its group was swept and it was reaped.
     pub fn observed_exit(&mut self) -> io::Result<Option<ExitStatus>> {
@@ -532,7 +417,7 @@ impl<O> OwnedHost<O> {
     }
     /// A handle that asks this host to stop from another thread, and never signals it once reaped.
     pub fn stopper(&self) -> HostStop {
-        HostStop(Leader::Launched(self.leader.clone()))
+        HostStop::new(Arc::new(Stopper(Leader::Launched(self.leader.clone()))))
     }
     pub fn diagnostic_tail(&self) -> Vec<DiagnosticCode> {
         self.tail
@@ -622,16 +507,15 @@ fn prepare_reaper(leader: Arc<Mutex<Option<rustix::process::Pid>>>, exit_status:
 /// Asks a host to stop from another thread. A launched host is signalled only while unreaped: the
 /// reap takes the same lock and clears the leader first. An adopted host is signalled only while
 /// the process at its endpoint is still the one this daemon reached.
-#[derive(Clone)]
-pub struct HostStop(Leader);
+struct Stopper(Leader);
 #[derive(Clone)]
 enum Leader {
     Launched(Arc<Mutex<Option<rustix::process::Pid>>>),
     Adopted(Arc<Mutex<Option<alondra_process_group::Member>>>),
 }
-impl HostStop {
+impl StopHandle for Stopper {
     /// The bound host while it is still the same live process, with its kernel birth identity.
-    pub fn process(&self) -> io::Result<Option<alondra_process_group::Member>> {
+    fn process(&self) -> io::Result<Option<alondra_process_group::Member>> {
         match &self.0 {
             Leader::Launched(leader) => {
                 let leader = leader.lock().expect("owned host leader poisoned");
@@ -648,16 +532,16 @@ impl HostStop {
     }
     /// Interrupts an unresponsive host under the same lease that protects it from PID reuse.
     /// Its exit monitor sweeps its descendants before reaping it.
-    pub fn kill(&self) -> io::Result<()> {
+    fn kill(&self) -> io::Result<()> {
         self.send(rustix::process::Signal::KILL)
     }
 
-    pub fn request(&self) -> io::Result<()> {
+    fn request(&self) -> io::Result<()> {
         self.send(rustix::process::Signal::TERM)
     }
     /// Lets a live host finish draining native output before forced cleanup. A stopped host is
     /// continued so it can handle TERM; the kernel exit watch bounds how long the caller waits.
-    pub fn request_graceful_stop(&self, timeout: Duration) -> io::Result<bool> {
+    fn request_graceful_stop(&self, timeout: Duration) -> io::Result<bool> {
         let Some(host) = self.process()? else { return Ok(true); };
         let mut exits = alondra_process_group::Exits::new()?;
         exits.watch(&host)?;
@@ -666,18 +550,20 @@ impl HostStop {
         exits.wait_for(timeout)
     }
     /// Asks the host to stop once Claude's running turn, if any, has ended as an interrupted turn.
-    pub fn request_after_interrupt(&self) -> io::Result<()> {
+    fn request_after_interrupt(&self) -> io::Result<()> {
         self.send(rustix::process::Signal::INT)
     }
     /// The process group the host leads, named by its PID: Claude and every command it runs
     /// that did not move to a group of its own. `None` once the host is gone or before an adopted
     /// host was reached.
-    pub fn process_group(&self) -> Option<i32> {
+    fn process_group(&self) -> Option<i32> {
         match &self.0 {
             Leader::Launched(leader) => (*leader.lock().expect("owned host leader poisoned")).map(|pid| pid.as_raw_nonzero().get()),
             Leader::Adopted(peer) => (*peer.lock().expect("adopted host peer poisoned")).map(|host| host.pid),
         }
     }
+}
+impl Stopper {
     fn send(&self, sig: rustix::process::Signal) -> io::Result<()> {
         let pid = match &self.0 {
             Leader::Launched(leader) => {
@@ -772,21 +658,21 @@ impl OwnedHost<OwnerGrant> {
 }
 /// An existing endpoint's retained private material, without an invented child handle.
 /// It conveys no authenticated peer state until the concrete adapter verifies mutual proof.
-pub struct AdoptedHost {
-    owner: OwnerGrant,
+pub struct AdoptedHost<O = OwnerGrant> {
+    owner: O,
     identity: HostFolder,
     lock_identity: (u64, u64),
     /// The process this daemon reached at the host's endpoint, by PID and start time.
     peer: Arc<Mutex<Option<alondra_process_group::Member>>>,
 }
-impl AdoptedHost {
+impl<O> AdoptedHost<O> {
     /// Reads the bootstrap a host running in `state_dir` was launched with and lets `inspect` check
     /// it. Nothing of the host's release is read from disk: the host may run a release that is no
     /// longer installed, and only its bootstrap says what it runs.
     pub fn adopt<T>(
-        owner: OwnerGrant,
+        owner: O,
         state_dir: &Path,
-        inspect: impl FnOnce(&OwnerGrant, &HostFolder, &[u8]) -> io::Result<T>,
+        inspect: impl FnOnce(&O, &HostFolder, &[u8]) -> io::Result<T>,
     ) -> io::Result<(Self, T)> {
         private_directory(state_dir)?;
         let identity = HostFolder::at(state_dir.to_path_buf());
@@ -845,22 +731,11 @@ impl AdoptedHost {
             value,
         ))
     }
-    pub fn owner(&self) -> &OwnerGrant {
+    pub fn owner(&self) -> &O {
         &self.owner
     }
     pub fn identity(&self) -> &HostFolder {
         &self.identity
-    }
-    pub fn replace_owner(&mut self, owner: OwnerGrant) -> io::Result<()> {
-        if owner.scope() != self.owner.scope()
-            || owner.execution() != self.owner.execution()
-            || owner.binding() != self.owner.binding()
-            || owner.generation() <= self.owner.generation()
-        {
-            return Err(refused("adopted host generation mismatch"));
-        }
-        self.owner = owner;
-        Ok(())
     }
     /// Does not acquire the launch lock, rotate material, spawn or authenticate the peer.
     /// Also records the process at the endpoint, which a later stop is addressed to.
@@ -871,7 +746,7 @@ impl AdoptedHost {
     }
     /// Asks the process at the endpoint to stop from another thread, while it is still that process.
     pub fn stopper(&self) -> HostStop {
-        HostStop(Leader::Adopted(self.peer.clone()))
+        HostStop::new(Arc::new(Stopper(Leader::Adopted(self.peer.clone()))))
     }
     /// Ends an unusable adopted host and the processes whose group membership a live host or
     /// retained native identity still proves. Without that anchor, leftover processes are refused.
@@ -919,6 +794,19 @@ impl AdoptedHost {
         }
     }
 }
+impl AdoptedHost<OwnerGrant> {
+    pub fn replace_owner(&mut self, owner: OwnerGrant) -> io::Result<()> {
+        if owner.scope() != self.owner.scope()
+            || owner.execution() != self.owner.execution()
+            || owner.binding() != self.owner.binding()
+            || owner.generation() <= self.owner.generation()
+        {
+            return Err(refused("adopted host generation mismatch"));
+        }
+        self.owner = owner;
+        Ok(())
+    }
+}
 fn live_group_anchor(anchor: Option<alondra_process_group::Member>, group: i32) -> io::Result<bool> {
     match anchor {
         Some(member) => Ok(alondra_process_group::alive(&member)? && alondra_process_group::group(member.pid)? == Some(group)),
@@ -934,23 +822,6 @@ fn adopted_snapshot_needs_cleanup(host: &alondra_process_group::Member, anchor: 
     }
     Err(io::Error::other("the adopted host's group has no stable live identity anchor and its cleanup is unresolved"))
 }
-/// What a daemon finds in the folder where a host of its execution ran. The kernel releases a
-/// host's lock when its process ends, a reboot included, so taking the lock is the fact that
-/// the host ended: no age, PID or failed connection decides it.
-pub enum Retained {
-    /// No host ever wrote its bootstrap here.
-    Absent,
-    /// A process still holds the host's lock: the host is alive.
-    Held,
-    /// No process holds the lock: the host ended. The claim keeps the lock until it is retired.
-    Ended(EndedHost),
-}
-/// The folder of a host that ended, locked by this daemon, with the bootstrap it ran with.
-pub struct EndedHost {
-    state_dir: PathBuf,
-    bootstrap: Vec<u8>,
-    _lock: Claimed,
-}
 /// The lock of an ended host's folder, taken by this daemon. A child another thread forks holds a
 /// copy of its descriptor until that child's `exec`, and closing only this copy would leave the
 /// lock with it: the host would read as alive. Unlocking releases every copy.
@@ -960,102 +831,85 @@ impl Drop for Claimed {
         let _ = self.0.unlock();
     }
 }
-impl EndedHost {
-    pub fn claim(state_dir: &Path) -> io::Result<Retained> {
-        match fs::symlink_metadata(state_dir) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Retained::Absent),
-            Err(error) => return Err(error),
-            Ok(_) => private_directory(state_dir)?,
-        }
-        let path = state_dir.join("host.lock");
-        let file = match OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(&path) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Retained::Absent),
-            other => other?,
-        };
-        let metadata = file.metadata()?;
-        if !metadata.is_file()
-            || metadata.nlink() != 1
-            || metadata.uid() != rustix::process::geteuid().as_raw()
-            || metadata.mode() & 0o777 != 0o600
-            || metadata.len() > BOOTSTRAP_LIMIT as u64
-        {
-            return Err(refused("retained private host material refused"));
-        }
-        match file.try_lock() {
-            Ok(()) => {}
-            Err(fs::TryLockError::WouldBlock) => return Ok(Retained::Held),
-            Err(fs::TryLockError::Error(error)) => return Err(error),
-        }
-        let mut claimed = Claimed(file);
-        let named = fs::symlink_metadata(&path)?;
-        if named.is_symlink() || (named.dev(), named.ino()) != (metadata.dev(), metadata.ino()) {
-            return Err(refused("retained lock inode changed while claimed"));
-        }
-        let mut bootstrap = Vec::new();
-        claimed.0.read_to_end(&mut bootstrap)?;
-        if bootstrap.is_empty() {
-            return Ok(Retained::Absent);
-        }
-        Ok(Retained::Ended(Self { state_dir: state_dir.to_path_buf(), bootstrap, _lock: claimed }))
+/// What is left in the folder where a host ran; see [`Retained`].
+pub fn claim(state_dir: &Path) -> io::Result<Retained> {
+    match fs::symlink_metadata(state_dir) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Retained::Absent),
+        Err(error) => return Err(error),
+        Ok(_) => private_directory(state_dir)?,
     }
-    /// Ends the host that still holds the lock of `state_dir` though no owner can adopt it, then
-    /// claims its folder. Each process holding the lock is asked to stop and waited out until it
-    /// exits, and what is left of a group it led is killed and waited out too: the lock the kernel
-    /// then frees is the fact that the host ended. Nothing here waits for a clock.
-    pub fn end_holders(state_dir: &Path) -> io::Result<Retained> {
-        private_directory(state_dir)?;
-        let lock = fs::symlink_metadata(state_dir.join("host.lock"))?;
-        if !lock.is_file() || lock.uid() != rustix::process::geteuid().as_raw() {
-            return Err(refused("retained private host material refused"));
-        }
-        let me = i32::try_from(std::process::id()).map_err(|_| refused("this process has no PID"))?;
-        let holders: Vec<alondra_process_group::Member> = alondra_process_group::holders(lock.dev(), lock.ino())?
-            .into_iter()
-            .filter(|holder| holder.pid != me && !holder.zombie)
-            .collect();
-        let mut groups = Vec::new();
-        for holder in &holders {
-            if alondra_process_group::group(holder.pid)? == Some(holder.pid) {
-                groups.push(holder.pid);
-            }
-        }
-        let mut exits = alondra_process_group::Exits::new()?;
-        for holder in &holders {
-            exits.watch(holder)?;
-        }
-        for holder in &holders {
-            if alondra_process_group::alive(holder)? {
-                signal(rustix::process::Pid::from_raw(holder.pid).ok_or_else(|| refused("host lock holder without a process"))?, rustix::process::Signal::TERM)?;
-            }
-        }
-        exits.wait()?;
-        for group in groups {
-            end_group(group)?;
-        }
-        match Self::claim(state_dir)? {
-            Retained::Held => Err(io::Error::other(format!(
-                "the host lock of {} is still held after {} holder(s) ended",
-                state_dir.display(),
-                holders.len()
-            ))),
-            claimed => Ok(claimed),
+    let path = state_dir.join("host.lock");
+    let file = match OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(&path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Retained::Absent),
+        other => other?,
+    };
+    let metadata = file.metadata()?;
+    if !metadata.is_file()
+        || metadata.nlink() != 1
+        || metadata.uid() != rustix::process::geteuid().as_raw()
+        || metadata.mode() & 0o777 != 0o600
+        || metadata.len() > BOOTSTRAP_LIMIT as u64
+    {
+        return Err(refused("retained private host material refused"));
+    }
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(fs::TryLockError::WouldBlock) => return Ok(Retained::Held),
+        Err(fs::TryLockError::Error(error)) => return Err(error),
+    }
+    let mut claimed = Claimed(file);
+    let named = fs::symlink_metadata(&path)?;
+    if named.is_symlink() || (named.dev(), named.ino()) != (metadata.dev(), metadata.ino()) {
+        return Err(refused("retained lock inode changed while claimed"));
+    }
+    let mut bootstrap = Vec::new();
+    claimed.0.read_to_end(&mut bootstrap)?;
+    if bootstrap.is_empty() {
+        return Ok(Retained::Absent);
+    }
+    Ok(Retained::Ended(EndedHost::new(state_dir.to_path_buf(), bootstrap, Box::new(claimed))))
+}
+/// Ends the host that still holds the lock of `state_dir` though no owner can adopt it, then
+/// claims its folder. Each process holding the lock is asked to stop and waited out until it
+/// exits, and what is left of a group it led is killed and waited out too: the lock the kernel
+/// then frees is the fact that the host ended. Nothing here waits for a clock.
+pub fn end_holders(state_dir: &Path) -> io::Result<Retained> {
+    private_directory(state_dir)?;
+    let lock = fs::symlink_metadata(state_dir.join("host.lock"))?;
+    if !lock.is_file() || lock.uid() != rustix::process::geteuid().as_raw() {
+        return Err(refused("retained private host material refused"));
+    }
+    let me = i32::try_from(std::process::id()).map_err(|_| refused("this process has no PID"))?;
+    let holders: Vec<alondra_process_group::Member> = alondra_process_group::holders(lock.dev(), lock.ino())?
+        .into_iter()
+        .filter(|holder| holder.pid != me && !holder.zombie)
+        .collect();
+    let mut groups = Vec::new();
+    for holder in &holders {
+        if alondra_process_group::group(holder.pid)? == Some(holder.pid) {
+            groups.push(holder.pid);
         }
     }
-    pub fn state_dir(&self) -> &Path {
-        &self.state_dir
+    let mut exits = alondra_process_group::Exits::new()?;
+    for holder in &holders {
+        exits.watch(holder)?;
     }
-    pub fn bootstrap(&self) -> &[u8] {
-        &self.bootstrap
-    }
-    /// Keeps the ended host's folder as evidence under `archive` and frees its path for the next
-    /// host. The lock is released only once the rename is durable.
-    pub fn retire(self, archive: &Path) -> io::Result<()> {
-        if archive.parent() != self.state_dir.parent() || fs::symlink_metadata(archive).is_ok() {
-            return Err(refused("ended host archive refused"));
+    for holder in &holders {
+        if alondra_process_group::alive(holder)? {
+            signal(rustix::process::Pid::from_raw(holder.pid).ok_or_else(|| refused("host lock holder without a process"))?, rustix::process::Signal::TERM)?;
         }
-        fs::rename(&self.state_dir, archive)?;
-        let parent = archive.parent().ok_or_else(|| refused("ended host archive has no parent"))?;
-        File::open(parent)?.sync_all()
+    }
+    exits.wait()?;
+    for group in groups {
+        end_group(group)?;
+    }
+    match claim(state_dir)? {
+        Retained::Held => Err(io::Error::other(format!(
+            "the host lock of {} is still held after {} holder(s) ended",
+            state_dir.display(),
+            holders.len()
+        ))),
+        claimed => Ok(claimed),
     }
 }
 fn connect_identity(
@@ -1089,20 +943,6 @@ pub(super) fn connect_socket() -> io::Result<std::os::fd::OwnedFd> {
     rustix::io::fcntl_setfd(&socket, rustix::io::FdFlags::CLOEXEC)?;
     rustix::io::ioctl_fionbio(&socket, true)?;
     Ok(socket)
-}
-/// Whether `stream` has bytes, or its end, to read within `timeout`. Nothing is read.
-pub fn readable(stream: &UnixStream, timeout: Duration) -> io::Result<bool> {
-    use rustix::event::{PollFd, PollFlags, Timespec, poll};
-    let timeout = Timespec::try_from(timeout).map_err(|_| io::ErrorKind::InvalidInput)?;
-    loop {
-        let mut fds = [PollFd::new(stream, PollFlags::IN)];
-        match poll(&mut fds, Some(&timeout)) {
-            Ok(0) => return Ok(false),
-            Ok(_) => return Ok(true),
-            Err(rustix::io::Errno::INTR) => continue,
-            Err(error) => return Err(error.into()),
-        }
-    }
 }
 pub(super) fn connect_deadline(path: &Path, deadline: Instant) -> io::Result<UnixStream> {
     use rustix::event::{PollFd, PollFlags, Timespec, poll};
@@ -1285,6 +1125,76 @@ impl AttemptBudget {
         true
     }
 }
+/// The port's implementation: hosts started through `launcher`, the real one unless a scenario
+/// swaps it.
+pub struct ProcessHosts {
+    launcher: Launcher,
+}
+impl ProcessHosts {
+    pub fn new(launcher: Launcher) -> Self {
+        Self { launcher }
+    }
+}
+impl AgentHost for ProcessHosts {
+    fn launch(&self, launch: HostLaunch<'_>, build: &mut dyn FnMut(&LaunchIdentity) -> io::Result<Vec<u8>>) -> io::Result<Box<dyn LaunchedHost>> {
+        let host = OwnedHost::launch_through(self.launcher.get(), (), launch.artifact, launch.state_dir, launch.environment, launch.confinement, |_, identity| build(identity))?;
+        Ok(Box::new(host))
+    }
+    fn adopt(&self, state_dir: &Path, inspect: &mut dyn FnMut(&HostFolder, &[u8]) -> io::Result<()>) -> io::Result<Box<dyn AdoptedEndpoint>> {
+        let (host, ()) = AdoptedHost::adopt((), state_dir, |_, folder, bytes| inspect(folder, bytes))?;
+        Ok(Box::new(host))
+    }
+    fn claim(&self, state_dir: &Path) -> io::Result<Retained> {
+        claim(state_dir)
+    }
+    fn end_holders(&self, state_dir: &Path) -> io::Result<Retained> {
+        end_holders(state_dir)
+    }
+    fn run(&self, run: ProbeRun) -> io::Result<ProbeOutput> {
+        self.launcher.get().run(run)
+    }
+}
+impl LaunchedHost for OwnedHost<()> {
+    fn identity(&self) -> &LaunchIdentity {
+        OwnedHost::identity(self)
+    }
+    fn wait_for_socket(&mut self, deadline: Instant) -> io::Result<UnixStream> {
+        OwnedHost::wait_for_socket(self, deadline)
+    }
+    fn observed_exit(&mut self) -> io::Result<Option<ExitStatus>> {
+        OwnedHost::observed_exit(self)
+    }
+    fn process_id(&self) -> u32 {
+        OwnedHost::process_id(self)
+    }
+    fn stopper(&self) -> HostStop {
+        OwnedHost::stopper(self)
+    }
+    fn diagnostic_tail(&self) -> Vec<DiagnosticCode> {
+        OwnedHost::diagnostic_tail(self)
+    }
+    fn wait(&mut self) -> io::Result<ExitStatus> {
+        OwnedHost::wait(self)
+    }
+}
+impl AdoptedEndpoint for AdoptedHost<()> {
+    fn identity(&self) -> &HostFolder {
+        AdoptedHost::identity(self)
+    }
+    fn connect(&self, deadline: Instant) -> io::Result<UnixStream> {
+        AdoptedHost::connect(self, deadline)
+    }
+    fn stopper(&self) -> HostStop {
+        AdoptedHost::stopper(self)
+    }
+    fn stop_with_anchor(&mut self, anchor: Option<alondra_process_group::Member>, force: bool) -> io::Result<()> {
+        AdoptedHost::stop_with_anchor(self, anchor, force)
+    }
+    fn stop(&mut self) -> io::Result<()> {
+        AdoptedHost::stop(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1322,7 +1232,7 @@ mod tests {
     #[test]
     fn observing_an_exit_does_not_wait_for_the_child_cleanup_mutex() {
         let executable = Path::new("/usr/bin/true");
-        let digest = crate::artifact_digest::digest(executable).unwrap();
+        let digest = alondra_foundation::artifact_digest::digest(executable).unwrap();
         let artifact = VerifiedArtifact::verify(executable, executable, &digest, &digest).unwrap();
         let child = Command::new(executable).env_clear().stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn().unwrap();
         let pid = rustix::process::Pid::from_child(&child);
@@ -1333,7 +1243,7 @@ mod tests {
         let (_, wake) = mpsc::sync_channel(1);
         let mut host = OwnedHost {
             owner: (),
-            identity: LaunchIdentity { folder: HostFolder::at(PathBuf::new()), artifact },
+            identity: LaunchIdentity::new(HostFolder::at(std::path::PathBuf::new()), artifact),
             child,
             pid,
             exit_status: Arc::new(Mutex::new(Some(status))),

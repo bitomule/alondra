@@ -283,7 +283,7 @@ fn broken_backend(f: &Fixture) -> crate::sdk_backend::SdkBackend {
         host: missing.join("host.cjs"), host_sha256: "0".repeat(64),
         native: missing.join("claude"), native_sha256: "0".repeat(64),
         host_environment: Default::default(), native_environment: Default::default(),
-        confinement: None, state_root: f.root.join("sdk"), io_timeout_seconds: 5, installed_native: false, launcher: Default::default(), release: crate::sdk_backend::this_release(),
+        confinement: None, state_root: f.root.join("sdk"), io_timeout_seconds: 5, installed_native: false, release: crate::sdk_backend::this_release(),
     }
 }
 

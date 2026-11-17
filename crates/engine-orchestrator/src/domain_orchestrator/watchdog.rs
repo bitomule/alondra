@@ -13,7 +13,7 @@ impl HostGuard {
     pub(crate) fn attach(
         domain: Arc<DomainRuntime>,
         run: &str,
-        stop: alondra_agent_runtime::owned_host::HostStop,
+        stop: alondra_engine_ports::agent_host::HostStop,
     ) -> Result<Self> {
         {
             let mut current = domain

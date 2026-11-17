@@ -6,12 +6,13 @@ load("@rules_rust//rust:defs.bzl", "rust_binary")
 load("//tools:rust_sources.bzl", "production_sources")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 
-RUNTIME_DEPS = ["//crates/process-group:process_group", "//crates/store:store"] + all_crate_deps(normal = True)
+RUNTIME_DEPS = ["//crates/engine-ports:engine_ports", "//crates/foundation:foundation", "//crates/process-group:process_group", "//crates/store:store"] + all_crate_deps(normal = True)
 
 adapter_out_crate(
     name = "agent_runtime",
     srcs = production_sources(),
     crate_name = "alondra_agent_runtime",
+    test_visibility = ["//crates/daemon-engine:__pkg__", "//crates/engine-sdk:__pkg__", "//crates/provider-claude:__pkg__"],
     version = "0.1.0",
     deps = RUNTIME_DEPS,
 )

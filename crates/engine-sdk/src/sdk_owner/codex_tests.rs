@@ -1353,7 +1353,7 @@ fn archive(folder: &Path, name: &str) -> PathBuf {
 }
 
 fn host_runs(folder: &Path) -> bool {
-    matches!(alondra_agent_runtime::owned_host::EndedHost::claim(folder).unwrap(), alondra_agent_runtime::owned_host::Retained::Held)
+    matches!(alondra_agent_runtime::owned_host::claim(folder).unwrap(), alondra_agent_runtime::owned_host::Retained::Held)
 }
 
 /// A Codex node is mid-turn when the Mac goes down; `meanwhile` changes its host's folder before
@@ -1436,7 +1436,7 @@ fn a_codex_takeover_that_fails_after_launching_its_host_leaves_no_host_running()
     let taken = adopt(Arc::clone(&restarted), &slice.backend, TASK.into(), Some(&slice.plugin));
     let (refused, ran) = (taken.is_err(), host_runs(&folder));
     drop(taken);
-    if ran { alondra_agent_runtime::owned_host::EndedHost::end_holders(&folder).unwrap(); }
+    if ran { alondra_agent_runtime::owned_host::end_holders(&folder).unwrap(); }
     assert!(refused, "the new host's folder holds another account's proof");
     assert!(!ran, "the host the takeover launched was ended");
 }
@@ -1462,7 +1462,7 @@ fn a_host_left_running_for_a_task_that_ended_is_ended_when_the_daemon_starts() {
     restarted.enable_sdk(slice.backend.clone());
     adopt_all(&restarted, &slice.backend);
     let ran = host_runs(&folder);
-    if ran { alondra_agent_runtime::owned_host::EndedHost::end_holders(&folder).unwrap(); }
+    if ran { alondra_agent_runtime::owned_host::end_holders(&folder).unwrap(); }
     assert!(!ran, "the daemon that starts ends it");
 }
 

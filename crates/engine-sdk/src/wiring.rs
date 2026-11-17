@@ -18,6 +18,8 @@ pub fn open_at(home: &Path, database: &Path) -> Result<DomainRuntime> {
     alondra_daemon_engine::wiring::wire(runtime.ports());
     wire(runtime.ports());
     alondra_engine_admission::wire(runtime.ports());
+    #[cfg(any(test, feature = "test-hooks"))]
+    alondra_agent_runtime::wire(runtime.ports(), Default::default());
     Ok(runtime)
 }
 

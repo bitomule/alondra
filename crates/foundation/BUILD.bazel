@@ -6,11 +6,22 @@ load("//tools:rust_sources.bzl", "production_sources")
 
 foundation_crate(
     name = "foundation",
-    srcs = ["src/lib.rs", "src/execution.rs", "src/mcp.rs"],
+    srcs = production_sources(),
     crate_name = "alondra_foundation",
     version = "0.1.0",
     test_visibility = ["//crates/machine-model:__pkg__", "//crates/provider-conformance:__pkg__"],
     deps = all_crate_deps(normal = True),
+)
+
+low_opt_rust_test(
+    name = "foundation_unit_test",
+    size = "small",
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    crate_name = "alondra_foundation",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    version = "0.1.0",
+    deps = all_crate_deps(normal = True, normal_dev = True),
 )
 
 low_opt_rust_test(

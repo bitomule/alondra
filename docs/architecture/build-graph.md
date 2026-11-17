@@ -107,10 +107,11 @@ kernel has no cycle and the engine's main cycle measures 39 modules on `main` at
 
 `engine-ports` holds the ports the pieces of the engine call each other through, the values they
 speak in, and the registry that holds one implementation of each. It depends only on `core` and
-`domain-rules`: every piece depends on it, and none on the piece that implements a port it uses.
+`domain-rules`, and on `foundation` and `process-group` below them: every piece depends on it, and
+none on the piece that implements a port it uses.
 
 - The ports: `AdmissionGate` (`admission.rs`), `OrchestratorEngine` and `OrchestratorAnswers`
-  (`orchestrator.rs`) and `SdkHosts` (`hosts.rs`). The values they carry moved with them:
+  (`orchestrator.rs`), `SdkHosts` (`hosts.rs`) and `AgentHost` (`agent_host.rs`). The values they carry moved with them:
   `LaunchOptions` and `Failed` (`launch.rs`), `NoRoom` (`machine.rs`) and `OutboxMessage`
   (`outbox.rs`). The crates they came from re-export them, so their callers did not change.
 - The registry (`Registry`) maps each port's type to its implementation: `provide::<dyn P>(…)`
@@ -127,7 +128,15 @@ speak in, and the registry that holds one implementation of each. It depends onl
   against `DomainRuntime` and reach it through one bridge, `DomainRuntime::of`; each piece moves to
   the context's methods as it stops depending on the kernel (phase 4), and the bridge then goes.
   Generics would compile each piece into its callers and stop the ports being `dyn` in the registry.
-- `agent-runtime` is not behind a port yet: the port `AgentHost` that hides it is the next phase.
+- `AgentHost` (`agent_host.rs`) is how the providers and the engine start, adopt, stop and reclaim
+  the processes their agents run in, and run a provider's command line to its end. `agent-runtime`
+  implements it (`ProcessHosts`) and `alondra_agent_runtime::wire(&Registry, launcher)` provides it:
+  `alondrad` with the launcher of its seams, so a scenario's stand-in host takes the real one's place.
+  The providers get it in their configuration; the engine asks the registry
+  (`agent_host::of(domain.ports())`). The values it carries moved with it (`VerifiedArtifact`,
+  `LaunchIdentity`, `HostStop`, `EndedHost`…), and so did the owner wrappers `OwnedHost` and
+  `AdoptedHost`. The file digest and the socket poll they need are plain computations, in
+  `foundation`.
 
 ## The orchestrator
 

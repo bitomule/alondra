@@ -12,7 +12,7 @@ import sys
 import xml.etree.ElementTree as ElementTree
 
 # The number of entries in LAYER_EXCEPTIONS. It only goes down: lower it with every entry removed.
-EXCEPTION_CEILING = 62
+EXCEPTION_CEILING = 55
 
 # rules_rust compiles a crate's build.rs into a binary of its own.
 BUILD_SCRIPT_MACROS = {"cargo_build_script"}

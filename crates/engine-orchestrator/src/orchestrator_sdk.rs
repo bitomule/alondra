@@ -7,7 +7,7 @@ use crate::orchestrator_provider::ProviderOwner;
 use crate::domain_store::batch_effects::BatchReport;
 use crate::orchestrator_process::{self as process, Output, ProcessOwner, Stream, bounded};
 use crate::sdk_backend::SdkBackend;
-use alondra_agent_runtime::owned_host::VerifiedArtifact;
+use alondra_engine_ports::agent_host::VerifiedArtifact;
 use alondra_provider_claude::{BatchHost, ClaudeConfiguration, HostEvent, McpServer, OrchestratorProfile};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -162,7 +162,7 @@ fn configuration(batch: &Batch) -> Result<ClaudeConfiguration, String> {
         host_release: env!("CARGO_PKG_VERSION").into(),
         io_timeout: Duration::from_secs(backend.io_timeout_seconds),
         confinement: backend.confinement.clone(),
-        launcher: backend.launcher.clone(),
+        hosts: alondra_engine_ports::agent_host::of(batch.domain.ports()).map_err(|error| format!("starting the SDK host: {error}"))?,
         worker: None,
     })
 }

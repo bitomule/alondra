@@ -6,7 +6,7 @@ use alondra_codex_protocol::{
     Action, Body, Command, ControlResult, Decision as WireDecision, DecisionKind as WireKind, FramedReader,
     Observation as WireObservation, PermissionMode as WireMode, SDK_VERSION, SdkEventKind,
 };
-use alondra_agent_runtime::owned_host::{AdoptedHost, EndedHost, HostStop, LaunchIdentity, OwnedHost, Retained as RetainedHost, VerifiedArtifact};
+use alondra_engine_ports::agent_host::{AdoptedHost, EndedHost, HostLaunch, HostStop, LaunchIdentity, OwnedHost, Retained as RetainedHost, VerifiedArtifact};
 use crate::ended::EndedJournal;
 use alondra_foundation::{CommandId, ExecutionStamp, MessageUuid, RequestId};
 use alondra_provider_contract::{
@@ -35,8 +35,8 @@ pub struct CodexConfiguration {
     pub io_timeout: Duration,
     /// A Seatbelt profile the whole host runs under, the native process included.
     pub confinement: Option<PathBuf>,
-    /// Starts the host process; a scenario swaps it.
-    pub launcher: alondra_agent_runtime::owned_host::Launcher,
+    /// Starts, adopts and reclaims the host process; a scenario swaps it.
+    pub hosts: std::sync::Arc<dyn alondra_engine_ports::agent_host::AgentHost>,
     /// What a task's native Codex loads besides the user's own settings, skills, plugins and MCP.
     pub worker: Option<WorkerProfile>,
 }
@@ -586,8 +586,8 @@ fn validate_ack(
 /// The transport's host: one this daemon launched, or one a previous daemon left running that
 /// this one adopted. An adopted host is stopped by the process at its endpoint, never reaped here.
 enum Host {
-    Launched(OwnedHost),
-    Adopted(AdoptedHost, LaunchedAs),
+    Launched(OwnedHost<OwnerGrant>),
+    Adopted(AdoptedHost<OwnerGrant>, LaunchedAs),
 }
 impl Host {
     fn owner(&self) -> &OwnerGrant {
@@ -802,7 +802,7 @@ impl CodexAdapter {
         }
         let stored: SessionRecord = serde_json::from_slice(state.conversation()).map_err(|_| AdapterError::InvalidObservation)?;
         let expected = fence(&owner, &self.control);
-        let (host, retained) = AdoptedHost::adopt(owner, &self.configuration.state_directory, |grant, _, bytes| self.retained(grant, bytes, &stored))
+        let (host, retained) = AdoptedHost::adopt(&*self.configuration.hosts, owner, &self.configuration.state_directory, |grant, _, bytes| self.retained(grant, bytes, &stored))
             .map_err(|_| AdapterError::Disconnected)?;
         if let Some(why) = alondra_codex_protocol::refuses_adoption(&retained.control.host_release, &retained.launched.sdk_version) {
             return Err(AdapterError::Protocol(why));
@@ -833,7 +833,7 @@ impl CodexAdapter {
         let stored: SessionRecord = serde_json::from_slice(state.conversation()).map_err(|_| AdapterError::InvalidObservation)?;
         let committed = state.checkpoint().map(|checkpoint| checkpoint.cursor()).unwrap_or(0);
         let wire_fence = fence(owner, &self.control);
-        let journal = match EndedHost::claim(&self.configuration.state_directory).map_err(|_| AdapterError::Disconnected)? {
+        let journal = match self.configuration.hosts.claim(&self.configuration.state_directory).map_err(|_| AdapterError::Disconnected)? {
             RetainedHost::Held => return Ok(Found::Live),
             RetainedHost::Absent => EndedJournal::without_evidence(committed),
             RetainedHost::Ended(ended) => {
@@ -873,13 +873,10 @@ impl CodexAdapter {
         }
         let expected = fence(&owner, &self.control);
         let continued = Continued { journal_base: base, resume, opens_on_control };
-        let host = OwnedHost::launch_through(
-            self.configuration.launcher.get(),
+        let host = OwnedHost::launch(
+            &*self.configuration.hosts,
             owner,
-            self.configuration.artifact.clone(),
-            &directory,
-            &self.configuration.host_environment,
-            self.configuration.confinement.as_deref(),
+            HostLaunch { artifact: self.configuration.artifact.clone(), state_dir: &directory, environment: &self.configuration.host_environment, confinement: self.configuration.confinement.as_deref() },
             |grant, identity| bootstrap(grant, identity, &self.control, &self.configuration, &session, None, Some(continued)),
         )
         .map_err(|_| AdapterError::Disconnected)?;
@@ -1093,13 +1090,10 @@ impl DurableAdapter for CodexAdapter {
         let session: SessionRecord = serde_json::from_slice(state.conversation())
             .map_err(|_| AdapterError::InvalidObservation)?;
         let expected = fence(&owner, &self.control);
-        let host = OwnedHost::launch_through(
-            self.configuration.launcher.get(),
+        let host = OwnedHost::launch(
+            &*self.configuration.hosts,
             owner,
-            self.configuration.artifact.clone(),
-            &self.configuration.state_directory,
-            &self.configuration.host_environment,
-            self.configuration.confinement.as_deref(),
+            HostLaunch { artifact: self.configuration.artifact.clone(), state_dir: &self.configuration.state_directory, environment: &self.configuration.host_environment, confinement: self.configuration.confinement.as_deref() },
             |grant, identity| {
                 bootstrap(
                     grant,

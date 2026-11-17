@@ -123,15 +123,15 @@ impl Drop for PausedFork {
 /// child, and the host that ended read as alive: a move stayed draining.
 #[test]
 fn a_released_claim_leaves_the_host_ended_while_a_child_forked_meanwhile_waits_to_exec() {
-    use alondra_agent_runtime::owned_host::{EndedHost, Retained};
+    use alondra_agent_runtime::owned_host::{Retained, claim};
     let directory = support::directory();
     let lock = directory.join("host.lock");
     fs::write(&lock, b"private-fixture-bootstrap").unwrap();
     fs::set_permissions(&lock, fs::Permissions::from_mode(0o600)).unwrap();
-    let Retained::Ended(claim) = EndedHost::claim(&directory).unwrap() else { panic!("no process holds the lock of a host that ended") };
+    let Retained::Ended(claimed) = claim(&directory).unwrap() else { panic!("no process holds the lock of a host that ended") };
     let forked = PausedFork::start();
-    drop(claim);
-    let again = EndedHost::claim(&directory).unwrap();
+    drop(claimed);
+    let again = claim(&directory).unwrap();
     drop(forked);
     assert!(matches!(again, Retained::Ended(_)), "the host that ended read as alive once its claim was released");
 }
@@ -604,11 +604,11 @@ fn actual_host_survives_only_its_owned_fake_daemon_group_death() {
 }
 #[test]
 fn only_a_lock_no_process_holds_makes_an_ended_host_and_retiring_it_frees_its_folder() {
-    use alondra_agent_runtime::owned_host::{EndedHost, Retained};
+    use alondra_agent_runtime::owned_host::{Retained, claim};
     let directory = support::directory();
     let state = directory.join("host");
     let archive = directory.join("host.ended");
-    assert!(matches!(EndedHost::claim(&state).unwrap(), Retained::Absent), "no folder, no host");
+    assert!(matches!(claim(&state).unwrap(), Retained::Absent), "no folder, no host");
     fs::create_dir(&state).unwrap();
     fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
     let mut environment = support::environment(&directory);
@@ -618,21 +618,21 @@ fn only_a_lock_no_process_holds_makes_an_ended_host_and_retiring_it_frees_its_fo
     })
     .unwrap();
     drop(host.wait_for_socket(Instant::now() + Duration::from_secs(10)).unwrap());
-    assert!(matches!(EndedHost::claim(&state).unwrap(), Retained::Held), "the live host holds its lock");
+    assert!(matches!(claim(&state).unwrap(), Retained::Held), "the live host holds its lock");
     message(&state.join("s"), b"exit\n").unwrap();
     assert!(host.wait().unwrap().success());
-    let Retained::Ended(ended) = EndedHost::claim(&state).unwrap() else { panic!("the host ended, so its lock is free") };
+    let Retained::Ended(ended) = claim(&state).unwrap() else { panic!("the host ended, so its lock is free") };
     assert_eq!(ended.bootstrap(), b"retained-bootstrap");
-    assert!(matches!(EndedHost::claim(&state).unwrap(), Retained::Held), "the claim keeps the lock until it is retired");
+    assert!(matches!(claim(&state).unwrap(), Retained::Held), "the claim keeps the lock until it is retired");
     ended.retire(&archive).unwrap();
     assert_eq!(fs::read(archive.join("host.lock")).unwrap(), b"retained-bootstrap", "the ended host is kept as evidence");
-    assert!(matches!(EndedHost::claim(&state).unwrap(), Retained::Absent), "its path is free for the next host");
+    assert!(matches!(claim(&state).unwrap(), Retained::Absent), "its path is free for the next host");
     let lock = OpenOptions::new().read(true).write(true).open(archive.join("host.lock")).unwrap();
     assert!(lock.try_lock().is_ok(), "retiring released the lock");
 }
 #[test]
 fn a_live_host_no_owner_can_adopt_is_ended_with_its_group_by_the_lock_it_holds() {
-    use alondra_agent_runtime::owned_host::{EndedHost, Retained};
+    use alondra_agent_runtime::owned_host::{Retained, claim, end_holders};
     let directory = support::directory();
     fs::write(
         directory.join(".alondra-process-fixture"),
@@ -684,8 +684,8 @@ fn a_live_host_no_owner_can_adopt_is_ended_with_its_group_by_the_lock_it_holds()
         adopted.connect(Instant::now() + Duration::from_secs(10)).is_err(),
         "with its owner's socket gone no owner reaches the host"
     );
-    assert!(matches!(EndedHost::claim(&directory).unwrap(), Retained::Held), "yet it still holds its lock");
-    let Retained::Ended(ended) = EndedHost::end_holders(&directory).unwrap() else {
+    assert!(matches!(claim(&directory).unwrap(), Retained::Held), "yet it still holds its lock");
+    let Retained::Ended(ended) = end_holders(&directory).unwrap() else {
         panic!("ending the holders frees the lock")
     };
     assert_eq!(ended.bootstrap(), fs::read(directory.join("host.lock")).unwrap());

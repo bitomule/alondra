@@ -232,17 +232,17 @@ fn the_probe_runs_the_released_host_without_a_prompt_and_reads_each_accounts_fol
     let state = crate::host_fixtures::HostRoot::new();
     let backend = probe_backend(&home, &state);
 
-    let default = probe(&backend, None).expect("the default profile answers");
+    let default = probe(&hosts(), &backend, None).expect("the default profile answers");
     assert_eq!(default.plan.as_deref(), Some("max"));
     assert_eq!(default.windows.iter().map(|w| (w.kind.clone(), w.used)).collect::<Vec<_>>(),
         [(WindowKind::Session, Share::of(0.12)), (WindowKind::Weekly, Share::of(0.4))]);
     assert_eq!(default.windows[1].resets_at, Some(4_071_254_400_000), "2099-01-05T00:00:00Z");
 
-    let work = probe(&backend, Some(&home.join("accounts/work"))).expect("an account's folder answers");
+    let work = probe(&hosts(), &backend, Some(&home.join("accounts/work"))).expect("an account's folder answers");
     assert_eq!((work.plan.as_deref(), work.windows[1].used), (Some("pro"), Share::of(0.03)), "Claude ran with the account's folder");
 
     std::fs::write(home.join("usage-fails"), "").unwrap();
-    let failed = probe(&backend, None).unwrap_err();
+    let failed = probe(&hosts(), &backend, None).unwrap_err();
     assert!(failed.contains("the probe failed"), "{failed}");
 }
 
@@ -253,11 +253,11 @@ fn a_probe_that_fails_keeps_the_last_good_reading_and_its_age() {
     let domain = crate::wiring::open(&home).unwrap();
     let state = crate::host_fixtures::HostRoot::new();
     let backend = probe_backend(&home, &state);
-    let reading = probe(&backend, None).unwrap();
+    let reading = probe(&hosts(), &backend, None).unwrap();
     record(&domain, &AccountId::default_account(), reading, NOW);
     let before = domain.read().state().account_usage.clone();
     std::fs::write(home.join("usage-fails"), "").unwrap();
-    assert!(probe(&backend, None).is_err());
+    assert!(probe(&hosts(), &backend, None).is_err());
     assert_eq!(domain.read().state().account_usage, before, "nothing recorded");
     assert_eq!(before[0].measured_at(), Some(NOW), "the reading says how old it is");
     let usage = domain.read().index().usage(NOW + 3_600_000, &alondra_daemon_engine_model::local_day(NOW)).unwrap();
@@ -460,4 +460,8 @@ fn the_account_rows_recorded_before_the_margin_fix_load_and_spread_work_to_claud
     drop(read);
     domain.execute_as_system(envelope).unwrap();
     assert_eq!(available_accounts(domain.read().state(), now + 60_000), [claude_2, codex]);
+}
+
+fn hosts() -> alondra_agent_runtime::owned_host::ProcessHosts {
+    alondra_agent_runtime::owned_host::ProcessHosts::new(Default::default())
 }

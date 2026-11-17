@@ -5,7 +5,7 @@ use crate::adapter::{ClaudeConfiguration, bootstrap, random_uuid};
 use crate::records::SessionRecord;
 use crate::wire::{Connection, ControlIdentity, HostOwner, execution, fence};
 use alondra_agent_protocol::{Action, Body, Command, FailureSurface, Observation, SdkEventKind, SdkFailure};
-use alondra_agent_runtime::owned_host::OwnedHost;
+use alondra_engine_ports::agent_host::{HostLaunch, OwnedHost};
 use alondra_foundation::{CommandId, MessageUuid};
 use alondra_provider_contract::{AdapterError, Handoff};
 use serde::Serialize;
@@ -113,13 +113,10 @@ impl<O: HostOwner> BatchHost<O> {
             session_id: MessageUuid::new(session).map_err(|_| AdapterError::InvalidObservation)?,
             continued: false,
         };
-        let mut host = OwnedHost::launch_through(
-            configuration.launcher.get(),
+        let mut host = OwnedHost::launch(
+            &*configuration.hosts,
             owner,
-            configuration.artifact.clone(),
-            &configuration.state_directory,
-            &configuration.host_environment,
-            configuration.confinement.as_deref(),
+            HostLaunch { artifact: configuration.artifact.clone(), state_dir: &configuration.state_directory, environment: &configuration.host_environment, confinement: configuration.confinement.as_deref() },
             |owner, identity| bootstrap(owner, identity, &control, configuration, &session, Some(profile), None),
         )
         .map_err(|_| AdapterError::Disconnected)?;
@@ -196,7 +193,7 @@ impl<O: HostOwner> BatchHost<O> {
         self.pending=None;Ok(())
     }
 
-    pub fn stopper(&self) -> alondra_agent_runtime::owned_host::HostStop {
+    pub fn stopper(&self) -> alondra_engine_ports::agent_host::HostStop {
         self.host.stopper()
     }
 

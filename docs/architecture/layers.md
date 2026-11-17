@@ -91,5 +91,6 @@ nothing uses, and on a count different from `EXCEPTION_CEILING` in
 that ceiling in the same change, in plain sight of review.
 
 The phases of the build-graph plan empty it: `engine-ports` (phase 3) and the wide application
-(phase 4) remove the application's dependencies on its sisters, and moving `agent-runtime` behind
-the `AgentHost` port of `engine-ports` (phase 3b) removes its uses from the providers and the engine.
+(phase 4) remove the application's dependencies on its sisters. Phase 3b moved `agent-runtime`
+behind the `AgentHost` port of `engine-ports`: no provider or piece of the engine depends on it,
+only the roots and the tests that start real hosts.

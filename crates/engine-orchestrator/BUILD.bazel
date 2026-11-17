@@ -11,7 +11,6 @@ load("//tools:rust_sources.bzl", "production_sources")
 # subsystem, no subsystem depends on it, and only alondrad, which puts the daemon together, sees it.
 WORKSPACE_DEPS = [
     "//crates/engine-ports:engine_ports",
-    "//crates/agent-runtime:agent_runtime",
     "//crates/core:alondra_core",
     "//crates/domain-rules:domain_rules",
     "//crates/view-model:view_model",

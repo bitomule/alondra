@@ -26,7 +26,7 @@ pub(crate) use crate::domain_runtime::seals::{self, Seals};
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{Attached, Preparer, StoreError};
 use alondra_agent_application::InputMetadata;
-use alondra_agent_runtime::owned_host::VerifiedArtifact;
+use alondra_engine_ports::agent_host::{EndedHost, HostStop, VerifiedArtifact};
 use alondra_domain_rules::*;
 use alondra_domain::ActivityView;
 use alondra_foundation::InputId;
@@ -480,7 +480,7 @@ pub fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Lau
         command,
     };
     let binding = binding_for(provider, backend, capabilities, &launch.account, crate::accounts::generation_provider(&state, &AccountKey { provider, account: launch.account.clone() }))?;
-    let mut configuration = configuration(backend, &binding, &launch.directory, &agent.0, true, Some(worker_profile(&launch.plugin, &launch.options, &launch.directory)?))?;
+    let mut configuration = configuration(&domain, backend, &binding, &launch.directory, &agent.0, true, Some(worker_profile(&launch.plugin, &launch.options, &launch.directory)?))?;
     if let Some(Continuation::Transition { id }) = &continuation {
         let prepared = crate::provider_transition::retained_handoff(&domain, &launch.task, id).map_err(|error|Failed::new(error.message))?;
         configuration.worker.as_mut().ok_or_else(||Failed::new("The transfer has no worker profile".into()))?.handoff_context=Some(prepared.context);
@@ -577,9 +577,9 @@ pub fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Lau
     driver.log_host("started");
     let permit = driver.permits.pop_front().ok_or_else(|| Failed::new("the admission issued no launch permit".into()))?;
     if let Err(failed) = driver.dispatch(permit) {
-        let directory = driver.worker.state_directory().to_path_buf();
+        let (directory, runtime) = (driver.worker.state_directory().to_path_buf(), Arc::clone(&driver.domain));
         drop(driver);
-        return Err(end_launched(&directory, failed));
+        return Err(end_launched(&runtime, &directory, failed));
     }
     driver.awaiting = first;
     Ok(driver)
@@ -716,7 +716,7 @@ pub(crate) fn launch_admitted(domain: Arc<DomainRuntime>, backend: &SdkBackend, 
     let mut options = LaunchOptions::load(&backend.state_root.join(&instance))?;
     options.provider = provider;
     let backend = &on_account_provider(&domain, backend, Provider::from_driver(grant.binding().driver()).ok_or_else(|| Failed::new("unknown execution provider".into()))?, &account_of(grant.binding()))?;
-    let mut configuration = configuration(backend, grant.binding(), &adoption.directory, &instance, false, Some(worker_profile(plugin, &options, &adoption.directory)?))?;
+    let mut configuration = configuration(&domain, backend, grant.binding(), &adoption.directory, &instance, false, Some(worker_profile(plugin, &options, &adoption.directory)?))?;
     let capability = domain.bind_agent(&agent.0).map_err(failed("issuing the node's capability"))?;
     let unadmitted = Unadmitted { domain: Some(Arc::clone(&domain)), agent: agent.clone() };
     configuration.native_environment.extend(node_environment(domain.home(), &agent, capability.expose_for_child_environment()));
@@ -729,9 +729,9 @@ pub(crate) fn launch_admitted(domain: Arc<DomainRuntime>, backend: &SdkBackend, 
     let mut driver = Driver::new(domain, worker, scope, task.clone(), agent, Duration::from_secs(backend.io_timeout_seconds));
     driver.log_host("started, as its admission's first host");
     if let Err(failed) = driver.dispatch(permit) {
-        let directory = driver.worker.state_directory().to_path_buf();
+        let (directory, runtime) = (driver.worker.state_directory().to_path_buf(), Arc::clone(&driver.domain));
         drop(driver);
-        return Err(end_launched(&directory, failed));
+        return Err(end_launched(&runtime, &directory, failed));
     }
     let read = driver.domain.read();
     driver.awaiting = read.state().lifecycle_of(&task).ok()
@@ -762,7 +762,7 @@ pub(crate) fn end_unowned_host(domain: Arc<DomainRuntime>, backend: &SdkBackend,
 
 /// `end_unowned_host`, keeping the ended host's folder locked from the moment its end was read:
 /// the proof that nothing of the host writes any more is never released and taken again.
-pub(crate) fn end_and_claim_unowned_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId) -> Result<Option<alondra_agent_runtime::owned_host::EndedHost>, Failed> {
+pub(crate) fn end_and_claim_unowned_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId) -> Result<Option<EndedHost>, Failed> {
     let mut claimed = None;
     take_host_into(domain, backend, task, None, false, true, false, &mut claimed)?;
     Ok(claimed)
@@ -782,7 +782,7 @@ fn take_host(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plu
 
 /// `take_host`, which without `relaunch` leaves in `claimed` the ended host's folder it claimed, still locked.
 #[allow(clippy::too_many_arguments)]
-fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: Option<&std::path::Path>, relaunch: bool, end_refused: bool, explicit_account_retry:bool, claimed: &mut Option<alondra_agent_runtime::owned_host::EndedHost>) -> Result<Option<Driver>, Failed> {
+fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId, plugin: Option<&std::path::Path>, relaunch: bool, end_refused: bool, explicit_account_retry:bool, claimed: &mut Option<EndedHost>) -> Result<Option<Driver>, Failed> {
     let _in_hand = InHand::new(&domain, &task);
     let taken_at = clock::instant();
     if relaunch { crate::account_move::require_started_destination(&domain,&task).map_err(Failed::new)?; }
@@ -814,7 +814,7 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
     }
     let profile = plugin.map(|plugin| worker_profile(plugin, &options, &adoption.directory)).transpose()?;
     let on_account = &on_account_provider(&domain, backend, Provider::from_driver(grant.binding().driver()).ok_or_else(|| Failed::new("unknown execution provider".into()))?, &account_of(grant.binding()))?;
-    let mut worker = Worker::configured(grant.binding().clone(), configuration(on_account, grant.binding(), &adoption.directory, stamp.instance().as_str(), false, profile)?)
+    let mut worker = Worker::configured(grant.binding().clone(), configuration(&domain, on_account, grant.binding(), &adoption.directory, stamp.instance().as_str(), false, profile)?)
         .map_err(adapter("configuring the SDK worker"))?;
     let (adapter_state, _) = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
     domain.seals.take(&task);
@@ -851,7 +851,7 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
             log!("the SDK host of {task} still runs with no owner: it is stopped without resuming its Claude session");
             drop(worker);
             mark_stopped_by_alondra(&backend.state_root.join(stamp.instance().as_str()));
-            alondra_agent_runtime::owned_host::EndedHost::end_holders(&backend.state_root.join(stamp.instance().as_str()))
+            alondra_engine_ports::agent_host::of(domain.ports()).and_then(|hosts| hosts.end_holders(&backend.state_root.join(stamp.instance().as_str())))
                 .map_err(|error| Failed::new(format!("its host did not stop: {error}")))?;
             return take_host_into(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry, claimed);
         }
@@ -863,7 +863,7 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
             log!("the live SDK host of {task} refused its adoption ({error:?}): it is stopped and a host that resumes the same Claude session takes its place");
             drop(worker);
             mark_stopped_by_alondra(&backend.state_root.join(stamp.instance().as_str()));
-            alondra_agent_runtime::owned_host::EndedHost::end_holders(&backend.state_root.join(stamp.instance().as_str()))
+            alondra_engine_ports::agent_host::of(domain.ports()).and_then(|hosts| hosts.end_holders(&backend.state_root.join(stamp.instance().as_str())))
                 .map_err(|error| Failed::new(format!("its host refused to be taken over and did not stop: {error}")))?;
             return take_host_into(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry, claimed);
         }
@@ -876,7 +876,7 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
             log!("the SDK host of {task} answered its adoption but its process is gone: its end is recorded");
             drop(worker);
             mark_stopped_by_alondra(&backend.state_root.join(stamp.instance().as_str()));
-            alondra_agent_runtime::owned_host::EndedHost::end_holders(&backend.state_root.join(stamp.instance().as_str()))
+            alondra_engine_ports::agent_host::of(domain.ports()).and_then(|hosts| hosts.end_holders(&backend.state_root.join(stamp.instance().as_str())))
                 .map_err(|error| Failed::new(format!("the leftovers of its host did not stop: {error}")))?;
             return take_host_into(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry, claimed);
         }
@@ -1001,7 +1001,7 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
     if let Err(failed)=options.save(worker.state_directory()).and_then(|()|identity.as_ref().map_or(Ok(()),|identity|identity.retain(worker.state_directory()))){
         let directory=worker.state_directory().to_path_buf();
         drop(worker);
-        return Err(end_launched(&directory,failed));
+        return Err(end_launched(&domain, &directory,failed));
     }
     let mut driver = Driver::new(domain, worker, scope, task, agent, Duration::from_secs(backend.io_timeout_seconds));
     driver.replacement = true;
@@ -1035,8 +1035,8 @@ pub fn adopt_all(domain: &Arc<DomainRuntime>, backend: &SdkBackend) {
 /// moved to another node) has no owner, and no daemon would ever take it over: it is ended by the
 /// lock it holds.
 fn end_hosts_of_ended_tasks(domain: &DomainRuntime, backend: &SdkBackend) {
-    use alondra_agent_runtime::owned_host::{EndedHost, Retained};
     let Ok(state) = domain.state() else { return };
+    let Ok(hosts) = alondra_engine_ports::agent_host::of(domain.ports()) else { return };
     let claimed: BTreeSet<&str> = state.tasks.iter()
         .filter(|(id, _)| !state.lifecycle_of(id).is_ok_and(|lifecycle| matches!(lifecycle.phase(), alondra_domain::TaskPhase::Completed | alondra_domain::TaskPhase::Cancelled)))
         .filter_map(|(_, task)| task.agent_id.as_ref().map(|agent| agent.0.as_str()))
@@ -1051,9 +1051,9 @@ fn end_hosts_of_ended_tasks(domain: &DomainRuntime, backend: &SdkBackend) {
             let Some(node) = name.to_str().filter(|name| name.starts_with("sdk-") && !name.contains('.')) else { continue };
             if claimed.contains(node) || domain.owns_sdk_host(&AgentId(node.to_owned())) { continue }
             let directory = entry.path();
-            if !matches!(EndedHost::claim(&directory), Ok(Retained::Held)) { continue }
+            if !matches!(hosts.claim(&directory), Ok(alondra_engine_ports::agent_host::Retained::Held)) { continue }
             mark_stopped_by_alondra(&directory);
-            match EndedHost::end_holders(&directory) {
+            match hosts.end_holders(&directory) {
                 Ok(_) => log!("the SDK host of {node}, a node no task goes on with, still ran with no owner: it was stopped"),
                 Err(error) => log!("the SDK host of {node}, a node no task goes on with, still runs with no owner and did not stop: {error}"),
             }
@@ -1361,7 +1361,7 @@ fn take_again(runtime: &Arc<DomainRuntime>, backend: &SdkBackend, task: &TaskId,
         };
         if let Some(directory) = directory {
             mark_stopped_by_alondra(&directory);
-            if let Err(error) = alondra_agent_runtime::owned_host::EndedHost::end_holders(&directory) {
+            if let Err(error) = alondra_engine_ports::agent_host::of(runtime.ports()).and_then(|hosts| hosts.end_holders(&directory)) {
                 return not_taken(runtime, task, Failed::new(format!("its host, which never took what it was handed, did not stop: {error}")));
             }
         }
@@ -1481,7 +1481,7 @@ pub fn take_all(domain: &Arc<DomainRuntime>, backend: &SdkBackend) -> Vec<(TaskI
 
 /// The host's folder is `state_root/<instance>`, so the execution's own identity names it and a
 /// daemon that comes back finds it without searching. A launch creates it; an adoption reuses it.
-fn configuration(backend: &SdkBackend, binding: &ProviderBinding, directory: &str, instance: &str, create: bool, worker: Option<WorkerProfile>) -> Result<ClaudeConfiguration, Failed> {
+fn configuration(domain: &DomainRuntime, backend: &SdkBackend, binding: &ProviderBinding, directory: &str, instance: &str, create: bool, worker: Option<WorkerProfile>) -> Result<ClaudeConfiguration, Failed> {
     let state_directory = backend.state_root.join(instance);
     if create {
         std::fs::create_dir_all(&backend.state_root).map_err(|error| Failed::written(format!("creating the SDK state root: {error}"), &error))?;
@@ -1517,7 +1517,7 @@ fn configuration(backend: &SdkBackend, binding: &ProviderBinding, directory: &st
         host_release: backend.release.clone(),
         io_timeout: Duration::from_secs(backend.io_timeout_seconds),
         confinement: backend.confinement.clone(),
-        launcher: backend.launcher.clone(),
+        hosts: alondra_engine_ports::agent_host::of(domain.ports()).map_err(|error| Failed::new(format!("starting the SDK host: {error}")))?,
         worker,
     })
 }
@@ -2271,9 +2271,9 @@ fn mark_stopped_by_alondra(state_directory: &std::path::Path) {
 }
 /// A host this daemon launched that no owner will hold, because what came after its launch
 /// failed: it is ended by the lock it holds, so no host runs with no owner.
-fn end_launched(directory: &std::path::Path, failed: Failed) -> Failed {
+fn end_launched(domain: &DomainRuntime, directory: &std::path::Path, failed: Failed) -> Failed {
     mark_stopped_by_alondra(directory);
-    match alondra_agent_runtime::owned_host::EndedHost::end_holders(directory) {
+    match alondra_engine_ports::agent_host::of(domain.ports()).and_then(|hosts| hosts.end_holders(directory)) {
         Ok(_) => failed,
         Err(error) => Failed { why: format!("{}; its new host did not stop: {error}", failed.why), ..failed },
     }
@@ -2369,7 +2369,7 @@ pub struct Owner {
     release: Arc<AtomicBool>,
     domain: Arc<DomainRuntime>,
     /// A holder that panics leaves it whole, so it is recovered: one assignment or a read.
-    host: Arc<Mutex<Option<alondra_agent_runtime::owned_host::HostStop>>>,
+    host: Arc<Mutex<Option<HostStop>>>,
     agent: AgentId,
     /// The host's folder, where its stop is marked as Alondra's own.
     state_directory: std::path::PathBuf,

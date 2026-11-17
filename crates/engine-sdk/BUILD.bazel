@@ -12,7 +12,6 @@ load("//tools:rust_sources.bzl", "production_sources")
 WORKSPACE_DEPS = [
     "//crates/engine-ports:engine_ports",
     "//crates/agent-application:agent_application",
-    "//crates/agent-runtime:agent_runtime",
     "//crates/core:alondra_core",
     "//crates/domain:domain",
     "//crates/domain-rules:domain_rules",
@@ -67,7 +66,7 @@ rust_library(
     rustc_flags = [LOW_OPT_LEVEL],
     version = VERSION,
     visibility = ["//crates/alondrad:__pkg__", "//crates/engine-orchestrator:__pkg__", "//crates/machine-model:__pkg__", "//crates/scenarios:__pkg__"],
-    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + TEST_HOOKS_DEPS,
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/agent-runtime:agent_runtime"] + TEST_HOOKS_DEPS,
 )
 
 # Most of the SDK's tests run a real Agent SDK host, a fake Claude or Codex, or the alondra and
@@ -112,7 +111,7 @@ low_opt_rust_test(
         "HOME": ".",
     },
     version = VERSION,
-    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + TEST_HOOKS_DEPS + ["//crates/views:views"],
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/agent-runtime:agent_runtime"] + TEST_HOOKS_DEPS + ["//crates/views:views"],
 )
 
 rust_inputs_test(

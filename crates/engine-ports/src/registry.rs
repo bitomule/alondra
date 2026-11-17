@@ -1,6 +1,7 @@
 //! One implementation of each port, by its type. A holder that panics leaves the map whole: one
 //! insert or one lookup each, so a poisoned lock is recovered.
 use crate::admission::AdmissionGate;
+use crate::agent_host::AgentHost;
 use crate::hosts::SdkHosts;
 use crate::orchestrator::{OrchestratorAnswers, OrchestratorEngine};
 use alondra_domain_rules::{CommandEnvelope, CommandOutcome, DomainError, DomainState};
@@ -45,8 +46,9 @@ impl Registry {
     }
 }
 
-fn every_port() -> [(TypeId, &'static str); 4] {
+fn every_port() -> [(TypeId, &'static str); 5] {
     [
+        (TypeId::of::<dyn AgentHost>(), "AgentHost"),
         (TypeId::of::<dyn AdmissionGate>(), "AdmissionGate"),
         (TypeId::of::<dyn OrchestratorAnswers>(), "OrchestratorAnswers"),
         (TypeId::of::<dyn OrchestratorEngine>(), "OrchestratorEngine"),
@@ -81,12 +83,12 @@ mod tests {
     #[test]
     fn a_registry_names_every_port_nothing_implements() {
         let registry = Registry::default();
-        assert_eq!(registry.missing(), ["AdmissionGate", "OrchestratorAnswers", "OrchestratorEngine", "SdkHosts"]);
+        assert_eq!(registry.missing(), ["AgentHost", "AdmissionGate", "OrchestratorAnswers", "OrchestratorEngine", "SdkHosts"]);
         struct Answers;
         impl OrchestratorAnswers for Answers {
             fn settle_answers(&self, _: &dyn Runtime, _: &alondra_domain_rules::DomainState, _: &std::collections::BTreeSet<alondra_domain_rules::TaskId>) {}
         }
         registry.provide::<dyn OrchestratorAnswers>(Arc::new(Answers));
-        assert_eq!(registry.missing(), ["AdmissionGate", "OrchestratorEngine", "SdkHosts"]);
+        assert_eq!(registry.missing(), ["AgentHost", "AdmissionGate", "OrchestratorEngine", "SdkHosts"]);
     }
 }
