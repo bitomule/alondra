@@ -31,10 +31,10 @@
             "tone": "accent"
           },
           "icon": "question",
-          "id": "turn-ended-t1-1-turn-2",
+          "id": "turn-ended-t1-1-claude-run-00000000-0000-4000-9000-000000000010",
           "kind": "decide",
           "link": {
-            "key": "card:turn-ended-t1-1-turn-2",
+            "key": "card:turn-ended-t1-1-claude-run-00000000-0000-4000-9000-000000000010",
             "kind": "view"
           },
           "meta": "Alondra",
@@ -46,7 +46,7 @@
           "subtitle": "Claude Code no puede usar la API de Claude hasta que se arregle fuera de Alondra. Arréglalo y dile a la tarea que siga, o cancélala.",
           "timestamps": [
             {
-              "at": "2026-11-15T09:03:30.000+00:00",
+              "at": "2026-11-15T09:03:40.000+00:00",
               "format": "relative",
               "role": "created"
             }
@@ -68,7 +68,7 @@
             {
               "attachments": false,
               "enabled": true,
-              "id": "ans:turn-ended-t1-1-turn-2@<revision>",
+              "id": "ans:turn-ended-t1-1-claude-run-00000000-0000-4000-9000-000000000010@<revision>",
               "input": {
                 "kind": "none"
               },
@@ -84,7 +84,7 @@
             {
               "attachments": false,
               "enabled": true,
-              "id": "ans:turn-ended-t1-1-turn-2@<revision>",
+              "id": "ans:turn-ended-t1-1-claude-run-00000000-0000-4000-9000-000000000010@<revision>",
               "input": {
                 "kind": "none"
               },
@@ -118,10 +118,10 @@
             "tone": "accent"
           },
           "icon": "question",
-          "id": "turn-ended-t1-1-turn-2",
+          "id": "turn-ended-t1-1-claude-run-00000000-0000-4000-9000-000000000010",
           "kind": "decide",
           "link": {
-            "key": "card:turn-ended-t1-1-turn-2",
+            "key": "card:turn-ended-t1-1-claude-run-00000000-0000-4000-9000-000000000010",
             "kind": "view"
           },
           "meta": "Alondra",
@@ -129,7 +129,7 @@
           "reply": {
             "attachments": true,
             "enabled": true,
-            "id": "reply:turn-ended-t1-1-turn-2@<revision>",
+            "id": "reply:turn-ended-t1-1-claude-run-00000000-0000-4000-9000-000000000010@<revision>",
             "input": {
               "kind": "text",
               "multiline": true,
@@ -151,7 +151,7 @@
           "subtitle": "Claude Code no puede usar la API de Claude hasta que se arregle fuera de Alondra. Arréglalo y dile a la tarea que siga, o cancélala.",
           "timestamps": [
             {
-              "at": "2026-11-15T09:03:30.000+00:00",
+              "at": "2026-11-15T09:03:40.000+00:00",
               "format": "relative",
               "role": "created"
             }
@@ -217,6 +217,27 @@
     ],
     "gauges": [
       {
+        "detail": "Puedes seguir: Claude tiene margen",
+        "id": "usage",
+        "label": "Claude",
+        "level": "calm",
+        "parts": [
+          {
+            "detail": "Aún sin medir",
+            "group": "Claude",
+            "label": "Default",
+            "level": "calm",
+            "lines": [
+              "Aún sin medir"
+            ],
+            "text": "con margen",
+            "value": 1.0
+          }
+        ],
+        "text": "con margen",
+        "value": 0.0
+      },
+      {
         "id": "memory",
         "label": "RAM",
         "level": "calm",
@@ -241,10 +262,6 @@
     "orchestrator": {
       "text": "inactivo",
       "tone": "neutral"
-    },
-    "session_wait": {
-      "text": "No hay ninguna cuenta de proveedor disponible · revisa Cuentas",
-      "tone": "warning"
     },
     "summary": "1 pregunta · 1 tarea trabajando",
     "summary_parts": [

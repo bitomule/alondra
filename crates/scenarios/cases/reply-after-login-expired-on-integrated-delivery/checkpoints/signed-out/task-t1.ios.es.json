@@ -35,7 +35,7 @@
           "badges": [
             {
               "elapsed": {
-                "since": "2026-11-15T09:00:00.000+00:00"
+                "since": "2026-11-15T09:00:10.000+00:00"
               },
               "text": "desde las 09:00",
               "tone": "neutral"
@@ -61,7 +61,7 @@
           "struck": false,
           "title": "Desde",
           "trailing": {
-            "at": "2026-11-15T09:01:00.000+00:00",
+            "at": "2026-11-15T09:01:10.000+00:00",
             "format": "relative",
             "kind": "time"
           },
@@ -78,7 +78,7 @@
           "icon": "history",
           "id": "now",
           "link": {
-            "key": "card:claude-signed-out-t1-12",
+            "key": "card:claude-signed-out-t1-17",
             "kind": "view"
           },
           "struck": false,
@@ -86,6 +86,32 @@
           "type": "row"
         }
       ]
+    },
+    {
+      "collapsed": false,
+      "id": "last_message",
+      "items": [
+        {
+          "commentable": false,
+          "text": "Working on it",
+          "truncated": false,
+          "type": "markdown"
+        },
+        {
+          "depth": 0,
+          "icon": "history",
+          "id": "last_message_time",
+          "struck": false,
+          "title": "Último mensaje",
+          "trailing": {
+            "at": "2026-11-15T09:01:10.000+00:00",
+            "format": "relative",
+            "kind": "time"
+          },
+          "type": "row"
+        }
+      ],
+      "title": "Lo último que dijo"
     },
     {
       "collapsed": false,
@@ -112,10 +138,10 @@
             "tone": "critical"
           },
           "icon": "warning",
-          "id": "claude-signed-out-t1-12",
+          "id": "claude-signed-out-t1-17",
           "kind": "problem",
           "link": {
-            "key": "card:claude-signed-out-t1-12",
+            "key": "card:claude-signed-out-t1-17",
             "kind": "view"
           },
           "meta": "Alondra",
@@ -127,7 +153,7 @@
           "subtitle": "La sesión de Claude Code caducó y una tarea espera. Abre Terminal en el Mac, ejecuta claude e inicia sesión con /login; luego pulsa Ya he iniciado sesión.",
           "timestamps": [
             {
-              "at": "2026-11-15T09:01:00.000+00:00",
+              "at": "2026-11-15T09:01:10.000+00:00",
               "format": "relative",
               "role": "created"
             }
@@ -207,7 +233,7 @@
             {
               "attachments": true,
               "enabled": true,
-              "id": "msg:agent-t1@<revision>~t1",
+              "id": "msg:<node>@<revision>~t1",
               "input": {
                 "kind": "text",
                 "multiline": true,
@@ -279,6 +305,20 @@
               "resolves_card": false,
               "role": "risk",
               "style": "destructive"
+            },
+            {
+              "attachments": false,
+              "disabled_reason": "Actualiza Alondra para usar esta función",
+              "enabled": false,
+              "id": "",
+              "input": {
+                "kind": "none"
+              },
+              "label": "Cambiar modelo",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "neutral",
+              "style": "plain"
             }
           ],
           "type": "actions"
@@ -338,6 +378,27 @@
       }
     ],
     "gauges": [
+      {
+        "detail": "Puedes seguir: Claude tiene margen",
+        "id": "usage",
+        "label": "Claude",
+        "level": "calm",
+        "parts": [
+          {
+            "detail": "Aún sin medir",
+            "group": "Claude",
+            "label": "Default",
+            "level": "calm",
+            "lines": [
+              "Aún sin medir"
+            ],
+            "text": "con margen",
+            "value": 1.0
+          }
+        ],
+        "text": "con margen",
+        "value": 0.0
+      },
       {
         "id": "memory",
         "label": "RAM",

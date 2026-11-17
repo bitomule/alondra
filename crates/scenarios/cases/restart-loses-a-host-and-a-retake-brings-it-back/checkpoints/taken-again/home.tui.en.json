@@ -1,22 +1,14 @@
 {
-  "client": "ios",
+  "client": "tui",
   "cursor": "<cursor>",
   "data_epoch": "<data_epoch>",
   "empty": {
-    "text": "Nada espera tu respuesta",
+    "text": "Nothing is waiting for you",
     "tone": "neutral"
   },
   "key": "home",
   "protocol": 1,
-  "sections": [
-    {
-      "collapsed": false,
-      "count": 0,
-      "id": "queue",
-      "items": [],
-      "title": "Te espera"
-    }
-  ],
+  "sections": [],
   "service": {
     "capabilities": [
       "account_presentation",
@@ -34,41 +26,62 @@
     "counts": [
       {
         "id": "inbox",
-        "label": "Bandeja",
+        "label": "Inbox",
         "value": 0
       },
       {
         "id": "tasks",
-        "label": "Tareas",
-        "value": 0
+        "label": "Tasks",
+        "value": 1
       },
       {
         "id": "working",
-        "label": "trabajando",
-        "value": 0
+        "label": "working",
+        "value": 1
       },
       {
         "id": "needs_you",
-        "label": "esperando por ti",
+        "label": "waiting for you",
         "value": 0
       },
       {
         "id": "queued",
-        "label": "en cola",
+        "label": "queued",
         "value": 0
       },
       {
         "id": "paused",
-        "label": "en pausa",
+        "label": "paused",
         "value": 0
       },
       {
         "id": "other_waiting",
-        "label": "en espera",
+        "label": "waiting",
         "value": 0
       }
     ],
     "gauges": [
+      {
+        "detail": "You can go on: Claude has room",
+        "id": "usage",
+        "label": "Claude",
+        "level": "calm",
+        "parts": [
+          {
+            "detail": "90% of the week left",
+            "group": "Claude",
+            "label": "Default",
+            "level": "calm",
+            "lines": [
+              "90% of the week left"
+            ],
+            "text": "with room",
+            "value": 0.9
+          }
+        ],
+        "text": "with room",
+        "value": 0.8
+      },
       {
         "id": "memory",
         "label": "RAM",
@@ -85,27 +98,23 @@
       },
       {
         "id": "disk",
-        "label": "Disco",
+        "label": "Disk",
         "level": "calm",
-        "text": "550 GB libres",
+        "text": "550 GB free",
         "value": 0.5
       }
     ],
     "orchestrator": {
-      "text": "inactivo",
+      "text": "idle",
       "tone": "neutral"
     },
-    "session_wait": {
-      "text": "No hay ninguna cuenta de proveedor disponible · revisa Cuentas",
-      "tone": "warning"
-    },
-    "summary": "0 tareas trabajando",
+    "summary": "1 task working",
     "summary_parts": [
       {
-        "count": 0,
+        "count": 1,
         "id": "working",
-        "one": "{count} tarea trabajando",
-        "other": "{count} tareas trabajando"
+        "one": "{count} task working",
+        "other": "{count} tasks working"
       }
     ],
     "version": "<version>"

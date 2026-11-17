@@ -30,7 +30,7 @@
           "badges": [
             {
               "elapsed": {
-                "since": "2026-11-15T09:00:00.000+00:00"
+                "since": "2026-11-15T09:00:10.000+00:00"
               },
               "text": "desde las 09:00",
               "tone": "neutral"
@@ -56,13 +56,59 @@
           "struck": false,
           "title": "Desde",
           "trailing": {
-            "at": "2026-11-15T09:00:00.000+00:00",
+            "at": "2026-11-15T09:00:10.000+00:00",
             "format": "relative",
             "kind": "time"
           },
           "type": "row"
         }
       ]
+    },
+    {
+      "collapsed": false,
+      "id": "activity",
+      "items": [
+        {
+          "depth": 0,
+          "icon": "history",
+          "id": "2026-11-15T09:01:41.000+00:00",
+          "struck": false,
+          "title": "Trabajando",
+          "trailing": {
+            "at": "2026-11-15T09:01:41.000+00:00",
+            "format": "relative",
+            "kind": "time"
+          },
+          "type": "row"
+        }
+      ],
+      "title": "Ahora mismo"
+    },
+    {
+      "collapsed": false,
+      "id": "last_message",
+      "items": [
+        {
+          "commentable": false,
+          "text": "Done",
+          "truncated": false,
+          "type": "markdown"
+        },
+        {
+          "depth": 0,
+          "icon": "history",
+          "id": "last_message_time",
+          "struck": false,
+          "title": "Último mensaje",
+          "trailing": {
+            "at": "2026-11-15T09:01:41.000+00:00",
+            "format": "relative",
+            "kind": "time"
+          },
+          "type": "row"
+        }
+      ],
+      "title": "Lo último que dijo"
     },
     {
       "collapsed": true,
@@ -111,7 +157,7 @@
             {
               "attachments": true,
               "enabled": true,
-              "id": "msg:agent-t1@<revision>~t1",
+              "id": "msg:<node>@<revision>~t1",
               "input": {
                 "kind": "text",
                 "multiline": true,
@@ -133,7 +179,7 @@
                 "title": "Interrumpir"
               },
               "enabled": true,
-              "id": "interrupt:agent-t1@<revision>",
+              "id": "interrupt:<node>@<revision>",
               "input": {
                 "kind": "none"
               },
@@ -152,7 +198,7 @@
                 "title": "¿Pausar este nodo?"
               },
               "enabled": true,
-              "id": "pause:agent-t1@<revision>",
+              "id": "pause:<node>@<revision>",
               "input": {
                 "kind": "none"
               },
@@ -225,6 +271,20 @@
               "resolves_card": false,
               "role": "risk",
               "style": "destructive"
+            },
+            {
+              "attachments": false,
+              "disabled_reason": "Actualiza Alondra para usar esta función",
+              "enabled": false,
+              "id": "",
+              "input": {
+                "kind": "none"
+              },
+              "label": "Cambiar modelo",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "neutral",
+              "style": "plain"
             }
           ],
           "type": "actions"
@@ -285,6 +345,27 @@
     ],
     "gauges": [
       {
+        "detail": "Puedes seguir: Claude tiene margen",
+        "id": "usage",
+        "label": "Claude",
+        "level": "calm",
+        "parts": [
+          {
+            "detail": "Le queda el 90 % de la semana",
+            "group": "Claude",
+            "label": "Default",
+            "level": "calm",
+            "lines": [
+              "Le queda el 90 % de la semana"
+            ],
+            "text": "con margen",
+            "value": 0.9
+          }
+        ],
+        "text": "con margen",
+        "value": 0.8
+      },
+      {
         "id": "memory",
         "label": "RAM",
         "level": "calm",
@@ -309,10 +390,6 @@
     "orchestrator": {
       "text": "inactivo",
       "tone": "neutral"
-    },
-    "session_wait": {
-      "text": "No hay ninguna cuenta de proveedor disponible · revisa Cuentas",
-      "tone": "warning"
     },
     "summary": "1 tarea trabajando",
     "summary_parts": [

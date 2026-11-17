@@ -62,6 +62,27 @@
     ],
     "gauges": [
       {
+        "detail": "Puedes seguir: Claude tiene margen",
+        "id": "usage",
+        "label": "Claude",
+        "level": "calm",
+        "parts": [
+          {
+            "detail": "Le queda el 90 % de la semana",
+            "group": "Claude",
+            "label": "Default",
+            "level": "calm",
+            "lines": [
+              "Le queda el 90 % de la semana"
+            ],
+            "text": "con margen",
+            "value": 0.9
+          }
+        ],
+        "text": "con margen",
+        "value": 0.8
+      },
+      {
         "id": "memory",
         "label": "RAM",
         "level": "calm",
@@ -86,10 +107,6 @@
     "orchestrator": {
       "text": "inactivo",
       "tone": "neutral"
-    },
-    "session_wait": {
-      "text": "No hay ninguna cuenta de proveedor disponible · revisa Cuentas",
-      "tone": "warning"
     },
     "summary": "1 tarea trabajando",
     "summary_parts": [

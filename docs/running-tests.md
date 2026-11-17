@@ -140,15 +140,34 @@ user acts as the app does: a request is written on the new request screen, a mes
 task's composer, and an action is pressed on the card the view serves, all through
 `POST /actions`; an action the daemon turns down fails the step. A node calls its tools as
 `alondra mcp-node` does, at the task's routes with the capability the daemon issued to its
-session, so a delivery goes through the same checks (a draft pull request is refused). The nodes
-a scenario plays count as the daemon's own SDK hosts, also after a restart.
+session, so a delivery goes through the same checks (a draft pull request is refused).
+
+A Claude node starts as a launch in production starts it, and its SDK host is the scenario's: a
+process the daemon supervises (`host_relay`, which listens on the host's socket and holds the lock
+of its folder) relays the daemon's frames to a host in the runner that speaks the real protocol and
+says what a Claude session says. The same edge answers Claude's command line and the host's probes
+(`claude auth status`, the usage and model probes), so the daemon checks its accounts as it does on
+a Mac. The world decides what the provider answers:
+
+- `[world] accounts = ["default", "work"]` sets up those Claude accounts, each signed in, and
+  `node` takes `account`. `login_expired` / `login_restored` act on one account: Claude says it is
+  signed out and every turn on it ends on `authentication_failed` (401), while the others go on.
+  `provider_down` makes the API fail every turn of every account with an error of
+  `sdk-errors.json` (`api_error` ends one turn with one); a `rate_limit` also reads as a reached
+  limit in the usage probe, until the hour after it began.
+- `restart` lets the daemon go as a crash does: the hosts run on and the new daemon takes them
+  over; the tasks of `lose` lose theirs, and no new host starts for them until `host_can_start`.
+  `update` installs this release's own host files over a daemon of `[world] release`; a host of a
+  release this one does not adopt is ended and replaced by one that resumes its session.
+- `check = "hosts"` counts the hosts started for a task, those running, and the Claude sessions
+  they held.
 
 - `bazel test //crates/scenarios:scenarios_test` runs every case; `--test_arg=<name>` runs the
   cases whose name contains it. `//crates/scenarios:scenarios_harness_test` tests the harness
   itself: it names each failure with its own error, runs a scenario twice to the same bytes, and
   refuses anything that reaches a real process.
-- `bazel run //crates/scenarios:accept -- <case>` writes what the checkpoints read into the case's
-  folder; the pull request shows that diff for a reviewer to read.
+- `bazel run //crates/scenarios:accept -- <case>...` writes what the checkpoints read into each
+  case's folder; the pull request shows that diff for a reviewer to read.
 - `bazel run //crates/scenarios:ablate -- <case> --revert <file>...` runs only that case without
   the fix (those files as they were on the base of the branch) and with it, and prints the block
   the pull request shows.

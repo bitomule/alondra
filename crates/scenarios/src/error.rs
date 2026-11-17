@@ -23,6 +23,9 @@ pub enum ScenarioError {
     /// The hosts stopped short of their transcripts and nothing they exchanged with the daemon moved
     /// them on: how many started and what each has left to play.
     HostsStalled { started: usize, expected: usize, remaining: Vec<usize> },
+    /// The daemon and its Claude hosts did not come to rest within the real time a wait for them
+    /// may take: what was still moving.
+    Unsettled(String),
     /// Something reached for a real service: the network, an outside process, the system clock.
     Leak(String),
 }
@@ -55,6 +58,7 @@ impl std::fmt::Display for ScenarioError {
             Self::HostsStalled { started, expected, remaining } => {
                 write!(f, "{started} of {expected} hosts started and stopped with lines left to play: {remaining:?}")
             }
+            Self::Unsettled(what) => write!(f, "the daemon and its Claude hosts never came to rest: {what}"),
             Self::Leak(what) => write!(f, "a real service was reached: {what}"),
         }
     }

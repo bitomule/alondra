@@ -1,0 +1,134 @@
+name = "an expired sign-in holds only the tasks on its account, while a general outage holds every account without asking anyone to sign in"
+max_virtual = "2h"
+
+[world]
+accounts = ["default", "work"]
+
+[[step]]
+do = "request"
+text = "Export the report as CSV and as PDF"
+task = "t1"
+title = "Add the CSV export"
+
+[[step]]
+do = "task"
+id = "t2"
+title = "Add the PDF export"
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "node"
+task = "t2"
+account = "work"
+
+[[step]]
+do = "login_expired"
+account = "work"
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "turn_end"
+task = "t2"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "work-signed-out"
+screens = ["home", "tasks"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "claude-signed-out-t2"
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "claude-outage"
+present = false
+
+[[step.expect]]
+check = "task_state"
+task = "t1"
+state = "running"
+
+[[step]]
+do = "login_restored"
+account = "work"
+
+[[step]]
+do = "answer"
+card = "claude-signed-out-t2"
+option = "signed_in"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "provider_down"
+error = "overloaded"
+status = 529
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "turn_end"
+task = "t2"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "general-outage"
+screens = ["home"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "claude-outage"
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "claude-signed-out"
+present = false
+
+[[step]]
+do = "provider_up"
+
+[[step]]
+do = "advance"
+by = "3m"
+
+[[step]]
+do = "rest"
+max = "30m"
+
+[[step]]
+do = "checkpoint"
+name = "after-the-outage"
+screens = ["home"]
+
+[[step.expect]]
+check = "task_state"
+task = "t1"
+state = "running"
+
+[[step.expect]]
+check = "task_state"
+task = "t2"
+state = "running"

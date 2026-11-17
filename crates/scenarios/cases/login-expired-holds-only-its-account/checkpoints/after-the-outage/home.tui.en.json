@@ -1,5 +1,5 @@
 {
-  "client": "ios",
+  "client": "tui",
   "cursor": "<cursor>",
   "data_epoch": "<data_epoch>",
   "empty": {
@@ -8,15 +8,7 @@
   },
   "key": "home",
   "protocol": 1,
-  "sections": [
-    {
-      "collapsed": false,
-      "count": 0,
-      "id": "queue",
-      "items": [],
-      "title": "Waiting for You"
-    }
-  ],
+  "sections": [],
   "service": {
     "capabilities": [
       "account_presentation",
@@ -40,12 +32,12 @@
       {
         "id": "tasks",
         "label": "Tasks",
-        "value": 0
+        "value": 2
       },
       {
         "id": "working",
         "label": "working",
-        "value": 0
+        "value": 2
       },
       {
         "id": "needs_you",
@@ -69,6 +61,38 @@
       }
     ],
     "gauges": [
+      {
+        "detail": "You can go on: Claude has room",
+        "id": "usage",
+        "label": "Claude",
+        "level": "calm",
+        "parts": [
+          {
+            "detail": "Not measured yet",
+            "group": "Claude",
+            "label": "Default",
+            "level": "calm",
+            "lines": [
+              "Not measured yet"
+            ],
+            "text": "with room",
+            "value": 1.0
+          },
+          {
+            "detail": "Not measured yet",
+            "group": "Claude",
+            "label": "Work",
+            "level": "calm",
+            "lines": [
+              "Not measured yet"
+            ],
+            "text": "with room",
+            "value": 1.0
+          }
+        ],
+        "text": "with room",
+        "value": 0.0
+      },
       {
         "id": "memory",
         "label": "RAM",
@@ -95,14 +119,10 @@
       "text": "idle",
       "tone": "neutral"
     },
-    "session_wait": {
-      "text": "No provider account is available · check Accounts",
-      "tone": "warning"
-    },
-    "summary": "0 tasks working",
+    "summary": "2 tasks working",
     "summary_parts": [
       {
-        "count": 0,
+        "count": 2,
         "id": "working",
         "one": "{count} task working",
         "other": "{count} tasks working"

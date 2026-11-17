@@ -51,7 +51,7 @@
           },
           "timestamps": [
             {
-              "at": "2026-11-15T09:03:00.000+00:00",
+              "at": "2026-11-15T09:03:10.000+00:00",
               "format": "relative",
               "role": "created"
             }
@@ -215,7 +215,7 @@
           },
           "timestamps": [
             {
-              "at": "2026-11-15T09:03:00.000+00:00",
+              "at": "2026-11-15T09:03:10.000+00:00",
               "format": "relative",
               "role": "created"
             }
@@ -280,6 +280,27 @@
     ],
     "gauges": [
       {
+        "detail": "Puedes seguir: Claude tiene margen",
+        "id": "usage",
+        "label": "Claude",
+        "level": "calm",
+        "parts": [
+          {
+            "detail": "Aún sin medir",
+            "group": "Claude",
+            "label": "Default",
+            "level": "calm",
+            "lines": [
+              "Aún sin medir"
+            ],
+            "text": "con margen",
+            "value": 1.0
+          }
+        ],
+        "text": "con margen",
+        "value": 0.0
+      },
+      {
         "id": "memory",
         "label": "RAM",
         "level": "calm",
@@ -304,10 +325,6 @@
     "orchestrator": {
       "text": "inactivo",
       "tone": "neutral"
-    },
-    "session_wait": {
-      "text": "No hay ninguna cuenta de proveedor disponible · revisa Cuentas",
-      "tone": "warning"
     },
     "summary": "1 por leer · 1 tarea trabajando",
     "summary_parts": [

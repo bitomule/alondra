@@ -30,7 +30,7 @@
           "badges": [
             {
               "elapsed": {
-                "since": "2026-11-15T09:00:00.000+00:00"
+                "since": "2026-11-15T09:00:10.000+00:00"
               },
               "text": "since 09:00",
               "tone": "neutral"
@@ -56,13 +56,59 @@
           "struck": false,
           "title": "Since",
           "trailing": {
-            "at": "2026-11-15T09:01:02.000+00:00",
+            "at": "2026-11-15T09:01:12.000+00:00",
             "format": "relative",
             "kind": "time"
           },
           "type": "row"
         }
       ]
+    },
+    {
+      "collapsed": false,
+      "id": "activity",
+      "items": [
+        {
+          "depth": 0,
+          "icon": "history",
+          "id": "2026-11-15T09:01:12.000+00:00",
+          "struck": false,
+          "title": "Working",
+          "trailing": {
+            "at": "2026-11-15T09:01:12.000+00:00",
+            "format": "relative",
+            "kind": "time"
+          },
+          "type": "row"
+        }
+      ],
+      "title": "Right now"
+    },
+    {
+      "collapsed": false,
+      "id": "last_message",
+      "items": [
+        {
+          "commentable": false,
+          "text": "Done",
+          "truncated": false,
+          "type": "markdown"
+        },
+        {
+          "depth": 0,
+          "icon": "history",
+          "id": "last_message_time",
+          "struck": false,
+          "title": "Last message",
+          "trailing": {
+            "at": "2026-11-15T09:01:12.000+00:00",
+            "format": "relative",
+            "kind": "time"
+          },
+          "type": "row"
+        }
+      ],
+      "title": "What it said last"
     },
     {
       "collapsed": true,
@@ -144,7 +190,7 @@
             {
               "attachments": true,
               "enabled": true,
-              "id": "msg:agent-t1@<revision>~t1",
+              "id": "msg:<node>@<revision>~t1",
               "input": {
                 "kind": "text",
                 "multiline": true,
@@ -166,7 +212,7 @@
                 "title": "Interrupt"
               },
               "enabled": true,
-              "id": "interrupt:agent-t1@<revision>",
+              "id": "interrupt:<node>@<revision>",
               "input": {
                 "kind": "none"
               },
@@ -185,7 +231,7 @@
                 "title": "Pause this node?"
               },
               "enabled": true,
-              "id": "pause:agent-t1@<revision>",
+              "id": "pause:<node>@<revision>",
               "input": {
                 "kind": "none"
               },
@@ -258,6 +304,20 @@
               "resolves_card": false,
               "role": "risk",
               "style": "destructive"
+            },
+            {
+              "attachments": false,
+              "disabled_reason": "Update Alondra to use this feature",
+              "enabled": false,
+              "id": "",
+              "input": {
+                "kind": "none"
+              },
+              "label": "Change model",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "neutral",
+              "style": "plain"
             }
           ],
           "type": "actions"
@@ -318,6 +378,27 @@
     ],
     "gauges": [
       {
+        "detail": "You can go on: Claude has room",
+        "id": "usage",
+        "label": "Claude",
+        "level": "calm",
+        "parts": [
+          {
+            "detail": "Not measured yet",
+            "group": "Claude",
+            "label": "Default",
+            "level": "calm",
+            "lines": [
+              "Not measured yet"
+            ],
+            "text": "with room",
+            "value": 1.0
+          }
+        ],
+        "text": "with room",
+        "value": 0.0
+      },
+      {
         "id": "memory",
         "label": "RAM",
         "level": "calm",
@@ -342,10 +423,6 @@
     "orchestrator": {
       "text": "idle",
       "tone": "neutral"
-    },
-    "session_wait": {
-      "text": "No provider account is available · check Accounts",
-      "tone": "warning"
     },
     "summary": "1 task working",
     "summary_parts": [

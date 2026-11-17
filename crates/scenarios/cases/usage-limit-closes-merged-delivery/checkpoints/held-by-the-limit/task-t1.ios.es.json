@@ -15,7 +15,7 @@
               "kind": "state",
               "label": "Estado",
               "tone": "neutral",
-              "value": "En espera · Límite de Claude"
+              "value": "En espera · Límite de Claude hasta las 10:00"
             },
             {
               "kind": "request",
@@ -35,7 +35,7 @@
           "badges": [
             {
               "elapsed": {
-                "since": "2026-11-15T09:00:00.000+00:00"
+                "since": "2026-11-15T09:00:10.000+00:00"
               },
               "text": "desde las 09:00",
               "tone": "neutral"
@@ -61,7 +61,7 @@
           "struck": false,
           "title": "Desde",
           "trailing": {
-            "at": "2026-11-15T09:00:00.000+00:00",
+            "at": "2026-11-15T09:00:10.000+00:00",
             "format": "relative",
             "kind": "time"
           },
@@ -71,60 +71,29 @@
     },
     {
       "collapsed": false,
-      "id": "waiting",
+      "id": "last_message",
       "items": [
         {
-          "content_row": {
-            "icon": "notice",
-            "kind": "report",
-            "label": "Informe",
-            "summary": "1 punto"
+          "commentable": false,
+          "text": "Done",
+          "truncated": false,
+          "type": "markdown"
+        },
+        {
+          "depth": 0,
+          "icon": "history",
+          "id": "last_message_time",
+          "struck": false,
+          "title": "Último mensaje",
+          "trailing": {
+            "at": "2026-11-15T09:00:10.000+00:00",
+            "format": "relative",
+            "kind": "time"
           },
-          "context": [
-            {
-              "icon": "task",
-              "link": {
-                "key": "task:t1",
-                "kind": "view"
-              },
-              "state": {
-                "text": "En espera",
-                "tone": "neutral"
-              },
-              "text": "Add the CSV export"
-            }
-          ],
-          "detail": "reference",
-          "eyebrow": {
-            "text": "Revisar · PR #7",
-            "tone": "accent"
-          },
-          "icon": "pull_request",
-          "id": "d1",
-          "kind": "review",
-          "link": {
-            "key": "card:d1",
-            "kind": "view"
-          },
-          "meta": "Add the CSV export",
-          "need": "Revisa el resultado",
-          "state": {
-            "text": "Listo para merge",
-            "tone": "success"
-          },
-          "timestamps": [
-            {
-              "at": "2026-11-15T09:00:00.000+00:00",
-              "format": "relative",
-              "role": "created"
-            }
-          ],
-          "title": "Review the result",
-          "title_is_separate": true,
-          "type": "card"
+          "type": "row"
         }
       ],
-      "title": "Te espera"
+      "title": "Lo último que dijo"
     },
     {
       "collapsed": true,
@@ -193,7 +162,7 @@
             {
               "attachments": true,
               "enabled": true,
-              "id": "msg:agent-t1@<revision>~t1",
+              "id": "msg:<node>@<revision>~t1",
               "input": {
                 "kind": "text",
                 "multiline": true,
@@ -265,6 +234,20 @@
               "resolves_card": false,
               "role": "risk",
               "style": "destructive"
+            },
+            {
+              "attachments": false,
+              "disabled_reason": "Actualiza Alondra para usar esta función",
+              "enabled": false,
+              "id": "",
+              "input": {
+                "kind": "none"
+              },
+              "label": "Cambiar modelo",
+              "presentation": "button",
+              "resolves_card": false,
+              "role": "neutral",
+              "style": "plain"
             }
           ],
           "type": "actions"
@@ -285,12 +268,12 @@
     }
   },
   "status": {
-    "badge": 1,
+    "badge": 0,
     "counts": [
       {
         "id": "inbox",
         "label": "Bandeja",
-        "value": 1
+        "value": 0
       },
       {
         "id": "tasks",
@@ -325,6 +308,27 @@
     ],
     "gauges": [
       {
+        "detail": "Puedes seguir: Claude tiene margen",
+        "id": "usage",
+        "label": "Claude",
+        "level": "calm",
+        "parts": [
+          {
+            "detail": "Aún sin medir",
+            "group": "Claude",
+            "label": "Default",
+            "level": "calm",
+            "lines": [
+              "Aún sin medir"
+            ],
+            "text": "con margen",
+            "value": 1.0
+          }
+        ],
+        "text": "con margen",
+        "value": 0.0
+      },
+      {
         "id": "memory",
         "label": "RAM",
         "level": "calm",
@@ -350,18 +354,8 @@
       "text": "inactivo",
       "tone": "neutral"
     },
-    "session_wait": {
-      "text": "No hay ninguna cuenta de proveedor disponible · revisa Cuentas",
-      "tone": "warning"
-    },
-    "summary": "1 por leer · 0 tareas trabajando",
+    "summary": "0 tareas trabajando",
     "summary_parts": [
-      {
-        "count": 1,
-        "id": "to_read",
-        "one": "{count} por leer",
-        "other": "{count} por leer"
-      },
       {
         "count": 0,
         "id": "working",
@@ -369,6 +363,13 @@
         "other": "{count} tareas trabajando"
       }
     ],
+    "usage_exhausted": {
+      "macs_exhausted": 1,
+      "macs_total": 1,
+      "paused_by_user": false,
+      "scope": "this_mac",
+      "until": "2026-11-15T10:00:10.000+00:00"
+    },
     "version": "<version>"
   },
   "title": "Add the CSV export",

@@ -40,6 +40,8 @@ pub(crate) struct Claude {
     pub path: String,
     pub username: String,
     pub timeout: Option<Duration>,
+    /// The edge the daemon reaches Claude through: the same that starts its hosts.
+    pub launcher: alondra_agent_runtime::owned_host::Launcher,
 }
 
 impl Claude {
@@ -49,7 +51,7 @@ impl Claude {
         let path = backend.native_environment.get("PATH").cloned().unwrap_or_default();
         let executable = if backend.installed_native { claude_account::executable(&path)? } else { backend.native.clone() };
         let user_home = Self::user_home(domain);
-        Some(Claude { executable, environment: backend.native_environment.clone(), user_home, path, username: claude_account::effective_username()?, timeout: (!domain.live().unbounded_claude_status.load(std::sync::atomic::Ordering::Relaxed)).then_some(claude_account::STATUS_TIMEOUT) })
+        Some(Claude { executable, environment: backend.native_environment.clone(), user_home, path, username: claude_account::effective_username()?, timeout: (!domain.live().unbounded_claude_status.load(std::sync::atomic::Ordering::Relaxed)).then_some(claude_account::STATUS_TIMEOUT), launcher: backend.launcher.clone() })
     }
 
     /// The profile the default account runs with: the one the daemon was set up with.
@@ -63,7 +65,10 @@ impl Claude {
     }
 
     fn status(&self, folder: Option<&Path>) -> Result<claude_account::AuthStatus, String> {
-        claude_account::status(&self.executable, &self.environment, &self.user_home, &self.path, &self.username, folder, self.timeout)
+        let command = claude_account::status_command(&self.executable, &self.environment, &self.user_home, &self.path, &self.username, folder);
+        let run = alondra_agent_runtime::owned_host::ProbeRun { command, input: Vec::new(), timeout: self.timeout };
+        let output = self.launcher.get().run(run).map_err(|error| format!("could not run Claude Code: {error}"))?;
+        claude_account::read_status(output.success, &output.stdout)
     }
 
     fn logout(&self, folder: &Path) -> Result<(), String> {

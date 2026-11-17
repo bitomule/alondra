@@ -31,10 +31,10 @@
             "tone": "critical"
           },
           "icon": "warning",
-          "id": "claude-outage-t1-13",
+          "id": "claude-outage-t1-20",
           "kind": "problem",
           "link": {
-            "key": "card:claude-outage-t1-13",
+            "key": "card:claude-outage-t1-20",
             "kind": "view"
           },
           "meta": "Alondra",
@@ -46,7 +46,7 @@
           "subtitle": "La API de Claude siguió fallando tras los reintentos de Claude Code. Alondra prueba una tarea cada 2 minutos; cuando Claude responda, siguen todas.",
           "timestamps": [
             {
-              "at": "2026-11-15T09:00:00.000+00:00",
+              "at": "2026-11-15T09:00:10.000+00:00",
               "format": "relative",
               "role": "created"
             }
@@ -68,7 +68,7 @@
             {
               "attachments": false,
               "enabled": true,
-              "id": "ans:claude-outage-t1-13@<revision>",
+              "id": "ans:claude-outage-t1-20@<revision>",
               "input": {
                 "kind": "none"
               },
@@ -102,10 +102,10 @@
             "tone": "critical"
           },
           "icon": "warning",
-          "id": "claude-outage-t1-13",
+          "id": "claude-outage-t1-20",
           "kind": "problem",
           "link": {
-            "key": "card:claude-outage-t1-13",
+            "key": "card:claude-outage-t1-20",
             "kind": "view"
           },
           "meta": "Alondra",
@@ -117,7 +117,7 @@
           "subtitle": "La API de Claude siguió fallando tras los reintentos de Claude Code. Alondra prueba una tarea cada 2 minutos; cuando Claude responda, siguen todas.",
           "timestamps": [
             {
-              "at": "2026-11-15T09:00:00.000+00:00",
+              "at": "2026-11-15T09:00:10.000+00:00",
               "format": "relative",
               "role": "created"
             }
@@ -183,6 +183,27 @@
     ],
     "gauges": [
       {
+        "detail": "Puedes seguir: Claude tiene margen",
+        "id": "usage",
+        "label": "Claude",
+        "level": "calm",
+        "parts": [
+          {
+            "detail": "Aún sin medir",
+            "group": "Claude",
+            "label": "Default",
+            "level": "calm",
+            "lines": [
+              "Aún sin medir"
+            ],
+            "text": "con margen",
+            "value": 1.0
+          }
+        ],
+        "text": "con margen",
+        "value": 0.0
+      },
+      {
         "id": "memory",
         "label": "RAM",
         "level": "calm",
@@ -207,10 +228,6 @@
     "orchestrator": {
       "text": "inactivo",
       "tone": "neutral"
-    },
-    "session_wait": {
-      "text": "No hay ninguna cuenta de proveedor disponible · revisa Cuentas",
-      "tone": "warning"
     },
     "summary": "1 pregunta · 1 tarea trabajando",
     "summary_parts": [

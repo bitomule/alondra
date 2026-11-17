@@ -1,0 +1,43 @@
+name = "an update to a release that does not adopt the hosts of the old one ends them and resumes each session in a host of its own"
+max_virtual = "1h"
+
+[world]
+release = "0.3.4"
+
+[[step]]
+do = "request"
+text = "Export the report as CSV"
+task = "t1"
+title = "Add the CSV export"
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "update"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "after-the-update"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "hosts"
+task = "t1"
+started = 2
+running = 1
+sessions = 1
+
+[[step.expect]]
+check = "task_state"
+task = "t1"
+state = "running"

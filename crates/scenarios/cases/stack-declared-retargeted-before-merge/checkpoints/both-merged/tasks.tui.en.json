@@ -111,6 +111,27 @@
     ],
     "gauges": [
       {
+        "detail": "You can go on: Claude has room",
+        "id": "usage",
+        "label": "Claude",
+        "level": "calm",
+        "parts": [
+          {
+            "detail": "Not measured yet",
+            "group": "Claude",
+            "label": "Default",
+            "level": "calm",
+            "lines": [
+              "Not measured yet"
+            ],
+            "text": "with room",
+            "value": 1.0
+          }
+        ],
+        "text": "with room",
+        "value": 0.0
+      },
+      {
         "id": "memory",
         "label": "RAM",
         "level": "calm",
@@ -135,10 +156,6 @@
     "orchestrator": {
       "text": "idle",
       "tone": "neutral"
-    },
-    "session_wait": {
-      "text": "No provider account is available · check Accounts",
-      "tone": "warning"
     },
     "summary": "0 tasks working",
     "summary_parts": [

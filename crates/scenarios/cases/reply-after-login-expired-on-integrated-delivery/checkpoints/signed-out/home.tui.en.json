@@ -31,10 +31,10 @@
             "tone": "critical"
           },
           "icon": "warning",
-          "id": "claude-signed-out-t1-12",
+          "id": "claude-signed-out-t1-17",
           "kind": "problem",
           "link": {
-            "key": "card:claude-signed-out-t1-12",
+            "key": "card:claude-signed-out-t1-17",
             "kind": "view"
           },
           "meta": "Alondra",
@@ -46,7 +46,7 @@
           "subtitle": "Claude Code's sign-in expired and a task waits. Open Terminal on the Mac, run claude and sign in with /login, then press I signed in.",
           "timestamps": [
             {
-              "at": "2026-11-15T09:01:00.000+00:00",
+              "at": "2026-11-15T09:01:10.000+00:00",
               "format": "relative",
               "role": "created"
             }
@@ -68,7 +68,7 @@
             {
               "attachments": false,
               "enabled": true,
-              "id": "ans:claude-signed-out-t1-12@<revision>",
+              "id": "ans:claude-signed-out-t1-17@<revision>",
               "input": {
                 "kind": "none"
               },
@@ -102,10 +102,10 @@
             "tone": "critical"
           },
           "icon": "warning",
-          "id": "claude-signed-out-t1-12",
+          "id": "claude-signed-out-t1-17",
           "kind": "problem",
           "link": {
-            "key": "card:claude-signed-out-t1-12",
+            "key": "card:claude-signed-out-t1-17",
             "kind": "view"
           },
           "meta": "Alondra",
@@ -117,7 +117,7 @@
           "subtitle": "Claude Code's sign-in expired and a task waits. Open Terminal on the Mac, run claude and sign in with /login, then press I signed in.",
           "timestamps": [
             {
-              "at": "2026-11-15T09:01:00.000+00:00",
+              "at": "2026-11-15T09:01:10.000+00:00",
               "format": "relative",
               "role": "created"
             }
@@ -182,6 +182,27 @@
       }
     ],
     "gauges": [
+      {
+        "detail": "You can go on: Claude has room",
+        "id": "usage",
+        "label": "Claude",
+        "level": "calm",
+        "parts": [
+          {
+            "detail": "Not measured yet",
+            "group": "Claude",
+            "label": "Default",
+            "level": "calm",
+            "lines": [
+              "Not measured yet"
+            ],
+            "text": "with room",
+            "value": 1.0
+          }
+        ],
+        "text": "with room",
+        "value": 0.0
+      },
       {
         "id": "memory",
         "label": "RAM",
