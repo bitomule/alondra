@@ -36,6 +36,7 @@ pub mod auto_launch;
 pub mod bg_handover;
 pub mod domain_schedule_api;
 pub mod domain_schedule_runner;
+pub mod ended_hosts;
 #[cfg(any(test, feature = "test-hooks"))]
 pub mod engine_tests;
 pub mod idle_release;

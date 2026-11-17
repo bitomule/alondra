@@ -1660,3 +1660,34 @@ async fn a_persisted_recovery_card_after_cleanup_is_retired_without_resuming_the
     assert!(domain.state().unwrap().interactions[&card].withdrawn);
     assert_eq!(domain.state().unwrap().tasks[&task_id].state, TaskState::Done);
 }
+
+#[tokio::test]
+async fn a_node_end_the_domain_refuses_leaves_the_folder_the_task_still_needs() {
+    let rig = Rig::new(thirty_minutes());
+    let root = crate::test_support::Directory::new();
+    let dir = crate::worktree::testing::task_worktree(&root, "t");
+    rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
+    rig.confirm();
+    let domain = rig.domain.clone();
+    *rig.sessions.during_rm.lock().unwrap() = Some(Box::new(move || {
+        command(&domain, agent(), "late-work", Command::DeclarePostMergeWork { task_id: "t".into(), reason: Some("Publish".into()), waits_for: vec![] });
+    }));
+    rig.pass(T0).await;
+    assert_eq!(rig.sessions.removals(), 1);
+    assert!(!rig.task().over());
+    assert!(dir.exists(), "the end of the node was refused, so nothing of the task is deleted");
+    assert_eq!(rig.closing().unwrap().failures, 1, "the refusal is a failed close, tried again");
+}
+
+#[tokio::test]
+async fn a_closing_task_whose_folder_is_gone_is_given_no_host() {
+    let rig = Rig::new(thirty_minutes());
+    let root = crate::test_support::Directory::new();
+    let dir = crate::worktree::testing::task_worktree(&root, "t");
+    rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
+    rig.confirm();
+    let held = || crate::sdk_owner::closing_without_folder(&rig.domain, &rig.domain.state().unwrap(), &"t".into());
+    assert!(!held(), "its folder is there");
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(held(), "its folder is gone: no host can start in it");
+}
