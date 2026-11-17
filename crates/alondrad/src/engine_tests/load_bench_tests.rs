@@ -6,7 +6,7 @@ use alondra_daemon_engine::domain_store::*;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "opt-in isolated signed card request measurement; no production service"]
 async fn repeated_card_requests() {
-    use alondra_core::views::{Client, Lang, Transport, View};
+    use alondra_views::{Client, Lang, Transport, View};
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use p256::ecdsa::{SigningKey, Signature, signature::Signer};
     use serde_json::json;
@@ -80,7 +80,7 @@ async fn repeated_card_requests() {
                 unchanged += 1;
             } else {
                 let view: View = serde_json::from_value(value)?;
-                anyhow::ensure!(view.key == key && view.view != alondra_core::views::SETTLED_VIEW, "wrong card");
+                anyhow::ensure!(view.key == key && view.view != alondra_views::SETTLED_VIEW, "wrong card");
                 if let Some(expected) = &first {
                     anyhow::ensure!(view.sections == expected.sections && view.data_epoch == expected.data_epoch,
                         "card content changed");
@@ -148,7 +148,7 @@ async fn repeated_card_requests() {
 #[tokio::test]
 #[ignore = "opt-in isolated live store read trace; no production service"]
 async fn trace_card_live_store_reads() {
-    use alondra_core::views::Lang;
+    use alondra_views::Lang;
     let home = crate::test_support::Directory::new();
     std::fs::create_dir_all(&home).unwrap();
     {

@@ -1,5 +1,5 @@
 use super::*;
-use alondra_core::domain::*;
+use alondra_domain_rules::*;
 use serde_json::json;
 use std::os::unix::fs::PermissionsExt;
 

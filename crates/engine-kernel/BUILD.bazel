@@ -13,6 +13,7 @@ WORKSPACE_DEPS = [
     "//crates/agent-runtime:agent_runtime",
     "//crates/core:alondra_core",
     "//crates/domain:domain",
+    "//crates/domain-rules:domain_rules",
     "//crates/foundation:foundation",
     "//crates/provider-contract:provider_contract",
     "//crates/store:store",
@@ -73,6 +74,7 @@ low_opt_rust_test(
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
         "//crates/daemon-engine-store:daemon_engine_store_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",
+        "//crates/views:views",
     ],
 )
 

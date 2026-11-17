@@ -1,6 +1,6 @@
 //! What the orchestrator reads when a decision of the user holds the tasks that wait for the one
 //! decided on, and why a launch of one of them is refused until it reviews their plans.
-use alondra_core::domain::{DomainState, TaskId};
+use alondra_domain_rules::{DomainState, TaskId};
 
 /// Why a held task does not start now, or nothing if no decision holds it.
 pub fn held(state: &DomainState, task: &TaskId) -> Option<String> {
@@ -15,12 +15,12 @@ pub mod tests {
     use super::*;
     use alondra_daemon_engine_model::LaunchPlan;
     use crate::domain_runtime::DomainRuntime;
-    use alondra_core::domain::{
+    use alondra_domain_rules::{
         Actor, CardKind, CardSpec, Command, CommandEnvelope, PROTOCOL_VERSION, PlanReviewOutcome, QuestionOption, Recipient, Scope, SuggestionDecision,
     };
     use std::collections::{BTreeMap, BTreeSet};
 
-    fn run(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) -> Result<(), alondra_core::domain::DomainError> {
+    fn run(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) -> Result<(), alondra_domain_rules::DomainError> {
         let state = domain.state().unwrap();
         domain.execute(&actor, &CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: id.into(),
@@ -87,7 +87,7 @@ pub mod tests {
         store.pending_messages().unwrap().into_iter().filter(|m| m.recipient_kind == "orchestrator").map(|m| m.message).collect()
     }
 
-    pub fn settle(domain: &DomainRuntime, id: &str, task: &str, outcome: PlanReviewOutcome) -> Result<(), alondra_core::domain::DomainError> {
+    pub fn settle(domain: &DomainRuntime, id: &str, task: &str, outcome: PlanReviewOutcome) -> Result<(), alondra_domain_rules::DomainError> {
         run(domain, orchestrator(), id, Command::SettlePlanReview { review_id: "decision-1".into(), task_id: task.into(), outcome })
     }
 
@@ -144,7 +144,7 @@ pub mod tests {
         let (_home, domain) = redraft();
         must(&domain, Actor::Agent { agent_id: "a".into() }, "suggest", Command::AskQuestion {
             attachments: vec![], interaction_id: "p".into(), scope: Scope::Task { task_id: "b".into() }, recipient: Recipient::Orchestrator,
-            body: "The README still names the old flag".into(), blocking: false, options: alondra_core::domain::suggestion_options(),
+            body: "The README still names the old flag".into(), blocking: false, options: alondra_domain_rules::suggestion_options(),
             card: CardSpec::new(CardKind::Propose, "Update the README's old flag").why("It is not part of this task"),
         });
         must(&domain, orchestrator(), "settle", Command::SettleSuggestion { interaction_id: "p".into(), decision: SuggestionDecision::NewTask {

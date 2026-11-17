@@ -17,7 +17,7 @@ rust_library(
     version = VERSION,
     deps = all_crate_deps(normal = True) + [
         "//crates/agent-runtime:agent_runtime",
-        "//crates/core:alondra_core",
+        "//crates/core:alondra_core", "//crates/domain-rules:domain_rules", "//crates/views:views",
         "//crates/daemon-engine:daemon_engine",
         "//crates/engine-orchestrator:engine_orchestrator",
         "//crates/daemon-support:daemon_support",
@@ -40,7 +40,7 @@ rust_library(
     visibility = ["//crates/scenarios:__pkg__"],
     deps = all_crate_deps(normal = True) + [
         "//crates/agent-runtime:agent_runtime",
-        "//crates/core:alondra_core",
+        "//crates/core:alondra_core", "//crates/domain-rules:domain_rules", "//crates/views:views",
         "//crates/daemon-engine:daemon_engine_test_hooks",
         "//crates/engine-orchestrator:engine_orchestrator_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",
@@ -97,7 +97,7 @@ low_opt_rust_test(
     compile_data = [
         "//crates/core:fixtures/ctrl_trivial_2.jsonl",
         "//crates/core:fixtures/quill.jsonl",
-        "//crates/core:src/domain/tests.rs",
+        "//crates/domain-rules:src/tests.rs",
         "//crates/daemon-engine-store:src/schedule_acceptance_tests.rs",
         "//crates/daemon-engine-store:src/tests.rs",
         "//crates/daemon-support:src/domain_authority.rs",
@@ -130,7 +130,7 @@ low_opt_rust_test(
     },
     deps = all_crate_deps(normal = True, normal_dev = True) + [
         "//crates/agent-runtime:agent_runtime",
-        "//crates/core:alondra_core",
+        "//crates/core:alondra_core", "//crates/domain-rules:domain_rules", "//crates/views:views",
         "//crates/daemon-engine:daemon_engine_test_hooks",
         "//crates/engine-orchestrator:engine_orchestrator_test_hooks",
         "//crates/daemon-engine-store:daemon_engine_store_test_hooks",
@@ -195,7 +195,7 @@ low_opt_rust_test(
     edition = "2024",
     rustc_env = {"CARGO_BIN_EXE_alondrad": "$(rootpath :alondrad)"},
     version = VERSION,
-    deps = all_crate_deps(normal = True, normal_dev = True) + ["//crates/core:alondra_core"],
+    deps = all_crate_deps(normal = True, normal_dev = True) + ["//crates/core:alondra_core", "//crates/domain-rules:domain_rules", "//crates/views:views"],
 )
 
 low_opt_rust_test(

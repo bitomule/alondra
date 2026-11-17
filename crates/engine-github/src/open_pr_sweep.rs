@@ -2,7 +2,7 @@
 use alondra_core::clock;
 use crate::domain_github::{GhCli, PrObserver, execute_system};
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain::{Command, DomainState, OpenPrPending, OpenedPr, PullRequest, TaskState};
+use alondra_domain_rules::{Command, DomainState, OpenPrPending, OpenedPr, PullRequest, TaskState};
 use alondra_core::options::OptionsFile;
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -30,7 +30,7 @@ struct Repository {
 
 impl SearchPr {
     fn identity(&self) -> Option<OpenedPr> {
-        let repository = alondra_core::domain::normalize_pr_repository(&self.repository.name_with_owner);
+        let repository = alondra_domain_rules::normalize_pr_repository(&self.repository.name_with_owner);
         let expected = format!("https://github.com/{repository}/pull/{}", self.number);
         (self.url.eq_ignore_ascii_case(&expected) && self.number > 0).then_some(OpenedPr {
             host: "github.com".into(), repository, number: self.number,
@@ -59,7 +59,7 @@ fn checkout_repositories(root: &Path) -> BTreeSet<String> {
     alondra_core::options::projects(&root).into_iter()
         .filter(|(_, path)| path.canonicalize().is_ok_and(|path| path.starts_with(&root)))
         .filter_map(|(_, path)| origin_repository(&path))
-        .map(|repo| alondra_core::domain::normalize_pr_repository(&repo))
+        .map(|repo| alondra_domain_rules::normalize_pr_repository(&repo))
         .collect()
 }
 

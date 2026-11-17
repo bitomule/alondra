@@ -49,7 +49,7 @@ exports_files(
 
 exports_files(
     ["docs/architecture/cards.md"],
-    visibility = ["//crates/core:__pkg__"],
+    visibility = ["//crates/domain-rules:__pkg__"],
 )
 
 # What Claude Code writes beside a mod it loads with --plugin-dir: never part of the plugin.

@@ -189,3 +189,49 @@ sources. Bazel's own time, without the queue's wait:
 | Edit | Crates reopened | Test targets reopened | Actions run (rustc / clippy / tests) | Edit + test |
 |---|---:|---:|---|---:|
 | `crates/daemon-engine/src/sdk_owner/tests.rs` | 7 | 27 | 42 (7 / 3 / 31) | 374 s |
+
+## `core` split into `core`, `domain-rules`, `view-model` and `views` (2026-11-17)
+
+```
+alondra, alondrad, scenarios
+          │
+        views ──────────────┐      the screens: every view and card the clients render
+          │                 ▼
+          │            view-model  the wire types of a view and the live snapshot the engine writes
+          │                 │       ▲
+          ▼                 ▼       └── engine-kernel, daemon-engine*, daemon-support: never views
+     domain-rules ◄─────────┘      the domain's commands, rules and cards (core::domain before)
+          │
+        core                       accounts, usage, options, config, the text macros (t!, tf!)
+          │
+   domain, foundation
+```
+
+- The engine's libraries and their test-hooks builds depend on `view-model`, never on `views`.
+  Only test binaries that render a screen to check it (the engine's and the kernel's unit tests)
+  and the binaries link `views`.
+- Each crate has its unit target and compiles only its production sources. The domain tests that
+  render screens (they drive the domain and assert on what a client shows) form
+  `//crates/views:domain_screens_test`: the domain's unit target cannot link `views`, which links
+  the domain. The catalog of tests is the same before and after: 1,665 tests, none added or removed.
+
+Measured with `edit_bench` against main at 84eb0d9, one edit at a time, each edit a static no
+earlier run had cached; Bazel's own time without the queue's wait, on a shared machine whose load
+changed between runs (the actions are the stable figure):
+
+| Edit | Crates reopened | Test targets reopened | Actions run (rustc / clippy / tests) | Edit + test |
+|---|---:|---:|---|---:|
+| `core/src/views/task_state.rs` (before) | 23 | 50 | 124 (36 / 16 / 70) | 830 s (a CLI test timed out) |
+| `views/src/task_state.rs` (after) | 10 | 37 | 86 (19 / 11 / 55) | 315 s |
+| `core/src/views/tests.rs` (before) | 0 | 10 | 19 (1 / 1 / 17) | 65 s |
+| `views/src/tests.rs` (after) | 0 | 9 | 16 (1 / 1 / 14) | 21 s |
+| `core/src/domain/rules.rs` (before) | 23 | 50 | 123 (36 / 16 / 69) | 370 s |
+| `domain-rules/src/rules.rs` (after) | 25 | 55 | 134 (41 / 19 / 72) | 844 s |
+
+- A screen edit compiles 19 crates and test binaries instead of 36, and none of the engine's
+  libraries or test-hooks builds.
+- A domain edit still reaches everything above it, as expected without early cutoff, and now goes
+  through the three crates that replace `core`, one after another, plus their test binaries: 5 more
+  compilations. Iterating on the domain alone is cheaper: a line in `rules.rs` with `bazel test` of
+  its own target took 41 s (`//crates/domain-rules:domain_rules_test`) against 59 s for
+  `//crates/core:alondra_core_test`.

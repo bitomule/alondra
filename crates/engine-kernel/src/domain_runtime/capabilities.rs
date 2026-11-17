@@ -125,7 +125,7 @@ fn decode_digest(text: &str) -> Result<[u8; 32]> {
 mod tests {
     use super::*;
     use crate::domain_runtime::DomainRuntime;
-    use alondra_core::domain::*;
+    use alondra_domain_rules::*;
 
     struct Fixture(crate::test_support::Directory);
     impl Fixture {

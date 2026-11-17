@@ -5,7 +5,7 @@
 use crate::live::LiveOf as _;
 use alondra_core::clock;
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain::AgentId;
+use alondra_domain_rules::AgentId;
 use axum::http::StatusCode;
 use serde::Serialize;
 use serde_json::Value;

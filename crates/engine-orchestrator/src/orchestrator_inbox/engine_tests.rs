@@ -3,7 +3,7 @@
 
 /// A task that waits for a cancelled one is the orchestrator's to re-plan, handed back at every rest.
 mod cancelled_dependencies {
-    use alondra_core::domain::{Actor, Command, TaskId, TaskState};
+    use alondra_domain_rules::{Actor, Command, TaskId, TaskState};
     use alondra_daemon_engine::auto_launch::pass;
     use alondra_daemon_engine::auto_launch::tests::{Fixture, command, create, launches, open_task, plan, problem, told, user, world};
 
@@ -59,7 +59,7 @@ mod cancelled_dependencies {
         open_task(&f, "f2");
         create(&f, "f1", &["f0"], Some(&plan(&f, "app/f1")));
         command(&f.domain, user(), Command::CancelTask { task_id: "f0".into(), reason: None });
-        command(&f.domain, Actor::System, Command::RaiseStartProblem { task_id: "f1".into(), problem: alondra_core::domain::StartProblem::DependencyCancelled { dependency: "f0".into() } });
+        command(&f.domain, Actor::System, Command::RaiseStartProblem { task_id: "f1".into(), problem: alondra_domain_rules::StartProblem::DependencyCancelled { dependency: "f0".into() } });
         let card = problem(&f, "f1").expect("a card from before the orchestrator decided");
         command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::SetDependencies {
             task_id: "f1".into(), dependencies: ["f2".into()].into(), stack: None, reason: None,});
@@ -112,7 +112,7 @@ mod cancelled_dependencies {
 
 /// A launch plan the start refused stays the orchestrator's until it decides.
 mod refused_plans {
-    use alondra_core::domain::TaskId;
+    use alondra_domain_rules::TaskId;
     use alondra_daemon_engine::domain_orchestrator_tools::tests::{refuse_its_start, refused_plan, world};
 
     #[tokio::test]
@@ -122,7 +122,7 @@ mod refused_plans {
         refused_plan(&f);
         refuse_its_start(&f).await;
         let reminders = || f.domain.state().unwrap().interactions.values()
-            .filter(|i| i.id.0.starts_with(alondra_core::orchestrator_cards::PLAN_REFUSED_NOTICE_PREFIX)).count();
+            .filter(|i| i.id.0.starts_with(alondra_domain_rules::orchestrator_cards::PLAN_REFUSED_NOTICE_PREFIX)).count();
         crate::orchestrator_inbox::hand_replans(&f.domain);
         crate::orchestrator_inbox::hand_replans(&f.domain);
         assert_eq!(reminders(), 1, "once per rest");
@@ -137,17 +137,17 @@ mod refused_plans {
         let state = f.domain.state().unwrap();
         assert!(!state.tasks[&TaskId::from("t")].cancelled(), "no clock cancels it for the orchestrator");
         assert!(state.open_plan_refusal(&"t".into()).is_some(), "it stays open until the orchestrator decides");
-        let reminder = state.interactions.values().find(|i| i.id.0.ends_with("-3") && i.id.0.starts_with(alondra_core::orchestrator_cards::PLAN_REFUSED_NOTICE_PREFIX)).unwrap();
-        assert_eq!(reminder.recipient, alondra_core::domain::Recipient::Orchestrator);
+        let reminder = state.interactions.values().find(|i| i.id.0.ends_with("-3") && i.id.0.starts_with(alondra_domain_rules::orchestrator_cards::PLAN_REFUSED_NOTICE_PREFIX)).unwrap();
+        assert_eq!(reminder.recipient, alondra_domain_rules::Recipient::Orchestrator);
         assert!(reminder.body.starts_with("Still open, reminder 3:"), "{}", reminder.body);
-        assert!(state.interactions.values().all(|i| i.recipient != alondra_core::domain::Recipient::User
-            || !matches!(&i.scope, alondra_core::domain::Scope::Task { task_id } if task_id.0 == "t")), "the user is never asked");
+        assert!(state.interactions.values().all(|i| i.recipient != alondra_domain_rules::Recipient::User
+            || !matches!(&i.scope, alondra_domain_rules::Scope::Task { task_id } if task_id.0 == "t")), "the user is never asked");
     }
 }
 
 /// A stopped node's case is reminded to the orchestrator and then settled by Alondra.
 mod stopped_nodes {
-    use alondra_core::domain::*;
+    use alondra_domain_rules::*;
     use alondra_daemon_engine::wiring::owner_tests::*;
     use std::sync::Arc;
 
@@ -156,8 +156,8 @@ mod stopped_nodes {
     /// and no card ever asks the user.
     #[test]
     fn a_stop_left_unsettled_is_reminded_once_then_handed_back_and_both_outlive_a_restart() {
-        use alondra_core::domain::{STALL_ATTEMPTS, UNSETTLED_INSTRUCT};
-        use alondra_core::orchestrator_cards::STALL_NOTICE_PREFIX;
+        use alondra_domain_rules::{STALL_ATTEMPTS, UNSETTLED_INSTRUCT};
+        use alondra_domain_rules::orchestrator_cards::STALL_NOTICE_PREFIX;
         const MINUTE: i64 = 60_000;
         let (fixture, mut store, execution) = running();
         let normalizer = woken(&mut store, &execution);
@@ -198,7 +198,7 @@ mod stopped_nodes {
     /// The orchestrator's instruction settles the case for good: no reminder follows it.
     #[test]
     fn a_stop_the_orchestrator_settles_gets_no_reminder() {
-        use alondra_core::orchestrator_cards::STALL_NOTICE_PREFIX;
+        use alondra_domain_rules::orchestrator_cards::STALL_NOTICE_PREFIX;
         let (fixture, mut store, execution) = running();
         let normalizer = woken(&mut store, &execution);
         let runtime = runtime(&fixture, store);
@@ -207,7 +207,7 @@ mod stopped_nodes {
         runtime.own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, WOKEN_CURSOR), &normalizer, no_home(), false)).unwrap();
         crate::orchestrator_inbox::settle_overdue(&runtime, 0);
         let state = Arc::clone(runtime.read().state());
-        let settle = Command::SettleStall { case_id: stall_case_of("turn-2"), task_id: task(), outcome: alondra_core::domain::StallOutcome::Instruct { text: "Present it".into() } };
+        let settle = Command::SettleStall { case_id: stall_case_of("turn-2"), task_id: task(), outcome: alondra_domain_rules::StallOutcome::Instruct { text: "Present it".into() } };
         let fresh = CommandEnvelope { expected_revision: state.revision, ..envelope(&state, "orchestrator-instructs", settle) };
         runtime.execute(&Actor::Orchestrator { generation: state.orchestrator_generation }, &fresh, None, || Ok(())).unwrap();
         crate::orchestrator_inbox::settle_overdue(&runtime, 11 * 60_000);
@@ -217,8 +217,8 @@ mod stopped_nodes {
 
 /// Plans a decision of the user holds are reminded, then released unchanged with a note.
 mod held_plans {
-    use alondra_core::domain::{PlanReviewOutcome, Recipient, TaskId};
-    use alondra_core::orchestrator_cards::PLAN_REVIEW_NOTICE_PREFIX;
+    use alondra_domain_rules::{PlanReviewOutcome, Recipient, TaskId};
+    use alondra_domain_rules::orchestrator_cards::PLAN_REVIEW_NOTICE_PREFIX;
     use alondra_daemon_engine::plan_reviews::held;
     use alondra_daemon_engine::plan_reviews::tests::{plan, redraft, settle};
     use alondra_engine_kernel::domain_runtime::DomainRuntime;

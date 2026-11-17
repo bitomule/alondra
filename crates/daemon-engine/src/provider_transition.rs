@@ -8,7 +8,7 @@ use crate::domain_store::{Attached,StoreError};
 use crate::domain_store::provider_transition::{Kind,Plan,Phase,Transition,prepared_facts};
 use alondra_agent_runtime::owned_host::{EndedHost,Retained};
 use alondra_core::accounts::AccountKey;
-use alondra_core::domain::*;
+use alondra_domain_rules::*;
 use alondra_core::model_selection::{ModelSelection,MoveRefused,PendingTaskSelection,TaskSelection};
 use alondra_core::selection_transition::{ActiveSelection,SelectionTransition,TransitionCapabilities,classify_transition};
 use alondra_domain::ActivityView;
@@ -179,7 +179,7 @@ fn drained(domain:&DomainRuntime,plan:&Plan)->Result<bool,DomainError>{
         && lifecycle.cards().iter().all(|(card,_)|lifecycle.card_callback(card).is_none()) && lifecycle.doubts().is_empty())
 }
 /// The task's canonical context, or why it cannot move: Alondra no longer has part of it.
-pub(crate) fn critical_context(state:&DomainState,task:&alondra_core::domain::Task)->Result<String,DomainError>{
+pub(crate) fn critical_context(state:&DomainState,task:&alondra_domain_rules::Task)->Result<String,DomainError>{
     let canonical=crate::domain_orchestrator_tools::canonical_task_context(state,task);
     if !canonical.missing_sources.is_empty(){return Err(failure(format!("Critical task context is missing: {}",canonical.missing_sources.join(", "))))}
     Ok(canonical.text)

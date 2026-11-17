@@ -1,5 +1,5 @@
-use alondra_core::domain::DomainError;
-use alondra_core::views::{BuildError, Client, ClientCapabilities, Lang, Transport, VIEWS_PROTOCOL};
+use alondra_domain_rules::DomainError;
+use alondra_views::{BuildError, Client, ClientCapabilities, Lang, Transport, VIEWS_PROTOCOL};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -201,7 +201,7 @@ pub(super) async fn respond(
 
 /// The view's bytes, leaving out the cards it carries from the last while it does not fit: the
 /// app asks for those on its own.
-fn within_budget(view: &mut alondra_core::views::View, budget: usize) -> serde_json::Result<Vec<u8>> {
+fn within_budget(view: &mut alondra_views::View, budget: usize) -> serde_json::Result<Vec<u8>> {
     loop {
         let bytes = serde_json::to_vec(view)?;
         if bytes.len() <= budget || view.first_cards.pop().is_none() {
@@ -210,7 +210,7 @@ fn within_budget(view: &mut alondra_core::views::View, budget: usize) -> serde_j
     }
 }
 
-fn unchanged(cursor: &str, data_epoch: &str, service: alondra_core::views::Service) -> Response {
+fn unchanged(cursor: &str, data_epoch: &str, service: alondra_views::Service) -> Response {
     Json(json!({"protocol":VIEWS_PROTOCOL,"unchanged":true,"cursor":cursor,
         "data_epoch":data_epoch,"service":service})).into_response()
 }
@@ -302,7 +302,7 @@ fn view_key(base: &str, options: &ViewOptions) -> Option<String> {
         effort,
     } = options;
     let clean = |value: &str| value.len() <= 256 && !value.chars().any(char::is_control);
-    if base == alondra_core::views::metrics::KEY {
+    if base == alondra_views::metrics::KEY {
         if [focus, section, after, q, refresh].iter().any(|option| option.is_some()) {
             return None;
         }
@@ -497,7 +497,7 @@ fn normalize_key(raw: &str) -> Option<String> {
 }
 
 fn plain_id(id: &str) -> bool {
-    alondra_core::views::id::valid(id)
+    alondra_core::id::valid(id)
 }
 
 fn error(code: &str, message: &str) -> Response {
@@ -562,14 +562,14 @@ mod tests {
         for key in keys {
             assert_eq!(normalize_key(key).as_deref(), Some(key), "{key}");
         }
-        let reached: std::collections::HashSet<_> = keys.into_iter().filter_map(alondra_core::views::Family::of).collect();
-        let missing: Vec<_> = alondra_core::views::Family::ALL.iter().filter(|family| !reached.contains(family)).collect();
+        let reached: std::collections::HashSet<_> = keys.into_iter().filter_map(alondra_views::Family::of).collect();
+        let missing: Vec<_> = alondra_views::Family::ALL.iter().filter(|family| !reached.contains(family)).collect();
         assert!(missing.is_empty(), "a family no device can open: {missing:?}");
     }
 
     #[test]
     fn a_view_over_budget_leaves_out_its_last_cards_first() {
-        let golden: alondra_core::views::View =
+        let golden: alondra_views::View =
             serde_json::from_str(include_str!("../../../../fixtures/views/cards/home-ios.json")).unwrap();
         assert_eq!(golden.first_cards.len(), 3);
         let size = |cards: usize| {

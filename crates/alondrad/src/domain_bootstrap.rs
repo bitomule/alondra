@@ -5,7 +5,7 @@ use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::auth::{Signed, is_local};
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain::{AttachmentRef, DomainError};
+use alondra_domain_rules::{AttachmentRef, DomainError};
 use anyhow::{Context, Result, ensure};
 use axum::extract::{ConnectInfo, Path as RoutePath, Query, RawQuery, State, rejection::JsonRejection};
 use axum::http::{HeaderMap, StatusCode};
@@ -297,7 +297,7 @@ pub(crate) fn signed_device(home: &Path, signed: &Option<Extension<Signed>>) -> 
 
 /// Who may read and change this Mac's settings: this Mac unsigned, or an approved device. A
 /// browser page open on the Mac sends an `Origin` and is refused.
-fn settings_caller(state: &DomainDaemon, peer: &SocketAddr, headers: &HeaderMap, signed: &Option<Extension<Signed>>) -> Result<alondra_core::views::Lang, Response> {
+fn settings_caller(state: &DomainDaemon, peer: &SocketAddr, headers: &HeaderMap, signed: &Option<Extension<Signed>>) -> Result<alondra_views::Lang, Response> {
     if headers.contains_key(axum::http::header::ORIGIN) {
         return Err(forbidden("settings change only from Alondra's own clients"));
     }
@@ -308,7 +308,7 @@ fn settings_caller(state: &DomainDaemon, peer: &SocketAddr, headers: &HeaderMap,
     }
     match local_only(peer, headers) {
         Some(refused) => Err(refused),
-        None => Ok(alondra_core::views::Lang::En),
+        None => Ok(alondra_views::Lang::En),
     }
 }
 
@@ -790,7 +790,7 @@ async fn agent_message(
             "invalid message",
         ));
     };
-    let user = alondra_core::domain::Actor::User {
+    let user = alondra_domain_rules::Actor::User {
         user_id: format!("device:{}", device.device_id),
     };
     match crate::domain_messages::deliver(
@@ -846,7 +846,7 @@ pub(crate) async fn send_agent_message(
     domain: &DomainRuntime,
     home: &Path,
     sender: &str,
-    agent: &alondra_core::domain::AgentId,
+    agent: &alondra_domain_rules::AgentId,
     body: Value,
 ) -> Value {
     crate::domain_messages::relayed(domain, home, sender, agent.clone(), Some(&body)).await
@@ -868,7 +868,7 @@ fn tool_caller(
     peer: &SocketAddr,
     headers: &HeaderMap,
     what: Option<&str>,
-) -> Result<alondra_core::domain::Actor, Response> {
+) -> Result<alondra_domain_rules::Actor, Response> {
     if let Some(refused) = local_only(peer, headers) {
         return Err(refused);
     }
@@ -976,7 +976,7 @@ async fn read_task_context(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PlanModeQuery { task_id: alondra_core::domain::TaskId }
+struct PlanModeQuery { task_id: alondra_domain_rules::TaskId }
 
 async fn request_plan_mode(
     State(state): State<Arc<DomainDaemon>>,ConnectInfo(peer): ConnectInfo<SocketAddr>,headers: HeaderMap,
@@ -1036,7 +1036,7 @@ async fn orchestrator_launch_plan(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LaunchPlanQuery {
-    task_id: alondra_core::domain::TaskId,
+    task_id: alondra_domain_rules::TaskId,
 }
 
 async fn orchestrator_get_launch_plan(
@@ -1238,16 +1238,16 @@ async fn open_cards(
         .and_then(|value| value.strip_prefix("Bearer "));
     let (reader, bound) = match bearer.map(|token| state.domain.resolve_bearer(token)) {
         Some(Ok(crate::domain_authority::Principal::Agent { session_id, task_binding, .. })) => {
-            (alondra_core::domain::Actor::Agent { agent_id: session_id.into() }, task_binding)
+            (alondra_domain_rules::Actor::Agent { agent_id: session_id.into() }, task_binding)
         }
         Some(Ok(crate::domain_authority::Principal::Orchestrator { generation, .. })) => {
-            (alondra_core::domain::Actor::Orchestrator { generation }, None)
+            (alondra_domain_rules::Actor::Orchestrator { generation }, None)
         }
         _ => return forbidden("an Agent's or the orchestrator's capability is required"),
     };
     let task = match (bound, query.task_id) {
         (Some(bound), Some(asked)) if bound != asked => return forbidden("this node is bound to another task"),
-        (bound, asked) => asked.or(bound).map(alondra_core::domain::TaskId),
+        (bound, asked) => asked.or(bound).map(alondra_domain_rules::TaskId),
     };
     match state.domain.state() {
         Ok(domain) => Json(json!({"cards": domain.open_card_rows(&reader, task.as_ref())})).into_response(),
@@ -1282,7 +1282,7 @@ async fn orchestrator_machine(
 
 /// The models the orchestrator chooses from, as `model_table` writes them, and the public evidence
 /// of each one's sheet. Until the daemon records the accounts, every catalog's account counts.
-pub(crate) fn available_models(state: &alondra_core::domain::DomainState, tasks: &[alondra_core::metrics::report::TaskRow], now: alondra_core::Millis)
+pub(crate) fn available_models(state: &alondra_domain_rules::DomainState, tasks: &[alondra_core::metrics::report::TaskRow], now: alondra_core::Millis)
     -> (Option<String>, std::collections::BTreeMap<String, String>) {
     use alondra_core::accounts::{AccountKey, AccountState};
     use alondra_core::model_table::AccountRoom;
@@ -1413,7 +1413,7 @@ mod tests {
         use alondra_core::accounts::*;
         use alondra_core::model_selection::*;
         use alondra_core::usage::*;
-        let mut state = alondra_core::domain::DomainState::new("quota-test");
+        let mut state = alondra_domain_rules::DomainState::new("quota-test");
         state.accounts = vec![AccountStatus { provider: Provider::Codex, id: AccountId::default_account(),
             name: "Native".into(), state: AccountState::SignedIn, native_identity: None, email: None, plan: None,
             billing: AccountBilling::default(), sign_ins: 0, profile: None }];
@@ -1725,7 +1725,7 @@ mod tests {
 
     #[test]
     fn bootstrap_refuses_an_unsupported_schema_and_preserves_the_domain() {
-        use alondra_core::domain::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION};
+        use alondra_domain_rules::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION};
         let scratch_directory = crate::test_support::Directory::new();
         let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-domain-bootstrap-schema-{}", crate::auth::random_hex(8)));
@@ -2224,7 +2224,7 @@ mod tests {
             .bearer_auth(orchestrator.expose_for_child_environment())
             .json(&json!({"task_id": "missing", "changes": {"model": "sonnet"}})).send().await.unwrap();
         assert_eq!(missing_update.status(), StatusCode::NOT_FOUND);
-        use alondra_core::domain::{Actor, Command, CommandEnvelope, LaunchPlan, PROTOCOL_VERSION};
+        use alondra_domain_rules::{Actor, Command, CommandEnvelope, LaunchPlan, PROTOCOL_VERSION};
         let execute = |actor, command| {
             let state = domain.state().unwrap();
             domain.execute_fixture(&actor, CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
@@ -2736,7 +2736,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(uploaded.status(), StatusCode::OK);
-        let reference: alondra_core::domain::AttachmentRef = uploaded.json().await.unwrap();
+        let reference: alondra_domain_rules::AttachmentRef = uploaded.json().await.unwrap();
         let expected: String = <sha2::Sha256 as sha2::Digest>::digest(&bytes)
             .iter()
             .map(|b| format!("{b:02x}"))

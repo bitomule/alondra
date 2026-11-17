@@ -1,7 +1,7 @@
 //! How Alondra starts a task by itself: the launch plan every task is created with,
 //! stored beside it, and the checks it must pass when it is given.
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain::{Command, DomainError, RequestId, SuggestionDecision};
+use alondra_domain_rules::{Command, DomainError, RequestId, SuggestionDecision};
 use std::path::Path;
 
 const MISSION_LIMIT: usize = 32_000;
@@ -9,7 +9,7 @@ const MISSION_LIMIT: usize = 32_000;
 /// to: the launch would refuse it every time.
 pub const EFFORT_WITHOUT_MODEL: &str = "launch.effort needs launch.model: name the model the effort is for (claude/… or codex/…), or leave the effort out so Automatic picks both";
 
-pub use alondra_core::domain::LaunchPlan;
+pub use alondra_domain_rules::LaunchPlan;
 
 /// Whether a plan can start a task of this request: a launch with these fields would be accepted.
 pub fn validate(domain: &DomainRuntime, home: &Path, request_id: &RequestId, plan: &LaunchPlan) -> Result<(), DomainError> {

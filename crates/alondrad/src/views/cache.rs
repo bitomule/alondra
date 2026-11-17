@@ -1,7 +1,7 @@
 use crate::locks::Poisonable as _;
-use alondra_core::domain::{DomainState, ReadSnapshot};
-use alondra_core::views::{
-    self, BuildError, Client, ClientCapabilities, Lang, LiveSnapshot, RenderContext, Status, Transport, View,
+use alondra_domain_rules::{DomainState, ReadSnapshot};
+use alondra_views::{
+    self as views, BuildError, Client, ClientCapabilities, Lang, LiveSnapshot, RenderContext, Status, Transport, View,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};

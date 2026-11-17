@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use alondra_core::config::{Config, FileConfig};
 use alondra_core::startup::Record;
-use alondra_core::views::Lang;
+use alondra_views::Lang;
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 

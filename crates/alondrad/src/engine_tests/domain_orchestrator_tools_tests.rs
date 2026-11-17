@@ -5,7 +5,7 @@ use alondra_daemon_engine::domain_orchestrator_tools::tests::*;
 use alondra_daemon_engine::domain_orchestrator_tools::*;
 use crate::domain_runtime::DomainRuntime;
 use crate::test_support::Directory;
-use alondra_core::domain::*;
+use alondra_domain_rules::*;
 use serde_json::{Value, json};
 
 /// What `alondra metrics --json` shows once a sonnet task launched by the orchestrator went
@@ -23,11 +23,11 @@ async fn a_review_that_asks_for_changes_twice_shows_its_rounds_in_the_metrics() 
     command(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Readable editor".into() });
     command(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: "t".into(), request_id: "r".into(), title: "Editor colours".into(),
         agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
-        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
+        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
     command(&domain, Actor::System, Command::RegisterAgent { agent_id: "reviewer".into(), name: "Reviewer".into(), at: 0 });
     command(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: "review".into(), request_id: "r".into(), title: "Review the editor colours".into(),
         agent_id: Some("reviewer".into()), review_prs: false, dependencies: Default::default(), stack: None,
-        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
+        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
     command(&domain, user(), Command::SetRelations { task_id: "review".into(), delivered_dependencies: ["t".into()].into(), blocks: ["t".into()].into() });
 
     command(&domain, Actor::System, Command::RegisterAgent { agent_id: "worker".into(), name: "editor".into(), at: 0 });
@@ -59,7 +59,7 @@ async fn a_review_that_asks_for_changes_twice_shows_its_rounds_in_the_metrics() 
     };
     let delivery = |task: &str, id: &str| json!({"task_id": task, "interaction_id": id, "body": "Done", "is_final": true, "attachments": [],
         "targets": [{"kind": "text", "text": "The result"}],
-        "card": serde_json::to_value(alondra_core::domain::CardSpec::delivery("Review the result", &[], true)).unwrap()});
+        "card": serde_json::to_value(alondra_domain_rules::CardSpec::delivery("Review the result", &[], true)).unwrap()});
 
     call(&worker, "/tasks/t/start".into(), json!({"task_id": "t"})).await;
     let verdicts = [
@@ -77,8 +77,8 @@ async fn a_review_that_asks_for_changes_twice_shows_its_rounds_in_the_metrics() 
     }
 
     command(&domain, user(), Command::AcceptDelivery { presentation_id: "delivery-2".into(),
-        targets: vec![alondra_core::domain::DeliveryTarget::Text { text: "The result".into() }] });
-    command(&domain, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: None });
+        targets: vec![alondra_domain_rules::DeliveryTarget::Text { text: "The result".into() }] });
+    command(&domain, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: alondra_domain_rules::NodeEnd::Closed, agent_id: None });
 
     let report: Value = client.get(format!("{base}/metrics?period=all&compare=none")).send().await.unwrap().json().await.unwrap();
     println!("GET /metrics (what alondra metrics --json prints):\n{}", serde_json::to_string_pretty(&report).unwrap());

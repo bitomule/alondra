@@ -283,7 +283,7 @@ fn unescape(text: &str) -> String {
 /// crates it runs whose `eprintln!` also land in `alondrad.log`.
 pub const LOG_SOURCES: &[&str] =
     &["crates/alondrad/src", "crates/alondrad/launcher", "crates/daemon-support/src", "crates/daemon-engine/src", "crates/daemon-engine-model/src", "crates/daemon-engine-store/src", "crates/daemon-engine-machine/src", "crates/engine-github/src", "crates/engine-kernel/src", "crates/engine-orchestrator/src", "crates/core/src",
-        "crates/provider-claude/src"];
+        "crates/domain-rules/src", "crates/view-model/src", "crates/views/src", "crates/provider-claude/src"];
 
 /// Functions that word a whole log line, which the daemon then logs as `log!("{line}")`: each of
 /// their `format!` texts is a template too.
@@ -309,6 +309,9 @@ pub const VOCABULARY_SOURCES: &[&str] = &[
     "crates/daemon-support/src",
     "crates/daemon-engine/src", "crates/daemon-engine-model/src", "crates/daemon-engine-store/src", "crates/daemon-engine-machine/src", "crates/engine-github/src", "crates/engine-kernel/src", "crates/engine-orchestrator/src",
     "crates/core/src",
+    "crates/domain-rules/src",
+    "crates/view-model/src",
+    "crates/views/src",
     "crates/domain/src",
     "crates/foundation/src",
     "crates/store/src",

@@ -167,7 +167,7 @@ pub enum Expect {
     /// The calls Alondra made to GitHub that change something, in order, as `gh` is typed.
     GhCalls { calls: Vec<String> },
     PrMergedInto { pr: u64, branch: String },
-    TaskState { task: String, state: alondra_core::domain::TaskState },
+    TaskState { task: String, state: alondra_domain_rules::TaskState },
     /// Every transcript of the case was played to its end: the daemon sent what each expected and
     /// received everything it said.
     TranscriptsPlayed,

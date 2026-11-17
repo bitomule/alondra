@@ -6,7 +6,7 @@ load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 
-WORKSPACE_DEPS = ["//crates/agent-application:agent_application", "//crates/agent-runtime:agent_runtime", "//crates/core:alondra_core", "//crates/domain:domain", "//crates/foundation:foundation", "//crates/provider-codex:provider_codex", "//crates/provider-contract:provider_contract", "//crates/store:store"]
+WORKSPACE_DEPS = ["//crates/agent-application:agent_application", "//crates/agent-runtime:agent_runtime", "//crates/core:alondra_core", "//crates/domain-rules:domain_rules", "//crates/domain:domain", "//crates/foundation:foundation", "//crates/provider-codex:provider_codex", "//crates/provider-contract:provider_contract", "//crates/store:store"]
 SQL = [
     "//crates/domain-store-schema:schema.sql",
     "//crates/domain-store-schema:schedule_launch_transition.sql",

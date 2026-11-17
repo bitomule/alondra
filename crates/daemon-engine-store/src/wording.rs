@@ -1,5 +1,5 @@
 //! What the orchestrator is told when the store stages the effects of a command.
-use alondra_core::domain::{ANSWER_TEXT, DecisionPrompt, DomainState, Hold, InputValue, InteractionId, InteractionPayload, McpServerOrigin, RequestId, TaskId};
+use alondra_domain_rules::{ANSWER_TEXT, DecisionPrompt, DomainState, Hold, InputValue, InteractionId, InteractionPayload, McpServerOrigin, RequestId, TaskId};
 use alondra_daemon_engine_model::LaunchPlan;
 use alondra_provider_contract::DecisionKind;
 use serde_json::Value;

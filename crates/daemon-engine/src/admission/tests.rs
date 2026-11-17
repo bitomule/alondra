@@ -3,7 +3,7 @@ use super::*;
 use crate::machine_watch::step_on;
 use crate::node_reports::{Envelope, Report};
 use alondra_core::Machine;
-use alondra_core::domain::{Actor, AgentId, Command, CommandEnvelope, RuntimeObservation, PROTOCOL_VERSION};
+use alondra_domain_rules::{Actor, AgentId, Command, CommandEnvelope, RuntimeObservation, PROTOCOL_VERSION};
 
 const MIN: Millis = 60_000;
 const SAMPLE: Millis = 10_000;
@@ -297,7 +297,7 @@ fn create(domain: &DomainRuntime, id: &str) {
     run(domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
         task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
         dependencies: Default::default(), stack: None,
-        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
     });
 }
 
@@ -488,7 +488,7 @@ fn a_node_waiting_for_the_user_to_approve_its_plan_leaves_its_slot_to_the_queue_
     start(&domain, "t2", now);
 
     run(&domain, Actor::User { user_id: "u".into() }, Command::AnswerQuestion {
-        attachments: vec![], interaction_id: plan, option_id: alondra_core::domain::Hold::APPROVE.into(), inputs: Default::default() });
+        attachments: vec![], interaction_id: plan, option_id: alondra_domain_rules::Hold::APPROVE.into(), inputs: Default::default() });
     let t3 = Waiting { key: Key::Task("t3".into()), priority: TaskPriority::Normal, resuming: false, since: now };
     assert!(matches!(gate.ask(&domain, t3, now), Err(Hold::Slots { working: 2, limit: 1 })), "approved, t1 counts again");
 }
@@ -541,11 +541,11 @@ fn end_turn(domain: &DomainRuntime, id: &str) {
 /// with no turn running already rests.
 fn finish(domain: &DomainRuntime, id: &str, now: Millis) {
     let Some(turn) = domain.state().unwrap().lifecycle_of(&id.into()).unwrap().turn().map(|turn| turn.as_str().to_owned()) else { return };
-    let options = vec![alondra_core::domain::QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }];
+    let options = vec![alondra_domain_rules::QuestionOption { id: "yes".into(), label: "Yes".into(), description: None }];
     run(domain, Actor::Agent { agent_id: AgentId(format!("agent-{id}")) }, Command::AskQuestion {
-        attachments: vec![], interaction_id: format!("q-{id}-{now}").into(), scope: alondra_core::domain::Scope::Task { task_id: id.into() },
-        recipient: alondra_core::domain::Recipient::User, body: "Ship it?".into(), blocking: false,
-        card: alondra_core::domain::CardSpec::question("Ship it?", &options), options,
+        attachments: vec![], interaction_id: format!("q-{id}-{now}").into(), scope: alondra_domain_rules::Scope::Task { task_id: id.into() },
+        recipient: alondra_domain_rules::Recipient::User, body: "Ship it?".into(), blocking: false,
+        card: alondra_domain_rules::CardSpec::question("Ship it?", &options), options,
     });
     run(domain, Actor::System, Command::RecordTurnBoundary { task_id: id.into(), generation: 1, turn, failure: None, failed: None });
     domain.report(Envelope { session_id: format!("agent-{id}"), report: Report::TurnComplete { answer: "Done".into(), aborted: false } }, now);
@@ -695,7 +695,7 @@ fn memory_coming_and_going_for_an_hour_tells_the_orchestrator_nothing() {
         now += SAMPLE;
     }
     let state = domain.state().unwrap();
-    let told: Vec<_> = state.interactions.values().filter(|i| i.recipient == alondra_core::domain::Recipient::Orchestrator).map(|i| i.id.0.clone()).collect();
+    let told: Vec<_> = state.interactions.values().filter(|i| i.recipient == alondra_domain_rules::Recipient::Orchestrator).map(|i| i.id.0.clone()).collect();
     assert!(told.is_empty(), "{told:?}");
 }
 
@@ -792,10 +792,10 @@ fn a_started_node_already_waiting_on_the_user_leaves_its_slot_although_it_was_ad
     assert_eq!(gate.ask(&domain, t1, now), Ok(()));
     start(&domain, "t1", now);
     run(&domain, Actor::Agent { agent_id: "agent-t1".into() }, Command::AskQuestion {
-        attachments: vec![], interaction_id: "question".into(), scope: alondra_core::domain::Scope::Task { task_id: "t1".into() },
-        recipient: alondra_core::domain::Recipient::User, body: "Which format?".into(), blocking: true,
-        options: ["plain", "markdown"].map(|id| alondra_core::domain::QuestionOption { id: id.into(), label: id.into(), description: None }).to_vec(),
-        card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Decide, "Choose the format"),
+        attachments: vec![], interaction_id: "question".into(), scope: alondra_domain_rules::Scope::Task { task_id: "t1".into() },
+        recipient: alondra_domain_rules::Recipient::User, body: "Which format?".into(), blocking: true,
+        options: ["plain", "markdown"].map(|id| alondra_domain_rules::QuestionOption { id: id.into(), label: id.into(), description: None }).to_vec(),
+        card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Decide, "Choose the format"),
     });
     assert_eq!(gate.snapshot(&domain, now).unwrap().working, 0, "t1's node waits on the user, a second after its admission");
     let t2 = Waiting { key: Key::Task("t2".into()), priority: TaskPriority::Normal, resuming: false, since: now };
@@ -862,13 +862,13 @@ fn settings_offer_the_automatic_limit_the_gate_applies_and_the_most_it_takes() {
         assert_eq!((pacing.fixed, pacing.auto, pacing.limit, pacing.most), (None, auto, auto, most), "{cost} bytes a node");
 
         let state = domain.state().unwrap();
-        let index = alondra_core::domain::ReadIndex::build(&state);
-        let live = alondra_core::views::LiveSnapshot { pacing: Some(pacing), ..Default::default() };
-        let context = alondra_core::views::RenderContext { domain: &state, index: &index, live: &live, client: alondra_core::views::Client::Ios,
-            lang: alondra_core::views::Lang::En, transport: alondra_core::views::Transport::Loopback, cursor: "c", rendered_at: "" };
-        let view = alondra_core::views::build("machine", context).unwrap();
+        let index = alondra_domain_rules::ReadIndex::build(&state);
+        let live = alondra_view_model::LiveSnapshot { pacing: Some(pacing), ..Default::default() };
+        let context = alondra_views::RenderContext { domain: &state, index: &index, live: &live, client: alondra_view_model::Client::Ios,
+            lang: alondra_view_model::Lang::En, transport: alondra_view_model::Transport::Loopback, cursor: "c", rendered_at: "" };
+        let view = alondra_views::build("machine", context).unwrap();
         let menu = view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
-            alondra_core::views::Item::Row(row) => row.actions.iter().find(|action| action.id.starts_with("set_limit:")).cloned(),
+            alondra_view_model::Item::Row(row) => row.actions.iter().find(|action| action.id.starts_with("set_limit:")).cloned(),
             _ => None,
         }).expect("Settings offer the limit");
         let ids: Vec<&str> = menu.options.iter().map(|option| option.id.as_str()).collect();
@@ -1087,7 +1087,7 @@ fn a_resume_waits_while_the_disk_has_no_room_for_one_more_build() {
     assert!(still_paused(&domain, "t1"), "the disk is under its line");
     let queued = gate.live(&domain, base + MIN).unwrap().queued;
     assert_eq!(queued.iter().map(|queued| (queued.task_id.as_str(), &queued.hold)).collect::<Vec<_>>(),
-        [("t1", &alondra_core::views::LiveHold::Disk { free: 4 * GB, needed: 5 * GB, volume: None })], "it waits in the queue, and says why");
+        [("t1", &alondra_view_model::LiveHold::Disk { free: 4 * GB, needed: 5 * GB, volume: None })], "it waits in the queue, and says why");
     assert!(gate.live(&domain, base + MIN).unwrap().paused.is_empty(), "no longer shown as paused by the user");
 
     watch.measure_disk(crate::disk::Space { free: 4 * GB, purgeable: 11 * GB, total: 500 * GB });
@@ -1134,7 +1134,7 @@ fn nodes_the_user_resumed_still_wait_for_a_slot_after_the_daemon_restarts() {
 const GB: u64 = 1_000_000_000;
 
 fn create_in(domain: &DomainRuntime, id: &str, project: &str) {
-    let mut launch = alondra_core::domain::LaunchPlan::new("node", "/tmp");
+    let mut launch = alondra_domain_rules::LaunchPlan::new("node", "/tmp");
     launch.project = Some(project.into());
     run(domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
         task_id: id.into(), request_id: "r".into(), title: format!("Task {id}"), agent_id: None, review_prs: false,
@@ -1186,7 +1186,7 @@ fn growing_swap_holds_a_resume_in_the_queue_and_a_quiet_minute_releases_it() {
     logged.free();
     look(&domain, &home.0, now);
     assert!(still_paused(&domain, "t1"));
-    assert!(matches!(gate.live(&domain, now).unwrap().queued[0].hold, alondra_core::views::LiveHold::Disk { .. }));
+    assert!(matches!(gate.live(&domain, now).unwrap().queued[0].hold, alondra_view_model::LiveHold::Disk { .. }));
     let lines = logged.lines();
     let held = lines.iter().find(|line| line.contains("the admission gate holds")).expect("a disk hold is logged");
     assert!(held.contains("swap 20.30/30.00 GB, growth +0.300 GB over 300 s"), "{held}");
@@ -1357,7 +1357,7 @@ fn a_node_the_disks_floor_held_still_waits_after_a_restart_and_goes_on_once_ther
     assert!(still_paused(&domain, "t1"), "4 GB are under the 5 GB line");
     let pacing = gate.live(&domain, now).unwrap();
     assert_eq!(pacing.queued.iter().map(|queued| (queued.task_id.as_str(), &queued.hold)).collect::<Vec<_>>(),
-        [("t1", &alondra_core::views::LiveHold::Disk { free: 4 * GB, needed: 5 * GB, volume: None })], "it waits in the queue for the disk");
+        [("t1", &alondra_view_model::LiveHold::Disk { free: 4 * GB, needed: 5 * GB, volume: None })], "it waits in the queue for the disk");
     assert!(pacing.paused.is_empty(), "not shown as paused");
 
     disk_sample(&domain, 16 * GB, now + SAMPLE);

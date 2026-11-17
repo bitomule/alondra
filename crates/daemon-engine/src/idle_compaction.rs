@@ -14,7 +14,7 @@ use crate::live::LiveOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain::{Command, CommandEnvelope, DomainState, PROTOCOL_VERSION, TaskId};
+use alondra_domain_rules::{Command, CommandEnvelope, DomainState, PROTOCOL_VERSION, TaskId};
 use alondra_core::{Millis, now_millis};
 use alondra_domain::{ActivityView, ResourceEvidence};
 use alondra_provider_claude::ContextEvent;

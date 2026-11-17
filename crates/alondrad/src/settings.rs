@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use alondra_core::projects_folder::{self, RootError};
-use alondra_core::views::Lang;
+use alondra_views::Lang;
 use axum::http::StatusCode;
 use serde::Deserialize;
 use serde_json::json;

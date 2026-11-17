@@ -7,7 +7,7 @@ use crate::domain_store::OutboxMessage;
 use crate::locks::Poisonable as _;
 use alondra_core::Millis;
 use alondra_core::accounts::{AccountId, AccountKey, Provider};
-use alondra_core::domain::{AgentId, DomainError, DomainState, TaskId};
+use alondra_domain_rules::{AgentId, DomainError, DomainState, TaskId};
 use alondra_core::model_selection::{SelectionDecision, TaskSelection};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;

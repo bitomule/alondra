@@ -3,8 +3,8 @@
 
 use super::parity::view_fixture;
 use super::*;
-use alondra_core::domain::Refusal;
-use alondra_core::views::Lang as ViewLang;
+use alondra_domain_rules::Refusal;
+use alondra_views::Lang as ViewLang;
 use ratatui::style::{Color, Modifier};
 
 const WIDTH: u16 = 120;
@@ -119,7 +119,7 @@ fn tui_shots() {
                 "You reviewed an older version. Send anyway, or open the PR to see what changed."
             }
             .into(),
-            alondra_core::views::send_anyway(
+            alondra_views::send_anyway(
                 format!("merge:{CARD}@2~0123abcd"),
                 if es { "Enviar igualmente" } else { "Send anyway" },
             ),
@@ -138,7 +138,7 @@ fn tui_shots() {
         }
         let html = page(&mut task_on_another_model(lang));
         std::fs::write(out.join(format!("9-task-model-{name}.html")), html).unwrap();
-        let unknown = alondra_core::views::unknown_outcome(alondra_core::views::action_outcome::UnknownReason::Interrupted, view_lang);
+        let unknown = alondra_views::unknown_outcome(alondra_views::action_outcome::UnknownReason::Interrupted, view_lang);
         let html = page(&mut answered(lang, unknown));
         std::fs::write(out.join(format!("8-outcome-unknown-{name}.html")), html).unwrap();
     }

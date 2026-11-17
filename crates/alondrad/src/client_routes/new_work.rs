@@ -6,7 +6,7 @@ use crate::locks::Poisonable as _;
 use super::close::Answer;
 use super::{Client, Reply};
 use crate::domain_store::{RequestLaunch, TransportIdentity};
-use alondra_core::domain::{Actor, AttachmentRef, Command, CommandEnvelope, DomainError, PROTOCOL_VERSION};
+use alondra_domain_rules::{Actor, AttachmentRef, Command, CommandEnvelope, DomainError, PROTOCOL_VERSION};
 use alondra_core::options::{Choice, OptionsFile};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -23,8 +23,8 @@ pub(crate) trait Github: Send + Sync + 'static {
     /// Closes the PR on GitHub with `comment`, the way Alondra closes every PR it closes.
     fn close_pr<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, comment: &'a str) -> Answer<'a, Result<(), String>>;
     /// Whether GitHub has the PR open, closed or merged now.
-    fn pr_state<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Answer<'a, Result<alondra_core::domain::PrState, String>>;
-    fn viewed_files<'a>(&'a self, pr: &'a alondra_core::domain::PullRequest) -> Answer<'a, Result<crate::pr_viewed::Marks, String>>;
+    fn pr_state<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Answer<'a, Result<alondra_domain_rules::PrState, String>>;
+    fn viewed_files<'a>(&'a self, pr: &'a alondra_domain_rules::PullRequest) -> Answer<'a, Result<crate::pr_viewed::Marks, String>>;
     fn set_viewed<'a>(&'a self, host: &'a str, node: &'a str, path: &'a str, viewed: bool) -> Answer<'a, Result<(), String>>;
 }
 
@@ -45,22 +45,22 @@ impl Github for Gh {
         })
     }
 
-    fn pr_state<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Answer<'a, Result<alondra_core::domain::PrState, String>> {
+    fn pr_state<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Answer<'a, Result<alondra_domain_rules::PrState, String>> {
         Box::pin(async move {
             let url = crate::domain_github::pr_url(host, repository, number);
             let out = crate::domain_github::GhCli::new()
                 .run(&["pr", "view", &url, "--json", "state", "--jq", ".state"], None, std::time::Duration::from_secs(30))
                 .await?;
             match String::from_utf8_lossy(&out).trim() {
-                "OPEN" => Ok(alondra_core::domain::PrState::Open),
-                "CLOSED" => Ok(alondra_core::domain::PrState::Closed),
-                "MERGED" => Ok(alondra_core::domain::PrState::Merged),
+                "OPEN" => Ok(alondra_domain_rules::PrState::Open),
+                "CLOSED" => Ok(alondra_domain_rules::PrState::Closed),
+                "MERGED" => Ok(alondra_domain_rules::PrState::Merged),
                 other => Err(format!("gh reported an unknown PR state {other:?}")),
             }
         })
     }
 
-    fn viewed_files<'a>(&'a self, pr: &'a alondra_core::domain::PullRequest) -> Answer<'a, Result<crate::pr_viewed::Marks, String>> {
+    fn viewed_files<'a>(&'a self, pr: &'a alondra_domain_rules::PullRequest) -> Answer<'a, Result<crate::pr_viewed::Marks, String>> {
         Box::pin(async move { crate::pr_viewed::read(&crate::domain_github::GhCli::new(), pr).await })
     }
 

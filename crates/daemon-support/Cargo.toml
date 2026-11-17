@@ -10,6 +10,8 @@ test-hooks = ["dep:tempfile"]
 
 [dependencies]
 alondra-core.workspace = true
+alondra-domain-rules.workspace = true
+alondra-view-model.workspace = true
 alondra-e2e = { path = "../e2e" }
 alondra-process-group.workspace = true
 alondra-provider-claude.workspace = true

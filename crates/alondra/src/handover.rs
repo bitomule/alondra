@@ -82,7 +82,7 @@ pub(crate) fn render(report: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_core::views::Lang;
+    use alondra_views::Lang;
     use serde_json::json;
 
     #[test]

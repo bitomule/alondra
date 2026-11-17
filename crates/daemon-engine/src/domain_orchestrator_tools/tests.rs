@@ -194,7 +194,7 @@ use crate::sdk_handover::BgSessions;
 use alondra_daemon_engine_model::LaunchOptions;
 use crate::sdk_owner::tests::SdkLaunches;
 use crate::test_support::Directory;
-use alondra_core::domain::{AttachmentRef, Command, CommandEnvelope, ModelChooser, PROTOCOL_VERSION, TaskModel, TaskState};
+use alondra_domain_rules::{AttachmentRef, Command, CommandEnvelope, ModelChooser, PROTOCOL_VERSION, TaskModel, TaskState};
 use alondra_core::options::OptionsFile;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -252,7 +252,7 @@ fn bare_world() -> Fixture {
     command(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Readable editor".into() });
     command(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: "t".into(), request_id: "r".into(), title: "Editor colours".into(),
         agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
-        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
+        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
     Fixture { sdk: None, sessions, root, home, project, domain }
 }
 
@@ -558,7 +558,7 @@ async fn a_message_with_a_task_reaches_only_that_tasks_node() {
     give(&f, "t", "agent-b");
     command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: "t2".into(), request_id: "r".into(), title: "Editor fonts".into(),
         agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
-        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
+        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
     let body = |task: &str, text: &str| -> SendBody { serde_json::from_value(json!({"node": "Instance B", "text": text, "task": task})).unwrap() };
     let answer = send(&f.domain, &f.home, &actor, body("t", "Take the editor colours")).await.unwrap();
     assert_eq!(answer["delivery_state"], "handed");
@@ -599,7 +599,7 @@ async fn a_node_on_a_task_takes_no_other_but_still_gets_plain_messages() {
     give(&f, "t", "agent-b");
     command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: "t2".into(), request_id: "r".into(), title: "Editor fonts".into(),
         agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
-        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
+        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
     let body = |task: Option<&str>| -> SendBody { serde_json::from_value(json!({"node": "Instance B", "text": "Go", "task": task})).unwrap() };
     assert_eq!(send(&f.domain, &f.home, &actor, body(Some("t2"))).await.unwrap_err().code, "not_assigned");
     send(&f.domain, &f.home, &actor, body(None)).await.unwrap();
@@ -669,8 +669,8 @@ async fn going_over_todays_slice_launches_without_a_warning_and_asks_the_user_on
     let cards = || f.domain.state().unwrap().interactions.values()
         .filter(|card| card.id.0.starts_with("over-pace-")).cloned().collect::<Vec<_>>();
     let [card] = cards().try_into().unwrap();
-    assert_eq!(card.card.kind, alondra_core::domain::CardKind::Decide);
-    assert_eq!(card.author, alondra_core::domain::Author::System);
+    assert_eq!(card.card.kind, alondra_domain_rules::CardKind::Decide);
+    assert_eq!(card.author, alondra_domain_rules::Author::System);
     assert!(!card.blocking);
     assert_eq!(card.body, "41/18/53");
     crate::usage_pause::raise_over_pace_card(&f.domain, alondra_core::now_millis());
@@ -686,7 +686,7 @@ async fn going_over_todays_slice_launches_without_a_warning_and_asks_the_user_on
 #[tokio::test]
 async fn a_disk_preflight_refusal_invalidates_admission_before_a_remounted_volume_is_budgeted() {
     use crate::admission::{Hold, Key, Limit, Tuning, Waiting};
-    use alondra_core::domain::TaskPriority;
+    use alondra_domain_rules::TaskPriority;
     use std::collections::BTreeMap;
     const GB: u64 = 1_000_000_000;
     for origin in [Origin::Auto, Origin::Admitted] {
@@ -1094,19 +1094,19 @@ async fn a_launch_of_a_follow_up_task_carries_the_earlier_result_and_pull_reques
     let author = Actor::Agent { agent_id: "agent-b".into() };
     give(&f, "t", "agent-b");
     command(&f.domain, author.clone(), Command::RegisterPr { task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(),
-        repository: "me/app".into(), number: 12, head: "head1".into(), base: "main".into(), allowed_methods: vec![alondra_core::domain::MergeMethod::Squash] });
-    let targets = || vec![alondra_core::domain::DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }];
+        repository: "me/app".into(), number: 12, head: "head1".into(), base: "main".into(), allowed_methods: vec![alondra_domain_rules::MergeMethod::Squash] });
+    let targets = || vec![alondra_domain_rules::DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }];
     command(&f.domain, author, Command::PresentResult { checklist: Vec::new(), attachments: vec![], task_id: "t".into(), interaction_id: "final".into(),
         body: "  The colours live in one file now.  ".into(), targets: targets(), is_final: true, nothing_to_review: false,
-        card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
+        card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true) });
     command(&f.domain, user(), Command::AcceptDelivery { presentation_id: "final".into(), targets: targets() });
     command(&f.domain, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: "head1".into(), base: "main".into(),
-        state: alondra_core::domain::PrState::Merged, merged_head: Some("head1".into()) });
-    command(&f.domain, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: None });
+        state: alondra_domain_rules::PrState::Merged, merged_head: Some("head1".into()) });
+    command(&f.domain, Actor::System, Command::RecordNodeEnd { task_id: "t".into(), end: alondra_domain_rules::NodeEnd::Closed, agent_id: None });
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].state, TaskState::Done);
     command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: "t2".into(), request_id: "r".into(), title: "Editor fonts".into(),
         agent_id: None, review_prs: false, dependencies: ["t".into()].into(), stack: None,
-        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
+        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
 
     launch(&f.domain, &f.home, launch_body(&f, json!({"task": "t2", "model": "sonnet"})), |_| None).await.unwrap();
     let prompt = f.prompt().await;
@@ -1118,8 +1118,8 @@ fn the_follow_up_context_is_empty_without_earlier_work_and_shortens_a_long_resul
     let f = world();
     let state = f.domain.state().unwrap();
     assert_eq!(follow_up_context(&state, &state.tasks[&TaskId::from("t")]), "");
-    assert_eq!(clipped(&"x".repeat(5), 3, "[shortened]"), alondra_core::domain::Clipped { text: "xxx[shortened]".into(), shortened: true });
-    assert_eq!(clipped("short", 10, "[shortened]"), alondra_core::domain::Clipped { text: "short".into(), shortened: false });
+    assert_eq!(clipped(&"x".repeat(5), 3, "[shortened]"), alondra_domain_rules::Clipped { text: "xxx[shortened]".into(), shortened: true });
+    assert_eq!(clipped("short", 10, "[shortened]"), alondra_domain_rules::Clipped { text: "short".into(), shortened: false });
 }
 
 #[test]
@@ -1128,7 +1128,7 @@ fn canonical_task_context_is_scoped_whole_and_preserves_source_ids() {
     let mut state = f.domain.state().unwrap().as_ref().clone();
     let task = state.tasks[&TaskId::from("t")].clone();
     state.requests.get_mut(&task.request_id).unwrap().body = "The requested feature".into();
-    state.requests.insert("unrelated".into(), alondra_core::domain::Request {
+    state.requests.insert("unrelated".into(), alondra_domain_rules::Request {
         id: "unrelated".into(), body: "Private unrelated request".into(), ..state.requests[&task.request_id].clone()
     });
     let context = canonical_task_context(&state, &task);
@@ -1149,7 +1149,7 @@ fn canonical_task_context_is_scoped_whole_and_preserves_source_ids() {
 
 #[test]
 fn canonical_task_context_keeps_ordered_public_user_inputs_whole_and_names_missing_text() {
-    use alondra_core::domain::LifecycleRecord;
+    use alondra_domain_rules::LifecycleRecord;
     let f = world();
     let mut state = f.domain.state().unwrap().as_ref().clone();
     let task = state.tasks[&TaskId::from("t")].clone();
@@ -1178,7 +1178,7 @@ fn canonical_task_context_keeps_ordered_public_user_inputs_whole_and_names_missi
 
 #[test]
 fn canonical_task_context_carries_every_input_whole_in_the_order_they_came() {
-    use alondra_core::domain::LifecycleRecord;
+    use alondra_domain_rules::LifecycleRecord;
     let f = world();
     let mut state = f.domain.state().unwrap().as_ref().clone();
     let task = state.tasks[&TaskId::from("t")].clone();
@@ -1194,7 +1194,7 @@ fn canonical_task_context_carries_every_input_whole_in_the_order_they_came() {
 
 #[test]
 fn a_task_moves_to_another_provider_by_what_is_missing_never_by_a_marker_or_a_compacted_dependency() {
-    use alondra_core::domain::{Author, CardKind, CardSpec, Interaction, InteractionPayload, Recipient, Scope};
+    use alondra_domain_rules::{Author, CardKind, CardSpec, Interaction, InteractionPayload, Recipient, Scope};
     let f = world();
     let mut state = f.domain.state().unwrap().as_ref().clone();
     let mut task = state.tasks[&TaskId::from("t")].clone();
@@ -1300,21 +1300,21 @@ async fn the_changes_the_user_asked_for_reach_the_node_that_takes_the_task_over(
     let old = agent_of(&answer);
     let mut changed = f.domain.subscribe();
     while !f.domain.state().unwrap().lifecycle_journal[&TaskId::from("t")].iter()
-        .any(|record| matches!(record, alondra_core::domain::LifecycleRecord::TurnStarted { .. })) {
+        .any(|record| matches!(record, alondra_domain_rules::LifecycleRecord::TurnStarted { .. })) {
         changed.changed().await.unwrap();
     }
     let original = f.sdk().starts()[0]["session"].as_str().unwrap().to_owned();
-    let targets = || vec![alondra_core::domain::DeliveryTarget::Text { text: "Result".into() }];
+    let targets = || vec![alondra_domain_rules::DeliveryTarget::Text { text: "Result".into() }];
     command(&f.domain, Actor::Agent { agent_id: old.clone() }, Command::PresentResult { checklist: Vec::new(), attachments: vec![], task_id: "t".into(),
         interaction_id: "final".into(), body: "Done".into(), targets: targets(), is_final: true, nothing_to_review: false,
-        card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
+        card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true) });
     command(&f.domain, user(), Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "final".into(), targets: targets(),
-        body: "  Use the new palette  ".into(), instruction: alondra_core::domain::Instruction::Changes });
+        body: "  Use the new palette  ".into(), instruction: alondra_domain_rules::Instruction::Changes });
     f.domain.stop_sdk_host(&old).unwrap();
     let (backend, runtime) = f.domain.sdk().unwrap();
     crate::sdk_owner::end_unowned_host(runtime, backend, "t".into()).unwrap();
     command(&f.domain, Actor::System, Command::RecordNodeEnd {
-        task_id: "t".into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: Some(old.clone()),
+        task_id: "t".into(), end: alondra_domain_rules::NodeEnd::Closed, agent_id: Some(old.clone()),
     });
     assert!(f.task_node().is_none(), "confirmed source exit releases the reviewed node while retaining its delivery and feedback");
     answer_ended_cards(&f);
@@ -1344,20 +1344,20 @@ fn close_sdk_node(f: &Fixture, agent: &AgentId) {
 fn answer_ended_cards(f: &Fixture) {
     let state = f.domain.state().unwrap();
     let open: Vec<_> = state.interactions.values()
-        .filter(|card| card.scope == (alondra_core::domain::Scope::Task { task_id: "t".into() }) && state.open(card))
+        .filter(|card| card.scope == (alondra_domain_rules::Scope::Task { task_id: "t".into() }) && state.open(card))
         .collect();
-    let cases: Vec<_> = open.iter().filter(|card| alondra_core::domain::is_stall_case(card)).map(|card| card.id.clone()).collect();
-    let cards: Vec<_> = open.iter().filter(|card| matches!(&card.payload, alondra_core::domain::InteractionPayload::Question { options, .. }
-        if options.iter().any(|option| option.id == alondra_core::domain::CARRY_ON))).map(|card| card.id.clone()).collect();
+    let cases: Vec<_> = open.iter().filter(|card| alondra_domain_rules::is_stall_case(card)).map(|card| card.id.clone()).collect();
+    let cards: Vec<_> = open.iter().filter(|card| matches!(&card.payload, alondra_domain_rules::InteractionPayload::Question { options, .. }
+        if options.iter().any(|option| option.id == alondra_domain_rules::CARRY_ON))).map(|card| card.id.clone()).collect();
     for case in cases {
         command(&f.domain, Actor::Orchestrator { generation: state.orchestrator_generation }, Command::SettleStall {
-            case_id: case.clone(), task_id: "t".into(), outcome: alondra_core::domain::StallOutcome::Instruct { text: "Go on with your task".into() },
+            case_id: case.clone(), task_id: "t".into(), outcome: alondra_domain_rules::StallOutcome::Instruct { text: "Go on with your task".into() },
         });
         assert!(!f.domain.state().unwrap().open(&f.domain.state().unwrap().interactions[&case]), "the orchestrator settled the case");
     }
     for card in cards {
         command(&f.domain, user(), Command::AnswerQuestion {
-            interaction_id: card.clone(), option_id: alondra_core::domain::CARRY_ON.into(),
+            interaction_id: card.clone(), option_id: alondra_domain_rules::CARRY_ON.into(),
             inputs: Default::default(), attachments: vec![],
         });
         assert!(!f.domain.state().unwrap().open(&f.domain.state().unwrap().interactions[&card]), "the user answered the existing card");
@@ -1401,7 +1401,7 @@ async fn replacing_a_tasks_node_stops_it_keeps_its_folder_and_gives_the_task_to_
     let state = f.domain.state().unwrap();
     assert_eq!(state.agents[&agent].name, "Instance B", "it keeps the old node's name");
     assert_eq!(state.tasks[&TaskId::from("t")].agent_id, Some(agent));
-    assert!(!alondra_core::domain::ReadIndex::build(&state).holds_slot(&old), "the old node is disconnected");
+    assert!(!alondra_domain_rules::ReadIndex::build(&state).holds_slot(&old), "the old node is disconnected");
     assert!(f.domain.live().closed_task_ids().is_empty());
 }
 
@@ -1419,7 +1419,7 @@ async fn a_replacement_that_cannot_launch_leaves_the_old_node_working() {
 
     command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: "free".into(), request_id: "r".into(), title: "Free".into(),
         agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
-        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
+        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
     let body = serde_json::from_value(json!({"task": "free", "replace": true, "model": "opus", "reason": "Needs opus", "name": "x", "cwd": f.project.to_str().unwrap()})).unwrap();
     let nothing = launch(&f.domain, &f.home, body, |_| None).await.unwrap_err();
     assert!(nothing.message.contains("no node to replace"), "{}", nothing.message);
@@ -1841,17 +1841,17 @@ async fn a_launch_of_the_task_that_implements_an_approved_plan_carries_the_whole
     let author = Actor::Agent { agent_id: "agent-b".into() };
     give(&f, "t", "agent-b");
     let plan = "# Index the library\n\n- [ ] Store feature prints in Core Data\n- [ ] Follow changes in the background\n";
-    let targets = || vec![alondra_core::domain::DeliveryTarget::Text { text: "Report".into() }];
+    let targets = || vec![alondra_domain_rules::DeliveryTarget::Text { text: "Report".into() }];
     command(&f.domain, author, Command::PresentResult { checklist: Vec::new(), attachments: vec![], task_id: "t".into(), interaction_id: "report".into(),
         body: "Viable: index once".into(), targets: targets(), is_final: true, nothing_to_review: false,
-        card: alondra_core::domain::CardSpec::delivery("Read the report", &targets(), true).plan(plan) });
+        card: alondra_domain_rules::CardSpec::delivery("Read the report", &targets(), true).plan(plan) });
     command(&f.domain, user(), Command::DecideProposedPlan { presentation_id: "report".into(), targets: targets(),
-        choice: alondra_core::domain::PlanChoice::Implement });
+        choice: alondra_domain_rules::PlanChoice::Implement });
     let orchestrator = Actor::Orchestrator { generation: 0 };
     command(&f.domain, orchestrator.clone(), Command::TitleRequest { request_id: "implement-report".into(), title: "Index the library".into() });
     command(&f.domain, orchestrator, Command::CreateTask { plan_items: None, continues: None, task_id: "build".into(), request_id: "implement-report".into(), title: "Index the library".into(),
         agent_id: None, review_prs: false, dependencies: ["t".into()].into(), stack: None,
-        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
+        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
 
     launch(&f.domain, &f.home, launch_body(&f, json!({"task": "build", "model": "sonnet"})), |_| None).await.unwrap();
     let prompt = f.prompt().await;
@@ -1862,7 +1862,7 @@ async fn a_launch_of_the_task_that_implements_an_approved_plan_carries_the_whole
 
 #[test]
 fn a_reopened_task_carries_the_plan_approved_in_its_own_previous_native_session() {
-    use alondra_core::domain::{CardKind, CardSpec, ContentKind, Hold, NodeEnd};
+    use alondra_domain_rules::{CardKind, CardSpec, ContentKind, Hold, NodeEnd};
     let f = bare_world();
     give(&f, "t", "agent-b");
     let plan = "# Make the editor readable\n\n- [ ] Preserve the chosen typeface\n- [ ] Verify the editor contrast\n";
@@ -1896,16 +1896,16 @@ fn a_reopened_task_carries_the_plan_approved_in_its_own_previous_native_session(
 fn decided_on(f: &Fixture) {
     command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "fonts".into(), request_id: "r".into(),
         title: "Editor fonts".into(), agent_id: Some("agent-b".into()), review_prs: false, dependencies: Default::default(), stack: None,
-        launch: Some(alondra_core::domain::LaunchPlan::new("fonts", "/tmp")), plan_items: None, continues: None });
+        launch: Some(alondra_domain_rules::LaunchPlan::new("fonts", "/tmp")), plan_items: None, continues: None });
     command(&f.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::StartTask { task_id: "fonts".into() });
     command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::SetDependencies { task_id: "t".into(),
         dependencies: [TaskId::from("fonts")].into(), stack: None, reason: None});
     command(&f.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::AskQuestion {
-        attachments: vec![], interaction_id: "font-choice".into(), scope: alondra_core::domain::Scope::Task { task_id: "fonts".into() },
-        recipient: alondra_core::domain::Recipient::User, body: "Which typeface?".into(), blocking: true,
-        options: vec![alondra_core::domain::QuestionOption { id: "mono".into(), label: "Monospaced".into(), description: None },
-            alondra_core::domain::QuestionOption { id: "serif".into(), label: "Serif".into(), description: None }],
-        card: alondra_core::domain::CardSpec::new(alondra_core::domain::CardKind::Decide, "Choose the editor's typeface").why("Its colours come next"),
+        attachments: vec![], interaction_id: "font-choice".into(), scope: alondra_domain_rules::Scope::Task { task_id: "fonts".into() },
+        recipient: alondra_domain_rules::Recipient::User, body: "Which typeface?".into(), blocking: true,
+        options: vec![alondra_domain_rules::QuestionOption { id: "mono".into(), label: "Monospaced".into(), description: None },
+            alondra_domain_rules::QuestionOption { id: "serif".into(), label: "Serif".into(), description: None }],
+        card: alondra_domain_rules::CardSpec::new(alondra_domain_rules::CardKind::Decide, "Choose the editor's typeface").why("Its colours come next"),
     });
 }
 
@@ -1925,7 +1925,7 @@ async fn a_task_held_for_a_plan_review_is_not_launched_until_the_orchestrator_se
     assert!(held.message.contains("Editor fonts"), "{}", held.message);
     assert!(f.sdk().starts().is_empty(), "Claude never runs for a held task");
     command(&f.domain, actor.clone(), Command::SettlePlanReview { review_id: "font-choice".into(), task_id: "t".into(),
-        outcome: alondra_core::domain::PlanReviewOutcome::Unchanged { reason: "Colours do not depend on the typeface".into() } });
+        outcome: alondra_domain_rules::PlanReviewOutcome::Unchanged { reason: "Colours do not depend on the typeface".into() } });
     command(&f.domain, actor.clone(), Command::SetDependencies { task_id: "t".into(), dependencies: Default::default(), stack: None, reason: None });
     let answer = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap();
     assert_eq!(f.task_node(), Some(agent_of(&answer)));
@@ -1933,7 +1933,7 @@ async fn a_task_held_for_a_plan_review_is_not_launched_until_the_orchestrator_se
 
 #[tokio::test]
 async fn a_launch_of_one_phase_of_an_approved_plan_carries_the_whole_plan_and_names_its_points() {
-    use alondra_core::domain::{CardKind, CardSpec, ContentKind, Hold, PlanItems};
+    use alondra_domain_rules::{CardKind, CardSpec, ContentKind, Hold, PlanItems};
     let f = world();
     give(&f, "t", "agent-b");
     let plan = "# Fast views\n\n## Phase 1\n- [ ] Guards\n\n## Phase 2\nDepends on: phase 1\n- [ ] Read index\n- [ ] Index matches the state\n";
@@ -1944,7 +1944,7 @@ async fn a_launch_of_one_phase_of_an_approved_plan_carries_the_whole_plan_and_na
     let request = f.domain.state().unwrap().tasks[&TaskId::from("t")].request_id.clone();
     command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { task_id: "index".into(), request_id: request, title: "Read index".into(),
         agent_id: None, review_prs: false, dependencies: ["t".into()].into(), stack: None,
-        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
         plan_items: Some(PlanItems { from_task: "t".into(), items: vec!["2".into(), "3".into()] }), continues: None });
 
     connect_claude_and_codex(&f);
@@ -2085,7 +2085,7 @@ async fn with_codex_connected_a_launch_still_starts_on_the_claude_account_with_t
 // task in nobody's hands; once an account resets it goes ahead there.
 #[tokio::test]
 async fn while_no_account_can_work_a_launch_waits_for_capacity_and_goes_ahead_once_one_can() {
-    use alondra_core::domain::{GateCause, Holder};
+    use alondra_domain_rules::{GateCause, Holder};
     let f = world();
     let folder = with_work_account(&f);
     let now = alondra_core::now_millis();
@@ -2332,7 +2332,7 @@ async fn an_unstarted_selection_waits_without_a_card_then_starts_on_an_active_pr
     f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &plan, 1).unwrap();
     std::fs::write(alondra_core::options::path_in(&f.home), "[accounts]\nconnected = []\n").unwrap();
     let cards = f.domain.state().unwrap().interactions.len();
-    for _ in 0..=alondra_core::domain::START_RETRIES.len() {
+    for _ in 0..=alondra_domain_rules::START_RETRIES.len() {
         crate::auto_launch::pass(&f.domain, &f.home).await.unwrap();
         let store = f.domain.store.lock().unwrap();
         assert!(store.start_retries().unwrap().is_empty(), "account availability is not a failed start");
@@ -2487,7 +2487,7 @@ pub fn refused_plan(f: &Fixture) {
     f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &stored, 1).unwrap();
 }
 
-pub async fn refuse_its_start(f: &Fixture) -> alondra_core::domain::Interaction {
+pub async fn refuse_its_start(f: &Fixture) -> alondra_domain_rules::Interaction {
     crate::auto_launch::pass(&f.domain, &f.home).await.unwrap();
     assert!(f.sdk().starts().is_empty());
     assert!(f.domain.store.lock().unwrap().start_retries().unwrap().is_empty(), "no retry is promised for a start that cannot work");
@@ -2495,10 +2495,10 @@ pub async fn refuse_its_start(f: &Fixture) -> alondra_core::domain::Interaction 
         "a start that did not start holds no slot, so the next try asks the gate again");
     let state = f.domain.state().unwrap();
     let card = state.open_plan_refusal(&"t".into()).cloned().expect("the orchestrator is handed the refused plan at once");
-    assert_eq!(card.recipient, alondra_core::domain::Recipient::Orchestrator);
+    assert_eq!(card.recipient, alondra_domain_rules::Recipient::Orchestrator);
     assert!(card.body.contains("Choose a model before its native reasoning effort"), "{}", card.body);
-    assert!(state.interactions.values().all(|i| i.recipient != alondra_core::domain::Recipient::User
-        || !matches!(&i.scope, alondra_core::domain::Scope::Task { task_id } if task_id.0 == "t")), "nothing reaches the user's inbox");
+    assert!(state.interactions.values().all(|i| i.recipient != alondra_domain_rules::Recipient::User
+        || !matches!(&i.scope, alondra_domain_rules::Scope::Task { task_id } if task_id.0 == "t")), "nothing reaches the user's inbox");
     let messages = f.domain.store.lock().unwrap().pending_messages().unwrap();
     assert!(messages.iter().any(|m| m.recipient_kind == "orchestrator" && m.interaction_id.as_deref() == Some(card.id.0.as_str())),
         "the orchestrator hears of it in its next batch: {messages:?}");
@@ -2523,8 +2523,8 @@ async fn the_orchestrator_cancels_a_refused_plan_with_its_reason() {
     refused_plan(&f);
     let card = refuse_its_start(&f).await;
     command(&f.domain, the_orchestrator(&f.domain), Command::AnswerQuestion { attachments: vec![], interaction_id: card.id,
-        option_id: alondra_core::domain::START_CANCEL.into(),
-        inputs: [(alondra_core::domain::ANSWER_TEXT.to_owned(), alondra_core::domain::InputValue::Text("The editor no longer needs it".into()))].into() });
+        option_id: alondra_domain_rules::START_CANCEL.into(),
+        inputs: [(alondra_domain_rules::ANSWER_TEXT.to_owned(), alondra_domain_rules::InputValue::Text("The editor no longer needs it".into()))].into() });
     crate::auto_launch::pass(&f.domain, &f.home).await.unwrap();
     assert!(f.domain.state().unwrap().tasks[&TaskId::from("t")].cancelled());
     assert_eq!(f.domain.store.lock().unwrap().cancel_reasons().unwrap()[&TaskId::from("t")], "The editor no longer needs it");
@@ -2548,7 +2548,7 @@ fn cancelled_launch_plan_with_history(f: &Fixture) -> alondra_daemon_engine_mode
     });
     command(&f.domain, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     command(&f.domain, Actor::System, Command::RecordNodeEnd {
-        task_id: "t".into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: Some("agent-b".into()),
+        task_id: "t".into(), end: alondra_domain_rules::NodeEnd::Closed, agent_id: Some("agent-b".into()),
     });
     assert!(f.domain.store.lock().unwrap().task_was_launched(&"t".into()).unwrap());
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].state, TaskState::Cancelled);
@@ -2575,10 +2575,10 @@ async fn reopening_a_legacy_task_admits_its_retained_project_policy_after_the_pr
     command(&f.domain, user(), Command::CancelTask { task_id: "t".into(), reason: None });
     git_in(&f.project, &["worktree", "remove", original.to_str().unwrap()]);
     command(&f.domain, Actor::System, Command::ReleaseTaskWorktree {
-        task_id: "t".into(), path: original.display().to_string(), end: alondra_core::domain::WorktreeEnd::Removed,
+        task_id: "t".into(), path: original.display().to_string(), end: alondra_domain_rules::WorktreeEnd::Removed,
     });
     command(&f.domain, Actor::System, Command::RecordNodeEnd {
-        task_id: "t".into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: Some("agent-b".into()),
+        task_id: "t".into(), end: alondra_domain_rules::NodeEnd::Closed, agent_id: Some("agent-b".into()),
     });
     assert!(!original.exists());
     assert!(f.domain.state().unwrap().tasks[&TaskId::from("t")].selection.is_none(), "the previous release used legacy effort options");
@@ -2652,7 +2652,7 @@ fn preparing_terminal_choices_preserves_scope_and_requires_an_open_request_and_a
     assert_eq!(set_launch_plan(&f.domain, &f.home, replacement).unwrap_err().code, "invalid_input");
     assert_eq!(f.domain.launch_plan(&"t".into()).unwrap().unwrap(), before);
     let mut state = (*f.domain.state().unwrap()).clone();
-    for end in [alondra_core::domain::NodeEnd::KeptByUser, alondra_core::domain::NodeEnd::UsersOwn] {
+    for end in [alondra_domain_rules::NodeEnd::KeptByUser, alondra_domain_rules::NodeEnd::UsersOwn] {
         for agent in [Some(AgentId::from("agent-b")), None] {
             let task = state.tasks.get_mut(&TaskId::from("t")).unwrap();
             task.wrap_up.node = Some(end);
@@ -2660,7 +2660,7 @@ fn preparing_terminal_choices_preserves_scope_and_requires_an_open_request_and_a
             assert!(editable_plan(&state, &"t".into(), true).is_err(), "a retained live node prevents preparation, including legacy data without its agent id");
         }
     }
-    state.tasks.get_mut(&TaskId::from("t")).unwrap().wrap_up.node = Some(alondra_core::domain::NodeEnd::Gone);
+    state.tasks.get_mut(&TaskId::from("t")).unwrap().wrap_up.node = Some(alondra_domain_rules::NodeEnd::Gone);
     assert!(editable_plan(&state, &"t".into(), true).is_ok());
     state.tasks.get_mut(&TaskId::from("t")).unwrap().archived = true;
     assert!(editable_plan(&state, &"t".into(), true).is_err(), "preparation preserves the archived-task guard");
@@ -2689,7 +2689,7 @@ fn stored_selection(f: &Fixture) -> alondra_daemon_engine_model::LaunchPlan {
     let plan = alondra_daemon_engine_model::LaunchPlan {
         mission: Some("Keep the full mission\n\nAdded context: preserve colours.".into()),
         model: Some("claude/sonnet".into()), effort: Some("medium".into()), reason: Some("Implementation".into()),
-        role: Some(alondra_core::domain::TaskRole::Implementation), project: Some("App".into()),
+        role: Some(alondra_domain_rules::TaskRole::Implementation), project: Some("App".into()),
         ..alondra_daemon_engine_model::LaunchPlan::new("app/editor", f.project.to_str().unwrap())
     };
     f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &plan, 1).unwrap();
@@ -2803,7 +2803,7 @@ fn partial_launch_plan_refuses_the_users_fixed_work_effort_even_for_a_native_mod
 fn partial_launch_plan_refuses_a_task_with_historical_start_evidence() {
     let f = world();
     let mut state = (*f.domain.state().unwrap()).clone();
-    state.lifecycle_journal.insert("t".into(), vec![alondra_core::domain::LifecycleRecord::ResourceAvailable]);
+    state.lifecycle_journal.insert("t".into(), vec![alondra_domain_rules::LifecycleRecord::ResourceAvailable]);
     assert_eq!(editable_plan(&state, &"t".into(), false).unwrap_err().code, "conflict");
     state.lifecycle_journal.remove(&TaskId::from("t"));
     assert_eq!(editable_plan(&state, &"t".into(), true).unwrap_err().code, "conflict");

@@ -1,6 +1,6 @@
 use crate::domain_runtime::*;
 use crate::domain_store::StoreError;
-use alondra_core::domain::*;
+use alondra_domain_rules::*;
 use std::sync::Arc;
 use alondra_core::accounts::{AccountId, Policy};
 use alondra_core::usage::{Share, UsageReading, WindowKind, WindowReading};

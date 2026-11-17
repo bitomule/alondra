@@ -1,7 +1,7 @@
 //! Schedule v2 presentation and trusted draft materialization. The launcher is P4.
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{StoreError, TransportIdentity};
-use alondra_core::domain as d;
+use alondra_domain_rules as d;
 use alondra_core::options::{self, Choice, OptionsFile};
 use alondra_core::now_millis;
 use axum::http::StatusCode;

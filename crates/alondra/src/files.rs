@@ -19,8 +19,8 @@ pub fn sweep(json: bool) -> Result<()> {
 
 fn size(bytes: u64) -> String {
     let lang = match crate::i18n::lang() {
-        crate::i18n::Lang::En => alondra_core::views::Lang::En,
-        crate::i18n::Lang::Es => alondra_core::views::Lang::Es,
+        crate::i18n::Lang::En => alondra_views::Lang::En,
+        crate::i18n::Lang::Es => alondra_views::Lang::Es,
     };
     alondra_core::machine_incident::bytes_text(bytes, lang)
 }

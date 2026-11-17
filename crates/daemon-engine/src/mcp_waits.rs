@@ -9,7 +9,7 @@
 use alondra_core::clock;
 use crate::domain_runtime::DomainRuntime;
 use crate::locks::Poisonable as _;
-use alondra_core::domain::{
+use alondra_domain_rules::{
     Actor, Command, CommandEnvelope, DomainError, DomainState, InteractionId, MCP_SERVER_PREFIX, McpServerKey, McpServerState,
     McpStatus, Millis, OpenSignIn, PROTOCOL_VERSION, TaskId,
 };

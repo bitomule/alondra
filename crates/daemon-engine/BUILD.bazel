@@ -9,7 +9,7 @@ load("//tools:rust_sources.bzl", "production_sources")
 WORKSPACE_DEPS = [
     "//crates/agent-application:agent_application",
     "//crates/agent-runtime:agent_runtime",
-    "//crates/core:alondra_core",
+    "//crates/core:alondra_core", "//crates/domain-rules:domain_rules", "//crates/view-model:view_model",
     "//crates/domain:domain",
     "//crates/foundation:foundation",
     "//crates/process-group:process_group",
@@ -92,6 +92,7 @@ ENGINE_TEST_COMPILE_DATA = [
 ]
 
 ENGINE_TEST_DEPS = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
+    "//crates/views:views",
     "//crates/codex-protocol:codex_protocol",
     "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
     "//crates/daemon-engine-store:daemon_engine_store_test_hooks",

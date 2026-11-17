@@ -1,6 +1,6 @@
 use super::*;
-use alondra_core::domain::{AgentId, McpStatus, TaskId};
-use alondra_core::views::Lang;
+use alondra_domain_rules::{AgentId, McpStatus, TaskId};
+use alondra_view_model::Lang;
 use std::os::unix::fs::PermissionsExt;
 
 const LINEAR: &str = "https://mcp.linear.app/mcp";

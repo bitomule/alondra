@@ -2,7 +2,7 @@
 //! it: the subagents it spawned, the workflows it started and its Claude Code task list. Kept per
 //! session and bounded: finished runs drop out after the latest few, the list stops at a cap.
 use crate::node_reports::short_label;
-use alondra_core::views::RunOutcome;
+use alondra_view_model::RunOutcome;
 use alondra_core::{BackgroundItem, BackgroundKind, Millis};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};

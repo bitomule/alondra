@@ -3,7 +3,7 @@
 //! of its own task; a commit of the normal command path hands its permits here too.
 use alondra_core::clock;
 use crate::locks::{Poisonable as _, AfterPanic as _};
-use alondra_core::domain::TaskId;
+use alondra_domain_rules::TaskId;
 use alondra_store::Committed;
 
 #[derive(Default)]

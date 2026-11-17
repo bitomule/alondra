@@ -1,4 +1,4 @@
-use alondra_core::domain::*;
+use alondra_domain_rules::*;
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OptionalExtension, params, types::Value as SqlValue};
 use serde::{Serialize, de::DeserializeOwned};
@@ -1592,7 +1592,7 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
     }
     let stored: bool = c.query_row("SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='branch_update'", [], |r| r.get::<_, i64>(0))? == 1;
     if stored && let Some(method) = c.query_row("SELECT method FROM branch_update WHERE singleton=1", [], |r| r.get::<_, String>(0)).optional()? {
-        state.branch_update = alondra_core::domain::BranchUpdate::parse(&method).with_context(|| format!("an unknown branch update {method:?}"))?;
+        state.branch_update = alondra_domain_rules::BranchUpdate::parse(&method).with_context(|| format!("an unknown branch update {method:?}"))?;
     }
     let mut usage = c.prepare("SELECT usage FROM account_usage ORDER BY rowid")?;
     for row in usage.query_map([], |r| r.get::<_, String>(0))? {
@@ -1660,7 +1660,7 @@ pub(super) fn add_shortened_column(tx: &rusqlite::Transaction<'_>) -> rusqlite::
     tx.execute(
         "UPDATE interactions SET shortened=1 WHERE id IN(SELECT final_presentation FROM tasks WHERE final_presentation IS NOT NULL)
          AND length(body)=?1 AND substr(body,-?2)=?3",
-        rusqlite::params![(alondra_core::domain::RESULT_LIMIT + MARKER.chars().count()) as i64, MARKER.chars().count() as i64, MARKER],
+        rusqlite::params![(alondra_domain_rules::RESULT_LIMIT + MARKER.chars().count()) as i64, MARKER.chars().count() as i64, MARKER],
     )?;
     Ok(())
 }

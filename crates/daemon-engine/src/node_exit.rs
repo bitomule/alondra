@@ -3,7 +3,7 @@
 use crate::live::LiveOf as _;
 use crate::live::Relaunch;
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain::{AgentId, Command, CommandEnvelope, NodeEvent, TaskId, PROTOCOL_VERSION};
+use alondra_domain_rules::{AgentId, Command, CommandEnvelope, NodeEvent, TaskId, PROTOCOL_VERSION};
 
 /// Whether the user stopped, killed or deleted the session in Claude agents: its job file says
 /// `stopped`, or the job folder Alondra last saw is gone. A session whose job was never seen is
@@ -23,7 +23,7 @@ pub(crate) fn has_open_task(domain: &DomainRuntime, session: &str) -> bool {
     domain.state().is_ok_and(|state| open_task(&state, session))
 }
 
-fn open_task(state: &alondra_core::domain::DomainState, session: &str) -> bool {
+fn open_task(state: &alondra_domain_rules::DomainState, session: &str) -> bool {
     let agent = AgentId(session.to_owned());
     state.agents.contains_key(&agent) && state.tasks.values().any(|task| task.agent_id.as_ref() == Some(&agent) && !task.over() && !task.archived && task.wrap_up.asked_at.is_none())
 }

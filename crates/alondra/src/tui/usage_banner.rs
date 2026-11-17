@@ -1,4 +1,4 @@
-use alondra_core::views::UsageExhausted;
+use alondra_views::UsageExhausted;
 
 /// The line shown across the top during a confirmed usage limit.
 pub(super) fn banner_text(usage: &UsageExhausted, now_millis: i64) -> String {

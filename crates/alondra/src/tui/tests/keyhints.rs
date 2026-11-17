@@ -247,7 +247,7 @@ fn states() -> Vec<State> {
             app
         })),
         ("inbox, empty", false, Box::new(|| {
-            let domain = alondra_core::domain::DomainState::new("keys");
+            let domain = alondra_domain_rules::DomainState::new("keys");
             app_on(Screen::Inbox, build(&domain, &Default::default(), "home"))
         })),
         ("inbox, loading", false, Box::new(|| {
@@ -449,8 +449,8 @@ fn a_cards_documents_are_lines_of_their_own_and_f_lists_them_to_open_one() {
     assert!(lines.iter().any(|line| line == "▤ How other apps index a library · docs/research/competitors.md"), "{lines:#?}");
     assert!(!lines.iter().any(|line| line.contains("Indexes overnight")), "{lines:#?}");
     let menu = view_render::documents_menu(&document).expect("its documents to pick from");
-    let opens: Vec<(&str, Option<&alondra_core::views::Link>)> = menu.entries.iter().map(|(action, _)| (action.label.as_str(), action.link.as_ref())).collect();
+    let opens: Vec<(&str, Option<&alondra_views::Link>)> = menu.entries.iter().map(|(action, _)| (action.label.as_str(), action.link.as_ref())).collect();
     assert_eq!(opens.len(), 4);
-    assert_eq!(opens[2], ("How other apps index a library", Some(&alondra_core::views::Link::View { key: "document:result-1.file-1".into() })));
+    assert_eq!(opens[2], ("How other apps index a library", Some(&alondra_views::Link::View { key: "document:result-1.file-1".into() })));
     assert!(menu.entries.iter().all(|(action, _)| action.id.is_empty()), "picking one opens it, never acts on the card");
 }

@@ -308,7 +308,7 @@ fn an_action_whose_outcome_the_mac_cannot_tell_says_what_happened_and_what_to_do
     served_merge_card(&mut app);
     press(&mut app, KeyCode::Char('1'));
     let request = posted(&app)[0].1.clone();
-    let reason = alondra_core::views::action_outcome::UnknownReason::Interrupted;
+    let reason = alondra_views::action_outcome::UnknownReason::Interrupted;
     app.on_msg(Msg::ViewAction { request, result: Err(Delivery::Unknown(reason)) });
     let notice = flash(&app).to_owned();
     assert_eq!(notice, "Tu Mac no sabe si se hizo.\nAlondra se reinició en tu Mac mientras lo hacía. Mira si el cambio está; si no, vuelve a hacerlo.");
@@ -336,7 +336,7 @@ fn no_waiting_card_fixture_has_an_unusable_action() {
     .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
     .filter(|name| name.starts_with("card-") && name.ends_with(".json"))
     {
-        let view: alondra_core::views::View = serde_json::from_value(view_fixture(&name)).unwrap();
+        let view: alondra_views::View = serde_json::from_value(view_fixture(&name)).unwrap();
         for action in crate::tui::view_render::actions(&view) {
             assert!(action.enabled && action.disabled_reason.is_none(), "{name}: {}", action.label);
         }
@@ -355,7 +355,7 @@ fn failed_views_feed_marks_cached_tasks_as_outdated_until_recovery() {
     assert!(screen(&mut app, 120, 26).contains("saved data · connection lost"));
     let status = app.view_status.clone().unwrap();
     app.on_msg(Msg::ViewFeed(Ok(crate::client::ViewsFeed {
-        protocol: alondra_core::views::VIEWS_PROTOCOL,
+        protocol: alondra_views::VIEWS_PROTOCOL,
         cursor: "1".into(),
         data_epoch: "epoch".into(),
         status,
@@ -404,7 +404,7 @@ fn tasks_search_paste_loads_the_pasted_query() {
 
 #[test]
 fn view_form_checks_project_choice_and_conditional_weekday() {
-    let fields: Vec<alondra_core::views::Field> = serde_json::from_value(serde_json::json!([
+    let fields: Vec<alondra_views::Field> = serde_json::from_value(serde_json::json!([
         {"id":"project","label":"Project","kind":{"kind":"choice","items":[{"id":"App","label":"App"}]},
          "value":"App","required":true,"reload_on_change":true},
         {"id":"repeat","label":"Repeat","kind":{"kind":"choice","items":[{"id":"daily","label":"Daily"},{"id":"weekly","label":"Weekly"}]},
@@ -655,7 +655,7 @@ fn delivery_detail() -> App {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
-    let view: alondra_core::views::View = serde_json::from_value(view_fixture("card-delivery.json")).unwrap();
+    let view: alondra_views::View = serde_json::from_value(view_fixture("card-delivery.json")).unwrap();
     app.view_navigation.push(view.key.clone());
     app.card_view = Some(view);
     app
@@ -824,7 +824,7 @@ fn large_files_start_folded_and_open_from_the_list_and_a_cut_diff_says_so() {
 }
 
 /// The key bar with `view` open as the detail of what is selected.
-fn footer_on(view: alondra_core::views::View) -> Vec<(String, String)> {
+fn footer_on(view: alondra_views::View) -> Vec<(String, String)> {
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
     app.view_navigation.push(view.key.clone());
@@ -1266,7 +1266,7 @@ fn schedules_screen_has_its_own_footer_with_the_create_hint() {
     assert!(!keys.iter().any(|(key, _)| key == "Shift+A" || key == "Tab"));
 }
 
-fn question_card() -> alondra_core::views::View {
+fn question_card() -> alondra_views::View {
     let mut card = view_fixture("card-question.json");
     card["sections"][0]["items"][0]["timestamps"] =
         serde_json::json!([{"role": "created", "at": screens::minutes_ago(2), "format": "relative"}]);
@@ -1360,7 +1360,7 @@ fn an_empty_inbox_says_all_caught_up_and_offers_the_next_step() {
     assert!(shown.contains("✓ Todo al día") && shown.contains("Tab mira las tareas"), "{shown}");
 }
 
-fn attachable(key: &str) -> alondra_core::views::View {
+fn attachable(key: &str) -> alondra_views::View {
     let mut view = view_fixture("card-question.json");
     view["view"] = serde_json::json!("task");
     view["key"] = serde_json::json!(key);
@@ -1417,7 +1417,7 @@ fn enter_on_a_task_or_node_expands_it_and_an_old_attach_link_runs_nothing() {
     app.view_navigation.push("task:t-1".into());
     app.card_view = Some(attachable("task:t-1"));
     assert!(matches!(app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Flow::Go));
-    let attach: alondra_core::views::Action = serde_json::from_value(serde_json::json!({
+    let attach: alondra_views::Action = serde_json::from_value(serde_json::json!({
         "id": "", "label": "Attach to node", "style": "plain", "presentation": "button",
         "input": {"kind": "none"}, "attachments": false, "enabled": true, "key": "a",
         "link": {"kind": "local", "local": {"kind": "attach", "session": "short-a-1"}}
@@ -1427,7 +1427,7 @@ fn enter_on_a_task_or_node_expands_it_and_an_old_attach_link_runs_nothing() {
     assert!(flash.text.contains("no longer opens a node's terminal"), "{}", flash.text);
 }
 
-pub(super) fn status_with(gauges: serde_json::Value) -> alondra_core::views::Status {
+pub(super) fn status_with(gauges: serde_json::Value) -> alondra_views::Status {
     serde_json::from_value(serde_json::json!({
         "version": "1", "summary": "", "badge": 0,
         "counts": [
@@ -1472,7 +1472,7 @@ fn a_banner_tops_the_screen_while_claude_usage_is_out_and_goes_with_it() {
     let mut app = App::new(tx);
     app.loaded = true;
     let mut status = status_with(production_gauges());
-    status.usage_exhausted = Some(alondra_core::views::UsageExhausted {
+    status.usage_exhausted = Some(alondra_views::UsageExhausted {
         scope: "this_mac".into(),
         until: "2099-10-05T14:30:00.000+02:00".into(),
         macs_exhausted: 1,
@@ -1502,9 +1502,9 @@ fn the_banner_says_work_waits_for_a_claude_session_while_no_account_has_one() {
     let mut app = App::new(tx);
     app.loaded = true;
     let mut status = status_with(production_gauges());
-    status.session_wait = Some(alondra_core::views::Notice {
+    status.session_wait = Some(alondra_views::Notice {
         text: "Esperando una sesión de Claude · inicia sesión en una cuenta en Cuentas de Claude".into(),
-        tone: alondra_core::views::Tone::Warning,
+        tone: alondra_views::Tone::Warning,
         action: None,
     });
     app.view_status = Some(status);
@@ -1674,8 +1674,8 @@ fn help_lists_scheduled_tasks_the_disk_bar_and_no_fleet() {
     assert!(help.contains("scheduled") && help.contains(":tasks"), "{help}");
 }
 
-fn held_plan_card() -> alondra_core::views::View {
-    use alondra_core::domain::*;
+fn held_plan_card() -> alondra_views::View {
+    use alondra_domain_rules::*;
     let mut state = DomainState::new("e");
     let mut run = |actor: Actor, command: Command| {
         let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
@@ -1687,15 +1687,15 @@ fn held_plan_card() -> alondra_core::views::View {
     run(Actor::System, Command::RegisterAgent { agent_id: "agent-a".into(), name: "Instance A".into(), at: 0 });
     run(Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None, task_id: "t".into(), request_id: "r".into(), title: "Build".into(),
         agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
-        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")), });
+        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")), });
     run(Actor::System, Command::HoldHook { interaction_id: "hold-1".into(), task_id: "t".into(),
         agent_id: "agent-a".into(), hold: Hold::Plan, body: "# Ship the parser\n\n- [ ] Split the lexer".into(),
-        options: Hold::Plan.options(), card: alondra_core::domain::CardSpec::new(alondra_core::domain::CardKind::Review, "Ship the parser")
-            .content(alondra_core::domain::ContentKind::Plan, "- [ ] Split the lexer") });
-    let live = alondra_core::views::LiveSnapshot::default();
-    alondra_core::views::build("card:hold-1", alondra_core::views::RenderContext {
-        domain: &state, index: &alondra_core::domain::ReadIndex::build(&state), live: &live, client: alondra_core::views::Client::Tui, lang: alondra_core::views::Lang::En,
-        transport: alondra_core::views::Transport::Loopback, cursor: "c", rendered_at: "",
+        options: Hold::Plan.options(), card: alondra_domain_rules::CardSpec::new(alondra_domain_rules::CardKind::Review, "Ship the parser")
+            .content(alondra_domain_rules::ContentKind::Plan, "- [ ] Split the lexer") });
+    let live = alondra_views::LiveSnapshot::default();
+    alondra_views::build("card:hold-1", alondra_views::RenderContext {
+        domain: &state, index: &alondra_domain_rules::ReadIndex::build(&state), live: &live, client: alondra_views::Client::Tui, lang: alondra_views::Lang::En,
+        transport: alondra_views::Transport::Loopback, cursor: "c", rendered_at: "",
     }).unwrap()
 }
 
@@ -1722,7 +1722,7 @@ fn a_held_plan_is_approved_with_1_and_sent_back_from_its_field() {
     assert_eq!(posted(&app)[0].1["input"]["text"], "Split it in two PRs");
 }
 
-fn task_view(id: &str, with_node: bool) -> alondra_core::views::View {
+fn task_view(id: &str, with_node: bool) -> alondra_views::View {
     let action = |action_id: &str, label: &str, key: &str| serde_json::json!({
         "id": action_id, "label": label, "style": "secondary", "presentation": "button",
         "input": {"kind": "none"}, "attachments": false, "enabled": true, "key": key
@@ -1928,7 +1928,7 @@ fn views_that_arrive_before_the_mac_confirms_never_bring_the_card_back() {
     let mut after = home.clone();
     after.version = "after-the-answer".into();
     for section in &mut after.sections {
-        section.items.retain(|item| !matches!(item, alondra_core::views::Item::Card(card) if card.id == origin));
+        section.items.retain(|item| !matches!(item, alondra_views::Item::Card(card) if card.id == origin));
     }
     app.on_msg(Msg::ViewHome(Ok(after)));
     assert!(!app.inbox_keys().contains(&Key(origin)), "the daemon's newer view no longer lists it");
@@ -2348,7 +2348,7 @@ fn merge_from_a_pull_request_detail_sends_the_method_its_button_says() {
 
 fn settled(card: &serde_json::Value, why: &str) -> ViewDocument {
     let mut view = card.clone();
-    view["view"] = alondra_core::views::SETTLED_VIEW.into();
+    view["view"] = alondra_views::SETTLED_VIEW.into();
     view["sections"] = serde_json::json!([]);
     view["empty"] = serde_json::json!({"text": why, "tone": "neutral"});
     serde_json::from_value(view).unwrap()
@@ -2413,10 +2413,10 @@ fn reader_with_a_comment(app: &mut App) -> String {
     key
 }
 
-fn settled_card(key: &str) -> alondra_core::views::View {
+fn settled_card(key: &str) -> alondra_views::View {
     let card = view_fixture("card-question.json");
     serde_json::from_value(serde_json::json!({
-        "protocol": card["protocol"], "data_epoch": "test-epoch", "view": alondra_core::views::SETTLED_VIEW,
+        "protocol": card["protocol"], "data_epoch": "test-epoch", "view": alondra_views::SETTLED_VIEW,
         "key": key, "client": "tui", "version": "", "cursor": "", "sections": [],
         "empty": {"text": "Respondida", "tone": "neutral"}, "status": card["status"], "notices": []
     }))
@@ -2595,8 +2595,8 @@ fn card_title_contract_tui_uses_fields_without_text_comparison() {
     }
     let view = serde_json::from_value(value).unwrap();
     let mut card = crate::tui::view_render::typed_card(&view).unwrap().clone();
-    card.icon = alondra_core::views::Icon::PullRequest;
-    card.state = Some(alondra_core::views::Label { text: "Ready for review".into(), tone: alondra_core::views::Tone::Info, elapsed: None });
+    card.icon = alondra_views::Icon::PullRequest;
+    card.state = Some(alondra_views::Label { text: "Ready for review".into(), tone: alondra_views::Tone::Info, elapsed: None });
     let lines = text_of(&crate::tui::view_render::card_lines(&card, 100));
     assert_eq!(lines[0], "Release design");
     assert!(lines.iter().any(|line| line.starts_with("Ready for review")), "{lines:#?}");

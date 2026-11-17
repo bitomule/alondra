@@ -2,7 +2,7 @@
 use std::time::Duration;
 
 use alondra_core::metrics::report::{Compare, Group, MetricsReport, Period, Query};
-use alondra_core::views::metrics::{compare_label, compared, estimate_notice, group_name, group_summary, label, period_label, sections};
+use alondra_views::metrics::{compare_label, compared, estimate_notice, group_name, group_summary, label, period_label, sections};
 use anyhow::{Result, bail};
 
 use crate::client::Client;
@@ -100,7 +100,7 @@ mod tests {
     use super::*;
     use alondra_core::metrics::fold::Outcome;
     use alondra_core::metrics::report::{DAY_MS, MetricsInputs, Spend, TaskRow, Tokens, report};
-    use alondra_core::views::Lang;
+    use alondra_views::Lang;
 
     fn options<'a>(period: &'a str, compare: &'a str) -> Options<'a> {
         Options { period, compare, project: Some("app"), model: None }

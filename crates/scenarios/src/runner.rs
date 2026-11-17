@@ -8,11 +8,11 @@ use crate::error::ScenarioError;
 use crate::format::{Checkpoint, Expect, GithubChange, Scenario, Step, parse_duration};
 use crate::http::{PHONE_SECRET, Phone};
 use alondra_agent_runtime::owned_host::{HostLauncher, HostSpawn, Launcher};
-use alondra_core::domain::{
+use alondra_domain_rules::{
     Actor, CardSpec, Command, CommandEnvelope, DeliveryTarget, LaunchPlan, MergeMethod, NodeEnd, PROTOCOL_VERSION,
     RuntimeObservation, SdkApiFailure, StackDependency,
 };
-use alondra_core::views::action_id::ActionId;
+use alondra_views::action_id::ActionId;
 use alondra_daemon_engine::github_world::GithubWorld;
 use alondra_daemon_engine::machine::MachineSampler;
 use alondrad::assemble::{self, Assembled, Backend, GithubSeams, Pushes, Seams};
@@ -313,8 +313,8 @@ impl Context<'_> {
     }
 
     /// The id the daemon gives the scenario's PR `number`: its host, repository and number.
-    fn pr_id(&self, number: u64) -> alondra_core::domain::PrId {
-        alondra_core::domain::hosted_pr_id(REPOSITORY_HOST, &self.scenario.world.repository, number)
+    fn pr_id(&self, number: u64) -> alondra_domain_rules::PrId {
+        alondra_domain_rules::hosted_pr_id(REPOSITORY_HOST, &self.scenario.world.repository, number)
     }
 
     /// The subject a case names a card by: `pr7` stands for the card of the scenario's PR 7.
@@ -714,7 +714,7 @@ impl Context<'_> {
 
     async fn view(&self, screen: &str, client: &str, lang: &str) -> Result<Value, ScenarioError> {
         let key = screen.replace(':', "%3A");
-        let path = format!("/views/{key}?protocol={}&client={client}&lang={lang}", alondra_core::views::VIEWS_PROTOCOL);
+        let path = format!("/views/{key}?protocol={}&client={client}&lang={lang}", alondra_views::VIEWS_PROTOCOL);
         let response = self.phone.get(&path).await.map_err(|e| ScenarioError::Invalid(e.to_string()))?;
         if response.status != 200 {
             return Err(ScenarioError::ActionRefused { action: format!("GET {path}"), code: response.status, body: response.body });
@@ -828,7 +828,7 @@ impl Context<'_> {
         self.commands += 1;
         let command_id = format!("00000000-0000-4000-8000-{:012x}", self.commands);
         let body = json!({
-            "protocol": alondra_core::views::VIEWS_PROTOCOL,
+            "protocol": alondra_views::VIEWS_PROTOCOL,
             "command_id": command_id,
             "data_epoch": view["data_epoch"],
             "client": client, "lang": lang,
@@ -1037,8 +1037,8 @@ fn find_message(view: &Value, task: &str) -> Option<Value> {
         .into_iter()
         .find(|candidate| {
             candidate["id"].as_str().and_then(|id| ActionId::parse(id).ok()).is_some_and(|id| match id.verb {
-                alondra_core::views::action_id::Verb::Msg => id.extra.as_deref() == Some(task),
-                alondra_core::views::action_id::Verb::TaskMsg => id.subject == task,
+                alondra_views::action_id::Verb::Msg => id.extra.as_deref() == Some(task),
+                alondra_views::action_id::Verb::TaskMsg => id.subject == task,
                 _ => false,
             })
         })

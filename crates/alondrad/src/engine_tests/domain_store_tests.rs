@@ -1,7 +1,7 @@
 //! The domain store as alondrad's preflight reads it.
 use alondra_daemon_engine::domain_store::tests::*;
 use alondra_daemon_engine::domain_store::*;
-use alondra_core::domain::*;
+use alondra_domain_rules::*;
 use std::fs;
 
 #[test]

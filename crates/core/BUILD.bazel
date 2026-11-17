@@ -1,7 +1,7 @@
 load("//tools:tree.bzl", "repo_tree")
 load("@crates//:defs.bzl", "all_crate_deps")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_doc_test", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//tools:rust_sources.bzl", "production_sources")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 
@@ -18,88 +18,18 @@ rust_library(
     deps = CORE_DEPS,
 )
 
-exports_files(glob(["fixtures/*.jsonl"]) + ["src/domain/tests.rs"])
-
-# The lifecycle authority cannot be cloned, deserialized or made from the Task DTO.
-rust_doc_test(
-    name = "lifecycle_construction_test",
-    size = "small",
-    crate = ":alondra_core",
-    deps = ["//crates/domain:domain", "@crates//:serde_json"],
-)
+exports_files(glob(["fixtures/*.jsonl"]))
 
 low_opt_rust_test(
     name = "alondra_core_test",
     timeout = "moderate",
     srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
-    compile_data = glob(["fixtures/*.jsonl", "fixtures/*.json"]) + ["src/model_sheets.toml", "//fixtures/views:all", "//fixtures/views:cards", "//fixtures/views:metrics", "//fixtures/accounts:recorded-rows.json", "//:docs/architecture/cards.md"],
+    compile_data = glob(["fixtures/*.jsonl", "fixtures/*.json"]) + ["src/model_sheets.toml"],
     crate_name = "alondra_core",
     crate_root = "src/lib.rs",
     deps = CORE_DEPS + all_crate_deps(normal_dev = True),
     edition = "2024",
     version = "0.1.0",
-)
-
-# Opt-in profiling driver; ordinary tests do not execute it.
-rust_binary(
-    name = "read_index_cost",
-    testonly = True,
-    srcs = ["benches/read_index_cost.rs", "benches/inbox_graphs.rs", "benches/read_index.rs"],
-    edition = "2024",
-    deps = [":alondra_core"] + all_crate_deps(normal = True),
-)
-
-
-low_opt_rust_test(
-    name = "read_index_cost_test",
-    size = "small",
-    crate_root = "benches/read_index_cost.rs",
-    srcs = ["benches/read_index_cost.rs", "benches/inbox_graphs.rs", "benches/read_index.rs"],
-    edition = "2024",
-    deps = [":alondra_core"] + all_crate_deps(normal = True),
-)
-
-low_opt_rust_test(
-    name = "foundation_contract_test",
-    size = "small",
-    crate_root = "tests/foundation.rs",
-    srcs = ["tests/foundation.rs"],
-    edition = "2024",
-    version = "0.1.0",
-    deps = [
-        ":alondra_core",
-        "//crates/foundation:foundation",
-        "@crates//:serde_json",
-    ],
-)
-
-# The domain and the screens never read what hooks deduced of a node: that deduction is kept only
-# for the `claude --bg` nodes still handed over to the Agent SDK.
-low_opt_rust_test(
-    name = "hook_deduction_boundary_test",
-    size = "small",
-    crate_root = "tests/hook_deduction_boundary.rs",
-    srcs = ["tests/hook_deduction_boundary.rs"],
-    data = glob(["src/domain/**/*.rs", "src/views/**/*.rs"]),
-    edition = "2024",
-    rustc_env = {"CARGO_MANIFEST_DIR": "crates/core"},
-)
-
-# Every family of views renders a real-size domain within its budget, with alondra_core built as
-# the daemon links it: without the checks only its own unit tests compile in.
-# It stays at the build's opt-level: the budget is a speed measurement.
-rust_test(
-    name = "views_budget_test",
-    size = "small",
-    crate_root = "tests/views_budget.rs",
-    srcs = ["tests/views_budget.rs"],
-    edition = "2024",
-    version = "0.1.0",
-    deps = [
-        ":alondra_core",
-        "//crates/domain:domain",
-        "@crates//:serde_json",
-    ],
 )
 
 # The library compiles only production sources: a test file among its inputs would rebuild every
@@ -110,7 +40,7 @@ rust_inputs_test(
     required_sources = ["crates/core/src/lib.rs"],
     source_dir = "crates/core/src/",
     target_under_test = ":alondra_core",
-    test_only_sources = ["crates/core/src/views/tests.rs", "crates/core/src/recorded.rs", "crates/core/src/model_decider/properties.rs", "crates/test_support.rs"],
+    test_only_sources = ["crates/core/src/recorded.rs", "crates/core/src/model_decider/properties.rs", "crates/test_support.rs"],
     test_sources = False,
 )
 

@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{ModelChooser, TaskModel};
 
 pub const FILE_NAME: &str = "options.toml";
 pub const PR: &str = "pr";
@@ -24,6 +23,17 @@ const MAPPED: [&str; 3] = ["light", "normal", "hard"];
 const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 const MODEL_ALIASES: [&str; 4] = ["haiku", "sonnet", "opus", "fable"];
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelChooser {
+    Orchestrator,
+    User,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskModel {
+    pub model: String,
+    pub chosen_by: ModelChooser,
+}
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum Choice {

@@ -23,7 +23,7 @@ pub(super) fn start(
 
 /// The daemon's version and range reach the TUI from every answer that carries them; the client
 /// then asks for the newest protocol both speak.
-fn seen(tx: &SyncSender<Msg>, client: Client, service: Option<&alondra_core::views::Service>) -> Client {
+fn seen(tx: &SyncSender<Msg>, client: Client, service: Option<&alondra_views::Service>) -> Client {
     let Some(service) = service else {
         return client;
     };

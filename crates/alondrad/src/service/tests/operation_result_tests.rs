@@ -1,6 +1,6 @@
 use super::*;
 use std::sync::atomic::AtomicU64;
-use alondra_core::views::action_id::{ActionId, Verb};
+use alondra_views::action_id::{ActionId, Verb};
 
 struct Fixture {
     service: Service,
@@ -140,7 +140,7 @@ async fn a_conflict_whose_outcome_is_unknown_names_its_kind() {
 /// that the Mac has no record of it: read as absent, an expired seal sent it again under a new id.
 #[tokio::test]
 async fn a_lookup_while_the_action_still_runs_says_so_and_once_cut_short_says_why_it_is_unknown() {
-    use alondra_core::views::action_outcome::{UnknownReason, in_progress_body, unknown_body};
+    use alondra_views::action_outcome::{UnknownReason, in_progress_body, unknown_body};
     let f = Fixture::new();
     let original = f.action();
     let lookup = operation_results::lookup(&f.path(&original)).unwrap();

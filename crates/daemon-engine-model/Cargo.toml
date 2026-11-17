@@ -10,6 +10,7 @@ test-hooks = ["alondra-daemon-support/test-hooks"]
 
 [dependencies]
 alondra-core.workspace = true
+alondra-domain-rules.workspace = true
 alondra-daemon-support.workspace = true
 alondra-store.workspace = true
 anyhow.workspace = true

@@ -1,6 +1,6 @@
 use super::*;
 use crate::iroh_endpoint::{self, ALPN, IrohConfig, close};
-use alondra_core::views::action_id::{ActionId, Verb};
+use alondra_views::action_id::{ActionId, Verb};
 use iroh::endpoint::{Connection, ConnectionError, PortmapperConfig, VarInt, presets};
 use iroh::{Endpoint, EndpointAddr, RelayMode};
 use std::net::Ipv4Addr;

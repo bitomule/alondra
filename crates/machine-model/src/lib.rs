@@ -18,8 +18,8 @@ use alondra_daemon_engine::machine_hooks::obligation_watch::{self, Watch};
 use alondra_daemon_engine::machine_hooks::provider_transition::{self, MoveStart};
 use alondra_daemon_engine::machine_hooks::{problems, sdk_owner};
 use alondra_engine_orchestrator::orchestrator_inbox;
-use alondra_core::domain::obligation_policy;
-use alondra_core::domain::{
+use alondra_domain_rules::obligation_policy;
+use alondra_domain_rules::{
     Actor, AgentId, CardKind, CardSpec, ContentKind, Command, CommandEnvelope, CommandOutcome, DecisionPrompt, DomainEffect, DeliveryTarget, DomainState, Hold,
     Instruction, InteractionId, InteractionPayload, LaunchPlan, LifecycleRecord, NODE_PAUSE_RESUME, NodeEnd, NodeEvent,
     PROTOCOL_VERSION, Pause, PauseCleanup, PauseReason, PlanReviewOutcome, QuestionOption, ReadIndex, Recipient, RuntimeObservation, STALL_ATTEMPTS, Scope,
@@ -228,7 +228,7 @@ impl Machine {
                 for effect in &outcome.effects {
                     if let DomainEffect::NotifyUser { task_id: Some(task), interaction_id } = effect
                         && closing.contains(task)
-                        && self.domain.interactions.get(interaction_id).is_some_and(|card| matches!(card.author, alondra_core::domain::Author::Agent { .. }))
+                        && self.domain.interactions.get(interaction_id).is_some_and(|card| matches!(card.author, alondra_domain_rules::Author::Agent { .. }))
                     {
                         self.seen.closing_cards.push(format!("{task}: {interaction_id} by {name}"));
                     }
@@ -468,7 +468,7 @@ impl Machine {
             let answers = card.filter(|card| {
                 let answered = matches!(&card.payload, InteractionPayload::Question { answer: Some(_), .. } | InteractionPayload::ActionRequest { answer: Some(_), .. });
                 let node = state.tasks.get(&task).and_then(|task| task.agent_id.clone());
-                answered && matches!(&card.author, alondra_core::domain::Author::Agent { agent_id } if Some(agent_id) == node.as_ref()) && card.scope == scope(&task)
+                answered && matches!(&card.author, alondra_domain_rules::Author::Agent { agent_id } if Some(agent_id) == node.as_ref()) && card.scope == scope(&task)
             }).map(|card| card.id.clone());
             let from_user = answers.is_some() && card.is_some_and(|card| card.recipient == Recipient::User);
             let text = if message.text.trim().is_empty() { "Alondra has news for you".to_owned() } else { message.text };
@@ -491,7 +491,7 @@ impl Machine {
         let Some(generation) = self.generation(task) else { return false };
         let facts = |fact| Command::RecordRuntimeFacts { task_id: task.clone(), generation, facts: vec![fact] };
         let taken = match self.run(Actor::System, facts(RuntimeObservation::TakenOver)) {
-            Err(code) if code == alondra_core::domain::REPEATED_TAKEOVER => {
+            Err(code) if code == alondra_domain_rules::REPEATED_TAKEOVER => {
                 let _ = self.run(Actor::System, facts(RuntimeObservation::TakeoverUnanswered));
                 self.run(Actor::System, facts(RuntimeObservation::TakenOver))
             }
@@ -670,7 +670,7 @@ impl Machine {
         let since = |task: &TaskId| state.lifecycle_of(task).ok().and_then(|lifecycle| lifecycle.obligation()).map_or(0, |obligation| obligation.since as Millis);
         let turns = admission::waiting_turns(state).into_iter().filter(|task| !self.granted.contains(task))
             .map(|task| Waiting { priority: state.tasks[&task].priority, since: since(&task), key: Key::Turn(task), resuming: false });
-        let starts = state.tasks.values().filter(|task| !task.over() && task.state != alondra_core::domain::TaskState::WaitingDependency && !self.deferred.contains_key(&task.id))
+        let starts = state.tasks.values().filter(|task| !task.over() && task.state != alondra_domain_rules::TaskState::WaitingDependency && !self.deferred.contains_key(&task.id))
             .filter(|task| state.lifecycle_of(&task.id).ok().and_then(|lifecycle| lifecycle.obligation()).is_some_and(|obligation| obligation.owed == Owed::Room(Capacity::Gate))
                 && !state.waits_for_turn(&task.id))
             .map(|task| Waiting { priority: task.priority, since: since(&task.id), key: Key::Task(task.id.clone()), resuming: false });
@@ -946,7 +946,7 @@ impl Machine {
             _ => None,
         };
         let Some(option_id) = option else { return false };
-        let inputs = BTreeMap::from([(alondra_core::domain::ANSWER_TEXT.to_owned(), alondra_core::domain::InputValue::Text(text.into()))]);
+        let inputs = BTreeMap::from([(alondra_domain_rules::ANSWER_TEXT.to_owned(), alondra_domain_rules::InputValue::Text(text.into()))]);
         let answered = self.run(orchestrator, Command::AnswerQuestion { attachments: vec![], interaction_id: card.clone(), option_id, inputs }).is_ok();
         if answered {
             self.progress(task);

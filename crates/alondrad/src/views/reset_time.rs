@@ -1,5 +1,5 @@
 use alondra_core::Millis;
-use alondra_core::views::Lang;
+use alondra_views::Lang;
 
 const MINUTE: i64 = 60_000;
 const HOUR: i64 = 60 * MINUTE;

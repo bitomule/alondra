@@ -3,7 +3,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use alondra_core::config::{FileConfig, path_in};
-use alondra_core::domain::{
+use alondra_domain_rules::{
     Command, DeliveryTarget, DomainError, DomainState, InteractionId, PrState, PullRequest, TaskId,
 };
 use serde::Deserialize;
@@ -55,7 +55,7 @@ async fn snapshot(gh: &GhCli, pr: &PullRequest) -> Result<Repository, DomainErro
         .repository
         .split_once('/')
         .ok_or_else(|| unavailable("invalid repository"))?;
-    let host = alondra_core::domain::normalize_pr_host(&pr.host);
+    let host = alondra_domain_rules::normalize_pr_host(&pr.host);
     let args = [
         format!("query={QUERY}"),
         format!("owner={owner}"),
@@ -190,7 +190,7 @@ async fn review_pr(gh: &GhCli, pr: &PullRequest, names: &[String]) -> Result<(),
     }
     let url = format!(
         "https://{}/{}/pull/{}",
-        alondra_core::domain::normalize_pr_host(&pr.host),
+        alondra_domain_rules::normalize_pr_host(&pr.host),
         pr.repository,
         pr.number
     );

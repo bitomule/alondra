@@ -10,7 +10,7 @@ use std::future::Future;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use alondra_core::domain::{DomainError, InteractionId};
+use alondra_domain_rules::{DomainError, InteractionId};
 use serde_json::Value;
 use tokio::sync::watch;
 

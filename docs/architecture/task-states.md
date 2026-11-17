@@ -63,7 +63,7 @@ Only a finished or cancelled task owes nothing.
 A deadline is a last resort. A state that an event of the provider ends carries none, and a
 deadline never ends work by itself: it triggers a closed outcome (the turn goes back to the node,
 the input goes back to the queue, or the task reads a factual state). It never opens a card for
-the user. `obligation_policy` (`crates/core/src/domain/obligation_policy.rs`) is the only place a deadline
+the user. `obligation_policy` (`crates/domain-rules/src/obligation_policy.rs`) is the only place a deadline
 may exist, and one clock in the daemon (`obligation_watch`) applies them. `enforced` says which
 deadlines are acted on: `HandInput`, `Wake` and `Answer`.
 
@@ -159,10 +159,10 @@ request. Where a phase differs from the plan, it is listed below the table.
 | 6 | An empty turn goes back to its node at once, up to three times in a row | `crates/domain`, `crates/core` | #162 | Merged |
 | 7 | `HandInput` and `Wake` deadlines | `obligation_watch` | #164 | Merged; `HandInput` became the hung-process last resort in the delivery with certainty phases (#185 and its second phase) |
 | 8 | `Answer` deadline | `orchestrator_inbox` | #167 | Merged |
-| 9 | `Situation` | `crates/core/src/domain/situation.rs` | #157 | Merged |
-| 10 | Seven state labels | `crates/core/src/views/task_state.rs` | #163 | Merged |
+| 9 | `Situation` | `crates/domain-rules/src/situation.rs` | #157 | Merged |
+| 10 | Seven state labels | `crates/views/src/task_state.rs` | #163 | Merged |
 | 11 | One count of work and of slots | `crates/core`, `admission` | #160 | Merged |
-| 12 | A present fact on every working row | `crates/core/src/views` (`NowFact`) | #169 | Merged |
+| 12 | A present fact on every working row | `crates/views/src` (`NowFact`) | #169 | Merged |
 | 13 | The wait report | `agent-host`, `crates/alondra`, `docs/wait-report.md` | #171 | Merged |
 | 14 | The model test | `crates/machine-model` | #170 | Merged; no known gaps |
 | 15 | The legacy node machine retired | `crates/core` `node_machine` | #173 | Merged |

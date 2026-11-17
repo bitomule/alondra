@@ -8,7 +8,7 @@ use crate::domain_store::{StoreError, TransportIdentity};
 use crate::domain_runtime::DomainRuntime;
 pub(crate) use alondra_daemon_engine::reply::status_for;
 use std::path::Path as FsPath;
-use alondra_core::domain::*;
+use alondra_domain_rules::*;
 use axum::extract::{ConnectInfo, Path, RawQuery, State, rejection::JsonRejection};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
@@ -198,7 +198,7 @@ fn attachment_content_path(path: &str) -> Option<(String, String, String)> {
     let decode = |raw: &str| {
         let id = percent_decoded(raw)?;
         (!id.trim().is_empty() && id.len() <= 256 && !id.chars().any(char::is_control)
-            && alondra_core::views::id::path_segment(&id) == raw).then_some(id)
+            && alondra_core::id::path_segment(&id) == raw).then_some(id)
     };
     document_content_query(query)?;
     Some((decode(interaction)?, decode(attachment)?, query.to_owned()))
@@ -537,7 +537,7 @@ async fn changes<H: DomainHost>(
     }
     let response = match (host.new_work_client(), signed_device(&*host, &signed)) {
         (Some(client), Some(device)) => crate::views::feed::handle(client, &device.device_id,
-            query.as_deref().unwrap_or(""), alondra_core::views::Transport::Loopback).await,
+            query.as_deref().unwrap_or(""), alondra_views::Transport::Loopback).await,
         _ => domain_error(DomainError::new("forbidden", "signed user device required")),
     };
     if !signed_read(&*host, &signed) {
@@ -935,10 +935,10 @@ fn adapt_legacy_card_fields(command: &mut serde_json::Map<String, Value>) {
     if let Some(card) = command.get_mut("card").and_then(Value::as_object_mut)
         && !card.contains_key("title")
         && let (Some(need), Some(kind)) = (card.get("need").and_then(Value::as_str), card.get("kind"))
-        && let Ok(kind) = serde_json::from_value::<alondra_core::domain::CardKind>(kind.clone())
+        && let Ok(kind) = serde_json::from_value::<alondra_domain_rules::CardKind>(kind.clone())
     {
         // A previous MCP process keeps its old catalog until its SDK host rests.
-        let adapted = alondra_core::domain::CardSpec::new(kind, need);
+        let adapted = alondra_domain_rules::CardSpec::new(kind, need);
         card.insert("title".into(), json!(adapted.title));
         card.insert("need".into(), json!(adapted.need));
         if card.get("content").is_none_or(Value::is_null)
@@ -1027,7 +1027,7 @@ pub(crate) fn encoded_pull_request_id(raw: &str) -> bool {
 /// A PR id is the registered `host/owner/repo#number`, so it travels percent-encoded once.
 pub(crate) fn decoded_pull_request_id(raw: &str) -> Option<String> {
     let id = percent_decoded(raw)?;
-    (alondra_core::views::id::valid(&id) && alondra_core::views::id::path_segment(&id) == raw).then_some(id)
+    (alondra_core::id::valid(&id) && alondra_core::id::path_segment(&id) == raw).then_some(id)
 }
 
 /// Path segments are percent-encoded (RFC 3986 §2.1); the caller checks the decoded id's grammar.
@@ -1393,7 +1393,7 @@ pub(crate) fn check_launch_plan(domain: &DomainRuntime, home: &std::path::Path, 
         Command::CreateTask { request_id, launch: Some(plan), .. }
         | Command::SettleSuggestion { decision: SuggestionDecision::NewTask { request_id, launch: plan, .. }, .. } =>
             crate::launch_plans::validate(domain, home, request_id, plan),
-        Command::SettlePlanReview { task_id, outcome: alondra_core::domain::PlanReviewOutcome::PlanChanged { launch: plan, .. }, .. } => {
+        Command::SettlePlanReview { task_id, outcome: alondra_domain_rules::PlanReviewOutcome::PlanChanged { launch: plan, .. }, .. } => {
             let state = domain.state().map_err(|_| DomainError::new("storage_unavailable", "domain state unavailable"))?;
             let task = state.tasks.get(task_id).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;
             crate::launch_plans::validate(domain, home, &task.request_id, plan)
@@ -1933,7 +1933,7 @@ mod tests {
                     review_prs: true,
                     dependencies: BTreeSet::new(),
                     stack: None,
-                    launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+                    launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
                 },
             ),
             (
@@ -1946,7 +1946,7 @@ mod tests {
                     },
                     recipient: Recipient::User,
                     body: "Information".into(),
-                    attachments: vec![], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
+                    attachments: vec![], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"),
                 },
             ),
         ] {
@@ -2087,7 +2087,7 @@ mod tests {
         let second = envelope(&host, "info-b", Command::PublishInformation {
             interaction_id: "info-b".into(), scope: Scope::Task { task_id: "task-a".into() }, recipient: Recipient::User,
             body: "More information".into(), attachments: vec![],
-            card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the second update"),
+            card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the second update"),
         });
         host.domain.execute(&Actor::System, &second, None, || Ok(())).unwrap();
         let remote = envelope(
@@ -2249,8 +2249,8 @@ mod tests {
             session_id: "agent-a".into(), task_binding: None, provider_agent_id: None,
         }).unwrap();
         let user = alondra_core::user_language::current();
-        let other = if user == alondra_core::views::Lang::Es { "en" } else { "es" };
-        let own = if user == alondra_core::views::Lang::Es { "es" } else { "en" };
+        let other = if user == alondra_views::Lang::Es { "en" } else { "es" };
+        let own = if user == alondra_views::Lang::Es { "es" } else { "en" };
         let send = |language: &'static str| {
             let state = host.domain.state().unwrap();
             let request = reqwest::Client::new().post(format!("{base}/questions"))

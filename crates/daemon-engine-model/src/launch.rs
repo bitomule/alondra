@@ -1,8 +1,9 @@
-use alondra_core::{accounts::Provider, domain::TaskId};
+use alondra_core::accounts::Provider;
+use alondra_domain_rules::TaskId;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-pub use alondra_core::domain::LaunchPlan;
+pub use alondra_domain_rules::LaunchPlan;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -54,9 +55,9 @@ impl LaunchBody {
             model: plan.model.clone(),
             provider: None,
             profile: plan.role.map(|role| match role {
-                alondra_core::domain::TaskRole::Design => alondra_core::model_selection::ModelProfile::Design,
-                alondra_core::domain::TaskRole::Implementation => alondra_core::model_selection::ModelProfile::Implementation,
-                alondra_core::domain::TaskRole::Review => alondra_core::model_selection::ModelProfile::Review,
+                alondra_domain_rules::TaskRole::Design => alondra_core::model_selection::ModelProfile::Design,
+                alondra_domain_rules::TaskRole::Implementation => alondra_core::model_selection::ModelProfile::Implementation,
+                alondra_domain_rules::TaskRole::Review => alondra_core::model_selection::ModelProfile::Review,
             }),
             effort: plan.effort.clone(),
             approach: plan.approach,
@@ -92,9 +93,9 @@ impl LaunchBody {
         self.approach = self.approach.or(plan.approach);
         self.tags = self.tags.or_else(|| plan.tags.clone());
         self.profile = self.profile.or_else(|| plan.role.map(|role| match role {
-            alondra_core::domain::TaskRole::Design => alondra_core::model_selection::ModelProfile::Design,
-            alondra_core::domain::TaskRole::Implementation => alondra_core::model_selection::ModelProfile::Implementation,
-            alondra_core::domain::TaskRole::Review => alondra_core::model_selection::ModelProfile::Review,
+            alondra_domain_rules::TaskRole::Design => alondra_core::model_selection::ModelProfile::Design,
+            alondra_domain_rules::TaskRole::Implementation => alondra_core::model_selection::ModelProfile::Implementation,
+            alondra_domain_rules::TaskRole::Review => alondra_core::model_selection::ModelProfile::Review,
         }));
         if self.relaunch_model.is_none() {
             self.model = self.model.or_else(|| plan.model.clone());

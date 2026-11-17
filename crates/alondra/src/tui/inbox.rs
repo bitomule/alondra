@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use alondra_core::domain::PrId;
+use alondra_domain_rules::PrId;
 use alondra_core::now_millis;
 use crossterm::event::{KeyCode, KeyEvent};
 
@@ -17,7 +17,7 @@ pub(super) fn review_clone_flow(
     number: u64,
     dir: std::path::PathBuf,
 ) -> Option<Flow> {
-    alondra_core::views::id::valid(pr_id).then(|| Flow::Review {
+    alondra_core::id::valid(pr_id).then(|| Flow::Review {
         key: selected.clone(),
         pr: PrId(pr_id.to_string()),
         number,
@@ -50,7 +50,7 @@ impl App {
     /// The server's count of what waits for the user, less the cards answered here that it still lists.
     pub fn attention(&self) -> usize {
         let answered = self.home_view.iter().flat_map(|home| &home.sections).flat_map(|section| &section.items)
-            .filter(|item| matches!(item, alondra_core::views::Item::Card(card) if self.optimistic.hides(&Key(card.id.clone()))))
+            .filter(|item| matches!(item, alondra_views::Item::Card(card) if self.optimistic.hides(&Key(card.id.clone()))))
             .count();
         self.view_status
             .as_ref()
@@ -172,7 +172,7 @@ impl App {
             .iter()
             .flat_map(|section| &section.items)
             .find_map(|item| {
-                if let alondra_core::views::Item::Form(form) = item
+                if let alondra_views::Item::Form(form) = item
                     && form.submit.enabled
                 {
                     Some(form)
@@ -202,7 +202,7 @@ impl App {
     fn card_button_key(
         &mut self,
         key: KeyEvent,
-        card: &alondra_core::views::Card,
+        card: &alondra_views::Card,
         epoch: String,
     ) -> Option<Flow> {
         if !(key.modifiers - crossterm::event::KeyModifiers::SHIFT).is_empty() {
@@ -213,7 +213,7 @@ impl App {
         };
         let selected = self.sel.clone().unwrap_or_else(|| Key(card.id.clone()));
         if let Some(index) = card_button_index(key) {
-            let action = alondra_core::views::Action::from(card.actions.get(index)?.clone());
+            let action = alondra_views::Action::from(card.actions.get(index)?.clone());
             if self.open_elicitation_form(card, &action, &selected, &epoch) {
                 return Some(Flow::Go);
             }
@@ -235,8 +235,8 @@ impl App {
     /// An action that offers options asks which one first; the rest run at once.
     pub(super) fn press_card_action(
         &mut self,
-        action: alondra_core::views::Action,
-        option: Option<alondra_core::views::ActionOption>,
+        action: alondra_views::Action,
+        option: Option<alondra_views::ActionOption>,
         selected: &Key,
         epoch: String,
     ) -> Flow {
@@ -292,8 +292,8 @@ impl App {
 
     pub(super) fn run_view_action(
         &mut self,
-        action: &alondra_core::views::Action,
-        option: Option<&alondra_core::views::ActionOption>,
+        action: &alondra_views::Action,
+        option: Option<&alondra_views::ActionOption>,
         selected: &Key,
         epoch: String,
     ) -> Flow {
@@ -306,7 +306,7 @@ impl App {
                 body: confirm.message.clone(),
                 button: confirm.button.clone(),
                 cancel: confirm.cancel.clone(),
-                destructive: action.style == alondra_core::views::Style::Destructive,
+                destructive: action.style == alondra_views::Style::Destructive,
                 then: super::ModalThen::Action {
                     action: Box::new(action.clone()),
                     option_id: option.map(|option| option.id.clone()),
@@ -321,8 +321,8 @@ impl App {
 
     pub(super) fn run_view_action_confirmed(
         &mut self,
-        action: &alondra_core::views::Action,
-        option: Option<&alondra_core::views::ActionOption>,
+        action: &alondra_views::Action,
+        option: Option<&alondra_views::ActionOption>,
         selected: &Key,
         epoch: String,
     ) -> Flow {
@@ -330,7 +330,7 @@ impl App {
             && let Some(link) = action.link.as_ref()
         {
             match link {
-                alondra_core::views::Link::Url { url } => {
+                alondra_views::Link::Url { url } => {
                     if safe_github_url(url) || alondra_core::codex_login::verification_url(url) {
                         super::open_with_mac(url);
                     } else {
@@ -340,33 +340,33 @@ impl App {
                         ));
                     }
                 }
-                alondra_core::views::Link::View { key } => self.navigate_view(key),
-                alondra_core::views::Link::Unsupported
-                | alondra_core::views::Link::Local { local: alondra_core::views::LocalLink::Unsupported } => {
+                alondra_views::Link::View { key } => self.navigate_view(key),
+                alondra_views::Link::Unsupported
+                | alondra_views::Link::Local { local: alondra_views::LocalLink::Unsupported } => {
                     self.fail(super::view_render::update_to_use());
                 }
-                alondra_core::views::Link::Local { local } => match local {
-                    alondra_core::views::LocalLink::Unsupported => self.fail(super::view_render::update_to_use()),
-                    alondra_core::views::LocalLink::Attach { .. } => {
+                alondra_views::Link::Local { local } => match local {
+                    alondra_views::LocalLink::Unsupported => self.fail(super::view_render::update_to_use()),
+                    alondra_views::LocalLink::Attach { .. } => {
                         self.fail(tr!(
                             "Alondra no longer opens a node's terminal: its detail has its state and its cards",
                             "Alondra ya no abre el terminal de un nodo: su detalle tiene su estado y sus tarjetas"
                         ));
                     }
-                    alondra_core::views::LocalLink::McpSignIn { card, server } => self.mcp_connect(card, server),
-                    alondra_core::views::LocalLink::McpReconnect { card } => self.mcp_reconnect(card),
-                    alondra_core::views::LocalLink::CrashReport { failure } => self.open_crash_report(failure),
-                    alondra_core::views::LocalLink::AccountAdd { .. } | alondra_core::views::LocalLink::AccountSignIn { .. } => {}
-                    alondra_core::views::LocalLink::OpenPath { path } => {
+                    alondra_views::LocalLink::McpSignIn { card, server } => self.mcp_connect(card, server),
+                    alondra_views::LocalLink::McpReconnect { card } => self.mcp_reconnect(card),
+                    alondra_views::LocalLink::CrashReport { failure } => self.open_crash_report(failure),
+                    alondra_views::LocalLink::AccountAdd { .. } | alondra_views::LocalLink::AccountSignIn { .. } => {}
+                    alondra_views::LocalLink::OpenPath { path } => {
                         self.flash(trf!(
                             "Local file reference: {path}",
                             "Referencia de archivo local: {path}"
                         ));
                     }
-                    alondra_core::views::LocalLink::ReviewClone {
+                    alondra_views::LocalLink::ReviewClone {
                         repo, pr, pr_id, ..
                     } => {
-                        if !alondra_core::views::id::valid(pr_id) {
+                        if !alondra_core::id::valid(pr_id) {
                             self.fail(tr!(
                                 "Invalid PR review target",
                                 "Destino de revisión de PR no válido"
@@ -403,8 +403,8 @@ impl App {
         let option_id = option.map(|option| option.id.clone()).or_else(|| action.option_id.clone());
         let input = match option {
             Some(option)
-                if matches!(option.input, alondra_core::views::Input::None)
-                    && matches!(action.input, alondra_core::views::Input::Text { required: false, .. }) =>
+                if matches!(option.input, alondra_views::Input::None)
+                    && matches!(action.input, alondra_views::Input::Text { required: false, .. }) =>
             {
                 &action.input
             }
@@ -435,7 +435,7 @@ impl App {
             return Flow::Go;
         }
         match input {
-            alondra_core::views::Input::Text { required, secret, .. } => {
+            alondra_views::Input::Text { required, secret, .. } => {
                 self.compose(
                     super::Target::ViewAction {
                         action_id: action.id.clone(),
@@ -451,8 +451,8 @@ impl App {
                     "",
                 );
             }
-            alondra_core::views::Input::Unsupported => self.fail(super::view_render::update_to_use()),
-            alondra_core::views::Input::None => {
+            alondra_views::Input::Unsupported => self.fail(super::view_render::update_to_use()),
+            alondra_views::Input::None => {
                 let request = crate::client::Client::action_body(&epoch, &action.id, option_id.as_deref(), serde_json::json!({}));
                 self.submit_view_request(request, Some(acting));
             }
@@ -475,8 +475,8 @@ impl App {
 
 /// Whether what the user wrote can go with this key: every option carries it, and so does an
 /// action that takes text.
-pub(super) fn carries_words(action: &alondra_core::views::Action, option: Option<&alondra_core::views::ActionOption>) -> bool {
-    let text = |input: &alondra_core::views::Input| matches!(input, alondra_core::views::Input::Text { .. });
+pub(super) fn carries_words(action: &alondra_views::Action, option: Option<&alondra_views::ActionOption>) -> bool {
+    let text = |input: &alondra_views::Input| matches!(input, alondra_views::Input::Text { .. });
     action.option_id.is_some() || text(&action.input) || option.is_some_and(|option| text(&option.input))
 }
 
@@ -495,7 +495,7 @@ pub(super) fn safe_github_url(value: &str) -> bool {
 }
 
 /// An action with a single option needs no menu: pressing it picks that option.
-pub(super) fn only_option(action: &alondra_core::views::Action) -> Option<alondra_core::views::ActionOption> {
+pub(super) fn only_option(action: &alondra_views::Action) -> Option<alondra_views::ActionOption> {
     match action.options.as_slice() {
         [option] if action.option_id.is_none() => Some(option.clone()),
         _ => None,
@@ -513,13 +513,13 @@ fn card_button_index(key: KeyEvent) -> Option<usize> {
 
 /// The action, and the option when the key names one, that a key presses on a view's detail.
 pub(super) fn view_key_choice(
-    document: &alondra_core::views::View,
+    document: &alondra_views::View,
     key: KeyEvent,
-) -> Option<(alondra_core::views::Action, Option<alondra_core::views::ActionOption>)> {
+) -> Option<(alondra_views::Action, Option<alondra_views::ActionOption>)> {
     if let Some(card) = super::view_render::typed_card(document)
         && let Some(index) = card_button_index(key)
     {
-        let action = alondra_core::views::Action::from(card.actions.get(index)?.clone());
+        let action = alondra_views::Action::from(card.actions.get(index)?.clone());
         let option = only_option(&action);
         return Some((action, option));
     }

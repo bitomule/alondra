@@ -2,7 +2,7 @@ use crate::live::LiveOf as _;
 use crate::idle_compaction::ContextsOf as _;
 use crate::node_reports::{Answer, Report, Reported, short_label};
 use alondra_core::activity::Activity;
-use alondra_core::views::RunOutcome;
+use alondra_view_model::RunOutcome;
 use alondra_core::{BackgroundItem, BackgroundKind, Millis, ToolInFlight};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -140,7 +140,7 @@ pub(crate) fn ended(session: &mut Reported, now: Millis) {
     session.end_background(|_| true, RunOutcome::Stopped, now); session.work.ended(now);
     if let Some(readings) = session.codex.as_mut() { readings.calls.clear(); readings.turn = None; readings.deltas.clear(); }
 }
-fn update_context(contexts:&crate::idle_compaction::Contexts,task:&alondra_core::domain::TaskId,before:Option<&Readings>,session:&Reported,message:&Value,now:Millis){
+fn update_context(contexts:&crate::idle_compaction::Contexts,task:&alondra_domain_rules::TaskId,before:Option<&Readings>,session:&Reported,message:&Value,now:Millis){
     use alondra_provider_claude::ContextEvent;
     let Some(current)=session.codex.as_ref() else{return};
     if before.is_some_and(|prior|prior.thread!=current.thread || prior.model!=current.model || (prior.turn!=current.turn && current.turn.is_some() && current.model_turn.is_none())){contexts.forget(task);}
@@ -160,7 +160,7 @@ fn update_context(contexts:&crate::idle_compaction::Contexts,task:&alondra_core:
         _=>{}
     }
 }
-pub(crate) fn feed(domain: &crate::domain_runtime::DomainRuntime, agent: &alondra_core::domain::AgentId, observation: &alondra_provider_contract::OrderedObservation) {
+pub(crate) fn feed(domain: &crate::domain_runtime::DomainRuntime, agent: &alondra_domain_rules::AgentId, observation: &alondra_provider_contract::OrderedObservation) {
     if let Some(message) = alondra_provider_codex::native_message(observation) {
         let before=domain.live().mods.session(&agent.0).and_then(|session|session.codex);
         let now=alondra_core::now_millis();domain.live().mods.apply_codex(&agent.0,&message,now);

@@ -7,10 +7,10 @@
 use alondra_core::clock;
 use crate::mcp_probe::McpProbes;
 use crate::sdk_owner::SdkBackend;
-use alondra_core::domain::{McpNodeReading, McpServerKey, McpServerState};
+use alondra_domain_rules::{McpNodeReading, McpServerKey, McpServerState};
 use alondra_core::options::ProjectEntry;
-use alondra_core::views::mcp_servers::project_target;
-use alondra_core::views::{LiveMcpProbe, LiveMcpRemoval};
+use alondra_view_model::mcp::project_target;
+use alondra_view_model::{LiveMcpProbe, LiveMcpRemoval};
 use alondra_foundation::{McpOrigin, McpTraits};
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -47,8 +47,8 @@ pub enum Refused {
 }
 
 impl Refused {
-    pub fn message(&self, name: &str, lang: alondra_core::views::Lang) -> String {
-        let es = lang == alondra_core::views::Lang::Es;
+    pub fn message(&self, name: &str, lang: alondra_view_model::Lang) -> String {
+        let es = lang == alondra_view_model::Lang::Es;
         match self {
             Self::Gone if es => "Este servidor MCP ya no aparece".into(),
             Self::Gone => "This MCP server is no longer listed".into(),

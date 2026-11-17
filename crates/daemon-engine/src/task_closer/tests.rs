@@ -3,7 +3,7 @@ use super::*;
 use crate::domain_store::model_metrics::{Decision, DecisionKind};
 use crate::node_close::Answer;
 use crate::node_push::testing::Node;
-use alondra_core::domain::{
+use alondra_domain_rules::{
     Actor, CardSpec, CommandEnvelope, DeliveryTarget, Instruction, ModelChooser, POST_MERGE_CLOSE, POST_MERGE_PROBLEM_PREFIX,
     PROTOCOL_VERSION, QuestionOption, TaskState,
 };
@@ -114,7 +114,7 @@ async fn a_user_message_saved_before_removal_keeps_the_task_and_session_open() {
     command(&rig.domain, agent(), "old-result", Command::PresentResult {
         checklist: vec![], attachments: vec![], task_id: "t".into(), interaction_id: "old-result".into(),
         body: "Done".into(), targets: text(), is_final: true, nothing_to_review: false,
-        card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+        card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
     });
     command(&rig.domain, Actor::System, "user-message", Command::TellNode {
         task_id: "t".into(), text: "Prepare the follow-up report".into(), from_user: true, answers: None,
@@ -195,7 +195,7 @@ impl Rig {
         command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
             task_id: "t".into(), request_id: "r".into(), title: "Result".into(), agent_id: Some(SESSION.into()),
             review_prs: false, dependencies: Default::default(), stack: None,
-            launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
         });
         domain.live().apply(&Event::DaemonSeen(DaemonObservation {
             session_id: SESSION.into(), short_id: SHORT.into(), name: Some("Node".into()), ..Default::default()
@@ -211,7 +211,7 @@ impl Rig {
         command(&self.domain, agent(), "present", Command::PresentResult {
             checklist: Vec::new(),
             attachments: vec![], task_id: "t".into(), interaction_id: "final".into(), body: "Done".into(), targets: text(),
-            is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+            is_final: true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
         });
         command(&self.domain, user(), "accept", Command::AcceptDelivery { presentation_id: "final".into(), targets: text() });
     }
@@ -240,7 +240,7 @@ impl Rig {
         self.node.texts()
     }
 
-    fn cards(&self) -> Vec<alondra_core::domain::Interaction> {
+    fn cards(&self) -> Vec<alondra_domain_rules::Interaction> {
         self.domain.state().unwrap().interactions.values().filter(|i| i.id.0.starts_with("problem-close-")).cloned().collect()
     }
 
@@ -264,7 +264,7 @@ async fn recording_a_closed_node_failure_keeps_its_receipt_and_stops_after_three
     command(&rig.domain, Actor::Orchestrator { generation: 0 }, "other-task", Command::CreateTask {
         plan_items: None, continues: None, task_id: "z".into(), request_id: "other".into(), title: "Other task".into(), agent_id: Some("other".into()),
         review_prs: false, dependencies: Default::default(), stack: None,
-        launch: Some(alondra_core::domain::LaunchPlan::new("other", "/tmp")),
+        launch: Some(alondra_domain_rules::LaunchPlan::new("other", "/tmp")),
     });
     command(&rig.domain, Actor::Agent { agent_id: "other".into() }, "other-result", Command::PresentResult {
         checklist: vec![], attachments: vec![], task_id: "z".into(), interaction_id: "other-final".into(), body: "Done".into(),
@@ -443,8 +443,8 @@ async fn three_failed_closes_raise_one_card_with_try_again_and_leave_it_open() {
     let InteractionPayload::Question { options, answer: None } = &cards[0].payload else { panic!("a question card") };
     assert_eq!(options.iter().map(|o| (o.id.as_str(), o.label.as_str())).collect::<Vec<_>>(),
         vec![("retry", "Try again"), ("leave", "Leave it open")]);
-    let card = alondra_core::close_problem::CloseProblem::from_body(&cards[0].body).expect("the body holds what clients word");
-    assert_eq!((card.stop, card.detail.as_str(), card.cancelled), (alondra_core::close_problem::CloseStop::Unsaved, "work", false));
+    let card = alondra_domain_rules::close_problem::CloseProblem::from_body(&cards[0].body).expect("the body holds what clients word");
+    assert_eq!((card.stop, card.detail.as_str(), card.cancelled), (alondra_domain_rules::close_problem::CloseStop::Unsaved, "work", false));
     assert_eq!(cards[0].card.recommended.as_deref(), Some("leave"), "closing would lose the unsaved work");
     assert_eq!(rig.closing().unwrap().problem_id.as_deref(), Some(cards[0].id.0.as_str()));
     let told = rig.told().len();
@@ -566,14 +566,14 @@ async fn a_session_alondra_did_not_launch_is_never_closed() {
 
 #[tokio::test]
 async fn a_users_session_with_unproved_release_work_stays_available_after_merge() {
-    use alondra_core::domain::{ChecklistMark, Evidence, EvidenceKind, Hold, MergeMethod, PrState};
+    use alondra_domain_rules::{ChecklistMark, Evidence, EvidenceKind, Hold, MergeMethod, PrState};
     let rig = Rig::undelivered(thirty_minutes());
     let plan = "- [ ] Prepare the release\n- [ ] Publish the release\n";
     command(&rig.domain, Actor::System, "plan", Command::HoldHook {
         interaction_id: "plan".into(), task_id: "t".into(), agent_id: SESSION.into(), hold: Hold::Plan,
         body: plan.into(), options: Hold::Plan.options(),
-        card: CardSpec::new(alondra_core::domain::CardKind::Review, "Review the release plan")
-            .content(alondra_core::domain::ContentKind::Plan, plan),
+        card: CardSpec::new(alondra_domain_rules::CardKind::Review, "Review the release plan")
+            .content(alondra_domain_rules::ContentKind::Plan, plan),
     });
     command(&rig.domain, user(), "approve", Command::AnswerQuestion {
         attachments: vec![], interaction_id: "plan".into(), option_id: Hold::APPROVE.into(), inputs: Default::default(),
@@ -816,14 +816,14 @@ async fn cleanup_done_ends_the_work_after_the_merge_and_closes_the_node() {
 }
 
 impl Rig {
-    fn post_merge_cards(&self) -> Vec<alondra_core::domain::Interaction> {
+    fn post_merge_cards(&self) -> Vec<alondra_domain_rules::Interaction> {
         self.domain.state().unwrap().interactions.values()
             .filter(|i| i.id.0.starts_with("problem-post-merge-") && !i.withdrawn
                 && matches!(i.payload, InteractionPayload::Question { answer: None, .. }))
             .cloned().collect()
     }
 
-    fn node_event(&self, event: alondra_core::domain::NodeEvent) {
+    fn node_event(&self, event: alondra_domain_rules::NodeEvent) {
         crate::domain_agent_lifecycle::node_event(&self.domain, &SESSION.into(), event).unwrap();
     }
 }
@@ -852,8 +852,8 @@ async fn a_node_whose_work_after_the_merge_the_user_ended_on_any_card_closes_wit
     command(&rig.domain, Actor::System, "raise", Command::RaiseProblem {
         attachments: vec![], interaction_id: card.as_str().into(), scope: Scope::Task { task_id: "t".into() }, body: "Its session closed".into(),
         options: vec![QuestionOption { id: POST_MERGE_CLOSE.into(), label: "Close the task".into(), description: None }],
-        card: CardSpec { system: Some(alondra_core::domain::SystemCard::PostMergeProblem), ..CardSpec::new(alondra_core::domain::CardKind::Problem, "Its work after the merge stopped")
-            .why("Its session closed while it ran its work after the merge.").content(alondra_core::domain::ContentKind::Diagnosis, "Its session closed") },
+        card: CardSpec { system: Some(alondra_domain_rules::SystemCard::PostMergeProblem), ..CardSpec::new(alondra_domain_rules::CardKind::Problem, "Its work after the merge stopped")
+            .why("Its session closed while it ran its work after the merge.").content(alondra_domain_rules::ContentKind::Diagnosis, "Its session closed") },
     });
     command(&rig.domain, user(), "close", Command::AnswerQuestion {
         attachments: vec![], interaction_id: card.as_str().into(), option_id: POST_MERGE_CLOSE.into(), inputs: Default::default(),
@@ -1048,7 +1048,7 @@ async fn a_dirty_subagent_worktree_holds_the_close_and_tells_the_node() {
         let dir = repo.join(".claude/worktrees").join(name);
         git(&repo, &["worktree", "add", "-q", "-b", &format!("worktree-{name}"), dir.to_str().unwrap()]);
         command(&rig.domain, Actor::System, &format!("record-{name}"), Command::RecordTaskWorktree {
-            task_id: "t".into(), path: dir.to_str().unwrap().into(), origin: alondra_core::domain::WorktreeOrigin::Subagent, branch: None,
+            task_id: "t".into(), path: dir.to_str().unwrap().into(), origin: alondra_domain_rules::WorktreeOrigin::Subagent, branch: None,
         });
         dir
     };
@@ -1076,7 +1076,7 @@ async fn a_dirty_subagent_worktree_holds_the_close_and_tells_the_node() {
     }
     let task = rig.task();
     assert_eq!(task.state, TaskState::Done);
-    assert!(task.worktrees.values().all(|worktree| worktree.end == Some(alondra_core::domain::WorktreeEnd::Removed)), "{:?}", task.worktrees);
+    assert!(task.worktrees.values().all(|worktree| worktree.end == Some(alondra_domain_rules::WorktreeEnd::Removed)), "{:?}", task.worktrees);
 }
 
 fn pr() -> Vec<DeliveryTarget> {
@@ -1094,18 +1094,18 @@ impl Rig {
         }).unwrap();
         command(&rig.domain, agent(), "register-pr", Command::RegisterPr {
             task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(), number: 1,
-            head: "head1".into(), base: "main".into(), allowed_methods: vec![alondra_core::domain::MergeMethod::Squash],
+            head: "head1".into(), base: "main".into(), allowed_methods: vec![alondra_domain_rules::MergeMethod::Squash],
         });
         if work.is_some() {
             rig.declare_post_merge_work(work);
         }
         command(&rig.domain, agent(), "present-pr", Command::PresentResult {
             checklist: Vec::new(), attachments: vec![], task_id: "t".into(), interaction_id: "final".into(), body: "Done".into(),
-            targets: pr(), is_final: true, nothing_to_review: false, card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+            targets: pr(), is_final: true, nothing_to_review: false, card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
         });
         command(&rig.domain, user(), "accept-pr", Command::AcceptDelivery { presentation_id: "final".into(), targets: pr() });
         command(&rig.domain, Actor::System, "merged", Command::ObservePrState {
-            pr_id: "pr".into(), head: "head1".into(), base: "main".into(), state: alondra_core::domain::PrState::Merged,
+            pr_id: "pr".into(), head: "head1".into(), base: "main".into(), state: alondra_domain_rules::PrState::Merged,
             merged_head: Some("head1".into()),
         });
         rig
@@ -1115,8 +1115,8 @@ impl Rig {
     fn session_ends(&self) {
         self.sessions.listed.lock().unwrap().clear();
         self.domain.live().observe(&hook("SessionEnd"));
-        let agent = alondra_core::domain::AgentId(SESSION.into());
-        crate::domain_agent_lifecycle::node_event(&self.domain, &agent, alondra_core::domain::NodeEvent::SessionClosed).unwrap();
+        let agent = alondra_domain_rules::AgentId(SESSION.into());
+        crate::domain_agent_lifecycle::node_event(&self.domain, &agent, alondra_domain_rules::NodeEvent::SessionClosed).unwrap();
         crate::domain_transport::session_ended(&self.domain, &agent).unwrap();
     }
 
@@ -1163,7 +1163,7 @@ async fn a_cancelled_task_without_a_node_is_cancelled_by_alondras_cleanup_receip
     command(&rig.domain, Actor::Orchestrator { generation: 0 }, "task-u", Command::CreateTask { plan_items: None, continues: None,
         task_id: "u".into(), request_id: "r".into(), title: "Later".into(), agent_id: None,
         review_prs: false, dependencies: Default::default(), stack: None,
-        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
     });
     command(&rig.domain, user(), "cancel-u", Command::CancelTask { task_id: "u".into(), reason: None });
     let task = rig.domain.state().unwrap().tasks[&TaskId::from("u")].clone();
@@ -1191,14 +1191,14 @@ fn moved(continues: Option<&str>) -> (Rig, crate::test_support::Directory, std::
     command(&rig.domain, Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
     command(&rig.domain, Actor::Orchestrator { generation: 0 }, "continuation", Command::CreateTask {
         task_id: "t-claude".into(), request_id: "r".into(), title: "Result on Claude".into(), agent_id: None, review_prs: false,
-        dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", dir.to_str().unwrap())),
+        dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", dir.to_str().unwrap())),
         plan_items: None, continues: continues.map(TaskId::from),
     });
     command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
     (rig, root, dir)
 }
 
-fn worktree_end(rig: &Rig, task: &str, dir: &std::path::Path) -> Option<Option<alondra_core::domain::WorktreeEnd>> {
+fn worktree_end(rig: &Rig, task: &str, dir: &std::path::Path) -> Option<Option<alondra_domain_rules::WorktreeEnd>> {
     rig.domain.state().unwrap().tasks[&TaskId::from(task)].worktrees.get(dir.to_str().unwrap()).map(|worktree| worktree.end)
 }
 
@@ -1211,7 +1211,7 @@ async fn a_cancelled_task_whose_worktree_its_continuation_works_in_closes_withou
     assert!(dir.join("a.txt").exists(), "the continuation's work is still there");
     assert_eq!(rig.task().state, TaskState::Cancelled);
     assert!(rig.cards().is_empty(), "no card about a session Alondra cannot close");
-    assert_eq!(worktree_end(&rig, "t", &dir), Some(Some(alondra_core::domain::WorktreeEnd::HandedOver)));
+    assert_eq!(worktree_end(&rig, "t", &dir), Some(Some(alondra_domain_rules::WorktreeEnd::HandedOver)));
     assert_eq!(worktree_end(&rig, "t-claude", &dir), Some(None), "the continuation holds it now");
 }
 
@@ -1235,7 +1235,7 @@ async fn a_cancelled_task_whose_continuation_is_already_over_leaves_its_unsaved_
     }
     assert!(dir.join("a.txt").exists(), "work no remote has is never deleted unasked");
     assert_eq!(rig.task().state, TaskState::Cancelled, "the unsaved file no longer keeps the task from closing");
-    assert_eq!(worktree_end(&rig, "t", &dir), Some(Some(alondra_core::domain::WorktreeEnd::KeptByUser)), "nobody else goes on in it, so it waits for the user");
+    assert_eq!(worktree_end(&rig, "t", &dir), Some(Some(alondra_domain_rules::WorktreeEnd::KeptByUser)), "nobody else goes on in it, so it waits for the user");
     assert_eq!(rig.discard_cards().len(), 1);
     assert!(rig.cards().is_empty());
 }
@@ -1245,7 +1245,7 @@ async fn several_continuations_of_one_task_keep_its_worktree_until_the_last_one_
     let (rig, _root, dir) = moved(Some("t"));
     command(&rig.domain, Actor::Orchestrator { generation: 0 }, "second", Command::CreateTask {
         task_id: "t-sonnet".into(), request_id: "r".into(), title: "Result on Sonnet".into(), agent_id: None, review_prs: false,
-        dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", dir.to_str().unwrap())),
+        dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", dir.to_str().unwrap())),
         plan_items: None, continues: Some("t".into()),
     });
     command(&rig.domain, user(), "cancel-continuation", Command::CancelTask { task_id: "t-claude".into(), reason: None });
@@ -1255,12 +1255,12 @@ async fn several_continuations_of_one_task_keep_its_worktree_until_the_last_one_
     assert!(dir.join("a.txt").exists());
     assert_eq!(rig.task().state, TaskState::Cancelled);
     assert!(rig.cards().is_empty());
-    assert_eq!(worktree_end(&rig, "t-claude", &dir), Some(Some(alondra_core::domain::WorktreeEnd::HandedOver)));
+    assert_eq!(worktree_end(&rig, "t-claude", &dir), Some(Some(alondra_domain_rules::WorktreeEnd::HandedOver)));
     assert_eq!(worktree_end(&rig, "t-sonnet", &dir), Some(None), "the continuation still working keeps it");
 }
 
-use alondra_core::discard_worktrees::DiscardWorktrees;
-use alondra_core::domain::SystemCard;
+use alondra_domain_rules::discard_worktrees::DiscardWorktrees;
+use alondra_domain_rules::SystemCard;
 
 fn branch_exists(repository: &std::path::Path, branch: &str) -> bool {
     let out = std::process::Command::new("git").arg("-C").arg(repository)
@@ -1269,7 +1269,7 @@ fn branch_exists(repository: &std::path::Path, branch: &str) -> bool {
 }
 
 impl Rig {
-    fn discard_cards(&self) -> Vec<alondra_core::domain::Interaction> {
+    fn discard_cards(&self) -> Vec<alondra_domain_rules::Interaction> {
         self.domain.state().unwrap().interactions.values().filter(|i| i.system_card == Some(SystemCard::DiscardWorktrees)).cloned().collect()
     }
 
@@ -1285,7 +1285,7 @@ impl Rig {
         let form = json!({"delete": tasks}).as_object().unwrap().clone();
         command(&self.domain, user(), "answer-discard-ticked", Command::AnswerQuestion {
             attachments: vec![], interaction_id: card, option_id: "accept".into(),
-            inputs: [(alondra_core::domain::ANSWER_CONTENT.to_string(), alondra_core::domain::InputValue::Form(form))].into(),
+            inputs: [(alondra_domain_rules::ANSWER_CONTENT.to_string(), alondra_domain_rules::InputValue::Form(form))].into(),
         });
     }
 
@@ -1296,7 +1296,7 @@ impl Rig {
         });
         command(&self.domain, Actor::Orchestrator { generation: 0 }, &format!("create-{id}"), Command::CreateTask {
             plan_items: None, continues: None, task_id: id.into(), request_id: format!("r-{id}").into(), title: format!("Task {id}"), agent_id: None,
-            review_prs: false, dependencies: Default::default(), stack: None, launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+            review_prs: false, dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
         });
         command(&self.domain, user(), &format!("cancel-{id}"), Command::CancelTask { task_id: id.into(), reason: None });
         let root = crate::test_support::Directory::new();
@@ -1404,7 +1404,7 @@ async fn a_cancelled_task_with_an_open_pull_request_keeps_its_branch_when_its_wo
     let rig = Rig::new(thirty_minutes());
     command(&rig.domain, agent(), "register-pr", Command::RegisterPr {
         task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(), number: 1,
-        head: "head1".into(), base: "main".into(), allowed_methods: vec![alondra_core::domain::MergeMethod::Squash],
+        head: "head1".into(), base: "main".into(), allowed_methods: vec![alondra_domain_rules::MergeMethod::Squash],
     });
     let root = crate::test_support::Directory::new();
     let dir = crate::worktree::testing::task_worktree(&root, "t");
@@ -1521,7 +1521,7 @@ impl UsersFolders {
 
 fn record_worktree(domain: &DomainRuntime, task: &str, path: &std::path::Path) -> Result<(), crate::domain_store::StoreError> {
     crate::domain_github::execute_system(domain, Command::RecordTaskWorktree {
-        task_id: task.into(), path: path.to_str().unwrap().into(), origin: alondra_core::domain::WorktreeOrigin::Entered, branch: None,
+        task_id: task.into(), path: path.to_str().unwrap().into(), origin: alondra_domain_rules::WorktreeOrigin::Entered, branch: None,
     })
 }
 
@@ -1550,7 +1550,7 @@ async fn closing_a_task_launched_in_the_projects_root_hands_it_to_no_other_task_
     command(&rig.domain, Actor::Orchestrator { generation: 0 }, "other", Command::CreateTask {
         plan_items: None, continues: None, task_id: "t-other".into(), request_id: "r".into(), title: "Other".into(), agent_id: None,
         review_prs: false, dependencies: Default::default(), stack: None,
-        launch: Some(alondra_core::domain::LaunchPlan::new("node", folders.projects.to_str().unwrap())),
+        launch: Some(alondra_domain_rules::LaunchPlan::new("node", folders.projects.to_str().unwrap())),
     });
     rig.confirm();
     rig.pass(T0).await;
@@ -1576,7 +1576,7 @@ async fn stored_records_of_folders_that_are_no_worktree_are_ignored_and_the_task
     rig.confirm();
     rig.pass(T0).await;
     rig.assert_done(NodeEnd::Closed);
-    assert_eq!(rig.task().worktrees[folders.projects.to_str().unwrap()].end, Some(alondra_core::domain::WorktreeEnd::UsersOwn),
+    assert_eq!(rig.task().worktrees[folders.projects.to_str().unwrap()].end, Some(alondra_domain_rules::WorktreeEnd::UsersOwn),
         "the projects root, a git repository, is left as the user's own");
     let rows: i64 = rig.domain.store.lock().unwrap().conn
         .query_row("SELECT count(*) FROM task_worktree_records WHERE task_id='t'", [], |row| row.get(0)).unwrap();
@@ -1599,7 +1599,7 @@ async fn cancelling_a_task_whose_stored_worktrees_are_home_and_the_projects_root
     assert_eq!(rig.task().state, TaskState::Cancelled);
     assert!(rig.discard_cards().is_empty(), "nobody is asked to delete the home or the projects root");
     for dir in [&folders.home, &folders.projects] {
-        assert_eq!(rig.task().worktrees[dir.to_str().unwrap()].end, Some(alondra_core::domain::WorktreeEnd::UsersOwn));
+        assert_eq!(rig.task().worktrees[dir.to_str().unwrap()].end, Some(alondra_domain_rules::WorktreeEnd::UsersOwn));
     }
     assert!(folders.untouched());
 }
@@ -1618,27 +1618,27 @@ async fn a_persisted_recovery_card_after_cleanup_is_retired_without_resuming_the
     command(&domain, Actor::Orchestrator { generation: 0 }, "create", Command::CreateTask {
         task_id: task_id.clone(), request_id: "r".into(), title: "Finish the change".into(), agent_id: None,
         review_prs: false, dependencies: Default::default(), stack: None, plan_items: None, continues: None,
-        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/synthetic/repository")),
+        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/synthetic/repository")),
     });
     crate::domain_store::admit_through_sdk_with_host(&domain, &task_id, "node", crate::sdk_owner::HOST);
     let input = domain.state().unwrap().lifecycle_of(&task_id).unwrap().pending_inputs()[0].as_str().to_owned();
     command(&domain, Actor::System, "turn", Command::RecordRuntimeFacts { task_id: task_id.clone(), generation: 1,
-        facts: vec![alondra_core::domain::RuntimeObservation::ResourceAvailable,
-            alondra_core::domain::RuntimeObservation::TurnStarted { turn: "turn".into(), input }] });
+        facts: vec![alondra_domain_rules::RuntimeObservation::ResourceAvailable,
+            alondra_domain_rules::RuntimeObservation::TurnStarted { turn: "turn".into(), input }] });
     command(&domain, node.clone(), "register-pr", Command::RegisterPr { task_id: task_id.clone(), pr_id: "pr".into(),
         host: "github.com".into(), repository: "acme/widgets".into(), number: 7, head: "1".repeat(40), base: "main".into(),
-        allowed_methods: vec![alondra_core::domain::MergeMethod::Squash] });
+        allowed_methods: vec![alondra_domain_rules::MergeMethod::Squash] });
     let targets = vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "1".repeat(40) }];
     command(&domain, node, "present", Command::PresentResult { task_id: task_id.clone(), interaction_id: "d".into(),
         body: "Done".into(), targets: targets.clone(), is_final: true, nothing_to_review: false,
         attachments: vec![], checklist: vec![], card: CardSpec::delivery("Review the change", &[], true) });
     command(&domain, user(), "accept", Command::AcceptDelivery { presentation_id: "d".into(), targets });
     command(&domain, Actor::System, "merged", Command::ObservePrState { pr_id: "pr".into(), head: "1".repeat(40),
-        base: "main".into(), state: alondra_core::domain::PrState::Merged, merged_head: Some("1".repeat(40)) });
+        base: "main".into(), state: alondra_domain_rules::PrState::Merged, merged_head: Some("1".repeat(40)) });
     command(&domain, Actor::System, "lost", Command::RecordHostLost { task_id: task_id.clone(),
         reason: "The host stopped".into(), quiet: false });
     let state = domain.state().unwrap();
-    let card = state.interactions.values().find(|card| alondra_core::domain::retakes(card)).unwrap().id.clone();
+    let card = state.interactions.values().find(|card| alondra_domain_rules::retakes(card)).unwrap().id.clone();
     domain.store.lock().unwrap().conn_for_test().execute(
         "UPDATE task_wrap_ups SET cleaned_at=?1 WHERE task_id='closing'", [state.revision as i64]).unwrap();
     drop(domain);
@@ -1652,7 +1652,7 @@ async fn a_persisted_recovery_card_after_cleanup_is_retired_without_resuming_the
     assert!(state.interactions[&card].withdrawn);
     assert_eq!(state.tasks[&task_id].state, TaskState::Done);
     assert!(!state.lifecycle_journal[&task_id].iter().any(|record| matches!(record,
-        alondra_core::domain::LifecycleRecord::Told { .. } | alondra_core::domain::LifecycleRecord::Resumed { .. })));
+        alondra_domain_rules::LifecycleRecord::Told { .. } | alondra_domain_rules::LifecycleRecord::Resumed { .. })));
     assert_eq!(state.tasks[&task_id].wrap_up.node, Some(NodeEnd::Gone));
     assert!(sessions.calls.lock().unwrap().is_empty(), "closing uses the SDK path with no host to resume");
     drop(domain);

@@ -4,8 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::views::Lang;
-use crate::views::text::{t, tf};
+use crate::text::Lang;
+use crate::text::{t, tf};
 
 pub const MACHINE_PREFIX: &str = "machine-";
 pub const MACHINE_FIXED_OPTION: &str = "fixed";

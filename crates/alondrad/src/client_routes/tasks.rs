@@ -3,7 +3,7 @@
 use alondra_daemon_engine::live::LiveOf as _;
 use crate::locks::Poisonable as _;
 use super::{Client, Reply, storage};
-use alondra_core::domain::{DomainError, TaskId};
+use alondra_domain_rules::{DomainError, TaskId};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
@@ -48,7 +48,7 @@ impl Client {
             return Ok(Reply::error(DomainError::new("invalid_input", "a reason has words and fits in 4 KiB")));
         }
         let task = TaskId(id.to_owned());
-        let Some(cancelled) = self.domain.state()?.tasks.get(&task).map(alondra_core::domain::Task::cancelled) else {
+        let Some(cancelled) = self.domain.state()?.tasks.get(&task).map(alondra_domain_rules::Task::cancelled) else {
             return Ok(Reply::error(DomainError::new("not_found", "task does not exist")));
         };
         if !cancelled {

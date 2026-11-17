@@ -3,7 +3,7 @@
 //! in that order.
 use super::DomainRuntime;
 use crate::domain_store::StoreError;
-use alondra_core::domain::{Actor, Command, CommandOutcome, DomainState};
+use alondra_domain_rules::{Actor, Command, CommandOutcome, DomainState};
 
 /// What carries out a command in place of the store, once the runtime authorized it.
 pub type Carried<'a> = Box<dyn FnOnce() -> Result<CommandOutcome, StoreError> + 'a>;

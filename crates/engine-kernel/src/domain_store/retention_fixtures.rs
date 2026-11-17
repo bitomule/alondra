@@ -2,7 +2,7 @@
 //! and of the engine's commands that race with it.
 use crate::domain_store::DomainStore;
 use crate::domain_store::tests::{Fixture, seeded};
-use alondra_core::domain::*;
+use alondra_domain_rules::*;
 
 pub fn envelope(store: &mut DomainStore, id: &str, command: Command) -> CommandEnvelope {
     let state = store.load().unwrap();

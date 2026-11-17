@@ -14,9 +14,9 @@ use std::time::Duration;
 
 use alondra_core::accounts::{AccountBilling, AccountChange, AccountId, AccountKey, AccountState, AccountStatus, AccountsConfig, Policy, Provider};
 use alondra_core::claude_account;
-use alondra_core::domain::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION};
+use alondra_domain_rules::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION};
 use alondra_core::usage::Share;
-use alondra_core::views::Lang;
+use alondra_view_model::Lang;
 use axum::http::StatusCode;
 use serde::Deserialize;
 use serde_json::json;
@@ -206,15 +206,15 @@ pub(crate) fn log_choice(domain: &DomainRuntime, what: &str, account: &AccountKe
 }
 
 pub(crate) fn select_for_launch(domain: &DomainRuntime, home: &Path, intent: &alondra_core::model_selection::TaskSelection, now: alondra_core::Millis)
-    -> Result<alondra_core::model_selection::SelectionDecision, alondra_core::domain::DomainError>
+    -> Result<alondra_core::model_selection::SelectionDecision, alondra_domain_rules::DomainError>
 {
     select_for_node(domain, home, intent, None, None, now)
 }
 
-pub fn select_for_active_model(domain: &DomainRuntime, task_id: &alondra_core::domain::TaskId,
-    intent: &alondra_core::model_selection::TaskSelection) -> Result<alondra_core::model_selection::SelectionDecision, alondra_core::domain::DomainError>
+pub fn select_for_active_model(domain: &DomainRuntime, task_id: &alondra_domain_rules::TaskId,
+    intent: &alondra_core::model_selection::TaskSelection) -> Result<alondra_core::model_selection::SelectionDecision, alondra_domain_rules::DomainError>
 {
-    use alondra_core::domain::DomainError;
+    use alondra_domain_rules::DomainError;
     let read=domain.read(); let state=read.state();
     let task=state.tasks.get(task_id).ok_or_else(||DomainError::new("not_found","Task missing"))?;
     let account=task.account_key();
@@ -229,13 +229,13 @@ pub fn select_for_active_model(domain: &DomainRuntime, task_id: &alondra_core::d
 }
 
 pub(crate) fn select_for_launch_with_tools(domain: &DomainRuntime, home: &Path, intent: &alondra_core::model_selection::TaskSelection,
-    denied_tools: &[String], now: alondra_core::Millis) -> Result<alondra_core::model_selection::SelectionDecision, alondra_core::domain::DomainError>
+    denied_tools: &[String], now: alondra_core::Millis) -> Result<alondra_core::model_selection::SelectionDecision, alondra_domain_rules::DomainError>
 {
     select_for_node_with_tools(domain, home, intent, None, None, denied_tools, now)
 }
 
 pub(crate) fn select_for_node(domain: &DomainRuntime, home: &Path, intent: &alondra_core::model_selection::TaskSelection,
-    preferred_account: Option<&AccountKey>, provider: Option<Provider>, now: alondra_core::Millis) -> Result<alondra_core::model_selection::SelectionDecision, alondra_core::domain::DomainError>
+    preferred_account: Option<&AccountKey>, provider: Option<Provider>, now: alondra_core::Millis) -> Result<alondra_core::model_selection::SelectionDecision, alondra_domain_rules::DomainError>
 {
     select_for_node_with_tools(domain, home, intent, preferred_account, provider, &[], now)
 }
@@ -250,17 +250,17 @@ pub fn finish_initial_check(domain: &DomainRuntime) {
     domain.live().initial_account_check_pending.store(false, std::sync::atomic::Ordering::Release);
 }
 
-pub fn require_initial_check(domain: &DomainRuntime) -> Result<(), alondra_core::domain::DomainError> {
+pub fn require_initial_check(domain: &DomainRuntime) -> Result<(), alondra_domain_rules::DomainError> {
     if domain.live().initial_account_check_pending.load(std::sync::atomic::Ordering::Acquire) {
-        return Err(alondra_core::domain::DomainError::new("account_check_in_progress", "Accounts are being checked after startup. New nodes will wait for current authentication and billing information."));
+        return Err(alondra_domain_rules::DomainError::new("account_check_in_progress", "Accounts are being checked after startup. New nodes will wait for current authentication and billing information."));
     }
     Ok(())
 }
 
 pub(crate) fn select_for_node_with_tools(domain: &DomainRuntime, home: &Path, intent: &alondra_core::model_selection::TaskSelection,
-    preferred_account: Option<&AccountKey>, provider: Option<Provider>, denied_tools: &[String], now: alondra_core::Millis) -> Result<alondra_core::model_selection::SelectionDecision, alondra_core::domain::DomainError>
+    preferred_account: Option<&AccountKey>, provider: Option<Provider>, denied_tools: &[String], now: alondra_core::Millis) -> Result<alondra_core::model_selection::SelectionDecision, alondra_domain_rules::DomainError>
 {
-    use alondra_core::domain::DomainError;
+    use alondra_domain_rules::DomainError;
     require_initial_check(domain)?;
     let config = config(home).map_err(|why| DomainError::new("settings_unavailable", why))?;
     let read = domain.read();
@@ -312,7 +312,7 @@ pub(crate) fn profiles(home: &Path) -> Vec<PathBuf> {
 
 /// The generation of the credential new executions on `account` run with: one more each time it
 /// was signed in again after its sign-in expired.
-pub(crate) fn generation(state: &alondra_core::domain::DomainState, account: &AccountId) -> u64 {
+pub(crate) fn generation(state: &alondra_domain_rules::DomainState, account: &AccountId) -> u64 {
     generation_provider(state, &AccountKey::new(Provider::Claude, account.clone()))
 }
 
@@ -324,7 +324,7 @@ fn unchecked(accounts: &[AccountStatus]) -> Vec<AccountStatus> {
 }
 
 pub(crate) struct ProbeFence {
-    state: Arc<alondra_core::domain::DomainState>,
+    state: Arc<alondra_domain_rules::DomainState>,
     options: Option<String>,
 }
 
@@ -351,7 +351,7 @@ pub(crate) fn publish_current_probe(domain: &DomainRuntime, home: &Path, fence: 
 
 fn commit_probe<T>(domain: &DomainRuntime, home: &Path, fence: ProbeFence, commands: Vec<Command>, finish: impl FnOnce(&mut crate::domain_store::OwnerTransaction<'_>) -> Result<T, crate::domain_store::StoreError>) -> Result<T, crate::domain_store::StoreError> {
     use crate::domain_store::{Attached, StoreError};
-    use alondra_core::domain::DomainError;
+    use alondra_domain_rules::DomainError;
     let scope = alondra_store::AuthorityScope::new(fence.state.data_epoch.clone()).map_err(StoreError::from)?;
     domain.own(scope, |transaction| {
         let current = transaction.domain_state();
@@ -417,8 +417,8 @@ impl NativeAuthAccount {
 }
 
 /// Refreshes only the account of this existing native session, including when disabled for new work.
-pub(crate) fn probe_current_codex(domain: &DomainRuntime, task_id: &alondra_core::domain::TaskId, hold: Option<alondra_core::domain::ClaudeHold>) -> Result<bool, String> {
-    use alondra_core::domain::{ClaudeHold, DomainError};
+pub(crate) fn probe_current_codex(domain: &DomainRuntime, task_id: &alondra_domain_rules::TaskId, hold: Option<alondra_domain_rules::ClaudeHold>) -> Result<bool, String> {
+    use alondra_domain_rules::{ClaudeHold, DomainError};
     use crate::domain_store::{Attached, StoreError};
     if hold == Some(ClaudeHold::SignedOut) { return Err("Only the user's answer checks a signed-out native session".into()); }
     let (fence, file) = probe_fence(domain, domain.home())?;
@@ -726,7 +726,7 @@ pub(crate) fn migrate_legacy_settings(domain: &DomainRuntime, home: &Path) -> Re
 #[derive(Debug)]
 pub enum ChangeRefused {
     /// The change's own rules refuse it.
-    Domain(alondra_core::domain::DomainError),
+    Domain(alondra_domain_rules::DomainError),
     Store(Refused),
 }
 
@@ -891,7 +891,7 @@ pub fn end_abandoned_sign_ins(domain: &DomainRuntime) {
     for login in logins {
         if let Some(codex) = &codex { crate::codex_credentials::recover_pending(&codex.profile(domain.home(), &login.account), &login.attempt); }
         if !login.phase.active() { continue; }
-        let ended = alondra_core::domain::AccountLogin { phase: alondra_core::domain::AccountLoginPhase::Failed, challenge: None,
+        let ended = alondra_domain_rules::AccountLogin { phase: alondra_domain_rules::AccountLoginPhase::Failed, challenge: None,
             error: Some("Sign-in was interrupted; the previous session was preserved".into()), ..login };
         let read = domain.read();
         let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: read.state().data_epoch.clone(),
@@ -997,7 +997,7 @@ pub(crate) fn write_authorized(domain: &DomainRuntime, home: &Path, actor: &Acto
 }
 
 /// The accounts the open tasks' executions run on.
-fn working_keys(state: &alondra_core::domain::DomainState) -> Vec<AccountKey> {
+fn working_keys(state: &alondra_domain_rules::DomainState) -> Vec<AccountKey> {
     state.tasks.values().filter(|task| !task.over()).map(|task| task.account_key()).collect()
 }
 

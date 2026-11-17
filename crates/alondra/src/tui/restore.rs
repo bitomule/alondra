@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use alondra_core::domain::AgentId;
+use alondra_domain_rules::AgentId;
 use serde::{Deserialize, Serialize};
 
 use super::dropped::Chip;

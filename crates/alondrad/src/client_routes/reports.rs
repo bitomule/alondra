@@ -4,7 +4,7 @@
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use super::{Client, Reply};
-use alondra_core::domain::DomainError;
+use alondra_domain_rules::DomainError;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::time::Duration;

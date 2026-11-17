@@ -3,7 +3,7 @@
 //! memory, for that one request, and is never written down or logged. Claude exchanges it and
 //! keeps the credential; Alondra records only that the sign-in is no longer open.
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION, TaskId};
+use alondra_domain_rules::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION, TaskId};
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::time::Duration;

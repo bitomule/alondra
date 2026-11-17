@@ -72,7 +72,7 @@ pub use alondra_daemon_engine_store::testing::{load, save_journal};
 mod lifecycle_cache_tests;
 #[cfg(test)]
 use {
-    alondra_core::domain::*,
+    alondra_domain_rules::*,
     anyhow::Result,
     rusqlite::{Connection, OptionalExtension, Transaction, params},
     serde_json::{Value, json},

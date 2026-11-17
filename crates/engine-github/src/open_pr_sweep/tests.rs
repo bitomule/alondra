@@ -1,5 +1,5 @@
 use super::*;
-use alondra_core::domain::*;
+use alondra_domain_rules::*;
 use std::os::unix::fs::PermissionsExt;
 
 fn command(domain: &DomainRuntime, actor: Actor, command: Command) {
@@ -259,8 +259,8 @@ async fn adopting_delivers_pending_checks_without_starting_a_node() {
     assert_eq!(task.state, TaskState::ForYourReview);
     assert!(task.agent_id.is_none());
     let delivery = &state.interactions[task.final_presentation.as_ref().unwrap()];
-    assert_eq!(alondra_core::open_pr_delivery::OpenPrDelivery::from_body(&delivery.body).unwrap().readiness,
-        alondra_core::open_pr_delivery::PrReadiness::ChecksRunning { names: vec!["test".into()] });
+    assert_eq!(alondra_domain_rules::open_pr_delivery::OpenPrDelivery::from_body(&delivery.body).unwrap().readiness,
+        alondra_domain_rules::open_pr_delivery::PrReadiness::ChecksRunning { names: vec!["test".into()] });
 
 }
 

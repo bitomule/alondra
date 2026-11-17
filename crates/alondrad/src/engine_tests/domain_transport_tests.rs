@@ -2,7 +2,7 @@
 use alondra_daemon_engine::live::LiveOf as _;
 use alondra_daemon_engine::domain_transport::tests::*;
 use alondra_daemon_engine::domain_transport::*;
-use alondra_core::domain::*;
+use alondra_domain_rules::*;
 use serde_json::{Value, json};
 use tokio::net::UnixStream;
 

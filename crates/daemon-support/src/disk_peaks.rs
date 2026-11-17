@@ -21,7 +21,7 @@
 //! On 27 October six nodes building at once took the disk from 34 GB to nothing: each start found
 //! room for one build, none for the builds already running.
 use alondra_core::Millis;
-use alondra_core::domain::TaskId;
+use alondra_domain_rules::TaskId;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 

@@ -1,5 +1,5 @@
 //! Managed, content-addressed copies of domain document revisions.
-use alondra_core::domain::{AttachmentRef, Command, CommandEnvelope, DomainError};
+use alondra_domain_rules::{AttachmentRef, Command, CommandEnvelope, DomainError};
 use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 use std::ffi::CString;
@@ -318,7 +318,7 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_core::domain::{CommandId, DataEpoch};
+    use alondra_domain_rules::{CommandId, DataEpoch};
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -380,7 +380,7 @@ mod tests {
             command: Command::PresentResult {
                 attachments, task_id: "task".into(), interaction_id: "result".into(), body: "Done".into(),
                 targets: vec![], is_final: false, nothing_to_review: false, checklist: vec![],
-                card: alondra_core::domain::CardSpec::new(alondra_core::domain::CardKind::Review, "Done"),
+                card: alondra_domain_rules::CardSpec::new(alondra_domain_rules::CardKind::Review, "Done"),
             },
         }
     }

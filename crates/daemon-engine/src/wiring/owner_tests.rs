@@ -3,7 +3,7 @@
 //! committed state before it acknowledges. Lifecycle fixtures are not native SDK observations.
 use crate::sdk_owner::SdkOwners as _;
 use crate::domain_store::*;
-use alondra_core::domain::*;
+use alondra_domain_rules::*;
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
@@ -302,7 +302,7 @@ fn a_late_plan_observation_after_approval_commits_without_reopening_the_card() {
         }).unwrap()
     };
     observe(1, vec![Observation::Available, Observation::TurnStarted { input, turn: TurnId::new("plan-turn").unwrap() }, request.clone()]);
-    let card = alondra_core::domain::decision_card_id(&task(), execution.generation(), 1);
+    let card = alondra_domain_rules::decision_card_id(&task(), execution.generation(), 1);
     let state = runtime.state().unwrap();
     assert!(state.interactions.contains_key(&card), "the native plan is presented: {:?}", state.lifecycle_journal[&task()]);
     runtime.execute_fixture(&Actor::User { user_id: "fixture-user".into() }, envelope(&state, "approve-native-plan", Command::AnswerQuestion {
@@ -354,7 +354,7 @@ fn a_native_plan_repeated_at_a_new_epoch_reuses_its_exact_approved_decision() {
         }).unwrap()
     };
     observe(1, vec![Observation::Available, Observation::TurnStarted { input, turn: TurnId::new("plan-turn").unwrap() }, requested(1)]);
-    let original = alondra_core::domain::decision_card_id(&task(), execution.generation(), 1);
+    let original = alondra_domain_rules::decision_card_id(&task(), execution.generation(), 1);
     let state = runtime.state().unwrap();
     runtime.execute_fixture(&Actor::User { user_id: "fixture-user".into() }, envelope(&state, "approve-original-plan", Command::AnswerQuestion {
         interaction_id: original.clone(), option_id: Hold::APPROVE.into(), inputs: BTreeMap::new(), attachments: vec![],
@@ -365,7 +365,7 @@ fn a_native_plan_repeated_at_a_new_epoch_reuses_its_exact_approved_decision() {
     let replayed = runtime.state().unwrap();
     assert_eq!(replayed.interactions, approved.interactions, "a new transport epoch cannot present the same native plan again");
     assert_eq!(replayed.checklists, approved.checklists);
-    assert!(!replayed.interactions.contains_key(&alondra_core::domain::decision_card_id(&task(), execution.generation(), 2)));
+    assert!(!replayed.interactions.contains_key(&alondra_domain_rules::decision_card_id(&task(), execution.generation(), 2)));
     assert!(replayed.lifecycle_journal[&task()].iter().any(|record| matches!(record,
         LifecycleRecord::DecidedByPolicy { epoch: 2, decision: DecisionRecord::Allow })));
     assert_eq!(runtime.take_acknowledgements().iter().map(|committed| committed.observations.len()).sum::<usize>(), 1);
@@ -899,7 +899,7 @@ fn turn_ended_card_of(turn: &str) -> InteractionId {
 }
 /// The case the orchestrator gets when turn `turn` of the running execution ends as a stop.
 pub fn stall_case_of(turn: &str) -> InteractionId {
-    alondra_core::domain::stalled_card_id(&task(), 2, turn)
+    alondra_domain_rules::stalled_card_id(&task(), 2, turn)
 }
 /// Ends the first turn of the running execution with nothing that explains its next step (the
 /// fixture's question withdrawn first), which wakes its node, ends empty the turns of its other
@@ -1019,7 +1019,7 @@ fn settling_the_case_of_a_stopped_node_tells_the_task_how_to_go_on_in_one_commit
     let instruct = Command::SettleStall {
         case_id: stall_case_of("turn-2"),
         task_id: task(),
-        outcome: alondra_core::domain::StallOutcome::Instruct { text: "Add the tests first".into() },
+        outcome: alondra_domain_rules::StallOutcome::Instruct { text: "Add the tests first".into() },
     };
     let ordinary = store.execute_filling_revision(&orchestrator(), &envelope(&state, "instruct", instruct)).unwrap();
     let permits = &ordinary.sealed.as_ref().unwrap().permits;
@@ -1303,7 +1303,7 @@ fn a_returned_sign_in_has_the_node_connect_the_server_again(watcher_starts_after
 #[test]
 fn the_servers_screen_signs_in_to_and_out_of_a_server_no_task_waits_for() {
     use crate::mcp_waits::{Opened, Target, connect, reconnect, sign_out};
-    use alondra_core::domain::McpServerKey;
+    use alondra_domain_rules::McpServerKey;
     use alondra_provider_contract::McpSignInReport;
     let mcp = binding_with(BTreeSet::from([Capability::OfferInput, Capability::McpStatus, Capability::McpReconnect, Capability::McpSignIn,
         Capability::McpClearAuth]));
@@ -1345,7 +1345,7 @@ fn the_servers_screen_signs_in_to_and_out_of_a_server_no_task_waits_for() {
 
     assert_eq!(sign_out(&runtime, &server), Ok("linear".into()));
     assert!(matches!(runtime.read().state().lifecycle_journal[&task()].last(),
-        Some(LifecycleRecord::ControlRequested { operation: alondra_core::domain::ControlRecord::ClearMcpSignIn { server }, .. }) if server == "linear"));
+        Some(LifecycleRecord::ControlRequested { operation: alondra_domain_rules::ControlRecord::ClearMcpSignIn { server }, .. }) if server == "linear"));
 }
 
 // 21 Oct, in the sandbox: a node said it waits for Linear and was told its Claude had no such
@@ -1429,7 +1429,7 @@ fn a_previous_native_credentials_generation_cannot_change_the_new_accounts_auth_
 
 #[test]
 fn a_codex_turn_the_usage_limit_ended_holds_its_task_even_when_its_account_is_not_confirmed(){
-    use alondra_core::domain::ClaudeHold;
+    use alondra_domain_rules::ClaudeHold;
     use alondra_provider_contract::{ApiFailure,TurnOutcome};
     let native=ProviderBinding::new("composite-binding".into(),"codex-app-server".into(),"fixture-instance".into(),"fixture-config".into(),1,1,BTreeSet::from([Capability::OfferInput]),"default".into(),1).unwrap();
     let (fixture,store,execution)=running_with(&native);let runtime=runtime(&fixture,store);
@@ -1450,13 +1450,13 @@ fn a_live_native_cell_continuation_is_one_durable_input_without_retiring_own_wor
     let state=runtime.state().unwrap();runtime.execute_as_system(envelope(&state,"already-queued",Command::TellNode{task_id:task(),text:"Preserve this existing input".into(), from_user: false, answers: None})).unwrap();
     let before=runtime.state().unwrap();let pending=before.lifecycle_of(&task()).unwrap().pending_inputs().iter().map(|input|input.as_str().to_owned()).collect::<Vec<_>>();
     let before_runtime_cursor=before.lifecycle_of(&task()).unwrap().cursor();
-    let before_told=before.lifecycle_journal[&task()].iter().filter(|record|matches!(record,alondra_core::domain::LifecycleRecord::Told{..})).count();
+    let before_told=before.lifecycle_journal[&task()].iter().filter(|record|matches!(record,alondra_domain_rules::LifecycleRecord::Told{..})).count();
     let continuation=Observation::ContinuationRequested{work:work.clone(),activation:"process/root/origin/exec".into(),text:"Use functions.wait for the existing cell".into()};
     assert_eq!(observe(3,vec![continuation.clone()]),ObservationAcceptance::Accepted);
     let state=runtime.state().unwrap();let after=state.lifecycle_of(&task()).unwrap().pending_inputs().iter().map(|input|input.as_str().to_owned()).collect::<Vec<_>>();assert_eq!(&after[..pending.len()],pending.as_slice());assert_eq!(after.len(),pending.len()+1);
     assert_eq!(state.lifecycle_of(&task()).unwrap().cursor(),before_runtime_cursor,"Tell queues a real input and domain event; it is not a new native runtime fact");
-    assert_eq!(state.lifecycle_journal[&task()].iter().filter(|record|matches!(record,alondra_core::domain::LifecycleRecord::Told{..})).count(),before_told+1,"the zero cursor delta cannot skip the actual durable Tell");
-    assert!(!state.lifecycle_journal[&task()].iter().any(|record|matches!(record,alondra_core::domain::LifecycleRecord::WorkEnded{work:ended,..} if ended==work.as_str())));
+    assert_eq!(state.lifecycle_journal[&task()].iter().filter(|record|matches!(record,alondra_domain_rules::LifecycleRecord::Told{..})).count(),before_told+1,"the zero cursor delta cannot skip the actual durable Tell");
+    assert!(!state.lifecycle_journal[&task()].iter().any(|record|matches!(record,alondra_domain_rules::LifecycleRecord::WorkEnded{work:ended,..} if ended==work.as_str())));
     let before=counts(&observer(&fixture));assert_eq!(observe(3,vec![continuation]),ObservationAcceptance::Duplicate);assert_eq!(counts(&observer(&fixture)),before);
     let told:i64=observer(&fixture).query_row("SELECT count(*) FROM command_audit WHERE command_id LIKE 'native-work-followup-%'",[],|row|row.get(0)).unwrap();assert_eq!(told,1);
     let state=runtime.state().unwrap();let before=counts(&observer(&fixture));let error=runtime.own(scope_of(&state),|owner|owner.stage_observation(&binding(),1,&batch(&execution,4),&Normalizer::Facts(vec![Observation::ContinuationRequested{work:WorkId::new("unknown-cell").unwrap(),activation:"unknown".into(),text:"Do not invent a follow-up".into()}]),no_home(),false));assert!(error.is_err());assert_eq!(counts(&observer(&fixture)),before,"an unowned cell cannot advance raw evidence/checkpoint or queue input");
@@ -1527,7 +1527,7 @@ fn a_turn_end_that_consumes_a_notification_it_read_commits() {
     assert_eq!(cursor_of(&runtime), before + 2, "the end of the turn and the notification it read");
     let records = runtime.read().state().lifecycle_journal.get(&task()).cloned().unwrap_or_default();
     assert!(
-        records.iter().any(|record| matches!(record, alondra_core::domain::LifecycleRecord::WorkContinued { continuation } if continuation == "claude-notification:b")),
+        records.iter().any(|record| matches!(record, alondra_domain_rules::LifecycleRecord::WorkContinued { continuation } if continuation == "claude-notification:b")),
         "the notification the turn read is consumed: {records:?}"
     );
 }
@@ -1587,8 +1587,8 @@ fn work_observed_after_the_delivery_is_recorded_once() {
     let state = runtime.state().unwrap();
     let delivery = Command::PresentResult {
         attachments: vec![], task_id: task(), interaction_id: "delivery".into(), body: "Done".into(), is_final: true, nothing_to_review: false,
-        targets: vec![alondra_core::domain::DeliveryTarget::Text { text: "Done".into() }], checklist: vec![],
-        card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+        targets: vec![alondra_domain_rules::DeliveryTarget::Text { text: "Done".into() }], checklist: vec![],
+        card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true),
     };
     runtime.execute(&agent(), &CommandEnvelope { expected_revision: state.revision, ..envelope(&state, "deliver", delivery) }, None, || Ok(())).unwrap();
     assert!(runtime.read().state().lifecycle_of(&task()).unwrap().phase() == alondra_domain::TaskPhase::Delivered);

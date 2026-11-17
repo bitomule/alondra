@@ -1,6 +1,6 @@
 use alondra_daemon_engine::local_actions::LocalActionsOf as _;
 use super::actions::{ActionRequest, execute};
-use alondra_core::views::action_outcome::{UnknownReason, in_progress_body, unknown_body};
+use alondra_views::action_outcome::{UnknownReason, in_progress_body, unknown_body};
 use alondra_daemon_engine::local_actions::RunningAction;
 use crate::auth::Signed;
 use crate::domain_runtime::DomainRuntime;
@@ -452,7 +452,7 @@ pub(super) async fn read(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_core::views::action_id::{ActionId, Verb};
+    use alondra_views::action_id::{ActionId, Verb};
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use p256::ecdsa::{Signature, SigningKey, signature::Signer};
     use std::future::IntoFuture;

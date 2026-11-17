@@ -1,9 +1,9 @@
 use alondra_core::clock;
-use alondra_core::domain::{
+use alondra_domain_rules::{
     Actor, CardKind, CardSpec, Command, CommandEnvelope, LaunchPlan, PROTOCOL_VERSION,
     QuestionOption, Recipient, Scope,
 };
-use alondra_core::views::action_id::{ActionId, Verb};
+use alondra_views::action_id::{ActionId, Verb};
 use axum::{body::Body, extract::State, http::Request, middleware::Next, response::Response};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use p256::ecdsa::SigningKey;

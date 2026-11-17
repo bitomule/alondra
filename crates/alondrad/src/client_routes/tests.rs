@@ -5,7 +5,7 @@ use alondra_daemon_engine::live::LiveOf as _;
 use super::*;
 use crate::auth::Auth;
 use crate::domain_bootstrap::DomainDaemon;
-use alondra_core::domain::{
+use alondra_domain_rules::{
     Actor, AttachmentRef, Command, CommandEnvelope, CommandOutcome, PROTOCOL_VERSION, Recipient, Scope,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -186,12 +186,12 @@ fn seed_work(fixture: &Fixture) {
     fixture.orchestrator("task-1", Command::CreateTask { plan_items: None, continues: None,
         task_id: "task-1".into(), request_id: "request-1".into(), title: "Readable editor colours".into(),
         agent_id: Some("agent-a".into()), review_prs: true, dependencies: BTreeSet::new(), stack: None,
-        launch: Some(alondra_core::domain::LaunchPlan { project: Some("Editor".into()), ..alondra_core::domain::LaunchPlan::new("node", "/tmp") }),
+        launch: Some(alondra_domain_rules::LaunchPlan { project: Some("Editor".into()), ..alondra_domain_rules::LaunchPlan::new("node", "/tmp") }),
     });
     fixture.command(Actor::System, "answer-2", Command::PublishInformation {
         attachments: vec![], interaction_id: "info-2".into(),
         scope: Scope::Orchestrator { request_id: Some("request-2".into()) }, recipient: Recipient::User,
-        body: "Nothing to change: it already works".into(), card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
+        body: "Nothing to change: it already works".into(), card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"),
     });
     fixture.user("close-2", Command::CloseRequest { request_id: "request-2".into(), answer: None, withdrawn: false, title: None, headline: None, folded_into: None });
     fixture.user("request-3", Command::CreateRequest { request_id: "request-3".into(), body: "Never mind".into(), auto_merge: false, maintenance: false, message: false });
@@ -199,7 +199,7 @@ fn seed_work(fixture: &Fixture) {
     fixture.agent("agent-a", "pr-1", Command::RegisterPr {
         task_id: "task-1".into(), pr_id: "pr-1".into(), host: "github.com".into(), repository: "me/app".into(),
         number: 7, head: "0123456789abcdef0123456789abcdef01234567".into(), base: "main".into(),
-        allowed_methods: vec![alondra_core::domain::MergeMethod::Squash],
+        allowed_methods: vec![alondra_domain_rules::MergeMethod::Squash],
     });
 }
 
@@ -290,7 +290,7 @@ async fn times_are_the_commits_own_and_survive_a_restart() {
 
     fixture.command(Actor::System, "ask", Command::PublishInformation {
         attachments: vec![], interaction_id: "info-1".into(),
-        scope: Scope::Task { task_id: "task-1".into() }, recipient: Recipient::User, body: "FYI".into(), card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
+        scope: Scope::Task { task_id: "task-1".into() }, recipient: Recipient::User, body: "FYI".into(), card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"),
     });
     let informed = fixture.runtime_json().await;
     assert_eq!(informed["tasks"]["task-1"]["state_since"], before["tasks"]["task-1"]["state_since"], "information does not move the task's state");
@@ -298,7 +298,7 @@ async fn times_are_the_commits_own_and_survive_a_restart() {
     assert!(appeared >= started, "the inbox row carries the time of the commit that added it");
 
     fixture.user("cancel", Command::CancelTask { task_id: "task-1".into(), reason: None });
-    fixture.command(Actor::System, "end", Command::RecordNodeEnd { task_id: "task-1".into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: Some("agent-a".into()) });
+    fixture.command(Actor::System, "end", Command::RecordNodeEnd { task_id: "task-1".into(), end: alondra_domain_rules::NodeEnd::Closed, agent_id: Some("agent-a".into()) });
     let cancelled = fixture.runtime_json().await;
     assert!(cancelled["tasks"]["task-1"]["state_since"].as_i64().unwrap() >= appeared, "a change of state is timed by the commit that made it");
     let history = fixture.domain.store.lock().unwrap().task_history(&"task-1".into()).unwrap();
@@ -419,7 +419,7 @@ async fn closing_a_background_session_runs_claude_rm_and_closes_it() {
     assert_eq!(answer["interactive"], false);
     let calls = sessions.calls.lock().unwrap().clone();
     assert!(calls.iter().any(|call| call == &["rm".to_string(), short.clone()]), "{calls:?}");
-    assert_eq!(fixture.domain.state().unwrap().agents[&"agent-a".into()].phase, alondra_core::domain::NodePhase::Closed, "the domain sees the session gone");
+    assert_eq!(fixture.domain.state().unwrap().agents[&"agent-a".into()].phase, alondra_domain_rules::NodePhase::Closed, "the domain sees the session gone");
     assert!(fixture.domain.resolve_bearer(&bearer).is_err(), "its capability is revoked");
     let runtime = fixture.runtime_json().await;
     assert!(runtime["nodes"].as_array().unwrap().iter().all(|node| node["session_id"] != "agent-a"), "what was observed of it is forgotten");
@@ -471,7 +471,7 @@ async fn closing_a_node_that_runs_through_the_sdk_is_refused_because_it_ends_wit
     fixture.orchestrator("task-sdk", Command::CreateTask { plan_items: None, continues: None,
         task_id: "task-sdk".into(), request_id: "request-sdk".into(), title: "Write the release notes".into(),
         agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
-        launch: Some(alondra_core::domain::LaunchPlan::new("node", worktree.to_str().unwrap())),
+        launch: Some(alondra_domain_rules::LaunchPlan::new("node", worktree.to_str().unwrap())),
     });
     let launched = crate::sdk_owner::launch(&fixture.domain, crate::sdk_owner::Launch {
         task: "task-sdk".into(), name: "Release notes".into(), directory: worktree.to_str().unwrap().into(),
@@ -536,7 +536,7 @@ fn writes_are_named_exactly() {
 
 #[test]
 fn conflicts_are_resolved_for_a_pr_named_by_its_repository() {
-    let encoded = alondra_core::views::id::path_segment("github.com/acme/lumo#163");
+    let encoded = alondra_core::id::path_segment("github.com/acme/lumo#163");
     assert_eq!(parse_write(&format!("/pull-requests/{encoded}/resolve-conflicts")),
         Some(Write::ResolveConflicts("github.com/acme/lumo#163".into())));
     assert_eq!(parse_write("/pull-requests/pr-163/resolve-conflicts"), Some(Write::ResolveConflicts("pr-163".into())));
@@ -614,11 +614,11 @@ impl Github for FakeGithub {
     fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64, _: &'a str) -> close::Answer<'a, Result<(), String>> {
         Box::pin(async { Err("closing is not available here".into()) })
     }
-    fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<alondra_core::domain::PrState, String>> {
+    fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<alondra_domain_rules::PrState, String>> {
         Box::pin(async { Err("unexpected PR state".into()) })
     }
 
-    fn viewed_files<'a>(&'a self, _: &'a alondra_core::domain::PullRequest) -> close::Answer<'a, Result<crate::pr_viewed::Marks, String>> {
+    fn viewed_files<'a>(&'a self, _: &'a alondra_domain_rules::PullRequest) -> close::Answer<'a, Result<crate::pr_viewed::Marks, String>> {
         Box::pin(async { Err("viewed files are not available here".into()) })
     }
 
@@ -741,7 +741,7 @@ async fn a_new_request_keeps_what_the_user_chose_in_the_same_commit_as_the_reque
     fixture.orchestrator("task-9", Command::CreateTask { plan_items: None, continues: None,
         task_id: "task-9".into(), request_id: "request-9".into(), title: "Ship".into(), agent_id: None,
         review_prs: true, dependencies: BTreeSet::new(), stack: None,
-        launch: Some(alondra_core::domain::LaunchPlan { project: Some("App".into()), ..alondra_core::domain::LaunchPlan::new("node", "/tmp") }), });
+        launch: Some(alondra_domain_rules::LaunchPlan { project: Some("App".into()), ..alondra_domain_rules::LaunchPlan::new("node", "/tmp") }), });
     let runtime = fixture.runtime_json().await;
     assert_eq!((runtime["tasks"]["task-9"]["project"].as_str(), runtime["tasks"]["task-9"]["effort"].as_str()), (Some("App"), Some("hard")), "its tasks carry what it asked for");
 }
@@ -861,11 +861,11 @@ async fn a_tasks_history_lists_the_states_it_entered_with_the_words_that_moved_i
     fixture.agent("agent-a", "ask", Command::AskQuestion {
         attachments: vec![], interaction_id: "q-1".into(), scope: Scope::Task { task_id: "task-1".into() },
         recipient: Recipient::User, body: "Which colour?\nThe blue or the green one.".into(), blocking: true,
-        options: vec![alondra_core::domain::QuestionOption { id: "blue".into(), label: "Blue".into(), description: None }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
+        options: vec![alondra_domain_rules::QuestionOption { id: "blue".into(), label: "Blue".into(), description: None }], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Provide, "Answer the question"),
     });
     fixture.user("answer", Command::AnswerQuestion { attachments: vec![], interaction_id: "q-1".into(), option_id: "blue".into(), inputs: Default::default() });
     fixture.user("cancel", Command::CancelTask { task_id: "task-1".into(), reason: None });
-    fixture.command(Actor::System, "end", Command::RecordNodeEnd { task_id: "task-1".into(), end: alondra_core::domain::NodeEnd::Closed, agent_id: Some("agent-a".into()) });
+    fixture.command(Actor::System, "end", Command::RecordNodeEnd { task_id: "task-1".into(), end: alondra_domain_rules::NodeEnd::Closed, agent_id: Some("agent-a".into()) });
     let expected = fixture_json("requests.json");
     let request = &expected["history"];
     let history = fixture.get_json(request["path"].as_str().unwrap()).await;
@@ -932,7 +932,7 @@ async fn an_uncertain_delivery_is_resolved_on_this_mac_by_the_paired_device() {
     seed_work(&fixture);
     fixture.command(Actor::System, "info-1", Command::PublishInformation {
         attachments: vec![], interaction_id: "info-1".into(), scope: Scope::Task { task_id: "task-1".into() },
-        recipient: Recipient::User, body: "FYI".into(), card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
+        recipient: Recipient::User, body: "FYI".into(), card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update"),
     });
     let (attempt, message) = {
         let mut store = fixture.domain.store.lock().unwrap();
@@ -967,7 +967,7 @@ async fn resolving_conflicts_is_refused_before_anything_is_typed_when_it_cannot_
     assert_eq!((status, error["code"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid_input")));
     fixture.command(Actor::System, "closed", Command::ObservePrState {
         pr_id: "pr-1".into(), head: "0123456789abcdef0123456789abcdef01234567".into(), base: "main".into(),
-        state: alondra_core::domain::PrState::Closed, merged_head: None });
+        state: alondra_domain_rules::PrState::Closed, merged_head: None });
     let (status, error) = fixture.local_send(path, &json!({})).await;
     assert_eq!((status, error["code"].as_str()), (StatusCode::CONFLICT, Some("pr_not_open")));
     let unsigned = reqwest::Client::new().post(format!("{}{path}", fixture.base)).json(&json!({})).send().await.unwrap();
@@ -981,7 +981,7 @@ async fn view_json(fixture: &Fixture, key: &str, lang: &str) -> Value {
 }
 
 async fn view_json_on(fixture: &Fixture, key: &str, lang: &str, client: &str) -> Value {
-    let path = format!("/views/{key}?protocol={}&client={client}&lang={lang}", alondra_core::views::VIEWS_PROTOCOL);
+    let path = format!("/views/{key}?protocol={}&client={client}&lang={lang}", alondra_views::VIEWS_PROTOCOL);
     let response = crate::views::routes::relay(&fixture.client, "device:test", &path).await;
     assert_eq!(response.status(), StatusCode::OK, "{path}");
     serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024).await.unwrap()).unwrap()
@@ -1071,17 +1071,17 @@ async fn a_task_waits_for_room_on_the_disk_and_starts_once_the_disk_has_it() {
     alondra_daemon_engine::domain_store::admit_through_sdk(&fixture.domain, &"task-1".into(), "agent-a");
     let input = fixture.domain.state().unwrap().lifecycle_of(&"task-1".into()).unwrap().pending_inputs()[0].as_str().to_owned();
     fixture.command(Actor::System, "turn-1", Command::RecordRuntimeFacts { task_id: "task-1".into(), generation: 2, facts: vec![
-        alondra_core::domain::RuntimeObservation::ResourceAvailable,
-        alondra_core::domain::RuntimeObservation::TurnStarted { turn: "turn-1".into(), input },
+        alondra_domain_rules::RuntimeObservation::ResourceAvailable,
+        alondra_domain_rules::RuntimeObservation::TurnStarted { turn: "turn-1".into(), input },
     ] });
     fixture.user("title-1", Command::TitleRequest { request_id: "request-1".into(), title: "Editor".into() });
     fixture.orchestrator("task-9", Command::CreateTask { plan_items: None, continues: None,
         task_id: "task-9".into(), request_id: "request-1".into(), title: "Faster search".into(),
         agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None,
-        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
     });
     let watch = &fixture.domain.live().machine_watch;
-    let ask = || fixture.domain.live().gate.ask(&fixture.domain, Waiting { key: Key::Task("task-9".into()), priority: alondra_core::domain::TaskPriority::Normal, resuming: false, since: 0 }, alondra_core::now_millis());
+    let ask = || fixture.domain.live().gate.ask(&fixture.domain, Waiting { key: Key::Task("task-9".into()), priority: alondra_domain_rules::TaskPriority::Normal, resuming: false, since: 0 }, alondra_core::now_millis());
     watch.measure_disk(crate::disk::Space { free: 6 * GB, purgeable: 0, total: 500 * GB });
     assert_eq!(ask(), Err(Hold::Disk { free: 6 * GB, needed: 21 * GB, volume: None }),
         "projects never measured: 8 GB for the build of the node at work and 8 GB for this one, on top of the 5 GB line");
@@ -1207,13 +1207,13 @@ async fn a_node_whose_session_ended_with_its_task_open_leaves_the_tasks_in_progr
     run(Actor::Orchestrator { generation: 0 }, "task-stopped", Command::CreateTask { plan_items: None, continues: None,
         task_id: "task-stopped".into(), request_id: "request-stopped".into(), title: "Probe".into(), agent_id: Some("stopped".into()),
         review_prs: false, dependencies: Default::default(), stack: None,
-        launch: Some(alondra_core::domain::LaunchPlan::new("node", "/tmp")),
+        launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
     });
     let mods = &domain;
     let connection = mods.connect_node(serde_json::from_value(json!({"session_id": "stopped", "version": "2.1.287"})).unwrap(), alondra_core::now_millis());
     mods.report(serde_json::from_value(json!({"session_id": "stopped", "event": "session.end"})).unwrap(), alondra_core::now_millis());
     mods.live().mods.disconnect("stopped", connection);
-    crate::domain_agent_lifecycle::move_instance(domain, &"stopped".into(), alondra_core::domain::NodeEvent::SessionClosed,
+    crate::domain_agent_lifecycle::move_instance(domain, &"stopped".into(), alondra_domain_rules::NodeEvent::SessionClosed,
         &crate::domain_agent_lifecycle::prepare_event(domain, "end-stopped").unwrap()).unwrap();
 
     assert!(!in_progress(&fixture, "task-stopped").await, "no session, not in progress");
@@ -1225,16 +1225,16 @@ async fn views_and_changes_say_which_daemon_answered_and_an_unserved_protocol_ge
     let fixture = Fixture::start().await;
     let service = json!({"version": env!("CARGO_PKG_VERSION"),
         "capabilities": ["account_presentation", "model_selection", "provider_accounts"],
-        "views_protocol": {"min": alondra_core::views::VIEWS_PROTOCOL_MIN, "max": alondra_core::views::VIEWS_PROTOCOL}});
+        "views_protocol": {"min": alondra_views::VIEWS_PROTOCOL_MIN, "max": alondra_views::VIEWS_PROTOCOL}});
     assert_eq!(view_json(&fixture, "home", "en").await["service"], service);
 
-    let changes = format!("/changes?protocol={}&client=tui&lang=en&wait=0", alondra_core::views::VIEWS_PROTOCOL);
+    let changes = format!("/changes?protocol={}&client=tui&lang=en&wait=0", alondra_views::VIEWS_PROTOCOL);
     let response = crate::views::routes::relay_feed(&fixture.client, "device:test", &changes).await;
     assert_eq!(response.status(), StatusCode::OK);
     let body: Value = serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap();
     assert_eq!(body["service"], service);
 
-    let unserved = alondra_core::views::VIEWS_PROTOCOL + 1;
+    let unserved = alondra_views::VIEWS_PROTOCOL + 1;
     for path in [
         format!("/views/home?protocol={unserved}&client=tui&lang=en"),
         format!("/changes?protocol={unserved}&client=tui&lang=en&wait=0"),
@@ -1268,10 +1268,10 @@ impl Github for HeldIssueSearch {
     fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64, _: &'a str) -> close::Answer<'a, Result<(), String>> {
         Box::pin(async { Err("unexpected PR close".into()) })
     }
-    fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<alondra_core::domain::PrState, String>> {
+    fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<alondra_domain_rules::PrState, String>> {
         Box::pin(async { Err("unexpected PR state".into()) })
     }
-    fn viewed_files<'a>(&'a self, _: &'a alondra_core::domain::PullRequest) -> close::Answer<'a, Result<crate::pr_viewed::Marks, String>> {
+    fn viewed_files<'a>(&'a self, _: &'a alondra_domain_rules::PullRequest) -> close::Answer<'a, Result<crate::pr_viewed::Marks, String>> {
         Box::pin(async { Err("unexpected viewed files".into()) })
     }
     fn set_viewed<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str, _: bool) -> close::Answer<'a, Result<(), String>> {
@@ -1427,10 +1427,10 @@ impl Github for ViewedGithub {
     fn close_pr<'a>(&'a self, _: &'a str, _: &'a str, _: u64, _: &'a str) -> close::Answer<'a, Result<(), String>> {
         Box::pin(async { Err("unexpected PR close".into()) })
     }
-    fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<alondra_core::domain::PrState, String>> {
+    fn pr_state<'a>(&'a self, _: &'a str, _: &'a str, _: u64) -> close::Answer<'a, Result<alondra_domain_rules::PrState, String>> {
         Box::pin(async { Err("unexpected PR state".into()) })
     }
-    fn viewed_files<'a>(&'a self, _: &'a alondra_core::domain::PullRequest) -> close::Answer<'a, Result<crate::pr_viewed::Marks, String>> {
+    fn viewed_files<'a>(&'a self, _: &'a alondra_domain_rules::PullRequest) -> close::Answer<'a, Result<crate::pr_viewed::Marks, String>> {
         Box::pin(async { self.marks.clone() })
     }
     fn set_viewed<'a>(&'a self, host: &'a str, node: &'a str, path: &'a str, viewed: bool) -> close::Answer<'a, Result<(), String>> {
@@ -1485,7 +1485,7 @@ async fn a_file_is_never_marked_for_a_head_or_a_file_the_reader_did_not_see() {
     assert_eq!((status, error["code"].as_str()), (StatusCode::CONFLICT, Some("stale_head")), "GitHub's head moved past the registered one");
     fixture.command(Actor::System, "closed", Command::ObservePrState {
         pr_id: "pr-1".into(), head: PR_HEAD.into(), base: "main".into(),
-        state: alondra_core::domain::PrState::Closed, merged_head: None });
+        state: alondra_domain_rules::PrState::Closed, merged_head: None });
     fixture.client.use_github(github.clone());
     let (status, error) = fixture.local_send(path, &mark("src/a.rs", PR_HEAD)).await;
     assert_eq!((status, error["code"].as_str()), (StatusCode::CONFLICT, Some("pr_not_open")));

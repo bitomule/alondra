@@ -1,0 +1,87 @@
+load("//tools:tree.bzl", "repo_tree")
+load("@crates//:defs.bzl", "all_crate_deps")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_doc_test", "rust_library")
+load("//tools:rust_sources.bzl", "production_sources")
+load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
+
+DOMAIN_RULES_DEPS = all_crate_deps(normal = True) + [
+    "//crates/core:alondra_core",
+    "//crates/domain:domain",
+    "//crates/foundation:foundation",
+]
+
+# The rules of the domain: every command, the state it changes and the cards it raises.
+rust_library(
+    name = "domain_rules",
+    srcs = production_sources(),
+    crate_name = "alondra_domain_rules",
+    edition = "2024",
+    version = "0.1.0",
+    visibility = ["//visibility:public"],
+    deps = DOMAIN_RULES_DEPS,
+)
+
+# The lifecycle authority cannot be cloned, deserialized or made from the Task DTO.
+rust_doc_test(
+    name = "lifecycle_construction_test",
+    size = "small",
+    crate = ":domain_rules",
+    deps = ["//crates/domain:domain", "@crates//:serde_json"],
+)
+
+low_opt_rust_test(
+    name = "domain_rules_test",
+    timeout = "moderate",
+    srcs = glob(["src/**/*.rs"]),
+    compile_data = ["fixtures/inbox_order.json", "//:docs/architecture/cards.md"],
+    crate_name = "alondra_domain_rules",
+    crate_root = "src/lib.rs",
+    deps = DOMAIN_RULES_DEPS + all_crate_deps(normal_dev = True),
+    edition = "2024",
+    version = "0.1.0",
+)
+
+# Opt-in profiling driver; ordinary tests do not execute it.
+rust_binary(
+    name = "read_index_cost",
+    testonly = True,
+    srcs = ["benches/read_index_cost.rs", "benches/inbox_graphs.rs", "benches/read_index.rs"],
+    edition = "2024",
+    deps = [":domain_rules", "@crates//:libc"] + all_crate_deps(normal = True),
+)
+
+low_opt_rust_test(
+    name = "read_index_cost_test",
+    size = "small",
+    crate_root = "benches/read_index_cost.rs",
+    srcs = ["benches/read_index_cost.rs", "benches/inbox_graphs.rs", "benches/read_index.rs"],
+    edition = "2024",
+    deps = [":domain_rules", "@crates//:libc"] + all_crate_deps(normal = True),
+)
+
+# The library compiles only production sources: a test file among its inputs would rebuild every
+# crate above it whenever the test changes.
+rust_inputs_test(
+    name = "production_inputs_test",
+    size = "small",
+    required_sources = ["crates/domain-rules/src/lib.rs", "crates/domain-rules/src/rules.rs"],
+    source_dir = "crates/domain-rules/src/",
+    target_under_test = ":domain_rules",
+    test_only_sources = ["crates/domain-rules/src/tests.rs", "crates/domain-rules/src/lifecycle_tests.rs"],
+    test_sources = False,
+)
+
+exports_files(["src/tests.rs"])
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+
+# The crate's production sources: the crash report's log catalog reads them, and fails on a test
+# file among them.
+filegroup(
+    name = "report_sources",
+    srcs = production_sources(),
+    visibility = ["//crates/alondra:__pkg__", "//crates/views:__pkg__"],
+)
+
+repo_tree()

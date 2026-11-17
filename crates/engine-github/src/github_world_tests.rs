@@ -1,6 +1,6 @@
 use super::*;
 use crate::domain_github::parse;
-use alondra_core::domain::{PrId, TaskId};
+use alondra_domain_rules::{PrId, TaskId};
 
 fn pr(number: u64) -> PullRequest {
     PullRequest {

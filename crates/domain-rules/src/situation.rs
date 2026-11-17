@@ -1,0 +1,234 @@
+//! The one state a task shows: seven situations every screen, count and the gate read, decided
+//! once from its lifecycle, who owes its next step and the cards the inbox lists.
+use super::*;
+use alondra_domain::{Await, Capacity, FinishIntent, Owed, Owner, Party, TaskPhase, WaitReason};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Situation {
+    Working(Doing),
+    Waiting(WaitsFor),
+    /// A card of the task that the inbox lists asks the user to answer or act.
+    NeedsYou,
+    /// The user paused it, or interrupted its turn.
+    Paused,
+    Delivered(Delivery),
+    Finished,
+    Cancelled,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Doing {
+    Turn,
+    OwnWork,
+    /// The work its node said comes after its PR merged.
+    AfterMerge,
+}
+
+/// What a waiting task goes on with by itself once it arrives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WaitsFor {
+    Slot,
+    Machine,
+    Disk,
+    Usage,
+    ProviderApi,
+    Tasks,
+    PlanReview,
+    Step(AlondraStep),
+}
+
+/// A short step Alondra itself owes the task.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AlondraStep {
+    Starting,
+    Delivering,
+    Waking,
+    Answering,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Delivery {
+    ForReview,
+    Blocked,
+    /// Accepted: its PR merges or the task cleans up before closing.
+    Closing,
+}
+
+/// What an open task counts as in the status header, the Live Activity and the Tasks list. The categories are
+/// disjoint, so they add up to the open tasks, and they are declared in the order the list shows them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Tally {
+    NeedsYou,
+    Working,
+    /// It waits for the room to start: a slot, the machine, the disk, a usage limit or the provider's API.
+    Queued,
+    Paused,
+    /// It waits for something else: other tasks, a plan review, a step Alondra owes it, or its delivery.
+    Waiting,
+}
+
+impl Situation {
+    /// The category of a task that is not waiting for the user to look at its delivery; none once it ended.
+    pub fn tally(self) -> Option<Tally> {
+        Some(match self {
+            Self::NeedsYou => Tally::NeedsYou,
+            Self::Working(_) => Tally::Working,
+            Self::Waiting(WaitsFor::Slot | WaitsFor::Machine | WaitsFor::Disk | WaitsFor::Usage | WaitsFor::ProviderApi) => Tally::Queued,
+            Self::Paused => Tally::Paused,
+            Self::Waiting(WaitsFor::Tasks | WaitsFor::PlanReview | WaitsFor::Step(_)) | Self::Delivered(_) => Tally::Waiting,
+            Self::Finished | Self::Cancelled => return None,
+        })
+    }
+}
+
+/// What the inbox lists of a task: whether a card of it other than its delivery asks the user to
+/// answer or act, and whether a given card, or the one it is grouped under, is listed.
+pub struct Listing<'a> {
+    pub needs_you: bool,
+    pub listed: &'a dyn Fn(&InteractionId) -> bool,
+}
+
+/// A task's situation, and the card its lifecycle waits on the user for that the inbox does not
+/// list: a fault to show, never a «needs you» nobody can act on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reckoned {
+    pub situation: Situation,
+    pub unlisted: Option<InteractionId>,
+}
+
+impl From<Situation> for Reckoned {
+    fn from(situation: Situation) -> Self {
+        Self { situation, unlisted: None }
+    }
+}
+
+impl Situation {
+    /// A paused task whose next start already waits in the gate's queue waits for a slot, not for the user:
+    /// the gate is the only thing that holds it. The queue is the daemon's, so it is told here, once.
+    #[must_use]
+    pub fn queued_at_gate(self, queued: bool) -> Self {
+        match self {
+            Self::Paused if queued => Self::Waiting(WaitsFor::Slot),
+            other => other,
+        }
+    }
+}
+
+impl DomainState {
+    /// The one state `task` shows, given what the inbox lists of it.
+    pub fn situation(&self, task: &Task, listing: &Listing<'_>) -> Reckoned {
+        match task.state {
+            TaskState::Done => return Situation::Finished.into(),
+            TaskState::Cancelled => return Situation::Cancelled.into(),
+            _ => {}
+        }
+        if listing.needs_you {
+            return Situation::NeedsYou.into();
+        }
+        if self.task_activity(task) == Some(TaskActivity::NodeClosed) {
+            return Situation::Waiting(WaitsFor::Slot).into();
+        }
+        let Ok(lifecycle) = self.lifecycle_of(&task.id) else { return without_lifecycle(task).into() };
+        if lifecycle.phase() == TaskPhase::Delivered && self.node_closing(task) {
+            return Situation::Delivered(Delivery::Closing).into();
+        }
+        let Some(obligation) = self.obligation_of(&task.id) else {
+            return if lifecycle.phase() == TaskPhase::Cancelled { Situation::Cancelled } else { Situation::Finished }.into();
+        };
+        match obligation.owed {
+            Owed::Turn if self.work_after_merge(&task.id, &lifecycle).is_some() => return Situation::Working(Doing::AfterMerge).into(),
+            Owed::Turn => return Situation::Working(Doing::Turn).into(),
+            Owed::OwnWork => return Situation::Working(Doing::OwnWork).into(),
+            _ => {}
+        }
+        let user_paused = lifecycle.cards().iter()
+            .any(|(card, reason)| *reason == WaitReason::Pause && lifecycle.card_owner(card) == Some(Owner::User) && self.node_pause_card(card));
+        if user_paused || lifecycle.awaits() == Some(&Await::Instruction) {
+            return Situation::Paused.into();
+        }
+        if obligation.party == Party::User {
+            let waited: Vec<InteractionId> = lifecycle.cards().into_iter()
+                .filter(|(card, _)| lifecycle.card_owner(card) == Some(Owner::User))
+                .map(|(card, _)| card.clone())
+                .chain(match lifecycle.awaits() {
+                    Some(Await::User(card)) => Some(card.clone()),
+                    _ => None,
+                })
+                .collect();
+            if let Some(card) = waited.iter().find(|card| !(listing.listed)(card)).cloned() {
+                return Reckoned { situation: Situation::Waiting(WaitsFor::Step(AlondraStep::Answering)), unlisted: Some(card) };
+            }
+            if !waited.is_empty() && lifecycle.phase() != TaskPhase::Delivered {
+                return Situation::NeedsYou.into();
+            }
+        }
+        if lifecycle.phase() == TaskPhase::Delivered {
+            match obligation.owed {
+                Owed::User if self.task_handed_back(&task.id).is_some() => return Situation::Waiting(WaitsFor::Step(AlondraStep::Delivering)).into(),
+                Owed::User => return Situation::Delivered(Delivery::ForReview).into(),
+                Owed::Tasks => return Situation::Waiting(WaitsFor::Tasks).into(),
+                Owed::Merge | Owed::Close => return Situation::Delivered(Delivery::Closing).into(),
+                _ => {}
+            }
+        }
+        if lifecycle.finishing_intent() == Some(FinishIntent::Cancel) {
+            return Situation::Cancelled.into();
+        }
+        Situation::Waiting(match obligation.owed {
+            Owed::Room(Capacity::Gate) => WaitsFor::Slot,
+            Owed::Room(Capacity::Machine) => WaitsFor::Machine,
+            Owed::Room(Capacity::Disk) => WaitsFor::Disk,
+            Owed::Room(Capacity::Usage) => WaitsFor::Usage,
+            Owed::Room(Capacity::ClaudeApi) => WaitsFor::ProviderApi,
+            Owed::Tasks => WaitsFor::Tasks,
+            Owed::Answer if !lifecycle.plan_reviews().is_empty() => WaitsFor::PlanReview,
+            Owed::Start => WaitsFor::Step(AlondraStep::Starting),
+            Owed::HandInput | Owed::ReadInput | Owed::HandDecision => WaitsFor::Step(AlondraStep::Delivering),
+            Owed::Wake => WaitsFor::Step(AlondraStep::Waking),
+            Owed::Merge | Owed::Close => return Situation::Delivered(Delivery::Closing).into(),
+            Owed::Answer | Owed::Replan | Owed::User | Owed::Turn | Owed::OwnWork => WaitsFor::Step(AlondraStep::Answering),
+        }).into()
+    }
+}
+
+fn without_lifecycle(task: &Task) -> Situation {
+    match task.state {
+        TaskState::NotStarted => Situation::Waiting(WaitsFor::Slot),
+        TaskState::Running => Situation::Waiting(WaitsFor::Step(AlondraStep::Starting)),
+        TaskState::NeedsYou => Situation::Waiting(WaitsFor::Step(AlondraStep::Answering)),
+        TaskState::AwaitingBlocker => Situation::Waiting(WaitsFor::Tasks),
+        TaskState::ForYourReview => Situation::Delivered(Delivery::ForReview),
+        TaskState::WaitingDependency => Situation::Waiting(WaitsFor::Tasks),
+        TaskState::Closing if task.cancelled() => Situation::Cancelled,
+        TaskState::Closing => Situation::Delivered(Delivery::Closing),
+        TaskState::Done => Situation::Finished,
+        TaskState::Cancelled => Situation::Cancelled,
+    }
+}
+
+impl Situation {
+    /// The situation a task in `live` reads, so a screen test reaches every state without building its history.
+    pub(crate) fn of_live(live: &alondra_domain::LiveState) -> Self {
+        use alondra_domain::{LiveState, Step, Worker};
+        match live {
+            LiveState::Working(Worker::Turn) => Self::Working(Doing::Turn),
+            LiveState::Working(Worker::OwnWork) => Self::Working(Doing::OwnWork),
+            LiveState::Working(Worker::AfterMerge) => Self::Working(Doing::AfterMerge),
+            LiveState::Working(Worker::Alondra(Step::Starting)) => Self::Waiting(WaitsFor::Step(AlondraStep::Starting)),
+            LiveState::Working(Worker::Alondra(Step::Delivering)) => Self::Waiting(WaitsFor::Step(AlondraStep::Delivering)),
+            LiveState::Working(Worker::Alondra(Step::Waking)) => Self::Waiting(WaitsFor::Step(AlondraStep::Waking)),
+            LiveState::Working(Worker::Alondra(Step::Answering)) => Self::Waiting(WaitsFor::Step(AlondraStep::Answering)),
+            LiveState::Working(Worker::Alondra(Step::Merging | Step::Finishing)) => Self::Delivered(Delivery::Closing),
+            LiveState::WaitingUser(cards) if cards.iter().all(|card| card.0.starts_with("delivery")) => Self::Delivered(Delivery::ForReview),
+            LiveState::WaitingUser(cards) if cards.iter().all(|card| card.0.starts_with(crate::NODE_PAUSE_PREFIX)) => Self::Paused,
+            LiveState::WaitingUser(_) => Self::NeedsYou,
+            LiveState::WaitingCapacity(Capacity::Gate) => Self::Waiting(WaitsFor::Slot),
+            LiveState::WaitingCapacity(Capacity::Machine) => Self::Waiting(WaitsFor::Machine),
+            LiveState::WaitingCapacity(Capacity::Disk) => Self::Waiting(WaitsFor::Disk),
+            LiveState::WaitingCapacity(Capacity::Usage) => Self::Waiting(WaitsFor::Usage),
+            LiveState::WaitingCapacity(Capacity::ClaudeApi) => Self::Waiting(WaitsFor::ProviderApi),
+            LiveState::WaitingTask(_) => Self::Waiting(WaitsFor::Tasks),
+            LiveState::Paused => Self::Paused,
+        }
+    }
+}

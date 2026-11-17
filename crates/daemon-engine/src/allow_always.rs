@@ -531,8 +531,8 @@ mod tests {
 pub(crate) struct ChosenAlways;
 
 impl crate::domain_runtime::CommitObserver for ChosenAlways {
-    fn committed(&self, domain: &crate::domain_runtime::DomainRuntime, command: &alondra_core::domain::Command, state: &alondra_core::domain::DomainState) {
-        use alondra_core::domain::{Command as Domain, Hold, LifecycleRecord, Scope};
+    fn committed(&self, domain: &crate::domain_runtime::DomainRuntime, command: &alondra_domain_rules::Command, state: &alondra_domain_rules::DomainState) {
+        use alondra_domain_rules::{Command as Domain, Hold, LifecycleRecord, Scope};
         let Domain::AnswerQuestion { interaction_id, option_id, .. } = command else { return };
         if option_id != Hold::ALWAYS {
             return;

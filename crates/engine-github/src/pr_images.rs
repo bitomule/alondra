@@ -3,7 +3,7 @@
 //! repository's images need GitHub's sign-in, which only the daemon has: the clients read the
 //! copies from the daemon, through the same channel as any attachment. Nothing is sent anywhere.
 use alondra_core::markdown::images::{self as markdown, IMAGE_MAX_BYTES};
-use alondra_core::views::pr_images::{ImageProblem, PrImage, Shown};
+use alondra_view_model::pr_images::{ImageProblem, PrImage, Shown};
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::Path;
@@ -126,7 +126,7 @@ fn source(target: &Target<'_>, url: &str) -> Option<Source> {
     let host = host.to_ascii_lowercase();
     let path = path.split(['?', '#']).next()?;
     let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    let pr_host = alondra_core::domain::normalize_pr_host(target.host);
+    let pr_host = alondra_domain_rules::normalize_pr_host(target.host);
     if host == SIGNED_HOST {
         let name = parts.last()?;
         let stem = name.split('.').next()?;
@@ -235,7 +235,7 @@ fn keep(home: &Path, bytes: &[u8]) -> Result<String, ImageProblem> {
 fn unavailable(target: &Target<'_>, url: &str, source: &Source, problem: ImageProblem) -> Shown {
     let link = match source {
         Source::File { repository, segments, relative: true } => {
-            format!("https://{}/{repository}/blob/{}/{}", alondra_core::domain::normalize_pr_host(target.host), target.head, encoded(&segments.join("/")))
+            format!("https://{}/{repository}/blob/{}/{}", alondra_domain_rules::normalize_pr_host(target.host), target.head, encoded(&segments.join("/")))
         }
         _ => url.to_owned(),
     };
@@ -294,7 +294,7 @@ impl Gh {
     }
 
     async fn api(&self, host: &str, endpoint: &str, accept: &str) -> Result<Vec<u8>, Failure> {
-        let host = alondra_core::domain::normalize_pr_host(host);
+        let host = alondra_domain_rules::normalize_pr_host(host);
         let accept = format!("Accept: {accept}");
         let args = ["--hostname", host.as_str(), "-H", accept.as_str(), endpoint];
         match self.cli.api(&args, LIMIT).await {
