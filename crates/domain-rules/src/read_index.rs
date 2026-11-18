@@ -464,6 +464,15 @@ impl ReadSnapshot {
     pub fn index(&self) -> &Arc<ReadIndex> {
         &self.index
     }
+    pub fn node_pause(&self, agent: &AgentId) -> Option<Pause> {
+        // The node machine selects in task-id order, including archived history; the screen's
+        // `task_of_node` instead selects by revision and is not interchangeable with it.
+        let tasks: Vec<&Task> = self.index.node(agent)?.all_tasks.iter()
+            .filter_map(|id| self.state.tasks.get(id))
+            .inspect(|_| super::measure::task_read())
+            .collect();
+        self.state.node_pause_of(agent, super::node_machine::current_of(&tasks))
+    }
 }
 
 impl TaskReading {

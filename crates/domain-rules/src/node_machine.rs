@@ -465,7 +465,7 @@ impl DomainState {
         self.node_pause_of(agent, self.node_task(agent))
     }
 
-    fn node_pause_of(&self, agent: &AgentId, current: Option<&Task>) -> Option<Pause> {
+    pub(super) fn node_pause_of(&self, agent: &AgentId, current: Option<&Task>) -> Option<Pause> {
         if self.node_phase(agent) != Some(&NodePhase::ThroughSdk) {
             return None;
         }
@@ -624,7 +624,7 @@ impl DomainState {
 }
 
 /// The task a node works on among `mine`, its tasks in id order: its open one, else the last.
-fn current_of<'a>(mine: &[&'a Task]) -> Option<&'a Task> {
+pub(super) fn current_of<'a>(mine: &[&'a Task]) -> Option<&'a Task> {
     mine.iter().find(|t| !t.state.terminal() && !t.archived && t.state != TaskState::Closing)
         .or_else(|| mine.iter().find(|t| !t.state.terminal() && !t.archived))
         .or_else(|| mine.last())

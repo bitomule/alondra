@@ -93,6 +93,28 @@ pub fn advance(driver: &mut Driver) {
     }
 }
 
+#[test]
+fn repeated_driver_pause_checks_do_not_scan_unrelated_tasks() {
+    let slice = Slice::new();
+    for n in 0..8 {
+        slice.run(&Actor::Orchestrator { generation: 0 }, &format!("unrelated-{n}"), Command::CreateTask {
+            task_id: format!("unrelated-{n}").into(), request_id: "sdk-slice-request".into(),
+            title: "Unrelated task".into(), agent_id: None, review_prs: false,
+            dependencies: BTreeSet::new(), stack: None,
+            launch: Some(LaunchPlan::new("node", slice.worktree.to_str().unwrap())),
+            plan_items: None, continues: None,
+        });
+    }
+    let mut driver = slice.launch();
+    let own_tasks = slice.domain.read().index().node(&driver.agent).unwrap().all_tasks.len() as u64;
+    assert_eq!(own_tasks, 1);
+    let before = alondra_domain_rules::measure::tasks_read();
+    for _ in 0..32 { assert!(!driver.paused()); }
+    let read = alondra_domain_rules::measure::tasks_read() - before;
+    driver.stop().unwrap();
+    assert_eq!(read, 32 * own_tasks, "the owner's unchanged pause checks must not scan unrelated tasks");
+}
+
 /// Whether `card` is one an ended turn of `task` rests on: the case the orchestrator settles when
 /// the node stopped, or the user's card when the turn was interrupted or failed.
 pub(crate) fn rests_on(task: &str, card: &InteractionId) -> bool {
