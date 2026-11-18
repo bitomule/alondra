@@ -96,6 +96,42 @@ fn waiting_tasks_share_one_start_problem_history_scan() {
     assert_eq!(reads, state.interactions.len() as u64, "all waiting tasks share one history scan");
 }
 
+fn waiting_with_history(count: usize) -> DomainState {
+    let mut state = world();
+    for n in 0..count {
+        let id = format!("waiting-{n}");
+        task(&mut state, &id, None);
+        must(&mut state, Actor::System, Command::PublishInformation {
+            interaction_id: format!("history-{n}").into(), scope: Scope::Task { task_id: id.into() },
+            recipient: Recipient::User, body: "Historical update".into(), attachments: vec![],
+            card: CardSpec::derived(CardKind::Know, "Read update"),
+        });
+    }
+    state
+}
+
+#[test]
+fn read_index_does_not_scan_start_problem_history_per_waiting_task() {
+    for count in [5, 20] {
+        let state = waiting_with_history(count);
+        assert_eq!(state.tasks.len(), count);
+        assert_eq!(state.interactions.len(), count);
+        for task in state.tasks.values() {
+            assert_eq!(task.state, TaskState::NotStarted);
+            assert!(!task.started && task.agent_id.is_none());
+            assert!(state.lifecycle_of(&task.id).is_ok());
+        }
+        let before = measure::cards_read();
+        let index = ReadIndex::build(&state);
+        let reads = measure::cards_read() - before;
+        for id in state.tasks.keys() {
+            assert_eq!(index.task(id).unwrap().situation, Situation::Waiting(WaitsFor::Slot));
+        }
+        assert_eq!(reads, state.interactions.len() as u64,
+            "read index visited {reads} cards for {count} tasks and {count} cards");
+    }
+}
+
 fn task_cards_agree_with_the_scans(s: &DomainState) -> Result<(), TestCaseError> {
     let cards = TaskCards::new(s);
     for t in s.tasks.keys() {
