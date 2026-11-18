@@ -220,9 +220,10 @@ moves of a task to another provider or account (`provider_transition`, `account_
 - `sdk_handover` keeps in the engine what reaches a `claude --bg` node that is moving and how Alondra
   stops one; the moves themselves are `bg_handover`.
 - Each crate of the engine has one test target. The engine's and the gate's tests that start nodes
-  through the SDK run in `//crates/engine-sdk:engine_sdk_test`, next to its own, with the hosts, fake
-  Claude and Codex and binaries they need; the engine's own target needs only the Node host and a
-  fake native Claude, and no test runs on a name filter any more.
+  through the SDK run in `//crates/engine-sdk:engine_sdk_test`, next to its own, with the hosts and
+  the fake Claude and Codex they need, and never a binary of the root (see "Tests leave the root");
+  the engine's own target needs only the Node host and a fake native Claude, and no test runs on a
+  name filter any more.
 
 ## Output adapters
 
@@ -435,6 +436,43 @@ their crate may not use (`TEST_HOOK_EXCEPTIONS` lists the two that still do, for
 - The run failed only in three scenarios (an SDK host disconnecting at start and timing checkpoints),
   the same failures under load as before; nothing in them touches GitHub.
 
+## Tests leave the root (2026-11-18)
+
+A test reruns when anything it reads changes, a binary in its `data` included, so a test that
+depends on the root reruns on every edit of every crate the daemon links. Phase 6 took the two
+tests that start the real `alondrad` out of `engine_sdk_test`, into a second target of the same
+sources that a name filter and `#[ignore]` selected. They are now a test of the root:
+
+- `//crates/alondrad:codex_adoption_process_test` holds them (a real `alondrad`, killed and
+  started again twice, adopts the live Codex host of a task), `manual` and without `#[ignore]`, and
+  the release's tests name it. Nothing ran them, and they had stopped passing: the daemon serves
+  before it takes over its hosts, and they read the takeover as soon as the listener answered. They
+  wait for the owner the store records and the one the host attached to.
+- `crate_layers_test` fails on a test outside the root that reaches a crate or a binary of the
+  root, through `deps` or `data` at any depth. `ROOT_TEST_CONSUMERS` lists the packages that still
+  do: the apps' client process, the system and sandbox suites, and `daemon-server`, whose test
+  target carries the daemon and the CLI for six of its 613 tests and reruns on every edit until
+  those six move to the root.
+- `test_catalog` lists every Rust test by target and compares two lists, so a change that moves
+  tests shows that none was lost.
+- `edit_bench` times the build apart from the tests, names the test target that took longest and
+  the ones that failed, and `--tracked` measures an adapter, the top of the engine and the root.
+
+`edit_bench` on main at 92cc6f1 with this change, same Mac, with incremental state, Bazel's own time
+without the queue's wait:
+
+| Edit | Crates reopened | Test targets reopened | Actions run (rustc / clippy / tests) | Build: critical path | Edit + build | Longest test target | Critical path | Edit + test |
+|---|---:|---:|---|---:|---:|---|---:|---:|
+| `github-gh/src/cli.rs` | 12 | 39 | 66 (14 / 6 / 45) | 14 s | 21 s | `scenarios_test` 60 s | 81 s | 87 s |
+| `alondrad/src/assemble.rs` | 9 | 36 | 55 (8 / 3 / 43) | 11 s | 16 s | `scenarios_test` 53 s | 68 s | 74 s |
+| `engine-sdk/src/sdk_owner.rs` | 13 | 43 | 73 (15 / 6 / 51) | 17 s | 31 s | `engine_sdk_test` 222 s | 239 s | 247 s |
+
+- Building is 16 to 31 s of each edit; the rest is tests.
+- An edit of an adapter or of the root waits for the longest shard of the conversation scenarios.
+- An edit of the engine waits for `engine_sdk_test`, most of whose tests start a real Agent SDK
+  host: run one at a time, a test without a host takes 0.05 s (median) and one with a host 0.9 to
+  1.8 s.
+
 ## Admission and orchestrator without the engine (phase 4a, 2026-11-18)
 
 `engine-admission` and `engine-orchestrator` compile and test without `daemon-engine` and without
@@ -498,8 +536,8 @@ application:  views (implements `Screens`; only the roots link it) · the engine
   engine run with the server's tests (`daemon-server/src/engine_tests/`), whose fixtures the engine
   crates expose under `test-hooks`; the admission menu's wording was already a test of `views`.
   `engine_sdk_test` (150 to 227 s) carried the `alondra` and `alondrad` binaries for two opt-in
-  tests: they moved to `engine_sdk_process_test` (`manual`), so relinking the binaries no longer
-  reruns the SDK suite.
+  tests: they moved out of it, so relinking the binaries no longer reruns the SDK suite (they are
+  a test of the root now, see "Tests leave the root").
 - `scenarios_test` reruns on every edit of any crate, and it ran its 16 cases one after another
   in 124 s. Its runner already split cases by Bazel's shard variables: it now runs in 4 shards, the
   longest 41 s.

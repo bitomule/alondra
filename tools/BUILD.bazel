@@ -187,6 +187,19 @@ sh_test(
     size = "small",
 )
 
+# `bazel run //tools:test_catalog`: every Rust test by target, and whether a change lost one.
+sh_binary(
+    name = "test_catalog",
+    srcs = ["test_catalog.py"],
+)
+
+sh_test(
+    name = "test_catalog_test",
+    srcs = ["tests/test_test_catalog.py"],
+    data = ["test_catalog.py"],
+    size = "small",
+)
+
 low_opt_rust_test(
     name = "no_old_commands_test",
     size = "small",

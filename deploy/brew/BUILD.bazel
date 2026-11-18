@@ -46,6 +46,7 @@ sh_test(
         "release.py",
         "release.sh",
         "tests/test_local_release.py",
+        "//crates/alondrad:BUILD.bazel",
         "//:Cargo.lock",
         "//:Cargo.toml",
         "//agent-host:codex-main.ts",

@@ -3,8 +3,8 @@
 
 Fails when a production rust_library or rust_binary is declared without a role macro, when a package
 that ships Rust has no layer or a layer names a package with no crate, when a production dependency
-breaks the rule (in any branch of a select), and when the exception list keeps an entry nothing uses
-or grows past its ceiling.
+breaks the rule (in any branch of a select), when a test outside the root depends on a crate or
+binary of the root, and when an exception list keeps an entry nothing uses or grows past its ceiling.
 """
 import json
 import os
@@ -15,6 +15,9 @@ import xml.etree.ElementTree as ElementTree
 EXCEPTION_CEILING = 60
 # The number of entries in TEST_HOOK_EXCEPTIONS, which only goes down too.
 TEST_HOOK_EXCEPTION_CEILING = 2
+
+# The number of packages in ROOT_TEST_CONSUMERS, which only goes down too.
+ROOT_TEST_CONSUMER_CEILING = 5
 
 # rules_rust compiles a crate's build.rs into a binary of its own.
 BUILD_SCRIPT_MACROS = {"cargo_build_script"}
@@ -95,6 +98,69 @@ def hooks_linking_adapters(table, targets):
     return found
 
 
+def read_rules(path):
+    """Every rule with its kind and the labels it reads, implicit ones included."""
+    rules = {}
+    for rule in ElementTree.parse(path).getroot().iter("rule"):
+        rules[rule.get("name")] = (rule.get("class"), [entry.get("name") for entry in rule.iter("rule-input")])
+    return rules
+
+
+def root_reached(table, rules):
+    """For each test that reaches a crate or a binary of the root, through anything it reads at any
+    depth, the first one it reaches."""
+    roots = {package for package, layer in table["crate_layers"].items() if layer == "root"}
+    reached = {}
+
+    def reach(label):
+        if label not in reached:
+            kind, inputs = rules.get(label, ("", []))
+            reached[label] = None
+            if kind in ("rust_library", "rust_binary") and package_of(label) in roots:
+                reached[label] = label
+            else:
+                reached[label] = next(filter(None, map(reach, inputs)), None)
+        return reached[label]
+
+    limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(max(limit, len(rules) + 1000))
+    try:
+        return {label: reach(label) for label, (kind, _) in sorted(rules.items()) if kind.endswith("_test") and reach(label)}
+    finally:
+        sys.setrecursionlimit(limit)
+
+
+def tests_above_their_layer(table, rules):
+    """A test outside the root that depends on a crate or a binary of the root, through `deps` or
+    `data` at any depth: it would rerun on every edit of every crate the daemon links."""
+    found = []
+    roots = sorted(package for package, layer in table["crate_layers"].items() if layer == "root")
+    consumers = table["root_test_consumers"]
+    used = set()
+    for label, crate in root_reached(table, rules).items():
+        package = package_of(label)
+        if package in roots:
+            continue
+        if package in consumers:
+            used.add(package)
+            continue
+        found.append(
+            f"{label} depends on {crate}: a test outside the root ({', '.join(roots)}) may not depend on a "
+            "crate or binary of the root, or it reruns on every edit of the daemon. Test against the port or "
+            "its double, or move the test to the root (docs/architecture/layers.md)."
+        )
+    for package in sorted(set(consumers) - used):
+        found.append(f"No test of {package} depends on the root any more: remove it from ROOT_TEST_CONSUMERS.")
+    if len(consumers) > ROOT_TEST_CONSUMER_CEILING:
+        found.append(
+            f"ROOT_TEST_CONSUMERS has {len(consumers)} packages, over its ceiling of {ROOT_TEST_CONSUMER_CEILING}: "
+            "the list only shrinks. Test against the port or its double, or move the test to the root."
+        )
+    elif len(consumers) < ROOT_TEST_CONSUMER_CEILING:
+        found.append(f"ROOT_TEST_CONSUMERS has {len(consumers)} packages: lower ROOT_TEST_CONSUMER_CEILING to {len(consumers)}.")
+    return found
+
+
 def problems(table, targets):
     found = []
     macros = set(table["role_macros"])
@@ -147,6 +213,7 @@ def main():
     with open(os.environ["CRATE_LAYERS"]) as file:
         table = json.load(file)
     found = problems(table, read_targets(os.environ["RUST_TARGETS"]))
+    found += tests_above_their_layer(table, read_rules(os.environ["RULES"]))
     for problem in found:
         print(problem)
     return 1 if found else 0

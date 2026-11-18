@@ -946,10 +946,6 @@ fn initial_native_policy_rejection_keeps_original_mission_for_explicit_same_acco
     let db=slice.observer();let checkpoint:Vec<u8>=db.query_row("SELECT bytes FROM provider_normalization_checkpoints WHERE task_id=?1",[TASK],|row|row.get(0)).unwrap();assert!(alondra_provider_codex::blocked_policy(&checkpoint).is_none());drop(db);resumed.stop().unwrap();
 }
 
-#[cfg(all(target_os = "macos", process_tests))]
-#[path = "codex_process_tests.rs"]
-mod process_adoption;
-
 pub fn turns_started(domain: &DomainRuntime) -> usize {
     domain.read().state().lifecycle_journal[&TaskId::from(TASK)].iter().filter(|record| matches!(record, alondra_domain_rules::LifecycleRecord::TurnStarted { .. })).count()
 }

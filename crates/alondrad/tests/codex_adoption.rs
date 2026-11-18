@@ -1,5 +1,17 @@
-use super::*;
+//! A real alondrad, killed and started again, adopts the live Codex host of a task with what it
+//! held: a pending permission or a child process of its own. It starts the daemon three times
+//! under Seatbelt, so its target is `manual` and the release's tests name it.
+use alondra_core::accounts::Provider;
+use alondra_domain::ActivityView;
+use alondra_domain_rules::Scope;
+use alondra_engine_sdk::domain_database_migration::DATABASE;
+use alondra_engine_sdk::sdk_owner::tests::codex_tests::{configured, launch, transcript};
+use alondra_engine_sdk::sdk_owner::tests::{DECISION_CARDS, HostRoot, Slice, TASK, advance, owner_generation, runfile};
+use alondra_engine_sdk::sdk_owner::{Driver, backend};
+use rusqlite::Connection;
 use std::io::{BufRead, BufReader};
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread::JoinHandle;
@@ -100,7 +112,7 @@ fn durable_native_work(slice: &Slice) -> DurableNativeWork {
 }
 
 fn daemon_fixture(mode: &str) -> (Slice, Driver, PathBuf, PathBuf) {
-    let mut slice = Slice::with_database_name(HostRoot::new(), crate::domain_database_migration::DATABASE);
+    let mut slice = Slice::with_database_name(HostRoot::new(), DATABASE);
     let sentinels = slice._home.join("sentinels"); std::fs::create_dir(&sentinels).unwrap();
     let calls = slice._home.join("forbidden-native-calls");
     for name in ["claude", "security", "launchctl"] {
@@ -188,6 +200,16 @@ fn prove_live_observation_after_final_adoption(slice: &Slice, journal: &Path) {
     }
 }
 
+/// The daemon serves before it takes over its hosts, so its listener says nothing about them: the
+/// owner it records and the host's own journal of who it attached to do.
+fn adopted(slice: &Slice, journal: &Path, generation: i64, cycle: usize) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(45);
+    while owner_generation(&slice.database) != generation || attached_host_generation(journal) != generation {
+        assert!(std::time::Instant::now() < deadline, "the actual daemon did not adopt the live host in cycle {cycle}: the store names owner {} and the host attached to {}, not {generation}", owner_generation(&slice.database), attached_host_generation(journal));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 struct RetainedNativeFixture { slice: Slice, driver: Option<Driver> }
 impl Drop for RetainedNativeFixture {
     fn drop(&mut self) { drop(self.driver.take()); self.slice._state.kill_hosts(); }
@@ -213,8 +235,9 @@ fn prove_actual_daemon_adoption(mode: &str) {
     let mut generation = owner_generation(&slice.database);
     for cycle in 0..3 {
         let mut daemon = ActualDaemon::start(slice, &profile, &sentinels);
-        generation += 1; assert_eq!(owner_generation(&slice.database), generation, "main.startup adopt_all must claim the live execution in cycle {cycle}");
         let journal = slice.backend.state_root.join(&expected.instance).join("outbox");
+        generation += 1; adopted(slice, &journal, generation, cycle);
+        assert_eq!(owner_generation(&slice.database), generation, "main.startup adopt_all must claim the live execution in cycle {cycle}");
         assert_eq!(attached_host_generation(&journal), generation, "the existing host durably accepted the new owner, rather than merely reserving SQL ownership");
         if cycle == 2 { prove_live_observation_after_final_adoption(slice, &journal); }
         assert_eq!(durable_native_work(slice), expected, "the durable pending permission/owned work survives the actual process replacement");
@@ -229,9 +252,7 @@ fn prove_actual_daemon_adoption(mode: &str) {
 }
 
 #[test]
-#[ignore = "opt-in: actual candidate alondrad processes and two SIGKILL/restart cycles under Seatbelt; temporary HOME and fake native Codex only"]
 fn an_actual_daemon_preserves_a_codex_permission_across_two_process_crashes() { prove_actual_daemon_adoption("permission"); }
 
 #[test]
-#[ignore = "opt-in: actual candidate alondrad processes and barrier-blocked native child across two SIGKILL/restart cycles; no external inference"]
 fn an_actual_daemon_preserves_a_codex_owned_child_across_two_process_crashes() { prove_actual_daemon_adoption("blocked_command"); }

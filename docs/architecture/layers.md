@@ -44,6 +44,13 @@ edit of the adapter. The fakes that need the adapter stay in the crate's own uni
 (`#[cfg(test)]`), or fake the port instead. `TEST_HOOK_EXCEPTIONS` in the table lists the hooks that
 still do, and only shrinks, like the exceptions below.
 
+A test has the layer of its package too. A test outside the root may not depend on a crate or a
+binary of the root, through `deps` or `data` at any depth: it would rerun on every edit of every
+crate the daemon links, whatever it checks. It tests against a port or its double, or it lives in
+the root. `ROOT_TEST_CONSUMERS` in the table lists the packages whose tests run the binaries (the
+apps' client process, the system and sandbox suites, and the server's test target until its six
+tests of the real daemon and CLI move to the root), and only shrinks.
+
 ## Declaring a crate
 
 A production crate is declared only with the macro of its layer, from
@@ -72,8 +79,10 @@ are declared as before.
 - **`//tools/bazel:crate_layers_test`.** A `genquery` reads every Rust target under `//:tree`. The
   test fails on a production `rust_library` or `rust_binary` whose `generator_function` is not a
   role macro, on a package with crates but no layer (or the reverse), on a forbidden dependency in
-  any branch of a `select`, on test hooks that link an output adapter their crate may not use, and
-  on an unused exception. It runs in MUSTS (`crate-layers`) and CI.
+  any branch of a `select`, on test hooks that link an output adapter their crate may not use, on
+  an unused exception, and on a test outside the root that reaches a crate or binary of the root
+  (a second `genquery` gives every rule with what it reads, and the test follows them). It runs in
+  MUSTS (`crate-layers`) and CI.
 
 Why this combination, for Bazel 8.4:
 

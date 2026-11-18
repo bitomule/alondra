@@ -23,16 +23,28 @@ genquery(
     scope = ["//:tree"],
 )
 
+# Every rule of the repository with what it reads: the test follows them from each test target to
+# the crates of the root. A genquery may not walk dependencies outside its scope, so `rdeps` here
+# fails on the first one.
+genquery(
+    name = "rules",
+    expression = 'kind("rule", siblings(deps(//:tree)))',
+    opts = ["--output=xml"],
+    scope = ["//:tree"],
+)
+
 sh_test(
     name = "crate_layers_test",
     size = "small",
     srcs = ["crate_layers_test.py"],
     data = [
         ":crate_layers",
+        ":rules",
         ":rust_targets",
     ],
     env = {
         "CRATE_LAYERS": "$(rootpath :crate_layers)",
+        "RULES": "$(rootpath :rules)",
         "RUST_TARGETS": "$(rootpath :rust_targets)",
     },
 )
