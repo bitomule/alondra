@@ -94,7 +94,7 @@ pub fn advance(driver: &mut Driver) {
 }
 
 #[test]
-fn repeated_driver_pause_checks_do_not_scan_unrelated_tasks() {
+fn unchanged_driver_pause_checks_do_not_query_the_domain() {
     let slice = Slice::new();
     for n in 0..8 {
         slice.run(&Actor::Orchestrator { generation: 0 }, &format!("unrelated-{n}"), Command::CreateTask {
@@ -108,11 +108,15 @@ fn repeated_driver_pause_checks_do_not_scan_unrelated_tasks() {
     let mut driver = slice.launch();
     let own_tasks = slice.domain.read().index().node(&driver.agent).unwrap().all_tasks.len() as u64;
     assert_eq!(own_tasks, 1);
+    assert!(!driver.paused());
+    let queries = alondra_domain_rules::measure::pause_queries();
     let before = alondra_domain_rules::measure::tasks_read();
     for _ in 0..32 { assert!(!driver.paused()); }
     let read = alondra_domain_rules::measure::tasks_read() - before;
+    let queries = alondra_domain_rules::measure::pause_queries() - queries;
     driver.stop().unwrap();
-    assert_eq!(read, 32 * own_tasks, "the owner's unchanged pause checks must not scan unrelated tasks");
+    assert_eq!(queries, 0, "unchanged pause checks must not query the domain");
+    assert_eq!(read, 0, "unchanged pause checks must not inspect tasks");
 }
 
 /// Whether `card` is one an ended turn of `task` rests on: the case the orchestrator settles when

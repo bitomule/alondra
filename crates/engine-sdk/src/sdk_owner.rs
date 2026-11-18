@@ -194,11 +194,35 @@ impl Drop for InHand {
     }
 }
 
+struct PauseSubscription {
+    snapshots: tokio::sync::watch::Receiver<u64>,
+    paused: bool,
+}
+
+impl PauseSubscription {
+    fn new(domain: &DomainRuntime, agent: &AgentId) -> Self {
+        let mut snapshots = domain.subscribe_snapshots();
+        // Mark before reading: a publication racing the read remains pending.
+        drop(snapshots.borrow_and_update());
+        let paused = domain.read().node_pause(agent).is_some_and(|pause| !pause.released);
+        Self { snapshots, paused }
+    }
+
+    fn get(&mut self, domain: &DomainRuntime, agent: &AgentId) -> bool {
+        if self.snapshots.has_changed().unwrap_or(false) {
+            drop(self.snapshots.borrow_and_update());
+            self.paused = domain.read().node_pause(agent).is_some_and(|pause| !pause.released);
+        }
+        self.paused
+    }
+}
+
 pub struct Driver {
     pub in_hand: Option<InHand>,
     /// The capability its host was started or adopted with, which goes when the host ends.
     capability: Option<[u8; 32]>,
     domain: Arc<DomainRuntime>,
+    pause: Mutex<PauseSubscription>,
     pub worker: Worker,
     scope: AuthorityScope,
     task: TaskId,
@@ -1623,7 +1647,8 @@ fn node_environment(home: &std::path::Path, agent: &AgentId, capability: &str) -
 
 impl Driver {
     fn new(domain: Arc<DomainRuntime>, worker: Worker, scope: AuthorityScope, task: TaskId, agent: AgentId, opening_timeout: Duration) -> Self {
-        Self { in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout, opening_deadline: None, refused: BTreeSet::new(), #[cfg(any(test, feature = "test-hooks"))] refuse_offers: 0, #[cfg(any(test, feature = "test-hooks"))] fail_next_step: false, #[cfg(any(test, feature = "test-hooks"))] panic_next_step: false }
+        let pause = Mutex::new(PauseSubscription::new(&domain, &agent));
+        Self { pause, in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout, opening_deadline: None, refused: BTreeSet::new(), #[cfg(any(test, feature = "test-hooks"))] refuse_offers: 0, #[cfg(any(test, feature = "test-hooks"))] fail_next_step: false, #[cfg(any(test, feature = "test-hooks"))] panic_next_step: false }
     }
 
     pub fn agent(&self) -> &AgentId {
@@ -1953,7 +1978,7 @@ impl Driver {
     }
 
     pub fn paused(&self) -> bool {
-        self.domain.read().node_pause(&self.agent).is_some_and(|pause| !pause.released)
+        self.pause.lock_or_recover("the SDK pause subscription").get(&self.domain, &self.agent)
     }
 
     /// An input that starts a turn waits here for a slot of the gate, with no card: it stays the
@@ -2144,7 +2169,9 @@ impl Driver {
         if (!self.replacement || self.untaken) && self.worker.readable(Duration::ZERO).unwrap_or(true) {
             return self.observe().map(drop);
         }
-        let sealed = self.domain.seals.wait_for(&self.task, WAKE, || stopped() || paused && !self.paused());
+        let sealed = self.domain.seals.wait_for(&self.task, WAKE, || {
+            stopped() || self.pause.lock_or_recover("the SDK pause subscription").snapshots.has_changed().unwrap_or(false)
+        });
         self.receive_permits(sealed.permits);
         self.controls.extend(sealed.control_permits);
         Ok(())
@@ -2152,6 +2179,7 @@ impl Driver {
 
     #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn rebind(&mut self, domain: Arc<DomainRuntime>) {
+        self.pause = Mutex::new(PauseSubscription::new(&domain, &self.agent));
         self.domain = domain;
     }
 
@@ -3024,3 +3052,6 @@ impl crate::hosts::SdkHosts for Hosts {
         crate::provider_transition::moving(domain, task)
     }
 }
+
+#[cfg(test)]
+mod pause_tests;

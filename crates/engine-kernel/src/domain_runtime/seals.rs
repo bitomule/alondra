@@ -12,6 +12,8 @@ pub struct Seals {
     /// shot permits out by field; lost ones would strand a task, and a fresh start derives them
     /// again from the store.
     queued: clock::Monitor<Vec<Committed>>,
+    #[cfg(test)]
+    before_wake: std::sync::Mutex<Option<Box<dyn FnMut() + Send>>>,
 }
 
 impl Seals {
@@ -72,7 +74,16 @@ impl Seals {
     /// Wakes every waiting owner, so one told to stop sees it.
     pub fn wake(&self) {
         let _queued = self.queued.lock_or_exit("the SDK seals");
+        #[cfg(test)]
+        if let Some(observe) = self.before_wake.lock().unwrap().as_mut() {
+            observe();
+        }
         self.queued.notify_all();
+    }
+
+    #[cfg(test)]
+    pub(super) fn on_wake(&self, observe: impl FnMut() + Send + 'static) {
+        *self.before_wake.lock().unwrap() = Some(Box::new(observe));
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
