@@ -185,6 +185,14 @@ impl<'a> StartProblems<'a> {
         let dependency = self.state.cancelled_dependency(task)?;
         unasked_dependency(self.open(&task.id), dependency)
     }
+
+    pub fn obligation_of(&self, task: &TaskId) -> Option<alondra_domain::Obligation> {
+        self.state.obligation_with(task, |t| self.replanned_for(t).is_some() || self.plan_refusal(&t.id).is_some())
+    }
+
+    pub fn situation(&self, task: &Task, listing: &Listing<'_>) -> Reckoned {
+        self.state.situation_with(task, listing, || self.obligation_of(&task.id))
+    }
 }
 
 fn unasked_dependency(card: Option<&Interaction>, dependency: TaskId) -> Option<TaskId> {
@@ -328,6 +336,10 @@ impl DomainState {
     /// orchestrator's decision: the lifecycle knows neither, and without it the wait would read
     /// as a wait for a slot.
     pub fn obligation_of(&self, task: &TaskId) -> Option<alondra_domain::Obligation> {
+        self.obligation_with(task, |t| self.replanned_for(t).is_some() || self.open_plan_refusal(&t.id).is_some())
+    }
+
+    fn obligation_with(&self, task: &TaskId, needs_replan: impl FnOnce(&Task) -> bool) -> Option<alondra_domain::Obligation> {
         let lifecycle = self.lifecycle_of(task).ok()?;
         let obligation = lifecycle.obligation()?;
         let asks_the_orchestrator = lifecycle.phase() == alondra_domain::TaskPhase::Delivered
@@ -338,7 +350,7 @@ impl DomainState {
             return Some(alondra_domain::Obligation { party: alondra_domain::Party::Alondra, owed: alondra_domain::Owed::Answer, ..obligation });
         }
         let replans = self.tasks.get(task).is_some_and(|t| !t.over() && !t.archived && !t.started && t.agent_id.is_none()
-            && matches!(t.state, TaskState::NotStarted | TaskState::WaitingDependency) && (self.replanned_for(t).is_some() || self.open_plan_refusal(&t.id).is_some()));
+            && matches!(t.state, TaskState::NotStarted | TaskState::WaitingDependency) && needs_replan(t));
         Some(if replans { alondra_domain::Obligation { party: alondra_domain::Party::Alondra, owed: alondra_domain::Owed::Replan, ..obligation } } else { obligation })
     }
 

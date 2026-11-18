@@ -72,3 +72,33 @@ state = "running"
 [[step.expect]]
 check = "start_problem_reads"
 max_passes = 1
+
+[[step]]
+do = "task"
+id = "t3"
+title = "Add the text export"
+
+[[step]]
+do = "task"
+id = "t4"
+title = "Add the JSON export"
+
+[[step]]
+do = "checkpoint"
+name = "queued-behind-card-history"
+
+[[step.expect]]
+check = "read_index_cards"
+max_passes = 1
+
+[[step]]
+do = "node_limit"
+count = 4
+
+[[step]]
+do = "node"
+task = "t3"
+
+[[step]]
+do = "node"
+task = "t4"

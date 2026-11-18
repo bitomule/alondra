@@ -1067,6 +1067,22 @@ impl Context<'_> {
     async fn expect(&self, checkpoint: &str, expect: &Expect, sent: Option<&[SentPush]>) -> Result<(), ScenarioError> {
         let failed = |expected: String, actual: String| ScenarioError::ExpectFailed { checkpoint: checkpoint.to_owned(), expected, actual };
         match expect {
+            Expect::ReadIndexCards { max_passes } => {
+                let state = self.daemon().domain.state().map_err(|error| ScenarioError::Invalid(error.to_string()))?;
+                let cards = state.interactions.len() as u64;
+                let waiting = state.tasks.values().filter(|task| !task.over() && !task.archived && !task.started && task.agent_id.is_none()).count();
+                if cards == 0 || waiting < 2 {
+                    return Err(failed("multiple unstarted tasks and nonempty card history".into(), format!("waiting={waiting}, cards={cards}")));
+                }
+                let before = alondra_domain_rules::measure::cards_read();
+                std::hint::black_box(alondra_domain_rules::ReadIndex::build(&state));
+                let reads = alondra_domain_rules::measure::cards_read() - before;
+                let limit = max_passes.saturating_mul(cards);
+                if reads > limit {
+                    return Err(failed(format!("at most {limit} card reads to build the read index"),
+                        format!("reads={reads}, waiting={waiting}, cards={cards}")));
+                }
+            }
             Expect::StartProblemReads { max_passes } => {
                 let state = self.daemon().domain.state().map_err(|error| ScenarioError::Invalid(error.to_string()))?;
                 let cards = state.interactions.len() as u64;

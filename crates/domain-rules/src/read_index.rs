@@ -32,6 +32,10 @@ pub struct TaskReading {
     pub situation: Situation,
     /// The card its lifecycle waits on the user for that the inbox does not list.
     pub unlisted: Option<InteractionId>,
+    /// The open card handing a refused launch plan to the orchestrator.
+    pub plan_refusal: Option<InteractionId>,
+    /// The cancelled dependency the orchestrator still needs to re-plan around.
+    pub replanned_for: Option<TaskId>,
 }
 
 /// What a node shows, from the domain alone.
@@ -581,12 +585,13 @@ impl<'a> Builder<'a> {
             || state.interactions.get(card).is_some_and(|i| state.grouped_away(i) || state.mcp_grouped_away(i));
         let mut readings = Vec::with_capacity(state.tasks.len());
         let mut slots = BTreeSet::new();
+        let problems = StartProblems::new(state);
         for t in state.tasks.values() {
             let waiting = waiting_of_task.remove(&t.id).unwrap_or_default();
             let waits_for_user = waiting.iter().any(|item| item.kind != "information");
             let waits_for_review = waits_for_user
                 && waiting.iter().filter(|item| item.kind != "information").all(|item| item.kind == "delivery");
-            let Reckoned { situation, unlisted } = state.situation(t, &Listing { needs_you: waits_for_user && !waits_for_review, listed: &listed });
+            let Reckoned { situation, unlisted } = problems.situation(t, &Listing { needs_you: waits_for_user && !waits_for_review, listed: &listed });
             let facts = TaskReading {
                 attention: attention[&t.id].clone(),
                 activity: state.task_activity(t),
@@ -606,6 +611,8 @@ impl<'a> Builder<'a> {
                 }).collect(),
                 situation,
                 unlisted,
+                plan_refusal: problems.plan_refusal(&t.id).map(|card| card.id.clone()),
+                replanned_for: problems.replanned_for(t),
             };
             if let Some(agent) = t.agent_id.as_ref().filter(|agent| Some(*agent) != state.orchestrator_session.as_ref()) {
                 if !t.state.terminal() && admitted_through_sdk(state, &t.id, agent) && state.takes_slot(t, situation) {

@@ -117,6 +117,10 @@ impl Situation {
 impl DomainState {
     /// The one state `task` shows, given what the inbox lists of it.
     pub fn situation(&self, task: &Task, listing: &Listing<'_>) -> Reckoned {
+        self.situation_with(task, listing, || self.obligation_of(&task.id))
+    }
+
+    pub(crate) fn situation_with(&self, task: &Task, listing: &Listing<'_>, obligation: impl FnOnce() -> Option<alondra_domain::Obligation>) -> Reckoned {
         match task.state {
             TaskState::Done => return Situation::Finished.into(),
             TaskState::Cancelled => return Situation::Cancelled.into(),
@@ -132,7 +136,7 @@ impl DomainState {
         if lifecycle.phase() == TaskPhase::Delivered && self.node_closing(task) {
             return Situation::Delivered(Delivery::Closing).into();
         }
-        let Some(obligation) = self.obligation_of(&task.id) else {
+        let Some(obligation) = obligation() else {
             return if lifecycle.phase() == TaskPhase::Cancelled { Situation::Cancelled } else { Situation::Finished }.into();
         };
         match obligation.owed {

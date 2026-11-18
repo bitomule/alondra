@@ -427,11 +427,22 @@ impl World {
 
     fn check(&self, steps: &[Step]) -> Result<(), String> {
         let problems = StartProblems::new(&self.s);
+        let readings = ReadIndex::build(&self.s);
         for task in self.s.tasks.values() {
             assert_eq!(problems.open(&task.id), self.s.open_start_problem(&task.id));
             assert_eq!(problems.last(&task.id), self.s.last_start_problem(&task.id));
             assert_eq!(problems.plan_refusal(&task.id), self.s.open_plan_refusal(&task.id));
             assert_eq!(problems.replanned_for(task), self.s.replanned_for(task));
+            assert_eq!(problems.obligation_of(&task.id), self.s.obligation_of(&task.id));
+            for needs_you in [false, true] {
+                for listed in [false, true] {
+                    let listing = Listing { needs_you, listed: &|_| listed };
+                    assert_eq!(problems.situation(task, &listing), self.s.situation(task, &listing));
+                }
+            }
+            let reading = readings.task(&task.id).unwrap();
+            assert_eq!(reading.plan_refusal.as_ref(), self.s.open_plan_refusal(&task.id).map(|card| &card.id));
+            assert_eq!(reading.replanned_for, self.s.replanned_for(task));
         }
         let none = StartFacts::default();
         if let Some(card) = self.s.interactions.values().find(|i| i.system_card == Some(SystemCard::StartProblem)
@@ -688,6 +699,16 @@ fn a_refused_plan_is_the_orchestrators_to_fix_or_cancel_with_a_reason() {
     assert!(w.s.open_user_card(&task).is_none(), "never a card for the user");
     assert_eq!(w.s.holder(&w.s.tasks[&task], &w.facts[&task]), Ok(Holder::Orchestrator));
     assert!(w.s.react(&w.facts).is_empty(), "nothing asks the user or retries it");
+    let before = ReadSnapshot::build(std::sync::Arc::new(w.s.clone()));
+    let mut withdrawn = w.s.clone();
+    super::lifecycle_tests::must(&mut withdrawn, Actor::System, Command::Withdraw { interaction_id: card.id.clone() });
+    let after = ReadSnapshot::build(std::sync::Arc::new(withdrawn));
+    assert_eq!(after.index().task(&task).unwrap().plan_refusal, None);
+    assert_eq!(after.index().task(&task).unwrap().situation, Situation::Waiting(WaitsFor::Slot));
+    assert_eq!(before.index().task(&task).unwrap().plan_refusal, Some(card.id.clone()));
+    assert_eq!(before.index().task(&task).unwrap().situation, Situation::Waiting(WaitsFor::Step(AlondraStep::Answering)));
+    assert!(after.state().revision > before.state().revision);
+    assert!(ReadSnapshot::pair(after.state().clone(), before.index().clone()).is_err());
     let answer = |option: &str, text: &str| Command::AnswerQuestion { attachments: vec![], interaction_id: card.id.clone(), option_id: option.into(),
         inputs: if text.is_empty() { BTreeMap::new() } else { BTreeMap::from([(ANSWER_TEXT.to_owned(), InputValue::Text(text.into()))]) } };
     for (option, text) in [(START_CANCEL, ""), (START_RETRY, "Try it again")] {
@@ -696,4 +717,14 @@ fn a_refused_plan_is_the_orchestrators_to_fix_or_cancel_with_a_reason() {
     assert_eq!(w.exec(user(), answer(START_CANCEL, "No")).unwrap_err().code, "forbidden");
     w.must(orchestrator(), answer(START_CANCEL, "The editor no longer needs it"));
     assert!(w.s.tasks[&task].cancelled());
+    assert_eq!(ReadIndex::build(&w.s).task(&task).unwrap().situation, Situation::Cancelled);
+    w.must(Actor::System, Command::RecordTaskCleanup { task_id: task.clone() });
+    for archived in [true, false] {
+        w.must(user(), Command::ArchiveTask { task_id: task.clone(), archived });
+        let index = ReadIndex::build(&w.s);
+        let reading = index.task(&task).unwrap();
+        assert_eq!(reading.situation, Situation::Cancelled);
+        assert_eq!(reading.plan_refusal.as_ref(), w.s.open_plan_refusal(&task).map(|card| &card.id));
+        assert_eq!(reading.replanned_for, w.s.replanned_for(&w.s.tasks[&task]));
+    }
 }
