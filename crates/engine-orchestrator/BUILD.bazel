@@ -81,6 +81,7 @@ low_opt_rust_test(
     },
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
+        "//crates/agent-runtime:agent_runtime",
         "//crates/codex-protocol:codex_protocol",
         "//crates/engine-doubles:engine_doubles",
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",

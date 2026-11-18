@@ -26,6 +26,7 @@ sysinfo.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+alondra-agent-runtime.workspace = true
 alondra-codex-protocol.workspace = true
 alondra-engine-doubles.workspace = true
 alondra-daemon-engine-model = { workspace = true, features = ["test-hooks"] }

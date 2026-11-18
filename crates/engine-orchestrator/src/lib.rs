@@ -32,8 +32,8 @@ pub fn wire(registry: &Registry) {
     registry.provide::<dyn OrchestratorAnswers>(Arc::new(orchestrator_inbox::Answers));
 }
 
-/// The runtime the orchestrator's tests open: the orchestrator's own port, doubles of the rest of
-/// the engine, and the faults a test injects at its home failing the orchestrator's writes there.
+/// The runtime the orchestrator's tests open: the orchestrator's own port, the real agent hosts,
+/// doubles of the rest of the engine, and the faults a test injects at its home failing the orchestrator's writes there.
 #[cfg(test)]
 mod wiring {
     use crate::engine::OrchestratorOf as _;
@@ -47,6 +47,7 @@ mod wiring {
         crate::wire(domain.ports());
         domain.ports().provide::<dyn OrchestratorEngine>(Arc::new(alondra_engine_doubles::orchestrator::Engine));
         domain.ports().provide::<dyn SdkHosts>(Arc::new(alondra_engine_doubles::hosts::NoHosts));
+        alondra_agent_runtime::wire(domain.ports(), Default::default());
         let injected = &domain.orchestrator().injected;
         let at = home.to_owned();
         injected.fail_writes(move |point| faults::write(&at, point));

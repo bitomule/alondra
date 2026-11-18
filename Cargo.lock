@@ -484,6 +484,7 @@ dependencies = [
 name = "alondra-engine-orchestrator"
 version = "0.3.49"
 dependencies = [
+ "alondra-agent-runtime",
  "alondra-codex-protocol",
  "alondra-core",
  "alondra-daemon-engine-model",
