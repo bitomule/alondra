@@ -543,3 +543,18 @@ Mac with incremental state:
 - The edit rebuilds `system`, its test, `alondrad` and the tests that run the `alondrad` binary.
 - Before the doubles, with the engine's test hooks wiring `system` into every runtime, the same edit
   took 46 s to build and 318 s with tests.
+
+## Output adapter `system`: the Mac's gauges (2026-11-18)
+
+The memory, load, swap and own-disk readings the admission gate decides on (sysctl, Mach's
+`host_statistics64`, `sysinfo`) moved from `daemon-engine-machine` to `system/src/machine.rs`, behind
+the `MachineProbe` port of `engine-ports`. `engine-admission` keeps every decision and asks the port
+for the Mac's size when it has no sample yet; the engine's tests get `engine-doubles`' calm Mac, and
+both pass `contract::machine`. No application crate links `sysinfo` any more. `edit_bench` on one edit
+of the reading code, where it lived (`daemon-engine-machine/src/machine.rs`, which still holds the
+sampling loop) and where it lives now, on the same Mac with incremental state and a load near 19:
+
+| Edit | Crates reopened | Test targets reopened | Actions run, build (rustc / clippy) | Build: edit + build | Edit + test |
+|---|---:|---:|---|---:|---:|
+| Where it lived: `daemon-engine-machine/src/machine.rs` | 31 | 69 | 58 (42 / 15) | 30 s | 258 s, a test fails under load |
+| Now: `system/src/machine.rs` | 11 | 38 | 15 (10 / 4) | 20 s | 82 s |
