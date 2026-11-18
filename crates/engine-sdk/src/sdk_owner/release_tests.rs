@@ -483,3 +483,20 @@ async fn resumes_over_the_node_limit_wait_for_capacity_with_no_process_and_no_ca
     assert_eq!(tasks.iter().filter(|task| waits(task)).count(), 0, "a free slot resumes them, with the spacing of starts still at a minute");
     slice.domain.stop_sdk_owners();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_node_whose_host_closed_while_it_rests_holds_no_capability_until_its_session_goes_on() {
+    let slice = Slice::new();
+    resting_node(&slice);
+    let agent = slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].agent_id.clone().unwrap();
+    let holds = |domain: &DomainRuntime| std::fs::read_to_string(domain.home().join("domain-capabilities.json")).unwrap().contains(&agent.0);
+    assert!(holds(&slice.domain));
+    look_after_the_wait(&slice.domain);
+    until_released(&slice.domain, &[TASK]).await;
+    let retired = async { while holds(&slice.domain) { tokio::task::yield_now().await } };
+    tokio::time::timeout(std::time::Duration::from_secs(60), retired).await.expect("the closed host's capability is retired");
+    tell(&slice, TASK, "Now the changelog.").await;
+    until_last_prompt_ends_with(&slice.domain, &slice.capture, "Now the changelog.").await;
+    assert!(holds(&slice.domain), "the host that resumes the session is issued a new one");
+    slice.domain.stop_sdk_owners();
+}

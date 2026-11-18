@@ -15,6 +15,8 @@ pub enum SystemCard {
     PaceResume { day: String },
     Machine,
     LocalNetwork,
+    /// The node credential registry has no room: new starts wait.
+    CapabilityCapacity,
     McpWait,
     ClaudeSignedOut,
     ClaudeOutage,

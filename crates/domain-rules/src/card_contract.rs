@@ -50,6 +50,7 @@ pub enum SystemCardKind {
     PaceResume,
     Machine,
     LocalNetwork,
+    CapabilityCapacity,
     McpWait,
     ClaudeSignedOut,
     ClaudeOutage,
@@ -79,9 +80,9 @@ pub enum SystemCardKind {
 }
 
 impl SystemCardKind {
-    pub const ALL: [SystemCardKind; 31] = {
+    pub const ALL: [SystemCardKind; 32] = {
         use SystemCardKind::*;
-        [NodePause, OverPace, PaceResume, Machine, LocalNetwork, McpWait, ClaudeSignedOut, ClaudeOutage, ClaudeUsage,
+        [NodePause, OverPace, PaceResume, Machine, LocalNetwork, CapabilityCapacity, McpWait, ClaudeSignedOut, ClaudeOutage, ClaudeUsage,
             HostLost, TurnEnded, Stalled, SessionEnded, HandoffDoubt, DecisionCancelled, Dropped, Unheard, EndedUnanswered,
             StartProblem, PostMergeProblem, CloseProblem, DiscardWorktrees, OpenPrDelivery, LaunchProblem, BatchProblem,
             StuckProblem, RequestDone, RequestTasks, Inbox, RefusedCards, Unknown]
@@ -97,6 +98,7 @@ impl SystemCard {
             Self::PaceResume { .. } => K::PaceResume,
             Self::Machine => K::Machine,
             Self::LocalNetwork => K::LocalNetwork,
+            Self::CapabilityCapacity => K::CapabilityCapacity,
             Self::McpWait => K::McpWait,
             Self::ClaudeSignedOut => K::ClaudeSignedOut,
             Self::ClaudeOutage => K::ClaudeOutage,
@@ -344,7 +346,7 @@ impl CardType {
                     S::NodePause => alondra(to_user, &[K::Decide], Decides, Task, &[Answered, Resumed, TaskEnded]),
                     S::OverPace | S::PaceResume => alondra(to_user, &[K::Decide], Decides, Task, &[Answered, Withdrawn, Resumed]),
                     S::StartProblem => alondra(&[R::User, R::Orchestrator], &[K::Problem], Decides, Task, &[Answered, Withdrawn, Replaced, Resolved, TaskEnded]),
-                    S::Machine | S::LocalNetwork | S::PostMergeProblem | S::CloseProblem
+                    S::Machine | S::LocalNetwork | S::CapabilityCapacity | S::PostMergeProblem | S::CloseProblem
                     | S::DiscardWorktrees | S::LaunchProblem | S::BatchProblem | S::StuckProblem => {
                         alondra(to_user, &[K::Problem], Decides, Task, &[Answered, Withdrawn, Replaced, Resolved, TaskEnded])
                     }
