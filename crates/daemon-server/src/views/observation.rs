@@ -12,8 +12,10 @@ pub(crate) enum Metric {
     WaitingTaskRows, AgentRows, PullRequestRows,
     PrAccepted, PrRejected, PrVisibleChanged, PrVisibleUnchanged,
     WakeIssues, WakeMcpStarted, WakeMcpFinished, WakeMcpRemoved,
+    FeedRequests, FeedChanged, FeedTimeout, FeedError,
+    FeedSupersededTui, FeedSupersededIos, FeedSupersededMac,
 }
-const NAMES: [&str; 31] = [
+const NAMES: [&str; 38] = [
     "gather_request", "sampler_periodic", "sampler_domain", "sampler_hooks", "sampler_reports",
     "final_hit", "shared_hit", "missing", "unwatched",
     "gather_shared", "gather_sampler", "gather_keyed",
@@ -22,6 +24,8 @@ const NAMES: [&str; 31] = [
     "waiting_task_rows", "agent_rows", "pull_request_rows",
     "pr_accepted", "pr_rejected", "pr_visible_changed", "pr_visible_unchanged",
     "wake_issues", "wake_mcp_started", "wake_mcp_finished", "wake_mcp_removed",
+    "feed_requests", "feed_changed", "feed_timeout", "feed_error",
+    "feed_superseded_tui", "feed_superseded_ios", "feed_superseded_mac",
 ];
 #[derive(Clone, Copy)]
 #[repr(usize)]

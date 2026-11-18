@@ -110,12 +110,33 @@ See [the process table and its signals](../crates/system/src/lib.rs),
   `ALONDRA_VIEW_OBSERVE_DELAY_SECONDS` delays its start by 0 to 3600 seconds (default 60).
   Missing duration or invalid values disable it. The window writes two records to the existing
   daemon log with fixed counter names and numeric totals for executed view work, serialization
-  bytes and invalidation causes. It records no view keys, device IDs, paths or request contents,
+  bytes and invalidation causes. Feed counters distinguish changed replies, timeout replies
+  (including zero-wait requests), errors and requests superseded by another feed for the same
+  device. Superseded counts use the declared view client (`tui`, `ios`, `mac`), not a verified
+  application identity. It records no view keys, device IDs, paths or request contents,
   creates no endpoint or additional file, and stops counting automatically. Counts near a
   window boundary are approximate under concurrency; they are not CPU measurements. Variables
   must be present in the daemon's own startup environment: exporting them in another terminal
   does not affect a running daemon. Setup does not add them to the launchd job or provider
   environment. See [view observation](../crates/daemon-server/src/views/observation.rs).
+- **Optional HTTP authentication diagnostics:** `ALONDRA_AUTH_OBSERVE_SECONDS` (1–3600)
+  enables one aggregate window when the authentication state opens inside the daemon's Tokio
+  runtime. `ALONDRA_AUTH_OBSERVE_DELAY_SECONDS` (0–3600, default 60) delays it. Missing or invalid
+  settings disable it; opening outside a runtime also disables it. The existing daemon log
+  receives start/end records containing fixed counter names and numbers, with actual elapsed
+  microseconds for calculating rates. No new endpoint or file is created. Counters distinguish
+  requests, missing signature headers, local unsigned passes, body-read rejections, verification
+  attempts, key decoding/preparation, executed ECDSA and verification results. Verification
+  success does not imply the handler's later durable authorization succeeded. Replayed requests
+  can still execute ECDSA and are counted as rejected. Routes use a fixed catalog; `client` in
+  view/feed queries and the presence of an MCP-operation header are only declared origins,
+  never application identities. Unknown or ambiguous declarations stay unknown. No device IDs,
+  names, addresses, operation IDs, query values, signatures or request bodies are logged. The
+  scope is the main HTTP listener, not direct/iroh envelopes, pairing or outgoing signatures.
+  Boundary events can race the window, so stage totals need not balance exactly. Counters are
+  not CPU measurements. These variables must be set in the daemon's startup environment; they
+  are not installed into launchd or provider environments. See
+  [HTTP authentication observation](../crates/daemon-support/src/auth/observation.rs).
 - **Optional direct APNs:** `~/.alondra/push.json` holds notification registration state;
   `~/.alondra/apns.json` names an Apple `.p8` private key file, team,
   key ID and topic. The daemon reads that key to send notifications when direct APNs is
