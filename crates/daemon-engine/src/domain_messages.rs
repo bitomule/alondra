@@ -5,7 +5,7 @@ use crate::live::LiveOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
-pub use crate::worktree::user_name;
+pub use alondra_core::config::user_name;
 use alondra_core::delivery::State;
 use alondra_domain_rules::{Actor, AgentId, AttachmentRef, Command, CommandEnvelope, DomainError, InteractionId, PrId, TaskId};
 use serde::Deserialize;

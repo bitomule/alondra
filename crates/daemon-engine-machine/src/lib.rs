@@ -1,8 +1,8 @@
 //! Machine sampling, resource state and native probe retry primitives.
 #![cfg_attr(all(feature = "test-hooks", not(test)), allow(dead_code, unused_imports))]
 #[macro_use]
-extern crate alondra_daemon_support;
-use alondra_daemon_support::{disk, locks, node_cost};
+extern crate alondra_foundation;
+use alondra_daemon_support::{locks, node_cost};
 use alondra_daemon_engine_store as domain_store;
 #[cfg(any(test, feature = "test-hooks"))]
 #[path = "../../test_support.rs"]

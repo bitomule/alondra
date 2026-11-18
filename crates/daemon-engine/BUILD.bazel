@@ -109,7 +109,7 @@ low_opt_rust_test(
         "HOME": ".",
     },
     version = VERSION,
-    deps = ENGINE_TEST_DEPS,
+    deps = ENGINE_TEST_DEPS + ["//crates/system:system_test_hooks"],
 )
 
 rust_inputs_test(

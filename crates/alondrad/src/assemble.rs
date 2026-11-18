@@ -79,7 +79,7 @@ impl Seams {
         Self {
             github: GithubSeams::production(),
             push: Pushes::default(),
-            machine: Arc::new(SystemSampler::new()),
+            machine: Arc::new(SystemSampler::new(Arc::new(alondra_system::Disks))),
             launcher: Launcher::default(),
             backend: Backend::Resolve,
             world: World::Real,

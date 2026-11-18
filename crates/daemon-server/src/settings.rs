@@ -107,7 +107,7 @@ pub(crate) fn write_config(home: &Path, body: &serde_json::Value) -> Reply {
         let result = (|| -> Result<(), String> {
             let text = crate::options::read_options(home)?.unwrap_or_default();
             alondra_core::options::OptionsFile::parse(&text)?;
-            let root = change.value.as_deref().map(|value| alondra_daemon_support::worktrees_root::capture(Path::new(value))).transpose()?;
+            let root = change.value.as_deref().map(|value| alondra_system::worktrees_root::capture(Path::new(value))).transpose()?;
             let written = alondra_core::options::with_worktrees_root(&text, root.as_ref())?;
             replace(&alondra_core::options::path_in(home), written.as_bytes()).map_err(|why| why.to_string())
         })();

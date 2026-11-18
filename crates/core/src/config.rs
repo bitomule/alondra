@@ -157,6 +157,11 @@ pub fn parse_duration(text: &str) -> Result<Duration, String> {
     Ok(Duration::from_secs_f64(amount * seconds))
 }
 
+/// The user's name, as the configuration has it.
+pub fn user_name() -> String {
+    Config::load().map(|config| config.name).unwrap_or_else(|_| "The user".into())
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub struct Config {
     pub home: PathBuf,

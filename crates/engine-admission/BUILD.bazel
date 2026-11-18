@@ -10,6 +10,7 @@ load("//tools:rust_sources.bzl", "production_sources")
 # The admission gate and the rest of the engine know each other only through the ports of
 # engine-ports. Only alondrad, which puts the daemon together, sees it.
 WORKSPACE_DEPS = [
+    "//crates/foundation:foundation",
     "//crates/engine-ports:engine_ports",
     "//crates/core:alondra_core",
     "//crates/domain:domain",
@@ -51,7 +52,7 @@ rust_library(
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",
         "//crates/engine-kernel:engine_kernel_test_hooks",
-    ],
+    ] + ["//crates/system:system_test_hooks"],
 )
 
 low_opt_rust_test(
@@ -70,7 +71,7 @@ low_opt_rust_test(
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",
         "//crates/engine-kernel:engine_kernel_test_hooks",
-    ],
+    ] + ["//crates/system:system_test_hooks"],
 )
 
 rust_inputs_test(

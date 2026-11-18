@@ -24,16 +24,16 @@ pub(crate) fn checkouts_of(worktree: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(if main == own { vec![own] } else { vec![own, main] })
 }
 
-fn checkouts(state: &DomainState, session_id: &str, task: &TaskId) -> Result<Vec<PathBuf>, String> {
-    let worktree = crate::worktree::node_worktree(state, session_id, task)
+fn checkouts(claude_home: &Path, state: &DomainState, session_id: &str, task: &TaskId) -> Result<Vec<PathBuf>, String> {
+    let worktree = crate::worktree::node_worktree(claude_home, state, session_id, task)
         .ok_or("Alondra cannot tell which repository this task works in")?;
     checkouts_of(&worktree)
 }
 
 /// Why a node cannot ask for a secret written to `destination`: it is not a git-ignored file
 /// inside both its worktree and the main checkout.
-pub fn ask_refusal(state: &DomainState, session_id: &str, task: &TaskId, destination: &SecretDestination) -> Option<DomainError> {
-    let problem = checkouts(state, session_id, task).and_then(|roots| {
+pub fn ask_refusal(claude_home: &Path, state: &DomainState, session_id: &str, task: &TaskId, destination: &SecretDestination) -> Option<DomainError> {
+    let problem = checkouts(claude_home, state, session_id, task).and_then(|roots| {
         roots.iter().find_map(|root| destination.place_problem(root)).map_or(Ok(()), Err)
     }).err()?;
     let mut refusal = DomainError::new("invalid_input", problem);
@@ -43,12 +43,12 @@ pub fn ask_refusal(state: &DomainState, session_id: &str, task: &TaskId, destina
 
 /// Writes `value` where the open card `interaction` says, and returns what the node is told
 /// instead: nothing is written unless every checkout can take it.
-pub fn write(state: &DomainState, interaction: &Interaction, value: &str) -> Result<String, String> {
+pub fn write(claude_home: &Path, state: &DomainState, interaction: &Interaction, value: &str) -> Result<String, String> {
     let destination = interaction.card.secret_destination.as_ref().ok_or("This card does not take a secret")?;
     let (Author::Agent { agent_id }, Scope::Task { task_id }) = (&interaction.author, &interaction.scope) else {
         return Err("Only a task's node asks for a secret".into());
     };
-    let roots = checkouts(state, &agent_id.0, task_id)?;
+    let roots = checkouts(claude_home, state, &agent_id.0, task_id)?;
     if let Some(problem) = roots.iter().find_map(|root| destination.place_problem(root)) {
         return Err(problem);
     }

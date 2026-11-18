@@ -314,6 +314,7 @@ dependencies = [
  "alondra-provider-codex",
  "alondra-provider-contract",
  "alondra-store",
+ "alondra-system",
  "alondra-view-model",
  "anyhow",
  "axum",
@@ -344,6 +345,7 @@ dependencies = [
  "alondra-daemon-support",
  "alondra-domain-rules",
  "alondra-engine-ports",
+ "alondra-foundation",
  "anyhow",
  "libc",
  "serde_json",
@@ -386,6 +388,7 @@ dependencies = [
  "alondra-provider-codex",
  "alondra-provider-contract",
  "alondra-store",
+ "alondra-system",
  "anyhow",
  "libc",
  "proptest",
@@ -446,6 +449,7 @@ dependencies = [
  "alondra-core",
  "alondra-domain-rules",
  "alondra-e2e",
+ "alondra-foundation",
  "alondra-process-group",
  "alondra-provider-claude",
  "alondra-store",
@@ -562,7 +566,9 @@ dependencies = [
  "alondra-domain-rules",
  "alondra-engine-kernel",
  "alondra-engine-ports",
+ "alondra-foundation",
  "alondra-github-gh",
+ "alondra-system",
  "alondra-view-model",
  "anyhow",
  "rusqlite",
@@ -610,6 +616,7 @@ dependencies = [
  "alondra-daemon-support",
  "alondra-domain-rules",
  "alondra-engine-kernel",
+ "alondra-foundation",
  "alondra-provider-claude",
  "alondra-provider-codex",
  "alondra-provider-contract",
@@ -655,6 +662,7 @@ dependencies = [
  "alondra-engine-doubles",
  "alondra-engine-kernel",
  "alondra-engine-ports",
+ "alondra-foundation",
  "alondra-process-group",
  "alondra-provider-claude",
  "alondra-provider-codex",
@@ -743,6 +751,7 @@ dependencies = [
  "alondra-domain-rules",
  "alondra-engine-kernel",
  "alondra-engine-ports",
+ "alondra-foundation",
  "alondra-view-model",
  "anyhow",
  "serde_json",
@@ -754,11 +763,13 @@ dependencies = [
 name = "alondra-foundation"
 version = "0.3.50"
 dependencies = [
+ "libc",
  "rustix 1.1.5",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -922,6 +933,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "alondra-system"
+version = "0.3.49"
+dependencies = [
+ "alondra-core",
+ "alondra-domain-rules",
+ "alondra-engine-ports",
+ "alondra-foundation",
+ "anyhow",
+ "libc",
+ "objc2",
+ "objc2-foundation",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "alondra-view-model"
 version = "0.3.50"
 dependencies = [
@@ -968,8 +998,10 @@ dependencies = [
  "alondra-engine-orchestrator",
  "alondra-engine-ports",
  "alondra-engine-sdk",
+ "alondra-foundation",
  "alondra-github-gh",
  "alondra-process-group",
+ "alondra-system",
  "alondra-view-model",
  "alondra-views",
  "anyhow",

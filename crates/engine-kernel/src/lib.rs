@@ -9,13 +9,12 @@
 pub mod test_support;
 
 #[macro_use]
-extern crate alondra_daemon_support;
+extern crate alondra_foundation;
 
 use alondra_daemon_support::{
     approval_lease,
     auth,
     blocking_work,
-    disk,
     domain_authority,
     domain_content,
     domain_cutover,
@@ -26,7 +25,6 @@ use alondra_daemon_support::{
     runtime_mutex,
     save,
     service_files,
-    worktree,
 };
 
 pub use alondra_daemon_engine_model::options;

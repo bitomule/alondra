@@ -282,7 +282,7 @@ fn unescape(text: &str) -> String {
 /// Where the catalog's calls are, relative to the workspace root: the daemon, its launcher, and the
 /// crates it runs whose `eprintln!` also land in `alondrad.log`.
 pub const LOG_SOURCES: &[&str] =
-    &["crates/alondrad/src", "crates/daemon-server/src", "crates/alondrad/launcher", "crates/daemon-support/src", "crates/daemon-engine/src", "crates/daemon-engine-model/src", "crates/daemon-engine-store/src", "crates/daemon-engine-machine/src", "crates/engine-admission/src", "crates/engine-github/src", "crates/engine-live/src", "crates/engine-mcp/src", "crates/engine-worktrees/src", "crates/engine-kernel/src", "crates/engine-orchestrator/src", "crates/engine-sdk/src", "crates/core/src",
+    &["crates/alondrad/src", "crates/daemon-server/src", "crates/alondrad/launcher", "crates/daemon-support/src", "crates/system/src", "crates/foundation/src", "crates/daemon-engine/src", "crates/daemon-engine-model/src", "crates/daemon-engine-store/src", "crates/daemon-engine-machine/src", "crates/engine-admission/src", "crates/engine-github/src", "crates/engine-live/src", "crates/engine-mcp/src", "crates/engine-worktrees/src", "crates/engine-kernel/src", "crates/engine-orchestrator/src", "crates/engine-sdk/src", "crates/core/src",
         "crates/domain-rules/src", "crates/view-model/src", "crates/views/src", "crates/provider-claude/src"];
 
 /// Functions that word a whole log line, which the daemon then logs as `log!("{line}")`: each of
@@ -308,6 +308,7 @@ pub const VOCABULARY_SOURCES: &[&str] = &[
     "crates/alondrad/src",
     "crates/daemon-server/src",
     "crates/daemon-support/src",
+    "crates/system/src",
     "crates/daemon-engine/src", "crates/daemon-engine-model/src", "crates/daemon-engine-store/src", "crates/daemon-engine-machine/src", "crates/engine-admission/src", "crates/engine-github/src", "crates/engine-live/src", "crates/engine-mcp/src", "crates/engine-worktrees/src", "crates/engine-kernel/src", "crates/engine-orchestrator/src", "crates/engine-sdk/src",
     "crates/core/src",
     "crates/domain-rules/src",

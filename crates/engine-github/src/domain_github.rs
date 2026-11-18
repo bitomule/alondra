@@ -603,7 +603,7 @@ pub mod tests {
     async fn a_final_delivery_finds_the_open_pr_of_a_branch_no_command_showed() {
         let (fixture, domain) = open("branch-pr");
         authorized(&domain);
-        let worktree = crate::worktree::testing::task_worktree(&fixture.0.join("checkout"), "worktree");
+        let worktree = alondra_system::worktree::testing::task_worktree(&fixture.0.join("checkout"), "worktree");
         command(&domain, Actor::System, "worktree", Command::RecordTaskWorktree {
             task_id: "t".into(), path: worktree.display().to_string(), origin: alondra_domain_rules::WorktreeOrigin::Entered, branch: None,
         });

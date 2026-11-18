@@ -10,6 +10,7 @@ load("//tools:rust_sources.bzl", "production_sources")
 # The orchestrator knows the engine only through the ports of engine-ports: it depends on no engine
 # subsystem, no subsystem depends on it, and only alondrad, which puts the daemon together, sees it.
 WORKSPACE_DEPS = [
+    "//crates/foundation:foundation",
     "//crates/engine-ports:engine_ports",
     "//crates/core:alondra_core",
     "//crates/domain-rules:domain_rules",

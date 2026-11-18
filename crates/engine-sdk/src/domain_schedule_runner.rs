@@ -7,7 +7,7 @@ use crate::live::LiveOf as _;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
-use crate::launch_worktree::Workplace;
+use alondra_engine_ports::worktrees::Workplace;
 use alondra_domain_rules::{
     Actor, Command, CommandEnvelope, CommandOutcome, DomainState, PROTOCOL_VERSION,
     Request, RequestId, ScheduleLaunchState, ScheduleRunOrigin, ScheduleRunState, Task,
@@ -176,7 +176,7 @@ async fn launch_through_sdk(
     .await
     .map_err(|error| error.message)?;
     let agent = launched["agent_id"].as_str().map(str::to_owned).ok_or_else(|| "the SDK launch named no node".to_owned())?;
-    if let Some(dir) = workplace.chosen().map(|dir| dir.to_string_lossy().into_owned()) {
+    if let Some(dir) = domain.ports().worktrees().chosen(&workplace).map(|dir| dir.to_string_lossy().into_owned()) {
         if let Err(error) = domain.set_inherited_worktree(&agent, &dir, "alondra") {
             log!("could not record that {agent} works in {dir}: {error:#}");
         }
@@ -210,10 +210,10 @@ async fn prepare_claimed(
     }
     let file = options_at(home).map_err(|why| alondra_domain_rules::DomainError::new("invalid_input", why.to_string()))?;
     let root = recorded.map(|record| record.root).or(file.worktrees_root);
-    let workplace = crate::launch_worktree::isolate_in(Path::new(&launch.cwd), &crate::launch_worktree::slug(&task.0), known.as_deref().map(Path::new), None, root.as_ref())
+    let workplace = domain.ports().worktrees().isolate(Path::new(&launch.cwd), &alondra_engine_ports::worktrees::slug(&task.0), known.as_deref().map(Path::new), None, root.as_ref())
         .await
         .map_err(|why| {
-            let code = match &why { crate::launch_worktree::LaunchError::Storage(_) => "worktrees_unavailable", _ => "main_checkout" };
+            let code = match &why { alondra_engine_ports::worktrees::LaunchError::Storage(_) => "worktrees_unavailable", _ => "main_checkout" };
             alondra_domain_rules::DomainError::new(code, why.to_string())
         })?;
     let Some(plugin) = crate::plugins::node_in(home) else {
@@ -247,7 +247,7 @@ fn scheduled_task_name(title: &str, at: i64) -> Result<String> {
     }
     let date = format!("{:04}-{:02}-{:02}", date.tm_year + 1900, date.tm_mon + 1, date.tm_mday);
     let suffix = crate::auth::random_hex(16);
-    let title = crate::launch_worktree::slug(title);
+    let title = alondra_engine_ports::worktrees::slug(title);
     // Reserve the complete identity suffix before the worktree's 64-byte limit.
     let budget = 64_usize.saturating_sub(4 + date.len() + suffix.len());
     let title = title.chars().take(budget).collect::<String>();
@@ -429,9 +429,9 @@ async fn dispatch_pending(
                 return Ok(());
             }
         }
-        match crate::launch_worktree::storage_for(Path::new(&launch.intent.cwd), &crate::launch_worktree::slug(&task.0), known.as_deref().map(Path::new), None, root.as_ref()).await {
+        match domain.ports().worktrees().storage_for(Path::new(&launch.intent.cwd), &alondra_engine_ports::worktrees::slug(&task.0), known.as_deref().map(Path::new), None, root.as_ref()).await {
             Ok(storage) if domain.gate().refuse_launch(&storage).is_none() => {},
-            Err(crate::launch_worktree::LaunchError::Workspace(why)) => return fail_run(domain, run_id, why),
+            Err(alondra_engine_ports::worktrees::LaunchError::Workspace(why)) => return fail_run(domain, run_id, why),
             result => {
                 domain.gate().not_started(&key);
                 if result.is_err() {
@@ -981,7 +981,7 @@ pub mod tests {
         let task = run.task_id.as_ref().unwrap();
         assert!(task.0.starts_with("t-review-"), "{}", task.0);
         assert_eq!(run.launch.as_ref().unwrap().intent.name, format!("scheduled/{}", task.0));
-        assert_eq!(crate::launch_worktree::slug(&task.0), task.0);
+        assert_eq!(alondra_engine_ports::worktrees::slug(&task.0), task.0);
         finish_claim(&fixture.domain, &fixture.home, &"readable".into()).unwrap();
         assert_eq!(fixture.domain.state().unwrap().schedule.runs[&run.id], *run);
         fixture.claim("another");
@@ -1002,7 +1002,7 @@ pub mod tests {
             let state = fixture.domain.state().unwrap();
             let task = state.schedule.runs[&ScheduleRunId::from("title")].task_id.as_ref().unwrap();
             assert!(task.0.len() <= 64);
-            assert_eq!(crate::launch_worktree::slug(&task.0), task.0);
+            assert_eq!(alondra_engine_ports::worktrees::slug(&task.0), task.0);
             assert!(task.0.split('-').count() >= 6, "title, UTC date and unique suffix: {}", task.0);
             assert_eq!(task.0.rsplit('-').next().unwrap().len(), 32);
         }
@@ -1020,7 +1020,7 @@ pub mod tests {
         let fixture = Fixture::new();
         let project = fixture.in_project("LegacyApp");
         let old_slug = "t-a245e78abcdef";
-        let workplace = crate::launch_worktree::isolate(&project, old_slug, None, None).await.unwrap();
+        let workplace = alondra_system::launch_worktree::isolate(&project, old_slug, None, None).await.unwrap();
         let old_path = project.join(".claude/worktrees").join(old_slug).canonicalize().unwrap();
         assert_eq!(workplace.dir().canonicalize().unwrap(), old_path);
         fixture.claim("legacy");
@@ -1188,7 +1188,7 @@ pub mod tests {
         assert_eq!(starts.len(), 1, "{starts:?}");
         assert_eq!(
             PathBuf::from(starts[0]["cwd"].as_str().unwrap()),
-            project.join(".claude/worktrees").join(crate::launch_worktree::slug(&task.0)).canonicalize().unwrap(),
+            project.join(".claude/worktrees").join(alondra_engine_ports::worktrees::slug(&task.0)).canonicalize().unwrap(),
             "a scheduled node works in a worktree of its own, never the main checkout"
         );
         let branch = std::process::Command::new("git").arg("-C").arg(starts[0]["cwd"].as_str().unwrap()).args(["branch", "--show-current"]).output().unwrap();
@@ -1221,7 +1221,7 @@ pub mod tests {
         let state = fixture.domain.state().unwrap();
         let task = state.schedule.runs[&ScheduleRunId::from("run-1")].task_id.clone().unwrap();
         let agent = state.tasks[&task].agent_id.clone().expect("the task is its SDK node's");
-        let made = project.join(".claude/worktrees").join(crate::launch_worktree::slug(&task.0)).canonicalize().unwrap();
+        let made = project.join(".claude/worktrees").join(alondra_engine_ports::worktrees::slug(&task.0)).canonicalize().unwrap();
         let recorded = fixture.domain.task_worktree(&task).unwrap().expect("the task's worktree is recorded");
         assert_eq!(Path::new(&recorded).canonicalize().unwrap(), made, "it is cleaned with the task");
         let owned = fixture.domain.inherited_worktree(&agent.0).unwrap().expect("its node owns it");
@@ -1666,7 +1666,7 @@ pub mod tests {
         let _sdk = SdkLaunches::enable(&fixture.domain, &fixture.home);
         let project = fixture.root.join("projects/app");
         std::fs::create_dir(&project).unwrap();
-        let git = |args: &[&str]| crate::worktree::testing::git(&project, args);
+        let git = |args: &[&str]| alondra_system::worktree::testing::git(&project, args);
         git(&["init", "-q", "-b", "main"]);
         git(&["config", "user.email", "test@example.invalid"]);
         git(&["config", "user.name", "Test"]);
@@ -1689,7 +1689,7 @@ pub mod tests {
         assert_eq!(fixture.launches(), 0);
         assert!(!path.exists());
         std::fs::create_dir(&path).unwrap();
-        let root = alondra_daemon_support::worktrees_root::capture(&path).unwrap();
+        let root = alondra_system::worktrees_root::capture(&path).unwrap();
         std::fs::write(&options, alondra_core::options::with_worktrees_root(&original, Some(&root)).unwrap()).unwrap();
         run_cycle(&fixture.domain, &fixture.home, false).await.unwrap();
         assert_eq!(fixture.launches(), 1);

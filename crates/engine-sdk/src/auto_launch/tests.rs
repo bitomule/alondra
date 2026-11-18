@@ -54,7 +54,7 @@ pub fn world_using_sdk(enable: fn(&Arc<DomainRuntime>, &Path) -> SdkLaunches) ->
     let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
     alondra_engine_admission::measure_machine(&domain, &alondra_core::Machine { at: 1, memory_total: 16 << 30,
         memory_available: 12 << 30, memory_free_percent: Some(75), cpus: 11,
-        disk_total: 500_000_000_000, disk_available: 400_000_000_000, ..Default::default() }, crate::disk::Space { total: 500_000_000_000, free: 400_000_000_000, purgeable: 0 });
+        disk_total: 500_000_000_000, disk_available: 400_000_000_000, ..Default::default() }, alondra_engine_ports::disk::Space { total: 500_000_000_000, free: 400_000_000_000, purgeable: 0 });
     let sdk = enable(&domain, &home);
     command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Rebuild the editor".into(), auto_merge: false, maintenance: false, message: false });
     command(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Editor".into() });
@@ -230,7 +230,7 @@ async fn while_usage_is_exhausted_a_ready_task_waits_and_starts_when_usage_is_ba
 #[tokio::test]
 async fn worktrees_root_unavailable_waits_without_cards_or_failed_retries_and_starts_when_available() {
     let f = world();
-    let git = |args: &[&str]| crate::worktree::testing::git(&f.project, args);
+    let git = |args: &[&str]| alondra_system::worktree::testing::git(&f.project, args);
     git(&["init", "-q", "-b", "main"]);
     git(&["config", "user.email", "test@example.invalid"]);
     git(&["config", "user.name", "Test"]);
@@ -252,7 +252,7 @@ async fn worktrees_root_unavailable_waits_without_cards_or_failed_retries_and_st
     assert!(f.domain.store.lock().unwrap().start_retries().unwrap().is_empty());
     assert!(f.domain.store.lock().unwrap().launch_refusals().unwrap().iter().any(|(task, reason, _)| task.0 == "waiting-volume" && reason == "worktrees_unavailable"));
     std::fs::create_dir(&path).unwrap();
-    let available = alondra_daemon_support::worktrees_root::capture(&path).unwrap();
+    let available = alondra_system::worktrees_root::capture(&path).unwrap();
     save(&available);
     pass(&f.domain, &f.home).await.unwrap();
     assert_eq!(launches(&f), 1);
@@ -815,7 +815,7 @@ async fn the_worktree_made_for_a_task_cancelled_while_it_starts_goes_when_it_clo
     let f = world();
     for args in [&["init", "-q"][..], &["config", "user.email", "test@example.invalid"], &["config", "user.name", "Test"],
         &["commit", "-q", "--allow-empty", "-m", "base"]] {
-        crate::worktree::testing::git(&f.project, args);
+        alondra_system::worktree::testing::git(&f.project, args);
     }
     f.domain.admission().tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(1)) });
     create(&f, "a", &[], Some(&plan(&f, "app/a")));

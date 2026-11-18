@@ -7,7 +7,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// the old file or the new one, never half of one. When a step fails, what was written beside is
 /// removed, so it takes none of the little space left, and `file` keeps what it held.
 pub fn atomic(file: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    #[cfg(any(test, feature = "test-hooks"))]
     full_disk::write()?;
     let next = file.with_extension("next");
     let written = std::fs::File::create(&next)
@@ -19,16 +18,15 @@ pub fn atomic(file: &Path, bytes: &[u8]) -> std::io::Result<()> {
     written
 }
 
-#[cfg(not(any(test, feature = "test-hooks")))]
-fn flush_to_disk(written: &std::fs::File) -> std::io::Result<()> {
-    written.sync_all()
-}
-
 /// On macOS a flush empties the disk's own cache, and tests that save on every step spend most of
-/// their run waiting for it. No test can see whether the bytes reached the platter.
-#[cfg(any(test, feature = "test-hooks"))]
-fn flush_to_disk(_: &std::fs::File) -> std::io::Result<()> {
-    Ok(())
+/// their run waiting for it. No test can see whether the bytes reached the platter, so under
+/// `bazel test`, which sets `BAZEL_TEST`, the flush is skipped.
+fn flush_to_disk(written: &std::fs::File) -> std::io::Result<()> {
+    static UNDER_TEST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *UNDER_TEST.get_or_init(|| std::env::var_os("BAZEL_TEST").is_some()) {
+        return Ok(());
+    }
+    written.sync_all()
 }
 
 /// Whether the last save of one file failed. A full disk fails every save until there is space:
@@ -49,8 +47,7 @@ impl Failures {
 }
 
 /// A disk with no space left, as one test thread sees it: saves and log lines fail with ENOSPC,
-/// and the log keeps every line it was asked to write.
-#[cfg(any(test, feature = "test-hooks"))]
+/// and the log keeps every line it was asked to write. Nothing changes until a test calls `fill`.
 pub mod full_disk {
     use std::cell::RefCell;
 

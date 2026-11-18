@@ -50,6 +50,7 @@ url = "2.5"
 
 [dev-dependencies]
 alondra-agent-runtime.workspace = true
+alondra-system = { workspace = true, features = ["test-hooks"] }
 alondra-engine-github = { workspace = true, features = ["test-hooks"] }
 alondra-engine-live = { workspace = true, features = ["test-hooks"] }
 alondra-engine-mcp = { workspace = true, features = ["test-hooks"] }

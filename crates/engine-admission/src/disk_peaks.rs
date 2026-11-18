@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn macos_purging_and_time_machine_snapshots_are_no_nodes_use() {
-        use crate::disk::Space;
+        use alondra_engine_ports::disk::Space;
         let (mut ledger, mut estimates) = (Ledger::default(), Estimates::default());
         let tasks = working(&[("t1", "app")]);
         let samples = [Space { free: 10 * GB, purgeable: 20 * GB, total: 500 * GB },

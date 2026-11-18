@@ -5,7 +5,7 @@
 //! until it passes; each host start checks the version again for itself.
 use alondra_core::clock;
 use alondra_core::clock::Instant;
-use crate::locks::Poisonable as _;
+use alondra_foundation::locks::Poisonable as _;
 use alondra_core::claude_code;
 use alondra_core::claude_update::{self, Outcome as Update};
 use serde::Serialize;

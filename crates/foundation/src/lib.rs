@@ -1,4 +1,12 @@
+#[macro_use]
+pub mod log;
 pub mod artifact_digest;
+pub mod clock;
+pub mod daemon_log;
+pub mod exit;
+pub mod locks;
+pub mod runtime_mutex;
+pub mod save;
 mod execution;
 mod mcp;
 mod poll;
@@ -38,6 +46,16 @@ pub type Revision = u64;
 pub const MAX_REVISION: Revision = 9_007_199_254_740_991;
 
 pub type Millis = i64;
+
+/// `bytes` random bytes from the system, in hex.
+pub fn random_hex(bytes: usize) -> String {
+    use std::io::Read;
+    let mut buf = vec![0u8; bytes];
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        let _ = f.read_exact(&mut buf);
+    }
+    buf.iter().map(|b| format!("{b:02x}")).collect()
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

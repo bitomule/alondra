@@ -9,9 +9,11 @@
 pub mod test_support;
 
 #[macro_use]
-extern crate alondra_daemon_support;
+extern crate alondra_foundation;
 
-use alondra_daemon_support::{auth, disk, disk_peaks, locks, node_cost, process_watch, runtime_mutex, save};
+use alondra_daemon_support::{auth, locks, node_cost, process_watch, runtime_mutex, save};
+
+pub mod disk_peaks;
 use alondra_daemon_engine_machine::{machine_state, swap_disk};
 pub use alondra_engine_kernel::{domain_database_migration, domain_runtime, domain_store};
 
@@ -34,7 +36,7 @@ use std::sync::Arc;
 use tokio::sync::watch;
 
 alondra_engine_kernel::extension!(Admission, |runtime: &dyn alondra_engine_ports::Runtime| Admission::persisted_in(runtime.home()));
-alondra_engine_kernel::extension!(MachineWatch, |runtime: &dyn alondra_engine_ports::Runtime| MachineWatch::persisted_in(runtime.home()));
+alondra_engine_kernel::extension!(MachineWatch, |runtime: &dyn alondra_engine_ports::Runtime| MachineWatch::persisted_in(runtime.home(), runtime.ports().disk()));
 
 /// The gate and the machine watch of a runtime, kept as its extensions.
 pub trait AdmissionOf {
@@ -54,7 +56,7 @@ impl AdmissionOf for DomainRuntime {
 
 /// Takes `machine` as a sample of the Mac and `disk` as its own disk's space: a test's fixture
 /// makes the Mac healthy, short or full with it.
-pub fn measure_machine(domain: &DomainRuntime, machine: &alondra_core::Machine, disk: disk::Space) {
+pub fn measure_machine(domain: &DomainRuntime, machine: &alondra_core::Machine, disk: alondra_engine_ports::disk::Space) {
     machine_watch::pace(domain, machine);
     domain.machine_watch().measure_disk(disk);
 }

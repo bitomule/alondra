@@ -2,10 +2,12 @@
 //! insert or one lookup each, so a poisoned lock is recovered.
 use crate::admission::{AdmissionEngine, AdmissionGate};
 use crate::agent_host::AgentHost;
+use crate::disk::Disk;
 use crate::github::GitHub;
 use crate::hosts::SdkHosts;
 use crate::orchestrator::{OrchestratorAnswers, OrchestratorEngine};
 use alondra_view_model::Screens;
+use crate::worktrees::Worktrees;
 use alondra_domain_rules::{CommandEnvelope, CommandOutcome, DomainError, DomainState};
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
@@ -45,6 +47,16 @@ impl Registry {
         self.0.read().unwrap_or_else(PoisonError::into_inner).get(&TypeId::of::<P>())?.downcast_ref::<Arc<P>>().cloned()
     }
 
+    /// The Mac's git and task worktrees.
+    pub fn worktrees(&self) -> Arc<dyn Worktrees> {
+        self.port::<dyn Worktrees>().expect("the root gives the registry the Mac's worktrees")
+    }
+
+    /// The Mac's disks.
+    pub fn disk(&self) -> Arc<dyn Disk> {
+        self.port::<dyn Disk>().expect("the root gives the registry the Mac's disks")
+    }
+
     /// The ports nothing implements yet, by name.
     pub fn missing(&self) -> Vec<&'static str> {
         let provided = self.0.read().unwrap_or_else(PoisonError::into_inner);
@@ -52,16 +64,18 @@ impl Registry {
     }
 }
 
-fn every_port() -> [(TypeId, &'static str); 8] {
+fn every_port() -> [(TypeId, &'static str); 10] {
     [
         (TypeId::of::<dyn AgentHost>(), "AgentHost"),
         (TypeId::of::<dyn AdmissionEngine>(), "AdmissionEngine"),
         (TypeId::of::<dyn AdmissionGate>(), "AdmissionGate"),
+        (TypeId::of::<dyn Disk>(), "Disk"),
         (TypeId::of::<GitHub>(), "GitHub"),
         (TypeId::of::<dyn OrchestratorAnswers>(), "OrchestratorAnswers"),
         (TypeId::of::<dyn OrchestratorEngine>(), "OrchestratorEngine"),
         (TypeId::of::<dyn SdkHosts>(), "SdkHosts"),
         (TypeId::of::<dyn Screens>(), "Screens"),
+        (TypeId::of::<dyn Worktrees>(), "Worktrees"),
     ]
 }
 
@@ -92,12 +106,12 @@ mod tests {
     #[test]
     fn a_registry_names_every_port_nothing_implements() {
         let registry = Registry::default();
-        assert_eq!(registry.missing(), ["AgentHost", "AdmissionEngine", "AdmissionGate", "GitHub", "OrchestratorAnswers", "OrchestratorEngine", "SdkHosts", "Screens"]);
+        assert_eq!(registry.missing(), ["AgentHost", "AdmissionEngine", "AdmissionGate", "Disk", "GitHub", "OrchestratorAnswers", "OrchestratorEngine", "SdkHosts", "Screens", "Worktrees"]);
         struct Answers;
         impl OrchestratorAnswers for Answers {
             fn settle_answers(&self, _: &dyn Runtime, _: &alondra_domain_rules::DomainState, _: &std::collections::BTreeSet<alondra_domain_rules::TaskId>) {}
         }
         registry.provide::<dyn OrchestratorAnswers>(Arc::new(Answers));
-        assert_eq!(registry.missing(), ["AgentHost", "AdmissionEngine", "AdmissionGate", "GitHub", "OrchestratorEngine", "SdkHosts", "Screens"]);
+        assert_eq!(registry.missing(), ["AgentHost", "AdmissionEngine", "AdmissionGate", "Disk", "GitHub", "OrchestratorEngine", "SdkHosts", "Screens", "Worktrees"]);
     }
 }

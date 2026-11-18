@@ -400,7 +400,7 @@ impl Executor {
             }
         }
         text.push_str(&transfer);
-        let user = alondra_daemon_support::worktree::user_name();
+        let user = alondra_core::config::user_name();
         let opened = self.domain.store.lock_or_exit("the domain store").request_times()?;
         text.push_str(&summary(&state, &Ages { now: now_millis(), opened }, |request| self.domain.request_launch(request).ok().flatten()
             .map(|choices| choices_text(&user, &self.home, &choices))));

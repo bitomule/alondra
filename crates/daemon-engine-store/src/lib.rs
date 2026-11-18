@@ -2,8 +2,8 @@
 //! evidence only; these rows are never reconstructed by legacy event replay.
 #![cfg_attr(all(feature = "test-hooks", not(test)), allow(dead_code, unused_imports))]
 #[macro_use]
-extern crate alondra_daemon_support;
-use alondra_daemon_support::{auth, locks, save, worktree};
+extern crate alondra_foundation;
+use alondra_daemon_support::{auth, locks, save};
 use alondra_daemon_engine_model::options;
 #[cfg(any(test, feature = "test-hooks"))]
 #[path = "../../test_support.rs"]
@@ -456,7 +456,7 @@ pub struct DomainStore {
     cached: Option<Cached>,
     aggregates: alondra_store::AggregateCache,
     /// The folders no task's worktree can be: a worktree is recorded only once git lists it.
-    protected: crate::worktree::Protected,
+    protected: alondra_engine_ports::worktrees::WorktreeRules,
     decisions: Option<Arc<dyn wording::SdkDecisions>>,
     #[cfg(any(test, feature = "test-hooks"))]
     after_commit: Option<Box<dyn FnMut() + Send>>,
@@ -508,7 +508,7 @@ fn audit_foreign_keys(connection: &Connection) -> Result<()> {
     ensure!(violations == 0, "database foreign key check failed: {violations} violation(s)");
     Ok(())
 }
-fn recorded_worktree_storage(conn: &Connection, path: &str) -> Result<Option<(std::path::PathBuf, alondra_daemon_support::worktrees_root::Repository)>> {
+fn recorded_worktree_storage(conn: &Connection, path: &str) -> Result<Option<(std::path::PathBuf, alondra_engine_ports::worktrees::Repository)>> {
     for ancestor in Path::new(path).ancestors() {
         let json: Option<String> = conn.query_row("SELECT storage FROM worktree_storage WHERE path=?1", [ancestor.to_string_lossy()], |row| row.get(0)).optional()?;
         if let Some(json) = json {
@@ -551,6 +551,33 @@ fn state_in(cached: &Option<Cached>, tx: &Connection) -> Result<(Arc<DomainState
         }
     }
 }
+/// The ports a store not yet protected checks worktrees with: none, so asking panics, outside
+/// tests, which check them with the Mac's own git.
+fn unprotected_ports() -> Arc<alondra_engine_ports::Registry> {
+    let ports = Arc::new(alondra_engine_ports::Registry::default());
+    #[cfg(any(test, feature = "test-hooks"))]
+    alondra_system::wire(&ports, alondra_daemon_support::watcher::claude_home);
+    ports
+}
+
+/// A full disk anywhere in the error's chain, or SQLite saying its database is full.
+pub fn no_space(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause.downcast_ref::<std::io::Error>().is_some_and(alondra_engine_ports::disk::io_no_space)
+            || cause.downcast_ref::<rusqlite::Error>().is_some_and(|error| error.sqlite_error_code() == Some(rusqlite::ErrorCode::DiskFull))
+    })
+}
+
+#[cfg(test)]
+#[test]
+fn a_full_disk_is_told_from_other_failures_through_the_whole_chain() {
+    let full = || std::io::Error::from_raw_os_error(libc::ENOSPC);
+    assert!(no_space(&anyhow::Error::from(full()).context("writing domain-capabilities.json")));
+    let sqlite = rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL), None);
+    assert!(no_space(&anyhow::Error::from(alondra_store::Error::Database(sqlite)).context("committing")));
+    assert!(!no_space(&anyhow::anyhow!("No space left on device")), "only the error itself counts, never its text");
+}
+
 #[derive(Debug)]
 pub enum StoreError {
     Domain(DomainError),
@@ -904,10 +931,10 @@ impl DomainStore {
         store.conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, false)?;
         Ok(store)
     }
-    pub fn protect(&mut self, protected: crate::worktree::Protected) {
+    pub fn protect(&mut self, protected: alondra_engine_ports::worktrees::WorktreeRules) {
         self.protected = protected;
     }
-    pub fn protected(&self) -> &crate::worktree::Protected {
+    pub fn protected(&self) -> &alondra_engine_ports::worktrees::WorktreeRules {
         &self.protected
     }
     pub fn with_decisions(mut self, decisions: Arc<dyn wording::SdkDecisions>) -> Self {
@@ -919,7 +946,10 @@ impl DomainStore {
             conn,
             cached: None,
             aggregates: Default::default(),
-            protected: crate::worktree::Protected { home: crate::options::user_home(), projects_root: crate::options::user_home().join("Projects") },
+            protected: alondra_engine_ports::worktrees::WorktreeRules::new(
+                alondra_engine_ports::worktrees::Protected { home: crate::options::user_home(), projects_root: crate::options::user_home().join("Projects") },
+                unprotected_ports(),
+            ),
             decisions: None,
             #[cfg(any(test, feature = "test-hooks"))]
             live_read_trace: None,
@@ -1470,14 +1500,14 @@ impl DomainStore {
             Ok((task, owned.unwrap_or(path)))
         }).collect()
     }
-    pub fn worktree_storage(&self, path: &str) -> Result<Option<alondra_daemon_support::worktrees_root::Repository>> {
+    pub fn worktree_storage(&self, path: &str) -> Result<Option<alondra_engine_ports::worktrees::Repository>> {
         Ok(self.worktree_storage_at(path)?.map(|(_, record)| record))
     }
-    pub fn worktree_storage_at(&self, path: &str) -> Result<Option<(std::path::PathBuf, alondra_daemon_support::worktrees_root::Repository)>> {
+    pub fn worktree_storage_at(&self, path: &str) -> Result<Option<(std::path::PathBuf, alondra_engine_ports::worktrees::Repository)>> {
         recorded_worktree_storage(&self.conn, path)
     }
     pub fn set_task_worktree(&mut self, task_id: &TaskId, dir: &str, now: i64) -> Result<()> {
-        if let Some(storage) = alondra_daemon_support::worktrees_root::stored(Path::new(dir)) {
+        if let Some(storage) = self.protected.stored(Path::new(dir)) {
             self.conn.execute("INSERT INTO worktree_storage(path,storage) VALUES(?1,?2) ON CONFLICT(path) DO UPDATE SET storage=excluded.storage",
                 params![dir, serde_json::to_string(&storage)?])?;
         }

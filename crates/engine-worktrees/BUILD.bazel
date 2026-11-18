@@ -10,6 +10,7 @@ load("//tools:rust_sources.bzl", "production_sources")
 # A subsystem on the kernel beside the others: it depends on none of them, and only the engine
 # that wires them sees it.
 WORKSPACE_DEPS = [
+    "//crates/foundation:foundation",
     "//crates/engine-ports:engine_ports",
     "//crates/core:alondra_core",
     "//crates/domain-rules:domain_rules",

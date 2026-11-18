@@ -35,7 +35,7 @@ pub struct Adoption {
 /// whole transaction, even when the caller catches it, so it can only roll back.
 pub struct OwnerTransaction<'connection> {
     conn: &'connection Connection,
-    protected: &'connection crate::worktree::Protected,
+    protected: &'connection alondra_engine_ports::worktrees::WorktreeRules,
     journal: LifecycleTransaction<'connection>,
     draft: OwnerDraft,
     /// What the host observed that moves the task's lifecycle and the domain refused to record,
@@ -234,7 +234,7 @@ impl<'connection> OwnerTransaction<'connection> {
     fn begin(
         conn: &'connection Connection,
         cached: &'connection Option<Cached>,
-        protected: &'connection crate::worktree::Protected,
+        protected: &'connection alondra_engine_ports::worktrees::WorktreeRules,
         aggregates: &'connection alondra_store::AggregateCache,
         scope: AuthorityScope,
     ) -> std::result::Result<Self, StoreError> {
@@ -523,7 +523,7 @@ impl<'connection> OwnerTransaction<'connection> {
                 }
                 ObservedFact::Worktree { path, branch, subagent } => {
                     flush(&mut commands, &mut technical);
-                    if let Err(why) = crate::worktree::registrable(std::path::Path::new(path), self.protected) {
+                    if let Err(why) = self.protected.registrable(std::path::Path::new(path)) {
                         log!("{task_id} does not take {path} as a worktree: {why}");
                         continue;
                     }
@@ -538,9 +538,9 @@ impl<'connection> OwnerTransaction<'connection> {
                             .optional()
                             .map_err(|error| StoreError::Storage(error.into()))
                     })?;
-                    let path = own.as_deref().and_then(|own| crate::worktree::subagent_worktree(std::path::Path::new(own), agent));
+                    let path = own.as_deref().and_then(|own| self.protected.subagent_worktree(std::path::Path::new(own), agent));
                     let path = path.ok_or_else(|| ObservationRefusal::Unrecordable(format!("task {task_id} has no worktree of its own to place subagent {agent}'s")))?;
-                    if let Err(why) = crate::worktree::registrable(&path, self.protected) {
+                    if let Err(why) = self.protected.registrable(&path) {
                         log!("{task_id} does not take {} as subagent {agent}'s worktree: {why}", path.display());
                         continue;
                     }
@@ -830,7 +830,7 @@ impl<'connection> OwnerTransaction<'connection> {
             }
         }
         self.journal.reserve_owner(&execution, 0)?;
-        if std::path::Path::new(directory).join(".git").is_file() && crate::worktree::registrable(std::path::Path::new(directory), self.protected).is_ok() {
+        if std::path::Path::new(directory).join(".git").is_file() && self.protected.registrable(std::path::Path::new(directory)).is_ok() {
             let envelope = CommandEnvelope {
                 protocol_version: PROTOCOL_VERSION,
                 data_epoch: self.draft.state.data_epoch.clone(),

@@ -5,8 +5,8 @@ macro_rules! log {
     };
 }
 
-use alondra_core::clock;
-use alondra_core::daemon_log;
+use crate::clock;
+use crate::daemon_log;
 use std::io::{BufRead, Write};
 use std::os::fd::{AsRawFd, RawFd};
 use std::path::{Path, PathBuf};
@@ -133,7 +133,6 @@ fn keep_last(path: &Path, limit: u64) -> std::io::Result<()> {
 
 pub fn line(message: std::fmt::Arguments<'_>) {
     let line = format!("{} alondrad: {message}\n", stamp());
-    #[cfg(any(test, feature = "test-hooks"))]
     if let Some(mut disk) = crate::save::full_disk::log() {
         return write(&mut disk, &line);
     }

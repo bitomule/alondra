@@ -42,7 +42,7 @@ fn assert_draft_is_what_a_reload_reads(draft: &DomainState, conn: &Connection) -
 pub(super) fn stage(
     conn: &Connection,
     base: Base<'_>,
-    protected: &crate::worktree::Protected,
+    protected: &alondra_engine_ports::worktrees::WorktreeRules,
     actor: &Actor,
     envelope: &CommandEnvelope,
     transport: Option<TransportIdentity<'_>>,
@@ -150,7 +150,7 @@ pub(super) fn stage(
         envelope
     };
     if let Command::RecordTaskWorktree { path, .. } = &envelope.command {
-        crate::worktree::registrable(std::path::Path::new(path), protected).map_err(|why| DomainError::new("invalid_input", why))?;
+        protected.registrable(std::path::Path::new(path)).map_err(|why| DomainError::new("invalid_input", why))?;
     }
     if let Command::TellNode { task_id, from_user: true, .. } = &envelope.command
         && !state.is_scheduled_task(task_id)

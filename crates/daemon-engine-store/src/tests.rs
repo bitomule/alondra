@@ -2408,7 +2408,7 @@ fn a_continuation_and_the_worktree_it_was_handed_survive_a_restart() {
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     let orchestrator = Actor::Orchestrator { generation: 0 };
     let root = crate::test_support::Directory::new();
-    let worktree = crate::worktree::testing::task_worktree(&root, "t");
+    let worktree = alondra_system::worktree::testing::task_worktree(&root, "t");
     let worktree = worktree.to_str().unwrap();
     execute(&mut store, &user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
     execute(&mut store, &orchestrator, "title", Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
@@ -2439,7 +2439,7 @@ pub fn continuation_fixture() -> (Fixture, crate::test_support::Directory, Domai
         request_id: "request-1".into(), title: "The answer".into(),
     });
     let root = crate::test_support::Directory::new();
-    let worktree = crate::worktree::testing::task_worktree(&root, "original");
+    let worktree = alondra_system::worktree::testing::task_worktree(&root, "original");
     let path = worktree.to_str().unwrap();
     execute(&mut store, &Actor::System, "worktree", Command::RecordTaskWorktree {
         task_id: "task-1".into(), path: path.into(), origin: WorktreeOrigin::Task, branch: Some("worktree-original".into()),

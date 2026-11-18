@@ -12,7 +12,7 @@ use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_github::execute_system;
 use crate::node_close::{CloseOutcome, Sessions, close_node, listed};
-use crate::worktree::TaskWorktree;
+use alondra_engine_ports::worktrees::TaskWorktree;
 use alondra_domain_rules::{AgentId, Command, DomainState, NodeEnd, Task, TaskState};
 use axum::http::StatusCode;
 use serde_json::{Value, json};
@@ -243,7 +243,7 @@ async fn closed_task_worktrees(
             kept.push(json!({"task_id": task_id.0, "task": task.title, "dir": dir, "detail": why.to_string()}));
             continue;
         }
-        match crate::worktree::release_task_worktree(Path::new(&dir), &crate::launch_worktree::slug(&task_id.0), !dry_run).await {
+        match domain.ports().worktrees().release_task_worktree(Path::new(&dir), &alondra_engine_ports::worktrees::slug(&task_id.0), !dry_run).await {
             Ok(TaskWorktree::Removed { .. }) => released.push(row),
             Ok(TaskWorktree::Absent | TaskWorktree::NotAlondras) => {}
             Ok(TaskWorktree::Unsaved(left) | TaskWorktree::Unavailable(left)) => kept.push(json!({"task_id": task_id.0, "task": task.title, "dir": dir, "detail": left})),

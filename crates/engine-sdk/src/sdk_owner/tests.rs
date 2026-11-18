@@ -188,7 +188,7 @@ pub fn envelope(state: &DomainState, id: &str, command: Command) -> CommandEnvel
 
 pub fn measure_healthy_machine(domain: &DomainRuntime) {
     alondra_engine_admission::measure_machine(&domain, &alondra_core::Machine { memory_total: 16 << 30, memory_available: 12 << 30,
-        memory_free_percent: Some(75), cpus: 11, disk_total: 500_000_000_000, disk_available: 100_000_000_000, ..Default::default() }, crate::disk::Space { total: 500_000_000_000, free: 100_000_000_000, purgeable: 0 });
+        memory_free_percent: Some(75), cpus: 11, disk_total: 500_000_000_000, disk_available: 100_000_000_000, ..Default::default() }, alondra_engine_ports::disk::Space { total: 500_000_000_000, free: 100_000_000_000, purgeable: 0 });
 }
 
 impl Slice {
@@ -911,7 +911,7 @@ async fn an_sdk_node_is_told_once_about_its_unsaved_worktree_and_its_confirmatio
     let agent = driver.agent().clone();
     let node = Actor::Agent { agent_id: agent.clone() };
     let root = Directory::new();
-    let dirty = crate::worktree::testing::task_worktree(&root, "sdk-slice");
+    let dirty = alondra_system::worktree::testing::task_worktree(&root, "sdk-slice");
     slice.run(&Actor::System, "worktree", Command::RecordTaskWorktree {
         task_id: TASK.into(), path: dirty.to_str().unwrap().into(), origin: alondra_domain_rules::WorktreeOrigin::Subagent, branch: None,
     });
@@ -1844,7 +1844,7 @@ async fn the_orchestrators_replace_stops_the_sdk_node_and_closes_its_request_bef
 async fn a_cancelled_sdk_task_with_unsaved_files_in_a_subagents_worktree_is_closed_and_the_user_decides_on_them() {
     let slice = Slice::new();
     let root = Directory::new();
-    let own = crate::worktree::testing::task_worktree(&root, TASK);
+    let own = alondra_system::worktree::testing::task_worktree(&root, TASK);
     slice.domain.set_task_worktree(&TaskId::from(TASK), own.to_str().unwrap()).unwrap();
     let mut driver = slice.launch();
     slice.settle(&mut driver);
@@ -4247,7 +4247,7 @@ fn a_failed_reopening_workspace_cannot_replace_the_original_admissions_native_di
         task_id: TASK.into(), end: NodeEnd::Closed, agent_id: Some(old_node.clone()),
     });
     slice.run(&user(), "reopen-directory-original", Command::ReopenTask { task_id: TASK.into() });
-    let failed_workspace = crate::worktree::testing::task_worktree(&slice._home.join("failed-reopening"), "failed-reopening-workspace");
+    let failed_workspace = alondra_system::worktree::testing::task_worktree(&slice._home.join("failed-reopening"), "failed-reopening-workspace");
     slice.domain.set_task_worktree(&TASK.into(), failed_workspace.to_str().unwrap()).unwrap();
     assert_eq!(original_directory(&slice.domain, &TASK.into()).unwrap().as_deref(), slice.worktree.to_str(),
         "only the admitted launch placement identifies the original native session's directory");

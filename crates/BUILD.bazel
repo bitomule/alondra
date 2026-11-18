@@ -58,6 +58,7 @@ WORKSPACE_MEMBERS = [
     "scenarios",
     "scenarios-transcript",
     "store",
+    "system",
     "view-model",
     "views",
 ]

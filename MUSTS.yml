@@ -65,6 +65,7 @@ checks:
       - "crates/engine-orchestrator/src/**"
       - "crates/engine-sdk/src/**"
       - "crates/daemon-support/src/**"
+      - "crates/system/src/**"
       - "crates/agent-runtime/src/**"
       - "crates/engine-ports/src/agent_host.rs"
       - "crates/foundation/src/artifact_digest.rs"
@@ -81,7 +82,9 @@ checks:
       - "crates/core/src/codex_account.rs"
       - "crates/core/src/codex_login.rs"
       - "crates/core/src/config.rs"
-      - "crates/core/src/daemon_log.rs"
+      - "crates/foundation/src/daemon_log.rs"
+      - "crates/foundation/src/log.rs"
+      - "crates/foundation/src/save.rs"
       - "crates/core/src/home_lock.rs"
       - "crates/core/src/issues.rs"
       - "crates/core/src/launcher.rs"
@@ -898,6 +901,37 @@ checks:
     with:
       targets:
         - //crates/engine-doubles/...
+
+  crate-system:
+    uses: bazel/test
+    paths:
+      - ".bazelrc"
+      - ".bazelversion"
+      - "BUILD.bazel"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "MODULE.bazel"
+      - "clippy.toml"
+      - "crates/BUILD.bazel"
+      - "crates/core/**"
+      - "crates/domain-rules/**"
+      - "crates/domain/**"
+      - "crates/engine-ports/**"
+      - "crates/foundation/**"
+      - "crates/process-group/**"
+      - "crates/system/**"
+      - "crates/test_support.rs"
+      - "tools/BUILD.bazel"
+      - "tools/bazel/*.bzl"
+      - "tools/bazel/BUILD.bazel"
+      - "tools/rust_inputs_test.bzl"
+      - "tools/rust_sources.bzl"
+      - "tools/rust_test.bzl"
+      - "tools/tree.bzl"
+      - "version.bzl"
+    with:
+      targets:
+        - //crates/system/...
 
   crate-engine-kernel:
     uses: bazel/test

@@ -180,7 +180,7 @@ INVENTORY_SURFACES = (
     "crates/daemon-server/src/iroh_endpoint.rs",
     "crates/daemon-server/src/service/relay.rs",
     "crates/engine-kernel/src/sdk_backend.rs",
-    "crates/daemon-support/src/launch_worktree.rs",
+    "crates/system/src/launch_worktree.rs",
     "crates/daemon-support/src/codex_credentials.rs",
     "crates/daemon-support/src/new_runtime_surface.rs",
     "crates/agent-runtime/src/owned_host.rs",

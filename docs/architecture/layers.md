@@ -27,12 +27,12 @@ the application: they talk through ports, and the roots wire them together.
 
 | Layer | Packages |
 |---|---|
-| foundation | `foundation`, `process-group`, `e2e`, `scenarios-transcript` |
+| foundation | `foundation` (with the clock, the daemon's log, its locks and atomic saves), `process-group`, `e2e`, `scenarios-transcript` |
 | domain | `domain`, `domain-rules`, `core` (mixed: its accounts, launcher and update code goes to the `system` adapter) |
 | ports | `engine-ports`, `provider-contract`, `view-model`, `client-port`, `store`, `agent-application` |
 | application | `engine-kernel`, `daemon-engine`, `daemon-engine-model`, `daemon-engine-machine`, `engine-admission`, `engine-orchestrator`, `engine-sdk`, `engine-github`, `engine-live`, `engine-mcp`, `engine-worktrees`, `daemon-support` (mixed: most of it goes to the `system` adapter), `views` |
 | adapter-in | `daemon-server` (the daemon's routes, transports, pushes and screens' cache), `cli`, `cli-tui`, `cli-mcp`, `cli-report`, `client-transport` |
-| adapter-out | `github-gh`, `provider-claude`, `provider-codex`, `daemon-engine-store`, `agent-runtime` |
+| adapter-out | `github-gh`, `provider-claude`, `provider-codex`, `daemon-engine-store`, `agent-runtime`, `system` (git, the task worktrees and the disks, behind the `Worktrees` and `Disk` ports) |
 | adapter-private | `agent-protocol` (of `provider-claude`), `codex-protocol` (of `provider-codex`) |
 | root | `alondrad`, `alondra`, `relay`, `scenarios`, `tools/sandbox` |
 

@@ -40,7 +40,7 @@ fn startup_admission_keeps_starts_and_resumes_queued_until_measured() {
         assert!(gate.ask(&domain, waiting.clone(), now + SAMPLE).is_err(), "an empty sample cannot open the gate");
         crate::machine_watch::pace(&domain, &Machine { at: now + 2 * SAMPLE, memory_total: 16 << 30, memory_available: 8 << 30,
             memory_free_percent: Some(50), disk_total: 500 << 30, disk_available: 100 << 30, ..Machine::default() });
-        domain.machine_watch().measure_disk(crate::disk::Space { total: 500 << 30, free: 100 << 30, purgeable: 0 });
+        domain.machine_watch().measure_disk(alondra_engine_ports::disk::Space { total: 500 << 30, free: 100 << 30, purgeable: 0 });
         assert_eq!(gate.ask(&domain, waiting, now + 2 * SAMPLE), Ok(()));
         assert_eq!(gate.snapshot(&domain, now + 2 * SAMPLE).unwrap().in_flight, 1);
     }
@@ -57,7 +57,7 @@ fn startup_admission_explicit_memory_bypass_keeps_disk_and_slot_checks() {
     gate.tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(1)) });
     let now = alondra_core::now_millis();
     assert!(matches!(ask(&domain, "t1", now), Err(Hold::Disk { .. })));
-    domain.machine_watch().measure_disk(crate::disk::Space { total: 500 << 30, free: 100 << 30, purgeable: 0 });
+    domain.machine_watch().measure_disk(alondra_engine_ports::disk::Space { total: 500 << 30, free: 100 << 30, purgeable: 0 });
     assert_eq!(ask(&domain, "t1", now), Ok(()));
     assert!(matches!(ask(&domain, "t2", now), Err(Hold::Slots { .. })));
 }
@@ -70,7 +70,7 @@ fn startup_admission_granted_work_keeps_disk_reserves_until_new_bytes() {
         let gate = &domain.admission();
         gate.ignore_mac();
         let watch = &domain.machine_watch();
-        let disk = |free| crate::disk::Space { total: 500 * GB, free, purgeable: 0 };
+        let disk = |free| alondra_engine_ports::disk::Space { total: 500 * GB, free, purgeable: 0 };
         watch.measure_disk(disk(36 * GB));
         let base = alondra_core::now_millis();
         for (index, id) in ["t1", "t2", "t3"].into_iter().enumerate() {
@@ -106,7 +106,7 @@ fn startup_admission_missing_memory_cannot_cancel_pending_reserves() {
     let base = alondra_core::now_millis();
     let watch = &domain.machine_watch();
     watch.measure_nodes(base - MIN, vec![GIB as u64; 30]);
-    watch.measure_disk(crate::disk::Space { total: 500 << 30, free: 100 << 30, purgeable: 0 });
+    watch.measure_disk(alondra_engine_ports::disk::Space { total: 500 << 30, free: 100 << 30, purgeable: 0 });
     let sample = |at| Machine { at, memory_total: 18 << 30, memory_available: 5 << 30,
         memory_free_percent: Some(60), ..Machine::default() };
     crate::machine_watch::pace(&domain, &sample(base));
@@ -299,7 +299,7 @@ fn world() -> (Home, Arc<DomainRuntime>) {
 fn healthy(domain: &DomainRuntime) {
     crate::machine_watch::pace(domain, &Machine { at: 1, memory_total: 16 << 30, memory_available: 12 << 30,
         memory_free_percent: Some(75), cpus: 11, ..Machine::default() });
-    domain.machine_watch().measure_disk(crate::disk::Space { total: 500 << 30, free: 100 << 30, purgeable: 0 });
+    domain.machine_watch().measure_disk(alondra_engine_ports::disk::Space { total: 500 << 30, free: 100 << 30, purgeable: 0 });
 }
 
 fn unmeasured_world() -> (Home, Arc<DomainRuntime>) {
@@ -1011,7 +1011,7 @@ proptest::proptest! {
         while back.len() < ids.len() {
             proptest::prop_assert!(step < 400, "{} of {} came back", back.len(), ids.len());
             let now = resumed_at + step as Millis * SAMPLE;
-            domain.machine_watch().measure_disk(crate::disk::Space { total: 500 << 30, free: 100 << 30, purgeable: 0 });
+            domain.machine_watch().measure_disk(alondra_engine_ports::disk::Space { total: 500 << 30, free: 100 << 30, purgeable: 0 });
             look(&domain, &home.0, now);
             let gone_on: Vec<&String> = ids.iter().filter(|id| !back.contains(id) && !still_paused(&domain, id)).collect();
             for id in gone_on {
@@ -1041,7 +1041,7 @@ fn a_resume_waits_while_the_disk_has_no_room_for_one_more_build() {
     let base = alondra_core::now_millis();
     paused_by_user(&domain, "t1", TaskPriority::Normal, base);
     let watch = &domain.machine_watch();
-    watch.measure_disk(crate::disk::Space { free: 4 * GB, purgeable: 0, total: 500 * GB });
+    watch.measure_disk(alondra_engine_ports::disk::Space { free: 4 * GB, purgeable: 0, total: 500 * GB });
     assert!(gate.resume_now(&domain, "agent-t1", base + MIN));
     look(&domain, &home.0, base + MIN);
     assert!(still_paused(&domain, "t1"), "the disk is under its line");
@@ -1050,7 +1050,7 @@ fn a_resume_waits_while_the_disk_has_no_room_for_one_more_build() {
         [("t1", &alondra_view_model::LiveHold::Disk { free: 4 * GB, needed: 5 * GB, volume: None })], "it waits in the queue, and says why");
     assert!(gate.live(&domain, base + MIN).unwrap().paused.is_empty(), "no longer shown as paused by the user");
 
-    watch.measure_disk(crate::disk::Space { free: 4 * GB, purgeable: 11 * GB, total: 500 * GB });
+    watch.measure_disk(alondra_engine_ports::disk::Space { free: 4 * GB, purgeable: 11 * GB, total: 500 * GB });
     look(&domain, &home.0, base + MIN + SAMPLE);
     assert!(!still_paused(&domain, "t1"), "with room on the disk it goes on");
 }
@@ -1106,7 +1106,7 @@ fn create_in(domain: &DomainRuntime, id: &str, project: &str) {
 fn disk_sample(domain: &DomainRuntime, usable: u64, now: Millis) {
     crate::machine_watch::pace(domain, &Machine { at: now, memory_total: 16 << 30, memory_available: 12 << 30, memory_free_percent: Some(50), cpus: 11, load: [5.0; 3],
         disk_total: 500 * GB, disk_available: usable, ..Machine::default() });
-    domain.machine_watch().measure_disk(crate::disk::Space { free: usable, purgeable: 0, total: 500 * GB });
+    domain.machine_watch().measure_disk(alondra_engine_ports::disk::Space { free: usable, purgeable: 0, total: 500 * GB });
 }
 
 fn machine_cards(domain: &DomainRuntime) -> usize {
@@ -1124,7 +1124,7 @@ fn swap_sample_with_total(domain: &DomainRuntime, free: u64, used: u64, total: u
         memory_available: 32 << 30,
         memory_free_percent: Some(29), cpus: 11, load: [5.0; 3], compressor: Some(compressor),
         disk_total: 500 * GB, disk_available: free, ..Machine::default() });
-    domain.machine_watch().measure_disk(crate::disk::Space { free, purgeable: 0, total: 500 * GB });
+    domain.machine_watch().measure_disk(alondra_engine_ports::disk::Space { free, purgeable: 0, total: 500 * GB });
 }
 
 #[test]
@@ -1234,7 +1234,7 @@ fn growing_swap_holds_starts_even_when_the_disk_budget_has_room() {
                 memory_available: 32 << 30,
                 memory_free_percent: Some(29), cpus: 11, load: [5.0; 3], compressor: Some(counters),
                 disk_total: 500 * GB, disk_available: free, ..Machine::default() });
-            watch.measure_disk(crate::disk::Space { free, purgeable: 0, total: 500 * GB });
+            watch.measure_disk(alondra_engine_ports::disk::Space { free, purgeable: 0, total: 500 * GB });
             if step == 0 {
                 start(&domain, "build", now);
             }
@@ -1408,7 +1408,7 @@ proptest::proptest! {
                     ended[index] = true;
                 }
             }
-            proptest::prop_assert!(free >= crate::disk::LOW_DISK_BYTES as i64, "step {}: {} bytes left with {:?} taken", step, free, took);
+            proptest::prop_assert!(free >= alondra_engine_ports::disk::LOW_DISK_BYTES as i64, "step {}: {} bytes left with {:?} taken", step, free, took);
             disk_sample(&domain, free as u64, now);
             step += 1;
         }

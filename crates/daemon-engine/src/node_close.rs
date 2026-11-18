@@ -49,33 +49,47 @@ pub trait Sessions: Send + Sync + 'static {
 
     /// The JSON of `claude agents --json --all`, only when it exited with 0.
     fn agents<'a>(&'a self) -> Answer<'a, Result<String, String>> {
-        Box::pin(async move {
-            let ran = self.claude(vec!["agents".into(), "--json".into(), "--all".into()]).await?;
-            if ran.success { Ok(ran.stdout) } else { Err(format!("claude agents failed: {}", ran.text())) }
-        })
+        Box::pin(async move { listing(self.claude(agents_args()).await?) })
     }
 }
 
-pub struct Machine;
+fn agents_args() -> Vec<String> {
+    vec!["agents".into(), "--json".into(), "--all".into()]
+}
+
+fn listing(ran: Ran) -> Result<String, String> {
+    if ran.success { Ok(ran.stdout) } else { Err(format!("claude agents failed: {}", ran.text())) }
+}
+
+/// The JSON of `claude agents --json --all` on this Mac.
+pub async fn agents() -> Result<String, String> {
+    listing(claude(agents_args()).await?)
+}
+
+/// Runs `claude` on this Mac; Err when it could not run or did not answer in 60 s.
+pub async fn claude(args: Vec<String>) -> Result<Ran, String> {
+    let run = tokio::process::Command::new("claude").args(&args).kill_on_drop(true).output();
+    match clock::timeout(Duration::from_secs(60), run).await {
+        Ok(Ok(out)) => Ok(Ran {
+            success: out.status.success(),
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        }),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err(format!("claude {} did not answer in 60 s", args.join(" "))),
+    }
+}
+
+/// Claude Code and git on this Mac.
+pub struct Machine(pub std::sync::Arc<dyn alondra_engine_ports::worktrees::Worktrees>);
 
 impl Sessions for Machine {
     fn claude<'a>(&'a self, args: Vec<String>) -> Answer<'a, Result<Ran, String>> {
-        Box::pin(async move {
-            let run = tokio::process::Command::new("claude").args(&args).kill_on_drop(true).output();
-            match clock::timeout(Duration::from_secs(60), run).await {
-                Ok(Ok(out)) => Ok(Ran {
-                    success: out.status.success(),
-                    stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-                    stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-                }),
-                Ok(Err(e)) => Err(e.to_string()),
-                Err(_) => Err(format!("claude {} did not answer in 60 s", args.join(" "))),
-            }
-        })
+        Box::pin(claude(args))
     }
 
     fn leftovers<'a>(&'a self, session_id: &'a str) -> Answer<'a, Option<String>> {
-        Box::pin(crate::worktree::leftovers(session_id))
+        self.0.leftovers(session_id)
     }
 }
 

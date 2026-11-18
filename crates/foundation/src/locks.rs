@@ -41,7 +41,7 @@ impl<T> Poisonable for RuntimeMutex<T> {
     }
 }
 
-impl<T> Poisonable for alondra_core::clock::Monitor<T> {
+impl<T> Poisonable for crate::clock::Monitor<T> {
     type Guard<'a> = MutexGuard<'a, T> where T: 'a;
     fn lock_or_recover(&self, what: &str) -> MutexGuard<'_, T> {
         self.lock().or_recover(what, || self.clear_poison())
@@ -94,7 +94,7 @@ pub(crate) fn exit_after_panic(what: &str) -> ! {
 
 /// Leaves `lock` as a thread that panicked holding it does.
 pub fn poison<T: Send + ?Sized>(lock: &Mutex<T>) {
-    alondra_core::clock::scope(|scope| {
+    crate::clock::scope(|scope| {
         let _ = scope.spawn(|| {
             let _held = lock.lock();
             panic!("a holder panics");
@@ -103,9 +103,8 @@ pub fn poison<T: Send + ?Sized>(lock: &Mutex<T>) {
     assert!(lock.is_poisoned());
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
-pub fn poison_monitor<T: Send>(monitor: &alondra_core::clock::Monitor<T>) {
-    alondra_core::clock::scope(|scope| {
+pub fn poison_monitor<T: Send>(monitor: &crate::clock::Monitor<T>) {
+    crate::clock::scope(|scope| {
         let _ = scope.spawn(|| {
             let _held = monitor.lock();
             panic!("a holder panics");
@@ -114,9 +113,8 @@ pub fn poison_monitor<T: Send>(monitor: &alondra_core::clock::Monitor<T>) {
     assert!(monitor.lock().is_err());
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
 pub fn poison_rw<T: Send + Sync + ?Sized>(lock: &RwLock<T>) {
-    alondra_core::clock::scope(|scope| {
+    crate::clock::scope(|scope| {
         let _ = scope.spawn(|| {
             let _held = lock.write();
             panic!("a holder panics");
@@ -128,7 +126,6 @@ pub fn poison_rw<T: Send + Sync + ?Sized>(lock: &RwLock<T>) {
 /// Runs the ignored test `name` of this binary in a child process and returns how it ended. The
 /// child exits without dropping anything, so the files it writes go in `home`, which the parent
 /// owns and removes.
-#[cfg(any(test, feature = "test-hooks"))]
 pub fn in_child(name: &str, home: &std::path::Path) -> std::process::Output {
     std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--ignored", "--exact", name, "--nocapture"])
@@ -138,14 +135,12 @@ pub fn in_child(name: &str, home: &std::path::Path) -> std::process::Output {
 }
 
 /// The `home` of `in_child`, only inside the child.
-#[cfg(any(test, feature = "test-hooks"))]
 pub fn child_home() -> Option<std::path::PathBuf> {
     std::env::var_os("ALONDRA_POISON_CHILD").map(Into::into)
 }
 
 /// The child's reader reached the lock and the daemon exited for it, with the line that says
 /// which lock.
-#[cfg(any(test, feature = "test-hooks"))]
 pub fn assert_exited_for(child: &std::process::Output, what: &str) {
     let stderr = String::from_utf8_lossy(&child.stderr);
     assert_eq!(child.status.code(), Some(AFTER_PANIC), "the reader must exit the daemon, not panic: {stderr}");

@@ -12,7 +12,7 @@
 pub mod test_support;
 
 #[macro_use]
-extern crate alondra_daemon_support;
+extern crate alondra_foundation;
 
 use alondra_daemon_engine::{
     accounts, allow_always, api_failures, cancelled_worktrees, claude_trust, codex_live, domain_agent_lifecycle,
@@ -22,7 +22,7 @@ use alondra_daemon_engine::{
 };
 #[cfg(target_os = "macos")]
 use alondra_daemon_support::schedule_clock;
-use alondra_daemon_support::{auth, blocking_work, disk, files_retention, launch_worktree, locks, plugins, schedules, worktree};
+use alondra_daemon_support::{auth, blocking_work, files_retention, locks, plugins, schedules};
 #[cfg(any(test, feature = "test-hooks"))]
 use alondra_daemon_engine::{claude_access, domain_orchestrator_reads, host_fixtures, machine_state, native_probe, node_reports, obligation_watch, untaken, usage_probe};
 #[cfg(any(test, feature = "test-hooks"))]

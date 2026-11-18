@@ -351,7 +351,7 @@ mod tests {
         let before = std::fs::read(fixture.0.join(FILE)).unwrap();
         domain.full_disk.store(true, std::sync::atomic::Ordering::SeqCst);
         let refused = domain.bind_agent("session-b").err().expect("a registry that cannot be written issues nothing");
-        assert!(matches!(&refused, crate::domain_store::StoreError::Storage(error) if crate::disk::no_space(error)), "{refused}");
+        assert!(matches!(&refused, crate::domain_store::StoreError::Storage(error) if alondra_daemon_engine_store::no_space(error)), "{refused}");
         assert_eq!(std::fs::read(fixture.0.join(FILE)).unwrap(), before, "the registry before is whole");
         domain.full_disk.store(false, std::sync::atomic::Ordering::SeqCst);
         domain.revoke_agent("session-unknown").unwrap();
