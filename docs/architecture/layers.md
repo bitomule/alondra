@@ -37,7 +37,12 @@ the application: they talk through ports, and the roots wire them together.
 | root | `alondrad`, `alondra`, `relay`, `scenarios`, `tools/sandbox` |
 
 `machine-model`, `provider-conformance`, the `*_test_hooks` libraries and other `testonly` targets
-are tests: they have no layer and the rule does not apply to them.
+are tests: they have no layer and the rule does not apply to them, with one exception. A
+`testonly` library of a package with a layer (its test hooks) may not link an output adapter that
+the package's production crate may not use: every test that links those hooks would rerun on each
+edit of the adapter. The fakes that need the adapter stay in the crate's own unit tests
+(`#[cfg(test)]`), or fake the port instead. `TEST_HOOK_EXCEPTIONS` in the table lists the hooks that
+still do, and only shrinks, like the exceptions below.
 
 ## Declaring a crate
 
@@ -67,7 +72,8 @@ are declared as before.
 - **`//tools/bazel:crate_layers_test`.** A `genquery` reads every Rust target under `//:tree`. The
   test fails on a production `rust_library` or `rust_binary` whose `generator_function` is not a
   role macro, on a package with crates but no layer (or the reverse), on a forbidden dependency in
-  any branch of a `select`, and on an unused exception. It runs in MUSTS (`crate-layers`) and CI.
+  any branch of a `select`, on test hooks that link an output adapter their crate may not use, and
+  on an unused exception. It runs in MUSTS (`crate-layers`) and CI.
 
 Why this combination, for Bazel 8.4:
 

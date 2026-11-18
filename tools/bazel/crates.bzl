@@ -22,6 +22,7 @@ load(
     "PORTS",
     "PRIVATE_TO",
     "ROOT",
+    "TEST_HOOK_EXCEPTIONS",
     "layer_violation",
 )
 
@@ -95,6 +96,7 @@ def _layer_table_impl(ctx):
         allowed_dependencies = ALLOWED_DEPENDENCIES,
         private_to = PRIVATE_TO,
         exceptions = LAYER_EXCEPTIONS,
+        test_hook_exceptions = TEST_HOOK_EXCEPTIONS,
         role_macros = ROLE_MACROS,
     )))
     return [DefaultInfo(files = depset([table]))]

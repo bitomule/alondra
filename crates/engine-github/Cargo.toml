@@ -6,7 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-test-hooks = ["dep:tempfile", "dep:alondra-github-gh", "alondra-daemon-engine-model/test-hooks", "alondra-daemon-support/test-hooks", "alondra-engine-kernel/test-hooks"]
+test-hooks = ["dep:tempfile", "alondra-daemon-engine-model/test-hooks", "alondra-daemon-support/test-hooks", "alondra-engine-kernel/test-hooks"]
 
 [dependencies]
 alondra-core.workspace = true
@@ -16,7 +16,6 @@ alondra-daemon-engine-model.workspace = true
 alondra-daemon-support.workspace = true
 alondra-engine-kernel.workspace = true
 alondra-engine-ports.workspace = true
-alondra-github-gh = { workspace = true, optional = true }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -393,5 +393,28 @@ and after (`github-gh/src/cli.rs`), on the same branch and Mac, with incremental
   use those fakes. So the edit still reopens 42 test targets, `scenarios_test` (about 180 s) among
   them. Both edit + test runs failed only on tests that pass alone (the SDK host disconnecting at
   start in scenarios, `alondrad`'s PR diff tests), so their times are not comparable.
-- Next cut: move the fakes that need a `GhCli` into `github-gh`'s own test hooks, so the subsystem's
-  hooks stop linking the adapter.
+- Next cut, below: the subsystem's hooks stop linking the adapter.
+
+### `engine-github`'s test hooks without `github-gh` (2026-11-18)
+
+Only two helpers of `engine-github`'s test hooks named a `GhCli`: `github` in `domain_github::tests`
+and `answering_gh` in `pr_images::tests`. Both serve only the crate's own unit tests, so they are
+`#[cfg(test)]` now and `engine_github_test_hooks` no longer links `github-gh`; the crate's unit test
+still does. `crate_layers_test` keeps it that way: test hooks may not link an output adapter that
+their crate may not use (`TEST_HOOK_EXCEPTIONS` lists the two that still do, for real hosts).
+
+`edit_bench` on `github-gh/src/cli.rs`, same Mac, with incremental state:
+
+| Hooks | Crates reopened | Test targets reopened | Actions run (rustc / clippy / tests) | Critical path | Edit + test |
+|---|---:|---:|---|---:|---:|
+| Link `github-gh` (before) | 14 | 42 | — | — | 388 s, tests fail under load |
+| Do not (after) | 10 | 37 | 57 (11 / 5 / 40) | 229 s | 239 s, tests fail under load |
+
+- No `daemon-engine`, `engine-admission`, `engine-orchestrator` or `machine-model` test reruns any
+  more, and their hooks no longer rebuild.
+- Edit + test still misses ≤ 90 s, and this cut cannot reach it: `alondrad` links `github-gh` in
+  production, so its tests, `engine_sdk_test` (which runs the `alondrad` binary, about 210 s) and
+  `scenarios_test` rerun on every edit and make the critical path. Reaching the goal needs those
+  tests to stop depending on the root's link, not on the adapter.
+- The run failed only in three scenarios (an SDK host disconnecting at start and timing checkpoints),
+  the same failures under load as before; nothing in them touches GitHub.

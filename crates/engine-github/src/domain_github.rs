@@ -457,8 +457,10 @@ pub mod tests {
         }, None, || Ok(())).unwrap();
     }
 
+    #[cfg(test)]
     use alondra_github_gh::GhCli;
 
+    #[cfg(test)]
     fn github(gh: GhCli) -> GitHub {
         GitHub::of(Arc::new(gh))
     }

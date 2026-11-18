@@ -279,6 +279,7 @@ fn signed_links_are_read_from_the_rendered_description_by_the_uploads_uuid() {
 
 /// A `gh` that answers every call with `stdout` on its standard output, `stderr` on its error
 /// output and exits with `code`.
+#[cfg(test)]
 fn answering_gh(dir: &Path, stdout: &str, stderr: &str, code: i32) -> alondra_github_gh::GhCli {
     use std::os::unix::fs::PermissionsExt;
     let program = dir.join("gh");

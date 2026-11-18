@@ -761,7 +761,7 @@
           "@@//crates/domain/Cargo.toml": "eba560970fabccf60ea3e517b86f23433ab0a9a9813a1046ae2bf3003d1aa710",
           "@@//crates/e2e/Cargo.toml": "83b64ed56c301e13be660f9d5b4a73a32fdea05a1dbf8aeeb545bc2b4698ca52",
           "@@//crates/engine-admission/Cargo.toml": "3f01fe1ccbab5b764efd3ae41916cb0f9c5ab29079ca7879f0c4288500a28d51",
-          "@@//crates/engine-github/Cargo.toml": "6bcda9ba6cc657057949c153af96298989281fd792d5be5d0f2f6c8567b225f5",
+          "@@//crates/engine-github/Cargo.toml": "84f9b5b042826a7e8837947c7dffce7fe3f49852d71d05d96ad36f9b467398d6",
           "@@//crates/engine-kernel/Cargo.toml": "dcd1215ab06eea15abe7526cd51d17113ce68375f80e46d8cf6ca0003c00773f",
           "@@//crates/engine-live/Cargo.toml": "c6280eee0b4bdcc6b25a0ba3af62283b499635a628af072edd6275821dcb3539",
           "@@//crates/engine-mcp/Cargo.toml": "12a86bfca773b1c68d73c079ef85c88980b5459753079631117ca9fc572aea0e",
