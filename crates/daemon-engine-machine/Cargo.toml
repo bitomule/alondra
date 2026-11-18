@@ -16,9 +16,7 @@ alondra-domain-rules.workspace = true
 alondra-daemon-engine-model.workspace = true
 alondra-daemon-engine-store.workspace = true
 alondra-daemon-support.workspace = true
-libc.workspace = true
 serde_json.workspace = true
-sysinfo.workspace = true
 tokio.workspace = true
 tempfile = { workspace = true, optional = true }
 

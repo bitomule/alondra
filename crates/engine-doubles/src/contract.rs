@@ -1,8 +1,9 @@
-//! What the engine relies on from the `Worktrees` and `Disk` ports. The doubles of this crate pass
-//! it in their unit tests; `crates/system` passes it with the Mac's own git and disks, so a double
-//! never drifts from what the daemon really does.
+//! What the engine relies on from the `Worktrees`, `Disk` and `MachineProbe` ports. The doubles of
+//! this crate pass it in their unit tests; `crates/system` passes it with the Mac's own git, disks
+//! and gauges, so a double never drifts from what the daemon really does.
 use crate::test_support::Directory;
 use alondra_engine_ports::disk::Disk;
+use alondra_engine_ports::machine::MachineProbe;
 use alondra_core::secret_destination::SecretDestination;
 use alondra_domain_rules::{Actor, Command, CommandEnvelope, DomainState, LaunchPlan, PROTOCOL_VERSION, TaskId, WorktreeOrigin};
 use alondra_engine_ports::worktrees::{LaunchError, Protected, TaskWorktree, Workplace, Worktrees, CHECK_LIMIT};
@@ -26,6 +27,22 @@ pub fn disk(disk: &dyn Disk) {
     assert!(!disk.same_volume(&scratch, &missing), "a missing path shares no volume");
     let mounts = disk.mounted_volumes().unwrap();
     assert!(mounts.candidates.iter().all(|candidate| mounts.all.contains(candidate)), "{mounts:?}");
+}
+
+/// A sample of the Mac holds gauges that fit together: memory within what it has, the own disk's
+/// free space within its size, a percentage under 100, and the cores and memory its size says.
+pub fn machine(probe: &dyn MachineProbe) {
+    let before = alondra_core::now_millis();
+    let sample = probe.sample();
+    assert!(sample.at >= before, "a sample is taken now: {} before {before}", sample.at);
+    assert!(sample.memory_total > 0 && sample.memory_available <= sample.memory_total, "{sample:?}");
+    assert!(sample.memory_free_percent.is_none_or(|free| free <= 100), "{sample:?}");
+    assert!(sample.disk_total > 0 && sample.disk_available <= sample.disk_total, "the Mac's own disk is measured: {sample:?}");
+    assert!(sample.load.iter().all(|load| load.is_finite() && *load >= 0.0), "{sample:?}");
+    let (cores, memory) = probe.size();
+    assert!(cores > 0, "a Mac has cores");
+    assert_eq!(memory, sample.memory_total, "the size names the memory the samples measure");
+    assert_eq!(probe.size(), (cores, memory), "a Mac's size stays put");
 }
 
 fn ready<T>(future: impl std::future::Future<Output = T>) -> T {

@@ -1535,3 +1535,21 @@ fn the_gate_names_as_many_tasks_as_it_counts() {
     assert!(line.contains("3 of 3 working (t1, t2, t3)") && !line.contains("starting"), "{line}");
     assert_eq!(super::working_tasks(&domain, &state).len(), domain.read().index().slots().len());
 }
+
+#[test]
+fn the_most_working_nodes_settings_offers_follow_the_cores_the_macs_probe_reports() {
+    struct Sized(usize);
+    impl alondra_engine_ports::machine::MachineProbe for Sized {
+        fn sample(&self) -> Machine {
+            Machine::default()
+        }
+        fn size(&self) -> (usize, u64) {
+            (self.0, 64 << 30)
+        }
+    }
+    let (_home, domain) = unmeasured_world();
+    domain.ports().provide::<dyn alondra_engine_ports::machine::MachineProbe>(Arc::new(Sized(4)));
+    assert_eq!(most_working_nodes(&domain), 8, "two nodes per core");
+    domain.ports().provide::<dyn alondra_engine_ports::machine::MachineProbe>(Arc::new(Sized(12)));
+    assert_eq!(most_working_nodes(&domain), 24);
+}

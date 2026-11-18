@@ -172,7 +172,8 @@ visibility on both).
 
 `engine-admission` holds the gate every start, resume and turn passes through (`admission`), the
 pauses it holds nodes in (`pauses`) and the watch over the Mac's memory and disk it decides on
-(`machine_watch`). It depends on `engine-kernel` and the crates below it, never on `daemon-engine`,
+(`machine_watch`). It only decides: the gauges come from the `MachineProbe` port, which `system`
+reads from the kernel. It depends on `engine-kernel` and the crates below it, never on `daemon-engine`,
 and only `alondrad`, the machine model and the scenarios see it (Bazel visibility).
 
 - `daemon-engine` asks the gate through the port `AdmissionGate` (`engine-ports/src/admission.rs`):

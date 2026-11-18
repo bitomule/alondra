@@ -6,7 +6,7 @@ use super::*;
 use alondra_agent_runtime::owned_host::Launcher;
 use alondra_daemon_engine::domain_github::PrObserver;
 use alondra_daemon_engine::domain_merges::PrMerger;
-use alondra_daemon_engine::machine::{MachineSampler, SystemSampler};
+use alondra_engine_ports::machine::MachineProbe;
 use alondra_daemon_engine::pr_images::GitHubImages;
 use alondra_engine_ports::github::GitHub;
 pub use crate::client_routes::PrView;
@@ -68,7 +68,8 @@ pub enum World {
 pub struct Seams {
     pub github: GithubSeams,
     pub push: Pushes,
-    pub machine: Arc<dyn MachineSampler>,
+    /// The Mac's gauges in place of the real ones, which `wire_machine` registers.
+    pub machine: Option<Arc<dyn MachineProbe>>,
     pub launcher: Launcher,
     pub backend: Backend,
     pub world: World,
@@ -79,7 +80,7 @@ impl Seams {
         Self {
             github: GithubSeams::production(),
             push: Pushes::default(),
-            machine: Arc::new(SystemSampler::new(Arc::new(alondra_system::Disks))),
+            machine: None,
             launcher: Launcher::default(),
             backend: Backend::Resolve,
             world: World::Real,
@@ -228,6 +229,9 @@ pub(crate) async fn assemble_with(
     crate::wire(domain.ports());
     let tasks = Tasks::default();
     domain.ports().provide(Arc::new(seams.github.port()));
+    if let Some(machine) = seams.machine.clone() {
+        domain.ports().provide::<dyn MachineProbe>(machine);
+    }
     let auth = state.auth();
     let state_domain = domain.clone();
     let state_auth = auth.clone();
@@ -337,7 +341,7 @@ pub(crate) async fn assemble_with(
         Arc::new(seams.github.observer.clone()),
         pr_poll,
     ));
-    tasks.spawn(machine::run(gauges, seams.machine.clone(), state_domain.clone()));
+    tasks.spawn(machine::run(gauges, state_domain.clone()));
     let owners = state_domain.clone();
     client.use_pr_view(seams.github.view.clone());
     client.use_pr_images(seams.github.images.clone());

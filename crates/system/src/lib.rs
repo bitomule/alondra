@@ -1,6 +1,7 @@
-//! The Mac as the engine reaches it: git and the task worktrees, the disks, and the files and
-//! checks only the daemon itself makes. The engine asks for them through the `Worktrees` and
-//! `Disk` ports of `engine-ports`; the root gives the registry this crate's implementations.
+//! The Mac as the engine reaches it: git and the task worktrees, the disks, its memory and load,
+//! and the files and checks only the daemon itself makes. The engine asks for them through the
+//! `Worktrees`, `Disk` and `MachineProbe` ports of `engine-ports`; the root gives the registry this
+//! crate's implementations.
 #[cfg(test)]
 #[path = "../../test_support.rs"]
 mod test_support;
@@ -10,6 +11,7 @@ extern crate alondra_foundation;
 
 pub mod disk;
 pub mod launch_worktree;
+pub mod machine;
 pub mod secret_files;
 pub mod worktree;
 pub mod worktrees_root;
@@ -20,15 +22,17 @@ use alondra_domain_rules::{ChecklistMark, DeliveryTarget, DomainError, DomainSta
 use std::time::Duration;
 use alondra_engine_ports::Registry;
 use alondra_engine_ports::disk::{Disk, Mounts, Space};
+use alondra_engine_ports::machine::MachineProbe;
 use alondra_engine_ports::worktrees::{Git, LaunchError, Protected, Repository, TaskWorktree, WorktreeOrigin, Workplace, Worktrees};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// Gives the registry the Mac's disks and its git, which finds the sessions' worktrees in the
-/// Claude folder `claude_home` names.
+/// Gives the registry the Mac's disks, its gauges and its git, which finds the sessions' worktrees
+/// in the Claude folder `claude_home` names.
 pub fn wire(registry: &Registry, claude_home: fn() -> PathBuf) {
     registry.provide::<dyn Worktrees>(Arc::new(GitWorktrees { claude_home }));
     registry.provide::<dyn Disk>(Arc::new(Disks));
+    registry.provide::<dyn MachineProbe>(Arc::new(machine::Mac::new(Arc::new(Disks))));
 }
 
 pub struct Disks;
@@ -195,6 +199,6 @@ mod tests {
         assert_eq!(worktrees.worktree_of("0123abcd-session"), Some(made.clone()));
         assert_eq!(worktrees.origin("0123abcd-session"), Some(WorktreeOrigin::Made(made)));
         assert_eq!(worktrees.worktree_of("ffffffff-other"), None, "a session without a job has none");
-        assert!(registry.missing().iter().all(|port| !matches!(*port, "Disk" | "Worktrees")), "{:?}", registry.missing());
+        assert!(registry.missing().iter().all(|port| !matches!(*port, "Disk" | "MachineProbe" | "Worktrees")), "{:?}", registry.missing());
     }
 }
