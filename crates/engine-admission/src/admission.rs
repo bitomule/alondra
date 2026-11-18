@@ -367,6 +367,11 @@ impl Admission {
         }
         crate::pauses::stop(domain, &mut inner.saved.pauses, session, task, Reason::ByUser, now);
         self.save_with(domain, &mut inner);
+        let held = domain.state().ok().is_some_and(|state| state.node_pause(&AgentId(session.to_owned())).is_some_and(|pause| pause.reason == PauseReason::ByUser));
+        if crate::pauses::through_sdk(domain, session) && !held {
+            inner.saved.pauses.paused.remove(session);
+            return Err("The pause could not be recorded");
+        }
         let paused = inner.saved.pauses.paused.get(session).cloned();
         drop(inner);
         if let Some(paused) = paused.filter(|_| crate::pauses::through_sdk(domain, session)) {
@@ -726,8 +731,8 @@ fn hand_pauses(domain: &DomainRuntime, wanted: &BTreeMap<String, Paused>) -> BTr
     let mut events = vec![];
     for (session, paused) in wanted {
         match held.get(session) {
-            Some(_) if state.through_sdk(&AgentId(session.clone())) => {}
-            None => events.push((session, NodeEvent::Paused { pause: Pause {
+            Some(known) if state.through_sdk(&AgentId(session.clone())) && !(paused.reason == Reason::ByUser && known.reason != Reason::ByUser) => {}
+            Some(_) | None => events.push((session, NodeEvent::Paused { pause: Pause {
                 reason: pause_reason(&paused.reason), since: paused.since, cut: paused.cut.clone(), turn_since: paused.turn_since,
                 cleanup: pause_cleanup(paused.cleanup), released: paused.released,
             } })),
