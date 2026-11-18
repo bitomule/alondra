@@ -234,6 +234,14 @@ pub(crate) fn upload_step(path: &str) -> Option<&str> {
 }
 
 impl Client {
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub async fn shared_tui_feed_work_for_test(
+        &self, auth: &crate::auth::Auth, secret: &[u8; 32], device: &str, first_timestamp: i64,
+    ) -> Result<(u64, usize), String> {
+        let key = p256::ecdsa::SigningKey::from_slice(secret).map_err(|error| error.to_string())?;
+        crate::views::feed_probe::shared_tui_feed_work(self, auth, &key, device, first_timestamp).await
+    }
+
     pub(crate) fn shared(&self) -> Arc<Self> {
         self.shared.upgrade().expect("client still owned")
     }

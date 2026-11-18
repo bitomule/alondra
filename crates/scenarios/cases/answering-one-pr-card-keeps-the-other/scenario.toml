@@ -48,6 +48,11 @@ name = "two-cards"
 screens = ["home", "task:t1"]
 
 [[step.expect]]
+check = "shared_tui_feed"
+max_requests = 2
+max_verifications = 2
+
+[[step.expect]]
 check = "view_shows"
 screen = "home"
 text = "#7"

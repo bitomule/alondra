@@ -113,8 +113,12 @@ See [the process table and its signals](../crates/system/src/lib.rs),
   bytes and invalidation causes. Feed counters distinguish changed replies, timeout replies
   (including zero-wait requests), errors and requests superseded by another feed for the same
   device. Superseded counts use the declared view client (`tui`, `ios`, `mac`), not a verified
-  application identity. It records no view keys, device IDs, paths or request contents,
-  creates no endpoint or additional file, and stops counting automatically. Counts near a
+  application identity. Concurrent TUI requests sharing a device keep their existing connections
+  waiting for changes, with their original long-poll deadlines; another terminal does not make
+  them return a superseded response and immediately send a replacement. Each pending terminal's
+  views remain included in live sampling until its request ends. Diagnostics record no view keys,
+  device IDs, paths or request contents, create no endpoint or additional file, and stop counting
+  automatically. Counts near a
   window boundary are approximate under concurrency; they are not CPU measurements. Variables
   must be present in the daemon's own startup environment: exporting them in another terminal
   does not affect a running daemon. Setup does not add them to the launchd job or provider

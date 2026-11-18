@@ -1067,6 +1067,14 @@ impl Context<'_> {
     async fn expect(&self, checkpoint: &str, expect: &Expect, sent: Option<&[SentPush]>) -> Result<(), ScenarioError> {
         let failed = |expected: String, actual: String| ScenarioError::ExpectFailed { checkpoint: checkpoint.to_owned(), expected, actual };
         match expect {
+            Expect::SharedTuiFeed { max_requests, max_verifications } => {
+                let (requests, verifications) = self.phone.shared_tui_feed_work(self.daemon()).await
+                    .map_err(|error| failed("two pending signed TUI feeds".into(), error))?;
+                if requests > *max_requests || verifications > *max_verifications {
+                    return Err(failed(format!("at most {max_requests} feed requests and {max_verifications} signature verifications"),
+                        format!("requests={requests}, verifications={verifications}")));
+                }
+            }
             Expect::ReadIndexCards { max_passes } => {
                 let state = self.daemon().domain.state().map_err(|error| ScenarioError::Invalid(error.to_string()))?;
                 let cards = state.interactions.len() as u64;

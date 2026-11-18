@@ -7,7 +7,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
 
-TEST_ONLY = ["src/operation_journal/process_fixture.rs"]
+TEST_ONLY = ["src/operation_journal/process_fixture.rs", "src/views/feed_probe.rs"]
 
 WORKSPACE_DEPS = [
     "//crates/core:alondra_core",
@@ -42,7 +42,8 @@ adapter_in_crate(
 rust_library(
     name = "daemon_server_scenarios_lib",
     testonly = True,
-    srcs = production_sources(test_only = TEST_ONLY),
+    crate_features = ["test-hooks"],
+    srcs = production_sources(test_only = TEST_ONLY) + ["src/views/feed_probe.rs"],
     crate_name = "alondra_daemon_server",
     crate_root = "src/lib.rs",
     edition = "2024",
