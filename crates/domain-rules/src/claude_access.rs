@@ -545,7 +545,7 @@ impl DomainState {
         self.account_usage.retain(|usage| !replaced.contains(&AccountKey::new(usage.provider, usage.account.clone())));
     }
 
-    fn withdraw_hold(&mut self, card: &InteractionId) {
+    pub(super) fn withdraw_hold(&mut self, card: &InteractionId) {
         let revision = self.revision + 1;
         if let Some(card) = self.interactions.get_mut(card) {
             card.withdrawn = true;
@@ -553,7 +553,7 @@ impl DomainState {
         }
     }
 
-    fn resume_held(&mut self, held: &ClaudeHeld, written: Option<&str>, lifecycles: &mut Lifecycles) -> Result<(), DomainError> {
+    pub(super) fn resume_held(&mut self, held: &ClaudeHeld, written: Option<&str>, lifecycles: &mut Lifecycles) -> Result<(), DomainError> {
         let mut text = String::from(if held.provider == Provider::Claude { held.hold.go_on() } else { "Continue your existing task. Alondra manages provider waits; do not poll, sleep or schedule a retry yourself." });
         if let Some(written) = written {
             text.push_str("\n\nThe user wrote: ");

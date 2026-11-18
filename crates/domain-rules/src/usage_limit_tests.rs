@@ -154,7 +154,15 @@ impl World {
             Act::Pause(at, by_user) => {
                 let reason = if by_user { PauseReason::ByUser } else { PauseReason::Declared { reason: "The build queue is full".into() } };
                 let pause = Pause { reason, since: n as Millis, cut: None, turn_since: None, cleanup: PauseCleanup::Done, released: false };
-                let _ = exec(&mut self.s, Actor::System, Command::MoveNode { agent_id: node(at).into(), event: NodeEvent::Paused { pause }});
+                let paused_by_user = |s: &DomainState| matches!(s.node_pause(&node(at).into()), Some(Pause { reason: PauseReason::ByUser, .. }));
+                let already = paused_by_user(&self.s);
+                let done = exec(&mut self.s, Actor::System, Command::MoveNode { agent_id: node(at).into(), event: NodeEvent::Paused { pause }});
+                if by_user && !already && done.is_ok() != paused_by_user(&self.s) {
+                    return Err(format!("the user's pause of {} was {done:?} yet the node reads {:?}", TASKS[at].0, self.s.node_pause(&node(at).into())));
+                }
+                if by_user && !already && done.is_err() && !matches!(self.s.live_state(&TaskId::from(TASKS[at].0)), Some(LiveState::WaitingUser(_))) {
+                    return Err(format!("the user's pause of {} was refused: {done:?}", TASKS[at].0));
+                }
             }
             Act::Resume(at) => {
                 let _ = exec(&mut self.s, Actor::System, Command::TellNode { task_id: TASKS[at].0.into(), text: format!("Carry on {n}"), from_user: false, answers: None });

@@ -480,8 +480,13 @@ impl DomainState {
         match event {
             NodeEvent::Paused { pause } => {
                 let task = task.ok_or_else(|| DomainError::new("not_found", "The node has no open task"))?;
-                if self.held_pause(&task).is_some() {
+                let by_user = pause.reason == PauseReason::ByUser;
+                let held_by_alondra = self.node_pause(agent).is_some_and(|held| held.reason != PauseReason::ByUser);
+                if self.held_pause(&task).is_some() && !(by_user && held_by_alondra) {
                     return refuse("already_paused", "The node is already paused");
+                }
+                if by_user {
+                    self.end_pauses_of_alondra(&task, lifecycles)?;
                 }
                 let (card, owner, system) = node_pause_card(&task, pause)
                     .ok_or_else(|| DomainError::new("invalid_input", "A Claude API error of a node of the Agent SDK is held by its task's lifecycle"))?;
@@ -502,6 +507,28 @@ impl DomainState {
                 Ok(())
             }
         }
+    }
+
+    /// The user pauses a node a pause of Alondra's own holds (the gate's, a usage limit): theirs
+    /// takes its place, so that nothing but the user's resume can put the node back to work.
+    fn end_pauses_of_alondra(&mut self, task: &TaskId, lifecycles: &mut Lifecycles) -> Result<()> {
+        let cards: Vec<InteractionId> = {
+            let lifecycle = self.lifecycle(lifecycles, task)?;
+            lifecycle.cards().into_iter()
+                .filter(|(card, reason)| *reason == alondra_domain::WaitReason::Pause && lifecycle.card_owner(card) != Some(alondra_domain::Owner::User))
+                .map(|(card, _)| card.clone()).collect()
+        };
+        for card in cards {
+            if let Some(held) = self.claude_held().into_iter().find(|held| held.card == card) {
+                self.withdraw_hold(&card);
+                self.resume_held(&held, None, lifecycles)?;
+            } else {
+                let record = self.end_of_pause(task, &card, lifecycles)?;
+                self.decide(lifecycles, task, record)?;
+                self.retire(&card);
+            }
+        }
+        Ok(())
     }
 
     /// The gate's pause of the node `task` leaves ends with it: the gate sees pauses through

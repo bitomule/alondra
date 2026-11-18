@@ -203,8 +203,12 @@ proptest! {
         prop_assert_eq!(agree(&s), Ok(()));
         for (n, act) in acts.iter().enumerate() {
             let paused = s.node_pause(&NODE.into()).is_some();
+            let by_user = matches!(s.node_pause(&NODE.into()), Some(Pause { reason: PauseReason::ByUser, .. }));
             perform(&mut s, act, n);
             prop_assert_eq!(agree(&s), Ok(()), "after {:?} in {:?}", act, acts);
+            if by_user && matches!(act, Act::Pause { .. } | Act::DiskPause | Act::Interrupt) {
+                prop_assert!(matches!(s.node_pause(&NODE.into()), Some(Pause { reason: PauseReason::ByUser, .. })), "only the user's resume lifts their pause: {:?}", acts);
+            }
             if paused && matches!(act, Act::Resume | Act::ResumeAlone) {
                 prop_assert_eq!(s.node_pause(&NODE.into()), None, "the gate's resume always ends its pause: {:?}", acts);
                 let lifecycle = s.lifecycle_of(&SDK.into()).unwrap();
@@ -212,6 +216,25 @@ proptest! {
             }
         }
     }
+}
+
+/// 17 Nov, t-musts-scopes-gaps: a pause of the gate held the node when the user paused it, and the
+/// user's pause was lost. It takes the gate's place, and the user's resume is what lifts it.
+#[test]
+fn the_users_pause_over_a_pause_of_the_gate_is_recorded_and_only_their_resume_lifts_it() {
+    let mut s = three_tasks();
+    let agent = AgentId::from(NODE);
+    must(&mut s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Paused { pause: disk_pause(5) }});
+    must(&mut s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Paused { pause: pause(true, 6) }});
+    assert_eq!(s.node_pause(&agent).map(|pause| (pause.reason, pause.since)), Some((PauseReason::ByUser, 6)));
+    assert!(!s.turn_passes_gate(&SDK.into()), "no turn is given to a node the user paused");
+    assert_eq!(agree(&s), Ok(()));
+    assert!(exec(&mut s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Paused { pause: disk_pause(7) }}).is_err(), "nothing of Alondra's pauses it over the user's");
+    assert_eq!(s.node_pause(&agent).map(|pause| pause.reason), Some(PauseReason::ByUser));
+    must(&mut s, Actor::System, Command::TellNode { task_id: SDK.into(), text: "Carry on".into(), from_user: false, answers: None });
+    must(&mut s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Resumed });
+    assert_eq!(s.node_pause(&agent), None);
+    assert_eq!(agree(&s), Ok(()));
 }
 
 /// A node delivers, is told something while its delivery waits for review (before or after the
