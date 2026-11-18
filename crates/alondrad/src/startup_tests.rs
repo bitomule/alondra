@@ -107,3 +107,12 @@ fn the_daemon_implements_every_port() {
     crate::wire(daemon.domain().ports());
     assert_eq!(daemon.domain().ports().missing(), Vec::<&str>::new(), "a port nothing implements");
 }
+
+/// The server's wiring and the root's, on an empty registry, leave no port to nothing.
+#[test]
+fn the_daemons_wiring_alone_implements_every_port() {
+    let registry = alondra_engine_ports::Registry::default();
+    domain_bootstrap::wire(&registry);
+    crate::wire(&registry);
+    assert_eq!(registry.missing(), Vec::<&str>::new(), "a port the daemon's wiring leaves to nothing");
+}

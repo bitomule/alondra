@@ -16,12 +16,13 @@ const DATABASES: [&str; 5] = [
     "schedules.db",
 ];
 
-pub fn run(config: &Config) -> Result<String> {
-    run_for(config, &crate::options::user_home())
+/// `wire` gives the domain the root's output adapters, which this crate does not see.
+pub fn run(config: &Config, wire: fn(&alondra_engine_ports::Registry)) -> Result<String> {
+    run_for(config, &crate::options::user_home(), wire)
 }
 
 /// `run` for a user whose HOME is `user_home`, where a production SDK backend runs Claude.
-fn run_for(config: &Config, user_home: &Path) -> Result<String> {
+fn run_for(config: &Config, user_home: &Path, wire: fn(&alondra_engine_ports::Registry)) -> Result<String> {
     crate::domain_cutover::refuse_legacy_home(&config.home)?;
     alondra_core::home_lock::ensure_ready(&config.home)?;
     let backend = alondra_daemon_engine::sdk_backend::load(&config.home, config.sandbox, user_home)
@@ -30,7 +31,7 @@ fn run_for(config: &Config, user_home: &Path) -> Result<String> {
     snapshot(&config.home, &scratch.0)?;
     let mut copy = config.clone();
     copy.home = scratch.0.clone();
-    let started = start(&copy)?;
+    let started = start(&copy, wire)?;
     Ok(match backend {
         Some(backend) => format!("{started}; SDK backend configuration {} admitted", backend.configuration_digest()),
         None => started,
@@ -38,12 +39,13 @@ fn run_for(config: &Config, user_home: &Path) -> Result<String> {
 }
 
 /// The same canonical bootstrap `run` performs, on a HOME it may freely write.
-fn start(config: &Config) -> Result<String> {
+fn start(config: &Config, wire: fn(&alondra_engine_ports::Registry)) -> Result<String> {
     crate::home_renames::apply(&config.home, crate::domain_orchestrator::RECORDS)?;
     let (_, _source_fence) = crate::domain_database_migration::migrate_and_fence(&config.home)?;
     crate::retire_empty_older_sidecar(&config.home)?;
     crate::ensure_domain_protocol(&config.home)?;
     let domain = alondra_engine_sdk::wiring::open(&config.home)?;
+    wire(domain.ports());
     crate::domain_bootstrap::DomainDaemon::over(&config.home, domain)?;
     Ok("canonical domain state starts".into())
 }
@@ -205,7 +207,7 @@ mod tests {
             .unwrap();
         let lock = alondra_core::home_lock::HomeLock::recovery(&home).unwrap();
         let before = contents(&home);
-        let refused = run(&config).unwrap_err();
+        let refused = run(&config, |_| {}).unwrap_err();
         drop(lock);
         assert!(
             format!("{refused:#}").contains("still holds legacy data"),
@@ -257,11 +259,11 @@ mod tests {
         });
         std::fs::write(home.join(alondra_daemon_engine::sdk_backend::FILE), backend.to_string()).unwrap();
         let before = contents(&home);
-        let admitted = run_for(&config, &user).unwrap();
+        let admitted = run_for(&config, &user, |_| {}).unwrap();
         assert!(admitted.contains("SDK backend configuration") && admitted.contains("admitted"), "{admitted}");
         assert_eq!(contents(&home), before, "preflight must not write to the HOME it checks");
         std::fs::write(&artifact, b"another artifact").unwrap();
-        let refused = format!("{:#}", run_for(&config, &user).unwrap_err());
+        let refused = format!("{:#}", run_for(&config, &user, |_| {}).unwrap_err());
         assert!(refused.contains("does not have the SHA256"), "{refused}");
     }
 
@@ -270,7 +272,7 @@ mod tests {
         let (home, config) = committed_domain_home("migration-markerless");
         let before = contents(&home);
         assert!(
-            run(&config)
+            run(&config, |_| {})
                 .unwrap()
                 .contains("canonical domain state starts")
         );
@@ -285,7 +287,7 @@ mod tests {
         crate::domain_database_migration::prepare_test_migration(&home);
         let before = contents(&home);
         assert!(
-            run(&config)
+            run(&config, |_| {})
                 .unwrap()
                 .contains("canonical domain state starts")
         );
@@ -300,7 +302,7 @@ mod tests {
         assert!(crate::domain_database_migration::migrate(&home).unwrap());
         let before = contents(&home);
         assert!(
-            run(&config)
+            run(&config, |_| {})
                 .unwrap()
                 .contains("canonical domain state starts")
         );
@@ -317,7 +319,7 @@ mod tests {
             .execute("UPDATE domain_meta SET revision=revision+1", [])
             .unwrap();
         let before = contents(&home);
-        assert!(run(&config).is_err());
+        assert!(run(&config, |_| {}).is_err());
         assert_eq!(contents(&home), before);
         std::fs::remove_dir_all(home).unwrap();
     }

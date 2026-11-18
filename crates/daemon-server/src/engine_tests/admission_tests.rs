@@ -95,7 +95,7 @@ fn world() -> (Home, Arc<DomainRuntime>) {
     let home = home();
     let domain = open(&home.0);
     alondra_engine_admission::measure_machine(&domain, &Machine { at: 1, memory_total: 16 << 30, memory_available: 12 << 30,
-        memory_free_percent: Some(75), cpus: 11, ..Machine::default() }, crate::disk::Space { total: 500 << 30, free: 100 << 30, purgeable: 0 });
+        memory_free_percent: Some(75), cpus: 11, ..Machine::default() }, alondra_engine_ports::disk::Space { total: 500 << 30, free: 100 << 30, purgeable: 0 });
     run(&domain, Actor::User { user_id: "u".into() }, Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
     (home, domain)
 }

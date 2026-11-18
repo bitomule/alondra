@@ -1210,7 +1210,7 @@ async fn checked_producer_command<H: DomainHost>(
         = (&principal, &envelope.command)
         && let Ok(state) = host.domain().state()
         && !state.interactions.contains_key(interaction_id)
-        && let Some(refusal) = steps.step("checking the worktree with git", crate::worktree::final_refusal(&crate::watcher::claude_home(), &state, session_id, task_id, targets, git_within)).await
+        && let Some(refusal) = steps.step("checking the worktree with git", host.domain().ports().worktrees().final_refusal(&state, session_id, task_id, targets, git_within)).await
     {
         return Err(refusal);
     }
@@ -1218,14 +1218,14 @@ async fn checked_producer_command<H: DomainHost>(
         && !checklist.is_empty()
         && let Ok(state) = host.domain().state()
         && !state.interactions.contains_key(interaction_id)
-        && let Some(refusal) = steps.step("checking the checklist's commits with git", crate::worktree::evidence_refusal(&crate::watcher::claude_home(), &state, session_id, task_id, checklist, git_within)).await
+        && let Some(refusal) = steps.step("checking the checklist's commits with git", host.domain().ports().worktrees().evidence_refusal(&state, session_id, task_id, checklist, git_within)).await
     {
         return Err(refusal);
     }
     if let (Principal::Agent { session_id, .. }, Command::AskQuestion { scope: Scope::Task { task_id }, card, .. }) = (&principal, &envelope.command)
         && let Some(destination) = &card.secret_destination
         && let Ok(state) = host.domain().state()
-        && let Some(refusal) = crate::secret_files::ask_refusal(&crate::watcher::claude_home(), &state, session_id, task_id, destination)
+        && let Some(refusal) = host.domain().ports().worktrees().secret_refusal(&state, session_id, task_id, destination)
     {
         return Err(refusal);
     }
@@ -1488,7 +1488,7 @@ mod tests {
         }
         let (_home, host) = fixture();
         let root = crate::test_support::Directory::new();
-        let path = crate::worktree::testing::task_worktree(&root, "original");
+        let path = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "original");
         let path = path.to_str().unwrap();
         let plan = "- [ ] Build the answer\n";
         for (actor, id, command) in [

@@ -48,7 +48,7 @@ low_opt_rust_test(
     # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
     env = {"HOME": "."},
     version = VERSION,
-    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS,
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/engine-doubles:engine_doubles"],
 )
 
 rust_inputs_test(

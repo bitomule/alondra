@@ -525,22 +525,20 @@ state primed; its load average was 45 to 51 during the last runs:
 
 ## Output adapter `system`: git, worktrees and disks (2026-11-18)
 
-`crates/system` runs git, makes and deletes the task worktrees and reads the disks; the engine asks
-it through the `Worktrees` and `Disk` ports of `engine-ports`, and only `alondrad` links it. The
-clock, the daemon's log, its locks and its atomic saves moved to `foundation`, so the adapter needs
-nothing of the application. `edit_bench` on one edit of the worktree code, before (where it lived,
+`crates/system` runs git, makes and deletes the task worktrees and reads the disks. The engine asks
+it through the `Worktrees` and `Disk` ports of `engine-ports`, and only the `alondrad` root links it.
+The clock, the daemon's log, its locks and its atomic saves moved to `foundation`, so the adapter needs
+nothing of the application. The engine's tests run against `engine-doubles`' git-free `Worktrees` and
+`Disk`, which pass the same contract suite (`engine-doubles/src/contract.rs`) that `system`'s tests
+run with real git. `edit_bench` on one edit of the worktree code, before (where it lived,
 `daemon-support/src/worktree.rs`, main at 3a9431c) and after (`system/src/worktree.rs`), on the same
 Mac with incremental state:
 
 | Edit | Crates reopened | Test targets reopened | Actions run, build (rustc / clippy) | Build: critical path | Build: edit + build | Edit + test |
 |---|---:|---:|---|---:|---:|---:|
 | Before: `daemon-support/src/worktree.rs` | 35 | 76 | 66 (48 / 17) | 32 s | 48 s | 312 s, a test fails under load |
-| After: `system/src/worktree.rs` | 22 | 50 | 51 (34 / 16) | 31 s | 46 s | 318 s, a test fails under load |
+| After: `system/src/worktree.rs` | 11 | 38 | 15 (10 / 4) | 10 s | 22 s | 87 s |
 
-- In production the edit rebuilds three targets: `system`, `alondrad_lib` and the `alondrad` binary.
-- Every other target it reopens is a test: the engine's tests make real git worktrees, so the test
-  hooks of `engine-kernel`, `daemon-engine-store` and `engine-admission` wire `system`'s ports into
-  every runtime they open, and every engine test target links it. Edit + test misses the goal
-  (≤ 90 s) for that reason.
-- Next cut: an in-memory `Worktrees` and `Disk` for the engine's tests, with the tests of real git
-  living in `system`, so the engine's test hooks stop linking the adapter.
+- The edit rebuilds `system`, its test, `alondrad` and the tests that run the `alondrad` binary.
+- Before the doubles, with the engine's test hooks wiring `system` into every runtime, the same edit
+  took 46 s to build and 318 s with tests.

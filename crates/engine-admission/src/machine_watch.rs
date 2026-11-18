@@ -822,7 +822,7 @@ impl MachineWatch {
             self.changed.notify_one();
         }
         let free = space.filter(|_| low_here).map(|space| format!(" ({} free where it works)", alondra_core::machine_incident::bytes_text(if space.short_now() { space.free } else { space.usable() }, Lang::En))).unwrap_or_default();
-        Some(format!("The disk is nearly full{free}: Alondra starts no node until there is space again, and {} has a card about it", alondra_daemon_support::worktree::user_name()))
+        Some(format!("The disk is nearly full{free}: Alondra starts no node until there is space again, and {} has a card about it", alondra_core::config::user_name()))
     }
 
     fn watch_mount(&self, mount: PathBuf) {
@@ -1883,18 +1883,19 @@ mod tests {
 
     #[test]
     fn a_launch_on_another_volume_watches_it_from_then_on() {
-        let watch = MachineWatch::default();
-        let here = crate::test_support::Directory::new();
-        std::fs::create_dir(&here).unwrap();
-        watch.refuse_launch(&here);
-        let mount = alondra_system::disk::mount_point(&here).unwrap();
+        let disks = Arc::new(alondra_engine_doubles::disk::Disks::default());
+        disks.mount("/Volumes/Build", alondra_engine_doubles::disk::ROOMY, 0);
+        let watch = MachineWatch::reading(disks);
+        watch.refuse_launch(Path::new("/Volumes/Build/repo"));
         let watched = watch.record.lock().unwrap().volumes.clone();
-        if alondra_system::disk::same_volume(&mount, own_disk()) {
-            assert!(watched.is_empty(), "the Mac's own disk already has its gauge: {watched:?}");
-        } else {
-            assert_eq!(watched.into_iter().collect::<Vec<_>>(), [mount]);
-            assert_eq!(watch.volumes().len(), 1);
-        }
+        assert_eq!(watched.into_iter().collect::<Vec<_>>(), [PathBuf::from("/Volumes/Build")]);
+        watch.discover_volumes();
+        watch.measure_volumes(&BTreeMap::new(), 0);
+        assert_eq!(watch.volumes(), [(PathBuf::from("/Volumes/Build"), alondra_engine_doubles::disk::ROOMY)]);
+        let own = MachineWatch::default();
+        let folder = crate::test_support::Directory::new();
+        own.refuse_launch(&folder);
+        assert!(own.record.lock().unwrap().volumes.is_empty(), "the Mac's own disk already has its gauge");
     }
 
     /// Hours of a full disk with nodes waiting and nothing new measured: the one card stays, with

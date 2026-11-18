@@ -197,7 +197,7 @@ pub(crate) async fn final_refusal_within(state: &DomainState, dir: &Path, task: 
 }
 
 /// How long git may take, in all, on each check a final delivery makes in its worktree.
-pub const CHECK_LIMIT: Duration = Duration::from_secs(60);
+pub use alondra_engine_ports::worktrees::CHECK_LIMIT;
 
 /// What `check` finds within `limit`, or a refusal that names the git that did not finish. Every
 /// git it starts is killed when it is dropped.

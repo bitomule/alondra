@@ -2,7 +2,7 @@
 //! paired directly has no account to bind its endpoint at the relay with, so the iroh relay would
 //! not let it in; this Mac binds it there instead, carrying the device's own hello as its proof.
 //! Also what devices need to dial this Mac's endpoint: its direct addresses and its iroh relay.
-use alondra_foundation::locks::Poisonable as _;
+use crate::locks::Poisonable as _;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

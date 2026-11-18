@@ -45,7 +45,7 @@ fn require_database(home: &Path) -> Result<()> {
 
 /// Gives the registry every port's implementation the server reaches: each piece of the engine
 /// wires its own. The hosts of agents and the screens are the root's to wire.
-pub(crate) fn wire(registry: &alondra_engine_ports::Registry) {
+pub fn wire(registry: &alondra_engine_ports::Registry) {
     alondra_daemon_engine::wiring::wire(registry);
     alondra_engine_sdk::wiring::wire(registry);
     alondra_engine_admission::wire(registry);
@@ -473,7 +473,8 @@ async fn settings_config(
     let Ok(Json(body)) = body else {
         return crate::domain_api::domain_error(DomainError::new("invalid_input", "invalid setting"));
     };
-    match tokio::task::spawn_blocking(move || crate::settings::write_config(&state.home, &body)).await {
+    let worktrees = state.domain.ports().worktrees();
+    match tokio::task::spawn_blocking(move || crate::settings::write_config(&state.home, &*worktrees, &body)).await {
         Ok(reply) => reply.into_response(),
         Err(_) => storage(),
     }

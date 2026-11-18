@@ -8,15 +8,16 @@ mod test_support;
 #[macro_use]
 extern crate alondra_foundation;
 
-pub mod claude_check;
 pub mod disk;
-pub mod iroh_terminals;
 pub mod launch_worktree;
 pub mod secret_files;
 pub mod worktree;
 pub mod worktrees_root;
 
 use alondra_core::options::WorktreesRoot;
+use alondra_core::secret_destination::SecretDestination;
+use alondra_domain_rules::{ChecklistMark, DeliveryTarget, DomainError, DomainState, Interaction, TaskId};
+use std::time::Duration;
 use alondra_engine_ports::Registry;
 use alondra_engine_ports::disk::{Disk, Mounts, Space};
 use alondra_engine_ports::worktrees::{Git, LaunchError, Protected, Repository, TaskWorktree, WorktreeOrigin, Workplace, Worktrees};
@@ -112,6 +113,21 @@ impl Worktrees for GitWorktrees {
     fn restore(&self, worktree: &Path, record: &Repository) -> Result<(), String> {
         worktrees_root::restore(worktree, record)
     }
+    fn capture_root(&self, path: &Path) -> Result<WorktreesRoot, String> {
+        worktrees_root::capture(path)
+    }
+    fn final_refusal<'a>(&'a self, state: &'a DomainState, session_id: &'a str, task: &'a TaskId, targets: &'a [DeliveryTarget], limit: Duration) -> Git<'a, Option<DomainError>> {
+        Box::pin(async move { worktree::final_refusal(&(self.claude_home)(), state, session_id, task, targets, limit).await })
+    }
+    fn evidence_refusal<'a>(&'a self, state: &'a DomainState, session_id: &'a str, task: &'a TaskId, checklist: &'a [ChecklistMark], limit: Duration) -> Git<'a, Option<DomainError>> {
+        Box::pin(async move { worktree::evidence_refusal(&(self.claude_home)(), state, session_id, task, checklist, limit).await })
+    }
+    fn secret_refusal(&self, state: &DomainState, session_id: &str, task: &TaskId, destination: &SecretDestination) -> Option<DomainError> {
+        secret_files::ask_refusal(&(self.claude_home)(), state, session_id, task, destination)
+    }
+    fn write_secret(&self, state: &DomainState, interaction: &Interaction, value: &str) -> Result<String, String> {
+        secret_files::write(&(self.claude_home)(), state, interaction, value)
+    }
 }
 
 #[cfg(test)]
@@ -123,6 +139,44 @@ mod tests {
 
     fn claude_home() -> PathBuf {
         CLAUDE_HOME.get().cloned().unwrap_or_default()
+    }
+
+    #[test]
+    fn the_macs_disks_keep_the_contract_the_doubles_keep() {
+        alondra_engine_doubles::contract::disk(&Disks);
+    }
+
+    fn git_repository(path: &std::path::Path) {
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(path).args(args).output().unwrap().status.success(), "git {args:?}");
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+    }
+
+    #[test]
+    fn the_macs_git_keeps_the_contract_the_doubles_keep() {
+        alondra_engine_doubles::contract::worktrees(&GitWorktrees { claude_home: PathBuf::new }, &git_repository);
+        alondra_engine_doubles::contract::final_checks(&GitWorktrees { claude_home: PathBuf::new }, &git_repository, &slow_status);
+        let git = |dir: &std::path::Path, args: &[&str]| std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+        alondra_engine_doubles::contract::saved_work(&GitWorktrees { claude_home: PathBuf::new }, &alondra_engine_doubles::contract::Saving {
+            task_worktree: &worktree::testing::task_worktree,
+            local_commit: &|dir| assert!(git(dir, &["commit", "-q", "--allow-empty", "-m", "fix"]).status.success()),
+            push: &|dir| assert!(git(dir, &["push", "-q", "-u", "origin", "HEAD"]).status.success()),
+            branch_exists: &|repo, branch| git(repo, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).status.success(),
+        });
+    }
+
+    /// Every `git status` in `dir` takes `delay`: git asks a file-system monitor hook that sleeps
+    /// before it answers.
+    fn slow_status(dir: &std::path::Path, delay: std::time::Duration) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let hook = dir.parent().unwrap().join(format!("{}-slow-fsmonitor", dir.file_name().unwrap().to_string_lossy()));
+        std::fs::write(&hook, format!("#!/bin/sh\nsleep {}\nexit 1\n", delay.as_secs())).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let git = std::process::Command::new("git").arg("-C").arg(dir).args(["config", "core.fsmonitor", hook.to_str().unwrap()]).output().unwrap();
+        assert!(git.status.success());
     }
 
     #[test]

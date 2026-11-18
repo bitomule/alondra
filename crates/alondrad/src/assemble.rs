@@ -147,6 +147,7 @@ pub async fn start(config: &Config, seams: Seams) -> Result<Assembled> {
 /// `start` over a domain the caller opened at `config.home`, so it can prepare the domain before
 /// the daemon takes the SDK hosts over: how a scenario's restart keeps the hosts it plays.
 pub async fn start_over(config: &Config, domain: domain_runtime::DomainRuntime, seams: Seams) -> Result<Assembled> {
+    crate::wire_machine(domain.ports());
     let state = domain_bootstrap::DomainDaemon::over(&config.home, domain)?;
     assemble(config, state, seams).await
 }

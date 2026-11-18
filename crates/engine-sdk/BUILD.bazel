@@ -49,6 +49,7 @@ TEST_HOOKS_DEPS = [
     "//crates/daemon-engine-store:daemon_engine_store_test_hooks",
     "//crates/daemon-support:daemon_support_test_hooks",
     "//crates/engine-admission:engine_admission_on_test_hooks",
+    "//crates/engine-doubles:engine_doubles",
     "//crates/engine-github:engine_github_test_hooks",
     "//crates/engine-kernel:engine_kernel_test_hooks",
 ]

@@ -556,7 +556,7 @@ fn state_in(cached: &Option<Cached>, tx: &Connection) -> Result<(Arc<DomainState
 fn unprotected_ports() -> Arc<alondra_engine_ports::Registry> {
     let ports = Arc::new(alondra_engine_ports::Registry::default());
     #[cfg(any(test, feature = "test-hooks"))]
-    alondra_system::wire(&ports, alondra_daemon_support::watcher::claude_home);
+    alondra_engine_doubles::machine::wire(&ports, alondra_daemon_support::watcher::claude_home);
     ports
 }
 

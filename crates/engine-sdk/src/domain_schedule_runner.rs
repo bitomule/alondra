@@ -1020,7 +1020,7 @@ pub mod tests {
         let fixture = Fixture::new();
         let project = fixture.in_project("LegacyApp");
         let old_slug = "t-a245e78abcdef";
-        let workplace = alondra_system::launch_worktree::isolate(&project, old_slug, None, None).await.unwrap();
+        let workplace = fixture.domain.ports().worktrees().isolate(&project, old_slug, None, None, None).await.unwrap();
         let old_path = project.join(".claude/worktrees").join(old_slug).canonicalize().unwrap();
         assert_eq!(workplace.dir().canonicalize().unwrap(), old_path);
         fixture.claim("legacy");
@@ -1043,9 +1043,7 @@ pub mod tests {
         finish_claim(&reopened, &fixture.home, &run.id).unwrap();
         assert_eq!(reopened.state().unwrap().schedule.runs[&run.id], saved);
         assert_eq!(old_path.canonicalize().unwrap(), old_path);
-        let branch = std::process::Command::new("git").arg("-C").arg(&old_path).args(["branch", "--show-current"]).output().unwrap();
-        assert!(branch.status.success());
-        assert_eq!(String::from_utf8(branch.stdout).unwrap().trim(), format!("worktree-{old_slug}"));
+        assert_eq!(fixture.domain.ports().worktrees().branch_in(&old_path).await, Some(format!("worktree-{old_slug}")));
     }
 
     pub struct Fixture {
@@ -1121,10 +1119,7 @@ pub mod tests {
     }
 
     fn git_repository(dir: &Path) {
-        std::fs::create_dir_all(dir).unwrap();
-        for args in [&["init", "-q", "-b", "main"][..], &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "start"]] {
-            assert!(std::process::Command::new("git").arg("-C").arg(dir).args(args).status().unwrap().success());
-        }
+        alondra_engine_doubles::worktrees::repository(dir);
     }
 
     impl Fixture {
@@ -1191,9 +1186,7 @@ pub mod tests {
             project.join(".claude/worktrees").join(alondra_engine_ports::worktrees::slug(&task.0)).canonicalize().unwrap(),
             "a scheduled node works in a worktree of its own, never the main checkout"
         );
-        let branch = std::process::Command::new("git").arg("-C").arg(starts[0]["cwd"].as_str().unwrap()).args(["branch", "--show-current"]).output().unwrap();
-        assert!(branch.status.success());
-        assert_eq!(String::from_utf8(branch.stdout).unwrap().trim(), format!("worktree-{}", task.0));
+        assert_eq!(fixture.domain.ports().worktrees().branch_in(Path::new(starts[0]["cwd"].as_str().unwrap())).await, Some(format!("worktree-{}", task.0)));
         assert!(sdk.flag("--disallowedTools").is_some_and(|tools| tools.contains("Bash")), "{:?}", sdk.args());
         let prompts = sdk.prompts();
         assert_eq!(prompts.len(), 1, "{prompts:?}");
@@ -1666,11 +1659,7 @@ pub mod tests {
         let _sdk = SdkLaunches::enable(&fixture.domain, &fixture.home);
         let project = fixture.root.join("projects/app");
         std::fs::create_dir(&project).unwrap();
-        let git = |args: &[&str]| alondra_system::worktree::testing::git(&project, args);
-        git(&["init", "-q", "-b", "main"]);
-        git(&["config", "user.email", "test@example.invalid"]);
-        git(&["config", "user.name", "Test"]);
-        git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+        alondra_engine_doubles::worktrees::repository(&project);
         let mut schedule = fixture.domain.state().unwrap().schedule.schedules[&ScheduleId::from("schedule-1")].clone();
         schedule.project = Some("app".into());
         schedule.revision += 1;
@@ -1689,7 +1678,7 @@ pub mod tests {
         assert_eq!(fixture.launches(), 0);
         assert!(!path.exists());
         std::fs::create_dir(&path).unwrap();
-        let root = alondra_system::worktrees_root::capture(&path).unwrap();
+        let root = fixture.domain.ports().worktrees().capture_root(&path).unwrap();
         std::fs::write(&options, alondra_core::options::with_worktrees_root(&original, Some(&root)).unwrap()).unwrap();
         run_cycle(&fixture.domain, &fixture.home, false).await.unwrap();
         assert_eq!(fixture.launches(), 1);

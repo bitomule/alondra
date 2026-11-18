@@ -1514,7 +1514,7 @@ pub mod tests {
             dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
         });
         let root = crate::test_support::Directory::new();
-        let made = alondra_system::worktree::testing::task_worktree(&root, "agent-a9e1782746c156d58");
+        let made = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "agent-a9e1782746c156d58");
         let path = made.to_str().unwrap();
         hook(&domain, json!({"session_id": "session-a", "hook_event_name": "PostToolUse", "tool_name": "Agent",
             "tool_input": {"isolation": "worktree", "prompt": "Fix it"},

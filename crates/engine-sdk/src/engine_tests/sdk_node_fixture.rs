@@ -102,7 +102,7 @@ impl SdkNode {
         }).unwrap();
         domain.sdk_owners().driven_by_hand.lock().unwrap().insert(driver.agent().clone());
         domain.admission().ignore_mac();
-        domain.machine_watch().measure_disk(crate::disk::Space { total: 500_000_000_000, free: 100_000_000_000, purgeable: 0 });
+        domain.machine_watch().measure_disk(alondra_engine_ports::disk::Space { total: 500_000_000_000, free: 100_000_000_000, purgeable: 0 });
         Self { driver, domain, capture, backend, home, _state: state }
     }
 

@@ -177,7 +177,7 @@ impl DomainRuntime {
         store.fill_task_projects(&projects_root)?;
         let ports = Arc::new(alondra_engine_ports::Registry::default());
         #[cfg(any(test, feature = "test-hooks"))]
-        alondra_system::wire(&ports, alondra_daemon_support::watcher::claude_home);
+        alondra_engine_doubles::machine::wire(&ports, alondra_daemon_support::watcher::claude_home);
         store.protect(alondra_engine_ports::worktrees::WorktreeRules::new(
             alondra_engine_ports::worktrees::Protected { home: home_of_user, projects_root },
             ports.clone(),

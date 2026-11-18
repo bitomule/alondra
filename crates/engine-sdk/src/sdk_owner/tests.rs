@@ -911,7 +911,7 @@ async fn an_sdk_node_is_told_once_about_its_unsaved_worktree_and_its_confirmatio
     let agent = driver.agent().clone();
     let node = Actor::Agent { agent_id: agent.clone() };
     let root = Directory::new();
-    let dirty = alondra_system::worktree::testing::task_worktree(&root, "sdk-slice");
+    let dirty = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "sdk-slice");
     slice.run(&Actor::System, "worktree", Command::RecordTaskWorktree {
         task_id: TASK.into(), path: dirty.to_str().unwrap().into(), origin: alondra_domain_rules::WorktreeOrigin::Subagent, branch: None,
     });
@@ -1844,16 +1844,14 @@ async fn the_orchestrators_replace_stops_the_sdk_node_and_closes_its_request_bef
 async fn a_cancelled_sdk_task_with_unsaved_files_in_a_subagents_worktree_is_closed_and_the_user_decides_on_them() {
     let slice = Slice::new();
     let root = Directory::new();
-    let own = alondra_system::worktree::testing::task_worktree(&root, TASK);
+    let own = alondra_engine_doubles::worktrees::testing::task_worktree(&root, TASK);
     slice.domain.set_task_worktree(&TaskId::from(TASK), own.to_str().unwrap()).unwrap();
     let mut driver = slice.launch();
     slice.settle(&mut driver);
     let agent = driver.agent().clone();
     let repo = root.join("repo");
     let subagent = repo.join(".claude/worktrees/agent-a0000000000000001");
-    let added = std::process::Command::new("git").current_dir(&repo)
-        .args(["worktree", "add", "-q", "-b", "worktree-agent-a0000000000000001", subagent.to_str().unwrap()]).status().unwrap();
-    assert!(added.success());
+    alondra_engine_doubles::worktrees::make_worktree(&repo, &subagent).unwrap();
     slice.run(&Actor::System, "subagent", Command::RecordTaskWorktree {
         task_id: TASK.into(), path: subagent.to_str().unwrap().into(), origin: alondra_domain_rules::WorktreeOrigin::Subagent, branch: None,
     });
@@ -4247,7 +4245,7 @@ fn a_failed_reopening_workspace_cannot_replace_the_original_admissions_native_di
         task_id: TASK.into(), end: NodeEnd::Closed, agent_id: Some(old_node.clone()),
     });
     slice.run(&user(), "reopen-directory-original", Command::ReopenTask { task_id: TASK.into() });
-    let failed_workspace = alondra_system::worktree::testing::task_worktree(&slice._home.join("failed-reopening"), "failed-reopening-workspace");
+    let failed_workspace = alondra_engine_doubles::worktrees::testing::task_worktree(&slice._home.join("failed-reopening"), "failed-reopening-workspace");
     slice.domain.set_task_worktree(&TASK.into(), failed_workspace.to_str().unwrap()).unwrap();
     assert_eq!(original_directory(&slice.domain, &TASK.into()).unwrap().as_deref(), slice.worktree.to_str(),
         "only the admitted launch placement identifies the original native session's directory");

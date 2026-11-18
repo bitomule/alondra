@@ -1,6 +1,9 @@
 //! The task worktrees Alondra makes, reopens and deletes with git, as the engine asks for them,
 //! and the values that travel with them.
 use alondra_core::options::WorktreesRoot;
+use alondra_core::secret_destination::SecretDestination;
+use alondra_domain_rules::{ChecklistMark, DeliveryTarget, DomainError, DomainState, Interaction, TaskId};
+use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -8,6 +11,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::Registry;
+
+/// How long git may take, in all, on each check a final delivery makes in its worktree.
+pub const CHECK_LIMIT: Duration = Duration::from_secs(60);
 
 pub type Git<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -135,6 +141,16 @@ pub trait Worktrees: Send + Sync {
     fn stored(&self, worktree: &Path) -> Option<Repository>;
     /// Puts back the record of a worktree's storage folder.
     fn restore(&self, worktree: &Path, record: &Repository) -> Result<(), String>;
+    /// The worktrees folder at `path`, pinned to the volume it is on.
+    fn capture_root(&self, path: &Path) -> Result<WorktreesRoot, String>;
+    /// Why a node's final delivery cannot be taken yet, git given `limit` in all.
+    fn final_refusal<'a>(&'a self, state: &'a DomainState, session_id: &'a str, task: &'a TaskId, targets: &'a [DeliveryTarget], limit: Duration) -> Git<'a, Option<DomainError>>;
+    /// Why the commits a final delivery cites cannot be taken.
+    fn evidence_refusal<'a>(&'a self, state: &'a DomainState, session_id: &'a str, task: &'a TaskId, checklist: &'a [ChecklistMark], limit: Duration) -> Git<'a, Option<DomainError>>;
+    /// Why a node cannot ask for a secret written to `destination`.
+    fn secret_refusal(&self, state: &DomainState, session_id: &str, task: &TaskId, destination: &SecretDestination) -> Option<DomainError>;
+    /// Writes the secret `value` where the open card `interaction` says; what the node is told.
+    fn write_secret(&self, state: &DomainState, interaction: &Interaction, value: &str) -> Result<String, String>;
 }
 
 /// The folders a task's worktree can never be, and the git that tells whether a folder is one: what

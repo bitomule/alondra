@@ -24,8 +24,8 @@ tempfile = { workspace = true, optional = true }
 tokio.workspace = true
 
 [dev-dependencies]
+alondra-engine-doubles.workspace = true
 alondra-github-gh.workspace = true
-alondra-system = { workspace = true, features = ["test-hooks"] }
 alondra-daemon-engine-model = { workspace = true, features = ["test-hooks"] }
 alondra-daemon-support = { workspace = true, features = ["test-hooks"] }
 alondra-engine-kernel = { workspace = true, features = ["test-hooks"] }
