@@ -218,6 +218,20 @@ proptest! {
     }
 }
 
+/// The same for the wait for the machine a node declared itself: the user's pause takes its place.
+#[test]
+fn the_users_pause_over_a_wait_for_the_machine_is_recorded_and_only_their_resume_lifts_it() {
+    let mut s = three_tasks();
+    let agent = AgentId::from(NODE);
+    must(&mut s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Paused { pause: pause(false, 5) }});
+    assert!(matches!(s.node_next(&agent, &NodeEvent::Paused { pause: pause(true, 6) }), Ok(Some(_))), "the gate is told the user's pause takes its place");
+    assert!(matches!(s.node_next(&agent, &NodeEvent::Paused { pause: pause(false, 7) }), Ok(None)), "a pause of Alondra's over one is nothing to do");
+    must(&mut s, Actor::System, Command::MoveNode { agent_id: NODE.into(), event: NodeEvent::Paused { pause: pause(true, 6) }});
+    assert_eq!(s.node_pause(&agent).map(|pause| (pause.reason, pause.since)), Some((PauseReason::ByUser, 6)));
+    assert!(matches!(s.node_next(&agent, &NodeEvent::Paused { pause: pause(true, 8) }), Ok(None)), "a second pause of the user's is nothing to do");
+    assert_eq!(agree(&s), Ok(()));
+}
+
 /// 17 Nov, t-musts-scopes-gaps: a pause of the gate held the node when the user paused it, and the
 /// user's pause was lost. It takes the gate's place, and the user's resume is what lifts it.
 #[test]
