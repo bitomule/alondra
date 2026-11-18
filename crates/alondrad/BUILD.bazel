@@ -36,6 +36,7 @@ root_library(
 # test hooks (the one fake GitHub), so a conversation runs the production loops over fake edges.
 rust_library(
     name = "alondrad_scenarios_lib",
+    crate_features = ["test-hooks"],
     testonly = True,
     srcs = production_sources(exclude = ["src/main.rs"]),
     crate_name = "alondrad",

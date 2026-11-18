@@ -250,8 +250,7 @@ impl Client {
         self.get(&path)
     }
 
-    /// Poll changes for the open TUI views. Starting a newer request for the same device
-    /// supersedes this one at the daemon.
+    /// Poll changes for the open TUI views. Concurrent terminals can share one device identity.
     pub fn feed(&self, cursor: Option<&str>, views: &[(&str, &str)], wait: u64) -> Result<ViewsFeed> {
         let reply = self.feed_with_capabilities(cursor, views, wait)?;
         if self.observe_capabilities(reply.service.as_ref()) {

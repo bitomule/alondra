@@ -13,7 +13,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::Serialize;
 use sha2::Digest;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -29,6 +29,12 @@ pub(crate) struct Feeds {
     cache: Mutex<HashMap<String, Current>>,
     /// A holder that panics leaves it whole, so it is recovered: one insert or retain.
     open: Mutex<HashMap<String, (String, Instant)>>,
+    /// Concurrent terminals share a device identity, but can watch different screens.
+    active_tui: Mutex<HashMap<u64, String>>,
+    #[cfg(any(test, feature = "test-hooks"))]
+    test_waiting: AtomicU64,
+    #[cfg(any(test, feature = "test-hooks"))]
+    test_displacements: AtomicU64,
     next: AtomicU64,
     clock: watch::Sender<u64>,
     shared: watch::Sender<u64>,
@@ -39,11 +45,22 @@ impl Default for Feeds {
     fn default() -> Self {
         let (clock, _) = watch::channel(0);
         let (shared, _) = watch::channel(0);
-        Self { waiters: Mutex::default(), cache: Mutex::default(), open: Mutex::default(), next: AtomicU64::new(0), clock, shared, observation: Observation::default() }
+        Self {
+            waiters: Mutex::default(), cache: Mutex::default(), open: Mutex::default(), active_tui: Mutex::default(),
+            #[cfg(any(test, feature = "test-hooks"))]
+            test_waiting: AtomicU64::new(0),
+            #[cfg(any(test, feature = "test-hooks"))]
+            test_displacements: AtomicU64::new(0),
+            next: AtomicU64::new(0), clock, shared, observation: Observation::default(),
+        }
     }
 }
 
 impl Feeds {
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(super) fn test_progress(&self) -> (u64, u64) {
+        (self.test_waiting.load(Ordering::Relaxed), self.test_displacements.load(Ordering::Relaxed))
+    }
     pub(crate) fn observed(observation: Observation) -> Self { Self { observation, ..Self::default() } }
 
     pub(crate) fn wake(&self) {
@@ -75,10 +92,14 @@ impl Feeds {
     }
 
     fn live_keys_at(&self, now: Instant) -> Vec<String> {
+        let mut active: HashSet<String> = self.active_tui.lock_or_recover("the active terminal feeds")
+            .values().cloned().collect();
         let mut open = self.open.lock_or_recover("the open feed views");
         open.retain(|_, (_, seen)| now.saturating_duration_since(*seen) < Duration::from_secs(60));
+        active.extend(open.values().map(|(key, _)| key.clone()));
+        drop(open);
         let mut cache = self.cache.lock_or_recover("the feed cache");
-        cache.retain(|key, _| open.values().any(|(active, _)| active == key));
+        cache.retain(|key, _| active.contains(key));
         let mut keys = cache.values().flat_map(|current| current.live_keys.iter().cloned())
             .collect::<Vec<_>>();
         keys.sort();
@@ -188,6 +209,20 @@ struct Current {
     live_keys: Vec<String>,
 }
 
+struct PendingTerminal<'a> {
+    client: &'a crate::client_routes::Client,
+    device: &'a str,
+    generation: u64,
+}
+
+impl Drop for PendingTerminal<'_> {
+    fn drop(&mut self) {
+        self.client.feeds.active_tui.lock_or_recover("the active terminal feeds")
+            .remove(&self.generation);
+        remove_waiter(self.client, self.device, self.generation);
+    }
+}
+
 pub(crate) async fn handle(
     client: &crate::client_routes::Client,
     device: &str,
@@ -210,6 +245,11 @@ pub(crate) async fn handle(
     client.feeds.remember_open(device, feed_key(kind, lang, transport, &views, capabilities));
     let (cancel_tx, mut cancel_rx) = oneshot::channel();
     let generation = client.feeds.next.fetch_add(1, Ordering::Relaxed);
+    let _terminal = (kind == Client::Tui).then(|| {
+        client.feeds.active_tui.lock_or_recover("the active terminal feeds")
+            .insert(generation, feed_key(kind, lang, transport, &views, capabilities));
+        PendingTerminal { client, device, generation }
+    });
     if let Some((_, old)) = client
         .feeds
         .waiters
@@ -222,6 +262,9 @@ pub(crate) async fn handle(
     let mut domain_changes = client.domain.subscribe();
     let mut live_changes = client.feeds.clock.subscribe();
     let mut previous = None;
+    let mut displaced = false;
+    #[cfg(any(test, feature = "test-hooks"))]
+    let mut counted_wait = false;
     loop {
         let current = match current(client, kind, lang, transport, &views, capabilities, previous.as_ref()).await {
             Ok(current) => current,
@@ -256,10 +299,23 @@ pub(crate) async fn handle(
             .into_response();
         }
         previous = Some(current.clone());
+        #[cfg(any(test, feature = "test-hooks"))]
+        if kind == Client::Tui && !counted_wait {
+            client.feeds.test_waiting.fetch_add(1, Ordering::Relaxed);
+            counted_wait = true;
+        }
         let timeout = clock::sleep(Duration::from_secs(wait).saturating_sub(alondra_core::clock::since(started)));
         tokio::pin!(timeout);
         tokio::select! {
-            _ = &mut cancel_rx => {
+            _ = &mut cancel_rx, if !displaced => {
+                #[cfg(any(test, feature = "test-hooks"))]
+                if kind == Client::Tui { client.feeds.test_displacements.fetch_add(1, Ordering::Relaxed); }
+                if kind == Client::Tui {
+                    // Another terminal shares this key. Keep this connection subscribed instead
+                    // of making both terminals immediately sign replacement requests.
+                    displaced = true;
+                    continue;
+                }
                 client.view_observation.add(match kind {
                     Client::Tui => Metric::FeedSupersededTui,
                     Client::Ios => Metric::FeedSupersededIos,
@@ -1064,12 +1120,12 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn observation_counts_repeated_feed_displacement_without_domain_changes() {
+    async fn observation_counts_repeated_app_feed_displacement_without_domain_changes() {
         use std::{future::{Future, poll_fn}, task::Poll};
         let observation = Observation::armed();
         let fixture = FeedFixture::observed(observation.clone());
-        let initial = response_json(handle(&fixture.client, "terminal", "protocol=1&client=tui&lang=en&wait=0", Transport::Loopback).await).await;
-        let query = format!("protocol=1&client=tui&lang=en&wait=50&cursor={}", initial["cursor"].as_str().unwrap());
+        let initial = response_json(handle(&fixture.client, "terminal", "protocol=1&client=ios&lang=en&wait=0", Transport::Loopback).await).await;
+        let query = format!("protocol=1&client=ios&lang=en&wait=50&cursor={}", initial["cursor"].as_str().unwrap());
         observation.start();
         let mut previous = Box::pin(handle(&fixture.client, "terminal", &query, Transport::Loopback));
         poll_fn(|cx| {
@@ -1094,8 +1150,8 @@ mod tests {
         drop(previous);
         let counts = observation.totals().metrics;
         assert_eq!(counts[Metric::FeedRequests as usize], 5);
-        assert_eq!(counts[Metric::FeedSupersededTui as usize], 4);
-        for metric in [Metric::FeedChanged, Metric::FeedTimeout, Metric::FeedError, Metric::FeedSupersededIos, Metric::FeedSupersededMac] {
+        assert_eq!(counts[Metric::FeedSupersededIos as usize], 4);
+        for metric in [Metric::FeedChanged, Metric::FeedTimeout, Metric::FeedError, Metric::FeedSupersededTui, Metric::FeedSupersededMac] {
             assert_eq!(counts[metric as usize], 0);
         }
     }
@@ -1115,6 +1171,118 @@ mod tests {
         assert_eq!(counts[Metric::FeedChanged as usize], 1);
         assert_eq!(counts[Metric::FeedTimeout as usize], 1);
         assert_eq!(counts[Metric::FeedError as usize], 1);
+    }
+
+    async fn assert_pending<T>(mut future: std::pin::Pin<&mut impl std::future::Future<Output = T>>) {
+        std::future::poll_fn(|cx| {
+            assert!(future.as_mut().poll(cx).is_pending(), "an unchanged terminal keeps its connection open");
+            std::task::Poll::Ready(())
+        }).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn concurrent_terminals_wait_for_changes_without_displacing_each_other() {
+        let observation = Observation::armed();
+        let fixture = FeedFixture::observed(observation.clone());
+        let initial = response_json(handle(&fixture.client, "terminal", "protocol=1&client=tui&lang=en&wait=0", Transport::Loopback).await).await;
+        let query = format!("protocol=1&client=tui&lang=en&wait=50&cursor={}", initial["cursor"].as_str().unwrap());
+        observation.start();
+        let mut pending = Vec::new();
+        for _ in 0..5 {
+            let mut request = Box::pin(handle(&fixture.client, "terminal", &query, Transport::Loopback));
+            assert_pending(request.as_mut()).await;
+            pending.push(request);
+        }
+        for request in &mut pending { assert_pending(request.as_mut()).await; }
+        let counts = observation.totals().metrics;
+        assert_eq!(counts[Metric::FeedRequests as usize], 5);
+        assert_eq!(counts[Metric::FeedSupersededTui as usize], 0);
+        assert_eq!(fixture.client.feeds.active_tui.lock().unwrap().len(), 5);
+
+        fixture.create_visible_question("terminal-update");
+        for request in pending {
+            let reply = response_json(request.await).await;
+            assert_eq!(reply["superseded"], false);
+            assert_ne!(reply["status"]["version"], initial["status"]["version"]);
+        }
+        assert!(fixture.client.feeds.active_tui.lock().unwrap().is_empty());
+        assert!(fixture.client.feeds.waiters.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shared_terminal_request_and_signature_budget_counts_real_work() {
+        let fixture = FeedFixture::new();
+        let auth = crate::auth::Auth::open(&fixture.home).unwrap();
+        let secret = [29u8; 32];
+        let key = p256::ecdsa::SigningKey::from_slice(&secret).unwrap();
+        let device = auth.pair(&auth.new_pairing_code(), "Terminal", &base64::engine::general_purpose::STANDARD.encode(key.verifying_key().to_sec1_bytes())).unwrap();
+        let (requests, verifications) = fixture.client.shared_tui_feed_work_for_test(
+            &auth, &secret, &device.id, alondra_core::now_millis(),
+        ).await.unwrap();
+        assert_eq!(requests, 2, "two terminals issue one outstanding request each");
+        assert_eq!(verifications, 2, "each actual request still verifies its signature");
+        assert!(fixture.client.feeds.active_tui.lock().unwrap().is_empty());
+        assert!(fixture.client.feeds.waiters.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_shared_terminal_keeps_its_original_transport_deadline() {
+        let fixture = FeedFixture::new();
+        let initial = response_json(handle(&fixture.client, "terminal", "protocol=1&client=tui&lang=en&wait=0", Transport::Loopback).await).await;
+        let first_query = format!("protocol=1&client=tui&lang=en&wait=20&cursor={}", initial["cursor"].as_str().unwrap());
+        let second_query = first_query.replace("wait=20", "wait=50");
+        let mut first = Box::pin(handle(&fixture.client, "terminal", &first_query, Transport::Loopback));
+        assert_pending(first.as_mut()).await;
+        tokio::time::advance(Duration::from_secs(10)).await;
+        let mut second = Box::pin(handle(&fixture.client, "terminal", &second_query, Transport::Loopback));
+        assert_pending(second.as_mut()).await;
+        assert_pending(first.as_mut()).await;
+        tokio::time::advance(Duration::from_secs(10)).await;
+        let reply = response_json(first.await).await;
+        assert_eq!(reply["superseded"], false);
+        assert_eq!(reply["stale"], serde_json::json!([]));
+        assert_pending(second.as_mut()).await;
+        drop(second);
+        assert!(fixture.client.feeds.active_tui.lock().unwrap().is_empty());
+        assert!(fixture.client.feeds.waiters.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pending_terminals_keep_each_distinct_live_view_until_the_connection_closes() {
+        let fixture = FeedFixture::new();
+        let (agent, first_key) = fixture.node_on_task("first-terminal");
+        let (_, second_key) = fixture.node_on_task("second-terminal");
+        let tool = |command: &str| serde_json::json!({"type":"assistant", "parent_tool_use_id":null,
+            "message":{"role":"assistant", "content":[{"type":"tool_use", "id":command, "name":"Bash", "input":{"command":command}}]}});
+        fixture.client.domain.live().mods.apply_sdk(&agent, &tool("first"), alondra_core::now_millis());
+        let state = fixture.client.domain.state().unwrap();
+        let mut queries = Vec::new();
+        for key in [&first_key, &second_key] {
+            let live = super::super::live::gather(&fixture.client, &state, Lang::En, &[key.clone()], false, false).await;
+            let view = fixture.client.views.render(key, &alondra_domain_rules::ReadSnapshot::build(state.clone()), &live,
+                Client::Tui, Lang::En, Transport::Loopback).unwrap();
+            let views = vec![(key.clone(), view.version)];
+            let initial = current(&fixture.client, Client::Tui, Lang::En, Transport::Loopback, &views, ClientCapabilities::default(), None).await.unwrap();
+            queries.push(query(&initial.cursor, 50, &views).replace("client=ios", "client=tui"));
+        }
+        let mut first = Box::pin(handle(&fixture.client, "terminal", &queries[0], Transport::Loopback));
+        let mut second = Box::pin(handle(&fixture.client, "terminal", &queries[1], Transport::Loopback));
+        assert_pending(first.as_mut()).await;
+        assert_pending(second.as_mut()).await;
+        assert_pending(first.as_mut()).await;
+        let keys = fixture.client.feeds.live_keys_at(clock::instant() + Duration::from_secs(61));
+        assert!(keys.contains(&first_key) && keys.contains(&second_key), "pending connections keep both screens sampled: {keys:?}");
+        let mut last = None;
+        sample_live(&fixture.client, &state, &mut last).await;
+        fixture.client.domain.live().mods.apply_sdk(&agent, &tool("second"), alondra_core::now_millis());
+        assert!(sample_live(&fixture.client, &state, &mut last).await);
+        let reply = response_json(first.await).await;
+        assert_eq!(reply["superseded"], false);
+        assert_eq!(reply["stale"], serde_json::json!([first_key]));
+        assert!(!fixture.client.feeds.live_keys().contains(&first_key));
+        drop(second);
+        assert!(fixture.client.feeds.active_tui.lock().unwrap().is_empty());
+        assert!(fixture.client.feeds.live_keys().is_empty());
     }
 
     #[tokio::test]

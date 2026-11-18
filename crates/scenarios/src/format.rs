@@ -195,6 +195,8 @@ pub struct Checkpoint {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "check", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Expect {
+    /// Two TUI windows sharing a paired identity keep their signed long polls open.
+    SharedTuiFeed { max_requests: u64, max_verifications: usize },
     /// The calls Alondra made to GitHub that change something, in order, as `gh` is typed.
     GhCalls { calls: Vec<String> },
     PrMergedInto { pr: u64, branch: String },

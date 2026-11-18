@@ -43,6 +43,12 @@ impl Phone {
         &self.device
     }
 
+    pub async fn shared_tui_feed_work(&self, daemon: &Assembled) -> Result<(u64, usize), String> {
+        let first_timestamp = alondra_core::now_millis() + self.sent.get();
+        self.sent.set(self.sent.get() + 32);
+        daemon.shared_tui_feed_work_for_test(&PHONE_SECRET, self.device(), first_timestamp).await
+    }
+
     pub async fn get(&self, path: &str) -> std::io::Result<Response> {
         self.send("GET", path, None).await
     }

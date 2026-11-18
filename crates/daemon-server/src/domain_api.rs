@@ -1420,6 +1420,50 @@ mod tests {
     use sha2::{Digest as _, Sha256};
     use std::collections::BTreeSet;
 
+    #[tokio::test(start_paused = true)]
+    async fn shared_terminal_feeds_recheck_revocation_and_same_identity_key_replacement() {
+        use std::{future::{Future, poll_fn}, task::Poll};
+        for replace_key in [false, true] {
+            let home = crate::test_support::Directory::new();
+            std::fs::create_dir_all(&home).unwrap();
+            let domain = alondra_engine_sdk::engine_tests::open(&home).unwrap();
+            let host = crate::domain_bootstrap::DomainDaemon::over(&home, domain).unwrap();
+            let key = SigningKey::from_slice(&[27u8; 32]).unwrap();
+            let public = STANDARD.encode(key.verifying_key().to_sec1_bytes());
+            let device = host.auth().pair(&host.auth().new_pairing_code(), "Terminal", &public).unwrap();
+            let signed = Signed { device_id: device.id.clone(), name: device.name, public_key: public };
+            let initial = changes(State(host.clone()), Some(Extension(signed.clone())),
+                RawQuery(Some("protocol=1&client=tui&lang=en&wait=0".into()))).await;
+            let bytes = axum::body::to_bytes(initial.into_body(), 1 << 20).await.unwrap();
+            let initial: Value = serde_json::from_slice(&bytes).unwrap();
+            let query = format!("protocol=1&client=tui&lang=en&wait=20&cursor={}", initial["cursor"].as_str().unwrap());
+            let mut first = Box::pin(changes(State(host.clone()), Some(Extension(signed.clone())), RawQuery(Some(query.clone()))));
+            let mut second = Box::pin(changes(State(host.clone()), Some(Extension(signed)), RawQuery(Some(query))));
+            poll_fn(|cx| {
+                assert!(first.as_mut().poll(cx).is_pending());
+                assert!(second.as_mut().poll(cx).is_pending());
+                assert!(first.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            }).await;
+            let authority = crate::auth::Auth::open(&home).unwrap();
+            if replace_key {
+                let replacement = SigningKey::from_slice(&[28u8; 32]).unwrap();
+                let path = home.join("devices.json");
+                let mut devices: Vec<crate::auth::Device> = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                devices.iter_mut().find(|saved| saved.id == device.id).unwrap().public_key =
+                    STANDARD.encode(replacement.verifying_key().to_sec1_bytes());
+                std::fs::write(&path, serde_json::to_vec(&devices).unwrap()).unwrap();
+            } else {
+                assert!(authority.revoke(&device.id).unwrap());
+            }
+            tokio::time::advance(std::time::Duration::from_secs(20)).await;
+            for response in [first.await, second.await] {
+                assert_eq!(response.status(), StatusCode::FORBIDDEN,
+                    "the saved approval is checked again before either pending feed returns");
+            }
+        }
+    }
+
     #[test]
     fn task_wait_reply_distinguishes_a_pending_wait_and_survives_reopening_the_store() {
         let home = crate::test_support::Directory::new();
