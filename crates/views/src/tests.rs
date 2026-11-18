@@ -10559,3 +10559,63 @@ fn host_recovery_cards_use_plain_localized_content_in_the_list_and_detail() {
         assert!(state.interactions[&id].body.contains("StaleOwner"), "the diagnostic is retained");
     }
 }
+
+fn start_problem_read_fixture() -> DomainState {
+    use alondra_domain_rules::{Actor, Command, LaunchPlan, CardSpec, CardKind, StartProblem};
+    let mut state = DomainState::new("test-epoch");
+    execute(&mut state, Actor::User { user_id: "u".into() }, Command::CreateRequest {
+        request_id: "r".into(), body: "Export the report".into(), auto_merge: false, maintenance: false, message: false,
+    });
+    execute(&mut state, Actor::Orchestrator { generation: 0 }, Command::TitleRequest { request_id: "r".into(), title: "Exports".into() });
+    for (id, dependencies) in [("source", vec![]), ("dependent", vec!["source"]), ("refused", vec![]), ("queued", vec![])] {
+        execute(&mut state, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
+            task_id: id.into(), request_id: "r".into(), title: id.into(), agent_id: None, review_prs: false,
+            dependencies: dependencies.into_iter().map(Into::into).collect(), stack: None,
+            launch: Some(LaunchPlan::new("node", "/work")), plan_items: None, continues: None,
+        });
+    }
+    execute(&mut state, Actor::User { user_id: "u".into() }, Command::CancelTask { task_id: "source".into(), reason: None });
+    execute(&mut state, Actor::System, Command::RaiseStartProblem { task_id: "refused".into(),
+        problem: StartProblem::PlanRefused { error: "Choose a model".into() } });
+    for n in 0..20 {
+        execute(&mut state, Actor::System, Command::PublishInformation {
+            interaction_id: format!("history-{n}").into(), scope: Scope::Task { task_id: "queued".into() },
+            recipient: Recipient::User, body: "Historical update".into(), attachments: vec![],
+            card: CardSpec::derived(CardKind::Know, "Read update"),
+        });
+    }
+    state.validate_journal().unwrap();
+    state
+}
+
+#[test]
+fn task_presentations_read_start_problems_from_the_committed_index() {
+    use alondra_domain_rules::{ReadSnapshot, Situation, WaitsFor, AlondraStep};
+    let read = ReadSnapshot::build(std::sync::Arc::new(start_problem_read_fixture()));
+    for id in ["refused", "dependent"] {
+        assert_eq!(read.index().task(&id.into()).unwrap().situation,
+            Situation::Waiting(WaitsFor::Step(AlondraStep::Answering)));
+    }
+    assert_eq!(read.index().task(&"queued".into()).unwrap().situation, Situation::Waiting(WaitsFor::Slot));
+    let mut live = LiveSnapshot::default();
+    live.start_waits.insert("queued".into(), LiveStartWait::Room);
+    for (lang, expected) in [
+        (Lang::En, ["The orchestrator fixes its launch plan or cancels it",
+            "“source” was cancelled · the orchestrator decides what happens to it", "Starts when there is room"]),
+        (Lang::Es, ["El orquestador corrige su plan de arranque o la cancela",
+            "«source» se canceló · el orquestador decide qué hacer con ella", "Arranca cuando haya sitio"]),
+    ] {
+        for client in [Client::Ios, Client::Mac, Client::Tui] {
+            let context = RenderContext { domain: read.state(), index: read.index(), live: &live,
+                client, lang, transport: Transport::Relay, cursor: "test", rendered_at: "" };
+            let before = alondra_domain_rules::measure::cards_read();
+            for (id, expected) in ["refused", "dependent", "queued"].into_iter().zip(expected) {
+                let task = &read.state().tasks[&id.into()];
+                let presentation = task_state::present(task, &context);
+                assert_eq!(presentation.fact(), Some(expected), "{id} {client:?} {lang:?}");
+            }
+            assert_eq!(alondra_domain_rules::measure::cards_read() - before, 0,
+                "presenting tasks must not scan start-problem history");
+        }
+    }
+}

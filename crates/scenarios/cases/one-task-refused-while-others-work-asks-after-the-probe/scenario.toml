@@ -91,6 +91,10 @@ name = "queued-behind-card-history"
 check = "read_index_cards"
 max_passes = 1
 
+[[step.expect]]
+check = "task_presentation_reads"
+max_reads = 0
+
 [[step]]
 do = "node_limit"
 count = 4

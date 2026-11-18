@@ -7,8 +7,10 @@ use alondra_domain_rules::{
     PrState, PullRequest, PROTOCOL_VERSION,
 };
 use alondra_core::pr::Check;
+use alondra_view_model::{LiveCheck, LivePullRequest};
 use alondra_view_model::pr_images::{PrImage, Shown};
 use crate::pr_images::GitHubImages;
+use crate::views::observation::{Observation as ViewObservation, Metric};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -106,6 +108,33 @@ pub(crate) enum Merge {
 const CLEAN_CACHE_MILLIS: i64 = 60_000;
 
 impl Details {
+    fn into_live(self) -> LivePullRequest {
+        LivePullRequest {
+            title: self.title,
+            body: self.body,
+            head_ref: self.head_ref,
+            base_ref: self.base_ref,
+            checks: self.checks.into_iter().map(|check| LiveCheck {
+                name: check.name,
+                state: match check.state {
+                    alondra_core::pr::CheckState::Passed => alondra_view_model::CheckState::Pass,
+                    alondra_core::pr::CheckState::Failed => alondra_view_model::CheckState::Fail,
+                    alondra_core::pr::CheckState::Running | alondra_core::pr::CheckState::Other => alondra_view_model::CheckState::Pending,
+                },
+            }).collect(),
+            additions: self.additions,
+            deletions: self.deletions,
+            changed_files: self.changed_files,
+            fetched: true,
+            draft: self.draft,
+            blocked: self.blocked,
+            mergeability_unknown: self.mergeability_unknown,
+            conflicts: self.conflicts,
+            images: self.images,
+            ..Default::default()
+        }
+    }
+
     fn fresh_at(&self, now: i64) -> bool {
         self.observed_at.and_then(|at| now.checked_sub(at))
             .is_some_and(|age| (0..CLEAN_CACHE_MILLIS).contains(&age))
@@ -128,6 +157,7 @@ impl Details {
 
 #[derive(Default)]
 pub(crate) struct PrDetails {
+    observation: ViewObservation,
     /// A holder that panics leaves it whole, so it is recovered: a cache of GitHub reads the next
     /// refresh writes again.
     cache: Mutex<Observations>,
@@ -150,6 +180,25 @@ struct Observation {
     images: Option<Images>,
 }
 
+impl Observation {
+    fn effective(&self) -> Option<Details> {
+        let mut details = self.details.clone()?;
+        match self.images.as_ref() {
+            Some(images) if images.read > self.accepted && !images.brought.is_empty() => {
+                details.body = Some(images.body.clone());
+                details.images = images.brought.clone();
+            }
+            Some(images) if details.body.as_deref() == Some(images.body.as_str()) => details.images = images.brought.clone(),
+            _ => {}
+        }
+        Some(details)
+    }
+
+    fn live(&self) -> Option<LivePullRequest> {
+        self.effective().map(Details::into_live)
+    }
+}
+
 /// The images brought for one description at one head, read by request `read`.
 struct Images {
     body: String,
@@ -160,6 +209,10 @@ struct Images {
 }
 
 impl PrDetails {
+    pub(crate) fn observed(observation: ViewObservation) -> Self {
+        Self { observation, ..Self::default() }
+    }
+
     fn now(&self) -> i64 {
         #[cfg(test)]
         if let Some(clock) = self.clock.lock_or_recover("the pull request clock").clone() { return clock(); }
@@ -173,17 +226,12 @@ impl PrDetails {
 
     pub(crate) fn get(&self, pr_id: &str) -> Option<Details> {
         let cache = self.cache.lock_or_recover("the pull request details");
-        let entry = cache.entries.get(pr_id)?;
-        let mut details = entry.details.clone()?;
-        match entry.images.as_ref() {
-            Some(images) if images.read > entry.accepted && !images.brought.is_empty() => {
-                details.body = Some(images.body.clone());
-                details.images = images.brought.clone();
-            }
-            Some(images) if details.body.as_deref() == Some(images.body.as_str()) => details.images = images.brought.clone(),
-            _ => {}
-        }
-        Some(details)
+        cache.entries.get(pr_id)?.effective()
+    }
+
+    pub(crate) fn live(&self, pr_id: &str) -> LivePullRequest {
+        let cache = self.cache.lock_or_recover("the pull request details");
+        cache.entries.get(pr_id).and_then(Observation::live).unwrap_or_default()
     }
 
     /// Brings from GitHub the images of each open pull request's description not brought yet.
@@ -239,11 +287,21 @@ impl PrDetails {
 
     fn complete(&self, pr_id: &str, request: u64, mut details: Details) -> bool {
         let mut cache = self.cache.lock_or_recover("the pull request details");
-        let Some(entry) = cache.entries.get_mut(pr_id).filter(|entry| entry.accepted <= request) else { return false };
+        let Some(entry) = cache.entries.get_mut(pr_id).filter(|entry| entry.accepted <= request) else {
+            self.observation.add(Metric::PrRejected, 1);
+            return false;
+        };
+        let before = entry.live();
         entry.accepted = request;
         details.observed_at = Some(self.now());
         entry.details = Some(details);
-        cache.changes += 1;
+        self.observation.add(Metric::PrAccepted, 1);
+        if entry.live() != before {
+            cache.changes += 1;
+            self.observation.add(Metric::PrVisibleChanged, 1);
+        } else {
+            self.observation.add(Metric::PrVisibleUnchanged, 1);
+        }
         true
     }
 
@@ -1317,5 +1375,139 @@ mod tests {
         }));
         assert_eq!((details.additions, details.deletions, details.changed_files), (120, 30, 4));
         assert_eq!(details.checks.iter().map(|check| check.name.as_str()).collect::<Vec<_>>(), ["build", "ui tests"]);
+    }
+}
+
+#[cfg(test)]
+mod visible_projection_regression {
+    use super::*;
+
+    #[test]
+    fn a_check_that_has_not_finished_is_pending_and_only_a_pass_is_green() {
+        use alondra_core::pr::CheckState as Github;
+        use alondra_view_model::CheckState as View;
+        let details = Details {
+            checks: [Github::Passed, Github::Failed, Github::Running, Github::Other].into_iter()
+                .map(|state| Check { name: "build".into(), state, url: None }).collect(),
+            ..Default::default()
+        };
+        assert_eq!(details.into_live().checks.into_iter().map(|check| check.state).collect::<Vec<_>>(),
+            [View::Pass, View::Fail, View::Pending, View::Pending]);
+    }
+    use std::sync::atomic::{AtomicI64, Ordering};
+
+    #[test]
+    fn identical_visible_details_refresh_freshness_without_invalidating_views() {
+        let details = PrDetails::default();
+        let now = Arc::new(AtomicI64::new(1_000));
+        let clock = now.clone();
+        *details.clock.lock().unwrap() = Some(Arc::new(move || clock.load(Ordering::SeqCst)));
+        let original = Details {
+            title: Some("Export report".into()), body: Some("Ready for review".into()),
+            head_sha: Some("head-one".into()), base_ref: Some("main".into()),
+            checks: vec![Check { name: "build".into(), state: alondra_core::pr::CheckState::Running, url: None }],
+            ..Default::default()
+        };
+        details.record("pr", original.clone());
+        let version = details.version();
+        now.store(61_000, Ordering::SeqCst);
+        details.record("pr", original.clone());
+        let fresh = details.get("pr").unwrap();
+        assert_eq!(fresh.observed_at, Some(61_000));
+        assert!(fresh.fresh_at(61_001), "freshness remains current for the merge path");
+        assert_eq!(details.version(), version, "a timestamp-only refresh changes no view");
+
+        let mut invisible = original.clone();
+        invisible.head_sha = Some("head-two".into());
+        invisible.checks[0].url = Some("https://example.com/build".into());
+        invisible.checks[0].state = alondra_core::pr::CheckState::Other;
+        details.record("pr", invisible.clone());
+        assert_eq!(details.get("pr").unwrap().head_sha, invisible.head_sha);
+        assert_eq!(details.version(), version, "both raw check states show Pending; head and check URLs are not shown");
+
+        invisible.title = Some("Export report with totals".into());
+        details.record("pr", invisible);
+        assert_eq!(details.version(), version + 1, "a changed visible title invalidates views");
+    }
+
+    fn image(label: &str) -> PrImage {
+        PrImage {
+            span: 0..1, dest: 0..1, url: "https://example.com/image.png".into(),
+            alt: label.into(), html: false,
+            shown: Shown::Stored { route: "/pr-images/example.png".into() },
+        }
+    }
+
+    #[test]
+    fn completing_identical_raw_details_invalidates_a_displaced_image_overlay() {
+        let details = PrDetails::default();
+        *details.clock.lock().unwrap() = Some(Arc::new(|| 1_000));
+        let raw = Details { body: Some("Original body".into()), images: vec![image("original")], ..Default::default() };
+        details.record("pr", raw.clone());
+        let overlay = details.begin("pr");
+        details.cache.lock().unwrap().entries.get_mut("pr").unwrap().images = Some(Images {
+            body: "Newer image body".into(), head: "head".into(), brought: vec![image("newer")], retry: false, read: overlay,
+        });
+        assert_eq!(details.get("pr").unwrap().body.as_deref(), Some("Newer image body"));
+        assert_eq!(details.live("pr").images, vec![image("newer")]);
+        let version = details.version();
+        details.record("pr", raw);
+        assert_eq!(details.version(), version + 1, "accepted advancement changes the effective overlay even when raw details match");
+        let latest = details.live("pr");
+        assert_eq!(latest.body.as_deref(), Some("Original body"));
+        assert_eq!(latest.images, vec![image("original")]);
+    }
+
+    #[test]
+    fn matching_body_keeps_the_image_overlay_without_invalidating_identical_output() {
+        let details = PrDetails::default();
+        let raw = Details { body: Some("Same body".into()), ..Default::default() };
+        details.record("pr", raw.clone());
+        let overlay = details.begin("pr");
+        details.cache.lock().unwrap().entries.get_mut("pr").unwrap().images = Some(Images {
+            body: "Same body".into(), head: "head".into(), brought: vec![image("kept")], retry: false, read: overlay,
+        });
+        let before = details.live("pr");
+        let version = details.version();
+        details.record("pr", raw);
+        assert_eq!(details.live("pr"), before);
+        assert_eq!(details.version(), version, "the matching-body fallback retains the same effective images");
+    }
+
+    #[test]
+    fn visible_check_image_and_merge_state_changes_each_invalidate() {
+        let details = PrDetails::default();
+        let raw = Details {
+            checks: vec![Check { name: "build".into(), state: alondra_core::pr::CheckState::Running, url: None }],
+            ..Default::default()
+        };
+        details.record("pr", raw.clone());
+        let version = details.version();
+        let mut changed = raw;
+        changed.checks[0].state = alondra_core::pr::CheckState::Passed;
+        details.record("pr", changed.clone());
+        assert_eq!(details.version(), version + 1);
+        assert_eq!(details.live("pr").checks[0].state, alondra_view_model::CheckState::Pass);
+        changed.images = vec![image("published")];
+        details.record("pr", changed.clone());
+        assert_eq!(details.version(), version + 2);
+        assert_eq!(details.live("pr").images, changed.images);
+        changed.blocked = true;
+        details.record("pr", changed);
+        assert_eq!(details.version(), version + 3);
+        assert!(details.live("pr").blocked);
+    }
+
+    #[test]
+    fn an_older_completion_cannot_change_effective_details_or_freshness() {
+        let details = PrDetails::default();
+        let old = details.begin("pr");
+        let new = details.begin("pr");
+        assert!(details.complete("pr", new, Details { title: Some("New observation".into()), ..Default::default() }));
+        let before = details.get("pr").unwrap();
+        let version = details.version();
+        assert!(!details.complete("pr", old, Details { title: Some("Older observation".into()), ..Default::default() }));
+        assert_eq!(details.get("pr").unwrap(), before);
+        assert_eq!(details.version(), version);
     }
 }

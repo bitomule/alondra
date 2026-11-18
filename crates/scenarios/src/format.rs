@@ -203,6 +203,8 @@ pub enum Expect {
     StartProblemReads { max_passes: u64 },
     /// Building the committed read index scans card history at most this many times.
     ReadIndexCards { max_passes: u64 },
+    /// Task list and detail rendering reads at most this many cards from domain history.
+    TaskPresentationReads { max_reads: u64 },
     /// Every transcript of the case was played to its end: the daemon sent what each expected and
     /// received everything it said.
     TranscriptsPlayed,

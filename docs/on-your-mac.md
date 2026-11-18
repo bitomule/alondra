@@ -105,6 +105,17 @@ See [the process table and its signals](../crates/system/src/lib.rs),
   `node_environment` can add variables; their values may persist in host ownership records.
   MCP servers and provider plugins have their own credentials and access. See
   [environment selection](../crates/engine-kernel/src/sdk_backend.rs).
+- **Optional view diagnostics:** The daemon reads `ALONDRA_VIEW_OBSERVE_SECONDS` once when
+  opening its client. An integer from 1 to 3600 enables one aggregate observation window;
+  `ALONDRA_VIEW_OBSERVE_DELAY_SECONDS` delays its start by 0 to 3600 seconds (default 60).
+  Missing duration or invalid values disable it. The window writes two records to the existing
+  daemon log with fixed counter names and numeric totals for executed view work, serialization
+  bytes and invalidation causes. It records no view keys, device IDs, paths or request contents,
+  creates no endpoint or additional file, and stops counting automatically. Counts near a
+  window boundary are approximate under concurrency; they are not CPU measurements. Variables
+  must be present in the daemon's own startup environment: exporting them in another terminal
+  does not affect a running daemon. Setup does not add them to the launchd job or provider
+  environment. See [view observation](../crates/daemon-server/src/views/observation.rs).
 - **Optional direct APNs:** `~/.alondra/push.json` holds notification registration state;
   `~/.alondra/apns.json` names an Apple `.p8` private key file, team,
   key ID and topic. The daemon reads that key to send notifications when direct APNs is

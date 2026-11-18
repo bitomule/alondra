@@ -70,6 +70,7 @@ pub struct Client {
     issue_cache: tokio::sync::Mutex<Option<crate::issues::IssueList>>,
     pub(crate) live_reads: crate::views::live::LiveReadCache,
     pub(crate) live_snapshots: crate::views::live::LiveSnapshots,
+    pub(crate) view_observation: crate::views::observation::Observation,
     pub(crate) mcp_probes: Arc<crate::mcp_probe::McpProbes>,
     /// A holder that panics leaves it whole, so it is recovered: assigned only after the file is
     /// saved.
@@ -264,6 +265,17 @@ impl Client {
     }
 
     pub(crate) fn open(domain: Arc<DomainRuntime>, home: &Path, gauges: crate::machine::Gauges) -> Arc<Self> {
+        let seconds = std::env::var("ALONDRA_VIEW_OBSERVE_SECONDS").ok();
+        let delay = std::env::var("ALONDRA_VIEW_OBSERVE_DELAY_SECONDS").ok();
+        let window = crate::views::observation::window(seconds.as_deref(), delay.as_deref());
+        let observation = if window.is_some() { crate::views::observation::Observation::armed() } else { Default::default() };
+        let client = Self::open_observed(domain, home, gauges, observation);
+        if let Some(window) = window { crate::views::observation::start_window(&client, window); }
+        client
+    }
+
+    pub(crate) fn open_observed(domain: Arc<DomainRuntime>, home: &Path, gauges: crate::machine::Gauges,
+        view_observation: crate::views::observation::Observation) -> Arc<Self> {
         let device_languages_path = home.join("device-languages.json");
         let device_languages = match std::fs::read(&device_languages_path) {
             Ok(bytes) => match serde_json::from_slice(&bytes) {
@@ -288,18 +300,19 @@ impl Client {
             home: home.to_owned(),
             gauges,
             views_gauges: Default::default(),
-            details: Default::default(),
+            details: pr_details::PrDetails::observed(view_observation.clone()),
             pr_view: std::sync::Mutex::new(Arc::new(GhView)),
             pr_images: std::sync::Mutex::new(Arc::new(alondra_github_gh::GhCli::new())),
             pr_merger: std::sync::Mutex::new(Arc::new(alondra_github_gh::GhCli::new())),
             views: Default::default(),
-            feeds: Default::default(),
+            feeds: crate::views::feed::Feeds::observed(view_observation.clone()),
             sessions: std::sync::Mutex::new(machine),
             github: std::sync::Mutex::new(Arc::new(new_work::Gh)),
             options: Default::default(),
             issue_cache: Default::default(),
             live_reads: Default::default(),
             live_snapshots: Default::default(),
+            view_observation,
             mcp_probes: Default::default(),
             device_languages: std::sync::Mutex::new(device_languages),
             device_languages_path,
