@@ -1,5 +1,8 @@
 //! Optional aggregate counts of the work views execute, scoped to one daemon client.
-use std::sync::{Arc, atomic::{AtomicBool, AtomicU64, Ordering}};
+use std::sync::{Arc, Mutex, Weak, atomic::{AtomicBool, AtomicU64, Ordering}};
+use std::time::Duration;
+use alondra_core::clock;
+use crate::locks::Poisonable as _;
 
 #[derive(Clone, Copy)]
 #[repr(usize)]
@@ -52,39 +55,111 @@ pub(crate) struct Totals {
     pub causes: [[u64; CAUSES.len()]; STAGES.len()],
 }
 
-/// A disabled handle allocates nothing; clones never retain Client.
+/// Clones share control without retaining Client. Off only reads one atomic flag.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct Observation(Option<Arc<Counts>>);
+pub(crate) struct Observation(Arc<Control>);
+#[derive(Debug, Default)]
+struct Control {
+    active: AtomicBool,
+    window: Mutex<WindowState>,
+}
+#[derive(Debug, Default)]
+struct WindowState {
+    counts: Option<Arc<Counts>>,
+    running: bool,
+    started: Option<clock::Instant>,
+}
 #[derive(Debug)]
 struct Counts {
     active: AtomicBool,
+    elapsed_us: AtomicU64,
     metrics: [AtomicU64; NAMES.len()],
     invalid_events: [AtomicU64; STAGES.len()],
     causes: [[AtomicU64; CAUSES.len()]; STAGES.len()],
 }
-impl Observation {
-    pub(crate) fn armed() -> Self {
-        Self(Some(Arc::new(Counts {
+impl Default for Counts {
+    fn default() -> Self {
+        Self {
             active: AtomicBool::new(false),
+            elapsed_us: AtomicU64::new(0),
             metrics: std::array::from_fn(|_| AtomicU64::new(0)),
             invalid_events: std::array::from_fn(|_| AtomicU64::new(0)),
             causes: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU64::new(0))),
-        })))
+        }
     }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StartError { InvalidWindow, AlreadyRunning, RuntimeUnavailable }
+
+impl Observation {
+    #[cfg(test)]
+    pub(crate) fn armed() -> Self {
+        let observation = Self::default();
+        observation.0.window.lock_or_recover("the view observation window").counts = Some(Arc::default());
+        observation
+    }
+    #[cfg(test)]
     pub(crate) fn start(&self) {
-        if let Some(counts) = &self.0 { counts.active.store(true, Ordering::Relaxed); }
+        let mut window = self.0.window.lock_or_recover("the view observation window");
+        if let Some(counts) = &window.counts {
+            counts.active.store(true, Ordering::Relaxed);
+            self.0.active.store(true, Ordering::Release);
+            window.running = true;
+        }
     }
+    #[cfg(test)]
     pub(crate) fn stop(&self) {
-        if let Some(counts) = &self.0 { counts.active.store(false, Ordering::Relaxed); }
+        let mut window = self.0.window.lock_or_recover("the view observation window");
+        self.0.active.store(false, Ordering::Release);
+        if let Some(counts) = &window.counts { counts.active.store(false, Ordering::Relaxed); }
+        window.running = false;
+    }
+    pub(crate) fn is_running(&self) -> bool {
+        self.0.window.lock_or_recover("the view observation window").running
+    }
+    pub(crate) fn start_window(&self, seconds: u64, delay_seconds: u64) -> Result<(), StartError> {
+        if !(1..=3600).contains(&seconds) || delay_seconds > 3600 { return Err(StartError::InvalidWindow); }
+        let runtime = tokio::runtime::Handle::try_current().map_err(|_| StartError::RuntimeUnavailable)?;
+        let counts = Arc::new(Counts::default());
+        {
+            let mut window = self.0.window.lock_or_recover("the view observation window");
+            if window.running { return Err(StartError::AlreadyRunning); }
+            window.counts = Some(counts.clone());
+            window.running = true;
+            window.started = None;
+            if delay_seconds == 0 {
+                log!("view observation start seconds={} totals={}", seconds, counts.summary());
+                window.started = Some(clock::instant());
+                counts.active.store(true, Ordering::Relaxed);
+                self.0.active.store(true, Ordering::Release);
+            }
+        }
+        let starts = clock::instant() + Duration::from_secs(delay_seconds);
+        let control = Arc::downgrade(&self.0);
+        let counts = Arc::downgrade(&counts);
+        runtime.spawn(async move {
+            if delay_seconds != 0 {
+                clock::sleep_until(starts).await;
+                if !transition(&control, &counts, true, seconds) { return; }
+            }
+            clock::sleep_until(starts + Duration::from_secs(seconds)).await;
+            transition(&control, &counts, false, seconds);
+        });
+        Ok(())
+    }
+    fn active_counts(&self) -> Option<Arc<Counts>> {
+        if !self.0.active.load(Ordering::Acquire) { return None; }
+        self.0.window.lock_or_recover("the view observation window").counts.clone()
+            .filter(|counts| counts.active.load(Ordering::Relaxed))
     }
     pub(crate) fn add(&self, metric: Metric, value: u64) {
-        if let Some(counts) = &self.0 && counts.active.load(Ordering::Relaxed) {
+        if let Some(counts) = self.active_counts() {
             counts.metrics[metric as usize].fetch_add(value, Ordering::Relaxed);
         }
     }
     pub(crate) fn invalid(&self, stage: Stage, mask: u16) {
-        let Some(counts) = &self.0 else { return };
-        if mask == 0 || !counts.active.load(Ordering::Relaxed) { return; }
+        if mask == 0 { return; }
+        let Some(counts) = self.active_counts() else { return };
         let stage = stage as usize;
         counts.invalid_events[stage].fetch_add(1, Ordering::Relaxed);
         for cause in 0..CAUSES.len() {
@@ -93,10 +168,19 @@ impl Observation {
             }
         }
     }
+    #[cfg(test)]
     pub(crate) fn totals(&self) -> Totals {
-        let Some(counts) = &self.0 else {
-            return Totals { metrics: [0; NAMES.len()], invalid_events: [0; STAGES.len()], causes: [[0; CAUSES.len()]; STAGES.len()] };
-        };
+        self.0.window.lock_or_recover("the view observation window").counts.as_ref()
+            .map(|counts| counts.totals())
+            .unwrap_or(Totals { metrics: [0; NAMES.len()], invalid_events: [0; STAGES.len()], causes: [[0; CAUSES.len()]; STAGES.len()] })
+    }
+    #[cfg(test)]
+    fn summary(&self) -> String { summary(self.totals(), 0) }
+}
+
+impl Counts {
+    fn totals(&self) -> Totals {
+        let counts = self;
         Totals {
             metrics: std::array::from_fn(|i| counts.metrics[i].load(Ordering::Relaxed)),
             invalid_events: std::array::from_fn(|i| counts.invalid_events[i].load(Ordering::Relaxed)),
@@ -104,17 +188,39 @@ impl Observation {
         }
     }
     fn summary(&self) -> String {
-        let totals = self.totals();
-        let mut fields = std::collections::BTreeMap::new();
-        for (name, value) in NAMES.iter().zip(totals.metrics) { fields.insert((*name).to_owned(), value); }
-        for (stage, name) in STAGES.iter().enumerate() {
-            fields.insert(format!("{name}_invalid"), totals.invalid_events[stage]);
-            for (cause, label) in CAUSES.iter().enumerate() {
-                fields.insert(format!("{name}_{label}"), totals.causes[stage][cause]);
-            }
-        }
-        serde_json::to_string(&fields).expect("aggregate view counts serialize")
+        summary(self.totals(), self.elapsed_us.load(Ordering::Relaxed))
     }
+}
+fn summary(totals: Totals, elapsed_us: u64) -> String {
+    let mut fields = std::collections::BTreeMap::new();
+    fields.insert("elapsed_us".to_owned(), elapsed_us);
+    for (name, value) in NAMES.iter().zip(totals.metrics) { fields.insert((*name).to_owned(), value); }
+    for (stage, name) in STAGES.iter().enumerate() {
+        fields.insert(format!("{name}_invalid"), totals.invalid_events[stage]);
+        for (cause, label) in CAUSES.iter().enumerate() {
+            fields.insert(format!("{name}_{label}"), totals.causes[stage][cause]);
+        }
+    }
+    serde_json::to_string(&fields).expect("aggregate view counts serialize")
+}
+
+fn transition(control: &Weak<Control>, counts: &Weak<Counts>, active: bool, seconds: u64) -> bool {
+    let (Some(control), Some(counts)) = (control.upgrade(), counts.upgrade()) else { return false };
+    let mut window = control.window.lock_or_recover("the view observation window");
+    if !window.running || !window.counts.as_ref().is_some_and(|current| Arc::ptr_eq(current, &counts)) { return false; }
+    if active {
+        log!("view observation start seconds={} totals={}", seconds, counts.summary());
+        window.started = Some(clock::instant());
+    }
+    counts.active.store(active, Ordering::Relaxed);
+    control.active.store(active, Ordering::Release);
+    if !active {
+        window.running = false;
+        let elapsed = window.started.map(clock::since).unwrap_or_default();
+        counts.elapsed_us.store(elapsed.as_micros().min(u64::MAX as u128) as u64, Ordering::Relaxed);
+        log!("view observation end seconds={} totals={}", seconds, counts.summary());
+    }
+    true
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -126,23 +232,6 @@ pub(crate) fn window(seconds: Option<&str>, delay: Option<&str>) -> Option<Windo
         None => 60,
     };
     Some(Window { delay_seconds, seconds })
-}
-
-/// Two aggregate records per explicit startup request; the observer creates no route or file.
-pub(crate) fn start_window(client: &Arc<crate::client_routes::Client>, window: Window) {
-    let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
-    let weak = Arc::downgrade(client);
-    runtime.spawn(async move {
-        alondra_core::clock::sleep(std::time::Duration::from_secs(window.delay_seconds)).await;
-        let Some(client) = weak.upgrade() else { return };
-        let observation = client.view_observation.clone();
-        drop(client);
-        log!("view observation start seconds={} totals={}", window.seconds, observation.summary());
-        observation.start();
-        alondra_core::clock::sleep(std::time::Duration::from_secs(window.seconds)).await;
-        observation.stop();
-        log!("view observation end seconds={} totals={}", window.seconds, observation.summary());
-    });
 }
 
 #[cfg(test)]
@@ -188,5 +277,122 @@ mod tests {
         let summary: std::collections::BTreeMap<String, u64> = serde_json::from_str(&observation.summary()).unwrap();
         assert_eq!(summary["lookup_invalid"], 1);
         assert_eq!(summary["lookup_store"], 1);
+    }
+
+    #[test]
+    fn hot_windows_validate_without_mutating_and_require_a_runtime() {
+        let observation = Observation::default();
+        for (seconds, delay) in [(0, 0), (3601, 0), (1, 3601)] {
+            assert_eq!(observation.start_window(seconds, delay), Err(StartError::InvalidWindow));
+        }
+        assert_eq!(observation.start_window(1, 0), Err(StartError::RuntimeUnavailable));
+        assert!(!observation.is_running());
+        let _window = observation.0.window.lock().unwrap();
+        observation.add(Metric::GatherRequest, 1);
+        observation.invalid(Stage::Lookup, Cause::Revision.bit());
+    }
+
+    #[test]
+    fn hot_windows_delay_reject_overlap_stop_and_rearm_with_fresh_counts() {
+        clock::VirtualRuntime::new(0).unwrap().block_on(async {
+            let observation = Observation::default();
+            let existing_clone = observation.clone();
+            observation.start_window(20, 10).unwrap();
+            assert!(observation.is_running());
+            assert_eq!(observation.start_window(1, 0), Err(StartError::AlreadyRunning));
+            existing_clone.add(Metric::GatherRequest, 1);
+            assert_eq!(observation.totals().metrics[Metric::GatherRequest as usize], 0);
+            clock::sleep(Duration::from_secs(11)).await;
+            existing_clone.add(Metric::GatherRequest, 3);
+            assert_eq!(observation.totals().metrics[Metric::GatherRequest as usize], 3);
+            assert_eq!(observation.start_window(1, 0), Err(StartError::AlreadyRunning));
+            clock::sleep(Duration::from_secs(20)).await;
+            assert!(!observation.is_running());
+            existing_clone.add(Metric::GatherRequest, 1);
+            assert_eq!(observation.totals().metrics[Metric::GatherRequest as usize], 3);
+            observation.start_window(2, 0).unwrap();
+            assert_eq!(observation.totals().metrics[Metric::GatherRequest as usize], 0);
+            existing_clone.add(Metric::GatherRequest, 1);
+            clock::sleep(Duration::from_secs(3)).await;
+            assert!(!observation.is_running());
+            assert_eq!(observation.totals().metrics[Metric::GatherRequest as usize], 1);
+        });
+    }
+
+    #[test]
+    fn timers_do_not_retain_the_owner_or_change_a_replacement_window() {
+        clock::VirtualRuntime::new(0).unwrap().block_on(async {
+            for delay in [0, 10] {
+                let observation = Observation::default();
+                observation.start_window(20, delay).unwrap();
+                let weak = Arc::downgrade(&observation.0);
+                let counts = Arc::downgrade(observation.0.window.lock().unwrap().counts.as_ref().unwrap());
+                drop(observation);
+                assert!(weak.upgrade().is_none());
+                assert!(counts.upgrade().is_none());
+                clock::sleep(Duration::from_secs(31)).await;
+                assert!(weak.upgrade().is_none());
+            }
+            let observation = Observation::default();
+            observation.start_window(10, 0).unwrap();
+            let old_counts = observation.0.window.lock().unwrap().counts.clone().unwrap();
+            observation.stop();
+            observation.start_window(30, 0).unwrap();
+            clock::sleep(Duration::from_secs(11)).await;
+            assert!(observation.is_running(), "the old timer cannot stop the replacement window");
+            observation.add(Metric::GatherRequest, 1);
+            assert_eq!(observation.totals().metrics[Metric::GatherRequest as usize], 1);
+            assert_eq!(old_counts.totals().metrics[Metric::GatherRequest as usize], 0);
+        });
+    }
+
+    #[test]
+    fn elapsed_time_measures_active_time_instead_of_the_requested_window() {
+        clock::VirtualRuntime::new(0).unwrap().block_on(async {
+            let observation = Observation::default();
+            observation.start_window(20, 10).unwrap();
+            clock::sleep(Duration::from_secs(15)).await;
+            let counts = observation.0.window.lock().unwrap().counts.clone().unwrap();
+            assert!(transition(&Arc::downgrade(&observation.0), &Arc::downgrade(&counts), false, 20));
+            let totals: std::collections::BTreeMap<String, u64> = serde_json::from_str(&counts.summary()).unwrap();
+            assert_eq!(totals["elapsed_us"], 5_000_000, "neither the delay nor nominal duration is counted");
+            observation.start_window(20, 0).unwrap();
+            let fresh = observation.0.window.lock().unwrap().counts.clone().unwrap();
+            assert_eq!(fresh.elapsed_us.load(Ordering::Relaxed), 0);
+            clock::sleep(Duration::from_secs(21)).await;
+            assert_eq!(fresh.elapsed_us.load(Ordering::Relaxed), 20_000_000);
+        });
+    }
+
+    #[test]
+    fn hot_activation_counts_the_existing_clients_actual_feed_work() {
+        clock::VirtualRuntime::new(0).unwrap().block_on(async {
+            let home = crate::test_support::Directory::new();
+            std::fs::create_dir(&home).unwrap();
+            let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+            let observation = Observation::default();
+            let client = crate::client_routes::Client::open_observed(
+                domain, &home, Arc::new(Mutex::new(None)), observation.clone(),
+            );
+            let query = "protocol=1&client=tui&lang=en&wait=0";
+            let response = super::super::feed::handle(&client, "terminal", query, alondra_view_model::Transport::Loopback).await;
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            assert_eq!(observation.totals().metrics[Metric::FeedRequests as usize], 0);
+            client.start_view_observation(20, 0).unwrap();
+            let response = super::super::feed::handle(&client, "terminal", query, alondra_view_model::Transport::Loopback).await;
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            assert_eq!(observation.totals().metrics[Metric::FeedRequests as usize], 1);
+            assert_eq!(observation.totals().metrics[Metric::FeedChanged as usize], 1);
+            clock::sleep(Duration::from_secs(21)).await;
+            assert!(!client.view_observation_is_running());
+            let response = super::super::feed::handle(&client, "terminal", query, alondra_view_model::Transport::Loopback).await;
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            assert_eq!(observation.totals().metrics[Metric::FeedRequests as usize], 1);
+            client.start_view_observation(20, 0).unwrap();
+            assert_eq!(observation.totals().metrics[Metric::FeedRequests as usize], 0);
+            let response = super::super::feed::handle(&client, "terminal", query, alondra_view_model::Transport::Loopback).await;
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            assert_eq!(observation.totals().metrics[Metric::FeedRequests as usize], 1);
+        });
     }
 }

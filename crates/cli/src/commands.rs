@@ -31,6 +31,16 @@ fn daemon() -> Client {
     Client::new(Duration::from_secs(10))
 }
 
+pub fn observe(seconds: u64, delay_seconds: u64, json: bool) -> Result<()> {
+    let reply = daemon().post("/diagnostics/observe", &json!({"seconds":seconds,"delay_seconds":delay_seconds}))?;
+    if json { return print_json(&reply); }
+    println!("{}", tr!(
+        "Observation scheduled. Request and view totals will appear in the daemon log; counting stops automatically.",
+        "Observación programada. Los totales de peticiones y vistas aparecerán en el log del daemon; el recuento se detiene solo."
+    ));
+    Ok(())
+}
+
 // device
 
 pub fn device_list(json: bool) -> Result<()> {

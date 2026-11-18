@@ -25,6 +25,7 @@ use sha2::{Digest, Sha256};
 
 mod observation;
 use observation::{Metric, Observation, RequestObservation};
+pub use observation::ObservationError;
 
 const MAX_SKEW_MS: i64 = 120_000;
 const PAIRING_TTL: Duration = Duration::from_secs(600);
@@ -207,6 +208,10 @@ pub fn approved_devices(home: &std::path::Path) -> Result<Arc<Vec<Device>>> {
 }
 
 impl Auth {
+    pub fn start_observation(&self, seconds: u64, delay_seconds: u64) -> Result<(), ObservationError> {
+        self.observation.start_window(seconds, delay_seconds)
+    }
+    pub fn observation_running(&self) -> bool { self.observation.running() }
     /// Counts actual key decoding, key preparation, and ECDSA verification attempts, in that order.
     #[cfg(any(test, feature = "test-hooks"))]
     pub fn request_crypto_counts_for_test(&self) -> (usize, usize, usize) {
@@ -225,7 +230,7 @@ impl Auth {
         if let Some(hook) = hook { hook(stage); }
     }
 
-    fn prepare_request_key(&self, encoded: &str, observed: &RequestObservation<'_>) -> Result<VerifyingKey, &'static str> {
+    fn prepare_request_key(&self, encoded: &str, observed: &RequestObservation) -> Result<VerifyingKey, &'static str> {
         #[cfg(any(test, feature = "test-hooks"))]
         self.request_crypto.decodes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         observed.add(Metric::KeyDecodes);
@@ -531,6 +536,37 @@ mod tests {
     fn signed_headers(device: &str, key: &SigningKey, path: &str, at: i64) -> HeaderMap {
         let signature: Signature = key.sign(signed_message("GET", path, &at.to_string(), b"").as_bytes());
         headers(device, at, &signature)
+    }
+
+    #[test]
+    fn an_open_auth_can_start_and_rearm_observation_without_reopening_devices() {
+        let (auth, key, id) = auth_with_device();
+        let verify = |request: usize| {
+            let at = 1_000_000;
+            let path = format!("/views/home?client=tui&request={request}");
+            auth.verify_at(&signed_headers(&id, &key, &path, at), "GET", &path, b"", at, true).unwrap();
+        };
+        verify(0);
+        assert_eq!(auth.observation.total(Metric::Ecdsa), 0);
+        alondra_core::clock::VirtualRuntime::new(0).unwrap().block_on(async {
+            auth.start_observation(10, 0).unwrap();
+            assert!(auth.observation_running());
+            alondra_core::clock::sleep(std::time::Duration::from_secs(1)).await;
+            verify(1);
+            verify(2);
+            assert_eq!(auth.observation.total(Metric::Ecdsa), 2);
+            assert_eq!(auth.observation.total(Metric::KeyPreparations), 0, "the already prepared device key is reused");
+            alondra_core::clock::sleep(std::time::Duration::from_secs(11)).await;
+            assert!(!auth.observation_running());
+            verify(3);
+            assert_eq!(auth.observation.total(Metric::Ecdsa), 2);
+            auth.start_observation(10, 0).unwrap();
+            alondra_core::clock::sleep(std::time::Duration::from_secs(1)).await;
+            verify(4);
+            assert_eq!(auth.observation.total(Metric::Ecdsa), 1);
+            assert_eq!(auth.observation.total(Metric::Verified), 1);
+            assert_eq!(auth.request_crypto.counts(), (1, 1, 5));
+        });
     }
 
     #[test]

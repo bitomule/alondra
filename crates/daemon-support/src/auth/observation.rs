@@ -1,7 +1,8 @@
 //! Optional, instance-local counts of signed HTTP middleware work. Declared clients are not identities.
 use alondra_core::clock;
+use crate::locks::Poisonable as _;
 use axum::http::HeaderMap;
-use std::sync::{Arc, atomic::{AtomicBool, AtomicU64, Ordering}};
+use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU64, Ordering}};
 use std::time::Duration;
 
 #[derive(Clone, Copy)]
@@ -91,9 +92,20 @@ fn classify(headers: &HeaderMap, path_and_query: &str, local: bool) -> Class {
     Class { route, origin, local }
 }
 
-/// Off is a None: no counters, allocation, request classification or timer.
+/// Disabled requests only read `active`: no locks, classification or counter allocation.
 #[derive(Clone, Default)]
-pub(super) struct Observation(Option<Arc<Counts>>);
+pub(super) struct Observation(Arc<Control>);
+#[derive(Default)]
+struct Control {
+    active: AtomicBool,
+    // Every mutation leaves a complete counter set; recovering loses at most diagnostic events.
+    state: Mutex<State>,
+}
+#[derive(Default)]
+struct State {
+    counts: Option<Arc<Counts>>,
+    running: bool,
+}
 struct Counts {
     active: AtomicBool,
     events: [[AtomicU64; METRICS.len()]; BUCKETS],
@@ -101,42 +113,64 @@ struct Counts {
 
 /// Counts are events, not transactions: a request crossing a boundary may contribute only some
 /// stages, and a writer already past the active check can race the final snapshot.
-pub(super) struct RequestObservation<'a> { counts: Option<&'a Counts>, bucket: usize }
-impl RequestObservation<'_> {
+pub(super) struct RequestObservation { counts: Option<Arc<Counts>>, bucket: usize }
+impl RequestObservation {
     pub(super) fn add(&self, metric: Metric) {
-        if let Some(counts) = self.counts && counts.active.load(Ordering::Relaxed) {
+        if let Some(counts) = &self.counts && counts.active.load(Ordering::Relaxed) {
             counts.events[self.bucket][metric as usize].fetch_add(1, Ordering::Relaxed);
         }
     }
 }
 
 impl Observation {
+    pub(super) fn running(&self) -> bool { self.0.state.lock_or_recover("the auth observation window").running }
+    #[cfg(test)]
     pub(super) fn armed() -> Self {
-        Self(Some(Arc::new(Counts {
+        let observation = Self::default();
+        observation.0.state.lock_or_recover("the auth observation window").counts = Some(Self::counts());
+        observation
+    }
+    fn counts() -> Arc<Counts> {
+        Arc::new(Counts {
             active: AtomicBool::new(false),
             events: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU64::new(0))),
-        })))
+        })
     }
+    #[cfg(test)]
     pub(super) fn start(&self) {
-        if let Some(counts) = &self.0 { counts.active.store(true, Ordering::Relaxed); }
+        if let Some(counts) = &self.0.state.lock_or_recover("the auth observation window").counts {
+            counts.active.store(true, Ordering::Relaxed);
+            self.0.active.store(true, Ordering::Release);
+        }
     }
+    #[cfg(test)]
     fn stop(&self) {
-        if let Some(counts) = &self.0 { counts.active.store(false, Ordering::Relaxed); }
+        let mut state = self.0.state.lock_or_recover("the auth observation window");
+        self.0.active.store(false, Ordering::Release);
+        if let Some(counts) = &state.counts { counts.active.store(false, Ordering::Relaxed); }
+        state.running = false;
     }
-    pub(super) fn request<'a>(&'a self, headers: &HeaderMap, path_and_query: &str, local: bool) -> RequestObservation<'a> {
-        let Some(counts) = self.0.as_deref() else { return RequestObservation { counts: None, bucket: 0 } };
-        if !counts.active.load(Ordering::Relaxed) { return RequestObservation { counts: None, bucket: 0 }; }
-        RequestObservation { counts: Some(counts), bucket: classify(headers, path_and_query, local).index() }
+    pub(super) fn request(&self, headers: &HeaderMap, path_and_query: &str, local: bool) -> RequestObservation {
+        if !self.0.active.load(Ordering::Acquire) { return RequestObservation { counts: None, bucket: 0 }; }
+        let counts = self.0.state.lock_or_recover("the auth observation window").counts.clone();
+        if !counts.as_ref().is_some_and(|counts| counts.active.load(Ordering::Relaxed)) {
+            return RequestObservation { counts: None, bucket: 0 };
+        }
+        RequestObservation { counts, bucket: classify(headers, path_and_query, local).index() }
     }
     #[cfg(test)]
     pub(super) fn total(&self, metric: Metric) -> u64 {
-        self.0.as_ref().map_or(0, |counts| counts.events.iter().map(|row| row[metric as usize].load(Ordering::Relaxed)).sum())
+        self.0.state.lock_or_recover("the auth observation window").counts.as_ref().map_or(0, |counts| counts.events.iter().map(|row| row[metric as usize].load(Ordering::Relaxed)).sum())
     }
+    #[cfg(test)]
     fn summary(&self, window: Window, elapsed: Duration) -> String {
+        Self::summarize(self.0.state.lock_or_recover("the auth observation window").counts.as_deref(), window, elapsed)
+    }
+    fn summarize(counts: Option<&Counts>, window: Window, elapsed: Duration) -> String {
         let mut fields = std::collections::BTreeMap::new();
         fields.insert("configured_seconds".to_owned(), window.seconds);
         fields.insert("elapsed_us".to_owned(), elapsed.as_micros().min(u64::MAX as u128) as u64);
-        if let Some(counts) = &self.0 {
+        if let Some(counts) = counts {
             for (route, route_name) in ROUTES.iter().enumerate() {
                 for (origin, origin_name) in ORIGINS.iter().enumerate() {
                     for (local, local_name) in LOCALS.iter().enumerate() {
@@ -151,7 +185,53 @@ impl Observation {
         }
         serde_json::to_string(&fields).expect("aggregate auth counts serialize")
     }
+
+    pub(super) fn start_window(&self, seconds: u64, delay_seconds: u64) -> Result<(), ObservationError> {
+        if !(1..=3600).contains(&seconds) || delay_seconds > 3600 { return Err(ObservationError::InvalidWindow); }
+        let runtime = tokio::runtime::Handle::try_current().map_err(|_| ObservationError::NoRuntime)?;
+        let starts = clock::instant() + Duration::from_secs(delay_seconds);
+        let mut state = self.0.state.lock_or_recover("the auth observation window");
+        if state.running { return Err(ObservationError::AlreadyRunning); }
+        let counts = Self::counts();
+        let weak_counts = Arc::downgrade(&counts);
+        state.counts = Some(counts.clone());
+        state.running = true;
+        let weak = Arc::downgrade(&self.0);
+        let window = Window { seconds, delay_seconds };
+        let started = if delay_seconds == 0 {
+            log!("auth observation start totals={}", Self::summarize(Some(&counts), window, Duration::ZERO));
+            let started = clock::instant();
+            counts.active.store(true, Ordering::Relaxed);
+            self.0.active.store(true, Ordering::Release);
+            Some(started)
+        } else { None };
+        runtime.spawn(async move {
+            let started = if let Some(started) = started { started } else {
+                clock::sleep_until(starts).await;
+                let (Some(control), Some(counts)) = (weak.upgrade(), weak_counts.upgrade()) else { return };
+                let state = control.state.lock_or_recover("the auth observation window");
+                if !state.running || !state.counts.as_ref().is_some_and(|current| Arc::ptr_eq(current, &counts)) { return; }
+                log!("auth observation start totals={}", Self::summarize(Some(&counts), window, Duration::ZERO));
+                let started = clock::instant();
+                counts.active.store(true, Ordering::Relaxed);
+                control.active.store(true, Ordering::Release);
+                started
+            };
+            clock::sleep_until(starts + Duration::from_secs(seconds)).await;
+            let (Some(control), Some(counts)) = (weak.upgrade(), weak_counts.upgrade()) else { return };
+            let mut state = control.state.lock_or_recover("the auth observation window");
+            if !state.running || !state.counts.as_ref().is_some_and(|current| Arc::ptr_eq(current, &counts)) { return; }
+            control.active.store(false, Ordering::Release);
+            counts.active.store(false, Ordering::Relaxed);
+            state.running = false;
+            log!("auth observation end totals={}", Self::summarize(Some(&counts), window, clock::since(started)));
+        });
+        Ok(())
+    }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObservationError { InvalidWindow, AlreadyRunning, NoRuntime }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Window { delay_seconds: u64, seconds: u64 }
@@ -164,26 +244,10 @@ fn window(seconds: Option<&str>, delay: Option<&str>) -> Option<Window> {
     Some(Window { delay_seconds, seconds })
 }
 
-/// Opening synchronously outside a Tokio runtime disables observation. It is not started later.
+/// Startup configuration outside a Tokio runtime stays off; an explicit hot request can arm it later.
 fn configured_window(window: Option<Window>) -> Observation {
-    let Some(window) = window else { return Observation::default() };
-    let Ok(runtime) = tokio::runtime::Handle::try_current() else { return Observation::default() };
-    let observation = Observation::armed();
-    let weak = Arc::downgrade(observation.0.as_ref().expect("armed observation"));
-    runtime.spawn(async move {
-        clock::sleep(Duration::from_secs(window.delay_seconds)).await;
-        let Some(counts) = weak.upgrade() else { return };
-        let observation = Observation(Some(counts));
-        log!("auth observation start totals={}", observation.summary(window, Duration::ZERO));
-        let started = clock::instant();
-        observation.start();
-        drop(observation);
-        clock::sleep(Duration::from_secs(window.seconds)).await;
-        let Some(counts) = weak.upgrade() else { return };
-        let observation = Observation(Some(counts));
-        observation.stop();
-        log!("auth observation end totals={}", observation.summary(window, clock::since(started)));
-    });
+    let observation = Observation::default();
+    if let Some(window) = window { let _ = observation.start_window(window.seconds, window.delay_seconds); }
     observation
 }
 
@@ -207,16 +271,20 @@ mod tests {
         assert_eq!(window(Some("3600"), Some("3600")), Some(Window { seconds: 3600, delay_seconds: 3600 }));
         for value in ["", "0", "3601", "-1", "invalid"] { assert_eq!(window(Some(value), None), None); }
         for value in ["", "3601", "-1", "invalid"] { assert_eq!(window(Some("300"), Some(value)), None); }
-        assert!(configured_window(window(Some("1"), Some("0"))).0.is_none(), "sync open has no runtime");
+        assert!(configured_window(window(Some("1"), Some("0"))).0.state.lock_or_recover("the auth observation window").counts.is_none(), "sync open has no runtime");
     }
 
     #[test]
     fn disabled_stopped_and_independent_instances_have_no_counts() {
         let headers = HeaderMap::new();
         let disabled = Observation::default();
+        let locked = disabled.0.state.lock_or_recover("the auth observation window");
+        let ignored = disabled.request(&headers, "/changes?client=%invalid", true);
+        assert!(ignored.counts.is_none(), "disabled requests do not lock or classify");
+        drop(locked);
         disabled.start();
         disabled.request(&headers, "/views/home?client=ios", true).add(Metric::Guard);
-        assert!(disabled.0.is_none());
+        assert!(disabled.0.state.lock_or_recover("the auth observation window").counts.is_none());
         assert_eq!(disabled.total(Metric::Guard), 0);
         let enabled = Observation::armed();
         enabled.request(&headers, "/runtime", false).add(Metric::Guard);
@@ -227,16 +295,87 @@ mod tests {
         enabled.request(&headers, "/runtime", false).add(Metric::Guard);
         assert_eq!(enabled.total(Metric::Guard), 1);
         assert_eq!(Observation::armed().total(Metric::Guard), 0);
-        let weak = Arc::downgrade(enabled.0.as_ref().unwrap());
+        let weak = Arc::downgrade(&enabled.0);
         drop(enabled);
         assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn hot_windows_validate_overlap_rearm_and_isolate_old_request_handles() {
+        let observation = Observation::default();
+        assert_eq!(observation.start_window(0, 0), Err(ObservationError::InvalidWindow));
+        assert_eq!(observation.start_window(3601, 0), Err(ObservationError::InvalidWindow));
+        assert_eq!(observation.start_window(1, 3601), Err(ObservationError::InvalidWindow));
+        assert_eq!(observation.start_window(1, 0), Err(ObservationError::NoRuntime));
+        assert!(!observation.running());
+        clock::VirtualRuntime::new(0).unwrap().block_on(async {
+            let headers = HeaderMap::new();
+            observation.start_window(20, 10).unwrap();
+            assert!(observation.running(), "delay reserves the window");
+            assert_eq!(observation.start_window(20, 0), Err(ObservationError::AlreadyRunning));
+            assert!(observation.request(&headers, "/changes", true).counts.is_none());
+            clock::sleep(Duration::from_secs(11)).await;
+            let old_request = observation.request(&headers, "/changes", true);
+            old_request.add(Metric::Guard);
+            assert_eq!(observation.total(Metric::Guard), 1);
+            assert_eq!(observation.start_window(20, 0), Err(ObservationError::AlreadyRunning));
+            clock::sleep(Duration::from_secs(21)).await;
+            assert!(!observation.running());
+            old_request.add(Metric::Guard);
+            assert_eq!(observation.total(Metric::Guard), 1);
+            observation.start_window(20, 0).unwrap();
+            assert_eq!(observation.total(Metric::Guard), 0);
+            assert!(observation.0.active.load(Ordering::Acquire), "zero delay activates before returning");
+            old_request.add(Metric::Guard);
+            assert_eq!(observation.total(Metric::Guard), 0, "an earlier request cannot contaminate a new window");
+            observation.request(&headers, "/changes", true).add(Metric::Guard);
+            assert_eq!(observation.total(Metric::Guard), 1);
+            clock::sleep(Duration::from_secs(21)).await;
+            assert!(!observation.running());
+        });
+    }
+
+    #[test]
+    fn stale_timer_cannot_stop_a_replacement_window() {
+        clock::VirtualRuntime::new(0).unwrap().block_on(async {
+            let observation = Observation::default();
+            observation.start_window(10, 0).unwrap();
+            clock::sleep(Duration::from_secs(1)).await;
+            observation.stop();
+            observation.start_window(30, 0).unwrap();
+            clock::sleep(Duration::from_secs(11)).await;
+            assert!(observation.running());
+            observation.request(&HeaderMap::new(), "/runtime", true).add(Metric::Guard);
+            assert_eq!(observation.total(Metric::Guard), 1);
+            clock::sleep(Duration::from_secs(21)).await;
+            assert!(!observation.running());
+        });
+    }
+
+    #[test]
+    fn concurrent_start_reserves_exactly_one_window() {
+        clock::VirtualRuntime::new(0).unwrap().block_on(async {
+            let observation = Observation::default();
+            let runtime = tokio::runtime::Handle::current();
+            let barrier = std::sync::Barrier::new(4);
+            let results = std::thread::scope(|scope| {
+                let threads = (0..4).map(|_| scope.spawn(|| {
+                    let _entered = runtime.enter();
+                    barrier.wait();
+                    observation.start_window(20, 10)
+                })).collect::<Vec<_>>();
+                threads.into_iter().map(|thread| thread.join().unwrap()).collect::<Vec<_>>()
+            });
+            assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+            assert_eq!(results.iter().filter(|result| **result == Err(ObservationError::AlreadyRunning)).count(), 3);
+        });
     }
 
     #[test]
     fn one_window_starts_after_delay_stops_and_does_not_retain_the_owner() {
         clock::VirtualRuntime::new(0).unwrap().block_on(async {
             let observation = configured_window(Some(Window { delay_seconds: 10, seconds: 20 }));
-            assert!(configured_window(None).0.is_none());
+            assert!(configured_window(None).0.state.lock_or_recover("the auth observation window").counts.is_none());
             let headers = HeaderMap::new();
             observation.request(&headers, "/runtime", true).add(Metric::Guard);
             assert_eq!(observation.total(Metric::Guard), 0);
@@ -246,10 +385,10 @@ mod tests {
             clock::sleep(Duration::from_secs(21)).await;
             observation.request(&headers, "/runtime", true).add(Metric::Guard);
             assert_eq!(observation.total(Metric::Guard), 1);
-            assert!(!observation.0.as_ref().unwrap().active.load(Ordering::Relaxed));
+            assert!(!observation.0.active.load(Ordering::Relaxed));
 
             let short_lived = configured_window(Some(Window { delay_seconds: 10, seconds: 20 }));
-            let weak = Arc::downgrade(short_lived.0.as_ref().unwrap());
+            let weak = Arc::downgrade(&short_lived.0);
             drop(short_lived);
             assert!(weak.upgrade().is_none());
             clock::sleep(Duration::from_secs(11)).await;
@@ -257,8 +396,8 @@ mod tests {
 
             let active = configured_window(Some(Window { delay_seconds: 0, seconds: 20 }));
             clock::sleep(Duration::from_secs(1)).await;
-            assert!(active.0.as_ref().unwrap().active.load(Ordering::Relaxed));
-            let weak = Arc::downgrade(active.0.as_ref().unwrap());
+            assert!(active.0.active.load(Ordering::Relaxed));
+            let weak = Arc::downgrade(&active.0);
             drop(active);
             assert!(weak.upgrade().is_none(), "the active timer must not retain counters");
             clock::sleep(Duration::from_secs(21)).await;

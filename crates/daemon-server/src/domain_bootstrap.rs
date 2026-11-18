@@ -29,6 +29,7 @@ pub struct DomainDaemon {
     service: std::sync::OnceLock<Arc<crate::service::Service>>,
     direct: std::sync::OnceLock<Arc<crate::direct::Direct>>,
     delivery_reviews: crate::delivery_review::DeliveryReviews,
+    observation_gate: std::sync::Mutex<()>,
 }
 
 fn require_database(home: &Path) -> Result<()> {
@@ -77,6 +78,7 @@ impl DomainDaemon {
             service: std::sync::OnceLock::new(),
             direct: std::sync::OnceLock::new(),
             delivery_reviews: Default::default(),
+            observation_gate: Default::default(),
         }))
     }
 
@@ -139,6 +141,7 @@ pub fn router(state: Arc<DomainDaemon>) -> Router {
     let client = state.client();
     Router::new()
         .route("/daemon", get(daemon))
+        .route("/diagnostics/observe", post(observe))
         .route("/pairing", post(new_pairing))
         .route("/pair", post(pair))
         .route("/devices", get(devices))
@@ -478,6 +481,48 @@ async fn settings_config(
         Ok(reply) => reply.into_response(),
         Err(_) => storage(),
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ObservationWindow {
+    seconds: u64,
+    #[serde(default)]
+    delay_seconds: u64,
+}
+
+async fn observe(
+    State(state): State<Arc<DomainDaemon>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    signed: Option<Extension<Signed>>,
+    body: Result<Json<ObservationWindow>, JsonRejection>,
+) -> Response {
+    if signed.is_some() || ["forwarded", "x-forwarded-host", "x-forwarded-proto"].iter().any(|name| headers.contains_key(*name)) {
+        return forbidden("diagnostics start only from this Mac's terminal");
+    }
+    if let Some(refused) = local_client_only(&peer, &headers) { return refused; }
+    let Ok(Json(window)) = body else {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_observation_window"}))).into_response();
+    };
+    if !(1..=3600).contains(&window.seconds) || window.delay_seconds > 3600 {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":"invalid_observation_window"}))).into_response();
+    }
+    // Startup windows are installed before routing. Serialize hot starts so neither half
+    // of a combined window can race another request's preflight.
+    let _gate = state.observation_gate.lock_or_recover("the diagnostic observation gate");
+    if state.auth.observation_running() || state.client.view_observation_is_running() {
+        return (StatusCode::CONFLICT, Json(json!({"error":"observation_running"}))).into_response();
+    }
+    if tokio::runtime::Handle::try_current().is_err() {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"observation_unavailable"}))).into_response();
+    }
+    if state.auth.start_observation(window.seconds, window.delay_seconds).is_err()
+        || state.client.start_view_observation(window.seconds, window.delay_seconds).is_err()
+    {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error":"observation_unavailable"}))).into_response();
+    }
+    Json(json!({"ok":true,"seconds":window.seconds,"delay_seconds":window.delay_seconds})).into_response()
 }
 
 /// The running version, update state and machine gauges, for `alondra update`,
@@ -1419,6 +1464,94 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use p256::ecdsa::{Signature, SigningKey, signature::Signer};
     use std::net::SocketAddr;
+
+    #[test]
+    fn hot_observation_is_local_bounded_and_rearms_without_reopening_the_daemon() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&*home).unwrap();
+        drop(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let state = DomainDaemon::open(&home).unwrap();
+        clock::VirtualRuntime::new(0).unwrap().block_on(async {
+            let mut headers = HeaderMap::new();
+            headers.insert("host", "127.0.0.1:4000".parse().unwrap());
+            let ask = |peer: &str, headers, signed, seconds, delay_seconds| observe(
+                State(state.clone()), ConnectInfo(peer.parse::<SocketAddr>().unwrap()), headers, signed,
+                Ok(Json(ObservationWindow { seconds, delay_seconds })),
+            );
+            for (peer, header, value, signed) in [
+                ("203.0.113.7:4000", "host", "127.0.0.1:4000", None),
+                ("127.0.0.1:4000", "origin", "http://localhost", None),
+                ("127.0.0.1:4000", "host", "untrusted.example:4000", None),
+                ("127.0.0.1:4000", "x-forwarded-for", "203.0.113.7", None),
+                ("127.0.0.1:4000", "forwarded", "for=203.0.113.7", None),
+                ("127.0.0.1:4000", "host", "127.0.0.1:4000", Some(Extension(Signed {
+                    device_id: "paired-device".into(), name: "Terminal".into(), public_key: "key".into(),
+                }))),
+            ] {
+                let mut request_headers = headers.clone();
+                request_headers.insert(axum::http::HeaderName::from_bytes(header.as_bytes()).unwrap(), value.parse().unwrap());
+                assert_eq!(ask(peer, request_headers, signed, 10, 0).await.status(), StatusCode::FORBIDDEN);
+                assert!(!state.auth.observation_running());
+                assert!(!state.client.view_observation_is_running());
+            }
+            for (seconds, delay) in [(0, 0), (3601, 0), (1, 3601)] {
+                assert_eq!(ask("127.0.0.1:4000", headers.clone(), None, seconds, delay).await.status(), StatusCode::BAD_REQUEST);
+            }
+            assert_eq!(ask("127.0.0.1:4000", headers.clone(), None, 10, 2).await.status(), StatusCode::OK);
+            assert!(state.auth.observation_running());
+            assert!(state.client.view_observation_is_running());
+            assert_eq!(ask("127.0.0.1:4000", headers.clone(), None, 20, 0).await.status(), StatusCode::CONFLICT);
+            clock::sleep(std::time::Duration::from_secs(13)).await;
+            assert!(!state.auth.observation_running());
+            assert!(!state.client.view_observation_is_running());
+            // A legacy startup window must not leave the other observer running on refusal.
+            state.client.start_view_observation(5, 0).unwrap();
+            assert_eq!(ask("127.0.0.1:4000", headers.clone(), None, 10, 0).await.status(), StatusCode::CONFLICT);
+            assert!(!state.auth.observation_running());
+            clock::sleep(std::time::Duration::from_secs(6)).await;
+            assert_eq!(ask("127.0.0.1:4000", headers, None, 10, 0).await.status(), StatusCode::OK);
+            assert!(state.auth.observation_running());
+            assert!(state.client.view_observation_is_running());
+            clock::sleep(std::time::Duration::from_secs(11)).await;
+            assert!(!state.auth.observation_running());
+            assert!(!state.client.view_observation_is_running());
+        });
+    }
+
+    #[tokio::test]
+    async fn hot_observation_route_accepts_only_valid_local_json_without_restarting() {
+        use axum::extract::connect_info::MockConnectInfo;
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&*home).unwrap();
+        drop(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let state = DomainDaemon::open(&home).unwrap();
+        let app = router(state.clone())
+            .layer(axum::middleware::from_fn_with_state(state.auth(), crate::auth::guard))
+            .layer(MockConnectInfo("127.0.0.1:4000".parse::<SocketAddr>().unwrap()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let http = reqwest::Client::new();
+        for (header, value) in [("origin", "http://localhost"), ("forwarded", "for=203.0.113.7")] {
+            assert_eq!(http.post(format!("{base}/diagnostics/observe")).header(header, value)
+                .json(&json!({"seconds":10})).send().await.unwrap().status(), StatusCode::FORBIDDEN);
+        }
+        for body in [json!({"seconds":0}), json!({"seconds":1,"unexpected":true}), json!({"seconds":"1"})] {
+            assert_eq!(http.post(format!("{base}/diagnostics/observe")).json(&body).send().await.unwrap().status(), StatusCode::BAD_REQUEST);
+        }
+        assert!(!state.auth.observation_running());
+        let before: Value = http.get(format!("{base}/daemon")).send().await.unwrap().json().await.unwrap();
+        let response = http.post(format!("{base}/diagnostics/observe")).json(&json!({"seconds":10,"delay_seconds":2})).send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.json::<Value>().await.unwrap(), json!({"ok":true,"seconds":10,"delay_seconds":2}));
+        assert!(state.auth.observation_running() && state.client.view_observation_is_running());
+        let after: Value = http.get(format!("{base}/daemon")).send().await.unwrap().json().await.unwrap();
+        assert_eq!(before["version"], after["version"]);
+        assert_eq!(http.post(format!("{base}/diagnostics/observe")).json(&json!({"seconds":10})).send().await.unwrap().status(), StatusCode::CONFLICT);
+        assert!(!home.join("config.toml").exists());
+        server.abort();
+        let _ = server.await;
+    }
 
     #[test]
     fn account_margin_table_keeps_native_quota_separate_from_availability() {
