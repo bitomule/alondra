@@ -916,7 +916,6 @@ checks:
       - "Cargo.toml"
       - "crates/agent-application/**"
       - "crates/agent-protocol/**"
-      - "crates/agent-runtime/**"
       - "crates/BUILD.bazel"
       - "crates/codex-protocol/**"
       - "crates/core/**"
