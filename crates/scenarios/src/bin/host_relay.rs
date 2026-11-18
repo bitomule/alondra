@@ -6,8 +6,7 @@
 //! Like a real host it never writes to its output once it listens: the daemon that read it may be
 //! gone.
 
-use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
+use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 
@@ -18,14 +17,18 @@ fn pipe(mut from: UnixStream, mut to: UnixStream) {
 }
 
 fn main() {
+    // SAFETY: this process is still single-threaded; its socket is private from creation.
+    unsafe { libc::umask(0o177) };
     let mut arguments = std::env::args_os().skip(1).map(PathBuf::from);
     let (Some(socket), Some(back)) = (arguments.next(), arguments.next()) else {
         eprintln!("usage: host_relay <socket> <back>");
         std::process::exit(2);
     };
     let Ok(listener) = UnixListener::bind(&socket) else { std::process::exit(1) };
-    if std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).is_err() {
-        std::process::exit(1);
+    if std::env::var_os("SCENARIO_TEST_BOUND").is_some() {
+        let _ = writeln!(std::io::stdout(), "bound");
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stdin().read_exact(&mut [0]);
     }
     let mut stdout = std::io::stdout();
     let _ = writeln!(stdout, "Alondra host: socket listening");

@@ -20,6 +20,10 @@ pub use runner::{Outcome, run, run_partial, run_with};
 #[cfg(test)]
 mod harness_tests;
 
+#[cfg(test)]
+#[path = "../../test_support.rs"]
+mod test_support;
+
 use std::path::{Path, PathBuf};
 
 /// The folders of `cases_root` that hold a case, by name.

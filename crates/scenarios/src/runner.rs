@@ -38,7 +38,57 @@ pub struct Outcome {
 /// The Mac of a scenario: always rested, with room for everything. It counts the samples the
 /// daemon takes of it.
 #[derive(Clone, Default)]
-struct CalmMac(Arc<std::sync::atomic::AtomicU64>);
+struct CalmMac(Arc<std::sync::atomic::AtomicU64>, Arc<Publication>);
+
+impl CalmMac {
+    async fn wait_for_second_publication(&self) {
+        self.1.wait_for(2).await;
+    }
+}
+
+#[derive(Default)]
+struct Publication {
+    count: std::sync::atomic::AtomicU64,
+    changed: tokio::sync::Notify,
+}
+
+impl Publication {
+    fn publish(&self) {
+        self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.changed.notify_one();
+    }
+
+    async fn wait_for(&self, count: u64) {
+        loop {
+            let changed = self.changed.notified();
+            if self.count.load(std::sync::atomic::Ordering::SeqCst) >= count {
+                return;
+            }
+            changed.await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+    use std::future::Future;
+    use std::task::{Context, Poll, Waker};
+
+    #[test]
+    fn a_started_sample_is_not_a_published_sample() {
+        let mac = CalmMac::default();
+        mac.sample();
+        mac.1.publish();
+        mac.sample();
+
+        let mut ready = Box::pin(mac.wait_for_second_publication());
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(matches!(ready.as_mut().poll(&mut context), Poll::Pending));
+        mac.1.publish();
+        assert!(matches!(ready.as_mut().poll(&mut context), Poll::Ready(())));
+    }
+}
 impl MachineProbe for CalmMac {
     fn sample(&self) -> alondra_core::Machine {
         self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -189,8 +239,10 @@ async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnc
     let codex = codex_transcripts(scenario);
     write_accounts(&config.home, &scenario.world.accounts).map_err(|e| invalid(&e))?;
     let mut claude = None;
+    let mut startup_probe = None;
     let (launcher, backend, peer) = if codex.is_empty() {
         let edge = ClaudeEdge::new(&config.home, leaks.clone());
+        startup_probe = Some(edge.hold_startup_probe());
         let launcher = Launcher::new(edge.clone());
         let backend = claude_backend(&config.home, &scenario.world.release).map_err(|e| invalid(&e))?;
         claude = Some(edge);
@@ -233,7 +285,9 @@ async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnc
         budget,
         outcome: Outcome { checkpoints: Vec::new() },
     };
-    let result = match context.accounts_checked().await {
+    let checked = context.accounts_checked().await;
+    drop(startup_probe);
+    let result = match checked {
         Ok(()) => steps(&mut context).await,
         Err(error) => Err(error),
     };
@@ -255,6 +309,10 @@ fn seams_of(github: &Arc<GithubWorld>, pushes: &RecordedPushes, mac: &CalmMac, l
         github: GithubSeams::of(github.clone()),
         push: Pushes::new(pushes.clone()),
         machine: Some(Arc::new(mac.clone())),
+        machine_published: Some({
+            let publication = mac.1.clone();
+            Arc::new(move || publication.publish())
+        }),
         launcher,
         backend,
         world: assemble::World::Isolated,
@@ -754,6 +812,11 @@ impl Context<'_> {
             }
             self.pass(Duration::from_secs(1), 0).await?;
         }
+        self.mac.wait_for_second_publication().await;
+        // The daemon's background sampler may have cached the initial, unchecked accounts before
+        // the scenario starts. Its first visible view must use the completed startup sample.
+        self.daemon().clear_scenario_gauges();
+        self.view("home", "ios", "en").await?;
         Ok(())
     }
 

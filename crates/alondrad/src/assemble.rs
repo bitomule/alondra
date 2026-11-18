@@ -70,6 +70,8 @@ pub struct Seams {
     pub push: Pushes,
     /// The Mac's gauges in place of the real ones, which `wire_machine` registers.
     pub machine: Option<Arc<dyn MachineProbe>>,
+    /// Observes a completed publication of the machine gauges.
+    pub machine_published: Option<Arc<dyn Fn() + Send + Sync>>,
     pub launcher: Launcher,
     pub backend: Backend,
     pub world: World,
@@ -81,6 +83,7 @@ impl Seams {
             github: GithubSeams::production(),
             push: Pushes::default(),
             machine: None,
+            machine_published: None,
             launcher: Launcher::default(),
             backend: Backend::Resolve,
             world: World::Real,
@@ -129,6 +132,10 @@ pub struct Assembled {
 }
 
 impl Assembled {
+    #[cfg(feature = "test-hooks")]
+    pub fn clear_scenario_gauges(&self) {
+        self.client.clear_scenario_gauges();
+    }
     #[cfg(feature = "test-hooks")]
     pub async fn shared_tui_feed_work_for_test(&self, secret: &[u8; 32], device: &str, first_timestamp: i64) -> std::result::Result<(u64, usize), String> {
         self.client.shared_tui_feed_work_for_test(&self.auth, secret, device, first_timestamp).await
@@ -348,7 +355,7 @@ pub(crate) async fn assemble_with(
         Arc::new(seams.github.observer.clone()),
         pr_poll,
     ));
-    tasks.spawn(machine::run(gauges, state_domain.clone()));
+    tasks.spawn(machine::run(gauges, state_domain.clone(), seams.machine_published.clone()));
     let owners = state_domain.clone();
     client.use_pr_view(seams.github.view.clone());
     client.use_pr_images(seams.github.images.clone());

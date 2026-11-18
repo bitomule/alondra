@@ -41,6 +41,7 @@ rust_binary(
     crate_root = "src/bin/host_relay.rs",
     edition = "2024",
     version = VERSION,
+    deps = ["@crates//:libc"],
 )
 
 RELAY_ENV = {"SCENARIO_HOST_RELAY": "$(rootpath :host_relay)"}
@@ -50,7 +51,7 @@ RELAY_ENV = {"SCENARIO_HOST_RELAY": "$(rootpath :host_relay)"}
 low_opt_rust_test(
     name = "scenarios_harness_test",
     size = "medium",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/bin/*.rs"]),
+    srcs = glob(["src/**/*.rs"], exclude = ["src/bin/*.rs"]) + ["//crates:test_support.rs"],
     compile_data = ["//crates/agent-protocol:fixtures/sdk-errors.json"],
     crate_name = "alondra_scenarios",
     crate_root = "src/lib.rs",

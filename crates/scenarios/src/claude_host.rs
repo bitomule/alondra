@@ -95,6 +95,16 @@ struct Shared {
     /// The scenario's virtual clock and runtime, which every host reads the time on.
     clock: alondra_core::clock::Clock,
     runtime: Option<tokio::runtime::Handle>,
+    startup_probe: (Mutex<bool>, std::sync::Condvar),
+}
+
+pub struct StartupProbeGate(ClaudeEdge);
+
+impl Drop for StartupProbeGate {
+    fn drop(&mut self) {
+        *lock(&self.0.0.startup_probe.0) = false;
+        self.0.0.startup_probe.1.notify_all();
+    }
 }
 
 /// One host the daemon started: its process, its identity, and the conversation it holds.
@@ -195,7 +205,13 @@ impl ClaudeEdge {
             next_uuid: AtomicU64::new(0),
             clock: alondra_core::clock::Clock::current(),
             runtime: tokio::runtime::Handle::try_current().ok(),
+            startup_probe: (Mutex::new(false), std::sync::Condvar::new()),
         }))
+    }
+
+    pub fn hold_startup_probe(&self) -> StartupProbeGate {
+        *lock(&self.0.startup_probe.0) = true;
+        StartupProbeGate(self.clone())
     }
 
     pub fn activity(&self) -> u64 {
@@ -703,6 +719,12 @@ impl HostLauncher for ClaudeEdge {
             return answer(json!({"loggedIn": true, "email": format!("{account}@example.com"), "subscriptionType": "max", "authMethod": "claude.ai"}));
         }
         if args.iter().any(|arg| arg == "--usage-probe") {
+            let (held, ready) = &self.0.startup_probe;
+            let mut held = lock(held);
+            while *held {
+                held = ready.wait(held).unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+            drop(held);
             let session = match lock(&self.0.world).limit_resets_at {
                 Some(resets_at) => json!({"kind": "five_hour", "used": 1.0, "resets_at": resets_at}),
                 None => json!({"kind": "five_hour", "used": 0.2}),

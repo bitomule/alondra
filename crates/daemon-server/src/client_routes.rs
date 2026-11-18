@@ -235,6 +235,10 @@ pub(crate) fn upload_step(path: &str) -> Option<&str> {
 
 impl Client {
     #[cfg(any(test, feature = "test-hooks"))]
+    pub fn clear_scenario_gauges(&self) {
+        *self.views_gauges.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+    #[cfg(any(test, feature = "test-hooks"))]
     pub async fn shared_tui_feed_work_for_test(
         &self, auth: &crate::auth::Auth, secret: &[u8; 32], device: &str, first_timestamp: i64,
     ) -> Result<(u64, usize), String> {
