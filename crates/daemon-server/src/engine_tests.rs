@@ -17,6 +17,6 @@ mod task_list_tests;
 mod usage_pause_tests;
 
 /// Opens every runtime the engine's fixtures open as the daemon does, with the gate of a test.
-fn wired() {
+pub(crate) fn wired() {
     alondra_daemon_engine::wiring::TEST_OPEN.get_or_init(|| alondra_engine_sdk::engine_tests::open_at);
 }

@@ -7,10 +7,41 @@ pub(super) struct PreparedCommit {
     pub(super) remember: bool,
 }
 
+/// What a staged command is decided against.
+pub(super) enum Base<'a> {
+    /// What the store last committed, read again when another connection wrote since.
+    Stored(&'a Option<Cached>),
+    /// What the commands staged so far in this owner transaction add up to, with its
+    /// `data_version`. Evidence and journal rows written meanwhile are not domain state: a reload
+    /// would read this same state, at the cost of the whole domain under the writer lock.
+    Draft(&'a Arc<DomainState>, i64),
+}
+
+impl Base<'_> {
+    fn state(&self, conn: &Connection) -> Result<(Arc<DomainState>, bool, i64)> {
+        match self {
+            Self::Stored(cached) => state_in(cached, conn),
+            Self::Draft(state, version) => {
+                #[cfg(any(test, feature = "test-hooks"))]
+                assert_draft_is_what_a_reload_reads(state, conn)?;
+                Ok((Arc::clone(state), true, *version))
+            }
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+fn assert_draft_is_what_a_reload_reads(draft: &DomainState, conn: &Connection) -> Result<()> {
+    let mut reloaded = repository::load(conn)?;
+    reloaded.mcp = draft.mcp.clone();
+    assert!(reloaded == *draft, "an owner transaction's draft differs from what a reload reads");
+    Ok(())
+}
+
 /// The owner must roll back the whole transaction on error; this stages no independent commit.
 pub(super) fn stage(
     conn: &Connection,
-    cached: &Option<Cached>,
+    base: Base<'_>,
     protected: &crate::worktree::Protected,
     actor: &Actor,
     envelope: &CommandEnvelope,
@@ -32,7 +63,7 @@ pub(super) fn stage(
     let digest = canonical::digest(envelope)
         .map_err(|e| DomainError::new("invalid_input", e.to_string()))?;
     check_schema(conn)?;
-    let (state, hit, version) = state_in(cached, conn)?;
+    let (state, hit, version) = base.state(conn)?;
     if envelope.protocol_version != PROTOCOL_VERSION {
         return Err(
             DomainError::new("incompatible_protocol", "domain protocol 2 is required").into(),
@@ -128,8 +159,7 @@ pub(super) fn stage(
     {
         return Err(DomainError::new("session_unreachable", "The task's session is being removed: nothing was sent. Send the work as a new request").into());
     }
-    let mut next = DomainState::clone(&state);
-    let outcome = next.execute(actor, envelope)?;
+    let (next, outcome) = state.transition(actor, envelope)?;
     if outcome.changed {
         repository::save_changes(conn, journal, &state, &next).context("persisting domain state")?;
         if let Command::RecordScheduleRunFailed { run_id, .. } = &envelope.command
@@ -404,9 +434,10 @@ pub(super) fn stage(
             params![sender, id, ciphertext_digest.as_slice(), result],
         )?;
     }
+    let next = if outcome.changed { Arc::new(next) } else { state };
     Ok(PreparedCommit {
         commit: Commit {
-            state: Arc::new(next),
+            state: next,
             outcome,
             replayed: false,
             sealed: None,

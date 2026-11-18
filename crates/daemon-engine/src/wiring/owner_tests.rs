@@ -691,6 +691,25 @@ fn the_cache_after_an_owner_commit_is_what_a_reload_reads() {
     assert_eq!(alondra_daemon_engine_store::testing::load(&store.conn).unwrap(), **cached_state, "a reload reads the cached state");
 }
 
+// Every observation of a working node goes through here: reading the whole domain for each of its
+// commands held the writer lock for seconds, and every action of the user waited behind it.
+#[test]
+fn an_observation_and_its_commands_never_read_the_whole_domain() {
+    let (fixture, store, execution) = running();
+    let runtime = runtime(&fixture, store);
+    let state = Arc::clone(runtime.read().state());
+    let before = alondra_daemon_engine_store::FULL_LOADS.with(std::cell::Cell::get);
+    runtime
+        .own(scope_of(&state), |owner| {
+            owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Available, no_home(), false)?;
+            owner.stage_command(&agent(), &envelope(&state, "owner-ask", ask("owner-card")), Attached::None)?;
+            owner.stage_command(&Actor::System, &envelope(&state, "nothing-due", Command::ResurfaceDueCards { now: 0 }), Attached::None)?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(alondra_daemon_engine_store::FULL_LOADS.with(std::cell::Cell::get), before);
+}
+
 // An accepted observation whose facts the domain never recorded cannot commit: dropping its
 // pending observation leaves nothing to acknowledge.
 #[test]

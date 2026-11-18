@@ -270,10 +270,17 @@ impl DomainState {
 
     /// The task a node works on: its open one, else the last it had.
     pub fn node_task(&self, agent: &AgentId) -> Option<&Task> {
-        let mine = || self.tasks.values().filter(move |t| t.agent_id.as_ref() == Some(agent));
-        mine().find(|t| !t.state.terminal() && !t.archived && t.state != TaskState::Closing)
-            .or_else(|| mine().find(|t| !t.state.terminal() && !t.archived))
-            .or_else(|| mine().last())
+        let mine: Vec<&Task> = self.tasks.values().inspect(|_| super::measure::task_read())
+            .filter(|t| t.agent_id.as_ref() == Some(agent)).collect();
+        current_of(&mine)
+    }
+
+    /// What `sdk_live` says of `agent`, whose task `node_task` already found.
+    pub fn sdk_live_of(&self, agent: &AgentId, task: Option<&Task>) -> Option<alondra_domain::LiveState> {
+        if self.node_phase(agent) != Some(&NodePhase::ThroughSdk) && !self.through_sdk(agent) {
+            return None;
+        }
+        task.filter(|t| !t.over()).and_then(|t| self.live_state(&t.id))
     }
 
     pub fn task_facts(&self, agent: &AgentId) -> TaskFacts {
@@ -315,6 +322,7 @@ impl DomainState {
         }
         let mut tasks: BTreeMap<&AgentId, (u8, &Task)> = BTreeMap::new();
         for t in self.tasks.values() {
+            super::measure::task_read();
             let Some(agent) = &t.agent_id else { continue };
             let rank = match (!t.state.terminal() && !t.archived, t.state == TaskState::Closing) {
                 (true, false) => 0,
@@ -386,9 +394,27 @@ impl DomainState {
     /// What `task`'s node goes on with passes the gate first. A node that closes does not: cleaning
     /// up frees what the others wait for. Nor one a pause holds, which comes back through the gate.
     pub fn turn_passes_gate(&self, task: &TaskId) -> bool {
-        let Some(t) = self.tasks.get(task).filter(|t| !t.over()) else { return false };
+        self.tasks.get(task).is_some_and(|t| self.passes_gate_in(&self.fact_index(), t))
+    }
+
+    fn passes_gate_in(&self, index: &FactIndex<'_>, t: &Task) -> bool {
+        if t.over() {
+            return false;
+        }
         let Some(agent) = t.agent_id.as_ref().filter(|agent| Some(*agent) != self.orchestrator_session.as_ref()) else { return false };
-        self.through_sdk(agent) && !self.task_facts(agent).closing && self.node_pause(agent).is_none_or(|pause| pause.released)
+        let current = index.tasks.get(agent).map(|(_, task)| *task);
+        current.is_some_and(|current| super::read_index::admitted_through_sdk(self, &current.id, agent))
+            && !self.facts_in(index, agent).closing
+            && self.node_pause_of(agent, current).is_none_or(|pause| pause.released)
+    }
+
+    /// Every task whose node waits for a slot of the gate, as `waits_for_turn` says of each, found
+    /// with one look at the tasks and cards for all of them.
+    pub fn tasks_waiting_for_turn(&self) -> Vec<&Task> {
+        let index = self.fact_index();
+        self.tasks.values()
+            .filter(|t| self.passes_gate_in(&index, t) && self.lifecycle_of(&t.id).is_ok_and(|lifecycle| lifecycle.waits_for_slot()))
+            .collect()
     }
 
     /// `task`'s node has an input or an answer that waits for a slot of the gate.
@@ -422,10 +448,7 @@ impl DomainState {
     /// What the open task of a node does, from its lifecycle alone; `None` for a closed node that
     /// never ran through the Agent SDK, or one whose task is over.
     pub fn sdk_live(&self, agent: &AgentId) -> Option<alondra_domain::LiveState> {
-        if self.node_phase(agent) != Some(&NodePhase::ThroughSdk) && !self.through_sdk(agent) {
-            return None;
-        }
-        self.node_task(agent).filter(|t| !t.over()).and_then(|t| self.live_state(&t.id))
+        self.sdk_live_of(agent, self.node_task(agent))
     }
 
     /// Whether the session of a node of the Agent SDK runs: its task's execution has a host that
@@ -439,10 +462,14 @@ impl DomainState {
 
     /// The pause the gate holds a node in, as its open task's lifecycle keeps it.
     pub fn node_pause(&self, agent: &AgentId) -> Option<Pause> {
+        self.node_pause_of(agent, self.node_task(agent))
+    }
+
+    fn node_pause_of(&self, agent: &AgentId, current: Option<&Task>) -> Option<Pause> {
         if self.node_phase(agent) != Some(&NodePhase::ThroughSdk) {
             return None;
         }
-        self.node_task(agent).filter(|t| !t.over())
+        current.filter(|t| !t.over())
             .and_then(|t| self.held_pause(&t.id)).and_then(|card| pause_of_card(self.interactions.get(&card)?))
     }
 
@@ -593,5 +620,39 @@ impl DomainState {
     /// Whether the card named `card` is the card of a pause of the gate.
     pub fn node_pause_card(&self, card: &InteractionId) -> bool {
         self.interactions.get(card).is_some_and(is_node_pause)
+    }
+}
+
+/// The task a node works on among `mine`, its tasks in id order: its open one, else the last.
+fn current_of<'a>(mine: &[&'a Task]) -> Option<&'a Task> {
+    mine.iter().find(|t| !t.state.terminal() && !t.archived && t.state != TaskState::Closing)
+        .or_else(|| mine.iter().find(|t| !t.state.terminal() && !t.archived))
+        .or_else(|| mine.last())
+        .copied()
+}
+
+/// Every node's tasks in id order, found in one pass over the tasks: what a screen that lists
+/// every node reads instead of looking through all the tasks once per node.
+pub struct NodeTasks<'a>(BTreeMap<&'a AgentId, Vec<&'a Task>>);
+
+impl<'a> NodeTasks<'a> {
+    pub fn new(state: &'a DomainState) -> Self {
+        let mut tasks: BTreeMap<&AgentId, Vec<&Task>> = BTreeMap::new();
+        for task in state.tasks.values() {
+            super::measure::task_read();
+            if let Some(agent) = &task.agent_id {
+                tasks.entry(agent).or_default().push(task);
+            }
+        }
+        Self(tasks)
+    }
+
+    pub fn of(&self, agent: &AgentId) -> &[&'a Task] {
+        self.0.get(agent).map_or(&[], Vec::as_slice)
+    }
+
+    /// What `DomainState::node_task` answers for `agent`.
+    pub fn current(&self, agent: &AgentId) -> Option<&'a Task> {
+        current_of(self.of(agent))
     }
 }

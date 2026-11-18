@@ -21,7 +21,7 @@ mod api_failure;
 mod claude_access;
 mod journal;
 mod lifecycle;
-mod measure;
+pub mod measure;
 mod node_machine;
 pub mod obligation_policy;
 mod ownership;

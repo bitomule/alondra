@@ -98,6 +98,7 @@ rust_test(
         "//crates/core:alondra_core",
         "//crates/domain:domain",
         "//crates/domain-rules:domain_rules",
+        "@crates//:libc",
         "@crates//:serde_json",
     ],
 )
