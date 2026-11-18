@@ -1083,6 +1083,45 @@ impl Context<'_> {
                         format!("reads={reads}, waiting={waiting}, cards={cards}")));
                 }
             }
+            Expect::TaskPresentationReads { max_reads } => {
+                use alondra_views::{Client, Lang, LiveSnapshot, LiveStartWait, RenderContext, Transport};
+                let read = self.daemon().domain.read();
+                let state = read.state();
+                let cards = state.interactions.len();
+                let waiting: Vec<_> = state.tasks.values()
+                    .filter(|task| !task.over() && !task.archived && !task.started && task.agent_id.is_none())
+                    .collect();
+                if cards == 0 || waiting.len() < 2 {
+                    return Err(failed("multiple unstarted tasks and nonempty card history".into(),
+                        format!("waiting={}, cards={cards}", waiting.len())));
+                }
+                let mut live = LiveSnapshot::default();
+                let mut screens = vec!["tasks".to_owned()];
+                for task in &waiting {
+                    let situation = read.index().task(&task.id).map(|reading| reading.situation);
+                    if situation != Some(alondra_domain_rules::Situation::Waiting(alondra_domain_rules::WaitsFor::Slot)) {
+                        return Err(failed(format!("unstarted task {} waits for a slot", task.id), format!("{situation:?}")));
+                    }
+                    live.start_waits.insert(task.id.0.clone(), LiveStartWait::Room);
+                    screens.push(format!("task:{}", task.id));
+                }
+                for lang in [Lang::En, Lang::Es] {
+                    for client in [Client::Ios, Client::Mac, Client::Tui] {
+                        for screen in &screens {
+                            let context = RenderContext { domain: state, index: read.index(), live: &live,
+                                client, lang, transport: Transport::Relay, cursor: "scenario", rendered_at: "" };
+                            let before = alondra_domain_rules::measure::cards_read();
+                            let view = std::hint::black_box(alondra_views::build(screen, context));
+                            let reads = alondra_domain_rules::measure::cards_read() - before;
+                            view.map_err(|error| failed(format!("{screen} renders for {client:?} in {lang:?}"), format!("{error:?}")))?;
+                            if reads > *max_reads {
+                                return Err(failed(format!("at most {max_reads} card reads to render {screen} for {client:?} in {lang:?}"),
+                                    format!("reads={reads}, waiting={}, cards={cards}", waiting.len())));
+                            }
+                        }
+                    }
+                }
+            }
             Expect::StartProblemReads { max_passes } => {
                 let state = self.daemon().domain.state().map_err(|error| ScenarioError::Invalid(error.to_string()))?;
                 let cards = state.interactions.len() as u64;

@@ -1,5 +1,6 @@
 use alondra_daemon_engine::live::LiveOf as _;
 use alondra_core::clock;
+use super::observation::{Observation, Metric};
 use alondra_core::clock::Instant;
 use crate::locks::Poisonable as _;
 use alondra_domain_rules::DomainError;
@@ -30,20 +31,34 @@ pub(crate) struct Feeds {
     open: Mutex<HashMap<String, (String, Instant)>>,
     next: AtomicU64,
     clock: watch::Sender<u64>,
+    shared: watch::Sender<u64>,
+    observation: Observation,
 }
 
 impl Default for Feeds {
     fn default() -> Self {
         let (clock, _) = watch::channel(0);
-        Self { waiters: Mutex::default(), cache: Mutex::default(), open: Mutex::default(), next: AtomicU64::new(0), clock }
+        let (shared, _) = watch::channel(0);
+        Self { waiters: Mutex::default(), cache: Mutex::default(), open: Mutex::default(), next: AtomicU64::new(0), clock, shared, observation: Observation::default() }
     }
 }
 
 impl Feeds {
+    pub(crate) fn observed(observation: Observation) -> Self { Self { observation, ..Self::default() } }
+
     pub(crate) fn wake(&self) {
+        self.observation.add(Metric::DeliveryWake, 1);
         let next = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         self.clock.send_replace(next);
     }
+
+    pub(crate) fn shared_changed(&self) {
+        self.observation.add(Metric::SharedWake, 1);
+        self.shared.send_modify(|value| *value = value.wrapping_add(1));
+        self.wake();
+    }
+
+    pub(crate) fn subscribe_shared(&self) -> watch::Receiver<u64> { self.shared.subscribe() }
 
     /// Changes when the live sampler, or a route, sees displayed live data change.
     pub(crate) fn subscribe(&self) -> watch::Receiver<u64> {
@@ -95,6 +110,7 @@ pub(crate) fn start_clock(client: &Arc<crate::client_routes::Client>) {
         let mut state = initial_client.domain.state().ok();
         let mut hook_changes = initial_client.domain.live().changed.subscribe();
         let mut report_changes = initial_client.domain.live().mods.changed.subscribe();
+        let observation = initial_client.view_observation.clone();
         drop(initial_client);
         let mut last = None;
         loop {
@@ -103,6 +119,7 @@ pub(crate) fn start_clock(client: &Arc<crate::client_routes::Client>) {
                 &mut domain_changes,
                 &mut hook_changes,
                 &mut report_changes,
+                observation.clone(),
             ).await else { break };
             let Some(client) = weak.upgrade() else { break };
             if domain_advanced || state.is_none() {
@@ -119,12 +136,13 @@ async fn next_sample(
     domain_changes: &mut watch::Receiver<alondra_domain_rules::Revision>,
     hook_changes: &mut watch::Receiver<()>,
     report_changes: &mut watch::Receiver<()>,
+    observation: Observation,
 ) -> Option<bool> {
     tokio::select! {
-        _ = periodic => Some(false),
-        changed = domain_changes.changed() => changed.ok().map(|()| true),
-        changed = hook_changes.changed() => changed.ok().map(|()| false),
-        changed = report_changes.changed() => changed.ok().map(|()| false),
+        _ = periodic => { observation.add(Metric::SamplerPeriodic, 1); Some(false) },
+        changed = domain_changes.changed() => changed.ok().map(|()| { observation.add(Metric::SamplerDomain, 1); true }),
+        changed = hook_changes.changed() => changed.ok().map(|()| { observation.add(Metric::SamplerHooks, 1); false }),
+        changed = report_changes.changed() => changed.ok().map(|()| { observation.add(Metric::SamplerReports, 1); false }),
     }
 }
 
@@ -135,12 +153,14 @@ pub(crate) async fn sample_live(
 ) -> bool {
     let keys = client.feeds.live_keys();
     let live = super::live::gather(client, state, Lang::En, &keys, false, true).await;
-    let digest = live_revision(&live);
+    let digest = live_revision(&live, &client.view_observation);
     if last.as_ref() == Some(&digest) {
+        client.view_observation.add(Metric::SamplerUnchanged, 1);
         return false;
     }
     *last = Some(digest);
-    client.feeds.wake();
+    client.view_observation.add(Metric::SamplerChanged, 1);
+    client.feeds.shared_changed();
     true
 }
 
@@ -350,8 +370,10 @@ fn status_view_key(kind: Client) -> &'static str {
     if kind == Client::Mac { "sidebar" } else { "home" }
 }
 
-fn live_revision(live: &alondra_view_model::LiveSnapshot) -> String {
+fn live_revision(live: &alondra_view_model::LiveSnapshot, observation: &Observation) -> String {
     let bytes = serde_json::to_vec(live).expect("live snapshot serialization");
+    observation.add(Metric::SamplerSerializations, 1);
+    observation.add(Metric::SamplerBytes, bytes.len() as u64);
     let digest = sha2::Sha256::digest(bytes);
     digest[..8]
         .iter()
@@ -772,6 +794,26 @@ mod tests {
         assert_eq!(pending.await.unwrap()["superseded"], true);
     }
 
+
+    #[test]
+    fn delivery_wakes_leave_shared_facts_intact_and_shared_changes_notify_both() {
+        let observation = Observation::armed();
+        observation.start();
+        let feeds = Feeds::observed(observation.clone());
+        let mut delivery = feeds.subscribe();
+        let mut shared = feeds.subscribe_shared();
+        feeds.wake();
+        assert!(delivery.has_changed().unwrap());
+        assert!(!shared.has_changed().unwrap());
+        delivery.borrow_and_update();
+        feeds.shared_changed();
+        assert!(delivery.has_changed().unwrap());
+        assert!(shared.has_changed().unwrap());
+        shared.borrow_and_update();
+        assert_eq!(observation.totals().metrics[Metric::DeliveryWake as usize], 2);
+        assert_eq!(observation.totals().metrics[Metric::SharedWake as usize], 1);
+    }
+
     fn poll_sample(
         domain_changes: &mut watch::Receiver<alondra_domain_rules::Revision>,
         hook_changes: &mut watch::Receiver<()>,
@@ -780,7 +822,7 @@ mod tests {
         use std::future::Future;
         let mut pending = Box::pin(next_sample(
             std::future::pending(), domain_changes,
-            hook_changes, report_changes,
+            hook_changes, report_changes, Observation::default(),
         ));
         pending.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
     }

@@ -153,6 +153,7 @@ pub(super) async fn respond(
     let live = super::live::gather(client, read.state(), language, std::slice::from_ref(&key), true, false).await;
     if key == "issue_picker?refresh=1" {
         client.feeds.wake();
+        client.view_observation.add(super::observation::Metric::WakeIssues, 1);
     }
     let service = crate::views::this_service();
     let input = super::cache::Input::prepared(read.state(), &live).with_capabilities(capabilities);

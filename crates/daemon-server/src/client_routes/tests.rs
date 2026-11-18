@@ -1316,6 +1316,70 @@ fn runtime_progress_slow_issue_refreshes_leave_the_view_read_lane_free() {
     });
 }
 
+#[test]
+fn issue_picker_refresh_notifies_feeds_without_rebuilding_warm_shared_views() {
+    use crate::views::observation::{Metric, Observation};
+    let directory = crate::test_support::Directory::new();
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(alondra_core::options::path_in(&directory), "[issues]\nowners = [\"fixture\"]\n").unwrap();
+    let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&directory).unwrap());
+    let observation = Observation::armed();
+    observation.start();
+    let client = Client::open_observed(domain.clone(), &directory, Default::default(), observation.clone());
+    let issue = |title: &str| json!([{
+        "repository": {"nameWithOwner": "fixture/app"}, "number": 1,
+        "title": title, "url": "https://github.com/fixture/app/issues/1",
+    }]);
+    let original = FakeGithub::with(issue("Original issue"));
+    client.use_github(original.clone());
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    runtime.block_on(async {
+        async fn view(client: &Client, key: &str, lang: &str) -> Value {
+            let response = crate::views::routes::relay(client, "fixture-phone",
+                &format!("/views/{key}?protocol=1&client=ios&lang={lang}")).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
+            serde_json::from_slice(&bytes).unwrap()
+        }
+
+        let mut warm = Vec::new();
+        for lang in ["en", "es"] {
+            for key in ["home", "tasks"] {
+                warm.push((key, lang, view(&client, key, lang).await));
+            }
+        }
+        assert!(view(&client, "issue_picker", "en").await.to_string().contains("Original issue"));
+        assert_eq!(original.searches(), 1);
+        let changed = FakeGithub::with(issue("Newly reported issue"));
+        client.use_github(changed.clone());
+        let notifications = client.feeds.subscribe();
+        let before_refresh = observation.totals();
+        let refreshed = crate::views::routes::relay(&client, "fixture-phone",
+            "/views/issue_picker?protocol=1&client=ios&lang=en&refresh=1").await;
+        assert_eq!(refreshed.status(), StatusCode::OK);
+        let refreshed = axum::body::to_bytes(refreshed.into_body(), 1 << 20).await.unwrap();
+        let refreshed: Value = serde_json::from_slice(&refreshed).unwrap();
+        assert!(refreshed.to_string().contains("Newly reported issue"));
+        assert_eq!(changed.searches(), 1, "the real refresh route must ask GitHub again");
+        assert!(notifications.has_changed().unwrap(), "the real refresh emitter must wake feeds");
+        let after_refresh = observation.totals();
+        assert_eq!(after_refresh.metrics[Metric::WakeIssues as usize], before_refresh.metrics[Metric::WakeIssues as usize] + 1);
+        assert_eq!(after_refresh.metrics[Metric::GatherShared as usize], before_refresh.metrics[Metric::GatherShared as usize]);
+
+        // The refresh has its own keyed snapshot and digest; only the following warm reads must reuse theirs.
+        domain.reads.lock().unwrap().begin_live_read_trace();
+        for (key, lang, expected) in warm {
+            assert_eq!(view(&client, key, lang).await, expected);
+        }
+        let trace = domain.reads.lock().unwrap().end_live_read_trace();
+        assert!(trace.is_empty(), "an issue-only refresh must not rerun shared store getters: {trace:?}");
+        let after_warm_reads = observation.totals();
+        for metric in [Metric::GatherShared, Metric::GatherKeyed, Metric::DigestSerializations] {
+            assert_eq!(after_warm_reads.metrics[metric as usize], after_refresh.metrics[metric as usize]);
+        }
+    });
+}
+
 // The routes of the card tasks waiting for an MCP server wait on: signed devices only, on this Mac
 // and through the relay, each with its exact body, and none of them one of the relay's atomic
 // command writes.

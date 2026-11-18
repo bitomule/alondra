@@ -323,10 +323,10 @@ fn waiting(task: &Task, waits: WaitsFor, context: &RenderContext<'_>) -> Present
 /// What the orchestrator has still to decide about the task, or Alondra's own next step.
 fn answering_fact(task: &Task, context: &RenderContext<'_>) -> String {
     let lang = context.lang;
-    if context.domain.open_plan_refusal(&task.id).is_some() {
+    if context.reading(&task.id).is_some_and(|read| read.plan_refusal.is_some()) {
         return t!(lang, "The orchestrator fixes its launch plan or cancels it", "El orquestador corrige su plan de arranque o la cancela").into();
     }
-    if let Some(title) = context.domain.replanned_for(task).and_then(|dependency| context.domain.tasks.get(&dependency)).map(|dependency| dependency.title.clone()) {
+    if let Some(title) = context.reading(&task.id).and_then(|read| read.replanned_for.as_ref()).and_then(|dependency| context.domain.tasks.get(dependency)).map(|dependency| dependency.title.clone()) {
         return tf!(lang, "“{title}” was cancelled · the orchestrator decides what happens to it", "«{title}» se canceló · el orquestador decide qué hacer con ella");
     }
     t!(lang, "Alondra prepares its next step", "Alondra prepara su siguiente paso").into()
@@ -339,7 +339,7 @@ fn provider_name(task: &Task) -> &'static str {
 /// Why a task waits for a slot: its retry, the refusal that sent it back, or its place in the queue.
 fn slot_fact(task: &Task, context: &RenderContext<'_>) -> (String, Option<usize>) {
     let lang = context.lang;
-    if context.domain.open_plan_refusal(&task.id).is_some() {
+    if context.reading(&task.id).is_some_and(|read| read.plan_refusal.is_some()) {
         return (t!(lang, "The orchestrator fixes its launch plan or cancels it", "El orquestador corrige su plan de arranque o la cancela").into(), None);
     }
     if let Some(queued) = common::gate_queued(task, context) {

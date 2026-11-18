@@ -861,10 +861,14 @@ async fn execute_external(
                 return Ok(error_value_lang(lang, "conflict", "This Alondra has no Agent SDK host to check with"));
             };
             let shared = std::sync::Arc::downgrade(&client.shared());
-            let woken = move || if let Some(client) = shared.upgrade() { client.feeds.wake() };
+            let woken = move || if let Some(client) = shared.upgrade() {
+                client.feeds.wake();
+                client.view_observation.add(super::observation::Metric::WakeMcpFinished, 1);
+            };
             let started = crate::mcp_probe::check(client.mcp_probes.clone(), hosts, backend.clone(), project.name.clone(), project.path, woken);
             if started {
                 client.feeds.wake();
+                client.view_observation.add(super::observation::Metric::WakeMcpStarted, 1);
             }
             Ok(to_applied(200, json!({"checking": project.name})))
         }
@@ -878,6 +882,7 @@ async fn execute_external(
             match removed {
                 Ok(server) => {
                     client.feeds.wake();
+                    client.view_observation.add(super::observation::Metric::WakeMcpRemoved, 1);
                     Ok(to_applied(200, json!({"removed": server})))
                 }
                 Err((name, refused @ crate::mcp_remove::Refused::Gone)) => Ok(no_longer_available(lang, &refused.message(name.as_deref().unwrap_or_default(), lang))),

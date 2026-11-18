@@ -4,6 +4,7 @@ pub(crate) mod actions;
 pub mod action_results;
 pub(crate) mod feed;
 pub(crate) mod live;
+pub(crate) mod observation;
 pub(crate) mod reset_time;
 pub(crate) mod routes;
 
