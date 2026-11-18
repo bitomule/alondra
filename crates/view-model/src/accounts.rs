@@ -1,6 +1,6 @@
 //! How an account and its quota read in a list, a choice or a task decision.
 use crate::text::{t, tf, Lang};
-use alondra_core::accounts::{AccountStatus, Provider};
+use alondra_core::accounts::{AccountBilling, AccountState, AccountStatus, Provider};
 use alondra_core::usage::WindowKind;
 
 /// The account's name; the default one the user never named is called so in their language.
@@ -79,3 +79,67 @@ pub fn percent(share: alondra_core::usage::Share) -> u32 {
 }
 
 pub fn native_limit_reported(measured: Option<&alondra_core::usage::AccountUsage>) -> bool { measured.is_some_and(|usage| usage.windows.iter().any(|window| window.reading.kind.is_native_limit_marker() && window.reading.exhausted)) }
+
+pub const KEY: &str = "accounts";
+
+/// `text` as one word for the shell, whatever it holds.
+pub fn shell_word(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
+}
+
+pub fn state_label(state: AccountState, lang: Lang) -> &'static str {
+    match state {
+        AccountState::Unchecked => t!(lang, "not checked yet", "sin comprobar"),
+        AccountState::SignedIn => t!(lang, "signed in", "con sesión"),
+        AccountState::SignedOut => t!(lang, "signed out", "sin sesión"),
+        AccountState::Unavailable => t!(lang, "can't be checked", "no se puede comprobar"),
+        AccountState::Disabled => t!(lang, "disabled", "desactivada"),
+    }
+}
+
+/// Email, plan and state, each when known: `me@example.org · max · signed in`.
+pub fn subtitle(account: &AccountStatus, lang: Lang) -> String {
+    [account.email.clone(), billing(account, lang), Some(state_label(account.state, lang).to_owned())].into_iter().flatten().collect::<Vec<_>>().join(" · ")
+}
+
+pub fn billing(account: &AccountStatus, lang: Lang) -> Option<String> {
+    match &account.billing {
+        AccountBilling::PayPerUse => Some(t!(lang, "pay per use", "pago por uso").to_owned()),
+        AccountBilling::Subscription { .. } => account.plan.clone(),
+    }
+}
+
+pub fn action_provider(action: &crate::action_id::ActionId) -> Option<Provider> {
+    match action.extra.as_deref() { None | Some("claude") => Some(Provider::Claude), Some("codex") => Some(Provider::Codex), _ => None }
+}
+
+/// How the user signs an account in with the provider's own tool on the Mac, the command whole.
+pub fn sign_in_hint(provider: Provider, profile: Option<&str>, lang: Lang) -> String {
+    command_hint(provider, &alondra_core::accounts::sign_in_command(provider, profile), lang)
+}
+
+/// [`sign_in_hint`] for a command already built.
+pub fn command_hint(provider: Provider, command: &str, lang: Lang) -> String {
+    match provider {
+        Provider::Claude => tf!(lang, "Open Terminal on the Mac, run {command} and sign in with /login", "Abre Terminal en el Mac, ejecuta {command} e inicia sesión con /login"),
+        Provider::Codex => tf!(lang, "On the Mac, run {command}", "En el Mac, ejecuta {command}"),
+    }
+}
+
+/// [`sign_in_hint`] for `account`. A named account whose profile folder is not known yet is named
+/// instead, never sent to the default profile.
+pub fn account_sign_in_hint(account: &AccountStatus, lang: Lang) -> String {
+    match &account.profile {
+        _ if account.id.is_default() => sign_in_hint(account.provider, None, lang),
+        Some(profile) => sign_in_hint(account.provider, Some(profile), lang),
+        None => named_hint(account.provider, &account.name, lang),
+    }
+}
+
+/// How a named account whose profile folder is not known yet is signed in: by its name.
+pub fn named_hint(provider: Provider, name: &str, lang: Lang) -> String {
+    let provider = provider_name(provider);
+    tf!(lang, "Sign {name} in to {provider} in Terminal on the Mac, with its own profile", "Inicia la sesión de {name} en {provider} en Terminal en el Mac, con su propio perfil")
+}
+
+

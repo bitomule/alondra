@@ -870,3 +870,31 @@ pub struct ChoiceItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
+
+/// A plain button of `role` for the action `id`.
+pub fn button(id: String, label: &str, role: Role) -> Action {
+    Action {
+        id,
+        label: label.into(),
+        style: match role {
+            Role::Advance => Style::Primary,
+            Role::Risk => Style::Destructive,
+            Role::Neutral => Style::Secondary,
+        },
+        role: Some(role),
+        option_id: None,
+        description: None,
+        presentation: Presentation::Button,
+        options: vec![],
+        input: Input::None,
+        attachments: false,
+        comments: None,
+        confirm: None,
+        enabled: true,
+        disabled_reason: None,
+        stamp: None,
+        key: None,
+        link: None,
+        resolves_card: false,
+    }
+}

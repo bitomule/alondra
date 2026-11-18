@@ -1,0 +1,72 @@
+load("//tools/bazel:crates.bzl", "adapter_in_crate")
+load("//tools:tree.bzl", "repo_tree")
+load("@crates//:defs.bzl", "all_crate_deps")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("//tools:rust_sources.bzl", "production_sources")
+load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
+load("//:version.bzl", "VERSION")
+
+WORKSPACE_DEPS = [
+    "//crates/client-port:client_port",
+    "//crates/core:alondra_core",
+    "//crates/domain-rules:domain_rules",
+    "//crates/view-model:view_model",
+]
+
+TEST_ONLY = ["src/tui/md/corpus.rs"]
+
+# The terminal app: the screens the daemon renders, drawn and driven from the keyboard.
+adapter_in_crate(
+    name = "cli_tui",
+    srcs = production_sources(test_only = TEST_ONLY),
+    crate_name = "alondra_cli_tui",
+    version = VERSION,
+    deps = all_crate_deps(normal = True) + WORKSPACE_DEPS,
+)
+
+# The screens are compared with what the daemon's renderer builds, so the test renders real views.
+low_opt_rust_test(
+    name = "cli_tui_test",
+    size = "small",
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    compile_data = ["//fixtures/diffs"],
+    crate_name = "alondra_cli_tui",
+    crate_root = "src/lib.rs",
+    data = [
+        "//fixtures/client-v2",
+        "//fixtures/markdown",
+        "//fixtures/views:all",
+        "//fixtures/views:cards",
+        "//fixtures/views:metrics",
+        "//fixtures/views:newer_daemon",
+    ],
+    edition = "2024",
+    version = VERSION,
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
+        "//crates/client-transport:client_transport",
+        "//crates/views:views",
+    ],
+)
+
+# The library compiles only production sources: a test file among its inputs would rebuild every
+# crate above it whenever the test changes.
+rust_inputs_test(
+    name = "production_inputs_test",
+    size = "small",
+    required_sources = ["crates/cli-tui/src/lib.rs", "crates/cli-tui/src/tui.rs"],
+    source_dir = "crates/cli-tui/src/",
+    target_under_test = ":cli_tui",
+    test_only_sources = ["crates/cli-tui/src/tui/md/corpus.rs", "crates/cli-tui/src/tui/tests/screens.rs"],
+    test_sources = False,
+)
+
+# Every source, tests included, for the root's tests that read what a person sees.
+filegroup(
+    name = "sources",
+    srcs = glob(["src/**/*.rs"]),
+    visibility = ["//crates/alondra:__pkg__"],
+)
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+
+repo_tree()

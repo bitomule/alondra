@@ -84,9 +84,12 @@ rust_binary(
     deps = DEPS + [":scenarios"],
 )
 
+# Every edit of any crate relinks the runner and reruns this test, so its cases run in shards side
+# by side: the edit loop waits for the longest shard, not for every case one after another.
 sh_test(
     name = "scenarios_test",
     size = "medium",
+    shard_count = 4,
     srcs = ["run_scenarios.sh"],
     data = [":host_relay", ":scenarios_runner"] + glob(["cases/**"]),
     env = {"HOME": ".", "TZ": "UTC"} | RELAY_ENV,

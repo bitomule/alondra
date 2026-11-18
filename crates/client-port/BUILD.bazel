@@ -1,0 +1,58 @@
+load("//tools/bazel:crates.bzl", "port_crate")
+load("//tools:tree.bzl", "repo_tree")
+load("@crates//:defs.bzl", "all_crate_deps")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("//tools:rust_sources.bzl", "production_sources")
+load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
+load("//:version.bzl", "VERSION")
+
+WORKSPACE_DEPS = [
+    "//crates/core:alondra_core",
+    "//crates/domain-rules:domain_rules",
+    "//crates/view-model:view_model",
+]
+
+# The client port: the daemon client every input adapter of the `alondra` binary talks through, and
+# the words and requests they share. The root installs the transport behind it.
+port_crate(
+    name = "client_port",
+    srcs = production_sources(test_only = ["src/test_transport.rs"]),
+    crate_name = "alondra_client_port",
+    version = VERSION,
+    deps = all_crate_deps(normal = True) + WORKSPACE_DEPS,
+)
+
+low_opt_rust_test(
+    name = "client_port_test",
+    size = "small",
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    crate_name = "alondra_client_port",
+    crate_root = "src/lib.rs",
+    data = ["//fixtures/client-v2"],
+    edition = "2024",
+    version = VERSION,
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS,
+)
+
+# The library compiles only production sources: a test file among its inputs would rebuild every
+# crate above it whenever the test changes.
+rust_inputs_test(
+    name = "production_inputs_test",
+    size = "small",
+    required_sources = ["crates/client-port/src/lib.rs", "crates/client-port/src/client.rs"],
+    source_dir = "crates/client-port/src/",
+    target_under_test = ":client_port",
+    test_only_sources = ["crates/client-port/src/test_transport.rs", "crates/client-port/src/doc_images_tests.rs"],
+    test_sources = False,
+)
+
+# Every source, tests included, for the root's tests that read what a person sees.
+filegroup(
+    name = "sources",
+    srcs = glob(["src/**/*.rs"]),
+    visibility = ["//crates/alondra:__pkg__"],
+)
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+
+repo_tree()

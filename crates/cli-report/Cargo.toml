@@ -1,0 +1,29 @@
+[package]
+name = "alondra-cli-report"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+alondra-client-port.workspace = true
+alondra-core.workspace = true
+alondra-domain-rules.workspace = true
+alondra-view-model.workspace = true
+anyhow.workspace = true
+base64 = "0.23.1"
+cliclack = "0.5.6"
+flate2 = "1.1.10"
+libc.workspace = true
+ring = "0.17.14"
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.11.0"
+toml.workspace = true
+ureq.workspace = true
+url = "2.5.7"
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true

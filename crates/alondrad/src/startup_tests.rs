@@ -94,3 +94,16 @@ async fn the_port_answers_while_hosts_are_still_being_taken_over() {
     assert!(!daemon.is_finished());
     daemon.abort();
 }
+
+/// Every port has its implementation once the root wired the daemon: the engine's pieces, the
+/// orchestrator the server adds, and the screens only the root sees.
+#[test]
+fn the_daemon_implements_every_port() {
+    let home = crate::test_support::Directory::new();
+    std::fs::create_dir_all(&home).unwrap();
+    drop(alondra_engine_sdk::wiring::open(&home).unwrap());
+    let runtime = domain_runtime::DomainRuntime::open_unwired_at(&home, &domain_database_migration::active_path(&home)).unwrap();
+    let daemon = domain_bootstrap::DomainDaemon::over(&home, runtime).unwrap();
+    crate::wire(daemon.domain().ports());
+    assert_eq!(daemon.domain().ports().missing(), Vec::<&str>::new(), "a port nothing implements");
+}

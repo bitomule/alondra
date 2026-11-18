@@ -1,0 +1,309 @@
+use std::cell::Cell;
+use std::sync::OnceLock;
+
+use alondra_core::tasks::{RequestState, TaskState};
+use alondra_core::{BackgroundItem, BackgroundKind, Node, NodeState, OrchestratorState, ReportKind};
+
+pub use alondra_view_model::Lang;
+
+static DETECTED: OnceLock<Lang> = OnceLock::new();
+
+thread_local! {
+    static OVERRIDE: Cell<Option<Lang>> = const { Cell::new(None) };
+}
+
+pub fn lang() -> Lang {
+    OVERRIDE.with(Cell::get).unwrap_or_else(|| *DETECTED.get_or_init(alondra_core::user_language::current))
+}
+
+/// The language this thread speaks from now on, whatever the user's is: for tests.
+pub fn set_for_this_thread(l: Lang) {
+    OVERRIDE.with(|o| o.set(Some(l)));
+}
+
+/// `tr!("English", "Español")` picks the string for the current language.
+#[macro_export]
+macro_rules! tr {
+    ($en:literal, $es:literal) => {
+        match $crate::i18n::lang() {
+            $crate::i18n::Lang::En => $en,
+            $crate::i18n::Lang::Es => $es,
+        }
+    };
+}
+
+/// `trf!("{n} left", "quedan {n}")`: like `tr!` but both are format strings with inline captures.
+#[macro_export]
+macro_rules! trf {
+    ($en:literal, $es:literal) => {
+        match $crate::i18n::lang() {
+            $crate::i18n::Lang::En => format!($en),
+            $crate::i18n::Lang::Es => format!($es),
+        }
+    };
+}
+
+pub fn state(s: NodeState) -> &'static str {
+    match s {
+        NodeState::Working => tr!("working", "trabajando"),
+        NodeState::WaitingAnswer => tr!("waiting for an answer", "esperando respuesta"),
+        NodeState::YourTurn => tr!("your turn", "te toca"),
+        NodeState::WaitingMerge => tr!("waiting for your review", "espera tu revisión"),
+        NodeState::Delivered => tr!("delivering a result", "entrega resultado"),
+        NodeState::WaitingMachine => tr!("waiting for the machine", "esperando máquina"),
+        NodeState::Done => tr!("done", "terminado"),
+        NodeState::Idle => tr!("idle", "inactivo"),
+    }
+}
+
+pub fn orchestrator(s: OrchestratorState) -> &'static str {
+    match s {
+        OrchestratorState::OnDuty => tr!("on duty", "de guardia"),
+        OrchestratorState::Handling => tr!("handling a request", "atendiendo una petición"),
+        OrchestratorState::WaitingForYou => tr!("waiting for you", "esperándote"),
+        OrchestratorState::Offline => tr!("offline", "desconectado"),
+        OrchestratorState::Unknown => tr!("unknown", "desconocido"),
+    }
+}
+
+/// The orchestrator is shown with its own states, every other node with the node states.
+pub fn node_state(n: &Node) -> &'static str {
+    n.orchestrator_state.map_or_else(|| state(n.state), orchestrator)
+}
+
+/// What a task means to the user: nobody works on it yet, it runs, it waits for them (a question,
+/// an action or a PR to review), it finished, or it was cancelled. The steps in between are
+/// Alondra's, not theirs.
+pub fn task_state(s: TaskState) -> &'static str {
+    match s {
+        TaskState::NotStarted => tr!("not started", "por empezar"),
+        TaskState::WaitingDependency | TaskState::Running | TaskState::Closing => tr!("running", "en marcha"),
+        TaskState::NeedsYou | TaskState::InReview => tr!("needs you", "te espera"),
+        TaskState::Done => tr!("finished", "terminada"),
+        TaskState::Cancelled => tr!("cancelled", "descartada"),
+    }
+}
+
+pub fn request_state(s: RequestState) -> &'static str {
+    match s {
+        RequestState::Defining => tr!("defining", "definiendo"),
+        RequestState::InProgress => tr!("in progress", "en curso"),
+        RequestState::Done => tr!("finished", "terminada"),
+    }
+}
+
+/// Whether a node works on something now; its tasks carry everything else.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Occupancy {
+    Busy,
+    Free,
+    WaitingMachine,
+}
+
+impl Occupancy {
+    pub fn of(n: &Node) -> Self {
+        match n.state {
+            NodeState::Working => Occupancy::Busy,
+            NodeState::WaitingMachine => Occupancy::WaitingMachine,
+            _ => Occupancy::Free,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Occupancy::Busy => tr!("busy", "ocupado"),
+            Occupancy::Free => tr!("free", "libre"),
+            Occupancy::WaitingMachine => tr!("waiting for the machine", "esperando máquina"),
+        }
+    }
+}
+
+/// The orchestrator keeps its own states; every other node is free or busy.
+pub fn occupancy_label(n: &Node) -> &'static str {
+    n.orchestrator_state.map_or_else(|| Occupancy::of(n).label(), orchestrator)
+}
+
+pub fn report_kind(k: ReportKind) -> &'static str {
+    match k {
+        ReportKind::Notice => tr!("notice", "aviso"),
+        ReportKind::Document => tr!("document", "documento"),
+        ReportKind::Progress => tr!("progress", "progreso"),
+        ReportKind::Final => tr!("finished", "terminado"),
+    }
+}
+
+/// Option labels and hints the server writes in English; free labels pass through.
+pub fn option_label(label: &str) -> &str {
+    use alondra_core::answer_option as o;
+    match label {
+        o::APPROVE => tr!("Approve", "Aprobar"),
+        o::REQUEST_CHANGES => tr!("Request changes", "Pedir cambios"),
+        o::ALLOW => tr!("Allow", "Permitir"),
+        o::DENY => tr!("Deny", "Denegar"),
+        o::MORE_CONTEXT => tr!("I need more context", "Necesito más contexto"),
+        o::DONE => tr!("Done", "Hecho"),
+        o::CANNOT => tr!("I can't / explain", "No puedo / explícamelo"),
+        o::WRITE_THE_REASON => tr!("Write the reason", "Escribe el motivo"),
+        "Write what to change" => tr!("Write what to change", "Escribe qué cambiar"),
+        other => other,
+    }
+}
+
+pub fn open_in_browser() -> &'static str {
+    tr!("Open in browser", "Abrir en el navegador")
+}
+
+pub fn rescue_comments() -> &'static str {
+    tr!("Rescue comments", "Rescatar comentarios")
+}
+
+pub fn approve_artifact() -> &'static str {
+    tr!("Approve", "Aprobar")
+}
+
+pub fn merge_method(m: alondra_core::pr::MergeMethod) -> &'static str {
+    use alondra_core::pr::MergeMethod;
+    match m {
+        MergeMethod::Merge => tr!("merge commit", "commit de merge"),
+        MergeMethod::Squash => tr!("squash", "squash"),
+        MergeMethod::Rebase => tr!("rebase", "rebase"),
+    }
+}
+
+/// Why `POST /v1/nodes/{key}/close` refused, in the user's language and without the server's
+/// status code or raw prose. `kind` is the reason alondrad sent; `detail`, when present, names
+/// the worktree or files at stake and is not itself translated.
+pub fn close_reason(kind: &str, detail: Option<&str>) -> String {
+    match kind {
+        "busy" => tr!("it is working; wait until it stops", "está trabajando; espera a que termine").to_string(),
+        "permission" => {
+            tr!(
+                "it has a permission pending on a tool call that is running; answer it and close again",
+                "tiene un permiso pendiente en una llamada a herramienta en marcha; respóndelo y vuelve a cerrarlo"
+            )
+            .to_string()
+        }
+        "orchestrator" => tr!("it is the orchestrator, which Alondra manages automatically", "es el orquestador, que Alondra gestiona automáticamente").to_string(),
+        "worktree" => {
+            let detail = detail.unwrap_or_default();
+            trf!(
+                "its worktree has work that is not pushed ({detail}); commit and push it, or discard it, and close again",
+                "su worktree tiene trabajo sin subir ({detail}); haz commit y push, o descártalo, y vuelve a cerrarlo"
+            )
+        }
+        _ => detail.unwrap_or(kind).to_string(),
+    }
+}
+
+pub fn comments(n: usize) -> String {
+    match (lang(), n) {
+        (Lang::En, 1) => "1 comment".into(),
+        (Lang::En, n) => format!("{n} comments"),
+        (Lang::Es, 1) => "1 comentario".into(),
+        (Lang::Es, n) => format!("{n} comentarios"),
+    }
+}
+
+pub fn background_kind(k: BackgroundKind) -> &'static str {
+    match k {
+        BackgroundKind::Agent => tr!("subagent", "subagente"),
+        BackgroundKind::Shell => tr!("shell", "shell"),
+        BackgroundKind::Other => tr!("task", "tarea"),
+    }
+}
+
+fn background_count(k: BackgroundKind, n: usize) -> String {
+    match (lang(), k, n) {
+        (_, _, 1) => format!("1 {}", background_kind(k)),
+        (Lang::En, BackgroundKind::Agent, n) => format!("{n} subagents"),
+        (Lang::En, BackgroundKind::Shell, n) => format!("{n} shells"),
+        (Lang::En, BackgroundKind::Other, n) => format!("{n} tasks"),
+        (Lang::Es, BackgroundKind::Agent, n) => format!("{n} subagentes"),
+        (Lang::Es, BackgroundKind::Shell, n) => format!("{n} shells"),
+        (Lang::Es, BackgroundKind::Other, n) => format!("{n} tareas"),
+    }
+}
+
+/// "2 subagentes · 1 shell": what the node runs in the background, by kind, or nothing.
+pub fn background_badge(items: &[BackgroundItem]) -> Option<String> {
+    let parts: Vec<String> = [BackgroundKind::Agent, BackgroundKind::Shell, BackgroundKind::Other]
+        .into_iter()
+        .filter_map(|k| {
+            let n = items.iter().filter(|b| b.kind == k).count();
+            (n > 0).then(|| background_count(k, n))
+        })
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_background_badge_counts_each_kind_in_the_user_language() {
+        let item = |kind| BackgroundItem { kind, label: String::new(), started_at: 0 };
+        let items = [item(BackgroundKind::Agent), item(BackgroundKind::Shell), item(BackgroundKind::Agent), item(BackgroundKind::Other)];
+        set_for_this_thread(Lang::Es);
+        assert_eq!(background_badge(&items).as_deref(), Some("2 subagentes · 1 shell · 1 tarea"));
+        assert_eq!(background_badge(&items[1..2]).as_deref(), Some("1 shell"));
+        assert_eq!(background_badge(&[item(BackgroundKind::Shell), item(BackgroundKind::Shell)]).as_deref(), Some("2 shells"));
+        assert_eq!(background_badge(&[]), None);
+        set_for_this_thread(Lang::En);
+        assert_eq!(background_badge(&items).as_deref(), Some("2 subagents · 1 shell · 1 task"));
+        assert_eq!(background_badge(&items[..1]).as_deref(), Some("1 subagent"));
+    }
+
+    #[test]
+    fn action_options_read_in_the_user_language() {
+        set_for_this_thread(Lang::Es);
+        assert_eq!(option_label(alondra_core::answer_option::DONE), "Hecho");
+        assert_eq!(option_label(alondra_core::answer_option::CANNOT), "No puedo / explícamelo");
+        assert_eq!(option_label("Merge #150"), "Merge #150");
+        set_for_this_thread(Lang::En);
+        assert_eq!(option_label(alondra_core::answer_option::CANNOT), "I can't / explain");
+    }
+
+    #[test]
+    fn close_reasons_read_in_the_user_language_without_a_status_code() {
+        set_for_this_thread(Lang::Es);
+        assert_eq!(close_reason("busy", None), "está trabajando; espera a que termine");
+        assert_eq!(close_reason("permission", None), "tiene un permiso pendiente en una llamada a herramienta en marcha; respóndelo y vuelve a cerrarlo");
+        assert_eq!(
+            close_reason("worktree", Some("2 commit(s) not pushed in /tmp/x")),
+            "su worktree tiene trabajo sin subir (2 commit(s) not pushed in /tmp/x); haz commit y push, o descártalo, y vuelve a cerrarlo"
+        );
+        set_for_this_thread(Lang::En);
+        assert_eq!(close_reason("busy", None), "it is working; wait until it stops");
+        for kind in ["busy", "permission", "worktree"] {
+            assert!(!close_reason(kind, Some("x")).contains("40"), "{kind} must not leak a status code");
+        }
+    }
+
+    #[test]
+    fn the_thread_override_switches_every_string() {
+        set_for_this_thread(Lang::En);
+        assert_eq!(state(NodeState::Working), "working");
+        assert_eq!(comments(2), "2 comments");
+        set_for_this_thread(Lang::Es);
+        assert_eq!(state(NodeState::Working), "trabajando");
+        assert_eq!(comments(1), "1 comentario");
+    }
+
+    #[test]
+    fn task_request_and_node_labels_read_as_the_apps_do() {
+        set_for_this_thread(Lang::Es);
+        let tasks: Vec<&str> = TaskState::ALL.iter().map(|s| task_state(*s)).collect();
+        assert_eq!(tasks, ["por empezar", "en marcha", "en marcha", "te espera", "te espera", "en marcha", "terminada", "descartada"]);
+        assert_eq!(request_state(RequestState::Done), "terminada");
+        assert_eq!(request_state(RequestState::Defining), "definiendo");
+        let mut n = Node::new("s", 0);
+        n.state = NodeState::Working;
+        assert_eq!(occupancy_label(&n), "ocupado");
+        n.state = NodeState::WaitingMerge;
+        assert_eq!(occupancy_label(&n), "libre");
+        set_for_this_thread(Lang::En);
+        assert_eq!(task_state(TaskState::WaitingDependency), "running");
+        assert_eq!(task_state(TaskState::Done), "finished");
+    }
+}

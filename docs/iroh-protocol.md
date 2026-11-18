@@ -1,6 +1,6 @@
 # iroh protocol between devices and a Mac
 
-What a client (the CLI and the apps) speaks to `alondrad`'s iroh endpoint. The daemon side is `crates/alondrad/src/iroh_endpoint.rs`.
+What a client (the CLI and the apps) speaks to `alondrad`'s iroh endpoint. The daemon side is `crates/daemon-server/src/iroh_endpoint.rs`.
 
 ## Finding the Mac
 

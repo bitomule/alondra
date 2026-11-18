@@ -1,7 +1,7 @@
 use super::*;
 use alondra_domain_rules::{DomainState, ReadIndex};
 use alondra_core::metrics::fold::Outcome;
-use alondra_core::metrics::report::{DAY_MS, DayRow, Release, Spend, TaskRow, Tokens};
+use alondra_core::metrics::report::{DAY_MS, DayRow, Metric, Release, Spend, TaskRow, Tokens, Unit, Value};
 use crate::{Client, Item, LiveSnapshot, Transport, build as build_view};
 
 const NOW: i64 = 20_752 * DAY_MS;

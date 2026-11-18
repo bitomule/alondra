@@ -49,7 +49,7 @@ swift_test(
     timeout = "moderate",
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = ["ProcessTests/ActionJournalProcessTests.swift", "ProcessFixtures/ProcessProtocol.swift"],
-    data = [":ActionJournalProcessClient", "//crates/alondrad:alondrad_test"],
+    data = [":ActionJournalProcessClient", "//crates/daemon-server:daemon_server_test"],
     env_inherit = ["ALONDRA_MEASURE_RELAY"],
     deps = ["//apple/Contract:AlondraContract", "//apple/Testing:AlondraTestSupport"],
 )

@@ -461,3 +461,61 @@ passed when run again alone.
 - The rest is phase 4b: the remaining `test-hooks` builds (`engine-github`'s among them) and the `*_on_test_hooks` copies go, so no
   crate is compiled twice.
 
+## Screens and input adapters (phase 6, 2026-11-18)
+
+```
+roots:        alondrad (main, supervision, assemble + wire)    alondra (main, wire, dispatch, log catalog)
+                 │  registers views as `Screens`                  │  installs the transport and the hooks
+adapters-in:  daemon-server                     cli · cli-tui · cli-mcp · cli-report · client-transport
+                 │  routes, iroh, direct,          │  each one only through ports
+                 │  pushes, the screens' cache     │
+ports:        engine-ports (+ `Screens` in its registry) · view-model (`Screens`, the screens' types)
+              client-port (the daemon client's traits, its protocol `Client`, shared CLI words)
+application:  views (implements `Screens`; only the roots link it) · the engine
+```
+
+- `view-model` holds the port `Screens` (`build`, `inbox_badge`, `activity_counts`,
+  `waiting_cards`, `push_content`, `answer_label`) and everything a client or the server names
+  besides the rendering itself: `RenderContext`, `BuildError`, the protocol constants, the push
+  types, capabilities, outcomes and refusals, the accounts' and metrics' words, the keys of each
+  screen. `views` re-exports them, so its own code did not change, and implements the port
+  (`alondra_views::Views`, `alondra_views::wire`).
+- `daemon-server` is everything `alondrad` held but `main`, the supervision and `assemble`. It
+  asks the screens of the registry (`screens::install`, `screens::get`); its own tests render with
+  the real `views`, the only test target of the server that links it. Until phase 4 puts the
+  engine behind ports it depends on five engine crates and `github-gh` through `LAYER_EXCEPTIONS`
+  (54 → 60), the
+  user's choice.
+- The CLI is five adapters and a port. `client-port` holds the transport traits and the protocol
+  `Client` built on them; `client-transport` implements them (HTTP to this Mac, the relay, iroh).
+  The root `alondra` installs the transport, the account keychain, the doctor's diagnosis and the
+  log catalog, and hands each command to its adapter. No adapter depends on another one, and no
+  layer exception was added.
+- The log catalog is built for the root alone: a word added in any crate rebuilds the root, not a
+  library of the CLI.
+- The engine's tests no longer link `views`. The ones that checked a screen after driving the
+  engine run with the server's tests (`daemon-server/src/engine_tests/`), whose fixtures the engine
+  crates expose under `test-hooks`; the admission menu's wording was already a test of `views`.
+  `engine_sdk_test` (150 to 227 s) carried the `alondra` and `alondrad` binaries for two opt-in
+  tests: they moved to `engine_sdk_process_test` (`manual`), so relinking the binaries no longer
+  reruns the SDK suite.
+- `scenarios_test` reruns on every edit of any crate, and it ran its 16 cases one after another
+  in 124 s. Its runner already split cases by Bazel's shard variables: it now runs in 4 shards, the
+  longest 41 s.
+
+Measured with `edit_bench --edit crates/views/src/task_state.rs` on the shared Mac, the incremental
+state primed; its load average was 45 to 51 during the last runs:
+
+| `views/src/task_state.rs` | Crates reopened | Test targets reopened | Actions run (rustc / clippy / tests) | Critical path | Build | Edit + test |
+|---|---:|---:|---|---:|---:|---:|
+| Before (plan, unprimed) | | | 21 / 13 | 220 s | 228 s | 315 s |
+| Before (phase 1, primed) | | | 21 / 13 | | 59 s | 261 s |
+| Phase 6, `scenarios_test` in one shard | 10 | 43 | 77 (17 / 11 / 48) | 168 s | 32 s | 184 s |
+| Phase 6, `scenarios_test` in 4 shards | 10 | 43 | 84 (17 / 11 / 55) | 74 s | 30 s | 105 s |
+
+- The libraries a screen edit rebuilds are `views` and the roots (`alondrad`, `alondra`,
+  `scenarios`); no adapter and no piece of the engine.
+- What is left of edit + test is the tests that link `views` or run the binaries: the four
+  scenario shards (up to 41 s), `daemon_server_test` (26 s alone, 55 s on the loaded Mac), the
+  binaries' tests (`relaunch_test`, `doctor_service_test`, `cli_api_test`, 18 to 30 s) and the
+  views' own. rules_rust 0.74 does not shard `rust_test`.

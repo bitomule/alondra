@@ -51,7 +51,6 @@ url = "2.5"
 alondra-agent-runtime.workspace = true
 alondra-daemon-engine = { workspace = true, features = ["test-hooks"] }
 alondra-engine-github = { workspace = true, features = ["test-hooks"] }
-alondra-views.workspace = true
 alondra-engine-kernel = { workspace = true, features = ["test-hooks"] }
 alondra-daemon-engine-machine = { workspace = true, features = ["test-hooks"] }
 alondra-daemon-engine-store = { workspace = true, features = ["test-hooks"] }

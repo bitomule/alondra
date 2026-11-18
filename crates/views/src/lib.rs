@@ -3,8 +3,8 @@
 mod test_support;
 pub mod accounts;
 pub use alondra_view_model::{action_id, components, live, now_fact, pr_images};
-pub mod action_outcome;
-mod capabilities;
+pub use alondra_view_model::{action_outcome, resolves, review_export};
+use alondra_view_model::messages;
 pub mod allow_always;
 pub mod allow_for_task;
 mod card;
@@ -13,11 +13,8 @@ mod details;
 mod task_node;
 mod home;
 pub mod mcp_servers;
-pub mod resolves;
-pub mod review_export;
 mod merge_method;
 mod branch_update;
-mod messages;
 pub mod metrics;
 mod misc;
 mod pacing;
@@ -34,108 +31,50 @@ mod domain_fixtures;
 mod tests;
 #[cfg(test)]
 mod card_contract_tests;
+#[cfg(test)]
+mod capabilities_tests;
 pub mod text;
 
 pub use components::*;
-pub use capabilities::{ClientCapabilities, InvalidCapabilities};
+pub use alondra_view_model::capabilities::{ClientCapabilities, InvalidCapabilities};
 pub use card::answer_label;
 pub use messages::{Outcome, OutcomeKind, refusal_text, scheduled_message_stamp, send_anyway, transport_failure, unknown_outcome};
 pub use resolves::{pr_presentation, resolves_card};
 pub use live::*;
 pub use text::Lang;
-/// The newest views protocol this build speaks.
-pub const VIEWS_PROTOCOL: u32 = 1;
-/// The oldest one a daemon still serves: kept at least two releases after `VIEWS_PROTOCOL` rises.
-pub const VIEWS_PROTOCOL_MIN: u32 = 1;
-pub const VIEWS_PROTOCOLS: ProtocolRange = ProtocolRange { min: VIEWS_PROTOCOL_MIN, max: VIEWS_PROTOCOL };
+pub use alondra_view_model::screens::*;
+use alondra_domain_rules::{DomainState, ReadIndex};
+use std::sync::Arc;
 
-/// A daemon of `version` serving every protocol this build knows.
-pub fn service(version: &str) -> Service {
-    Service { version: version.to_owned(), views_protocol: VIEWS_PROTOCOLS, capabilities: ClientCapabilities::SUPPORTED.iter().map(|name| (*name).to_owned()).collect() }
+/// The screens this crate renders, as the port the rest of Alondra asks for them.
+pub struct Views;
+
+impl Screens for Views {
+    fn build(&self, key: &str, context: RenderContext<'_>) -> Result<View, BuildError> {
+        build(key, context)
+    }
+    fn inbox_badge(&self, index: &ReadIndex) -> u32 {
+        inbox_badge(index)
+    }
+    fn activity_counts(&self, context: &RenderContext<'_>) -> alondra_domain_rules::ActivityCounts {
+        activity_counts(context)
+    }
+    fn waiting_cards(&self, index: &ReadIndex) -> Vec<String> {
+        waiting_cards(index)
+    }
+    fn push_content(&self, read: &alondra_domain_rules::ReadSnapshot, card_id: &str, lang: Lang) -> Result<PushContent, BuildError> {
+        push_content(read, card_id, lang)
+    }
+    fn answer_label(&self, state: &DomainState, interaction: &alondra_domain_rules::Interaction, option: &alondra_domain_rules::QuestionOption, lang: Lang) -> String {
+        answer_label(state, interaction, option, lang)
+    }
 }
 
-use alondra_domain_rules::{DomainState, InboxItem, ReadIndex, Task, TaskId, TaskReading};
-use sha2::{Digest, Sha256};
+/// Registers the screens as the implementation of the port `Screens`.
+pub fn wire(registry: &alondra_engine_ports::Registry) {
+    registry.provide::<dyn Screens>(Arc::new(Views));
+}
 
-#[derive(Clone, Copy, Debug)]
-pub struct RenderContext<'a> {
-    pub domain: &'a DomainState,
-    /// The read index of `domain`'s revision: everything a row reads of the domain beyond its own
-    /// record, decided once per commit, so no view walks the domain once per row.
-    pub index: &'a ReadIndex,
-    pub live: &'a LiveSnapshot,
-    pub client: Client,
-    pub lang: Lang,
-    pub transport: Transport,
-    pub cursor: &'a str,
-    pub rendered_at: &'a str,
-}
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum BuildError {
-    InvalidKey,
-    InvalidActionId,
-    NotFound,
-    UnsupportedClient,
-}
-/// The view a card key renders once the card no longer waits for the user: no card, only the
-/// short notice in `empty` that says why, for the client to show as it closes the screen.
-pub const SETTLED_VIEW: &str = "settled_card";
-/// Why a card reached by its link is gone: answered, withdrawn, accepted, read, or its task ended.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Settled {
-    Answered,
-    Withdrawn,
-    Accepted,
-    Read,
-    TaskOver,
-    Merged,
-    ClosedUnmerged,
-}
-impl Settled {
-    /// The short notice a client shows as it closes the card.
-    pub fn notice(self, lang: Lang) -> &'static str {
-        use text::t;
-        match self {
-            Self::Answered => t!(lang, "Already answered", "Ya respondida"),
-            Self::Withdrawn => t!(lang, "No longer needed", "Ya no hace falta"),
-            Self::Accepted => t!(lang, "Already accepted", "Ya aceptada"),
-            Self::Read => t!(lang, "Already read", "Ya leída"),
-            Self::TaskOver => t!(lang, "Its task is over", "Su tarea ya terminó"),
-            Self::Merged => t!(lang, "Already merged", "Ya tiene merge"),
-            Self::ClosedUnmerged => t!(lang, "Closed without merging", "Cerrada sin hacer merge"),
-        }
-    }
-}
-impl RenderContext<'_> {
-    /// Waiting for You, in its order, each card with its buttons.
-    pub(crate) fn waiting(&self) -> &[InboxItem] {
-        self.index.cards()
-    }
-    pub(crate) fn reading(&self, task: &TaskId) -> Option<&TaskReading> {
-        self.index.task(task)
-    }
-    pub(crate) fn attention(&self, task: &Task) -> alondra_domain_rules::Attention {
-        self.reading(&task.id).map_or(alondra_domain_rules::Attention::Idle, |read| read.attention.clone())
-    }
-    pub(crate) fn waits_for_review(&self, task: &TaskId) -> bool {
-        self.reading(task).is_some_and(|read| read.waits_for_review)
-    }
-    /// The cards a task waits on the user with, in the queue's order.
-    pub(crate) fn waiting_cards_of(&self, task: &TaskId) -> impl Iterator<Item = &InboxItem> {
-        self.reading(task).into_iter().flat_map(|read| &read.waiting).flat_map(|id| {
-            let cards = self.index.cards_of(id);
-            if cards.is_empty() { self.index.snoozed_card(id).map(|entry| std::slice::from_ref(&entry.card)).unwrap_or_default() } else { cards }
-        })
-    }
-    /// The task a node works for: its latest open one, or else its latest.
-    pub(crate) fn node_task(&self, agent: &alondra_domain_rules::AgentId) -> Option<&Task> {
-        self.index.task_of_node(agent).and_then(|id| self.domain.tasks.get(id))
-    }
-    /// The orchestrator has neither split the request into tasks nor closed it.
-    pub(crate) fn is_defining(&self, request: &alondra_domain_rules::Request) -> bool {
-        !request.closed && self.index.tasks_of_request(&request.id).is_empty()
-    }
-}
 /// The app icon badge: the cards of the Waiting for You queue that ask the user for something, as
 /// `Status::badge` counts them; a card that is only read never counts.
 pub fn inbox_badge(index: &alondra_domain_rules::ReadIndex) -> u32 {
@@ -156,69 +95,6 @@ pub fn activity_counts(context: &RenderContext<'_>) -> alondra_domain_rules::Act
 /// The cards of the Waiting for You queue, by the id a push names them with (`alondra.card`).
 pub fn waiting_cards(index: &alondra_domain_rules::ReadIndex) -> Vec<String> {
     index.waiting().iter().map(|item| card::public_id(item).to_owned()).collect()
-}
-
-macro_rules! families {
-    ($($family:ident),* $(,)?) => {
-        /// Every kind of view `build` renders, each named by what its keys start with.
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-        pub enum Family { $($family),* }
-        impl Family {
-            pub const ALL: &[Family] = &[$(Family::$family),*];
-        }
-    };
-}
-families!(Home, Card, Document, PullRequest, Sidebar, Tasks, Task, Request, Orchestrator, Schedules, Schedule, NewRequest,
-    IssuePicker, Search, Machine, McpServers, Accounts, ModelProfile, TaskSelection, Metrics);
-
-impl Family {
-    /// The family a key belongs to, or none for a key no view answers.
-    pub fn of(key: &str) -> Option<Family> {
-        let listed = |name: &str| key == name || key.strip_prefix(name).is_some_and(|rest| rest.starts_with('?'));
-        Some(if key == "home" || key.starts_with("home?focus=") {
-            Family::Home
-        } else if key.starts_with("card:") {
-            Family::Card
-        } else if key.starts_with("document:") {
-            Family::Document
-        } else if key.starts_with("pull_request:") {
-            Family::PullRequest
-        } else if key == "sidebar" {
-            Family::Sidebar
-        } else if listed("tasks") {
-            Family::Tasks
-        } else if key.starts_with("task_selection:") {
-            Family::TaskSelection
-        } else if key.starts_with("model_profile:") {
-            Family::ModelProfile
-        } else if key.starts_with("task:") {
-            Family::Task
-        } else if key.starts_with("request:") {
-            Family::Request
-        } else if key == "orchestrator" {
-            Family::Orchestrator
-        } else if key == "schedules" {
-            Family::Schedules
-        } else if key.starts_with("schedule:") {
-            Family::Schedule
-        } else if listed("new_request") {
-            Family::NewRequest
-        } else if listed("issue_picker") {
-            Family::IssuePicker
-        } else if listed("search") {
-            Family::Search
-        } else if key == "machine" {
-            Family::Machine
-        } else if key == mcp_servers::KEY {
-            Family::McpServers
-        } else if key == "accounts" {
-            Family::Accounts
-        } else if listed(metrics::KEY) {
-            Family::Metrics
-        } else {
-            return None;
-        })
-    }
 }
 
 pub fn build(key: &str, context: RenderContext<'_>) -> Result<View, BuildError> {
@@ -248,43 +124,6 @@ pub fn build(key: &str, context: RenderContext<'_>) -> Result<View, BuildError> 
     view.version = version(&view);
     Ok(view)
 }
-
-/// Notification actions are the same opaque actions rendered on an iOS card. The
-/// notification extension only has room for four controls and can collect at most text.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct PushAction {
-    pub id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub option: Option<String>,
-    pub label: String,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub text: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub placeholder: Option<String>,
-    /// Opens the card in the app instead of acting from the notification.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub open: bool,
-}
-
-/// What the lock screen shows for a card: what the user must do over why.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PushAlert {
-    pub title: String,
-    pub body: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PushContent {
-    pub alert: Option<PushAlert>,
-    pub actions: Vec<PushAction>,
-    /// iOS `interruption-level`: `time-sensitive`, `active` or `passive`.
-    pub interruption_level: &'static str,
-    /// iOS `thread-id`: the notifications of one Task group together, then those of one Request.
-    pub thread: Option<String>,
-}
-
-pub const PUSH_TITLE_CHARS: usize = 80;
-pub const PUSH_BODY_CHARS: usize = 180;
 
 pub fn push_actions(
     read: &alondra_domain_rules::ReadSnapshot,
@@ -394,22 +233,4 @@ fn push_text(input: &Input) -> (bool, Option<String>) {
         Input::Text { placeholder, .. } => (true, Some(placeholder.clone())),
     }
 }
-pub fn version<T: serde::Serialize>(value: &T) -> String {
-    let mut json = serde_json::to_value(value).expect("view serialization");
-    if let Some(object) = json.as_object_mut() {
-        object.remove("version");
-        object.remove("cursor");
-        for card in object.get_mut("first_cards").and_then(|cards| cards.as_array_mut()).into_iter().flatten() {
-            card.as_object_mut().map(|card| card.remove("cursor"));
-        }
-    }
-    let bytes = serde_json::to_vec(&json).expect("canonical JSON");
-    let digest = Sha256::digest(bytes);
-    let hex = digest[..8]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    format!("v{hex}")
-}
-
 pub mod model_controls;

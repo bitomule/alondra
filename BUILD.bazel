@@ -27,7 +27,7 @@ exports_files(
         "plugin/skills/alondra/SKILL.md",
         "plugin-orchestrator/skills/alondra-orchestrator/SKILL.md",
     ],
-    visibility = ["//crates/alondra:__pkg__"],
+    visibility = ["//crates/cli-mcp:__pkg__"],
 )
 
 exports_files(

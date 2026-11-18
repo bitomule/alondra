@@ -29,9 +29,9 @@ the application: they talk through ports, and the roots wire them together.
 |---|---|
 | foundation | `foundation`, `process-group`, `e2e`, `scenarios-transcript` |
 | domain | `domain`, `domain-rules`, `core` (mixed: its accounts, launcher and update code goes to the `system` adapter) |
-| ports | `engine-ports`, `provider-contract`, `view-model`, `store`, `agent-application` |
+| ports | `engine-ports`, `provider-contract`, `view-model`, `client-port`, `store`, `agent-application` |
 | application | `engine-kernel`, `daemon-engine`, `daemon-engine-model`, `daemon-engine-machine`, `engine-admission`, `engine-orchestrator`, `engine-sdk`, `engine-github`, `engine-live`, `engine-mcp`, `engine-worktrees`, `daemon-support` (mixed: most of it goes to the `system` adapter), `views` |
-| adapter-in | none yet: `alondrad` and `alondra` hold theirs |
+| adapter-in | `daemon-server` (the daemon's routes, transports, pushes and screens' cache), `cli`, `cli-tui`, `cli-mcp`, `cli-report`, `client-transport` |
 | adapter-out | `github-gh`, `provider-claude`, `provider-codex`, `daemon-engine-store`, `agent-runtime` |
 | adapter-private | `agent-protocol` (of `provider-claude`), `codex-protocol` (of `provider-codex`) |
 | root | `alondrad`, `alondra`, `relay`, `scenarios`, `tools/sandbox` |
@@ -97,6 +97,8 @@ nothing uses, and on a count different from `EXCEPTION_CEILING` in
 that ceiling in the same change, in plain sight of review.
 
 The phases of the build-graph plan empty it: `engine-ports` (phase 3) and the wide application
-(phase 4) remove the application's dependencies on its sisters. Phase 3b moved `agent-runtime`
+(phase 4) remove the application's dependencies on its sisters, and the six of `daemon-server` on
+the engine and on `github-gh`, which phase 6 added when it took the server out of the root (a
+decision of the user's while the engine is not yet behind ports). Phase 3b moved `agent-runtime`
 behind the `AgentHost` port of `engine-ports`: no provider or piece of the engine depends on it,
 only the roots and the tests that start real hosts.

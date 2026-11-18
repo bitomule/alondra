@@ -1,0 +1,78 @@
+load("//tools/bazel:crates.bzl", "adapter_in_crate")
+load("//tools:tree.bzl", "repo_tree")
+load("@crates//:defs.bzl", "all_crate_deps")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("//tools:rust_sources.bzl", "production_sources")
+load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
+load("//crates/alondra:catalog.bzl", "REPORT_SOURCES")
+load("//:version.bzl", "VERSION")
+
+WORKSPACE_DEPS = [
+    "//crates/client-port:client_port",
+    "//crates/core:alondra_core",
+    "//crates/domain-rules:domain_rules",
+    "//crates/view-model:view_model",
+]
+
+# `alondra report`: a crash report of this Mac with everything private left out. The log catalog
+# it keeps lines by is compiled into the root and installed here, so a word changed in any crate
+# never recompiles this one.
+adapter_in_crate(
+    name = "cli_report",
+    srcs = production_sources(),
+    crate_name = "alondra_cli_report",
+    version = VERSION,
+    deps = all_crate_deps(normal = True) + WORKSPACE_DEPS,
+)
+
+CATALOG = "//crates/alondra:log-catalog.txt"
+
+VOCABULARY = "//crates/alondra:vocabulary.txt"
+
+low_opt_rust_test(
+    name = "cli_report_test",
+    size = "small",
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    crate_name = "alondra_cli_report",
+    crate_root = "src/lib.rs",
+    data = REPORT_SOURCES + [
+        CATALOG,
+        VOCABULARY,
+        "//fixtures/report",
+    ],
+    edition = "2024",
+    rustc_env = {
+        "ALONDRA_LOG_CATALOG": "$(rootpath {})".format(CATALOG),
+        "ALONDRA_LOG_VOCABULARY": "$(rootpath {})".format(VOCABULARY),
+    },
+    version = VERSION,
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS,
+)
+
+# The library compiles only production sources: a test file among its inputs would rebuild every
+# crate above it whenever the test changes.
+rust_inputs_test(
+    name = "production_inputs_test",
+    size = "small",
+    required_sources = ["crates/cli-report/src/lib.rs", "crates/cli-report/src/report/mod.rs"],
+    source_dir = "crates/cli-report/src/",
+    target_under_test = ":cli_report",
+    test_sources = False,
+)
+
+# The root's log catalog is built from the extractor and reads the report's schema for its words.
+exports_files(
+    ["src/report/extract.rs", "src/report/check/schema.rs"],
+    visibility = ["//crates/alondra:__pkg__"],
+)
+
+# Every source, tests included, for the root's tests that read what a person sees.
+filegroup(
+    name = "sources",
+    srcs = glob(["src/**/*.rs"]),
+    visibility = ["//crates/alondra:__pkg__"],
+)
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+
+repo_tree()

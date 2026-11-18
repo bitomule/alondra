@@ -32,7 +32,6 @@ tempfile = { workspace = true, optional = true }
 tokio.workspace = true
 
 [dev-dependencies]
-alondra-views.workspace = true
 alondra-daemon-engine-machine = { workspace = true, features = ["test-hooks"] }
 p256 = { version = "0.14.0", features = ["ecdsa", "pem", "pkcs8"] }
 alondra-daemon-engine-model = { workspace = true, features = ["test-hooks"] }

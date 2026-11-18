@@ -65,53 +65,83 @@ rust_library(
     edition = "2024",
     rustc_flags = [LOW_OPT_LEVEL],
     version = VERSION,
-    visibility = ["//crates/alondrad:__pkg__", "//crates/engine-orchestrator:__pkg__", "//crates/machine-model:__pkg__", "//crates/scenarios:__pkg__"],
+    visibility = ["//crates/alondrad:__pkg__", "//crates/daemon-server:__pkg__", "//crates/engine-orchestrator:__pkg__", "//crates/machine-model:__pkg__", "//crates/scenarios:__pkg__"],
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/agent-runtime:agent_runtime"] + TEST_HOOKS_DEPS,
 )
 
-# Most of the SDK's tests run a real Agent SDK host, a fake Claude or Codex, or the alondra and
-# alondrad binaries, so its one test target carries them.
+SDK_TEST_DATA = [
+    "//agent-host:alondra-codex-host",
+    "//agent-host:alondra-host",
+    "//agent-host:alondra-codex-plan-legacy-fixture-host",
+    "//agent-host:codex-legacy-fixture",
+    "//agent-host:codex-model-double.py",
+    "//agent-host:fake-codex-mcp.py",
+    "//agent-host:fake-codex.py",
+    "//agent-host:persistent-fake-claude.py",
+]
+
+SDK_TEST_ENV = {
+    "FIXTURE_CODEX_HOST": "$(rootpath //agent-host:alondra-codex-host)",
+    "FIXTURE_CODEX_LEGACY_HOST": "$(rootpath //agent-host:codex-legacy-fixture)",
+    "FIXTURE_CODEX_MCP_NATIVE": "$(rootpath //agent-host:fake-codex-mcp.py)",
+    "FIXTURE_CODEX_MODEL_DOUBLE": "$(rootpath //agent-host:codex-model-double.py)",
+    "FIXTURE_CODEX_NATIVE": "$(rootpath //agent-host:fake-codex.py)",
+    "FIXTURE_CODEX_PLAN_LEGACY_HOST": "$(rootpath //agent-host:alondra-codex-plan-legacy-fixture-host)",
+    "FIXTURE_HOST": "$(rootpath //agent-host:alondra-host)",
+    "FIXTURE_NATIVE": "$(rootpath //agent-host:persistent-fake-claude.py)",
+    "FIXTURE_NODE": "$(rootpath //agent-host:alondra-host)",
+    # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
+    "HOME": ".",
+}
+
+SDK_TEST_COMPILE_DATA = [
+    "//fixtures/client-v2",
+    "//fixtures/accounts:recorded-rows.json",
+    "//fixtures/domain-v2:acceptance.json",
+]
+
+# Most of the SDK's tests run a real Agent SDK host or a fake Claude or Codex, so its test target
+# carries them. It never carries the alondra and alondrad binaries: they link every crate, so an
+# edit anywhere would rerun these tests.
 low_opt_rust_test(
     name = "engine_sdk_test",
     size = "large",
     srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
-    compile_data = [
-        "//fixtures/client-v2",
-        "//fixtures/accounts:recorded-rows.json",
-        "//fixtures/domain-v2:acceptance.json",
-    ],
+    compile_data = SDK_TEST_COMPILE_DATA,
     crate_name = "alondra_engine_sdk",
     crate_root = "src/lib.rs",
-    data = [
-        "//agent-host:alondra-codex-host",
-        "//agent-host:alondra-host",
-        "//agent-host:alondra-codex-plan-legacy-fixture-host",
-        "//agent-host:codex-legacy-fixture",
-        "//agent-host:codex-model-double.py",
-        "//agent-host:fake-codex-mcp.py",
-        "//agent-host:fake-codex.py",
-        "//agent-host:persistent-fake-claude.py",
+    data = SDK_TEST_DATA,
+    edition = "2024",
+    env = SDK_TEST_ENV,
+    rustc_flags = ["--check-cfg=cfg(process_tests)"],
+    version = VERSION,
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/agent-runtime:agent_runtime"] + TEST_HOOKS_DEPS,
+)
+
+# The opt-in tests that start the real alondrad and adopt its hosts (`process_adoption`), apart so
+# relinking the binaries never reruns the SDK suite:
+# `bazelisk test //crates/engine-sdk:engine_sdk_process_test --test_arg=--ignored`.
+low_opt_rust_test(
+    name = "engine_sdk_process_test",
+    size = "large",
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    args = ["process_adoption::"],
+    tags = ["manual"],
+    compile_data = SDK_TEST_COMPILE_DATA,
+    crate_name = "alondra_engine_sdk",
+    crate_root = "src/lib.rs",
+    data = SDK_TEST_DATA + [
         "//crates/alondra:alondra",
         "//crates/alondrad:alondrad",
     ],
     edition = "2024",
-    # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
-    env = {
+    env = SDK_TEST_ENV | {
         "FIXTURE_CLI": "$(rootpath //crates/alondra:alondra)",
-        "FIXTURE_CODEX_HOST": "$(rootpath //agent-host:alondra-codex-host)",
-        "FIXTURE_CODEX_LEGACY_HOST": "$(rootpath //agent-host:codex-legacy-fixture)",
-        "FIXTURE_CODEX_MCP_NATIVE": "$(rootpath //agent-host:fake-codex-mcp.py)",
-        "FIXTURE_CODEX_MODEL_DOUBLE": "$(rootpath //agent-host:codex-model-double.py)",
-        "FIXTURE_CODEX_NATIVE": "$(rootpath //agent-host:fake-codex.py)",
-        "FIXTURE_CODEX_PLAN_LEGACY_HOST": "$(rootpath //agent-host:alondra-codex-plan-legacy-fixture-host)",
         "FIXTURE_DAEMON": "$(rootpath //crates/alondrad:alondrad)",
-        "FIXTURE_HOST": "$(rootpath //agent-host:alondra-host)",
-        "FIXTURE_NATIVE": "$(rootpath //agent-host:persistent-fake-claude.py)",
-        "FIXTURE_NODE": "$(rootpath //agent-host:alondra-host)",
-        "HOME": ".",
     },
+    rustc_flags = ["--cfg=process_tests", "--check-cfg=cfg(process_tests)"],
     version = VERSION,
-    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/agent-runtime:agent_runtime"] + TEST_HOOKS_DEPS + ["//crates/views:views"],
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/agent-runtime:agent_runtime"] + TEST_HOOKS_DEPS,
 )
 
 rust_inputs_test(
@@ -131,7 +161,7 @@ exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 filegroup(
     name = "report_sources",
     srcs = production_sources(test_only = ["src/machine_hooks.rs"]),
-    visibility = ["//crates/alondra:__pkg__", "//crates/alondrad:__pkg__"],
+    visibility = ["//crates/alondra:__pkg__", "//crates/cli-report:__pkg__", "//crates/alondrad:__pkg__", "//crates/daemon-server:__pkg__"],
 )
 
 repo_tree()

@@ -5,7 +5,7 @@ use super::{
     CardAction,
     Action, Attachment, AttachmentKind, BlockChip, BuildError, Card, Check, CheckState,
     Checks, Client, CommentSpec, ContentRef, ContentRow, ContextLine, Detail, Fact, Facts, Icon, Input, Item,
-    Label, Lang, Link, LocalLink, Markdown, Notice, Presentation, RenderContext, Role, Row, SETTLED_VIEW, Settled, Stamp, Style,
+    Label, Lang, Link, LocalLink, Markdown, Notice, RenderContext, Role, Row, SETTLED_VIEW, Settled, Stamp, Style,
     TimeFormat, Tone, VIEWS_PROTOCOL, View,
     action_id::{ActionId, Verb},
     summary,
@@ -861,32 +861,7 @@ fn action_id(verb: Verb, subject: &str, revision: u64, extra: Option<String>) ->
     }
 }
 
-pub(super) fn button(id: String, label: &str, role: Role) -> Action {
-    Action {
-        id,
-        label: label.into(),
-        style: match role {
-            Role::Advance => Style::Primary,
-            Role::Risk => Style::Destructive,
-            Role::Neutral => Style::Secondary,
-        },
-        role: Some(role),
-        option_id: None,
-        description: None,
-        presentation: Presentation::Button,
-        options: vec![],
-        input: Input::None,
-        attachments: false,
-        comments: None,
-        confirm: None,
-        enabled: true,
-        disabled_reason: None,
-        stamp: None,
-        key: None,
-        link: None,
-        resolves_card: false,
-    }
-}
+pub(super) use alondra_view_model::components::button;
 
 fn with_availability(mut action: Action, available: Option<&AvailableAction>, _lang: Lang) -> Action {
     action.enabled = available.is_some_and(|available| available.enabled);

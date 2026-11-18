@@ -1,7 +1,7 @@
 import Foundation
 
 /// What a value may look like to enter a crash report as it is, and the pseudonym of everything
-/// else: the rule of `alondra report` (`crates/alondra/src/report/redact.rs`), held to the same
+/// else: the rule of `alondra report` (`crates/cli-report/src/report/redact.rs`), held to the same
 /// vectors (`fixtures/report/shape-vectors.json`).
 public enum ReportShapes {
     public enum Kind: String, CaseIterable, Sendable {

@@ -18,254 +18,11 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use super::sdk_node_fixture::*;
 const MIN: Millis = 60_000;
 const SAMPLE: Millis = 10_000;
 
 
-
-struct Home(crate::test_support::Directory);
-impl Drop for Home {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-fn run(domain: &DomainRuntime, actor: Actor, command: Command) {
-    let state = domain.state().unwrap();
-    domain.execute(&actor, &CommandEnvelope {
-        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: crate::auth::random_hex(8).into(),
-        expected_revision: state.revision, command,
-    }, None, || Ok(())).unwrap();
-}
-
-fn user() -> Actor {
-    Actor::User { user_id: "u".into() }
-}
-
-const SDK_TASK: &str = "t-sdk-paused";
-
-/// Drives an owner until it has nothing to send and its host owes nothing.
-fn settle(driver: &mut crate::sdk_owner::Driver) {
-    while driver.pending_permits() > 0 || driver.waits_for_host() {
-        if driver.pending_permits() > 0 {
-            driver.step(&|| false).unwrap();
-        } else {
-            driver.observe().unwrap();
-        }
-    }
-}
-
-/// A task of the Agent SDK whose turn runs, on the pinned host with the fake native Claude. Its
-/// owner is driven here step by step, so nothing reaches Claude unless a step hands it over.
-struct SdkNode {
-    driver: crate::sdk_owner::Driver,
-    domain: Arc<DomainRuntime>,
-    capture: PathBuf,
-    backend: alondra_daemon_engine::sdk_backend::SdkBackend,
-    home: crate::test_support::Directory,
-    _state: crate::host_fixtures::HostRoot,
-}
-
-impl SdkNode {
-    /// A node whose first turn the fake Claude holds open.
-    fn working() -> Self {
-        let mut node = Self::told("consume-and-hold");
-        while node.lifecycle().activity() != alondra_domain::ActivityView::Working {
-            node.driver.observe().unwrap();
-        }
-        node
-    }
-
-    /// A node whose first turn ended: it rests until it is told something.
-    fn resting() -> Self {
-        let mut node = Self::told("Write the notes");
-        settle(&mut node.driver);
-        node
-    }
-
-    fn told(prompt: &str) -> Self {
-        let home = crate::test_support::Directory::new();
-        std::fs::DirBuilder::new().mode(0o700).create(&home).unwrap();
-        let state = crate::host_fixtures::HostRoot::new();
-        let worktree = home.join("worktree");
-        std::fs::DirBuilder::new().mode(0o700).create(&worktree).unwrap();
-        let (backend, capture) = crate::host_fixtures::fixture_backend(&home, &state);
-        let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
-        domain.enable_sdk(backend.clone());
-        run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateRequest {
-            request_id: "r".into(), body: "Write the release notes".into(), auto_merge: false, maintenance: false, message: false });
-        run(&domain, Actor::Orchestrator { generation: 0 }, Command::TitleRequest { request_id: "r".into(), title: "Release notes".into() });
-        run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
-            task_id: SDK_TASK.into(), request_id: "r".into(), title: "Write the release notes".into(), agent_id: None, review_prs: false,
-            dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", worktree.to_str().unwrap())) });
-        let driver = crate::sdk_owner::start(Arc::clone(&domain), &backend, crate::sdk_owner::Launch {
-            task: SDK_TASK.into(), name: "Release notes".into(), directory: worktree.to_str().unwrap().into(),
-            prompt: prompt.into(), plugin: home.join("plugin"), options: Default::default(),
-            model: None, account: alondra_core::accounts::AccountId::default_account(),
-        }).unwrap();
-        domain.sdk_owners().driven_by_hand.lock().unwrap().insert(driver.agent().clone());
-        domain.admission().ignore_mac();
-        domain.machine_watch().measure_disk(crate::disk::Space { total: 500_000_000_000, free: 100_000_000_000, purgeable: 0 });
-        Self { driver, domain, capture, backend, home, _state: state }
-    }
-
-    /// One more node of the same host root whose first turn the fake Claude holds open.
-    fn beside(&self, task: &str) -> crate::sdk_owner::Driver {
-        let mut driver = self.beside_told(task, "consume-and-hold");
-        while self.activity(task) != alondra_domain::ActivityView::Working {
-            driver.observe().unwrap();
-        }
-        driver
-    }
-
-    /// One more node of the same host root, resting after its first turn.
-    fn beside_resting(&self, task: &str) -> crate::sdk_owner::Driver {
-        let mut driver = self.beside_told(task, "Write the notes");
-        settle(&mut driver);
-        driver
-    }
-
-    fn beside_told(&self, task: &str, prompt: &str) -> crate::sdk_owner::Driver {
-        let worktree = self.home.join(task);
-        std::fs::DirBuilder::new().mode(0o700).create(&worktree).unwrap();
-        run(&self.domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask { plan_items: None, continues: None,
-            task_id: task.into(), request_id: "r".into(), title: format!("Task {task}"), agent_id: None, review_prs: false,
-            dependencies: Default::default(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", worktree.to_str().unwrap())) });
-        let driver = crate::sdk_owner::start(Arc::clone(&self.domain), &self.backend, crate::sdk_owner::Launch {
-            task: task.into(), name: format!("Task {task}"), directory: worktree.to_str().unwrap().into(),
-            prompt: prompt.into(), plugin: self.home.join("plugin"), options: Default::default(),
-            model: None, account: alondra_core::accounts::AccountId::default_account(),
-        }).unwrap();
-        self.domain.sdk_owners().driven_by_hand.lock().unwrap().insert(driver.agent().clone());
-        driver
-    }
-
-    fn tell(&self, task: &str, text: &str) {
-        crate::domain_messages::tell_sdk_node(&self.domain, &task.into(), crate::node_push::ALONDRA, text, &format!("tell-{task}"), false).unwrap();
-    }
-
-    fn set_limit(&self, limit: u32) {
-        self.domain.admission().tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(limit)) });
-    }
-
-    fn gate(&self) -> crate::admission::Snapshot {
-        self.domain.admission().snapshot(&self.domain, alondra_core::now_millis()).unwrap()
-    }
-
-    /// The tasks whose next turn waits for a slot, in the gate's order.
-    fn waiting_turns(&self) -> Vec<String> {
-        self.gate().queue.into_iter().filter_map(|waiting| match waiting.key { Key::Turn(task) => Some(task.0), _ => None }).collect()
-    }
-
-    fn cards(&self) -> Vec<alondra_domain_rules::InteractionId> {
-        self.domain.state().unwrap().interactions.keys().cloned().collect()
-    }
-
-    fn activity(&self, task: &str) -> alondra_domain::ActivityView {
-        self.domain.state().unwrap().lifecycle_of(&task.into()).unwrap().activity()
-    }
-
-    fn lifecycle(&self) -> alondra_domain::TaskLifecycle {
-        let read = self.domain.read();
-        alondra_domain_rules::replay(&SDK_TASK.into(), &read.state().lifecycle_journal[&TaskId::from(SDK_TASK)]).unwrap()
-    }
-
-    fn agent(&self) -> String {
-        self.driver.agent().0.clone()
-    }
-
-    /// The prompts Claude got, besides the wake Alondra sends after a turn that ended empty.
-    fn prompts(&self) -> Vec<String> {
-        crate::sdk_owner::tests::not_wakes(std::fs::read_to_string(format!("{}.prompts", self.capture.display())).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()))
-    }
-
-    fn pending_inputs(&self) -> usize {
-        self.lifecycle().pending_inputs().len()
-    }
-
-    /// Steps the owner as its thread does, until `done` holds: each step sends what may be sent,
-    /// or reads what the host has.
-    fn step_until(&mut self, done: impl Fn(&Self) -> bool) {
-        while !done(self) {
-            self.driver.step(&|| true).unwrap();
-        }
-    }
-
-    /// A few steps of the owner: each sends whatever it may send.
-    fn step(&mut self) {
-        for _ in 0..4 {
-            self.driver.step(&|| true).unwrap();
-        }
-    }
-
-    /// How many of the task's inputs the owner claimed to hand to its host.
-    fn dispatched_inputs(&self) -> i64 {
-        rusqlite::Connection::open(crate::domain_database_migration::active_path(&self.home)).unwrap()
-            .query_row("SELECT count(*) FROM lifecycle_dispatches WHERE task_id=?1 AND kind='input' AND status NOT IN ('prepared','revoked')", [SDK_TASK], |row| row.get(0)).unwrap()
-    }
-
-    /// Steps the owner until Claude got a prompt that says `text`.
-    fn until_told(&mut self, text: &str) {
-        self.step_until(|node| node.prompts().iter().any(|prompt| prompt.contains(text)));
-    }
-
-    fn turn_ended(&self) -> bool {
-        self.domain.read().state().lifecycle_journal[&TaskId::from(SDK_TASK)].iter()
-            .any(|record| matches!(record, alondra_domain_rules::LifecycleRecord::TurnEnded { .. }))
-    }
-
-    /// One look of the gate, which lets the node go on once it has a slot.
-    async fn gate_look(&self) {
-        crate::admission::pass_at(&self.domain, &self.home, alondra_core::now_millis()).await.unwrap();
-    }
-
-    /// The user pauses the node from its task; its turn is interrupted and ends.
-    fn pause(&mut self) {
-        self.domain.admission().pause_by_user(&self.domain, &self.agent(), alondra_core::now_millis()).unwrap();
-        self.step_until(Self::turn_ended);
-        let state = self.domain.state().unwrap();
-        assert!(matches!(state.node_pause(&AgentId(self.agent())), Some(Pause { reason: PauseReason::ByUser, .. })), "{:?}", state.node_pause(&AgentId(self.agent())));
-        assert_eq!(state.node_phase(&AgentId(self.agent())), Some(&NodePhase::ThroughSdk), "its task's lifecycle holds the pause, not its phase");
-    }
-
-    /// Each native Claude the hosts started, with the session it runs and the one it resumed.
-    fn starts(&self) -> Vec<serde_json::Value> {
-        std::fs::read_to_string(format!("{}.starts", self.capture.display())).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
-    }
-
-    /// The node's host dies while it is paused and no owner of the daemon is left to replace it.
-    fn lose_host(&mut self) {
-        std::fs::DirBuilder::new().mode(0o700).create(self.home.join("plugin")).unwrap();
-        crate::sdk_owner::tests::kill_host(&self.driver);
-        self.domain.sdk_owners().driven_by_hand.lock().unwrap().remove(self.driver.agent());
-        self.driver.let_go();
-        assert!(!self.domain.owns_sdk_host(&AgentId(self.agent())));
-    }
-
-    fn deliver(&self) {
-        run(&self.domain, Actor::Agent { agent_id: self.driver.agent().clone() }, Command::PresentResult {
-            attachments: vec![], task_id: SDK_TASK.into(), interaction_id: "result".into(), body: "Done".into(), is_final: true, nothing_to_review: false,
-            targets: vec![alondra_domain_rules::DeliveryTarget::Text { text: "Done".into() }], checklist: vec![],
-            card: alondra_domain_rules::CardSpec::delivery("Review the result", &[], true) });
-    }
-
-    /// The user sends the delivery back with changes.
-    fn get_it_back(&self) {
-        run(&self.domain, user(), Command::SubmitFeedback { merge_failure: None, attachments: vec![], presentation_id: "result".into(),
-            targets: vec![alondra_domain_rules::DeliveryTarget::Text { text: "Done".into() }], body: "Pass the MCP variables too".into(),
-            instruction: alondra_domain_rules::Instruction::Changes });
-    }
-
-    fn host_lost_card(&self) -> Option<alondra_domain_rules::Interaction> {
-        crate::sdk_owner::tests::open_card(&self.domain, alondra_domain_rules::HOST_LOST_PREFIX)
-    }
-}
-
-impl Drop for SdkNode {
-    fn drop(&mut self) {
-        let _ = self.driver.stop();
-    }
-}
 
 #[tokio::test]
 async fn a_paused_sdk_node_receives_nothing_until_it_is_resumed_and_then_gets_the_resume_text_and_what_it_was_told() {
@@ -310,66 +67,7 @@ async fn the_orchestrators_message_to_a_paused_node_waits_for_its_resume_and_ask
     node.until_told("Say that a commit's author email is not private");
 }
 
-/// Pausing interrupts the turn with what the node goes on with already told: no card asks the user
-/// how it goes on, its task says it is paused, and resuming it is the user's one step.
-#[tokio::test]
-async fn pausing_an_sdk_node_raises_no_card_and_its_task_shows_it_paused() {
-    super::wired();
-    let mut node = SdkNode::working();
-    node.pause();
-    node.step();
-    let state = node.domain.state().unwrap();
-    let cards: Vec<_> = state.interactions.keys()
-        .filter(|id| [alondra_domain_rules::TURN_ENDED_PREFIX, alondra_domain_rules::STALLED_PREFIX].iter().any(|prefix| id.0.starts_with(prefix)))
-        .collect();
-    assert!(cards.is_empty(), "a pause asks nothing: {cards:?}");
-    let read = node.domain.read();
-    let live = alondra_views::live::LiveSnapshot::default();
-    let tasks = alondra_views::build("tasks", alondra_views::RenderContext {
-        domain: read.state(), index: read.index(), live: &live, client: alondra_views::Client::Tui,
-        lang: alondra_views::text::Lang::En, transport: alondra_views::Transport::Loopback, cursor: "test", rendered_at: "",
-    }).unwrap();
-    let tasks = serde_json::to_string(&tasks).unwrap();
-    assert!(tasks.contains("\"Paused\""), "{tasks}");
-    assert!(read.index().waiting().is_empty(), "the pause waits in nobody's inbox: {:?}", read.index().waiting());
-    let screen = serde_json::to_string(&alondra_views::build(&format!("task:{SDK_TASK}"), alondra_views::RenderContext {
-        domain: read.state(), index: read.index(), live: &live, client: alondra_views::Client::Tui,
-        lang: alondra_views::text::Lang::En, transport: alondra_views::Transport::Loopback, cursor: "test", rendered_at: "",
-    }).unwrap()).unwrap();
-    assert!(screen.contains("Paused") && !screen.contains("Resume “"), "its screen says it is paused and shows no card: {screen}");
-    drop(read);
 
-    assert!(node.domain.admission().resume_now(&node.domain, &node.agent(), alondra_core::now_millis()));
-    node.gate_look().await;
-    node.until_told("resumed you");
-    assert_eq!(node.prompts().len(), 2, "{:?}", node.prompts());
-}
-
-/// 17 November, 16:28: a message sent as the user's words to a node the user paused at 15:28 queued
-/// its return, and the node started again at 16:51 with nobody pressing Resume. A pause of the user
-/// ends only with a later Resume of the user's: the message waits with the task's inputs, the node
-/// stays paused whatever slots free, and the Resume brings it back with the message.
-#[tokio::test]
-async fn the_users_own_message_to_a_paused_sdk_node_waits_for_the_users_resume() {
-    super::wired();
-    let mut node = SdkNode::working();
-    node.pause();
-    node.set_limit(1);
-    let body = serde_json::from_value(serde_json::json!({"text": "Use the short changelog format"})).unwrap();
-    crate::domain_messages::deliver(&node.domain, &node.home, &user(), "The user", &AgentId(node.agent()), body, true).await.unwrap();
-    node.gate_look().await;
-    node.step();
-    assert!(node.domain.admission().paused(&node.domain, &node.agent()).is_some(), "the message does not end the user's pause");
-    assert!(!node.gate().queue.iter().any(|waiting| waiting.key == Key::Resume(node.agent())), "nor does it queue the node's return");
-    assert_eq!(node.dispatched_inputs(), 0, "nothing reaches the host while it is paused");
-    let tasks = tasks_view(&node);
-    assert!(offered(&tasks, &format!("resume:{}", node.agent())).is_some(), "its task offers Resume: {tasks}");
-
-    assert!(node.domain.admission().resume_now(&node.domain, &node.agent(), alondra_core::now_millis()));
-    node.gate_look().await;
-    assert!(node.domain.admission().paused(&node.domain, &node.agent()).is_none(), "the user's Resume brings it back");
-    node.until_told("Use the short changelog format");
-}
 
 /// The user paused the node and its host died with no owner left to replace it, as when a daemon's
 /// start puts a host the pause's interrupt then closes. Resuming it launches a host that resumes the
@@ -671,7 +369,7 @@ async fn under_the_disks_floor_the_heavier_nodes_next_turn_waits_for_room_withou
     assert!(domain.admission().paused(&domain, &node.agent()).is_some(), "the disk has no room: it still waits");
     assert_eq!(node.dispatched_inputs(), 0, "what it is told waits for room");
     let pacing = domain.admission().live(&domain, alondra_core::now_millis()).unwrap();
-    assert!(matches!(pacing.queued.as_slice(), [queued] if queued.task_id == SDK_TASK && matches!(queued.hold, alondra_views::LiveHold::Disk { .. })),
+    assert!(matches!(pacing.queued.as_slice(), [queued] if queued.task_id == SDK_TASK && matches!(queued.hold, alondra_view_model::LiveHold::Disk { .. })),
         "it waits in the queue for the disk: {:?}", pacing.queued);
     assert!(domain.read().index().waiting().is_empty(), "nobody is asked anything: {:?}", domain.read().index().waiting());
     assert!(!domain.state().unwrap().interactions.keys().any(|id| id.0.starts_with(alondra_core::machine_incident::MACHINE_PREFIX)));
@@ -683,19 +381,7 @@ async fn under_the_disks_floor_the_heavier_nodes_next_turn_waits_for_room_withou
     assert!(domain.admission().paused(&domain, &node.agent()).is_none());
 }
 
-fn node_pause_card(domain: &DomainRuntime) -> Option<alondra_domain_rules::InteractionId> {
-    let state = domain.state().unwrap();
-    state.interactions.values().find(|card| state.node_pause_card(&card.id) && state.open(card)).map(|card| card.id.clone())
-}
 
-fn answer_resume(domain: &DomainRuntime, card: &alondra_domain_rules::InteractionId) -> Result<(), String> {
-    let state = domain.state().unwrap();
-    domain.execute(&user(), &CommandEnvelope {
-        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: crate::auth::random_hex(8).into(),
-        expected_revision: state.revision,
-        command: Command::AnswerQuestion { interaction_id: card.clone(), option_id: "resume".into(), inputs: Default::default(), attachments: vec![] },
-    }, None, || Ok(())).map(drop).map_err(|error| format!("{error:?}"))
-}
 
 /// 6 Nov, t-account-identity-per-profile: the disk fell under its floor while the node's turn ran,
 /// and 30 s later its host's connection broke and its owner stopped. Nothing took the task over
@@ -906,34 +592,6 @@ async fn every_pause_with_its_host_lost_or_not_keeps_a_working_task_owned_and_it
     }
 }
 
-/// 6 Nov 07:50: pausing working nodes was refused with invalid_input. The Pause a working node of
-/// the Agent SDK offers carries its revision and is taken; the same id written by hand without it
-/// is no action at all.
-#[tokio::test]
-async fn the_pause_a_working_sdk_node_offers_is_taken_and_one_without_its_revision_is_no_action() {
-    super::wired();
-    use alondra_views::action_id::{ActionId, Verb};
-    let mut node = SdkNode::working();
-    let agent = node.agent();
-    let tasks = {
-        let read = node.domain.read();
-        let live = alondra_views::live::LiveSnapshot::default();
-        serde_json::to_string(&alondra_views::build("tasks", alondra_views::RenderContext {
-            domain: read.state(), index: read.index(), live: &live, client: alondra_views::Client::Tui,
-            lang: alondra_views::text::Lang::En, transport: alondra_views::Transport::Loopback, cursor: "test", rendered_at: "",
-        }).unwrap()).unwrap()
-    };
-    let start = tasks.find(&format!("\"pause:{agent}@")).unwrap_or_else(|| panic!("a working node offers Pause: {tasks}")) + 1;
-    let offered = &tasks[start..start + tasks[start..].find('"').unwrap()];
-    let action = ActionId::parse(offered).unwrap();
-    assert_eq!((action.verb, action.subject.as_str()), (Verb::Pause, agent.as_str()));
-    assert!(ActionId::parse(&format!("pause:{agent}")).is_err(), "an id without its revision is not one the apps send");
-
-    node.domain.admission().pause_by_user(&node.domain, &action.subject, alondra_core::now_millis()).unwrap();
-    node.step_until(SdkNode::turn_ended);
-    let card = node_pause_card(&node.domain).expect("the pause has its card");
-    assert_eq!(answer_resume(&node.domain, &card), Ok(()));
-}
 
 /// 7 November: with 8 as the limit, 39 nodes worked, because only starts passed the gate. Ten nodes
 /// told at once with two slots: two go on, eight wait with no card, and they enter as slots free.
@@ -1012,33 +670,6 @@ async fn a_slot_that_frees_goes_to_the_waiting_turn_of_highest_priority_then_to_
     }
 }
 
-/// A node that waits for a slot says so with its place in the queue, and nobody is asked anything.
-#[tokio::test]
-async fn a_turn_waiting_for_a_slot_reads_waiting_for_capacity_and_raises_no_card() {
-    super::wired();
-    let mut node = SdkNode::resting();
-    node.set_limit(0);
-    let cards = node.cards();
-    let delivered = node.dispatched_inputs();
-    node.tell(SDK_TASK, "Go on");
-    node.step();
-    assert_eq!(node.dispatched_inputs(), delivered, "nothing more reached the host");
-    assert_eq!(node.cards(), cards);
-    assert_eq!(node.gate().working, 0, "an input held back takes no slot, so it never blocks what frees one");
-    let read = node.domain.read();
-    let live = alondra_views::live::LiveSnapshot { pacing: node.domain.admission().live(&node.domain, alondra_core::now_millis()), ..Default::default() };
-    let tasks = alondra_views::build("tasks", alondra_views::RenderContext {
-        domain: read.state(), index: read.index(), live: &live, client: alondra_views::Client::Tui,
-        lang: alondra_views::text::Lang::En, transport: alondra_views::Transport::Loopback, cursor: "test", rendered_at: "",
-    }).unwrap();
-    let tasks = serde_json::to_string(&tasks).unwrap();
-    assert!(tasks.contains("Waiting"), "{tasks}");
-    drop(read);
-
-    node.set_limit(1);
-    node.gate_look().await;
-    node.until_told("Go on");
-}
 
 /// A message to a resting node waits for a slot, and reaches Claude once one frees.
 #[tokio::test]
@@ -1076,21 +707,7 @@ async fn a_node_back_from_a_pause_starts_its_turn_on_the_slot_of_its_resume() {
     assert!(node.gate().working <= 1);
 }
 
-#[cfg(test)]
-fn tasks_view(node: &SdkNode) -> String {
-    let read = node.domain.read();
-    let live = alondra_views::live::LiveSnapshot { pacing: node.domain.admission().live(&node.domain, alondra_core::now_millis()), ..Default::default() };
-    serde_json::to_string(&alondra_views::build("tasks", alondra_views::RenderContext {
-        domain: read.state(), index: read.index(), live: &live, client: alondra_views::Client::Tui,
-        lang: alondra_views::text::Lang::En, transport: alondra_views::Transport::Loopback, cursor: "test", rendered_at: "",
-    }).unwrap()).unwrap()
-}
 
-#[cfg(test)]
-fn offered(view: &str, prefix: &str) -> Option<alondra_views::action_id::ActionId> {
-    let start = view.find(&format!("\"{prefix}@"))? + 1;
-    alondra_views::action_id::ActionId::parse(&view[start..start + view[start..].find('"')?]).ok()
-}
 
 /// 17 November, 15:15: the user's answer to a task of high priority waited for a slot while the
 /// gate's log named a normal task coming back from a pause as the next. The high task's turn is the
@@ -1123,32 +740,6 @@ async fn a_high_tasks_input_goes_before_a_normal_node_coming_back_and_the_log_na
     high.stop().unwrap();
 }
 
-/// 17 November: four tasks the user had resumed waited to come back and their task offered no
-/// action, not even Pause. Pause takes a node coming back out of the queue, and only the user's
-/// Resume puts it back.
-#[tokio::test]
-async fn a_node_coming_back_from_a_pause_offers_pause_and_pausing_it_takes_it_out_of_the_queue() {
-    super::wired();
-    let mut node = SdkNode::working();
-    node.pause();
-    node.set_limit(0);
-    let agent = node.agent();
-    assert!(node.domain.admission().resume_now(&node.domain, &agent, alondra_core::now_millis()));
-    node.gate_look().await;
-    assert!(node.gate().queue.iter().any(|waiting| waiting.key == Key::Resume(agent.clone())), "it waits to come back");
-
-    let tasks = tasks_view(&node);
-    let pause = offered(&tasks, &format!("pause:{agent}")).unwrap_or_else(|| panic!("a node coming back offers Pause: {tasks}"));
-    node.domain.admission().pause_by_user(&node.domain, &pause.subject, alondra_core::now_millis()).unwrap();
-    node.gate_look().await;
-    assert!(!node.gate().queue.iter().any(|waiting| waiting.key == Key::Resume(agent.clone())), "it left the queue");
-    assert_eq!(node.domain.admission().paused(&node.domain, &agent).map(|paused| paused.reason), Some(Reason::ByUser));
-    node.set_limit(1);
-    node.gate_look().await;
-    assert!(node.domain.admission().paused(&node.domain, &agent).is_some(), "a free slot does not bring it back");
-    let tasks = tasks_view(&node);
-    assert!(offered(&tasks, &format!("resume:{agent}")).is_some(), "it offers Resume: {tasks}");
-}
 
 /// 17 November, 22:48: a Resume of the user that waited for a slot all day brought a node back at the
 /// moment the user paused it again. A pause of Alondra's own the user's Resume waits behind must not
@@ -1177,22 +768,3 @@ async fn a_users_pause_on_a_node_whose_resume_waits_behind_a_pause_of_alondras_t
     assert_eq!(node.domain.admission().paused(&node.domain, &agent).map(|paused| paused.reason), Some(Reason::ByUser), "a free slot does not bring it back");
 }
 
-/// A resting node whose next turn waits for a slot is in the queue too: Pause takes it out.
-#[tokio::test]
-async fn a_node_waiting_for_its_turn_offers_pause_and_pausing_it_takes_it_out_of_the_queue() {
-    super::wired();
-    let mut node = SdkNode::resting();
-    node.set_limit(0);
-    node.tell(SDK_TASK, "Go on");
-    node.step();
-    assert_eq!(node.waiting_turns(), [SDK_TASK]);
-    let agent = node.agent();
-    let tasks = tasks_view(&node);
-    let pause = offered(&tasks, &format!("pause:{agent}")).unwrap_or_else(|| panic!("a node waiting for its turn offers Pause: {tasks}"));
-    node.domain.admission().pause_by_user(&node.domain, &pause.subject, alondra_core::now_millis()).unwrap();
-    node.gate_look().await;
-    assert!(node.waiting_turns().is_empty(), "it left the queue");
-    node.set_limit(1);
-    node.gate_look().await;
-    assert!(node.domain.admission().paused(&node.domain, &agent).is_some(), "a free slot does not bring it back");
-}

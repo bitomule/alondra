@@ -10,3 +10,22 @@ pub fn short_duration(secs: u64) -> String {
         _ => format!("{} d {} h", secs / 86_400, secs % 86_400 / 3_600),
     }
 }
+
+/// The words of a model's effort level, or none for one Alondra does not know.
+pub fn effort_label(effort: &str, lang: Lang) -> Option<&'static str> {
+    Some(match effort {
+        "auto" => t!(lang, "Auto", "Automático"),
+        "light" => t!(lang, "Light", "Ligero"),
+        "normal" => t!(lang, "Normal", "Normal"),
+        "hard" => t!(lang, "Hard", "A fondo"),
+        "none" => t!(lang, "None", "Ninguno"),
+        "minimal" => t!(lang, "Minimal", "Mínimo"),
+        "low" => t!(lang, "Low", "Bajo"),
+        "medium" => t!(lang, "Medium", "Medio"),
+        "high" => t!(lang, "High", "Alto"),
+        "xhigh" => t!(lang, "Extra high", "Muy alto"),
+        "max" => t!(lang, "Maximum", "Máximo"),
+        "ultra" => t!(lang, "Ultra", "Ultra"),
+        _ => return None,
+    })
+}

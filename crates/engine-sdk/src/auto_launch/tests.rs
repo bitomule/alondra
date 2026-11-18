@@ -746,7 +746,7 @@ async fn while_the_disk_is_nearly_full_a_ready_task_waits_and_starts_once_there_
     assert_eq!(auto(&f, "f1"), None, "not claimed: it starts by itself once there is space");
     assert!(told(&f).iter().all(|id| !id.starts_with("auto-launch")), "the orchestrator is not told: the user has the disk card");
     let queued = f.domain.admission().live(&f.domain, alondra_core::now_millis()).unwrap().queued;
-    assert!(queued.iter().any(|queued| queued.task_id == "f1" && matches!(queued.hold, alondra_views::LiveHold::Disk { .. })),
+    assert!(queued.iter().any(|queued| queued.task_id == "f1" && matches!(queued.hold, alondra_view_model::LiveHold::Disk { .. })),
         "it waits at the gate for room on the disk: {queued:?}");
 
     f.domain.machine_watch().set_disk_low(false);

@@ -12,6 +12,7 @@ VIEWS_DEPS = all_crate_deps(normal = True) + [
     "//crates/core:alondra_core",
     "//crates/domain:domain",
     "//crates/domain-rules:domain_rules",
+    "//crates/engine-ports:engine_ports",
     "//crates/foundation:foundation",
     "//crates/view-model:view_model",
 ]
@@ -22,7 +23,7 @@ application_crate(
     srcs = production_sources(test_only = VIEWS_TEST_ONLY),
     crate_name = "alondra_views",
     version = "0.1.0",
-    test_visibility = ["//crates/daemon-engine:__pkg__", "//crates/engine-admission:__pkg__", "//crates/engine-kernel:__pkg__", "//crates/engine-sdk:__pkg__"],
+    test_visibility = ["//crates/cli:__pkg__", "//crates/cli-tui:__pkg__", "//crates/daemon-server:__pkg__"],
     deps = VIEWS_DEPS,
 )
 
@@ -120,7 +121,7 @@ rust_inputs_test(
 filegroup(
     name = "report_sources",
     srcs = production_sources(test_only = VIEWS_TEST_ONLY),
-    visibility = ["//crates/alondra:__pkg__", "//crates/views:__pkg__"],
+    visibility = ["//crates/alondra:__pkg__", "//crates/cli-report:__pkg__", "//crates/views:__pkg__"],
 )
 
 repo_tree()

@@ -7,7 +7,7 @@ when the count drops ([push fields](push-fields.md)).
 
 ## Who does what
 
-- **Each Mac** (`crates/alondrad/src/activity_push.rs`) seals its counts for each phone in an
+- **Each Mac** (`crates/daemon-server/src/activity_push.rs`) seals its counts for each phone in an
   envelope of kind `activity`, and posts it to `/v1/mac/activity` with three flags in the clear:
   `active`, `may_start` (the phone is outside its quiet hours) and `urgent` (the Inbox grew).
   Changes settle for 5 s. While active, the state repeats every 15 min even if nothing changed.
