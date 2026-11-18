@@ -1150,6 +1150,33 @@ async fn a_node_coming_back_from_a_pause_offers_pause_and_pausing_it_takes_it_ou
     assert!(offered(&tasks, &format!("resume:{agent}")).is_some(), "it offers Resume: {tasks}");
 }
 
+/// 17 November, 22:48: a Resume of the user that waited for a slot all day brought a node back at the
+/// moment the user paused it again. A pause of Alondra's own the user's Resume waits behind must not
+/// outlive the user's new pause: it leaves the queue, and no free slot brings the node back.
+#[tokio::test]
+async fn a_users_pause_on_a_node_whose_resume_waits_behind_a_pause_of_alondras_takes_it_out_of_the_queue() {
+    super::wired();
+    let mut node = SdkNode::working();
+    let agent = node.agent();
+    node.set_limit(0);
+    assert!(node.domain.admission().hold_back(&node.domain, &agent, Reason::Declared { reason: "The build queue is full".into() }, alondra_core::now_millis()));
+    interrupt_sdk_node(&*node.domain, &agent);
+    node.step_until(SdkNode::turn_ended);
+    assert!(node.domain.admission().resume_now(&node.domain, &agent, alondra_core::now_millis()));
+    node.gate_look().await;
+    assert!(node.gate().queue.iter().any(|waiting| waiting.key == Key::Resume(agent.clone())), "the user's Resume waits for a slot");
+
+    node.domain.admission().pause_by_user(&node.domain, &agent, alondra_core::now_millis()).unwrap();
+    node.gate_look().await;
+    assert!(!node.gate().queue.iter().any(|waiting| waiting.key == Key::Resume(agent.clone())), "the user's pause took it out of the queue");
+    let state = node.domain.state().unwrap();
+    assert!(matches!(state.node_pause(&AgentId(agent.clone())), Some(Pause { reason: PauseReason::ByUser, .. })), "the node machine holds the user's pause");
+    node.set_limit(6);
+    node.gate_look().await;
+    node.gate_look().await;
+    assert_eq!(node.domain.admission().paused(&node.domain, &agent).map(|paused| paused.reason), Some(Reason::ByUser), "a free slot does not bring it back");
+}
+
 /// A resting node whose next turn waits for a slot is in the queue too: Pause takes it out.
 #[tokio::test]
 async fn a_node_waiting_for_its_turn_offers_pause_and_pausing_it_takes_it_out_of_the_queue() {

@@ -332,10 +332,12 @@ impl DomainState {
     pub fn node_next(&self, agent: &AgentId, event: &NodeEvent) -> Result<Option<NodePhase>> {
         let a = self.agents.get(agent).ok_or_else(|| DomainError::new("not_found", "Agent missing"))?;
         if a.phase == NodePhase::ThroughSdk || self.through_sdk(agent) {
-            let paused = self.node_pause(agent).is_some();
+            let held = self.node_pause(agent);
+            let takes_the_place_of_alondras = |pause: &Pause| pause.reason == PauseReason::ByUser
+                && held.as_ref().is_some_and(|held| held.reason != PauseReason::ByUser);
             return Ok(match event {
-                NodeEvent::Paused { .. } if !paused => Some(NodePhase::ThroughSdk),
-                NodeEvent::Resumed if paused => Some(NodePhase::ThroughSdk),
+                NodeEvent::Paused { pause } if held.is_none() || takes_the_place_of_alondras(pause) => Some(NodePhase::ThroughSdk),
+                NodeEvent::Resumed if held.is_some() => Some(NodePhase::ThroughSdk),
                 NodeEvent::SessionClosed if a.phase != NodePhase::Closed => Some(NodePhase::Closed),
                 _ => None,
             });
