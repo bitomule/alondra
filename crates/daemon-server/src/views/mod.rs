@@ -9,6 +9,9 @@ pub(crate) mod live;
 pub(crate) mod observation;
 pub(crate) mod reset_time;
 pub(crate) mod routes;
+pub(crate) mod serialization;
+#[cfg(test)]
+mod projection_tests;
 
 pub(crate) const VIEW_BUDGET_BYTES: usize = {
     let local = crate::service::MAX_LOCAL_RESPONSE - 16 * 1024;

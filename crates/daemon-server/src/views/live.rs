@@ -34,7 +34,7 @@ struct SnapshotData {
 
 impl Snapshot {
     #[cfg(test)]
-    fn new(live: LiveSnapshot) -> Self { Self::observed(live, &Observation::default()) }
+    pub(crate) fn new(live: LiveSnapshot) -> Self { Self::observed(live, &Observation::default()) }
 
     fn observed(live: LiveSnapshot, observation: &Observation) -> Self {
         Self(std::sync::Arc::new(SnapshotData {
@@ -50,10 +50,16 @@ impl Snapshot {
         *self.0.digest.get_or_init(|| {
             #[cfg(test)]
             self.0.serializations.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let bytes = serde_json::to_vec(&self.0.live).expect("live snapshot serialization");
-            self.0.observation.add(Metric::DigestSerializations, 1);
-            self.0.observation.add(Metric::DigestBytes, bytes.len() as u64);
+            let bytes = self.0.observation.serialize_snapshot(&self.0.live, super::observation::Serialization::Digest);
             sha2::Sha256::digest(bytes).into()
+        })
+    }
+
+    pub(crate) fn same_payload(&self, other: &Self) -> bool {
+        // Floating point equality merges signed zero, but JSON preserves its sign.
+        self.0.live == other.0.live && self.gauges.iter().zip(&other.gauges).all(|(left, right)| {
+            left.value.to_bits() == right.value.to_bits()
+                && left.parts.iter().zip(&right.parts).all(|(left, right)| left.value.to_bits() == right.value.to_bits())
         })
     }
 
@@ -207,6 +213,12 @@ impl Marks {
 }
 
 impl LiveSnapshots {
+    /// Facts still require a fresh read. Only its already-proven identical value is reused.
+    fn reuse_payload(&self, key: &str, fresh: Snapshot) -> Snapshot {
+        let previous = cache(&self.entries).get(key).map(|(_, live)| live.clone());
+        previous.filter(|live| live.same_payload(&fresh)).unwrap_or(fresh)
+    }
+
     fn get(&self, client: &crate::client_routes::Client, key: &str, state: &DomainState, observed_at: Option<Millis>) -> Option<Snapshot> {
         let marks = Marks::now(client);
         let mut entries = cache(&self.entries);
@@ -318,6 +330,7 @@ async fn gather_now(
             #[cfg(test)]
             snapshots.gathered.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let live = Snapshot::observed(gather_at(client, state, lang, &[], false, false, now).await, &client.view_observation);
+            let live = snapshots.reuse_payload(&shared, live);
             if let Some(facts) = &facts {
                 snapshots.insert(client, shared, facts.clone(), live.clone());
             }
@@ -330,7 +343,7 @@ async fn gather_now(
     let mut live = live.0.live.clone();
     keyed_at(client, state, keys, issue_data).await.apply(&mut live);
     live.observed_at = quota_clock(state, keys, now);
-    let live = Snapshot::observed(live, &client.view_observation);
+    let live = snapshots.reuse_payload(&key, Snapshot::observed(live, &client.view_observation));
     if watched && let Some(facts) = facts {
         snapshots.insert(client, key, facts, live.clone());
     }
@@ -629,6 +642,7 @@ async fn gather_inner(
                 waiting_until: exhausted.as_ref().filter(|_| node.usage_limited).map(|exhausted| timestamp(exhausted.until)),
             })
         })
+        .inspect(|_| client.view_observation.add(Metric::NodeOutputRows, 1))
         .collect();
     let pull_requests = state
         .pull_requests
@@ -1160,6 +1174,7 @@ mod cache_tests {
         assert_eq!(before.metrics[Metric::GatherKeyed as usize], 2);
         assert_eq!(before.metrics[Metric::WaitingTaskRows as usize], state.tasks.len() as u64);
         assert_eq!(before.metrics[Metric::AgentRows as usize], state.agents.len() as u64);
+        assert_eq!(before.metrics[Metric::NodeOutputRows as usize], first.nodes.len() as u64);
         assert_eq!(before.metrics[Metric::PullRequestRows as usize], state.pull_requests.len() as u64);
         assert_eq!(before.metrics[Metric::DigestSerializations as usize], 1);
         assert_eq!(before.metrics[Metric::DigestBytes as usize], bytes);
@@ -1368,10 +1383,10 @@ mod cache_tests {
         let changed = gather_now(&client, &state, Lang::En, &keys, false, false, 1_000).await;
         changed.digest();
         let after = observation.totals();
-        for metric in [Metric::GatherShared, Metric::DigestSerializations] {
-            assert_eq!(after.metrics[metric as usize], before.metrics[metric as usize] + 1,
-                "a shared change still rebuilds and serializes the home snapshot");
-        }
+        assert_eq!(after.metrics[Metric::GatherShared as usize], before.metrics[Metric::GatherShared as usize] + 1,
+            "a shared notification still rebuilds the home snapshot");
+        assert_eq!(after.metrics[Metric::DigestSerializations as usize], before.metrics[Metric::DigestSerializations as usize],
+            "a notification with identical content retains the existing digest");
     }
 
     #[tokio::test]
@@ -1487,6 +1502,35 @@ mod cache_tests {
         assert_eq!(gathered(&client), 2, "the snapshot read across the change is gathered again");
         gather(&client, &state, Lang::En, &home, true, false).await;
         assert_eq!(gathered(&client), 2, "the one read after it is kept");
+    }
+
+    #[tokio::test]
+    async fn an_equal_projection_reuses_its_digest_without_accepting_raced_facts() {
+        let observation = Observation::armed();
+        observation.start();
+        let (_home, domain, client) = wait_fixture_observed(observation.clone());
+        let home = ["home".to_owned()];
+        let state = domain.state().unwrap();
+        let first = gather_now(&client, &state, Lang::En, &home, false, false, 1_000).await;
+        let digest = first.digest();
+        client.feeds.shared_changed();
+        let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (weak, once) = (Arc::downgrade(&client), fired.clone());
+        domain.reads.lock().unwrap().on_live_read(move |getter| {
+            if getter == "task_state_times" && !once.swap(true, std::sync::atomic::Ordering::SeqCst)
+                && let Some(client) = weak.upgrade() { client.feeds.shared_changed(); }
+        });
+        let raced = gather_now(&client, &state, Lang::En, &home, false, false, 1_000).await;
+        assert!(fired.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(Arc::ptr_eq(&first.0, &raced.0));
+        assert_eq!(raced.digest(), digest);
+        assert!(observation.totals().invalid_events[Stage::Insert as usize] > 0);
+        let fresh = gather_now(&client, &state, Lang::En, &home, false, false, 1_000).await;
+        assert_eq!(fresh.digest(), digest);
+        assert_eq!(gathered(&client), 3, "equal content does not validate facts read across a change");
+        gather_now(&client, &state, Lang::En, &home, false, false, 1_000).await.digest();
+        assert_eq!(gathered(&client), 3);
+        assert_eq!(observation.totals().metrics[Metric::DigestSerializations as usize], 1);
     }
 
     #[tokio::test]

@@ -52,7 +52,7 @@ struct Turn {
     driver: Driver,
     client: Arc<crate::client_routes::Client>,
     runtime: tokio::runtime::Runtime,
-    sampled: std::cell::RefCell<Option<String>>,
+    sampled: std::cell::RefCell<Option<crate::views::feed::Sample>>,
 }
 
 impl Turn {

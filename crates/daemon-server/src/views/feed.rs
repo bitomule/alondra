@@ -167,20 +167,35 @@ async fn next_sample(
     }
 }
 
+pub(crate) struct Sample {
+    live: super::live::Snapshot,
+    digest: String,
+}
+
+pub(crate) fn sample_changed(
+    live: super::live::Snapshot,
+    last: &mut Option<Sample>,
+    observation: &Observation,
+) -> bool {
+    if last.as_ref().is_some_and(|previous| previous.live.same_payload(&live)) {
+        observation.add(Metric::SamplerUnchanged, 1);
+        return false;
+    }
+    let digest = live_revision(&live, observation);
+    let changed = last.as_ref().is_none_or(|previous| previous.digest != digest);
+    *last = Some(Sample { live, digest });
+    observation.add(if changed { Metric::SamplerChanged } else { Metric::SamplerUnchanged }, 1);
+    changed
+}
+
 pub(crate) async fn sample_live(
     client: &crate::client_routes::Client,
     state: &Arc<alondra_domain_rules::DomainState>,
-    last: &mut Option<String>,
+    last: &mut Option<Sample>,
 ) -> bool {
     let keys = client.feeds.live_keys();
     let live = super::live::gather(client, state, Lang::En, &keys, false, true).await;
-    let digest = live_revision(&live, &client.view_observation);
-    if last.as_ref() == Some(&digest) {
-        client.view_observation.add(Metric::SamplerUnchanged, 1);
-        return false;
-    }
-    *last = Some(digest);
-    client.view_observation.add(Metric::SamplerChanged, 1);
+    if !sample_changed(live, last, &client.view_observation) { return false; }
     client.feeds.shared_changed();
     true
 }
@@ -437,9 +452,7 @@ fn status_view_key(kind: Client) -> &'static str {
 }
 
 fn live_revision(live: &alondra_view_model::LiveSnapshot, observation: &Observation) -> String {
-    let bytes = serde_json::to_vec(live).expect("live snapshot serialization");
-    observation.add(Metric::SamplerSerializations, 1);
-    observation.add(Metric::SamplerBytes, bytes.len() as u64);
+    let bytes = observation.serialize_snapshot(live, super::observation::Serialization::Sampler);
     let digest = sha2::Sha256::digest(bytes);
     digest[..8]
         .iter()
@@ -901,7 +914,9 @@ mod tests {
     #[test]
     fn node_reports_publish_without_domain_or_periodic_clock_and_coalesce_bursts() {
         // Open outside the runtime so this test owns the single sampler's progression.
-        let fixture = FeedFixture::new();
+        let observation = Observation::armed();
+        observation.start();
+        let fixture = FeedFixture::observed(observation.clone());
         let (agent, key) = fixture.node_on_task("event-driven");
         let agent = agent.as_str();
         let report = |command: &str| crate::node_reports::Envelope {
@@ -951,10 +966,30 @@ mod tests {
             let live = super::super::live::gather(&fixture.client, &state, Lang::En, &[key.clone()], false, false).await;
             let rendered = fixture.client.views.render(&key, &alondra_domain_rules::ReadSnapshot::build(state.clone()), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
             assert!(serde_json::to_string(&rendered).unwrap().contains("echo burst-63"), "the final activity reaches the view");
+            let digest = live.digest();
+            let before_duplicate = observation.totals();
             fixture.client.domain.report(report("echo burst-63"), 1_700_000_000_064);
             assert_eq!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes), std::task::Poll::Ready(Some(false)));
             assert!(!sample_live(&fixture.client, &state, &mut last).await, "an unchanged visible report does not wake clients");
             assert_eq!(*fixture.client.feeds.clock.borrow(), before + 1);
+            let unchanged = super::super::live::gather(&fixture.client, &state, Lang::En, &[key.clone()], false, false).await;
+            assert_eq!(unchanged.digest(), digest);
+            let after_duplicate = observation.totals();
+            let delta = |metric: Metric| after_duplicate.metrics[metric as usize] - before_duplicate.metrics[metric as usize];
+            assert_eq!((delta(Metric::SamplerSerializations), delta(Metric::SamplerBytes),
+                delta(Metric::DigestSerializations), delta(Metric::DigestBytes)), (0, 0, 0, 0),
+                "an identical visible report must not serialize either live projection again");
+            fixture.client.domain.report(report("echo changed-again"), 1_700_000_000_065);
+            let before_change = observation.totals();
+            assert!(sample_live(&fixture.client, &state, &mut last).await);
+            let after_change = observation.totals();
+            for metric in [Metric::SharedWake, Metric::SamplerSerializations] {
+                assert_eq!(after_change.metrics[metric as usize], before_change.metrics[metric as usize] + 1);
+            }
+            let changed = super::super::live::gather(&fixture.client, &state, Lang::En, &[key.clone()], false, false).await;
+            assert_ne!(changed.digest(), digest);
+            let rendered = fixture.client.views.render(&key, &alondra_domain_rules::ReadSnapshot::build(state.clone()), &changed, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+            assert!(serde_json::to_string(&rendered).unwrap().contains("echo changed-again"));
             println!("reports=64 sample_permits=1 visible_wakes=1 domain_commits=0 latest_activity=echo burst-63 duplicate_wakes=0 periodic_ticks=0");
         });
     }
