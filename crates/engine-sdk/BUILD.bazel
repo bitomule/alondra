@@ -101,9 +101,10 @@ SDK_TEST_COMPILE_DATA = [
     "//fixtures/domain-v2:acceptance.json",
 ]
 
-# Most of the SDK's tests run a real Agent SDK host or a fake Claude or Codex, so its test target
-# carries them. It never carries the alondra and alondrad binaries: they link every crate, so an
-# edit anywhere would rerun these tests.
+# Most of the SDK's tests run a real Agent SDK host or a fake Claude or Codex, so its one test
+# target carries them. It never carries a binary of the root: they link every crate, so an edit
+# anywhere would rerun these tests. The tests that start the real daemon are
+# //crates/alondrad:codex_adoption_process_test.
 low_opt_rust_test(
     name = "engine_sdk_test",
     size = "large",
@@ -114,33 +115,6 @@ low_opt_rust_test(
     data = SDK_TEST_DATA,
     edition = "2024",
     env = SDK_TEST_ENV,
-    rustc_flags = ["--check-cfg=cfg(process_tests)"],
-    version = VERSION,
-    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/agent-runtime:agent_runtime"] + TEST_HOOKS_DEPS,
-)
-
-# The opt-in tests that start the real alondrad and adopt its hosts (`process_adoption`), apart so
-# relinking the binaries never reruns the SDK suite:
-# `bazelisk test //crates/engine-sdk:engine_sdk_process_test --test_arg=--ignored`.
-low_opt_rust_test(
-    name = "engine_sdk_process_test",
-    size = "large",
-    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
-    args = ["process_adoption::"],
-    tags = ["manual"],
-    compile_data = SDK_TEST_COMPILE_DATA,
-    crate_name = "alondra_engine_sdk",
-    crate_root = "src/lib.rs",
-    data = SDK_TEST_DATA + [
-        "//crates/alondra:alondra",
-        "//crates/alondrad:alondrad",
-    ],
-    edition = "2024",
-    env = SDK_TEST_ENV | {
-        "FIXTURE_CLI": "$(rootpath //crates/alondra:alondra)",
-        "FIXTURE_DAEMON": "$(rootpath //crates/alondrad:alondrad)",
-    },
-    rustc_flags = ["--cfg=process_tests", "--check-cfg=cfg(process_tests)"],
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/agent-runtime:agent_runtime"] + TEST_HOOKS_DEPS,
 )

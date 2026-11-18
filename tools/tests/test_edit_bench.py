@@ -66,6 +66,49 @@ class EditBenchTest(unittest.TestCase):
         self.assertIn("static EDIT_BENCH: u64 = 7;", bench.edit_text(".rs", 7))
         self.assertEqual(bench.edit_text(".py", 7), "# edit-bench 7\n")
 
+    def test_the_longest_test_is_one_bazel_ran_never_a_cached_result(self):
+        output = (
+            "//crates/alondrad:alondrad_test                                  (cached) PASSED in 300.0s\n"
+            "//crates/scenarios:scenarios_test                                        PASSED in 144.0s\n"
+            "//crates/alondrad:relaunch_test                                          FAILED in 34.2s\n"
+            "//crates/engine-sdk:engine_sdk_test                                     TIMEOUT in 600.0s\n"
+        )
+        self.assertEqual(bench.slowest_test(output), ("//crates/engine-sdk:engine_sdk_test", 600.0))
+        self.assertIsNone(bench.slowest_test("//crates/core:alondra_core_test (cached) PASSED in 44.5s\n"))
+
+    def test_a_failed_run_names_the_targets_that_did_not_pass(self):
+        output = (
+            "//crates/alondrad:relaunch_test                                          FAILED in 34.2s\n"
+            "//crates/engine-sdk:engine_sdk_test                                     TIMEOUT in 600.0s\n"
+            "//crates/scenarios:scenarios_test                                        PASSED in 60.0s\n"
+            "//crates/views:views_test                                             NO STATUS\n"
+        )
+        failed = ["//crates/alondrad:relaunch_test", "//crates/engine-sdk:engine_sdk_test", "//crates/views:views_test"]
+        self.assertEqual(bench.not_passed(output), failed)
+        row = {
+            "edit": "a.rs", "crates": 1, "tests": 2, "verb": "test", "seconds": 9, "critical": 8.0, "cached": 0,
+            "passed": False, "retried": False, "rustc": 1, "clippy": 1, "test_runs": 2, "actions": 4,
+            "failed": failed[:1],
+        }
+        self.assertIn("9 s (test) (failed: `//crates/alondrad:relaunch_test`) |", bench.table([row]))
+
+    def test_a_row_tells_compiling_from_testing(self):
+        row = {
+            "edit": "crates/github-gh/src/cli.rs", "crates": 10, "tests": 36, "verb": "test", "seconds": 150,
+            "critical": 146.2, "cached": 3, "passed": True, "retried": False, "rustc": 11, "clippy": 5,
+            "test_runs": 39, "actions": 56, "build_seconds": 41, "build_critical": 29.6,
+            "slowest": ("//crates/scenarios:scenarios_test", 143.8),
+        }
+        line = bench.table([row]).splitlines()[-1]
+        self.assertIn("| 30 s | 41 s | `//crates/scenarios:scenarios_test` 144 s | 146 s | 150 s (test) |", line)
+        counted = bench.table([{"edit": "a.rs", "crates": 1, "tests": 2}]).splitlines()[-1]
+        self.assertEqual(counted, "| `a.rs` | 1 | 2 | - | - | - | - | - | - | - |")
+
+    def test_the_tracked_edits_cover_an_adapter_the_engine_the_root_and_the_domain(self):
+        for edit in ("crates/github-gh/src/cli.rs", "crates/engine-sdk/src/sdk_owner.rs",
+                     "crates/alondrad/src/assemble.rs", "crates/domain-rules/src/rules.rs"):
+            self.assertIn(edit, bench.TRACKED)
+
     def test_a_retried_invocation_is_told_apart(self):
         self.assertEqual(bench.attempts("INFO: Elapsed time: 1s\nINFO: Elapsed time: 2s\n"), 2)
         self.assertEqual(bench.attempts(""), 1)

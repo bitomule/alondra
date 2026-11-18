@@ -161,7 +161,48 @@ low_opt_rust_test(
     deps = all_crate_deps(normal = True, normal_dev = True),
 )
 
-exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+# A real alondrad, killed and started again twice, adopts the live Codex host of a task with what
+# it held. It starts the daemon three times under Seatbelt, so no wildcard runs it: the release's
+# tests name it (deploy/brew/local-release.py).
+low_opt_rust_test(
+    name = "codex_adoption_process_test",
+    timeout = "moderate",
+    srcs = ["tests/codex_adoption.rs"],
+    crate_root = "tests/codex_adoption.rs",
+    data = [
+        ":alondrad",
+        "//agent-host:alondra-codex-host",
+        "//agent-host:alondra-host",
+        "//agent-host:fake-codex.py",
+        "//agent-host:persistent-fake-claude.py",
+        "//crates/alondra:alondra",
+    ],
+    edition = "2024",
+    # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
+    env = {
+        "FIXTURE_CLI": "$(rootpath //crates/alondra:alondra)",
+        "FIXTURE_CODEX_HOST": "$(rootpath //agent-host:alondra-codex-host)",
+        "FIXTURE_CODEX_NATIVE": "$(rootpath //agent-host:fake-codex.py)",
+        "FIXTURE_DAEMON": "$(rootpath :alondrad)",
+        "FIXTURE_HOST": "$(rootpath //agent-host:alondra-host)",
+        "FIXTURE_NATIVE": "$(rootpath //agent-host:persistent-fake-claude.py)",
+        "FIXTURE_NODE": "$(rootpath //agent-host:alondra-host)",
+        "HOME": ".",
+    },
+    tags = ["manual"],
+    target_compatible_with = ["@platforms//os:macos"],
+    version = VERSION,
+    deps = all_crate_deps(normal = True, normal_dev = True) + [
+        "//crates/core:alondra_core",
+        "//crates/domain:domain",
+        "//crates/domain-rules:domain_rules",
+        "//crates/engine-sdk:engine_sdk_test_hooks",
+        "//crates/process-group:process_group",
+    ],
+)
+
+# The release's test reads this package's BUILD file to check the tests it names.
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__", "//deploy/brew:__pkg__"])
 
 # The crate's production sources: the crash report's log catalog reads them, and fails on a test
 # file among them.

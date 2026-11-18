@@ -29,6 +29,9 @@ PREVIOUS_DOCTOR = 'previous-doctor'
 HANDOVER_CRASHES = ('planned', 'bg_stopped', 'sdk_admitted')
 SDK_REHEARSAL = {'--sandbox-tool': '//tools/sandbox:alondra-sandbox'}
 RELEASE_CONFIG = '--config=release'
+# Tests too slow for every edit, which no wildcard runs: a release names them. They start the real
+# daemon several times.
+RELEASE_ONLY_TESTS = ('//crates/alondrad:codex_adoption_process_test',)
 # What a release ships, by the name it ships under: the binaries `bazelisk test //crates/...` built
 # and tested, in the same configuration, so the release never compiles them a second time.
 RELEASE_TARGETS = {
@@ -283,7 +286,7 @@ def prepare(ver, source, output):
     # Never overwrite prior archives, including partially prepared artifacts.
     output.mkdir(parents=True, exist_ok=False)
     output.chmod(0o700)
-    bazel('test', '//crates/...', '//deploy/brew/...')
+    bazel('test', '//crates/...', '//deploy/brew/...', *RELEASE_ONLY_TESTS)
     built = release_build(ver)
     for target in release.TARGETS:
         with tempfile.TemporaryDirectory(prefix='alondra-local-sign-') as temp:

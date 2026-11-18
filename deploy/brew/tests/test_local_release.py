@@ -229,7 +229,16 @@ class LocalReleaseTests(unittest.TestCase):
             self.fail(f'Unexpected command before release validation: {args}')
         with patch.object(l, 'run', side_effect=fake), self.assertRaises(subprocess.CalledProcessError):
             l.prepare('0.1.2', 'source', self.root / 'artifacts')
-        self.assertEqual(calls[-1], ('bazelisk', 'test', l.RELEASE_CONFIG, '//crates/...', '//deploy/brew/...'))
+        self.assertEqual(calls[-1], ('bazelisk', 'test', l.RELEASE_CONFIG, '//crates/...', '//deploy/brew/...', *l.RELEASE_ONLY_TESTS))
+
+    def test_a_release_names_tests_that_exist_and_that_no_wildcard_runs(self):
+        self.assertIn('//crates/alondrad:codex_adoption_process_test', l.RELEASE_ONLY_TESTS)
+        for label in l.RELEASE_ONLY_TESTS:
+            package, name = label.removeprefix('//').split(':')
+            declared = (REPO_ROOT / package / 'BUILD.bazel').read_text()
+            self.assertIn(f'name = "{name}"', declared, f'{label} is not declared in {package}')
+            target = declared[declared.index(f'name = "{name}"'):]
+            self.assertIn('tags = ["manual"]', target[:target.index('\n)\n')], f'{label} runs with every wildcard already')
 
     def test_disk_guard_accepts_threshold_and_rejects_below_it(self):
         sufficient = type('Usage', (), {'free': l.LOW_FREE})()

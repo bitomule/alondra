@@ -6,9 +6,10 @@
 weeks; --tracked measures the edits the build graph's targets are set for. For each edit it makes a
 first one-line change and builds the affected targets, so rustc's incremental state exists for every
 crate the edit reaches, as it does in a real edit loop (a crate taken from a cache has none). Then it
-makes a second change that reaches the binaries (a `#[used]` static in Rust, a comment elsewhere),
-times `bazel test` (or `bazel build`) over the same targets with an execution log, and puts the file
-back exactly as it was, also when interrupted.
+makes a second change that reaches the binaries (a `#[used]` static in Rust, a comment elsewhere)
+and times `bazel build` over the same targets: what compiling costs. A third change times `bazel
+test` with an execution log: the whole edit, and the test target that took longest. It puts the
+file back exactly as it was, also when interrupted. `--build-only` stops after the build.
 
 Under bazelqueue a `bazel run` holds its build slot while the bench runs, so on a shared Mac build
 the script and run it outside Bazel:
@@ -35,7 +36,12 @@ TRACKED = [
     "crates/engine-orchestrator/src/domain_orchestrator.rs",
     "crates/engine-live/src/node_reports.rs",
     "crates/domain-rules/src/rules.rs",
+    "crates/github-gh/src/cli.rs",
+    "crates/engine-sdk/src/sdk_owner.rs",
+    "crates/alondrad/src/assemble.rs",
 ]
+NOT_PASSED = re.compile(r"^(//\S+)\s+(?:FAILED|TIMEOUT|NO STATUS)\b", re.M)
+RAN_TEST = re.compile(r"^(//\S+)\s+(?:PASSED|FAILED|FLAKY|TIMEOUT)\b.* in (\d+(?:\.\d+)?)s", re.M)
 CRITICAL = re.compile(r"Critical Path: (\d+(?:\.\d+)?)s")
 QUEUE_RAN = re.compile(r"^bazelqueue: finished \S+ exit=\d+ queued=\S+ ran=(\S+)", re.M)
 DURATION = re.compile(r"(\d+(?:\.\d+)?)(h|ms|m|s)")
@@ -90,6 +96,18 @@ def critical_path(output):
     """Bazel's critical path of the last invocation in the output, in seconds."""
     found = CRITICAL.findall(output)
     return float(found[-1]) if found else None
+
+
+def slowest_test(output):
+    """The test target of Bazel's summary that took longest among those it ran, with its seconds;
+    a result read from a cache did not run."""
+    ran = [(float(seconds), label) for label, seconds in RAN_TEST.findall(output)]
+    return max(ran)[::-1] if ran else None
+
+
+def not_passed(output):
+    """The test targets of Bazel's summary that failed, timed out or never ran."""
+    return sorted(set(NOT_PASSED.findall(output)))
 
 
 def seconds_of(text):
@@ -153,6 +171,10 @@ def measure(root, relative, query_only, build_only=False, flags=()):
         try:
             path.write_bytes(original + edit_text(path.suffix, time.time_ns()).encode())
             bazel(root, "build", tests, *flags)
+            if not build_only:
+                path.write_bytes(original + edit_text(path.suffix, time.time_ns()).encode())
+                _, build_seconds, _, build_output = bazel(root, "build", tests, *flags)
+                row.update(build_seconds=round(build_seconds), build_critical=critical_path(build_output))
             path.write_bytes(original + edit_text(path.suffix, time.time_ns()).encode())
             code, seconds, tries, output = bazel(root, verb, tests, *flags, f"--execution_log_json_file={log}")
         finally:
@@ -163,6 +185,8 @@ def measure(root, relative, query_only, build_only=False, flags=()):
         verb=verb,
         seconds=round(seconds),
         critical=critical_path(output),
+        slowest=slowest_test(output),
+        failed=not_passed(output),
         cached=from_cache(text),
         passed=code == 0,
         retried=tries > 1,
@@ -177,19 +201,26 @@ def measure(root, relative, query_only, build_only=False, flags=()):
 def table(rows):
     lines = [
         "| Edit | Crates reopened | Test targets reopened | Actions run (rustc / clippy / tests) | From cache"
-        " | Critical path | Edit + build or test |",
-        "|---|---:|---:|---|---:|---:|---:|",
+        " | Build: critical path | Edit + build | Longest test target | Critical path | Edit + build or test |",
+        "|---|---:|---:|---|---:|---:|---:|---|---:|---:|",
     ]
     for row in rows:
         if "seconds" in row:
             ran = f"{row['actions']} ({row['rustc']} / {row['clippy']} / {row['test_runs']})"
-            took = f"{row['seconds']} s ({row['verb']})" + ("" if row["passed"] else " (failed)")
+            failed = ": " + ", ".join(f"`{label}`" for label in row["failed"]) if row.get("failed") else ""
+            took = f"{row['seconds']} s ({row['verb']})" + ("" if row["passed"] else f" (failed{failed})")
             took += " (retried: actions count only the last attempt)" if row["retried"] else ""
             critical = "-" if row["critical"] is None else f"{round(row['critical'])} s"
             cache = str(row["cached"])
+            build_critical = "-" if row.get("build_critical") is None else f"{round(row['build_critical'])} s"
+            build = f"{row['build_seconds']} s" if "build_seconds" in row else "-"
+            slowest = f"`{row['slowest'][0]}` {round(row['slowest'][1])} s" if row.get("slowest") else "-"
         else:
-            ran = took = critical = cache = "-"
-        lines.append(f"| `{row['edit']}` | {row['crates']} | {row['tests']} | {ran} | {cache} | {critical} | {took} |")
+            ran = took = critical = cache = build_critical = build = slowest = "-"
+        lines.append(
+            f"| `{row['edit']}` | {row['crates']} | {row['tests']} | {ran} | {cache} | {build_critical} | {build}"
+            f" | {slowest} | {critical} | {took} |"
+        )
     return "\n".join(lines)
 
 

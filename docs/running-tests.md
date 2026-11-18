@@ -28,11 +28,25 @@ back to the checkout, and a test tagged `external`, `local`, `no-cache` or `no-r
 reason in `tools/uncacheable_tests.tsv`.
 
 `bazel run //tools:edit_bench` measures what one-line edits cost: the crates and test targets each
-reopens, the actions Bazel really runs, and the time to edit and test. `--edit <path>` picks the
-files; without it, the files edited most often in the last two weeks. `--query-only` only counts.
+reopens, the actions Bazel really runs, the time to build alone, the time to edit and test, and the
+test target that took longest. `--edit <path>` picks the files; without it, the files edited most
+often in the last two weeks; `--tracked` measures one edit per layer. `--query-only` only counts.
 On a shared Mac, where bazelqueue keeps a `bazel run` in its build slot until the program ends,
 build the script and run it outside Bazel:
 `bazelisk run --script_path=.scratch/edit_bench //tools:edit_bench && .scratch/edit_bench --edit <path>`.
+
+`bazel run //tools:test_catalog -- list` prints every Rust test of `//crates/...` with its target and
+whether it runs (`run`, `ignored`, or `manual` for a target no wildcard runs), and a line per
+conversation scenario. A change that moves tests between targets shows in its pull request
+`test_catalog -- compare before.tsv after.tsv`: a test that only changed target or module is found
+by its function name, and the command fails on a test that is nowhere any more, or that ran and no
+longer does, unless a line of `--moves` says where it went and why.
+
+A test's package decides how often it runs. A test outside the root may not depend on a crate or a
+binary of the root (`//tools/bazel:crate_layers_test` fails on it): it would rerun on every edit of
+the daemon. The tests that start the real daemon several times are `manual` targets of the root
+that the release's tests name (`RELEASE_ONLY_TESTS` in `deploy/brew/local-release.py`);
+`bazelisk test //crates/alondrad:codex_adoption_process_test` runs them on request.
 
 ## Invalid cached executables
 

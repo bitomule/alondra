@@ -1082,15 +1082,6 @@ checks:
       - "crates/agent-application/**"
       - "crates/agent-protocol/**"
       - "crates/agent-runtime/**"
-      - "crates/alondra/**"
-      - "crates/cli/**"
-      - "crates/cli-mcp/**"
-      - "crates/cli-report/**"
-      - "crates/cli-tui/**"
-      - "crates/client-port/**"
-      - "crates/client-transport/**"
-      - "crates/alondrad/**"
-      - "crates/daemon-server/**"
       - "crates/BUILD.bazel"
       - "crates/codex-protocol/**"
       - "crates/core/**"
@@ -1105,13 +1096,11 @@ checks:
       - "crates/e2e/**"
       - "crates/engine-admission/**"
       - "crates/engine-github/**"
-      - "crates/github-gh/**"
       - "crates/engine-live/**"
       - "crates/engine-mcp/**"
       - "crates/engine-ports/**"
       - "crates/engine-worktrees/**"
       - "crates/engine-kernel/**"
-      - "crates/engine-orchestrator/**"
       - "crates/engine-sdk/**"
       - "crates/foundation/**"
       - "crates/host/**"
@@ -1122,12 +1111,10 @@ checks:
       - "crates/store/**"
       - "crates/test_support.rs"
       - "crates/view-model/**"
-      - "crates/views/**"
       - "fixtures/accounts/**"
       - "fixtures/client-v2/**"
       - "fixtures/domain-v2/acceptance.json"
       - "fixtures/domain-v2/BUILD.bazel"
-      - "launchd/**"
       - "MODULE.bazel"
       - "tools/BUILD.bazel"
       - "tools/rust_inputs_test.bzl"
@@ -1708,12 +1695,15 @@ checks:
     paths:
       - "tools/BUILD.bazel"
       - "tools/edit_bench.py"
+      - "tools/test_catalog.py"
       - "tools/tests/test_edit_bench.py"
+      - "tools/tests/test_test_catalog.py"
       - "tools/rust_test.bzl"
       - "tools/tree.bzl"
     with:
       targets:
         - //tools:edit_bench_test
+        - //tools:test_catalog_test
 
   crate-layers:
     uses: bazel/test

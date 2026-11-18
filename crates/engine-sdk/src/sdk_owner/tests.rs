@@ -149,7 +149,7 @@ impl SdkLaunches {
 
 pub struct Slice {
     pub domain: Arc<DomainRuntime>,
-    database: PathBuf,
+    pub database: PathBuf,
     pub capture: PathBuf,
     pub worktree: PathBuf,
     pub plugin: PathBuf,
@@ -157,7 +157,7 @@ pub struct Slice {
     /// Every raw host event the daemon committed for the task, by cursor, as it was committed.
     pub kept: Arc<Mutex<BTreeMap<u64, Vec<u8>>>>,
     /// Before `_home`: the hosts write in the HOME they get, so they end before it is removed.
-    _state: HostRoot,
+    pub _state: HostRoot,
     pub _home: Directory,
 }
 
@@ -1004,7 +1004,7 @@ async fn cancelling_an_sdk_task_that_waits_on_its_card_stops_its_host_and_ends_t
 }
 
 /// The owner generation currently fencing the slice's execution, read straight from SQL.
-fn owner_generation(database: &Path) -> i64 {
+pub fn owner_generation(database: &Path) -> i64 {
     Connection::open(database).unwrap().query_row("SELECT owner_generation FROM provider_execution_owners", [], |row| row.get(0)).unwrap()
 }
 
@@ -3016,7 +3016,7 @@ fn a_step_on_a_quiet_turn_returns_to_send_the_interrupt_that_comes_next() {
     driver.stop().unwrap();
 }
 
-const DECISION_CARDS: &str = "decision-sdk-slice-";
+pub const DECISION_CARDS: &str = "decision-sdk-slice-";
 
 /// A task's card that asks the user for a decision Claude waits on.
 #[derive(Debug, PartialEq)]
