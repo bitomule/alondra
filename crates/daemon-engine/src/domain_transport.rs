@@ -833,6 +833,41 @@ pub mod tests {
         }
     }
 
+    /// The SDK execution of `task`, admitted for `agent`, launched in a remote workspace and in
+    /// its first turn.
+    pub fn admitted_sdk_execution(domain: &Arc<DomainRuntime>, task: &str, agent: &str, n: usize) {
+        let state = domain.state().unwrap();
+        let admit = CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: format!("admit-{n}").as_str().into(),
+            expected_revision: state.revision, command: Command::AdmitExecution {
+                provider: alondra_core::accounts::Provider::Claude, task_id: task.into(), agent_id: agent.into(),
+                conversation: format!("conversation-{n}"), instance: format!("instance-{n}"), host: "fixture-service".into(),
+                model: None, account: None, leaves_limit: None,
+            },
+        };
+        let binding = alondra_provider_contract::ProviderBinding::new(format!("composite-binding-{n}"), "fixture-service".into(),
+            format!("fixture-instance-{n}"), "fixture-config".into(), 1, 1,
+            BTreeSet::from([alondra_provider_contract::Capability::OfferInput]), "fixture-credential-reference".into(), 1).unwrap();
+        let task: TaskId = task.into();
+        domain.own(alondra_store::AuthorityScope::new(state.data_epoch.clone()).unwrap(), |owner| {
+            owner.stage_command(&Actor::System, &admit, crate::domain_store::Attached::None)?;
+            let journal = owner.journal();
+            let pending = journal.load(&task)?.pending_inputs()[0].clone();
+            journal.give_input_text(&task, alondra_store::InputPayload::new(pending, "Work").unwrap())?;
+            journal.stage_launch(&task, &alondra_provider_contract::Placement::RemoteWorkspace("sandbox/workspace".into()), &binding)?;
+            let execution = journal.load(&task)?.execution().unwrap().clone();
+            journal.reserve_owner(&execution, 0)?;
+            Ok(())
+        }).unwrap();
+        let state = domain.state().unwrap();
+        let Some(LifecycleRecord::Planned { input }) = state.lifecycle_journal.get(&task).and_then(|records| records.iter().next().cloned()) else {
+            panic!("a task's journal starts planned")
+        };
+        command(domain, Actor::System, &format!("turn-{n}"), Command::RecordRuntimeFacts { task_id: task, generation: 1, facts: vec![
+            RuntimeObservation::ResourceAvailable, RuntimeObservation::TurnStarted { turn: format!("turn-{n}").as_str().into(), input },
+        ] });
+    }
+
     fn command(domain: &Arc<DomainRuntime>, actor: Actor, id: &str, command: Command) {
         let state = domain.state().unwrap();
         domain.execute(&actor, &CommandEnvelope {

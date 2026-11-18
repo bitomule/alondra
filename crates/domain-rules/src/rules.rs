@@ -2469,10 +2469,12 @@ impl DomainState {
         }
     }
     fn retire_cards_of_ended_tasks(&mut self, effects: &mut Vec<DomainEffect>) -> Result<()> {
-        let left: Vec<(TaskId, InteractionId)> = self.tasks.values()
-            .filter(|t| t.state.terminal() && !Self::winding_down(t))
-            .flat_map(|t| self.interactions.values().filter(|i| self.left_open(i, &t.id)).map(|i| (t.id.clone(), i.id.clone())))
+        let mut left: Vec<(TaskId, InteractionId)> = self.interactions.values()
+            .filter_map(|i| match &i.scope { Scope::Task { task_id } => Some((task_id, i)), Scope::Orchestrator { .. } => None })
+            .filter(|(task_id, i)| self.tasks.get(*task_id).is_some_and(|t| t.state.terminal() && !Self::winding_down(t)) && self.left_open(i, task_id))
+            .map(|(task_id, i)| (task_id.clone(), i.id.clone()))
             .collect();
+        left.sort();
         let stale_notices: Vec<InteractionId> = self.interactions.values()
             .filter(|i| i.author == Author::System && !i.withdrawn && matches!(i.system_card, Some(SystemCard::EndedUnanswered { .. })))
             .filter(|i| matches!(&i.scope, Scope::Task { task_id } if self.tasks.get(task_id).is_some_and(|t| t.state == TaskState::Cancelled)))
@@ -2900,11 +2902,18 @@ impl DomainState {
     /// The current state was validated when it was loaded or committed; only the result is checked.
     /// Semantic receipts belong to the SQL transaction and are looked up before this method.
     pub fn execute(&mut self, actor: &Actor, envelope: &CommandEnvelope) -> Result<CommandOutcome> {
-        let (next, outcome) = self.prepare_transition(actor, envelope)?;
+        let (next, outcome) = self.transition(actor, envelope)?;
         *self = next;
-        #[cfg(test)]
-        super::read_index::assert_index_matches(self);
         Ok(outcome)
+    }
+
+    /// The state `envelope` leaves and its outcome, decided on a single copy of this one, which
+    /// stays as it was.
+    pub fn transition(&self, actor: &Actor, envelope: &CommandEnvelope) -> Result<(Self, CommandOutcome)> {
+        let (next, outcome) = self.prepare_transition(actor, envelope)?;
+        #[cfg(test)]
+        super::read_index::assert_index_matches(&next);
+        Ok((next, outcome))
     }
 
     #[cfg(test)]

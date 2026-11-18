@@ -519,6 +519,11 @@ fn recorded_worktree_storage(conn: &Connection, path: &str) -> Result<Option<(st
     Ok(None)
 }
 
+#[cfg(any(test, feature = "test-hooks"))]
+thread_local! {
+    /// How many times this thread read the whole domain because its cached copy was stale.
+    pub static FULL_LOADS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
 fn data_version(c: &Connection) -> Result<i64> {
     Ok(c.pragma_query_value(None, "data_version", |r| r.get(0))?)
 }
@@ -536,6 +541,8 @@ fn state_in(cached: &Option<Cached>, tx: &Connection) -> Result<(Arc<DomainState
             Ok((Arc::clone(&c.state), true, version))
         }
         _ => {
+            #[cfg(any(test, feature = "test-hooks"))]
+            FULL_LOADS.with(|loads| loads.set(loads.get() + 1));
             let mut state = repository::load(tx)?;
             if let Some(c) = cached {
                 state.mcp = c.state.mcp.clone();
@@ -1051,7 +1058,7 @@ impl DomainStore {
         let mut journal = alondra_store::LifecycleTransaction::attach_cached(tx, scope, &self.aggregates)?;
         let (conn, cached, protected) = (&self.conn, &self.cached, &self.protected);
         let staged = journal.inspect_mut(|journal| {
-            command::stage(conn, cached, protected, actor, envelope, transport, fill_revision, attached, journal)
+            command::stage(conn, command::Base::Stored(cached), protected, actor, envelope, transport, fill_revision, attached, journal)
         })?;
         let mut staged = staged;
         staged.commit.sealed = Some(journal.commit()?);

@@ -2,7 +2,7 @@
 //! that ask every task whether a card holds it find its cards in one pass over the interactions,
 //! and those cards answer what scanning every interaction answers.
 use super::lifecycle_cache_tests::{run, step, three_tasks};
-use super::lifecycle_tests::{must, node, task, world};
+use super::lifecycle_tests::{must, node, task, user, world};
 use super::*;
 use proptest::prelude::*;
 
@@ -31,9 +31,23 @@ fn delivered(tasks: usize) -> DomainState {
     s
 }
 
+/// Five delivered tasks, and `ended` more that are done and left no card.
+fn ended(ended: usize) -> DomainState {
+    let mut s = delivered(5);
+    let template = s.tasks[&TaskId::from("task-4")].clone();
+    for t in 0..ended {
+        let id = TaskId::from(format!("ended-{t}").as_str());
+        s.tasks.insert(id.clone(), Task { id, state: TaskState::Done, agent_id: None, final_presentation: None, ..template.clone() });
+    }
+    s
+}
+
 /// The cards one more delivery of the first task reads among `tasks` delivered tasks.
 fn cards_read_by_a_delivery(tasks: usize) -> u64 {
-    let s = delivered(tasks);
+    cards_read_by_a_delivery_in(&delivered(tasks))
+}
+
+fn cards_read_by_a_delivery_in(s: &DomainState) -> u64 {
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: s.data_epoch.clone(), command_id: "measured".into(),
         expected_revision: s.revision, command: deliver("task-0", DELIVERIES),
@@ -49,6 +63,14 @@ fn a_command_reads_the_cards_once_per_rule_not_once_per_task() {
     assert!(many <= 4 * few, "with four times the tasks and cards a delivery read {many} cards, against {few}: more than four times as many");
 }
 
+// Most tasks of a real domain have ended: a rule that looks for what each ended task left open
+// reads every card once, not once per ended task.
+#[test]
+fn ended_tasks_do_not_multiply_the_cards_a_command_reads() {
+    let (few, many) = (cards_read_by_a_delivery_in(&ended(5)), cards_read_by_a_delivery_in(&ended(80)));
+    assert!(many <= 2 * few, "with sixteen times the ended tasks and the same cards a delivery read {many} cards, against {few}");
+}
+
 fn task_cards_agree_with_the_scans(s: &DomainState) -> Result<(), TestCaseError> {
     let cards = TaskCards::new(s);
     for t in s.tasks.keys() {
@@ -60,6 +82,16 @@ fn task_cards_agree_with_the_scans(s: &DomainState) -> Result<(), TestCaseError>
     for i in s.interactions.keys() {
         prop_assert_eq!(cards.first_card(i), Holds::first_card(s, i), "first card in front of {}", i);
     }
+    let nodes = NodeTasks::new(s);
+    for agent in s.agents.keys() {
+        prop_assert_eq!(nodes.current(agent).map(|t| &t.id), s.node_task(agent).map(|t| &t.id), "task of node {}", agent);
+    }
+    let waiting: Vec<&TaskId> = s.tasks_waiting_for_turn().into_iter().map(|t| &t.id).collect();
+    let one_by_one: Vec<&TaskId> = s.tasks.values().filter(|t| !t.over()
+        && t.agent_id.as_ref().filter(|agent| Some(*agent) != s.orchestrator_session.as_ref()).is_some_and(|agent| s.through_sdk(agent)
+            && !s.task_facts(agent).closing && s.node_pause(agent).is_none_or(|pause| pause.released))
+        && s.lifecycle_of(&t.id).is_ok_and(|lifecycle| lifecycle.waits_for_slot())).map(|t| &t.id).collect();
+    prop_assert_eq!(waiting, one_by_one, "tasks waiting for a turn");
     Ok(())
 }
 

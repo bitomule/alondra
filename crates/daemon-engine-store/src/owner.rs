@@ -35,7 +35,6 @@ pub struct Adoption {
 /// whole transaction, even when the caller catches it, so it can only roll back.
 pub struct OwnerTransaction<'connection> {
     conn: &'connection Connection,
-    cached: &'connection Option<Cached>,
     protected: &'connection crate::worktree::Protected,
     journal: LifecycleTransaction<'connection>,
     draft: OwnerDraft,
@@ -248,7 +247,6 @@ impl<'connection> OwnerTransaction<'connection> {
         })?;
         Ok(Self {
             conn,
-            cached,
             protected,
             journal,
             draft: OwnerDraft {
@@ -298,7 +296,7 @@ impl<'connection> OwnerTransaction<'connection> {
         if let Some(refusal) = refused_for_test(&envelope.command, true) {
             return Err(refusal);
         }
-        let (conn, cached, protected) = (self.conn, self.cached, self.protected);
+        let (conn, protected, state, version) = (self.conn, self.protected, &self.draft.state, self.draft.version);
         let prepared = self.journal.inspect_mut(|journal| {
             if matches!(envelope.command, Command::CreateDocument { .. } | Command::ReviseDocument { .. }) {
                 return Err(DomainError::new(
@@ -307,7 +305,7 @@ impl<'connection> OwnerTransaction<'connection> {
                 )
                 .into());
             }
-            command::stage(conn, cached, protected, actor, envelope, None, true, attached, journal)
+            command::stage(conn, command::Base::Draft(state, version), protected, actor, envelope, None, true, attached, journal)
         })?;
         self.draft.record(&envelope.command, &envelope.command_id, prepared.commit);
         Ok(&self.draft.outcomes.last().expect("outcome just recorded").outcome)
@@ -760,9 +758,8 @@ impl<'connection> OwnerTransaction<'connection> {
         if let Some(StoreError::Domain(refusal)) = refused_for_test(&envelope.command, true) {
             return Some(refusal);
         }
-        let mut probe = DomainState::clone(&self.draft.state);
-        let envelope = CommandEnvelope { expected_revision: probe.revision, ..envelope.clone() };
-        probe.execute(&Actor::System, &envelope).err()
+        let envelope = CommandEnvelope { expected_revision: self.draft.state.revision, ..envelope.clone() };
+        self.draft.state.transition(&Actor::System, &envelope).err()
     }
 
     /// Whether `reading` says something new of `account`: the same windows and plan again within

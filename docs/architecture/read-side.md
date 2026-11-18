@@ -133,10 +133,14 @@ every key shares is kept once per language; keys that read files or GitHub (`mac
 | Index equals the state's on-demand answers | `assert_index_matches`, after every `execute` in the core tests (`rules.rs`) | the index disagrees on queue order, Waiting for You and its buttons, counts, acting cards, blockers, relations, items, reviewers, dependents, PRs, task buttons, schedule marks |
 | Guard equals execution, every button | `assert_guard_matches_execution`, in `action()` under `cfg(test)` | a button's guard accepts or refuses differently from running its command on a copy |
 | Guard equals execution, every refusal | `guards_refuse_what_the_commands_refuse` (`domain/tests.rs`) | any button command × 5 actors × 5 envelopes × 4 delivery states disagrees |
-| View budget | `//crates/core:views_budget_test` | any of 29 keys renders cold over 50 ms (median of 5) on a real-size domain, or a `Family` has no measured key |
+| View budget | `//crates/views:views_budget_test` | any of 29 keys renders cold over 50 ms (median of 5) on a real-size domain, or a `Family` has no measured key |
 | Index cost | `bazelisk run -c opt //crates/core:read_index_cost -- --check-cost` | building the index of a real-size domain with 420 waiting cards takes over 10 ms |
 | Snapshot pairing | `domain_runtime.rs` tests | a commit publishes a state without its index, or a stale pair is accepted |
 | Live snapshot reuse | `views::live` cache tests | a fact change does not force exactly one new read, or a snapshot read across a change is kept |
+| Action budget | `//crates/views:views_budget_test` `every_action_of_the_user_fits_its_budget_on_a_live_size_domain` | reading, answering, accepting, requesting changes, messaging, prioritizing, cancelling or reopening costs over 120 ms of CPU (median of 5) on a domain of ~1,400 tasks and ~8,600 cards: the command on one copy of the state, the read index after it and letting the old state go |
+| Owner transactions read no whole domain | `an_observation_and_its_commands_never_read_the_whole_domain` (`wiring/owner_tests.rs`) | a command staged after an SDK observation reloads the domain from SQLite instead of building on the transaction's draft; under `test-hooks` every staged command also checks its draft equals a reload |
+| Ended tasks do not multiply card reads | `ended_tasks_do_not_multiply_the_cards_a_command_reads` (`transition_cost_tests.rs`) | sixteen times the ended tasks make a command read more than twice the cards |
+| A live gather is linear | `a_live_gather_looks_at_each_task_once_however_many_nodes_there_are` (`views/live.rs`) | four times the nodes make one gather look at more than four times the tasks (`measure::tasks_read`) |
 
 `make views-measure DB=<copy>` measures each step on a copy of the real domain
 (`sqlite3 -readonly ~/.alondra/domain.db ".backup /path/copy.db"`); it never opens the live file.
@@ -341,6 +345,28 @@ open, the domain opened twice), 81 % of the time.
 Later the same day, the same copy (1916 events in that task): loading the domain took 375 ms →
 54 ms (median of 20, test build). Before, each open replayed every journal five times, and every
 event copied the task's whole queue of pending inputs.
+
+## What a commit costs, and what kept the daemon busy
+
+November 2026, on a domain of ~1,060 requests, ~1,500 tasks, ~1,070 nodes and ~6,300 cards, the
+daemon spent most of its CPU and held its writer lock in three places, found by sampling the
+installed daemon:
+
+- Every SDK observation that recorded a fact read the whole domain from SQLite again (40–52 % of
+  the active samples): its evidence rows changed the connection's write count, so the cached
+  state looked stale. A command staged inside an owner transaction now builds on the
+  transaction's draft (`command::Base::Draft`); only a write by another connection reloads.
+- A command copied the state twice and dropped two copies; a probe copied it once more. It now
+  copies once (`DomainState::transition`) and keeps the published state when nothing changed.
+- Retiring the cards of ended tasks looked through every card once per ended task. It is one pass
+  over the cards.
+- Each live gather found every node's task by walking all the tasks, several times per node, and
+  the gate's queue rebuilt its fact index once per task. Both now build `NodeTasks` and the fact
+  index once (`DomainState::tasks_waiting_for_turn`).
+
+Actions waited behind those reloads for the writer lock: a «Seen» took 49 s and a pause 76 s at
+worst. On the synthetic domain of the action budget an action now costs 35–42 ms of CPU: about
+6 ms copying the state, 13 ms building the read index and the rest in the command's rules.
 
 ## Rules for new work
 

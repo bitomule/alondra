@@ -157,12 +157,12 @@ fn reads_unwatched_sources(key: &str) -> bool {
 /// The project a node was launched for, which a restart cannot lose: its task's request, or the
 /// project its name starts with.
 fn launched_project(
-    state: &DomainState,
+    mine: &[&alondra_domain_rules::Task],
     agent: &alondra_domain_rules::Agent,
     launches: &BTreeMap<alondra_domain_rules::RequestId, (Option<String>, Option<String>)>,
 ) -> Option<String> {
-    state.tasks.values()
-        .filter(|task| task.agent_id.as_ref() == Some(&agent.id) && !task.archived)
+    mine.iter()
+        .filter(|task| !task.archived)
         .find_map(|task| launches.get(&task.request_id).and_then(|(project, _)| project.clone()))
         .or_else(|| agent.name.split_once('/').map(|(project, _)| project.to_owned()).filter(|project| !project.is_empty()))
 }
@@ -383,13 +383,15 @@ async fn gather_inner(
             (task.0, alondra_view_model::LiveLaunchRefusal { reason, detail })
         })
         .collect();
+    let node_tasks = alondra_domain_rules::NodeTasks::new(state);
     let nodes: Vec<_> = state
         .agents
         .values()
         .filter_map(|agent| {
             let session_id = agent.id.0.clone();
             let reported = client.domain.live().mods.session(&session_id).unwrap_or_default();
-            let open_task = state.tasks.values().any(|task| task.agent_id.as_ref() == Some(&agent.id) && !task.archived
+            let mine = node_tasks.of(&agent.id);
+            let open_task = mine.iter().any(|task| !task.archived
                 && !matches!(task.state, TaskState::Done | TaskState::Closing | TaskState::Cancelled));
             let (node, state_since) = match client.domain.live().node(&session_id) {
                 Some(node) => {
@@ -406,9 +408,9 @@ async fn gather_inner(
             let project = if node.cwd.is_some() || node.is_orchestrator {
                 node.project()
             } else {
-                launched_project(state, agent, &launches).unwrap_or_else(|| node.project())
+                launched_project(mine, agent, &launches).unwrap_or_else(|| node.project())
             };
-            let sdk = (agent.phase == NodePhase::ThroughSdk).then(|| state.sdk_live(&agent.id));
+            let sdk = (agent.phase == NodePhase::ThroughSdk).then(|| state.sdk_live_of(&agent.id, node_tasks.current(&agent.id)));
             let state_key = match (&agent.phase, reported.activity()) {
                 (NodePhase::ThroughSdk, _) => match sdk.as_ref().and_then(Option::as_ref) {
                     Some(live) if matches!(live, alondra_domain::LiveState::Working(alondra_domain::Worker::Turn | alondra_domain::Worker::OwnWork | alondra_domain::Worker::AfterMerge
@@ -449,10 +451,10 @@ async fn gather_inner(
                     })
                 }).collect::<Vec<_>>();
             let background_badge = (!counts.is_empty()).then(|| counts.join(" · "));
-            let context = state.tasks.values().filter(|task| task.agent_id.as_ref() == Some(&agent.id))
+            let context = mine.iter()
                 .find_map(|task| client.domain.contexts().used(&task.id))
                 .map(|used| (used.percent(), used.window));
-            let reported_wait = state.tasks.values().find(|task| task.agent_id.as_ref() == Some(&agent.id))
+            let reported_wait = mine.first()
                 .and_then(|task| {
                     let lifecycle = state.lifecycle_of(&task.id).ok()?;
                     alondra_daemon_engine::sdk_live::wait_file(&client.domain, task.account_key().provider, lifecycle.execution()?.instance().as_str())
@@ -645,9 +647,10 @@ async fn gather_inner(
         (task.id.0.clone(), alondra_view_model::live::LiveTaskOptions { effort })
     }).collect();
     let task_costs = if clock_only { BTreeMap::new() } else {
+        let nodes_by_agent: BTreeMap<&str, &LiveNode> = nodes.iter().map(|node| (node.agent_id.as_str(), node)).collect();
         read.task_spend.into_iter().filter_map(|(id, (sessions, folded))| {
             let task = state.tasks.get(&TaskId(id.clone()))?;
-            let live = task.agent_id.as_ref().and_then(|agent| nodes.iter().find(|node| node.agent_id == agent.0))
+            let live = task.agent_id.as_ref().and_then(|agent| nodes_by_agent.get(agent.0.as_str()).copied())
                 .and_then(|node| Some((node.agent_id.as_str(), node.cost_cents?)));
             Some((id.clone(), task_cost_cents(&sessions, folded, live)?))
         }).collect()
@@ -942,10 +945,11 @@ async fn read_live_json(
 
 fn search_source_revision(client: &crate::client_routes::Client, state: &DomainState) -> String {
     let nodes = client.domain.live().nodes();
+    let nodes_by_session: BTreeMap<&str, &alondra_core::Node> = nodes.iter().map(|node| (node.session_id.as_str(), node)).collect();
+    let node_tasks = alondra_domain_rules::NodeTasks::new(state);
     let candidates: Vec<_> = state.agents.values().map(|agent| {
-        let node = nodes.iter().find(|node| node.session_id == agent.id.0);
-        let tasks: Vec<&str> = state.tasks.values()
-            .filter(|task| task.agent_id.as_ref() == Some(&agent.id)).map(|task| task.title.as_str()).collect();
+        let node = nodes_by_session.get(agent.id.0.as_str()).copied();
+        let tasks: Vec<&str> = node_tasks.of(&agent.id).iter().map(|task| task.title.as_str()).collect();
         let text = format!("{} {} {} {} {}", agent.name, node.map_or(String::new(), |n| n.short_id.clone()),
             node.map_or(String::new(), |n| n.project()),
             node.and_then(|n| n.last_message.clone()).unwrap_or_default(), tasks.join(" "));
@@ -1999,6 +2003,51 @@ fn timestamp(millis: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alondra_domain_rules::{Actor, Command, CommandEnvelope, LaunchPlan, PROTOCOL_VERSION};
+
+    fn run(domain: &std::sync::Arc<crate::domain_runtime::DomainRuntime>, actor: Actor, id: &str, command: Command) {
+        let state = domain.state().unwrap();
+        domain.execute(&actor, &CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
+            command_id: id.into(), expected_revision: state.revision, command,
+        }, None, || Ok(())).unwrap();
+    }
+
+    /// The tasks one live gather looks at in a domain of `nodes` nodes of the Agent SDK, one task each.
+    fn tasks_read_by_a_gather(nodes: usize) -> u64 {
+        let fixture = alondra_daemon_engine::domain_transport::tests::Fixture::new();
+        let domain = fixture.open();
+        for n in 0..nodes {
+            let (agent, request, task) = (format!("sdk-{n}"), format!("request-{n}"), format!("task-{n}"));
+            run(&domain, Actor::System, &format!("register-{n}"), Command::RegisterAgent { agent_id: agent.as_str().into(), name: agent.clone(), at: 0 });
+            run(&domain, Actor::User { user_id: "u".into() }, &format!("request-{n}"), Command::CreateRequest {
+                request_id: request.as_str().into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
+            });
+            run(&domain, Actor::Orchestrator { generation: 0 }, &format!("task-{n}"), Command::CreateTask { plan_items: None, continues: None,
+                task_id: task.as_str().into(), request_id: request.as_str().into(), title: "Task".into(), agent_id: None, review_prs: false,
+                dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
+            });
+            alondra_daemon_engine::domain_transport::tests::admitted_sdk_execution(&domain, &task, &agent, n);
+        }
+        let client = crate::client_routes::Client::open(domain.clone(), &fixture.0, Default::default());
+        let read = domain.read();
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let before = alondra_domain_rules::measure::tasks_read();
+        let live = runtime.block_on(gather_inner(&client, read.state(), Lang::En, &[], None, false, alondra_core::now_millis()));
+        assert_eq!(live.nodes.len(), nodes, "every node is gathered");
+        alondra_domain_rules::measure::tasks_read() - before
+    }
+
+    // The live data of every node is what every screen refreshes on each commit: finding each node's
+    // task through all the tasks again made one gather cost nodes × tasks, millions of steps on a real
+    // domain, with the CPU of the daemon pinned while nothing ran.
+    #[test]
+    fn a_live_gather_looks_at_each_task_once_however_many_nodes_there_are() {
+        crate::engine_tests::wired();
+        let (few, many) = (tasks_read_by_a_gather(4), tasks_read_by_a_gather(16));
+        assert!(many <= 4 * few + 4, "with four times the nodes and tasks a gather looked at {many} tasks, against {few}: it grows faster than the domain");
+    }
+
 
     #[test]
     fn a_tasks_cost_adds_every_session_and_the_running_one_as_it_reads_now() {

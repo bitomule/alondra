@@ -907,7 +907,7 @@ fn go_on(domain: &DomainRuntime, state: &DomainState, granted: &[TaskId]) {
 /// The tasks whose node has an input or an answer that waits for a slot, as the domain says,
 /// whoever asked. A node that fixes its accepted PR goes on without one.
 pub(crate) fn waiting_turns(state: &DomainState) -> BTreeSet<TaskId> {
-    state.tasks.values().filter(|task| !task.over() && state.waits_for_turn(&task.id) && state.task_merge_failure(&task.id).is_none())
+    state.tasks_waiting_for_turn().into_iter().filter(|task| state.task_merge_failure(&task.id).is_none())
         .map(|task| task.id.clone()).collect()
 }
 
@@ -1012,8 +1012,9 @@ pub fn working_tasks(domain: &DomainRuntime, state: &DomainState) -> BTreeSet<Ta
 
 /// The open tasks whose node holds a slot in `index`, the read index of `state`.
 pub(crate) fn slot_tasks(state: &DomainState, index: &alondra_domain_rules::ReadIndex) -> BTreeSet<TaskId> {
+    let nodes = alondra_domain_rules::NodeTasks::new(state);
     index.slots().iter()
-        .filter_map(|agent| state.node_task(agent).filter(|task| !task.over()).map(|task| task.id.clone()))
+        .filter_map(|agent| nodes.current(agent).filter(|task| !task.over()).map(|task| task.id.clone()))
         .collect()
 }
 

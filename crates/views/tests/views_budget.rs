@@ -250,10 +250,15 @@ fn absorb(into: &mut DomainState, unit: &DomainState, number: usize) {
 }
 
 fn real_size() -> DomainState {
+    sized(1)
+}
+
+/// The domain of `UNITS`, each unit `scale` times.
+fn sized(scale: usize) -> DomainState {
     let mut state = DomainState::new("budget-epoch");
     for (shape, count) in UNITS {
         let template = unit(shape);
-        for number in 0..count {
+        for number in 0..count * scale {
             absorb(&mut state, &template, number);
         }
     }
@@ -503,6 +508,89 @@ fn every_view_renders_a_real_size_domain_cold_within_the_budget() {
         }
     }
     assert!(over.is_empty(), "views over {BUDGET_MS} ms: {over:#?}");
+}
+
+/// The live domain on 6 November had ~1,000 requests, ~1,500 tasks and ~6,300 cards.
+const LIVE_SCALE: usize = 5;
+/// CPU a user's action may cost the domain on a domain the size of the live one: deciding its
+/// command on a copy of the state, building the read index every screen reads after it, and
+/// letting the state it replaced go. Each of those grows with the domain once, never with its
+/// square; SQLite's part does not grow with it. Alone an action takes about 40 ms and under a
+/// full test run about 80: the budget is three times the first.
+const ACTION_BUDGET_MS: f64 = 120.0;
+
+/// CPU time of this thread: what the work costs, whatever else the machine runs meanwhile.
+fn cpu_ms() -> f64 {
+    let mut now = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut now) };
+    now.tv_sec as f64 * 1000.0 + now.tv_nsec as f64 / 1_000_000.0
+}
+
+fn envelope_on(state: &DomainState, id: &str, command: Command) -> CommandEnvelope {
+    CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: id.into(),
+        expected_revision: state.revision, command,
+    }
+}
+
+/// One command per kind of action a screen offers on a task or a card.
+fn actions(state: &mut DomainState) -> Vec<(&'static str, Actor, Command)> {
+    let unread: InteractionId = "budget-unread".into();
+    let notice = Command::PublishInformation {
+        attachments: vec![], interaction_id: unread.clone(), scope: Scope::Task { task_id: "t-running-u000".into() },
+        recipient: Recipient::User, body: "Synthetic news".into(), card: CardSpec::derived(CardKind::Know, "Read the synthetic news"),
+    };
+    let envelope = envelope_on(state, "budget-notice", notice);
+    state.execute(&Actor::System, &envelope).expect("the notice is published");
+    let review = vec![DeliveryTarget::PullRequest { pr_id: "pr-review-u000".into(), head: "head-1".into() }];
+    vec![
+        ("read", user(), Command::MarkRead { interaction_id: unread }),
+        ("answer", user(), Command::AnswerQuestion {
+            attachments: vec![], interaction_id: "q-asking-u000".into(), option_id: "yes".into(), inputs: BTreeMap::new(),
+        }),
+        ("accept", user(), Command::AcceptDelivery { presentation_id: "d-review-u000".into(), targets: review.clone() }),
+        ("request changes", user(), Command::SubmitFeedback {
+            attachments: vec![], presentation_id: "d-review-u000".into(), targets: review, body: "Tighten the copy".into(),
+            instruction: Default::default(), merge_failure: None,
+        }),
+        ("message", Actor::System, Command::TellNode { task_id: "t-running-u000".into(), text: "Also check the tests".into(), from_user: true, answers: None }),
+        ("priority", user(), Command::SetPriority { task_id: "t-running-u000".into(), priority: alondra_domain_rules::TaskPriority::High }),
+        ("cancel", user(), Command::CancelTask { task_id: "t-running-u001".into(), reason: None }),
+        ("reopen", user(), Command::ReopenTask { task_id: "t-done-u000".into() }),
+    ]
+}
+
+#[test]
+fn every_action_of_the_user_fits_its_budget_on_a_live_size_domain() {
+    let mut state = sized(LIVE_SCALE);
+    assert!(state.requests.len() >= 1000 && state.tasks.len() >= 1400 && state.interactions.len() >= 6000,
+        "the domain is smaller than the live one: {} requests, {} tasks, {} cards", state.requests.len(), state.tasks.len(), state.interactions.len());
+    let median_of = |work: &dyn Fn()| {
+        let mut spent: Vec<f64> = (0..SAMPLES).map(|_| { let started = cpu_ms(); work(); cpu_ms() - started }).collect();
+        spent.sort_by(f64::total_cmp);
+        spent[SAMPLES / 2]
+    };
+    println!("copy of the state: {:.2} ms CPU, read index: {:.2} ms CPU",
+        median_of(&|| drop(std::hint::black_box(state.clone()))), median_of(&|| drop(std::hint::black_box(ReadSnapshot::build(Arc::new(state.clone())))))
+            - median_of(&|| drop(std::hint::black_box(state.clone()))));
+    let mut over = vec![];
+    for (name, actor, command) in actions(&mut state) {
+        let envelope = envelope_on(&state, &format!("budget-{name}"), command);
+        let mut spent: Vec<f64> = (0..SAMPLES).map(|_| {
+            let started = cpu_ms();
+            let (next, outcome) = state.transition(&actor, &envelope).unwrap_or_else(|error| panic!("{name}: {error:?}"));
+            assert!(outcome.changed, "{name} changed nothing");
+            std::hint::black_box(ReadSnapshot::build(Arc::new(next)));
+            cpu_ms() - started
+        }).collect();
+        spent.sort_by(f64::total_cmp);
+        let median = spent[SAMPLES / 2];
+        println!("{name}: {median:.2} ms CPU");
+        if median > ACTION_BUDGET_MS {
+            over.push(format!("{name}: {median:.2} ms"));
+        }
+    }
+    assert!(over.is_empty(), "actions over {ACTION_BUDGET_MS} ms of CPU on {} tasks and {} cards: {over:#?}", state.tasks.len(), state.interactions.len());
 }
 
 /// What each app waits for before it can draw its first card, right after a commit: the iPhone's
