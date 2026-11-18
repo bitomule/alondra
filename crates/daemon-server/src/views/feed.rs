@@ -280,7 +280,7 @@ async fn current(
     keys.push(status_key.to_owned());
     keys.extend(views.iter().filter(|(key, _)| super::routes::valid_open_key(key)).map(|(key, _)| key.clone()));
     let live = super::live::gather(client, &state, lang, &keys, false, false).await;
-    let input = super::cache::Input::of(state, &live).with_capabilities(capabilities);
+    let input = super::cache::Input::prepared(state, &live).with_capabilities(capabilities);
     let clock = (state.data_epoch.0.clone(), state.revision, input.live_revision().to_owned());
     if let Some(previous) = previous.filter(|previous| previous.clock == clock) {
         let mut current = previous.clone();

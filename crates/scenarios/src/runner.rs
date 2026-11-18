@@ -1067,6 +1067,26 @@ impl Context<'_> {
     async fn expect(&self, checkpoint: &str, expect: &Expect, sent: Option<&[SentPush]>) -> Result<(), ScenarioError> {
         let failed = |expected: String, actual: String| ScenarioError::ExpectFailed { checkpoint: checkpoint.to_owned(), expected, actual };
         match expect {
+            Expect::StartProblemReads { max_passes } => {
+                let state = self.daemon().domain.state().map_err(|error| ScenarioError::Invalid(error.to_string()))?;
+                let cards = state.interactions.len() as u64;
+                let tasks = state.tasks.values().filter(|task| !task.over() && !task.archived).count();
+                if cards == 0 || tasks < 2 {
+                    return Err(failed("multiple open tasks and nonempty card history".into(), format!("{tasks} tasks, {cards} cards")));
+                }
+                let rest = self.daemon().domain.orchestrator_rests.load(std::sync::atomic::Ordering::Relaxed);
+                let before = alondra_domain_rules::measure::cards_read();
+                std::hint::black_box(alondra_engine_orchestrator::orchestrator_inbox::replans(&state, rest));
+                let replans = alondra_domain_rules::measure::cards_read() - before;
+                let before = alondra_domain_rules::measure::cards_read();
+                std::hint::black_box(state.react(&Default::default()));
+                let reactions = alondra_domain_rules::measure::cards_read() - before;
+                let limit = max_passes.saturating_mul(cards);
+                if replans > limit || reactions > limit {
+                    return Err(failed(format!("at most {limit} card reads per start-problem pass"),
+                        format!("replans={replans}, reactions={reactions}, tasks={tasks}, cards={cards}")));
+                }
+            }
             Expect::GhCalls { calls } => {
                 let actual = self.github.gh_calls();
                 if &actual != calls {

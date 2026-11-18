@@ -18,7 +18,7 @@ use alondra_engine_ports::Runtime;
 use alondra_domain_rules::obligation_policy::{ANSWER, Millis};
 use alondra_domain_rules::{
     Author, CardKind, CardSpec, Command, DomainState, InboxCard, Interaction, InteractionId, InteractionPayload, PlanReview, PlanReviewOutcome, QuestionOption,
-    Request, RequestId, STALL_ATTEMPTS, Scope, StallOutcome, StartProblem, SystemCard, Task, TaskId, UNSETTLED_INSTRUCT,
+    Request, RequestId, STALL_ATTEMPTS, Scope, StallOutcome, StartProblem, StartProblems, SystemCard, Task, TaskId, UNSETTLED_INSTRUCT,
 };
 use alondra_domain_rules::orchestrator_cards::{
     DEPENDENCY_CANCELLED_NOTICE_PREFIX, UNANSWERED_NOTICE_PREFIX, UNSETTLED_NOTICE_PREFIX, UNSPLIT_CLOSE, UNSPLIT_CLOSE_LABEL, UNSPLIT_NOTICE_PREFIX,
@@ -100,8 +100,12 @@ pub fn overdue(state: &DomainState, due: &BTreeSet<TaskId>) -> Vec<(Step, Vec<Ta
 /// handed to it once per rest, with the open item, until it decides; Alondra never decides it,
 /// and no clock counts.
 pub fn replans(state: &DomainState, rest: u64) -> Vec<Step> {
+    let mut problems = None;
     state.tasks.values().filter(|task| !task.over() && !task.archived)
-        .filter_map(|task| dependency_cancelled(state, task, rest).or_else(|| plan_refused(state, task, rest)))
+        .filter_map(|task| {
+            let problems = problems.get_or_insert_with(|| StartProblems::new(state));
+            dependency_cancelled(state, problems, task, rest).or_else(|| plan_refused(state, problems, task, rest))
+        })
         .collect()
 }
 
@@ -279,8 +283,8 @@ fn stalled(state: &DomainState, case: &Interaction, task: &Task) -> Step {
 }
 
 /// A launch plan the start refused is the orchestrator's to fix or to cancel with its reason.
-fn plan_refused(state: &DomainState, task: &Task, rest: u64) -> Option<Step> {
-    let card = state.open_plan_refusal(&task.id)?;
+fn plan_refused(state: &DomainState, problems: &StartProblems<'_>, task: &Task, rest: u64) -> Option<Step> {
+    let card = problems.plan_refusal(&task.id)?;
     let (id, notice) = inbox_card(PLAN_REFUSED_NOTICE_PREFIX, InboxCard::PlanRefusedNotice, &card.id.0, rest as u32);
     if state.interactions.contains_key(&InteractionId(id.clone())) {
         return None;
@@ -327,14 +331,14 @@ fn unreviewed(state: &DomainState, id: &InteractionId, held: Vec<TaskId>) -> Vec
 /// A task that waits for a cancelled task is the orchestrator's to decide: cancel it, re-point it
 /// or let it start without the dependency. Once it no longer waits for that task, a card from
 /// before still asking the user about it is withdrawn.
-fn dependency_cancelled(state: &DomainState, task: &Task, rest: u64) -> Option<Step> {
-    if let Some(card) = state.open_start_problem(&task.id)
+fn dependency_cancelled(state: &DomainState, problems: &StartProblems<'_>, task: &Task, rest: u64) -> Option<Step> {
+    if let Some(card) = problems.open(&task.id)
         && let Some(StartProblem::DependencyCancelled { dependency }) = alondra_domain_rules::start_problem::from_body(&card.body)
         && state.cancelled_dependency(task).as_ref() != Some(&dependency)
     {
         return Some(Step::Withdraw { question: card.id.clone() });
     }
-    let dependency = state.replanned_for(task)?;
+    let dependency = problems.replanned_for(task)?;
     let subject = format!("{}--{dependency}", task.id);
     let (id, card) = inbox_card(DEPENDENCY_CANCELLED_NOTICE_PREFIX, InboxCard::DependencyCancelledNotice, &subject, rest as u32);
     if state.interactions.contains_key(&InteractionId(id.clone())) {
@@ -617,6 +621,36 @@ mod tests {
         }
         run(domain, Actor::Orchestrator { generation: 0 }, "second", create("second", &["first"]));
         run(domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "first".into(), reason: None });
+    }
+
+    #[test]
+    fn replanning_reads_start_problem_history_once_for_all_tasks() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = crate::wiring::open(&home).unwrap();
+        pair_of_tasks(&domain, true);
+        hand_replans(&domain);
+        let mut state = (*domain.state().unwrap()).clone();
+        let template = state.tasks[&TaskId::from("other")].clone();
+        let card = state.interactions.values().next().unwrap().clone();
+        state.tasks.clear();
+        state.interactions.clear();
+        for n in 0..40 {
+            let id = TaskId::from(format!("task-{n}").as_str());
+            state.tasks.insert(id.clone(), Task { id, ..template.clone() });
+            let id = InteractionId::from(format!("history-{n}").as_str());
+            state.interactions.insert(id.clone(), Interaction { id, ..card.clone() });
+        }
+        let before = alondra_domain_rules::measure::cards_read();
+        assert!(replans(&state, 0).is_empty());
+        let reads = alondra_domain_rules::measure::cards_read() - before;
+        assert!(reads <= state.interactions.len() as u64,
+            "replanning read {reads} cards for {} tasks and {} historical cards", state.tasks.len(), state.interactions.len());
+        for task in state.tasks.values_mut() { task.archived = true; }
+        let before = alondra_domain_rules::measure::cards_read();
+        assert!(replans(&state, 0).is_empty());
+        assert_eq!(alondra_domain_rules::measure::cards_read() - before, 0,
+            "no open task must read no start-problem history");
     }
 
     /// The wait is handed to the orchestrator every time it rests, with the open item, however long

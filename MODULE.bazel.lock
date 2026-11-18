@@ -743,7 +743,7 @@
         "bzlTransitiveDigest": "UvQf9r2bSvJv7U+jRyqYj19oBr1RA6pb7W74NQs9Qeg=",
         "usagesDigest": "t0oNvYqTkQgAzCqkVoL3Yq31SlGaTSDyalHX8UlrwpE=",
         "recordedFileInputs": {
-          "@@//Cargo.lock": "62177a5589f525488c6257b2413172a64a9b44f0af1def7f7b8fbf69b439f3bb",
+          "@@//Cargo.lock": "9b97ec81e3ad86a54affa262fa2435f5f9847ff76bd0d3beeb2f17c026d4b916",
           "@@//Cargo.toml": "3d80fa9e716209a4adf1ff00ce6070135837eeec86431bdfc00bf79a3102bc61",
           "@@//crates/agent-application/Cargo.toml": "ce6a54072a1c5e6bdb9f8a465f40cb283b345542c23a800f2d3f0a53a9e897c9",
           "@@//crates/agent-protocol/Cargo.toml": "125620e279bdef7b2ce0d2b3c57edcfd5296897a2ea47d3d4331f290adc3408b",
@@ -787,7 +787,7 @@
           "@@//crates/provider-contract/Cargo.toml": "836283d2aba9ddf221b21265f9bbe365870106994176cfcb095f105ca8d3c233",
           "@@//crates/relay/Cargo.toml": "c5efc00d91d964209ac25039b9d319f332936ccd93701a2a2b45035eb7a85a79",
           "@@//crates/scenarios-transcript/Cargo.toml": "a71de903276e0517a27af1c6a4ed0802109a733714c51bf125f233b2b67378a3",
-          "@@//crates/scenarios/Cargo.toml": "85dc46b97e9ca8513f43075eb5db62b045623fd2c7734898faa6c37490f2162f",
+          "@@//crates/scenarios/Cargo.toml": "9771519b0f039b1e4e1c07177983f6beb3e49bbe3187a0d0e8c19e6b8de414a7",
           "@@//crates/store/Cargo.toml": "c22827c420c91ff94f0605d75c672d2b62f337d152b0e13a4c3f86c3f6074aba",
           "@@//crates/system/Cargo.toml": "0bc0c8f389fa0400873e01620979b23831fb55112b74474c2f42c178431f2568",
           "@@//crates/view-model/Cargo.toml": "03789b99310b51680a00e9b44c86983c6fc48323aeb15ea18adca71beefacee2",

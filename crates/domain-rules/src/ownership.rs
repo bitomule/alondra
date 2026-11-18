@@ -153,6 +153,50 @@ pub enum Reaction {
     Retry(TaskId),
 }
 
+/// Start-problem history for a single immutable domain snapshot, indexed once for a batch of tasks.
+pub struct StartProblems<'a> {
+    state: &'a DomainState,
+    open: BTreeMap<&'a TaskId, &'a Interaction>,
+    last: BTreeMap<&'a TaskId, &'a Interaction>,
+}
+
+impl<'a> StartProblems<'a> {
+    pub fn new(state: &'a DomainState) -> Self {
+        let mut index = Self { state, open: BTreeMap::new(), last: BTreeMap::new() };
+        for card in state.interactions.values().inspect(|_| crate::measure::card_read()) {
+            if card.system_card != Some(SystemCard::StartProblem) { continue; }
+            let Scope::Task { task_id } = &card.scope else { continue };
+            if state.open(card) { index.open.entry(task_id).or_insert(card); }
+            let last = index.last.entry(task_id).or_insert(card);
+            if card.order >= last.order { *last = card; }
+        }
+        index
+    }
+
+    pub fn open(&self, task: &TaskId) -> Option<&'a Interaction> { self.open.get(task).copied() }
+
+    pub fn last(&self, task: &TaskId) -> Option<&'a Interaction> { self.last.get(task).copied() }
+
+    pub fn plan_refusal(&self, task: &TaskId) -> Option<&'a Interaction> {
+        self.open(task).filter(|card| is_plan_refusal(card))
+    }
+
+    pub fn replanned_for(&self, task: &Task) -> Option<TaskId> {
+        let dependency = self.state.cancelled_dependency(task)?;
+        unasked_dependency(self.open(&task.id), dependency)
+    }
+}
+
+fn unasked_dependency(card: Option<&Interaction>, dependency: TaskId) -> Option<TaskId> {
+    let asked = card.and_then(|card| crate::start_problem::from_body(&card.body));
+    (asked != Some(StartProblem::DependencyCancelled { dependency: dependency.clone() })).then_some(dependency)
+}
+
+fn answered_retry(card: Option<&Interaction>, task: &Task, since: bool) -> bool {
+    card.is_some_and(|i| !i.withdrawn && matches!(&i.payload,
+        InteractionPayload::Question { answer: Some(answer), .. } if answer.option_id == START_RETRY && (!since || answer.at_revision >= task.revision)))
+}
+
 impl DomainState {
     /// The start problem card of the task the user has not answered yet.
     pub fn open_start_problem(&self, task: &TaskId) -> Option<&Interaction> {
@@ -179,7 +223,7 @@ impl DomainState {
 
     fn start_problems(&self, task: &TaskId) -> impl Iterator<Item = &Interaction> + '_ {
         let task = task.clone();
-        self.interactions.values().filter(move |i| {
+        self.interactions.values().inspect(|_| crate::measure::card_read()).filter(move |i| {
             i.system_card == Some(SystemCard::StartProblem) && matches!(&i.scope, Scope::Task { task_id } if *task_id == task)
         })
     }
@@ -244,8 +288,8 @@ impl DomainState {
         match facts.start {
             Start::Ready | Start::Launching => Ok(Holder::Gate(GateCause::Room)),
             Start::Retry { at, .. } => Ok(Holder::Gate(GateCause::Retry { at })),
-            Start::Blocked if self.answered_retry(t, false) => Ok(Holder::Gate(GateCause::Room)),
-            Start::Launched if self.answered_retry(t, true) => Ok(Holder::Gate(GateCause::Room)),
+            Start::Blocked if answered_retry(self.last_start_problem(&t.id), t, false) => Ok(Holder::Gate(GateCause::Room)),
+            Start::Launched if answered_retry(self.last_start_problem(&t.id), t, true) => Ok(Holder::Gate(GateCause::Room)),
             Start::Blocked => ownerless("its start failed and nobody was asked"),
             Start::Launched => ownerless("its node is gone and nobody was asked"),
         }
@@ -276,8 +320,7 @@ impl DomainState {
     /// what the orchestrator has to decide for `t`.
     pub fn replanned_for(&self, t: &Task) -> Option<TaskId> {
         let dependency = self.cancelled_dependency(t)?;
-        let asked = self.open_start_problem(&t.id).and_then(|card| crate::start_problem::from_body(&card.body));
-        (asked != Some(StartProblem::DependencyCancelled { dependency: dependency.clone() })).then_some(dependency)
+        unasked_dependency(self.open_start_problem(&t.id), dependency)
     }
 
     /// What the task's lifecycle says it is owed, except that a task the orchestrator has to
@@ -299,29 +342,21 @@ impl DomainState {
         Some(if replans { alondra_domain::Obligation { party: alondra_domain::Party::Alondra, owed: alondra_domain::Owed::Replan, ..obligation } } else { obligation })
     }
 
-    /// The user chose "try again" on its last start problem; with `since`, only if nothing happened
-    /// to the task after, such as a new node closed again. A blocked start needs no such bound:
-    /// the daemon unblocks it when it acts on the answer.
-    fn answered_retry(&self, t: &Task, since: bool) -> bool {
-        self.last_start_problem(&t.id).is_some_and(|i| !i.withdrawn && matches!(&i.payload,
-            InteractionPayload::Question { answer: Some(answer), .. } if answer.option_id == START_RETRY && (!since || answer.at_revision >= t.revision)))
-    }
-
     /// What must happen now so that every open task stays in someone's hands.
     pub fn react(&self, facts: &BTreeMap<TaskId, StartFacts>) -> Vec<Reaction> {
         let none = StartFacts::default();
         let mut out = vec![];
+        let mut problems = None;
         for t in self.tasks.values().filter(|t| !t.state.terminal() && !t.archived) {
             let f = facts.get(&t.id).unwrap_or(&none);
-            if self.open_start_problem(&t.id).is_some() {
-                continue;
-            }
             let unstarted = t.state == TaskState::NotStarted && t.agent_id.is_none() && !t.started;
             if !unstarted || f.held {
                 continue;
             }
-            let relaunch = self.answered_retry(t, true);
-            if (f.start == Start::Blocked && self.answered_retry(t, false)) || (f.start == Start::Launched && relaunch) {
+            let problems = problems.get_or_insert_with(|| StartProblems::new(self));
+            if problems.open(&t.id).is_some() { continue; }
+            let relaunch = answered_retry(problems.last(&t.id), t, true);
+            if (f.start == Start::Blocked && answered_retry(problems.last(&t.id), t, false)) || (f.start == Start::Launched && relaunch) {
                 out.push(Reaction::Retry(t.id.clone()));
             } else if !relaunch && f.closed && matches!(f.start, Start::Launched | Start::Ready) {
                 out.push(Reaction::Ask(t.id.clone(), StartProblem::NodeClosed));

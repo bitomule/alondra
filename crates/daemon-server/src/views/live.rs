@@ -18,6 +18,59 @@ use sha2::Digest;
 use std::{collections::{BTreeMap, BTreeSet, HashMap}, sync::Mutex};
 use tokio::sync::watch;
 
+/// An immutable published snapshot; readers share its data and its wire digest.
+#[derive(Clone, Debug)]
+pub(crate) struct Snapshot(std::sync::Arc<SnapshotData>);
+
+#[derive(Debug)]
+struct SnapshotData {
+    live: LiveSnapshot,
+    digest: std::sync::OnceLock<[u8; 32]>,
+    #[cfg(test)]
+    serializations: std::sync::atomic::AtomicUsize,
+}
+
+impl Snapshot {
+    fn new(live: LiveSnapshot) -> Self {
+        Self(std::sync::Arc::new(SnapshotData {
+            live,
+            digest: std::sync::OnceLock::new(),
+            #[cfg(test)]
+            serializations: std::sync::atomic::AtomicUsize::new(0),
+        }))
+    }
+
+    pub(crate) fn digest(&self) -> [u8; 32] {
+        *self.0.digest.get_or_init(|| {
+            #[cfg(test)]
+            self.0.serializations.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            sha2::Sha256::digest(serde_json::to_vec(&self.0.live).expect("live snapshot serialization")).into()
+        })
+    }
+
+    fn with_clock(self, observed_at: Option<Millis>) -> Self {
+        if self.observed_at == observed_at { return self; }
+        let mut live = self.0.live.clone();
+        live.observed_at = observed_at;
+        Self::new(live)
+    }
+}
+
+impl std::ops::Deref for Snapshot {
+    type Target = LiveSnapshot;
+    fn deref(&self) -> &LiveSnapshot { &self.0.live }
+}
+
+impl PartialEq for Snapshot {
+    fn eq(&self, other: &Self) -> bool { self.0.live == other.0.live }
+}
+
+impl serde::Serialize for Snapshot {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.live.serialize(serializer)
+    }
+}
+
 /// A cache whose holder panicked is emptied: the next read fills it again.
 fn cache<T: Default>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     lock.lock().unwrap_or_else(|poisoned| {
@@ -53,7 +106,7 @@ impl LiveReadCache {
 #[derive(Default)]
 pub(crate) struct LiveSnapshots {
     /// A holder that panics empties it: see `cache`.
-    entries: Mutex<HashMap<String, (Facts, LiveSnapshot)>>,
+    entries: Mutex<HashMap<String, (Facts, Snapshot)>>,
     #[cfg(test)]
     gathered: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
@@ -129,14 +182,16 @@ impl Marks {
 }
 
 impl LiveSnapshots {
-    fn get(&self, client: &crate::client_routes::Client, key: &str, state: &DomainState) -> Option<LiveSnapshot> {
+    fn get(&self, client: &crate::client_routes::Client, key: &str, state: &DomainState, observed_at: Option<Millis>) -> Option<Snapshot> {
         let marks = Marks::now(client);
-        let entries = cache(&self.entries);
-        let (facts, live) = entries.get(key)?;
-        (facts.reads(state) && facts.unchanged(&marks)).then(|| live.clone())
+        let mut entries = cache(&self.entries);
+        let (facts, live) = entries.get_mut(key)?;
+        if !facts.reads(state) || !facts.unchanged(&marks) { return None; }
+        if live.observed_at != observed_at { *live = live.clone().with_clock(observed_at); }
+        Some(live.clone())
     }
 
-    fn insert(&self, client: &crate::client_routes::Client, key: String, facts: Facts, live: LiveSnapshot) {
+    fn insert(&self, client: &crate::client_routes::Client, key: String, facts: Facts, live: Snapshot) {
         let marks = Marks::now(client);
         if !facts.unchanged(&marks) { return; }
         let mut entries = cache(&self.entries);
@@ -187,7 +242,7 @@ pub(crate) async fn gather(
     keys: &[String],
     allow_issue_refresh: bool,
     clock_only: bool,
-) -> LiveSnapshot {
+) -> Snapshot {
     gather_now(client, state, lang, keys, allow_issue_refresh, clock_only, alondra_core::now_millis()).await
 }
 
@@ -199,31 +254,30 @@ async fn gather_now(
     allow_issue_refresh: bool,
     clock_only: bool,
     now: Millis,
-) -> LiveSnapshot {
+) -> Snapshot {
     // The live sampler reads clock-only snapshots to notice what no fact announces; it must
     // always look afresh.
     if clock_only {
         #[cfg(test)]
         client.live_snapshots.gathered.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        return gather_at(client, state, lang, keys, allow_issue_refresh, true, now).await;
+        return Snapshot::new(gather_at(client, state, lang, keys, allow_issue_refresh, true, now).await);
     }
     let snapshots = &client.live_snapshots;
     let key = format!("{lang:?}|{}", keys.join("\n"));
     let watched = !keys.iter().any(|key| reads_unwatched_sources(key));
-    if watched && let Some(mut live) = snapshots.get(client, &key, state) {
-        live.observed_at = quota_clock(state, keys, now);
+    if watched && let Some(live) = snapshots.get(client, &key, state, quota_clock(state, keys, now)) {
         return live;
     }
     // GitHub is awaited before the read lane is taken, so a slow issue search never holds it.
     let issue_data = issue_data(client, keys, allow_issue_refresh).await;
     let facts = Facts::observe(client, state);
     let shared = format!("{lang:?}|");
-    let mut live = match snapshots.get(client, &shared, state) {
+    let live = match snapshots.get(client, &shared, state, None) {
         Some(live) => live,
         None => {
             #[cfg(test)]
             snapshots.gathered.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let live = gather_at(client, state, lang, &[], false, false, now).await;
+            let live = Snapshot::new(gather_at(client, state, lang, &[], false, false, now).await);
             if let Some(facts) = &facts {
                 snapshots.insert(client, shared, facts.clone(), live.clone());
             }
@@ -233,8 +287,10 @@ async fn gather_now(
     if keys.is_empty() {
         return live;
     }
+    let mut live = live.0.live.clone();
     keyed_at(client, state, keys, issue_data).await.apply(&mut live);
     live.observed_at = quota_clock(state, keys, now);
+    let live = Snapshot::new(live);
     if watched && let Some(facts) = facts {
         snapshots.insert(client, key, facts, live.clone());
     }
@@ -1074,6 +1130,14 @@ mod cache_tests {
             assert_eq!(first.observed_at, Some(now), "{key} keeps its clock after shared cache reuse");
             let later = gather_now(&client, &state, Lang::En, &keys, false, false, now + 360_000).await;
             assert_eq!(later.observed_at, Some(now + 360_000), "{key} refreshes its clock on a cached read");
+            if !reads_unwatched_sources(key) {
+                let again = gather_now(&client, &state, Lang::En, &keys, false, false, now + 361_000).await;
+                assert!(Arc::ptr_eq(&later.0, &again.0), "{key} shares the new minute's snapshot");
+                assert_eq!(later.digest(), again.digest());
+                assert_eq!(later.0.serializations.load(std::sync::atomic::Ordering::Relaxed), 1);
+                assert_ne!(first.digest(), later.digest());
+                assert_eq!(first.observed_at, Some(now), "an older reader retains its own clock");
+            }
             let quota = alondra_view_model::accounts::quota_summary(state.account_usage.first(), later.observed_at, Lang::En);
             assert!(quota.contains("reading from 6 min ago") && quota.contains("resets in"), "{quota}");
         }
@@ -1148,6 +1212,43 @@ mod cache_tests {
         gather(&client, &state, Lang::En, &home, false, true).await;
         gather(&client, &state, Lang::En, &home, false, true).await;
         assert_eq!(gathered(&client), before + 2, "so are the live sampler's own reads");
+    }
+
+    #[tokio::test]
+    async fn unchanged_view_requests_serialize_the_live_snapshot_once() {
+        let (_home, domain, client) = wait_fixture();
+        let state = domain.state().unwrap();
+        let keys = ["home".to_owned()];
+        let first = gather(&client, &state, Lang::En, &keys, false, false).await;
+        for _ in 0..4 {
+            let response = crate::views::routes::respond(&client, "home",
+                "protocol=1&client=ios&lang=en", alondra_view_model::Transport::Loopback, None).await;
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+        }
+        assert_eq!(first.0.serializations.load(std::sync::atomic::Ordering::Relaxed), 1,
+            "unchanged view requests must reuse the serialized live digest");
+        assert_eq!(crate::views::cache::Input::of(&state, &first), crate::views::cache::Input::prepared(&state, &first),
+            "reusing the digest preserves the cursor bytes");
+        domain.store.lock().unwrap().set_start_retry(&"retry".into(), Some((1, 2_000_000_000_000))).unwrap();
+        let changed = gather(&client, &state, Lang::En, &keys, false, false).await;
+        assert_ne!(first.start_waits, changed.start_waits, "a store change reaches the next snapshot");
+        assert_ne!(first.digest(), changed.digest(), "the changed snapshot has a different wire digest");
+        assert_eq!(changed.digest(), changed.digest());
+        assert_eq!(changed.0.serializations.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn concurrent_readers_share_one_serialization() {
+        let snapshot = Snapshot::new(LiveSnapshot::default());
+        let start = std::sync::Barrier::new(2);
+        std::thread::scope(|scope| {
+            let readers: Vec<_> = (0..2).map(|_| scope.spawn(|| {
+                start.wait();
+                snapshot.digest()
+            })).collect();
+            for reader in readers { assert_eq!(reader.join().unwrap(), snapshot.digest()); }
+        });
+        assert_eq!(snapshot.0.serializations.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 
     #[tokio::test]

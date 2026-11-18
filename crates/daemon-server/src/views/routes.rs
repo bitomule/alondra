@@ -155,7 +155,7 @@ pub(super) async fn respond(
         client.feeds.wake();
     }
     let service = crate::views::this_service();
-    let input = super::cache::Input::of(read.state(), &live).with_capabilities(capabilities);
+    let input = super::cache::Input::prepared(read.state(), &live).with_capabilities(capabilities);
     if let Some(version) = known.as_deref()
         .and_then(|known| client.views.version(&key, &input, client_kind, language, transport).filter(|v| v.version == known))
     {

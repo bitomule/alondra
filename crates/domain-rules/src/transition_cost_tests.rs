@@ -71,6 +71,31 @@ fn ended_tasks_do_not_multiply_the_cards_a_command_reads() {
     assert!(many <= 2 * few, "with sixteen times the ended tasks and the same cards a delivery read {many} cards, against {few}");
 }
 
+#[test]
+fn started_tasks_do_not_scan_start_problem_cards_on_each_observation() {
+    let state = delivered(20);
+    let before = measure::cards_read();
+    for _ in 0..4 {
+        assert!(state.react(&Default::default()).is_empty());
+    }
+    assert_eq!(measure::cards_read() - before, 0,
+        "observing already started tasks needs no start-problem history");
+}
+
+#[test]
+fn waiting_tasks_share_one_start_problem_history_scan() {
+    let mut state = delivered(20);
+    for task in state.tasks.values_mut() {
+        task.state = TaskState::NotStarted;
+        task.agent_id = None;
+        task.started = false;
+    }
+    let before = measure::cards_read();
+    assert!(state.react(&Default::default()).is_empty());
+    let reads = measure::cards_read() - before;
+    assert_eq!(reads, state.interactions.len() as u64, "all waiting tasks share one history scan");
+}
+
 fn task_cards_agree_with_the_scans(s: &DomainState) -> Result<(), TestCaseError> {
     let cards = TaskCards::new(s);
     for t in s.tasks.keys() {

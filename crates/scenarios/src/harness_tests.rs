@@ -204,6 +204,25 @@ fn an_alert_the_phone_received_fails_a_check_that_there_was_none() {
 }
 
 #[test]
+fn the_start_problem_budget_counts_reads_and_rejects_an_empty_fixture() {
+    let budget = "\n[[step.expect]]\ncheck = \"start_problem_reads\"\nmax_passes = 0\n";
+    let two_tasks = DELIVERED.replace("do = \"node\"", "do = \"task\"\nid = \"t2\"\ntitle = \"Another export\"\n\n[[step]]\ndo = \"node\"");
+    match run(&scenario(&format!("{two_tasks}{budget}")), None) {
+        Err(ScenarioError::ExpectFailed { expected, actual, .. }) => {
+            assert_eq!(expected, "at most 0 card reads per start-problem pass");
+            assert!(actual.contains("tasks=2"), "{actual}");
+        }
+        other => panic!("expected a failed work budget, found {:?}", other.map(|_| ())),
+    }
+    match run(&scenario(&format!("{SMALL}{budget}")), None) {
+        Err(ScenarioError::ExpectFailed { expected, .. }) => {
+            assert_eq!(expected, "multiple open tasks and nonempty card history");
+        }
+        other => panic!("expected an insufficient fixture, found {:?}", other.map(|_| ())),
+    }
+}
+
+#[test]
 fn a_badge_the_phone_never_got_fails_a_check_on_it() {
     let lines = "pushes = true\n\n[[step.expect]]\ncheck = \"badge\"\ncount = 0\n";
     match delivered(lines) {
