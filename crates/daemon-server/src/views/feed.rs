@@ -194,9 +194,11 @@ pub(crate) async fn handle(
     query: &str,
     transport: Transport,
 ) -> Response {
+    client.view_observation.add(Metric::FeedRequests, 1);
     let (kind, lang, wait, cursor, views, capabilities) = match parse(query) {
         Ok(parsed) => parsed,
         Err(parse_error) => {
+            client.view_observation.add(Metric::FeedError, 1);
             let lang = query_language(query);
             return match parse_error {
                 QueryError::Invalid => error("invalid_input", "invalid changes query", "consulta de cambios no válida", lang),
@@ -224,6 +226,7 @@ pub(crate) async fn handle(
         let current = match current(client, kind, lang, transport, &views, capabilities, previous.as_ref()).await {
             Ok(current) => current,
             Err(response) => {
+                client.view_observation.add(Metric::FeedError, 1);
                 remove_waiter(client, device, generation);
                 return response;
             }
@@ -238,6 +241,7 @@ pub(crate) async fn handle(
                 .and_then(decode_cursor)
                 .is_some_and(|c| c.3 != current.status.version);
         if changed || alondra_core::clock::since(started) >= Duration::from_secs(wait) {
+            client.view_observation.add(if changed { Metric::FeedChanged } else { Metric::FeedTimeout }, 1);
             remove_waiter(client, device, generation);
             return Json(Reply {
                 protocol: VIEWS_PROTOCOL,
@@ -256,12 +260,18 @@ pub(crate) async fn handle(
         tokio::pin!(timeout);
         tokio::select! {
             _ = &mut cancel_rx => {
+                client.view_observation.add(match kind {
+                    Client::Tui => Metric::FeedSupersededTui,
+                    Client::Ios => Metric::FeedSupersededIos,
+                    Client::Mac => Metric::FeedSupersededMac,
+                }, 1);
                 remove_waiter(client, device, generation);
                 return Json(Reply { protocol: VIEWS_PROTOCOL, cursor: current.cursor, data_epoch: current.epoch, status: current.status, stale: vec![], reset: false, superseded: true, service: crate::views::this_service() }).into_response();
             },
             _ = domain_changes.changed() => {},
             _ = live_changes.changed() => {},
             _ = &mut timeout => {
+                client.view_observation.add(Metric::FeedTimeout, 1);
                 remove_waiter(client, device, generation);
                 return Json(Reply { protocol: VIEWS_PROTOCOL, cursor: current.cursor, data_epoch: current.epoch, status: current.status, stale: vec![], reset: false, superseded: false, service: crate::views::this_service() }).into_response();
             },
@@ -511,13 +521,18 @@ mod tests {
 
     impl FeedFixture {
         fn new() -> Self {
+            Self::observed(Observation::default())
+        }
+
+        fn observed(observation: Observation) -> Self {
             let home = crate::test_support::Directory::new();
             fs::create_dir(&home).unwrap();
             let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
-            let client = crate::client_routes::Client::open(
+            let client = crate::client_routes::Client::open_observed(
                 domain,
                 &home,
                 Arc::new(std::sync::Mutex::new(None)),
+                observation,
             );
             Self { home, client }
         }
@@ -1046,6 +1061,60 @@ mod tests {
         let _ = response_json(handle(&fixture.client, "same-device", &query(&now.cursor, 0, &[]), Transport::Loopback).await).await;
         let old = tokio::time::timeout(Duration::from_secs(1), old).await.unwrap().unwrap();
         assert_eq!(old["superseded"], true);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn observation_counts_repeated_feed_displacement_without_domain_changes() {
+        use std::{future::{Future, poll_fn}, task::Poll};
+        let observation = Observation::armed();
+        let fixture = FeedFixture::observed(observation.clone());
+        let initial = response_json(handle(&fixture.client, "terminal", "protocol=1&client=tui&lang=en&wait=0", Transport::Loopback).await).await;
+        let query = format!("protocol=1&client=tui&lang=en&wait=50&cursor={}", initial["cursor"].as_str().unwrap());
+        observation.start();
+        let mut previous = Box::pin(handle(&fixture.client, "terminal", &query, Transport::Loopback));
+        poll_fn(|cx| {
+            assert!(previous.as_mut().poll(cx).is_pending());
+            if fixture.client.feeds.waiters.lock().unwrap().contains_key("terminal") { Poll::Ready(()) } else { Poll::Pending }
+        }).await;
+        for _ in 0..4 {
+            let generation = fixture.client.feeds.next.load(Ordering::Relaxed);
+            let mut replacement = Box::pin(handle(&fixture.client, "terminal", &query, Transport::Loopback));
+            poll_fn(|cx| {
+                assert!(replacement.as_mut().poll(cx).is_pending());
+                if fixture.client.feeds.waiters.lock().unwrap().get("terminal").is_some_and(|(current, _)| *current == generation) {
+                    Poll::Ready(())
+                } else { Poll::Pending }
+            }).await;
+            let displaced = response_json(previous.await).await;
+            assert_eq!(displaced["superseded"], true);
+            assert_eq!(displaced["cursor"], initial["cursor"]);
+            assert_eq!(displaced["status"], initial["status"]);
+            previous = replacement;
+        }
+        drop(previous);
+        let counts = observation.totals().metrics;
+        assert_eq!(counts[Metric::FeedRequests as usize], 5);
+        assert_eq!(counts[Metric::FeedSupersededTui as usize], 4);
+        for metric in [Metric::FeedChanged, Metric::FeedTimeout, Metric::FeedError, Metric::FeedSupersededIos, Metric::FeedSupersededMac] {
+            assert_eq!(counts[metric as usize], 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn observation_distinguishes_feed_changes_zero_wait_and_invalid_queries() {
+        let observation = Observation::armed();
+        let fixture = FeedFixture::observed(observation.clone());
+        observation.start();
+        let first = response_json(handle(&fixture.client, "terminal", "protocol=1&client=tui&lang=en&wait=0", Transport::Loopback).await).await;
+        let query = format!("protocol=1&client=tui&lang=en&wait=0&cursor={}", first["cursor"].as_str().unwrap());
+        let unchanged = response_json(handle(&fixture.client, "terminal", &query, Transport::Loopback).await).await;
+        assert_eq!(unchanged["superseded"], false);
+        let _ = handle(&fixture.client, "terminal", "invalid", Transport::Loopback).await;
+        let counts = observation.totals().metrics;
+        assert_eq!(counts[Metric::FeedRequests as usize], 3);
+        assert_eq!(counts[Metric::FeedChanged as usize], 1);
+        assert_eq!(counts[Metric::FeedTimeout as usize], 1);
+        assert_eq!(counts[Metric::FeedError as usize], 1);
     }
 
     #[tokio::test]

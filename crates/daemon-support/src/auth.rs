@@ -23,6 +23,9 @@ use p256::ecdsa::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+mod observation;
+use observation::{Metric, Observation, RequestObservation};
+
 const MAX_SKEW_MS: i64 = 120_000;
 const PAIRING_TTL: Duration = Duration::from_secs(600);
 const MAX_BODY: usize = 25 * 1024 * 1024;
@@ -136,6 +139,7 @@ pub struct Auth {
     /// signature checks, so a torn change can only refuse a request.
     service_verifier: Mutex<HttpChallengeVerifier>,
     usage: crate::device_usage::DeviceUsage,
+    observation: Observation,
     #[cfg(test)]
     request_crypto: RequestCryptoWork,
     #[cfg(test)]
@@ -209,12 +213,14 @@ impl Auth {
         if let Some(hook) = hook { hook(stage); }
     }
 
-    fn prepare_request_key(&self, encoded: &str) -> Result<VerifyingKey, &'static str> {
+    fn prepare_request_key(&self, encoded: &str, observed: &RequestObservation<'_>) -> Result<VerifyingKey, &'static str> {
         #[cfg(test)]
         self.request_crypto.decodes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        observed.add(Metric::KeyDecodes);
         let raw = B64.decode(encoded).map_err(|_| "stored key is corrupt")?;
         #[cfg(test)]
         self.request_crypto.preparations.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        observed.add(Metric::KeyPreparations);
         VerifyingKey::from_sec1_bytes(&raw).map_err(|_| "stored key is corrupt")
     }
 
@@ -238,6 +244,7 @@ impl Auth {
             seen: Mutex::new(VecDeque::new()),
             service_verifier: Mutex::new(HttpChallengeVerifier::new(120_000, 4096)?),
             usage: crate::device_usage::DeviceUsage::at(home),
+            observation: observation::configured(),
             #[cfg(test)]
             request_crypto: RequestCryptoWork::default(),
             #[cfg(test)]
@@ -385,46 +392,54 @@ impl Auth {
 
     fn verify_at(&self, headers: &HeaderMap, method: &str, path_and_query: &str,
         body: &[u8], now: i64, local: bool) -> Result<Signed, &'static str> {
-        let h = |k: &str| headers.get(k).and_then(|v| v.to_str().ok());
-        let device_id = h("x-alondra-device").ok_or("missing X-Alondra-Device")?;
-        let timestamp = h("x-alondra-timestamp").ok_or("missing X-Alondra-Timestamp")?;
-        let signature_b64 = h("x-alondra-signature").ok_or("missing X-Alondra-Signature")?;
-        let ts: i64 = timestamp.parse().map_err(|_| "invalid timestamp")?;
-        if (now - ts).abs() > MAX_SKEW_MS {
-            return Err("timestamp out of range");
-        }
-        let prepared = {
+        let observed = self.observation.request(headers, path_and_query, local);
+        observed.add(Metric::Attempts);
+        let result = (|| {
+            let h = |k: &str| headers.get(k).and_then(|v| v.to_str().ok());
+            let device_id = h("x-alondra-device").ok_or("missing X-Alondra-Device")?;
+            let timestamp = h("x-alondra-timestamp").ok_or("missing X-Alondra-Timestamp")?;
+            let signature_b64 = h("x-alondra-signature").ok_or("missing X-Alondra-Signature")?;
+            let ts: i64 = timestamp.parse().map_err(|_| "invalid timestamp")?;
+            if (now - ts).abs() > MAX_SKEW_MS {
+                return Err("timestamp out of range");
+            }
+            let prepared = {
+                let devices = self.devices.lock_or_recover("the paired devices");
+                devices.prepared(device_id).map(|(_, key)| key.clone())
+            }
+            .ok_or("device not paired")?;
+            #[cfg(test)]
+            self.at_verification_stage(VerificationStage::Selected);
+            let key = prepared.key.get_or_init(|| self.prepare_request_key(&prepared.encoded, &observed))
+                .as_ref().map_err(|reason| *reason)?;
+            let der = B64.decode(signature_b64).map_err(|_| "signature badly encoded")?;
+            let signature = Signature::from_der(&der).map_err(|_| "malformed signature")?;
+            let message = signed_message(method, path_and_query, timestamp, body);
+            #[cfg(test)]
+            self.request_crypto.verifications.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            observed.add(Metric::Ecdsa);
+            key.verify(message.as_bytes(), &signature).map_err(|_| "wrong signature")?;
+            #[cfg(test)]
+            self.at_verification_stage(VerificationStage::Verified);
             let devices = self.devices.lock_or_recover("the paired devices");
-            devices.prepared(device_id).map(|(_, key)| key.clone())
-        }
-        .ok_or("device not paired")?;
-        #[cfg(test)]
-        self.at_verification_stage(VerificationStage::Selected);
-        let key = prepared.key.get_or_init(|| self.prepare_request_key(&prepared.encoded))
-            .as_ref().map_err(|reason| *reason)?;
-        let der = B64.decode(signature_b64).map_err(|_| "signature badly encoded")?;
-        let signature = Signature::from_der(&der).map_err(|_| "malformed signature")?;
-        let message = signed_message(method, path_and_query, timestamp, body);
-        #[cfg(test)]
-        self.request_crypto.verifications.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        key.verify(message.as_bytes(), &signature).map_err(|_| "wrong signature")?;
-        #[cfg(test)]
-        self.at_verification_stage(VerificationStage::Verified);
-        let devices = self.devices.lock_or_recover("the paired devices");
-        let (device, current) = devices.prepared(device_id).ok_or("device not paired")?;
-        if !Arc::ptr_eq(current, &prepared) { return Err("device approval changed"); }
-        let canonical_signature = B64.encode(signature.normalize_s().to_der().as_bytes());
-        let mut seen = self.seen.lock_or_recover("the seen requests");
-        if seen.iter().any(|s| s == &canonical_signature) {
-            return Err("replayed request");
-        }
-        seen.push_back(canonical_signature);
-        if seen.len() > REPLAY_MEMORY {
-            seen.pop_front();
-        }
-        drop(seen);
-        self.usage.touch(&device.id, now_millis(), local);
-        Ok(Signed { device_id: device.id.clone(), name: device.name.clone(), public_key: prepared.encoded.clone() })
+            let (device, current) = devices.prepared(device_id).ok_or("device not paired")?;
+            if !Arc::ptr_eq(current, &prepared) { return Err("device approval changed"); }
+            let canonical_signature = B64.encode(signature.normalize_s().to_der().as_bytes());
+            let mut seen = self.seen.lock_or_recover("the seen requests");
+            if seen.iter().any(|s| s == &canonical_signature) {
+                return Err("replayed request");
+            }
+            seen.push_back(canonical_signature);
+            if seen.len() > REPLAY_MEMORY {
+                seen.pop_front();
+            }
+            drop(seen);
+            self.usage.touch(&device.id, now_millis(), local);
+            Ok(Signed { device_id: device.id.clone(), name: device.name.clone(), public_key: prepared.encoded.clone() })
+        })();
+        // Verified is this cryptographic/replay check, not the handler's durable authorization.
+        observed.add(if result.is_ok() { Metric::Verified } else { Metric::Rejected });
+        result
     }
 }
 
@@ -449,11 +464,16 @@ fn unauthorized(reason: &str) -> Response {
 pub async fn guard(State(auth): State<Arc<Auth>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, req: Request<Body>, next: Next) -> Response {
     let presents_signature = req.headers().contains_key("x-alondra-signature");
     let local = is_local(&peer, req.headers());
+    let observed = auth.observation.request(req.headers(), req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/"), local);
+    observed.add(Metric::Guard);
+    if !presents_signature { observed.add(Metric::SignatureAbsent); }
     if local && !presents_signature {
+        observed.add(Metric::LocalBypass);
         return next.run(req).await;
     }
     let (parts, body) = req.into_parts();
     let Ok(bytes) = to_bytes(body, MAX_BODY).await else {
+        observed.add(Metric::BodyRejected);
         return unauthorized("cuerpo demasiado grande");
     };
     let path_and_query = parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
@@ -473,9 +493,14 @@ mod tests {
     use p256::ecdsa::signature::Signer;
 
     fn auth_with_device() -> (crate::test_support::Owned<Auth>, SigningKey, String) {
+        auth_with_observation(Observation::default())
+    }
+
+    fn auth_with_observation(observation: Observation) -> (crate::test_support::Owned<Auth>, SigningKey, String) {
         let dir = crate::test_support::Directory::new();
         std::fs::create_dir_all(&dir).unwrap();
-        let auth = Auth::open(&dir).unwrap();
+        let mut auth = Auth::open(&dir).unwrap();
+        auth.observation = observation;
         let signing = SigningKey::from_slice(&[7u8; 32]).unwrap();
         let public = B64.encode(signing.verifying_key().to_sec1_bytes());
         let code = auth.new_pairing_code();
@@ -494,6 +519,81 @@ mod tests {
     fn signed_headers(device: &str, key: &SigningKey, path: &str, at: i64) -> HeaderMap {
         let signature: Signature = key.sign(signed_message("GET", path, &at.to_string(), b"").as_bytes());
         headers(device, at, &signature)
+    }
+
+    #[test]
+    fn request_observation_counts_real_crypto_and_every_verification_outcome() {
+        let observation = Observation::armed();
+        observation.start();
+        let (auth, key, id) = auth_with_observation(observation.clone());
+        let at = 1_000_000;
+        for request in 0..4 {
+            let path = format!("/views/home?client=tui&request={request}");
+            auth.verify_at(&signed_headers(&id, &key, &path, at), "GET", &path, b"", at, true).unwrap();
+        }
+        let path = "/changes?client=ios";
+        let headers = signed_headers(&id, &key, path, at);
+        assert_eq!(auth.verify_at(&headers, "GET", path, b"tampered", at, false).unwrap_err(), "wrong signature");
+        auth.verify_at(&headers, "GET", path, b"", at, false).unwrap();
+        assert_eq!(auth.verify_at(&headers, "GET", path, b"", at, false).unwrap_err(), "replayed request");
+        assert_eq!(auth.verify_at(&headers, "GET", path, b"", at + MAX_SKEW_MS + 1, false).unwrap_err(), "timestamp out of range");
+        let mut malformed = headers.clone();
+        malformed.insert("x-alondra-signature", "not-base64".parse().unwrap());
+        assert_eq!(auth.verify_at(&malformed, "GET", path, b"", at, false).unwrap_err(), "signature badly encoded");
+        assert_eq!(observation.total(Metric::Attempts), 9);
+        assert_eq!(observation.total(Metric::KeyDecodes), 1);
+        assert_eq!(observation.total(Metric::KeyPreparations), 1);
+        assert_eq!(observation.total(Metric::Ecdsa), 7);
+        assert_eq!(observation.total(Metric::Verified), 5);
+        assert_eq!(observation.total(Metric::Rejected), 4);
+        assert_eq!(observation.total(Metric::Guard), 0);
+        assert_eq!(auth.request_crypto.counts(), (1, 1, 7));
+    }
+
+    #[tokio::test]
+    async fn guard_observation_counts_unsigned_rejected_and_real_signed_requests() {
+        let directory = Arc::new(crate::test_support::Directory::new());
+        std::fs::create_dir_all(&**directory).unwrap();
+        let observation = Observation::armed();
+        observation.start();
+        let mut auth = Auth::open(&directory).unwrap();
+        auth.observation = observation.clone();
+        let key = SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let device = auth.pair(&auth.new_pairing_code(), "Synthetic device", &B64.encode(key.verifying_key().to_sec1_bytes())).unwrap();
+        let auth = Arc::new(auth);
+        let router = axum::Router::new()
+            .route("/views/home", axum::routing::get(|request: Request<Body>| async move {
+                if request.extensions().get::<Signed>().is_some() { "signed" } else { "unsigned" }
+            }))
+            .layer(axum::middleware::from_fn_with_state(auth.clone(), guard));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_directory = directory.clone();
+        let server = tokio::spawn(async move {
+            let _directory = server_directory;
+            axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
+        });
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let path = "/views/home?client=mac";
+        let url = format!("http://{address}{path}");
+        assert_eq!(client.get(&url).send().await.unwrap().text().await.unwrap(), "unsigned");
+        assert_eq!(client.get(&url).header("x-forwarded-for", "203.0.113.7").send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        let signed = signed_headers(&device.id, &key, path, now_millis());
+        assert_eq!(client.get(&url).headers(signed).send().await.unwrap().text().await.unwrap(), "signed");
+        assert_eq!(observation.total(Metric::Guard), 3);
+        assert_eq!(observation.total(Metric::SignatureAbsent), 2);
+        assert_eq!(observation.total(Metric::LocalBypass), 1);
+        assert_eq!(observation.total(Metric::BodyRejected), 0);
+        assert_eq!(observation.total(Metric::Attempts), 2);
+        assert_eq!(observation.total(Metric::Verified), 1);
+        assert_eq!(observation.total(Metric::Rejected), 1);
+        assert_eq!(observation.total(Metric::KeyDecodes), 1);
+        assert_eq!(observation.total(Metric::KeyPreparations), 1);
+        assert_eq!(observation.total(Metric::Ecdsa), 1);
+        server.abort();
+        let _ = server.await;
+        drop(auth);
+        drop(directory);
     }
 
     #[test]
