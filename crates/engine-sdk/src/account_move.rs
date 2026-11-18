@@ -202,7 +202,7 @@ async fn stop(domain: &Arc<DomainRuntime>, moving: &AccountMove) -> Result<(), S
 async fn admit(domain: &Arc<DomainRuntime>, moving: &AccountMove) -> Result<(), String> {
     let (backend, runtime) = domain.sdk().ok_or("this daemon has no SDK backend")?;
     let backend = backend.clone();
-    let plugin = crate::plugins::node_in(domain.home()).ok_or("Alondra's node plugin, which the SDK node loads, was not found")?;
+    let plugin = domain.ports().plugins().node(domain.home()).ok_or("Alondra's node plugin, which the SDK node loads, was not found")?;
     let state = domain.state().map_err(|error| format!("{error:#}"))?;
     let task = state.tasks.get(&moving.task).ok_or("the task is gone")?;
     let options = alondra_daemon_engine_model::LaunchOptions::load(&backend.state_root.join(&moving.plan.instance)).map_err(|crate::sdk_owner::Failed { why, .. }| why)?;
@@ -248,7 +248,7 @@ async fn finish(domain: &Arc<DomainRuntime>, moving: &AccountMove) -> Result<(),
     if !domain.owns_sdk_host(&agent) {
         let (backend, runtime) = domain.sdk().ok_or("this daemon has no SDK backend")?;
         let backend = backend.clone();
-        let plugin = crate::plugins::node_in(domain.home()).ok_or("Alondra's node plugin, which the SDK node loads, was not found")?;
+        let plugin = domain.ports().plugins().node(domain.home()).ok_or("Alondra's node plugin, which the SDK node loads, was not found")?;
         let task = moving.task.clone();
         let driver = tokio::task::spawn_blocking(move || {
             crate::sdk_owner::adopt(runtime, &backend, task, Some(&plugin))

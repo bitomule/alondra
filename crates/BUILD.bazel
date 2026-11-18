@@ -57,6 +57,7 @@ WORKSPACE_MEMBERS = [
     "relay",
     "scenarios",
     "scenarios-transcript",
+    "host",
     "store",
     "system",
     "view-model",

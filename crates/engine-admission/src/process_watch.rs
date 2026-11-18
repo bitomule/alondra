@@ -3,11 +3,8 @@
 //! process; its MCP servers stay in the session's group, and the node mod's `alondra node connect`
 //! is another child of it. A build can stay silent for an hour and still be work; a call that is
 //! gone is not. The table comes from libproc and sysctl, never from the text of `ps`.
-pub use alondra_process_group::Entry as Process;
-
-pub fn snapshot() -> Vec<Process> {
-    alondra_process_group::table().unwrap_or_default()
-}
+//! The table itself and the signals come from the Mac through the `Processes` port.
+pub use alondra_engine_ports::processes::Process;
 
 /// The direct children of the session whose mod connection is process `mod_pid` that are in a
 /// group other than the session's, the mod left out. None when the mod or its session is not in
@@ -39,12 +36,6 @@ pub fn work_descendants(table: &[Process], mod_pid: u32) -> Vec<u32> {
     }
     found.reverse();
     found.into_iter().filter_map(|pid| u32::try_from(pid).ok()).collect()
-}
-
-pub fn signal(pids: &[u32], signal: libc::c_int) {
-    for pid in pids {
-        unsafe { libc::kill(*pid as libc::pid_t, signal) };
-    }
 }
 
 /// Whether the session whose mod connection is process `mod_pid` still runs: the mod's parent is

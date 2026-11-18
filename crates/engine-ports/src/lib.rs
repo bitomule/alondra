@@ -2,17 +2,22 @@
 //! other, the values they speak in, and the registry that holds one implementation of each. Each
 //! piece that implements a port gives it to the registry in its `wire`; the root calls every
 //! `wire` when it puts the daemon together, and a piece that needs a port asks the registry.
+pub mod accounts;
 pub mod admission;
 pub mod agent_host;
 pub mod api;
 pub mod disk;
 pub mod extensions;
 pub mod github;
+pub mod hooks;
 pub mod hosts;
 pub mod launch;
 pub mod machine;
 pub mod orchestrator;
 pub mod outbox;
+pub mod sign_in_returns;
+pub mod plugins;
+pub mod processes;
 pub mod usage;
 pub mod worktrees;
 mod registry;

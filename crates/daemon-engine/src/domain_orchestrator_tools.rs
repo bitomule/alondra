@@ -104,7 +104,7 @@ pub async fn launch_from(domain: &DomainRuntime, home: &Path, body: LaunchBody,
     }
     if let (Err(error), false) = (&launched, matches!(origin, Origin::Auto))
         && matches!(error.code.as_str(), "launch_failed" | "workspace_untrusted")
-        && let Some(problem) = crate::start_failures::problem_of(&error.code, &error.message, cwd.as_deref())
+        && let Some(problem) = crate::start_failures::problem_of(&*domain.ports().accounts(), &error.code, &error.message, cwd.as_deref())
         && let Err(failure) = crate::start_failures::failed(domain, &task, problem, alondra_core::now_millis())
     {
         log!("could not record that the start of {task} failed: {failure:#}");
@@ -592,7 +592,7 @@ pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBod
         cwd = original_directory.to_string_lossy().into_owned();
     }
     let profile = alondra_core::accounts::provider_folder(home, &key);
-    if let Some(repository) = (provider == alondra_core::accounts::Provider::Claude).then(|| crate::claude_trust::ensure_for(profile.as_deref(), Path::new(&cwd), projects_root.as_deref())).flatten() {
+    if let Some(repository) = (provider == alondra_core::accounts::Provider::Claude).then(|| domain.ports().accounts().ensure_trusted(profile.as_deref(), Path::new(&cwd), projects_root.as_deref())).flatten() {
         remember_refusal(domain, &task.id, Some(("workspace_untrusted", Some(&repository.to_string_lossy()))));
         return Err(DomainError::new("workspace_untrusted", crate::claude_trust::instructions(&repository)));
     }
@@ -631,7 +631,7 @@ pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBod
     }
     own_worktree(domain, &task.id, &workplace).await?;
     let cwd = workplace.dir().to_string_lossy().into_owned();
-    let Some(plugin) = crate::plugins::node_in(home) else {
+    let Some(plugin) = domain.ports().plugins().node(home) else {
         return Err(DomainError::new("unavailable", "Alondra's plugin was not found: run `alondra doctor --fix`"));
     };
     let request = current.requests.get(&task.request_id);

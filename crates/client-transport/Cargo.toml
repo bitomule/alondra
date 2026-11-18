@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 alondra-client-port.workspace = true
 alondra-core.workspace = true
+alondra-host.workspace = true
 alondra-e2e.workspace = true
 anyhow.workspace = true
 base64 = "0.23.1"

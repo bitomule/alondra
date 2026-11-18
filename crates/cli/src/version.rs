@@ -34,7 +34,7 @@ pub fn same(cli: &str, service: &str) -> bool {
 }
 
 pub fn install(path: &Path, home: &Path) -> &'static str {
-    if alondra_core::update::brew_prefix(path).is_some() {
+    if alondra_host::brew::brew_prefix(path).is_some() {
         "homebrew"
     } else if path.parent() == Some(&home.join(".local/bin")) {
         "source"

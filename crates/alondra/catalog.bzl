@@ -28,6 +28,7 @@ CATALOG_FRAGMENTS = [
     ("engine_orchestrator", "//crates/engine-orchestrator:report_sources", "--log --words"),
     ("engine_sdk", "//crates/engine-sdk:report_sources", "--log --words"),
     ("core", "//crates/core:report_sources", "--log --words"),
+    ("host", "//crates/host:report_sources", "--log --words"),
     ("domain_rules", "//crates/domain-rules:report_sources", "--log --words"),
     ("view_model", "//crates/view-model:report_sources", "--log --words"),
     ("views", "//crates/views:report_sources", "--log --words"),

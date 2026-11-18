@@ -1,4 +1,4 @@
-//! The Mac a test's runtime reaches: the doubled git, disks and gauges, never the real ones.
+//! The Mac a test's runtime reaches: the doubled git, disks, gauges and accounts, never the real ones.
 use alondra_core::Machine;
 use alondra_engine_ports::Registry;
 use alondra_engine_ports::disk::Disk;
@@ -11,11 +11,16 @@ use std::sync::Arc;
 const GIB: u64 = 1 << 30;
 
 /// Gives `registry` the doubled git, which finds sessions' worktrees in the Claude folder
-/// `claude_home` names, the doubled disks and a calm Mac.
+/// `claude_home` names, the doubled disks, a calm Mac, the doubled accounts, processes, plugins and
+/// sign-in listeners.
 pub fn wire(registry: &Registry, claude_home: fn() -> PathBuf) {
     registry.provide::<dyn Worktrees>(Arc::new(crate::worktrees::Worktrees::new(claude_home)));
     registry.provide::<dyn Disk>(Arc::new(crate::disk::Disks::default()));
     registry.provide::<dyn MachineProbe>(Arc::new(CalmMac::default()));
+    crate::accounts::wire(registry);
+    crate::processes::wire(registry);
+    crate::plugins::wire(registry);
+    crate::sign_in_returns::wire(registry);
 }
 
 /// A Mac always rested, with room for everything: 8 cores, 16 GiB of memory, 12 of them available,

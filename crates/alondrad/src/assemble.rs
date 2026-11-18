@@ -177,16 +177,16 @@ pub async fn assemble(config: &Config, state: Arc<domain_bootstrap::DomainDaemon
     let domain = state.domain();
     if real {
         // Before any SDK execution is taken over: a host that replaces one that ended loads this plugin.
-        match plugins::node_source(&watcher::claude_home()).zip(plugins::own_cli()) {
-            Some((source, cli)) => match plugins::install_node(&config.home, &source, &cli) {
+        match alondra_system::plugins::node_source(&watcher::claude_home()).zip(alondra_host::brew::own_cli()) {
+            Some((source, cli)) => match alondra_system::plugins::install_node(&config.home, &source, &cli) {
                 Ok(dir) => log!("node plugin {} brought up to date from {}", dir.display(), source.display()),
                 Err(error) => log!("could not bring the node plugin up to date from {}: {error:#}", source.display()),
             },
             None => log!("Alondra's node plugin was not found: run `alondra doctor --fix`"),
         }
-        match plugins::orchestrator_source(&watcher::claude_home()).zip(plugins::own_cli()) {
+        match alondra_system::plugins::orchestrator_source(&watcher::claude_home()).zip(alondra_host::brew::own_cli()) {
             Some((source, cli)) => {
-                if let Err(error) = plugins::install_orchestrator(&config.home, &source, &cli) {
+                if let Err(error) = alondra_system::plugins::install_orchestrator(&config.home, &source, &cli) {
                     log!("Could not update Alondra's orchestrator integration assets: {error:#}");
                 }
             }
@@ -244,7 +244,7 @@ pub(crate) async fn assemble_with(
         .with_context(|| format!("cannot listen on {addr}"))?;
     // The producer transport owns the per-home hook socket before any outbox
     // message can be claimed for a session.
-    let hooks = hook_socket::bind(&config.home).await?;
+    let hooks = alondra_system::hook_socket::bind(&config.home).await?;
     let real = seams.world == World::Real;
     if let Some(service) = service.clone().filter(|service| real && service.direct_config().enabled) {
         let direct = Arc::new(direct::Direct::new(
@@ -316,7 +316,7 @@ pub(crate) async fn assemble_with(
     let gate = tasks.spawn(admission::run(domain.clone(), config.home.clone()));
     let transport = tasks.spawn(domain_transport::run(hooks, domain.clone()));
     if real && accounts::config(&config.home).is_ok_and(|accounts| accounts.connected_providers().contains(&alondra_core::accounts::Provider::Claude)) {
-        tasks.spawn(claude_check::run(plugins::node()));
+        tasks.spawn(claude_check::run(alondra_system::plugins::node()));
     }
     tasks.spawn(bg_handover::run(state_domain.clone()));
     tasks.spawn(account_move::run(state_domain.clone()));
@@ -360,7 +360,7 @@ pub(crate) async fn assemble_with(
         .map(|service| tasks.spawn(async move { service.run().await }));
     if real {
         tasks.spawn(updates::updater(config).run());
-        tasks.spawn(reports::retry_pending(config.home.clone(), plugins::own_cli(), config.fast_timing));
+        tasks.spawn(reports::retry_pending(config.home.clone(), alondra_host::brew::own_cli(), config.fast_timing));
     }
     Ok(Assembled {
         addr,

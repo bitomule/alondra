@@ -62,7 +62,7 @@ impl Paths {
     /// What launchd runs before alondrad: the launcher at its fixed path, when this build ships
     /// one. macOS keeps the Local Network permission for that path across updates.
     fn launcher(&self) -> Option<PathBuf> {
-        alondra_core::launcher::bundled_path(&self.daemon()).is_file().then(|| alondra_core::launcher::installed_path(&self.alondra_home))
+        alondra_host::launcher::bundled_path(&self.daemon()).is_file().then(|| alondra_host::launcher::installed_path(&self.alondra_home))
     }
 }
 
@@ -271,7 +271,7 @@ fn plan_with_context(wanted: &FileConfig, apns: Option<&Apns>, args: &Args, path
             )));
         }
         if seen.binaries && seen.launcher_outdated && let Some(installed) = paths.launcher() {
-            steps.push(Step::Launcher { bundled: alondra_core::launcher::bundled_path(&paths.daemon()), installed });
+            steps.push(Step::Launcher { bundled: alondra_host::launcher::bundled_path(&paths.daemon()), installed });
         }
         let plist_changed = seen.plist.as_deref() != Some(plist.as_str());
         if plist_changed {
@@ -626,7 +626,7 @@ fn job_program(job: &Value) -> Option<&Path> {
 
 /// Whether a LaunchAgent runs alondrad, directly or through its launcher.
 pub(crate) fn starts_alondrad(job: &Value) -> bool {
-    job_program(job).and_then(Path::file_name).is_some_and(|name| name == "alondrad" || name == alondra_core::launcher::NAME)
+    job_program(job).and_then(Path::file_name).is_some_and(|name| name == "alondrad" || name == alondra_host::launcher::NAME)
 }
 
 fn observe(paths: &Paths, label: &str, apns: Option<&Apns>, args: &Args, context: &crate::claude_auth::ContextEnv) -> Observed {
@@ -655,8 +655,8 @@ fn observe(paths: &Paths, label: &str, apns: Option<&Apns>, args: &Args, context
 
 fn launcher_outdated(paths: &Paths) -> bool {
     let Some(installed) = paths.launcher() else { return false };
-    let bundled = alondra_core::launcher::version(&alondra_core::launcher::bundled_path(&paths.daemon()));
-    bundled.is_some() && bundled != alondra_core::launcher::version(&installed)
+    let bundled = alondra_host::launcher::version(&alondra_host::launcher::bundled_path(&paths.daemon()));
+    bundled.is_some() && bundled != alondra_host::launcher::version(&installed)
 }
 
 const LEAVE_INTERVAL: Duration = Duration::from_millis(200);
@@ -691,7 +691,7 @@ fn execute(step: &Step, context: &crate::claude_auth::ContextEnv) -> Result<()> 
         }
         Step::Unload { target, home } => unload(target, home, launchctl, 50, Duration::from_millis(100))?,
         Step::Launcher { bundled, installed } => {
-            alondra_core::launcher::install(bundled, installed).with_context(|| installed.display().to_string())?;
+            alondra_host::launcher::install(bundled, installed).with_context(|| installed.display().to_string())?;
         }
         Step::Unchanged { .. } | Step::Warn(_) => {}
     }
@@ -1278,7 +1278,7 @@ esac
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::write(bin.join("alondrad"), "").unwrap();
         std::fs::write(bin.join("alondra"), "").unwrap();
-        std::fs::write(bin.join(alondra_core::launcher::NAME), "").unwrap();
+        std::fs::write(bin.join(alondra_host::launcher::NAME), "").unwrap();
         Paths { bin, alondra_home: root.join("home/.alondra"), ..paths() }
     }
 
@@ -1287,7 +1287,7 @@ esac
         let root = crate::test_support::Directory::new();
         let paths = shipped_launcher(&root);
         let plist = render_plist("com.example.alondra", &paths).unwrap();
-        let launcher = alondra_core::launcher::installed_path(&paths.alondra_home);
+        let launcher = alondra_host::launcher::installed_path(&paths.alondra_home);
         let arguments = format!("<array>\n        <string>{}</string>\n        <string>{}</string>\n    </array>", launcher.display(), paths.bin.join("alondrad").display());
         assert!(plist.contains(&arguments), "{plist}");
         assert!(!plist.contains('@'));
@@ -1298,7 +1298,7 @@ esac
         let root = crate::test_support::Directory::new();
         let paths = shipped_launcher(&root);
         let p = plan(&named("Ana"), None, &Args::default(), &paths, &Observed { launcher_outdated: true, ..fresh() });
-        let copy = p.steps.iter().position(|s| matches!(s, Step::Launcher { installed, .. } if *installed == alondra_core::launcher::installed_path(&paths.alondra_home)));
+        let copy = p.steps.iter().position(|s| matches!(s, Step::Launcher { installed, .. } if *installed == alondra_host::launcher::installed_path(&paths.alondra_home)));
         let bootstrap = p.steps.iter().position(|s| matches!(s, Step::Run { args, .. } if args.first().map(String::as_str) == Some("bootstrap")));
         assert!(copy.is_some() && copy < bootstrap, "{:?}", p.steps);
         let current = plan(&named("Ana"), None, &Args::default(), &paths, &fresh());
@@ -1368,7 +1368,7 @@ esac
 /// Whether the LaunchAgent runs this HOME's alondrad, directly or through the launcher.
 fn recovery_job_matches(job: &Value, home: &Path, daemon: &Path) -> bool {
     let job_home = job.pointer("/EnvironmentVariables/ALONDRA_HOME").and_then(Value::as_str);
-    let launcher = alondra_core::launcher::installed_path(home);
+    let launcher = alondra_host::launcher::installed_path(home);
     job_home.is_some_and(|h| Path::new(h) == home) && job_program(job).is_some_and(|p| p == daemon || p == launcher)
 }
 

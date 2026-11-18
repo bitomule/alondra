@@ -13,6 +13,7 @@ alondra-agent-runtime = { workspace = true, optional = true }
 alondra-engine-ports.workspace = true
 alondra-agent-application.workspace = true
 alondra-core.workspace = true
+alondra-host.workspace = true
 alondra-domain-rules.workspace = true
 alondra-view-model.workspace = true
 alondra-daemon-engine-model.workspace = true

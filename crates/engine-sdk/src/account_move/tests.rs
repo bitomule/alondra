@@ -57,7 +57,7 @@ impl World {
         std::fs::DirBuilder::new().mode(0o700).create(&worktree).unwrap();
         std::fs::DirBuilder::new().mode(0o700).create(home.join(crate::plugins::NODE)).unwrap();
         std::fs::create_dir_all(home.join(".claude/projects")).unwrap();
-        claude_account::prepare(&home, &work(), &home.join(".claude")).unwrap();
+        alondra_engine_ports::accounts::Accounts::prepare_claude(&alondra_engine_doubles::accounts::Accounts::default(), &home, &work(), &home.join(".claude")).unwrap();
         let (backend, capture) = crate::sdk_owner::tests::fixture_backend(&home, &state);
         let database = home.join("domain.sqlite");
         let domain = Self::boot(&home, &database, &backend);

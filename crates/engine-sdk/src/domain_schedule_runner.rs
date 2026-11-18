@@ -205,7 +205,7 @@ async fn prepare_claimed(
     }
     let resolved: Resolved = serde_json::from_str(&launch.options_json).map_err(|error| alondra_domain_rules::DomainError::new("invalid_input", error.to_string()))?;
     let projects_root = options_at(home).ok().map(|file| file.projects_root(&crate::options::user_home()));
-    if let Some(repository) = (resolved.selected_provider() == Some(alondra_core::accounts::Provider::Claude)).then(|| crate::claude_trust::ensure_for(profile, Path::new(&launch.cwd), projects_root.as_deref())).flatten() {
+    if let Some(repository) = (resolved.selected_provider() == Some(alondra_core::accounts::Provider::Claude)).then(|| domain.ports().accounts().ensure_trusted(profile, Path::new(&launch.cwd), projects_root.as_deref())).flatten() {
         return Err(alondra_domain_rules::DomainError::new("workspace_untrusted", crate::claude_trust::instructions(&repository)));
     }
     let file = options_at(home).map_err(|why| alondra_domain_rules::DomainError::new("invalid_input", why.to_string()))?;
@@ -216,7 +216,7 @@ async fn prepare_claimed(
             let code = match &why { alondra_engine_ports::worktrees::LaunchError::Storage(_) => "worktrees_unavailable", _ => "main_checkout" };
             alondra_domain_rules::DomainError::new(code, why.to_string())
         })?;
-    let Some(plugin) = crate::plugins::node_in(home) else {
+    let Some(plugin) = domain.ports().plugins().node(home) else {
         return Err(alondra_domain_rules::DomainError::new("unavailable", "Alondra's Claude plugin is unavailable"));
     };
     Ok((workplace, plugin, resolved))
@@ -1508,10 +1508,9 @@ pub mod tests {
     async fn a_repository_alondra_cannot_trust_is_never_launched_and_the_orchestrator_hears_why() {
         let fixture = Fixture::new();
         let sdk = SdkLaunches::enable(&fixture.domain, &fixture.home);
-        let config = fixture.root.join(".claude.json");
-        std::fs::write(&config, r#"{"projects":{}}"#).unwrap();
-        crate::claude_trust::use_config_for_test(&config);
-        std::fs::create_dir(fixture.root.join(".claude.json.lock")).unwrap();
+        let accounts = alondra_engine_doubles::accounts::of(fixture.domain.ports());
+        accounts.set_trust(None, &[]);
+        accounts.refuse_trust_saves(true);
         fixture.claim("untrusted");
         run_cycle(&fixture.domain, &fixture.home, false).await.unwrap();
         assert_eq!(fixture.launches(), 0, "Claude is never asked to start there");

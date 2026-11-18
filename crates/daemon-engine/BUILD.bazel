@@ -13,6 +13,7 @@ WORKSPACE_DEPS = [
     "//crates/core:alondra_core", "//crates/domain-rules:domain_rules", "//crates/view-model:view_model",
     "//crates/domain:domain",
     "//crates/foundation:foundation",
+    "//crates/host:host",
     "//crates/process-group:process_group",
     "//crates/provider-claude:provider_claude",
     "//crates/provider-codex:provider_codex",
@@ -52,6 +53,7 @@ rust_library(
     version = VERSION,
     visibility = ["//crates/alondrad:__pkg__", "//crates/daemon-server:__pkg__", "//crates/engine-admission:__pkg__", "//crates/engine-orchestrator:__pkg__", "//crates/engine-sdk:__pkg__", "//crates/machine-model:__pkg__", "//crates/scenarios:__pkg__"],
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/agent-runtime:agent_runtime"] + [
+        "//crates/engine-doubles:engine_doubles",
         "//crates/codex-protocol:codex_protocol",
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
         "//crates/daemon-engine-store:daemon_engine_store_test_hooks",

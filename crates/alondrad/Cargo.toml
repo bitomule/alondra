@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 alondra-system.workspace = true
+alondra-host.workspace = true
 alondra-foundation.workspace = true
 alondra-engine-ports.workspace = true
 alondra-github-gh.workspace = true

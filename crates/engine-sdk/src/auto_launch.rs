@@ -202,7 +202,7 @@ pub fn settle(domain: &DomainRuntime, task: &TaskId, cwd: Option<&str>, launched
             }
             code => {
                 domain.gate().not_started(&alondra_engine_ports::admission::Key::Task(task.clone()));
-                if let Some(problem) = crate::start_failures::problem_of(code, &error.message, cwd) {
+                if let Some(problem) = crate::start_failures::problem_of(&*domain.ports().accounts(), code, &error.message, cwd) {
                     crate::start_failures::failed(domain, task, problem, now)?;
                 }
                 log!("could not start {task} by itself: {}", error.message);

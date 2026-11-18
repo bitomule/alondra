@@ -332,7 +332,7 @@ fn mutation_with_source(
         }
     };
     if let d::Command::CreateSchedule { schedule } | d::Command::UpdateSchedule { schedule } = &command
-        && let Some(refusal) = untrusted_project(home, schedule)
+        && let Some(refusal) = untrusted_project(domain, home, schedule)
     {
         return refusal;
     }
@@ -353,13 +353,13 @@ fn mutation_with_source(
 }
 
 /// An enabled Schedule would launch where Claude Code refuses to start, so it is not saved.
-fn untrusted_project(home: &Path, schedule: &d::Schedule) -> Option<Value> {
+fn untrusted_project(domain: &DomainRuntime, home: &Path, schedule: &d::Schedule) -> Option<Value> {
     if !schedule.enabled {
         return None;
     }
     let root = crate::options::options_at(home).ok()?.projects_root(&crate::options::user_home());
     let folder = schedule.project.as_deref().map_or(root.clone(), |project| root.join(project));
-    let repository = crate::claude_trust::ensure(&folder, Some(&root))?;
+    let repository = domain.ports().accounts().ensure_trusted(None, &folder, Some(&root))?;
     Some(error("untrusted_project", &crate::claude_trust::instructions(&repository)))
 }
 
@@ -416,25 +416,22 @@ mod tests {
         let fixture = Fixture::new();
         fs::create_dir_all(fixture.root.join("projects/Parcel/.git")).unwrap();
         let parcel = fixture.root.join("projects/Parcel").canonicalize().unwrap();
-        let config = fixture.root.join(".claude.json");
-        crate::claude_trust::use_config_for_test(&config);
-        fs::write(&config, json!({"projects": {parcel.to_str().unwrap(): {"hasTrustDialogAccepted": false}}}).to_string()).unwrap();
-        let accepted = || serde_json::from_str::<Value>(&fs::read_to_string(&config).unwrap()).unwrap()["projects"][parcel.to_str().unwrap()]["hasTrustDialogAccepted"].clone();
+        let accounts = alondra_engine_doubles::accounts::of(fixture.domain.ports());
+        accounts.set_trust(None, &[(&parcel, false)]);
+        let accepted = || accounts.trusts(None, &parcel);
         let mut draft = Fixture::draft();
         draft["project"] = json!("Parcel");
         let create = || mutation(&fixture.domain, &fixture.home, "POST", "/schedules", Some(&draft), None, || Ok(()));
-        let lock = fixture.root.join(".claude.json.lock");
-
-        fs::create_dir(&lock).unwrap();
+        accounts.refuse_trust_saves(true);
         let refused = create();
         assert_eq!(refused["body"]["code"], "untrusted_project");
         assert!(refused["body"]["message"].as_str().unwrap().contains(parcel.to_str().unwrap()));
         assert!(fixture.domain.state().unwrap().schedule.schedules.is_empty());
-        assert_eq!(accepted(), false);
+        assert!(!accepted());
 
-        fs::remove_dir(&lock).unwrap();
+        accounts.refuse_trust_saves(false);
         assert_eq!(create()["status"], 201);
-        assert_eq!(accepted(), true);
+        assert!(accepted());
     }
 
     #[tokio::test(flavor = "multi_thread")]

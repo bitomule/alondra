@@ -1,15 +1,10 @@
 //! Hands the browser's return from an MCP server's sign-in to Claude's own listener on this Mac,
 //! exactly as a browser on this Mac would. The return carries a one-time code: it lives only in
 //! memory, for that one request, and is never written down or logged. Claude exchanges it and
-//! keeps the credential; Alondra records only that the sign-in is no longer open.
+//! keeps the credential; Alondra records only that the sign-in is no longer open. The request
+//! itself goes through the `SignInReturns` port.
 use crate::domain_runtime::DomainRuntime;
 use alondra_domain_rules::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION, TaskId};
-use std::io::{Read, Write};
-use std::net::{Ipv4Addr, SocketAddr, TcpStream};
-use std::time::Duration;
-
-/// How long Claude's listener may take to exchange the code before it answers the browser.
-const EXCHANGE: Duration = Duration::from_secs(30);
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum SignInError {
@@ -42,22 +37,6 @@ fn parse(address: &str) -> Result<Return, SignInError> {
     Ok(Return { port, state, target: format!("/callback?{}", url.query().unwrap_or_default()) })
 }
 
-/// Sends the return to Claude's listener and reads the status it answers with, once the exchange
-/// is over.
-fn deliver(back: &Return) -> Result<u16, String> {
-    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, back.port));
-    let mut stream = TcpStream::connect_timeout(&address, EXCHANGE).map_err(|_| "Claude no longer waits for this sign-in".to_owned())?;
-    stream.set_read_timeout(Some(EXCHANGE)).map_err(|error| error.to_string())?;
-    stream.set_write_timeout(Some(EXCHANGE)).map_err(|error| error.to_string())?;
-    let request = format!("GET {} HTTP/1.1\r\nHost: localhost:{}\r\nConnection: close\r\n\r\n", back.target, back.port);
-    stream.write_all(request.as_bytes()).map_err(|error| error.to_string())?;
-    let mut head = [0_u8; 64];
-    let read = stream.read(&mut head).map_err(|_| "Claude did not answer the sign-in".to_owned())?;
-    let line = String::from_utf8_lossy(&head[..read]);
-    let status = line.split_whitespace().nth(1).and_then(|code| code.parse::<u16>().ok());
-    status.ok_or_else(|| "Claude did not answer the sign-in".to_owned())
-}
-
 /// Hands `address`, where the browser came back to after the user signed in to `server` for the
 /// task's node, to Claude's listener; then the sign-in is no longer open.
 pub fn complete(domain: &DomainRuntime, task: &TaskId, server: &str, address: &str) -> Result<(), SignInError> {
@@ -77,7 +56,7 @@ pub fn complete(domain: &DomainRuntime, task: &TaskId, server: &str, address: &s
     if port != Some(back.port) {
         return Err(SignInError::Refused(format!("This return is not from the sign-in to {server}")));
     }
-    let status = deliver(&back).map_err(SignInError::Undelivered)?;
+    let status = domain.ports().sign_in_returns().hand_back(back.port, &back.target).map_err(SignInError::Undelivered)?;
     if !(200..400).contains(&status) {
         return Err(SignInError::Undelivered(format!("Claude refused the sign-in ({status})")));
     }

@@ -18,7 +18,7 @@ const WAIT: Duration = Duration::from_secs(90);
 pub fn run(check: bool) -> Result<()> {
     let current = env!("CARGO_PKG_VERSION");
     let exe = std::env::current_exe()?;
-    let prefix = update::brew_prefix(&exe);
+    let prefix = alondra_host::brew::brew_prefix(&exe);
     let latest = latest_release();
     println!("{}", availability(current, latest.as_deref()));
     let Some(prefix) = prefix else {

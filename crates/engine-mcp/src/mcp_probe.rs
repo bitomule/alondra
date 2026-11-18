@@ -7,10 +7,9 @@ use alondra_domain_rules::{McpServerState, McpStatus};
 use alondra_view_model::{LiveMcpProbe, LiveMcpRemoval};
 use alondra_foundation::McpOrigin;
 use std::collections::BTreeMap;
-use std::io::{Read, Write};
-use std::os::unix::process::CommandExt;
+use alondra_engine_ports::agent_host::{AgentHost, ProbeRun};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -18,7 +17,7 @@ use std::time::Duration;
 const FLAG: &str = "--mcp-probe";
 /// Claude starts, connects its servers and answers well within this.
 const DEADLINE: Duration = Duration::from_secs(60);
-const MAX_OUTPUT: u64 = 512 * 1024;
+const MAX_OUTPUT: usize = 512 * 1024;
 
 /// What the MCP servers screen knows beyond the domain while this daemon runs: each check, and the
 /// servers the user deleted (`mcp_remove`).
@@ -99,7 +98,7 @@ fn parse(output: &str) -> Result<Vec<McpServerState>, String> {
 }
 
 /// Starts the host in `directory` as a check and reads what it answers, within `DEADLINE`.
-fn run(backend: &SdkBackend, directory: &Path) -> Result<Vec<McpServerState>, String> {
+fn run(hosts: &dyn AgentHost, backend: &SdkBackend, directory: &Path) -> Result<Vec<McpServerState>, String> {
     let backend = backend.for_start().map_err(|error| error.to_string())?;
     let mut command = match &backend.confinement {
         Some(profile) => {
@@ -109,35 +108,22 @@ fn run(backend: &SdkBackend, directory: &Path) -> Result<Vec<McpServerState>, St
         }
         None => Command::new(&backend.node),
     };
-    let mut child = command.arg(&backend.host).arg(FLAG).current_dir(directory).env_clear().envs(&backend.host_environment)
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).process_group(0)
-        .spawn().map_err(|error| format!("could not start the Agent SDK host: {error}"))?;
+    command.arg(&backend.host).arg(FLAG).current_dir(directory).env_clear().envs(&backend.host_environment);
     let config = serde_json::json!({"executable": backend.native, "cwd": directory, "env": backend.native_environment});
-    let mut stdin = child.stdin.take().expect("piped stdin");
-    let written = stdin.write_all(config.to_string().as_bytes());
-    drop(stdin);
-    let mut stdout = child.stdout.take().expect("piped stdout");
-    let (sender, receiver) = alondra_core::clock::channel();
-    alondra_core::clock::spawn_thread(move || {
-        let mut output = String::new();
-        let _ = (&mut stdout).take(MAX_OUTPUT).read_to_string(&mut output);
-        let _ = sender.send(output);
-    });
-    let output = alondra_core::clock::recv_timeout(&receiver, DEADLINE);
-    if output.is_err() {
-        // SAFETY: the host leads its own process group, Claude included.
-        unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) };
-    }
-    let _ = child.wait();
-    written.map_err(|error| format!("could not reach the Agent SDK host: {error}"))?;
-    let output = output.map_err(|_| format!("Claude did not answer within {} s", DEADLINE.as_secs()))?;
-    parse(&output)
+    let output = match hosts.run(ProbeRun { command, input: config.to_string().into_bytes(), timeout: Some(DEADLINE) }) {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::TimedOut => return Err(format!("Claude did not answer within {} s", DEADLINE.as_secs())),
+        Err(error) => return Err(format!("could not start the Agent SDK host: {error}")),
+    };
+    let answered = &output.stdout[..output.stdout.len().min(MAX_OUTPUT)];
+    parse(&String::from_utf8_lossy(answered))
 }
 
 /// Checks `directory`, the project `project`, in the background; false when it is already being
 /// checked. `done` runs once the result is in `probes`.
 pub fn check(
     probes: std::sync::Arc<McpProbes>,
+    hosts: std::sync::Arc<dyn AgentHost>,
     backend: SdkBackend,
     project: String,
     directory: std::path::PathBuf,
@@ -148,7 +134,7 @@ pub fn check(
     }
     alondra_core::clock::spawn_thread(move || {
         let at = crate::log::local_iso(alondra_core::now_millis().div_euclid(1000) as libc::time_t, 0);
-        let probe = match run(&backend, &directory) {
+        let probe = match run(&*hosts, &backend, &directory) {
             Ok(servers) => LiveMcpProbe::Checked { at, servers },
             Err(error) => {
                 log!("could not check the MCP servers of {project}: {error}");

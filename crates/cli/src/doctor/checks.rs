@@ -112,7 +112,7 @@ pub fn daemon_check(health: Result<Value, String>, local: &Config, start: Option
 }
 
 /// Why the daemon is down, when launchd keeps failing to start it.
-pub fn startup_check(record: Option<&alondra_core::startup::Record>, up: bool, home: &Path) -> Option<Outcome> {
+pub fn startup_check(record: Option<&alondra_host::startup::Record>, up: bool, home: &Path) -> Option<Outcome> {
     let record = record.filter(|_| !up)?;
     let (failures, reason) = (record.failures, &record.reason);
     let log = home.join("alondrad.log");
@@ -487,9 +487,9 @@ pub fn devices_check(devices: &[Value]) -> Outcome {
 }
 
 pub fn claude_version_check(out: Option<&str>) -> Outcome {
-    let min = alondra_core::claude_code::MIN_TEXT;
+    let min = alondra_host::claude_code::MIN_TEXT;
     match out.map(str::trim).filter(|v| !v.is_empty()) {
-        Some(v) if alondra_core::claude_code::compatible(v) => outcome("claude", "claude", Group::Claude, Status::Pass, v.to_string(), None),
+        Some(v) if alondra_host::claude_code::compatible(v) => outcome("claude", "claude", Group::Claude, Status::Pass, v.to_string(), None),
         Some(v) => outcome("claude", "claude", Group::Claude, Status::Fail,
             trf!("{v} is older than {min}, the release Alondra needs",
                 "{v} es anterior a {min}, la versión que necesita Alondra"),
@@ -540,7 +540,7 @@ pub fn validate_check(plugin: Option<&Path>, validate: Option<(bool, String)>) -
     match validate {
         None => fail(tr!("claude plugin validate did not finish", "claude plugin validate no terminó").into()),
         Some((false, text)) => {
-            let why = alondra_core::claude_code::tail(&text);
+            let why = alondra_host::claude_code::tail(&text);
             fail(trf!("the node plugin does not validate: {why}", "el plugin de nodo no pasa la validación: {why}"))
         }
         Some((true, _)) => outcome("validate", "validate", Group::Claude, Status::Pass,

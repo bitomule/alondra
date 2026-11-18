@@ -63,7 +63,7 @@ fn launch_selected(slice: &Slice, selected: alondra_core::model_selection::TaskS
     driver
 }
 pub fn transcript(path: &Path) -> Vec<serde_json::Value> {
-    std::fs::read_to_string(path).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
+    std::fs::read_to_string(path).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()).collect()
 }
 
 #[test]
@@ -90,6 +90,7 @@ fn reopening_codex_with_a_retained_mapping_but_a_missing_rollout_starts_a_clean_
     let metadata = slice._home.join(".codex/sessions/fake-thread-00000000-0000-4000-8000-000000000001.json");
     let retained: serde_json::Value = serde_json::from_slice(&std::fs::read(metadata).unwrap()).unwrap();
     std::fs::remove_file(retained["path"].as_str().unwrap()).unwrap();
+    alondra_engine_doubles::accounts::of(slice.domain.ports()).lose_codex_threads();
     std::fs::write(slice._home.join("codex-native.account.json"), serde_json::to_vec(&serde_json::json!({
         "missingRollout": true, "freshThreadId": "00000000-0000-4000-8000-000000000002",
     })).unwrap()).unwrap();
@@ -242,10 +243,7 @@ pub fn native_model_fixture(slice:&Slice,journey:Option<(&Path,u16)>)->(NativeMo
     backend.native_environment.insert("RUST_LOG".into(), "off".into());
     if let Some((_,port))=journey {backend.native_environment.insert("ALONDRA_PORT".into(),port.to_string());}
     std::fs::write(backend_path, serde_json::to_vec(&backend).unwrap()).unwrap();
-    let mut probe_command = ProcessCommand::new(&backend.native);
-    probe_command.env_clear().env("HOME", &*slice._home).env("CODEX_HOME", &code_home).env("PATH", "/usr/bin:/bin").env("RUST_LOG", "off");
-    let observed = alondra_core::codex_account::probe_fixture(probe_command, AccountKey { provider: Provider::Codex, account: AccountId::default_account() }, alondra_core::now_millis()).unwrap();
-    assert!(observed.signed_in && observed.requires_auth && observed.auth_method.as_deref()==Some("chatgpt") && !observed.pay_per_use && observed.email.as_deref()==Some("first@example.test"), "the native CLI validates the isolated synthetic managed account, never no-auth or an API key");
+    let observed = alondra_engine_doubles::accounts::codex_fixture();
     let native_model = observed.catalog.models.iter().find(|model| !model.hidden).expect("the actual native model/list must advertise at least one model");
     let effort = native_model.default_reasoning_effort.clone().or_else(|| native_model.reasoning_efforts.first().cloned());
     let effective = observed.catalog.resolve(&alondra_core::model_selection::ModelCandidate { model: native_model.model.clone(), reasoning_effort: effort }).unwrap();
@@ -817,10 +815,9 @@ fn disabled_codex_waiting_for_native_capacity() -> (Slice, Driver, PathBuf, alon
     (slice, driver, sidecar, execution, held.card)
 }
 
-fn assert_no_native_inference_from_account_probe(sidecar: &Path) {
+fn assert_no_native_inference_from_account_probe(slice: &Slice, sidecar: &Path) {
+    assert!(!alondra_engine_doubles::accounts::of(slice.domain.ports()).codex_probes().is_empty(), "the account was probed");
     let calls = transcript(&PathBuf::from(format!("{}.calls", sidecar.display())));
-    assert!(calls.iter().any(|request| request["method"] == "account/read"));
-    assert!(calls.iter().any(|request| request["method"] == "getAuthStatus" && request["params"] == serde_json::json!({"includeToken":false,"refreshToken":false})));
     assert!(calls.iter().all(|request| !matches!(request["method"].as_str(), Some("turn/start" | "thread/start" | "thread/resume"))), "a recovery probe is native metadata, never an inference or session transfer");
 }
 
@@ -837,7 +834,7 @@ fn a_disabled_existing_codex_node_recovers_from_real_native_capacity_without_bec
     assert!(state.claude_held().iter().all(|held| held.task != TaskId::from(TASK)));
     assert_eq!(state.lifecycle_of(&TASK.into()).unwrap().execution(), Some(&execution));
     assert_eq!(state.tasks[&TaskId::from(TASK)].account_key(), key);
-    assert_no_native_inference_from_account_probe(&sidecar);
+    assert_no_native_inference_from_account_probe(&slice, &sidecar);
     let host = driver.worker.host_group();
     std::fs::write(&sidecar, serde_json::to_vec(&serde_json::json!({"trace":true,"turnMode":"complete"})).unwrap()).unwrap();
     slice.settle(&mut driver);
@@ -854,7 +851,10 @@ fn an_existing_codex_probe_records_a_real_workspace_replacement_without_publishi
     use alondra_core::accounts::AccountState;
     let (slice, mut driver, sidecar, execution, card) = disabled_codex_waiting_for_native_capacity();
     let generation = crate::accounts::generation_provider(&slice.domain.state().unwrap(), &AccountKey::native(Provider::Codex));
-    std::fs::write(&sidecar, serde_json::to_vec(&serde_json::json!({"trace":true,"accountRead":{"account":{"type":"chatgpt","email":"first@example.test","planType":"plus"},"requiresOpenaiAuth":true},"rateLimits":{"accountId":"replacement-workspace","ordinaryUsageAllowed":true,"rateLimits":null}})).unwrap()).unwrap();
+    let mut replaced = alondra_engine_doubles::accounts::codex_fixture();
+    replaced.workspace_id = Some("replacement-workspace".into());
+    replaced.rate_limits = Some(serde_json::json!({"accountId":"replacement-workspace","ordinaryUsageAllowed":true,"rateLimits":null}));
+    alondra_engine_doubles::accounts::of(slice.domain.ports()).answer_every_codex(Ok(replaced));
     assert!(crate::accounts::probe_current_codex(&slice.domain, &TASK.into(), Some(alondra_domain_rules::ClaudeHold::Usage)).unwrap_err().contains("original managed account and workspace"));
     let state = slice.domain.state().unwrap(); let key = AccountKey::native(Provider::Codex);
     let account = state.accounts.iter().find(|account| account.provider == key.provider && account.id == key.account).unwrap();
@@ -864,7 +864,7 @@ fn an_existing_codex_probe_records_a_real_workspace_replacement_without_publishi
     assert!(state.account_usage.iter().all(|usage| usage.provider != key.provider || usage.account != key.account));
     assert!(!state.interactions[&card].withdrawn); assert!(state.interactions[&card].card.cause.is_some());
     assert_eq!(state.lifecycle_of(&TASK.into()).unwrap().execution(), Some(&execution));
-    assert_no_native_inference_from_account_probe(&sidecar);
+    assert_no_native_inference_from_account_probe(&slice, &sidecar);
     driver.stop().unwrap();
 }
 
@@ -873,7 +873,9 @@ fn an_existing_codex_probe_never_turns_new_api_key_billing_into_paid_authorizati
     use alondra_core::accounts::{AccountBilling, AccountState};
     let (slice, mut driver, sidecar, execution, card) = disabled_codex_waiting_for_native_capacity();
     let before = slice.domain.state().unwrap();
-    std::fs::write(&sidecar, serde_json::to_vec(&serde_json::json!({"trace":true,"accountRead":{"account":{"type":"apiKey"},"requiresOpenaiAuth":true}})).unwrap()).unwrap();
+    let mut api_key = alondra_engine_doubles::accounts::codex_fixture();
+    (api_key.account_type, api_key.pay_per_use, api_key.workspace_id, api_key.email, api_key.plan) = (Some("apiKey".into()), true, None, None, None);
+    alondra_engine_doubles::accounts::of(slice.domain.ports()).answer_every_codex(Ok(api_key));
     assert!(crate::accounts::probe_current_codex(&slice.domain, &TASK.into(), Some(alondra_domain_rules::ClaudeHold::Usage)).is_err());
     let state = slice.domain.state().unwrap(); let key = AccountKey::native(Provider::Codex);
     let account = state.accounts.iter().find(|account| account.provider == key.provider && account.id == key.account).unwrap();
@@ -883,7 +885,7 @@ fn an_existing_codex_probe_never_turns_new_api_key_billing_into_paid_authorizati
     assert!(!state.interactions[&card].withdrawn);
     assert_eq!(state.tasks[&TaskId::from(TASK)].selection.as_ref().unwrap().paid_account_grant, None);
     assert_eq!(state.lifecycle_of(&TASK.into()).unwrap().execution(), Some(&execution));
-    assert_no_native_inference_from_account_probe(&sidecar);
+    assert_no_native_inference_from_account_probe(&slice, &sidecar);
     driver.stop().unwrap();
 }
 

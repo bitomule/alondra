@@ -21,7 +21,6 @@ use alondra_daemon_support::{
     files_retention,
     hook_text,
     locks,
-    plugins,
     runtime_mutex,
     save,
     service_files,

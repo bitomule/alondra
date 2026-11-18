@@ -246,7 +246,7 @@ fn defer(domain:&DomainRuntime,change:&Transition)->Result<(),DomainError>{
 fn start_target(domain:&Arc<DomainRuntime>,plan:&Plan,prepared:PreparedHandoff)->Result<(),DomainError>{
     let task=&plan.task;
     let (backend,_)=domain.sdk().ok_or_else(||failure("Provider runtime missing"))?;
-    let plugin=crate::plugins::node_in(domain.home()).filter(|plugin|plugin.is_dir()).or_else(||Some(domain.home().join(crate::plugins::NODE)).filter(|plugin|plugin.is_dir())).ok_or_else(||failure("Alondra's task plugin is unavailable; run alondra doctor --fix"))?;
+    let plugin=domain.ports().plugins().node(domain.home()).filter(|plugin|plugin.is_dir()).or_else(||Some(domain.home().join(crate::plugins::NODE)).filter(|plugin|plugin.is_dir())).ok_or_else(||failure("Alondra's task plugin is unavailable; run alondra doctor --fix"))?;
     let launch=crate::sdk_owner::Launch{task:task.clone(),name:domain.read().state().tasks[task].title.clone(),directory:plan.source.directory.clone(),prompt:prepared.new_input,plugin,options:alondra_daemon_engine_model::LaunchOptions{provider:plan.target_account.provider,selection:Some(applied(plan)),model:Some(plan.target_model.model.model.clone()),effort:plan.target_model.reasoning_effort.clone(),disallowed_tools:plan.source.disallowed_tools.clone()},model:None,account:plan.target_account.account.clone()};
     let driver=crate::sdk_owner::continue_session(Arc::clone(domain),backend,launch,crate::sdk_owner::Continuation::Transition{id:plan.id.clone()})
         .map_err(|failed|failed.refusal.unwrap_or_else(||failure(failed.why)))?;
@@ -398,7 +398,7 @@ pub async fn advance(domain:&Arc<DomainRuntime>,task:&TaskId)->Result<Phase,Doma
                 }
                 if !domain.owns_sdk_host(&plan.source.agent){
                     let (backend,_)=domain.sdk().ok_or_else(||failure("The native runtime is unavailable"))?;
-                    let plugin=crate::plugins::node_in(domain.home()).ok_or_else(||failure("The node plugin is unavailable; run alondra doctor --fix"))?;
+                    let plugin=domain.ports().plugins().node(domain.home()).ok_or_else(||failure("The node plugin is unavailable; run alondra doctor --fix"))?;
                     let driver=crate::sdk_owner::adopt_for_transition(Arc::clone(domain),backend,task.clone(),Some(&plugin)).map_err(failure)?.ok_or_else(||failure("The existing native session cannot be adopted; create a new node instead of transferring it"))?;
                     domain.add_sdk_owner(crate::sdk_owner::Owner::spawn(driver));return Ok(Phase::Draining)
                 }

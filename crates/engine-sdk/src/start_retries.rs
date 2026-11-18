@@ -58,7 +58,7 @@ fn record_plan_cancels(domain: &DomainRuntime, state: &DomainState) -> Result<()
 async fn retry(domain: &DomainRuntime, home: &Path, task: &TaskId, closed: bool) -> Result<()> {
     let untrusted = domain.state()?.last_start_problem(task).and_then(|problem| serde_json::from_str::<StartProblem>(&problem.body).ok());
     if let Some(StartProblem::Untrusted { folder, .. }) = untrusted
-        && let Err(error) = crate::claude_trust::grant(Path::new(&folder), &crate::accounts::profiles(home))
+        && let Err(error) = domain.ports().accounts().grant_trust(Path::new(&folder), &crate::accounts::profiles(home))
     {
         log!("could not trust {folder} in Claude Code for {task}: {error}");
         return failed(domain, task, StartProblem::Untrusted { folder, error: Some(error) }, alondra_core::now_millis());
@@ -74,7 +74,7 @@ async fn retry(domain: &DomainRuntime, home: &Path, task: &TaskId, closed: bool)
     }
     match crate::domain_orchestrator_tools::relaunch(domain, home, task).await {
         Err(error) if !matches!(error.code.as_str(), "launch_failed" | "workspace_untrusted") => {
-            if let Some(problem) = problem_of(&error.code, &error.message, None) {
+            if let Some(problem) = problem_of(&*domain.ports().accounts(), &error.code, &error.message, None) {
                 failed(domain, task, problem, alondra_core::now_millis())?;
             }
         }

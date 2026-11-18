@@ -120,7 +120,7 @@ impl Updater {
 pub fn updater(config: &alondra_core::config::Config) -> Updater {
     let prefix = crate::relaunch::supervised(&config.service_label, |k| std::env::var(k).ok())
         .then(crate::relaunch::launch_path).flatten()
-        .and_then(|path| update::brew_prefix(&path));
+        .and_then(|path| alondra_host::brew::brew_prefix(&path));
     Updater {
         home: config.home.clone(),
         url: std::env::var("ALONDRA_UPDATE_URL").ok().filter(|u| !u.is_empty()).unwrap_or_else(|| update::RELEASES_URL.into()),

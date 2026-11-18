@@ -4,7 +4,7 @@
 //! list test Macs.
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
-use alondra_core::bonjour::{Advertisement, POLICY_DENIED, advertise as register, txt_record};
+use alondra_host::bonjour::{Advertisement, POLICY_DENIED, advertise as register, txt_record};
 use std::sync::Mutex;
 use std::time::Duration;
 

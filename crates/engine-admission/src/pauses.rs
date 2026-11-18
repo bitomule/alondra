@@ -149,14 +149,15 @@ fn clean_up(domain: &DomainRuntime, pauses: &mut Pauses, now: Millis) {
     if due.is_empty() {
         return;
     }
-    let table = crate::process_watch::snapshot();
+    let processes = domain.ports().processes();
+    let table = processes.table();
     for (session, stage) in due {
         let left = domain.engine().report(&session).and_then(|reported| reported.peer_pid)
             .map(|pid| crate::process_watch::work_descendants(&table, pid)).unwrap_or_default();
         let signal = if stage == Cleanup::Pending { libc::SIGTERM } else { libc::SIGKILL };
         if !left.is_empty() {
             log!("{session} was paused but {} process(es) of its calls still run: sending signal {signal}", left.len());
-            crate::process_watch::signal(&left, signal);
+            processes.signal(&left, signal);
         }
         if let Some(paused) = pauses.paused.get_mut(&session) {
             paused.cleanup = if stage == Cleanup::Pending && !left.is_empty() { Cleanup::Terminated } else { Cleanup::Done };

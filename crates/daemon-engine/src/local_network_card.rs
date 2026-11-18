@@ -42,7 +42,7 @@ pub(crate) fn step(open: bool, answered: bool, found: &str, denied_for: Option<D
 pub(crate) fn under_launcher() -> bool {
     let mut path = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
     let written = unsafe { libc::proc_pidpath(libc::getppid(), path.as_mut_ptr().cast(), path.len() as u32) };
-    written > 0 && std::str::from_utf8(&path[..written as usize]).is_ok_and(|parent| parent.ends_with(&format!("/{}", alondra_core::launcher::NAME)))
+    written > 0 && std::str::from_utf8(&path[..written as usize]).is_ok_and(|parent| parent.ends_with(&format!("/{}", alondra_host::launcher::NAME)))
 }
 
 pub async fn run(domain: Arc<DomainRuntime>) {

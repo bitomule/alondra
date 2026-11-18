@@ -494,8 +494,8 @@ impl Executor {
             return Ok(());
         }
         let (Some(orchestrator_plugin), Some(node_plugin)) = (
-            crate::plugins::orchestrator_in(&self.home).or_else(|| crate::plugins::dir(&self.claude_home, crate::plugins::ORCHESTRATOR)),
-            crate::plugins::node_in(&self.home).or_else(|| crate::plugins::dir(&self.claude_home, crate::plugins::NODE)),
+            self.domain.ports().plugins().orchestrator(&self.home).or_else(|| self.domain.ports().plugins().registered(&self.claude_home, crate::plugins::ORCHESTRATOR)),
+            self.domain.ports().plugins().node(&self.home).or_else(|| self.domain.ports().plugins().registered(&self.claude_home, crate::plugins::NODE)),
         ) else {
             bail!("Required Alondra plugins are not installed; run alondra doctor --fix");
         };

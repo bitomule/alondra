@@ -1,7 +1,7 @@
 //! Bringing Claude Code to the release Alondra needs, as `doctor --fix` and `alondra update` say it.
-use alondra_core::claude_code;
+use alondra_host::claude_code;
 use super::system::System as _;
-use alondra_core::claude_update::{Failure, Outcome};
+use alondra_host::claude_update::{Failure, Outcome};
 
 pub fn describe(outcome: &Outcome) -> String {
     let min = claude_code::MIN_TEXT;

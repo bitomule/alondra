@@ -10,11 +10,9 @@ use anyhow::{Context, Result, bail};
 use tokio::net::UnixListener;
 
 const OWNER_ANSWERS_WITHIN: Duration = Duration::from_secs(5);
-const ACK_PREFIX: &[u8] = b"alondrad:";
-
-pub fn probe_ack() -> Vec<u8> {
-    format!("alondrad:{}\n", std::process::id()).into_bytes()
-}
+use alondra_engine_ports::hooks::ACK_PREFIX;
+#[cfg(test)]
+use alondra_engine_ports::hooks::probe_ack;
 
 /// A listening socket outlives its daemon when a child forked at the wrong moment inherited the
 /// descriptor (macOS cannot create sockets close-on-exec atomically). The kernel keeps queueing

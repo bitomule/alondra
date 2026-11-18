@@ -641,7 +641,7 @@ pub fn launch(tui: fn() -> Result<()>) -> Result<()> {
     let interactive = can_ask(false);
     let decision = launch_decision(configured(&home, agents.as_deref()), interactive, launched,
         || answers_within(std::time::Duration::from_secs(5)),
-        || alondra_core::startup::read(&home).map(|r| r.reason));
+        || alondra_host::startup::read(&home).map(|r| r.reason));
     match decision {
         Launch::Wizard => std::process::exit(wizard()),
         Launch::NotSetUp => {

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::Millis;
+use alondra_foundation::Millis;
 
 pub const FILE: &str = "startup-failures.json";
 /// Failures further apart than this are not a loop: the count starts again.
