@@ -24,6 +24,33 @@ fn scenario(text: &str) -> Scenario {
     Scenario::parse(text).expect("the scenario is valid")
 }
 
+#[test]
+fn the_relay_socket_is_private_from_the_moment_it_is_bound() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::{fs::PermissionsExt, process::CommandExt};
+    use std::process::{Child, Command, Stdio};
+
+    struct OwnedChild(Child);
+    impl Drop for OwnedChild {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let directory = crate::test_support::Directory::for_unix_socket();
+    std::fs::create_dir_all(&*directory).unwrap();
+    let socket = directory.join("s");
+    let mut command = Command::new(std::env::var_os("SCENARIO_HOST_RELAY").unwrap());
+    command.arg(&socket).arg(directory.join("b")).env("SCENARIO_TEST_BOUND", "1").stdin(Stdio::piped()).stdout(Stdio::piped());
+    // SAFETY: only the forked test child changes its umask before exec.
+    unsafe { command.pre_exec(|| { libc::umask(0o022); Ok(()) }); }
+    let mut child = OwnedChild(command.spawn().unwrap());
+    let mut line = String::new();
+    BufReader::new(child.0.stdout.take().unwrap()).read_line(&mut line).unwrap();
+    assert_eq!(line, "bound\n");
+    assert_eq!(std::fs::symlink_metadata(socket).unwrap().permissions().mode() & 0o777, 0o600);
+}
+
 fn recorded() -> Outcome {
     run(&scenario(SMALL), None).expect("the scenario runs")
 }
@@ -55,7 +82,9 @@ fn a_view_that_changed_is_a_checkpoint_diff_naming_the_screen_client_and_languag
     let case = tempfile::tempdir().unwrap();
     let (name, files) = &outcome.checkpoints[0];
     checkpoint::write(case.path(), name, files).unwrap();
-    assert!(run(&scenario(SMALL), Some(case.path())).is_ok());
+    if let Err(error) = run(&scenario(SMALL), Some(case.path())) {
+        panic!("the recorded checkpoint differs: {error}");
+    }
     let file = case.path().join("checkpoints/asked/home.ios.es.json");
     let tampered = std::fs::read_to_string(&file).unwrap().replacen("\"view\": \"home\"", "\"view\": \"changed\"", 1);
     assert!(tampered.contains("changed"), "the accepted file has no view key to change");
@@ -183,7 +212,8 @@ fn delivered(checkpoint_lines: &str) -> Result<Outcome, ScenarioError> {
 fn the_pushes_a_phone_received_are_in_the_checkpoint_that_asks_for_them() {
     let outcome = delivered("pushes = true\n").expect("the scenario runs");
     let (_, files) = &outcome.checkpoints[0];
-    let pushes: serde_json::Value = serde_json::from_str(&files["pushes.json"]).unwrap();
+    let raw = files.get("pushes.json").unwrap_or_else(|| panic!("pushes.json is missing from checkpoint: {files:#?}"));
+    let pushes: serde_json::Value = serde_json::from_str(raw).unwrap_or_else(|error| panic!("invalid pushes.json: {error}; contents: {raw}"));
     let alerts: Vec<&serde_json::Value> = pushes.as_array().unwrap().iter().filter(|push| push["delivery"] == "alert").collect();
     assert_eq!(alerts.len(), 1, "{pushes}");
     assert_eq!(alerts[0]["device"], "<phone>");

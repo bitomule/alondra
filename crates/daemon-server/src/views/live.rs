@@ -690,14 +690,15 @@ async fn gather_inner(
             })
             .unwrap_or_default()
     };
+    let mut published = cache(&client.views_gauges);
     let sample = client.gauges.lock_or_recover("the machine gauges").clone();
     let gauges = if let Some((machine, _, providers)) = sample {
-        let mut published = cache(&client.views_gauges);
         published_gauges(&mut published, alondra_core::clock::instant(), lang, || (
             gauges(&machine, &providers, Lang::En, machine.at),
             gauges(&machine, &providers, Lang::Es, machine.at),
         ))
     } else { vec![] };
+    drop(published);
     let request_times = if clock_only { BTreeMap::new() } else { read.request_times
         .into_iter()
         .map(|(id, at)| (id.0, timestamp(at)))
@@ -1125,6 +1126,21 @@ mod cache_tests {
 
     fn keyed(client: &crate::client_routes::Client) -> usize {
         client.live_snapshots.keyed.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[tokio::test]
+    async fn scenario_start_discards_a_gauge_cached_before_the_startup_sample() {
+        let (_home, domain, client) = wait_fixture();
+        let state = domain.state().unwrap();
+        let machine = |cpu_usage| alondra_core::Machine { cpu_usage, ..Default::default() };
+        *client.gauges.lock().unwrap() = Some((machine(5.0), None, vec![]));
+        let early = gather(&client, &state, Lang::En, &[], false, true).await;
+        assert_eq!(early.gauges.iter().find(|gauge| gauge.id == "cpu").unwrap().text, "5%");
+
+        *client.gauges.lock().unwrap() = Some((machine(70.0), None, vec![]));
+        client.clear_scenario_gauges();
+        let ready = gather(&client, &state, Lang::En, &[], false, false).await;
+        assert_eq!(ready.gauges.iter().find(|gauge| gauge.id == "cpu").unwrap().text, "70%");
     }
 
 
