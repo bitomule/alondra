@@ -6,9 +6,10 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-test-hooks = ["dep:tempfile", "alondra-daemon-engine-model/test-hooks", "alondra-daemon-support/test-hooks"]
+test-hooks = ["dep:alondra-engine-doubles", "dep:tempfile", "alondra-daemon-engine-model/test-hooks", "alondra-daemon-support/test-hooks"]
 
 [dependencies]
+alondra-engine-doubles = { workspace = true, optional = true }
 alondra-engine-ports.workspace = true
 alondra-agent-application.workspace = true
 alondra-core.workspace = true

@@ -8,46 +8,16 @@ use std::time::Duration;
 
 use tokio::process::Command;
 
-#[derive(Debug)]
-pub enum LaunchError {
-    Workspace(String),
-    Storage(String),
-}
-impl std::fmt::Display for LaunchError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self { Self::Workspace(why) | Self::Storage(why) => f.write_str(why) }
-    }
-}
-impl From<String> for LaunchError { fn from(why: String) -> Self { Self::Workspace(why) } }
-impl std::error::Error for LaunchError {}
+pub use alondra_engine_ports::worktrees::{slug, LaunchError, Workplace};
 
-/// Where a launched node works.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Workplace {
-    /// The folder as given: not a git checkout, or a linked worktree already.
-    Given(PathBuf),
-    /// The task's worktree an earlier node left, with its work.
-    Reused(PathBuf),
-    /// A worktree Alondra made for the task from the default branch, or from the task's branch.
-    Made(PathBuf),
-}
-
-impl Workplace {
-    pub fn dir(&self) -> &Path {
-        match self {
-            Workplace::Given(dir) | Workplace::Reused(dir) | Workplace::Made(dir) => dir,
-        }
-    }
-
-    /// The worktree Alondra chose for the node, which it may delete with it.
-    pub fn chosen(&self) -> Option<&Path> {
-        match self {
-            Workplace::Given(_) => None,
-            Workplace::Reused(dir) | Workplace::Made(dir) => Some(dir.ancestors()
-                .find(|path| path.join(".git").exists())
-                .filter(|path| crate::worktrees_root::stored(path).is_some())
-                .unwrap_or(dir)),
-        }
+/// The worktree Alondra chose for the node, which it may delete with it.
+pub fn chosen(workplace: &Workplace) -> Option<&Path> {
+    match workplace {
+        Workplace::Given(_) => None,
+        Workplace::Reused(dir) | Workplace::Made(dir) => Some(dir.ancestors()
+            .find(|path| path.join(".git").exists())
+            .filter(|path| crate::worktrees_root::stored(path).is_some())
+            .unwrap_or(dir)),
     }
 }
 
@@ -194,7 +164,7 @@ pub async fn reopen_in(cwd: &Path, slug: &str, original: &Path, pr_head: Option<
         && main_checkout(Path::new(&top)) && !without_links(&Path::new(&top).join(".claude/worktrees")) {
         return Err(LaunchError::Workspace("The managed worktree folder contains a symbolic link".into()));
     }
-    isolate_in(&base, &format!("{slug}-reopened-{}", crate::auth::random_hex(4)), None, None, root).await.map(|workplace| (workplace, false))
+    isolate_in(&base, &format!("{slug}-reopened-{}", alondra_foundation::random_hex(4)), None, None, root).await.map(|workplace| (workplace, false))
 }
 
 struct ReopenLocation {
@@ -482,12 +452,6 @@ fn within(dir: PathBuf, inside: &Path) -> PathBuf {
 }
 
 /// A task id as a worktree folder name.
-pub fn slug(name: &str) -> String {
-    let slug: String = name.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();
-    let slug = slug.trim_matches('-').chars().take(64).collect::<String>();
-    if slug.is_empty() { "node".into() } else { slug }
-}
-
 fn same_dir(a: &Path, b: &Path) -> bool {
     match (a.canonicalize(), b.canonicalize()) {
         (Ok(a), Ok(b)) => a == b,
@@ -626,7 +590,7 @@ mod tests {
         sh(&inner, &["commit", "-q", "--allow-empty", "-m", "base"]);
         let task = isolate(&inner, "inner", None, None).await.unwrap();
         assert_eq!(task.dir(), inner.join(".claude/worktrees/inner"));
-        assert_eq!(task.chosen(), Some(task.dir()), "the first Git boundary belongs to the nested repository");
+        assert_eq!(chosen(&task), Some(task.dir()), "the first Git boundary belongs to the nested repository");
     }
 
     #[tokio::test]
@@ -927,7 +891,7 @@ mod tests {
         let (workplace, recovered) = reopen(&root, "t-given", &root, None).await.unwrap();
         assert!(recovered);
         assert_eq!(workplace, Workplace::Given(root.to_path_buf()));
-        assert!(workplace.chosen().is_none());
+        assert!(chosen(&workplace).is_none());
     }
 
     #[tokio::test]

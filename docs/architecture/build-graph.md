@@ -519,3 +519,26 @@ state primed; its load average was 45 to 51 during the last runs:
   scenario shards (up to 41 s), `daemon_server_test` (26 s alone, 55 s on the loaded Mac), the
   binaries' tests (`relaunch_test`, `doctor_service_test`, `cli_api_test`, 18 to 30 s) and the
   views' own. rules_rust 0.74 does not shard `rust_test`.
+
+- Next cut: move the fakes that need a `GhCli` into `github-gh`'s own test hooks, so the subsystem's
+  hooks stop linking the adapter.
+
+## Output adapter `system`: git, worktrees and disks (2026-11-18)
+
+`crates/system` runs git, makes and deletes the task worktrees and reads the disks. The engine asks
+it through the `Worktrees` and `Disk` ports of `engine-ports`, and only the `alondrad` root links it.
+The clock, the daemon's log, its locks and its atomic saves moved to `foundation`, so the adapter needs
+nothing of the application. The engine's tests run against `engine-doubles`' git-free `Worktrees` and
+`Disk`, which pass the same contract suite (`engine-doubles/src/contract.rs`) that `system`'s tests
+run with real git. `edit_bench` on one edit of the worktree code, before (where it lived,
+`daemon-support/src/worktree.rs`, main at 3a9431c) and after (`system/src/worktree.rs`), on the same
+Mac with incremental state:
+
+| Edit | Crates reopened | Test targets reopened | Actions run, build (rustc / clippy) | Build: critical path | Build: edit + build | Edit + test |
+|---|---:|---:|---|---:|---:|---:|
+| Before: `daemon-support/src/worktree.rs` | 35 | 76 | 66 (48 / 17) | 32 s | 48 s | 312 s, a test fails under load |
+| After: `system/src/worktree.rs` | 11 | 38 | 15 (10 / 4) | 10 s | 22 s | 87 s |
+
+- The edit rebuilds `system`, its test, `alondrad` and the tests that run the `alondrad` binary.
+- Before the doubles, with the engine's test hooks wiring `system` into every runtime, the same edit
+  took 46 s to build and 318 s with tests.

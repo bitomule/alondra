@@ -678,7 +678,7 @@ pub(crate) fn block_text(user: &str, title: &str) -> String {
 /// The open PR of the node's branch that no Task registered, which the node should register
 /// and deliver. GitHub gets three seconds: the Stop hook waits on this answer.
 async fn unregistered_pr(domain: &DomainRuntime, session: &str) -> Option<String> {
-    let dir = crate::worktree::worktree_of(session)?;
+    let dir = domain.ports().worktrees().worktree_of(session)?;
     let github = domain.ports().port::<alondra_engine_ports::github::GitHub>()?;
     let (host, repository, number) = github.reads.branch_pr(&dir).await?;
     unregistered_pr_text(&*domain.state().ok()?, &host, &repository, number)
@@ -1514,7 +1514,7 @@ pub mod tests {
             dependencies: BTreeSet::new(), stack: None, launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
         });
         let root = crate::test_support::Directory::new();
-        let made = crate::worktree::testing::task_worktree(&root, "agent-a9e1782746c156d58");
+        let made = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "agent-a9e1782746c156d58");
         let path = made.to_str().unwrap();
         hook(&domain, json!({"session_id": "session-a", "hook_event_name": "PostToolUse", "tool_name": "Agent",
             "tool_input": {"isolation": "worktree", "prompt": "Fix it"},

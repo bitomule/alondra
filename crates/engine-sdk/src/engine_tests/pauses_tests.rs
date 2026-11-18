@@ -137,7 +137,7 @@ async fn a_disk_hold_the_node_rested_through_ends_once_there_is_room_by_telling_
     assert_eq!(node.lifecycle().activity(), alondra_domain::ActivityView::Resting);
     assert_eq!(node.pending_inputs(), 0, "nothing waits for it");
 
-    domain.machine_watch().measure_disk(crate::disk::Space { free: 60 * GB, purgeable: 0, total: 500 * GB });
+    domain.machine_watch().measure_disk(alondra_engine_ports::disk::Space { free: 60 * GB, purgeable: 0, total: 500 * GB });
     node.gate_look().await;
     assert!(domain.admission().paused(&domain, &node.agent()).is_none(), "the pause ended");
     assert_eq!(node.pending_inputs(), 1, "recovery queues the carry-on instruction before the owner runs");
@@ -168,7 +168,7 @@ async fn a_host_that_dies_under_a_disk_hold_of_a_delivery_sent_back_goes_on_once
     assert_eq!(node.lifecycle().activity(), alondra_domain::ActivityView::Resting);
     assert_eq!(node.pending_inputs(), 0, "nothing waits for it while the disk has no room");
 
-    domain.machine_watch().measure_disk(crate::disk::Space { free: 60 * GB, purgeable: 0, total: 500 * GB });
+    domain.machine_watch().measure_disk(alondra_engine_ports::disk::Space { free: 60 * GB, purgeable: 0, total: 500 * GB });
     let mut changed = domain.subscribe();
     node.gate_look().await;
     assert!(domain.admission().paused(&domain, &node.agent()).is_none(), "the pause ended");
@@ -265,7 +265,7 @@ async fn ten_nodes_the_disk_held_come_back_one_by_one_on_19_gb_free_before_a_new
     for session in &sessions {
         assert!(gate.hold_back(&domain, session, Reason::Disk, now));
     }
-    watch.measure_disk(crate::disk::Space { free: 19 * GB, purgeable: 0, total: 500 * GB });
+    watch.measure_disk(alondra_engine_ports::disk::Space { free: 19 * GB, purgeable: 0, total: 500 * GB });
     node.gate_look().await;
     assert_eq!(crate::admission::working_tasks(&domain, &domain.state().unwrap()).len(), 0, "their turns go on, but they take no slot while the disk holds them");
 
@@ -348,7 +348,7 @@ async fn under_the_disks_floor_the_heavier_nodes_next_turn_waits_for_room_withou
     watch.measure_peaks(14 * GB, &heavy, now);
     watch.measure_peaks(2 * GB, &heavy, now + SAMPLE);
     watch.measure_peaks(2 * GB, &working, now + 2 * SAMPLE);
-    watch.measure_disk(crate::disk::Space { free: 2 * GB, purgeable: 0, total: 500 * GB });
+    watch.measure_disk(alondra_engine_ports::disk::Space { free: 2 * GB, purgeable: 0, total: 500 * GB });
     assert!(watch.under_floor());
 
     crate::admission::hold_for_disk(&domain, now + 2 * SAMPLE);
@@ -374,7 +374,7 @@ async fn under_the_disks_floor_the_heavier_nodes_next_turn_waits_for_room_withou
     assert!(domain.read().index().waiting().is_empty(), "nobody is asked anything: {:?}", domain.read().index().waiting());
     assert!(!domain.state().unwrap().interactions.keys().any(|id| id.0.starts_with(alondra_core::machine_incident::MACHINE_PREFIX)));
 
-    watch.measure_disk(crate::disk::Space { free: 60 * GB, purgeable: 0, total: 500 * GB });
+    watch.measure_disk(alondra_engine_ports::disk::Space { free: 60 * GB, purgeable: 0, total: 500 * GB });
     node.gate_look().await;
     node.until_told("Use the short changelog format");
     assert!(node.prompts().iter().all(|prompt| !prompt.contains("held your next turn")), "{:?}", node.prompts());
@@ -393,7 +393,7 @@ async fn a_host_that_dies_under_a_disk_hold_while_its_turn_runs_never_leaves_its
     let mut node = SdkNode::working();
     let domain = Arc::clone(&node.domain);
     domain.admission().tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
-    domain.machine_watch().measure_disk(crate::disk::Space { free: GB, purgeable: 0, total: 500 * GB });
+    domain.machine_watch().measure_disk(alondra_engine_ports::disk::Space { free: GB, purgeable: 0, total: 500 * GB });
     assert!(domain.admission().hold_back(&domain, &node.agent(), Reason::Disk, alondra_core::now_millis()));
     node.lose_host();
     node.gate_look().await;
@@ -520,7 +520,7 @@ async fn resume_on_the_card_of_a_paused_sdk_node_is_taken_while_the_card_is_open
         let mut node = SdkNode::working();
         let domain = Arc::clone(&node.domain);
         domain.admission().tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(0)) });
-        domain.machine_watch().measure_disk(crate::disk::Space { free: GB, purgeable: 0, total: 500 * GB });
+        domain.machine_watch().measure_disk(alondra_engine_ports::disk::Space { free: GB, purgeable: 0, total: 500 * GB });
         if reason == Reason::ByUser {
             node.pause();
         } else {
@@ -554,7 +554,7 @@ async fn every_pause_with_its_host_lost_or_not_keeps_a_working_task_owned_and_it
             let mut node = SdkNode::working();
             let domain = Arc::clone(&node.domain);
             domain.admission().tune(Tuning { spacing: 0, limit: Some(Limit::Fixed(6)) });
-            domain.machine_watch().measure_disk(crate::disk::Space { free: GB, purgeable: 0, total: 500 * GB });
+            domain.machine_watch().measure_disk(alondra_engine_ports::disk::Space { free: GB, purgeable: 0, total: 500 * GB });
             match &reason {
                 Reason::ByUser => node.pause(),
                 Reason::Disk => {
@@ -581,7 +581,7 @@ async fn every_pause_with_its_host_lost_or_not_keeps_a_working_task_owned_and_it
             assert!(domain.admission().paused(&domain, &node.agent()).is_some(), "{case}: an open pause card is a pause the gate holds");
             assert_eq!(answer_resume(&domain, &card), Ok(()), "{case}: the card's Resume is taken while it is open");
 
-            domain.machine_watch().measure_disk(crate::disk::Space { free: 60 * GB, purgeable: 0, total: 500 * GB });
+            domain.machine_watch().measure_disk(alondra_engine_ports::disk::Space { free: 60 * GB, purgeable: 0, total: 500 * GB });
             node.gate_look().await;
             domain.join_retakes();
             assert!(domain.admission().paused(&domain, &node.agent()).is_none(), "{case}: the pause ended");

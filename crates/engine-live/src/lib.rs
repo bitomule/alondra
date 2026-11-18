@@ -9,7 +9,7 @@
 pub mod test_support;
 
 #[macro_use]
-extern crate alondra_daemon_support;
+extern crate alondra_foundation;
 
 use alondra_daemon_support::{hook_text, job_state, locks};
 use alondra_engine_kernel::{domain_runtime, extension, metrics_capture};

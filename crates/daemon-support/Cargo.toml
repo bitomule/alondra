@@ -9,6 +9,7 @@ publish.workspace = true
 test-hooks = ["dep:tempfile"]
 
 [dependencies]
+alondra-foundation.workspace = true
 alondra-core.workspace = true
 alondra-domain-rules.workspace = true
 alondra-view-model.workspace = true

@@ -70,6 +70,7 @@ CRATE_LAYERS = {
     "crates/provider-claude": ADAPTER_OUT,
     "crates/provider-codex": ADAPTER_OUT,
     "crates/daemon-engine-store": ADAPTER_OUT,
+    "crates/system": ADAPTER_OUT,
     "crates/agent-runtime": ADAPTER_OUT,
     "crates/agent-protocol": ADAPTER_PRIVATE,
     "crates/codex-protocol": ADAPTER_PRIVATE,

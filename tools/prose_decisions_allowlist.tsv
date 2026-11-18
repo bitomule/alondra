@@ -83,9 +83,9 @@ crates/cli-tui/src/tui/unified_diff.rs	if let Some(to) = raw.strip_prefix("renam
 crates/cli-tui/src/tui/unified_diff.rs	if raw.starts_with("Binary files ") || raw == "GIT binary patch" {	format	git diff headers
 crates/daemon-server/src/domain_api.rs	for names in diff.lines().filter_map(|line| line.strip_prefix("diff --git a/")) {	format	git diff headers
 crates/daemon-engine/src/domain_messages.rs	hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>() == digest	format	digest hex
-crates/daemon-support/src/launch_worktree.rs	let dir = PathBuf::from(entry.lines().find_map(|line| line.strip_prefix("worktree "))?);	format	git worktree list --porcelain
-crates/daemon-support/src/launch_worktree.rs	let branch = entry.lines().find_map(|line| line.strip_prefix("branch refs/heads/")).map(str::to_owned);	format	git worktree list --porcelain
-crates/daemon-support/src/launch_worktree.rs	let slug: String = name.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();	format	branch slug built from a name
+crates/system/src/launch_worktree.rs	let dir = PathBuf::from(entry.lines().find_map(|line| line.strip_prefix("worktree "))?);	format	git worktree list --porcelain
+crates/system/src/launch_worktree.rs	let branch = entry.lines().find_map(|line| line.strip_prefix("branch refs/heads/")).map(str::to_owned);	format	git worktree list --porcelain
+crates/engine-ports/src/worktrees.rs	let slug: String = name.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect();	format	branch slug built from a name
 crates/engine-github/src/pr_images.rs	let host = host.to_ascii_lowercase();	format	URL host and attachment uuid normalised
 crates/engine-github/src/pr_images.rs	return uuid_like(uuid).then(|| Source::Uploaded { uuid: uuid.to_ascii_lowercase() });	format	URL host and attachment uuid normalised
 crates/engine-github/src/pr_images.rs	["user-attachments", "assets", uuid] if uuid_like(uuid) => Some(Source::Uploaded { uuid: uuid.to_ascii_lowercase() }),	format	URL host and attachment uuid normalised
@@ -223,7 +223,7 @@ crates/daemon-server/src/public_content.rs	if findings.len() < MAX_FINDINGS && l
 crates/daemon-server/src/public_content.rs	if let Some(header) = line.strip_prefix("diff --git ") {	format	Git unified diff file header
 crates/daemon-server/src/public_content.rs	} else if line.starts_with("@@ ") {	format	Git unified diff hunk header
 apple/Data/Transport/Sources/Errors/RegistrationFailure.swift	if status == 410, decoded?.kind == "outcome_unknown", decoded?.reason == "expired" {	own-grammar	HTTP 410 and documented JSON kind/reason tokens identify an expired registration outcome
-crates/daemon-support/src/worktree.rs	if !listed.lines().filter_map(|line| line.strip_prefix("worktree ")).any(|dir| Path::new(dir).canonicalize().ok().as_ref() == Some(&canonical)) {	format	git worktree list --porcelain
+crates/system/src/worktree.rs	if !listed.lines().filter_map(|line| line.strip_prefix("worktree ")).any(|dir| Path::new(dir).canonicalize().ok().as_ref() == Some(&canonical)) {	format	git worktree list --porcelain
 crates/core/src/claude_update.rs	if text.contains("/.local/share/claude/versions/") {	format	installation pathname components select the existing updater; no provider prose is read
 crates/core/src/claude_update.rs	if text.contains("/node_modules/@anthropic-ai/claude-code") {	format	installation pathname components select the existing updater; no provider prose is read
 crates/core/src/claude_update.rs	let mut command = Command::new("/bin/ps");	format	ps comm column compared as an exact executable path; failures conservatively keep the updater waiting
@@ -248,3 +248,4 @@ crates/core/src/task_git.rs	&& !text.starts_with(['-', '/'])	security-parse	shel
 crates/core/src/task_git.rs	&& !text.contains("..")	security-parse	shell command policy that parses the command it judges (G-12)
 crates/core/src/task_git.rs	text.strip_prefix("origin/").is_some_and(safe_ref)	security-parse	shell command policy that parses the command it judges (G-12)
 crates/core/src/task_git.rs	let own_source = source.is_none_or(|s| s == "HEAD" || s == branch || s == format!("refs/heads/{branch}"));	security-parse	shell command policy that parses the command it judges (G-12)
+crates/foundation/src/locks.rs	assert!(stderr.contains(&format!("{what}: a thread panicked holding it and may have left it half-changed")), "{stderr}");	format	a test helper asserting the daemon's own exit line

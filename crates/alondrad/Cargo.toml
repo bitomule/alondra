@@ -6,6 +6,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+alondra-system.workspace = true
+alondra-foundation.workspace = true
 alondra-engine-ports.workspace = true
 alondra-github-gh.workspace = true
 alondra-process-group.workspace = true

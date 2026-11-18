@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use alondra_domain_rules::{AgentId, Command, Task, TaskId, WorktreeEnd, WorktreeOrigin};
-use crate::worktree::TaskWorktree;
+use alondra_engine_ports::worktrees::TaskWorktree;
 use anyhow::{Context, Result};
 use serde_json::Value;
 
@@ -14,7 +14,8 @@ use crate::locks::Poisonable as _;
 pub async fn ready(domain: &DomainRuntime, path: &str) -> Result<()> {
     let storage = domain.store.lock_or_exit("the domain store").worktree_storage_at(path)?;
     if let Some((path, storage)) = storage {
-        tokio::task::spawn_blocking(move || alondra_daemon_support::worktrees_root::restore(&path, &storage))
+        let worktrees = domain.ports().worktrees();
+        tokio::task::spawn_blocking(move || worktrees.restore(&path, &storage))
             .await?.map_err(Unreachable)?;
     }
     Ok(())
@@ -74,7 +75,7 @@ fn record(domain: &DomainRuntime, task: &TaskId, made: Made) -> Result<()> {
         Made::At { path, branch, subagent } => (path, branch, if subagent { WorktreeOrigin::Subagent } else { WorktreeOrigin::Entered }),
         Made::Subagent { agent } => {
             let own = domain.task_worktree(task)?.with_context(|| format!("{task} has no worktree of its own to place subagent {agent}'s"))?;
-            let path = crate::worktree::subagent_worktree(Path::new(&own), &agent)
+            let path = domain.ports().worktrees().subagent_worktree(Path::new(&own), &agent)
                 .with_context(|| format!("{own} is not a worktree Alondra made"))?;
             (path.display().to_string(), None, WorktreeOrigin::Subagent)
         }
@@ -140,7 +141,7 @@ pub async fn leftovers(domain: &DomainRuntime, task: &Task) -> Vec<(String, Stri
                 continue;
             }
         }
-        match crate::worktree::unsaved(Path::new(path)).await {
+        match domain.ports().worktrees().unsaved(Path::new(path)).await {
             Ok(None) => {}
             Ok(Some(what)) => left.push((path.clone(), what)),
             Err(why) => left.push((path.clone(), why)),
@@ -165,7 +166,7 @@ pub async fn release_all(domain: &DomainRuntime, task: &Task) -> Result<Vec<(Str
             log!("leaving the worktree {path} of {} to {heir}, which goes on working in it", task.id);
             WorktreeEnd::HandedOver
         } else {
-            match crate::worktree::release_recorded_worktree(Path::new(path), worktree.discard).await {
+            match domain.ports().worktrees().release_recorded_worktree(Path::new(path), worktree.discard).await {
                 Ok(TaskWorktree::Removed { freed }) => {
                     log!("deleting the worktree {path} freed {}", alondra_core::machine_incident::bytes_text(freed, alondra_view_model::Lang::En));
                     WorktreeEnd::Removed

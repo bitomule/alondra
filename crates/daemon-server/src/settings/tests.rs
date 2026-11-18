@@ -233,22 +233,22 @@ async fn a_web_page_on_this_mac_is_refused() {
 #[test]
 fn config_keys_are_written_and_say_whether_the_daemon_restarts() {
     let mac = Mac::new();
-    let reply = write_config(&mac.alondra, &json!({"key": "port", "value": "47900"}));
+    let reply = write_config(&mac.alondra, &alondra_engine_doubles::worktrees::Worktrees::default(), &json!({"key": "port", "value": "47900"}));
     assert_eq!((reply.status, &reply.body), (StatusCode::OK, &json!({"key": "port", "restart": true})));
-    let reply = write_config(&mac.alondra, &json!({"key": "name", "value": "Ada"}));
+    let reply = write_config(&mac.alondra, &alondra_engine_doubles::worktrees::Worktrees::default(), &json!({"key": "name", "value": "Ada"}));
     assert_eq!(reply.body["restart"], json!(false));
     let file = std::fs::read_to_string(alondra_core::config::path_in(&mac.alondra)).unwrap();
     assert!(file.contains("port = 47900") && file.contains("name = \"Ada\""), "{file}");
-    assert_eq!(write_config(&mac.alondra, &json!({"key": "name", "value": null})).status, StatusCode::OK);
+    assert_eq!(write_config(&mac.alondra, &alondra_engine_doubles::worktrees::Worktrees::default(), &json!({"key": "name", "value": null})).status, StatusCode::OK);
     assert!(!std::fs::read_to_string(alondra_core::config::path_in(&mac.alondra)).unwrap().contains("name"));
     for (body, code) in [
         (json!({"key": "auto_update", "value": "true"}), "unknown_key"),
         (json!({"key": "port", "value": "web"}), "invalid_value"),
     ] {
-        let reply = write_config(&mac.alondra, &body);
+        let reply = write_config(&mac.alondra, &alondra_engine_doubles::worktrees::Worktrees::default(), &body);
         assert_eq!((reply.status, reply.body["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some(code)), "{body}");
     }
-    assert_eq!(write_config(&mac.alondra, &json!({"key": "port", "value": "1", "extra": 1})).status, StatusCode::BAD_REQUEST);
+    assert_eq!(write_config(&mac.alondra, &alondra_engine_doubles::worktrees::Worktrees::default(), &json!({"key": "port", "value": "1", "extra": 1})).status, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -301,7 +301,7 @@ fn worktrees_root_config_pins_its_volume_and_unset_restores_default_without_losi
     let path = mac.user.join("worktrees");
     std::fs::create_dir(&path).unwrap();
     std::fs::write(alondra_core::options::path_in(&mac.alondra), "max_working_nodes = 3\n").unwrap();
-    let reply = write_config(&mac.alondra, &json!({"key": "worktrees_root", "value": path}));
+    let reply = write_config(&mac.alondra, &alondra_engine_doubles::worktrees::Worktrees::default(), &json!({"key": "worktrees_root", "value": path}));
     assert_eq!(reply.status, StatusCode::OK, "{}", reply.body);
     assert_eq!(reply.body["restart"], false);
     let file = alondra_core::options::OptionsFile::parse(&mac.options()).unwrap();
@@ -309,9 +309,9 @@ fn worktrees_root_config_pins_its_volume_and_unset_restores_default_without_losi
     assert_eq!(storage.path, path);
     assert!(!storage.volume_id.is_empty());
     let saved = mac.options();
-    assert_eq!(write_config(&mac.alondra, &json!({"key": "worktrees_root", "value": path.join("missing")})).status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(write_config(&mac.alondra, &alondra_engine_doubles::worktrees::Worktrees::default(), &json!({"key": "worktrees_root", "value": path.join("missing")})).status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(mac.options(), saved);
-    assert_eq!(write_config(&mac.alondra, &json!({"key": "worktrees_root", "value": null})).status, StatusCode::OK);
+    assert_eq!(write_config(&mac.alondra, &alondra_engine_doubles::worktrees::Worktrees::default(), &json!({"key": "worktrees_root", "value": null})).status, StatusCode::OK);
     let file = alondra_core::options::OptionsFile::parse(&mac.options()).unwrap();
     assert_eq!(file.worktrees_root, None);
     assert_eq!(file.max_working_nodes, alondra_core::options::NodeLimit::Fixed(3));

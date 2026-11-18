@@ -16,7 +16,7 @@ use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::TaskClosing;
 use crate::node_close::{CloseOutcome, Sessions, close_node};
 use crate::task_worktrees::Unreachable;
-use crate::worktree::TaskWorktree;
+use alondra_engine_ports::worktrees::TaskWorktree;
 use alondra_domain_rules::close_problem::{CLOSE_PROBLEM_PREFIX, CloseProblem, CloseStop};
 use alondra_view_model::Lang;
 use alondra_domain_rules::{
@@ -169,7 +169,7 @@ async fn finish_unattended(domain: &DomainRuntime, task: &Task) -> Result<()> {
     let dir = domain.task_worktree(&task.id)?.filter(|dir| !task.worktrees.contains_key(dir));
     if let Some(dir) = &dir { crate::task_worktrees::ready(domain, dir).await?; }
     if let Some(dir) = dir.filter(|dir| crate::task_worktrees::may_handle(domain, dir).is_ok() && crate::task_worktrees::heir(domain, task, dir).is_ok_and(|heir| heir.is_none())) {
-        match crate::worktree::release_task_worktree(Path::new(&dir), &crate::launch_worktree::slug(&task.id.0), true).await {
+        match domain.ports().worktrees().release_task_worktree(Path::new(&dir), &alondra_engine_ports::worktrees::slug(&task.id.0), true).await {
             Ok(TaskWorktree::Unsaved(left)) => anyhow::bail!("the worktree of {} has work that is not saved: {left}", task.id),
             Ok(TaskWorktree::Removed { freed }) => log!("deleting the worktree {dir} freed {}", alondra_core::machine_incident::bytes_text(freed, alondra_view_model::Lang::En)),
             Ok(TaskWorktree::Unavailable(why)) => return Err(Unreachable(why).into()),
@@ -582,7 +582,7 @@ async fn finish_with_worktree(
     let Some(dir) = dir.filter(|dir| crate::task_worktrees::may_handle(domain, dir).is_ok() && crate::task_worktrees::heir(domain, task, dir).is_ok_and(|heir| heir.is_none())) else {
         return finish(domain, &row, Some(agent), end);
     };
-    match crate::worktree::release_task_worktree(Path::new(&dir), &crate::launch_worktree::slug(&task.id.0), true).await {
+    match domain.ports().worktrees().release_task_worktree(Path::new(&dir), &alondra_engine_ports::worktrees::slug(&task.id.0), true).await {
         Ok(TaskWorktree::Unsaved(left)) => {
             let reason = format!("its session is closed, but its worktree has work that is not saved: {left}");
             failure(domain, timing, now, task, agent, row, &reason, (CloseStop::Unsaved, &left), cleanup)

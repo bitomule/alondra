@@ -15,7 +15,7 @@ use anyhow::{Result, anyhow};
 
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
-use crate::worktree::TaskWorktree;
+use alondra_engine_ports::worktrees::TaskWorktree;
 
 enum Settled {
     Gone(WorktreeEnd),
@@ -30,15 +30,15 @@ fn keeps_branch(state: &DomainState, task: &Task) -> bool {
 /// Deletes the worktree at `path` unless it holds unsaved files, which it only counts.
 async fn settle_path(domain: &DomainRuntime, task: &Task, path: &str) -> Result<Settled> {
     crate::task_worktrees::ready(domain, path).await?;
-    if let Some(why) = crate::worktree::unreachable_link(Path::new(path)) {
+    if let Some(why) = domain.ports().worktrees().unreachable_link(Path::new(path)) {
         return Err(crate::task_worktrees::Unreachable(why).into());
     }
-    let unsaved = crate::worktree::uncommitted_files_of_alondras_worktree(Path::new(path)).await.map_err(|why| anyhow!(why))?.unwrap_or(0);
+    let unsaved = domain.ports().worktrees().uncommitted_files_of_alondras_worktree(Path::new(path)).await.map_err(|why| anyhow!(why))?.unwrap_or(0);
     if unsaved > 0 {
         return Ok(Settled::Unsaved(unsaved));
     }
     let keeps_branch = keeps_branch(&*domain.state()?, task);
-    match crate::worktree::discard_worktree(Path::new(path), keeps_branch).await.map_err(|why| anyhow!(why))? {
+    match domain.ports().worktrees().discard_worktree(Path::new(path), keeps_branch).await.map_err(|why| anyhow!(why))? {
         TaskWorktree::Removed { freed } => {
             log!("deleting the worktree {path} of the cancelled task {} freed {}", task.id, alondra_core::machine_incident::bytes_text(freed, Lang::En));
             Ok(Settled::Gone(WorktreeEnd::Removed))
@@ -132,7 +132,7 @@ pub async fn apply_answers(domain: &DomainRuntime) -> Result<()> {
             let keeps_branch = state.tasks.get(&task_id).is_some_and(|task| keeps_branch(&state, task));
             for path in entry.paths.iter().filter(|path| !in_use(domain, &state, &task_id, path)) {
                 if crate::task_worktrees::ready(domain, path).await.is_err() || crate::task_worktrees::may_handle(domain, path).is_err() { continue; }
-                match crate::worktree::discard_worktree(Path::new(path), keeps_branch).await {
+                match domain.ports().worktrees().discard_worktree(Path::new(path), keeps_branch).await {
                     Ok(TaskWorktree::Removed { freed }) => log!("deleting the worktree {path} of {task_id}, as the user asked, freed {}",
                         alondra_core::machine_incident::bytes_text(freed, Lang::En)),
                     Ok(_) => {}

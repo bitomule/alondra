@@ -7,12 +7,12 @@ use alondra_domain_rules::{ChecklistMark, DeliveryTarget, DomainError, DomainSta
 use serde_json::Value;
 use tokio::process::Command;
 
-pub fn user_name() -> String {
-    alondra_core::config::Config::load().map(|config| config.name).unwrap_or_else(|_| "The user".into())
-}
+pub use alondra_engine_ports::worktrees::{Protected, TaskWorktree, WorktreeOrigin};
 
-pub fn worktree_of(session_id: &str) -> Option<PathBuf> {
-    worktree_in(&crate::watcher::claude_home(), session_id)
+pub use alondra_core::config::user_name;
+
+pub fn worktree_of(claude_home: &Path, session_id: &str) -> Option<PathBuf> {
+    worktree_in(claude_home, session_id)
 }
 
 /// The worktree a session works in: the one Claude Code made for it, else the linked worktree it
@@ -21,16 +21,6 @@ pub(crate) fn worktree_in(claude_home: &Path, session_id: &str) -> Option<PathBu
     origin_in(claude_home, session_id).map(|origin| match origin {
         WorktreeOrigin::Made(dir) | WorktreeOrigin::LaunchedIn(dir) => dir,
     })
-}
-
-/// How a session came to work in its worktree, which decides whether Alondra may delete it.
-#[derive(Debug, PartialEq)]
-pub enum WorktreeOrigin {
-    /// Claude Code made it for the session.
-    Made(PathBuf),
-    /// The session was launched in it: the worktree of the node it replaced, or a folder the user
-    /// gave, which can be a linked worktree too.
-    LaunchedIn(PathBuf),
 }
 
 pub fn origin_in(claude_home: &Path, session_id: &str) -> Option<WorktreeOrigin> {
@@ -52,22 +42,6 @@ pub fn subagent_worktree(own: &Path, agent: &str) -> Option<PathBuf> {
         .map(|out| PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()))?;
     let repository = common.parent()?;
     Some(repository.join(".claude").join("worktrees").join(format!("agent-{agent}")))
-}
-
-/// The folders a task's worktree can never be, whatever git says of them: the user's home and the
-/// projects root, and every folder above them.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Protected {
-    pub home: PathBuf,
-    pub projects_root: PathBuf,
-}
-
-impl Protected {
-    pub fn covers(&self, path: &Path) -> bool {
-        let forms = |path: &Path| [Some(path.to_path_buf()), path.canonicalize().ok()].into_iter().flatten().collect::<Vec<_>>();
-        let kept: Vec<PathBuf> = forms(&self.home).into_iter().chain(forms(&self.projects_root)).collect();
-        forms(path).iter().any(|path| path.parent().is_none() || kept.iter().any(|kept| kept.starts_with(path)))
-    }
 }
 
 /// Why `path` cannot be a task's worktree, if it cannot: only the top of a worktree git lists for
@@ -152,8 +126,8 @@ async fn unpushed_commits(dir: &Path) -> Option<usize> {
 
 /// What a node would leave behind in its worktree: uncommitted files or commits no remote has.
 /// None when the node has no worktree of its own or it is clean.
-pub async fn leftovers(session_id: &str) -> Option<String> {
-    leftovers_in(&worktree_of(session_id)?).await
+pub async fn leftovers(claude_home: &Path, session_id: &str) -> Option<String> {
+    leftovers_in(&worktree_of(claude_home, session_id)?).await
 }
 
 pub async fn leftovers_in(dir: &Path) -> Option<String> {
@@ -214,8 +188,8 @@ fn listed(files: &[String]) -> String {
 /// a repository without a remote, or already in the local default branch, needs no push and no PR.
 /// Nothing when the node has no worktree of its own, or when git cannot tell.
 /// The check gives git `limit` in all, and is refused when git does not finish in it.
-pub async fn final_refusal(state: &DomainState, session_id: &str, task: &TaskId, targets: &[DeliveryTarget], limit: Duration) -> Option<DomainError> {
-    final_refusal_within(state, &node_worktree(state, session_id, task)?, task, targets, limit).await
+pub async fn final_refusal(claude_home: &Path, state: &DomainState, session_id: &str, task: &TaskId, targets: &[DeliveryTarget], limit: Duration) -> Option<DomainError> {
+    final_refusal_within(state, &node_worktree(claude_home, state, session_id, task)?, task, targets, limit).await
 }
 
 pub(crate) async fn final_refusal_within(state: &DomainState, dir: &Path, task: &TaskId, targets: &[DeliveryTarget], limit: Duration) -> Option<DomainError> {
@@ -223,7 +197,7 @@ pub(crate) async fn final_refusal_within(state: &DomainState, dir: &Path, task: 
 }
 
 /// How long git may take, in all, on each check a final delivery makes in its worktree.
-pub const CHECK_LIMIT: Duration = Duration::from_secs(60);
+pub use alondra_engine_ports::worktrees::CHECK_LIMIT;
 
 /// What `check` finds within `limit`, or a refusal that names the git that did not finish. Every
 /// git it starts is killed when it is dropped.
@@ -243,8 +217,8 @@ async fn within(limit: Duration, dir: &Path, what: &str, check: impl Future<Outp
 
 /// The worktree the node of `task` works in: the one its `claude --bg` job names, else the one the
 /// task recorded as its own, where a node of the Agent SDK, which has no job, works.
-pub(crate) fn node_worktree(state: &DomainState, session_id: &str, task: &TaskId) -> Option<PathBuf> {
-    worktree_of(session_id).or_else(|| {
+pub(crate) fn node_worktree(claude_home: &Path, state: &DomainState, session_id: &str, task: &TaskId) -> Option<PathBuf> {
+    worktree_of(claude_home, session_id).or_else(|| {
         let task = state.tasks.get(task)?;
         task.open_worktrees().find(|(_, worktree)| worktree.origin == alondra_domain_rules::WorktreeOrigin::Task).map(|(path, _)| PathBuf::from(path))
     })
@@ -299,8 +273,8 @@ pub(crate) async fn final_refusal_in(state: &DomainState, dir: &Path, task: &Tas
 
 /// Why the commits a final delivery cites as evidence cannot be taken: one its worktree does not
 /// have in the history of its HEAD. Nothing when the node has no worktree of its own.
-pub async fn evidence_refusal(state: &DomainState, session_id: &str, task: &TaskId, checklist: &[ChecklistMark], limit: Duration) -> Option<DomainError> {
-    let dir = node_worktree(state, session_id, task)?;
+pub async fn evidence_refusal(claude_home: &Path, state: &DomainState, session_id: &str, task: &TaskId, checklist: &[ChecklistMark], limit: Duration) -> Option<DomainError> {
+    let dir = node_worktree(claude_home, state, session_id, task)?;
     within(limit, &dir, "find the commits the checklist cites", evidence_refusal_in(&dir, checklist)).await
 }
 
@@ -320,23 +294,6 @@ pub(crate) async fn evidence_refusal_in(dir: &Path, checklist: &[ChecklistMark])
         }
     }
     None
-}
-
-/// What became of the worktree Alondra made for a task once the task closed.
-#[derive(Debug, PartialEq, Eq)]
-pub enum TaskWorktree {
-    /// It was deleted, or would be on a dry run, with the space its files took: none on a dry run
-    /// or when a deletion cut halfway is finished.
-    Removed { freed: u64 },
-    /// It no longer exists.
-    Absent,
-    /// It is not `.claude/worktrees/<slug>` of a repository: the user's folder, never deleted.
-    NotAlondras,
-    /// It holds files not committed or commits no remote has.
-    Unsaved(String),
-    /// It is a link to a folder that cannot be reached now, as on a volume that is not mounted:
-    /// left as it is, to be tried again.
-    Unavailable(String),
 }
 
 /// Deletes the worktree Alondra made for a closed task, `.claude/worktrees/<slug>`, which
@@ -820,10 +777,11 @@ mod tests {
             title: "Task".into(), agent_id: None, review_prs: false, dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")) });
         run(Actor::System, Command::RecordTaskWorktree { task_id: "t".into(), path: dir.to_str().unwrap().into(), origin: WorktreeOrigin::Task, branch: None });
         let session = "sdk-0123abcd";
-        assert_eq!(worktree_of(session), None, "an SDK node has no job");
-        assert_eq!(final_refusal(&state, session, &TaskId::from("t"), &[], CHECK_LIMIT).await.map(|refusal| refusal.code), None, "clean and pushed");
+        let claude_home = crate::test_support::Directory::new();
+        assert_eq!(worktree_of(&claude_home, session), None, "an SDK node has no job");
+        assert_eq!(final_refusal(&claude_home, &state, session, &TaskId::from("t"), &[], CHECK_LIMIT).await.map(|refusal| refusal.code), None, "clean and pushed");
         std::fs::write(dir.join("tokens.swift"), b"let accent = 1").unwrap();
-        let refused = final_refusal(&state, session, &TaskId::from("t"), &[], CHECK_LIMIT).await.expect("a dirty worktree is refused");
+        let refused = final_refusal(&claude_home, &state, session, &TaskId::from("t"), &[], CHECK_LIMIT).await.expect("a dirty worktree is refused");
         assert_eq!(refused.code, "worktree_not_clean", "{}", refused.message);
         assert!(refused.message.contains("tokens.swift"), "{}", refused.message);
     }

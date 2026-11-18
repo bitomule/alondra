@@ -5,6 +5,7 @@
 pub mod admission;
 pub mod agent_host;
 pub mod api;
+pub mod disk;
 pub mod extensions;
 pub mod github;
 pub mod hosts;
@@ -13,6 +14,7 @@ pub mod machine;
 pub mod orchestrator;
 pub mod outbox;
 pub mod usage;
+pub mod worktrees;
 mod registry;
 
 pub use extensions::extension;

@@ -8,15 +8,13 @@
 pub mod test_support;
 
 #[macro_use]
-extern crate alondra_daemon_support;
+extern crate alondra_foundation;
 
 use alondra_daemon_support::{
     approval_lease,
     auth,
     blocking_work,
     codex_credentials,
-    disk,
-    disk_peaks,
     domain_authority,
     domain_content,
     files_retention,
@@ -24,7 +22,6 @@ use alondra_daemon_support::{
     hook_socket,
     hook_text,
     job_state,
-    launch_worktree,
     local_network,
     locks,
     log,
@@ -37,7 +34,6 @@ use alondra_daemon_support::{
     service_files,
     uploads,
     watcher,
-    worktree,
 };
 #[cfg(target_os = "macos")]
 use alondra_daemon_support::schedule_clock;

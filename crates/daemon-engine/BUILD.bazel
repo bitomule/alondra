@@ -79,6 +79,7 @@ ENGINE_TEST_DEPS = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_
     "//crates/daemon-engine-store:daemon_engine_store_test_hooks",
     "//crates/daemon-engine-machine:daemon_engine_machine_test_hooks",
     "//crates/daemon-support:daemon_support_test_hooks",
+    "//crates/engine-doubles:engine_doubles",
     "//crates/engine-github:engine_github_test_hooks",
     "//crates/engine-live:engine_live_test_hooks",
     "//crates/engine-mcp:engine_mcp_test_hooks",

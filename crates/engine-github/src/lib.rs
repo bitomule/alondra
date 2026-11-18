@@ -8,11 +8,9 @@
 pub mod test_support;
 
 #[macro_use]
-extern crate alondra_daemon_support;
+extern crate alondra_foundation;
 
 use alondra_daemon_support::auth;
-#[cfg(any(test, feature = "test-hooks"))]
-use alondra_daemon_support::worktree;
 
 use alondra_daemon_engine_model::options;
 #[cfg(any(test, feature = "test-hooks"))]

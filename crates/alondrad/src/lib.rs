@@ -23,11 +23,18 @@ use anyhow::{Context, Result, anyhow};
 /// Registers what the root alone sees: the hosts of agents, through the real launcher unless the
 /// daemon's seams already gave another, and the screens, which it hands to the server.
 pub fn wire(registry: &alondra_engine_ports::Registry) {
+    wire_machine(registry);
     if registry.port::<dyn alondra_engine_ports::agent_host::AgentHost>().is_none() {
         alondra_agent_runtime::wire(registry, Default::default());
     }
     alondra_views::wire(registry);
     alondra_daemon_server::screens::install(registry);
+}
+
+/// Gives the registry the Mac's git and disks: the server asks for them as it is put together, so
+/// they are wired before it.
+pub fn wire_machine(registry: &alondra_engine_ports::Registry) {
+    alondra_system::wire(registry, alondra_daemon_server::watcher::claude_home);
 }
 
 pub fn main() -> Result<()> {
@@ -51,7 +58,7 @@ pub fn main() -> Result<()> {
         [flag] if flag == "--preflight" => {
             let checked = Config::load()
                 .map_err(|e| anyhow!("config.toml unreadable: {e}"))
-                .and_then(|config| preflight::run(&config));
+                .and_then(|config| preflight::run(&config, wire_machine));
             match checked {
                 Ok(summary) => println!("preflight ok: {summary}"),
                 Err(e) => {
@@ -275,6 +282,7 @@ where
 async fn run_domain(config: &Config, domain: domain_runtime::DomainRuntime) -> Result<()> {
     // Taken before the port opens: whoever sees this daemon answer may replace its binary at once.
     let upgrades = relaunch::watcher(&config.service_label);
+    wire_machine(domain.ports());
     let state = domain_bootstrap::DomainDaemon::over(&config.home, domain)?;
     if config.fast_timing {
         use domain_api::DomainHost as _;

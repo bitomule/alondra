@@ -3,7 +3,7 @@
 #[path = "../../test_support.rs"]
 mod test_support;
 
-use alondra_daemon_support::{disk, locks, save};
+use alondra_daemon_support::{locks, save};
 
 mod account;
 mod account_identity;

@@ -32,7 +32,7 @@ pub(crate) fn resume_text(paused: &Paused, now: Millis) -> String {
         Reason::Usage => "Your usage limit has reset. Carry on with what you were doing.".into(),
         Reason::Disk => format!("Alondra held your next turn at {at} while the disk was nearly full. There is room again: carry on with your task."),
         Reason::ApiError(retry) => alondra_engine_ports::api::resume_text(&retry.error, retry.detail.as_deref()),
-        Reason::ByUser => format!("{} resumed you; you were paused at {at}{cut}. Carry on with your task and run again what was cut.", alondra_daemon_support::worktree::user_name()),
+        Reason::ByUser => format!("{} resumed you; you were paused at {at}{cut}. Carry on with your task and run again what was cut.", alondra_core::config::user_name()),
     }
 }
 

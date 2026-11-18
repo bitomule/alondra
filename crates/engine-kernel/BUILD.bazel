@@ -58,7 +58,7 @@ rust_library(
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
         "//crates/daemon-engine-store:daemon_engine_store_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",
-    ],
+    ] + ["//crates/engine-doubles:engine_doubles"],
 )
 
 low_opt_rust_test(
@@ -76,7 +76,7 @@ low_opt_rust_test(
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
         "//crates/daemon-engine-store:daemon_engine_store_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",
-    ],
+    ] + ["//crates/engine-doubles:engine_doubles"],
 )
 
 rust_inputs_test(

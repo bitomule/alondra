@@ -1083,16 +1083,16 @@ async fn a_task_waits_for_room_on_the_disk_and_starts_once_the_disk_has_it() {
     });
     let watch = &fixture.domain.machine_watch();
     let ask = || fixture.domain.admission().ask(&fixture.domain, Waiting { key: Key::Task("task-9".into()), priority: alondra_domain_rules::TaskPriority::Normal, resuming: false, since: 0 }, alondra_core::now_millis());
-    watch.measure_disk(crate::disk::Space { free: 6 * GB, purgeable: 0, total: 500 * GB });
+    watch.measure_disk(alondra_engine_ports::disk::Space { free: 6 * GB, purgeable: 0, total: 500 * GB });
     assert_eq!(ask(), Err(Hold::Disk { free: 6 * GB, needed: 21 * GB, volume: None }),
         "projects never measured: 8 GB for the build of the node at work and 8 GB for this one, on top of the 5 GB line");
     assert_eq!(task_shown(&fixture, "task-9", "en").await[0].0, "Waiting · 1st of 1 · Disk · 6.0 GB free of 21.0 GB needed");
     let screen = view_json(&fixture, "task:task-9", "es").await.to_string();
     assert!(screen.contains("En espera") && screen.contains("1.º de 1 · Disco · 6,0 GB libres de 21,0 GB necesarios"), "{screen}");
 
-    watch.measure_disk(crate::disk::Space { free: 22 * GB, purgeable: 0, total: 500 * GB });
+    watch.measure_disk(alondra_engine_ports::disk::Space { free: 22 * GB, purgeable: 0, total: 500 * GB });
     assert!(matches!(ask(), Err(Hold::Disk { .. })), "past the line, not past its margin");
-    watch.measure_disk(crate::disk::Space { free: 4 * GB, purgeable: 20 * GB, total: 500 * GB });
+    watch.measure_disk(alondra_engine_ports::disk::Space { free: 4 * GB, purgeable: 20 * GB, total: 500 * GB });
     assert_eq!(ask(), Ok(()), "purgeable space counts: the disk has room for its build, and it starts");
 }
 

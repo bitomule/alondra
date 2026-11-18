@@ -867,7 +867,7 @@ async fn a_node_whose_work_after_the_merge_the_user_ended_on_any_card_closes_wit
 async fn closing_the_node_deletes_the_worktree_alondra_made_for_its_task_which_claude_rm_leaves() {
     let rig = Rig::new(thirty_minutes());
     let root = crate::test_support::Directory::new();
-    let dir = crate::worktree::testing::task_worktree(&root, "t");
+    let dir = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "t");
     rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
     rig.confirm();
     rig.pass(T0).await;
@@ -880,7 +880,7 @@ async fn closing_the_node_deletes_the_worktree_alondra_made_for_its_task_which_c
 async fn closing_the_node_deletes_the_tasks_worktree_that_is_a_link_with_the_folder_it_points_to() {
     let rig = Rig::new(thirty_minutes());
     let root = crate::test_support::Directory::new();
-    let (link, moved) = crate::worktree::testing::linked_task_worktree(&root, "t", &root.join("volume"));
+    let (link, moved) = alondra_engine_doubles::worktrees::testing::linked_task_worktree(&root, "t", &root.join("volume"));
     rig.domain.set_task_worktree(&"t".into(), link.to_str().unwrap()).unwrap();
     rig.confirm();
     rig.pass(T0).await;
@@ -891,16 +891,19 @@ async fn closing_the_node_deletes_the_tasks_worktree_that_is_a_link_with_the_fol
 
 #[tokio::test]
 async fn worktrees_root_interrupted_registration_keeps_both_close_paths_waiting_without_a_card() {
-    use alondra_daemon_support::worktrees_root::{self, Repository};
+    use alondra_engine_ports::worktrees::Repository;
     let rig = Rig::new(thirty_minutes());
     let fixture = crate::test_support::Directory::new();
-    let original = crate::worktree::testing::task_worktree(&fixture, "t");
+    let original = alondra_engine_doubles::worktrees::testing::task_worktree(&fixture, "t");
     let volume = fixture.join("volume");
     std::fs::create_dir(&volume).unwrap();
-    let root = worktrees_root::capture(&volume).unwrap();
-    let directory = worktrees_root::directory(&root, &fixture.join("repo")).unwrap();
+    let worktrees = rig.domain.ports().worktrees();
+    let root = worktrees.capture_root(&volume).unwrap();
+    let directory = root.path.join("repo");
     let path = directory.join("t");
-    crate::worktree::testing::git(&fixture.join("repo"), &["worktree", "move", original.to_str().unwrap(), path.to_str().unwrap()]);
+    worktrees.restore(&path, &Repository { repository: fixture.join("repo").canonicalize().unwrap(), root: root.clone() }).unwrap();
+    std::fs::rename(&original, &path).unwrap();
+    alondra_engine_doubles::worktrees::commit(&path);
     let record_path = directory.join(".alondra-repository.json");
     let original_record = std::fs::read(&record_path).unwrap();
     let mut record: Repository = serde_json::from_slice(&original_record).unwrap();
@@ -933,7 +936,7 @@ async fn worktrees_root_interrupted_registration_keeps_both_close_paths_waiting_
 async fn a_linked_worktree_that_cannot_be_reached_keeps_the_task_closing_and_goes_on_the_next_try() {
     let rig = Rig::new(thirty_minutes());
     let root = crate::test_support::Directory::new();
-    let (link, moved) = crate::worktree::testing::linked_task_worktree(&root, "t", &root.join("volume"));
+    let (link, moved) = alondra_engine_doubles::worktrees::testing::linked_task_worktree(&root, "t", &root.join("volume"));
     rig.domain.set_task_worktree(&"t".into(), link.to_str().unwrap()).unwrap();
     std::fs::rename(root.join("volume"), root.join("unmounted")).unwrap();
     rig.confirm();
@@ -957,7 +960,7 @@ async fn a_linked_worktree_that_cannot_be_reached_keeps_the_task_closing_and_goe
 async fn a_worktree_with_work_not_saved_keeps_the_task_closing_until_it_can_go() {
     let rig = Rig::new(thirty_minutes());
     let root = crate::test_support::Directory::new();
-    let dir = crate::worktree::testing::task_worktree(&root, "t");
+    let dir = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "t");
     rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
     std::fs::write(dir.join("a.txt"), "x").unwrap();
     rig.confirm();
@@ -985,6 +988,30 @@ fn job_with_worktree(dir: &std::path::Path) -> crate::test_support::Directory {
     claude_home
 }
 
+/// A repository with a remote and the worktree a `claude --bg` job made for `slug`, its branch
+/// pushed, made with git itself: after a failed `claude rm` the close asks git directly whether it
+/// still lists the worktree and whether its files are its branch's.
+fn git_task_worktree(root: &std::path::Path, slug: &str) -> std::path::PathBuf {
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    std::fs::create_dir_all(root).unwrap();
+    git(root, &["init", "-q", "--bare", "remote.git"]);
+    git(root, &["init", "-q", "repo"]);
+    let repo = root.join("repo");
+    git(&repo, &["config", "user.email", "test@example.invalid"]);
+    git(&repo, &["config", "user.name", "Test"]);
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "base"]);
+    git(&repo, &["remote", "add", "origin", root.join("remote.git").to_str().unwrap()]);
+    let dir = repo.join(".claude/worktrees").join(slug);
+    let branch = format!("worktree-{slug}");
+    git(&repo, &["worktree", "add", "-q", "-b", &branch, dir.to_str().unwrap()]);
+    git(&dir, &["commit", "-q", "--allow-empty", "-m", "work"]);
+    git(&dir, &["push", "-q", "origin", &branch]);
+    dir
+}
+
 // D-03: the close decides on the exit status of `claude rm`, the listing of `claude agents --json`
 // and `git worktree list --porcelain -z`, never on what `claude rm` printed.
 #[tokio::test]
@@ -1001,7 +1028,7 @@ async fn claude_rm_exiting_with_zero_closes_the_node_whatever_it_prints() {
 async fn a_failed_claude_rm_whose_worktree_git_no_longer_knows_deletes_it_if_identical_and_closes() {
     let rig = Rig::new(thirty_minutes());
     let root = crate::test_support::Directory::new();
-    let dir = crate::worktree::testing::task_worktree(&root, "job");
+    let dir = git_task_worktree(&root, "job");
     let _claude_home = job_with_worktree(&dir);
     std::fs::remove_dir_all(root.join("repo/.git/worktrees/job")).unwrap();
     rig.sessions.rm_answers.lock().unwrap().push_back(crate::node_close::Ran::failed("something went wrong"));
@@ -1016,7 +1043,7 @@ async fn a_failed_claude_rm_whose_worktree_git_no_longer_knows_deletes_it_if_ide
 async fn a_failed_claude_rm_whose_worktree_git_still_lists_fails_and_deletes_nothing() {
     let rig = Rig::new(thirty_minutes());
     let root = crate::test_support::Directory::new();
-    let dir = crate::worktree::testing::task_worktree(&root, "job");
+    let dir = git_task_worktree(&root, "job");
     let _claude_home = job_with_worktree(&dir);
     rig.sessions.rm_answers.lock().unwrap().push_back(crate::node_close::Ran::failed("Git couldn't remove it"));
     rig.confirm();
@@ -1028,10 +1055,6 @@ async fn a_failed_claude_rm_whose_worktree_git_still_lists_fails_and_deletes_not
     assert_eq!((closing.failures, closing.last_error.as_deref()), (1, Some("Git couldn't remove it")));
 }
 
-fn git(dir: &std::path::Path, args: &[&str]) {
-    let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-}
 
 // The user's rule, 19 October: a task owns every worktree its node's subagents make. One with work
 // not committed and one with a commit no remote has hold the close, and the node is told which
@@ -1041,12 +1064,12 @@ fn git(dir: &std::path::Path, args: &[&str]) {
 async fn a_dirty_subagent_worktree_holds_the_close_and_tells_the_node() {
     let rig = Rig::new(thirty_minutes());
     let root = crate::test_support::Directory::new();
-    let own = crate::worktree::testing::task_worktree(&root, "t");
+    let own = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "t");
     rig.domain.set_task_worktree(&"t".into(), own.to_str().unwrap()).unwrap();
     let repo = root.join("repo");
     let subagent = |name: &str| {
         let dir = repo.join(".claude/worktrees").join(name);
-        git(&repo, &["worktree", "add", "-q", "-b", &format!("worktree-{name}"), dir.to_str().unwrap()]);
+        alondra_engine_doubles::worktrees::make_worktree(&repo, &dir).unwrap();
         command(&rig.domain, Actor::System, &format!("record-{name}"), Command::RecordTaskWorktree {
             task_id: "t".into(), path: dir.to_str().unwrap().into(), origin: alondra_domain_rules::WorktreeOrigin::Subagent, branch: None,
         });
@@ -1056,7 +1079,7 @@ async fn a_dirty_subagent_worktree_holds_the_close_and_tells_the_node() {
     let unpushed = subagent("agent-a0000000000000002");
     let clean = subagent("agent-a0000000000000003");
     std::fs::write(given_up.join("draft.txt"), "x").unwrap();
-    git(&unpushed, &["commit", "-q", "--allow-empty", "-m", "fix"]);
+    alondra_engine_doubles::worktrees::local_commit(&unpushed);
     rig.confirm();
     rig.pass(T0).await;
     assert_eq!(rig.task().state, TaskState::Closing, "a task with work left in a worktree of its own does not close");
@@ -1068,7 +1091,7 @@ async fn a_dirty_subagent_worktree_holds_the_close_and_tells_the_node() {
     assert!(told.contains("discard"), "and how to give one up: {told}");
     assert!(given_up.join("draft.txt").exists() && unpushed.exists(), "nothing with work is deleted");
 
-    git(&unpushed, &["push", "-q", "origin", "worktree-agent-a0000000000000002"]);
+    alondra_engine_doubles::worktrees::push(&unpushed);
     command(&rig.domain, agent(), "give-up", Command::ConfirmCleanup { task_id: "t".into(), discard: vec![given_up.to_str().unwrap().into()] });
     rig.pass(T0 + 5 * MINUTE).await;
     for dir in [&own, &given_up, &unpushed, &clean] {
@@ -1122,7 +1145,7 @@ impl Rig {
 
     fn with_worktree(&self) -> (crate::test_support::Directory, std::path::PathBuf) {
         let root = crate::test_support::Directory::new();
-        let dir = crate::worktree::testing::task_worktree(&root, "t");
+        let dir = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "t");
         self.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
         (root, dir)
     }
@@ -1185,7 +1208,7 @@ fn moved(continues: Option<&str>) -> (Rig, crate::test_support::Directory, std::
         model: None, effort: None, approach: None, chosen_by: ModelChooser::User, reason: None, title: "Result".into(), provider: None, tags: None,
     }).unwrap();
     let root = crate::test_support::Directory::new();
-    let dir = crate::worktree::testing::task_worktree(&root, "t");
+    let dir = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "t");
     rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
     std::fs::write(dir.join("a.txt"), "x").unwrap();
     command(&rig.domain, Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest { request_id: "r".into(), title: "Work".into() });
@@ -1262,11 +1285,7 @@ async fn several_continuations_of_one_task_keep_its_worktree_until_the_last_one_
 use alondra_domain_rules::discard_worktrees::DiscardWorktrees;
 use alondra_domain_rules::SystemCard;
 
-fn branch_exists(repository: &std::path::Path, branch: &str) -> bool {
-    let out = std::process::Command::new("git").arg("-C").arg(repository)
-        .args(["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).output().unwrap();
-    out.status.success()
-}
+use alondra_engine_doubles::worktrees::branch_exists;
 
 impl Rig {
     fn discard_cards(&self) -> Vec<alondra_domain_rules::Interaction> {
@@ -1300,7 +1319,7 @@ impl Rig {
         });
         command(&self.domain, user(), &format!("cancel-{id}"), Command::CancelTask { task_id: id.into(), reason: None });
         let root = crate::test_support::Directory::new();
-        let dir = crate::worktree::testing::task_worktree(&root, id);
+        let dir = alondra_engine_doubles::worktrees::testing::task_worktree(&root, id);
         for file in unsaved {
             std::fs::write(dir.join(file), "x").unwrap();
         }
@@ -1313,7 +1332,7 @@ impl Rig {
 async fn cancelling_a_task_with_unsaved_files_asks_once_and_deletes_nothing_until_the_user_says_delete() {
     let rig = Rig::new(thirty_minutes());
     let root = crate::test_support::Directory::new();
-    let dir = crate::worktree::testing::task_worktree(&root, "t");
+    let dir = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "t");
     rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
     std::fs::write(dir.join("a.txt"), "x").unwrap();
     std::fs::write(dir.join("b.txt"), "y").unwrap();
@@ -1346,7 +1365,7 @@ async fn cancelling_a_task_with_unsaved_files_asks_once_and_deletes_nothing_unti
 async fn keeping_the_unsaved_files_of_a_cancelled_task_touches_nothing_and_never_asks_again() {
     let rig = Rig::new(thirty_minutes());
     let root = crate::test_support::Directory::new();
-    let dir = crate::worktree::testing::task_worktree(&root, "t");
+    let dir = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "t");
     rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
     std::fs::write(dir.join("a.txt"), "x").unwrap();
     command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
@@ -1365,7 +1384,7 @@ async fn keeping_the_unsaved_files_of_a_cancelled_task_touches_nothing_and_never
 async fn cancelling_a_task_without_unsaved_files_deletes_its_worktree_and_branch_without_a_card() {
     let rig = Rig::new(thirty_minutes());
     let root = crate::test_support::Directory::new();
-    let dir = crate::worktree::testing::task_worktree(&root, "t");
+    let dir = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "t");
     rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
     command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
     rig.pass(T0).await;
@@ -1380,7 +1399,7 @@ async fn cancelling_a_task_without_unsaved_files_deletes_its_worktree_and_branch
 async fn cancelling_a_task_deletes_its_worktree_that_is_a_link_with_the_folder_it_points_to() {
     let rig = Rig::new(thirty_minutes());
     let root = crate::test_support::Directory::new();
-    let (link, moved) = crate::worktree::testing::linked_task_worktree(&root, "t", &root.join("volume"));
+    let (link, moved) = alondra_engine_doubles::worktrees::testing::linked_task_worktree(&root, "t", &root.join("volume"));
     rig.domain.set_task_worktree(&"t".into(), link.to_str().unwrap()).unwrap();
     std::fs::rename(root.join("volume"), root.join("unmounted")).unwrap();
     command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
@@ -1407,7 +1426,7 @@ async fn a_cancelled_task_with_an_open_pull_request_keeps_its_branch_when_its_wo
         head: "head1".into(), base: "main".into(), allowed_methods: vec![alondra_domain_rules::MergeMethod::Squash],
     });
     let root = crate::test_support::Directory::new();
-    let dir = crate::worktree::testing::task_worktree(&root, "t");
+    let dir = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "t");
     rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
     command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
     rig.pass(T0).await;
@@ -1500,8 +1519,11 @@ impl UsersFolders {
             std::fs::create_dir_all(dir).unwrap();
             std::fs::write(dir.join("notes.txt"), "mine").unwrap();
         }
-        git(&projects, &["init", "-q"]);
-        domain.store.lock().unwrap().protect(crate::worktree::Protected { home: home.clone(), projects_root: projects.clone() });
+        alondra_engine_doubles::worktrees::repository(&projects);
+        let mut store = domain.store.lock().unwrap();
+        let rules = store.protected().protecting(alondra_engine_ports::worktrees::Protected { home: home.clone(), projects_root: projects.clone() });
+        store.protect(rules);
+        drop(store);
         Self { _scratch: scratch, home, projects, plain }
     }
 
@@ -1535,7 +1557,7 @@ async fn the_domain_refuses_home_the_projects_root_and_a_folder_git_does_not_kno
     }
     assert!(rig.domain.set_task_worktree(&"t".into(), folders.projects.to_str().unwrap()).is_err(), "the task's own folder is no exception");
     let root = crate::test_support::Directory::new();
-    let worktree = crate::worktree::testing::task_worktree(&root, "t");
+    let worktree = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "t");
     record_worktree(&rig.domain, "t", &worktree).unwrap();
     assert_eq!(rig.task().worktrees.keys().cloned().collect::<Vec<_>>(), [worktree.to_str().unwrap().to_owned()]);
     assert!(folders.untouched());
@@ -1588,7 +1610,7 @@ async fn stored_records_of_folders_that_are_no_worktree_are_ignored_and_the_task
 async fn cancelling_a_task_whose_stored_worktrees_are_home_and_the_projects_root_deletes_nothing_and_asks_nothing() {
     let rig = Rig::new(thirty_minutes());
     let folders = UsersFolders::protecting(&rig.domain);
-    git(&folders.home, &["init", "-q"]);
+    alondra_engine_doubles::worktrees::repository(&folders.home);
     folders.stored_as_worktree_of(&rig.domain, "t", &folders.home);
     folders.stored_as_worktree_of(&rig.domain, "t", &folders.projects);
     command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
@@ -1665,7 +1687,7 @@ async fn a_persisted_recovery_card_after_cleanup_is_retired_without_resuming_the
 async fn a_node_end_the_domain_refuses_leaves_the_folder_the_task_still_needs() {
     let rig = Rig::new(thirty_minutes());
     let root = crate::test_support::Directory::new();
-    let dir = crate::worktree::testing::task_worktree(&root, "t");
+    let dir = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "t");
     rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
     rig.confirm();
     let domain = rig.domain.clone();
@@ -1683,7 +1705,7 @@ async fn a_node_end_the_domain_refuses_leaves_the_folder_the_task_still_needs() 
 async fn a_closing_task_whose_folder_is_gone_is_given_no_host() {
     let rig = Rig::new(thirty_minutes());
     let root = crate::test_support::Directory::new();
-    let dir = crate::worktree::testing::task_worktree(&root, "t");
+    let dir = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "t");
     rig.domain.set_task_worktree(&"t".into(), dir.to_str().unwrap()).unwrap();
     rig.confirm();
     let held = || crate::sdk_owner::closing_without_folder(&rig.domain, &rig.domain.state().unwrap(), &"t".into());

@@ -19,7 +19,7 @@ fn preflight_reports_a_rejected_journal_event_without_changing_the_home() {
     drop(store);
     let before = fs::read(&path).unwrap();
     let config = alondra_core::config::Config::resolve(fixture.0.to_path_buf(), &Default::default(), |_| None, || Some("Test".into()));
-    let diagnostic = format!("{:#}", crate::preflight::run(&config).unwrap_err());
+    let diagnostic = format!("{:#}", crate::preflight::run(&config, |_| {}).unwrap_err());
     let output = std::process::Command::new(std::env::var("FIXTURE_DAEMON").unwrap())
         .arg("--preflight").env_clear().env("HOME", &*fixture.0).env("ALONDRA_HOME", &*fixture.0)
         .env("TMPDIR", &*fixture.0).envs(crate::test_support::xcrun_cache()).output().unwrap();

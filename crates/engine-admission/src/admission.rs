@@ -239,7 +239,7 @@ pub struct Snapshot {
     /// Nodes admitted in the last `IN_FLIGHT`, whose memory is reserved.
     pub in_flight: usize,
     pub hold: Option<Hold>,
-    pub disk: Option<crate::disk::Room>,
+    pub disk: Option<alondra_engine_ports::disk::Room>,
     disk_detail: Option<String>,
 }
 

@@ -18,7 +18,7 @@ pub mod task_git;
 pub mod artifact;
 pub mod automerge;
 pub mod config;
-pub mod daemon_log;
+pub use alondra_foundation::daemon_log;
 pub mod event;
 pub mod issues;
 pub mod launcher;
@@ -84,4 +84,4 @@ pub fn launch_settings() -> String {
 
 pub use clock::now_millis;
 
-pub mod clock;
+pub use alondra_foundation::clock;

@@ -456,7 +456,7 @@ async fn cleanup_deletes_the_worktrees_of_closed_tasks_whose_session_is_gone_and
     let mut worktree = |rig: &mut Rig, task: Task, gone: bool| {
         let session = rig.session(task, true);
         let id = format!("t{}", rig.count);
-        let dir = crate::worktree::testing::task_worktree(&worktrees.join(&id), &id);
+        let dir = alondra_engine_doubles::worktrees::testing::task_worktree(&worktrees.join(&id), &id);
         // Kept in the store alone, as tasks that ended before the domain recorded their worktrees.
         rig.domain.store.lock().unwrap().set_task_worktree(&id.as_str().into(), dir.to_str().unwrap(), 0).unwrap();
         if gone {
@@ -494,7 +494,7 @@ async fn cleanup_deletes_a_closed_tasks_worktree_that_is_a_link_and_keeps_one_it
         let session = rig.session(Task::Done, true);
         let id = format!("t{}", rig.count);
         let root = worktrees.join(&id);
-        let (link, moved) = crate::worktree::testing::linked_task_worktree(&root, &id, &root.join("volume"));
+        let (link, moved) = alondra_engine_doubles::worktrees::testing::linked_task_worktree(&root, &id, &root.join("volume"));
         rig.domain.store.lock().unwrap().set_task_worktree(&id.as_str().into(), link.to_str().unwrap(), 0).unwrap();
         rig.sessions.listed.lock().unwrap().retain(|short| !session.starts_with(short.as_str()));
         (root, link, moved)

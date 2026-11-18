@@ -1,9 +1,10 @@
 //! Worktree storage pinned to a volume. No directory is created before its identity is verified.
 use std::path::{Path, PathBuf};
 use alondra_core::options::WorktreesRoot;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use crate::locks::Poisonable as _;
+use alondra_foundation::locks::Poisonable as _;
+
+pub use alondra_engine_ports::worktrees::Repository;
 
 pub const UNAVAILABLE: &str = "worktrees_unavailable";
 // Recover: the lock holds no state, and every existing namespace is validated on disk.
@@ -77,12 +78,6 @@ pub fn capture(path: &Path) -> Result<WorktreesRoot, String> {
     if !path.is_dir() || path.parent().is_none() { return Err("Choose a worktree folder below the volume root".into()); }
     let volume_id = System.identity(&path).ok_or("Could not identify the worktree volume")?;
     Ok(WorktreesRoot { path, volume_id })
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct Repository {
-    pub repository: PathBuf,
-    pub root: WorktreesRoot,
 }
 
 /// Claims a repository folder; another checkout with the same name gets a short suffix.

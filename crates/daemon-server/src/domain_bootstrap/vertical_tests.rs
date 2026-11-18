@@ -723,15 +723,10 @@ const NODE_WAITS: std::time::Duration = std::time::Duration::from_millis(600);
 const SENDS_FOR: std::time::Duration = std::time::Duration::from_secs(90);
 
 impl Fixture {
-    /// The task's worktree, recorded as its own, whose `git status` takes SLOW_STATUS_SECONDS: git
-    /// asks a file-system monitor hook that sleeps before it answers.
+    /// The task's worktree, recorded as its own, whose checks take SLOW_STATUS_SECONDS.
     fn slow_worktree(&mut self, task: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt as _;
-        let dir = crate::worktree::testing::task_worktree(&self.home.join("repositories"), task);
-        let hook = self.home.join("slow-fsmonitor");
-        std::fs::write(&hook, format!("#!/bin/sh\nsleep {SLOW_STATUS_SECONDS}\nexit 1\n")).unwrap();
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
-        crate::worktree::testing::git(&dir, &["config", "core.fsmonitor", hook.to_str().unwrap()]);
+        let dir = alondra_engine_doubles::worktrees::testing::task_worktree(&self.home.join("repositories"), task);
+        alondra_engine_doubles::worktrees::slow(&dir, std::time::Duration::from_secs(SLOW_STATUS_SECONDS.into()));
         let envelope: CommandEnvelope = serde_json::from_value(self.envelope(json!({"kind":"record_task_worktree",
             "task_id":task, "path":dir.to_str().unwrap(), "origin":"task", "branch":format!("worktree-{task}")}))).unwrap();
         self.domain.execute(&Actor::System, &envelope, None, || Ok(())).unwrap();

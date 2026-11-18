@@ -57,7 +57,7 @@ pub struct DomainRuntime {
     /// The subsystems that hear of every commit, in the order the engine registered them.
     observers: Vec<Box<dyn CommitObserver>>,
     /// The ports the pieces of the engine call each other through, given when the engine is put together.
-    ports: alondra_engine_ports::Registry,
+    ports: Arc<alondra_engine_ports::Registry>,
     /// How many turns the orchestrator has ended, as its own record says: the evidence Alondra hands
     /// it what it still has to re-plan by.
     pub orchestrator_rests: std::sync::atomic::AtomicU64,
@@ -175,7 +175,13 @@ impl DomainRuntime {
         let home_of_user = crate::options::user_home();
         let projects_root = options.projects_root(&home_of_user);
         store.fill_task_projects(&projects_root)?;
-        store.protect(crate::worktree::Protected { home: home_of_user, projects_root });
+        let ports = Arc::new(alondra_engine_ports::Registry::default());
+        #[cfg(any(test, feature = "test-hooks"))]
+        alondra_engine_doubles::machine::wire(&ports, alondra_daemon_support::watcher::claude_home);
+        store.protect(alondra_engine_ports::worktrees::WorktreeRules::new(
+            alondra_engine_ports::worktrees::Protected { home: home_of_user, projects_root },
+            ports.clone(),
+        ));
         store.fill_task_models()?;
         let state = store.load()?;
         let (changed, _) = watch::channel(state.revision);
@@ -205,7 +211,7 @@ impl DomainRuntime {
             full_disk: Default::default(),
             extensions: Default::default(),
             observers,
-            ports: Default::default(),
+            ports,
             orchestrator_rests: Default::default(),
             orchestrator_progress: Default::default(),
             #[cfg(any(test, feature = "test-hooks"))]
@@ -779,8 +785,8 @@ impl DomainRuntime {
     }
     /// Why `path` cannot be a task's worktree, if it cannot.
     pub fn registrable_worktree(&self, path: &Path) -> std::result::Result<(), String> {
-        let protected = self.store.lock_or_exit("the domain store").protected().clone();
-        crate::worktree::registrable(path, &protected)
+        let rules = self.store.lock_or_exit("the domain store").protected().clone();
+        rules.registrable(path)
     }
     /// Gives every card whose attachments still sit in a worktree its own copy of them. A file
     /// that is gone or no longer matches its digest stays as it was; the names come back.

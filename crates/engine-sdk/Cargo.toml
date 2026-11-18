@@ -6,10 +6,11 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-test-hooks = ["dep:alondra-agent-runtime", "dep:tempfile", "alondra-daemon-engine/test-hooks", "alondra-daemon-engine-model/test-hooks", "alondra-daemon-engine-store/test-hooks", "alondra-daemon-engine-machine/test-hooks", "alondra-engine-kernel/test-hooks", "alondra-engine-github/test-hooks", "alondra-daemon-support/test-hooks"]
+test-hooks = ["dep:alondra-agent-runtime", "dep:alondra-engine-doubles", "dep:tempfile", "alondra-daemon-engine/test-hooks", "alondra-daemon-engine-model/test-hooks", "alondra-daemon-engine-store/test-hooks", "alondra-daemon-engine-machine/test-hooks", "alondra-engine-kernel/test-hooks", "alondra-engine-github/test-hooks", "alondra-daemon-support/test-hooks"]
 
 [dependencies]
 alondra-agent-runtime = { workspace = true, optional = true }
+alondra-engine-doubles = { workspace = true, optional = true }
 alondra-engine-ports.workspace = true
 alondra-daemon-engine.workspace = true
 alondra-engine-admission.workspace = true
@@ -49,6 +50,7 @@ url = "2.5"
 
 [dev-dependencies]
 alondra-agent-runtime.workspace = true
+alondra-engine-doubles.workspace = true
 alondra-daemon-engine = { workspace = true, features = ["test-hooks"] }
 alondra-engine-github = { workspace = true, features = ["test-hooks"] }
 alondra-engine-kernel = { workspace = true, features = ["test-hooks"] }

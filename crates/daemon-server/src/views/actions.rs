@@ -1189,7 +1189,7 @@ fn execute_value(
         if !attachments.is_empty() {
             return Ok(rejected_field(lang, "attachments", "Write the secret: it cannot go as a file"));
         }
-        match crate::secret_files::write(&state, interaction, request.input.text.as_deref().unwrap_or_default()) {
+        match domain.ports().worktrees().write_secret(&state, interaction, request.input.text.as_deref().unwrap_or_default()) {
             Ok(written) => request.input.text = Some(written),
             Err(problem) => return Ok(rejected_field(lang, "text", &format!("{}: {problem}", localize(lang, "Alondra could not save the secret")))),
         }
@@ -4079,7 +4079,7 @@ for line in sys.stdin:
         let (home, domain, client) = action_home();
         presented_pr(&domain);
         let root = crate::test_support::Directory::new();
-        let worktree = crate::worktree::testing::task_worktree(&root, "secret");
+        let worktree = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "secret");
         let main = root.join("repo");
         std::fs::write(main.join(".git/info/exclude"), ".env\n").unwrap();
         apply_seed_command(&domain, Actor::System, "worktree", Command::RecordTaskWorktree {
@@ -4087,9 +4087,9 @@ for line in sys.stdin:
         let destination = SecretDestination { file: ".env".into(), variable: "STRIPE_KEY".into() };
         let not_ignored = SecretDestination { file: "config.env".into(), variable: "STRIPE_KEY".into() };
         let state = domain.state().unwrap();
-        let refused = crate::secret_files::ask_refusal(&state, "agent-a", &"task".into(), &not_ignored).expect("a file git keeps is refused");
+        let refused = domain.ports().worktrees().secret_refusal(&state, "agent-a", &"task".into(), &not_ignored).expect("a file git keeps is refused");
         assert!(refused.message.contains("does not ignore"), "{}", refused.message);
-        assert!(crate::secret_files::ask_refusal(&state, "agent-a", &"task".into(), &destination).is_none());
+        assert!(domain.ports().worktrees().secret_refusal(&state, "agent-a", &"task".into(), &destination).is_none());
         apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "ask-secret", Command::AskQuestion {
             attachments: vec![], interaction_id: "secret".into(), scope: Scope::Task { task_id: "task".into() }, recipient: Recipient::User,
             body: "Send the Stripe key".into(), blocking: false,
@@ -4124,7 +4124,7 @@ for line in sys.stdin:
         let (home, domain, client) = action_home();
         presented_pr(&domain);
         let root = crate::test_support::Directory::new();
-        let worktree = crate::worktree::testing::task_worktree(&root, "secret");
+        let worktree = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "secret");
         apply_seed_command(&domain, Actor::System, "worktree", Command::RecordTaskWorktree {
             task_id: "task".into(), path: worktree.to_str().unwrap().into(), origin: WorktreeOrigin::Task, branch: None });
         let destination = alondra_core::secret_destination::SecretDestination { file: ".env".into(), variable: "STRIPE_KEY".into() };

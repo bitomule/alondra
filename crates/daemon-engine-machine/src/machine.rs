@@ -8,7 +8,7 @@ use alondra_core::{Machine, MemoryCompressor, MemoryPressure, now_millis};
 use sysinfo::System;
 
 const UNRELIABLE_LOAD: f64 = 50.0;
-pub use crate::disk::BOOT_DATA;
+pub use alondra_engine_ports::disk::BOOT_DATA;
 
 /// The latest gauges of the resource API daemon, read by `/daemon` for the TUI header. A sample is
 /// only ever replaced whole, so a lock whose holder panicked still holds a whole one.
@@ -21,18 +21,12 @@ pub trait MachineSampler: Send + Sync + 'static {
     fn sample(&self) -> Machine;
 }
 
-/// The Mac the daemon runs on.
-pub struct SystemSampler(std::sync::Mutex<System>);
+/// The Mac the daemon runs on, its own disk read through `disk`.
+pub struct SystemSampler(std::sync::Mutex<System>, std::sync::Arc<dyn alondra_engine_ports::disk::Disk>);
 
 impl SystemSampler {
-    pub fn new() -> Self {
-        Self(std::sync::Mutex::new(System::new()))
-    }
-}
-
-impl Default for SystemSampler {
-    fn default() -> Self {
-        Self::new()
+    pub fn new(disk: std::sync::Arc<dyn alondra_engine_ports::disk::Disk>) -> Self {
+        Self(std::sync::Mutex::new(System::new()), disk)
     }
 }
 
@@ -43,7 +37,7 @@ impl MachineSampler for SystemSampler {
         sys.refresh_cpu_usage();
         let pressure = forced_memory_free_percent().or_else(memorystatus_level);
         let load = System::load_average();
-        let root = crate::disk::space(Path::new(BOOT_DATA)).or_else(|| crate::disk::space(Path::new("/")));
+        let root = self.1.space(Path::new(BOOT_DATA)).or_else(|| self.1.space(Path::new("/")));
         Machine {
             at: now_millis(),
             memory_total: sys.total_memory(),

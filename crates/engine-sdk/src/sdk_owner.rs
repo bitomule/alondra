@@ -100,7 +100,7 @@ pub(crate) use alondra_daemon_engine_model::retain_selection_options;
 fn failed(what: &str) -> impl Fn(StoreError) -> Failed + '_ {
     move |error| Failed {
         why: format!("{what}: {}", store_text(&error)),
-        no_space: matches!(&error, StoreError::Storage(error) if crate::disk::no_space(error)),
+        no_space: matches!(&error, StoreError::Storage(error) if alondra_daemon_engine_store::no_space(error)),
         refusal: match &error { StoreError::Domain(error) => Some(error.clone()), StoreError::Storage(_) => None },
     }
 }

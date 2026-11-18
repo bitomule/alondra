@@ -4,12 +4,11 @@ use std::sync::{LockResult, Mutex, MutexGuard, TryLockError};
 /// CPU-heavy work still belongs in a bounded blocking job; this covers contended lock waits.
 pub struct RuntimeMutex<T> {
     inner: Mutex<T>,
-    #[cfg(any(test, feature = "test-hooks"))]
     wait_hook: Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
 }
 impl<T> RuntimeMutex<T> {
     pub fn new(value: T) -> Self {
-        Self { inner: Mutex::new(value), #[cfg(any(test, feature = "test-hooks"))] wait_hook: Mutex::new(None) }
+        Self { inner: Mutex::new(value), wait_hook: Mutex::new(None) }
     }
 
     pub fn lock(&self) -> LockResult<MutexGuard<'_, T>> {
@@ -18,8 +17,7 @@ impl<T> RuntimeMutex<T> {
             Err(TryLockError::Poisoned(error)) => Err(error),
             Err(TryLockError::WouldBlock) => {
                 let wait = || {
-                    #[cfg(any(test, feature = "test-hooks"))]
-                    if let Some(hook) = self.wait_hook.lock().unwrap().clone() { hook(); }
+                    if let Some(hook) = self.wait_hook.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() { hook(); }
                     self.inner.lock()
                 };
                 if tokio::runtime::Handle::try_current().is_ok_and(|handle|
@@ -41,9 +39,8 @@ impl<T> RuntimeMutex<T> {
         crate::locks::poison(&self.inner);
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn on_wait(&self, hook: impl Fn() + Send + Sync + 'static) {
-        *self.wait_hook.lock().unwrap() = Some(std::sync::Arc::new(hook));
+        *self.wait_hook.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(std::sync::Arc::new(hook));
     }
 }
 impl<T: Default> Default for RuntimeMutex<T> {

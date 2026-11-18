@@ -8,9 +8,9 @@
 pub mod test_support;
 
 #[macro_use]
-extern crate alondra_daemon_support;
+extern crate alondra_foundation;
 
-use alondra_daemon_support::{auth, domain_cutover, locks, worktree};
+use alondra_daemon_support::{auth, domain_cutover, locks};
 use alondra_engine_kernel::{domain_database_migration, domain_runtime};
 
 pub mod cancelled_worktrees;

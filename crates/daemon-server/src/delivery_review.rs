@@ -31,12 +31,12 @@ pub struct Limits {
 
 impl Limits {
     /// A sandbox answers in seconds, so a journey sees "still checking" without waiting 20 s.
-    pub const SANDBOX: Limits = Limits { answer_within: Duration::from_secs(2), git_within: crate::worktree::CHECK_LIMIT };
+    pub const SANDBOX: Limits = Limits { answer_within: Duration::from_secs(2), git_within: alondra_engine_ports::worktrees::CHECK_LIMIT };
 }
 
 impl Default for Limits {
     fn default() -> Self {
-        Self { answer_within: Duration::from_secs(20), git_within: crate::worktree::CHECK_LIMIT }
+        Self { answer_within: Duration::from_secs(20), git_within: alondra_engine_ports::worktrees::CHECK_LIMIT }
     }
 }
 

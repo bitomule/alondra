@@ -98,7 +98,7 @@ struct ConfigChange {
 
 /// Writes one key of `config.toml`, or takes it out with a null value. `restart` says whether the
 /// daemon reads it only when it starts, so the CLI restarts it.
-pub(crate) fn write_config(home: &Path, body: &serde_json::Value) -> Reply {
+pub(crate) fn write_config(home: &Path, worktrees: &dyn alondra_engine_ports::worktrees::Worktrees, body: &serde_json::Value) -> Reply {
     let Ok(change) = serde_json::from_value::<ConfigChange>(body.clone()) else {
         return Reply { status: StatusCode::BAD_REQUEST, body: json!({"error": "invalid_input", "message": "invalid setting"}) };
     };
@@ -107,7 +107,7 @@ pub(crate) fn write_config(home: &Path, body: &serde_json::Value) -> Reply {
         let result = (|| -> Result<(), String> {
             let text = crate::options::read_options(home)?.unwrap_or_default();
             alondra_core::options::OptionsFile::parse(&text)?;
-            let root = change.value.as_deref().map(|value| alondra_daemon_support::worktrees_root::capture(Path::new(value))).transpose()?;
+            let root = change.value.as_deref().map(|value| worktrees.capture_root(Path::new(value))).transpose()?;
             let written = alondra_core::options::with_worktrees_root(&text, root.as_ref())?;
             replace(&alondra_core::options::path_in(home), written.as_bytes()).map_err(|why| why.to_string())
         })();

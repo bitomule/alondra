@@ -15,14 +15,12 @@ pub use alondra_daemon_support::{
     blocking_work,
     card_language,
     classify,
-    claude_check,
     device_usage,
     domain_authority,
     domain_cutover,
     exit,
     files_retention,
     hook_socket,
-    iroh_terminals,
     job_state,
     local_network,
     locks,
@@ -37,17 +35,15 @@ pub use alondra_daemon_support::{
     result_files,
     revoked_devices,
     scoped_reads,
-    secret_files,
     service_files,
     start_guard,
     updates,
     uploads,
     watcher,
     workflow_state,
-    worktree,
 };
 #[cfg(test)]
-pub use alondra_daemon_support::{disk};
+pub use alondra_engine_ports::disk;
 pub use alondra_daemon_engine::{
     accounts,
     allow_always,
@@ -96,7 +92,9 @@ pub use alondra_daemon_engine::{domain_agent_lifecycle, machine_state};
 
 pub mod operation_journal;
 pub mod direct;
+pub mod claude_check;
 pub mod domain_api;
+pub mod iroh_terminals;
 pub mod domain_bootstrap;
 pub mod delivery_review;
 pub mod domain_delivery;

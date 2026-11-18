@@ -7,7 +7,7 @@
 mod test_support;
 
 #[macro_use]
-extern crate alondra_daemon_support;
+extern crate alondra_foundation;
 
 use alondra_daemon_support::{auth, locks, plugins, watcher};
 

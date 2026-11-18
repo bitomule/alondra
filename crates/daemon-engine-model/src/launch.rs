@@ -18,7 +18,7 @@ pub trait WrittenFailure {
 
 impl WrittenFailure for Failed {
     fn written(why: String, error: &std::io::Error) -> Self {
-        Self { why, no_space: crate::disk::io_no_space(error), refusal: None }
+        Self { why, no_space: alondra_engine_ports::disk::io_no_space(error), refusal: None }
     }
 }
 

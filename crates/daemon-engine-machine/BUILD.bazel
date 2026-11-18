@@ -6,7 +6,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
 
-WORKSPACE_DEPS = ["//crates/engine-ports:engine_ports", "//crates/core:alondra_core", "//crates/domain-rules:domain_rules"]
+WORKSPACE_DEPS = ["//crates/engine-ports:engine_ports", "//crates/foundation:foundation", "//crates/core:alondra_core", "//crates/domain-rules:domain_rules"]
 
 application_crate(
     name = "daemon_engine_machine",

@@ -10,6 +10,7 @@ load("//tools:rust_sources.bzl", "production_sources")
 # The admission gate and the rest of the engine know each other only through the ports of
 # engine-ports. Only alondrad, which puts the daemon together, sees it.
 WORKSPACE_DEPS = [
+    "//crates/foundation:foundation",
     "//crates/engine-ports:engine_ports",
     "//crates/core:alondra_core",
     "//crates/domain:domain",

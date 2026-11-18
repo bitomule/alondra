@@ -280,6 +280,7 @@ impl Client {
             }
         };
         let read_work = domain.read_work.clone();
+        let machine = Arc::new(crate::node_close::Machine(domain.ports().worktrees()));
         let client = Arc::new_cyclic(|shared| Self {
             shared: shared.clone(),
             read_work,
@@ -293,7 +294,7 @@ impl Client {
             pr_merger: std::sync::Mutex::new(Arc::new(alondra_github_gh::GhCli::new())),
             views: Default::default(),
             feeds: Default::default(),
-            sessions: std::sync::Mutex::new(Arc::new(crate::node_close::Machine)),
+            sessions: std::sync::Mutex::new(machine),
             github: std::sync::Mutex::new(Arc::new(new_work::Gh)),
             options: Default::default(),
             issue_cache: Default::default(),

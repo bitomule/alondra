@@ -10,7 +10,7 @@ use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::model_metrics::{Decision, DecisionKind};
-use crate::launch_worktree::Workplace;
+use alondra_engine_ports::worktrees::Workplace;
 use alondra_domain_rules::{Actor, AgentId, DomainError, DomainState, ModelChooser, RequestId, TaskId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -549,19 +549,19 @@ pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBod
         None => None,
     };
     let worktrees_root = recorded.map(|record| record.root).or_else(|| file.worktrees_root.clone());
-    let slug = crate::launch_worktree::slug(&task.id.0);
+    let slug = alondra_engine_ports::worktrees::slug(&task.id.0);
     let pr_head = current.pull_requests.values().filter(|pr| pr.task_id == task.id).map(|pr| pr.head.as_str()).last();
     let retained = match &known {
-        Some(known) => crate::task_worktrees::ready(domain, &known.to_string_lossy()).await.map_err(|why| crate::launch_worktree::LaunchError::Storage(why.to_string())),
+        Some(known) => crate::task_worktrees::ready(domain, &known.to_string_lossy()).await.map_err(|why| alondra_engine_ports::worktrees::LaunchError::Storage(why.to_string())),
         None => Ok(()),
     };
-    let storage = match retained { Ok(()) if worktrees_root.is_none() => Ok(PathBuf::from(&cwd)), Ok(()) => crate::launch_worktree::storage_for(Path::new(&cwd), &slug, known.as_deref(), pr_head, worktrees_root.as_ref()).await, Err(why) => Err(why) };
+    let storage = match retained { Ok(()) if worktrees_root.is_none() => Ok(PathBuf::from(&cwd)), Ok(()) => domain.ports().worktrees().storage_for(Path::new(&cwd), &slug, known.as_deref(), pr_head, worktrees_root.as_ref()).await, Err(why) => Err(why) };
     let storage = match storage {
         Ok(storage) => storage,
-        Err(crate::launch_worktree::LaunchError::Workspace(why)) => {
+        Err(alondra_engine_ports::worktrees::LaunchError::Workspace(why)) => {
             return Err(DomainError::new("main_checkout", format!("{why}. {} stays as it is and was not launched", task.id)));
         }
-        Err(crate::launch_worktree::LaunchError::Storage(why)) => {
+        Err(alondra_engine_ports::worktrees::LaunchError::Storage(why)) => {
             domain.gate().not_started(&alondra_engine_ports::admission::Key::Task(task.id.clone()));
             remember_refusal(domain, &task.id, Some(("worktrees_unavailable", None)));
             if origin == Origin::Orchestrator && replaced.is_none() {
@@ -586,7 +586,7 @@ pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBod
         let original_directory = known.clone().unwrap_or_else(|| PathBuf::from(&cwd));
         runtime.hosts().require_recoverable_session(&task.id, provider, &account, original_directory.to_string_lossy().as_ref())
             .map_err(|error| DomainError::new("native_session_required", error.to_string()))?;
-        if !crate::launch_worktree::recovery_directory_matches(Path::new(&cwd), &original_directory).await {
+        if !domain.ports().worktrees().recovery_directory_matches(Path::new(&cwd), &original_directory).await {
             return Err(DomainError::new("native_session_required", "Recover this node in its original native directory. Create another node to choose a different workspace"));
         }
         cwd = original_directory.to_string_lossy().into_owned();
@@ -597,13 +597,13 @@ pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBod
         return Err(DomainError::new("workspace_untrusted", crate::claude_trust::instructions(&repository)));
     }
     let isolation = if reopening.is_some() {
-        crate::launch_worktree::reopen_in(Path::new(&cwd), &slug, known.as_deref().unwrap_or_else(|| Path::new(&cwd)), pr_head, worktrees_root.as_ref()).await
+        domain.ports().worktrees().reopen(Path::new(&cwd), &slug, known.as_deref().unwrap_or_else(|| Path::new(&cwd)), pr_head, worktrees_root.as_ref()).await
     } else {
-        crate::launch_worktree::isolate_in(Path::new(&cwd), &slug, known.as_deref(), pr_head, worktrees_root.as_ref()).await.map(|workplace| (workplace, false))
+        domain.ports().worktrees().isolate(Path::new(&cwd), &slug, known.as_deref(), pr_head, worktrees_root.as_ref()).await.map(|workplace| (workplace, false))
     };
     let (workplace, recover_directory) = match isolation {
         Ok(workplace) => workplace,
-        Err(crate::launch_worktree::LaunchError::Storage(why)) => {
+        Err(alondra_engine_ports::worktrees::LaunchError::Storage(why)) => {
             domain.gate().not_started(&alondra_engine_ports::admission::Key::Task(task.id.clone()));
             remember_refusal(domain, &task.id, Some(("worktrees_unavailable", None)));
             return Err(DomainError::new("worktrees_unavailable", why));
@@ -674,8 +674,8 @@ pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBod
     });
     let mission = format!("{mission}{}{}{}", prefixed("\n\n", approved_plan(&current, task)), prefixed("\n\n", follow_up_context(&current, task)), prefixed("\n\n", alondra_domain_rules::asked_changes(&current, task)));
     let mission = match (&workplace, &replaced) {
-        (Workplace::Made(dir), _) => format!("{mission}\n\n{}", made_for(dir).await),
-        (Workplace::Reused(_), _) | (_, Some(_)) => format!("{mission}\n\n{}", continuing_in(Path::new(&cwd)).await),
+        (Workplace::Made(dir), _) => format!("{mission}\n\n{}", made_for(domain, dir).await),
+        (Workplace::Reused(_), _) | (_, Some(_)) => format!("{mission}\n\n{}", continuing_in(domain, Path::new(&cwd)).await),
         (Workplace::Given(_), None) => mission,
     };
     let prompt = crate::domain_orchestrator_tools::producer_prompt(&mission, crate::domain_orchestrator_tools::MissionAuthor::Orchestrator, &resolved, &task.id, body.approach.unwrap_or_default());
@@ -748,7 +748,7 @@ pub async fn launch_guarded(domain: &DomainRuntime, home: &Path, body: LaunchBod
 /// launch fails. A task that ended while the worktree was being made already had its close, so the
 /// worktree goes at once, unless it holds work not saved.
 pub async fn own_worktree(domain: &DomainRuntime, task: &TaskId, workplace: &Workplace) -> Result<(), DomainError> {
-    let Some(dir) = workplace.chosen() else { return Ok(()) };
+    let Some(dir) = domain.ports().worktrees().chosen(workplace) else { return Ok(()) };
     if !dir.join(".git").is_file() {
         return Ok(());
     }
@@ -759,8 +759,8 @@ pub async fn own_worktree(domain: &DomainRuntime, task: &TaskId, workplace: &Wor
     if !state.tasks.get(task).is_some_and(|ended| ended.state.terminal()) {
         return Ok(());
     }
-    match crate::worktree::release_recorded_worktree(dir, false).await {
-        Ok(crate::worktree::TaskWorktree::Unsaved(left)) => log!("the worktree of {task}, which ended while it started, is kept: {left}"),
+    match domain.ports().worktrees().release_recorded_worktree(&dir, false).await {
+        Ok(alondra_engine_ports::worktrees::TaskWorktree::Unsaved(left)) => log!("the worktree of {task}, which ended while it started, is kept: {left}"),
         Ok(_) => {}
         Err(why) => log!("could not delete the worktree of {task}, which ended while it started: {why}"),
     }
@@ -771,7 +771,7 @@ pub async fn own_worktree(domain: &DomainRuntime, task: &TaskId, workplace: &Wor
 fn record_worktree(domain: &DomainRuntime, agent: Option<&str>, workplace: &Workplace, inherited: Option<(&AgentId, &String)>) {
     let owned = match inherited {
         Some((old, dir)) => Some((dir.clone(), old.0.clone())),
-        None => workplace.chosen().map(|dir| (dir.to_string_lossy().into_owned(), "alondra".to_owned())),
+        None => domain.ports().worktrees().chosen(workplace).map(|dir| (dir.to_string_lossy().into_owned(), "alondra".to_owned())),
     };
     if let (Some(agent), Some((dir, from))) = (agent, owned)
         && let Err(error) = domain.set_inherited_worktree(agent, &dir, &from)
@@ -818,31 +818,31 @@ async fn until_idle(busy: impl Fn() -> bool, deadline: std::time::Duration) -> b
 }
 
 /// What the node that takes over a worktree is told about where it works.
-async fn continuing_in(dir: &Path) -> String {
-    match crate::worktree::branch_in(dir).await {
+async fn continuing_in(domain: &DomainRuntime, dir: &Path) -> String {
+    match domain.ports().worktrees().branch_in(dir).await {
         Some(branch) => format!("You continue in {}, branch {branch}: its files are the earlier node's work. Do not create another worktree and do not use EnterWorktree.", dir.display()),
         None => format!("You continue in {}: its files are the earlier node's work. Do not create another worktree and do not use EnterWorktree.", dir.display()),
     }
 }
 
 /// What the node Alondra made a worktree for is told about where it works.
-async fn made_for(dir: &Path) -> String {
-    let branch = crate::worktree::branch_in(dir).await.map(|branch| format!(", branch {branch}")).unwrap_or_default();
+async fn made_for(domain: &DomainRuntime, dir: &Path) -> String {
+    let branch = domain.ports().worktrees().branch_in(dir).await.map(|branch| format!(", branch {branch}")).unwrap_or_default();
     format!("You work in {}{branch}, the worktree Alondra made for this task. Do not create another worktree and do not use EnterWorktree.", dir.display())
 }
 
 /// The worktree Alondra may delete with the node: the one Claude Code made for it, or the one it
 /// inherited from the node it replaced. Never a folder it was only launched in.
 pub fn owned_worktree(domain: &DomainRuntime, session: &str) -> Option<String> {
-    match crate::worktree::origin_in(&crate::watcher::claude_home(), session) {
-        Some(crate::worktree::WorktreeOrigin::Made(dir)) => dir.to_str().map(str::to_owned),
+    match domain.ports().worktrees().origin(session) {
+        Some(alondra_engine_ports::worktrees::WorktreeOrigin::Made(dir)) => dir.to_str().map(str::to_owned),
         _ => domain.inherited_worktree(session).ok().flatten(),
     }
 }
 
 /// Where a node works: the worktree Claude Code made for it, else the folder it started in.
 fn node_folder(domain: &DomainRuntime, session: &str) -> Option<String> {
-    crate::worktree::worktree_of(session).and_then(|dir| dir.to_str().map(str::to_owned))
+    domain.ports().worktrees().worktree_of(session).and_then(|dir| dir.to_str().map(str::to_owned))
         .or_else(|| domain.live().mods.session(session).and_then(|reported| reported.cwd))
 }
 
