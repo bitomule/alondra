@@ -60,7 +60,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "alondra"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-core",
  "alondra-domain-rules",
@@ -100,7 +100,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-agent-application"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-domain",
  "alondra-foundation",
@@ -113,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-agent-protocol"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-foundation",
  "hmac 0.12.1",
@@ -124,7 +124,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-agent-runtime"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-domain",
  "alondra-engine-ports",
@@ -141,7 +141,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-codex-protocol"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-foundation",
  "hmac 0.12.1",
@@ -152,7 +152,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-core"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-domain",
  "alondra-foundation",
@@ -169,7 +169,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-daemon-engine"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-agent-application",
  "alondra-agent-runtime",
@@ -216,7 +216,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-daemon-engine-machine"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-core",
  "alondra-daemon-engine-model",
@@ -234,7 +234,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-daemon-engine-model"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-core",
  "alondra-daemon-support",
@@ -253,7 +253,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-daemon-engine-store"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-agent-application",
  "alondra-core",
@@ -279,7 +279,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-daemon-support"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-core",
  "alondra-domain-rules",
@@ -311,7 +311,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-domain"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-foundation",
  "proptest",
@@ -321,7 +321,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-domain-rules"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-core",
  "alondra-domain",
@@ -337,7 +337,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-e2e"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "base64 0.23.1",
  "hkdf 0.12.4",
@@ -351,7 +351,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-engine-admission"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-core",
  "alondra-daemon-engine",
@@ -378,7 +378,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-engine-github"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-core",
  "alondra-daemon-engine-model",
@@ -399,7 +399,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-engine-kernel"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-agent-application",
  "alondra-core",
@@ -429,7 +429,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-engine-live"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-core",
  "alondra-daemon-support",
@@ -448,7 +448,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-engine-mcp"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-core",
  "alondra-daemon-support",
@@ -468,7 +468,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-engine-orchestrator"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-codex-protocol",
  "alondra-core",
@@ -500,7 +500,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-engine-ports"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-core",
  "alondra-domain-rules",
@@ -514,7 +514,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-engine-sdk"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-agent-application",
  "alondra-agent-runtime",
@@ -560,7 +560,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-engine-worktrees"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-core",
  "alondra-daemon-support",
@@ -576,7 +576,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-foundation"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "rustix 1.1.5",
  "serde",
@@ -587,7 +587,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-github-gh"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-core",
  "alondra-domain-rules",
@@ -601,14 +601,14 @@ dependencies = [
 
 [[package]]
 name = "alondra-process-group"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "alondra-provider-claude"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-agent-application",
  "alondra-agent-protocol",
@@ -630,7 +630,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-provider-codex"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-agent-application",
  "alondra-codex-protocol",
@@ -651,7 +651,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-provider-conformance"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-agent-application",
  "alondra-domain",
@@ -665,14 +665,14 @@ dependencies = [
 
 [[package]]
 name = "alondra-provider-contract"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-foundation",
 ]
 
 [[package]]
 name = "alondra-relay"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-e2e",
  "anyhow",
@@ -698,7 +698,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-scenarios"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra",
  "alondra-agent-protocol",
@@ -724,7 +724,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-scenarios-transcript"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "serde",
  "serde_json",
@@ -733,7 +733,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-store"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-domain",
  "alondra-foundation",
@@ -747,7 +747,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-view-model"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-core",
  "alondra-domain-rules",
@@ -759,7 +759,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-views"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-core",
  "alondra-domain",
@@ -775,7 +775,7 @@ dependencies = [
 
 [[package]]
 name = "alondrad"
-version = "0.3.48"
+version = "0.3.49"
 dependencies = [
  "alondra-agent-runtime",
  "alondra-core",
