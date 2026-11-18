@@ -67,11 +67,66 @@ impl From<ServiceApprovalError> for String {
     }
 }
 
+#[cfg(test)]
+#[derive(Default)]
+struct RequestCryptoWork {
+    decodes: std::sync::atomic::AtomicUsize,
+    preparations: std::sync::atomic::AtomicUsize,
+    verifications: std::sync::atomic::AtomicUsize,
+}
+
+#[cfg(test)]
+impl RequestCryptoWork {
+    fn counts(&self) -> (usize, usize, usize) {
+        use std::sync::atomic::Ordering::Relaxed;
+        (self.decodes.load(Relaxed), self.preparations.load(Relaxed), self.verifications.load(Relaxed))
+    }
+}
+
+// An Arc also identifies one uninterrupted approval, even if the same key is paired again.
+struct PreparedKey {
+    encoded: String,
+    key: std::sync::OnceLock<Result<VerifyingKey, &'static str>>,
+}
+
+#[derive(Default)]
+struct PairedDevices {
+    devices: Vec<Device>,
+    keys: Vec<Arc<PreparedKey>>,
+}
+
+impl PairedDevices {
+    fn with_devices(&self, devices: Vec<Device>) -> Self {
+        let keys = devices.iter().map(|device| {
+            self.devices.iter().zip(&self.keys)
+                .find(|(old, _)| old.id == device.id && old.public_key == device.public_key)
+                .map(|(_, key)| key.clone())
+                .unwrap_or_else(|| Arc::new(PreparedKey {
+                    encoded: device.public_key.clone(), key: std::sync::OnceLock::new(),
+                }))
+        }).collect();
+        Self { devices, keys }
+    }
+
+    fn prepared(&self, id: &str) -> Option<(&Device, &Arc<PreparedKey>)> {
+        self.devices.iter().zip(&self.keys).find(|(device, _)| device.id == id)
+    }
+}
+
+impl std::ops::Deref for PairedDevices {
+    type Target = [Device];
+    fn deref(&self) -> &[Device] { &self.devices }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VerificationStage { Selected, Verified }
+
 pub struct Auth {
     path: PathBuf,
     /// A holder that panics leaves it whole, so it is recovered: each writer saves the file first
     /// and then replaces the list whole, so memory always matches a saved file.
-    devices: Mutex<Vec<Device>>,
+    devices: Mutex<PairedDevices>,
     /// A holder that panics leaves it whole, so it is recovered: a retain and an insert, or one
     /// remove.
     pairing: Mutex<HashMap<String, Instant>>,
@@ -81,6 +136,10 @@ pub struct Auth {
     /// signature checks, so a torn change can only refuse a request.
     service_verifier: Mutex<HttpChallengeVerifier>,
     usage: crate::device_usage::DeviceUsage,
+    #[cfg(test)]
+    request_crypto: RequestCryptoWork,
+    #[cfg(test)]
+    verification_hook: Mutex<Option<Arc<dyn Fn(VerificationStage) + Send + Sync>>>,
 }
 
 /// A random version 4 UUID.
@@ -144,6 +203,21 @@ pub fn approved_devices(home: &std::path::Path) -> Result<Arc<Vec<Device>>> {
 }
 
 impl Auth {
+    #[cfg(test)]
+    fn at_verification_stage(&self, stage: VerificationStage) {
+        let hook = self.verification_hook.lock().unwrap().clone();
+        if let Some(hook) = hook { hook(stage); }
+    }
+
+    fn prepare_request_key(&self, encoded: &str) -> Result<VerifyingKey, &'static str> {
+        #[cfg(test)]
+        self.request_crypto.decodes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let raw = B64.decode(encoded).map_err(|_| "stored key is corrupt")?;
+        #[cfg(test)]
+        self.request_crypto.preparations.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        VerifyingKey::from_sec1_bytes(&raw).map_err(|_| "stored key is corrupt")
+    }
+
     fn persisted(&self) -> Result<Vec<Device>> {
         match std::fs::read_to_string(&self.path) {
             Ok(text) => serde_json::from_str(&text).context("devices.json ilegible"),
@@ -159,11 +233,15 @@ impl Auth {
         };
         Ok(Auth {
             path,
-            devices: Mutex::new(devices),
+            devices: Mutex::new(PairedDevices::default().with_devices(devices)),
             pairing: Mutex::new(HashMap::new()),
             seen: Mutex::new(VecDeque::new()),
             service_verifier: Mutex::new(HttpChallengeVerifier::new(120_000, 4096)?),
             usage: crate::device_usage::DeviceUsage::at(home),
+            #[cfg(test)]
+            request_crypto: RequestCryptoWork::default(),
+            #[cfg(test)]
+            verification_hook: Mutex::default(),
         })
     }
 
@@ -204,8 +282,9 @@ impl Auth {
         let mut devices = self.devices.lock_or_recover("the paired devices");
         let mut next = self.persisted().map_err(|error| error.to_string())?;
         next.push(device.clone());
-        self.save(&next).map_err(|e| e.to_string())?;
-        *devices = next;
+        let prepared = devices.with_devices(next);
+        self.save(&prepared.devices).map_err(|e| e.to_string())?;
+        *devices = prepared;
         Ok(device)
     }
 
@@ -233,13 +312,14 @@ impl Auth {
         let mut next = self.persisted().map_err(|error| error.to_string())?;
         if let Some(existing) = next.iter().find(|d| d.id == id) {
             let same_key = existing.public_key == public_key;
-            *devices = next;
+            *devices = devices.with_devices(next);
             return if same_key { Ok(()) } else { Err("device ID already has another key".into()) };
         }
         next.push(Device { id: id.into(), name: name.into(), public_key,
             created_at: now_millis(), last_seen: None });
-        self.save(&next).map_err(|e| e.to_string())?;
-        *devices = next;
+        let prepared = devices.with_devices(next);
+        self.save(&prepared.devices).map_err(|e| e.to_string())?;
+        *devices = prepared;
         Ok(())
     }
 
@@ -273,7 +353,7 @@ impl Auth {
     }
 
     pub fn list(&self) -> Vec<Device> {
-        self.devices.lock_or_recover("the paired devices").clone()
+        self.devices.lock_or_recover("the paired devices").to_vec()
     }
 
     pub fn revoke(&self, id: &str) -> Result<bool> {
@@ -283,10 +363,11 @@ impl Auth {
         let previous_len = next.len();
         next.retain(|d| d.id != id);
         let changed = next.len() != previous_len;
+        let prepared = devices.with_devices(next);
         if changed {
-            self.save(&next)?;
+            self.save(&prepared.devices)?;
         }
-        *devices = next;
+        *devices = prepared;
         Ok(changed)
     }
 
@@ -312,16 +393,26 @@ impl Auth {
         if (now - ts).abs() > MAX_SKEW_MS {
             return Err("timestamp out of range");
         }
-        let key_b64 = {
+        let prepared = {
             let devices = self.devices.lock_or_recover("the paired devices");
-            devices.iter().find(|d| d.id == device_id).map(|d| d.public_key.clone())
+            devices.prepared(device_id).map(|(_, key)| key.clone())
         }
         .ok_or("device not paired")?;
-        let key = B64.decode(&key_b64).ok().and_then(|raw| VerifyingKey::from_sec1_bytes(&raw).ok()).ok_or("stored key is corrupt")?;
+        #[cfg(test)]
+        self.at_verification_stage(VerificationStage::Selected);
+        let key = prepared.key.get_or_init(|| self.prepare_request_key(&prepared.encoded))
+            .as_ref().map_err(|reason| *reason)?;
         let der = B64.decode(signature_b64).map_err(|_| "signature badly encoded")?;
         let signature = Signature::from_der(&der).map_err(|_| "malformed signature")?;
         let message = signed_message(method, path_and_query, timestamp, body);
+        #[cfg(test)]
+        self.request_crypto.verifications.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         key.verify(message.as_bytes(), &signature).map_err(|_| "wrong signature")?;
+        #[cfg(test)]
+        self.at_verification_stage(VerificationStage::Verified);
+        let devices = self.devices.lock_or_recover("the paired devices");
+        let (device, current) = devices.prepared(device_id).ok_or("device not paired")?;
+        if !Arc::ptr_eq(current, &prepared) { return Err("device approval changed"); }
         let canonical_signature = B64.encode(signature.normalize_s().to_der().as_bytes());
         let mut seen = self.seen.lock_or_recover("the seen requests");
         if seen.iter().any(|s| s == &canonical_signature) {
@@ -332,10 +423,8 @@ impl Auth {
             seen.pop_front();
         }
         drop(seen);
-        let devices = self.devices.lock_or_recover("the paired devices");
-        let device = devices.iter().find(|d| d.id == device_id).ok_or("device not paired")?;
         self.usage.touch(&device.id, now_millis(), local);
-        Ok(Signed { device_id: device.id.clone(), name: device.name.clone(), public_key: key_b64 })
+        Ok(Signed { device_id: device.id.clone(), name: device.name.clone(), public_key: prepared.encoded.clone() })
     }
 }
 
@@ -400,6 +489,198 @@ mod tests {
         h.insert("x-alondra-timestamp", ts.to_string().parse().unwrap());
         h.insert("x-alondra-signature", B64.encode(sig.to_der().as_bytes()).parse().unwrap());
         h
+    }
+
+    fn signed_headers(device: &str, key: &SigningKey, path: &str, at: i64) -> HeaderMap {
+        let signature: Signature = key.sign(signed_message("GET", path, &at.to_string(), b"").as_bytes());
+        headers(device, at, &signature)
+    }
+
+    #[test]
+    fn unchanged_device_prepares_once_but_verifies_every_request() {
+        let (auth, key, id) = auth_with_device();
+        let at = 1_000_000;
+        for request in 0..4 {
+            let path = format!("/views/home?request={request}");
+            auth.verify_at(&signed_headers(&id, &key, &path, at), "GET", &path, b"", at, false).unwrap();
+        }
+        assert_eq!(auth.request_crypto.counts(), (1, 1, 4));
+        for request in 4..8 {
+            let path = format!("/views/home?request={request}");
+            auth.verify_at(&signed_headers(&id, &key, &path, at), "GET", &path, b"", at, false).unwrap();
+        }
+        assert_eq!(auth.request_crypto.counts(), (1, 1, 8));
+    }
+
+    #[test]
+    fn two_devices_with_the_same_key_keep_separate_preparations() {
+        let (auth, key, first) = auth_with_device();
+        let second = auth.pair(&auth.new_pairing_code(), "Second device",
+            &B64.encode(key.verifying_key().to_sec1_bytes())).unwrap().id;
+        assert_ne!(first, second);
+        for round in 0..2 {
+            for (index, id) in [&first, &second].into_iter().enumerate() {
+                let path = format!("/views/home?device={index}&round={round}");
+                let signed = auth.verify_at(&signed_headers(id, &key, &path, 1_000_000), "GET", &path, b"", 1_000_000, false).unwrap();
+                assert_eq!(&signed.device_id, id);
+            }
+        }
+        assert_eq!(auth.request_crypto.counts(), (2, 2, 4));
+        let mut replay = signed_headers(&first, &key, "/views/home?device=0&round=0", 1_000_000);
+        replay.insert("x-alondra-device", second.parse().unwrap());
+        assert_eq!(auth.verify_at(&replay, "GET", "/views/home?device=0&round=0", b"", 1_000_000, false).unwrap_err(), "replayed request");
+        assert_eq!(auth.request_crypto.counts(), (2, 2, 5));
+    }
+
+    #[test]
+    fn concurrent_requests_share_preparation_but_each_verify() {
+        let (auth, key, id) = auth_with_device();
+        let start = std::sync::Barrier::new(2);
+        let paths = ["/views/home?request=first", "/views/home?request=second"];
+        let requests = paths.map(|path| signed_headers(&id, &key, path, 1_000_000));
+        std::thread::scope(|scope| {
+            let readers: Vec<_> = paths.iter().zip(&requests).map(|(path, headers)| {
+                let auth = &auth;
+                let start = &start;
+                scope.spawn(move || {
+                    start.wait();
+                    auth.verify_at(headers, "GET", path, b"", 1_000_000, false).unwrap()
+                })
+            }).collect();
+            for reader in readers { assert_eq!(reader.join().unwrap().device_id, id); }
+        });
+        assert_eq!(auth.request_crypto.counts(), (1, 1, 2));
+    }
+
+    fn service_auth_with_device() -> (crate::test_support::Owned<Auth>, SigningKey, String) {
+        let dir = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&dir).unwrap();
+        let auth = Auth::open(&dir).unwrap();
+        let key = SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let id = "client-test".to_owned();
+        auth.approve_service(&id, "Synthetic device", &URL_SAFE_NO_PAD.encode(key.verifying_key().to_sec1_bytes())).unwrap();
+        (crate::test_support::Owned::new(auth, dir), key, id)
+    }
+
+    fn replace_persisted_key(auth: &Auth, id: &str, key: &SigningKey) {
+        let mut devices = auth.persisted().unwrap();
+        devices.iter_mut().find(|device| device.id == id).unwrap().public_key = B64.encode(key.verifying_key().to_sec1_bytes());
+        auth.save(&devices).unwrap();
+        auth.approve_service(id, "Synthetic device", &URL_SAFE_NO_PAD.encode(key.verifying_key().to_sec1_bytes())).unwrap();
+    }
+
+    #[test]
+    fn devices_and_replaced_keys_have_separate_preparations() {
+        let (auth, first, id) = service_auth_with_device();
+        let second = SigningKey::from_slice(&[8u8; 32]).unwrap();
+        auth.approve_service("client-second", "Second device", &URL_SAFE_NO_PAD.encode(second.verifying_key().to_sec1_bytes())).unwrap();
+        let path = "/views/home";
+        for (device, key) in [(id.as_str(), &first), ("client-second", &second)] {
+            auth.verify_at(&signed_headers(device, key, path, 1_000_000), "GET", path, b"", 1_000_000, false).unwrap();
+        }
+        assert_eq!(auth.request_crypto.counts(), (2, 2, 2));
+        replace_persisted_key(&auth, &id, &second);
+        let path = "/views/tasks";
+        assert_eq!(auth.verify_at(&signed_headers(&id, &first, path, 1_000_000), "GET", path, b"", 1_000_000, false).unwrap_err(), "wrong signature");
+        auth.verify_at(&signed_headers(&id, &second, path, 1_000_000), "GET", path, b"", 1_000_000, false).unwrap();
+        assert_eq!(auth.request_crypto.counts(), (3, 3, 4));
+    }
+
+    #[test]
+    fn a_request_cannot_cross_revocation_reapproval_or_key_replacement() {
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum Change { Revoke, Reapprove, Replace }
+        for (stage, change) in [VerificationStage::Selected, VerificationStage::Verified].into_iter()
+            .flat_map(|stage| [Change::Revoke, Change::Reapprove, Change::Replace].map(|change| (stage, change)))
+        {
+            let (auth, key, id) = service_auth_with_device();
+            let prepared = Arc::new(std::sync::Barrier::new(2));
+            let resume = Arc::new(std::sync::Barrier::new(2));
+            let (entered, released) = (prepared.clone(), resume.clone());
+            *auth.verification_hook.lock().unwrap() = Some(Arc::new(move |at| {
+                if at == stage {
+                    entered.wait();
+                    released.wait();
+                }
+            }));
+            let headers = signed_headers(&id, &key, "/views/home", 1_000_000);
+            std::thread::scope(|scope| {
+                let reader = scope.spawn(|| auth.verify_at(&headers, "GET", "/views/home", b"", 1_000_000, false));
+                prepared.wait();
+                match change {
+                    Change::Revoke => { assert!(auth.revoke(&id).unwrap()); }
+                    Change::Reapprove => {
+                        assert!(auth.revoke(&id).unwrap());
+                        auth.approve_service(&id, "New approval", &URL_SAFE_NO_PAD.encode(key.verifying_key().to_sec1_bytes())).unwrap();
+                    }
+                    Change::Replace => replace_persisted_key(&auth, &id, &SigningKey::from_slice(&[8u8; 32]).unwrap()),
+                }
+                resume.wait();
+                let error = reader.join().unwrap().unwrap_err();
+                assert_eq!(error, if change == Change::Revoke { "device not paired" } else { "device approval changed" });
+            });
+            *auth.verification_hook.lock().unwrap() = None;
+            assert_eq!(auth.request_crypto.counts(), (1, 1, 1));
+            assert!(auth.seen.lock().unwrap().is_empty(), "an invalidated approval must not consume replay state");
+            if change == Change::Reapprove {
+                auth.verify_at(&headers, "GET", "/views/home", b"", 1_000_000, false).unwrap();
+                assert_eq!(auth.request_crypto.counts(), (2, 2, 2));
+            }
+        }
+    }
+
+    #[test]
+    fn failed_persistence_keeps_the_prepared_approval() {
+        let (auth, key, id) = auth_with_device();
+        auth.verify_at(&signed_headers(&id, &key, "/views/home", 1_000_000), "GET", "/views/home", b"", 1_000_000, false).unwrap();
+        std::fs::create_dir(auth.path.with_extension("json.tmp")).unwrap();
+        assert!(auth.revoke(&id).is_err());
+        auth.verify_at(&signed_headers(&id, &key, "/views/tasks", 1_000_000), "GET", "/views/tasks", b"", 1_000_000, false).unwrap();
+        assert_eq!(auth.request_crypto.counts(), (1, 1, 2));
+    }
+
+    #[test]
+    fn prepared_keys_keep_expiry_replay_and_invalid_signature_checks() {
+        let (auth, key, id) = auth_with_device();
+        let at = 1_000_000;
+        let path = "/views/home";
+        let headers = signed_headers(&id, &key, path, at);
+        assert_eq!(auth.verify_at(&headers, "GET", path, b"tampered", at, false).unwrap_err(), "wrong signature");
+        auth.verify_at(&headers, "GET", path, b"", at, false).unwrap();
+        assert_eq!(auth.verify_at(&headers, "GET", path, b"", at, false).unwrap_err(), "replayed request");
+        assert_eq!(auth.request_crypto.counts(), (1, 1, 3));
+        assert_eq!(auth.verify_at(&headers, "GET", path, b"", at + MAX_SKEW_MS + 1, false).unwrap_err(), "timestamp out of range");
+        assert_eq!(auth.request_crypto.counts(), (1, 1, 3));
+    }
+
+    #[test]
+    fn refreshed_name_keeps_preparation_and_returns_current_metadata() {
+        let (auth, key, id) = service_auth_with_device();
+        auth.verify_at(&signed_headers(&id, &key, "/views/home", 1_000_000), "GET", "/views/home", b"", 1_000_000, false).unwrap();
+        let mut devices = auth.persisted().unwrap();
+        devices[0].name = "Renamed device".into();
+        auth.save(&devices).unwrap();
+        auth.approve_service(&id, "Ignored existing name", &URL_SAFE_NO_PAD.encode(key.verifying_key().to_sec1_bytes())).unwrap();
+        let signed = auth.verify_at(&signed_headers(&id, &key, "/views/tasks", 1_000_000), "GET", "/views/tasks", b"", 1_000_000, false).unwrap();
+        assert_eq!(signed.name, "Renamed device");
+        assert_eq!(auth.request_crypto.counts(), (1, 1, 2));
+    }
+
+    #[test]
+    fn corrupt_key_does_not_poison_a_later_valid_approval() {
+        let (auth, key, id) = service_auth_with_device();
+        let mut devices = auth.persisted().unwrap();
+        devices[0].public_key = B64.encode([0u8; 65]);
+        auth.save(&devices).unwrap();
+        let reloaded = Auth::open(auth.path.parent().unwrap()).unwrap();
+        let headers = signed_headers(&id, &key, "/views/home", 1_000_000);
+        for _ in 0..2 {
+            assert_eq!(reloaded.verify_at(&headers, "GET", "/views/home", b"", 1_000_000, false).unwrap_err(), "stored key is corrupt");
+        }
+        assert_eq!(reloaded.request_crypto.counts(), (1, 1, 0));
+        replace_persisted_key(&reloaded, &id, &key);
+        reloaded.verify_at(&headers, "GET", "/views/home", b"", 1_000_000, false).unwrap();
+        assert_eq!(reloaded.request_crypto.counts(), (2, 2, 1));
     }
 
     #[test]

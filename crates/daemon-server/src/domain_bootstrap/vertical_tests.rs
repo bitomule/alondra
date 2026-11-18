@@ -52,6 +52,10 @@ struct Fixture {
 
 impl Fixture {
     async fn start() -> Self {
+        Self::start_with_after_auth(|_, _| {}).await
+    }
+
+    async fn start_with_after_auth(after_auth: impl Fn(&std::path::Path, &crate::auth::Signed) + Send + Sync + 'static) -> Self {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir(&home).unwrap();
         let store = alondra_engine_sdk::engine_tests::open(&home).unwrap();
@@ -106,10 +110,20 @@ impl Fixture {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let daemon = state.clone();
-        let app = router(state).layer(axum::middleware::from_fn_with_state(
-            auth.clone(),
-            crate::auth::guard,
-        ));
+        let after_auth = Arc::new(after_auth);
+        let hook_home = home.to_path_buf();
+        let app = router(state)
+            .layer(axum::middleware::from_fn(move |request: axum::extract::Request, next: axum::middleware::Next| {
+                let after_auth = after_auth.clone();
+                let home = hook_home.clone();
+                async move {
+                    if let Some(signed) = request.extensions().get::<crate::auth::Signed>() {
+                        after_auth(&home, signed);
+                    }
+                    next.run(request).await
+                }
+            }))
+            .layer(axum::middleware::from_fn_with_state(auth.clone(), crate::auth::guard));
         let server = ServerGuard(Some(tokio::spawn(async move {
             axum::serve(
                 listener,
@@ -285,6 +299,42 @@ async fn cached_views_still_require_the_current_paired_device_key() {
     assert_eq!(fixture.get_signed(path).await.0, StatusCode::UNAUTHORIZED,
         "the old device loses access even while the view is cached");
     fixture.finish().await;
+}
+
+#[tokio::test]
+async fn cached_views_recheck_durable_approval_after_signature_verification() {
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+    for replace_key in [false, true] {
+        let armed = Arc::new(AtomicBool::new(false));
+        let fired = Arc::new(AtomicBool::new(false));
+        let (change, changed) = (armed.clone(), fired.clone());
+        let fixture = Fixture::start_with_after_auth(move |home, signed| {
+            if !change.swap(false, SeqCst) { return; }
+            let other = Auth::open(home).unwrap();
+            if replace_key {
+                let mut devices = other.list();
+                let device = devices.iter_mut().find(|device| device.id == signed.device_id).unwrap();
+                let replacement = SigningKey::from_slice(&[29u8; 32]).unwrap();
+                device.public_key = STANDARD.encode(replacement.verifying_key().to_sec1_bytes());
+                let temporary = home.join("devices.test-next.json");
+                std::fs::write(&temporary, serde_json::to_vec(&devices).unwrap()).unwrap();
+                std::fs::rename(temporary, home.join("devices.json")).unwrap();
+            } else {
+                assert!(other.revoke(&signed.device_id).unwrap());
+            }
+            changed.store(true, SeqCst);
+        }).await;
+        assert_eq!(fixture.get_signed("/views/home?protocol=1&client=ios&lang=en").await.0, StatusCode::OK);
+        armed.store(true, SeqCst);
+        // Equivalent view parameters, distinct signed bytes even with an unchanged test clock.
+        let (status, body) = fixture.get_signed("/views/home?client=ios&lang=en&protocol=1").await;
+        assert!(fired.load(SeqCst), "the mutation follows successful middleware verification");
+        assert_eq!((status, body["code"].as_str()), (StatusCode::FORBIDDEN, Some("forbidden")), "{body}");
+        assert!(fixture.auth.list().iter().any(|device| device.id == fixture.device_id
+            && device.public_key == STANDARD.encode(fixture.key.verifying_key().to_sec1_bytes())),
+            "the handler must use durable approval even while middleware keeps its old preparation");
+        fixture.finish().await;
+    }
 }
 
 #[tokio::test]
