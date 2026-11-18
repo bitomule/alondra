@@ -54,7 +54,6 @@ alondra-engine-github = { workspace = true, features = ["test-hooks"] }
 alondra-engine-live = { workspace = true, features = ["test-hooks"] }
 alondra-engine-mcp = { workspace = true, features = ["test-hooks"] }
 alondra-engine-worktrees = { workspace = true, features = ["test-hooks"] }
-alondra-views.workspace = true
 alondra-engine-kernel = { workspace = true, features = ["test-hooks"] }
 alondra-daemon-engine-machine = { workspace = true, features = ["test-hooks"] }
 alondra-daemon-engine-store = { workspace = true, features = ["test-hooks"] }

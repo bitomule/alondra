@@ -337,7 +337,7 @@ impl Slice {
         not_wakes(std::fs::read_to_string(path).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()))
     }
 
-    fn observer(&self) -> Connection {
+    pub fn observer(&self) -> Connection {
         Connection::open(&self.database).unwrap()
     }
 
@@ -361,7 +361,7 @@ impl Slice {
         card.card.effective_title().replace(&state.tasks[&TaskId::from(TASK)].title, "<title>")
     }
 
-    fn stored_cards(&self) -> i64 {
+    pub fn stored_cards(&self) -> i64 {
         stored_turn_ends(&self.database)
     }
 }
@@ -379,7 +379,7 @@ fn committed_revision(database: &Path) -> u64 {
 }
 
 /// At every acknowledgement, what readers see is the revision SQL committed.
-fn watch_acknowledgements(slice: &Slice) -> Arc<Mutex<Vec<(u64, u64)>>> {
+pub fn watch_acknowledgements(slice: &Slice) -> Arc<Mutex<Vec<(u64, u64)>>> {
     let seen = Arc::new(Mutex::new(vec![]));
     let (recorded, database, domain) = (Arc::clone(&seen), slice.database.clone(), Arc::downgrade(&slice.domain));
     slice.on_acknowledge(move || {
@@ -480,54 +480,7 @@ fn a_test_process_killed_mid_test_leaves_no_host_and_no_folder() {
     assert!(!Path::new(root).parent().unwrap().exists(), "the reaper removed the hosts' folder: {said}");
 }
 
-#[test]
-fn a_task_launched_through_the_sdk_ends_its_turn_with_one_card_readers_see_before_the_host_is_acknowledged() {
-    let slice = Slice::new();
-    let acknowledged = watch_acknowledgements(&slice);
-    let mut driver = slice.launch();
-    slice.settle(&mut driver);
-    assert_eq!(slice.prompts(), ["Write the release notes"], "the host's Claude got the launch prompt");
-    let cards = Slice::read_cards(&slice.domain);
-    assert_eq!(cards.len(), 1, "one card: {cards:?}");
-    assert!(cards[0].0.starts_with(STALLED_PREFIX) && !cards[0].1, "the woken node stopped again: its case waits for the orchestrator, never the user: {cards:?}");
-    assert_eq!(slice.stored_cards(), 1);
-    let acknowledged = acknowledged.lock().unwrap().clone();
-    assert!(!acknowledged.is_empty(), "the host's observations were acknowledged");
-    for (published, committed) in acknowledged {
-        assert_eq!(published, committed, "readers see the committed revision when its observation is acknowledged");
-    }
-    let raw: i64 = slice.observer().query_row("SELECT count(*) FROM provider_observations WHERE task_id=?1", [TASK], |row| row.get(0)).unwrap();
-    assert!(raw >= 2, "the raw observations are kept: {raw}");
-    let offered = node_offers(&slice.domain, driver.agent());
-    for claude_bg in ["attach", "interrupt:", "close:"] {
-        assert!(!offered.iter().any(|offer| offer.starts_with(claude_bg)), "an SDK node offers no {claude_bg}: {offered:?}");
-    }
-    driver.stop().unwrap();
-}
 
-/// What the TUI's detail of the task `agent` works on offers, given the live node the daemon gathers for it.
-#[cfg(test)]
-fn node_offers(domain: &DomainRuntime, agent: &AgentId) -> Vec<String> {
-    use alondra_views::{Client, Item, RenderContext, Transport, build, live::{LiveNode, LiveSnapshot}};
-    let read = domain.read();
-    let live = LiveSnapshot { nodes: vec![LiveNode { agent_id: agent.0.clone(), short_id: Some(agent.0.chars().take(8).collect()), ..Default::default() }], ..Default::default() };
-    let view = build(&format!("task:{TASK}"), RenderContext {
-        domain: read.state(), index: read.index(), live: &live, client: Client::Tui, lang: alondra_view_model::text::Lang::En,
-        transport: Transport::Loopback, cursor: "test", rendered_at: "",
-    }).unwrap();
-    let mut offers = vec![];
-    for section in &view.sections {
-        if section.id == "attach" {
-            offers.push("attach".to_owned());
-        }
-        for item in &section.items {
-            if let Item::Actions(bar) = item {
-                offers.extend(bar.actions.iter().map(|action| action.id.clone()));
-            }
-        }
-    }
-    offers
-}
 
 // A2: the node stopped twice, so its case goes to the orchestrator, never the user. The
 // orchestrator's settlement commits with its dispatch prepared, the owner claims and sends it, and
@@ -2829,21 +2782,6 @@ pub fn subtypes(controls: &[serde_json::Value]) -> Vec<&str> {
 
 
 
-// Claude Code tracks a foreground command that runs for seconds as its own work, which ends
-// inside the turn that waits for it: that turn goes on with it and ends on one card.
-#[test]
-fn a_command_claude_code_tracks_as_work_ends_inside_its_turn_and_the_turn_ends_with_one_card() {
-    let slice = Slice::new();
-    let mut driver = slice.launch_with("foreground-command");
-    slice.read_turn_result(&mut driver);
-    assert_eq!(slice.observations_with("\"subtype\":\"task_notification\""), 1, "the command's work ended");
-    slice.settle(&mut driver);
-    assert_eq!(Slice::lifecycle(&slice.domain).activity(), ActivityView::Resting, "nothing waits for the command any more");
-    let cards = Slice::read_cards(&slice.domain);
-    assert_eq!(cards.len(), 1, "the turn ended with one card: {cards:?}");
-    assert!(!node_offers(&slice.domain, driver.agent()).iter().any(|offer| offer.starts_with("interrupt:")), "nothing runs: no Interrupt");
-    driver.stop().unwrap();
-}
 
 
 // C2: Alondra sets the model and the permission mode and reads the MCP status. Each control reaches

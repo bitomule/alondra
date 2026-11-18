@@ -27,7 +27,7 @@ exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 filegroup(
     name = "report_sources",
     srcs = production_sources(),
-    visibility = ["//crates/alondra:__pkg__"],
+    visibility = ["//crates/alondra:__pkg__", "//crates/cli-report:__pkg__", "//crates/cli-report:__pkg__"],
 )
 
 repo_tree()

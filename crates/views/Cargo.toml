@@ -9,6 +9,7 @@ publish.workspace = true
 alondra-core.workspace = true
 alondra-domain-rules.workspace = true
 alondra-view-model.workspace = true
+alondra-engine-ports.workspace = true
 alondra-foundation.workspace = true
 alondra-domain.workspace = true
 serde.workspace = true

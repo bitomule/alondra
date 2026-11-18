@@ -5,7 +5,7 @@
 //!   sources. A test file among them fails the action: the catalog never depends on a test.
 //! - `join CATALOG VOCABULARY FRAGMENTS...`: the whole catalog and vocabulary from the crates'
 //!   `.catalog` and `.words` parts, the catalogs in the order given.
-#[path = "src/report/extract.rs"]
+#[path = "../cli-report/src/report/extract.rs"]
 #[allow(dead_code)]
 mod extract;
 

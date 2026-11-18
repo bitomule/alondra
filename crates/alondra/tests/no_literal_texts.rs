@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 const USER_FACING: &[&str] = &[
-    "lib.rs",
+    "args.rs",
     "delivery.rs",
     "doctor",
     "update.rs",
@@ -136,7 +136,7 @@ fn literal_texts(text: &str) -> Vec<(usize, String)> {
 
 #[test]
 fn user_facing_texts_go_through_tr() {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../cli/src");
     let mut files = vec![];
     for name in USER_FACING {
         sources(&src.join(name), &mut files);

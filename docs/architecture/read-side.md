@@ -8,7 +8,7 @@ The domain changes only by committing a command. Each commit builds, once, a **r
 (`ReadIndex`, `crates/domain-rules/src/read_index.rs`) from the new state and publishes state and
 index together as a `ReadSnapshot`. Every screen, the changes feed, the badge, the push gate and
 push content read that snapshot plus a **live snapshot** (what nodes, hooks, GitHub and the machine
-report, `crates/alondrad/src/views/live.rs`). Nothing on the read side copies the domain, runs a
+report, `crates/daemon-server/src/views/live.rs`). Nothing on the read side copies the domain, runs a
 command to see what it would do, or walks every task or card for each row it draws.
 
 ```
@@ -22,7 +22,7 @@ command ──▶ DomainState::execute ──▶ SQLite commit ──▶ ReadSna
 
 ## The committed snapshot
 
-- `DomainRuntime` (`crates/alondrad/src/domain_runtime.rs`) keeps `snapshot: RwLock<Arc<ReadSnapshot>>`.
+- `DomainRuntime` (`crates/daemon-server/src/domain_runtime.rs`) keeps `snapshot: RwLock<Arc<ReadSnapshot>>`.
   `publish` replaces it after a commit while the store is still held; a replayed command that
   hands back the state already published builds nothing.
 - `DomainRuntime::read()` hands out the `Arc` without the store, a transaction or a copy.
@@ -108,7 +108,7 @@ merge, cancel, reopen and archive a task. Any other command is judged only when 
   Home, Card, Document, PullRequest, Sidebar, Tasks, Task, Request, Orchestrator, Schedules,
   Schedule, NewRequest, IssuePicker, Search, Machine, McpServers, Accounts. `RenderContext` carries `domain`, `index` and
   `live`.
-- The daemon's view cache (`crates/alondrad/src/views/cache.rs`) keeps rendered bodies (256) and
+- The daemon's view cache (`crates/daemon-server/src/views/cache.rs`) keeps rendered bodies (256) and
   versions per input — view, client, language, transport, revision and live data (4096). A client
   that already holds a version is answered "unchanged" from there without mounting the view.
 - The changes feed compares versions; only views never mounted with those inputs are mounted.

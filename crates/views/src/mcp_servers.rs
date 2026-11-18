@@ -10,7 +10,7 @@ use alondra_foundation::{McpConnect, McpOrigin, McpScope};
 use std::collections::BTreeMap;
 pub use alondra_view_model::mcp::project_target;
 
-pub const KEY: &str = "mcp_servers";
+pub const KEY: &str = alondra_view_model::mcp::SERVERS_KEY;
 
 
 /// One server of a project, as the nodes of its open tasks reported it.

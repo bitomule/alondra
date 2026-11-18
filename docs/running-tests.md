@@ -112,7 +112,7 @@ The slowest targets, measured in a full run on a busy machine:
 | `//crates/core:alondra_core_test` | 44.5 | 300 |
 | `//apple/Testing/MacSnapshots:AlondraMacSnapshotTests` | 31.3 | 300 |
 | `//agent-host:sea_test` | 26.6 | 300 |
-| `//crates/alondrad:alondrad_test` | 25.4 | 300 |
+| `//crates/daemon-server:daemon_server_test` (was `//crates/alondrad:alondrad_test`) | 25.4 | 300 |
 | `//agent-host:frame_test` | 23.8 | 300 |
 | `//agent-host:model_probe_test` | 20.3 | 300 |
 | `//crates/alondra:alondra_test` | 20.0 | 60 |

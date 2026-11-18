@@ -34,7 +34,7 @@ rust_library(
     crate_root = "src/lib.rs",
     edition = "2024",
     version = VERSION,
-    visibility = ["//crates/engine-sdk:__pkg__", "//crates/alondrad:__pkg__", "//crates/daemon-engine:__pkg__", "//crates/engine-admission:__pkg__", "//crates/engine-github:__pkg__", "//crates/engine-kernel:__pkg__", "//crates/engine-live:__pkg__", "//crates/engine-mcp:__pkg__", "//crates/engine-worktrees:__pkg__", "//crates/engine-orchestrator:__pkg__", "//crates/daemon-engine-machine:__pkg__", "//crates/daemon-engine-store:__pkg__", "//crates/daemon-engine-model:__pkg__", "//crates/scenarios:__pkg__"],
+    visibility = ["//crates/engine-sdk:__pkg__", "//crates/alondrad:__pkg__", "//crates/daemon-server:__pkg__", "//crates/daemon-engine:__pkg__", "//crates/engine-admission:__pkg__", "//crates/engine-github:__pkg__", "//crates/engine-kernel:__pkg__", "//crates/engine-live:__pkg__", "//crates/engine-mcp:__pkg__", "//crates/engine-worktrees:__pkg__", "//crates/engine-orchestrator:__pkg__", "//crates/daemon-engine-machine:__pkg__", "//crates/daemon-engine-store:__pkg__", "//crates/daemon-engine-model:__pkg__", "//crates/scenarios:__pkg__"],
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS,
 )
 
@@ -75,14 +75,14 @@ rust_inputs_test(
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 
 # Evidence alondrad's check of the domain v2 acceptance catalog finds tests in.
-exports_files(["src/domain_authority.rs", "src/domain_cutover.rs"], visibility = ["//crates/alondrad:__pkg__"])
+exports_files(["src/domain_authority.rs", "src/domain_cutover.rs"], visibility = ["//crates/alondrad:__pkg__", "//crates/daemon-server:__pkg__"])
 
 # The crate's production sources: the crash report's log catalog reads them, and fails on a test
 # file among them; alondrad's lock policy test reads them too.
 filegroup(
     name = "report_sources",
     srcs = production_sources(),
-    visibility = ["//crates/alondra:__pkg__", "//crates/alondrad:__pkg__", "//crates/daemon-engine:__pkg__", "//crates/daemon-engine-machine:__pkg__", "//crates/daemon-engine-store:__pkg__"],
+    visibility = ["//crates/alondra:__pkg__", "//crates/cli-report:__pkg__", "//crates/alondrad:__pkg__", "//crates/daemon-server:__pkg__", "//crates/daemon-engine:__pkg__", "//crates/daemon-engine-machine:__pkg__", "//crates/daemon-engine-store:__pkg__"],
 )
 
 repo_tree()

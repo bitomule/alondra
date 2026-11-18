@@ -1,0 +1,163 @@
+load("//tools/bazel:crates.bzl", "adapter_in_crate")
+load("//tools:tree.bzl", "repo_tree")
+load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//:version.bzl", "VERSION")
+load("//tools:rust_sources.bzl", "production_sources")
+
+TEST_ONLY = ["src/operation_journal/process_fixture.rs"]
+
+WORKSPACE_DEPS = [
+    "//crates/core:alondra_core",
+    "//crates/domain:domain",
+    "//crates/domain-rules:domain_rules",
+    "//crates/e2e:alondra_e2e",
+    "//crates/engine-ports:engine_ports",
+    "//crates/github-gh:github_gh",
+    "//crates/view-model:view_model",
+]
+
+# The daemon's input adapter: its HTTP routes, the iroh and direct transports, the pushes and the
+# screens' cache. It reaches the screens through the port `Screens`, so editing a screen never
+# rebuilds it; only the root, `alondrad`, links `views`.
+adapter_in_crate(
+    name = "daemon_server",
+    srcs = production_sources(test_only = TEST_ONLY),
+    crate_name = "alondra_daemon_server",
+    version = VERSION,
+    deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
+        "//crates/daemon-engine:daemon_engine",
+        "//crates/daemon-support:daemon_support",
+        "//crates/engine-admission:engine_admission",
+        "//crates/engine-orchestrator:engine_orchestrator",
+        "//crates/engine-sdk:engine_sdk",
+    ],
+)
+
+# The server as a scenario assembles it: the same sources, built against the engine's test hooks
+# (the one fake GitHub), so a conversation runs the production loops over fake edges.
+rust_library(
+    name = "daemon_server_scenarios_lib",
+    testonly = True,
+    srcs = production_sources(test_only = TEST_ONLY),
+    crate_name = "alondra_daemon_server",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    version = VERSION,
+    visibility = ["//crates/alondrad:__pkg__", "//crates/scenarios:__pkg__"],
+    deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
+        "//crates/daemon-engine:daemon_engine_test_hooks",
+        "//crates/daemon-support:daemon_support_test_hooks",
+        "//crates/engine-admission:engine_admission_on_test_hooks",
+        "//crates/engine-orchestrator:engine_orchestrator_on_test_hooks",
+        "//crates/engine-sdk:engine_sdk_test_hooks",
+    ],
+)
+
+# The server's tests render with the real screens: they are the only test target here that
+# links `views`, and it takes about 25 s.
+low_opt_rust_test(
+    name = "daemon_server_test",
+    size = "large",
+    timeout = "moderate",
+    visibility = ["//apple/Data/Feed:__pkg__", "//apple/Data/Iroh:__pkg__"],
+    compile_data = [
+        "//crates/core:fixtures/ctrl_trivial_2.jsonl",
+        "//crates/core:fixtures/quill.jsonl",
+        "//crates/domain-rules:src/tests.rs",
+        "//crates/daemon-engine-store:src/schedule_acceptance_tests.rs",
+        "//crates/daemon-engine-store:src/tests.rs",
+        "//crates/daemon-support:src/domain_authority.rs",
+        "//crates/daemon-support:src/domain_cutover.rs",
+        "//fixtures/domain-v2:acceptance.json",
+        "//fixtures/client-v2",
+        "//fixtures/push",
+        "//fixtures/views:all",
+        "//fixtures/views:cards",
+        "//crates/alondrad:Info.plist",
+    ],
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "alondra_daemon_server",
+    crate_root = "src/lib.rs",
+    # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
+    env = {
+        "FIXTURE_DAEMON": "$(rootpath //crates/alondrad:alondrad)",
+        "HOME": ".",
+        # The host a release ships: Node, the SDK and the host in one executable, so every SDK test
+        # of the daemon runs the bytes Brew installs.
+        "FIXTURE_NODE": "$(rootpath //agent-host:alondra-host)",
+        "FIXTURE_HOST": "$(rootpath //agent-host:alondra-host)",
+        "FIXTURE_NATIVE": "$(rootpath //agent-host:persistent-fake-claude.py)",
+        "FIXTURE_CODEX_HOST": "$(rootpath //agent-host:alondra-codex-host)",
+        "FIXTURE_CODEX_LEGACY_HOST": "$(rootpath //agent-host:codex-legacy-fixture)",
+        "FIXTURE_CODEX_NATIVE": "$(rootpath //agent-host:fake-codex.py)",
+        "FIXTURE_CODEX_MODEL_DOUBLE": "$(rootpath //agent-host:codex-model-double.py)",
+        "FIXTURE_CODEX_MCP_NATIVE": "$(rootpath //agent-host:fake-codex-mcp.py)",
+        "FIXTURE_ORCHESTRATOR_NATIVE": "$(rootpath //agent-host:orchestrator-fake-claude.py)",
+    },
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
+        "//crates/views:views",
+        "//crates/daemon-engine:daemon_engine_test_hooks",
+        "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
+        "//crates/daemon-engine-store:daemon_engine_store_test_hooks",
+        "//crates/daemon-support:daemon_support_test_hooks",
+        "//crates/engine-kernel:engine_kernel_test_hooks",
+        "//crates/engine-admission:engine_admission_on_test_hooks",
+        "//crates/engine-orchestrator:engine_orchestrator_on_test_hooks",
+        "//crates/engine-sdk:engine_sdk_test_hooks",
+    ],
+    data = [
+        "//crates/alondrad:alondrad",
+        "//agent-host:orchestrator-fake-claude.py",
+        "//agent-host:persistent-fake-claude.py",
+        "//agent-host:alondra-host",
+        "//agent-host:alondra-codex-host",
+        "//agent-host:codex-legacy-fixture",
+        "//agent-host:fake-codex.py",
+        "//agent-host:codex-model-double.py",
+        "//agent-host:fake-codex-mcp.py",
+        "//crates/alondra:alondra",
+        "//fixtures/client-v2",
+        "//fixtures/views:all",
+    ],
+    edition = "2024",
+    rustc_env = {"CARGO_BIN_EXE_alondra": "$(rootpath //crates/alondra:alondra)"},
+    # The Apple process tests run this binary as a daemon that advertises on the local network, so it
+    # carries the reason macOS shows for that permission, like `alondrad`.
+    rustc_flags = ["-Clink-arg=-Wl,-sectcreate,__TEXT,__info_plist,$(execpath //crates/alondrad:Info.plist)"],
+    version = VERSION,
+)
+
+rust_inputs_test(
+    name = "production_inputs_test",
+    size = "small",
+    required_sources = ["crates/daemon-server/src/lib.rs", "crates/daemon-server/src/domain_api.rs"],
+    source_dir = "crates/daemon-server/src/",
+    target_under_test = ":daemon_server",
+    test_only_sources = ["crates/daemon-server/src/operation_journal/process_fixture.rs", "crates/daemon-server/src/service/tests/iroh_tests.rs"],
+    test_sources = False,
+)
+
+rust_inputs_test(
+    name = "daemon_server_test_inputs_test",
+    size = "small",
+    required_sources = ["crates/daemon-server/src/lib.rs", "crates/daemon-server/src/domain_api.rs"],
+    source_dir = "crates/daemon-server/src/",
+    target_under_test = ":daemon_server_test",
+    test_only_sources = ["crates/daemon-server/src/operation_journal/process_fixture.rs", "crates/daemon-server/src/service/tests/iroh_tests.rs"],
+    test_sources = True,
+)
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+
+# The crate's production sources: the crash report's log catalog reads them, and fails on a test
+# file among them.
+filegroup(
+    name = "report_sources",
+    srcs = production_sources(test_only = TEST_ONLY),
+    visibility = ["//crates/alondra:__pkg__", "//crates/alondrad:__pkg__", "//crates/cli-report:__pkg__"],
+)
+
+repo_tree()

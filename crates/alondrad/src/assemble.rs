@@ -224,6 +224,7 @@ pub(crate) async fn assemble_with(
     service: Option<Arc<service::Service>>,
     seams: &Seams,
 ) -> Result<Assembled> {
+    crate::wire(domain.ports());
     let tasks = Tasks::default();
     domain.ports().provide(Arc::new(seams.github.port()));
     let auth = state.auth();

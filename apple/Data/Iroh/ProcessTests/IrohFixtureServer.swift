@@ -20,7 +20,7 @@ final class IrohFixtureServer: Sendable {
         let environment = ProcessInfo.processInfo.environment
         guard let root = environment["TEST_SRCDIR"] else { throw FixtureError.missingRunfile }
         let executable = URL(fileURLWithPath: root).appending(path: environment["TEST_WORKSPACE"] ?? "_main")
-            .appending(path: "crates/alondrad/alondrad_test")
+            .appending(path: "crates/daemon-server/daemon_server_test")
         let home = try TestFiles.directory()
         let stdin = Pipe(), stdout = Pipe()
         process = Process()

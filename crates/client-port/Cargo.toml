@@ -1,0 +1,22 @@
+[package]
+name = "alondra-client-port"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+alondra-core.workspace = true
+alondra-domain-rules.workspace = true
+alondra-view-model.workspace = true
+anyhow.workspace = true
+base64 = "0.23.1"
+clap.workspace = true
+ring = "0.17.14"
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.11.0"
+url = "2.5.7"
+
+[dev-dependencies]
+tempfile.workspace = true

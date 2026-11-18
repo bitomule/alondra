@@ -1,0 +1,64 @@
+load("//tools/bazel:crates.bzl", "adapter_in_crate")
+load("//tools:tree.bzl", "repo_tree")
+load("@crates//:defs.bzl", "all_crate_deps")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("//tools:rust_sources.bzl", "production_sources")
+load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
+load("//:version.bzl", "VERSION")
+
+WORKSPACE_DEPS = [
+    "//crates/client-port:client_port",
+    "//crates/core:alondra_core",
+    "//crates/e2e:alondra_e2e",
+]
+
+TEST_ONLY = ["src/service_client/live_transfer_test.rs"]
+
+# How the `alondra` binary's requests reach a daemon: this Mac's over HTTP, a Mac paired directly,
+# or one chosen through the relay. The root installs it into the client port.
+adapter_in_crate(
+    name = "client_transport",
+    srcs = production_sources(test_only = TEST_ONLY),
+    crate_name = "alondra_client_transport",
+    version = VERSION,
+    # The adapters' tests reach their fake daemons through it; their libraries never see it.
+    test_visibility = ["//crates/cli:__pkg__", "//crates/cli-mcp:__pkg__", "//crates/cli-tui:__pkg__"],
+    deps = all_crate_deps(normal = True) + WORKSPACE_DEPS,
+)
+
+low_opt_rust_test(
+    name = "client_transport_test",
+    size = "small",
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    crate_name = "alondra_client_transport",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    version = VERSION,
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
+        "//crates/domain-rules:domain_rules",
+        "//crates/view-model:view_model",
+    ],
+)
+
+# The library compiles only production sources: a test file among its inputs would rebuild every
+# crate above it whenever the test changes.
+rust_inputs_test(
+    name = "production_inputs_test",
+    size = "small",
+    required_sources = ["crates/client-transport/src/lib.rs", "crates/client-transport/src/local.rs"],
+    source_dir = "crates/client-transport/src/",
+    target_under_test = ":client_transport",
+    test_only_sources = ["crates/client-transport/src/service_client/live_transfer_test.rs", "crates/client-transport/src/direct_client_iroh_tests.rs"],
+    test_sources = False,
+)
+
+# Every source, tests included, for the root's tests that read what a person sees.
+filegroup(
+    name = "sources",
+    srcs = glob(["src/**/*.rs"]),
+    visibility = ["//crates/alondra:__pkg__"],
+)
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+
+repo_tree()

@@ -16,7 +16,7 @@ SQL = [
 TEST_DATA = SQL + ["//fixtures/domain-v2:acceptance.json"]
 
 # The tests alondrad's check of the acceptance catalog finds its evidence in.
-exports_files(["src/tests.rs", "src/schedule_acceptance_tests.rs"], visibility = ["//crates/alondrad:__pkg__"])
+exports_files(["src/tests.rs", "src/schedule_acceptance_tests.rs"], visibility = ["//crates/alondrad:__pkg__", "//crates/daemon-server:__pkg__"])
 
 adapter_out_crate(
     name = "daemon_engine_store",
@@ -41,7 +41,7 @@ rust_library(
     edition = "2024",
     rustc_flags = [LOW_OPT_LEVEL],
     version = VERSION,
-    visibility = ["//crates/engine-sdk:__pkg__", "//crates/alondrad:__pkg__", "//crates/daemon-engine:__pkg__", "//crates/engine-kernel:__pkg__", "//crates/daemon-engine-machine:__pkg__"],
+    visibility = ["//crates/engine-sdk:__pkg__", "//crates/alondrad:__pkg__", "//crates/daemon-server:__pkg__", "//crates/daemon-engine:__pkg__", "//crates/engine-kernel:__pkg__", "//crates/daemon-engine-machine:__pkg__"],
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",
@@ -80,7 +80,7 @@ exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 filegroup(
     name = "report_sources",
     srcs = production_sources(test_only = ["src/acceptance_cases.rs", "src/live_read_trace.rs", "src/load_bench.rs", "src/testing.rs"]),
-    visibility = ["//crates/alondra:__pkg__", "//crates/alondrad:__pkg__"],
+    visibility = ["//crates/alondra:__pkg__", "//crates/cli-report:__pkg__", "//crates/alondrad:__pkg__", "//crates/daemon-server:__pkg__"],
 )
 
 repo_tree()

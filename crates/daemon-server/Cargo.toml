@@ -1,0 +1,49 @@
+[package]
+name = "alondra-daemon-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+alondra-engine-ports.workspace = true
+alondra-core.workspace = true
+alondra-domain-rules.workspace = true
+alondra-view-model.workspace = true
+alondra-github-gh.workspace = true
+alondra-daemon-support.workspace = true
+alondra-daemon-engine.workspace = true
+alondra-engine-admission.workspace = true
+alondra-engine-orchestrator.workspace = true
+alondra-engine-sdk.workspace = true
+alondra-e2e = { path = "../e2e" }
+alondra-domain.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+base64 = "0.23.1"
+iroh = { version = "1.3.0", features = ["unstable-net-report"] }
+n0-future = "0.3.2"
+portmapper = "0.19.3"
+netwatch = "0.19.3"
+libc.workspace = true
+notify.workspace = true
+p256 = { version = "0.14.0", features = ["ecdsa", "pem", "pkcs8"] }
+ring = "0.17.14"
+reqwest = { version = "0.13.5", default-features = false, features = ["native-tls", "http2", "json"] }
+url = "2.5"
+rusqlite = { workspace = true, features = ["backup"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.11.0"
+tokio.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+alondra-views.workspace = true
+alondra-daemon-support = { workspace = true, features = ["test-hooks"] }
+alondra-daemon-engine = { workspace = true, features = ["test-hooks"] }
+alondra-daemon-engine-model = { workspace = true, features = ["test-hooks"] }
+alondra-engine-kernel = { workspace = true, features = ["test-hooks"] }
+alondra-engine-sdk = { workspace = true, features = ["test-hooks"] }
+h2 = "0.4.19"
+tempfile.workspace = true

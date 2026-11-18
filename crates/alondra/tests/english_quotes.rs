@@ -39,10 +39,16 @@ fn sources(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
     }
 }
 
+/// The crates of the `alondra` binary, whose texts a person reads.
+const CLI_CRATES: &[&str] = &["alondra", "cli", "cli-tui", "cli-mcp", "cli-report", "client-port", "client-transport"];
+
 #[test]
 fn english_halves_quote_with_curly_quotes() {
     let mut files = vec![];
-    sources(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    for name in CLI_CRATES {
+        sources(&crates.join(name).join("src"), &mut files);
+    }
     let offending: Vec<String> = files
         .iter()
         .flat_map(|path| {

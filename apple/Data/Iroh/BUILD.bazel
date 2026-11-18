@@ -28,7 +28,7 @@ swift_test(
     size = "small",
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = glob(["ProcessTests/*.swift"]),
-    data = ["//crates/alondrad:alondrad_test"],
+    data = ["//crates/daemon-server:daemon_server_test"],
     deps = [
         ":AlondraIroh",
         "//apple/Data/Transport:AlondraTransport",

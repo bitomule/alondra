@@ -1,0 +1,62 @@
+load("//tools/bazel:crates.bzl", "adapter_in_crate")
+load("//tools:tree.bzl", "repo_tree")
+load("@crates//:defs.bzl", "all_crate_deps")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("//tools:rust_sources.bzl", "production_sources")
+load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
+load("//:version.bzl", "VERSION")
+
+WORKSPACE_DEPS = [
+    "//crates/client-port:client_port",
+    "//crates/core:alondra_core",
+    "//crates/domain-rules:domain_rules",
+]
+
+SKILLS = [
+    "//:plugin/skills/alondra/SKILL.md",
+    "//:plugin-orchestrator/skills/alondra-orchestrator/SKILL.md",
+]
+
+# The MCP servers the node and orchestrator plugins start: each tool is a request to the daemon.
+adapter_in_crate(
+    name = "cli_mcp",
+    srcs = production_sources(),
+    compile_data = SKILLS,
+    crate_name = "alondra_cli_mcp",
+    version = VERSION,
+    deps = all_crate_deps(normal = True) + WORKSPACE_DEPS,
+)
+
+low_opt_rust_test(
+    name = "cli_mcp_test",
+    size = "small",
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    compile_data = SKILLS,
+    crate_name = "alondra_cli_mcp",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    version = VERSION,
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/client-transport:client_transport"],
+)
+
+# The library compiles only production sources: a test file among its inputs would rebuild every
+# crate above it whenever the test changes.
+rust_inputs_test(
+    name = "production_inputs_test",
+    size = "small",
+    required_sources = ["crates/cli-mcp/src/lib.rs", "crates/cli-mcp/src/mcp.rs"],
+    source_dir = "crates/cli-mcp/src/",
+    target_under_test = ":cli_mcp",
+    test_sources = False,
+)
+
+# Every source, tests included, for the root's tests that read what a person sees.
+filegroup(
+    name = "sources",
+    srcs = glob(["src/**/*.rs"]),
+    visibility = ["//crates/alondra:__pkg__"],
+)
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+
+repo_tree()

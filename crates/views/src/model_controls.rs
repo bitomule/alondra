@@ -3,13 +3,7 @@ use alondra_core::accounts::Provider;
 use alondra_domain_rules::{ModelChooser, TaskId};
 use alondra_core::model_selection::{ModelCandidate, ModelKey, ModelProfile, PendingTaskSelection, RoleModelPolicy, TaskSelection};
 use serde_json::json;
-
-pub(super) const PROFILES: [(ModelProfile, &str); 5] = [(ModelProfile::Implementation, "implementation"), (ModelProfile::General, "general"), (ModelProfile::Design, "design"), (ModelProfile::Review, "review"), (ModelProfile::Orchestrator, "orchestrator")];
-
-pub fn parse_profile(subject: &str) -> Option<(Provider, ModelProfile)> {
-    let (provider, role) = subject.split_once('-')?;
-    Some((Provider::parse(provider).ok()?, PROFILES.iter().find(|(_, name)| *name == role)?.0))
-}
+pub use alondra_view_model::model_controls::{PROFILES, parse_profile};
 
 fn profile_label(profile: ModelProfile, context: &RenderContext<'_>) -> &'static str {
     let lang = context.lang;

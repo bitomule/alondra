@@ -5,6 +5,7 @@ use crate::agent_host::AgentHost;
 use crate::github::GitHub;
 use crate::hosts::SdkHosts;
 use crate::orchestrator::{OrchestratorAnswers, OrchestratorEngine};
+use alondra_view_model::Screens;
 use alondra_domain_rules::{CommandEnvelope, CommandOutcome, DomainError, DomainState};
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
@@ -51,7 +52,7 @@ impl Registry {
     }
 }
 
-fn every_port() -> [(TypeId, &'static str); 7] {
+fn every_port() -> [(TypeId, &'static str); 8] {
     [
         (TypeId::of::<dyn AgentHost>(), "AgentHost"),
         (TypeId::of::<dyn AdmissionEngine>(), "AdmissionEngine"),
@@ -60,6 +61,7 @@ fn every_port() -> [(TypeId, &'static str); 7] {
         (TypeId::of::<dyn OrchestratorAnswers>(), "OrchestratorAnswers"),
         (TypeId::of::<dyn OrchestratorEngine>(), "OrchestratorEngine"),
         (TypeId::of::<dyn SdkHosts>(), "SdkHosts"),
+        (TypeId::of::<dyn Screens>(), "Screens"),
     ]
 }
 
@@ -90,12 +92,12 @@ mod tests {
     #[test]
     fn a_registry_names_every_port_nothing_implements() {
         let registry = Registry::default();
-        assert_eq!(registry.missing(), ["AgentHost", "AdmissionEngine", "AdmissionGate", "GitHub", "OrchestratorAnswers", "OrchestratorEngine", "SdkHosts"]);
+        assert_eq!(registry.missing(), ["AgentHost", "AdmissionEngine", "AdmissionGate", "GitHub", "OrchestratorAnswers", "OrchestratorEngine", "SdkHosts", "Screens"]);
         struct Answers;
         impl OrchestratorAnswers for Answers {
             fn settle_answers(&self, _: &dyn Runtime, _: &alondra_domain_rules::DomainState, _: &std::collections::BTreeSet<alondra_domain_rules::TaskId>) {}
         }
         registry.provide::<dyn OrchestratorAnswers>(Arc::new(Answers));
-        assert_eq!(registry.missing(), ["AgentHost", "AdmissionEngine", "AdmissionGate", "GitHub", "OrchestratorEngine", "SdkHosts"]);
+        assert_eq!(registry.missing(), ["AgentHost", "AdmissionEngine", "AdmissionGate", "GitHub", "OrchestratorEngine", "SdkHosts", "Screens"]);
     }
 }

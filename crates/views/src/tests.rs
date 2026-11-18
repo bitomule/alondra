@@ -1,6 +1,6 @@
 use super::*;
 use alondra_domain_rules::{
-    NodePhase, PauseReason,
+    NodePhase, PauseReason, TaskId,
     Agent, Author, Document, DocumentRevision, DomainState, Interaction, InteractionPayload,
     InteractionSubject, PrState, PullRequest, QuestionOption, Recipient, Request, RequestOrigin, Scope, Task,
     TaskState, ModelChooser, TaskModel,
@@ -4578,14 +4578,16 @@ fn spanish_says_merge_for_a_pull_request() {
         ("common.rs", include_str!("common.rs")), ("components.rs", include_str!("../../view-model/src/components.rs")),
         ("details.rs", include_str!("details.rs")), ("task_node.rs", include_str!("task_node.rs")),
         ("home.rs", include_str!("home.rs")), ("live.rs", include_str!("../../view-model/src/live.rs")),
-        ("mcp_servers.rs", include_str!("mcp_servers.rs")), ("messages.rs", include_str!("messages.rs")),
+        ("mcp_servers.rs", include_str!("mcp_servers.rs")), ("view-model/messages.rs", include_str!("../../view-model/src/messages.rs")),
         ("misc.rs", include_str!("misc.rs")), ("lib.rs", include_str!("lib.rs")), ("pacing.rs", include_str!("pacing.rs")),
-        ("resolves.rs", include_str!("resolves.rs")), ("review_export.rs", include_str!("review_export.rs")),
+        ("view-model/resolves.rs", include_str!("../../view-model/src/resolves.rs")), ("view-model/review_export.rs", include_str!("../../view-model/src/review_export.rs")),
         ("schedules.rs", include_str!("schedules.rs")), ("sidebar.rs", include_str!("sidebar.rs")),
         ("status.rs", include_str!("status.rs")), ("summary.rs", include_str!("summary.rs")),
         ("task_state.rs", include_str!("task_state.rs")), ("tasks.rs", include_str!("tasks.rs")),
         ("view-model/accounts.rs", include_str!("../../view-model/src/accounts.rs")),
         ("view-model/refusal.rs", include_str!("../../view-model/src/refusal.rs")),
+        ("view-model/screens.rs", include_str!("../../view-model/src/screens.rs")),
+        ("view-model/capabilities.rs", include_str!("../../view-model/src/capabilities.rs")),
     ];
     let mut found: Vec<String> = sources.iter().flat_map(|(file, source)| source.lines().enumerate()
         .filter(|(_, line)| says_fusionar(line)).map(move |(number, line)| format!("{file}:{}: {}", number + 1, line.trim())))

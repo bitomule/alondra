@@ -310,28 +310,44 @@ pub fn with_an_ended_task(test: impl FnOnce(&crate::domain_runtime::DomainRuntim
     let runtime = crate::domain_runtime::DomainRuntime::open_unwired_at(&fixture.0, &fixture.path()).unwrap();
     test(&runtime);
 }
-/// What the apps show: the task's detail, its cards, the home and the task list, on every client.
-fn shown(state: &DomainState) -> Vec<serde_json::Value> {
-    use alondra_views::{Client, Lang, LiveSnapshot, RenderContext, Transport};
-    let index = ReadIndex::build(state);
-    let live = LiveSnapshot::default();
-    let mut keys = vec!["task:task-1".to_owned(), "home".into(), "tasks".into()];
-    keys.extend(state.interactions.keys().map(|id| format!("card:{}", id.0)));
-    let mut shown = vec![];
-    for key in &keys {
-        for client in [Client::Ios, Client::Mac, Client::Tui] {
-            let view = alondra_views::build(key, RenderContext {
-                domain: state, index: &index, live: &live, client, lang: Lang::Es, transport: Transport::Loopback, cursor: "", rendered_at: "",
-            });
-            let Ok(view) = view else { continue };
-            let mut view = serde_json::to_value(view).unwrap();
-            for field in ["version", "status"] {
-                view.as_object_mut().unwrap().remove(field);
-            }
-            shown.push(serde_json::json!({ "key": key, "view": view }));
-        }
-    }
-    shown
+
+#[test]
+fn the_daemon_compacts_an_ended_tasks_cards_and_messages() {
+    let fixture = Fixture::new();
+    let store = ended_task(&fixture);
+    store.conn.execute("UPDATE domain_outbox SET state='handed'", []).unwrap();
+    store.conn.execute_batch("PRAGMA auto_vacuum=INCREMENTAL; VACUUM;").unwrap();
+    let messages: i64 = store.conn.query_row("SELECT count(*) FROM domain_messages WHERE task_id='task-1' AND message<>''", [], |row| row.get(0)).unwrap();
+    assert!(messages > 0);
+    drop(store);
+    let runtime = crate::domain_runtime::DomainRuntime::open_unwired_at(&fixture.0, &fixture.path()).unwrap();
+    let before = runtime.state().unwrap();
+    let now = alondra_core::now_millis();
+
+    let retained = runtime.retain(now).unwrap();
+
+    assert_eq!(retained.compacted, 1);
+    assert!(retained.tables.contains(&("messages of ended tasks", messages as usize)), "{:?}", retained.tables);
+    let after = runtime.state().unwrap();
+    assert_eq!(after.interactions[&InteractionId::from("ask-1")].body, "Which table goes first?");
+    assert_eq!(result_excerpt(&after.interactions[&InteractionId::from("delivery-1")].body), result_excerpt(&before.interactions[&InteractionId::from("delivery-1")].body));
+    let observer = Connection::open(fixture.path()).unwrap();
+    let left: i64 = observer.query_row("SELECT count(*) FROM domain_messages WHERE message<>''", [], |row| row.get(0)).unwrap();
+    assert_eq!(left, 0, "a handed message of an ended task keeps no text");
+    let marks: Vec<String> = observer.prepare("SELECT policy FROM retention_marks ORDER BY policy").unwrap()
+        .query_map([], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+    assert_eq!(marks, ["ended_tasks_compacted"], "the first full compaction rebuilt the store once");
+    let compact = fixture.0.join("compact.sqlite");
+    observer.execute("VACUUM INTO ?1", [compact.to_str().unwrap()]).unwrap();
+    assert_eq!(pages(&observer, "page_count"), pages(&Connection::open(&compact).unwrap(), "page_count"), "the shrunk cards leave no half-empty pages");
+    drop(observer);
+    let again = runtime.retain(now).unwrap();
+    assert_eq!(again.compacted, 0);
+    drop(runtime);
+    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(*reopened.load().unwrap(), *after, "what the daemon holds is what the store keeps");
+    let reopen = CommandEnvelope { expected_revision: before.revision, ..envelope(&mut reopened, "reopen", Command::ReopenTask { task_id: "task-1".into() }) };
+    reopened.execute_authenticated(&Actor::User { user_id: "user-1".into() }, &reopen, None).expect("a button shown before the compaction still works");
 }
 
 #[test]
@@ -357,46 +373,6 @@ fn a_result_compacted_before_interactions_knew_they_were_shortened_is_marked_onc
     assert!(!store.load().unwrap().interactions[&InteractionId::from("delivery-1")].shortened, "the text is read once, never again");
 }
 
-#[test]
-fn the_daemon_compacts_an_ended_tasks_cards_and_messages_and_the_apps_show_the_same() {
-    let fixture = Fixture::new();
-    let store = ended_task(&fixture);
-    store.conn.execute("UPDATE domain_outbox SET state='handed'", []).unwrap();
-    store.conn.execute_batch("PRAGMA auto_vacuum=INCREMENTAL; VACUUM;").unwrap();
-    let messages: i64 = store.conn.query_row("SELECT count(*) FROM domain_messages WHERE task_id='task-1' AND message<>''", [], |row| row.get(0)).unwrap();
-    assert!(messages > 0);
-    drop(store);
-    let runtime = crate::domain_runtime::DomainRuntime::open_unwired_at(&fixture.0, &fixture.path()).unwrap();
-    let before = runtime.state().unwrap();
-    let now = alondra_core::now_millis();
-
-    let retained = runtime.retain(now).unwrap();
-
-    assert_eq!(retained.compacted, 1);
-    assert!(retained.tables.contains(&("messages of ended tasks", messages as usize)), "{:?}", retained.tables);
-    let after = runtime.state().unwrap();
-    assert_eq!(after.interactions[&InteractionId::from("ask-1")].body, "Which table goes first?");
-    assert_eq!(result_excerpt(&after.interactions[&InteractionId::from("delivery-1")].body), result_excerpt(&before.interactions[&InteractionId::from("delivery-1")].body));
-    let renumbered = serde_json::to_string(&shown(&before)).unwrap().replace(&format!("@{}", before.revision), &format!("@{}", after.revision));
-    assert_eq!(serde_json::to_string(&shown(&after)).unwrap(), renumbered, "the apps show the same, buttons aside, which carry the revision");
-    let observer = Connection::open(fixture.path()).unwrap();
-    let left: i64 = observer.query_row("SELECT count(*) FROM domain_messages WHERE message<>''", [], |row| row.get(0)).unwrap();
-    assert_eq!(left, 0, "a handed message of an ended task keeps no text");
-    let marks: Vec<String> = observer.prepare("SELECT policy FROM retention_marks ORDER BY policy").unwrap()
-        .query_map([], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
-    assert_eq!(marks, ["ended_tasks_compacted"], "the first full compaction rebuilt the store once");
-    let compact = fixture.0.join("compact.sqlite");
-    observer.execute("VACUUM INTO ?1", [compact.to_str().unwrap()]).unwrap();
-    assert_eq!(pages(&observer, "page_count"), pages(&Connection::open(&compact).unwrap(), "page_count"), "the shrunk cards leave no half-empty pages");
-    drop(observer);
-    let again = runtime.retain(now).unwrap();
-    assert_eq!(again.compacted, 0);
-    drop(runtime);
-    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
-    assert_eq!(*reopened.load().unwrap(), *after, "what the daemon holds is what the store keeps");
-    let reopen = CommandEnvelope { expected_revision: before.revision, ..envelope(&mut reopened, "reopen", Command::ReopenTask { task_id: "task-1".into() }) };
-    reopened.execute_authenticated(&Actor::User { user_id: "user-1".into() }, &reopen, None).expect("a button shown before the compaction still works");
-}
 
 /// Runs the whole retention on a copy of a real domain database at `ALONDRA_RETENTION_DB`, as of
 /// `ALONDRA_RETENTION_DAYS` days from now, and prints how long it took.

@@ -486,9 +486,59 @@ fn legacy_account_retry_ready(usage: &alondra_core::usage::AccountUsage, now: Mi
     })
 }
 
+/// What the tests here and the server's tests of the over-pace card's notifications start from.
+#[cfg(any(test, feature = "test-hooks"))]
+pub mod fixtures {
+    use super::*;
+    use crate::domain_runtime::DomainRuntime;
+    use alondra_core::usage::{Share, UsageReading, WindowKind, WindowReading};
+    use std::sync::Arc;
+
+    pub fn domain() -> (Arc<DomainRuntime>, crate::test_support::Directory) {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = Arc::new(crate::wiring::open(&home).unwrap());
+        let state = domain.state().unwrap();
+        domain.execute_as_system(alondra_domain_rules::CommandEnvelope {
+            protocol_version: alondra_domain_rules::PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "fixture-claude-account".into(),
+            expected_revision: state.revision, command: alondra_domain_rules::Command::RecordAccounts {
+                accounts: vec![alondra_core::accounts::AccountStatus { provider: alondra_core::accounts::Provider::Claude,
+                    id: alondra_core::accounts::AccountId::default_account(), name: "Personal".into(), state: alondra_core::accounts::AccountState::SignedIn,
+                    native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0, profile: None }], reserve: alondra_core::usage::default_reserve(),
+            },
+        }).unwrap();
+        (domain, home)
+    }
+
+    /// The default account's windows as a node's events report them: `(kind, share used, reset)`.
+    pub fn measure(domain: &DomainRuntime, windows: &[(WindowKind, f64, Millis)]) {
+        let reading = UsageReading {
+            windows: windows.iter().map(|(kind, used, resets_at)| WindowReading { kind: kind.clone(), used: Share::of(*used), resets_at: Some(*resets_at), exhausted: false }).collect(),
+            plan: None, complete: false,
+        };
+        crate::usage_probe::record(domain, &alondra_core::accounts::AccountId::default_account(), reading, now_millis());
+        crate::usage_probe::follow(domain, now_millis());
+    }
+
+    pub fn over_pace_domain() -> (Arc<DomainRuntime>, crate::test_support::Directory) {
+        let (domain, home) = domain();
+        let reset = now_millis() + 5 * 86_400_000;
+        for used in [0.12, 0.53] {
+            measure(&domain, &[(WindowKind::Weekly, used, reset)]);
+        }
+        assert!(crate::usage_probe::usage(&domain, now_millis()).unwrap().over_pace);
+        (domain, home)
+    }
+
+    pub fn the_card(domain: &DomainRuntime, prefix: &str) -> Option<alondra_domain_rules::Interaction> {
+        domain.state().unwrap().interactions.values().find(|card| card.id.0.starts_with(prefix) && !card.withdrawn).cloned()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::fixtures::*;
 
     #[test]
     fn the_usage_pause_goes_on_after_a_panic_holding_it() {
@@ -666,31 +716,7 @@ mod tests {
     use serde_json::json;
     use std::sync::{Arc, Mutex};
 
-    fn domain() -> (Arc<DomainRuntime>, crate::test_support::Directory) {
-        let home = crate::test_support::Directory::new();
-        std::fs::create_dir_all(&home).unwrap();
-        let domain = Arc::new(crate::wiring::open(&home).unwrap());
-        let state = domain.state().unwrap();
-        domain.execute_as_system(alondra_domain_rules::CommandEnvelope {
-            protocol_version: alondra_domain_rules::PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "fixture-claude-account".into(),
-            expected_revision: state.revision, command: alondra_domain_rules::Command::RecordAccounts {
-                accounts: vec![alondra_core::accounts::AccountStatus { provider: alondra_core::accounts::Provider::Claude,
-                    id: alondra_core::accounts::AccountId::default_account(), name: "Personal".into(), state: alondra_core::accounts::AccountState::SignedIn,
-                    native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0, profile: None }], reserve: alondra_core::usage::default_reserve(),
-            },
-        }).unwrap();
-        (domain, home)
-    }
 
-    /// The default account's windows as a node's events report them: `(kind, share used, reset)`.
-    fn measure(domain: &DomainRuntime, windows: &[(WindowKind, f64, Millis)]) {
-        let reading = UsageReading {
-            windows: windows.iter().map(|(kind, used, resets_at)| WindowReading { kind: kind.clone(), used: Share::of(*used), resets_at: Some(*resets_at), exhausted: false }).collect(),
-            plan: None, complete: false,
-        };
-        crate::usage_probe::record(domain, &alondra_core::accounts::AccountId::default_account(), reading, now_millis());
-        crate::usage_probe::follow(domain, now_millis());
-    }
 
     fn stop_failure(session: &str, error: &str, details: Option<&str>) -> serde_json::Value {
         let mut payload = json!({"session_id": session, "hook_event_name": "StopFailure", "error_type": error});
@@ -795,19 +821,7 @@ mod tests {
         std::fs::remove_dir_all(home).unwrap();
     }
 
-    fn over_pace_domain() -> (Arc<DomainRuntime>, crate::test_support::Directory) {
-        let (domain, home) = domain();
-        let reset = now_millis() + 5 * 86_400_000;
-        for used in [0.12, 0.53] {
-            measure(&domain, &[(WindowKind::Weekly, used, reset)]);
-        }
-        assert!(crate::usage_probe::usage(&domain, now_millis()).unwrap().over_pace);
-        (domain, home)
-    }
 
-    fn the_card(domain: &DomainRuntime, prefix: &str) -> Option<alondra_domain_rules::Interaction> {
-        domain.state().unwrap().interactions.values().find(|card| card.id.0.starts_with(prefix) && !card.withdrawn).cloned()
-    }
 
     fn answer(domain: &DomainRuntime, card: &str, option: &str) {
         let state = domain.state().unwrap();
@@ -822,35 +836,6 @@ mod tests {
         }, None, || Ok(())).unwrap();
     }
 
-    #[test]
-    fn the_over_pace_card_has_the_numbers_and_two_options_and_reads_in_each_devices_language() {
-        use alondra_views::{Lang, push_content};
-        let (domain, home) = over_pace_domain();
-        raise_over_pace_card(&domain, now_millis());
-        let card = the_card(&domain, "over-pace-").expect("a card for the day");
-        assert_eq!(card.id.0, format!("over-pace-{}", alondra_daemon_engine_model::local_day(now_millis())));
-        assert_eq!(card.card.kind, alondra_domain_rules::CardKind::Decide);
-        assert_eq!(card.author, alondra_domain_rules::Author::System);
-        assert!(!card.blocking);
-        assert_eq!(card.card.recommended.as_deref(), Some("keep_going"));
-        let alondra_domain_rules::InteractionPayload::Question { options, .. } = &card.payload else { panic!("a question") };
-        assert_eq!(options.iter().map(|option| option.id.as_str()).collect::<Vec<_>>(), ["pause_until_tomorrow", "keep_going"]);
-
-        let read = domain.read();
-        let english = push_content(&read, &card.id.0, Lang::En).unwrap();
-        let spanish = push_content(&read, &card.id.0, Lang::Es).unwrap();
-        assert_eq!(english.interruption_level, "passive");
-        assert_eq!(english.alert.as_ref().unwrap().title, "Today is over its share of the weekly Claude usage");
-        assert_eq!(english.alert.unwrap().body.as_deref(), Some("41% used today against a 18% share · 53% of the week used"));
-        assert_eq!(spanish.alert.as_ref().unwrap().title, "Hoy vas por encima de tu parte del uso semanal");
-        assert_eq!(spanish.alert.unwrap().body.as_deref(), Some("41% usado hoy frente a una parte del 18% · 53% de la semana usado"));
-        let labels = |lang| push_content(&read, &card.id.0, lang).unwrap().actions.into_iter().map(|action| action.label).collect::<Vec<_>>();
-        let english_labels = labels(Lang::En);
-        let spanish_labels = labels(Lang::Es);
-        assert!(english_labels.iter().any(|label| label == "Pause until tomorrow") && english_labels.iter().any(|label| label.ends_with("Keep going")), "{english_labels:?}");
-        assert!(spanish_labels.iter().any(|label| label == "Pausar hasta mañana") && spanish_labels.iter().any(|label| label.ends_with("Seguir")), "{spanish_labels:?}");
-        std::fs::remove_dir_all(home).unwrap();
-    }
 
     #[test]
     fn answering_pause_pauses_until_local_midnight_and_resume_now_clears_it() {

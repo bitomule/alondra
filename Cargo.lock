@@ -62,40 +62,18 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 name = "alondra"
 version = "0.3.49"
 dependencies = [
- "alondra-core",
- "alondra-domain-rules",
- "alondra-e2e",
- "alondra-views",
+ "alondra-cli",
+ "alondra-cli-mcp",
+ "alondra-cli-report",
+ "alondra-cli-tui",
+ "alondra-client-port",
+ "alondra-client-transport",
  "anyhow",
- "base64 0.23.1",
- "clap",
- "cliclack",
- "crossterm",
- "flate2",
- "image",
- "iroh",
  "libc",
- "mmdflux",
- "objc2",
- "objc2-foundation",
  "p256 0.14.0",
  "proptest",
- "pulldown-cmark",
- "qrcode",
- "ratatui",
- "ratatui-image",
- "ring",
- "rusqlite",
- "security-framework",
- "serde",
  "serde_json",
- "sha2 0.11.0",
- "subtle",
  "tempfile",
- "tokio",
- "toml",
- "ureq",
- "url",
 ]
 
 [[package]]
@@ -137,6 +115,149 @@ dependencies = [
  "rustix 1.1.5",
  "sha2 0.10.9",
  "tempfile",
+]
+
+[[package]]
+name = "alondra-cli"
+version = "0.3.49"
+dependencies = [
+ "alondra-client-port",
+ "alondra-client-transport",
+ "alondra-core",
+ "alondra-domain-rules",
+ "alondra-e2e",
+ "alondra-view-model",
+ "alondra-views",
+ "anyhow",
+ "base64 0.23.1",
+ "clap",
+ "cliclack",
+ "crossterm",
+ "libc",
+ "objc2",
+ "objc2-foundation",
+ "p256 0.14.0",
+ "proptest",
+ "qrcode",
+ "ring",
+ "rusqlite",
+ "security-framework",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "subtle",
+ "tempfile",
+ "toml",
+ "ureq",
+ "url",
+]
+
+[[package]]
+name = "alondra-cli-mcp"
+version = "0.3.49"
+dependencies = [
+ "alondra-client-port",
+ "alondra-client-transport",
+ "alondra-core",
+ "alondra-domain-rules",
+ "anyhow",
+ "libc",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+]
+
+[[package]]
+name = "alondra-cli-report"
+version = "0.3.49"
+dependencies = [
+ "alondra-client-port",
+ "alondra-core",
+ "alondra-domain-rules",
+ "alondra-view-model",
+ "anyhow",
+ "base64 0.23.1",
+ "cliclack",
+ "flate2",
+ "libc",
+ "proptest",
+ "ring",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "toml",
+ "ureq",
+ "url",
+]
+
+[[package]]
+name = "alondra-cli-tui"
+version = "0.3.49"
+dependencies = [
+ "alondra-client-port",
+ "alondra-client-transport",
+ "alondra-core",
+ "alondra-domain-rules",
+ "alondra-view-model",
+ "alondra-views",
+ "anyhow",
+ "crossterm",
+ "image",
+ "libc",
+ "mmdflux",
+ "proptest",
+ "pulldown-cmark",
+ "ratatui",
+ "ratatui-image",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "url",
+]
+
+[[package]]
+name = "alondra-client-port"
+version = "0.3.49"
+dependencies = [
+ "alondra-core",
+ "alondra-domain-rules",
+ "alondra-view-model",
+ "anyhow",
+ "base64 0.23.1",
+ "clap",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "url",
+]
+
+[[package]]
+name = "alondra-client-transport"
+version = "0.3.49"
+dependencies = [
+ "alondra-client-port",
+ "alondra-core",
+ "alondra-domain-rules",
+ "alondra-e2e",
+ "alondra-view-model",
+ "anyhow",
+ "base64 0.23.1",
+ "iroh",
+ "libc",
+ "p256 0.14.0",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+ "toml",
+ "ureq",
+ "url",
 ]
 
 [[package]]
@@ -194,7 +315,6 @@ dependencies = [
  "alondra-provider-contract",
  "alondra-store",
  "alondra-view-model",
- "alondra-views",
  "anyhow",
  "axum",
  "base64 0.23.1",
@@ -275,6 +395,48 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "alondra-daemon-server"
+version = "0.3.49"
+dependencies = [
+ "alondra-core",
+ "alondra-daemon-engine",
+ "alondra-daemon-engine-model",
+ "alondra-daemon-support",
+ "alondra-domain",
+ "alondra-domain-rules",
+ "alondra-e2e",
+ "alondra-engine-admission",
+ "alondra-engine-kernel",
+ "alondra-engine-orchestrator",
+ "alondra-engine-ports",
+ "alondra-engine-sdk",
+ "alondra-github-gh",
+ "alondra-view-model",
+ "alondra-views",
+ "anyhow",
+ "axum",
+ "base64 0.23.1",
+ "h2",
+ "iroh",
+ "libc",
+ "n0-future",
+ "netwatch",
+ "notify",
+ "p256 0.14.0",
+ "portmapper",
+ "reqwest",
+ "ring",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+ "toml",
+ "url",
 ]
 
 [[package]]
@@ -427,7 +589,6 @@ dependencies = [
  "alondra-foundation",
  "alondra-provider-contract",
  "alondra-store",
- "alondra-views",
  "anyhow",
  "base64 0.23.1",
  "libc",
@@ -520,6 +681,7 @@ dependencies = [
  "alondra-domain-rules",
  "alondra-foundation",
  "alondra-process-group",
+ "alondra-view-model",
  "libc",
  "serde",
  "serde_json",
@@ -553,7 +715,6 @@ dependencies = [
  "alondra-provider-contract",
  "alondra-store",
  "alondra-view-model",
- "alondra-views",
  "anyhow",
  "axum",
  "base64 0.23.1",
@@ -779,6 +940,7 @@ dependencies = [
  "alondra-core",
  "alondra-domain",
  "alondra-domain-rules",
+ "alondra-engine-ports",
  "alondra-foundation",
  "alondra-view-model",
  "proptest",
@@ -796,6 +958,7 @@ dependencies = [
  "alondra-core",
  "alondra-daemon-engine",
  "alondra-daemon-engine-model",
+ "alondra-daemon-server",
  "alondra-daemon-support",
  "alondra-domain",
  "alondra-domain-rules",

@@ -424,9 +424,9 @@ upgrade-rehearsal:
 # sqlite3 -readonly ~/.alondra/domain.db ".backup /path/copy.db" && make views-measure DB=/path/copy.db
 views-measure:
 	@test -n "$(DB)" || { echo "DB=<copy of domain.db> is required"; exit 1; }
-	bazelisk build //crates/alondrad:alondrad_test
+	bazelisk build //crates/daemon-server:daemon_server_test
 	home=$$(mktemp -d) && trap 'rm -rf "$$home"' EXIT && HOME="$$home" ALONDRA_VIEWS_MEASURE_DB="$(abspath $(DB))" \
-		$(call exe,//crates/alondrad:alondrad_test) --ignored --exact views::measure_tests::measure_real_domain_views --nocapture
+		$(call exe,//crates/daemon-server:daemon_server_test) --ignored --exact views::measure_tests::measure_real_domain_views --nocapture
 
 # How fast a task's worktree is in ROOT (tools/worktree_volume_bench.py): `make worktree-volume-bench
 # ROOT=<folder> [COMMIT=<sha>] [BENCH_JSON=<file>]`. It removes only the worktrees it makes.

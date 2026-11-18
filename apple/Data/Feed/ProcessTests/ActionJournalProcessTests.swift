@@ -213,7 +213,7 @@ private struct IrohStack {
             arguments: [home.path, config.path], home: home, prefix: "ALONDRA_CLIENT ")
     }
     private func launchDaemon(home: URL, environment: [String: String] = [:]) throws -> FixtureProcess {
-        try FixtureProcess(executable: executable("crates/alondrad/alondrad_test"),
+        try FixtureProcess(executable: executable("crates/daemon-server/daemon_server_test"),
             arguments: ["--ignored", "--exact", "operation_journal::process_fixture::full_stack_fixture_server", "--nocapture"],
             home: home, prefix: "ALONDRA_FIXTURE ", additionalEnvironment: environment)
     }
@@ -395,7 +395,7 @@ private struct IrohStack {
 
     @Test func actualClientProcessCutsRecoverTheOriginalSignedHTTPActionAndRetireItsReplay() async throws {
         let serverHome = try TestFiles.directory()
-        let server = try FixtureProcess(executable: executable("crates/alondrad/alondrad_test"),
+        let server = try FixtureProcess(executable: executable("crates/daemon-server/daemon_server_test"),
             arguments: ["--ignored", "--exact", "operation_journal::process_fixture::full_stack_fixture_server", "--nocapture"],
             home: serverHome, prefix: "ALONDRA_FIXTURE ")
         defer { server.cleanup() }

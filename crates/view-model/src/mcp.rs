@@ -1,3 +1,5 @@
+/// The key of the MCP servers screen.
+pub const SERVERS_KEY: &str = "mcp_servers";
 pub const PROJECT_PREFIX: &str = "mcp-project-";
 
 /// The opaque id the screen names a project by in its actions.

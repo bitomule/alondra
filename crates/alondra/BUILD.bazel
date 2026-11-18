@@ -4,49 +4,9 @@ load("@crates//:defs.bzl", "all_crate_deps", "crate_deps")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@rules_rust//cargo:defs.bzl", "cargo_build_script")
 load("@rules_rust//rust:defs.bzl", "rust_binary")
-load("//tools:rust_sources.bzl", "production_sources")
 load("//:version.bzl", "VERSION")
+load(":catalog.bzl", "CATALOG_FRAGMENTS", "REPORT_SOURCES")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
-
-# Each crate's part of the crash report's log catalog, from its production sources, in the
-# catalog's order: `--log` reads its log calls, `--words` the words of its code
-# (`src/report/extract.rs`). The report's own schema adds the values it expects in the state it
-# reads, among them phases only older releases stored.
-CATALOG_FRAGMENTS = [
-    ("alondrad", "//crates/alondrad:report_sources", "--log --words"),
-    ("alondrad_launcher", "//crates/alondrad:launcher_report_sources", "--log"),
-    ("daemon_support", "//crates/daemon-support:report_sources", "--log --words"),
-    ("daemon_engine", "//crates/daemon-engine:report_sources", "--log --words"),
-    ("daemon_engine_model", "//crates/daemon-engine-model:report_sources", "--log --words"),
-    ("daemon_engine_store", "//crates/daemon-engine-store:report_sources", "--log --words"),
-    ("daemon_engine_machine", "//crates/daemon-engine-machine:report_sources", "--log --words"),
-    ("engine_admission", "//crates/engine-admission:report_sources", "--log --words"),
-    ("engine_github", "//crates/engine-github:report_sources", "--log --words"),
-    ("engine_live", "//crates/engine-live:report_sources", "--log --words"),
-    ("engine_mcp", "//crates/engine-mcp:report_sources", "--log --words"),
-    ("engine_worktrees", "//crates/engine-worktrees:report_sources", "--log --words"),
-    ("engine_kernel", "//crates/engine-kernel:report_sources", "--log --words"),
-    ("engine_ports", "//crates/engine-ports:report_sources", "--words"),
-    ("github_gh", "//crates/github-gh:report_sources", "--words"),
-    ("engine_orchestrator", "//crates/engine-orchestrator:report_sources", "--log --words"),
-    ("engine_sdk", "//crates/engine-sdk:report_sources", "--log --words"),
-    ("core", "//crates/core:report_sources", "--log --words"),
-    ("domain_rules", "//crates/domain-rules:report_sources", "--log --words"),
-    ("view_model", "//crates/view-model:report_sources", "--log --words"),
-    ("views", "//crates/views:report_sources", "--log --words"),
-    ("provider_claude", "//crates/provider-claude:report_sources", "--log --words"),
-    ("domain", "//crates/domain:report_sources", "--words"),
-    ("foundation", "//crates/foundation:report_sources", "--words"),
-    ("store", "//crates/store:report_sources", "--words"),
-    ("agent_application", "//crates/agent-application:report_sources", "--words"),
-    ("agent_protocol", "//crates/agent-protocol:report_sources", "--words"),
-    ("agent_runtime", "//crates/agent-runtime:report_sources", "--words"),
-    ("provider_contract", "//crates/provider-contract:report_sources", "--words"),
-    ("process_group", "//crates/process-group:report_sources", "--words"),
-    ("report_schema", "src/report/check/schema.rs", "--words"),
-]
-
-REPORT_SOURCES = [sources for _, sources, _ in CATALOG_FRAGMENTS if sources.startswith("//")]
 
 # The crash report keeps a line of alondrad.log only as the text of a log! call in the code: this
 # writes the catalog of those calls and the words of the code. Each crate's part comes from its
@@ -55,7 +15,7 @@ REPORT_SOURCES = [sources for _, sources, _ in CATALOG_FRAGMENTS if sources.star
 # recompiles it, because a build script's data are compile inputs of the crate it builds for.
 root_binary(
     name = "log_catalog_extract",
-    srcs = ["log_catalog.rs", "src/report/extract.rs"],
+    srcs = ["log_catalog.rs", "//crates/cli-report:src/report/extract.rs"],
     crate_root = "log_catalog.rs",
 )
 
@@ -73,26 +33,38 @@ genrule(
     outs = ["log-catalog.txt", "vocabulary.txt"],
     cmd = "$(execpath :log_catalog_extract) join $(OUTS) $(SRCS)",
     tools = [":log_catalog_extract"],
+    # The report's test reads the catalog this binary carries.
+    visibility = ["//crates/cli-report:__pkg__"],
 )
 
 cargo_build_script(
     name = "log_catalog",
-    srcs = ["build.rs", "src/report/extract.rs"],
+    srcs = ["build.rs", "//crates/cli-report:src/report/extract.rs"],
     build_script_env = {"ALONDRA_LOG_CATALOG_GENERATED": "1"},
     crate_root = "build.rs",
     data = [":log-catalog.txt", ":vocabulary.txt"],
     edition = "2024",
 )
 
+# The root: it installs the transport, the account and the doctor's checks into the client port,
+# the log catalog into the report, and hands each command to its adapter. Only it compiles the
+# catalog, so a word changed in any crate recompiles the root alone.
 root_library(
     name = "alondra_lib",
-    srcs = production_sources(test_only = ["src/account_native_smoke.rs", "src/service_client/live_transfer_test.rs", "src/tui/md/corpus.rs"], exclude = ["src/main.rs"]),
-    compile_data = ["//launchd:alondra.plist.in"],
+    srcs = ["src/lib.rs"],
     crate_name = "alondra",
     crate_root = "src/lib.rs",
     version = VERSION,
     test_visibility = ["//crates/scenarios:__pkg__"],
-    deps = all_crate_deps(normal = True) + [":log_catalog", "//crates/core:alondra_core", "//crates/domain-rules:domain_rules", "//crates/views:views", "//crates/e2e:alondra_e2e"],
+    deps = all_crate_deps(normal = True) + [
+        ":log_catalog",
+        "//crates/cli:cli",
+        "//crates/cli-mcp:cli_mcp",
+        "//crates/cli-report:cli_report",
+        "//crates/cli-tui:cli_tui",
+        "//crates/client-port:client_port",
+        "//crates/client-transport:client_transport",
+    ],
 )
 
 root_binary(
@@ -102,24 +74,6 @@ root_binary(
     version = VERSION,
     visibility = ["//visibility:public"],
     deps = crate_deps(["anyhow"]) + [":alondra_lib"],
-)
-
-low_opt_rust_test(
-    name = "alondra_test",
-    size = "small",
-    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]) + ["//crates:test_support.rs"],
-    crate_name = "alondra",
-    crate_root = "src/lib.rs",
-    compile_data = [
-        "//fixtures/diffs",
-        "//launchd:alondra.plist.in",
-        "//:plugin/skills/alondra/SKILL.md",
-        "//:plugin-orchestrator/skills/alondra-orchestrator/SKILL.md",
-    ],
-    deps = all_crate_deps(normal = True, normal_dev = True) + [":log_catalog", "//crates/core:alondra_core", "//crates/domain-rules:domain_rules", "//crates/views:views", "//crates/e2e:alondra_e2e"],
-    data = REPORT_SOURCES + ["//fixtures/report", "//fixtures/cli", "//fixtures/client-v2", "//fixtures/markdown", "//fixtures/views:all", "//fixtures/views:cards", "//fixtures/views:newer_daemon", "//fixtures/views:metrics", "//fixtures/domain-v2:text-completion.commands.json"],
-    edition = "2024",
-    version = VERSION,
 )
 
 # Cargo integration tests. Paths are runfiles-relative: Bazel runs tests from the
@@ -141,11 +95,21 @@ low_opt_rust_test(
     "version",
 ]]
 
+# The sources of every crate of the binary, for the tests that read what a person sees.
+CLI_SOURCES = glob(["src/**/*.rs"]) + [
+    "//crates/cli:sources",
+    "//crates/cli-mcp:sources",
+    "//crates/cli-report:sources",
+    "//crates/cli-tui:sources",
+    "//crates/client-port:sources",
+    "//crates/client-transport:sources",
+]
+
 [low_opt_rust_test(
     name = name + "_test",
     timeout = "moderate",
     srcs = ["tests/" + name + ".rs"],
-    data = glob(["src/**/*.rs"]),
+    data = CLI_SOURCES,
     edition = "2024",
     rustc_env = {"CARGO_MANIFEST_DIR": "crates/alondra"},
     deps = all_crate_deps(normal = True, normal_dev = True),
@@ -159,7 +123,7 @@ low_opt_rust_test(
     name = "no_sfltool_test",
     size = "small",
     srcs = ["tests/no_sfltool.rs"],
-    data = glob(["src/**/*.rs"]) + REPORT_SOURCES,
+    data = CLI_SOURCES + REPORT_SOURCES,
     edition = "2024",
     rustc_env = {"CARGO_MANIFEST_DIR": "crates/alondra"},
 )
@@ -187,15 +151,13 @@ low_opt_rust_test(
     deps = all_crate_deps(normal = True, normal_dev = True),
 )
 
-# The library compiles only production sources: a test file among its inputs would rebuild every
-# crate above it whenever the test changes.
+# The root library compiles `src/lib.rs` alone; every command lives in an adapter crate.
 rust_inputs_test(
     name = "production_inputs_test",
     size = "small",
     required_sources = ["crates/alondra/src/lib.rs"],
     source_dir = "crates/alondra/src/",
     target_under_test = ":alondra_lib",
-    test_only_sources = ["crates/alondra/src/account_native_smoke.rs", "crates/alondra/src/service_client/live_transfer_test.rs", "crates/alondra/src/tui/md/corpus.rs", "crates/alondra/src/tui/tests/screens.rs"],
     test_sources = False,
 )
 
