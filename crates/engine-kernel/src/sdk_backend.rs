@@ -114,7 +114,7 @@ pub fn resolve(home: &Path, sandbox: bool, user_home: &Path, daemon: &Path, envi
 /// The host beside `daemon`: `<keg>/libexec/alondra/sdk/alondra-host`, through Homebrew's `opt`
 /// link, so the next start after an upgrade verifies the new release's host.
 pub fn installed_host(daemon: &Path) -> PathBuf {
-    let cli = crate::plugins::cli_beside(daemon);
+    let cli = alondra_host::brew::cli_beside(daemon);
     let bin = cli.parent().unwrap_or(Path::new("/"));
     bin.parent().unwrap_or(bin).join("libexec/alondra/sdk").join(HOST)
 }
@@ -148,7 +148,7 @@ fn installed(home: &Path, user_home: &Path, daemon: &Path, environment: &BTreeMa
 }
 
 fn on_path(path: &str, name: &str) -> Option<PathBuf> {
-    alondra_core::claude_update::find_on_path(path, name)
+    alondra_host::claude_update::find_on_path(path, name)
 }
 
 /// The configuration in `home`, checked: `None` without one. `user_home` is the HOME the native
@@ -252,9 +252,9 @@ fn compatible(native: &Path, sha256: &str) -> Result<String> {
         return Ok(version);
     }
     let text = version_of(native)?;
-    if !alondra_core::claude_code::compatible(&text) {
+    if !alondra_host::claude_code::compatible(&text) {
         bail!("Claude Code {} is older than {}, the release Alondra needs: update it with `claude update`",
-            text.trim(), alondra_core::claude_code::MIN_TEXT);
+            text.trim(), alondra_host::claude_code::MIN_TEXT);
     }
     CHECKED.lock_or_recover("the checked SDK releases").get_or_insert_default().insert(sha256.to_owned(), text.clone());
     Ok(text)

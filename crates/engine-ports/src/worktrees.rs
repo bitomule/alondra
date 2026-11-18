@@ -124,6 +124,8 @@ pub trait Worktrees: Send + Sync {
     fn release_recorded_worktree<'a>(&'a self, dir: &'a Path, give_up: bool) -> Git<'a, Result<TaskWorktree, String>>;
     fn discard_worktree<'a>(&'a self, dir: &'a Path, keep_branch: bool) -> Git<'a, Result<TaskWorktree, String>>;
     /// Why the link `dir` is cannot be followed now, if it cannot.
+    /// Whether anything is at `dir` still: a worktree the user deleted is gone.
+    fn exists(&self, dir: &Path) -> bool;
     fn unreachable_link(&self, dir: &Path) -> Option<String>;
     fn uncommitted_files_of_alondras_worktree<'a>(&'a self, dir: &'a Path) -> Git<'a, Result<Option<usize>, String>>;
     /// What the worktree at `top` holds that no remote has.

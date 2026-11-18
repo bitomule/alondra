@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use alondra_engine_ports::plugins::{NODE, ORCHESTRATOR};
+
 const MARKETPLACE: &str = "alondra";
-pub const NODE: &str = "plugin";
-pub const ORCHESTRATOR: &str = "plugin-orchestrator";
 
 pub fn dir(claude_home: &Path, name: &str) -> Option<PathBuf> {
     let text = std::fs::read_to_string(claude_home.join("plugins/known_marketplaces.json")).ok()?;
@@ -50,13 +50,11 @@ static NODE_PLUGIN: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 /// The node plugin launched sessions load with `--plugin-dir`, once `install_node` placed it.
 pub fn node() -> Option<PathBuf> {
-    NODE_PLUGIN.get().cloned().or_else(|| cfg!(any(test, feature = "test-hooks")).then(|| PathBuf::from("/synthetic/plugin")))
+    NODE_PLUGIN.get().cloned()
 }
 
 /// The node plugin this daemon installed, else the copy in `home` an earlier start left.
 pub fn node_in(home: &Path) -> Option<PathBuf> {
-    #[cfg(any(test, feature = "test-hooks"))]
-    if home.join(NODE).is_dir() { return Some(home.join(NODE)); }
     node().or_else(|| Some(home.join(NODE)).filter(|plugin| plugin.is_dir()))
 }
 
@@ -82,21 +80,6 @@ pub fn install_orchestrator(home: &Path, source: &Path, alondra: &Path) -> anyho
     Ok(target)
 }
 
-/// The CLI next to this daemon, by the path that survives an upgrade: Homebrew's `opt` link
-/// instead of the versioned keg.
-pub fn own_cli() -> Option<PathBuf> {
-    Some(cli_beside(&std::env::current_exe().ok()?))
-}
-
-pub fn cli_beside(daemon: &Path) -> PathBuf {
-    let cli = daemon.with_file_name("alondra");
-    let rack = cli.ancestors().nth(3);
-    let cellar = cli.ancestors().nth(4);
-    match (rack.and_then(Path::file_name), cellar.and_then(Path::file_name), cli.ancestors().nth(5)) {
-        (Some(rack), Some(cellar), Some(prefix)) if rack == "alondra" && cellar == "Cellar" => prefix.join("opt/alondra/bin/alondra"),
-        _ => cli,
-    }
-}
 
 fn quoted(path: &Path) -> String {
     format!("'{}'", path.display().to_string().replace('\'', r"'\''"))
@@ -161,15 +144,6 @@ fn sync(source: &Path, target: &Path, wrapper: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Alondra's launch settings, with extra permissions when given.
-pub fn launch_settings_with(permissions: Option<serde_json::Value>) -> serde_json::Value {
-    let mut settings: serde_json::Value = serde_json::from_str(&alondra_core::launch_settings()).expect("launch settings are JSON");
-    if let Some(permissions) = permissions {
-        settings["permissions"] = permissions;
-    }
-    settings
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,19 +189,10 @@ mod tests {
     }
 
     #[test]
-    fn nodes_run_the_cli_beside_the_daemon_by_the_path_an_upgrade_keeps() {
-        assert_eq!(cli_beside(Path::new("/opt/homebrew/Cellar/alondra/0.2.23/bin/alondrad")),
-            Path::new("/opt/homebrew/opt/alondra/bin/alondra"));
-        assert_eq!(cli_beside(Path::new("/tmp/alondra-sandbox/bin/alondrad")), Path::new("/tmp/alondra-sandbox/bin/alondra"),
-            "a sandbox near the root of the disk");
-        assert_eq!(cli_beside(Path::new("/Users/me/.local/bin/alondrad")), Path::new("/Users/me/.local/bin/alondra"));
-    }
-
-    #[test]
     fn an_upgrade_updates_the_daemons_plugin_copy_in_place_so_running_sessions_keep_their_mod() {
         let scratch_directory = crate::test_support::Directory::new();
         use std::os::unix::fs::MetadataExt;
-        let root = scratch_directory.parent().unwrap().join(format!("alondra-plugin-copy-{}", crate::auth::random_hex(8)));
+        let root = scratch_directory.parent().unwrap().join(format!("alondra-plugin-copy-{}", alondra_foundation::random_hex(8)));
         let (old, new, home) = (root.join("Cellar/0.2.22/plugin"), root.join("Cellar/0.2.23/plugin"), root.join("home"));
         for (keg, mod_text) in [(&old, "old mod"), (&new, "new mod")] {
             std::fs::create_dir_all(keg.join(".claude-plugin")).unwrap();

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use alondra_core::config::{Config, FileConfig};
-use alondra_core::startup::Record;
+use alondra_host::startup::Record;
 use alondra_views::Lang;
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
@@ -55,7 +55,7 @@ struct Fake {
     cwd: PathBuf,
     apns: Option<String>,
     claude: RefCell<BTreeMap<String, (bool, String)>>,
-    claude_update: RefCell<alondra_core::claude_update::Outcome>,
+    claude_update: RefCell<alondra_host::claude_update::Outcome>,
     signed_in: RefCell<Result<bool, String>>,
     profile: Result<Option<String>, String>,
     plugins: RefCell<Option<Value>>,
@@ -94,7 +94,7 @@ impl Fake {
             cwd: "/".into(),
             apns: None,
             claude: RefCell::new(claude.into_iter().map(|(k, v)| (k.to_string(), v)).collect()),
-            claude_update: RefCell::new(alondra_core::claude_update::Outcome::Failed(alondra_core::claude_update::Failure::NoAnswer)),
+            claude_update: RefCell::new(alondra_host::claude_update::Outcome::Failed(alondra_host::claude_update::Failure::NoAnswer)),
             signed_in: RefCell::new(Ok(true)),
             profile: Ok(None),
             plugins: RefCell::new(Some(json!([]))),
@@ -192,7 +192,7 @@ impl System for Fake {
         self.claude_calls.borrow_mut().push(key.clone());
         self.claude.borrow().get(&key).cloned()
     }
-    fn update_claude(&self) -> alondra_core::claude_update::Outcome {
+    fn update_claude(&self) -> alondra_host::claude_update::Outcome {
         self.claude_update.borrow().clone()
     }
     fn signed_in(&self) -> Result<bool> {
@@ -259,7 +259,7 @@ impl System for Fake {
                 self.service.borrow_mut().marketplace_elsewhere = None;
             }
             Action::UpdateClaude => match self.claude_update.borrow().clone() {
-                alondra_core::claude_update::Outcome::Updated { to, .. } => {
+                alondra_host::claude_update::Outcome::Updated { to, .. } => {
                     self.claude.borrow_mut().insert("--version".into(), (true, to));
                 }
                 outcome => return Err(anyhow!(super::claude_update::describe(&outcome))),
@@ -518,7 +518,7 @@ fn claude_must_be_new_enough_for_the_agent_sdk() {
 
 #[test]
 fn fix_updates_a_claude_below_the_minimum_and_says_why_when_it_cannot() {
-    use alondra_core::claude_update::{Failure, Outcome};
+    use alondra_host::claude_update::{Failure, Outcome};
     english();
     let old = || {
         let sys = Fake::healthy();

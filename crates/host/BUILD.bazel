@@ -1,0 +1,42 @@
+load("//tools/bazel:crates.bzl", "foundation_crate")
+load("//tools:tree.bzl", "repo_tree")
+load("@crates//:defs.bzl", "all_crate_deps")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
+load("//tools:rust_sources.bzl", "production_sources")
+
+# What the daemon, the CLI and the clients reach on this Mac by themselves. Only its users link it,
+# so editing it rebuilds them, not every crate above core.
+WORKSPACE_DEPS = ["//crates/foundation:foundation"]
+
+foundation_crate(
+    name = "host",
+    srcs = production_sources(),
+    crate_name = "alondra_host",
+    version = "0.1.0",
+    deps = all_crate_deps(normal = True) + WORKSPACE_DEPS,
+)
+
+low_opt_rust_test(
+    name = "host_test",
+    size = "small",
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    crate_name = "alondra_host",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
+    env = {"HOME": "."},
+    version = "0.1.0",
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS,
+)
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+
+# The crate's production sources: the crash report's log catalog reads them, and fails on a test
+# file among them.
+filegroup(
+    name = "report_sources",
+    srcs = production_sources(),
+    visibility = ["//crates/alondra:__pkg__", "//crates/cli-report:__pkg__"],
+)
+
+repo_tree()

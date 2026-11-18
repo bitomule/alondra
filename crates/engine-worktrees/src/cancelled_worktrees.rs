@@ -161,7 +161,7 @@ pub async fn sweep(domain: &DomainRuntime) -> Result<()> {
         paths.sort();
         paths.dedup();
         let mut held = CancelledWorktree { task_id: task.id.0.clone(), title: task.title.clone(), files: 0, paths: vec![] };
-        for path in paths.into_iter().filter(|path| Path::new(path.as_str()).exists() && !in_use(domain, &state, &task.id, path)) {
+        for path in paths.into_iter().filter(|path| domain.ports().worktrees().exists(Path::new(path.as_str())) && !in_use(domain, &state, &task.id, path)) {
             if asked.contains(path.as_str()) {
                 continue;
             }

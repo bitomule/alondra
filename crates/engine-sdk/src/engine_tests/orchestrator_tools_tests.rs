@@ -485,9 +485,8 @@ async fn a_launch_in_a_repository_claude_does_not_trust_is_refused_before_claude
     super::wired();
     let f = world();
     let project = f.project.canonicalize().unwrap();
-    let config = f.root.join(".claude.json");
-    crate::claude_trust::use_config_for_test(&config);
-    let trust = |accepted: bool| std::fs::write(&config, json!({"projects": {project.to_str().unwrap(): {"hasTrustDialogAccepted": accepted}}}).to_string()).unwrap();
+    let accounts = alondra_engine_doubles::accounts::of(f.domain.ports());
+    let trust = |accepted: bool| accounts.set_trust(None, &[(&project, accepted)]);
 
     trust(false);
     let refused = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet"})), |_| None).await.unwrap_err();
@@ -1215,7 +1214,7 @@ async fn the_changes_the_user_asked_for_reach_the_node_that_takes_the_task_over(
     let f = world();
     let answer = crate::sdk_owner::launch(&f.domain, crate::sdk_owner::Launch {
         task: "t".into(), name: "Instance B".into(), directory: f.project.to_str().unwrap().into(),
-        prompt: "consume-and-hold".into(), plugin: crate::plugins::node_in(&f.home).unwrap(),
+        prompt: "consume-and-hold".into(), plugin: f.domain.ports().plugins().node(&f.home).unwrap(),
         options: LaunchOptions::default(), model: None,
         account: alondra_core::accounts::AccountId::default_account(),
     }).await.unwrap();
@@ -1361,9 +1360,7 @@ async fn a_replacement_works_in_a_worktree_of_a_trusted_repository() {
     std::fs::write(linked.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
     std::fs::write(admin.join("commondir"), "../..\n").unwrap();
     std::fs::write(admin.join("gitdir"), format!("{}\n", linked.join(".git").display())).unwrap();
-    let config = f.root.join(".claude.json");
-    crate::claude_trust::use_config_for_test(&config);
-    std::fs::write(&config, json!({"projects": {main.to_str().unwrap(): {"hasTrustDialogAccepted": true}}}).to_string()).unwrap();
+    alondra_engine_doubles::accounts::of(f.domain.ports()).set_trust(None, &[(&main, true)]);
     sdk_node_on_the_task(&f, &linked).await;
     let original = f.sdk().starts()[0]["session"].as_str().unwrap().to_owned();
     let body = serde_json::from_value(json!({"task": "t", "replace": true, "model": "opus", "reason": "Needs opus", "cwd": linked.to_str().unwrap()})).unwrap();
@@ -2112,10 +2109,8 @@ async fn changing_the_recovery_directory_refuses_before_workspace_effects_or_sto
         if repository {
             alondra_engine_doubles::worktrees::repository(&directory);
         }
-        let trust = f.root.join("trust.json");
-        let bytes = json!({"projects": {directory.to_str().unwrap(): {"hasTrustDialogAccepted": true}}}).to_string();
-        std::fs::write(&trust, &bytes).unwrap();
-        crate::claude_trust::use_config_for_test(&trust);
+        let accounts = alondra_engine_doubles::accounts::of(f.domain.ports());
+        accounts.set_trust(None, &[(&directory, true)]);
         let refused = launch(&f.domain, &f.home, launch_body(&f, json!({"replace": true, "model": "sonnet", "cwd": directory.to_str().unwrap()})), |_| None).await.unwrap_err();
         assert_eq!(refused.code, "native_session_required");
         assert_eq!(f.task_node(), Some(old.clone()));
@@ -2123,7 +2118,7 @@ async fn changing_the_recovery_directory_refuses_before_workspace_effects_or_sto
         assert_eq!(f.sdk().starts().len(), 1);
         assert_eq!(f.domain.task_worktree(&"t".into()).unwrap(), original);
         assert!(!directory.join(".claude/worktrees/t").exists());
-        assert_eq!(std::fs::read_to_string(&trust).unwrap(), bytes);
+        assert!(accounts.trusts(None, &directory), "the trust the user gave stays as it was");
     }
 }
 

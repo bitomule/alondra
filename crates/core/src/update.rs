@@ -1,5 +1,4 @@
 //! Released versions come from the Homebrew tap's GitHub releases, tagged `alondra-vX.Y.Z`.
-use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -28,15 +27,6 @@ pub fn latest_release(releases: &Value) -> Option<String> {
         .filter_map(|v| parse(v).map(|p| (p, v.to_string())))
         .max_by_key(|(p, _)| *p)
         .map(|(_, v)| v)
-}
-
-/// The Homebrew prefix of a binary Homebrew installed: `<prefix>/Cellar/alondra/<version>/bin/…`,
-/// whatever link (`<prefix>/opt/alondra/bin`, `<prefix>/bin`) it was reached through.
-pub fn brew_prefix(binary: &Path) -> Option<PathBuf> {
-    let real = binary.canonicalize().ok()?;
-    let parts: Vec<_> = real.components().collect();
-    let cellar = parts.windows(2).position(|w| w[0].as_os_str() == "Cellar" && w[1].as_os_str() == "alondra")?;
-    Some(parts[..cellar].iter().collect())
 }
 
 /// What the daemon knows about updates, as the overview and `/v1/health` show it.
@@ -103,24 +93,5 @@ mod tests {
         assert!(!newer("0.1.11", "0.1.12"));
         assert!(!newer("garbage", "0.1.12"));
         assert_eq!(parse("0.1.2.3"), None);
-    }
-
-    #[test]
-    fn a_homebrew_binary_is_recognised_through_its_links() {
-        let scratch_directory = crate::test_support::Directory::new();
-        let root = scratch_directory.parent().unwrap().join(format!("alondra-brew-{}-{}", std::process::id(), crate::now_millis()));
-        let keg = root.join("Cellar/alondra/0.1.12/bin");
-        std::fs::create_dir_all(&keg).unwrap();
-        std::fs::write(keg.join("alondra"), "").unwrap();
-        std::fs::create_dir_all(root.join("opt")).unwrap();
-        std::os::unix::fs::symlink("../Cellar/alondra/0.1.12", root.join("opt/alondra")).unwrap();
-        let prefix = root.canonicalize().unwrap();
-        assert_eq!(brew_prefix(&root.join("opt/alondra/bin/alondra")), Some(prefix.clone()));
-        assert_eq!(brew_prefix(&keg.join("alondra")), Some(prefix));
-        let dev = root.join("bin");
-        std::fs::create_dir_all(&dev).unwrap();
-        std::fs::write(dev.join("alondra"), "").unwrap();
-        assert_eq!(brew_prefix(&dev.join("alondra")), None);
-        std::fs::remove_dir_all(root).unwrap();
     }
 }

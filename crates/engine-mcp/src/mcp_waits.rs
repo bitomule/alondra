@@ -14,7 +14,6 @@ use alondra_domain_rules::{
     McpStatus, Millis, OpenSignIn, PROTOCOL_VERSION, TaskId,
 };
 use std::collections::{BTreeSet, HashMap};
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -119,15 +118,8 @@ fn open_sign_in<'a>(state: &'a DomainState, task: &TaskId, server: &str) -> Opti
     state.mcp.get(agent)?.sign_ins.get(server)
 }
 
-/// Whether something listens on `port` of this Mac, as a browser would reach it. An empty
-/// connection is what a browser opens ahead of a request; nothing is sent on it.
-fn listening(port: u16) -> bool {
-    let addresses: Vec<SocketAddr> = ("localhost", port).to_socket_addrs().map(Iterator::collect).unwrap_or_default();
-    addresses.iter().any(|address| TcpStream::connect_timeout(address, Duration::from_millis(300)).is_ok())
-}
-
-fn still_open(open: &OpenSignIn) -> bool {
-    open.callback_port.is_none_or(listening)
+fn still_open(domain: &DomainRuntime, open: &OpenSignIn) -> bool {
+    open.callback_port.is_none_or(|port| domain.ports().sign_in_returns().listening(port))
 }
 
 fn browser(server: &str, open: &OpenSignIn) -> Opened {
@@ -181,7 +173,7 @@ pub async fn connect(domain: &DomainRuntime, target: &Target) -> Result<Opened, 
             return Ok(Opened::Connected { server: name });
         }
         for task in &waiting {
-            if let Some(open) = open_sign_in(state, task, &name).filter(|open| still_open(open)) {
+            if let Some(open) = open_sign_in(state, task, &name).filter(|open| still_open(domain, open)) {
                 return Ok(browser(&name, open));
             }
         }
@@ -382,7 +374,7 @@ pub async fn run(domain: Arc<DomainRuntime>) {
         let still: BTreeSet<Returning> = open.iter().map(|(sign_in, _)| sign_in.clone()).collect();
         let mut over: Vec<Returning> = seen.difference(&still).filter(|sign_in| !ended.contains(*sign_in)).cloned().collect();
         for (sign_in, port) in &open {
-            if !ended.contains(sign_in) && !listening(*port) {
+            if !ended.contains(sign_in) && !domain.ports().sign_in_returns().listening(*port) {
                 ended.insert(sign_in.clone());
                 over.push(sign_in.clone());
             }

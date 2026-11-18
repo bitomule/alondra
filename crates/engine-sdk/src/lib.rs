@@ -22,7 +22,8 @@ use alondra_daemon_engine::{
 };
 #[cfg(target_os = "macos")]
 use alondra_daemon_support::schedule_clock;
-use alondra_daemon_support::{auth, blocking_work, files_retention, locks, plugins, schedules};
+use alondra_daemon_support::{auth, blocking_work, files_retention, locks, schedules};
+use alondra_engine_ports::plugins;
 #[cfg(any(test, feature = "test-hooks"))]
 use alondra_daemon_engine::{claude_access, domain_orchestrator_reads, host_fixtures, machine_state, native_probe, node_reports, obligation_watch, untaken, usage_probe};
 #[cfg(any(test, feature = "test-hooks"))]

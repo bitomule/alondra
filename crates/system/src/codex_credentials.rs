@@ -117,6 +117,17 @@ pub fn recover_pending(profile: &Path, attempt: &str) {
     if pending.symlink_metadata().is_ok_and(|meta| meta.is_file() && !meta.file_type().is_symlink()) { let _ = fs::remove_file(pending); }
 }
 
+/// Deletes each sign-in staging folder in `staging`, named by its 32-hex-digit attempt.
+pub fn clear_staging(staging: &Path) {
+    if !staging.symlink_metadata().is_ok_and(|meta| meta.is_dir() && !meta.file_type().is_symlink()) { return; }
+    for entry in fs::read_dir(staging).into_iter().flatten().flatten() {
+        if entry.file_name().to_str().is_some_and(|name| name.len() == 32 && name.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            && entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

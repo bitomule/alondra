@@ -953,8 +953,7 @@ fn a_node_s_mcp_servers_and_sign_in_are_recorded_and_its_return_reaches_only_cla
     let controls: i64 = Connection::open(fixture.path()).unwrap().query_row("SELECT count(*) FROM lifecycle_controls", [], |row| row.get(0)).unwrap();
     assert_eq!(controls, 0, "a binding without MCP status reads none, and the observation still commits");
 
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let port = 49_200;
     observe(4, vec![Observation::McpSignIn { server: "linear".into(), sign_in: McpSignInReport::Browser {
         url: "https://linear.app/oauth/authorize?state=s1".into(), callback_port: Some(port), state: Some("s1".into()),
     } }]);
@@ -962,17 +961,12 @@ fn a_node_s_mcp_servers_and_sign_in_are_recorded_and_its_return_reaches_only_cla
     assert!(matches!(complete(&runtime, &task(), "linear", &back("another")), Err(SignInError::Refused(_))), "another sign-in's return");
     assert!(matches!(complete(&runtime, &task(), "linear", &format!("http://localhost:{}/callback?code={CODE}&state=s1", port + 1)), Err(SignInError::Refused(_))), "another listener");
     assert_eq!(complete(&runtime, &task(), "linear", "https://evil.example.com/callback?code=c&state=s1"), Err(SignInError::NotAReturn));
-    let (heard, received) = mpsc::channel();
-    let claude = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut line = String::new();
-        BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap();
-        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").unwrap();
-        heard.send(line.trim_end().to_owned()).unwrap();
-    });
+    let listeners = alondra_engine_doubles::sign_in_returns::of(runtime.ports());
+    listeners.answer(Ok(400));
+    assert!(matches!(complete(&runtime, &task(), "linear", &back("s1")), Err(SignInError::Undelivered(_))), "Claude refused the code");
+    listeners.answer(Ok(200));
     complete(&runtime, &task(), "linear", &back("s1")).unwrap();
-    claude.join().unwrap();
-    assert_eq!(received.recv().unwrap(), format!("GET /callback?code={CODE}&state=s1 HTTP/1.1"));
+    assert_eq!(listeners.handed().last(), Some(&(port, format!("/callback?code={CODE}&state=s1"))));
     assert!(runtime.read().state().mcp[&agent].sign_ins.is_empty(), "the sign-in is no longer open");
     assert!(matches!(complete(&runtime, &task(), "linear", &back("s1")), Err(SignInError::Refused(_))), "a return is taken once");
     drop(runtime);
@@ -1063,8 +1057,7 @@ fn a_returned_sign_in_has_the_node_connect_the_server_again(watcher_starts_after
     let card = crate::mcp_waits::Target::Card(runtime.read().state().mcp_waiting()[0].card.clone());
     let tokio = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
 
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let port = 49_201;
     let opening = tokio.spawn({
         let (runtime, card) = (runtime.clone(), card.clone());
         async move { connect(&runtime, &card).await }
@@ -1084,21 +1077,11 @@ fn a_returned_sign_in_has_the_node_connect_the_server_again(watcher_starts_after
     let address = format!("http://localhost:{port}/callback?code={CODE}&state=s1");
     let refused = tokio.block_on(give_back(&runtime, &card, "https://evil.example.com/callback?code=c&state=s1".into()));
     assert_eq!(refused.unwrap_err().code, "invalid_input");
-    let claude = std::thread::spawn(move || loop {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut line = String::new();
-        BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap();
-        if line.is_empty() {
-            continue;
-        }
-        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").unwrap();
-        return line.trim_end().to_owned();
-    });
     let watcher = || tokio.spawn(crate::mcp_waits::run(runtime.clone()));
     let early = (!watcher_starts_after_the_return).then(watcher);
     let mut changes = runtime.subscribe();
     tokio.block_on(give_back(&runtime, &card, address.clone())).unwrap();
-    assert_eq!(claude.join().unwrap(), format!("GET /callback?code={CODE}&state=s1 HTTP/1.1"));
+    assert_eq!(alondra_engine_doubles::sign_in_returns::of(runtime.ports()).handed(), [(port, format!("/callback?code={CODE}&state=s1"))]);
     let watching = early.unwrap_or_else(watcher);
     // Claude connects the server only after it answered the browser: the node must connect it again.
     tokio.block_on(async {

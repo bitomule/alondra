@@ -1,6 +1,7 @@
-//! What the engine relies on from the `Worktrees`, `Disk` and `MachineProbe` ports. The doubles of
-//! this crate pass it in their unit tests; `crates/system` passes it with the Mac's own git, disks
-//! and gauges, so a double never drifts from what the daemon really does.
+//! What the engine relies on from the `Worktrees`, `Disk`, `MachineProbe`, `Accounts`, `Processes`
+//! and `Plugins` ports. The doubles of this crate pass it in their unit tests; `crates/system` passes
+//! it with the Mac's own git, disks, gauges, files and processes, so a double never drifts from what
+//! the daemon really does.
 use crate::test_support::Directory;
 use alondra_engine_ports::disk::Disk;
 use alondra_engine_ports::machine::MachineProbe;
@@ -238,4 +239,94 @@ pub fn saved_work(worktrees: &dyn Worktrees, saving: &Saving) {
     assert_eq!(ready(worktrees.unsaved(&pushed)).unwrap(), None, "pushed work is saved");
     assert!(matches!(ready(worktrees.discard_worktree(&pushed, false)).unwrap(), TaskWorktree::Removed { .. }));
     assert!(!(saving.branch_exists)(&repo, "worktree-u"), "a branch whose commits a remote has goes with its worktree");
+}
+
+/// An added Claude account's folder is private and links what the user set up; removing it keeps
+/// what it linked. A named Codex account gets a private folder of its own, the native one none.
+/// Two accounts share sessions only through the same `projects/`. A repository nothing trusts is
+/// untrusted, a projects folder trusts what is in it on the spot, and the user's trust holds on
+/// every account. `trust` writes the settings of a profile: which repositories it trusts.
+pub fn accounts(accounts: &dyn alondra_engine_ports::accounts::Accounts, trust: &dyn Fn(&Path, &[(&Path, bool)])) {
+    use alondra_core::accounts::{AccountId, AccountKey, Provider};
+    use std::os::unix::fs::PermissionsExt as _;
+    let scratch = Directory::new();
+    let user_home = scratch.join("user");
+    let claude = user_home.join(".claude");
+    std::fs::create_dir_all(claude.join("projects")).unwrap();
+    std::fs::create_dir_all(claude.join("skills/mine")).unwrap();
+    std::fs::write(claude.join("CLAUDE.md"), "be brief").unwrap();
+    let home = user_home.join(".alondra");
+    let work = AccountId::parse("work").unwrap();
+    let folder = accounts.prepare_claude(&home, &work, &claude).unwrap();
+    assert_eq!(std::fs::metadata(&folder).unwrap().permissions().mode() & 0o777, 0o700, "an account's folder is private");
+    assert_eq!(std::fs::read_link(folder.join("skills")).unwrap(), claude.join("skills"));
+    assert_eq!(std::fs::read_link(folder.join("CLAUDE.md")).unwrap(), claude.join("CLAUDE.md"));
+    assert!(std::fs::symlink_metadata(folder.join("agents")).is_err(), "a name the user has not is not linked");
+    assert!(accounts.prepare_claude(&home, &AccountId::default_account(), &claude).is_err(), "the default account is the user's own");
+    assert!(accounts.shares_sessions(&home, &user_home, None, &AccountId::default_account(), &work));
+    assert!(!accounts.shares_sessions(&home, &user_home, None, &work, &AccountId::parse("none").unwrap()), "an account with no folder");
+    accounts.remove_claude(&home, &work).unwrap();
+    assert!(!folder.exists());
+    assert!(claude.join("skills/mine").is_dir() && claude.join("CLAUDE.md").is_file(), "removing an account keeps what it linked");
+    accounts.remove_claude(&home, &work).unwrap();
+
+    let codex = AccountKey::new(Provider::Codex, AccountId::parse("projects").unwrap());
+    let profile = accounts.prepare_codex(&home, &codex).unwrap().expect("a named Codex account has a folder");
+    assert_eq!(std::fs::metadata(&profile).unwrap().permissions().mode() & 0o777, 0o700);
+    assert!(std::fs::read_to_string(profile.join("config.toml")).unwrap().contains("cli_auth_credentials_store = \"file\""));
+    assert_eq!(accounts.prepare_codex(&home, &AccountKey::native(Provider::Codex)).unwrap(), None, "the native account has no folder of Alondra's");
+    assert!(accounts.prepare_codex(&home, &AccountKey::new(Provider::Claude, work.clone())).is_err());
+    accounts.remove_codex(&home, &codex).unwrap();
+    assert!(!profile.exists());
+
+    let projects = scratch.join("projects");
+    let repository = projects.join("Lumo");
+    std::fs::create_dir_all(repository.join(".git")).unwrap();
+    std::fs::create_dir_all(repository.join("src")).unwrap();
+    let repository = repository.canonicalize().unwrap();
+    let account = scratch.join("accounts/work");
+    std::fs::create_dir_all(&account).unwrap();
+    assert_eq!(accounts.untrusted(Some(&account), &repository), None, "settings that cannot be read prove nothing");
+    trust(&account, &[]);
+    assert_eq!(accounts.untrusted(Some(&account), &repository.join("src")), Some(repository.clone()), "trust is kept under the repository's root");
+    assert_eq!(accounts.ensure_trusted(Some(&account), &repository, Some(&scratch.join("elsewhere"))), Some(repository.clone()));
+    assert_eq!(accounts.ensure_trusted(Some(&account), &repository, Some(&projects)), None, "inside the projects folder it is trusted on the spot");
+    assert_eq!(accounts.untrusted(Some(&account), &repository), None);
+    let fjord = projects.join("Fjord");
+    std::fs::create_dir_all(fjord.join(".git")).unwrap();
+    let fjord = fjord.canonicalize().unwrap();
+    trust(&account, &[(&fjord, false)]);
+    assert_eq!(accounts.untrusted(Some(&account), &fjord), Some(fjord.clone()));
+    accounts.grant_trust(&fjord, std::slice::from_ref(&account)).unwrap();
+    assert_eq!(accounts.untrusted(Some(&account), &fjord), None, "the user's trust holds on every account");
+}
+
+/// What the Mac answers of its processes: a table with this process in it, under its parent.
+pub fn processes(processes: &dyn alondra_engine_ports::processes::Processes) {
+    let table = processes.table();
+    let own = table.iter().find(|process| process.pid == std::process::id() as i32).expect("this process is in the table");
+    assert!(table.iter().any(|process| process.pid == own.parent), "its parent too");
+    processes.signal(&[], libc::SIGTERM);
+}
+
+/// Alondra's plugins: the copy a home holds, and the one the registered marketplace points to.
+pub fn plugins(plugins: &dyn alondra_engine_ports::plugins::Plugins) {
+    use alondra_engine_ports::plugins::{NODE, ORCHESTRATOR};
+    let scratch = Directory::new();
+    let home = scratch.join("home");
+    std::fs::create_dir_all(home.join(NODE)).unwrap();
+    assert!(plugins.node(&home).is_some(), "the copy in the home, or the one this daemon installed");
+    assert_eq!(plugins.orchestrator(&home), None, "a copy without its manifest is not a plugin");
+    std::fs::create_dir_all(home.join(ORCHESTRATOR).join(".claude-plugin")).unwrap();
+    std::fs::write(home.join(ORCHESTRATOR).join(".claude-plugin/plugin.json"), "{}").unwrap();
+    assert_eq!(plugins.orchestrator(&home), Some(home.join(ORCHESTRATOR)));
+    let claude_home = scratch.join("claude");
+    let marketplace = scratch.join("marketplace");
+    std::fs::create_dir_all(marketplace.join(NODE).join(".claude-plugin")).unwrap();
+    std::fs::write(marketplace.join(NODE).join(".claude-plugin/plugin.json"), "{}").unwrap();
+    assert_eq!(plugins.registered(&claude_home, NODE), None, "nothing registered");
+    std::fs::create_dir_all(claude_home.join("plugins")).unwrap();
+    std::fs::write(claude_home.join("plugins/known_marketplaces.json"), serde_json::json!({"alondra": {"installLocation": marketplace}}).to_string()).unwrap();
+    assert_eq!(plugins.registered(&claude_home, NODE), Some(marketplace.join(NODE)));
+    assert_eq!(plugins.registered(&claude_home, ORCHESTRATOR), None);
 }

@@ -956,8 +956,8 @@ async fn read_role_skill(
     let principal = match state.domain.resolve_bearer(bearer) { Ok(principal) => principal, Err(_) => return crate::domain_api::domain_error(DomainError::new("forbidden", "A current role capability is required")) };
     let Ok(Json(query)) = body else { return crate::domain_api::domain_error(DomainError::new("invalid_input", "Invalid skill request")); };
     let (root, name) = match (principal, query.name.as_str()) {
-        (crate::domain_authority::Principal::Agent { .. }, "alondra") => (crate::plugins::node_in(&state.home), "alondra"),
-        (crate::domain_authority::Principal::Orchestrator { .. }, "alondra-orchestrator") => (crate::plugins::orchestrator_in(&state.home), "alondra-orchestrator"),
+        (crate::domain_authority::Principal::Agent { .. }, "alondra") => (state.domain.ports().plugins().node(&state.home), "alondra"),
+        (crate::domain_authority::Principal::Orchestrator { .. }, "alondra-orchestrator") => (state.domain.ports().plugins().orchestrator(&state.home), "alondra-orchestrator"),
         _ => return crate::domain_api::domain_error(DomainError::new("forbidden", "Only the current role's installed skill may be read")),
     };
     let Some(root) = root else { return crate::domain_api::domain_error(DomainError::new("not_found", "The role's Alondra integration assets are not installed")); };

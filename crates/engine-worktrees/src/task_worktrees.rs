@@ -129,7 +129,7 @@ impl std::error::Error for Unreachable {}
 /// in, still holds that no remote has: the work that keeps the task from closing, by path.
 pub async fn leftovers(domain: &DomainRuntime, task: &Task) -> Vec<(String, String)> {
     let mut left = vec![];
-    for (path, _) in task.open_worktrees().filter(|(path, worktree)| !worktree.discard && Path::new(path).exists()) {
+    for (path, _) in task.open_worktrees().filter(|(path, worktree)| !worktree.discard && domain.ports().worktrees().exists(Path::new(path))) {
         if domain.registrable_worktree(Path::new(path)).is_err() {
             continue;
         }
@@ -199,7 +199,7 @@ pub async fn release_all(domain: &DomainRuntime, task: &Task) -> Result<Vec<(Str
 /// Whether Alondra may look into or delete the recorded `path`: it is gone, or still a worktree.
 /// Why not, otherwise.
 pub fn may_handle(domain: &DomainRuntime, path: &str) -> std::result::Result<(), String> {
-    match Path::new(path).exists() {
+    match domain.ports().worktrees().exists(Path::new(path)) {
         true => domain.registrable_worktree(Path::new(path)),
         false => Ok(()),
     }

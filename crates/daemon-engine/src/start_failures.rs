@@ -86,13 +86,13 @@ pub fn ended(domain: &DomainRuntime, task: &TaskId) -> Result<bool> {
 /// The problem a refused launch is, by the code it was refused with; none for refusals that clear
 /// by themselves (usage, disk, a launch already under way). A refusal of the task's own plan or
 /// choices is the same on every try.
-pub fn problem_of(code: &str, message: &str, cwd: Option<&str>) -> Option<StartProblem> {
+pub fn problem_of(accounts: &dyn alondra_engine_ports::accounts::Accounts, code: &str, message: &str, cwd: Option<&str>) -> Option<StartProblem> {
     match code {
         "usage_exhausted" | "worktrees_unavailable" | "disk_low" | "conflict" | alondra_domain_rules::capability_capacity_card::CAPABILITY_CAPACITY_CODE => None,
         "invalid_input" | "model_is_binding" | "unsupported_capability" | "selection_transition_required" | "active_account_immutable" =>
             Some(StartProblem::PlanRefused { error: message.trim().to_owned() }),
         "workspace_untrusted" => {
-            let folder = cwd.map(|cwd| crate::claude_trust::check(Path::new(cwd)).map_or_else(|| cwd.to_owned(), |repo| repo.to_string_lossy().into_owned()));
+            let folder = cwd.map(|cwd| accounts.untrusted(None, Path::new(cwd)).map_or_else(|| cwd.to_owned(), |repo| repo.to_string_lossy().into_owned()));
             Some(StartProblem::Untrusted { folder: folder.unwrap_or_else(|| message.to_owned()), error: None })
         }
         _ => Some(StartProblem::LaunchFailed { error: message.trim().to_owned() }),

@@ -9,6 +9,7 @@ extern crate alondra_daemon_support;
 
 pub use alondra_github_gh::{pr_viewed, prs};
 
+pub use alondra_engine_ports::plugins;
 pub use alondra_daemon_support::{
     approval_lease,
     auth,
@@ -20,13 +21,11 @@ pub use alondra_daemon_support::{
     domain_cutover,
     exit,
     files_retention,
-    hook_socket,
     job_state,
     local_network,
     locks,
     log,
     open_files,
-    plugins,
     pr_heads,
     pr_ids,
     push,

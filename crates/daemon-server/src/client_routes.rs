@@ -303,7 +303,7 @@ impl Client {
             mcp_probes: Default::default(),
             device_languages: std::sync::Mutex::new(device_languages),
             device_languages_path,
-            report_cli: std::sync::Mutex::new(crate::plugins::own_cli()),
+            report_cli: std::sync::Mutex::new(alondra_host::brew::own_cli()),
         });
         crate::views::feed::start_clock(&client);
         client

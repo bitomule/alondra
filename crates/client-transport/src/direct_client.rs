@@ -583,7 +583,7 @@ pub fn service_type() -> &'static str {
 
 /// Lists the Macs advertising Alondra here, for a few seconds.
 pub fn browse(window: Duration) -> Result<Vec<Found>> {
-    let services = alondra_core::bonjour::browse(service_type(), window)
+    let services = alondra_host::bonjour::browse(service_type(), window)
         .map_err(|error| anyhow!("Bonjour search failed: {error}"))?;
     Ok(services
         .into_iter()

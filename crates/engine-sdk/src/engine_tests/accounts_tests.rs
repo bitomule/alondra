@@ -70,9 +70,13 @@ fn the_actual_codex_metadata_check_keeps_external_auth_unavailable_and_api_keys_
     std::fs::write(f.home.join("codex-backend.json"), serde_json::to_vec(&backend).unwrap()).unwrap();
     let mut config = AccountsConfig::fresh(); config.connect(Provider::Codex);
     std::fs::write(alondra_core::options::path_in(&f.home), config.to_toml()).unwrap();
-    let sidecar = PathBuf::from(format!("{}.account.json", native.display()));
+    let accounts = alondra_engine_doubles::accounts::of(domain.ports());
     for (method, expected_state) in [("chatgptAuthTokens", AccountState::Unavailable), ("agentIdentity", AccountState::Unavailable), ("chatgpt", AccountState::SignedIn), ("apikey", AccountState::Unavailable)] {
-        std::fs::write(&sidecar, serde_json::to_vec(&json!({"trace":true,"authStatus":{"authMethod":method,"authToken":null,"requiresOpenaiAuth":true}})).unwrap()).unwrap();
+        let mut report = alondra_engine_doubles::accounts::codex_fixture();
+        report.auth_method = Some(method.into());
+        report.pay_per_use = method == "apikey";
+        if method != "chatgpt" { report.workspace_id = None; }
+        accounts.answer_every_codex(Ok(report));
         check(&domain, &f.home);
         let read = domain.read(); let account = &read.state().accounts[0];
         assert_eq!(account.provider, Provider::Codex); assert_eq!(account.state, expected_state);
@@ -83,7 +87,15 @@ fn the_actual_codex_metadata_check_keeps_external_auth_unavailable_and_api_keys_
         assert_eq!(eligible.contains(&AccountKey::native(Provider::Codex)), method == "chatgpt");
         if method == "apikey" { assert_eq!(account.billing, AccountBilling::PayPerUse, "confirmed API-key mode wins over cached ChatGPT account/read shape"); }
     }
-    std::fs::write(&sidecar, serde_json::to_vec(&json!({"trace":true,"accountRead":{"account":{"type":"chatgpt","email":"second@example.test","planType":"plus"},"requiresOpenaiAuth":true},"rateLimits":{"accountId":"replacement-workspace","ordinaryUsageAllowed":true,"rateLimits":null},"models":{"data":"invalid-native-shape"}})).unwrap()).unwrap();
+    let mut replaced = alondra_engine_doubles::accounts::codex_fixture();
+    replaced.email = Some("second@example.test".into());
+    replaced.workspace_id = Some("replacement-workspace".into());
+    replaced.rate_limits = Some(json!({"accountId":"replacement-workspace","ordinaryUsageAllowed":true,"rateLimits":null}));
+    replaced.catalog.models.clear();
+    replaced.catalog.revision.clear();
+    replaced.catalog.native_default = None;
+    replaced.catalog_error = Some("Codex model list has no data array".into());
+    accounts.answer_every_codex(Ok(replaced));
     check(&domain, &f.home);
     {
         let read = domain.read(); let account = &read.state().accounts[0];
@@ -92,8 +104,6 @@ fn the_actual_codex_metadata_check_keeps_external_auth_unavailable_and_api_keys_
         assert_eq!(account.state, AccountState::SignedIn);
         assert!(read.state().model_catalogs.iter().all(|catalog| catalog.account != AccountKey::native(Provider::Codex)), "unknown metadata never republishes the previous identity's catalog");
     }
-    let calls = std::fs::read_to_string(format!("{}.calls", sidecar.display())).unwrap();
-    assert!(calls.lines().map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()).all(|call| !matches!(call["method"].as_str(), Some("thread/start" | "thread/resume" | "turn/start"))));
 }
 
 #[tokio::test]
@@ -104,10 +114,13 @@ async fn a_stale_startup_account_check_retries_and_releases_account_selection() 
     let domain = Arc::new(crate::engine_tests::open(&f.home).unwrap());
     let _hosts = crate::sdk_owner::tests::SdkLaunches::enable(&domain, &f.home);
     let native = f._scratch.join("codex-native");
-    let original = std::fs::read_to_string(std::env::var("FIXTURE_CODEX_NATIVE").unwrap()).unwrap();
+    std::fs::copy(std::env::var("FIXTURE_CODEX_NATIVE").unwrap(), &native).unwrap();
     let options = alondra_core::options::path_in(&f.home);
-    let edit = format!("\nimport pathlib\noptions = pathlib.Path({:?})\nmarker = pathlib.Path(__file__ + '.attempts')\nif not marker.exists():\n    with options.open('a') as output: output.write('\\n# concurrent settings edit\\n')\nwith marker.open('a') as output: output.write('x')\n", options.display().to_string());
-    std::fs::write(&native, original.replacen("import json, os, sys, subprocess, threading", &format!("import json, os, sys, subprocess, threading{edit}"), 1)).unwrap();
+    let edited = options.clone();
+    alondra_engine_doubles::accounts::of(domain.ports()).during_next_codex_probe(move || {
+        use std::io::Write as _;
+        std::fs::OpenOptions::new().append(true).open(&edited).unwrap().write_all(b"\n# concurrent settings edit\n").unwrap();
+    });
     std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o700)).unwrap();
     let mut backend = domain.sdk().unwrap().0.clone();
     backend.provider = Provider::Codex; backend.origin = None;

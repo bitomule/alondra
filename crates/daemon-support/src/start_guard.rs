@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use alondra_core::startup;
+use alondra_host::startup;
 
 /// A holder that panics leaves it whole, so it is recovered: one assignment or one take.
 static ACTIVE: Mutex<Option<PathBuf>> = Mutex::new(None);

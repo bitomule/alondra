@@ -67,6 +67,7 @@ crate.from_cargo(
         "//crates/provider-codex:Cargo.toml",
         "//crates/daemon-support:Cargo.toml",
         "//crates/system:Cargo.toml",
+        "//crates/host:Cargo.toml",
         "//crates/daemon-engine:Cargo.toml",
         "//crates/daemon-engine-model:Cargo.toml",
         "//crates/daemon-engine-store:Cargo.toml",

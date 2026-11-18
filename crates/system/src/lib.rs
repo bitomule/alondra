@@ -1,7 +1,8 @@
 //! The Mac as the engine reaches it: git and the task worktrees, the disks, its memory and load,
-//! and the files and checks only the daemon itself makes. The engine asks for them through the
-//! `Worktrees`, `Disk` and `MachineProbe` ports of `engine-ports`; the root gives the registry this
-//! crate's implementations.
+//! the provider accounts' folders, sign-ins and trust, its processes, Alondra's plugins, Claude's
+//! sign-in listeners, and the files and checks only the daemon itself makes. The engine asks for
+//! them through the ports of `engine-ports`; the root gives the registry this crate's
+//! implementations.
 #[cfg(test)]
 #[path = "../../test_support.rs"]
 mod test_support;
@@ -9,10 +10,18 @@ mod test_support;
 #[macro_use]
 extern crate alondra_foundation;
 
+pub mod claude_account;
+pub mod claude_trust;
+pub mod codex_account;
+pub mod codex_credentials;
+pub mod codex_login;
 pub mod disk;
+pub mod hook_socket;
 pub mod launch_worktree;
 pub mod machine;
+pub mod plugins;
 pub mod secret_files;
+pub mod sign_in_returns;
 pub mod worktree;
 pub mod worktrees_root;
 
@@ -20,19 +29,111 @@ use alondra_core::options::WorktreesRoot;
 use alondra_core::secret_destination::SecretDestination;
 use alondra_domain_rules::{ChecklistMark, DeliveryTarget, DomainError, DomainState, Interaction, TaskId};
 use std::time::Duration;
+use alondra_core::accounts::{AccountId, AccountKey};
+use alondra_core::codex_account::ProbeReport;
 use alondra_engine_ports::Registry;
+use alondra_engine_ports::accounts::{Accept, Accounts};
+use alondra_engine_ports::plugins::Plugins;
+use alondra_engine_ports::processes::{Process, Processes};
+use alondra_engine_ports::sign_in_returns::SignInReturns;
 use alondra_engine_ports::disk::{Disk, Mounts, Space};
 use alondra_engine_ports::machine::MachineProbe;
 use alondra_engine_ports::worktrees::{Git, LaunchError, Protected, Repository, TaskWorktree, WorktreeOrigin, Workplace, Worktrees};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// Gives the registry the Mac's disks, its gauges and its git, which finds the sessions' worktrees
-/// in the Claude folder `claude_home` names.
+/// Gives the registry the Mac's disks, gauges, accounts, processes, plugins, sign-in listeners and
+/// its git, which finds the sessions' worktrees in the Claude folder `claude_home` names.
 pub fn wire(registry: &Registry, claude_home: fn() -> PathBuf) {
     registry.provide::<dyn Worktrees>(Arc::new(GitWorktrees { claude_home }));
     registry.provide::<dyn Disk>(Arc::new(Disks));
     registry.provide::<dyn MachineProbe>(Arc::new(machine::Mac::new(Arc::new(Disks))));
+    registry.provide::<dyn Accounts>(Arc::new(MacAccounts));
+    registry.provide::<dyn Processes>(Arc::new(MacProcesses));
+    registry.provide::<dyn Plugins>(Arc::new(MacPlugins));
+    registry.provide::<dyn SignInReturns>(Arc::new(Listeners));
+}
+
+pub struct Listeners;
+
+impl SignInReturns for Listeners {
+    fn hand_back(&self, port: u16, target: &str) -> Result<u16, String> {
+        sign_in_returns::hand_back(port, target)
+    }
+    fn listening(&self, port: u16) -> bool {
+        sign_in_returns::listening(port)
+    }
+}
+
+pub struct MacPlugins;
+
+impl Plugins for MacPlugins {
+    fn node(&self, home: &Path) -> Option<PathBuf> {
+        plugins::node_in(home)
+    }
+    fn orchestrator(&self, home: &Path) -> Option<PathBuf> {
+        plugins::orchestrator_in(home)
+    }
+    fn registered(&self, claude_home: &Path, name: &str) -> Option<PathBuf> {
+        plugins::dir(claude_home, name)
+    }
+}
+
+pub struct MacProcesses;
+
+impl Processes for MacProcesses {
+    fn table(&self) -> Vec<Process> {
+        alondra_process_group::table().unwrap_or_default()
+    }
+    fn signal(&self, pids: &[u32], signal: i32) {
+        for pid in pids {
+            unsafe { libc::kill(*pid as libc::pid_t, signal) };
+        }
+    }
+}
+
+pub struct MacAccounts;
+
+impl Accounts for MacAccounts {
+    fn prepare_claude(&self, home: &Path, account: &AccountId, shared_from: &Path) -> std::io::Result<PathBuf> {
+        claude_account::prepare(home, account, shared_from)
+    }
+    fn remove_claude(&self, home: &Path, account: &AccountId) -> std::io::Result<()> {
+        claude_account::remove(home, account)
+    }
+    fn prepare_codex(&self, home: &Path, key: &AccountKey) -> Result<Option<PathBuf>, String> {
+        codex_account::prepare(home, key)
+    }
+    fn remove_codex(&self, home: &Path, key: &AccountKey) -> std::io::Result<()> {
+        codex_account::remove(home, key)
+    }
+    fn shares_sessions(&self, home: &Path, user_home: &Path, default_profile: Option<&Path>, one: &AccountId, other: &AccountId) -> bool {
+        claude_account::shares_sessions(home, user_home, default_profile, one, other)
+    }
+    fn probe_codex(&self, command: std::process::Command, account: AccountKey, now: alondra_foundation::Millis, accept: Accept<'_>) -> Result<ProbeReport, String> {
+        codex_account::probe_matching(command, account, now, accept)
+    }
+    fn retained_codex_thread(&self, executable: &Path, environment: &std::collections::BTreeMap<String, String>, thread: &str, directory: &Path) -> Result<bool, String> {
+        codex_account::retained_thread(executable, environment, thread, directory)
+    }
+    fn recover_codex_sign_in(&self, profile: &Path, attempt: &str) {
+        codex_credentials::recover_pending(profile, attempt)
+    }
+    fn clear_sign_in_staging(&self, staging: &Path) {
+        codex_credentials::clear_staging(staging)
+    }
+    fn native_session_identity(&self, directory: &Path) -> Result<Vec<u8>, String> {
+        codex_account::native_session_identity(directory)
+    }
+    fn untrusted(&self, profile: Option<&Path>, cwd: &Path) -> Option<PathBuf> {
+        claude_trust::untrusted(&claude_trust::config_of(profile)?, cwd)
+    }
+    fn ensure_trusted(&self, profile: Option<&Path>, cwd: &Path, projects_root: Option<&Path>) -> Option<PathBuf> {
+        claude_trust::ensure_for(profile, cwd, projects_root)
+    }
+    fn grant_trust(&self, repository: &Path, profiles: &[PathBuf]) -> Result<(), String> {
+        claude_trust::grant(repository, profiles)
+    }
 }
 
 pub struct Disks;
@@ -86,6 +187,9 @@ impl Worktrees for GitWorktrees {
     }
     fn discard_worktree<'a>(&'a self, dir: &'a Path, keep_branch: bool) -> Git<'a, Result<TaskWorktree, String>> {
         Box::pin(worktree::discard_worktree(dir, keep_branch))
+    }
+    fn exists(&self, dir: &Path) -> bool {
+        dir.exists()
     }
     fn unreachable_link(&self, dir: &Path) -> Option<String> {
         worktree::unreachable_link(dir)
@@ -146,6 +250,24 @@ mod tests {
     }
 
     #[test]
+    fn the_macs_accounts_keep_the_contract_the_doubles_keep() {
+        let scratch = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&scratch).unwrap();
+        claude_trust::use_config_for_test(&scratch.join(".claude.json"));
+        alondra_engine_doubles::contract::accounts(&MacAccounts, &|profile, repositories| {
+            let projects: serde_json::Map<String, serde_json::Value> = repositories.iter()
+                .map(|(repository, accepted)| (repository.display().to_string(), serde_json::json!({"hasTrustDialogAccepted": accepted}))).collect();
+            std::fs::write(profile.join(".claude.json"), serde_json::json!({"projects": projects}).to_string()).unwrap();
+        });
+    }
+
+    #[test]
+    fn the_macs_processes_and_plugins_keep_the_contract_the_doubles_keep() {
+        alondra_engine_doubles::contract::processes(&MacProcesses);
+        alondra_engine_doubles::contract::plugins(&MacPlugins);
+    }
+
+    #[test]
     fn the_macs_disks_keep_the_contract_the_doubles_keep() {
         alondra_engine_doubles::contract::disk(&Disks);
     }
@@ -199,6 +321,6 @@ mod tests {
         assert_eq!(worktrees.worktree_of("0123abcd-session"), Some(made.clone()));
         assert_eq!(worktrees.origin("0123abcd-session"), Some(WorktreeOrigin::Made(made)));
         assert_eq!(worktrees.worktree_of("ffffffff-other"), None, "a session without a job has none");
-        assert!(registry.missing().iter().all(|port| !matches!(*port, "Disk" | "MachineProbe" | "Worktrees")), "{:?}", registry.missing());
+        assert!(registry.missing().iter().all(|port| !matches!(*port, "Accounts" | "Disk" | "MachineProbe" | "Plugins" | "Processes" | "SignInReturns" | "Worktrees")), "{:?}", registry.missing());
     }
 }

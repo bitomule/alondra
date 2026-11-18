@@ -11,6 +11,7 @@ test-hooks = ["dep:tempfile"]
 [dependencies]
 alondra-foundation.workspace = true
 alondra-core.workspace = true
+alondra-host.workspace = true
 alondra-domain-rules.workspace = true
 alondra-view-model.workspace = true
 alondra-e2e = { path = "../e2e" }
@@ -33,7 +34,6 @@ tempfile = { workspace = true, optional = true }
 tokio.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
-security-framework = "3.7.0"
 block2 = "0.6.2"
 dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "libc", "objc2"] }
 objc2 = "0.6.4"

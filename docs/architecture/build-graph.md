@@ -558,3 +558,32 @@ sampling loop) and where it lives now, on the same Mac with incremental state an
 |---|---:|---:|---|---:|---:|
 | Where it lived: `daemon-engine-machine/src/machine.rs` | 31 | 69 | 58 (42 / 15) | 30 s | 258 s, a test fails under load |
 | Now: `system/src/machine.rs` | 11 | 38 | 15 (10 / 4) | 20 s | 82 s |
+
+## Output adapter `system`: accounts, processes, plugins and sign-in returns; foundation `host` (2026-11-18)
+
+The engine reaches a provider account's folders, the Codex app-server, Claude Code's trust, the
+processes it signals, Alondra's installed plugins and Claude's MCP sign-in listeners through the
+`Accounts`, `Processes`, `Plugins` and `SignInReturns` ports; `system` implements them and only the
+roots link it. Claude's sign-out, Codex's and the MCP probe run through the `AgentHost` port that
+already ran Claude's status. The engine's tests run on the doubles of `engine-doubles`, which pass
+the same contract suite as `system`; a `system` test checks that the Codex double answers what the
+repository's fake Codex answers to a real probe.
+
+What the CLI, the server and the clients reach by themselves (Bonjour, the Claude Code install and
+its updater, the launcher, the record of failed starts, the Homebrew install, the user the process
+runs as) cannot go to `system`, which an input adapter may not link: it moved from `core` to
+`host`, a foundation crate only its users link. The types and pure parsing stay in `core`.
+
+`edit_bench` on the same Mac, with incremental state, under the shared load of the day:
+
+| Edit | Crates reopened | Test targets reopened | Edit + build | Edit + test |
+|---|---:|---:|---:|---:|
+| Before: `core/src/codex_account.rs` (the account code in `core`) | 57 | 132 | - | - |
+| After: `system/src/codex_account.rs` | 11 | 38 | 14 s | 91 s |
+| After: `host/src/claude_update.rs` | 41 | 89 | - | 316 s |
+
+- An edit of the account code now rebuilds `system`, its test, `alondrad` and the tests that run the
+  `alondrad` binary, as an edit of the worktree code does.
+- `host` is still linked by `daemon-support`, `daemon-engine` and `engine-kernel` (the user name,
+  the programs on the PATH, the Claude Code release check, the record of failed starts), so an edit
+  of it reopens most of the engine; less than when the same code was in `core`.

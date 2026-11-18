@@ -9,7 +9,8 @@ mod test_support;
 #[macro_use]
 extern crate alondra_foundation;
 
-use alondra_daemon_support::{auth, locks, plugins, watcher};
+use alondra_daemon_support::{auth, locks, watcher};
+use alondra_engine_ports::plugins;
 
 pub use alondra_engine_kernel::{domain_database_migration, domain_runtime, domain_store, metrics_capture, options, sdk_backend};
 

@@ -857,9 +857,12 @@ async fn execute_external(
             let Some((backend, _)) = domain.sdk() else {
                 return Ok(error_value_lang(lang, "conflict", "This Alondra has no Agent SDK host to check with"));
             };
+            let Ok(hosts) = alondra_engine_ports::agent_host::of(domain.ports()) else {
+                return Ok(error_value_lang(lang, "conflict", "This Alondra has no Agent SDK host to check with"));
+            };
             let shared = std::sync::Arc::downgrade(&client.shared());
             let woken = move || if let Some(client) = shared.upgrade() { client.feeds.wake() };
-            let started = crate::mcp_probe::check(client.mcp_probes.clone(), backend.clone(), project.name.clone(), project.path, woken);
+            let started = crate::mcp_probe::check(client.mcp_probes.clone(), hosts, backend.clone(), project.name.clone(), project.path, woken);
             if started {
                 client.feeds.wake();
             }
@@ -2399,8 +2402,8 @@ for line in sys.stdin:
         let codex = state.accounts.iter().find(|account| account.provider == Provider::Codex).expect("the provider's own account");
         assert_eq!(codex.state, alondra_core::accounts::AccountState::SignedIn, "the session already on the Mac is used");
         assert!(state.account_logins.is_empty());
-        let calls = std::fs::read_to_string(user.join("calls")).unwrap();
-        assert!(!calls.contains("login"), "nothing signs in: {calls}");
+        assert!(!alondra_engine_doubles::accounts::of(domain.ports()).codex_probes().is_empty(), "the session already on the Mac is read");
+        assert!(!user.join("calls").exists(), "Codex was never run to sign in");
     }
 
     #[tokio::test]

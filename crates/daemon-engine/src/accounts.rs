@@ -11,6 +11,7 @@ use crate::locks::Poisonable as _;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use alondra_engine_ports::accounts::Accounts;
 use alondra_engine_ports::agent_host::{AgentHost, ProbeRun};
 use std::time::Duration;
 
@@ -50,9 +51,9 @@ impl Claude {
         let (backend, _) = domain.sdk()?;
         let backend = backend.for_provider(Provider::Claude, domain.home()).ok()?;
         let path = backend.native_environment.get("PATH").cloned().unwrap_or_default();
-        let executable = if backend.installed_native { claude_account::executable(&path)? } else { backend.native.clone() };
+        let executable = if backend.installed_native { alondra_host::user::executable(&path, "claude")? } else { backend.native.clone() };
         let user_home = Self::user_home(domain);
-        Some(Claude { executable, environment: backend.native_environment.clone(), user_home, path, username: claude_account::effective_username()?, timeout: (!domain.live().unbounded_claude_status.load(std::sync::atomic::Ordering::Relaxed)).then_some(claude_account::STATUS_TIMEOUT), hosts: domain.ports().port::<dyn AgentHost>()? })
+        Some(Claude { executable, environment: backend.native_environment.clone(), user_home, path, username: alondra_host::user::effective_username()?, timeout: (!domain.live().unbounded_claude_status.load(std::sync::atomic::Ordering::Relaxed)).then_some(claude_account::STATUS_TIMEOUT), hosts: domain.ports().port::<dyn AgentHost>()? })
     }
 
     /// The profile the default account runs with: the one the daemon was set up with.
@@ -73,12 +74,16 @@ impl Claude {
     }
 
     fn logout(&self, folder: &Path) -> Result<(), String> {
-        claude_account::logout(&self.executable, &self.environment, &self.user_home, &self.path, &self.username, folder, self.timeout)
+        let command = claude_account::logout_command(&self.executable, &self.environment, &self.user_home, &self.path, &self.username, folder);
+        let output = self.hosts.run(ProbeRun { command, input: Vec::new(), timeout: self.timeout }).map_err(|error| format!("could not run Claude Code: {error}"))?;
+        if output.success { Ok(()) } else { Err("claude auth logout did not succeed".to_owned()) }
     }
 }
 
 #[derive(Clone)]
 pub(crate) struct Codex {
+    accounts: Arc<dyn Accounts>,
+    hosts: Arc<dyn AgentHost>,
     executable: PathBuf,
     environment: BTreeMap<String, String>,
     user_home: PathBuf,
@@ -97,9 +102,9 @@ impl Codex {
         let (backend, _) = domain.sdk()?;
         let backend = backend.for_provider(Provider::Codex, domain.home()).ok()?;
         let path = backend.native_environment.get("PATH").cloned().unwrap_or_default();
-        let executable = if backend.installed_native { alondra_core::codex_account::executable(&path)? } else { backend.native.clone() };
+        let executable = if backend.installed_native { alondra_host::user::executable(&path, "codex")? } else { backend.native.clone() };
         let user_home = backend.native_environment.get("HOME").map(PathBuf::from).unwrap_or_else(|| Claude::user_home(domain));
-        Some(Self { executable, environment: backend.native_environment.clone(), user_home, path, username: claude_account::effective_username()? })
+        Some(Self { accounts: domain.ports().port::<dyn Accounts>()?, hosts: domain.ports().port::<dyn AgentHost>()?, executable, environment: backend.native_environment.clone(), user_home, path, username: alondra_host::user::effective_username()? })
     }
 
     pub(crate) fn command(&self, profile: Option<&Path>) -> std::process::Command {
@@ -108,19 +113,19 @@ impl Codex {
 
     fn probe(&self, home: &Path, key: &AccountKey, now: alondra_core::Millis) -> Result<alondra_core::codex_account::ProbeReport, String> {
         let folder = alondra_core::accounts::provider_folder(home, key);
-        alondra_core::codex_account::probe(self.command(folder.as_deref()), key.clone(), now)
+        self.accounts.probe_codex(self.command(folder.as_deref()), key.clone(), now, Box::new(|_| true))
     }
 
     fn probe_matching(&self, home: &Path, key: &AccountKey, now: alondra_core::Millis, accept: impl FnOnce(&alondra_core::codex_account::ProbeReport) -> bool) -> Result<alondra_core::codex_account::ProbeReport, String> {
         let folder = alondra_core::accounts::provider_folder(home, key);
-        alondra_core::codex_account::probe_matching(self.command(folder.as_deref()), key.clone(), now, accept)
+        self.accounts.probe_codex(self.command(folder.as_deref()), key.clone(), now, Box::new(accept))
     }
 }
 
 /// Whether a session one account started resumes with the other: both read the same conversations.
 pub fn share_sessions(domain: &DomainRuntime, one: &AccountId, other: &AccountId) -> bool {
     let default_profile = domain.sdk().and_then(|(backend, _)| claude_account::configured_profile(&|key: &str| backend.native_environment.get(key).cloned()));
-    claude_account::shares_sessions(domain.home(), &Claude::user_home(domain), default_profile.as_deref(), one, other)
+    domain.ports().accounts().shares_sessions(domain.home(), &Claude::user_home(domain), default_profile.as_deref(), one, other)
 }
 
 pub fn config(home: &Path) -> Result<AccountsConfig, String> {
@@ -398,21 +403,8 @@ struct NativeAuthAccount {
 }
 
 impl NativeAuthAccount {
-    fn load(directory: &Path) -> Result<Self, String> {
-        use std::io::Read;
-        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-        let path = directory.join("native-auth-account.json");
-        let expected = std::fs::symlink_metadata(&path).map_err(|_| "This native session has no verified account identity; keep it paused and create a new node after signing in".to_owned())?;
-        let owner = std::fs::metadata(directory).map_err(|why| why.to_string())?;
-        if !expected.is_file() || expected.file_type().is_symlink() || expected.nlink() != 1 || expected.uid() != owner.uid() || expected.mode() & 0o777 != 0o600 || expected.len() > 4096 {
-            return Err("The native session account identity is not a private file".into());
-        }
-        let mut file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC).open(path).map_err(|why| why.to_string())?;
-        let actual = file.metadata().map_err(|why| why.to_string())?;
-        if expected.ino() != actual.ino() || expected.dev() != actual.dev() { return Err("The native session account identity changed while opening it".into()); }
-        let mut bytes = vec![];
-        file.by_ref().take(4097).read_to_end(&mut bytes).map_err(|why| why.to_string())?;
-        if bytes.len() > 4096 { return Err("The native session account identity is too large".into()); }
+    fn load(accounts: &dyn Accounts, directory: &Path) -> Result<Self, String> {
+        let bytes = accounts.native_session_identity(directory)?;
         serde_json::from_slice(&bytes).map_err(|_| "The native session account identity is invalid".into())
     }
 
@@ -440,7 +432,7 @@ pub fn probe_current_codex(domain: &DomainRuntime, task_id: &alondra_domain_rule
     let directory = backend.state_root.join(stamp.instance().as_str());
     let expected = alondra_daemon_engine_model::NativeAccountIdentity::load(&directory).map_err(|why| why.to_string())?
         .ok_or("This task has no original native account identity")?;
-    let native = NativeAuthAccount::load(&directory)?;
+    let native = NativeAuthAccount::load(&*domain.ports().accounts(), &directory)?;
     let original = fence.state.accounts.iter().find(|account| account.provider == key.provider && account.id == key.account)
         .ok_or("This task's original account metadata is unavailable")?;
     if expected.change(original).is_some() { return Err("This account's known identity or original billing policy changed; its existing session will remain paused".into()); }
@@ -478,7 +470,7 @@ pub fn probe_current_codex(domain: &DomainRuntime, task_id: &alondra_domain_rule
         let current = transaction.state().tasks.get(task_id).ok_or_else(|| DomainError::new("stale_probe", "The task no longer exists"))?;
         if current.over() || current.account_key() != key || current.selection != task.selection
             || transaction.state().lifecycle_of(task_id).map_err(StoreError::Domain)?.execution() != Some(&stamp)
-            || NativeAuthAccount::load(&directory).map_err(|why| StoreError::Domain(DomainError::new("stale_probe", why)))? != native {
+            || NativeAuthAccount::load(&*domain.ports().accounts(), &directory).map_err(|why| StoreError::Domain(DomainError::new("stale_probe", why)))? != native {
             return Err(DomainError::new("stale_probe", "The existing native session changed during its metadata check").into());
         }
         let binding = transaction.execution_binding(&stamp)?;
@@ -804,14 +796,14 @@ pub(crate) fn replace_configuration_authorized(domain: &DomainRuntime, home: &Pa
     let refused = std::cell::RefCell::new(None);
     let removed = std::cell::RefCell::new(Vec::new());
     let result = crate::settings_projection::apply_authorized(domain, home, actor, envelope, previous, target, recorded, authorize, |state| {
-        match prepare_account_changes(home, &user_home, claude.as_ref(), codex.as_ref(), &current, &next, &working_keys(state)) {
+        match prepare_account_changes(&*domain.ports().accounts(), home, &user_home, claude.as_ref(), codex.as_ref(), &current, &next, &working_keys(state)) {
             Ok(keys) => { *removed.borrow_mut() = keys; Ok(()) }
             Err(why) => { let message = format!("{why:?}"); *refused.borrow_mut() = Some(why); Err(crate::domain_store::StoreError::Storage(anyhow::anyhow!(message))) }
         }
     });
     if let Some(refused) = refused.into_inner() { return Err(ChangeRefused::Store(refused)); }
     match result {
-        Ok(()) => { cleanup_account_folders(home, &removed.into_inner()); Ok(()) }
+        Ok(()) => { cleanup_account_folders(&*domain.ports().accounts(), home, &removed.into_inner()); Ok(()) }
         Err(crate::domain_store::StoreError::Domain(why)) => Err(ChangeRefused::Domain(why)),
         Err(crate::domain_store::StoreError::Storage(why)) => Err(ChangeRefused::Store(Refused::Folder(format!("{why:#}")))),
     }
@@ -897,7 +889,7 @@ pub fn end_abandoned_sign_ins(domain: &DomainRuntime) {
     let logins = domain.read().state().account_logins.clone();
     let codex = (!logins.is_empty()).then(|| Codex::of(domain)).flatten();
     for login in logins {
-        if let Some(codex) = &codex { crate::codex_credentials::recover_pending(&codex.profile(domain.home(), &login.account), &login.attempt); }
+        if let Some(codex) = &codex { codex.accounts.recover_codex_sign_in(&codex.profile(domain.home(), &login.account), &login.attempt); }
         if !login.phase.active() { continue; }
         let ended = alondra_domain_rules::AccountLogin { phase: alondra_domain_rules::AccountLoginPhase::Failed, challenge: None,
             error: Some("Sign-in was interrupted; the previous session was preserved".into()), ..login };
@@ -907,14 +899,7 @@ pub fn end_abandoned_sign_ins(domain: &DomainRuntime) {
         drop(read);
         if let Err(why) = domain.execute_as_system(envelope) { log!("could not close an unfinished Codex sign-in: {why}"); }
     }
-    let staging = domain.home().join("account-sign-ins");
-    if !staging.symlink_metadata().is_ok_and(|meta| meta.is_dir() && !meta.file_type().is_symlink()) { return; }
-    for entry in std::fs::read_dir(staging).into_iter().flatten().flatten() {
-        if entry.file_name().to_str().is_some_and(|name| name.len() == 32 && name.bytes().all(|byte| byte.is_ascii_hexdigit()))
-            && entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            let _ = std::fs::remove_dir_all(entry.path());
-        }
-    }
+    domain.ports().accounts().clear_sign_in_staging(&domain.home().join("account-sign-ins"));
 }
 
 /// What the user is told about moving a node to another account when its own reaches its limit.
@@ -1057,19 +1042,19 @@ impl Refused {
 /// signs out each one it takes away and deletes its folder once the file no longer names it. An
 /// account open tasks still run on (`working`) is not taken away.
 #[cfg(any(test, feature = "test-hooks"))]
-pub(crate) fn store(home: &Path, user_home: &Path, claude: Option<&Claude>, seen: &str, next: &AccountsConfig, working: &[AccountId]) -> Result<(), Refused> {
+pub(crate) fn store(accounts: &dyn Accounts, home: &Path, user_home: &Path, claude: Option<&Claude>, seen: &str, next: &AccountsConfig, working: &[AccountId]) -> Result<(), Refused> {
     let working: Vec<_> = working.iter().cloned().map(|account| AccountKey::new(Provider::Claude, account)).collect();
-    store_provider(home, user_home, claude, None, seen, next, &working)
+    store_provider(accounts, home, user_home, claude, None, seen, next, &working)
 }
 
-fn prepare_account_changes(home: &Path, user_home: &Path, claude: Option<&Claude>, codex: Option<&Codex>, current: &AccountsConfig, next: &AccountsConfig, working: &[AccountKey]) -> Result<Vec<AccountKey>, Refused> {
+fn prepare_account_changes(accounts: &dyn Accounts, home: &Path, user_home: &Path, claude: Option<&Claude>, codex: Option<&Codex>, current: &AccountsConfig, next: &AccountsConfig, working: &[AccountKey]) -> Result<Vec<AccountKey>, Refused> {
     let ids = |config: &AccountsConfig| -> Vec<AccountKey> { Provider::ALL.into_iter().flat_map(|provider| config.listed(provider).iter().filter(|account| !account.id.is_default()).map(move |account| AccountKey::new(provider, account.id.clone()))).collect() };
     let (before, after) = (ids(&current), ids(&next));
     let shared = claude_account::config_folder(claude.and_then(Claude::default_profile).as_deref(), user_home);
     for id in after.iter().filter(|id| !before.contains(id)) {
         match id.provider {
-            Provider::Claude => { claude_account::prepare(home, &id.account, &shared).map_err(|e| Refused::Folder(e.to_string()))?; }
-            Provider::Codex => { alondra_core::codex_account::prepare(home, id).map_err(Refused::Folder)?; }
+            Provider::Claude => { accounts.prepare_claude(home, &id.account, &shared).map_err(|e| Refused::Folder(e.to_string()))?; }
+            Provider::Codex => { accounts.prepare_codex(home, id).map_err(Refused::Folder)?; }
         }
     }
     let removed: Vec<AccountKey> = before.iter().filter(|id| !after.contains(id)).cloned().collect();
@@ -1086,18 +1071,18 @@ fn prepare_account_changes(home: &Path, user_home: &Path, claude: Option<&Claude
     Ok(removed)
 }
 
-fn cleanup_account_folders(home: &Path, removed: &[AccountKey]) {
+fn cleanup_account_folders(accounts: &dyn Accounts, home: &Path, removed: &[AccountKey]) {
     for id in removed {
         let deleted = match id.provider {
-            Provider::Claude => claude_account::remove(home, &id.account),
-            Provider::Codex => alondra_core::accounts::provider_folder(home, id).filter(|folder| folder.exists()).map_or(Ok(()), std::fs::remove_dir_all),
+            Provider::Claude => accounts.remove_claude(home, &id.account),
+            Provider::Codex => accounts.remove_codex(home, id),
         };
         if let Err(why) = deleted { log!("Account {} is no longer registered, but its private folder needs cleanup: {why}", id.wire_id()); }
     }
 }
 
 #[cfg(any(test, feature = "test-hooks"))]
-fn store_provider(home: &Path, user_home: &Path, claude: Option<&Claude>, codex: Option<&Codex>, seen: &str, next: &AccountsConfig, working: &[AccountKey]) -> Result<(), Refused> {
+fn store_provider(accounts: &dyn Accounts, home: &Path, user_home: &Path, claude: Option<&Claude>, codex: Option<&Codex>, seen: &str, next: &AccountsConfig, working: &[AccountKey]) -> Result<(), Refused> {
     let current = config(home).map_err(Refused::Invalid)?;
     if version(&current) != seen {
         return Err(Refused::Stale);
@@ -1108,7 +1093,7 @@ fn store_provider(home: &Path, user_home: &Path, claude: Option<&Claude>, codex:
     if !next.any_enabled_globally() {
         return Err(Refused::Invalid("At least one account stays on".into()));
     }
-    let removed = prepare_account_changes(home, user_home, claude, codex, &current, &next, working)?;
+    let removed = prepare_account_changes(accounts, home, user_home, claude, codex, &current, &next, working)?;
     let file = alondra_core::options::path_in(home);
     let original = match std::fs::read_to_string(&file) {
         Ok(text) => text,
@@ -1117,7 +1102,7 @@ fn store_provider(home: &Path, user_home: &Path, claude: Option<&Claude>, codex:
     };
     let text = alondra_core::accounts::with_accounts(&original, &next).map_err(Refused::Invalid)?;
     crate::settings_file::replace(&file, text.as_bytes()).map_err(|e| Refused::Folder(format!("{}: {e}", file.display())))?;
-    cleanup_account_folders(home, &removed);
+    cleanup_account_folders(accounts, home, &removed);
     Ok(())
 }
 
@@ -1125,8 +1110,10 @@ fn sign_out_codex(home: &Path, codex: Option<&Codex>, key: &AccountKey) -> Resul
     let Some(folder) = alondra_core::accounts::provider_folder(home, key).filter(|folder| folder.is_dir()) else { return Ok(()) };
     if !folder.join("auth.json").is_file() { return Ok(()); }
     let codex = codex.ok_or_else(|| Refused::SignOut("Codex is not available on this Mac".into()))?;
-    let output = codex.command(Some(&folder)).arg("logout").output().map_err(|why| Refused::SignOut(why.to_string()))?;
-    if !output.status.success() { return Err(Refused::SignOut("Codex could not sign out the selected account".into())); }
+    let mut command = codex.command(Some(&folder));
+    command.arg("logout");
+    let output = codex.hosts.run(ProbeRun { command, input: Vec::new(), timeout: None }).map_err(|why| Refused::SignOut(why.to_string()))?;
+    if !output.success { return Err(Refused::SignOut("Codex could not sign out the selected account".into())); }
     Ok(())
 }
 

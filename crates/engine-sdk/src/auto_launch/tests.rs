@@ -460,17 +460,14 @@ async fn a_failed_start_is_tried_again_by_itself_then_put_to_the_user_who_can_tr
     assert!(agent_of(&f, "f1").is_some(), "the user's try again starts it");
 }
 
-fn untrusted_config(f: &Fixture) -> std::path::PathBuf {
-    let config = f.root.join(".claude.json");
-    crate::claude_trust::use_config_for_test(&config);
-    let project = f.project.canonicalize().unwrap();
-    std::fs::write(&config, json!({"projects": {project.to_str().unwrap(): {"hasTrustDialogAccepted": false}}}).to_string()).unwrap();
-    config
+fn untrusted_config(f: &Fixture) -> Arc<alondra_engine_doubles::accounts::Accounts> {
+    let accounts = alondra_engine_doubles::accounts::of(f.domain.ports());
+    accounts.set_trust(None, &[(&f.project.canonicalize().unwrap(), false)]);
+    accounts
 }
 
-fn trusted(f: &Fixture, config: &Path) -> bool {
-    let document: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(config).unwrap()).unwrap();
-    document["projects"][f.project.canonicalize().unwrap().to_str().unwrap()]["hasTrustDialogAccepted"] == true
+fn trusted(f: &Fixture, accounts: &alondra_engine_doubles::accounts::Accounts) -> bool {
+    accounts.trusts(None, &f.project.canonicalize().unwrap())
 }
 
 /// Claude Code does not trust the folder: the user is asked at once, and choosing to trust it
@@ -507,8 +504,7 @@ async fn a_trust_alondra_cannot_save_comes_back_saying_why() {
     let config = untrusted_config(&f);
     pass(&f.domain, &f.home).await.unwrap();
     let card = problem(&f, "f1").expect("asked");
-    let lock = f.root.join(".claude.json.lock");
-    std::fs::create_dir(&lock).unwrap();
+    config.refuse_trust_saves(true);
 
     answer(&f, &card.id, alondra_domain_rules::START_RETRY);
     pass(&f.domain, &f.home).await.unwrap();
@@ -522,7 +518,7 @@ async fn a_trust_alondra_cannot_save_comes_back_saying_why() {
     assert!(error.contains("locked"), "{error}");
     assert!(again.card.why.starts_with("You chose to trust it, but Alondra could not save"), "{}", again.card.why);
 
-    std::fs::remove_dir(&lock).unwrap();
+    config.refuse_trust_saves(false);
     answer(&f, &again.id, alondra_domain_rules::START_RETRY);
     pass(&f.domain, &f.home).await.unwrap();
     pass(&f.domain, &f.home).await.unwrap();

@@ -54,6 +54,7 @@ pub fn install(bundled: &Path, installed: &Path) -> std::io::Result<Installed> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use std::os::unix::fs::PermissionsExt;
 
     fn launcher(dir: &Path, name: &str, version: &str) -> PathBuf {

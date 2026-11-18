@@ -14,6 +14,7 @@ WORKSPACE_DEPS = [
     "//crates/domain-rules:domain_rules",
     "//crates/engine-ports:engine_ports",
     "//crates/foundation:foundation",
+    "//crates/process-group:process_group",
 ]
 
 adapter_out_crate(
@@ -45,8 +46,9 @@ low_opt_rust_test(
     crate_name = "alondra_system",
     crate_root = "src/lib.rs",
     edition = "2024",
+    data = ["//agent-host:fake-codex.py"],
     # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
-    env = {"HOME": "."},
+    env = {"HOME": ".", "FIXTURE_CODEX_NATIVE": "$(rootpath //agent-host:fake-codex.py)"},
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/engine-doubles:engine_doubles"],
 )

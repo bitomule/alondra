@@ -1,5 +1,6 @@
 //! One implementation of each port, by its type. A holder that panics leaves the map whole: one
 //! insert or one lookup each, so a poisoned lock is recovered.
+use crate::accounts::Accounts;
 use crate::admission::{AdmissionEngine, AdmissionGate};
 use crate::agent_host::AgentHost;
 use crate::disk::Disk;
@@ -7,6 +8,9 @@ use crate::github::GitHub;
 use crate::hosts::SdkHosts;
 use crate::machine::MachineProbe;
 use crate::orchestrator::{OrchestratorAnswers, OrchestratorEngine};
+use crate::plugins::Plugins;
+use crate::processes::Processes;
+use crate::sign_in_returns::SignInReturns;
 use alondra_view_model::Screens;
 use crate::worktrees::Worktrees;
 use alondra_domain_rules::{CommandEnvelope, CommandOutcome, DomainError, DomainState};
@@ -53,6 +57,26 @@ impl Registry {
         self.port::<dyn Worktrees>().expect("the root gives the registry the Mac's worktrees")
     }
 
+    /// The provider accounts as the Mac keeps them.
+    pub fn accounts(&self) -> Arc<dyn Accounts> {
+        self.port::<dyn Accounts>().expect("the root gives the registry the Mac's accounts")
+    }
+
+    /// Where Alondra's plugins are installed on the Mac.
+    pub fn plugins(&self) -> Arc<dyn Plugins> {
+        self.port::<dyn Plugins>().expect("the root gives the registry the Mac's plugins")
+    }
+
+    /// Claude's listeners for the returns of MCP sign-ins.
+    pub fn sign_in_returns(&self) -> Arc<dyn SignInReturns> {
+        self.port::<dyn SignInReturns>().expect("the root gives the registry the Mac's sign-in listeners")
+    }
+
+    /// The processes running on the Mac.
+    pub fn processes(&self) -> Arc<dyn Processes> {
+        self.port::<dyn Processes>().expect("the root gives the registry the Mac's processes")
+    }
+
     /// The Mac's disks.
     pub fn disk(&self) -> Arc<dyn Disk> {
         self.port::<dyn Disk>().expect("the root gives the registry the Mac's disks")
@@ -70,8 +94,9 @@ impl Registry {
     }
 }
 
-fn every_port() -> [(TypeId, &'static str); 11] {
+fn every_port() -> [(TypeId, &'static str); 15] {
     [
+        (TypeId::of::<dyn Accounts>(), "Accounts"),
         (TypeId::of::<dyn AgentHost>(), "AgentHost"),
         (TypeId::of::<dyn AdmissionEngine>(), "AdmissionEngine"),
         (TypeId::of::<dyn AdmissionGate>(), "AdmissionGate"),
@@ -80,8 +105,11 @@ fn every_port() -> [(TypeId, &'static str); 11] {
         (TypeId::of::<dyn MachineProbe>(), "MachineProbe"),
         (TypeId::of::<dyn OrchestratorAnswers>(), "OrchestratorAnswers"),
         (TypeId::of::<dyn OrchestratorEngine>(), "OrchestratorEngine"),
+        (TypeId::of::<dyn Plugins>(), "Plugins"),
+        (TypeId::of::<dyn Processes>(), "Processes"),
         (TypeId::of::<dyn SdkHosts>(), "SdkHosts"),
         (TypeId::of::<dyn Screens>(), "Screens"),
+        (TypeId::of::<dyn SignInReturns>(), "SignInReturns"),
         (TypeId::of::<dyn Worktrees>(), "Worktrees"),
     ]
 }
@@ -113,12 +141,12 @@ mod tests {
     #[test]
     fn a_registry_names_every_port_nothing_implements() {
         let registry = Registry::default();
-        assert_eq!(registry.missing(), ["AgentHost", "AdmissionEngine", "AdmissionGate", "Disk", "GitHub", "MachineProbe", "OrchestratorAnswers", "OrchestratorEngine", "SdkHosts", "Screens", "Worktrees"]);
+        assert_eq!(registry.missing(), ["Accounts", "AgentHost", "AdmissionEngine", "AdmissionGate", "Disk", "GitHub", "MachineProbe", "OrchestratorAnswers", "OrchestratorEngine", "Plugins", "Processes", "SdkHosts", "Screens", "SignInReturns", "Worktrees"]);
         struct Answers;
         impl OrchestratorAnswers for Answers {
             fn settle_answers(&self, _: &dyn Runtime, _: &alondra_domain_rules::DomainState, _: &std::collections::BTreeSet<alondra_domain_rules::TaskId>) {}
         }
         registry.provide::<dyn OrchestratorAnswers>(Arc::new(Answers));
-        assert_eq!(registry.missing(), ["AgentHost", "AdmissionEngine", "AdmissionGate", "Disk", "GitHub", "MachineProbe", "OrchestratorEngine", "SdkHosts", "Screens", "Worktrees"]);
+        assert_eq!(registry.missing(), ["Accounts", "AgentHost", "AdmissionEngine", "AdmissionGate", "Disk", "GitHub", "MachineProbe", "OrchestratorEngine", "Plugins", "Processes", "SdkHosts", "Screens", "SignInReturns", "Worktrees"]);
     }
 }

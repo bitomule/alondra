@@ -312,7 +312,7 @@ pub fn stable_path() -> PathBuf {
 }
 
 fn stable_for(exe: &Path, home: &Path) -> PathBuf {
-    if let Some(prefix) = alondra_core::update::brew_prefix(exe) {
+    if let Some(prefix) = alondra_host::brew::brew_prefix(exe) {
         return prefix.join("opt/alondra/bin/alondra");
     }
     let local = home.join(".local/bin/alondra");

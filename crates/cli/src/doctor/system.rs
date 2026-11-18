@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use alondra_core::config::{self, Config};
-use alondra_core::startup::Record;
+use alondra_host::startup::Record;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -126,7 +126,7 @@ pub trait System {
     fn codex_version(&self) -> Option<String> { None }
     fn native_accounts(&self) -> Option<Value> { None }
     fn claude(&self, args: &[&str], timeout: Duration) -> Option<(bool, String)>;
-    fn update_claude(&self) -> alondra_core::claude_update::Outcome;
+    fn update_claude(&self) -> alondra_host::claude_update::Outcome;
     fn signed_in(&self) -> Result<bool>;
     fn profile(&self) -> Result<Option<String>, String>;
     fn plugins(&self) -> Option<Value>;
@@ -379,8 +379,8 @@ impl Real {
 impl System for Real {
     fn codex_version(&self) -> Option<String> {
         let context = crate::claude_auth::installed_codex_context(&self.env_home).ok()?;
-        let executable = alondra_core::codex_account::executable(&context.path)?;
-        let username = alondra_core::claude_account::effective_username()?;
+        let executable = alondra_host::user::executable(&context.path, "codex")?;
+        let username = alondra_host::user::effective_username()?;
         let mut command = alondra_core::codex_account::command(&executable, &context.environment, &context.home, &context.path, &username, None);
         command.arg("--version");
         command_output(command, Duration::from_secs(10)).filter(|(ok, _)| *ok).map(|(_, version)| version)
@@ -466,7 +466,7 @@ impl System for Real {
     }
 
     fn startup(&self) -> Option<Record> {
-        alondra_core::startup::read(&self.home)
+        alondra_host::startup::read(&self.home)
     }
 
     fn service(&self) -> ServiceView {
@@ -532,14 +532,14 @@ impl System for Real {
         command_output(command, timeout)
     }
 
-    fn update_claude(&self) -> alondra_core::claude_update::Outcome {
-        use alondra_core::claude_update::{Failure, Outcome, ProcessHost};
+    fn update_claude(&self) -> alondra_host::claude_update::Outcome {
+        use alondra_host::claude_update::{Failure, Outcome, ProcessHost};
         let Ok(command) = self.context().and_then(|context| context.command().map_err(|e| e.to_string())) else {
             return Outcome::Failed(Failure::NoAnswer);
         };
         let environment = command.get_envs()
             .filter_map(|(key, value)| Some((key.to_string_lossy().into_owned(), value?.to_string_lossy().into_owned()))).collect();
-        alondra_core::claude_update::update(&ProcessHost { launcher: command.get_program().into(), environment: Some(environment) })
+        alondra_host::claude_update::update(&ProcessHost { launcher: command.get_program().into(), environment: Some(environment) })
     }
 
     fn signed_in(&self) -> Result<bool> {
@@ -621,7 +621,7 @@ impl System for Real {
             Action::RepairPlugin if self.sandbox.is_some() => Ok(()),
             Action::RepairPlugin => self.install().repair_plugin(),
             Action::UpdateClaude => match self.update_claude() {
-                alondra_core::claude_update::Outcome::Current(_) | alondra_core::claude_update::Outcome::Updated { .. } => Ok(()),
+                alondra_host::claude_update::Outcome::Current(_) | alondra_host::claude_update::Outcome::Updated { .. } => Ok(()),
                 outcome => Err(anyhow::anyhow!(super::claude_update::describe(&outcome))),
             },
             Action::EnableRelay => self.enable_relay(),

@@ -6,8 +6,8 @@
 use alondra_core::clock;
 use alondra_core::clock::Instant;
 use crate::locks::Poisonable as _;
-use alondra_core::claude_code;
-use alondra_core::claude_update::{self, Outcome as Update};
+use alondra_host::claude_code;
+use alondra_host::claude_update::{self, Outcome as Update};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

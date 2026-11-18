@@ -141,7 +141,7 @@ fn the_host_of_a_batch_takes_one_prompt_and_refuses_another() {
     assert!(claims.is_empty());
     let (backend, _) = f.domain().sdk().unwrap();
     let directory = f.executor.home.join("runtime/orchestrator");
-    let plugin = |name| crate::plugins::dir(&f.claude_home, name).unwrap();
+    let plugin = |name| f.domain().ports().plugins().registered(&f.claude_home, name).unwrap();
     let batch = Batch {
         owner, backend: backend.clone(), home: f.executor.home.clone(), directory,
         node_plugin: plugin(crate::plugins::NODE), orchestrator_plugin: plugin(crate::plugins::ORCHESTRATOR),
@@ -176,7 +176,7 @@ fn the_projects_root_is_readable_and_never_writable() {
     let epoch = f.domain().state().unwrap().data_epoch.clone();
     let batch = |root: Option<&Path>| {
         let (_, owner) = f.domain().store.lock().unwrap().claim_orchestrator_batch(&[], &crate::auth::random_hex(8), "00000000-0000-4000-8000-00000000c0de", epoch.clone()).unwrap();
-        let plugin = |name| crate::plugins::dir(&f.claude_home, name).unwrap();
+        let plugin = |name| f.domain().ports().plugins().registered(&f.claude_home, name).unwrap();
         Batch {
             owner, backend: f.domain().sdk().unwrap().0.clone(), home: f.executor.home.clone(), directory: f.executor.home.join("runtime/orchestrator"),
             node_plugin: plugin(crate::plugins::NODE), orchestrator_plugin: plugin(crate::plugins::ORCHESTRATOR),

@@ -6,10 +6,9 @@
 //! conversations), so a node works the same on any account; its sign-in and `.claude.json` are its
 //! own. Alondra never reads or keeps a token: `claude auth` does all of it.
 use std::collections::BTreeMap;
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
 
 use serde::Deserialize;
 
@@ -18,7 +17,8 @@ use crate::accounts::{self, AccountId};
 /// What every account shares with the user's own `~/.claude`.
 pub const SHARED: [&str; 8] = ["skills", "agents", "commands", "plugins", "rules", "CLAUDE.md", "settings.json", "projects"];
 pub const STATUS_TIMEOUT: Duration = Duration::from_secs(10);
-const OUTPUT_LIMIT: u64 = 65536;
+/// The most of an answer Claude Code is read for.
+pub const OUTPUT_LIMIT: u64 = 65536;
 
 /// The user's own Claude Code folder, which every account links and Alondra never changes.
 pub fn default_folder(user_home: &Path) -> PathBuf {
@@ -51,55 +51,6 @@ pub fn config_folder(profile: Option<&Path>, user_home: &Path) -> PathBuf {
 /// profile's folder, or in HOME for the default one.
 pub fn settings_file(profile: Option<&Path>, user_home: &Path) -> PathBuf {
     profile.unwrap_or(user_home).join(".claude.json")
-}
-
-/// Creates the account's folder, private to the user, with a link to each of `SHARED` that
-/// `shared_from` has. A name already in the folder is left as it is, so running it again only
-/// adds what `shared_from` gained since.
-pub fn prepare(home: &Path, id: &AccountId, shared_from: &Path) -> std::io::Result<PathBuf> {
-    use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
-    let folder = accounts::folder(home, id).ok_or_else(|| std::io::Error::other("the default account has no folder of Alondra's"))?;
-    let parent = folder.parent().expect("an account folder has a parent");
-    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(parent)?;
-    match std::fs::symlink_metadata(&folder) {
-        Ok(meta) if meta.file_type().is_symlink() || !meta.is_dir() => {
-            return Err(std::io::Error::other(format!("{} is not a folder", folder.display())));
-        }
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::fs::DirBuilder::new().mode(0o700).create(&folder)?,
-        Err(e) => return Err(e),
-    }
-    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700))?;
-    for name in SHARED {
-        let target = shared_from.join(name);
-        let link = folder.join(name);
-        if std::fs::symlink_metadata(&target).is_err() || std::fs::symlink_metadata(&link).is_ok() {
-            continue;
-        }
-        std::os::unix::fs::symlink(&target, &link)?;
-    }
-    Ok(folder)
-}
-
-/// Whether a session one account started resumes with the other: both keep their conversations
-/// in the same `projects/` folder, the default profile's, which every account links. One whose
-/// folder has a `projects/` of its own, or none, does not.
-pub fn shares_sessions(home: &Path, user_home: &Path, default_profile: Option<&Path>, one: &AccountId, other: &AccountId) -> bool {
-    let projects = |id: &AccountId| config_folder(profile(home, id, default_profile).as_deref(), user_home).join("projects").canonicalize().ok();
-    projects(one).is_some_and(|one| Some(one) == projects(other))
-}
-
-/// Deletes the account's folder: the links go, never what they point to.
-pub fn remove(home: &Path, id: &AccountId) -> std::io::Result<()> {
-    let Some(folder) = accounts::folder(home, id) else {
-        return Err(std::io::Error::other("the default account is the user's own and is never deleted"));
-    };
-    match std::fs::symlink_metadata(&folder) {
-        Ok(meta) if meta.file_type().is_symlink() => std::fs::remove_file(&folder),
-        Ok(_) => std::fs::remove_dir_all(&folder),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e),
-    }
 }
 
 /// What `claude auth status --json` says of a folder's sign-in. Never logged: it names the user.
@@ -139,30 +90,6 @@ pub fn parse_status(success: bool, bytes: &[u8]) -> Option<AuthStatus> {
     }
 }
 
-/// The `claude` the daemon's PATH finds first.
-pub fn executable(path: &str) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt as _;
-    std::env::split_paths(path).map(|p| p.join("claude")).find(|p| p.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
-}
-
-/// The user the process runs as, which Claude's Keychain lookup goes by, never an inherited
-/// `USER` or `LOGNAME`.
-pub fn effective_username() -> Option<String> {
-    let mut record = std::mem::MaybeUninit::<libc::passwd>::uninit();
-    let mut result = std::ptr::null_mut();
-    let mut buffer = vec![0u8; 16384];
-    let code = unsafe { libc::getpwuid_r(libc::geteuid(), record.as_mut_ptr(), buffer.as_mut_ptr().cast(), buffer.len(), &mut result) };
-    if code != 0 || result.is_null() {
-        return None;
-    }
-    let record = unsafe { record.assume_init() };
-    if record.pw_name.is_null() {
-        return None;
-    }
-    let name = unsafe { std::ffi::CStr::from_ptr(record.pw_name) }.to_str().ok()?;
-    (!name.is_empty()).then(|| name.to_owned())
-}
-
 /// How Claude is run for an account: with the `environment` nodes run Claude with and nothing else
 /// inherited but HOME, PATH and the user, in HOME, with `CLAUDE_CONFIG_DIR` only for an account
 /// that is not the default one.
@@ -176,60 +103,6 @@ pub fn command(executable: &Path, environment: &BTreeMap<String, String>, user_h
     command
 }
 
-trait OutputChild {
-    fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>>;
-    fn kill(&mut self) -> std::io::Result<()>;
-    fn wait(&mut self) -> std::io::Result<ExitStatus>;
-}
-
-impl OutputChild for std::process::Child {
-    fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> { Self::try_wait(self) }
-    fn kill(&mut self) -> std::io::Result<()> { Self::kill(self) }
-    fn wait(&mut self) -> std::io::Result<ExitStatus> { Self::wait(self) }
-}
-
-fn wait_for_output(child: &mut impl OutputChild, timeout: Option<Duration>, mut elapsed: impl FnMut() -> Duration, mut pause: impl FnMut()) -> std::io::Result<ExitStatus> {
-    let Some(timeout) = timeout else { return child.wait(); };
-    loop {
-        match child.try_wait()? {
-            Some(status) => return Ok(status),
-            None if elapsed() < timeout => pause(),
-            None => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "Claude Code did not answer in time"));
-            }
-        }
-    }
-}
-
-/// Runs `command` with no input, keeping what it printed. A finite fixture can wait for
-/// completion with no deadline; native commands use the caller's timeout.
-pub fn output(mut command: Command, timeout: Option<Duration>) -> Result<(ExitStatus, Vec<u8>), String> {
-    let mut child = command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| format!("could not run Claude Code: {e}"))?;
-    let stdout = child.stdout.take().expect("piped stdout");
-    let reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stdout.take(OUTPUT_LIMIT + 1).read_to_end(&mut bytes).map(|_| bytes)
-    });
-    let started = Instant::now();
-    let status = match wait_for_output(&mut child, timeout, || started.elapsed(), || std::thread::sleep(Duration::from_millis(20))) {
-        Ok(status) => status,
-        Err(error) => {
-            if error.kind() == std::io::ErrorKind::TimedOut { let _ = reader.join(); }
-            return Err(error.to_string());
-        }
-    };
-    let bytes = reader.join().map_err(|_| "could not read Claude Code's answer".to_owned())?.map_err(|e| e.to_string())?;
-    Ok((status, bytes))
-}
-
-/// The sign-in of the account whose folder is `folder` (`None`: the default one).
-pub fn status(executable: &Path, environment: &BTreeMap<String, String>, user_home: &Path, path: &str, username: &str, folder: Option<&Path>, timeout: Option<Duration>) -> Result<AuthStatus, String> {
-    let (status, bytes) = output(status_command(executable, environment, user_home, path, username, folder), timeout)?;
-    read_status(status.success(), &bytes)
-}
-
 /// The `claude auth status --json` that tells the sign-in of the account whose folder is `folder`.
 pub fn status_command(executable: &Path, environment: &BTreeMap<String, String>, user_home: &Path, path: &str, username: &str, folder: Option<&Path>) -> Command {
     let mut command = command(executable, environment, user_home, path, username, folder);
@@ -237,16 +110,16 @@ pub fn status_command(executable: &Path, environment: &BTreeMap<String, String>,
     command
 }
 
-pub fn read_status(success: bool, bytes: &[u8]) -> Result<AuthStatus, String> {
-    parse_status(success, bytes).ok_or_else(|| "Claude Code's answer about its sign-in could not be read".to_owned())
-}
-
-/// Signs the account out of Claude, which removes its sign-in from the Keychain.
-pub fn logout(executable: &Path, environment: &BTreeMap<String, String>, user_home: &Path, path: &str, username: &str, folder: &Path, timeout: Option<Duration>) -> Result<(), String> {
+/// The `claude auth logout` that signs the account whose folder is `folder` out of Claude, which
+/// removes its sign-in from the Keychain.
+pub fn logout_command(executable: &Path, environment: &BTreeMap<String, String>, user_home: &Path, path: &str, username: &str, folder: &Path) -> Command {
     let mut command = command(executable, environment, user_home, path, username, Some(folder));
     command.args(["auth", "logout"]);
-    let (status, _) = output(command, timeout)?;
-    if status.success() { Ok(()) } else { Err(format!("claude auth logout ended with {status}")) }
+    command
+}
+
+pub fn read_status(success: bool, bytes: &[u8]) -> Result<AuthStatus, String> {
+    parse_status(success, bytes).ok_or_else(|| "Claude Code's answer about its sign-in could not be read".to_owned())
 }
 
 #[cfg(test)]

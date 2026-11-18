@@ -35,11 +35,12 @@ ALLOWED_DEPENDENCIES = {
 CRATE_LAYERS = {
     "crates/foundation": FOUNDATION,
     "crates/process-group": FOUNDATION,
+    "crates/host": FOUNDATION,
     "crates/e2e": FOUNDATION,
     "crates/scenarios-transcript": FOUNDATION,
     "crates/domain": DOMAIN,
     "crates/domain-rules": DOMAIN,
-    # Mixed: its accounts, launcher and update code moves to the `system` adapter.
+    # Mixed: its config, options and home lock still read and write Alondra's home.
     "crates/core": DOMAIN,
     "crates/provider-contract": PORTS,
     "crates/engine-ports": PORTS,

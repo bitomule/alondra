@@ -391,7 +391,7 @@ fn native_recovery_status(domain: &DomainRuntime, backend: &SdkBackend, task: &T
         };
         if require_history {
             let selected = selected.for_start().map_err(|error| Failed::new(format!("Locating the original Codex executable: {error:#}")))?;
-            let retained = crate::blocking_work::blocking(|| alondra_core::codex_account::retained_thread(
+            let retained = crate::blocking_work::blocking(|| domain.ports().accounts().retained_codex_thread(
                 &selected.native, &selected.native_environment, &thread, std::path::Path::new(directory)));
             if !retained.unwrap_or(false) {
                 return unavailable("The original Codex thread is unavailable in its native profile".into());
@@ -1397,7 +1397,7 @@ fn take_again(runtime: &Arc<DomainRuntime>, backend: &SdkBackend, task: &TaskId,
             }
         }
     }
-    let plugin = crate::plugins::node_in(runtime.home());
+    let plugin = runtime.ports().plugins().node(runtime.home());
     let taken = if host_started(backend, runtime, task) {
         if explicit_account_retry{take_host(Arc::clone(runtime),backend,task.clone(),plugin.as_deref(),true,true,true).and_then(|driver|driver.ok_or_else(||Failed::new("The ended host was not replaced".into())))}else{adopt(Arc::clone(runtime), backend, task.clone(), plugin.as_deref())}
     } else {
@@ -1488,7 +1488,7 @@ pub(crate) fn runs_on_sdk_host(state: &DomainState, task: &TaskId) -> bool {
 pub fn take_all(domain: &Arc<DomainRuntime>, backend: &SdkBackend) -> Vec<(TaskId, Result<Driver, Failed>)> {
     let Ok(state) = domain.state() else { return Vec::new() };
     let tasks: Vec<TaskId> = state.tasks.keys().filter(|task| to_take(domain, &state, task)).cloned().collect();
-    let plugin = crate::plugins::node_in(domain.home());
+    let plugin = domain.ports().plugins().node(domain.home());
     alondra_core::clock::scope(|scope| {
         let taking: Vec<_> = tasks
             .into_iter()
@@ -2503,7 +2503,7 @@ impl Owner {
                     }
                 }
                 let task = driver.task.clone();
-                let plugin = driver.plugin.clone().or_else(|| crate::plugins::node_in(driver.domain.home()));
+                let plugin = driver.plugin.clone().or_else(|| driver.domain.ports().plugins().node(driver.domain.home()));
                 let moved = driver.moves_to_this_release;
                 let ended = driver.native_failure.take();
                 let waited = relaunch_wait(driver.relaunches);

@@ -128,7 +128,7 @@ async fn stop(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<bool, 
 async fn admit(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<(), String> {
     let (backend, runtime) = domain.sdk().ok_or("this daemon has no SDK backend")?;
     let backend = backend.clone();
-    let plugin = crate::plugins::node_in(domain.home()).ok_or("Alondra's node plugin, which the SDK node loads, was not found")?;
+    let plugin = domain.ports().plugins().node(domain.home()).ok_or("Alondra's node plugin, which the SDK node loads, was not found")?;
     let state = domain.state().map_err(|error| format!("{error:#}"))?;
     let task = state.tasks.get(&handover.task).ok_or("the task is gone")?;
     let options = alondra_daemon_engine_model::LaunchOptions {
@@ -165,7 +165,7 @@ async fn finish(domain: &Arc<DomainRuntime>, handover: &Handover) -> Result<(), 
     if !domain.owns_sdk_host(&agent) {
         let (backend, runtime) = domain.sdk().ok_or("this daemon has no SDK backend")?;
         let backend = backend.clone();
-        let plugin = crate::plugins::node_in(domain.home()).ok_or("Alondra's node plugin, which the SDK node loads, was not found")?;
+        let plugin = domain.ports().plugins().node(domain.home()).ok_or("Alondra's node plugin, which the SDK node loads, was not found")?;
         let task = handover.task.clone();
         let driver = tokio::task::spawn_blocking(move || {
             if crate::sdk_owner::host_started(&backend, &runtime, &task) {

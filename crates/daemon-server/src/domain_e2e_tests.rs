@@ -40,7 +40,8 @@ impl Daemon {
         let server = tokio::spawn(async move {
             axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
         });
-        let socket = crate::hook_socket::bind(home).await.unwrap();
+        let _ = std::fs::remove_file(home.join("hooks.sock"));
+        let socket = tokio::net::UnixListener::bind(home.join("hooks.sock")).unwrap();
         let hooks = tokio::spawn(crate::domain_transport::serve(socket, domain.clone()));
         let auth = state_auth;
         Self { domain, auth, port, server, hooks }

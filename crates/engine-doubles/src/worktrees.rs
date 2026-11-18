@@ -434,6 +434,9 @@ impl Port for Worktrees {
         })
     }
 
+    fn exists(&self, dir: &Path) -> bool {
+        dir.exists()
+    }
     fn unreachable_link(&self, dir: &Path) -> Option<String> {
         let meta = std::fs::symlink_metadata(dir).ok()?;
         (meta.file_type().is_symlink() && !dir.exists()).then(|| unreachable(dir))

@@ -11,6 +11,7 @@ TEST_ONLY = ["src/operation_journal/process_fixture.rs"]
 
 WORKSPACE_DEPS = [
     "//crates/core:alondra_core",
+    "//crates/host:host",
     "//crates/domain:domain",
     "//crates/domain-rules:domain_rules",
     "//crates/e2e:alondra_e2e",

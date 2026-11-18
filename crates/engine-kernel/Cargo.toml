@@ -13,6 +13,7 @@ alondra-engine-doubles = { workspace = true, optional = true }
 alondra-engine-ports.workspace = true
 alondra-agent-application.workspace = true
 alondra-core.workspace = true
+alondra-host.workspace = true
 alondra-domain-rules.workspace = true
 alondra-daemon-engine-machine.workspace = true
 alondra-daemon-engine-model.workspace = true
