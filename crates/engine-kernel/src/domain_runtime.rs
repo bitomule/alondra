@@ -172,7 +172,7 @@ impl DomainRuntime {
         let state = store.load()?;
         let (changed, _) = watch::channel(state.revision);
         let (schedule_changed, _) = watch::channel(state.revision);
-        let authority = capabilities::load(home, state.data_epoch.0.clone())?;
+        let authority = capabilities::load(home, &state)?;
         let runtime = Self {
             read_work: crate::blocking_work::BlockingWork::new(2),
             producer_work: crate::blocking_work::BlockingWork::new(2),
@@ -497,23 +497,85 @@ impl DomainRuntime {
 
     /// Bind a Claude session that the domain already knows as an Agent, such as
     /// one imported at cutover or resumed after a restart. Any earlier bearer
-    /// for that session stops working the moment the new one is issued.
+    /// for that session stops working the moment the new one is issued. A full
+    /// registry first retires the capabilities of agents with no host left; if
+    /// it is still full the start waits and the user sees why on one card.
     pub fn bind_agent(&self, session_id: &str) -> Result<Capability, StoreError> {
+        let bound = self.bind_agent_in_registry(session_id);
+        match &bound {
+            Err(StoreError::Domain(error)) if error.code == capability_capacity_card::CAPABILITY_CAPACITY_CODE => self.raise_capacity_card(),
+            Ok(_) => self.settle_capacity_card(),
+            Err(_) => {}
+        }
+        bound
+    }
+
+    fn bind_agent_in_registry(&self, session_id: &str) -> Result<Capability, StoreError> {
         let mut authority = self.authority.lock_or_recover("the domain authority");
         let state = self.state()?;
         if !state.agents.contains_key(&AgentId(session_id.to_owned())) {
             return Err(DomainError::new("not_found", "Agent does not exist").into());
         }
         authority.revoke_agent(session_id);
+        if authority.full() {
+            let live = capabilities::live_agents(&state);
+            if authority.retain_agents(|agent| live.contains(agent)) {
+                log!("domain: the capability registry was full; the capabilities of agents with no host left were retired");
+            }
+        }
         let capability = authority
             .issue(Principal::Agent {
                 session_id: session_id.to_owned(),
                 task_binding: None,
                 provider_agent_id: None,
             })
-            .map_err(|message| DomainError::new("forbidden", message))?;
+            .map_err(|message| if message == crate::domain_authority::CAPACITY_REACHED {
+                DomainError::new(capability_capacity_card::CAPABILITY_CAPACITY_CODE, "Alondra has no room for another node credential: every one belongs to a node that may still work")
+            } else {
+                DomainError::new("forbidden", message)
+            })?;
         self.persist_issued(&mut authority, &capability)?;
         Ok(capability)
+    }
+
+    fn open_capacity_cards(&self) -> Vec<InteractionId> {
+        let Ok(state) = self.state() else { return vec![] };
+        state.interactions.values()
+            .filter(|card| card.system_card == Some(SystemCard::CapabilityCapacity) && !card.withdrawn
+                && matches!(card.payload, InteractionPayload::Question { answer: None, .. }))
+            .map(|card| card.id.clone())
+            .collect()
+    }
+
+    fn raise_capacity_card(&self) {
+        if !self.open_capacity_cards().is_empty() {
+            return;
+        }
+        let live = self.authority.lock_or_recover("the domain authority").entries().count();
+        let card = capability_capacity_card::CapabilityCapacityCard { live: live as u32, limit: crate::domain_authority::CAPACITY as u32 };
+        let (need, why) = card.text(alondra_core::text::Lang::En);
+        let option = QuestionOption {
+            id: capability_capacity_card::CHECK_AGAIN_OPTION.into(),
+            label: capability_capacity_card::CHECK_AGAIN_LABEL.into(),
+            description: None,
+        };
+        let id = format!("{}{}", capability_capacity_card::CAPABILITY_CAPACITY_PREFIX, alondra_core::now_millis());
+        if let Err(error) = self.raise_worded_problem(&id, Some(SystemCard::CapabilityCapacity), capability_capacity_card::CAPABILITY_CAPACITY_CAUSE,
+            need, why, card.to_body(), vec![option], Some(capability_capacity_card::CHECK_AGAIN_OPTION)) {
+            log!("domain: could not tell the user the capability registry is full: {error:?}");
+        }
+    }
+
+    /// A registry with room again withdraws the card that said it had none.
+    fn settle_capacity_card(&self) {
+        if self.authority.lock_or_recover("the domain authority").full() {
+            return;
+        }
+        for id in self.open_capacity_cards() {
+            if let Err(error) = self.withdraw_problem(&id) {
+                log!("domain: could not withdraw the card of the full capability registry: {error:?}");
+            }
+        }
     }
 
     /// A capability that could not be written is never handed out, so it leaves the registry in
@@ -563,10 +625,30 @@ impl DomainRuntime {
         .map(drop)
     }
 
+    /// The digest of the capability the session holds now, which only it can retire later.
+    pub fn agent_capability(&self, session: &str) -> Option<[u8; 32]> {
+        self.authority.lock_or_recover("the domain authority").agent_digest(session)
+    }
+
+    /// Revokes the capability named by `digest`: one its session was issued after it stays.
+    pub fn revoke_capability(&self, digest: &[u8; 32]) -> Result<()> {
+        let persisted = {
+            let mut authority = self.authority.lock_or_recover("the domain authority");
+            authority.revoke_digest(digest);
+            self.persist_authority(&authority)
+        };
+        self.settle_capacity_card();
+        persisted
+    }
+
     pub fn revoke_agent(&self, session: &str) -> Result<()> {
-        let mut authority = self.authority.lock_or_recover("the domain authority");
-        authority.revoke_agent(session);
-        self.persist_authority(&authority)
+        let persisted = {
+            let mut authority = self.authority.lock_or_recover("the domain authority");
+            authority.revoke_agent(session);
+            self.persist_authority(&authority)
+        };
+        self.settle_capacity_card();
+        persisted
     }
     /// Revokes an orchestrator execution and returns what it was let change.
     pub fn end_execution(&self, execution: &str) -> Vec<String> {

@@ -1,4 +1,5 @@
 //! Pure business domain. Authenticated adapters construct Actors; SQL owns persistence.
+pub mod capability_capacity_card;
 pub mod cited_file;
 pub mod close_problem;
 pub mod discard_worktrees;

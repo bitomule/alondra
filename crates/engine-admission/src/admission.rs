@@ -1408,7 +1408,8 @@ pub async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) -> anyhow
 /// by itself and then put to the user. `launch_from` records the failures it knows.
 fn refused(domain: &DomainRuntime, task: &TaskId, error: &alondra_domain_rules::DomainError, now: Millis) -> anyhow::Result<()> {
     domain.admission().not_started(&Key::Task(task.clone()));
-    if domain.live().is_launching(&task.0) || matches!(error.code.as_str(), "launch_failed" | "workspace_untrusted" | "usage_exhausted" | "worktrees_unavailable" | "disk_low" | "account_unavailable" | "account_check_in_progress") {
+    if domain.live().is_launching(&task.0) || matches!(error.code.as_str(), "launch_failed" | "workspace_untrusted" | "usage_exhausted" | "worktrees_unavailable" | "disk_low" | "account_unavailable" | "account_check_in_progress"
+        | alondra_domain_rules::capability_capacity_card::CAPABILITY_CAPACITY_CODE) {
         return Ok(());
     }
     let state = domain.state()?;

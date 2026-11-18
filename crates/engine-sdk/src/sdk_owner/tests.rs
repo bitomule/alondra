@@ -4050,6 +4050,8 @@ pub mod codex_tests;
 pub mod untaken;
 #[path = "release_tests.rs"]
 mod release_tests;
+#[path = "capability_tests.rs"]
+mod capability_tests;
 
 #[test]
 fn fixture_current_revision_keeps_actor_fences_and_client_staleness() {

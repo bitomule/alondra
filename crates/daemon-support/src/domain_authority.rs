@@ -27,6 +27,11 @@ impl Capability {
     }
 }
 
+/// How many capabilities the registry holds at most. Live nodes hold one each, so normal use stays
+/// far below it; reaching it means credentials of ended hosts were not retired.
+pub const CAPACITY: usize = 4096;
+pub const CAPACITY_REACHED: &str = "capability capacity reached";
+
 #[derive(Default)]
 pub struct Authority {
     epoch: String,
@@ -84,8 +89,8 @@ impl Authority {
         if self.epoch.is_empty() {
             return Err("data epoch is required");
         }
-        if self.entries.len() >= 4096 {
-            return Err("capability capacity reached");
+        if self.full() {
+            return Err(CAPACITY_REACHED);
         }
         let mut bytes = [0u8; 32];
         SystemRandom::new()
@@ -121,6 +126,33 @@ impl Authority {
     pub fn forget(&mut self, capability: &Capability) {
         let digest: [u8; 32] = Sha256::digest(capability.0.as_bytes()).into();
         self.entries.remove(&digest);
+    }
+
+    pub fn full(&self) -> bool {
+        self.entries.len() >= CAPACITY
+    }
+
+    /// Retires the capability of every agent `keep` refuses. True when one was retired.
+    pub fn retain_agents(&mut self, keep: impl Fn(&str) -> bool) -> bool {
+        let before = self.entries.len();
+        self.entries.retain(|_, principal| match principal {
+            Principal::Agent { session_id, .. } => keep(session_id),
+            Principal::Orchestrator { .. } => true,
+        });
+        self.entries.len() != before
+    }
+
+    /// The digest of the capability `session_id` holds now: binding a session again replaces it.
+    pub fn agent_digest(&self, session_id: &str) -> Option<[u8; 32]> {
+        self.entries.iter().find_map(|(digest, principal)| match principal {
+            Principal::Agent { session_id: id, .. } if id == session_id => Some(*digest),
+            _ => None,
+        })
+    }
+
+    /// Revokes one capability, leaving any issued after it to the same session.
+    pub fn revoke_digest(&mut self, digest: &[u8; 32]) {
+        self.entries.remove(digest);
     }
 
     pub fn revoke_agent(&mut self, session_id: &str) {

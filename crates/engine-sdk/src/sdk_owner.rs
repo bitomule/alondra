@@ -196,6 +196,8 @@ impl Drop for InHand {
 
 pub struct Driver {
     pub in_hand: Option<InHand>,
+    /// The capability its host was started or adopted with, which goes when the host ends.
+    capability: Option<[u8; 32]>,
     domain: Arc<DomainRuntime>,
     pub worker: Worker,
     scope: AuthorityScope,
@@ -585,6 +587,26 @@ pub fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Lau
     Ok(driver)
 }
 
+/// The capability a host was started or adopted with. One a host that resumes the node was
+/// issued since stays.
+struct EndedCapability { domain: Arc<DomainRuntime>, agent: AgentId, digest: Option<[u8; 32]> }
+impl EndedCapability {
+    fn revoke(self) {
+        if let Some(digest) = self.digest
+            && let Err(error) = self.domain.revoke_capability(&digest) {
+            log!("the capability of {}, whose host ended, could not be revoked: {error:#}", self.agent);
+        }
+    }
+}
+
+/// A host that ended under this daemon takes its node's capability with it: the host that resumes
+/// the node is issued a new one, and a node no host resumes keeps none.
+fn host_ended(domain: &DomainRuntime, agent: &AgentId) {
+    if let Err(error) = domain.revoke_agent(&agent.0) {
+        log!("the capability of {agent}, whose host ended, could not be revoked: {error:#}");
+    }
+}
+
 /// The capability of a node whose execution was not admitted: a launch that stops before its
 /// admission commits revokes it, so a start refused again and again leaves none behind.
 struct Unadmitted { domain: Option<Arc<DomainRuntime>>, agent: AgentId }
@@ -669,7 +691,10 @@ pub(crate) async fn launch_prepared(domain: &DomainRuntime, launch: Launch, reop
     })
         .await
         .map_err(|error| DomainError::new("launch_failed", format!("the SDK launch stopped: {error}")))?
-        .map_err(|Failed { why, .. }| DomainError::new("launch_failed", format!("the task did not start through the Agent SDK: {why}")))?;
+        .map_err(|Failed { why, refusal, .. }| match refusal {
+            Some(refusal) if refusal.code == alondra_domain_rules::capability_capacity_card::CAPABILITY_CAPACITY_CODE => refusal,
+            _ => DomainError::new("launch_failed", format!("the task did not start through the Agent SDK: {why}")),
+        })?;
     let agent = driver.agent().clone();
     domain.add_sdk_owner(Owner::spawn(driver));
     domain.live().forget_closed_task(&task.0);
@@ -726,6 +751,7 @@ pub(crate) fn launch_admitted(domain: Arc<DomainRuntime>, backend: &SdkBackend, 
     let (adapter_state, _) = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
     domain.seals.take(&task);
     worker.install_owner(grant, adapter_state).map_err(adapter("starting the SDK host"))?;
+    unadmitted.admitted();
     let mut driver = Driver::new(domain, worker, scope, task.clone(), agent, Duration::from_secs(backend.io_timeout_seconds));
     driver.log_host("started, as its admission's first host");
     if let Err(failed) = driver.dispatch(permit) {
@@ -1003,6 +1029,7 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
         drop(worker);
         return Err(end_launched(&domain, &directory,failed));
     }
+    unadmitted.admitted();
     let mut driver = Driver::new(domain, worker, scope, task, agent, Duration::from_secs(backend.io_timeout_seconds));
     driver.replacement = true;
     driver.resuming_since = retaken.then_some(taken_at);
@@ -1116,6 +1143,10 @@ pub fn lost(domain: &DomainRuntime, task: &TaskId, why: &str) {
     log!("the SDK execution of {task} was not taken over: {why}");
     end_dead_host_claims(domain, task);
     let Ok(state) = domain.state() else { return };
+    if let Some(agent) = state.tasks.get(task).and_then(|task| task.agent_id.as_ref())
+        && !domain.owns_sdk_host(agent) {
+        host_ended(domain, agent);
+    }
     if node_paused(&state, task) {
         log!("{task} is paused: a host that resumes its session takes it over when the pause ends");
         return;
@@ -1592,11 +1623,17 @@ fn node_environment(home: &std::path::Path, agent: &AgentId, capability: &str) -
 
 impl Driver {
     fn new(domain: Arc<DomainRuntime>, worker: Worker, scope: AuthorityScope, task: TaskId, agent: AgentId, opening_timeout: Duration) -> Self {
-        Self { in_hand: Some(InHand::new(&domain, &task)), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout, opening_deadline: None, refused: BTreeSet::new(), #[cfg(any(test, feature = "test-hooks"))] refuse_offers: 0, #[cfg(any(test, feature = "test-hooks"))] fail_next_step: false, #[cfg(any(test, feature = "test-hooks"))] panic_next_step: false }
+        Self { in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout, opening_deadline: None, refused: BTreeSet::new(), #[cfg(any(test, feature = "test-hooks"))] refuse_offers: 0, #[cfg(any(test, feature = "test-hooks"))] fail_next_step: false, #[cfg(any(test, feature = "test-hooks"))] panic_next_step: false }
     }
 
     pub fn agent(&self) -> &AgentId {
         &self.agent
+    }
+
+    /// The capability of the host that ended, revoked once the driver lets go of its execution, so
+    /// a takeover of the task never waits on the revocation.
+    fn ended_capability(&mut self) -> EndedCapability {
+        EndedCapability { domain: Arc::clone(&self.domain), agent: self.agent.clone(), digest: self.capability.take() }
     }
 
     /// The driver no longer holds its execution, as one whose owner is gone though its value lives.
@@ -2430,6 +2467,9 @@ impl Owner {
                         Ok(()) => {
                             ending.store(true, Ordering::SeqCst);
                             log!("{} rests with nothing in its host: the host closed and its session waits for its next input", driver.task);
+                            let capability = driver.ended_capability();
+                            drop(driver);
+                            capability.revoke();
                             return Ok(());
                         }
                         Err(error) => {
@@ -2511,6 +2551,9 @@ impl Owner {
                 ending.store(true, Ordering::SeqCst);
                 lost(&driver.domain, &driver.task, &why);
             }
+            let capability = driver.ended_capability();
+            drop(driver);
+            capability.revoke();
             stopped
         })
         .expect("spawning the SDK owner");

@@ -1,7 +1,9 @@
 //! Durable registry of issued producer capabilities. Only SHA-256 digests are
 //! written; a bearer token exists in the producer's environment alone.
 use crate::domain_authority::{Authority, Principal};
+use alondra_domain_rules::{DomainState, NodeEnd};
 use anyhow::{Context, Result, ensure};
+use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -26,10 +28,27 @@ struct Entry {
     principal: Principal,
 }
 
+/// The agents whose host may still run or be adopted: the current node of a task that is not over
+/// and whose node Alondra did not close, a node the user kept, and the orchestrator's session.
+/// Earlier nodes of a task, and nodes of tasks that ended, hold no host.
+pub(super) fn live_agents(state: &DomainState) -> BTreeSet<String> {
+    state.tasks.values()
+        .filter(|task| match task.wrap_up.node {
+            Some(NodeEnd::Closed | NodeEnd::Gone) => false,
+            Some(NodeEnd::KeptByUser | NodeEnd::UsersOwn) => true,
+            None => !task.state.terminal(),
+        })
+        .filter_map(|task| task.agent_id.as_ref().map(|agent| agent.0.clone()))
+        .chain(state.orchestrator_session.as_ref().map(|agent| agent.0.clone()))
+        .collect()
+}
+
 /// A missing file is an empty registry. A file from another epoch was fenced
 /// by that epoch change, so its entries are dropped. An unreadable or unsafe
-/// file stops startup instead of silently reissuing authority.
-pub(super) fn load(home: &Path, epoch: String) -> Result<Authority> {
+/// file stops startup instead of silently reissuing authority. Agents whose
+/// host can no longer run lose their capability before the daemon serves.
+pub(super) fn load(home: &Path, state: &DomainState) -> Result<Authority> {
+    let epoch = state.data_epoch.0.clone();
     let path = home.join(FILE);
     let file = match OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(&path) {
         Ok(file) => file,
@@ -60,9 +79,11 @@ pub(super) fn load(home: &Path, epoch: String) -> Result<Authority> {
         Principal::Orchestrator { execution_id, .. } => Some(execution_id.clone()),
         Principal::Agent { .. } => None,
     }).collect();
-    if !batches.is_empty() {
+    let live = live_agents(state);
+    let ended = authority.retain_agents(|agent| live.contains(agent));
+    if !batches.is_empty() || ended {
         for execution in batches { authority.revoke_execution(&execution); }
-        persist(home, &authority).context("retiring previous orchestrator batch capabilities before startup")?;
+        persist(home, &authority).context("retiring the capabilities of previous orchestrator batches and ended hosts before startup")?;
     }
     Ok(authority)
 }
@@ -125,6 +146,7 @@ fn decode_digest(text: &str) -> Result<[u8; 32]> {
 mod tests {
     use super::*;
     use crate::domain_runtime::DomainRuntime;
+    use crate::locks::Poisonable as _;
     use alondra_domain_rules::*;
 
     struct Fixture(crate::test_support::Directory);
@@ -137,6 +159,16 @@ mod tests {
         fn open(&self) -> DomainRuntime {
             crate::domain_runtime::DomainRuntime::open_unwired(&self.0).unwrap()
         }
+        /// Opens the domain with the registry on disk as it is, as a daemon that ran without
+        /// pruning it at its start did.
+        fn open_unpruned(&self) -> DomainRuntime {
+            let saved = std::fs::read(self.0.join(FILE)).unwrap();
+            let domain = self.open();
+            std::fs::write(self.0.join(FILE), &saved).unwrap();
+            let state = domain.state().unwrap();
+            *domain.authority.lock_or_recover("the domain authority") = load_unpruned(&self.0, state.data_epoch.0.clone());
+            domain
+        }
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
@@ -144,13 +176,116 @@ mod tests {
         }
     }
 
-    fn register(domain: &DomainRuntime, agent: &str) {
+    fn run(domain: &DomainRuntime, actor: Actor, command: Command) {
         let state = domain.state().unwrap();
-        domain.execute(&Actor::System, &CommandEnvelope {
+        domain.execute(&actor, &CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
-            command_id: format!("register-{agent}").into(), expected_revision: state.revision,
-            command: Command::RegisterAgent { agent_id: agent.into(), name: agent.into(), at: 0 },
+            command_id: format!("c-{}", state.revision).into(), expected_revision: state.revision, command,
         }, None, || Ok(())).unwrap();
+    }
+
+    /// An agent the domain knows that no task names: an earlier node of a task, or one never admitted.
+    fn register_bare(domain: &DomainRuntime, agent: &str) {
+        run(domain, Actor::System, Command::RegisterAgent { agent_id: agent.into(), name: agent.into(), at: 0 });
+    }
+
+    /// The current node of an open task of its own.
+    fn register(domain: &DomainRuntime, agent: &str) {
+        register_bare(domain, agent);
+        let orchestrator = Actor::Orchestrator { generation: 0 };
+        run(domain, orchestrator.clone(), Command::CreateRequest { request_id: format!("r-{agent}").into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
+        run(domain, orchestrator, Command::CreateTask { plan_items: None, continues: None,
+            task_id: format!("task-{agent}").into(), request_id: format!("r-{agent}").into(), title: agent.into(), agent_id: Some(agent.into()), review_prs: false,
+            dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
+        });
+        run(domain, Actor::Agent { agent_id: agent.into() }, Command::StartTask { task_id: format!("task-{agent}").into() });
+    }
+
+    fn registry_agents(fixture: &Fixture) -> Vec<String> {
+        let registry: serde_json::Value = serde_json::from_slice(&std::fs::read(fixture.0.join(FILE)).unwrap()).unwrap();
+        let mut agents: Vec<String> = registry["entries"].as_array().unwrap().iter()
+            .filter_map(|entry| entry["principal"]["session_id"].as_str().map(str::to_owned)).collect();
+        agents.sort();
+        agents
+    }
+
+    // Production, 17 November: the registry reached 4087 of 4096 capabilities, one for every host
+    // that ever ran, because none was retired when its host ended and every restart loaded them
+    // all again. Opening the domain keeps only the capabilities of nodes whose host may still run.
+    #[test]
+    fn opening_the_domain_retires_the_capabilities_of_nodes_whose_host_can_no_longer_run() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        register(&domain, "working");
+        register(&domain, "closed");
+        register_bare(&domain, "replaced");
+        let tokens: Vec<String> = ["working", "closed", "replaced"].iter()
+            .map(|agent| domain.bind_agent(agent).unwrap().expose_for_child_environment().to_owned()).collect();
+        run(&domain, Actor::System, Command::RecordNodeEnd { task_id: "task-closed".into(), end: NodeEnd::Closed, agent_id: Some("closed".into()) });
+        assert_eq!(registry_agents(&fixture), ["closed", "replaced", "working"]);
+        drop(domain);
+
+        let reopened = fixture.open();
+        assert_eq!(registry_agents(&fixture), ["working"], "the pruned registry is written before the daemon serves");
+        assert!(reopened.resolve_bearer(&tokens[0]).is_ok(), "the node that may still work keeps its capability for its adoption");
+        assert!(reopened.resolve_bearer(&tokens[1]).is_err());
+        assert!(reopened.resolve_bearer(&tokens[2]).is_err());
+    }
+
+    fn load_unpruned(home: &Path, epoch: String) -> Authority {
+        let registry: Registry = serde_json::from_slice(&std::fs::read(home.join(FILE)).unwrap()).unwrap();
+        Authority::restore(epoch, registry.entries.into_iter().map(|entry| (decode_digest(&entry.digest).unwrap(), entry.principal)))
+    }
+
+    fn full_registry(fixture: &Fixture, agent: &str) {
+        let domain = fixture.open();
+        let state = domain.state().unwrap();
+        drop(domain);
+        let entries = (0..crate::domain_authority::CAPACITY).map(|index| {
+            let mut digest = [0u8; 32];
+            digest[..8].copy_from_slice(&(index as u64).to_be_bytes());
+            (digest, Principal::Agent { session_id: agent.into(), task_binding: None, provider_agent_id: None })
+        });
+        persist(&fixture.0, &Authority::restore(state.data_epoch.0.clone(), entries)).unwrap();
+    }
+
+    fn open_capacity_cards(domain: &DomainRuntime) -> usize {
+        domain.state().unwrap().interactions.values()
+            .filter(|card| card.system_card == Some(SystemCard::CapabilityCapacity) && !card.withdrawn).count()
+    }
+
+    #[test]
+    fn a_full_registry_retires_the_capabilities_of_ended_hosts_and_issues() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        register(&domain, "working");
+        register_bare(&domain, "ended");
+        drop(domain);
+        full_registry(&fixture, "ended");
+        let domain = fixture.open_unpruned();
+        let token = domain.bind_agent("working").expect("the ended hosts' capabilities make room").expose_for_child_environment().to_owned();
+        assert!(domain.resolve_bearer(&token).is_ok());
+        assert_eq!(registry_agents(&fixture), ["working"]);
+        assert_eq!(open_capacity_cards(&domain), 0);
+    }
+
+    #[test]
+    fn a_registry_full_of_working_nodes_refuses_with_its_own_code_and_one_card_until_one_ends() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        register(&domain, "working");
+        register(&domain, "next");
+        drop(domain);
+        full_registry(&fixture, "working");
+        let domain = fixture.open();
+        for _ in 0..3 {
+            let refused = domain.bind_agent("next").err().expect("no room");
+            assert!(matches!(&refused, crate::domain_store::StoreError::Domain(error) if error.code == alondra_domain_rules::capability_capacity_card::CAPABILITY_CAPACITY_CODE), "{refused}");
+        }
+        assert_eq!(open_capacity_cards(&domain), 1, "refused starts show one card, not one per try");
+        domain.revoke_agent("working").unwrap();
+        assert_eq!(open_capacity_cards(&domain), 0, "room again withdraws the card");
+        assert!(domain.bind_agent("next").is_ok());
     }
 
     #[test]
