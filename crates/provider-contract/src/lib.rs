@@ -340,20 +340,55 @@ pub enum DecisionKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TurnOutcome {
     Completed,
-    /// A Claude API error ended it, past Claude Code's own retries.
+    /// A provider API error ended it, past the provider's own retries, with the adapter's verdict.
     ApiFailed(ApiFailure),
     /// Claude Code ended it as failed with `code`, such as `error_max_turns`, known or not.
     Failed { code: String },
 }
-/// The Claude API error a root turn ended with, as Claude Code reports it after its own retries.
+/// A provider API error and what its adapter reads in it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApiFailure {
-    /// Claude Code's error category, such as `authentication_failed` or `rate_limit`.
+    pub failure: ProviderFailure,
+    pub verdict: Verdict,
+}
+/// The provider API error a turn or batch ended with, after the provider's own retries. Only the
+/// provider's adapter reads `error` and `detail`; the rest of Alondra reads its `Verdict`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProviderFailure {
+    /// The provider's error category, such as `authentication_failed` or `unauthorized`.
     pub error: String,
     /// The HTTP status of the failed request, when one was answered.
     pub status: Option<u16>,
+    /// The error's text, bounded and redacted by `bounded_detail`: for the log, never a card.
+    pub detail: Option<String>,
+    /// The statuses of the retries the provider made in the same turn, in order.
+    pub retried: Vec<Option<u16>>,
     /// When a rejected usage limit resets, in Unix seconds.
     pub resets_at: Option<u64>,
+}
+pub use alondra_foundation::{RefusalReason, RequestProblem, Verdict};
+/// The longest error text a `ProviderFailure` keeps.
+pub const DETAIL_MAX: usize = 300;
+/// `text` on one line, at most `DETAIL_MAX` characters, with what could name the user (emails,
+/// home folders, tokens) masked.
+pub fn bounded_detail(text: &str) -> Option<String> {
+    let words: Vec<String> = text.split_whitespace().map(redacted_word).collect();
+    let line = words.join(" ");
+    let line: String = line.chars().take(DETAIL_MAX).collect();
+    (!line.is_empty()).then_some(line)
+}
+fn redacted_word(word: &str) -> String {
+    let secret = word.len() >= 24 && word.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        && word.chars().any(|c| c.is_ascii_digit()) && word.chars().any(|c| c.is_ascii_alphabetic());
+    if word.contains('@') && word.contains('.') {
+        "[email]".into()
+    } else if secret || word.starts_with("sk-") {
+        "[secret]".into()
+    } else if let Some(at) = word.find("/Users/").or_else(|| word.find("/home/")) {
+        format!("{}[home]", &word[..at])
+    } else {
+        word.into()
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OrderedObservation {

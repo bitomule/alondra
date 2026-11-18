@@ -20,6 +20,9 @@ pub struct HookEvent {
     pub notification_type: Option<String>,
     #[serde(default)]
     pub error_type: Option<String>,
+    /// What Claude's adapter reads in `error_type`, set by the daemon that received the hook.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<alondra_foundation::Verdict>,
     #[serde(default)]
     pub cwd: Option<String>,
     #[serde(default)]

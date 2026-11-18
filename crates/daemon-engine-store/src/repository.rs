@@ -1014,6 +1014,12 @@ pub(super) fn save_changes(
                 params![usage.provider.as_str(), usage.account.as_str(), serde_json::to_string(usage)?])?;
         }
     }
+    if before.provider_health != after.provider_health {
+        exec(c, "DELETE FROM provider_health", [])?;
+        for health in &after.provider_health {
+            exec(c, "INSERT INTO provider_health(provider,health) VALUES(?1,?2)", params![health.provider.as_str(), serde_json::to_string(health)?])?;
+        }
+    }
     super::provider_accounts::save(c, before, after)?;
     super::pr_adoption::save(c, before, after)?;
     save_schedule_changes(c, &before.schedule, &after.schedule)?;
@@ -1599,6 +1605,11 @@ pub(super) fn load_rows(c: &Connection) -> Result<DomainState> {
         state.account_usage.push(serde_json::from_str(&row?)?);
     }
     drop(usage);
+    let mut health = c.prepare("SELECT health FROM provider_health ORDER BY provider")?;
+    for row in health.query_map([], |r| r.get::<_, String>(0))? {
+        state.provider_health.push(serde_json::from_str(&row?)?);
+    }
+    drop(health);
     super::provider_accounts::load(c, &mut state)?;
     super::pr_adoption::load(c, &mut state)?;
     state.schedule = load_schedule_state(c)?;

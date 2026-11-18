@@ -1114,6 +1114,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::HoldHook { .. }
         | Command::HoldQuestions { .. }
         | Command::ProbeClaudeAccess { .. }
+        | Command::RecordProviderHealth { .. }
         | Command::BeginAccountLogin { .. }
         | Command::CancelAccountLogin { .. }
         | Command::RecordAccountLogin { .. }

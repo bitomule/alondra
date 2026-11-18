@@ -56,6 +56,7 @@ pub enum SystemCardKind {
     ClaudeUsage,
     HostLost,
     TurnEnded,
+    TurnRefused,
     Stalled,
     SessionEnded,
     HandoffDoubt,
@@ -79,10 +80,10 @@ pub enum SystemCardKind {
 }
 
 impl SystemCardKind {
-    pub const ALL: [SystemCardKind; 31] = {
+    pub const ALL: [SystemCardKind; 32] = {
         use SystemCardKind::*;
         [NodePause, OverPace, PaceResume, Machine, LocalNetwork, McpWait, ClaudeSignedOut, ClaudeOutage, ClaudeUsage,
-            HostLost, TurnEnded, Stalled, SessionEnded, HandoffDoubt, DecisionCancelled, Dropped, Unheard, EndedUnanswered,
+            HostLost, TurnEnded, TurnRefused, Stalled, SessionEnded, HandoffDoubt, DecisionCancelled, Dropped, Unheard, EndedUnanswered,
             StartProblem, PostMergeProblem, CloseProblem, DiscardWorktrees, OpenPrDelivery, LaunchProblem, BatchProblem,
             StuckProblem, RequestDone, RequestTasks, Inbox, RefusedCards, Unknown]
     };
@@ -103,6 +104,7 @@ impl SystemCard {
             Self::ClaudeUsage { .. } => K::ClaudeUsage,
             Self::HostLost => K::HostLost,
             Self::TurnEnded => K::TurnEnded,
+            Self::TurnRefused { .. } => K::TurnRefused,
             Self::Stalled => K::Stalled,
             Self::SessionEnded => K::SessionEnded,
             Self::HandoffDoubt => K::HandoffDoubt,
@@ -351,7 +353,7 @@ impl CardType {
                     S::McpWait => alondra(to_user, &[K::Problem], Decides, McpServer, &[Answered, Resolved, TaskEnded]),
                     S::ClaudeSignedOut | S::ClaudeOutage | S::ClaudeUsage => alondra(to_user, &[K::Problem], Decides, Task, &[Answered, Resolved, TaskEnded]),
                     S::HostLost => alondra(to_user, &[K::Problem], Decides, Task, ASKED),
-                    S::TurnEnded | S::SessionEnded | S::HandoffDoubt | S::DecisionCancelled | S::Dropped => {
+                    S::TurnEnded | S::TurnRefused | S::SessionEnded | S::HandoffDoubt | S::DecisionCancelled | S::Dropped => {
                         alondra(to_user, &[K::Decide, K::Problem], Decides, Task, ASKED)
                     }
                     S::Stalled => alondra(&[R::Orchestrator], &[K::Decide], Decides, Task, ASKED),

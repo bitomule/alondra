@@ -1190,18 +1190,18 @@ fn claude_hold_text(interaction: &Interaction, domain: &DomainState, lang: Lang)
     Some((clip(&need, CardSpec::NEED_MAX), why))
 }
 
-/// What a refused Claude API request needs, in the viewer's language.
-fn api_refusal_text(error: &str, lang: Lang) -> &'static str {
-    match error {
-        "authentication_failed" => t!(lang, "the Claude account refuses this request", "la cuenta de Claude rechaza esta petición"),
-        "oauth_org_not_allowed" => t!(lang, "the Claude organization does not allow Claude Code", "la organización de Claude no permite Claude Code"),
-        "account_on_hold" => t!(lang, "the Claude account is on hold", "la cuenta de Claude está suspendida"),
-        "verification_required" => t!(lang, "the Claude account needs verifying", "la cuenta de Claude necesita verificarse"),
-        "billing_error" => t!(lang, "the Claude account has a billing problem", "la cuenta de Claude tiene un problema de facturación"),
-        "cloud_credential_error" => t!(lang, "Claude Code's cloud credentials fail", "fallan las credenciales en la nube de Claude Code"),
-        "model_not_found" => t!(lang, "Claude Code's model is not available", "el modelo de Claude Code no está disponible"),
-        "invalid_request" => t!(lang, "the Claude API refuses Claude Code's request", "la API de Claude rechaza la petición de Claude Code"),
-        _ => t!(lang, "the Claude API refuses its request", "la API de Claude rechaza su petición"),
+/// What a refused provider request needs, in the viewer's language.
+fn api_refusal_text(verdict: &alondra_domain_rules::ProviderVerdict, provider: &str, lang: Lang) -> String {
+    use alondra_domain_rules::{ProviderVerdict, RefusalReason, RequestProblem};
+    match verdict {
+        ProviderVerdict::Refused { reason: RefusalReason::AccountOnHold } => tf!(lang, "the {provider} account is on hold", "la cuenta de {provider} está suspendida"),
+        ProviderVerdict::Refused { reason: RefusalReason::OrgNotAllowed } => tf!(lang, "the {provider} organization does not allow it", "la organización de {provider} no lo permite"),
+        ProviderVerdict::Refused { reason: RefusalReason::Billing } => tf!(lang, "the {provider} account has a billing problem", "la cuenta de {provider} tiene un problema de facturación"),
+        ProviderVerdict::Refused { reason: RefusalReason::VerificationRequired } => tf!(lang, "the {provider} account needs verifying", "la cuenta de {provider} necesita verificarse"),
+        ProviderVerdict::RequestProblem { problem: RequestProblem::CloudCredentials } => tf!(lang, "the {provider} cloud credentials fail", "fallan las credenciales en la nube de {provider}"),
+        ProviderVerdict::RequestProblem { problem: RequestProblem::ModelNotFound } => tf!(lang, "the {provider} model is not available", "el modelo de {provider} no está disponible"),
+        ProviderVerdict::RequestProblem { .. } => tf!(lang, "the {provider} API refuses the request", "la API de {provider} rechaza la petición"),
+        _ => tf!(lang, "the {provider} account refuses this request", "la cuenta de {provider} rechaza esta petición"),
     }
 }
 
@@ -1247,15 +1247,22 @@ fn decision_cancelled_text(interaction: &Interaction, domain: &DomainState, lang
 /// The card that asks how a task goes on when its SDK turn ended with nothing that explains its
 /// next step, in the viewer's language.
 fn turn_ended_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Option<(String, String)> {
-    if interaction.author != Author::System || !matches!(interaction.system_card, Some(SystemCard::TurnEnded)) {
+    if interaction.author != Author::System || !matches!(interaction.system_card, Some(SystemCard::TurnEnded | SystemCard::TurnRefused { .. })) {
         return None;
     }
     let Scope::Task { task_id } = &interaction.scope else { return None };
-    let title = domain.tasks.get(task_id)?.title.as_str();
-    if interaction.card.why == alondra_domain_rules::REFUSED_WHY {
-        let refusal = alondra_domain_rules::REFUSALS.into_iter().find(|error| interaction.card.effective_title().ends_with(alondra_domain_rules::api_refusal(error)))
-            .map_or(t!(lang, "Claude Code cannot use the Claude API", "Claude Code no puede usar la API de Claude"), |error| api_refusal_text(error, lang));
+    let task = domain.tasks.get(task_id)?;
+    let title = task.title.as_str();
+    if let Some(SystemCard::TurnRefused { verdict }) = &interaction.system_card {
+        let provider = crate::accounts::provider_name(task.provider);
+        let refusal = api_refusal_text(verdict, provider, lang);
         let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "“{title}” stopped: {refusal}", "«{title}» se ha parado: {refusal}"));
+        return Some((need, tf!(lang,
+            "{provider} cannot work on this task until this is fixed outside Alondra. Fix it, then tell the task to go on, or cancel it.",
+            "{provider} no puede trabajar en esta tarea hasta que se arregle fuera de Alondra. Arréglalo y dile a la tarea que siga, o cancélala.")));
+    }
+    if interaction.card.why == alondra_domain_rules::REFUSED_WHY {
+        let need = fit_title(title, CardSpec::TITLED_NEED_MAX, |title| tf!(lang, "“{title}” stopped: Claude Code cannot use the Claude API", "«{title}» se ha parado: Claude Code no puede usar la API de Claude"));
         return Some((need, t!(lang,
             "Claude Code cannot use the Claude API until this is fixed outside Alondra. Fix it, then tell the task to go on, or cancel it.",
             "Claude Code no puede usar la API de Claude hasta que se arregle fuera de Alondra. Arréglalo y dile a la tarea que siga, o cancélala.").into()));

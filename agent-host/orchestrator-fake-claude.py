@@ -11,6 +11,8 @@ records its arguments and every prompt it gets, and answers each prompt as its f
   fixture:tool-then-exit    calls an Alondra tool that changes something, then dies without a result
   fixture:denied            calls an Alondra tool and ends with it refused
   fixture:limited           usage runs out before it answers
+  fixture:api-error         the API fails past its retries before it answers: api_error, 529
+  fixture:cloudflare-403    retried 503s, then Cloudflare's 403 page labelled authentication_failed
   fixture:exit-before-init  dies before it initializes
   fixture:another-input     ends with the result of a prompt that is not this one
 
@@ -114,6 +116,17 @@ for raw in sys.stdin:
                   rate_limit_info=dict(status='rejected', resetsAt=int(time.time()) + 3600, rateLimitType='five_hour')))
         assistant(message, [dict(type='text', text="You've hit your limit")], error='rate_limit')
         result(message, subtype='error_during_execution', is_error=True, result="You've hit your limit", terminal_reason='api_error')
+        continue
+    if 'fixture:api-error' in text:
+        send(dict(type='system', subtype='api_retry', session_id=session_id, uuid=uuid(), attempt=1, error_status=529, error='overloaded'))
+        assistant(message, [dict(type='text', text='API Error: 529 Overloaded')], error='overloaded')
+        result(message, is_error=True, result='API Error: 529 Overloaded', api_error_status=529, terminal_reason='api_error')
+        continue
+    if 'fixture:cloudflare-403' in text:
+        for attempt in (1, 2):
+            send(dict(type='system', subtype='api_retry', session_id=session_id, uuid=uuid(), attempt=attempt, error_status=503, error='server_error'))
+        assistant(message, [dict(type='text', text='Failed to authenticate. API Error: 403 Attention Required! | Cloudflare')], error='authentication_failed')
+        result(message, is_error=True, result='Failed to authenticate', api_error_status=403, terminal_reason='api_error')
         continue
     if 'fixture:tool-then-exit' in text:
         assistant(message, [dict(type='tool_use', id='toolu_fixture', name='mcp__%s__create_task' % server, input=dict(title='Fixture'))])

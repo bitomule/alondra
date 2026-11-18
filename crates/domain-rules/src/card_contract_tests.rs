@@ -61,6 +61,7 @@ fn sample(kind: SystemCardKind) -> SystemCard {
         K::ClaudeUsage => SystemCard::ClaudeUsage { resets_at: None },
         K::HostLost => SystemCard::HostLost,
         K::TurnEnded => SystemCard::TurnEnded,
+        K::TurnRefused => SystemCard::TurnRefused { verdict: crate::ProviderVerdict::Outage },
         K::Stalled => SystemCard::Stalled,
         K::SessionEnded => SystemCard::SessionEnded,
         K::HandoffDoubt => SystemCard::HandoffDoubt,

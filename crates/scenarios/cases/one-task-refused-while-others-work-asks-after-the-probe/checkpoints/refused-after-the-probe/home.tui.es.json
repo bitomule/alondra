@@ -43,7 +43,7 @@
             "text": "Bloquea a Add the CSV export",
             "tone": "warning"
           },
-          "subtitle": "Claude Code no puede usar la API de Claude hasta que se arregle fuera de Alondra. Arréglalo y dile a la tarea que siga, o cancélala.",
+          "subtitle": "Claude no puede trabajar en esta tarea hasta que se arregle fuera de Alondra. Arréglalo y dile a la tarea que siga, o cancélala.",
           "timestamps": [
             {
               "at": "2026-11-15T09:03:40.000+00:00",
@@ -54,7 +54,7 @@
           "title": "«Add the CSV export» se ha parado: la cuenta de Claude rechaza esta petición",
           "title_is_separate": true,
           "type": "card",
-          "why": "Claude Code no puede usar la API de Claude hasta que se arregle fuera de Alondra. Arréglalo y dile a la tarea que siga, o cancélala."
+          "why": "Claude no puede trabajar en esta tarea hasta que se arregle fuera de Alondra. Arréglalo y dile a la tarea que siga, o cancélala."
         }
       ],
       "title": "Te espera"
@@ -148,7 +148,7 @@
             "text": "Bloquea a Add the CSV export",
             "tone": "warning"
           },
-          "subtitle": "Claude Code no puede usar la API de Claude hasta que se arregle fuera de Alondra. Arréglalo y dile a la tarea que siga, o cancélala.",
+          "subtitle": "Claude no puede trabajar en esta tarea hasta que se arregle fuera de Alondra. Arréglalo y dile a la tarea que siga, o cancélala.",
           "timestamps": [
             {
               "at": "2026-11-15T09:03:40.000+00:00",
@@ -159,7 +159,7 @@
           "title": "«Add the CSV export» se ha parado: la cuenta de Claude rechaza esta petición",
           "title_is_separate": true,
           "type": "card",
-          "why": "Claude Code no puede usar la API de Claude hasta que se arregle fuera de Alondra. Arréglalo y dile a la tarea que siga, o cancélala."
+          "why": "Claude no puede trabajar en esta tarea hasta que se arregle fuera de Alondra. Arréglalo y dile a la tarea que siga, o cancélala."
         }
       ]
     }

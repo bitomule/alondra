@@ -2,7 +2,7 @@ use crate::records::{InputRecord, SessionRecord};
 use alondra_agent_application::{Normalization, ObservationMetadata, ObservationNormalizer};
 use alondra_codex_protocol::{Body, ControlResult, DecisionKind, DecisionOutcome, Fence, FramedReader, Observation as WireObservation, SdkEventKind, SignIn};
 use alondra_foundation::{ContinuationId, InputId, MessageUuid, TurnId, WorkId};
-use alondra_provider_contract::{pull_requests_named, runs_gh_pr_create, runs_gh_pr_close, ENDED_WITHOUT_RESULT, AdapterError, ApiFailure, McpServerReport, McpSignInReport, Observation, OrderedObservation, TurnOutcome};
+use alondra_provider_contract::{pull_requests_named, runs_gh_pr_create, runs_gh_pr_close, ENDED_WITHOUT_RESULT, AdapterError, ApiFailure, McpServerReport, RequestProblem, Verdict, McpSignInReport, Observation, OrderedObservation, TurnOutcome};
 use alondra_store::{ContextSource, TaskContextItem};
 use serde::{de::IgnoredAny, Deserialize, Serialize};
 use serde_json::Value;
@@ -472,13 +472,12 @@ fn public_context(batch: &OrderedObservation, observation: &WireObservation, thr
 }
 
 fn failed_outcome(turn: &Value, scoped: bool) -> TurnOutcome {
-    let error = turn.get("error").unwrap_or(&Value::Null);
-    match error.get("codexErrorInfo").and_then(Value::as_str) {
-        Some("badRequest") if scoped => TurnOutcome::Failed { code: "codex_request_rejected".into() },
-        Some("contextWindowExceeded") if scoped => TurnOutcome::Failed { code: "codex_context_exceeded".into() },
-        Some("usageLimitExceeded") => TurnOutcome::ApiFailed(ApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: None }),
-        Some("unauthorized") => TurnOutcome::ApiFailed(ApiFailure { error: "authentication_failed".into(), status: Some(401), resets_at: None }),
-        _ => TurnOutcome::Failed { code: "codex_turn_failed".into() },
+    let failure = crate::provider_failure(turn.get("error").unwrap_or(&Value::Null));
+    match crate::classify_failure(&failure) {
+        Some(Verdict::RequestProblem { problem: RequestProblem::BadRequest }) if scoped => TurnOutcome::Failed { code: "codex_request_rejected".into() },
+        Some(Verdict::RequestProblem { problem: RequestProblem::ContextWindowExceeded }) if scoped => TurnOutcome::Failed { code: "codex_context_exceeded".into() },
+        Some(Verdict::RequestProblem { .. }) | None => TurnOutcome::Failed { code: "codex_turn_failed".into() },
+        Some(verdict) => TurnOutcome::ApiFailed(ApiFailure { failure, verdict }),
     }
 }
 
@@ -790,12 +789,14 @@ mod tests {
                 else { assert!(facts.is_empty()); assert_eq!(state.turn.as_deref(), Some("turn")); }
             }
         }
-        for kind in [json!("other"), json!("serverOverloaded"), json!({"httpConnectionFailed":{"httpStatusCode":400}})] {
+        for kind in [json!("other"), json!({"httpConnectionFailed":{"httpStatusCode":400}})] {
             assert!(matches!(failed_outcome(&json!({"error":{"codexErrorInfo":kind,"message":"Model not found or quota exceeded"}}), true), TurnOutcome::Failed { code } if code == "codex_turn_failed"));
         }
         assert!(matches!(failed_outcome(&json!({"error":{"codexErrorInfo":"badRequest"}}), false), TurnOutcome::Failed { code } if code == "codex_turn_failed"));
-        assert!(matches!(failed_outcome(&json!({"error":{"codexErrorInfo":"unauthorized"}}), true), TurnOutcome::ApiFailed(ApiFailure { status: Some(401), .. })));
-        assert!(matches!(failed_outcome(&json!({"error":{"codexErrorInfo":"usageLimitExceeded"}}), true), TurnOutcome::ApiFailed(ApiFailure { status: Some(429), .. })));
+        assert!(matches!(failed_outcome(&json!({"error":{"codexErrorInfo":"unauthorized"}}), true), TurnOutcome::ApiFailed(ApiFailure { verdict: Verdict::SessionLost, .. })));
+        assert!(matches!(failed_outcome(&json!({"error":{"codexErrorInfo":"usageLimitExceeded"}}), true), TurnOutcome::ApiFailed(ApiFailure { verdict: Verdict::Usage { .. }, .. })));
+        assert!(matches!(failed_outcome(&json!({"error":{"codexErrorInfo":"serverOverloaded"}}), true), TurnOutcome::ApiFailed(ApiFailure { verdict: Verdict::Outage, .. })), "an overloaded server waits without a card");
+        assert!(matches!(failed_outcome(&json!({"error":{"codexErrorInfo":{"httpConnectionFailed":{"httpStatusCode":401}}}}), true), TurnOutcome::ApiFailed(ApiFailure { verdict: Verdict::Doubtful, .. })));
     }
 
     #[test]

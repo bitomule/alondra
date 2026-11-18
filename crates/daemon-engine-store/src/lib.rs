@@ -109,6 +109,8 @@ const ACCOUNTS: &str = "CREATE TABLE IF NOT EXISTS accounts(singleton INTEGER PR
 CREATE TABLE IF NOT EXISTS account_usage(provider TEXT NOT NULL, account TEXT NOT NULL, usage TEXT NOT NULL CHECK(json_valid(usage)), PRIMARY KEY(provider, account));\
 CREATE TABLE IF NOT EXISTS account_distribution(singleton INTEGER PRIMARY KEY CHECK(singleton=1), policy TEXT NOT NULL CHECK(policy IN('margin','chain')), move_when_exhausted INTEGER NOT NULL CHECK(move_when_exhausted IN(0,1)));";
 /// How this Mac merges PRs, as the user set it in Settings; no row is the default, squash.
+/// The providers this Mac saw fail for everyone: `ProviderHealth` as JSON, one row each.
+const PROVIDER_HEALTH: &str = "CREATE TABLE IF NOT EXISTS provider_health(provider TEXT PRIMARY KEY, health TEXT NOT NULL CHECK(json_valid(health)));";
 const MERGE_METHOD: &str = "CREATE TABLE IF NOT EXISTS merge_method(singleton INTEGER PRIMARY KEY CHECK(singleton=1), method TEXT NOT NULL CHECK(method IN('squash','merge','rebase')));";
 /// How nodes bring their PR's base into their branch, as the user set it in Settings; no row is the default, rebase.
 const BRANCH_UPDATE: &str = "CREATE TABLE IF NOT EXISTS branch_update(singleton INTEGER PRIMARY KEY CHECK(singleton=1), method TEXT NOT NULL CHECK(method IN('rebase','merge')));";
@@ -829,6 +831,7 @@ impl DomainStore {
         tx.execute_batch(REQUEST_PLANS)?;
         tx.execute_batch(PLAN_REVIEWS)?;
         tx.execute_batch(ACCOUNTS)?;
+        tx.execute_batch(PROVIDER_HEALTH)?;
         tx.execute_batch(MERGE_METHOD)?;
         tx.execute_batch(BRANCH_UPDATE)?;
         tx.execute_batch(LAUNCH_QUEUE)?;

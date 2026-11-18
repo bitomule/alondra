@@ -3246,9 +3246,10 @@ fn variant_index(c: &Command) -> usize {
         Command::NotePrChanges { .. } => 136,
         Command::RecordHostReleased { .. } => 137,
         Command::RecordHostRetaken { .. } => 138,
+        Command::RecordProviderHealth { .. } => 139,
     }
 }
-const COMMAND_KINDS: usize = 139;
+const COMMAND_KINDS: usize = 140;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -3393,7 +3394,8 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordAccountUsage { provider: alondra_core::accounts::Provider::Claude, account: alondra_core::accounts::AccountId::default_account(),
             reading: alondra_core::usage::UsageReading::default(), at: 1, day: "2026-10-21".into() }, true),
         (Command::RecordHostEnded { task_id: ids.task.into(), generation: 1, resumes: false, ended_work: vec![], by_alondra: false }, false),
-        (Command::RecordClaudeHold { task_id: ids.task.into(), generation: 1, failure: SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: None } }, false),
+        (Command::RecordClaudeHold { task_id: ids.task.into(), generation: 1, failure: SdkApiFailure::new("rate_limit", Some(429), ProviderVerdict::Usage { resets_at: None }) }, false),
+        (Command::RecordProviderHealth { provider: alondra_core::accounts::Provider::Claude, down: true, at: 1 }, true),
         (Command::RecordHostReleased { task_id: ids.task.into(), generation: 1 }, false),
         (Command::RecordHostRetaken { task_id: ids.task.into(), generation: 1 }, false),
         (Command::RecordDoubtfulHandoff { task_id: ids.task.into(), generation: 1, input: "input".into(), text: "text".into(), resumes: false, by_alondra: false }, false),

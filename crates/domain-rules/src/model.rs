@@ -1509,6 +1509,9 @@ pub struct DomainState {
     /// What each account last said of its usage.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub account_usage: Vec<alondra_core::usage::AccountUsage>,
+    /// The providers this Mac saw fail for everyone, and those that answered again since.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_health: Vec<crate::ProviderHealth>,
     /// How this Mac merges PRs when the user presses merge or accepts a result, if the PR's
     /// repository allows it (`MergeMethod::for_pr`).
     #[serde(default, skip_serializing_if = "MergeMethod::is_default")]
@@ -1520,6 +1523,7 @@ pub struct DomainState {
 impl DomainState {
     pub fn new(epoch: impl Into<DataEpoch>) -> Self {
         Self {
+            provider_health: Vec::new(),
             data_epoch: epoch.into(),
             revision: 0,
             orchestrator_generation: 0,

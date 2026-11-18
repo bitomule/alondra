@@ -1515,18 +1515,20 @@ impl DomainState {
 
     /// The wait `failure` asks for, when it asks for one.
     pub(super) fn hold_after_failure(&mut self, task: &TaskId, failure: &SdkApiFailure, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<()> {
-        match self.sdk_failure_kind(task, failure).and_then(ClaudeHold::for_failure) {
-            Some(hold) => self.hold_on_claude(task, hold, failure.resets_at, effects, lifecycles),
+        match ClaudeHold::for_failure(&self.failure_verdict(task, failure)) {
+            Some(hold) => self.hold_on_claude(task, hold, failure, effects, lifecycles),
             None => Ok(()),
         }
     }
 
-    /// The kind of `failure` for `task`: a 403 waits out the API with every task it stops, and is
-    /// the task's own refusal only once the task alone keeps getting it.
-    fn sdk_failure_kind(&self, task: &TaskId, failure: &SdkApiFailure) -> Option<SdkFailureKind> {
-        match classify_sdk(&failure.error, failure.status)? {
-            SdkFailureKind::Outage if refused_with_403(&failure.error, failure.status) && self.refused_alone(task) => Some(SdkFailureKind::NeedsUser),
-            kind => Some(kind),
+    /// What `failure` means for `task`. A doubtful authentication error waits out the API with
+    /// every task it stops; once the task alone keeps getting it, a 401 is its account's lost
+    /// session and anything else the account refusing the task.
+    fn failure_verdict(&self, task: &TaskId, failure: &SdkApiFailure) -> ProviderVerdict {
+        match &failure.verdict {
+            ProviderVerdict::Doubtful if self.refused_alone(task) && failure.status == Some(401) => ProviderVerdict::SessionLost,
+            ProviderVerdict::Doubtful if self.refused_alone(task) => ProviderVerdict::Refused { reason: RefusalReason::PermissionDenied },
+            verdict => verdict.clone(),
         }
     }
 
@@ -1538,11 +1540,12 @@ impl DomainState {
     }
 
     fn observed_turn_end<'a>(&self, task: &TaskId, turn: &str, failure: Option<&'a SdkApiFailure>, failed: Option<&'a str>) -> Option<TurnEnd<'a>> {
-        let kind = failure.and_then(|failure| self.sdk_failure_kind(task, failure));
+        let refusal = failure.map(|failure| self.failure_verdict(task, failure))
+            .filter(|verdict| matches!(verdict, ProviderVerdict::Refused { .. } | ProviderVerdict::RequestProblem { .. }));
         let interrupted = self.lifecycle_journal.get(task).is_some_and(|journal| interrupted(journal, turn));
         let provider = self.tasks[task].provider;
-        match failure.filter(|_| kind == Some(SdkFailureKind::NeedsUser)) {
-            Some(failure) => Some(TurnEnd::Refused(failure)),
+        match refusal {
+            Some(verdict) => Some(TurnEnd::Refused(verdict, provider)),
             None if interrupted => Some(TurnEnd::Interrupted),
             None => failed.map(|code| match code {
                 "interrupted" => TurnEnd::Interrupted,
@@ -1563,7 +1566,10 @@ impl DomainState {
         if self.turn_end_recorded(task, turn) {
             return Ok(());
         }
-        let end = self.observed_turn_end(task, turn, failure, failed).or_else(|| failure.map(TurnEnd::Refused));
+        if let Some(failure) = failure {
+            self.hold_after_failure(task, failure, effects, lifecycles)?;
+        }
+        let end = self.observed_turn_end(task, turn, failure, failed);
         let unexplained = end.is_none() && failure.is_none();
         self.finish_observed_turn(task, generation, turn, end, unexplained, effects, lifecycles)
     }
@@ -1608,7 +1614,8 @@ impl DomainState {
                 }
                 Some(end) => {
                     let title = self.tasks[task].title.clone();
-                    self.insert_system_card(turn_ended_card(card.clone(), task, &title, end, SystemCard::TurnEnded, self.revision + 1))?;
+                    let system = match &end { TurnEnd::Refused(verdict, _) => SystemCard::TurnRefused { verdict: verdict.clone() }, _ => SystemCard::TurnEnded };
+                    self.insert_system_card(turn_ended_card(card.clone(), task, &title, end, system, self.revision + 1))?;
                     effects.push(DomainEffect::NotifyUser { task_id: Some(task.clone()), interaction_id: card });
                 }
             }
@@ -1887,7 +1894,7 @@ impl DomainState {
     /// when one is open, or else on something still unanswered.
     pub fn waiting_on(&self, task: &TaskId) -> Option<RecordedWait> {
         let since = self.interactions.values()
-            .filter(|i| matches!(&i.scope, Scope::Task { task_id } if task_id == task) && i.system_card == Some(SystemCard::TurnEnded) && self.open(i))
+            .filter(|i| matches!(&i.scope, Scope::Task { task_id } if task_id == task) && matches!(i.system_card, Some(SystemCard::TurnEnded | SystemCard::TurnRefused { .. })) && self.open(i))
             .map(|i| i.revision)
             .max()
             .unwrap_or(u64::MAX);
@@ -2791,6 +2798,21 @@ pub const WAKE_INSTRUCTION: &str = "Your turn ended without a result, a question
 /// What a wake says follows when the node's turns keep ending empty.
 const WAKE_LIMIT: &str = "If your turns keep ending this way, Alondra reminds you up to 3 times in a row; after that the orchestrator decides how your task goes on, and it may close it.";
 
+/// What a refused request needs, for the card's stored text; screens draw it in the viewer's
+/// language from the card's `SystemCard::TurnRefused`.
+pub fn api_refusal(verdict: &ProviderVerdict, provider: &str) -> String {
+    match verdict {
+        ProviderVerdict::Refused { reason: RefusalReason::AccountOnHold } => format!("the {provider} account is on hold"),
+        ProviderVerdict::Refused { reason: RefusalReason::OrgNotAllowed } => format!("the {provider} organization does not allow it"),
+        ProviderVerdict::Refused { reason: RefusalReason::Billing } => format!("the {provider} account has a billing problem"),
+        ProviderVerdict::Refused { reason: RefusalReason::VerificationRequired } => format!("the {provider} account needs verifying"),
+        ProviderVerdict::RequestProblem { problem: RequestProblem::CloudCredentials } => format!("the {provider} cloud credentials fail"),
+        ProviderVerdict::RequestProblem { problem: RequestProblem::ModelNotFound } => format!("the {provider} model is not available"),
+        ProviderVerdict::RequestProblem { .. } => format!("the {provider} API refuses the request"),
+        _ => format!("the {provider} account refuses this request"),
+    }
+}
+
 pub const REFUSED_WHY: &str = "Claude Code cannot use the Claude API until this is fixed outside Alondra. Fix it, then tell the task to go on, or cancel it.";
 pub const INTERRUPTED_WHY: &str = "You stopped its turn. Tell it to carry on, write what to do, or cancel the task.";
 pub const FAILED_WHY: &str = "Claude Code ended its turn as failed. Tell it how to go on, write to it what to do, or cancel the task.";
@@ -2803,7 +2825,7 @@ pub const FAILED_CODE_MAX: usize = 40;
 /// Why a root turn ended with a card for the user: something only they decide.
 enum TurnEnd<'a> {
     Interrupted,
-    Refused(&'a SdkApiFailure),
+    Refused(ProviderVerdict, alondra_core::accounts::Provider),
     /// Claude Code ended it as failed with this code.
     Failed(&'a str),
     NativeFailed(&'a str),
@@ -2820,8 +2842,8 @@ fn interrupted(journal: &Journal, turn: &str) -> bool {
 
 fn turn_ended_card(id: InteractionId, task: &TaskId, title: &str, end: TurnEnd, system: SystemCard, revision: u64) -> Interaction {
     let (need, why) = match end {
-        TurnEnd::Refused(failure) => {
-            let refusal = api_refusal(&failure.error);
+        TurnEnd::Refused(verdict, provider) => {
+            let refusal = api_refusal(&verdict, match provider { alondra_core::accounts::Provider::Claude => "Claude", alondra_core::accounts::Provider::Codex => "Codex" });
             (fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("“{title}” stopped: {refusal}")), REFUSED_WHY)
         }
         TurnEnd::Interrupted => (fit_title(title, CardSpec::TITLED_NEED_MAX, |title| format!("You interrupted “{title}”: tell it how to go on")), INTERRUPTED_WHY),

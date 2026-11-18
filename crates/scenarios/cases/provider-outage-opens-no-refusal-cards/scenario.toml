@@ -1,4 +1,4 @@
-name = "a general outage of Claude opens no card saying the account refuses the request, and the tasks go on when it ends"
+name = "a general outage of Claude (retried 503s, then Cloudflare's 403 page) opens no card at all, and the tasks go on by themselves when it ends"
 max_virtual = "4h"
 
 [[step]]
@@ -33,6 +33,8 @@ task = "t3"
 do = "provider_down"
 error = "authentication_failed"
 status = 403
+detail = "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare"
+retried = [503, 503]
 
 [[step]]
 do = "turn_end"
@@ -59,6 +61,18 @@ screens = ["home", "tasks"]
 check = "view_shows"
 screen = "home"
 text = "refuses this request"
+present = false
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "not answering"
+present = false
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "Needs you"
 present = false
 
 [[step]]

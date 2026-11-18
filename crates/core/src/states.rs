@@ -465,7 +465,7 @@ mod tests {
     }
 
     fn usage_limit() -> Event {
-        Event::Hook(HookEvent { session_id: "s".into(), event: "StopFailure".into(), error_type: Some("rate_limit".into()), ..Default::default() })
+        Event::Hook(HookEvent { session_id: "s".into(), event: "StopFailure".into(), error_type: Some("rate_limit".into()), verdict: Some(alondra_foundation::Verdict::Usage { resets_at: None }), ..Default::default() })
     }
 
     fn wait() -> Event {

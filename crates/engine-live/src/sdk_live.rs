@@ -361,7 +361,9 @@ fn said(session: &mut Reported, readings: &mut Readings, message: &Value, parent
     let blocks = message["message"]["content"].as_array().map_or(&[][..], Vec::as_slice);
     let words: Vec<&str> = blocks.iter().filter(|block| block["type"] == "text").filter_map(|block| block["text"].as_str())
         .filter(|words| !words.trim().is_empty()).collect();
-    if run.is_none() && !words.is_empty() {
+    // The message Claude Code ends a failed turn with is the provider's error, not the model's words.
+    let provider_error = message.get("error").is_some_and(|error| !error.is_null());
+    if run.is_none() && !words.is_empty() && !provider_error {
         let text = words.join("\n\n");
         readings.last_message = Some((text.chars().take(ANSWER_LIMIT).collect(), now));
         readings.said = Some(text);

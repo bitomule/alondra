@@ -28,6 +28,7 @@ serde_json.workspace = true
 sysinfo.workspace = true
 tempfile = { workspace = true, optional = true }
 tokio.workspace = true
+alondra-provider-contract.workspace = true
 
 [dev-dependencies]
 alondra-codex-protocol.workspace = true
@@ -36,7 +37,6 @@ alondra-engine-sdk = { workspace = true, features = ["test-hooks"] }
 alondra-daemon-engine-model = { workspace = true, features = ["test-hooks"] }
 alondra-daemon-support = { workspace = true, features = ["test-hooks"] }
 alondra-engine-kernel = { workspace = true, features = ["test-hooks"] }
-alondra-provider-contract.workspace = true
 proptest.workspace = true
 rusqlite.workspace = true
 sha2 = "0.11.0"

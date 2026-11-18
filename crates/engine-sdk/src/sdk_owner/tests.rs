@@ -1551,6 +1551,32 @@ fn an_overloaded_api_holds_the_task_until_the_scheduled_probe_finds_claude_answe
     driver.stop().unwrap();
 }
 
+// 13 Nov: Claude Code retried 503s, then ended the turn with Cloudflare's 403 page labelled
+// authentication_failed. Through the real normalizer and owner it is an outage of Claude: the task
+// waits with no card at all, the account keeps its session, Claude is down on this Mac, and the
+// scheduled probe sends the task on once Claude answers, which brings Claude back.
+#[test]
+fn retried_503s_then_cloudflares_403_hold_the_task_silently_as_an_outage_never_as_a_refusal() {
+    let slice = Slice::new();
+    let mut driver = slice.launch_with("Write the release notes retried-503-then-403");
+    slice.settle(&mut driver);
+    let read = slice.domain.read();
+    let held: Vec<(String, ClaudeHold)> = read.state().claude_held().into_iter().map(|held| (held.task.0, held.hold)).collect();
+    assert_eq!(held, [(TASK.to_owned(), ClaudeHold::Outage)]);
+    assert!(read.state().provider_health(Provider::Claude).down_since().is_some(), "Claude is down on this Mac");
+    assert!(read.index().waiting().is_empty(), "nothing waits for the user: {:?}", read.index().waiting());
+    assert!(!read.state().interactions.values().any(|card| matches!(card.system_card, Some(alondra_domain_rules::SystemCard::TurnRefused { .. }))), "never a refusal");
+    drop(read);
+    assert_eq!(Slice::read_cards(&slice.domain), [], "no card that tells the task to go on");
+    std::fs::write(format!("{}.recovered", slice.capture.display()), "").unwrap();
+    crate::claude_access::probe(&slice.domain, ClaudeHold::Outage, None);
+    driver.step(&|| false).unwrap();
+    slice.settle(&mut driver);
+    assert!(slice.domain.read().state().claude_held().is_empty(), "Claude answered: nothing waits for it");
+    assert_eq!(slice.domain.read().state().provider_health(Provider::Claude), alondra_domain_rules::HealthState::Healthy, "the answer brings Claude back");
+    driver.stop().unwrap();
+}
+
 // 25 Oct, t-codex-support-design: the usage limit held the task, a subagent handed its report
 // back and Claude's own turn hit the limit again. The domain refused that second wait, so the end
 // of the turn went unrecorded and the owner stopped. Both ends are recorded and the task waits for

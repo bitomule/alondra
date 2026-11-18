@@ -242,8 +242,9 @@ impl Live {
         if !view.nodes.contains_key(&session_id) {
             view.apply(self.next(), now, &Event::Joined { session_id });
         }
-        let limit = event.event == "StopFailure" && event.error_type.as_deref() == Some("rate_limit");
-        if event.event == "StopFailure" && matches!(event.error_type.as_deref(), Some("authentication_failed" | "billing_error")) {
+        use alondra_domain_rules::ProviderVerdict;
+        let limit = event.event == "StopFailure" && matches!(event.verdict, Some(ProviderVerdict::Usage { .. }));
+        if event.event == "StopFailure" && matches!(event.verdict, Some(ProviderVerdict::SessionLost | ProviderVerdict::Doubtful | ProviderVerdict::Refused { .. })) {
             self.account_check.notify_one();
         }
         view.apply(self.next(), now, &Event::Hook(event));
@@ -321,6 +322,10 @@ fn hook_event(payload: &Value) -> Option<HookEvent> {
         last_message: str_field(payload, "last_assistant_message"),
         notification_type: str_field(payload, "notification_type"),
         error_type: str_field(payload, "error_type").or_else(|| str_field(payload, "error")),
+        verdict: (event == "StopFailure").then(|| str_field(payload, "error_type").or_else(|| str_field(payload, "error"))).flatten().map(|error| {
+            let detail = str_field(payload, "error_details").as_deref().and_then(alondra_provider_contract::bounded_detail);
+            alondra_provider_claude::classify_failure(&alondra_provider_contract::ProviderFailure { error, detail, ..Default::default() })
+        }),
         cwd: str_field(payload, "cwd"),
         agent_id: str_field(payload, "agent_id"),
         agent_type: str_field(payload, "agent_type"),

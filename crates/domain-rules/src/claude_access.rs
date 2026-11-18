@@ -46,12 +46,14 @@ pub enum ClaudeHold {
 }
 
 impl ClaudeHold {
-    pub fn for_failure(kind: SdkFailureKind) -> Option<Self> {
-        match kind {
-            SdkFailureKind::SignedOut => Some(Self::SignedOut),
-            SdkFailureKind::Outage => Some(Self::Outage),
-            SdkFailureKind::Usage => Some(Self::Usage),
-            SdkFailureKind::NeedsUser => None,
+    /// The wait a verdict asks for. A doubtful authentication error waits out the API like an
+    /// outage: nothing proves the account lost its session.
+    pub fn for_failure(verdict: &ProviderVerdict) -> Option<Self> {
+        match verdict {
+            ProviderVerdict::SessionLost => Some(Self::SignedOut),
+            ProviderVerdict::Outage | ProviderVerdict::Doubtful => Some(Self::Outage),
+            ProviderVerdict::Usage { .. } => Some(Self::Usage),
+            ProviderVerdict::Refused { .. } | ProviderVerdict::RequestProblem { .. } | ProviderVerdict::None => None,
         }
     }
     /// Who a task this hold pauses waits on: the user signs in; Alondra waits out the API and the limit.
@@ -151,6 +153,24 @@ fn last_hold<'a>(journal: &'a Journal, cards: &BTreeMap<InteractionId, Interacti
 }
 
 impl DomainState {
+    /// How `provider` answers on this Mac.
+    pub fn provider_health(&self, provider: Provider) -> HealthState {
+        self.provider_health.iter().find(|health| health.provider == provider).map_or(HealthState::Healthy, |health| health.state.clone())
+    }
+
+    /// `provider` failed for everyone at `at`: down since then, or since it already was.
+    pub(super) fn provider_down(&mut self, provider: Provider, at: Millis) {
+        let previous = self.provider_health.iter().find(|health| health.provider == provider).map(|health| health.state.clone());
+        let state = HealthState::down(previous.as_ref(), at);
+        self.provider_health.retain(|health| health.provider != provider);
+        self.provider_health.push(ProviderHealth { provider, state });
+    }
+
+    /// `provider` answered: it is up again.
+    pub(super) fn provider_up(&mut self, provider: Provider) {
+        self.provider_health.retain(|health| health.provider != provider);
+    }
+
     /// The Claude hold `card` stands for, when it is one of Alondra's hold cards.
     pub fn claude_hold(&self, card: &InteractionId) -> Option<ClaudeHold> {
         self.interactions.get(card).and_then(ClaudeHold::of)
@@ -259,13 +279,14 @@ impl DomainState {
     }
 
     /// The cards of Claude's holds Waiting for You shows: the oldest open one of each hold of each
-    /// account, and none of one a probe runs for. The others wait in the queue, out of sight.
+    /// account, and none of one a probe runs for. The others wait in the queue, out of sight. An
+    /// outage is never shown: its tasks wait silently and go on when the provider answers again.
     pub fn shown_claude_cards(&self) -> BTreeSet<InteractionId> {
         let probing = self.probing();
         let mut oldest: BTreeMap<(Provider, ClaudeHold, Option<AccountId>), &Interaction> = BTreeMap::new();
         for card in self.interactions.values().filter(|i| i.author == Author::System && self.open(i)) {
             let Some(waits_for) = self.provider_card_waits_for(card) else { continue };
-            if probing.contains(&waits_for) {
+            if probing.contains(&waits_for) || waits_for.1 == ClaudeHold::Outage {
                 continue;
             }
             let first = oldest.entry(waits_for).or_insert(card);
@@ -299,7 +320,11 @@ impl DomainState {
     /// refuses the end of the turn: the same hold stays as it is, a hold on the API gives way to
     /// the sign-in or the limit, and any other pause (the user's, the machine's) stands, so the
     /// next turn meets the hold again if it still holds. Nor does a lifecycle that cannot wait now.
-    pub(super) fn hold_on_claude(&mut self, task: &TaskId, hold: ClaudeHold, resets_at: Option<u64>, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<(), DomainError> {
+    pub(super) fn hold_on_claude(&mut self, task: &TaskId, hold: ClaudeHold, failure: &SdkApiFailure, effects: &mut Vec<DomainEffect>, lifecycles: &mut Lifecycles) -> Result<(), DomainError> {
+        let resets_at = failure.resets_at;
+        if hold == ClaudeHold::Outage && let Some(at) = failure.at {
+            self.provider_down(self.task_account_key(task).provider, at);
+        }
         let standing = self.lifecycle(lifecycles, task)?.cards().into_iter()
             .find(|(_, reason)| *reason == LifecycleWait::Pause)
             .map(|(card, _)| card.clone());
@@ -366,6 +391,7 @@ impl DomainState {
                 self.resume_held(&held, None, lifecycles)?;
             }
         }
+        self.provider_up(account.provider);
         if let Some(status) = self.accounts.iter_mut().find(|status| status.provider == account.provider && status.id == account.account && status.state == AccountState::SignedOut) {
             status.state = AccountState::SignedIn;
             status.sign_ins += 1;

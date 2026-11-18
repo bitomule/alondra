@@ -24,6 +24,7 @@ task = "t2"
 do = "provider_down"
 error = "authentication_failed"
 status = 403
+detail = 'Failed to authenticate. API Error: 403 {"type":"error","error":{"type":"permission_error","message":"Forbidden"},"request_id":"req_1"}'
 tasks = ["t1"]
 
 [[step]]

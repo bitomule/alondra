@@ -1,4 +1,4 @@
-name = "an expired sign-in holds only the tasks on its account, while a general outage holds every account without asking anyone to sign in"
+name = "an expired sign-in holds only the tasks on its account, while a general outage holds every account silently, with no card at all"
 max_virtual = "2h"
 
 [world]
@@ -100,6 +100,7 @@ screens = ["home"]
 check = "view_shows"
 screen = "home"
 text = "claude-outage"
+present = false
 
 [[step.expect]]
 check = "view_shows"

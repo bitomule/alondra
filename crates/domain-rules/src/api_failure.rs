@@ -1,10 +1,12 @@
-//! What follows a turn a Claude API error ended. Claude Code reports it with its `StopFailure`
-//! hook, whose `error_type` says which error (code.claude.com/docs/en/hooks). By then Claude Code
+//! What follows a turn a provider API error ended. Each provider's adapter reads its own errors
+//! and hands over a `Verdict`; nothing here reads a provider's error text or category. Claude Code
+//! reports a failure with its `StopFailure` hook too (code.claude.com/docs/en/hooks). By then Claude Code
 //! has already retried what it could: an error that arrives after the response began, such as
 //! "Connection lost mid-response", is never retried and needs a "continue"
 //! (code.claude.com/docs/en/errors). The hook cannot make Claude go on, so Alondra sends the node
 //! back to its task through the gate, a growing wait apart.
 use alondra_core::model::Millis;
+pub use alondra_foundation::{RefusalReason, RequestProblem, Verdict as ProviderVerdict};
 use serde::{Deserialize, Serialize};
 
 /// The waits before each of the times Alondra sends a node back by itself after an API error.
@@ -16,27 +18,6 @@ pub const OUTAGE_PROBE: Millis = 2 * 60_000;
 pub const QUIET_RETRY: Millis = 10 * 60_000;
 /// A node the model kept answering this long after its last API error fails anew, not again.
 pub const FRESH_TURN: Millis = 10 * 60_000;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ApiErrorKind {
-    /// The API failed for a while: trying again later helps.
-    Transient,
-    /// The usage limit: it goes on when the limit resets.
-    Usage,
-    /// Trying again cannot help until the user fixes something (login, billing, the model).
-    NeedsUser,
-}
-
-/// The kind of every `error_type` Claude Code's `StopFailure` hook reports; one it adds later is
-/// taken as transient.
-pub fn classify(error_type: &str) -> ApiErrorKind {
-    match error_type {
-        "rate_limit" => ApiErrorKind::Usage,
-        "authentication_failed" | "oauth_org_not_allowed" | "account_on_hold" | "billing_error" | "cloud_credential_error"
-        | "invalid_request" | "model_not_found" => ApiErrorKind::NeedsUser,
-        _ => ApiErrorKind::Transient,
-    }
-}
 
 /// A node stopped by an API error, waiting to be sent back to its task at `at`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,17 +52,17 @@ pub enum AfterApiFailure {
     Ask,
 }
 
-/// `attempt` counts this failure among those in a row. A transient error is retried after each
-/// wait of `API_RETRIES`; past them a card asks the user only when other nodes prove the API
+/// `attempt` counts this failure among those in a row. A failure of the API is retried after
+/// each wait of `API_RETRIES`; past them a card asks the user only when other nodes prove the API
 /// works, else the node keeps waiting for the API to come back.
-pub fn after_api_failure(error: &str, detail: Option<&str>, attempt: u8, health: ApiHealth, now: Millis) -> AfterApiFailure {
+pub fn after_api_failure(error: &str, detail: Option<&str>, verdict: &ProviderVerdict, attempt: u8, health: ApiHealth, now: Millis) -> AfterApiFailure {
     let retry = |wait: Millis, outage: bool| AfterApiFailure::Retry(ApiRetry {
         error: error.to_owned(), detail: detail.map(str::to_owned), attempt, at: now + wait, outage,
     });
-    match classify(error) {
-        ApiErrorKind::Usage => AfterApiFailure::WaitUsage,
-        ApiErrorKind::NeedsUser => AfterApiFailure::Ask,
-        ApiErrorKind::Transient => {
+    match verdict {
+        ProviderVerdict::Usage { .. } => AfterApiFailure::WaitUsage,
+        ProviderVerdict::SessionLost | ProviderVerdict::Refused { .. } | ProviderVerdict::RequestProblem { .. } => AfterApiFailure::Ask,
+        ProviderVerdict::Outage | ProviderVerdict::Doubtful | ProviderVerdict::None => {
             let scheduled = API_RETRIES.get(usize::from(attempt.max(1)) - 1).copied();
             match (health, scheduled) {
                 (ApiHealth::Down, _) => retry(OUTAGE_PROBE, true),
@@ -93,9 +74,10 @@ pub fn after_api_failure(error: &str, detail: Option<&str>, attempt: u8, health:
     }
 }
 
-/// The Claude API error an SDK turn ended with, once Claude Code's own retries were spent: its
-/// category in `SDKAssistantMessage.error`, the HTTP status of the result and, for a rejected
-/// usage limit, when it resets in Unix seconds.
+/// The provider API error an SDK turn ended with, once the provider's own retries were spent:
+/// its native category and status for the log, when a rejected usage limit resets in Unix
+/// seconds, and the verdict the provider's adapter read in it. Alondra decides on the verdict
+/// alone; a failure recorded before verdicts existed is taken as an outage.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SdkApiFailure {
     pub error: String,
@@ -103,60 +85,51 @@ pub struct SdkApiFailure {
     pub status: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resets_at: Option<u64>,
+    #[serde(default)]
+    pub verdict: ProviderVerdict,
+    /// When the daemon observed it, for the provider's health.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<Millis>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SdkFailureKind {
-    /// Claude Code's sign-in expired or was revoked: only the user signing in again helps.
-    SignedOut,
-    /// The usage limit: it goes on when the limit resets.
-    Usage,
-    /// The API failed past Claude Code's retries: it goes on when the API answers again.
-    Outage,
-    /// Something only the user can fix, and not by signing in: billing, the organization, the model.
-    NeedsUser,
+impl SdkApiFailure {
+    pub fn new(error: impl Into<String>, status: Option<u16>, verdict: ProviderVerdict) -> Self {
+        let resets_at = match verdict { ProviderVerdict::Usage { resets_at } => resets_at, _ => None };
+        Self { error: error.into(), status, resets_at, verdict, at: None }
+    }
+    pub fn at(mut self, at: Millis) -> Self {
+        self.at = Some(at);
+        self
+    }
 }
 
-/// The kind of an SDK turn's API error. A 403 is labelled `authentication_failed` too, but signing
-/// in again does not help with it, and it says the same for an account the API refuses and for an
-/// API that refuses everyone: it is taken as an outage, and the domain asks the user only once the
-/// task alone keeps getting it (`DomainState::refused_alone`). An answer cut at the output limit is
-/// no failure of the API: the turn ends like any other. A category Claude Code adds later is taken
-/// as an outage.
-pub fn classify_sdk(error: &str, status: Option<u16>) -> Option<SdkFailureKind> {
-    Some(match error {
-        "max_output_tokens" => return None,
-        _ if refused_with_403(error, status) => SdkFailureKind::Outage,
-        "authentication_failed" => SdkFailureKind::SignedOut,
-        "rate_limit" => SdkFailureKind::Usage,
-        "oauth_org_not_allowed" | "account_on_hold" | "verification_required" | "billing_error" | "cloud_credential_error"
-        | "invalid_request" | "model_not_found" => SdkFailureKind::NeedsUser,
-        _ => SdkFailureKind::Outage,
-    })
+/// Whether a provider answers on this Mac. Down holds the provider's work silently: no card, no
+/// push; the outage probe tries it again every `OUTAGE_PROBE`, and the first answer brings it back.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderHealth {
+    pub provider: alondra_core::accounts::Provider,
+    pub state: HealthState,
 }
 
-/// A 403 labelled `authentication_failed`: a refused account or an API down for everyone.
-pub fn refused_with_403(error: &str, status: Option<u16>) -> bool {
-    error == "authentication_failed" && status == Some(403)
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HealthState {
+    Healthy,
+    Down { since: Millis, #[serde(default, skip_serializing_if = "Option::is_none")] last_probe: Option<Millis>, next_probe: Millis },
 }
 
-/// The categories `api_refusal` names.
-pub const REFUSALS: [&str; 8] = [
-    "authentication_failed", "oauth_org_not_allowed", "account_on_hold", "verification_required", "billing_error",
-    "cloud_credential_error", "model_not_found", "invalid_request",
-];
-
-/// What a refused request needs, for a card that names it.
-pub fn api_refusal(error: &str) -> &'static str {
-    match error {
-        "authentication_failed" => "the Claude account refuses this request",
-        "oauth_org_not_allowed" => "the Claude organization does not allow Claude Code",
-        "account_on_hold" => "the Claude account is on hold",
-        "verification_required" => "the Claude account needs verifying",
-        "billing_error" => "the Claude account has a billing problem",
-        "cloud_credential_error" => "Claude Code's cloud credentials fail",
-        "model_not_found" => "Claude Code's model is not available",
-        "invalid_request" => "the Claude API refuses Claude Code's request",
-        _ => "the Claude API refuses its request",
+impl HealthState {
+    /// Down since `at`, or since it already was, with its next probe `OUTAGE_PROBE` after `at`.
+    pub fn down(previous: Option<&HealthState>, at: Millis) -> Self {
+        let since = match previous { Some(Self::Down { since, .. }) => *since, _ => at };
+        let last_probe = matches!(previous, Some(Self::Down { .. })).then_some(at);
+        Self::Down { since, last_probe, next_probe: at + OUTAGE_PROBE }
+    }
+    pub fn down_since(&self) -> Option<Millis> {
+        match self { Self::Down { since, .. } => Some(*since), Self::Healthy => None }
+    }
+    /// Whether new work stays off the provider at `now`: it is down and its probe is not due.
+    pub fn holds_new_work(&self, now: Millis) -> bool {
+        matches!(self, Self::Down { next_probe, .. } if now < *next_probe)
     }
 }

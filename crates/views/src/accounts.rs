@@ -42,8 +42,10 @@ pub(super) fn list(context: &RenderContext<'_>) -> View {
     }
     if let Some(check) = common::action(Verb::AccountCheck, "accounts", context.domain.revision, t!(lang, "Check accounts", "Comprobar cuentas"), Style::Secondary) { section.actions.push(check); }
     view.sections.push(section);
-    let provider_rows = [Provider::Claude, Provider::Codex].into_iter().map(|provider| {
-        if accounts.iter().any(|account| account.provider == provider) { add_row(provider, context) } else { connect_row(provider, context) }
+    let provider_rows = [Provider::Claude, Provider::Codex].into_iter().flat_map(|provider| {
+        let down = context.domain.provider_health(provider).down_since().map(|since| down_row(provider, since, context));
+        let row = if accounts.iter().any(|account| account.provider == provider) { add_row(provider, context) } else { connect_row(provider, context) };
+        down.into_iter().chain([row])
     }).collect();
     view.sections.push(list_style(common::section("providers", Some(t!(lang, "Providers", "Proveedores").into()), provider_rows)));
     if accounts.len() > 1 {
@@ -220,6 +222,19 @@ fn remove_action(account: &AccountStatus, shown: &str, context: &RenderContext<'
     });
     remove.stamp = Some(t!(lang, "Removed", "Quitada").into());
     Some(remove)
+}
+
+/// The provider fails for everyone on this Mac: its work waits and goes on by itself.
+fn down_row(provider: Provider, since: alondra_core::Millis, context: &RenderContext<'_>) -> Item {
+    let lang = context.lang;
+    let name = provider_name(provider);
+    let at = alondra_core::clock::local_hour_minute(since);
+    let mut row = common::row(&format!("{}-down", provider.as_str()), KEY, Icon::Machine,
+        tf!(lang, "{name} has not answered since {at}", "{name} no responde desde las {at}"),
+        Some(tf!(lang, "Alondra tries it again by itself. Its tasks wait and go on when it answers; new work goes to your other accounts.",
+            "Alondra lo vuelve a probar sola. Sus tareas esperan y siguen cuando responda; el trabajo nuevo va a tus otras cuentas.")));
+    row.link = None;
+    Item::Row(row)
 }
 
 fn add_row(provider: Provider, context: &RenderContext<'_>) -> Item {

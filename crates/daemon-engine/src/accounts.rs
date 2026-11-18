@@ -285,6 +285,11 @@ pub(crate) fn select_for_node_with_tools(domain: &DomainRuntime, home: &Path, in
     let effective_denied = !denied_tools.is_empty() || intent.native_tool_denials.as_ref().is_some_and(|tools| !tools.is_empty());
     eligible.retain(|key| config.accounts(key.provider).iter().any(|account| account.id == key.account && account.enabled)
         && provider.is_none_or(|provider| key.provider == provider) && (!effective_denied || key.provider != Provider::Codex));
+    let before_health = eligible.len();
+    eligible.retain(|key| !state.provider_health(key.provider).holds_new_work(now));
+    if eligible.is_empty() && before_health > 0 {
+        return Err(DomainError::new("provider_down", "The provider is not answering; work waits for it to answer again"));
+    }
     let mut eligible = alondra_core::usage::ranked_for_launch(state.account_policy, &eligible, &state.accounts, &state.account_usage, state.account_reserve, now, &alondra_daemon_engine_model::local_day(now));
     if let Some(preferred) = preferred_account
         && let Some(at) = eligible.iter().position(|key| key == preferred) { let first = eligible.remove(at); eligible.insert(0, first); }

@@ -1,7 +1,7 @@
 //! Alondra's card for a task that cannot start by itself. Its body holds the problem, so every
 //! client words it in its own language.
 
-use crate::{ApiErrorKind, CardKind, CardSpec, ContentKind, QuestionOption, START_CANCEL, START_RETRIES, START_RETRY, START_WITHOUT, StartProblem, classify, clip};
+use crate::{CardKind, CardSpec, ContentKind, QuestionOption, START_CANCEL, START_RETRIES, START_RETRY, START_WITHOUT, StartProblem, clip};
 use alondra_core::text::Lang;
 use alondra_core::text::{t, tf};
 
@@ -49,15 +49,11 @@ pub fn card(title: &str, problem: &StartProblem, dependency: Option<&str>, lang:
                 Some(detail) => format!("{detail} ({error})"),
                 None => error.clone(),
             };
-            let card = match classify(error) {
-                ApiErrorKind::NeedsUser => CardSpec::new(CardKind::Problem, need(tf!(lang, "“{title}” is stopped: Claude Code cannot use the Claude API", "«{title}» está parada: Claude Code no puede usar la API de Claude")))
-                    .why(why(tf!(lang, "{cause} Trying again does not help until that is fixed.", "{cause} Reintentar no sirve hasta que se arregle.", cause = needs_user_cause(error, lang)))),
-                _ => CardSpec::new(CardKind::Problem, need(tf!(lang, "Claude API errors keep cutting “{title}”", "Los errores de la API de Claude cortan una y otra vez «{title}»")))
-                    .why(why(tf!(lang,
-                        "Alondra sent its node back to the task {n} times and the API cut its turn every time. Other nodes do get answers, so the API is not down for everyone.",
-                        "Alondra devolvió su nodo a la tarea {n} veces y la API le cortó el turno todas. Otros nodos sí reciben respuesta, así que la API no está caída para todos.",
-                        n = attempts.saturating_sub(1)))),
-            };
+            let card = CardSpec::new(CardKind::Problem, need(tf!(lang, "Claude API errors keep cutting “{title}”", "Los errores de la API de Claude cortan una y otra vez «{title}»")))
+                .why(why(tf!(lang,
+                    "Alondra sent its node back to the task {n} times and the API cut its turn every time. Other nodes do get answers, so the API is not down for everyone.",
+                    "Alondra devolvió su nodo a la tarea {n} veces y la API le cortó el turno todas. Otros nodos sí reciben respuesta, así que la API no está caída para todos.",
+                    n = attempts.saturating_sub(1))));
             card.content(ContentKind::Diagnosis, &diagnosis)
         }
         StartProblem::MoveStartRefused { account, error } => {
@@ -117,18 +113,3 @@ pub fn options(problem: &StartProblem, lang: Lang) -> Vec<QuestionOption> {
     }
 }
 
-/// What the user has to fix for an API error that trying again cannot get past.
-fn needs_user_cause(error: &str, lang: Lang) -> &'static str {
-    match error {
-        "authentication_failed" | "oauth_org_not_allowed" | "cloud_credential_error" => t!(lang,
-            "Claude Code is not signed in, or its sign-in expired: run `claude` on the Mac and sign in.",
-            "Claude Code no tiene sesión iniciada o le caducó: ejecuta `claude` en el Mac e inicia sesión."),
-        "billing_error" | "account_on_hold" => t!(lang,
-            "The Claude account cannot be used right now (billing, or the account is on hold).",
-            "La cuenta de Claude no se puede usar ahora mismo (facturación, o la cuenta está suspendida)."),
-        "model_not_found" => t!(lang,
-            "The model this node uses does not exist or is not available to the account.",
-            "El modelo que usa este nodo no existe o la cuenta no tiene acceso a él."),
-        _ => t!(lang, "The Claude API refused what this node sent.", "La API de Claude rechazó lo que envió este nodo."),
-    }
-}

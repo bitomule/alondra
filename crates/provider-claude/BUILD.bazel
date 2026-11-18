@@ -14,6 +14,7 @@ _PROVIDER_TEST_SOURCES = _PROVIDER_SOURCES + [
     "src/archive_tests.rs",
     "src/ported_transcript_tests.rs",
     "src/conformance_tests.rs",
+    "src/failure_tests.rs",
     "//crates:test_support.rs",
     "//crates/agent-application:tests/support/controller.rs",
 ]

@@ -150,7 +150,7 @@
             "text": "Blocks Add the CSV export",
             "tone": "warning"
           },
-          "subtitle": "Claude Code cannot use the Claude API until this is fixed outside Alondra. Fix it, then tell the task to go on, or cancel it.",
+          "subtitle": "Claude cannot work on this task until this is fixed outside Alondra. Fix it, then tell the task to go on, or cancel it.",
           "timestamps": [
             {
               "at": "2026-11-15T09:03:40.000+00:00",
@@ -161,7 +161,7 @@
           "title": "“Add the CSV export” stopped: the Claude account refuses this request",
           "title_is_separate": true,
           "type": "card",
-          "why": "Claude Code cannot use the Claude API until this is fixed outside Alondra. Fix it, then tell the task to go on, or cancel it."
+          "why": "Claude cannot work on this task until this is fixed outside Alondra. Fix it, then tell the task to go on, or cancel it."
         }
       ],
       "title": "Waiting for You"

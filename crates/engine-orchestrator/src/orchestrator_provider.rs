@@ -77,6 +77,29 @@ pub(crate) async fn execute(batch: Batch, spawned: impl FnOnce() -> anyhow::Resu
 }
 
 
+
+/// `provider` failed for everyone at `at` (`down`), or answered again. Recording that it is up
+/// again changes nothing while it already is.
+pub(crate) fn record_provider_health(domain: &crate::domain_runtime::DomainRuntime, provider: alondra_core::accounts::Provider, down: bool, at: alondra_core::Millis) {
+    use alondra_domain_rules::{Command, CommandEnvelope, PROTOCOL_VERSION};
+    let state = domain.read();
+    if !down && state.state().provider_health(provider) == alondra_domain_rules::HealthState::Healthy {
+        return;
+    }
+    let envelope = CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION,
+        data_epoch: state.state().data_epoch.clone(),
+        command_id: format!("provider-health-{}-{down}-{at}-{}", provider.as_str(), state.state().revision).as_str().into(),
+        expected_revision: state.state().revision,
+        command: Command::RecordProviderHealth { provider, down, at },
+    };
+    drop(state);
+    match domain.execute_as_system(envelope) {
+        Ok(_) => log!("{provider:?} is {} on this Mac", if down { "down" } else { "answering again" }),
+        Err(error) => log!("could not record the health of {provider:?}: {error}"),
+    }
+}
+
 pub(crate) fn record_limit(domain: &crate::domain_runtime::DomainRuntime, selection: &BatchSelection, until: Option<alondra_core::Millis>, now: alondra_core::Millis) {
     use alondra_domain_rules::{Actor, Command, CommandEnvelope, PROTOCOL_VERSION};
     use alondra_core::usage::{Share, UsageReading, WindowKind, WindowReading};

@@ -1222,7 +1222,7 @@ fn a_previous_native_credentials_generation_cannot_change_the_new_accounts_auth_
     observe(1,vec![Observation::Available,Observation::TurnStarted{input,turn:turn.clone()}]);
     publish("first@example.test",false,"source-native-logout");publish("replacement@example.test",true,"replacement-native-login");publish("replacement@example.test",false,"replacement-native-logout");
     assert!(crate::accounts::generation_provider(runtime.read().state(),&alondra_core::accounts::AccountKey::new(Provider::Claude,AccountId::default_account()))>native.credential_generation());
-    observe(2,vec![Observation::ModelAnswered,Observation::Usage(UsageReport{windows:vec![UsageWindow{kind:UsageWindowKind::Weekly,used:10_000,resets_at:None,exhausted:true}],plan:None}),Observation::TurnEnded{turn,outcome:TurnOutcome::ApiFailed(ApiFailure{error:"authentication_failed".into(),status:Some(401),resets_at:None})}]);
+    observe(2,vec![Observation::ModelAnswered,Observation::Usage(UsageReport{windows:vec![UsageWindow{kind:UsageWindowKind::Weekly,used:10_000,resets_at:None,exhausted:true}],plan:None}),Observation::TurnEnded{turn,outcome:TurnOutcome::ApiFailed(ApiFailure{failure:alondra_provider_contract::ProviderFailure{error:"authentication_failed".into(),status:Some(401),detail:Some("OAuth token has expired".into()),..Default::default()},verdict:alondra_provider_contract::Verdict::SessionLost})}]);
     let state=runtime.read();assert_eq!(state.state().accounts[0].email.as_deref(),Some("replacement@example.test"));assert_eq!(state.state().accounts[0].state,AccountState::SignedOut);
     assert!(!state.state().account_usage.iter().any(|usage|usage.provider==Provider::Claude && usage.account.is_default() && usage.window(&WindowKind::Weekly).is_some_and(|window|window.reading.exhausted)));
     assert!(state.state().lifecycle_of(&task()).unwrap().turn().is_none(),"the previous task turn still commits");
@@ -1240,7 +1240,7 @@ fn a_codex_turn_the_usage_limit_ended_holds_its_task_even_when_its_account_is_no
     let input=runtime.read().state().lifecycle_of(&task()).unwrap().pending_inputs()[0].clone();let turn=TurnId::new("codex-limit-turn").unwrap();
     let observe=|cursor:u64,facts:Vec<Observation>|{let state=Arc::clone(runtime.read().state());runtime.own(scope_of(&state),|owner|owner.stage_observation(&native,1,&batch(&execution,cursor),&Normalizer::Facts(facts),no_home(),false)).unwrap();};
     observe(1,vec![Observation::Available,Observation::TurnStarted{input,turn:turn.clone()}]);
-    observe(2,vec![Observation::TurnEnded{turn,outcome:TurnOutcome::ApiFailed(ApiFailure{error:"rate_limit".into(),status:Some(429),resets_at:Some(4_102_444_800)})}]);
+    observe(2,vec![Observation::TurnEnded{turn,outcome:TurnOutcome::ApiFailed(ApiFailure{failure:alondra_provider_contract::ProviderFailure{error:"rate_limit".into(),status:Some(429),resets_at:Some(4_102_444_800),..Default::default()},verdict:alondra_provider_contract::Verdict::Usage{resets_at:Some(4_102_444_800)}})}]);
     let state=runtime.read();
     assert!(state.state().claude_held().iter().any(|held|held.task==task() && held.hold==ClaudeHold::Usage),"the limit holds the task until the provider's reset");
 }

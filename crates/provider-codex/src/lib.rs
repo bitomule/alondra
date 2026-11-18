@@ -3,6 +3,7 @@ mod adapter;
 mod batch;
 mod context;
 mod elicitation;
+mod failure;
 mod ended;
 mod normalizer;
 mod records;
@@ -18,6 +19,7 @@ pub use adapter::{CodexConfiguration, CodexWorker, Found, NativeLiveness, Worker
 pub use batch::{BatchHost, HostEvent, PendingHostEvent, McpServer, OrchestratorProfile};
 pub use context::{ContextEvent, SessionFailure, context_event, native_message, account_refusal, session_failure};
 pub use ended::{EndedJournal, Retained};
+pub use failure::{classify_failure, provider_failure};
 pub use normalizer::{background_left,live_scope,blocked_policy,LiveScope};
 pub use records::conversation_session;
 pub use wire::HostOwner;
@@ -27,3 +29,5 @@ use alondra_codex_protocol as archive_protocol;
 #[cfg(test)]
 #[path = "../../provider-claude/src/archive_tests.rs"]
 mod archive_tests;
+#[cfg(test)]
+mod failure_tests;

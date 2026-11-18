@@ -7,9 +7,10 @@ use alondra_agent_protocol::{
 use alondra_foundation::{ContinuationId, MessageUuid, TurnId, WorkId};
 use alondra_provider_contract::{
     pull_requests_named, runs_gh_pr_create, runs_gh_pr_close, reconciled_continuation, ENDED_WITHOUT_RESULT,
-    AdapterError, ApiFailure, McpServerReport, McpSignInReport, Observation, OrderedObservation, TurnOutcome, UsageReport, UsageWindow,
+    bounded_detail, AdapterError, ApiFailure, McpServerReport, McpSignInReport, Observation, OrderedObservation, ProviderFailure, TurnOutcome, UsageReport, UsageWindow,
     UsageWindowKind,
 };
+use crate::failure::classify_failure;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -79,6 +80,9 @@ struct Checkpoint {
     /// the next turn the limit ends carries it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     limit_resets_at: Option<u64>,
+    /// The statuses of the API retries Claude Code made since the last turn ended, the latest last.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    retried: Vec<Option<u16>>,
     /// The background tasks Claude Code listed as live last, by task id: each list replaces the
     /// one before, and a Claude that starts again has none until it lists them.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
@@ -127,6 +131,9 @@ struct LogicalTurn {
     error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     resets_at: Option<u64>,
+    /// The text Claude Code ended the turn's failure with, bounded and redacted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
     /// The run of the work whose notification opened this turn, when no input of Alondra's did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     woken_by: Option<String>,
@@ -303,6 +310,8 @@ fn public_context(event: &Event) -> Vec<alondra_store::TaskContextItem> {
     if native.parent_tool_use_id.is_some() || payload.get("parent_tool_use_id").is_some_and(|parent| !parent.is_null()) { return vec![]; }
     let kind = payload.get("type").and_then(Value::as_str).unwrap_or_default();
     if !matches!(kind, "assistant" | "user") { return vec![]; }
+    // The message Claude Code ends a failed turn with is the provider's error, not the model's words.
+    if kind == "assistant" && payload.get("error").is_some_and(|error| !error.is_null()) { return vec![]; }
     let Some(content) = payload.pointer("/message/content").and_then(Value::as_array) else { return vec![]; };
     let identity = payload.get("uuid").and_then(Value::as_str).or(native.message_id.as_deref()).map(str::to_owned).unwrap_or_else(|| format!("cursor-{}", event.cursor));
     let mut items = vec![];
@@ -468,6 +477,7 @@ fn fold(
                             answered: false,
                             error: None,
                             resets_at: None,
+                            detail: None,
                             woken_by: None,
                             notified: false,
                             unprompted: false,
@@ -507,13 +517,14 @@ fn fold(
             // result to read.
             if let Some(turn) = state.turn.take() {
                 facts.push(Observation::TurnEnded {
-                    turn: TurnId::new(turn.id).map_err(|_| AdapterError::InvalidObservation)?,
+                    turn: TurnId::new(turn.id.clone()).map_err(|_| AdapterError::InvalidObservation)?,
                     outcome: match turn.error {
-                        Some(error) => TurnOutcome::ApiFailed(ApiFailure { error, status: None, resets_at: turn.resets_at.or(state.limit_resets_at) }),
+                        Some(_) => api_failed(&turn, &state.retried, None, turn.resets_at.or(state.limit_resets_at)),
                         None => TurnOutcome::Failed { code: TURN_SUPERSEDED.into() },
                     },
                 });
                 state.limit_resets_at = None;
+                state.retried.clear();
             }
             // A prompt no input of ours started and no work woke: Claude goes on by itself, as
             // when a subagent hands its report back after the last turn ended.
@@ -527,6 +538,7 @@ fn fold(
                     answered: false,
                     error: None,
                     resets_at: None,
+                    detail: None,
                     woken_by: None,
                     notified: false,
                     unprompted: true,
@@ -549,13 +561,14 @@ fn fold(
                 state.running = None;
                 if let Some(turn) = state.turn.take() {
                     facts.push(Observation::TurnEnded {
-                        turn: TurnId::new(turn.id).map_err(|_| AdapterError::InvalidObservation)?,
+                        turn: TurnId::new(turn.id.clone()).map_err(|_| AdapterError::InvalidObservation)?,
                         outcome: match turn.error {
-                            Some(error) => TurnOutcome::ApiFailed(ApiFailure { error, status: None, resets_at: turn.resets_at.or(state.limit_resets_at) }),
+                            Some(_) => api_failed(&turn, &state.retried, None, turn.resets_at.or(state.limit_resets_at)),
                             None => TurnOutcome::Failed { code: ENDED_WITHOUT_RESULT.into() },
                         },
                     });
                     state.limit_resets_at = None;
+                    state.retried.clear();
                 }
                 let listed = &state.listed;
                 state.work.retain(|task, _| listed.contains(task));
@@ -572,6 +585,14 @@ fn fold(
         if let Some(plan) = account_plan(payload) {
             facts.push(Observation::Usage(UsageReport { windows: vec![], plan: Some(plan) }));
         }
+        return Ok(facts);
+    }
+    if kind == "system" && payload.get("subtype").and_then(Value::as_str) == Some("api_retry") {
+        // Claude Code retries a failing request itself; what it retried tells an outage apart.
+        if state.retried.len() == RETRIES_KEPT {
+            state.retried.remove(0);
+        }
+        state.retried.push(status(payload, "error_status"));
         return Ok(facts);
     }
     if kind == "system"
@@ -742,6 +763,7 @@ fn fold(
             answered: false,
             error: None,
             resets_at: None,
+            detail: None,
             woken_by: woken.run,
             notified: true,
             unprompted: false,
@@ -792,6 +814,7 @@ fn fold(
                 answered: false,
                 error: None,
                 resets_at: None,
+                detail: None,
                 woken_by: None,
                 notified: false,
                 unprompted: false,
@@ -813,7 +836,10 @@ fn fold(
             match payload.get("error") {
                 // The synthetic message Claude Code ends a turn with once a Claude API error
                 // outlasted its own retries.
-                Some(error) => turn.error = Some(error_code(error)),
+                Some(error) => {
+                    turn.error = Some(error_code(error));
+                    turn.detail = message_text(payload).as_deref().and_then(bounded_detail);
+                }
                 None if !turn.answered && turn.error.is_none() => {
                     turn.answered = true;
                     facts.push(Observation::ModelAnswered);
@@ -839,14 +865,7 @@ fn fold(
             }
         }
         let outcome = match &turn.error {
-            Some(error) => TurnOutcome::ApiFailed(ApiFailure {
-                error: error.clone(),
-                status: payload
-                    .get("api_error_status")
-                    .and_then(Value::as_u64)
-                    .and_then(|status| u16::try_from(status).ok()),
-                resets_at: turn.resets_at.or(state.limit_resets_at),
-            }),
+            Some(_) => api_failed(turn, &state.retried, status(payload, "api_error_status"), turn.resets_at.or(state.limit_resets_at)),
             None => match failures.iter().find(|failure| ends_turn(failure)) {
                 Some(failure) => TurnOutcome::Failed { code: failure.code.clone() },
                 None => TurnOutcome::Completed,
@@ -858,6 +877,7 @@ fn fold(
         });
         state.turn = None;
         state.limit_resets_at = None;
+        state.retried.clear();
     }
     Ok(facts)
 }
@@ -1056,6 +1076,33 @@ fn worktree_facts(payload: &Value, state: &mut Checkpoint) -> Vec<Observation> {
     facts
 }
 /// The API error Claude Code names; one this release cannot keep is `unknown`.
+/// How many of a turn's API retries it keeps.
+const RETRIES_KEPT: usize = 16;
+fn api_failed(turn: &LogicalTurn, retried: &[Option<u16>], status: Option<u16>, resets_at: Option<u64>) -> TurnOutcome {
+    let failure = ProviderFailure {
+        error: turn.error.clone().unwrap_or_else(|| "unknown".into()),
+        status,
+        detail: turn.detail.clone(),
+        retried: retried.to_vec(),
+        resets_at,
+    };
+    TurnOutcome::ApiFailed(ApiFailure { verdict: classify_failure(&failure), failure })
+}
+/// A failure with nothing but its category, status and reset, as the adapter would classify it.
+#[cfg(test)]
+fn api(error: &str, status: Option<u16>, resets_at: Option<u64>) -> ApiFailure {
+    let failure = ProviderFailure { error: error.into(), status, resets_at, ..ProviderFailure::default() };
+    ApiFailure { verdict: classify_failure(&failure), failure }
+}
+fn status(payload: &Value, key: &str) -> Option<u16> {
+    payload.get(key).and_then(Value::as_u64).and_then(|status| u16::try_from(status).ok())
+}
+/// The text of a message Claude Code wrote, its blocks joined.
+fn message_text(payload: &Value) -> Option<String> {
+    let blocks = payload.pointer("/message/content")?.as_array()?;
+    let text: Vec<&str> = blocks.iter().filter_map(|block| block.get("text").and_then(Value::as_str)).collect();
+    (!text.is_empty()).then(|| text.join(" "))
+}
 fn error_code(value: &Value) -> String {
     value
         .as_str()
@@ -1127,6 +1174,7 @@ fn account_plan(payload: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alondra_provider_contract::Verdict;
     use alondra_agent_protocol::{Execution, NativeCorrelation, SdkEventKind, TaskExecution};
     use alondra_foundation::{AgentId, DataEpoch, InputId, TaskId};
     use serde_json::json;
@@ -1300,7 +1348,7 @@ mod tests {
         fold(&failed, &session(), &mut state, input).unwrap();
         assert_eq!(fold(&init, &session(), &mut state, input).unwrap()[0], Observation::TurnEnded {
             turn: TurnId::new(format!("claude-message:{REPLY}")).unwrap(),
-            outcome: TurnOutcome::ApiFailed(ApiFailure { error: "server_error".into(), status: None, resets_at: None }),
+            outcome: TurnOutcome::ApiFailed(api("server_error", None, None)),
         });
     }
     // Before init only the consumption of an input of ours proves Claude is up; every other
@@ -1557,6 +1605,7 @@ mod tests {
             answered: false,
             error: None,
             resets_at: None,
+            detail: None,
             woken_by: None,
             notified: false,
             unprompted: false,
@@ -2024,7 +2073,7 @@ mod tests {
         assert!(facts.contains(&Observation::Usage(UsageReport {
             windows: vec![UsageWindow { kind: UsageWindowKind::Session, used: 10_000, resets_at: Some(1_790_202_000_000), exhausted: true }], plan: None,
         })), "{facts:?}");
-        assert_eq!(failure(&facts).and_then(|failure| failure.resets_at), Some(1_790_202_000));
+        assert_eq!(failure(&facts).and_then(|failure| failure.failure.resets_at), Some(1_790_202_000));
     }
     #[test]
     fn the_account_the_host_reports_as_claude_initializes_says_its_plan() {
@@ -2072,7 +2121,35 @@ mod tests {
             json!({"type":"result","uuid":SECOND,"subtype":"success","is_error":true,"api_error_status":401,"terminal_reason":"api_error","user_message_uuid":FIRST}),
         ]);
         assert!(!facts.contains(&Observation::ModelAnswered), "{facts:?}");
-        assert_eq!(failure(&facts), Some(ApiFailure { error: "authentication_failed".into(), status: Some(401), resets_at: None }));
+        assert_eq!(failure(&facts), Some(api("authentication_failed", Some(401), None)));
+        assert_eq!(failure(&facts).map(|failure| failure.verdict), Some(Verdict::Doubtful), "a bare 401 is checked before it is believed");
+    }
+    // 13 Nov: Claude Code retried 503s, then ended the turn with Cloudflare's challenge page as a
+    // 403 labelled authentication_failed. The adapter reads an outage, never the account.
+    #[test]
+    fn retried_503s_then_cloudflares_403_end_the_turn_as_an_outage() {
+        let facts = turn_end(&mut state(), vec![
+            json!({"type":"system","subtype":"api_retry","attempt":1,"max_retries":10,"retry_delay_ms":500,"error_status":503,"error":"server_error","uuid":SECOND}),
+            json!({"type":"system","subtype":"api_retry","attempt":2,"max_retries":10,"retry_delay_ms":1000,"error_status":503,"error":"server_error","uuid":SECOND}),
+            json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST],"error":"authentication_failed",
+                "message":{"content":[{"type":"text","text":"Failed to authenticate. API Error: 403 Attention Required! | Cloudflare"}]}}),
+            json!({"type":"result","uuid":SECOND,"subtype":"success","is_error":true,"api_error_status":403,"terminal_reason":"api_error","user_message_uuid":FIRST}),
+        ]);
+        let failure = failure(&facts).expect("the turn failed");
+        assert_eq!(failure.failure.retried, vec![Some(503), Some(503)]);
+        assert_eq!(failure.failure.detail.as_deref(), Some("Failed to authenticate. API Error: 403 Attention Required! | Cloudflare"));
+        assert_eq!(failure.verdict, Verdict::Outage);
+    }
+    #[test]
+    fn a_revoked_sign_in_ends_the_turn_with_its_session_lost() {
+        let facts = turn_end(&mut state(), vec![
+            json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST],"error":"authentication_failed",
+                "message":{"content":[{"type":"text","text":"OAuth token revoked · Please run /login for ana@example.com in /Users/ana/.claude"}]}}),
+            json!({"type":"result","uuid":SECOND,"subtype":"success","is_error":true,"api_error_status":401,"terminal_reason":"api_error","user_message_uuid":FIRST}),
+        ]);
+        let failure = failure(&facts).expect("the turn failed");
+        assert_eq!(failure.verdict, Verdict::SessionLost);
+        assert_eq!(failure.failure.detail.as_deref(), Some("OAuth token revoked · Please run /login for [email] in [home]"), "no user data is kept");
     }
     #[test]
     fn a_forbidden_request_keeps_its_status_and_a_rejected_limit_its_reset() {
@@ -2080,13 +2157,13 @@ mod tests {
             json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST],"error":"authentication_failed"}),
             json!({"type":"result","uuid":SECOND,"is_error":true,"api_error_status":403,"user_message_uuid":FIRST}),
         ]);
-        assert_eq!(failure(&forbidden).and_then(|failure| failure.status), Some(403));
+        assert_eq!(failure(&forbidden).and_then(|failure| failure.failure.status), Some(403));
         let limited = turn_end(&mut state(), vec![
             json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST],"error":"rate_limit"}),
             json!({"type":"rate_limit_event","uuid":SECOND,"rate_limit_info":{"status":"rejected","resetsAt":4_102_444_800_u64,"rateLimitType":"five_hour"}}),
             json!({"type":"result","uuid":SECOND,"is_error":true,"api_error_status":429,"terminal_reason":"blocking_limit","user_message_uuid":FIRST}),
         ]);
-        assert_eq!(failure(&limited), Some(ApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: Some(4_102_444_800) }));
+        assert_eq!(failure(&limited), Some(api("rate_limit", Some(429), Some(4_102_444_800))));
     }
     // Claude Code 2.1.300 always reports SessionStart hooks, before init: a plugin with hooks,
     // the user's or Alondra's, must not stop the task.
@@ -2107,7 +2184,7 @@ mod tests {
             json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"user_message_uuid":FIRST,"user_message_uuids":[FIRST],"error":"Not Logged In"}),
             json!({"type":"result","uuid":SECOND,"is_error":true,"api_error_status":"401","user_message_uuid":FIRST}),
         ]);
-        assert_eq!(failure(&facts), Some(ApiFailure { error: "unknown".into(), status: None, resets_at: None }));
+        assert_eq!(failure(&facts), Some(api("unknown", None, None)));
     }
     // A subagent's message that names inputs is evidence: only root messages consume ours.
     #[test]
@@ -2168,8 +2245,9 @@ mod tests {
         let facts = fold(&failing(result(), &[(Subtype, "success_is_error")]), &session(), &mut state, input).unwrap();
         assert_eq!(facts, vec![Observation::TurnEnded {
             turn: TurnId::new(format!("claude-message:{REPLY}")).unwrap(),
-            outcome: TurnOutcome::ApiFailed(ApiFailure { error: "billing_error".into(), status: None, resets_at: None }),
+            outcome: TurnOutcome::ApiFailed(api("billing_error", None, None)),
         }], "the API's failure comes first");
+        assert!(matches!(&facts[0], Observation::TurnEnded { outcome: TurnOutcome::ApiFailed(ApiFailure { verdict: Verdict::Refused { .. }, .. }), .. }));
     }
     // A prompt Claude completes without starting fails its turn: Claude never reads it, and the
     // input leaves what the task waits on.
@@ -2265,7 +2343,7 @@ mod tests {
         assert!(facts.iter().all(|fact| !matches!(fact, Observation::TurnEnded { .. })), "{facts:?}");
         assert_eq!(ended, vec![Observation::TurnEnded {
             turn: woken,
-            outcome: TurnOutcome::ApiFailed(ApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: Some(1_792_972_800) }),
+            outcome: TurnOutcome::ApiFailed(api("rate_limit", Some(429), Some(1_792_972_800))),
         }]);
     }
     // 25 Oct, t-alpha-report-1-local, from its host's outbox: a background Bash names no run, nor
@@ -2448,7 +2526,7 @@ mod tests {
                 _ => None,
             }).collect();
             match ended.as_slice() {
-                [outcome] if limited && !matches!(outcome, TurnOutcome::ApiFailed(failure) if failure.error == "rate_limit") =>
+                [outcome] if limited && !matches!(outcome, TurnOutcome::ApiFailed(failure) if failure.failure.error == "rate_limit") =>
                     Err(format!("the limit ended the turn as {outcome:?}")),
                 [_] => Ok(()),
                 other => Err(format!("the prompt ended {} turns: {facts:?}", other.len())),
@@ -2495,13 +2573,13 @@ mod tests {
             json!({"type":"assistant","uuid":THIRD,"parent_tool_use_id":null,"error":"rate_limit"}),
             json!({"type":"result","uuid":FOURTH,"is_error":true,"api_error_status":429,"terminal_reason":"api_error"}),
         ]);
-        assert_eq!(failure(&facts).and_then(|failure| failure.resets_at), Some(1_792_972_800));
+        assert_eq!(failure(&facts).and_then(|failure| failure.failure.resets_at), Some(1_792_972_800));
         let next = turn_end(&mut state, vec![
             json!({"type":"system","subtype":"init","uuid":NOTIFIED}),
             json!({"type":"assistant","uuid":REPLY,"parent_tool_use_id":null,"error":"rate_limit"}),
             json!({"type":"result","uuid":SECOND,"is_error":true,"api_error_status":429,"terminal_reason":"api_error"}),
         ]);
-        assert_eq!(failure(&next).and_then(|failure| failure.resets_at), None, "a reset is said once, for the turn it came before");
+        assert_eq!(failure(&next).and_then(|failure| failure.failure.resets_at), None, "a reset is said once, for the turn it came before");
     }
     #[test]
     fn the_inputs_claude_took_in_are_bounded_and_the_oldest_is_forgotten() {

@@ -9,6 +9,7 @@ mod context;
 mod elicitation;
 mod mcp;
 mod ended;
+mod failure;
 mod normalizer;
 mod records;
 mod wire;
@@ -25,6 +26,7 @@ pub use alondra_agent_protocol::{Execution, OrchestratorExecution, OrchestratorL
 pub use wire::HostOwner;
 pub use records::conversation_session;
 pub use normalizer::background_left;
+pub use failure::classify_failure;
 
 #[cfg(test)]
 mod controller_tests;
@@ -34,3 +36,5 @@ mod conformance_tests;
 use alondra_agent_protocol as archive_protocol;
 #[cfg(test)]
 mod archive_tests;
+#[cfg(test)]
+mod failure_tests;

@@ -377,3 +377,12 @@ pub async fn advance(duration: Duration) {
 #[cfg(test)]
 #[path = "clock_tests.rs"]
 mod tests;
+
+/// "14:05": `millis` in the Mac's local time.
+pub fn local_hour_minute(millis: Millis) -> String {
+    let seconds = millis.div_euclid(1000) as libc::time_t;
+    // SAFETY: `localtime_r` only writes into `tm`, a zeroed value this function owns.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    unsafe { libc::localtime_r(&seconds, &mut tm) };
+    format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
+}

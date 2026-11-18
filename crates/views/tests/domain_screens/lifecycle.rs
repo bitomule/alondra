@@ -198,7 +198,7 @@ fn a_turn_claude_ended_as_failed_asks_how_to_go_on_and_names_its_error() {
     let mut s = world();
     let card = sdk_turn(&mut s, "t", "a");
     must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(),
-        failure: Some(SdkApiFailure { error: "billing_error".into(), status: Some(400), resets_at: None }), failed: Some("success_is_error".into()) });
+        failure: Some(failure("billing_error", Some(400))), failed: Some("success_is_error".into()) });
     assert_eq!(s.interactions[&InteractionId::from(card.as_str())].card.why, REFUSED_WHY, "the API's failure comes first");
 }
 
@@ -471,10 +471,25 @@ fn holds_slot(s: &DomainState, id: &str) -> bool {
     replay(&id.into(), &s.lifecycle_journal[&TaskId::from(id)]).unwrap().holds_slot()
 }
 
+/// The failure Claude's adapter hands over for these test categories; the adapter's own tests
+/// cover how it reads Claude Code's errors.
+fn failure(error: &str, status: Option<u16>) -> SdkApiFailure {
+    use alondra_domain_rules::{ProviderVerdict, RefusalReason, RequestProblem};
+    let verdict = match (error, status) {
+        ("authentication_failed", Some(403)) => ProviderVerdict::Doubtful,
+        ("authentication_failed", _) => ProviderVerdict::SessionLost,
+        ("billing_error", _) => ProviderVerdict::Refused { reason: RefusalReason::Billing },
+        ("rate_limit", _) => ProviderVerdict::Usage { resets_at: None },
+        ("invalid_request", _) => ProviderVerdict::RequestProblem { problem: RequestProblem::InvalidRequest },
+        _ => ProviderVerdict::Outage,
+    };
+    SdkApiFailure::new(error, status, verdict).at(1_790_000_000_000)
+}
+
 fn fail_turn(s: &mut DomainState, id: &str, turn: &str, error: &str, status: Option<u16>) -> CommandOutcome {
     must(s, Actor::System, Command::RecordTurnBoundary {
         task_id: id.into(), generation: 1, turn: turn.into(),
-        failure: Some(SdkApiFailure { error: error.into(), status, resets_at: None }), failed: None })
+        failure: Some(failure(error, status)), failed: None })
 }
 
 /// The cards of Claude's holds Waiting for You lists.

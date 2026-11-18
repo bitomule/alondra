@@ -88,10 +88,9 @@ fn outcome_text(outcome: &TurnOutcome) -> String {
         TurnOutcome::Completed => "Completed".into(),
         TurnOutcome::Failed { code } => format!("Failed({code})"),
         TurnOutcome::ApiFailed(failure) => format!(
-            "ApiFailed({}, status={}, resets={})",
-            failure.error,
-            failure.status.map_or("none".into(), |status| status.to_string()),
-            failure.resets_at.map_or("none".into(), |at| at.to_string())
+            "ApiFailed({}, resets={})",
+            verdict(&failure.verdict),
+            failure.failure.resets_at.map_or("none".into(), |at| at.to_string())
         ),
     }
 }
@@ -129,5 +128,19 @@ pub fn settle_availability(facts: &mut Vec<String>) {
     if first_turn.is_none_or(|turn| at < turn) {
         let available = facts.remove(at);
         facts.insert(0, available);
+    }
+}
+
+/// What a provider failure means, the same words for every provider.
+fn verdict(verdict: &alondra_provider_contract::Verdict) -> String {
+    use alondra_provider_contract::Verdict;
+    match verdict {
+        Verdict::SessionLost => "session_lost".into(),
+        Verdict::Outage => "outage".into(),
+        Verdict::Refused { reason } => format!("refused:{reason:?}"),
+        Verdict::Usage { .. } => "usage".into(),
+        Verdict::Doubtful => "doubtful".into(),
+        Verdict::RequestProblem { problem } => format!("request:{problem:?}"),
+        Verdict::None => "none".into(),
     }
 }

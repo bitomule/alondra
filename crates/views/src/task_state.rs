@@ -278,7 +278,13 @@ fn waiting(task: &Task, waits: WaitsFor, context: &RenderContext<'_>) -> Present
             Some(paused) => common::api_wait_label(paused, lang),
             None => {
                 let provider = provider_name(task);
-                tf!(lang, "{provider} API · retries by itself", "API de {provider} · reintenta sola")
+                match context.domain.provider_health(task.provider).down_since() {
+                    Some(since) => {
+                        let at = alondra_core::clock::local_hour_minute(since);
+                        tf!(lang, "{provider} has not answered since {at} · Alondra tries it again by itself", "{provider} no responde desde las {at} · Alondra lo vuelve a probar sola")
+                    }
+                    None => tf!(lang, "{provider} API · retries by itself", "API de {provider} · reintenta sola"),
+                }
             }
         },
         WaitsFor::Tasks => tasks_fact(task, context),

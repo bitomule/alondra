@@ -140,7 +140,7 @@ pub const SCENARIOS: &[Scenario] = &[
         "InputHeld(input-1)",
         "TurnStarted(T1, input-1)",
         "Usage(session used=10000 exhausted resets=1790202000000)",
-        "TurnEnded(T1, ApiFailed(rate_limit, status=429, resets=1790202000))",
+        "TurnEnded(T1, ApiFailed(usage, resets=1790202000))",
         "Reconciled(idle, live=[])",
     ]),
 ];
@@ -194,14 +194,13 @@ pub const DIVERGENCES: &[KnownDivergence] = &[
     KnownDivergence {
         scenario: "usage-limit-reset",
         provider: Provider::Codex,
-        cause: "the Codex normalizer disguises usageLimitExceeded as Claude's error (rate_limit, 429) with no reset \
-                (provider-codex normalizer.rs failed_outcome) and reads no usage window from the thread: Codex's limits \
-                come only from polling account/rateLimits/read",
+        cause: "Codex's usageLimitExceeded carries no reset (provider-codex failure.rs) and the normalizer reads no \
+                usage window from the thread: Codex's limits come only from polling account/rateLimits/read",
         actual: &[
             "Available",
             "InputHeld(input-1)",
             "TurnStarted(T1, input-1)",
-            "TurnEnded(T1, ApiFailed(rate_limit, status=429, resets=none))",
+            "TurnEnded(T1, ApiFailed(usage, resets=none))",
             "Reconciled(idle, live=[])",
         ],
     },

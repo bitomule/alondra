@@ -811,6 +811,13 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         account: Option<alondra_core::accounts::AccountId>,
     },
+    /// The daemon saw `provider` fail for everyone at `at` (`down`), or answer again: its work
+    /// waits silently while it is down, and new work goes elsewhere.
+    RecordProviderHealth {
+        provider: alondra_core::accounts::Provider,
+        down: bool,
+        at: Millis,
+    },
     /// Stops what the node's SDK task runs now: its root turn, or the work it runs on its own.
     InterruptTurn {
         agent_id: AgentId,

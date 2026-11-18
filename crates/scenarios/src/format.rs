@@ -124,8 +124,10 @@ pub enum Step {
     /// the API does for others.
     ApiError { task: String, error: String, #[serde(default)] status: Option<u16> },
     /// Claude's API fails every turn with this error, for every account, until `provider_up`; only
-    /// the turns of `tasks` when it names any. A turn that starts meanwhile ends on it at once.
-    ProviderDown { #[serde(default = "Step::server_error")] error: String, #[serde(default)] status: Option<u16>, #[serde(default)] tasks: Vec<String> },
+    /// the turns of `tasks` when it names any. A turn that starts meanwhile ends on it at once. The
+    /// turn carries Claude Code's text `detail`, after the API retries whose statuses `retried` lists.
+    ProviderDown { #[serde(default = "Step::server_error")] error: String, #[serde(default)] status: Option<u16>, #[serde(default)] tasks: Vec<String>,
+        #[serde(default)] detail: Option<String>, #[serde(default)] retried: Vec<u16> },
     ProviderUp,
     /// The sign-in of `account` expired: Claude says it is signed out, and every turn on it ends on
     /// `authentication_failed`. Other accounts go on.
@@ -317,7 +319,7 @@ do = "update"
 "#,
         )
         .unwrap();
-        assert!(matches!(&scenario.steps[0], Step::ProviderDown { error, status: Some(529), tasks } if error == "server_error" && tasks.is_empty()));
+        assert!(matches!(&scenario.steps[0], Step::ProviderDown { error, status: Some(529), tasks, .. } if error == "server_error" && tasks.is_empty()));
         assert!(matches!(&scenario.steps[2], Step::LoginExpired { account } if account == "default"));
         assert!(matches!(&scenario.steps[4], Step::Restart { lose } if lose == &["t1"]));
         assert!(matches!(scenario.steps[5], Step::Update));

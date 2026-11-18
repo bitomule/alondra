@@ -2,9 +2,11 @@ pub mod artifact_digest;
 mod execution;
 mod mcp;
 mod poll;
+mod provider_failure;
 pub use execution::*;
 pub use mcp::*;
 pub use poll::readable;
+pub use provider_failure::*;
 
 #[cfg(test)]
 #[path = "../../test_support.rs"]

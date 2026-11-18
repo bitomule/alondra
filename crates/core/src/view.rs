@@ -900,7 +900,7 @@ impl View {
                 node.busy = false;
                 node.tool = None;
                 node.last_stop_at = Some(at);
-                if h.error_type.as_deref() == Some("rate_limit") {
+                if matches!(h.verdict, Some(alondra_foundation::Verdict::Usage { .. })) {
                     node.usage_limited = true;
                     node.usage_limited_at = Some(at);
                 }
@@ -1408,6 +1408,7 @@ mod tests {
                 session_id: "s".into(),
                 event: "StopFailure".into(),
                 error_type: Some("rate_limit".into()),
+                verdict: Some(alondra_foundation::Verdict::Usage { resets_at: None }),
                 ..Default::default()
             }),
         ]);
@@ -1415,11 +1416,13 @@ mod tests {
     }
 
     #[test]
-    fn only_a_rate_limit_is_a_usage_limit_and_billing_or_overload_are_not() {
-        for (error, limited) in [("rate_limit", true), ("billing_error", false), ("overloaded", false), ("authentication_failed", false)] {
-            let failed = Event::Hook(HookEvent { session_id: "s".into(), event: "StopFailure".into(), error_type: Some(error.into()), ..Default::default() });
+    fn only_a_usage_verdict_is_a_usage_limit() {
+        use alondra_foundation::{RefusalReason, Verdict as ProviderVerdict};
+        for (verdict, limited) in [(Some(ProviderVerdict::Usage { resets_at: None }), true), (Some(ProviderVerdict::Refused { reason: RefusalReason::Billing }), false),
+            (Some(ProviderVerdict::Outage), false), (Some(ProviderVerdict::Doubtful), false), (None, false)] {
+            let failed = Event::Hook(HookEvent { session_id: "s".into(), event: "StopFailure".into(), error_type: Some("rate_limit".into()), verdict: verdict.clone(), ..Default::default() });
             let v = run(&[hook("s", "UserPromptSubmit"), failed]);
-            assert_eq!(v.nodes["s"].usage_limited, limited, "{error}");
+            assert_eq!(v.nodes["s"].usage_limited, limited, "{verdict:?}");
         }
     }
 

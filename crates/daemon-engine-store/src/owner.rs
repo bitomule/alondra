@@ -422,14 +422,14 @@ impl<'connection> OwnerTransaction<'connection> {
                     if let TurnOutcome::ApiFailed(failure)=outcome
                         && account_fresh
                         && alondra_core::accounts::Provider::from_driver(binding.driver())==Some(alondra_core::accounts::Provider::Codex)
-                        && alondra_domain_rules::classify_sdk(&failure.error,failure.status)==Some(alondra_domain_rules::SdkFailureKind::Usage)
+                        && matches!(failure.verdict, alondra_foundation::Verdict::Usage { .. })
                     {
                         let account=self.draft.state.tasks.get(&task_id).ok_or_else(||DomainError::new("not_found","Task missing"))?.account_key();
                         let provider=alondra_core::accounts::Provider::from_driver(binding.driver()).ok_or_else(||DomainError::new("unknown_provider","The native quota observation has no supported driver"))?;
                         if provider!=account.provider{return Err(DomainError::new("provider_mismatch","The native quota belongs to another provider").into())}
                         let at=alondra_core::now_millis();
                         let kind=if provider==alondra_core::accounts::Provider::Codex{WindowKind::Other("codex:account:limit".into())}else{WindowKind::Session};
-                        let resets_at=failure.resets_at.and_then(|seconds|i64::try_from(seconds).ok()?.checked_mul(1000)).filter(|reset|*reset>at);
+                        let resets_at=failure.failure.resets_at.and_then(|seconds|i64::try_from(seconds).ok()?.checked_mul(1000)).filter(|reset|*reset>at);
                         commands.push(Command::RecordAccountUsage{provider,account:account.account,at,day:alondra_daemon_engine_model::local_day(at),reading:UsageReading{plan:None,complete:false,windows:vec![WindowReading{kind,used:Share::NONE,exhausted:true,resets_at}]}});
                     }
                     if matches!(outcome,TurnOutcome::Completed)
@@ -446,9 +446,11 @@ impl<'connection> OwnerTransaction<'connection> {
                     }
                     let (failure, failed) = match outcome {
                         TurnOutcome::Completed => (None, None),
-                        TurnOutcome::ApiFailed(failure) if !account_fresh && alondra_domain_rules::classify_sdk(&failure.error,failure.status)!=Some(alondra_domain_rules::SdkFailureKind::Usage) => (None,Some("stale_native_account_observation".into())),
-                        TurnOutcome::ApiFailed(failure) => {
-                            (Some(SdkApiFailure { error: failure.error.clone(), status: failure.status, resets_at: failure.resets_at }), None)
+                        TurnOutcome::ApiFailed(failure) if !account_fresh && !matches!(failure.verdict, alondra_foundation::Verdict::Usage { .. }) => (None,Some("stale_native_account_observation".into())),
+                        TurnOutcome::ApiFailed(api) => {
+                            let failure = SdkApiFailure { error: api.failure.error.clone(), status: api.failure.status, resets_at: api.failure.resets_at, verdict: api.verdict.clone(), at: Some(alondra_core::now_millis()) };
+                            log!("{task_id}: the provider ended turn {} with {:?} ({} {:?}, retried {:?}): {}", turn.as_str(), api.verdict, api.failure.error, api.failure.status, api.failure.retried, api.failure.detail.as_deref().unwrap_or("no text"));
+                            (Some(failure), None)
                         }
                         TurnOutcome::Failed { code } => (None, Some(code.clone())),
                     };
@@ -677,7 +679,7 @@ impl<'connection> OwnerTransaction<'connection> {
             }
             if let Command::RecordTurnBoundary { task_id, generation, turn, failure, failed } = &envelope.command {
                 let hold = failure.as_ref()
-                    .filter(|failure| alondra_domain_rules::classify_sdk(&failure.error, failure.status).and_then(alondra_domain_rules::ClaudeHold::for_failure).is_some())
+                    .filter(|failure| alondra_domain_rules::ClaudeHold::for_failure(&failure.verdict).is_some())
                     .map(|failure| CommandEnvelope {
                         command_id: format!("{}:hold", envelope.command_id.0).as_str().into(),
                         command: Command::RecordClaudeHold { task_id: task_id.clone(), generation: *generation, failure: failure.clone() },

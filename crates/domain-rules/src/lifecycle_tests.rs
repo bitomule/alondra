@@ -864,10 +864,26 @@ fn carrying_on_tells_the_task_how_to_go_on_and_cancelling_ends_it() {
     assert_aggregate_rules(&s);
 }
 
+/// The failure Claude's adapter hands over for these test categories; the adapter's own tests
+/// cover how it reads Claude Code's errors.
+fn verdict(error: &str, status: Option<u16>) -> ProviderVerdict {
+    match (error, status) {
+        ("authentication_failed", Some(403)) => ProviderVerdict::Doubtful,
+        ("authentication_failed", _) => ProviderVerdict::SessionLost,
+        ("billing_error", _) => ProviderVerdict::Refused { reason: RefusalReason::Billing },
+        ("rate_limit", _) => ProviderVerdict::Usage { resets_at: None },
+        ("invalid_request", _) => ProviderVerdict::RequestProblem { problem: RequestProblem::InvalidRequest },
+        _ => ProviderVerdict::Outage,
+    }
+}
+fn failure(error: &str, status: Option<u16>) -> SdkApiFailure {
+    SdkApiFailure::new(error, status, verdict(error, status)).at(FAILED_AT)
+}
+const FAILED_AT: Millis = 1_790_000_000_000;
 fn fail_turn(s: &mut DomainState, id: &str, turn: &str, error: &str, status: Option<u16>) -> CommandOutcome {
     must(s, Actor::System, Command::RecordTurnBoundary {
         task_id: id.into(), generation: 1, turn: turn.into(),
-        failure: Some(SdkApiFailure { error: error.into(), status, resets_at: None }), failed: None })
+        failure: Some(failure(error, status)), failed: None })
 }
 fn sign_in_cards(s: &DomainState) -> Vec<&Interaction> {
     s.interactions.values().filter(|i| i.id.0.starts_with(SIGNED_OUT_PREFIX) && s.open(i)).collect()
@@ -952,7 +968,7 @@ fn a_probe_that_fails_again_lists_the_one_card_again() {
 }
 
 #[test]
-fn an_outage_or_the_usage_limit_is_listed_once_unannounced_and_a_probe_lets_exactly_one_task_go_on() {
+fn an_outage_or_the_usage_limit_is_never_listed_nor_announced_and_a_probe_lets_exactly_one_task_go_on() {
     let mut s = world();
     must(&mut s, Actor::System, Command::RegisterAgent { agent_id: "c".into(), name: "c".into(), at: 0 });
     sdk_turn(&mut s, "t", "a");
@@ -961,9 +977,10 @@ fn an_outage_or_the_usage_limit_is_listed_once_unannounced_and_a_probe_lets_exac
     let outage = fail_turn(&mut s, "t", "turn-1", "overloaded", Some(529));
     fail_turn(&mut s, "u", "turn-1", "server_error", Some(500));
     let usage = must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "v".into(), generation: 1, turn: "turn-1".into(),
-        failure: Some(SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: Some(4_102_444_800) }), failed: None });
+        failure: Some(SdkApiFailure { resets_at: Some(4_102_444_800), ..failure("rate_limit", Some(429)) }), failed: None });
     assert_eq!((notices(&outage), notices(&usage)), (0, 0), "never announced");
-    assert_eq!(listed_holds(&s).len(), 1, "one card for the outage; the limit waits for its reset without one: {:?}", listed_holds(&s));
+    assert_eq!(listed_holds(&s), Vec::<String>::new(), "an outage waits silently; the limit waits for its reset without a card");
+    assert_eq!(s.provider_health(alondra_core::accounts::Provider::Claude).down_since(), Some(FAILED_AT), "Claude is down on this Mac since its first failure");
     assert_eq!(held(&s), [("t".into(), ClaudeHold::Outage), ("u".into(), ClaudeHold::Outage), ("v".into(), ClaudeHold::Usage)]);
     let limit = s.claude_held().into_iter().find(|held| held.hold == ClaudeHold::Usage).unwrap();
     assert_eq!(limit.resets_at, Some(4_102_444_800), "the reset Claude gave");
@@ -986,14 +1003,14 @@ fn an_outage_or_the_usage_limit_is_listed_once_unannounced_and_a_probe_lets_exac
 
 fn usage_turn(s: &mut DomainState, id: &str, resets_at: u64) {
     must(s, Actor::System, Command::RecordTurnBoundary { task_id: id.into(), generation: 1, turn: "turn-1".into(),
-        failure: Some(SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: Some(resets_at) }), failed: None });
+        failure: Some(SdkApiFailure { resets_at: Some(resets_at), ..failure("rate_limit", Some(429)) }), failed: None });
 }
 #[test]
 fn the_usage_limit_is_a_wait_of_its_task_and_never_a_card_for_the_user() {
     let mut s = world();
     sdk_turn(&mut s, "t", "a");
     let outcome = must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(),
-        failure: Some(SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: Some(4_102_444_800) }), failed: None });
+        failure: Some(SdkApiFailure { resets_at: Some(4_102_444_800), ..failure("rate_limit", Some(429)) }), failed: None });
     assert_eq!(notices(&outcome), 0);
     assert_eq!(s.live_state(&"t".into()), Some(alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::Usage)));
     assert!(listed_holds(&s).is_empty(), "no card in Waiting for You: {:?}", listed_holds(&s));
@@ -1013,7 +1030,7 @@ fn a_codex_limit_waits_without_a_card_and_comes_back_when_its_accounts_window_re
     s.account_usage.push(AccountUsage { provider: alondra_core::accounts::Provider::Codex, account: alondra_core::accounts::AccountId::default_account(), plan: None, day_start: None,
         windows: vec![UsageWindow { measured_at: 1, reading: WindowReading { kind: WindowKind::Other("codex:account:primary:10080".into()), used: Share::FULL, exhausted: true, resets_at: Some(5_000) } }] });
     must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-1".into(),
-        failure: Some(SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: None }), failed: None });
+        failure: Some(SdkApiFailure { resets_at: None, ..failure("rate_limit", Some(429)) }), failed: None });
     assert_eq!(held(&s), [("t".into(), ClaudeHold::Usage)]);
     assert!(listed_holds(&s).is_empty(), "no card in Waiting for You: {:?}", listed_holds(&s));
     assert_eq!(s.usage_resets_by_task(1), BTreeMap::from([(TaskId::from("t"), 5_000)]), "the account's week says when");
@@ -1038,7 +1055,7 @@ fn a_turn_that_hits_the_limit_while_the_limit_already_holds_its_task_ends_on_the
         RuntimeObservation::WorkContinued { continuation: "claude-notification:bash".into() },
     ] });
     must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-2".into(),
-        failure: Some(SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: Some(4_102_444_800) }), failed: None });
+        failure: Some(SdkApiFailure { resets_at: Some(4_102_444_800), ..failure("rate_limit", Some(429)) }), failed: None });
     assert_eq!(kinds(&s, "t").last().map(String::as_str), Some("turn_ended"), "the end of the turn is recorded");
     assert_eq!(s.live_state(&"t".into()), Some(usage), "the task still waits for the usage limit");
     assert_eq!(held(&s), [("t".into(), ClaudeHold::Usage)], "on one card");
@@ -1059,7 +1076,7 @@ fn a_turn_the_limit_ends_while_the_api_holds_its_task_waits_for_the_limit_instea
         RuntimeObservation::TurnUnprompted { turn: "turn-2".into() },
     ] });
     must(&mut s, Actor::System, Command::RecordTurnBoundary { task_id: "t".into(), generation: 1, turn: "turn-2".into(),
-        failure: Some(SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: Some(4_102_444_800) }), failed: None });
+        failure: Some(SdkApiFailure { resets_at: Some(4_102_444_800), ..failure("rate_limit", Some(429)) }), failed: None });
     assert!(outage(&s).withdrawn, "the API answered, with the limit");
     assert_eq!(held(&s), [("t".into(), ClaudeHold::Usage)]);
     assert_eq!(s.live_state(&"t".into()), Some(alondra_domain::LiveState::WaitingCapacity(alondra_domain::Capacity::Usage)));
@@ -1168,11 +1185,12 @@ fn the_api_answering_on_any_account_lets_every_task_the_outage_held_go_on() {
     fail_turn(&mut s, "t", "turn-1", "overloaded", Some(529));
     fail_turn(&mut s, "u", "turn-1", "overloaded", Some(529));
     usage_turn(&mut s, "v", 4_102_448_400);
-    assert_eq!(listed_holds(&s).len(), 1, "the API is one card for every account, and the limit has none: {:?}", listed_holds(&s));
+    assert_eq!(listed_holds(&s), Vec::<String>::new(), "the API waits without a card for every account, and the limit has none");
     must(&mut s, Actor::System, Command::ProbeClaudeAccess { provider: alondra_core::accounts::Provider::Claude, hold: ClaudeHold::Outage, account: None });
     turn_on_resumed(&mut s, "t", "turn-2");
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1, facts: vec![RuntimeObservation::ModelAnswered] });
     assert_eq!(held(&s), [("v".into(), ClaudeHold::Usage)], "the API works for the work account too; its limit still stands");
+    assert_eq!(s.provider_health(alondra_core::accounts::Provider::Claude), HealthState::Healthy, "the first answer brings Claude back");
     assert_aggregate_rules(&s);
 }
 
@@ -1231,7 +1249,7 @@ fn a_403_on_every_task_is_one_hold_on_the_api_and_no_refusal() {
     fail_turn(&mut s, "t", "turn-2", "authentication_failed", Some(403));
     assert_eq!(held(&s).len(), 2, "the probe fails with the other still waiting: still the API");
     assert_eq!(refusal_cards(&s), Vec::<String>::new());
-    assert_eq!(listed_holds(&s).len(), 1, "Waiting for You lists one hold: {:?}", listed_holds(&s));
+    assert_eq!(listed_holds(&s), Vec::<String>::new(), "waiting out the API lists nothing for the user");
     assert_aggregate_rules(&s);
 }
 
@@ -2333,12 +2351,15 @@ fn a_codex_outage_probe_and_answer_do_not_release_claudes_outage() {
     let mut s=world(); mixed_default_accounts(&mut s,AccountState::SignedIn);
     sdk_turn_on_provider(&mut s,Provider::Claude,"t","a","turn-1",None); sdk_turn_on_provider(&mut s,Provider::Codex,"u","b","turn-1",None);
     fail_turn(&mut s,"t","turn-1","overloaded_error",Some(503)); fail_turn(&mut s,"u","turn-1","overloaded_error",Some(503));
-    assert_eq!(listed_holds(&s).len(),2,"outages of different services never group together");
+    assert_eq!(listed_holds(&s),Vec::<String>::new(),"an outage of either service lists nothing for the user");
+    assert!(s.provider_health(Provider::Claude).down_since().is_some() && s.provider_health(Provider::Codex).down_since().is_some(),"each service is down on its own");
     must(&mut s,Actor::System,Command::ProbeClaudeAccess {provider:Provider::Codex,hold:ClaudeHold::Outage,account:None});
     assert_eq!(held(&s),[("t".into(),ClaudeHold::Outage)]);
     turn_on_resumed(&mut s,"u","turn-2");
     must(&mut s,Actor::System,Command::RecordRuntimeFacts {task_id:"u".into(),generation:1,facts:vec![RuntimeObservation::ModelAnswered]});
     assert_eq!(held(&s),[("t".into(),ClaudeHold::Outage)]);
+    assert_eq!(s.provider_health(Provider::Codex),HealthState::Healthy,"Codex answered: Codex is back");
+    assert!(s.provider_health(Provider::Claude).down_since().is_some(),"Codex answering says nothing of Claude");
 }
 
 #[test]

@@ -167,9 +167,9 @@ impl NativeTurn {
                 stream.result = true;
                 report.turn_completed = true;
                 if !stream.success {
-                    stream.native_request_rejected = params.pointer("/turn/status").and_then(Value::as_str) == Some("failed")
-                        && matches!(params.pointer("/turn/error/codexErrorInfo").and_then(Value::as_str), Some("badRequest" | "contextWindowExceeded"));
                     failure(&params["turn"]["error"],stream);
+                    stream.native_request_rejected = params.pointer("/turn/status").and_then(Value::as_str) == Some("failed")
+                        && matches!(stream.verdict, Some(alondra_provider_contract::Verdict::RequestProblem { .. }));
                     if stream.error.is_none() { stream.error = Some(format!("The Codex turn ended with status {}",params["turn"]["status"])); }
                 } else if !stream.denied && !stream.native_request_rejected {
                     stream.error = None;
@@ -228,12 +228,16 @@ fn bounded_public(text: &str, max: usize) -> String {
 }
 fn failure(error: &Value, stream: &mut Stream) {
     if error.is_null() { return; }
-    let kind = error["codexErrorInfo"].as_str();
-    stream.limited |= kind == Some("usageLimitExceeded");
+    let failure = alondra_provider_codex::provider_failure(error);
+    let verdict = alondra_provider_codex::classify_failure(&failure);
+    stream.limited |= matches!(verdict, Some(alondra_provider_contract::Verdict::Usage { .. }));
+    stream.verdict = verdict.clone().or(stream.verdict.take());
+    stream.failure = Some(failure);
     let message = error["message"].as_str().unwrap_or("The native turn failed");
-    let guidance = match kind {
-        Some("badRequest") => " Check this batch's selected model, reasoning effort and input before explicitly retrying; its catalog does not prove request acceptance.",
-        Some("contextWindowExceeded") => " This request exceeds the model's context window. Reduce the next batch's input or explicitly choose a compatible model before retrying.",
+    use alondra_provider_contract::{RequestProblem, Verdict};
+    let guidance = match &verdict {
+        Some(Verdict::RequestProblem { problem: RequestProblem::BadRequest }) => " Check this batch's selected model, reasoning effort and input before explicitly retrying; its catalog does not prove request acceptance.",
+        Some(Verdict::RequestProblem { problem: RequestProblem::ContextWindowExceeded }) => " This request exceeds the model's context window. Reduce the next batch's input or explicitly choose a compatible model before retrying.",
         _ => "",
     };
     stream.error = Some(bounded(format!("{message}{guidance}")));

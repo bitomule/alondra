@@ -84,7 +84,7 @@ impl World {
     /// The turn of Claude's `at` ends: on the limit while it is out. Never refused.
     fn end_turn(&mut self, at: usize) -> Result<(), String> {
         let Some(turn) = self.claude[at].turn.clone() else { return Ok(()) };
-        let failure = self.out.then(|| SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: None });
+        let failure = self.out.then(|| SdkApiFailure::new("rate_limit", Some(429), ProviderVerdict::Usage { resets_at: None }));
         exec(&mut self.s, Actor::System, Command::RecordTurnBoundary { task_id: TASKS[at].0.into(), generation: 1, turn: turn.clone(), failure, failed: None })
             .map_err(|error| format!("the end of {turn} of {} was refused: {error}", TASKS[at].0))?;
         self.claude[at].turn = None;
@@ -272,7 +272,7 @@ fn a_second_empty_turn_over_a_notification_and_a_told_message_is_left_to_the_orc
 /// hold the limit puts on the task. The end is taken now, with its hold; the daemon can still
 /// record a hold on its own.
 fn limit() -> SdkApiFailure {
-    SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: None }
+    SdkApiFailure::new("rate_limit", Some(429), ProviderVerdict::Usage { resets_at: None })
 }
 
 fn holds(world: &World) -> usize {
@@ -321,7 +321,7 @@ fn recording_the_same_limit_again_adds_no_second_hold() {
 fn an_error_no_wait_answers_holds_nothing() {
     let mut world = World::new();
     world.end_turn(0).unwrap();
-    let refused_by_claude = SdkApiFailure { error: "invalid_request".into(), status: Some(400), resets_at: None };
+    let refused_by_claude = SdkApiFailure::new("invalid_request", Some(400), ProviderVerdict::RequestProblem { problem: RequestProblem::InvalidRequest });
     record_hold(&mut world, 1, refused_by_claude).unwrap();
     assert!(world.s.claude_held().is_empty());
 }

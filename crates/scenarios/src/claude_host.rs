@@ -49,12 +49,19 @@ pub const MODEL: &str = "demo-model";
 pub struct ApiError {
     pub error: String,
     pub status: Option<u16>,
+    /// The text Claude Code ends the turn with.
+    pub detail: Option<String>,
+    /// The statuses of the API retries Claude Code made before giving up.
+    pub retried: Vec<u16>,
 }
 
 impl ApiError {
-    /// The error an expired sign-in ends every turn with.
+    pub fn new(error: impl Into<String>, status: Option<u16>) -> Self {
+        Self { error: error.into(), status, detail: None, retried: vec![] }
+    }
+    /// The error an expired sign-in ends every turn with, as Claude Code words it.
     pub fn signed_out() -> Self {
-        Self { error: "authentication_failed".into(), status: Some(401) }
+        Self { detail: Some("Failed to authenticate. API Error: 401 OAuth token has expired · Please run /login".into()), ..Self::new("authentication_failed", Some(401)) }
     }
 }
 
@@ -400,8 +407,14 @@ impl ClaudeEdge {
                     self.emit(host, state, "status", json!({"type": "rate_limit_event", "uuid": event, "session_id": host.session,
                         "rate_limit_info": {"status": "rejected", "resetsAt": resets_at / 1000, "rateLimitType": "five_hour", "utilization": 1.0}}));
                 }
+                for (attempt, status) in error.retried.iter().enumerate() {
+                    let retry = self.uuid();
+                    self.emit(host, state, "status", json!({"type": "system", "subtype": "api_retry", "uuid": retry, "attempt": attempt + 1, "max_retries": 10,
+                        "retry_delay_ms": 500, "error_status": status, "error": "server_error", "session_id": host.session}));
+                }
+                let text = error.detail.clone().unwrap_or_else(|| format!("API Error: {}", error.error));
                 self.emit(host, state, "message", json!({"type": "assistant", "uuid": answer, "parent_tool_use_id": null, "user_message_uuid": last,
-                    "user_message_uuids": taken, "error": error.error, "session_id": host.session}));
+                    "user_message_uuids": taken, "error": error.error, "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}, "session_id": host.session}));
                 let terminal = if limited { "blocking_limit" } else { "api_error" };
                 let mut payload = json!({"type": "result", "subtype": "success", "uuid": result, "user_message_uuid": last, "user_message_uuids": taken,
                     "is_error": true, "terminal_reason": terminal, "session_id": host.session});

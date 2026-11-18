@@ -45,8 +45,8 @@ hooks = {}
 hooked = {}
 # Message uuids are unique across processes, as the native ones are: a resumed session never repeats them.
 serial = (os.getpid() % 100000) * 1000000
-# The API refuses every prompt, with a 401 for an expired sign-in or a 529 when it is overloaded,
-# until the test marks it recovered with a file next to the capture.
+# The API refuses every prompt, with a 401 for an expired sign-in, a 529 when it is overloaded or
+# another of REFUSALS its keyword names, until the test marks it recovered with a file next to the capture.
 refused = None
 # Like a Claude whose turn never stops: it accepts the interrupt and keeps going, and only SIGKILL
 # ends it.
@@ -78,9 +78,17 @@ def lifecycle(message, state):
     send(dict(type='command_lifecycle', command_uuid=message['uuid'], state=state, session_id=session_id,
               uuid='00000000-0000-4000-8000-' + str(serial).zfill(12)))
 
-REFUSALS = {401: ('authentication_failed', 'Failed to authenticate. API Error: 401 OAuth token has expired'),
-            429: ('rate_limit', "You've hit your limit"),
-            529: ('server_error', 'API Error: 529 Overloaded')}
+# What each refusal sends: its status, Claude Code's error category and text, and the statuses of
+# the API retries Claude Code made before giving up.
+REFUSALS = {401: (401, 'authentication_failed', 'Failed to authenticate. API Error: 401 OAuth token has expired', []),
+            429: (429, 'rate_limit', "You've hit your limit", []),
+            529: (529, 'server_error', 'API Error: 529 Overloaded', []),
+            'revoked-401': (401, 'authentication_failed', 'OAuth token revoked · Please run /login', []),
+            'doubtful-401': (401, 'authentication_failed', 'Failed to authenticate. API Error: 401', []),
+            'cloudflare-403': (403, 'authentication_failed', 'Failed to authenticate. API Error: 403 Attention Required! | Cloudflare', []),
+            'retried-503-then-403': (403, 'authentication_failed', 'Failed to authenticate. API Error: 403 Attention Required! | Cloudflare', [503, 503]),
+            'account-on-hold': (403, 'account_on_hold', 'Your account is on hold', []),
+            'api-error': (500, 'server_error', 'API Error: 500 Internal server error', [500])}
 # When the session window a 429 rejects resets, in Unix seconds: far ahead, so it never resets in a test.
 LIMIT_RESETS_AT = 4102444800
 
@@ -105,9 +113,13 @@ def assistant(message, error=None, text='Fixture answer', usage=SMALL_USAGE):
         value['error'] = error
     send(value)
 
-def refuse(message, status):
+def refuse(message, refusal):
     global serial
-    error, text = REFUSALS[status]
+    status, error, text, retried = REFUSALS[refusal]
+    for attempt, retried_status in enumerate(retried, start=1):
+        serial += 1
+        send(dict(type='system', subtype='api_retry', attempt=attempt, max_retries=10, retry_delay_ms=500, error_status=retried_status,
+                  error='server_error', session_id=session_id, uuid='00000000-0000-4000-8000-' + str(serial).zfill(12)))
     assistant(message, error=error, text=text)
     if status == 429:
         serial += 1
@@ -471,6 +483,8 @@ for raw in sys.stdin:
             refused = 529
         elif text.endswith('rate-limited'):
             refused = 429
+        else:
+            refused = next((keyword for keyword in REFUSALS if isinstance(keyword, str) and text.endswith(keyword)), refused)
         if refused and os.path.exists(capture + '.recovered'):
             refused = None
             assistant(message)

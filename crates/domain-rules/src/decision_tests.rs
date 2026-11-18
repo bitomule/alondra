@@ -727,8 +727,10 @@ fn technical_failed_turn_ends_preserve_the_outcome_without_automatic_wakes() {
     sdk_turn(&mut s, "t", "a");
     must(&mut s, Actor::System, Command::RecordRuntimeFacts { task_id: "t".into(), generation: 1,
         facts: vec![RuntimeObservation::TurnEnded { turn: "turn-1".into(),
-            failure: Some(SdkApiFailure { error: "rate_limit".into(), status: Some(429), resets_at: None }), failed: None }] });
-    assert!(matches!(last(&s, "t"), LifecycleRecord::TurnEnded { wake: None, stalled: false, .. }));
+            failure: Some(SdkApiFailure::new("rate_limit", Some(429), ProviderVerdict::Usage { resets_at: None })), failed: None }] });
+    assert!(matches!(last(&s, "t"), LifecycleRecord::TurnEnded { wake: None, .. }));
+    assert_eq!(s.claude_held().into_iter().map(|held| (held.task.0, held.hold)).collect::<Vec<_>>(), [("t".to_owned(), ClaudeHold::Usage)],
+        "an observed end keeps its verdict: the usage limit holds the task, never a refusal");
     assert!(s.lifecycle_of(&"t".into()).unwrap().pending_inputs().is_empty());
     assert_aggregate_rules(&s);
 }

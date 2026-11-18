@@ -641,7 +641,22 @@ impl Executor {
                 self.rested(&mut runtime);
                 save(&self.home, &runtime)
             }
+            BatchEnd::ProviderFailed { verdict: alondra_provider_contract::Verdict::Outage } => {
+                log!("orchestrator: batch {} met an outage of {:?}: it goes on elsewhere or when the provider answers again", run.id, selection.account.provider);
+                crate::orchestrator_provider::record_provider_health(&self.domain, selection.account.provider, true, now_millis());
+                self.finish(&run, State::Retryable, Some("orchestrator_provider_down"))?;
+                runtime.active_run = None;
+                runtime.failure = None;
+                runtime.retry_at = None;
+                self.rested(&mut runtime);
+                save(&self.home, &runtime)
+            }
+            BatchEnd::ProviderFailed { verdict } => {
+                let why = output.stream.error.clone().unwrap_or_else(|| format!("The provider failed the batch: {verdict:?}"));
+                self.failed(runtime, &run, why, None)
+            }
             BatchEnd::Handled => {
+                crate::orchestrator_provider::record_provider_health(&self.domain, selection.account.provider, false, now_millis());
                 runtime.note = output.stream.note.as_deref().map(|note| bounded_note(note, MAX_NOTE_BYTES)).filter(|note| !note.is_empty());
                 self.handled(runtime, &run, &asked)
             }
@@ -1728,6 +1743,40 @@ mod tests {
         let runtime = load(&f.executor.home).unwrap();
         assert!(runtime.active_run.is_none() && runtime.last_error.is_none());
         assert!(unhandled(domain).is_empty(), "kept requests are handled once the provider recovers");
+    }
+
+    // 13 Nov: Claude failed for everyone. With Claude the only provider, the orchestrator neither
+    // counts a failure nor grows its wait nor asks the user: it waits for the outage probe, tries
+    // once when the probe is due, and Claude answering brings it back.
+    #[tokio::test]
+    async fn an_outage_of_the_only_provider_waits_for_its_probe_without_a_card_or_a_growing_wait() {
+        use alondra_core::accounts::Provider;
+        for marker in ["fixture:cloudflare-403", "fixture:api-error"] {
+            let f = fixture();
+            let domain = &f.executor.domain;
+            f.mark(marker);
+            ask_orchestrator(&f, 1);
+            f.tick().await;
+            let runtime = load(&f.executor.home).unwrap();
+            assert_eq!(runtime.consecutive_failures, 0, "{marker}: an outage is no failure of the batch");
+            assert!(runtime.active_run.is_none() && runtime.retry_at.is_none() && runtime.failure.is_none(), "{marker}: {runtime:?}");
+            let state = domain.state().unwrap();
+            assert!(state.provider_health(Provider::Claude).down_since().is_some(), "{marker}: Claude is down on this Mac");
+            assert!(!state.interactions.values().any(|i| !i.withdrawn && matches!(i.system_card,
+                Some(SystemCard::BatchProblem { .. } | SystemCard::StuckProblem | SystemCard::LaunchProblem { .. }))), "{marker}: no card");
+            drop(state);
+            let tried = f.attempts().len();
+            for _ in 0..3 { f.tick().await; }
+            assert_eq!(f.attempts().len(), tried, "{marker}: nothing is sent to a provider that is down before its probe is due");
+            let (epoch, revision) = { let state = domain.state().unwrap(); (state.data_epoch.clone(), state.revision) };
+            domain.execute_as_system(CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: epoch, command_id: format!("probe-due-{marker}").as_str().into(), expected_revision: revision,
+                command: Command::RecordProviderHealth { provider: Provider::Claude, down: true, at: now_millis() - alondra_domain_rules::OUTAGE_PROBE - 1 } }).unwrap();
+            f.clear_marker();
+            f.tick().await;
+            assert_eq!(f.attempts().len(), tried + 1, "{marker}: one try once the probe is due");
+            assert!(unhandled(domain).is_empty(), "{marker}: the kept request is handled when Claude answers");
+            assert_eq!(domain.state().unwrap().provider_health(Provider::Claude), alondra_domain_rules::HealthState::Healthy, "{marker}");
+        }
     }
 
     #[tokio::test]

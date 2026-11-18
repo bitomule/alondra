@@ -803,7 +803,8 @@ mod tests {
     async fn the_watcher_tells_once_when_it_starts_resumes_at_the_reset_wakes_the_nodes_and_tells_once_when_it_ends() {
         let (domain, home) = domain();
         domain.live().apply(&alondra_core::Event::Hook(alondra_core::HookEvent {
-            session_id: "limited".into(), event: "StopFailure".into(), error_type: Some("rate_limit".into()), ..Default::default()
+            session_id: "limited".into(), event: "StopFailure".into(), error_type: Some("rate_limit".into()),
+            verdict: Some(alondra_foundation::Verdict::Usage { resets_at: None }), ..Default::default()
         }));
         let node = Node::connect(&domain, "limited");
         let told = Arc::new(Told(Mutex::new(vec![])));

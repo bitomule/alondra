@@ -58,6 +58,19 @@ slots are taken, and both numbers come from the same computation.
 
 Only a finished or cancelled task owes nothing.
 
+### When the provider's API fails
+
+Each provider's adapter (`provider-claude`, `provider-codex`) reads its own errors and hands over a
+verdict; the domain and the engine decide on the verdict alone and never read an error's text.
+
+| Verdict | What happens |
+|---|---|
+| Outage | The provider is down on this Mac since the first failure. Its tasks wait with no card and no push, new work and the orchestrator go to another provider, and the outage probe tries again every 2 minutes. The first answer brings the provider back and every waiting task goes on. |
+| Usage | The task waits for its account's reset. |
+| Session lost | The account is signed out and its task waits for the sign-in. |
+| Doubtful | An authentication error that says neither: it waits like an outage. |
+| Refused, request problem | The task's own card asks the user, in their language. |
+
 ## Deadlines
 
 A deadline is a last resort. A state that an event of the provider ends carries none, and a

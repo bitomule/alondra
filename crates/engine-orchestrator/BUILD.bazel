@@ -18,6 +18,7 @@ WORKSPACE_DEPS = [
     "//crates/process-group:process_group",
     "//crates/provider-claude:provider_claude",
     "//crates/provider-codex:provider_codex",
+    "//crates/provider-contract:provider_contract",
     "//crates/store:store",
 ]
 
@@ -87,7 +88,6 @@ low_opt_rust_test(
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",
         "//crates/engine-kernel:engine_kernel_test_hooks",
-        "//crates/provider-contract:provider_contract",
     ],
 )
 

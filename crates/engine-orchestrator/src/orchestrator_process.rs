@@ -227,6 +227,9 @@ pub enum BatchEnd {
     Denied { calls: Vec<String>, why: String },
     /// Usage ran out before Claude answered: the batch waits for the reset.
     Limited { reset: Option<i64> },
+    /// The provider's API failed before the model answered, with the verdict its adapter read:
+    /// nothing changed, and the batch goes on as that verdict says.
+    ProviderFailed { verdict: alondra_provider_contract::Verdict },
     /// The user stopped the run; `effects` are the changes the daemon let it make, if it made any.
     Cancelled { effects: Option<Vec<String>> },
 }
@@ -254,6 +257,12 @@ pub struct Stream {
     pub acted: bool,
     pub denied: bool,
     pub(crate) native_request_rejected: bool,
+    /// The provider API error the batch's turn ended with, as the provider reported it, and the
+    /// verdict its adapter read in it.
+    pub failure: Option<alondra_provider_contract::ProviderFailure>,
+    pub verdict: Option<alondra_provider_contract::Verdict>,
+    /// The statuses of the API retries the provider made, the latest last.
+    retried: Vec<Option<u16>>,
     /// Claude reported that the plan's usage ran out, and the reset it gave in Unix milliseconds.
     pub limited: bool,
     pub limit_reset: Option<i64>,
@@ -287,6 +296,11 @@ impl Stream {
         if let Some(reset) = self.limit() && !self.worked {
             return BatchEnd::Limited { reset };
         }
+        if let Some(verdict) = self.verdict.clone().filter(|verdict| *verdict != alondra_provider_contract::Verdict::None)
+            && !self.worked && effects.is_none() && !self.native_request_rejected
+        {
+            return BatchEnd::ProviderFailed { verdict };
+        }
         let why = self.error.clone().unwrap_or_else(|| if diagnostic.trim().is_empty() {
             "Claude exited without a successful terminal result".into()
         } else {
@@ -305,6 +319,15 @@ impl Stream {
     /// answering when the run ended without its result, so what came next is unknown.
     pub fn may_have_effects(&self) -> bool {
         !self.alondra_calls.is_empty() || (self.acted && !self.result)
+    }
+    /// The verdict Claude's adapter reads in the batch's failure; its usage limit marks the batch limited.
+    fn classify_claude(&mut self) {
+        let Some(failure) = &self.failure else { return };
+        let verdict = alondra_provider_claude::classify_failure(failure);
+        if matches!(verdict, alondra_provider_contract::Verdict::Usage { .. }) {
+            self.limited = true;
+        }
+        self.verdict = Some(verdict);
     }
     /// Session fencing applies to every session-bearing record, including terminal results.
     pub fn accept(&mut self, line: &[u8], session: &str) -> Result<bool> {
@@ -360,6 +383,10 @@ impl Stream {
                 self.compacted = true;
                 self.post_compact_tokens = v.pointer("/compact_metadata/post_tokens").and_then(Value::as_u64);
             }
+            (Some("system"), Some("api_retry")) => {
+                if self.retried.len() == RETRIES_KEPT { self.retried.remove(0); }
+                self.retried.push(v["error_status"].as_u64().and_then(|status| u16::try_from(status).ok()));
+            }
             (Some("rate_limit_event"), _) => {
                 let info = &v["rate_limit_info"];
                 if info["status"] == "rejected" {
@@ -375,10 +402,19 @@ impl Stream {
                     .filter_map(|name| name.rsplit("__").next())
                     .filter(|tool| alondra_domain_rules::orchestrator_batch::changes_something(tool));
                 self.alondra_calls.extend(calls.map(str::to_owned));
-                if v["error"] == "rate_limit" {
-                    self.limited = true;
-                } else {
-                    self.worked = true;
+                match v.get("error").and_then(Value::as_str) {
+                    Some(error) => {
+                        let text: Vec<&str> = v.pointer("/message/content").and_then(Value::as_array).into_iter().flatten()
+                            .filter_map(|block| block["text"].as_str()).collect();
+                        self.failure = Some(alondra_provider_contract::ProviderFailure {
+                            error: error.to_owned(),
+                            detail: alondra_provider_contract::bounded_detail(&text.join(" ")),
+                            retried: self.retried.clone(),
+                            ..Default::default()
+                        });
+                        self.classify_claude();
+                    }
+                    None => self.worked = true,
                 }
                 if let Some(u) = v.pointer("/message/usage").filter(|u| u.is_object()) {
                     // Latest main-agent call only; aggregate result usage can include many calls.
@@ -400,6 +436,10 @@ impl Stream {
                     bail!("Claude reported the result of another input");
                 }
                 self.result = true;
+                if let Some(failure) = self.failure.as_mut() {
+                    failure.status = v["api_error_status"].as_u64().and_then(|status| u16::try_from(status).ok());
+                    self.classify_claude();
+                }
                 self.spent = crate::metrics_capture::claude_usage(&v);
                 self.success = v["subtype"] == "success" && v["is_error"] == false;
                 if self.success {
@@ -425,6 +465,8 @@ impl Stream {
 }
 
 pub(crate) const RESTRICTED_TOOLS: &str = "Skill,Read,Glob,Grep";
+/// How many of a batch's API retries it keeps.
+const RETRIES_KEPT: usize = 16;
 
 fn alondra_tool(name: &str) -> bool {
     name.starts_with("mcp__alondra-orchestrator__") || name.starts_with("mcp__plugin_alondra-orchestrator_alondra-orchestrator__")
@@ -580,6 +622,18 @@ mod tests {
         assert_eq!((assistant.limited, assistant.worked), (true, false));
         let result = accept(&[r#"{"type":"result","session_id":"a","subtype":"success","is_error":true,"result":"You've hit your session limit · resets 3:45pm"}"#]);
         assert!(!result.limited, "the result's words are not the limit: {result:?}");
+    }
+
+    // 13 Nov: retried 503s, then Cloudflare's 403 page labelled authentication_failed. The batch
+    // ends on an outage of Claude, never on the account, and the model never answered.
+    #[test]
+    fn retried_503s_then_cloudflares_403_end_the_batch_on_an_outage() {
+        let lines = [INIT,
+            r#"{"type":"system","subtype":"api_retry","session_id":"s","attempt":1,"error_status":503,"error":"server_error"}"#,
+            r#"{"type":"system","subtype":"api_retry","session_id":"s","attempt":2,"error_status":503,"error":"server_error"}"#,
+            r#"{"type":"assistant","session_id":"s","error":"authentication_failed","message":{"content":[{"type":"text","text":"Failed to authenticate. API Error: 403 Attention Required! | Cloudflare"}]}}"#,
+            r#"{"type":"result","session_id":"s","subtype":"success","is_error":true,"api_error_status":403,"result":"Failed to authenticate"}"#];
+        assert_eq!(ended(None, &lines, true, ""), BatchEnd::ProviderFailed { verdict: alondra_provider_contract::Verdict::Outage });
     }
 
     const REFUSED_READ_RESULT: &[u8] = br#"{"type":"result","session_id":"a","subtype":"success","is_error":false,"terminal_reason":"completed","num_turns":4,"result":"Done.","permission_denials":[{"tool_name":"Read","tool_use_id":"toolu_01Hi3ayKKFGKNW3JAR2tb9Z2","tool_input":{"file_path":"/Users/example/.zshrc","limit":1}}]}"#;

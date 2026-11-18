@@ -898,8 +898,11 @@ fn sdk_stopping(state: &DomainState, task: &TaskId) -> (bool, Option<alondra_dom
 #[cfg(test)]
 pub(super) fn assert_index_matches(state: &DomainState) {
     for card in state.interactions.values().filter(|card| card.author == super::Author::System || card.system_card == Some(super::SystemCard::Unheard)) {
-        if !matches!(card.system_card, Some(super::SystemCard::RefusedCards { .. })) {
-            assert_eq!(card.system_card, super::SystemCard::of_stored_id(&card.id.0), "Alondra's card {} says what it is as its id does", card.id);
+        match card.system_card {
+            Some(super::SystemCard::RefusedCards { .. }) => {}
+            Some(super::SystemCard::TurnRefused { .. }) => assert_eq!(super::SystemCard::of_stored_id(&card.id.0), Some(super::SystemCard::TurnEnded),
+                "a refused turn's card {} is a card of the end of that turn", card.id),
+            _ => assert_eq!(card.system_card, super::SystemCard::of_stored_id(&card.id.0), "Alondra's card {} says what it is as its id does", card.id),
         }
     }
     if let Err(divergence) = state.kept_lifecycles_agree_with_journals() {

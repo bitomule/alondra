@@ -22,6 +22,8 @@ pub enum SystemCard {
     ClaudeUsage { resets_at: Option<u64> },
     HostLost,
     TurnEnded,
+    /// A turn the provider refused: the account, or the task's request. Its card asks the user.
+    TurnRefused { verdict: crate::ProviderVerdict },
     Stalled,
     SessionEnded,
     HandoffDoubt,

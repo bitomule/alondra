@@ -5553,6 +5553,14 @@ impl DomainState {
                     return fail("not_found", "No task waits for Claude");
                 }
             }
+            Command::RecordProviderHealth { provider, down, at } => {
+                system(actor)?;
+                if *down {
+                    self.provider_down(*provider, *at);
+                } else {
+                    self.provider_up(*provider);
+                }
+            }
             Command::InterruptTurn { agent_id } => {
                 let (task, record) = self.interrupt_guard(actor, agent_id)?;
                 self.decide(lifecycles, &task, record)?;
