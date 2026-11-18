@@ -38,6 +38,7 @@ WORKSPACE_MEMBERS = [
     "engine-ports",
     "github-gh",
     "engine-orchestrator",
+    "engine-doubles",
     "engine-sdk",
     "e2e",
     "foundation",

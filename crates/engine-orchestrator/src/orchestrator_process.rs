@@ -70,7 +70,7 @@ fn identity(pid: u32, expected_run: Option<&str>) -> Option<u64> {
 }
 
 impl ProcessOwner {
-    pub(crate) fn record(directory: &Path, child_pid: u32, run_id: &str) -> Result<()> {
+    pub(crate) fn record(directory: &Path, child_pid: u32, run_id: &str, injected: &crate::engine::Injected) -> Result<()> {
         let daemon_pid = std::process::id();
         let owner = Self {
             daemon_pid,
@@ -82,20 +82,15 @@ impl ProcessOwner {
         let temporary = directory.join(format!("owner-{}.tmp", uuid()?));
         use std::io::Write;
         let written = (|| -> Result<()> {
-            #[cfg(any(test, feature = "test-hooks"))]
-            alondra_daemon_engine_model::faults::owner_write(directory, "owner_create")?;
+            injected.write("owner_create")?;
             let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary)?;
-            #[cfg(any(test, feature = "test-hooks"))]
-            alondra_daemon_engine_model::faults::owner_write(directory, "owner_write")?;
+            injected.write("owner_write")?;
             file.write_all(&serde_json::to_vec(&owner)?)?;
-            #[cfg(any(test, feature = "test-hooks"))]
-            alondra_daemon_engine_model::faults::owner_write(directory, "owner_sync")?;
+            injected.write("owner_sync")?;
             file.sync_all()?;
-            #[cfg(any(test, feature = "test-hooks"))]
-            alondra_daemon_engine_model::faults::owner_write(directory, "owner_rename")?;
+            injected.write("owner_rename")?;
             std::fs::rename(&temporary, directory.join("owner.json"))?;
-            #[cfg(any(test, feature = "test-hooks"))]
-            alondra_daemon_engine_model::faults::owner_write(directory, "owner_directory_sync")?;
+            injected.write("owner_directory_sync")?;
             std::fs::File::open(directory)?.sync_all()?;
             Ok(())
         })();
@@ -738,7 +733,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut child = tokio::process::Command::new("/bin/sleep").arg("30").env("ALONDRA_ORCHESTRATOR_EXECUTION", "test-run")
             .stdin(Stdio::null()).kill_on_drop(true).process_group(0).spawn().unwrap();
-        ProcessOwner::record(&dir, child.id().unwrap(), "test-run").unwrap();
+        ProcessOwner::record(&dir, child.id().unwrap(), "test-run", &crate::engine::Injected::default()).unwrap();
         assert!(terminate_orphan(&dir, Some("test-run")).unwrap_err().to_string().contains("live daemon"));
         assert!(child.try_wait().unwrap().is_none());
         let mut retired_daemon = tokio::process::Command::new("/bin/sh").args(["-c", "exit 0"]).spawn().unwrap();

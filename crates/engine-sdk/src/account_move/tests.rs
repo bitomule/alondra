@@ -75,7 +75,7 @@ impl World {
     }
 
     fn boot(home: &Path, database: &Path, backend: &crate::sdk_backend::SdkBackend) -> Arc<DomainRuntime> {
-        let domain = Arc::new(crate::wiring::open_at(home, database).unwrap());
+        let domain = Arc::new(crate::engine_tests::open_at(home, database).unwrap());
         domain.enable_sdk(backend.clone());
         domain
     }

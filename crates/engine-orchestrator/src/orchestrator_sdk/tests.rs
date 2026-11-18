@@ -272,9 +272,11 @@ async fn a_result_of_another_input_is_not_the_batch_handled() {
 }
 
 #[tokio::test]
-async fn a_batch_that_ran_out_of_usage_before_answering_pauses_and_waits_without_a_card() {
+async fn a_batch_that_ran_out_of_usage_before_answering_records_the_limit_and_waits_without_a_card() {
     let f = ended("fixture:limited").await;
-    assert!(f.domain().engine().usage_pause().is_some(), "usage pauses everything");
+    let usage = f.domain().read().state().account_usage.clone();
+    assert!(usage.iter().any(|usage| usage.account.is_default() && usage.exhausted_until(alondra_core::now_millis()).is_some()),
+        "the account ran out, for the engine to pause new work on: {usage:?}");
     let runtime = load(&f.executor.home).unwrap();
     assert!(runtime.active_run.is_none() && runtime.failure.is_none(), "{runtime:?}");
     assert_eq!(f.attempts(), ["retryable"]);

@@ -1,0 +1,28 @@
+load("//tools:tree.bzl", "repo_tree")
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//:version.bzl", "VERSION")
+load("//tools:rust_sources.bzl", "production_sources")
+
+# The test doubles of the engine's ports: a test registers the ones it needs in the runtime it opens,
+# in place of the pieces of the engine it does not test. Tests only: no production crate sees it.
+rust_library(
+    name = "engine_doubles",
+    testonly = True,
+    srcs = production_sources() + ["//crates:test_support.rs"],
+    crate_name = "alondra_engine_doubles",
+    edition = "2024",
+    version = VERSION,
+    visibility = ["//crates:__subpackages__"],
+    deps = all_crate_deps(normal = True) + [
+        "//crates/core:alondra_core",
+        "//crates/domain:domain",
+        "//crates/domain-rules:domain_rules",
+        "//crates/engine-ports:engine_ports",
+        "//crates/process-group:process_group",
+    ],
+)
+
+exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+
+repo_tree()

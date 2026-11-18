@@ -89,6 +89,10 @@ impl alondra_engine_ports::Runtime for DomainRuntime {
         &self.ports
     }
 
+    fn extensions(&self) -> &alondra_engine_ports::extensions::Extensions {
+        &self.extensions
+    }
+
     fn home(&self) -> &Path {
         &self.home
     }
@@ -103,6 +107,10 @@ impl alondra_engine_ports::Runtime for DomainRuntime {
 
     fn wake_seals(&self) {
         self.seals.wake();
+    }
+
+    fn launch_plan(&self, task: &alondra_domain_rules::TaskId) -> Option<alondra_domain_rules::LaunchPlan> {
+        DomainRuntime::launch_plan(self, task).ok().flatten()
     }
 }
 

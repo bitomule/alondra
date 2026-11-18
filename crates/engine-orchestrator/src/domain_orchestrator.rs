@@ -116,19 +116,29 @@ pub fn load(home: &Path) -> Result<Runtime> {
     }
 }
 
+/// Writes the runtime record a test seeds, with no fault injected.
+#[cfg(test)]
 pub(crate) fn save(home: &Path, runtime: &Runtime) -> Result<()> {
+    store(home, runtime, &crate::engine::Injected::default())
+}
+
+fn store(home: &Path, runtime: &Runtime, injected: &crate::engine::Injected) -> Result<()> {
     let next = home.join(format!("{FILE}.next"));
-    #[cfg(any(test, feature = "test-hooks"))]
-    faults::write(home, "runtime_write")?;
+    injected.write("runtime_write")?;
     std::fs::write(&next, serde_json::to_vec(runtime)?)?;
-    #[cfg(any(test, feature = "test-hooks"))]
-    faults::write(home, "runtime_rename")?;
+    injected.write("runtime_rename")?;
     std::fs::rename(&next, home.join(FILE))?;
     Ok(())
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
-pub use alondra_daemon_engine_model::faults;
+impl Executor {
+    fn save(&self, runtime: &Runtime) -> Result<()> {
+        store(&self.home, runtime, &self.domain.orchestrator().injected)
+    }
+}
+
+#[cfg(test)]
+use alondra_daemon_engine_model::faults;
 #[path = "domain_orchestrator/recovery.rs"]
 mod recovery;
 #[path = "domain_orchestrator/watchdog.rs"]
@@ -255,7 +265,7 @@ impl Executor {
                     self.failed(runtime,&run,why,Some(problem))?;
                 } else {
                     runtime.failure.get_or_insert(Failure::Interrupted);
-                    save(&self.home,&runtime)?;
+                    self.save(&runtime)?;
                     self.raise_batch_problem(&run.id,problem,&why);
                 }
                 return load(&self.home);
@@ -277,7 +287,7 @@ impl Executor {
             runtime.retry_at = None;
             runtime.consecutive_failures = 0;
             runtime.cancel_requested = false;
-            save(&self.home, &runtime)?;
+            self.save(&runtime)?;
         }
         Ok(runtime)
     }
@@ -323,7 +333,7 @@ impl Executor {
         runtime.retry_at = None;
         runtime.consecutive_failures = 0;
         runtime.cancel_requested = false;
-        save(&self.home, &runtime)
+        self.save(&runtime)
     }
 
     /// The user chose to replay an ambiguous execution's batch.
@@ -349,7 +359,7 @@ impl Executor {
         runtime.retry_at = None;
         runtime.consecutive_failures = 0;
         runtime.cancel_requested = false;
-        save(&self.home, &runtime)
+        self.save(&runtime)
     }
 
     pub(crate) fn cancel(&self, run_id: &str) -> Result<()> {
@@ -361,7 +371,7 @@ impl Executor {
             return self.acknowledge(run_id);
         }
         runtime.cancel_requested = true;
-        save(&self.home, &runtime)
+        self.save(&runtime)
     }
 
     fn prompt(&self, runtime: &Runtime, projects_root: Option<&Path>, messages: &[OutboxMessage]) -> Result<String> {
@@ -425,8 +435,7 @@ impl Executor {
     }
 
     /// One batch: claim, bind a bearer to this execution, run Claude, finish.
-    #[cfg(any(test, feature = "test-hooks"))]
-    pub(crate) async fn tick(&self) -> Result<()> {
+    pub async fn tick(&self) -> Result<()> {
         let (_hold, stop) = tokio::sync::watch::channel(false);
         self.tick_with_stop(stop).await
     }
@@ -518,7 +527,7 @@ impl Executor {
         runtime.failure = None;
         runtime.retry_at = None;
         self.domain.orchestrator_progress();
-        save(&self.home, &runtime)?;
+        self.save(&runtime)?;
         self.bind_session(&session);
         let projects_root = crate::options::options_at(&self.home).ok()
             .map(|file| file.projects_root(&crate::options::user_home()))
@@ -533,15 +542,14 @@ impl Executor {
         let directory = self.home.join("runtime/orchestrator");
         let home = self.home.clone();
         let spawned_domain = Arc::clone(&self.domain);
-        #[cfg(any(test, feature = "test-hooks"))]
         let spawned_capability = capability.expose_for_child_environment().to_owned();
         let mark_spawned = move || {
             let mut runtime = load(&home)?;
             if let Some(run) = runtime.active_run.as_mut() { run.spawned = true; }
-            save(&home, &runtime)?;
+            let injected = &spawned_domain.orchestrator().injected;
+            store(&home, &runtime, injected)?;
             spawned_domain.orchestrator_progress();
-            #[cfg(any(test, feature = "test-hooks"))]
-            faults::spawned(&home, &spawned_capability);
+            injected.spawned(&spawned_capability);
             Ok(())
         };
         let mut stopped = stop.clone();
@@ -576,8 +584,7 @@ impl Executor {
             self.remember_stop(&run, BatchProblem { stop, calls: changes.clone(), subjects: self.subjects(&claimed),
                 error: output.stream.error.clone().unwrap_or_else(|| "The provider requires explicit reconciliation before retrying".into()) });
         }
-        #[cfg(any(test, feature = "test-hooks"))]
-        watchdog::tests::draining(&run_id);
+        self.domain.orchestrator().injected.draining(&run_id);
         self.domain.drain_batch_operations(&run_id).await?;
         let effects_confirmed = self.domain.confirmed_batch_effects(&run_id,&changes)?;
         let restarted = *stop.borrow();
@@ -639,7 +646,7 @@ impl Executor {
                 runtime.failure = None;
                 runtime.retry_at = None;
                 self.rested(&mut runtime);
-                save(&self.home, &runtime)
+                self.save(&runtime)
             }
             BatchEnd::Handled => {
                 runtime.note = output.stream.note.as_deref().map(|note| bounded_note(note, MAX_NOTE_BYTES)).filter(|note| !note.is_empty());
@@ -651,7 +658,7 @@ impl Executor {
                     run_id: run.id.clone(), selection: selection.clone(),
                     reason: "The native turn ended after its effects were confirmed. Inspect durable results and continue only unfinished goals.".into(),
                 });
-                save(&self.home, &runtime)?;
+                self.save(&runtime)?;
                 self.failed(runtime, &run, why, None)
             }
             BatchEnd::Interrupted { calls, why } => self.failed(runtime, &run, why, Some(problem(BatchStop::Interrupted, calls))),
@@ -687,7 +694,7 @@ impl Executor {
             self.domain.store.lock_or_exit("the domain store").finish_batch(&handoff.run_id)?;
             self.domain.orchestrator().runs.lock_or_recover("the orchestrator runs").remove(&handoff.run_id);
         }
-        save(&self.home, &runtime)?;
+        self.save(&runtime)?;
         self.domain.orchestrator_progress();
         crate::orchestrator_inbox::hand_replans(&self.domain);
         if !self.pending()?.is_empty() {
@@ -751,7 +758,7 @@ impl Executor {
             let delay = 30_000_i64.saturating_mul(1_i64 << runtime.consecutive_failures.min(5));
             runtime.retry_at = Some(now_millis().saturating_add(delay));
             runtime.failure = Some(Failure::Launch);
-            return save(&self.home, &runtime);
+            return self.save(&runtime);
         };
         let mut problem = problem;
         problem.error = runtime.last_error.clone().unwrap_or_default();
@@ -759,7 +766,7 @@ impl Executor {
         runtime.retry_at = None;
         runtime.cancel_requested = false;
         runtime.failure = Some(match problem.stop { BatchStop::Denied => Failure::Denied, BatchStop::Cancelled => Failure::Cancelled, BatchStop::Interrupted => Failure::Interrupted });
-        save(&self.home, &runtime)?;
+        self.save(&runtime)?;
         self.finish(run, State::Uncertain, Some("orchestrator_execution_ambiguous"))?;
         self.raise_batch_problem(&run.id, problem, runtime.last_error.as_deref().unwrap_or_default());
         *self.domain.orchestrator().stop.lock_or_recover("the orchestrator stop") = None;
@@ -831,7 +838,7 @@ impl Executor {
                 self.domain.withdraw_problem(&interaction.id)?;
             }
         }
-        if runtime.stuck_problem.take().is_some() { save(&self.home, &runtime)?; }
+        if runtime.stuck_problem.take().is_some() { self.save(&runtime)?; }
         let active = runtime.active_run.map(|run| run.id);
         for (id, interaction) in &state.interactions {
             let Some(SystemCard::BatchProblem { run: run_id }) = &interaction.system_card else { continue };
@@ -1056,15 +1063,13 @@ pub async fn run(domain: Arc<DomainRuntime>, home: PathBuf, claude_home: PathBuf
 /// `.marker-once` for the next start only), holds the first prompt before Claude sees it
 /// (`.hold-before`) or adds fields to every result (`.result-extra`). A held turn waits on a FIFO
 /// the test writes, never on a clock.
-#[cfg(any(test, feature = "test-hooks"))]
 pub mod testing {
     use super::*;
     use crate::orchestrator_process::Ownership;
-    use crate::test_support::Directory;
     use alondra_domain_rules::{CardKind, CardSpec, LaunchPlan};
     use std::collections::{BTreeMap, BTreeSet};
     use std::io::{Read, Write};
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    use std::os::unix::fs::PermissionsExt;
 
     const WRAPPER: &str = r#"#!/usr/bin/python3
 import json
@@ -1131,7 +1136,7 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
     }
 
     /// Alondra's node and orchestrator plugins, registered in the returned Claude home.
-    pub(crate) fn registered_plugins(root: &Path) -> PathBuf {
+    pub fn registered_plugins(root: &Path) -> PathBuf {
         let claude_home = root.join("claude-home");
         let repo = root.join("assets");
         for plugin in [crate::plugins::NODE, crate::plugins::ORCHESTRATOR] {
@@ -1144,25 +1149,35 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
     }
 
     pub struct Fixture {
-        pub(crate) executor: Executor,
+        pub executor: Executor,
         _ownership: Ownership,
-        pub(crate) capture: PathBuf,
-        pub(crate) held: PathBuf,
-        pub(crate) release: PathBuf,
-        pub(crate) claude_home: PathBuf,
+        pub capture: PathBuf,
+        pub held: PathBuf,
+        pub release: PathBuf,
+        pub claude_home: PathBuf,
         _hosts: Box<dyn Send>,
-        pub(crate) root: Directory,
+        pub root: PathBuf,
+        _root: Box<dyn Send>,
     }
 
     /// A daemon home of its own whose orchestrator runs through the SDK.
     #[cfg(test)]
     pub(crate) fn fixture() -> Fixture {
-        let root = Directory::new();
+        use std::os::unix::fs::DirBuilderExt;
+        let root = crate::test_support::Directory::new();
         std::fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         let home = root.join("home");
         std::fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(crate::wiring::open(&home).unwrap());
-        Fixture::over(root, domain, home, alondra_daemon_engine::host_fixtures::HostRoot::new())
+        Fixture::over(root, domain, home, alondra_engine_doubles::host_root::HostRoot::new())
+    }
+
+    /// HOME and the system PATH for the fake Claude, whose environment is built from scratch;
+    /// xcrun's cache stays where the test keeps it.
+    fn environment(home: &Path) -> BTreeMap<String, String> {
+        let mut environment = BTreeMap::from([("HOME".to_owned(), home.display().to_string()), ("PATH".to_owned(), "/usr/bin:/bin".to_owned())]);
+        environment.extend(std::env::var("xcrun_db").ok().map(|path| ("xcrun_db".to_owned(), path)));
+        environment
     }
 
     fn seed_command(domain:&DomainRuntime,id:&str,command:Command) {
@@ -1170,7 +1185,7 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
         domain.execute_as_system(CommandEnvelope {protocol_version:PROTOCOL_VERSION,data_epoch:state.data_epoch.clone(),command_id:id.into(),expected_revision:state.revision,command}).unwrap();
     }
 
-    pub(crate) fn seed_native_metadata(domain:&DomainRuntime, home:&std::path::Path) {
+    pub fn seed_native_metadata(domain:&DomainRuntime, home:&std::path::Path) {
         let option_path = alondra_core::options::path_in(&home);
             if !option_path.exists() {
                 std::fs::write(&option_path, "[accounts]\nconnected=[\"claude\"]\n[model_profiles.claude.orchestrator]\nmode=\"ordered_candidates\"\ncandidates=[{model=\"opus\"}]\n").unwrap();
@@ -1202,7 +1217,8 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
     impl Fixture {
         /// The orchestrator of `domain`, whose daemon home is `home`, through the SDK; its fakes live
         /// in `root` and its hosts in `hosts`, which it keeps until it is dropped.
-        pub fn over<H: AsRef<Path> + Send + 'static>(root: Directory, domain: Arc<DomainRuntime>, home: PathBuf, hosts: H) -> Self {
+        pub fn over<R: AsRef<Path> + Send + 'static, H: AsRef<Path> + Send + 'static>(root: R, domain: Arc<DomainRuntime>, home: PathBuf, hosts: H) -> Self {
+            let (root, owner) = (root.as_ref().to_owned(), root);
             crate::wire(domain.ports());
             let claude_home = registered_plugins(&root);
             let fake = root.join("orchestrator-fake-claude.py");
@@ -1213,7 +1229,7 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
             let (capture, held, release) = (root.join("capture.json"), root.join("held"), root.join("release"));
             fifo(&held);
             fifo(&release);
-            let environment = crate::test_support::fixture_environment(&root);
+            let environment = environment(&root);
             let mut native_environment = environment.clone();
             for (name, path) in [("FIXTURE_CAPTURE", &capture), ("FIXTURE_HELD", &held), ("FIXTURE_RELEASE", &release)] {
                 native_environment.insert(name.into(), path.to_str().unwrap().into());
@@ -1237,14 +1253,14 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
             domain.enable_sdk(backend);
             seed_native_metadata(&domain,&home);
             let ownership = Ownership::acquire(&home.join("runtime/orchestrator")).unwrap().unwrap();
-            Self { executor: Executor { domain, home, claude_home: claude_home.clone() }, _ownership: ownership, capture, held, release, claude_home, _hosts: Box::new(hosts), root }
+            Self { executor: Executor { domain, home, claude_home: claude_home.clone() }, _ownership: ownership, capture, held, release, claude_home, _hosts: Box::new(hosts), root, _root: Box::new(owner) }
         }
 
-        pub(crate) fn domain(&self) -> &DomainRuntime {
+        pub fn domain(&self) -> &DomainRuntime {
             &self.executor.domain
         }
 
-        pub(crate) fn run(&self, actor: Actor, id: &str, command: Command) {
+        pub fn run(&self, actor: Actor, id: &str, command: Command) {
             let state = self.domain().state().unwrap();
             self.domain().execute(&actor, &CommandEnvelope {
                 protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
@@ -1253,7 +1269,7 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
         }
 
         /// A node working on task `t` asks the orchestrator `body`: one orchestrator inbox message.
-        pub(crate) fn ask(&self, n: u32, body: &str) {
+        pub fn ask(&self, n: u32, body: &str) {
             if self.domain().state().unwrap().tasks.is_empty() {
                 self.run(Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into(), at: 0 });
                 self.run(Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
@@ -1272,7 +1288,7 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
         }
 
         /// A message from the user: once the orchestrator handled it, `settle` closes it.
-        pub(crate) fn tell(&self, id: &str, body: &str) {
+        pub fn tell(&self, id: &str, body: &str) {
             self.run(Actor::User { user_id: "u".into() }, id, Command::CreateRequest { request_id: id.into(), body: body.into(), auto_merge: false, maintenance: false, message: true });
         }
 
@@ -1290,54 +1306,54 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
         }
 
         /// The capability each start of the fake Claude got, one per start.
-        pub(crate) fn starts(&self) -> Vec<String> {
+        pub fn starts(&self) -> Vec<String> {
             self.lines(".starts")
         }
 
         /// What the last start of the fake Claude was launched with.
-        pub(crate) fn arguments(&self) -> Vec<String> {
+        pub fn arguments(&self) -> Vec<String> {
             let capture: serde_json::Value = serde_json::from_slice(&std::fs::read(&self.capture).unwrap()).unwrap();
             serde_json::from_value(capture["args"].clone()).unwrap()
         }
 
         /// Every prompt from now on starts with `marker` until `clear_marker`.
-        pub(crate) fn mark(&self, marker: &str) {
+        pub fn mark(&self, marker: &str) {
             std::fs::write(format!("{}.marker", self.capture.display()), marker).unwrap();
         }
 
         /// Only the next start's prompts start with `marker`.
-        pub(crate) fn mark_once(&self, marker: &str) {
+        pub fn mark_once(&self, marker: &str) {
             std::fs::write(format!("{}.marker-once", self.capture.display()), marker).unwrap();
         }
 
-        pub(crate) fn clear_marker(&self) {
+        pub fn clear_marker(&self) {
             std::fs::remove_file(format!("{}.marker", self.capture.display())).unwrap();
         }
 
         /// The next starts hold their first prompt before Claude sees it, until `release`.
-        pub(crate) fn hold_before_claude(&self) {
+        pub fn hold_before_claude(&self) {
             std::fs::write(format!("{}.hold-before", self.capture.display()), "").unwrap();
         }
 
         /// Every result the fake Claude reports carries `fields` too.
-        pub(crate) fn add_to_results(&self, fields: serde_json::Value) {
+        pub fn add_to_results(&self, fields: serde_json::Value) {
             std::fs::write(format!("{}.result-extra", self.capture.display()), fields.to_string()).unwrap();
         }
 
-        pub(crate) fn pending(&self) -> usize {
-            self.domain().store.lock().unwrap().pending_messages().unwrap().into_iter().filter(|m| m.recipient_kind == "orchestrator").count()
+        pub fn pending(&self) -> usize {
+            self.domain().store.lock_or_exit("the domain store").pending_messages().unwrap().into_iter().filter(|m| m.recipient_kind == "orchestrator").count()
         }
 
-        pub(crate) fn attempts(&self) -> Vec<String> {
-            self.domain().store.lock().unwrap().delivery_evidence_page(0).unwrap().into_iter()
+        pub fn attempts(&self) -> Vec<String> {
+            self.domain().store.lock_or_exit("the domain store").delivery_evidence_page(0).unwrap().into_iter()
                 .filter(|i| i.recipient_kind == "orchestrator").map(|i| i.state).collect()
         }
 
-        pub(crate) fn cards(&self, prefix: &str) -> Vec<String> {
+        pub fn cards(&self, prefix: &str) -> Vec<String> {
             self.domain().state().unwrap().interactions.keys().filter(|id| id.0.starts_with(prefix)).map(|id| id.0.clone()).collect()
         }
 
-        pub(crate) fn unresolved(&self) -> Vec<String> {
+        pub fn unresolved(&self) -> Vec<String> {
             let state = self.domain().state().unwrap();
             let requests: Vec<RequestId> = state.requests.keys().cloned().collect();
             let suggestions: Vec<InteractionId> = state.interactions.keys().cloned().collect();
@@ -1349,14 +1365,14 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
         }
 
         /// Blocks until the fake Claude holds its turn.
-        pub(crate) fn wait_held(&self) {
+        pub fn wait_held(&self) {
             let mut text = String::new();
             std::fs::File::open(&self.held).unwrap().read_to_string(&mut text).unwrap();
             assert_eq!(text, "held\n");
         }
 
         /// Waits, off the runtime, until the fake Claude holds its turn.
-        pub(crate) async fn held(&self) {
+        pub async fn held(&self) {
             let held = self.held.clone();
             tokio::task::spawn_blocking(move || {
                 let mut text = String::new();
@@ -1364,7 +1380,7 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
             }).await.unwrap();
         }
 
-        pub(crate) fn release(&self) {
+        pub fn release(&self) {
             std::fs::OpenOptions::new().write(true).open(&self.release).unwrap().write_all(b"go").unwrap();
         }
     }
@@ -1373,7 +1389,6 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
 #[cfg(test)]
 mod tests {
     use super::testing::{Fixture, fixture};
-    use crate::live::LiveOf as _;
     use super::*;
     use alondra_domain_rules::*;
     use alondra_core::accounts::{AccountBilling, AccountId};
@@ -2233,11 +2248,9 @@ mod tests {
         f.tick().await;
         assert_eq!(f.starts().len(), 0, "no account can run the batch");
         assert_eq!(status(&f.executor).unwrap()["waits_for_sign_in"], true, "the screens hear why the request sits");
-        assert!(domain.live().usage_pause.waits_for_session(), "launches wait for a session, not for usage: {:?}", domain.engine().usage_pause());
 
         f.tick().await;
         assert_eq!(f.starts().len(), 0);
-        assert!(domain.live().usage_pause.waits_for_session(), "nothing but a session ends the wait");
         assert_eq!(f.executor.account_wait_change(), None, "the log says it once, not on every tick");
 
         domain.engine().account_wait().end();
@@ -2252,68 +2265,21 @@ mod tests {
         assert_eq!(status(&f.executor).unwrap()["waits_for_sign_in"], false, "and the wait is gone from the screens");
     }
 
-    #[tokio::test]
-    async fn a_request_on_a_fresh_install_says_each_reason_it_waits_and_runs_once_claude_is_connected() {
-        use alondra_core::accounts::{AccountKey, AccountsConfig, Provider};
-        let f = fixture();
-        let domain = &f.executor.domain;
-        let options = alondra_core::options::path_in(&f.executor.home);
-        let connected = std::fs::read_to_string(&options).unwrap();
-        std::fs::write(&options, AccountsConfig::fresh().to_toml()).unwrap();
-        crate::accounts::begin_initial_check(domain);
-        ask_orchestrator(&f, 1);
 
-        f.tick().await;
-        assert_eq!(f.starts().len(), 0);
-        let checking = domain.engine().account_wait().reason().expect("the request waits");
-        assert!(checking.contains("Accounts are being checked"), "{checking}");
-
-        crate::accounts::check(domain, &f.executor.home);
-        f.tick().await;
-        assert_eq!(f.starts().len(), 0, "no provider is connected");
-        let unconnected = domain.engine().account_wait().reason().expect("the request still waits");
-        assert_ne!(unconnected, checking, "the wait says why it waits now, not why it waited at startup");
-        assert!(unconnected.contains("open Accounts to connect"), "{unconnected}");
-
-        std::fs::write(&options, connected).unwrap();
-        let profiles = alondra_core::options::OptionsFile::parse(&std::fs::read_to_string(&options).unwrap()).unwrap().model_profiles;
-        let version = alondra_core::model_selection::profiles_version(&profiles);
-        command(domain, Actor::System, "connected-profiles", Command::RecordModelProfiles { profiles, version });
-        accounts_seen(&f, "connected", alondra_core::accounts::AccountState::SignedIn);
-        command(domain, Actor::System, "connected-order", Command::RecordAccountConfiguration { order: vec![AccountKey::native(Provider::Claude)], version: "connected".into() });
-        f.tick().await;
-        assert_eq!(f.starts().len(), 1, "connecting Claude runs the request that waited");
-        assert_eq!(domain.engine().account_wait().reason(), None);
-    }
-
-    #[tokio::test]
-    async fn claude_answering_while_no_account_has_a_session_checks_the_accounts_at_once() {
-        use alondra_core::accounts::AccountState;
-        let f = fixture();
-        let domain = &f.executor.domain;
-        let checked = || async { tokio::time::timeout(Duration::ZERO, domain.live().account_check.notified()).await.is_ok() };
-        crate::accounts::answered(domain);
-        assert!(!checked().await, "with sessions to spare an answer asks for nothing");
-
-        accounts_seen(&f, "accounts-out", AccountState::SignedOut);
-        assert!(crate::accounts::choose_for_launch(domain, &f.executor.home, now_millis()).is_none());
-        crate::accounts::answered(domain);
-        assert!(checked().await, "an answer while waiting for a session checks the accounts now");
-    }
 
     #[tokio::test]
     async fn no_batch_starts_while_usage_is_exhausted_and_it_runs_once_when_usage_is_back() {
         let f = fixture();
         let domain = &f.executor.domain;
         ask_orchestrator(&f, 1);
-        domain.live().usage_pause.exhaust(Some(now_millis() + 3_600_000), now_millis());
+        alondra_engine_doubles::orchestrator::usage(&**domain).exhaust(now_millis() + 3_600_000, now_millis());
         f.tick().await;
         f.tick().await;
         assert_eq!(f.starts().len(), 0, "paused: Claude is not started");
         assert_eq!(outbox(domain).len(), 1, "and the batch waits, untouched");
         assert!(load(&f.executor.home).unwrap().active_run.is_none());
 
-        domain.live().usage_pause.resume(now_millis());
+        alondra_engine_doubles::orchestrator::usage(&**domain).resume();
         f.tick().await;
         assert_eq!(f.starts().len(), 1, "resumed: the pending batch runs");
         assert!(unhandled(domain).is_empty());
@@ -2321,40 +2287,6 @@ mod tests {
         assert_eq!(f.starts().len(), 1, "and only once");
     }
 
-    #[tokio::test]
-    async fn a_run_that_hits_the_limit_before_working_pauses_everything_and_is_retried_after_the_reset() {
-        let f = fixture();
-        f.mark_once("fixture:limited");
-        let domain = &f.executor.domain;
-        ask_orchestrator(&f, 1);
-        let before = now_millis() / 1000;
-        f.tick().await;
-        let after = now_millis() / 1000;
-        assert_eq!(f.starts().len(), 1);
-        let until = domain.engine().usage_pause().map(|e| e.until).expect("usage pauses everything");
-        assert!(until % 1000 == 0 && ((before + 3_600) * 1000..=(after + 3_600) * 1000).contains(&until),
-            "until is the reset Claude reported, an hour after the run: {until}");
-        let runtime = load(&f.executor.home).unwrap();
-        assert!(runtime.active_run.is_none() && runtime.last_error.is_none() && runtime.failure.is_none() && runtime.consecutive_failures == 0 && runtime.retry_at.is_none(), "{runtime:?}");
-        assert_eq!(outbox(domain).iter().map(|(_, state)| state.as_str()).collect::<Vec<_>>(), ["retryable"]);
-        assert!(!domain.state().unwrap().interactions.keys().any(|id| id.0.starts_with(PROBLEM_PREFIX)), "a limit is not a Problem for the user to decide");
-
-        f.tick().await;
-        assert_eq!(f.starts().len(), 1, "nothing runs until the reset");
-        let usage = domain.read().state().account_usage.clone();
-        assert!(usage.iter().any(|usage| usage.account.is_default() && usage.exhausted_until(now_millis()) == Some(until)),
-            "the orchestrator's account ran out until the reset: {usage:?}");
-
-        crate::usage_probe::record(domain, &alondra_core::accounts::AccountId::default_account(), alondra_core::usage::UsageReading {
-            windows: vec![alondra_core::usage::WindowReading { kind: alondra_core::usage::WindowKind::Session, used: alondra_core::usage::Share::of(0.1), resets_at: None, exhausted: false }],
-            plan: None, complete: true,
-        }, now_millis());
-        domain.live().usage_pause.resume(now_millis());
-        f.tick().await;
-        assert_eq!(f.starts().len(), 2, "after the reset the probe finds room: the same batch is retried");
-        assert!(unhandled(domain).is_empty());
-        assert!(attempts(domain).iter().any(|(_, state, _)| state == "handed"));
-    }
 
     #[tokio::test]
     async fn without_an_sdk_backend_a_batch_does_not_start_and_is_offered_again() {

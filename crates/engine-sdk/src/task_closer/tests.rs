@@ -189,7 +189,7 @@ impl Rig {
     fn undelivered(wait: Option<Duration>) -> Self {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir(&home).unwrap();
-        let domain = Arc::new(crate::wiring::open(&home).unwrap());
+        let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: SESSION.into(), name: "Node".into(), at: 0 });
         command(&domain, user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
         command(&domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
@@ -322,7 +322,7 @@ async fn an_answered_leave_survives_a_failed_receipt_and_a_restart_without_askin
     assert_eq!(row.problem_id, card, "the answered card stays the task's answer");
     rig.pass(T0 + 11 * MINUTE + 1).await;
     assert_eq!(rig.closing().unwrap(), row, "the receipt waits for the usual retry");
-    rig.domain = Arc::new(crate::wiring::open(&rig._home.0).unwrap());
+    rig.domain = Arc::new(crate::engine_tests::open(&rig._home.0).unwrap());
     for at in [T0 + 17 * MINUTE, T0 + 600 * MINUTE] {
         assert!(pass(&rig.domain, rig.sessions.as_ref(), &rig.timing, at).await.is_err());
         assert_eq!(rig.closing().unwrap().problem_id, card);
@@ -1609,7 +1609,7 @@ async fn cancelling_a_task_whose_stored_worktrees_are_home_and_the_projects_root
 async fn a_persisted_recovery_card_after_cleanup_is_retired_without_resuming_the_host() {
     let home = Home(crate::test_support::Directory::new());
     std::fs::create_dir(&home.0).unwrap();
-    let domain = crate::wiring::open(&home.0).unwrap();
+    let domain = crate::engine_tests::open(&home.0).unwrap();
     let task_id = TaskId::from("closing");
     let node = Actor::Agent { agent_id: "node".into() };
     command(&domain, Actor::System, "register", Command::RegisterAgent { agent_id: "node".into(), name: "Node".into(), at: 0 });
@@ -1642,7 +1642,7 @@ async fn a_persisted_recovery_card_after_cleanup_is_retired_without_resuming_the
     domain.store.lock().unwrap().conn_for_test().execute(
         "UPDATE task_wrap_ups SET cleaned_at=?1 WHERE task_id='closing'", [state.revision as i64]).unwrap();
     drop(domain);
-    let domain = crate::wiring::open(&home.0).unwrap();
+    let domain = crate::engine_tests::open(&home.0).unwrap();
     let sessions = FakeSessions::listing(&[]);
     for index in 0..67 {
         pass(&domain, sessions.as_ref(), &Timing { wait: None, retry: Duration::from_secs(1), tick: Duration::from_secs(1) },
@@ -1656,7 +1656,7 @@ async fn a_persisted_recovery_card_after_cleanup_is_retired_without_resuming_the
     assert_eq!(state.tasks[&task_id].wrap_up.node, Some(NodeEnd::Gone));
     assert!(sessions.calls.lock().unwrap().is_empty(), "closing uses the SDK path with no host to resume");
     drop(domain);
-    let domain = crate::wiring::open(&home.0).unwrap();
+    let domain = crate::engine_tests::open(&home.0).unwrap();
     assert!(domain.state().unwrap().interactions[&card].withdrawn);
     assert_eq!(domain.state().unwrap().tasks[&task_id].state, TaskState::Done);
 }

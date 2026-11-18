@@ -33,20 +33,20 @@ application_crate(
     ],
 )
 
-# The engine's and alondrad's tests build against it: the inbox the engine's tests settle, and the
-# fixture of an orchestrator over a runtime they opened.
+# The same production sources built over the test-hooks builds of the crates below it: alondrad's
+# tests, the machine model and the scenarios still link those builds, and a test binary holds one
+# copy of each crate. It goes when those test-hooks builds go.
 rust_library(
-    name = "engine_orchestrator_test_hooks",
+    name = "engine_orchestrator_on_test_hooks",
     testonly = True,
-    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
-    crate_features = ["test-hooks"],
+    srcs = production_sources(),
     crate_name = "alondra_engine_orchestrator",
     crate_root = "src/lib.rs",
     edition = "2024",
     rustc_flags = [LOW_OPT_LEVEL],
     version = VERSION,
     visibility = ["//crates/alondrad:__pkg__", "//crates/machine-model:__pkg__", "//crates/scenarios:__pkg__"],
-    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
+    deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",
         "//crates/engine-kernel:engine_kernel_test_hooks",
@@ -82,8 +82,7 @@ low_opt_rust_test(
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
         "//crates/codex-protocol:codex_protocol",
-        "//crates/daemon-engine:daemon_engine_test_hooks",
-        "//crates/engine-sdk:engine_sdk_test_hooks",
+        "//crates/engine-doubles:engine_doubles",
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",
         "//crates/engine-kernel:engine_kernel_test_hooks",

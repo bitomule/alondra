@@ -1,14 +1,14 @@
 load("//tools/bazel:crates.bzl", "application_crate")
 load("//tools:tree.bzl", "repo_tree")
 load("//tools:rust_test.bzl", "LOW_OPT_LEVEL", "low_opt_rust_test")
-load("@crates//:defs.bzl", "all_crate_deps")
 load("@rules_rust//rust:defs.bzl", "rust_library")
+load("@crates//:defs.bzl", "all_crate_deps")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
 
-# The admission gate sits above the engine: it depends on daemon-engine, and daemon-engine asks it
-# only through the port of engine-ports. Only alondrad, which puts the daemon together, sees it.
+# The admission gate and the rest of the engine know each other only through the ports of
+# engine-ports. Only alondrad, which puts the daemon together, sees it.
 WORKSPACE_DEPS = [
     "//crates/engine-ports:engine_ports",
     "//crates/core:alondra_core",
@@ -20,11 +20,12 @@ WORKSPACE_DEPS = [
 
 application_crate(
     name = "engine_admission",
-    srcs = production_sources(test_only = ["src/machine_hooks.rs"]),
+    srcs = production_sources(),
     crate_name = "alondra_engine_admission",
+    # The model of the whole machine runs the gate's decisions.
+    test_visibility = ["//crates/machine-model:__pkg__"],
     version = VERSION,
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
-        "//crates/daemon-engine:daemon_engine",
         "//crates/daemon-engine-machine:daemon_engine_machine",
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-support:daemon_support",
@@ -32,20 +33,20 @@ application_crate(
     ],
 )
 
-# alondrad's tests and the machine model build against it: the gate's decisions, called as they are.
+# The same production sources built over the test-hooks builds of the crates below it: the tests of
+# alondrad, engine-sdk and the machine model still link those builds, and a test binary holds one
+# copy of each crate. It goes when those test-hooks builds go.
 rust_library(
-    name = "engine_admission_test_hooks",
+    name = "engine_admission_on_test_hooks",
     testonly = True,
-    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
-    crate_features = ["test-hooks"],
+    srcs = production_sources(),
     crate_name = "alondra_engine_admission",
     crate_root = "src/lib.rs",
     edition = "2024",
     rustc_flags = [LOW_OPT_LEVEL],
     version = VERSION,
-    visibility = ["//crates/alondrad:__pkg__", "//crates/engine-sdk:__pkg__", "//crates/machine-model:__pkg__", "//crates/scenarios:__pkg__"],
-    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
-        "//crates/daemon-engine:daemon_engine_test_hooks",
+    visibility = ["//crates/alondrad:__pkg__", "//crates/engine-sdk:__pkg__", "//crates/machine-model:__pkg__"],
+    deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-machine:daemon_engine_machine_test_hooks",
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",
@@ -64,8 +65,7 @@ low_opt_rust_test(
     env = {"HOME": "."},
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
-        "//crates/views:views",
-        "//crates/daemon-engine:daemon_engine_test_hooks",
+        "//crates/engine-doubles:engine_doubles",
         "//crates/daemon-engine-machine:daemon_engine_machine_test_hooks",
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",
@@ -79,7 +79,7 @@ rust_inputs_test(
     required_sources = ["crates/engine-admission/src/lib.rs", "crates/engine-admission/src/admission.rs"],
     source_dir = "crates/engine-admission/src/",
     target_under_test = ":engine_admission",
-    test_only_sources = ["crates/engine-admission/src/machine_hooks.rs", "crates/test_support.rs"],
+    test_only_sources = ["crates/test_support.rs"],
     test_sources = False,
 )
 
@@ -89,7 +89,7 @@ exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 # file among them; alondrad's lock policy test reads them too.
 filegroup(
     name = "report_sources",
-    srcs = production_sources(test_only = ["src/machine_hooks.rs"]),
+    srcs = production_sources(),
     visibility = ["//crates/alondra:__pkg__", "//crates/alondrad:__pkg__"],
 )
 

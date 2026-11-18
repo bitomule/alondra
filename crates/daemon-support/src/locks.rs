@@ -93,7 +93,6 @@ pub(crate) fn exit_after_panic(what: &str) -> ! {
 }
 
 /// Leaves `lock` as a thread that panicked holding it does.
-#[cfg(any(test, feature = "test-hooks"))]
 pub fn poison<T: Send + ?Sized>(lock: &Mutex<T>) {
     alondra_core::clock::scope(|scope| {
         let _ = scope.spawn(|| {

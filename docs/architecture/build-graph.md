@@ -110,8 +110,8 @@ speak in, and the registry that holds one implementation of each. It depends onl
 `domain-rules`, and on `foundation` and `process-group` below them: every piece depends on it, and
 none on the piece that implements a port it uses.
 
-- The ports: `AdmissionGate` (`admission.rs`), `OrchestratorEngine` and `OrchestratorAnswers`
-  (`orchestrator.rs`), `SdkHosts` (`hosts.rs`), `AgentHost` (`agent_host.rs`) and `GitHub` (`github.rs`, see "Output adapters"). The values they carry moved with them:
+- The ports: `AdmissionGate` and `AdmissionEngine` (`admission.rs`), `OrchestratorEngine` and
+  `OrchestratorAnswers` (`orchestrator.rs`), `SdkHosts` (`hosts.rs`), `AgentHost` (`agent_host.rs`) and `GitHub` (`github.rs`, see "Output adapters"). The values they carry moved with them:
   `LaunchOptions` and `Failed` (`launch.rs`), `NoRoom` (`machine.rs`) and `OutboxMessage`
   (`outbox.rs`). The crates they came from re-export them, so their callers did not change.
 - The registry (`Registry`) maps each port's type to its implementation: `provide::<dyn P>(…)`
@@ -124,8 +124,9 @@ none on the piece that implements a port it uses.
   `the_daemon_implements_every_port` fails when a port is left without an implementation.
 - Every port is called on a `&dyn Runtime`, the context the engine keeps its state in, as
   rust-analyzer's queries take `db: &dyn HirDatabase`. The context says what a piece may ask of the
-  kernel: its home, the committed state, a command as Alondra itself, the registry and the wake-up of
-  the SDK hosts' owners. `DomainRuntime` implements it. Most implementations are still written
+  kernel: its home, the committed state, a command as Alondra itself, the registry, the wake-up of
+  the SDK hosts' owners, a task's launch plan and the extensions (`extensions()`: the state each piece
+  keeps in the runtime, by type, in `engine-ports/src/extensions.rs`). `DomainRuntime` implements it. Most implementations are still written
   against `DomainRuntime` and reach it through one bridge, `DomainRuntime::of`; each piece moves to
   the context's methods as it stops depending on the kernel (phase 4), and the bridge then goes.
   Generics would compile each piece into its callers and stop the ports being `dyn` in the registry.
@@ -158,16 +159,21 @@ visibility on both).
 - The orchestrator's own state (its host, its stop, its runs) is an extension of its crate
   (`engine.rs`), no longer a field of the engine's `Live`.
 - Its tests are `//crates/engine-orchestrator:engine_orchestrator_test`, one target with the real
-  hosts and fake Claude and Codex they run. They open the engine through `daemon-engine`'s test
-  hooks, and the engine's tests of the orchestrator's inbox moved into it, so the engine's test binary
-  does not link the orchestrator. Neither production library sees the other.
+  hosts and fake Claude and Codex they run. They link neither `daemon-engine` nor `engine-sdk`: they
+  open a runtime with the doubles of `engine-doubles` registered for the ports they do not test. The
+  tests that need the whole engine are in `alondrad` (`engine_tests/orchestrator_*_tests.rs`).
+- What only tests changed is set at run time on the orchestrator's extension (`Injected`): the
+  failed writes, and hooks on a batch's spawn and drain. There is no `test-hooks` build of the crate.
+- The obligation clock (`OrchestratorAnswers::settle_answers`) works on the `&dyn Runtime` alone:
+  `the_clock_settles_what_the_orchestrator_owes_on_any_runtime` fails when it is taken for the
+  kernel's again.
 
 ## The admission gate
 
 `engine-admission` holds the gate every start, resume and turn passes through (`admission`), the
 pauses it holds nodes in (`pauses`) and the watch over the Mac's memory and disk it decides on
-(`machine_watch`). It sits above `daemon-engine`: it depends on it, and only `alondrad`, the machine
-model and the scenarios see it (Bazel visibility).
+(`machine_watch`). It depends on `engine-kernel` and the crates below it, never on `daemon-engine`,
+and only `alondrad`, the machine model and the scenarios see it (Bazel visibility).
 
 - `daemon-engine` asks the gate through the port `AdmissionGate` (`engine-ports/src/admission.rs`):
   ask for a start, take a turn, hold back or resume a node, the pauses it keeps, the place of a queued
@@ -178,10 +184,19 @@ model and the scenarios see it (Bazel visibility).
   reads of the domain's state (`open_task_of`, `run_priority`). The record of the usage pause stays
   in `daemon-engine` (`usage_pause`): the usage probe and the accounts keep it, and only one of its
   calls reaches the gate.
+- The gate asks the engine through the port `AdmissionEngine`, which `daemon-engine` provides: tell a
+  node, the handover, a node's events, a failed start, a launch and the reads of `Live`. It asks the
+  hosts' owner through `SdkHosts`. What it used that is pure moved to `engine-ports`: the API watch
+  (`api.rs`), the usage clock's text and `Alerts` (`usage.rs`), `candidate` and `ALONDRA`.
 - The gate and the machine watch are extensions of `engine-admission` instead of fields of `Live`.
-- Its tests are `//crates/engine-admission:engine_admission_test`. The ones that also start nodes
-  through the SDK run with `engine-sdk`. The engine's own test binary does not link the gate: a
-  runtime without one lets every start and turn through.
+  The pacing that only tests changed is set at run time (`Admission::tune`, `Tuning`).
+- Its tests are `//crates/engine-admission:engine_admission_test`, against the doubles of
+  `engine-doubles` (`admission::Engine`, `hosts::NoHosts`). The ones that need the whole engine are
+  in `alondrad` (`engine_tests/admission_tests.rs`). The engine's own test binary does not link the
+  gate: a runtime without one lets every start and turn through.
+- Until the `test-hooks` builds go (phase 4b), the test binaries that link them (`alondrad`,
+  `engine-sdk`, the machine model) take `engine_admission_on_test_hooks`, the same production sources
+  built over those builds, as `engine-orchestrator` does.
 
 ## The SDK and the launching of tasks
 
@@ -418,3 +433,31 @@ their crate may not use (`TEST_HOOK_EXCEPTIONS` lists the two that still do, for
   tests to stop depending on the root's link, not on the adapter.
 - The run failed only in three scenarios (an SDK host disconnecting at start and timing checkpoints),
   the same failures under load as before; nothing in them touches GitHub.
+
+## Admission and orchestrator without the engine (phase 4a, 2026-11-18)
+
+`engine-admission` and `engine-orchestrator` compile and test without `daemon-engine` and without
+`test-hooks` builds of their own: their doubles are registered at run time from the test-only crate
+`engine-doubles`, and the `engine-admission → daemon-engine` exception left `LAYER_EXCEPTIONS`
+(55 → 54 on main at 3a9431c). `engine-github` keeps its `test-hooks` build; it goes with phase 4b. An edit to `daemon-engine`, `engine-sdk`, `engine-github`,
+`github-gh`, `engine-live`, `engine-mcp` or `engine-worktrees` no longer reruns the gate's or the orchestrator's
+tests, and their MUSTS checks no longer list those crates.
+
+Measured with `edit_bench`, one edit at a time; Bazel's own time without the queue's wait, on the
+shared Mac. A test failed in each run before and after (the bench does not name it); the same targets
+passed when run again alone.
+
+| Edit | Crates reopened | Test targets reopened | Actions run (rustc / clippy / tests) | Critical path | Edit + test |
+|---|---:|---:|---|---:|---:|
+| `engine-admission/src/admission.rs` (before, main at 5a71f13) | 13 | 44 | 75 (16 / 7 / 51) | 288 s | 329 s |
+| `engine-admission/src/admission.rs` (after) | 13 | 43 | 79 (15 / 6 / 57) | 216 s | 243 s |
+| `engine-orchestrator/src/domain_orchestrator.rs` (before) | 11 | 41 | 63 (12 / 5 / 45) | 275 s | 293 s |
+| `engine-orchestrator/src/domain_orchestrator.rs` (after) | 11 | 41 | 63 (12 / 5 / 45) | 245 s | 274 s |
+
+- The target of the phase (≤ 30 s build, ≤ 90 s edit + test) is not met. An edit to these crates
+  still reaches every crate above them (`engine-sdk`, `alondrad`, the scenarios, the machine model),
+  and their test targets dominate the time. What this phase cuts is the other direction: edits below
+  the gate and the orchestrator no longer reach their tests.
+- The rest is phase 4b: the remaining `test-hooks` builds (`engine-github`'s among them) and the `*_on_test_hooks` copies go, so no
+  crate is compiled twice.
+

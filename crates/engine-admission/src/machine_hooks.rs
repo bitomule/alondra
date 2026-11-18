@@ -1,6 +1,5 @@
 //! What the model of the whole machine (`crates/machine-model`) runs of the gate: its decisions,
-//! called as they are. Only the `test-hooks` feature opens these functions; the gate keeps them
-//! crate-private.
+//! called as they are, which the gate itself keeps crate-private.
 use alondra_core::Millis;
 use alondra_domain_rules::{DomainState, ReadIndex, TaskId};
 use std::collections::BTreeSet;

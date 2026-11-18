@@ -18,7 +18,7 @@ domain_crate(
     srcs = production_sources(),
     crate_name = "alondra_domain_rules",
     version = "0.1.0",
-    test_visibility = ["//crates/machine-model:__pkg__"],
+    test_visibility = ["//crates/engine-doubles:__pkg__", "//crates/machine-model:__pkg__"],
     deps = DOMAIN_RULES_DEPS,
 )
 

@@ -30,6 +30,7 @@ use alondra_daemon_support::{
 };
 
 pub use alondra_daemon_engine_model::options;
+pub use alondra_engine_ports::extension;
 
 pub mod domain_database_migration;
 pub mod domain_runtime;

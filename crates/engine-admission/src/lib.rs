@@ -1,29 +1,22 @@
 //! The admission gate every start, resume and turn passes through (`admission`), the pauses it
 //! holds nodes in (`pauses`) and the watch over the Mac's memory and disk it decides on
-//! (`machine_watch`). It sits above `daemon-engine`, which asks it through the port of engine-ports
-//! (`AdmissionGate`); `alondrad` gives the runtime that port with `wire`.
-#![cfg_attr(all(feature = "test-hooks", not(test)), allow(dead_code, unused_imports))]
+//! (`machine_watch`). It knows the rest of the engine only through the ports of engine-ports: the
+//! engine asks it through `AdmissionGate`, and it asks the engine through `AdmissionEngine` and the
+//! hosts' owner through `SdkHosts`. `alondrad` gives the runtime the gate with `wire`.
 
-#[cfg(any(test, feature = "test-hooks"))]
+#[cfg(test)]
 #[path = "../../test_support.rs"]
 pub mod test_support;
 
 #[macro_use]
 extern crate alondra_daemon_support;
 
-use alondra_daemon_engine::{
-    api_failures, domain_agent_lifecycle, hosts, launch_plans, options, domain_messages, domain_orchestrator_tools, live, machine, node_push, node_reports, sdk_handover, start_failures, usage_pause,
-};
-#[cfg(test)]
-use alondra_daemon_engine::{domain_holds, domain_transport, home_renames, usage_probe};
 use alondra_daemon_support::{auth, disk, disk_peaks, locks, node_cost, process_watch, runtime_mutex, save};
 use alondra_daemon_engine_machine::{machine_state, swap_disk};
 pub use alondra_engine_kernel::{domain_database_migration, domain_runtime, domain_store};
 
 pub mod admission;
-#[cfg(test)]
-mod engine_tests;
-#[cfg(any(test, feature = "test-hooks"))]
+mod engine;
 pub mod machine_hooks;
 pub mod machine_watch;
 pub mod pauses;
@@ -40,8 +33,8 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::watch;
 
-alondra_engine_kernel::extension!(Admission, |domain: &DomainRuntime| Admission::persisted_in(domain.home()));
-alondra_engine_kernel::extension!(MachineWatch, |domain: &DomainRuntime| MachineWatch::persisted_in(domain.home()));
+alondra_engine_kernel::extension!(Admission, |runtime: &dyn alondra_engine_ports::Runtime| Admission::persisted_in(runtime.home()));
+alondra_engine_kernel::extension!(MachineWatch, |runtime: &dyn alondra_engine_ports::Runtime| MachineWatch::persisted_in(runtime.home()));
 
 /// The gate and the machine watch of a runtime, kept as its extensions.
 pub trait AdmissionOf {
@@ -61,10 +54,16 @@ impl AdmissionOf for DomainRuntime {
 
 /// Takes `machine` as a sample of the Mac and `disk` as its own disk's space: a test's fixture
 /// makes the Mac healthy, short or full with it.
-#[cfg(any(test, feature = "test-hooks"))]
 pub fn measure_machine(domain: &DomainRuntime, machine: &alondra_core::Machine, disk: disk::Space) {
     machine_watch::pace(domain, machine);
     domain.machine_watch().measure_disk(disk);
+}
+
+/// The gate of a test that is not about pacing: unpaced, and its launches see the disk the watch
+/// measured, never the free space of the Mac running the test. Production never calls it.
+pub fn for_tests(domain: &DomainRuntime) {
+    domain.admission().tune(admission::Tuning::UNPACED);
+    domain.machine_watch().launch_on_measured_disk();
 }
 
 /// Gives the registry the gate the rest of the engine asks.
@@ -176,12 +175,23 @@ impl AdmissionGate for Gate {
     }
 }
 
-/// The engine as `alondrad` puts it together, for the gate's tests.
+/// The gate's tests open a runtime with the gate and doubles of the rest of the engine: hosts that
+/// run nothing and an engine scripted by the test.
 #[cfg(test)]
 mod wiring {
+    use alondra_engine_doubles::admission::Engine;
+    use std::sync::Arc;
+
     pub fn open(home: &std::path::Path) -> anyhow::Result<super::DomainRuntime> {
-        let domain = alondra_daemon_engine::wiring::open(home)?;
+        let domain = super::DomainRuntime::open_unwired_at(home, &crate::domain_database_migration::active_path(home))?;
         crate::wire(domain.ports());
+        domain.ports().provide::<dyn alondra_engine_ports::hosts::SdkHosts>(Arc::new(alondra_engine_doubles::hosts::NoHosts));
+        Engine::wire(domain.ports());
+        crate::for_tests(&domain);
         Ok(domain)
+    }
+
+    pub fn engine(domain: &super::DomainRuntime) -> Arc<Engine> {
+        Engine::of(domain)
     }
 }

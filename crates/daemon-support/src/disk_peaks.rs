@@ -90,7 +90,6 @@ impl Estimates {
         }
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn seed(&mut self, project: &str, peaks: &[u64]) {
         for peak in peaks {
             self.keep(project, *peak, 0);

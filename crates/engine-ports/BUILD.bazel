@@ -20,6 +20,7 @@ port_crate(
     crate_name = "alondra_engine_ports",
     version = VERSION,
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS,
+    test_visibility = ["//crates/engine-doubles:__pkg__"],
 )
 
 low_opt_rust_test(

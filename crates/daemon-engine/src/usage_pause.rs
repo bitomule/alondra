@@ -24,7 +24,6 @@ use crate::live::LiveOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use alondra_core::{Millis, now_millis};
-use std::future::Future;
 use std::sync::Mutex;
 use std::time::Duration;
 use tokio::sync::watch;
@@ -37,6 +36,7 @@ const JITTER_MAX_MS: u64 = 45_000;
 pub(crate) const RESUME_MESSAGE: &str = "Your Claude usage limit has reset. Carry on with what you were doing.";
 
 pub use alondra_engine_ports::orchestrator::Exhausted;
+pub use alondra_engine_ports::usage::{Alerts, clock_text, local_at, local_midnight};
 
 #[derive(Default)]
 struct Record {
@@ -277,35 +277,6 @@ impl UsagePause {
     }
 }
 
-fn local_at(now: Millis, days_ahead: i32, hour: i32, minute: i32) -> Millis {
-    let t = now.div_euclid(1000) as libc::time_t;
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    unsafe { libc::localtime_r(&t, &mut tm) };
-    tm.tm_mday += days_ahead;
-    tm.tm_hour = hour;
-    tm.tm_min = minute;
-    tm.tm_sec = 0;
-    tm.tm_isdst = -1;
-    unsafe { libc::mktime(&mut tm) as Millis * 1000 }
-}
-
-fn local_midnight(millis: Millis) -> Millis {
-    local_at(millis, 0, 0, 0)
-}
-
-/// "15:45", with the weekday in front when it is not today.
-pub fn clock_text(millis: Millis, now: Millis, spanish: bool) -> String {
-    let t = millis.div_euclid(1000) as libc::time_t;
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    unsafe { libc::localtime_r(&t, &mut tm) };
-    let time = format!("{:02}:{:02}", tm.tm_hour, tm.tm_min);
-    if local_midnight(millis) == local_midnight(now) {
-        return time;
-    }
-    let days = if spanish { ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"] } else { ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] };
-    format!("{} {time}", days[tm.tm_wday as usize])
-}
-
 pub(crate) fn out_text(exhausted: &Exhausted, now: Millis, spanish: bool) -> String {
     if exhausted.no_session {
         return if spanish { "No hay ninguna cuenta de proveedor disponible: revisa Cuentas".into() }
@@ -402,10 +373,6 @@ async fn watch_pace_cards(domain: std::sync::Arc<crate::domain_runtime::DomainRu
     }
 }
 
-/// How the user hears it: a push that never carries a card.
-pub trait Alerts: Sync {
-    fn tell(&self, text: impl Fn(bool) -> String + Send + Sync, passive: bool) -> impl Future<Output = ()> + Send;
-}
 
 /// Watches the exhaustion: tells the user once when it starts and once when it ends, resumes at
 /// the reset time plus a little jitter, and wakes what waited.
@@ -792,8 +759,9 @@ mod tests {
         std::fs::remove_dir_all(home).unwrap();
     }
 
-    struct Told(Mutex<Vec<(String, bool)>>);
-    impl Alerts for Arc<Told> {
+    #[derive(Clone)]
+    struct Told(Arc<Mutex<Vec<(String, bool)>>>);
+    impl Alerts for Told {
         async fn tell(&self, text: impl Fn(bool) -> String + Send + Sync, passive: bool) {
             self.0.lock().unwrap().push((text(false), passive));
         }
@@ -806,7 +774,7 @@ mod tests {
             session_id: "limited".into(), event: "StopFailure".into(), error_type: Some("rate_limit".into()), ..Default::default()
         }));
         let node = Node::connect(&domain, "limited");
-        let told = Arc::new(Told(Mutex::new(vec![])));
+        let told = Told(Arc::new(Mutex::new(vec![])));
         domain.live().usage_pause.exhaust(Some(now_millis() + 150), now_millis());
         let watcher = tokio::spawn(watch(domain.clone(), told.clone(), 0));
         for _ in 0..200 {
@@ -953,7 +921,7 @@ mod tests {
     #[tokio::test]
     async fn no_account_with_a_session_sounds_because_only_the_user_can_fix_it() {
         let (domain, home) = domain();
-        let told = Arc::new(Told(Mutex::new(vec![])));
+        let told = Told(Arc::new(Mutex::new(vec![])));
         domain.live().usage_pause.wait_for_session(now_millis());
         let watcher = tokio::spawn(watch(domain.clone(), told.clone(), 0));
         for _ in 0..200 {
@@ -970,7 +938,7 @@ mod tests {
     #[tokio::test]
     async fn a_pause_by_the_user_resumes_by_itself_at_its_time_without_telling_anyone() {
         let (domain, home) = domain();
-        let told = Arc::new(Told(Mutex::new(vec![])));
+        let told = Told(Arc::new(Mutex::new(vec![])));
         domain.live().usage_pause.pause_by_user(now_millis() + 100, now_millis());
         let watcher = tokio::spawn(watch(domain.clone(), told.clone(), 0));
         for _ in 0..200 {

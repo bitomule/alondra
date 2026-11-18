@@ -93,7 +93,7 @@ impl Fixture {
         }
         std::fs::write(home.join("service.toml"), config).unwrap();
         let service = Service::open(&home, 0, Arc::new(Auth::open(&home).unwrap())).unwrap().unwrap();
-        let domain = Arc::new(alondra_engine_sdk::wiring::open(&home).unwrap());
+        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         let service = Arc::new(service.with_domain(domain.clone()).with_client(client));
         let config = IrohConfig {

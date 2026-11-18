@@ -10,7 +10,7 @@ use alondra_core::usage::{Share, UsageReading, WindowKind, WindowReading};
 fn with_an_ended_task(test: impl FnOnce(&DomainRuntime)) {
     let fixture = crate::domain_store::tests::Fixture::new();
     drop(crate::domain_store::retention_fixtures::ended_task(&fixture));
-    test(&crate::wiring::open_at(&fixture.0, &fixture.path()).unwrap());
+    test(&crate::engine_tests::open_at(&fixture.0, &fixture.path()).unwrap());
 }
 
 /// Another writer commits between the moment a system command reads the state and the moment it

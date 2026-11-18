@@ -1039,7 +1039,7 @@ pub mod tests {
         schedule.title = "Changed title".into();
         schedule.revision += 1;
         execute_system(&fixture.domain, Command::UpdateSchedule { schedule }).unwrap();
-        let reopened = crate::wiring::open(&fixture.home).unwrap();
+        let reopened = crate::engine_tests::open(&fixture.home).unwrap();
         finish_claim(&reopened, &fixture.home, &run.id).unwrap();
         assert_eq!(reopened.state().unwrap().schedule.runs[&run.id], saved);
         assert_eq!(old_path.canonicalize().unwrap(), old_path);
@@ -1055,7 +1055,7 @@ pub mod tests {
     }
     impl Fixture {
         pub fn open(home: &Path) -> DomainRuntime {
-            let domain = crate::wiring::open(home).unwrap();
+            let domain = crate::engine_tests::open(home).unwrap();
             crate::sdk_owner::tests::measure_healthy_machine(&domain);
             domain
         }

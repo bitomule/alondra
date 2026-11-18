@@ -190,7 +190,7 @@ fn a_crash_before_publication_acknowledges_nothing_and_the_replay_acknowledges_o
     assert_eq!(card(&observer, "owner-card"), Some((None, false)), "the transaction itself committed");
     drop(runtime);
 
-    let restarted = crate::wiring::open_at(&fixture.0, &fixture.path()).unwrap();
+    let restarted = crate::engine_tests::open_at(&fixture.0, &fixture.path()).unwrap();
     let published = Arc::clone(restarted.read().state());
     assert!(published.interactions.contains_key(&InteractionId::from("owner-card")));
     let (acceptance, outcomes) = restarted.own(scope_of(&published), work).unwrap();

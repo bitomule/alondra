@@ -161,7 +161,7 @@ impl World {
     }
 
     fn boot(home: &Path, database: &Path, backend: &crate::sdk_backend::SdkBackend, bg: &Arc<Bg>) -> Arc<DomainRuntime> {
-        let domain = Arc::new(crate::wiring::open_at(home, database).unwrap());
+        let domain = Arc::new(crate::engine_tests::open_at(home, database).unwrap());
         crate::sdk_owner::tests::measure_healthy_machine(&domain);
         domain.enable_sdk(backend.clone());
         domain.handovers().use_sessions(Arc::clone(bg) as Arc<dyn BgSessions>);

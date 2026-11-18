@@ -3826,7 +3826,7 @@ agreement_key = "{}"
         for revoke in ["none", "approval", "enrollment"] {
             let (directory, service, phone) = push_fixture();
             activate_push(&service);
-            let domain = Arc::new(alondra_engine_sdk::wiring::open(&directory).unwrap());
+            let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&directory).unwrap());
             let client = crate::client_routes::Client::open(domain.clone(), &directory, Default::default());
             let service = service.with_domain(domain.clone()).with_client(client);
             let work = changes_work(&service, "queued-write", json!({"method":"POST","path":"/requests", "body":{
@@ -3894,7 +3894,7 @@ agreement_key = "{}"
         let (_directory, mut service, phone) = push_fixture();
         activate_push(&service);
         let home = service.home.clone();
-        let domain = Arc::new(alondra_engine_sdk::wiring::open(&home).unwrap());
+        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
         service = service.with_domain(domain);
         let responses = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
         let work = changes_work(
@@ -4086,7 +4086,7 @@ agreement_key = "{}"
     fn encrypted_upload_steps_cross_the_domain_admission_gate_without_opening_other_routes() {
         let (_directory, service, _) = push_fixture();
         activate_push(&service);
-        let domain = Arc::new(alondra_engine_sdk::wiring::open(&service.home).unwrap());
+        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&service.home).unwrap());
         let service = service.with_domain(domain);
         for (index, step) in ["start", "chunk", "finish", "cancel"].into_iter().enumerate() {
             let path = format!("/uploads/{step}");
@@ -4592,7 +4592,7 @@ agreement_key = "{}"
         let (_directory, service, _) = push_fixture();
         activate_push(&service);
         let home = service.home.clone();
-        let domain = Arc::new(alondra_engine_sdk::wiring::open(&home).unwrap());
+        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
         let service = service.with_domain(domain);
         let work = changes_work(
             &service,
@@ -4702,7 +4702,7 @@ agreement_key = "{}"
                 .is_ok(),
             "known registrations receive a typed compatibility response from the legacy daemon"
         );
-        let domain = Arc::new(alondra_engine_sdk::wiring::open(&home).unwrap());
+        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
         let service = service.with_domain(domain);
         let send = |request_id: &'static str, path: &'static str, body: Value| {
             let service = &service;
@@ -5206,7 +5206,7 @@ agreement_key = "{}"
         let (_directory, mut service, phone) = push_fixture();
         activate_push(&service);
         let home = service.home.clone();
-        let domain = Arc::new(alondra_engine_sdk::wiring::open(&home).unwrap());
+        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
         service = service.with_domain(domain);
         let attacker = SigningKey::from_slice(&[71; 32]).unwrap();
         let trusted = SigningKey::from_slice(&[33; 32]).unwrap();
@@ -6263,7 +6263,7 @@ agreement_key = "{}"
         let home =
             scratch_directory.parent().unwrap().join(format!("alondra-service-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
-        let domain = Arc::new(alondra_engine_sdk::wiring::open(&home).unwrap());
+        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
         let phone_signing = SigningKey::from_slice(&[3u8; 32]).unwrap();
         let phone_agreement = SecretKey::from_slice(&[4u8; 32]).unwrap();
         let signing_wire = URL_SAFE_NO_PAD.encode(phone_signing.verifying_key().to_sec1_bytes());
@@ -6361,7 +6361,7 @@ agreement_key = "{}"
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir_all(&home).unwrap();
-        let domain = Arc::new(alondra_engine_sdk::wiring::open(&home).unwrap());
+        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
         let state = domain.state().unwrap();
         domain
             .execute(
@@ -6829,7 +6829,7 @@ agreement_key = "{}"
         use std::os::unix::fs::PermissionsExt;
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&*home).unwrap();
-        let domain = Arc::new(alondra_engine_sdk::wiring::open(&home).unwrap());
+        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
         let phone_signing = SigningKey::from_slice(&[3u8; 32]).unwrap();
         let phone_agreement = SecretKey::from_slice(&[4u8; 32]).unwrap();
         let signing_wire = URL_SAFE_NO_PAD.encode(phone_signing.verifying_key().to_sec1_bytes());

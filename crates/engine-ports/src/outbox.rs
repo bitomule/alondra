@@ -11,3 +11,5 @@ pub struct OutboxMessage {
     pub message: String,
     pub state: String,
 }
+
+pub const ALONDRA: &str = "Alondra";

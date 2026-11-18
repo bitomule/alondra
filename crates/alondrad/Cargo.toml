@@ -43,8 +43,9 @@ toml.workspace = true
 [dev-dependencies]
 alondra-daemon-support = { workspace = true, features = ["test-hooks"] }
 alondra-daemon-engine = { workspace = true, features = ["test-hooks"] }
-alondra-engine-admission = { workspace = true, features = ["test-hooks"] }
-alondra-engine-orchestrator = { workspace = true, features = ["test-hooks"] }
+alondra-daemon-engine-model = { workspace = true, features = ["test-hooks"] }
+alondra-engine-kernel = { workspace = true, features = ["test-hooks"] }
+alondra-view-model.workspace = true
 alondra-engine-sdk = { workspace = true, features = ["test-hooks"] }
 h2 = "0.4.19"
 tempfile.workspace = true

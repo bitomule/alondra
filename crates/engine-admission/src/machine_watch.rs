@@ -1,8 +1,7 @@
 //! Machine pressure is recorded as samples, incidents and admission state. No incident creates
 //! a user card or a fallback push. The admission gate resumes waiting nodes after recovery.
 //! Disk incidents retain hysteresis; memory only paces new starts and never stops running work.
-use crate::hosts::HostsOf as _;
-use crate::live::LiveOf as _;
+use crate::engine::EngineOf as _;
 use crate::AdmissionOf as _;
 use alondra_domain_rules::SystemCard;
 #[cfg(test)]
@@ -24,7 +23,7 @@ use std::time::Duration;
 
 use crate::domain_runtime::DomainRuntime;
 use crate::machine_state::{MacState, NoRoom};
-use crate::usage_pause::Alerts;
+use alondra_engine_ports::usage::Alerts;
 
 pub(crate) const FILE: &str = "machine-incident.json";
 /// Measurements in a row past the recovery line that end an incident: one alone may be a blip.
@@ -135,9 +134,8 @@ enum Candidates {
     #[default]
     None,
     Mounted,
-    #[cfg(any(test, feature = "test-hooks"))]
     Given(Vec<(PathBuf, crate::disk::Space, u64)>),
-    #[cfg(any(test, feature = "test-hooks"))]
+    #[cfg(test)]
     Probed { mounts: Option<Vec<PathBuf>>, spaces: Vec<(PathBuf, crate::disk::Space, u64)> },
 }
 
@@ -267,7 +265,6 @@ fn tightest_on<T: Clone>(machine: Machine, volumes: &[(T, crate::disk::Space)]) 
 
 /// One sample of the incident: the gauges, the nodes waiting, and whether the user just said they
 /// fixed it. Pure, so every turn of it is tested without a clock.
-#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) fn step(previous: Option<Incident>, machine: &Machine, waiting: &[Waiter], fixed: bool, now: Millis) -> (Option<Incident>, Vec<Action>) {
     step_on(previous, machine, None, waiting, fixed, now)
 }
@@ -325,17 +322,19 @@ fn open(cause: MachineCause, machine: &Machine, disk: Option<&str>, waiting: &[W
 
 /// The volume the machine's own disk gauge measures.
 fn own_disk() -> &'static Path {
-    let data = Path::new(crate::machine::BOOT_DATA);
+    let data = Path::new(alondra_daemon_engine_machine::machine::BOOT_DATA);
     if data.exists() { data } else { Path::new("/") }
 }
 
 pub struct MachineWatch {
-    #[cfg(any(test, feature = "test-hooks"))]
+    /// The space a test gives a launch's folder, in place of the free space of the Mac running it.
     launch_space: Mutex<BTreeMap<PathBuf, crate::disk::Space>>,
-    #[cfg(any(test, feature = "test-hooks"))]
+    /// A launch sees the boot disk the watch measured: a test's world never reads the real Mac's.
+    launches_on_measured_disk: std::sync::atomic::AtomicBool,
+    /// Told after every sample, for a test that waits for one.
     pub sampled: tokio::sync::Notify,
-    #[cfg(any(test, feature = "test-hooks"))]
-    pub sample_threads: Mutex<Vec<std::thread::ThreadId>>,
+    /// The threads that took each sample, kept only once a test asks for them.
+    sample_threads: Mutex<Option<Vec<std::thread::ThreadId>>>,
     /// A holder that panics leaves it whole, so it is recovered: see `MachineWatch::record`.
     record: Mutex<Record>,
     file: Option<PathBuf>,
@@ -345,9 +344,9 @@ pub struct MachineWatch {
 
 impl Default for MachineWatch {
     fn default() -> Self {
-        Self { #[cfg(any(test, feature = "test-hooks"))] launch_space: Mutex::default(), record: Mutex::default(), file: None, save_failures: crate::save::Failures::default(), changed: tokio::sync::Notify::new(),
-            #[cfg(any(test, feature = "test-hooks"))] sampled: tokio::sync::Notify::new(),
-            #[cfg(any(test, feature = "test-hooks"))] sample_threads: Mutex::new(vec![]),
+        Self { launch_space: Mutex::default(), launches_on_measured_disk: Default::default(), record: Mutex::default(), file: None,
+            save_failures: crate::save::Failures::default(), changed: tokio::sync::Notify::new(), sampled: tokio::sync::Notify::new(),
+            sample_threads: Mutex::new(None),
         }
     }
 }
@@ -370,9 +369,22 @@ impl MachineWatch {
         self.record.lock_or_recover("the machine watch")
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn poison(&self) {
         crate::locks::poison(&self.record);
+    }
+
+    /// From now on keeps the thread that takes each sample.
+    pub fn record_sample_threads(&self) {
+        self.sample_threads.lock_or_recover("the sampling threads").get_or_insert_default();
+    }
+
+    pub fn sample_threads(&self) -> Vec<std::thread::ThreadId> {
+        self.sample_threads.lock_or_recover("the sampling threads").clone().unwrap_or_default()
+    }
+
+    /// From now on a launch sees the boot disk this watch measured.
+    pub fn launch_on_measured_disk(&self) {
+        self.launches_on_measured_disk.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn save(&self, record: &Record) {
@@ -432,7 +444,6 @@ impl MachineWatch {
         }
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn measure_nodes(&self, now: Millis, footprints: Vec<u64>) {
         let mut record = self.record();
         record.node_cost.record(now, footprints);
@@ -452,7 +463,6 @@ impl MachineWatch {
         self.file.as_deref().and_then(Path::parent)
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn set_disk_low(&self, low: bool) {
         let disk = Machine { disk_total: 500_000_000_000, disk_available: if low { 1_000_000_000 } else { 400_000_000_000 }, ..Machine::default() };
         self.measure_disk(disk_space(&disk));
@@ -519,13 +529,11 @@ impl MachineWatch {
     }
 
     /// Volumes alone on their disk: what they hold grows by what their free space falls.
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn give_volumes(&self, volumes: Vec<(PathBuf, crate::disk::Space)>) {
         let volumes = volumes.into_iter().map(|(mount, space)| (mount, space, space.total.saturating_sub(space.usable()))).collect();
         self.record().candidates = Candidates::Given(volumes);
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn give_volumes_holding(&self, volumes: Vec<(PathBuf, crate::disk::Space, u64)>) {
         self.record().candidates = Candidates::Given(volumes);
     }
@@ -552,9 +560,8 @@ impl MachineWatch {
                     }).collect();
                 Some(VolumeMeasurements { mounts: mounts.all, spaces })
             }
-            #[cfg(any(test, feature = "test-hooks"))]
             Candidates::Given(spaces) => Some(VolumeMeasurements { mounts: spaces.iter().map(|(mount, _, _)| mount.clone()).collect(), spaces }),
-            #[cfg(any(test, feature = "test-hooks"))]
+            #[cfg(test)]
             Candidates::Probed { mounts, spaces } => Some(VolumeMeasurements { mounts: mounts?.into_iter().collect(), spaces }),
         }
     }
@@ -632,7 +639,6 @@ impl MachineWatch {
         freed
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn seed_peaks(&self, project: &str, peaks: &[u64]) {
         self.record().peaks.seed(project, peaks);
     }
@@ -767,19 +773,16 @@ impl MachineWatch {
         self.refuse_launch_on(mount, self.space_where_it_works(cwd))
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn give_launch_space(&self, path: PathBuf, space: crate::disk::Space) {
-        self.launch_space.lock().unwrap().insert(path, space);
+        self.launch_space.lock_or_recover("the launch volume measurements").insert(path, space);
     }
 
-    /// With test hooks a launch sees the space the watch measured, never the free space of the Mac running the tests.
     fn space_where_it_works(&self, cwd: &Path) -> Option<crate::disk::Space> {
-        #[cfg(any(test, feature = "test-hooks"))]
         if let Some(space) = self.launch_space.lock_or_recover("the launch volume measurements").get(cwd).copied() {
             return Some(space);
         }
-        #[cfg(any(test, feature = "test-hooks"))]
-        if let Some(measured) = self.record().boot_disk {
+        if self.launches_on_measured_disk.load(std::sync::atomic::Ordering::Relaxed)
+            && let Some(measured) = self.record().boot_disk {
             return Some(measured);
         }
         crate::disk::space(cwd)
@@ -810,7 +813,7 @@ impl MachineWatch {
             self.changed.notify_one();
         }
         let free = space.filter(|_| low_here).map(|space| format!(" ({} free where it works)", alondra_core::machine_incident::bytes_text(if space.short_now() { space.free } else { space.usable() }, Lang::En))).unwrap_or_default();
-        Some(format!("The disk is nearly full{free}: Alondra starts no node until there is space again, and {} has a card about it", crate::domain_messages::user_name()))
+        Some(format!("The disk is nearly full{free}: Alondra starts no node until there is space again, and {} has a card about it", alondra_daemon_support::worktree::user_name()))
     }
 
     fn watch_mount(&self, mount: PathBuf) {
@@ -851,7 +854,6 @@ impl MachineWatch {
         }
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     fn set_incident(&self, incident: Option<Incident>) {
         self.set_incident_on(incident, None);
     }
@@ -874,8 +876,8 @@ fn waiters(domain: &DomainRuntime) -> Vec<Waiter> {
     let mut gone = vec![];
     let mut waiting = vec![];
     for (session, declared) in watch.declared() {
-        let moved_on = domain.live().node(&session).is_some_and(|node| node.turn > declared.turn);
-        if moved_on || domain.live().is_closed(&session) {
+        let moved_on = domain.engine().turn(&session).is_some_and(|turn| turn > declared.turn);
+        if moved_on || domain.engine().is_closed(&session) {
             gone.push(session);
             continue;
         }
@@ -937,8 +939,9 @@ async fn act(domain: &std::sync::Arc<DomainRuntime>, _alerts: &impl Alerts, acti
 /// A new sample of the Mac: kept in the samples file, and when memory gains or loses room for one
 /// more node, one line in the log and a look of the gate.
 pub fn pace(domain: &DomainRuntime, machine: &Machine) {
-    #[cfg(any(test, feature = "test-hooks"))]
-    domain.machine_watch().sample_threads.lock().unwrap().push(std::thread::current().id());
+    if let Some(threads) = domain.machine_watch().sample_threads.lock_or_recover("the sampling threads").as_mut() {
+        threads.push(std::thread::current().id());
+    }
     let watch = &domain.machine_watch();
     let now = if machine.at == 0 { now_millis() } else { machine.at };
     let Some(before) = watch.sample(machine, now) else { return };
@@ -1024,7 +1027,6 @@ pub fn look(domain: &DomainRuntime, machine: Machine) -> Vec<Action> {
         domain.hosts().retake_waiting_for_space();
     }
     domain.admission().poke();
-    #[cfg(any(test, feature = "test-hooks"))]
     domain.machine_watch().sampled.notify_one();
     actions
 }
@@ -1036,7 +1038,7 @@ fn has_space(machine: &Machine, incident: Option<&Incident>) -> bool {
 }
 
 /// Looks at the machine on every sample and whenever a node declares a wait or the user answers.
-pub async fn run(domain: std::sync::Arc<DomainRuntime>, gauges: crate::machine::Gauges, alerts: impl Alerts) {
+pub async fn run(domain: std::sync::Arc<DomainRuntime>, gauges: alondra_daemon_engine_machine::machine::Gauges, alerts: impl Alerts) {
     watch(domain, move || gauges.lock_or_recover("the machine gauges").as_ref().map(|(machine, _, _)| machine.clone()), alerts, TICK).await
 }
 
@@ -1061,8 +1063,7 @@ async fn watch(domain: std::sync::Arc<DomainRuntime>, sample: impl Fn() -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node_push::testing::Node;
-    use alondra_domain_rules::{Actor, Command, CommandEnvelope, InteractionPayload, PROTOCOL_VERSION};
+    use alondra_domain_rules::InteractionPayload;
     use std::sync::Arc;
 
     const GB: u64 = 1_000_000_000;
@@ -1831,6 +1832,7 @@ mod tests {
     #[test]
     fn no_node_starts_while_the_disk_is_low_and_one_does_once_it_recovers() {
         let watch = MachineWatch::default();
+        watch.launch_on_measured_disk();
         let here = crate::test_support::Directory::new();
         std::fs::create_dir(&here).unwrap();
         watch.measure_disk(crate::disk::Space { total: 500 * GB, free: 400 * GB, purgeable: 0 });
@@ -1847,12 +1849,27 @@ mod tests {
     #[test]
     fn a_launch_sees_the_space_the_watch_measured_not_the_free_space_of_the_machine_running_the_test() {
         let watch = MachineWatch::default();
+        watch.launch_on_measured_disk();
         let here = crate::test_support::Directory::new();
         std::fs::create_dir(&here).unwrap();
         watch.measure_disk(crate::disk::Space { total: 500 * GB, free: GB, purgeable: 0 });
         assert!(watch.refuse_launch(&here).is_some_and(|why| why.contains("nearly full")), "a measured full disk refuses the launch");
         watch.measure_disk(crate::disk::Space { total: 500 * GB, free: 400 * GB, purgeable: 0 });
         assert_eq!(watch.refuse_launch(&here), None, "a measured roomy disk starts it");
+    }
+
+    /// The daemon's own launches read the disk of the folder they work in, whatever the watch
+    /// measured last: only a test's world takes the measurement in its place.
+    #[test]
+    fn a_launch_reads_its_folders_disk_unless_a_test_says_otherwise() {
+        let watch = MachineWatch::default();
+        let here = crate::test_support::Directory::new();
+        std::fs::create_dir(&here).unwrap();
+        let measured = crate::disk::Space { total: 500 * GB, free: GB, purgeable: 0 };
+        watch.measure_disk(measured);
+        assert_ne!(watch.space_where_it_works(&here), Some(measured), "the daemon reads the folder's disk");
+        watch.launch_on_measured_disk();
+        assert_eq!(watch.space_where_it_works(&here), Some(measured), "a test's world reads the measurement");
     }
 
     #[test]
@@ -2038,10 +2055,9 @@ mod tests {
     }
 
     fn orchestrator_inbox(domain: &DomainRuntime) -> Vec<String> {
-        let state = domain.state().unwrap();
         domain.store.lock().unwrap().pending_messages().unwrap().iter()
             .filter(|message| message.recipient_kind == "orchestrator")
-            .map(|message| crate::domain_transport::render(&state, message)).collect()
+            .map(|message| message.message.clone()).collect()
     }
 
     #[derive(Default)]
@@ -2218,7 +2234,7 @@ mod tests {
         let (_home, domain) = world();
         domain.machine_watch().declare("s", None, "RAM", 0, now_millis());
         assert_eq!(waiters(&domain).len(), 1);
-        domain.live().observe(&serde_json::json!({"session_id": "s", "hook_event_name": "UserPromptSubmit", "prompt": "go"}));
+        crate::wiring::engine(&domain).script().turns.insert("s".into(), 1);
         assert!(waiters(&domain).is_empty());
         assert!(waiters(&domain).is_empty(), "and it is forgotten");
     }
