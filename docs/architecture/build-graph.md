@@ -211,8 +211,9 @@ moves of a task to another provider or account (`provider_transition`, `account_
 ## Output adapters
 
 An output adapter implements a port of `engine-ports` against the world outside the daemon. It
-depends only on ports, the domain and foundation; only the roots see it, and editing it rebuilds the
-adapter, its test and the roots' link.
+depends only on ports, the domain and foundation, and no production crate but the roots sees it. A
+subsystem's test hooks may still link it for their fakes, and then an edit reopens the tests above
+them too (see "Output adapter `github-gh`" below).
 
 - `github-gh`: GitHub through the Mac's `gh` (`GhCli`). It implements every trait of the `GitHub`
   port (`PrObserver`, `PrMerger`, `GitHubImages`, `Gh`), parses what `gh` answers and reads the
@@ -375,3 +376,22 @@ one run, so the actions and the critical path are the stable part.
   `output file … .rmeta is not writeable` (bazelbuild/rules_rust#3662). Not enabled.
 - What reruns is decided by the graph: a test target reruns whenever a crate it links changes, and
   today most test targets link most of the engine. Cutting that is the work of the layering phases.
+
+## Output adapter `github-gh` (2026-11-18)
+
+`edit_bench` on one edit of the `gh` client, before (where it lived, `engine-github/src/domain_github.rs`)
+and after (`github-gh/src/cli.rs`), on the same branch and Mac, with incremental state:
+
+| Edit | Crates reopened | Test targets reopened | Actions run, build (rustc / clippy) | Build: critical path | Build: edit + build | Edit + test |
+|---|---:|---:|---|---:|---:|---:|
+| Before: `engine-github/src/domain_github.rs` | 17 | 51 | 32 (22 / 9) | 37 s | 106 s | 257 s, tests fail under load |
+| After: `github-gh/src/cli.rs` | 14 | 42 | 31 (20 / 10) | 30 s | 62 s | 388 s, tests fail under load |
+
+- Building meets the phase's goal (30 s on the critical path) and takes 40 % less in all.
+- Edit + test misses it (≤ 90 s): `engine-github`'s test hooks link `github-gh` because their fakes
+  (`FakeGitHub`, the scripted `gh` of `domain_github::tests`) build a `GhCli`, and `alondrad`'s tests
+  use those fakes. So the edit still reopens 42 test targets, `scenarios_test` (about 180 s) among
+  them. Both edit + test runs failed only on tests that pass alone (the SDK host disconnecting at
+  start in scenarios, `alondrad`'s PR diff tests), so their times are not comparable.
+- Next cut: move the fakes that need a `GhCli` into `github-gh`'s own test hooks, so the subsystem's
+  hooks stop linking the adapter.
