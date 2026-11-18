@@ -14,7 +14,7 @@ use alondra_domain_rules::{
 };
 use alondra_views::action_id::ActionId;
 use alondra_daemon_engine::github_world::GithubWorld;
-use alondra_daemon_engine::machine::MachineSampler;
+use alondra_daemon_engine::machine::MachineProbe;
 use alondrad::assemble::{self, Assembled, Backend, GithubSeams, Pushes, Seams};
 use alondrad::push_transport::{RecordedPushes, SentPush};
 use serde_json::{Value, json};
@@ -39,7 +39,7 @@ pub struct Outcome {
 /// daemon takes of it.
 #[derive(Clone, Default)]
 struct CalmMac(Arc<std::sync::atomic::AtomicU64>);
-impl MachineSampler for CalmMac {
+impl MachineProbe for CalmMac {
     fn sample(&self) -> alondra_core::Machine {
         self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         alondra_core::Machine {
@@ -57,6 +57,10 @@ impl MachineSampler for CalmMac {
             disk_purgeable: 0,
             unreliable: false,
         }
+    }
+
+    fn size(&self) -> (usize, u64) {
+        (8, 16 << 30)
     }
 }
 
@@ -250,7 +254,7 @@ fn seams_of(github: &Arc<GithubWorld>, pushes: &RecordedPushes, mac: &CalmMac, l
     Seams {
         github: GithubSeams::of(github.clone()),
         push: Pushes::new(pushes.clone()),
-        machine: Arc::new(mac.clone()),
+        machine: Some(Arc::new(mac.clone())),
         launcher,
         backend,
         world: assemble::World::Isolated,

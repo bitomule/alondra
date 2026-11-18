@@ -706,7 +706,7 @@ async fn execute_external(
             let limit = match request.option_id.as_deref() {
                 Some(alondra_core::options::AUTO) => alondra_core::options::NodeLimit::Auto,
                 Some(count) => match count.parse::<u32>() {
-                    Ok(count) if (1..=crate::admission::most_working_nodes()).contains(&count) => alondra_core::options::NodeLimit::Fixed(count),
+                    Ok(count) if (1..=crate::admission::most_working_nodes(&domain)).contains(&count) => alondra_core::options::NodeLimit::Fixed(count),
                     _ => return Ok(rejected_field(lang, "option_id", "Choose an option")),
                 },
                 None => return Ok(rejected_field(lang, "option_id", "Choose an option")),
@@ -2427,7 +2427,7 @@ for line in sys.stdin:
         let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetLimit, "limit", "auto", "en"), None, || Ok(())).await.unwrap();
         assert_eq!(reply["outcome"], "applied", "{reply}");
         assert!(fs::read_to_string(&options).unwrap().contains("max_working_nodes = \"auto\""));
-        let most = crate::admission::most_working_nodes();
+        let most = crate::admission::most_working_nodes(&domain);
         let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetLimit, "limit", &most.to_string(), "es"), None, || Ok(())).await.unwrap();
         assert_eq!(reply["outcome"], "applied", "{reply}");
         let reply = execute_action(&domain, &client, &home, "test-device", pacing_request(&state, Verb::SetLimit, "limit", &(most + 1).to_string(), "es"), None, || Ok(())).await.unwrap();

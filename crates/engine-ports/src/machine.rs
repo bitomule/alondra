@@ -1,5 +1,15 @@
-//! Why the Mac has no room for one more node, as the admission gate reports it.
-use alondra_core::MemoryPressure;
+//! The Mac the daemon runs on, read through [`MachineProbe`], and why it has no room for one more
+//! node, as the admission gate reports it.
+use alondra_core::{Machine, MemoryPressure};
+
+/// Where the gauges of the Mac come from: its memory, load and own disk in production, a fixed or
+/// scripted Mac in a test or a scenario. It only measures; what to do with a sample is decided above.
+pub trait MachineProbe: Send + Sync + 'static {
+    /// One sample of the Mac, taken now.
+    fn sample(&self) -> Machine;
+    /// How many cores the Mac has and how many bytes of memory, which stay put while it runs.
+    fn size(&self) -> (usize, u64);
+}
 
 const GIB: i64 = 1 << 30;
 const MIB: u64 = 1 << 20;

@@ -328,7 +328,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "sysinfo",
  "tempfile",
  "tokio",
  "toml",
@@ -347,9 +346,7 @@ dependencies = [
  "alondra-engine-ports",
  "alondra-foundation",
  "anyhow",
- "libc",
  "serde_json",
- "sysinfo",
  "tempfile",
  "tokio",
 ]
@@ -537,7 +534,6 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
- "sysinfo",
  "tempfile",
  "tokio",
 ]
@@ -738,7 +734,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
- "sysinfo",
  "tempfile",
  "tokio",
  "toml",
@@ -951,6 +946,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "sysinfo",
  "tempfile",
  "tokio",
 ]

@@ -1090,13 +1090,13 @@ fn queued_launches(domain: &DomainRuntime, state: &DomainState, now: Millis) -> 
 /// What `options.toml` sets and what this Mac takes with its nodes measured at what `mac` says.
 fn node_limits(domain: &DomainRuntime, mac: &MacState) -> (NodeLimit, NodeLimits) {
     let file = alondra_daemon_engine_model::options::options_at(domain.home()).unwrap_or_default();
-    let (cores, memory) = if mac.cpus > 0 && mac.memory_total > 0 { (mac.cpus, mac.memory_total) } else { machine_size() };
+    let (cores, memory) = if mac.cpus > 0 && mac.memory_total > 0 { (mac.cpus, mac.memory_total) } else { domain.ports().machine().size() };
     (file.max_working_nodes, NodeLimits::of(cores, memory, mac.node_cost.unwrap_or(crate::node_cost::DEFAULT)))
 }
 
 /// The highest number Settings offers and `set_limit` takes on this Mac.
-pub fn most_working_nodes() -> u32 {
-    let (cores, memory) = machine_size();
+pub fn most_working_nodes(domain: &DomainRuntime) -> u32 {
+    let (cores, memory) = domain.ports().machine().size();
     NodeLimits::of(cores, memory, crate::node_cost::DEFAULT).most
 }
 
@@ -1121,15 +1121,6 @@ pub fn set_node_limit(home: &Path, limit: NodeLimit) -> Result<(), &'static str>
     let temporary = path.with_extension("toml.tmp");
     std::fs::write(&temporary, written).and_then(|()| std::fs::rename(&temporary, &path))
         .map_err(|_| "Alondra could not write options.toml")
-}
-
-fn machine_size() -> (usize, u64) {
-    static SIZE: std::sync::OnceLock<(usize, u64)> = std::sync::OnceLock::new();
-    *SIZE.get_or_init(|| {
-        let mut system = sysinfo::System::new();
-        system.refresh_memory();
-        (std::thread::available_parallelism().map_or(1, |cores| cores.get()), system.total_memory())
-    })
 }
 
 fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, queued: Vec<Waiting>, now: Millis) -> Snapshot {

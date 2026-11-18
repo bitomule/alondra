@@ -19,7 +19,6 @@ anyhow.workspace = true
 libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sysinfo.workspace = true
 tokio.workspace = true
 alondra-view-model.workspace = true
 

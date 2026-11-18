@@ -7,8 +7,8 @@ load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
 
-# The Mac as the engine reaches it through the `Worktrees` and `Disk` ports: git, the task
-# worktrees and the disks. Only the roots link it, so editing it rebuilds this crate and their link.
+# The Mac as the engine reaches it through the `Worktrees`, `Disk` and `MachineProbe` ports: git,
+# the task worktrees, the disks and the memory and load gauges. Only the roots link it, so editing it rebuilds this crate and their link.
 WORKSPACE_DEPS = [
     "//crates/core:alondra_core",
     "//crates/domain-rules:domain_rules",
