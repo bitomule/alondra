@@ -31,7 +31,6 @@ use alondra_daemon_support::{
     node_cost,
     plugins,
     process_watch,
-    prs,
     runtime_mutex,
     save,
     schedules,
@@ -55,7 +54,7 @@ pub use alondra_engine_kernel::{
     settings_projection,
 };
 
-pub use alondra_engine_github::{domain_github, domain_merges, open_pr_sweep, pr_images, pr_viewed};
+pub use alondra_engine_github::{domain_github, domain_merges, open_pr_sweep, pr_images};
 pub use alondra_engine_live::{codex_live, contexts, node_reports, node_work, sdk_live};
 pub use alondra_engine_mcp::{mcp_probe, mcp_remove, mcp_sign_in, mcp_waits};
 pub use alondra_engine_worktrees::{cancelled_worktrees, home_renames, task_worktrees};

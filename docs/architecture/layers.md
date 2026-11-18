@@ -32,7 +32,7 @@ the application: they talk through ports, and the roots wire them together.
 | ports | `engine-ports`, `provider-contract`, `view-model`, `store`, `agent-application` |
 | application | `engine-kernel`, `daemon-engine`, `daemon-engine-model`, `daemon-engine-machine`, `engine-admission`, `engine-orchestrator`, `engine-sdk`, `engine-github`, `engine-live`, `engine-mcp`, `engine-worktrees`, `daemon-support` (mixed: most of it goes to the `system` adapter), `views` |
 | adapter-in | none yet: `alondrad` and `alondra` hold theirs |
-| adapter-out | `provider-claude`, `provider-codex`, `daemon-engine-store`, `agent-runtime` |
+| adapter-out | `github-gh`, `provider-claude`, `provider-codex`, `daemon-engine-store`, `agent-runtime` |
 | adapter-private | `agent-protocol` (of `provider-claude`), `codex-protocol` (of `provider-codex`) |
 | root | `alondrad`, `alondra`, `relay`, `scenarios`, `tools/sandbox` |
 

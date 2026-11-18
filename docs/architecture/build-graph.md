@@ -111,14 +111,15 @@ speak in, and the registry that holds one implementation of each. It depends onl
 none on the piece that implements a port it uses.
 
 - The ports: `AdmissionGate` (`admission.rs`), `OrchestratorEngine` and `OrchestratorAnswers`
-  (`orchestrator.rs`), `SdkHosts` (`hosts.rs`) and `AgentHost` (`agent_host.rs`). The values they carry moved with them:
+  (`orchestrator.rs`), `SdkHosts` (`hosts.rs`), `AgentHost` (`agent_host.rs`) and `GitHub` (`github.rs`, see "Output adapters"). The values they carry moved with them:
   `LaunchOptions` and `Failed` (`launch.rs`), `NoRoom` (`machine.rs`) and `OutboxMessage`
   (`outbox.rs`). The crates they came from re-export them, so their callers did not change.
 - The registry (`Registry`) maps each port's type to its implementation: `provide::<dyn P>(…)`
   gives it, `port::<dyn P>()` asks for it, and `missing()` names every port nothing implements. The
   runtime holds one (`domain.ports()`).
 - Each piece that implements a port exposes `pub fn wire(&Registry)`: `daemon-engine`
-  (`wiring::wire`), `engine-sdk` (`wiring::wire`), `engine-admission` and `engine-orchestrator`.
+  (`wiring::wire`), `engine-sdk` (`wiring::wire`), `engine-admission`, `engine-orchestrator` and
+  the adapter `github-gh`.
   `alondrad` calls all of them (`domain_bootstrap::wire`), and its test
   `the_daemon_implements_every_port` fails when a port is left without an implementation.
 - Every port is called on a `&dyn Runtime`, the context the engine keeps its state in, as
@@ -207,6 +208,19 @@ moves of a task to another provider or account (`provider_transition`, `account_
   Claude and Codex and binaries they need; the engine's own target needs only the Node host and a
   fake native Claude, and no test runs on a name filter any more.
 
+## Output adapters
+
+An output adapter implements a port of `engine-ports` against the world outside the daemon. It
+depends only on ports, the domain and foundation, and no production crate but the roots sees it. A
+subsystem's test hooks may still link it for their fakes, and then an edit reopens the tests above
+them too (see "Output adapter `github-gh`" below).
+
+- `github-gh`: GitHub through the Mac's `gh` (`GhCli`). It implements every trait of the `GitHub`
+  port (`PrObserver`, `PrMerger`, `GitHubImages`, `Gh`), parses what `gh` answers and reads the
+  viewed files of a PR (`pr_viewed`). `wire` gives the registry `github()`; `alondrad`'s assembly
+  replaces it with its seams' GitHub, which a scenario fills with `GithubWorld`. `engine-github`,
+  `engine-kernel` (PR sizes) and `daemon-engine` (a branch's PR) ask the registry for it.
+
 ## Subsystem crates
 
 Each subsystem crate sits on `engine-kernel` beside the others: it names none of them, and only
@@ -214,9 +228,8 @@ Each subsystem crate sits on `engine-kernel` beside the others: it names none of
 their paths. Its tests open the runtime with `DomainRuntime::open_unwired`, without the engine's
 observers; a test that needs another subsystem runs with the engine.
 
-- `engine-github`: reading pull requests with `gh` (`domain_github`), merging them
-  (`domain_merges`), the images and viewed files of their descriptions (`pr_images`, `pr_viewed`),
-  the sweep that adopts open PRs left without a live owner (`open_pr_sweep`) and the fake GitHub
+- `engine-github`: what Alondra decides from GitHub's pull requests (`domain_github`), merging
+  them (`domain_merges`), the images of their descriptions (`pr_images`), the sweep that adopts open PRs left without a live owner (`open_pr_sweep`) and the fake GitHub
   the tests and scenarios share (`github_world`, test hooks only). Its tests are
   `//crates/engine-github:engine_github_test`.
 - `engine-mcp`: what a node waits for while an MCP server signs in (`mcp_waits`, `mcp_sign_in`)
@@ -363,3 +376,22 @@ one run, so the actions and the critical path are the stable part.
   `output file … .rmeta is not writeable` (bazelbuild/rules_rust#3662). Not enabled.
 - What reruns is decided by the graph: a test target reruns whenever a crate it links changes, and
   today most test targets link most of the engine. Cutting that is the work of the layering phases.
+
+## Output adapter `github-gh` (2026-11-18)
+
+`edit_bench` on one edit of the `gh` client, before (where it lived, `engine-github/src/domain_github.rs`)
+and after (`github-gh/src/cli.rs`), on the same branch and Mac, with incremental state:
+
+| Edit | Crates reopened | Test targets reopened | Actions run, build (rustc / clippy) | Build: critical path | Build: edit + build | Edit + test |
+|---|---:|---:|---|---:|---:|---:|
+| Before: `engine-github/src/domain_github.rs` | 17 | 51 | 32 (22 / 9) | 37 s | 106 s | 257 s, tests fail under load |
+| After: `github-gh/src/cli.rs` | 14 | 42 | 31 (20 / 10) | 30 s | 62 s | 388 s, tests fail under load |
+
+- Building meets the phase's goal (30 s on the critical path) and takes 40 % less in all.
+- Edit + test misses it (≤ 90 s): `engine-github`'s test hooks link `github-gh` because their fakes
+  (`FakeGitHub`, the scripted `gh` of `domain_github::tests`) build a `GhCli`, and `alondrad`'s tests
+  use those fakes. So the edit still reopens 42 test targets, `scenarios_test` (about 180 s) among
+  them. Both edit + test runs failed only on tests that pass alone (the SDK host disconnecting at
+  start in scenarios, `alondrad`'s PR diff tests), so their times are not comparable.
+- Next cut: move the fakes that need a `GhCli` into `github-gh`'s own test hooks, so the subsystem's
+  hooks stop linking the adapter.

@@ -53,6 +53,7 @@ pub(crate) fn wire(registry: &alondra_engine_ports::Registry) {
     alondra_engine_sdk::wiring::wire(registry);
     alondra_engine_admission::wire(registry);
     alondra_engine_orchestrator::wire(registry);
+    alondra_github_gh::wire(registry);
 }
 
 impl DomainDaemon {

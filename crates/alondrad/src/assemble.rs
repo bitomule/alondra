@@ -8,6 +8,7 @@ use alondra_daemon_engine::domain_github::PrObserver;
 use alondra_daemon_engine::domain_merges::PrMerger;
 use alondra_daemon_engine::machine::{MachineSampler, SystemSampler};
 use alondra_daemon_engine::pr_images::GitHubImages;
+use alondra_engine_ports::github::GitHub;
 pub use crate::client_routes::PrView;
 pub use crate::push_transport::{DevicePush, PushTransport, Pushes};
 use std::future::Future;
@@ -21,25 +22,30 @@ pub struct GithubSeams {
     pub observer: Arc<dyn PrObserver>,
     pub view: Arc<dyn PrView>,
     pub images: Arc<dyn GitHubImages>,
+    pub reads: Arc<dyn prs::Gh>,
 }
 
 impl GithubSeams {
     /// The real GitHub, through `gh`.
     pub fn production() -> Self {
-        Self {
-            merger: Arc::new(domain_github::GhCli::new()),
-            observer: Arc::new(domain_github::GhCli::new()),
-            view: Arc::new(client_routes::GhView),
-            images: Arc::new(pr_images::Gh::new()),
-        }
+        Self::over(alondra_github_gh::github(), Arc::new(client_routes::GhView))
     }
 
     /// One object that stands for the whole of GitHub.
     pub fn of<W>(world: Arc<W>) -> Self
     where
-        W: PrMerger + PrObserver + prs::Gh + GitHubImages + Send + Sync + 'static,
+        W: PrMerger + PrObserver + prs::Gh + GitHubImages,
     {
-        Self { merger: Arc::new(world.clone()), observer: Arc::new(world.clone()), view: Arc::new(client_routes::ViaGh(world.clone())), images: world }
+        Self::over(GitHub::of(world.clone()), Arc::new(client_routes::ViaGh(world)))
+    }
+
+    fn over(github: GitHub, view: Arc<dyn PrView>) -> Self {
+        Self { merger: github.merger, observer: github.observer, view, images: github.images, reads: github.reads }
+    }
+
+    /// GitHub as the engine's port sees it.
+    pub fn port(&self) -> GitHub {
+        GitHub { observer: self.observer.clone(), merger: self.merger.clone(), images: self.images.clone(), reads: self.reads.clone() }
     }
 }
 
@@ -219,6 +225,7 @@ pub(crate) async fn assemble_with(
     seams: &Seams,
 ) -> Result<Assembled> {
     let tasks = Tasks::default();
+    domain.ports().provide(Arc::new(seams.github.port()));
     let auth = state.auth();
     let state_domain = domain.clone();
     let state_auth = auth.clone();

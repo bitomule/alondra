@@ -36,7 +36,7 @@ async fn final_delivery_review(
     home: &FsPath, merger: Arc<dyn crate::domain_merges::PrMerger>, state: Arc<DomainState>, command: &Command,
 ) -> Result<Option<crate::public_content::Reviewed>, DomainError> {
     let Command::PresentResult { task_id, targets, is_final: true, .. } = command else { return Ok(None) };
-    let gh = crate::domain_github::GhCli::new();
+    let gh = alondra_github_gh::GhCli::new();
     if let Some(refusal) = crate::domain_merges::draft_refusal(&state, &state.with_open_prs(task_id, targets), &merger).await {
         return Err(refusal);
     }
@@ -336,12 +336,12 @@ async fn pull_request_diff<H: DomainHost>(
 }
 
 pub(crate) async fn pull_request_diff_inner(domain: &DomainRuntime, id: String) -> Response {
-    pull_request_diff_from(domain, id, &crate::domain_github::GhCli::new()).await
+    pull_request_diff_from(domain, id, &alondra_github_gh::GhCli::new()).await
 }
 
 /// The diff at the registered head, with the viewed mark GitHub keeps for each file when it gives
 /// them for that same head: a mark that cannot be read never holds back the diff.
-pub(crate) async fn pull_request_diff_from(domain: &DomainRuntime, id: String, gh: &crate::domain_github::GhCli) -> Response {
+pub(crate) async fn pull_request_diff_from(domain: &DomainRuntime, id: String, gh: &alondra_github_gh::GhCli) -> Response {
     let state = match domain.state() {
         Ok(state) => state,
         Err(_) => return storage_error(),
@@ -451,7 +451,7 @@ fn diff_paths(diff: &str) -> std::collections::HashSet<String> {
     paths
 }
 
-pub(crate) async fn bounded_diff(gh: &crate::domain_github::GhCli, url: &str) -> Result<(Vec<u8>, bool), DomainError> {
+pub(crate) async fn bounded_diff(gh: &alondra_github_gh::GhCli, url: &str) -> Result<(Vec<u8>, bool), DomainError> {
     let mut child = tokio::process::Command::new(gh.program())
         .args(["pr", "diff", url])
         .stdout(Stdio::piped())
@@ -496,7 +496,7 @@ pub(crate) async fn bounded_diff(gh: &crate::domain_github::GhCli, url: &str) ->
     Ok((bytes, truncated))
 }
 
-async fn live_head(gh: &crate::domain_github::GhCli, url: &str) -> Result<String, Response> {
+async fn live_head(gh: &alondra_github_gh::GhCli, url: &str) -> Result<String, Response> {
     let output = clock::timeout(
         std::time::Duration::from_secs(20),
         tokio::process::Command::new(gh.program())
@@ -1245,7 +1245,7 @@ async fn checked_producer_command<H: DomainHost>(
     let reviewed = if matches!(principal, Principal::Agent { .. }) {
         let state = host.domain().state().map_err(|_| storage())?;
         let merger = host.new_work_client().map_or_else(
-            || Arc::new(crate::domain_github::GhCli::new()) as Arc<dyn crate::domain_merges::PrMerger>,
+            || Arc::new(alondra_github_gh::GhCli::new()) as Arc<dyn crate::domain_merges::PrMerger>,
             crate::client_routes::Client::pr_merger,
         );
         steps.step("the public content review", final_delivery_review(host.home(), merger, state, &envelope.command)).await?

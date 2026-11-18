@@ -1,11 +1,11 @@
 //! Find authored PRs whose work no longer has a live owner.
 use alondra_core::clock;
-use crate::domain_github::{GhCli, PrObserver, execute_system};
+use crate::domain_github::execute_system;
+use alondra_engine_ports::github::{AuthoredPr, GitHub};
 use crate::domain_runtime::DomainRuntime;
 use alondra_domain_rules::{Command, DomainState, OpenPrPending, OpenedPr, PullRequest, TaskState};
 use alondra_core::options::OptionsFile;
 use anyhow::{Context, Result};
-use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
@@ -13,29 +13,13 @@ use std::time::Duration;
 
 const FIRST_SWEEP: Duration = Duration::from_secs(5 * 60);
 const SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
-const GH_LIMIT: Duration = Duration::from_secs(30);
 
-#[derive(Deserialize)]
-struct SearchPr {
-    repository: Repository,
-    number: u64,
-    url: String,
-}
-
-#[derive(Deserialize)]
-struct Repository {
-    #[serde(rename = "nameWithOwner")]
-    name_with_owner: String,
-}
-
-impl SearchPr {
-    fn identity(&self) -> Option<OpenedPr> {
-        let repository = alondra_domain_rules::normalize_pr_repository(&self.repository.name_with_owner);
-        let expected = format!("https://github.com/{repository}/pull/{}", self.number);
-        (self.url.eq_ignore_ascii_case(&expected) && self.number > 0).then_some(OpenedPr {
-            host: "github.com".into(), repository, number: self.number,
-        })
-    }
+fn identity(found: &AuthoredPr) -> Option<OpenedPr> {
+    let repository = alondra_domain_rules::normalize_pr_repository(&found.repository);
+    let expected = format!("https://github.com/{repository}/pull/{}", found.number);
+    (found.url.eq_ignore_ascii_case(&expected) && found.number > 0).then_some(OpenedPr {
+        host: "github.com".into(), repository, number: found.number,
+    })
 }
 
 fn registered<'a>(state: &'a DomainState, pr: &OpenedPr) -> Option<&'a PullRequest> {
@@ -79,39 +63,31 @@ fn origin_repository(checkout: &Path) -> Option<String> {
     None
 }
 
-pub async fn sweep(domain: &DomainRuntime, gh: &GhCli, options: &OptionsFile, user_home: &Path) -> Result<()> {
+pub async fn sweep(domain: &DomainRuntime, github: &GitHub, options: &OptionsFile, user_home: &Path) -> Result<()> {
     let repositories = checkout_repositories(&options.projects_root(user_home));
-    let output = gh.run(&["search", "prs", "--author", "@me", "--state", "open", "--limit", "1000", "--json", "repository,number,url"],
-        None, GH_LIMIT).await.map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    let prs: Vec<SearchPr> = serde_json::from_slice(&output).context("decoding the open PR search")?;
+    let prs = github.reads.authored_open_prs().await.map_err(|e| anyhow::anyhow!(e.to_string())).context("searching the open PRs")?;
     for found in prs {
-        let Some(pr) = found.identity() else { continue };
+        let Some(pr) = identity(&found) else { continue };
         if !repositories.contains(&pr.repository) || excluded(&*domain.state()?, &pr) { continue; }
-        let output = match gh.run(&["pr", "view", &found.url, "--json", "headRefName"], None, GH_LIMIT).await {
-            Ok(output) => output,
-            Err(error) => { log!("open PR sweep could not read {}: {error}", found.url); continue; }
-        };
-        #[derive(Deserialize)]
-        struct Branch { #[serde(rename = "headRefName")] name: String }
-        let branch: Branch = match serde_json::from_slice(&output) {
+        let branch = match github.reads.head_ref(&found.url).await {
             Ok(branch) => branch,
-            Err(error) => { log!("open PR sweep could not decode the branch of {}: {error}", found.url); continue; }
+            Err(error) => { log!("open PR sweep could not read the branch of {}: {error}", found.url); continue; }
         };
         let state = domain.state()?;
-        if excluded(&state, &pr) || branch_excluded(&state, &branch.name, &options.pr_sweep_ignore_branch_prefixes) { continue; }
+        if excluded(&state, &pr) || branch_excluded(&state, &branch, &options.pr_sweep_ignore_branch_prefixes) { continue; }
         let owner = registered(&state, &pr).map(|p| (p.task_id.clone(), p.id.clone()));
         let command = if let Some((task_id, pr_id)) = owner {
-            let facts = match gh.observe(&pr.host, &pr.repository, pr.number).await {
+            let facts = match github.observer.observe(&pr.host, &pr.repository, pr.number).await {
                 Ok(facts) => facts,
                 Err(error) => { log!("open PR sweep could not read {}: {error}", found.url); continue; }
             };
             if state.tasks.get(&task_id).is_some_and(|task| task.state == TaskState::Cancelled) {
-                Command::ClosePrOfCancelledTask { task_id, pr_id, branch: branch.name, status: facts.status() }
+                Command::ClosePrOfCancelledTask { task_id, pr_id, branch, status: facts.status() }
             } else {
-                Command::AdoptOpenPr { task_id, pr_id, branch: branch.name, status: facts.status() }
+                Command::AdoptOpenPr { task_id, pr_id, branch, status: facts.status() }
             }
         } else {
-            Command::RequestPrAdoption { pr, branch: branch.name }
+            Command::RequestPrAdoption { pr, branch }
         };
         if let Err(error) = execute_system(domain, command) {
             log!("open PR sweep could not handle {}: {error}", found.url);
@@ -123,13 +99,16 @@ pub async fn sweep(domain: &DomainRuntime, gh: &GhCli, options: &OptionsFile, us
 pub async fn run(domain: Arc<DomainRuntime>, home: std::path::PathBuf) {
     let mut interval = clock::interval_at(clock::instant() + FIRST_SWEEP, SWEEP_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let gh = GhCli::new();
     loop {
         interval.tick().await;
         let options = crate::options::options_at(&home);
         match options {
             Ok(options) => {
-                if let Err(error) = sweep(&domain, &gh, &options, &crate::options::user_home()).await {
+                let Some(github) = domain.ports().port::<GitHub>() else {
+                    log!("open PR sweep has no GitHub to read");
+                    continue;
+                };
+                if let Err(error) = sweep(&domain, &github, &options, &crate::options::user_home()).await {
                     log!("open PR sweep failed: {error}");
                 }
             }

@@ -1345,7 +1345,7 @@ const PR_HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
 
 /// A `gh` for `me/app#7` at `PR_HEAD`: `pr view` gives the head, `pr diff` the diff in `diff`, and
 /// the GraphQL read of its files `marks`.
-fn diff_gh(dir: &std::path::Path, marks: &str) -> crate::domain_github::GhCli {
+fn diff_gh(dir: &std::path::Path, marks: &str) -> alondra_github_gh::GhCli {
     use std::os::unix::fs::PermissionsExt;
     let diff = dir.join("diff");
     std::fs::write(&diff, "diff --git a/src/a.rs b/src/a.rs\n+a\ndiff --git a/src/b.rs b/src/b.rs\n+b\n").unwrap();
@@ -1361,7 +1361,7 @@ case "$*" in
 esac
 "#, marks = marks_file.display(), diff = diff.display())).unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-    crate::domain_github::GhCli::at(program)
+    alondra_github_gh::GhCli::at(program)
 }
 
 fn marks_page(head: &str) -> String {
@@ -1371,7 +1371,7 @@ fn marks_page(head: &str) -> String {
     }}}}}).to_string()
 }
 
-async fn diff_body(fixture: &Fixture, gh: &crate::domain_github::GhCli) -> Value {
+async fn diff_body(fixture: &Fixture, gh: &alondra_github_gh::GhCli) -> Value {
     let response = crate::domain_api::pull_request_diff_from(&fixture.domain, "pr-1".into(), gh).await;
     let status = response.status();
     let body = axum::body::to_bytes(response.into_body(), 1024 * 1024).await.unwrap();

@@ -5,352 +5,16 @@ use alondra_core::clock;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
 use alondra_domain_rules::{
-    Actor, Command, CommandEnvelope, DomainState, MergeAttemptState, MergeMethod, OpenPrPending, OpenPrStatus, OpenedPr,
+    Command, CommandEnvelope, DomainState, MergeAttemptState, OpenPrPending, OpenPrStatus, OpenedPr,
     clip, hosted_pr_id, CardSpec, PrChecks, PrId, PrMergeable, PrState, PullRequest, Scope, TaskId, PROTOCOL_VERSION,
 };
-use alondra_core::pr::CheckState;
 use anyhow::Result;
-use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
-use std::future::Future;
-use std::path::PathBuf;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// How long a delivery waits for GitHub to name one branch's open PR.
-const BRANCH_PR_LIMIT: Duration = Duration::from_secs(3);
-
-/// What GitHub reports for one PR. `merged_head` is the PR head at merge time,
-/// never the merge commit: squash and rebase produce a different commit that
-/// can never match the presented and authorized head.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PrFacts {
-    pub head: String,
-    pub base: String,
-    pub state: PrState,
-    pub merged_head: Option<String>,
-    pub allowed_methods: Vec<MergeMethod>,
-    pub mergeable: PrMergeable,
-    pub checks: PrChecks,
-}
-
-impl PrFacts {
-    pub fn status(&self) -> OpenPrStatus {
-        OpenPrStatus { state: self.state, head: self.head.clone(), base: self.base.clone(),
-            mergeable: self.mergeable, checks: self.checks.clone() }
-    }
-}
-
-pub type Observed<'a> = Pin<Box<dyn Future<Output = Result<PrFacts, String>> + Send + 'a>>;
-pub type Closed<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
-
-pub trait PrObserver: Send + Sync + 'static {
-    fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Observed<'a>;
-    /// Closes the PR on GitHub with `comment`.
-    fn close<'a>(&'a self, _host: &'a str, _repository: &'a str, _number: u64, _comment: &'a str) -> Closed<'a> {
-        Box::pin(async { Err("this observer cannot close pull requests".to_owned()) })
-    }
-}
-
-impl PrObserver for Arc<dyn PrObserver> {
-    fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Observed<'a> {
-        (**self).observe(host, repository, number)
-    }
-    fn close<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, comment: &'a str) -> Closed<'a> {
-        (**self).close(host, repository, number, comment)
-    }
-}
-
-impl<T: PrObserver> PrObserver for Arc<T> {
-    fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Observed<'a> {
-        (**self).observe(host, repository, number)
-    }
-    fn close<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, comment: &'a str) -> Closed<'a> {
-        (**self).close(host, repository, number, comment)
-    }
-}
-
-const OBSERVED_FIELDS: &str = "state,headRefOid,baseRefName,mergeable,mergeStateStatus,statusCheckRollup";
-
-#[derive(Clone)]
-pub struct GhCli {
-    program: PathBuf,
-    branch_pr_limit: Duration,
-}
-
-impl GhCli {
-    pub fn new() -> Self {
-        Self { program: "gh".into(), branch_pr_limit: BRANCH_PR_LIMIT }
-    }
-    #[cfg(any(test, feature = "test-hooks"))]
-    pub fn at(program: PathBuf) -> Self {
-        Self { program, branch_pr_limit: BRANCH_PR_LIMIT }
-    }
-    #[cfg(any(test, feature = "test-hooks"))]
-    pub fn with_branch_pr_limit(mut self, limit: Duration) -> Self {
-        self.branch_pr_limit = limit;
-        self
-    }
-    pub fn program(&self) -> &std::path::Path {
-        &self.program
-    }
-}
-
-impl PrObserver for GhCli {
-    fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Observed<'a> {
-        Box::pin(async move {
-            let url = format!("https://{}/{repository}/pull/{number}", alondra_domain_rules::normalize_pr_host(host));
-            let run = tokio::process::Command::new(&self.program)
-                .args(["pr", "view", &url, "--json", OBSERVED_FIELDS])
-                .kill_on_drop(true)
-                .output();
-            let output = match clock::timeout(Duration::from_secs(30), run).await {
-                Ok(Ok(output)) if output.status.success() => output,
-                Ok(Ok(output)) => return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned()),
-                Ok(Err(error)) => return Err(error.to_string()),
-                Err(_) => return Err("gh pr view did not finish within 30 s".into()),
-            };
-            let value: Value = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
-            let mut facts = parse(&value)?;
-            facts.allowed_methods = self.repository_methods(host, repository).await;
-            Ok(facts)
-        })
-    }
-    fn close<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, comment: &'a str) -> Closed<'a> {
-        Box::pin(async move {
-            let url = pr_url(host, repository, number);
-            self.run(&["pr", "close", &url, "--comment", comment], None, Duration::from_secs(30)).await
-                .map(drop).map_err(|failure| failure.to_string())
-        })
-    }
-}
-
-impl GhCli {
-    /// The merge methods the repository settings allow, squash first; empty when GitHub does not answer.
-    async fn repository_methods(&self, host: &str, repository: &str) -> Vec<MergeMethod> {
-        let url = format!("https://{}/{repository}", alondra_domain_rules::normalize_pr_host(host));
-        let args = ["repo", "view", url.as_str(), "--json", "mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed"];
-        let Ok(out) = self.run(&args, None, Duration::from_secs(30)).await else { return vec![] };
-        let Ok(value) = serde_json::from_slice::<Value>(&out) else { return vec![] };
-        parse_methods(&value)
-    }
-
-    pub async fn run(&self, args: &[&str], dir: Option<&std::path::Path>, limit: Duration) -> Result<Vec<u8>, GhFailure> {
-        let output = self.output(args, dir, limit).await?;
-        if output.status.success() {
-            return Ok(output.stdout);
-        }
-        Err(GhFailure::Exit(output.status.code(), String::from_utf8_lossy(&output.stderr).trim().to_owned()))
-    }
-
-    /// One `gh api` call with `--include`: GitHub's HTTP status, headers and body, whatever the status.
-    /// A failure is only `gh` failing before GitHub answered.
-    pub async fn api(&self, args: &[&str], limit: Duration) -> Result<HttpAnswer, GhFailure> {
-        let args: Vec<&str> = ["api", "--include"].into_iter().chain(args.iter().copied()).collect();
-        let output = self.output(&args, None, limit).await?;
-        match HttpAnswer::parse(&output.stdout) {
-            Some(answer) => Ok(answer),
-            None if output.status.success() => Err(GhFailure::Unreadable("gh api answered without an HTTP status".into())),
-            None => Err(GhFailure::Exit(output.status.code(), String::from_utf8_lossy(&output.stderr).trim().to_owned())),
-        }
-    }
-
-    async fn output(&self, args: &[&str], dir: Option<&std::path::Path>, limit: Duration) -> Result<std::process::Output, GhFailure> {
-        let mut command = tokio::process::Command::new(&self.program);
-        command.args(args).kill_on_drop(true);
-        if let Some(dir) = dir {
-            command.current_dir(dir);
-        }
-        match clock::timeout(limit, command.output()).await {
-            Ok(Ok(output)) => Ok(output),
-            Ok(Err(error)) => Err(GhFailure::Launch(error.kind(), error.to_string())),
-            Err(_) => Err(GhFailure::TimedOut(format!("gh {} did not finish within {} s", args.first().copied().unwrap_or_default(), limit.as_secs()))),
-        }
-    }
-
-    /// The open PR GitHub has for the branch checked out in `dir`, as host, `owner/repo` and number.
-    pub async fn branch_pr(&self, dir: &std::path::Path, limit: Duration) -> Option<(String, String, u64)> {
-        let out = self.run(&["pr", "view", "--json", "url,state"], Some(dir), limit).await.ok()?;
-        let value: Value = serde_json::from_slice(&out).ok()?;
-        if value["state"].as_str() != Some("OPEN") {
-            return None;
-        }
-        let (host, path) = value["url"].as_str()?.split_once("://")?.1.split_once('/')?;
-        let (repository, number) = path.split_once("/pull/")?;
-        Some((alondra_domain_rules::normalize_pr_host(host), repository.to_owned(), number.trim_end_matches('/').parse().ok()?))
-    }
-}
-
-/// Why a `gh` run failed, as the system and `gh` report it. The text in each case is only shown.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum GhFailure {
-    /// `gh` could not be started here.
-    Launch(std::io::ErrorKind, String),
-    TimedOut(String),
-    /// `gh` exited with this code, `None` when a signal ended it. 4 is `gh` needing a sign-in (`gh help exit-codes`).
-    Exit(Option<i32>, String),
-    /// GitHub answered with an HTTP status the call does not expect.
-    Http(u16, String),
-    /// `gh` answered something Alondra cannot read.
-    Unreadable(String),
-}
-
-impl GhFailure {
-    /// `gh` cannot work on this Mac until someone installs it or signs it in.
-    pub fn needs_setup(&self) -> bool {
-        matches!(self, Self::Launch(..) | Self::Exit(Some(4), _))
-    }
-
-    pub fn signed_out(&self) -> bool {
-        matches!(self, Self::Exit(Some(4), _))
-    }
-
-    pub fn timed_out(&self) -> bool {
-        matches!(self, Self::TimedOut(_))
-    }
-
-    pub fn unreadable(error: impl std::fmt::Display) -> Self {
-        Self::Unreadable(error.to_string())
-    }
-}
-
-impl std::fmt::Display for GhFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Launch(_, text) | Self::TimedOut(text) | Self::Exit(_, text) | Self::Unreadable(text) => f.write_str(text),
-            Self::Http(status, text) => write!(f, "{text} (HTTP {status})"),
-        }
-    }
-}
-
-#[cfg(any(test, feature = "test-hooks"))]
-impl From<&str> for GhFailure {
-    fn from(stderr: &str) -> Self {
-        Self::Exit(Some(1), stderr.to_owned())
-    }
-}
-
-impl From<GhFailure> for String {
-    fn from(failure: GhFailure) -> Self {
-        failure.to_string()
-    }
-}
-
-/// What GitHub answered to a `gh api --include` call.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HttpAnswer {
-    pub status: u16,
-    /// Header names in lower case.
-    pub headers: BTreeMap<String, String>,
-    pub body: Vec<u8>,
-}
-
-impl HttpAnswer {
-    /// `HTTP/<version> <status> <reason>`, header lines, an empty line, then the body.
-    pub fn parse(stdout: &[u8]) -> Option<Self> {
-        let end = stdout.windows(4).position(|window| window == b"\r\n\r\n")?;
-        let head = std::str::from_utf8(&stdout[..end]).ok()?;
-        let mut lines = head.lines();
-        let status = lines.next()?.strip_prefix("HTTP/")?.split_whitespace().nth(1)?.parse().ok()?;
-        let headers = lines.filter_map(|line| line.split_once(':'))
-            .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned())).collect();
-        Some(Self { status, headers, body: stdout[end + 4..].to_vec() })
-    }
-
-    pub fn success(&self) -> bool {
-        (200..300).contains(&self.status)
-    }
-
-    /// GitHub refused for its rate limit: a 429, or a 403 with no requests left or a wait to respect.
-    pub fn rate_limited(&self) -> bool {
-        self.status == 429 || (self.status == 403
-            && (self.headers.get("x-ratelimit-remaining").is_some_and(|left| left == "0") || self.headers.contains_key("retry-after")))
-    }
-
-    /// The answer as a failure, with GitHub's `message` for showing.
-    pub fn failure(&self) -> GhFailure {
-        let message = serde_json::from_slice::<Value>(&self.body).ok()
-            .and_then(|value| value["message"].as_str().map(str::to_owned)).unwrap_or_default();
-        GhFailure::Http(self.status, message)
-    }
-}
-
-pub fn pr_url(host: &str, repository: &str, number: u64) -> String {
-    format!("https://{}/{repository}/pull/{number}", alondra_domain_rules::normalize_pr_host(host))
-}
-
-fn parse_methods(value: &Value) -> Vec<MergeMethod> {
-    [
-        ("squashMergeAllowed", MergeMethod::Squash),
-        ("mergeCommitAllowed", MergeMethod::Merge),
-        ("rebaseMergeAllowed", MergeMethod::Rebase),
-    ]
-    .into_iter()
-    .filter(|(key, _)| value[*key].as_bool() == Some(true))
-    .map(|(_, method)| method)
-    .collect()
-}
-
-pub fn parse(value: &Value) -> Result<PrFacts, String> {
-    let head = value["headRefOid"].as_str()
-        .filter(|head| head.len() == 40 && head.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        .ok_or("gh reported no PR head")?;
-    let base = value["baseRefName"].as_str().filter(|base| !base.is_empty())
-        .ok_or("gh reported no PR base")?;
-    let state = match value["state"].as_str() {
-        Some("OPEN") => PrState::Open,
-        Some("CLOSED") => PrState::Closed,
-        Some("MERGED") => PrState::Merged,
-        other => return Err(format!("gh reported an unknown PR state {other:?}")),
-    };
-    Ok(PrFacts {
-        head: head.to_owned(),
-        base: base.to_owned(),
-        merged_head: (state == PrState::Merged).then(|| head.to_owned()),
-        state,
-        allowed_methods: vec![],
-        mergeable: mergeable(value),
-        checks: checks(value),
-    })
-}
-
-fn mergeable(value: &Value) -> PrMergeable {
-    match (value["mergeable"].as_str(), value["mergeStateStatus"].as_str()) {
-        (Some("CONFLICTING"), _) | (_, Some("DIRTY")) => PrMergeable::Conflicting,
-        (Some("UNKNOWN") | None, _) | (_, Some("UNKNOWN")) => PrMergeable::Computing,
-        (Some("MERGEABLE"), None | Some("CLEAN" | "HAS_HOOKS")) => PrMergeable::Clean,
-        _ => PrMergeable::Other,
-    }
-}
-
-/// The latest run of each check: any failure first, then any that needs someone's approval to run,
-/// then any still running.
-fn checks(value: &Value) -> PrChecks {
-    let entries = value["statusCheckRollup"].as_array().map(|rollup| alondra_daemon_support::prs::latest_entries(rollup)).unwrap_or_default();
-    let (mut failed, mut approval, mut running, mut any) = (vec![], vec![], vec![], false);
-    for entry in entries {
-        let Some(check) = alondra_daemon_support::prs::check(entry) else { continue };
-        any = true;
-        match check.state {
-            _ if entry["conclusion"].as_str() == Some("ACTION_REQUIRED") => approval.push(check.name),
-            CheckState::Failed => failed.push(check.name),
-            CheckState::Running => running.push(check.name),
-            CheckState::Passed | CheckState::Other => (),
-        }
-    }
-    if !failed.is_empty() {
-        PrChecks::Failed { names: failed }
-    } else if !approval.is_empty() {
-        PrChecks::ActionRequired { names: approval }
-    } else if !running.is_empty() {
-        PrChecks::Pending { names: running }
-    } else if any {
-        PrChecks::Passed
-    } else {
-        PrChecks::None
-    }
-}
+use alondra_engine_ports::github::GitHub;
+pub use alondra_engine_ports::github::{Closed, GhFailure, HttpAnswer, Observed, PrFacts, PrObserver, pr_url};
 
 pub fn execute_system(domain: &DomainRuntime, command: Command) -> Result<(), StoreError> {
     let state = domain.state().map_err(StoreError::Storage)?;
@@ -414,17 +78,18 @@ pub async fn read_opened(domain: &DomainRuntime, observer: &impl PrObserver, tas
 /// What a node's delivery is judged on, read when it presents: the open PR of each branch the task
 /// works on (a final delivery only, for a PR no command showed), what the node was seen opening,
 /// and where its registered PRs are now. A closed PR can have reopened; a merged PR cannot.
-pub async fn catch_up_task(domain: &DomainRuntime, gh: &GhCli, task_id: &TaskId, is_final: bool) -> Result<()> {
-    catch_up_task_using(domain, gh, gh, task_id, is_final).await
+pub async fn catch_up_task(domain: &DomainRuntime, github: &GitHub, task_id: &TaskId, is_final: bool) -> Result<()> {
+    catch_up_task_using(domain, github, &github.observer, task_id, is_final).await
 }
 
-/// Branch discovery needs the GitHub CLI; registered PRs use the caller's source of current facts.
-pub async fn catch_up_task_using(domain: &DomainRuntime, gh: &GhCli, source: &impl PrObserver, task_id: &TaskId, is_final: bool) -> Result<()> {
+/// Branches and the PRs the node opened are read from `github`; registered PRs use the caller's
+/// source of current facts.
+pub async fn catch_up_task_using(domain: &DomainRuntime, github: &GitHub, source: &impl PrObserver, task_id: &TaskId, is_final: bool) -> Result<()> {
     let state = domain.state()?;
     let Some(task) = state.tasks.get(task_id) else { return Ok(()) };
     if is_final {
         for (path, _) in task.open_worktrees() {
-            let Some((host, repository, number)) = gh.branch_pr(std::path::Path::new(path), gh.branch_pr_limit).await else { continue };
+            let Some((host, repository, number)) = github.reads.branch_pr(std::path::Path::new(path)).await else { continue };
             match execute_system(domain, Command::NotePrOpened { task_id: task_id.clone(), host, repository, number }) {
                 Ok(()) => (),
                 Err(StoreError::Domain(error)) => log!("the open PR of {path} was refused: {error}"),
@@ -432,7 +97,7 @@ pub async fn catch_up_task_using(domain: &DomainRuntime, gh: &GhCli, source: &im
             }
         }
     }
-    read_opened(domain, gh, Some(task_id)).await?;
+    read_opened(domain, &github.observer, Some(task_id)).await?;
     let state = domain.state()?;
     let Some(task) = state.tasks.get(task_id) else { return Ok(()) };
     let prs: Vec<&PullRequest> = state.task_prs(task)
@@ -770,7 +435,6 @@ pub mod tests {
     use super::*;
     use alondra_domain_rules::*;
     use std::collections::BTreeSet;
-    use std::os::unix::fs::PermissionsExt;
 
     pub struct Fixture(crate::test_support::Directory);
     impl Drop for Fixture {
@@ -791,6 +455,12 @@ pub mod tests {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
             command_id: id.into(), expected_revision: state.revision, command,
         }, None, || Ok(())).unwrap();
+    }
+
+    use alondra_github_gh::GhCli;
+
+    fn github(gh: GhCli) -> GitHub {
+        GitHub::of(Arc::new(gh))
     }
 
     pub const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -943,9 +613,9 @@ pub mod tests {
         std::fs::set_permissions(&program, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         let gh = GhCli::at(program).with_branch_pr_limit(Duration::from_secs(600));
 
-        catch_up_task(&domain, &gh, &"t".into(), false).await.unwrap();
+        catch_up_task(&domain, &github(gh.clone()), &"t".into(), false).await.unwrap();
         assert_eq!(domain.state().unwrap().tasks[&"t".into()].later_prs.len(), 0, "only a final delivery looks at the branches");
-        catch_up_task(&domain, &gh, &"t".into(), true).await.unwrap();
+        catch_up_task(&domain, &github(gh.clone()), &"t".into(), true).await.unwrap();
         assert_eq!(domain.state().unwrap().tasks[&"t".into()].later_prs, vec![hosted_pr_id("github.com", "owner/site", 6)]);
     }
 
@@ -956,7 +626,7 @@ pub mod tests {
         let program = fixture.0.join("gh");
         std::fs::write(&program, format!("#!/bin/sh\nprintf '%s' '{{\"state\":\"CLOSED\",\"headRefOid\":\"{HEAD}\",\"baseRefName\":\"main\"}}'\n")).unwrap();
         std::fs::set_permissions(&program, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-        catch_up_task(&domain, &GhCli::at(program), &"t".into(), true).await.unwrap();
+        catch_up_task(&domain, &github(GhCli::at(program)), &"t".into(), true).await.unwrap();
         assert_eq!(domain.state().unwrap().pull_requests[&"pr".into()].state, PrState::Closed);
         assert!(alondra_domain_rules::ReadIndex::build(&domain.state().unwrap()).cards_of(&"d".into()).is_empty());
     }
@@ -970,7 +640,7 @@ pub mod tests {
         });
         let source = FakeObserver::new();
         source.set(7, Ok(facts(HEAD, PrState::Open)));
-        catch_up_task_using(&domain, &GhCli::new(), &source, &"t".into(), true).await.unwrap();
+        catch_up_task_using(&domain, &github(GhCli::new()), &source, &"t".into(), true).await.unwrap();
         assert_eq!(domain.state().unwrap().pull_requests[&"pr".into()].state, PrState::Open);
         command(&domain, Actor::Agent { agent_id: "a".into() }, "reopened-result", Command::PresentResult {
             checklist: vec![], attachments: vec![], task_id: "t".into(), interaction_id: "reopened-result".into(), body: "Ready".into(),
@@ -987,7 +657,7 @@ pub mod tests {
         let program = fixture.0.join("gh");
         std::fs::write(&program, "#!/bin/sh\nexit 1\n").unwrap();
         std::fs::set_permissions(&program, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-        assert!(catch_up_task(&domain, &GhCli::at(program), &"t".into(), true).await.is_err());
+        assert!(catch_up_task(&domain, &github(GhCli::at(program)), &"t".into(), true).await.is_err());
         assert_eq!(domain.state().unwrap().pull_requests[&"pr".into()].state, PrState::Open);
     }
 
@@ -1005,30 +675,6 @@ pub mod tests {
         let state = domain.state().unwrap();
         assert_eq!(state.pull_requests[&"pr".into()].state, PrState::Closed);
         assert!(state.tasks[&"t".into()].opened_prs.is_empty());
-    }
-
-    #[tokio::test]
-    async fn a_branch_gh_does_not_name_within_the_limit_is_left_out() {
-        let (fixture, _) = open("branch-pr-limit");
-        let program = fixture.0.join("gh");
-        std::fs::write(&program, "#!/bin/sh\nprintf '%s' '{\"url\":\"https://github.com/owner/site/pull/6\",\"state\":\"OPEN\"}'\n").unwrap();
-        std::fs::set_permissions(&program, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-        let gh = GhCli::at(program);
-        assert_eq!(gh.branch_pr(&fixture.0, Duration::from_secs(600)).await, Some(("github.com".into(), "owner/site".into(), 6)));
-        assert_eq!(gh.branch_pr(&fixture.0, Duration::ZERO).await, None);
-    }
-
-    #[tokio::test]
-    async fn gh_reports_the_repository_merge_methods_and_stays_silent_when_it_fails() {
-        let (fixture, _) = open("gh-methods");
-        let program = fixture.0.join("gh");
-        std::fs::write(&program, format!("#!/bin/sh\ncase \"$*\" in *\"repo view\"*owner/repo*) printf '%s' '{{\"mergeCommitAllowed\":true,\"squashMergeAllowed\":false,\"rebaseMergeAllowed\":true}}';; *\"repo view\"*) echo 'boom' >&2; exit 1;; *) printf '%s' '{{\"state\":\"OPEN\",\"headRefOid\":\"{HEAD}\",\"baseRefName\":\"main\"}}';; esac\n")).unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let gh = GhCli::at(program);
-        let known = gh.observe("github.com", "owner/repo", 7).await.unwrap();
-        assert_eq!(known.allowed_methods, vec![MergeMethod::Merge, MergeMethod::Rebase]);
-        let unknown = gh.observe("github.com", "other/repo", 7).await.unwrap();
-        assert!(unknown.allowed_methods.is_empty());
     }
 
     #[tokio::test]
@@ -1260,35 +906,6 @@ pub mod tests {
             authorization_id: "auth-2".into(), presentation_id: "d2".into(), pr_id: "pr".into(),
             expected_head: OTHER.into(), method: MergeMethod::Squash, despite_pending_message: false,
         });
-    }
-
-    #[tokio::test]
-    async fn gh_output_is_parsed_from_a_fake_binary_and_failures_are_reported() {
-        let (fixture, _) = open("gh");
-        let program = fixture.0.join("gh");
-        let log = fixture.0.join("calls");
-        std::fs::write(&program, format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\ncase \"$*\" in *pull/7*) printf '%s' '{{\"state\":\"MERGED\",\"headRefOid\":\"{HEAD}\",\"baseRefName\":\"main\",\"mergeCommit\":{{\"oid\":\"{OTHER}\"}}}}';; *pull/8*) printf '%s' '{{\"state\":\"OPEN\",\"headRefOid\":\"short\",\"baseRefName\":\"main\"}}';; *) echo 'no pull requests found' >&2; exit 1;; esac\n", log.display())).unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let gh = GhCli::at(program);
-        let merged = gh.observe("github.com", "owner/repo", 7).await.unwrap();
-        assert_eq!(merged, PrFacts { head: HEAD.into(), base: "main".into(), state: PrState::Merged, merged_head: Some(HEAD.into()), allowed_methods: vec![],
-            mergeable: PrMergeable::Computing, checks: PrChecks::None });
-        assert_eq!(gh.observe("github.com", "owner/repo", 8).await.unwrap_err(), "gh reported no PR head");
-        assert!(gh.observe("github.com", "owner/repo", 9).await.unwrap_err().contains("no pull requests found"));
-        let calls = std::fs::read_to_string(&log).unwrap();
-        assert!(calls.contains(&format!("pr view https://github.com/owner/repo/pull/7 --json {OBSERVED_FIELDS}")), "{calls}");
-    }
-
-    #[tokio::test]
-    async fn a_registration_with_the_bare_host_github_is_polled_at_github_com() {
-        let (fixture, _) = open("bare-host");
-        let program = fixture.0.join("gh");
-        let log = fixture.0.join("calls");
-        std::fs::write(&program, format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\nprintf '%s' '{{\"state\":\"OPEN\",\"headRefOid\":\"{HEAD}\",\"baseRefName\":\"main\"}}'\n", log.display())).unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-        GhCli::at(program).observe("github", "owner/repo", 7).await.unwrap();
-        let calls = std::fs::read_to_string(&log).unwrap();
-        assert!(calls.contains("pr view https://github.com/owner/repo/pull/7"), "{calls}");
     }
 
     #[tokio::test]
@@ -1526,44 +1143,6 @@ pub mod tests {
         assert_eq!((state.pull_requests[&"pr".into()].state, state.tasks[&"t".into()].open_pr.clone()), (PrState::Closed, None));
         assert_eq!(state.tasks[&"t".into()].state, TaskState::Cancelled);
         assert!(state.tasks[&"t".into()].final_presentation.is_none());
-    }
-
-    #[tokio::test]
-    async fn gh_closes_a_pr_with_its_comment() {
-        let (fixture, _) = open("gh-close");
-        let program = fixture.0.join("gh");
-        let log = fixture.0.join("calls");
-        std::fs::write(&program, format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\ncase \"$*\" in *pull/7*) exit 0;; *) echo 'no pull requests found' >&2; exit 1;; esac\n", log.display())).unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let gh = GhCli::at(program);
-        gh.close("github.com", "owner/repo", 7, "Cancelled in Alondra: Task").await.unwrap();
-        assert!(gh.close("github.com", "owner/repo", 9, "Cancelled in Alondra: Task").await.unwrap_err().contains("no pull requests found"));
-        let calls = std::fs::read_to_string(&log).unwrap();
-        assert!(calls.contains("pr close https://github.com/owner/repo/pull/7 --comment Cancelled in Alondra: Task"), "{calls}");
-    }
-
-    #[test]
-    fn readiness_is_read_from_githubs_typed_fields() {
-        let read = |extra: Value| {
-            let mut value = serde_json::json!({"state": "OPEN", "headRefOid": HEAD, "baseRefName": "main"});
-            value.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
-            let facts = parse(&value).unwrap();
-            (facts.mergeable, facts.checks)
-        };
-        let run = |name: &str, status: &str, conclusion: &str| serde_json::json!({"__typename": "CheckRun", "name": name, "status": status, "conclusion": conclusion});
-        assert_eq!(read(serde_json::json!({"mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "statusCheckRollup": []})),
-            (PrMergeable::Clean, PrChecks::None));
-        assert_eq!(read(serde_json::json!({"mergeable": "CONFLICTING", "mergeStateStatus": "DIRTY",
-            "statusCheckRollup": [run("test", "COMPLETED", "SUCCESS"), run("lint", "IN_PROGRESS", "")]})), (PrMergeable::Conflicting, PrChecks::Pending { names: vec!["lint".into()] }));
-        assert_eq!(read(serde_json::json!({"mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN",
-            "statusCheckRollup": [run("lint", "IN_PROGRESS", ""), serde_json::json!({"context": "ci/legacy", "state": "PENDING"}), run("test", "COMPLETED", "SUCCESS")]})),
-            (PrMergeable::Clean, PrChecks::Pending { names: vec!["lint".into(), "ci/legacy".into()] }));
-        assert_eq!(serde_json::from_str::<PrChecks>(r#"{"kind":"pending"}"#).unwrap(), PrChecks::Pending { names: vec![] });
-        assert_eq!(read(serde_json::json!({"mergeable": "UNKNOWN", "statusCheckRollup": [run("test", "COMPLETED", "FAILURE"), run("lint", "IN_PROGRESS", "")]})),
-            (PrMergeable::Computing, PrChecks::Failed { names: vec!["test".into()] }));
-        assert_eq!(read(serde_json::json!({"mergeable": "MERGEABLE", "mergeStateStatus": "BLOCKED",
-            "statusCheckRollup": [run("deploy", "COMPLETED", "ACTION_REQUIRED"), run("test", "COMPLETED", "SUCCESS")]})),
-            (PrMergeable::Other, PrChecks::ActionRequired { names: vec!["deploy".into()] }));
     }
 
 }

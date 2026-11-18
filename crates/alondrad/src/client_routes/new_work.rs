@@ -32,23 +32,23 @@ pub(crate) struct Gh;
 
 impl Github for Gh {
     fn search_issues<'a>(&'a self, owners: &'a [String]) -> Answer<'a, Result<Value, String>> {
-        Box::pin(crate::prs::Gh::search_issues(&crate::prs::GhCli, owners))
+        Box::pin(async move { crate::prs::Gh::search_issues(&alondra_github_gh::GhCli::new(), owners).await })
     }
 
     fn issue_view<'a>(&'a self, repo: &'a str, number: u64) -> Answer<'a, Result<Value, String>> {
-        Box::pin(crate::prs::Gh::issue_view(&crate::prs::GhCli, repo, number))
+        Box::pin(async move { crate::prs::Gh::issue_view(&alondra_github_gh::GhCli::new(), repo, number).await })
     }
 
     fn close_pr<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, comment: &'a str) -> Answer<'a, Result<(), String>> {
         Box::pin(async move {
-            crate::domain_github::PrObserver::close(&crate::domain_github::GhCli::new(), host, repository, number, comment).await
+            crate::domain_github::PrObserver::close(&alondra_github_gh::GhCli::new(), host, repository, number, comment).await
         })
     }
 
     fn pr_state<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Answer<'a, Result<alondra_domain_rules::PrState, String>> {
         Box::pin(async move {
             let url = crate::domain_github::pr_url(host, repository, number);
-            let out = crate::domain_github::GhCli::new()
+            let out = alondra_github_gh::GhCli::new()
                 .run(&["pr", "view", &url, "--json", "state", "--jq", ".state"], None, std::time::Duration::from_secs(30))
                 .await?;
             match String::from_utf8_lossy(&out).trim() {
@@ -61,11 +61,11 @@ impl Github for Gh {
     }
 
     fn viewed_files<'a>(&'a self, pr: &'a alondra_domain_rules::PullRequest) -> Answer<'a, Result<crate::pr_viewed::Marks, String>> {
-        Box::pin(async move { crate::pr_viewed::read(&crate::domain_github::GhCli::new(), pr).await })
+        Box::pin(async move { crate::pr_viewed::read(&alondra_github_gh::GhCli::new(), pr).await })
     }
 
     fn set_viewed<'a>(&'a self, host: &'a str, node: &'a str, path: &'a str, viewed: bool) -> Answer<'a, Result<(), String>> {
-        Box::pin(async move { crate::pr_viewed::set(&crate::domain_github::GhCli::new(), host, node, path, viewed).await })
+        Box::pin(async move { crate::pr_viewed::set(&alondra_github_gh::GhCli::new(), host, node, path, viewed).await })
     }
 }
 
@@ -73,16 +73,16 @@ impl Github for Gh {
 struct Issues<'a>(&'a dyn Github);
 
 impl crate::prs::Gh for Issues<'_> {
-    async fn view(&self, _: &str) -> Option<Value> {
-        None
+    fn view<'a>(&'a self, _: &'a str) -> alondra_engine_ports::github::Read<'a, Option<Value>> {
+        Box::pin(async { None })
     }
 
-    async fn search_issues(&self, owners: &[String]) -> Result<Value, String> {
-        self.0.search_issues(owners).await
+    fn search_issues<'a>(&'a self, owners: &'a [String]) -> alondra_engine_ports::github::Read<'a, Result<Value, String>> {
+        self.0.search_issues(owners)
     }
 
-    async fn issue_view(&self, repo: &str, number: u64) -> Result<Value, String> {
-        self.0.issue_view(repo, number).await
+    fn issue_view<'a>(&'a self, repo: &'a str, number: u64) -> alondra_engine_ports::github::Read<'a, Result<Value, String>> {
+        self.0.issue_view(repo, number)
     }
 }
 

@@ -3,7 +3,7 @@ use alondra_core::now_millis;
 use alondra_core::options::OptionsFile;
 use serde::Serialize;
 
-use crate::prs::Gh;
+use alondra_engine_ports::github::Gh;
 
 /// A list younger than this is served again without asking GitHub.
 pub const FRESH_MS: i64 = 10 * 60 * 1000;
@@ -40,7 +40,7 @@ pub fn excluded(file: &OptionsFile, repo: &str) -> bool {
 
 /// The open issues, from memory unless the list is stale or the user asked to refresh. Only
 /// one search runs at a time: a second caller waits for it and gets the same list.
-pub async fn list_in(cache: &tokio::sync::Mutex<Option<IssueList>>, file: &OptionsFile, refresh: bool, gh: &impl Gh) -> IssueList {
+pub async fn list_in(cache: &tokio::sync::Mutex<Option<IssueList>>, file: &OptionsFile, refresh: bool, gh: &(impl Gh + ?Sized)) -> IssueList {
     let mut cache = cache.lock().await;
     let owners = owners(file);
     let fresh = cache.as_ref().is_some_and(|c| c.owners == owners && c.error.is_none() && now_millis() - c.fetched_at < FRESH_MS);
@@ -66,7 +66,7 @@ pub async fn list_in(cache: &tokio::sync::Mutex<Option<IssueList>>, file: &Optio
 }
 
 /// The text the orchestrator gets for an issue. A failed read still passes the link on.
-pub async fn for_orchestrator_in(cache: &tokio::sync::Mutex<Option<IssueList>>, repo: &str, number: u64, gh: &impl Gh) -> String {
+pub async fn for_orchestrator_in(cache: &tokio::sync::Mutex<Option<IssueList>>, repo: &str, number: u64, gh: &(impl Gh + ?Sized)) -> String {
     let association = cache.lock().await.as_ref().and_then(|c| c.issues.iter().find(|i| i.repo == repo && i.number == number).and_then(|i| i.association.clone()));
     match gh.issue_view(repo, number).await {
         Ok(view) => issues::for_orchestrator(repo, number, &view, association.as_deref()),

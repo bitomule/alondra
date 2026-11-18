@@ -27,6 +27,7 @@ CATALOG_FRAGMENTS = [
     ("engine_worktrees", "//crates/engine-worktrees:report_sources", "--log --words"),
     ("engine_kernel", "//crates/engine-kernel:report_sources", "--log --words"),
     ("engine_ports", "//crates/engine-ports:report_sources", "--words"),
+    ("github_gh", "//crates/github-gh:report_sources", "--words"),
     ("engine_orchestrator", "//crates/engine-orchestrator:report_sources", "--log --words"),
     ("engine_sdk", "//crates/engine-sdk:report_sources", "--log --words"),
     ("core", "//crates/core:report_sources", "--log --words"),

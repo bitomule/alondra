@@ -385,9 +385,10 @@ dependencies = [
  "alondra-daemon-support",
  "alondra-domain-rules",
  "alondra-engine-kernel",
+ "alondra-engine-ports",
+ "alondra-github-gh",
  "alondra-view-model",
  "anyhow",
- "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
@@ -585,6 +586,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "alondra-github-gh"
+version = "0.3.48"
+dependencies = [
+ "alondra-core",
+ "alondra-domain-rules",
+ "alondra-engine-ports",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "alondra-process-group"
 version = "0.3.48"
 dependencies = [
@@ -773,6 +788,7 @@ dependencies = [
  "alondra-engine-orchestrator",
  "alondra-engine-ports",
  "alondra-engine-sdk",
+ "alondra-github-gh",
  "alondra-process-group",
  "alondra-views",
  "anyhow",

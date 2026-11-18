@@ -32,7 +32,6 @@ pub mod plugins;
 pub mod pr_heads;
 pub mod pr_ids;
 pub mod process_watch;
-pub mod prs;
 pub mod push;
 pub mod relaunch;
 pub mod reports;

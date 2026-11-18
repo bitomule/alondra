@@ -31,7 +31,7 @@ struct Fixture {
     root: crate::test_support::Directory,
     domain: DomainRuntime,
     options: OptionsFile,
-    gh: GhCli,
+    gh: GitHub,
 }
 
 impl Fixture {
@@ -61,7 +61,7 @@ fi
 "#, root.join("calls").display(), root.join("search.json").display(), root.join("branch.json").display(), root.join("status.json").display())).unwrap();
         std::fs::write(root.join("status.json"), r#"{"state":"OPEN","headRefOid":"1111111111111111111111111111111111111111","baseRefName":"main","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","statusCheckRollup":[]}"#).unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
-        Self { root, domain, options, gh: GhCli::at(program) }
+        Self { root, domain, options, gh: GitHub::of(Arc::new(alondra_github_gh::GhCli::at(program))) }
     }
     fn result(&self, number: u64, repo: &str, branch: &str) {
         std::fs::write(self.root.join("search.json"), serde_json::to_vec(&serde_json::json!([{
