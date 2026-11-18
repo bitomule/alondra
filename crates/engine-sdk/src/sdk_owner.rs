@@ -1953,7 +1953,7 @@ impl Driver {
     }
 
     pub fn paused(&self) -> bool {
-        self.domain.read().state().node_pause(&self.agent).is_some_and(|pause| !pause.released)
+        self.domain.read().node_pause(&self.agent).is_some_and(|pause| !pause.released)
     }
 
     /// An input that starts a turn waits here for a slot of the gate, with no card: it stays the
