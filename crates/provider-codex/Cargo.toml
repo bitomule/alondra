@@ -7,7 +7,7 @@ publish.workspace = true
 
 [dependencies]
 alondra-codex-protocol.workspace = true
-alondra-agent-runtime.workspace = true
+alondra-engine-ports.workspace = true
 alondra-agent-application.workspace = true
 alondra-provider-contract.workspace = true
 alondra-foundation.workspace = true

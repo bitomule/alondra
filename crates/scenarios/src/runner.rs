@@ -188,7 +188,7 @@ async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnc
     let (launcher, backend, peer) = if codex.is_empty() {
         let edge = ClaudeEdge::new(&config.home, leaks.clone());
         let launcher = Launcher::new(edge.clone());
-        let backend = claude_backend(&config.home, launcher.clone(), &scenario.world.release).map_err(|e| invalid(&e))?;
+        let backend = claude_backend(&config.home, &scenario.world.release).map_err(|e| invalid(&e))?;
         claude = Some(edge);
         (launcher, Backend::Given(Some(backend)), None)
     } else {
@@ -196,7 +196,7 @@ async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnc
         let peer = crate::codex_peer::launcher(case, &codex)?;
         let (seen, activity) = (peer.seen.clone(), peer.activity.clone());
         let launcher = Launcher::new(peer);
-        let backend = codex_backend(&config.home, launcher.clone()).map_err(|e| invalid(&e))?;
+        let backend = codex_backend(&config.home).map_err(|e| invalid(&e))?;
         (launcher, Backend::Given(Some(backend)), Some(Peer { seen, activity, hosts: codex.len() }))
     };
     probe(&launcher);
@@ -296,21 +296,20 @@ fn short_root() -> std::path::PathBuf {
     }
 }
 
-fn codex_backend(home: &Path, launcher: Launcher) -> Result<alondra_engine_sdk::sdk_owner::backend::SdkBackend, String> {
-    sdk_backend(home, launcher, alondra_core::accounts::Provider::Codex, "codex", &alondra_engine_sdk::sdk_owner::backend::this_release())
+fn codex_backend(home: &Path) -> Result<alondra_engine_sdk::sdk_owner::backend::SdkBackend, String> {
+    sdk_backend(home, alondra_core::accounts::Provider::Codex, "codex", &alondra_engine_sdk::sdk_owner::backend::this_release())
 }
 
-/// The backend of a daemon whose Claude nodes start through `launcher`, of `release`.
-fn claude_backend(home: &Path, launcher: Launcher, release: &str) -> Result<alondra_engine_sdk::sdk_owner::backend::SdkBackend, String> {
-    sdk_backend(home, launcher, alondra_core::accounts::Provider::Claude, "claude", release)
+/// The backend of a daemon whose Claude nodes run `release`.
+fn claude_backend(home: &Path, release: &str) -> Result<alondra_engine_sdk::sdk_owner::backend::SdkBackend, String> {
+    sdk_backend(home, alondra_core::accounts::Provider::Claude, "claude", release)
 }
 
-/// The backend of a daemon whose nodes start through `launcher`: three files that stand where the
+/// The backend of a daemon: three files that stand where the
 /// host and the native executable stand, named by their digests as a real configuration names them.
 /// Each release installs its own host, so the files of two releases differ.
 fn sdk_backend(
     home: &Path,
-    launcher: Launcher,
     provider: alondra_core::accounts::Provider,
     name: &str,
     release: &str,
@@ -339,7 +338,6 @@ fn sdk_backend(
         state_root: home.join("sdk"),
         io_timeout_seconds: 30,
         installed_native: false,
-        launcher,
         release: release.to_owned(),
     })
 }
@@ -814,7 +812,7 @@ impl Context<'_> {
             (Some(edge), _) => {
                 let release = release.unwrap_or_else(|| self.scenario.world.release.clone());
                 let launcher = Launcher::new(edge.clone());
-                Some(claude_backend(&self.config.home, launcher.clone(), &release).map(|backend| (launcher, backend)).map_err(|e| Self::failed(index, e))?)
+                Some(claude_backend(&self.config.home, &release).map(|backend| (launcher, backend)).map_err(|e| Self::failed(index, e))?)
             }
             (None, _) => None,
         };

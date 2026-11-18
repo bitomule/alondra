@@ -202,11 +202,8 @@ pub async fn assemble(config: &Config, state: Arc<domain_bootstrap::DomainDaemon
                 }
             }
         }
-    }
-    .map(|mut backend| {
-        backend.launcher = seams.launcher.clone();
-        backend
-    });
+    };
+    alondra_agent_runtime::wire(domain.ports(), seams.launcher.clone());
     accounts::begin_initial_check(&domain);
     let recovery = prepare_workers(config, domain.clone(), backend);
     assemble_with(config, state, domain, recovery, service, &seams).await

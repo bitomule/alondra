@@ -15,7 +15,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use alondra_agent_runtime::owned_host::VerifiedArtifact;
+use alondra_engine_ports::agent_host::{AgentHost, ProbeRun, VerifiedArtifact};
 use alondra_core::accounts::{AccountBilling, AccountId, AccountState, AccountStatus, Policy, Provider};
 use alondra_domain_rules::{Actor, Command as DomainCommand, CommandEnvelope, DomainState, PROTOCOL_VERSION};
 use alondra_core::usage::{AccountUsage, Share, UsageReading, WindowKind, WindowReading};
@@ -122,17 +122,17 @@ pub(crate) fn reading(report: ProbeReport) -> Result<UsageReading, String> {
 }
 
 /// Runs the host's probe with `folder` as Claude's configuration, none for the default profile.
-fn probe(backend: &SdkBackend, folder: Option<&Path>) -> Result<UsageReading, String> {
-    let report = serde_json::from_value(run_probe(backend, folder, "--usage-probe")?).map_err(|error| format!("the probe's answer: {error}"))?;
+fn probe(hosts: &dyn AgentHost, backend: &SdkBackend, folder: Option<&Path>) -> Result<UsageReading, String> {
+    let report = serde_json::from_value(run_probe(hosts, backend, folder, "--usage-probe")?).map_err(|error| format!("the probe's answer: {error}"))?;
     reading(report)
 }
 
-pub(crate) fn models(backend: &SdkBackend, home: &Path, key: &alondra_core::accounts::AccountKey) -> Result<alondra_core::model_selection::AccountModelCatalog, String> {
+pub(crate) fn models(hosts: &dyn AgentHost, backend: &SdkBackend, home: &Path, key: &alondra_core::accounts::AccountKey) -> Result<alondra_core::model_selection::AccountModelCatalog, String> {
     use sha2::Digest;
     if key.provider != Provider::Claude { return Err("The SDK catalog belongs to Claude".into()); }
     let backend = backend.for_provider(key.provider, home).and_then(|backend| backend.for_account_provider(home, key.provider, &key.account, &crate::accounts::registered_provider(home, key.provider)))
         .map_err(|why| format!("{why:#}"))?;
-    let report = run_probe(&backend, None, "--model-probe")?;
+    let report = run_probe(hosts, &backend, None, "--model-probe")?;
     let models: Vec<alondra_core::model_selection::CatalogModel> = serde_json::from_value(report["models"].clone()).map_err(|why| format!("The SDK model catalog is invalid: {why}"))?;
     let native_default = report["native_default"].as_str().map(str::to_owned);
     let bytes = serde_json::to_vec(&(&models, &native_default)).map_err(|why| why.to_string())?;
@@ -140,7 +140,7 @@ pub(crate) fn models(backend: &SdkBackend, home: &Path, key: &alondra_core::acco
     Ok(alondra_core::model_selection::AccountModelCatalog { account: key.clone(), revision, models, native_default, measured_at: alondra_core::now_millis() })
 }
 
-fn run_probe(backend: &SdkBackend, folder: Option<&Path>, flag: &str) -> Result<serde_json::Value, String> {
+fn run_probe(hosts: &dyn AgentHost, backend: &SdkBackend, folder: Option<&Path>, flag: &str) -> Result<serde_json::Value, String> {
     let started = backend.for_start().map_err(|error| format!("{error:#}"))?;
     let artifact = VerifiedArtifact::verify(&started.node, &started.host, &started.node_sha256, &started.host_sha256)
         .map_err(|error| format!("verifying the SDK host: {error}"))?;
@@ -161,8 +161,8 @@ fn run_probe(backend: &SdkBackend, folder: Option<&Path>, flag: &str) -> Result<
         None => Command::new(artifact.executable()),
     };
     command.arg(artifact.artifact()).arg(flag).current_dir(&started.state_root).env_clear().envs(&started.host_environment);
-    let run = alondra_agent_runtime::owned_host::ProbeRun { command, input: request.to_string().into_bytes(), timeout: Some(TIMEOUT + Duration::from_secs(5)) };
-    let output = match started.launcher.get().run(run) {
+    let run = ProbeRun { command, input: request.to_string().into_bytes(), timeout: Some(TIMEOUT + Duration::from_secs(5)) };
+    let output = match hosts.run(run) {
         Ok(output) => output,
         Err(error) if error.kind() == std::io::ErrorKind::TimedOut => return Err(format!("the probe did not answer within {} s", TIMEOUT.as_secs())),
         Err(error) => return Err(format!("starting the SDK host: {error}")),
@@ -318,6 +318,7 @@ async fn measure_account(domain: &DomainRuntime, home: &Path, account: &AccountI
         return crate::native_probe::Outcome::Finished;
     }
     let Some((backend, _)) = domain.sdk() else { return crate::native_probe::Outcome::Finished };
+    let Some(hosts) = domain.ports().port::<dyn AgentHost>() else { return crate::native_probe::Outcome::Finished };
     let (backend, folder) = (backend.clone(), alondra_core::accounts::folder(home, account));
     if folder.as_ref().is_some_and(|folder| !folder.is_dir()) {
         return crate::native_probe::Outcome::Finished;
@@ -330,7 +331,7 @@ async fn measure_account(domain: &DomainRuntime, home: &Path, account: &AccountI
         return crate::native_probe::Outcome::Finished;
     }
     let measured_at = now_millis();
-    match tokio::task::spawn_blocking(move || probe(&backend, folder.as_deref())).await {
+    match tokio::task::spawn_blocking(move || probe(&*hosts, &backend, folder.as_deref())).await {
         Ok(Ok(reading)) => {
             let command = DomainCommand::RecordAccountUsage { provider: Provider::Claude, account: account.clone(), reading, at: measured_at, day: alondra_daemon_engine_model::local_day(measured_at) };
             match crate::accounts::publish_current_probe(domain, home, fence, vec![command]) {

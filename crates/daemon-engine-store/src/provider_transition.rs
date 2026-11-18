@@ -3,7 +3,7 @@ use alondra_daemon_engine_model::LaunchOptionsFile as _;
 use super::*;
 use alondra_core::accounts::AccountKey;
 use alondra_core::model_selection::{ModelSelection, TaskSelection};
-use alondra_agent_runtime::owned_host::EndedHost;
+use alondra_engine_ports::agent_host::EndedHost;
 
 pub(super) const SCHEMA: &str = r#"CREATE TABLE IF NOT EXISTS provider_transition_steps(
  sequence INTEGER PRIMARY KEY, transition_id TEXT NOT NULL, task_id TEXT NOT NULL REFERENCES tasks(id),

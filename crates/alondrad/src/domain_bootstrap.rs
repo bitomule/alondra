@@ -43,8 +43,12 @@ fn require_database(home: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Gives the registry every port's implementation: each piece of the engine wires its own.
+/// Gives the registry every port's implementation: each piece of the engine wires its own. The
+/// hosts of agents start through the real launcher unless the daemon's seams already gave another.
 pub(crate) fn wire(registry: &alondra_engine_ports::Registry) {
+    if registry.port::<dyn alondra_engine_ports::agent_host::AgentHost>().is_none() {
+        alondra_agent_runtime::wire(registry, Default::default());
+    }
     alondra_daemon_engine::wiring::wire(registry);
     alondra_engine_sdk::wiring::wire(registry);
     alondra_engine_admission::wire(registry);

@@ -10,6 +10,8 @@ load("//tools:rust_sources.bzl", "production_sources")
 WORKSPACE_DEPS = [
     "//crates/core:alondra_core",
     "//crates/domain-rules:domain_rules",
+    "//crates/foundation:foundation",
+    "//crates/process-group:process_group",
 ]
 
 port_crate(
@@ -23,7 +25,7 @@ port_crate(
 low_opt_rust_test(
     name = "engine_ports_test",
     size = "small",
-    srcs = glob(["src/**/*.rs"]),
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
     crate_name = "alondra_engine_ports",
     crate_root = "src/lib.rs",
     edition = "2024",

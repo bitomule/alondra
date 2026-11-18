@@ -211,7 +211,7 @@ fn scenario(prompt: &str, terminal_gap: bool) {
         host_release: "sdk-client-fixture".into(),
         io_timeout: Duration::from_secs(30),
         confinement: None,
-        launcher: Default::default(),
+        hosts: std::sync::Arc::new(alondra_agent_runtime::owned_host::ProcessHosts::new(Default::default())),
         worker: None,
     };
     let probe = Arc::new(Mutex::new(Probe::default()));
@@ -549,7 +549,7 @@ impl FacadeFixture {
             host_release: "sdk-facade-fixture".into(),
             io_timeout: Duration::from_secs(30),
             confinement: None,
-            launcher: Default::default(),
+            hosts: std::sync::Arc::new(alondra_agent_runtime::owned_host::ProcessHosts::new(Default::default())),
             worker: None,
         };
         let connection = database(&directory.join("domain.db"), &cwd);

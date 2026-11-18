@@ -10,7 +10,6 @@ load("//tools:rust_sources.bzl", "production_sources")
 WORKSPACE_DEPS = [
     "//crates/engine-ports:engine_ports",
     "//crates/agent-application:agent_application",
-    "//crates/agent-runtime:agent_runtime",
     "//crates/core:alondra_core", "//crates/domain-rules:domain_rules", "//crates/view-model:view_model",
     "//crates/domain:domain",
     "//crates/foundation:foundation",
@@ -52,7 +51,7 @@ rust_library(
     rustc_flags = [LOW_OPT_LEVEL],
     version = VERSION,
     visibility = ["//crates/alondrad:__pkg__", "//crates/engine-admission:__pkg__", "//crates/engine-orchestrator:__pkg__", "//crates/engine-sdk:__pkg__", "//crates/machine-model:__pkg__", "//crates/scenarios:__pkg__"],
-    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/agent-runtime:agent_runtime"] + [
         "//crates/codex-protocol:codex_protocol",
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
         "//crates/daemon-engine-store:daemon_engine_store_test_hooks",
@@ -74,7 +73,7 @@ ENGINE_TEST_COMPILE_DATA = [
     "//fixtures/domain-v2:acceptance.json",
 ]
 
-ENGINE_TEST_DEPS = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
+ENGINE_TEST_DEPS = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/agent-runtime:agent_runtime"] + [
     "//crates/views:views",
     "//crates/codex-protocol:codex_protocol",
     "//crates/daemon-engine-model:daemon_engine_model_test_hooks",

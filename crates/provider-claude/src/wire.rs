@@ -3,7 +3,7 @@ use alondra_agent_protocol::{
     HostExpectation, ReceiptOutcome, ReceiptPhase, ReceivedFrame, SDK_VERSION,
     encode, owner_proof, verify_host_proof,
 };
-use alondra_agent_runtime::owned_host::VerifiedArtifact;
+use alondra_engine_ports::agent_host::VerifiedArtifact;
 use alondra_provider_contract::{AdapterError, Handoff, PreparedCommand};
 use alondra_foundation::DataEpoch;
 use alondra_store::OwnerGrant;
@@ -421,7 +421,7 @@ impl Connection {
         if self.failed {
             return Err(AdapterError::Disconnected);
         }
-        alondra_agent_runtime::owned_host::readable(&self.probe, timeout).map_err(disconnected)
+        alondra_foundation::readable(&self.probe, timeout).map_err(disconnected)
     }
     fn check_owner(&self, owner: &impl HostOwner) -> Result<(), AdapterError> {
         if self.failed {

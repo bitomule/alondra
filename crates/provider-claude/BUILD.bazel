@@ -20,7 +20,7 @@ _PROVIDER_TEST_SOURCES = _PROVIDER_SOURCES + [
 
 _PROVIDER_DEPS = [
     "//crates/agent-protocol:agent_protocol",
-    "//crates/agent-runtime:agent_runtime",
+    "//crates/engine-ports:engine_ports",
     "//crates/agent-application:agent_application",
     "//crates/provider-contract:provider_contract",
     "//crates/foundation:foundation",
@@ -57,7 +57,7 @@ low_opt_rust_test(
     version = "0.1.0",
     crate_features = ["sdk_fixture"],
     edition = "2024",
-    deps = _PROVIDER_DEPS + ["//crates/domain:domain", "//crates/scenarios-transcript:scenarios_transcript", "//crates/provider-conformance:provider_conformance"] + all_crate_deps(normal_dev = True),
+    deps = _PROVIDER_DEPS + ["//crates/agent-runtime:agent_runtime", "//crates/domain:domain", "//crates/scenarios-transcript:scenarios_transcript", "//crates/provider-conformance:provider_conformance"] + all_crate_deps(normal_dev = True),
     compile_data = [
         "//crates/domain-store-schema:schema.sql",
         "//crates/agent-protocol:fixtures/hello.json",

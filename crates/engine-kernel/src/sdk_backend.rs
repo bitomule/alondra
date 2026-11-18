@@ -91,9 +91,6 @@ pub struct SdkBackend {
     /// then.
     #[serde(skip)]
     pub installed_native: bool,
-    /// Starts the host process; a scenario swaps it.
-    #[serde(skip)]
-    pub launcher: alondra_agent_runtime::owned_host::Launcher,
     /// The release the hosts this daemon starts are of, as their manifest names it: the daemon's
     /// own. A scenario names an older one to play the daemon an update replaces.
     #[serde(skip, default = "this_release")]
@@ -146,7 +143,7 @@ fn installed(home: &Path, user_home: &Path, daemon: &Path, environment: &BTreeMa
         host_environment: BTreeMap::from([("PATH".into(), "/usr/bin:/bin".into())]),
         native_environment,
         confinement: None, state_root, io_timeout_seconds: 120, installed_native: true,
-        launcher: Default::default(), release: this_release(),
+        release: this_release(),
     })
 }
 
@@ -286,7 +283,7 @@ fn version_of(native: &Path) -> Result<String> {
 }
 
 pub fn digest(file: &Path) -> Result<String> {
-    alondra_agent_runtime::artifact_digest::digest(file)
+    alondra_foundation::artifact_digest::digest(file)
         .with_context(|| format!("hashing {}", file.display()))
 }
 
@@ -624,7 +621,6 @@ impl SdkBackend {
                 backend.provider = provider;
                 remove_codex_auth_environment(&mut backend.native_environment);
                 backend.origin = Some(Box::new(self.clone()));
-                backend.launcher = self.launcher.clone();
                 backend.release = self.release.clone();
                 if let Some(port) = self.native_environment.get("ALONDRA_PORT") { backend.native_environment.insert("ALONDRA_PORT".into(), port.clone()); }
                 for (file, expected) in [(&backend.node, &backend.node_sha256), (&backend.host, &backend.host_sha256), (&backend.native, &backend.native_sha256)] {
@@ -656,7 +652,7 @@ impl SdkBackend {
             native, native_sha256, host_environment: self.host_environment.clone(), native_environment,
             confinement: self.confinement.clone(), state_root, io_timeout_seconds: self.io_timeout_seconds,
             installed_native: true,
-            launcher: self.launcher.clone(), release: self.release.clone(),
+            release: self.release.clone(),
         })
     }
 

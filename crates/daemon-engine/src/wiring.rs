@@ -40,6 +40,7 @@ pub fn open_engine_at(home: &Path, database: &Path) -> Result<DomainRuntime> {
         Box::new(crate::allow_always::ChosenAlways),
     ])?;
     wire(runtime.ports());
+    alondra_agent_runtime::wire(runtime.ports(), Default::default());
     Ok(runtime)
 }
 

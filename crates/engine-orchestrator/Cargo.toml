@@ -10,7 +10,6 @@ test-hooks = ["dep:tempfile", "alondra-daemon-engine-model/test-hooks", "alondra
 
 [dependencies]
 alondra-engine-ports.workspace = true
-alondra-agent-runtime.workspace = true
 alondra-core.workspace = true
 alondra-domain-rules.workspace = true
 alondra-view-model.workspace = true

@@ -1,6 +1,6 @@
 use super::ClaudeConfiguration;
 use alondra_agent_application::{InputMetadata, Normalization, ObservationMetadata, ObservationNormalizer};
-use alondra_agent_runtime::owned_host::HostStop;
+use alondra_engine_ports::agent_host::HostStop;
 use alondra_core::accounts::Provider;
 use alondra_foundation::CommandId;
 use alondra_provider_claude::ClaudeWorker;
@@ -47,7 +47,7 @@ impl Worker {
                     host_environment: configuration.host_environment, native_executable: configuration.native_executable,
                     native_directory: configuration.native_directory, native_environment: configuration.native_environment,
                     profile_id: configuration.profile_id, account_id: configuration.account_id,
-                    host_release: configuration.host_release, io_timeout: configuration.io_timeout, confinement: configuration.confinement, launcher: configuration.launcher,
+                    host_release: configuration.host_release, io_timeout: configuration.io_timeout, confinement: configuration.confinement, hosts: configuration.hosts,
                     worker: configuration.worker.map(|profile| alondra_provider_codex::WorkerProfile { plugins: profile.plugins, settings: profile.settings, model: profile.model, effort: profile.effort, disallowed_tools: profile.disallowed_tools, handoff_context: profile.handoff_context }),
                 };
                 CodexWorker::configured(binding, configuration).map(Self::Codex)
@@ -67,7 +67,7 @@ impl Worker {
             Self::Codex(worker) => match worker.find_host(grant, state)? { alondra_provider_codex::Found::Live => Found::Live, alondra_provider_codex::Found::Ended(journal) => Found::Ended(EndedJournal::Codex(journal)) },
         })
     }
-    pub fn take_ended(&mut self) -> Option<alondra_agent_runtime::owned_host::EndedHost> { dispatch!(self, take_ended) }
+    pub fn take_ended(&mut self) -> Option<alondra_engine_ports::agent_host::EndedHost> { dispatch!(self, take_ended) }
     pub fn relaunch(&mut self, grant: OwnerGrant, state: AdapterState, base: u64, resume: bool, opens_on_control: bool, environment: BTreeMap<String, String>) -> Result<(), AdapterError> { dispatch!(self, relaunch, grant, state, base, resume, opens_on_control, environment) }
     pub fn reconcile(&mut self, bytes: &[u8]) -> Result<Handoff, AdapterError> { dispatch!(self, reconcile, bytes) }
     pub fn archived_handoffs(&self, grant: &OwnerGrant, state: &AdapterState, commands: &[&[u8]]) -> Result<Vec<alondra_provider_contract::HandoffProof>, AdapterError> {

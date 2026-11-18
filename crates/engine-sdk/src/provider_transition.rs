@@ -8,7 +8,7 @@ use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{Attached,StoreError};
 use crate::domain_store::provider_transition::{Kind,Plan,Phase,Transition,prepared_facts};
-use alondra_agent_runtime::owned_host::{EndedHost,Retained};
+use alondra_engine_ports::agent_host::{EndedHost,Retained};
 use alondra_core::accounts::AccountKey;
 use alondra_domain_rules::*;
 use alondra_core::model_selection::{ModelSelection,MoveRefused,PendingTaskSelection,TaskSelection};
@@ -219,7 +219,7 @@ fn prepare_context(domain:&DomainRuntime,plan:&Plan)->Result<PreparedHandoff,Dom
 /// with its end, and the ended host is the proof that nothing of it writes any more.
 fn end_source(domain:&Arc<DomainRuntime>,plan:&Plan)->Result<(),DomainError>{
     domain.own(scope(domain)?,|owner|owner.validate_selection_binding(plan)).map_err(store_failure)?;
-    let alive=!matches!(EndedHost::claim(&plan.source.host_directory),Ok(Retained::Ended(_)));
+    let alive=!matches!(alondra_engine_ports::agent_host::of(domain.ports()).and_then(|hosts|hosts.claim(&plan.source.host_directory)),Ok(Retained::Ended(_)));
     if alive || !host_ended(domain,&plan.task)? || crate::sdk_owner::claims_left(domain,&plan.task).map_err(failure)?{end_and_fence(domain,plan)?;}
     ensure_fence(domain,plan)?;
     let fences=domain.selection_changes().fences.lock_or_recover("the provider transition fences");
@@ -351,7 +351,7 @@ fn end_and_fence(domain:&Arc<DomainRuntime>,plan:&Plan)->Result<(),DomainError>{
 }
 fn ensure_fence(domain:&DomainRuntime,plan:&Plan)->Result<(),DomainError>{
     if domain.selection_changes().fences.lock_or_recover("the provider transition fences").contains_key(&plan.id){return Ok(())}
-    let retained=EndedHost::claim(&plan.source.host_directory).map_err(failure)?;
+    let retained=alondra_engine_ports::agent_host::of(domain.ports()).and_then(|hosts|hosts.claim(&plan.source.host_directory)).map_err(failure)?;
     let proof=match retained{Retained::Ended(proof)=>proof,Retained::Held=>return Err(failure("The source host still holds its native execution")),Retained::Absent=>return Err(failure("The source host fence is missing; its absence is not continuation proof"))};
     domain.selection_changes().fences.lock_or_recover("the provider transition fences").insert(plan.id.clone(),proof);
     Ok(())

@@ -127,6 +127,7 @@ name = "alondra-agent-runtime"
 version = "0.3.48"
 dependencies = [
  "alondra-domain",
+ "alondra-engine-ports",
  "alondra-foundation",
  "alondra-process-group",
  "alondra-provider-contract",
@@ -255,7 +256,6 @@ name = "alondra-daemon-engine-store"
 version = "0.3.48"
 dependencies = [
  "alondra-agent-application",
- "alondra-agent-runtime",
  "alondra-core",
  "alondra-daemon-engine-model",
  "alondra-daemon-support",
@@ -401,7 +401,6 @@ name = "alondra-engine-kernel"
 version = "0.3.48"
 dependencies = [
  "alondra-agent-application",
- "alondra-agent-runtime",
  "alondra-core",
  "alondra-daemon-engine-machine",
  "alondra-daemon-engine-model",
@@ -470,7 +469,6 @@ dependencies = [
 name = "alondra-engine-orchestrator"
 version = "0.3.48"
 dependencies = [
- "alondra-agent-runtime",
  "alondra-codex-protocol",
  "alondra-core",
  "alondra-daemon-engine",
@@ -505,8 +503,11 @@ version = "0.3.48"
 dependencies = [
  "alondra-core",
  "alondra-domain-rules",
+ "alondra-foundation",
+ "alondra-process-group",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 
@@ -576,8 +577,11 @@ dependencies = [
 name = "alondra-foundation"
 version = "0.3.48"
 dependencies = [
+ "rustix 1.1.5",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]
@@ -595,6 +599,7 @@ dependencies = [
  "alondra-agent-protocol",
  "alondra-agent-runtime",
  "alondra-domain",
+ "alondra-engine-ports",
  "alondra-foundation",
  "alondra-provider-conformance",
  "alondra-provider-contract",
@@ -613,9 +618,9 @@ name = "alondra-provider-codex"
 version = "0.3.48"
 dependencies = [
  "alondra-agent-application",
- "alondra-agent-runtime",
  "alondra-codex-protocol",
  "alondra-domain",
+ "alondra-engine-ports",
  "alondra-foundation",
  "alondra-process-group",
  "alondra-provider-conformance",

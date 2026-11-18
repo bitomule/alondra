@@ -173,7 +173,7 @@ pub fn fixture_backend(home: &Path, state: &HostRoot) -> (SdkBackend, PathBuf) {
         confinement: None,
         state_root: state.join("h"),
         io_timeout_seconds: 30,
-        installed_native: false, launcher: Default::default(), release: crate::sdk_backend::this_release(),
+        installed_native: false, release: crate::sdk_backend::this_release(),
             provider: alondra_core::accounts::Provider::Claude, origin: None,
     };
     (backend, capture)

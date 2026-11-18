@@ -82,12 +82,8 @@ PRIVATE_TO = {
 # The dependencies that break the rule today, by dependent package. This list only shrinks: a
 # change that removes a dependency removes its entry, `crate_layers_test` fails on an entry no
 # dependency uses, and its ceiling drops with every entry removed.
-#
-# Every `crates/agent-runtime` entry goes in phase 3b, when the local host processes are reached
-# only through the port `AgentHost` of `crates/engine-ports`.
 LAYER_EXCEPTIONS = {
     "crates/daemon-engine": [
-        "crates/agent-runtime",
         "crates/daemon-engine-machine",
         "crates/daemon-engine-model",
         "crates/daemon-engine-store",
@@ -109,7 +105,6 @@ LAYER_EXCEPTIONS = {
         "crates/daemon-support",
     ],
     "crates/daemon-engine-store": [
-        "crates/agent-runtime",
         "crates/daemon-engine-model",
         "crates/daemon-support",
         "crates/provider-codex",
@@ -130,7 +125,6 @@ LAYER_EXCEPTIONS = {
         "crates/engine-kernel",
     ],
     "crates/engine-kernel": [
-        "crates/agent-runtime",
         "crates/daemon-engine-machine",
         "crates/daemon-engine-model",
         "crates/daemon-engine-store",
@@ -148,7 +142,6 @@ LAYER_EXCEPTIONS = {
         "crates/provider-claude",
     ],
     "crates/engine-orchestrator": [
-        "crates/agent-runtime",
         "crates/daemon-engine-model",
         "crates/daemon-support",
         "crates/engine-kernel",
@@ -156,7 +149,6 @@ LAYER_EXCEPTIONS = {
         "crates/provider-codex",
     ],
     "crates/engine-sdk": [
-        "crates/agent-runtime",
         "crates/daemon-engine",
         "crates/daemon-engine-machine",
         "crates/daemon-engine-model",
@@ -171,12 +163,6 @@ LAYER_EXCEPTIONS = {
     "crates/engine-worktrees": [
         "crates/daemon-support",
         "crates/engine-kernel",
-    ],
-    "crates/provider-claude": [
-        "crates/agent-runtime",
-    ],
-    "crates/provider-codex": [
-        "crates/agent-runtime",
     ],
 }
 

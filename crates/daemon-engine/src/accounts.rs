@@ -11,6 +11,7 @@ use crate::locks::Poisonable as _;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use alondra_engine_ports::agent_host::{AgentHost, ProbeRun};
 use std::time::Duration;
 
 use alondra_core::accounts::{AccountBilling, AccountChange, AccountId, AccountKey, AccountState, AccountStatus, AccountsConfig, Policy, Provider};
@@ -41,7 +42,7 @@ pub(crate) struct Claude {
     pub username: String,
     pub timeout: Option<Duration>,
     /// The edge the daemon reaches Claude through: the same that starts its hosts.
-    pub launcher: alondra_agent_runtime::owned_host::Launcher,
+    pub hosts: Arc<dyn AgentHost>,
 }
 
 impl Claude {
@@ -51,7 +52,7 @@ impl Claude {
         let path = backend.native_environment.get("PATH").cloned().unwrap_or_default();
         let executable = if backend.installed_native { claude_account::executable(&path)? } else { backend.native.clone() };
         let user_home = Self::user_home(domain);
-        Some(Claude { executable, environment: backend.native_environment.clone(), user_home, path, username: claude_account::effective_username()?, timeout: (!domain.live().unbounded_claude_status.load(std::sync::atomic::Ordering::Relaxed)).then_some(claude_account::STATUS_TIMEOUT), launcher: backend.launcher.clone() })
+        Some(Claude { executable, environment: backend.native_environment.clone(), user_home, path, username: claude_account::effective_username()?, timeout: (!domain.live().unbounded_claude_status.load(std::sync::atomic::Ordering::Relaxed)).then_some(claude_account::STATUS_TIMEOUT), hosts: domain.ports().port::<dyn AgentHost>()? })
     }
 
     /// The profile the default account runs with: the one the daemon was set up with.
@@ -66,8 +67,8 @@ impl Claude {
 
     fn status(&self, folder: Option<&Path>) -> Result<claude_account::AuthStatus, String> {
         let command = claude_account::status_command(&self.executable, &self.environment, &self.user_home, &self.path, &self.username, folder);
-        let run = alondra_agent_runtime::owned_host::ProbeRun { command, input: Vec::new(), timeout: self.timeout };
-        let output = self.launcher.get().run(run).map_err(|error| format!("could not run Claude Code: {error}"))?;
+        let run = ProbeRun { command, input: Vec::new(), timeout: self.timeout };
+        let output = self.hosts.run(run).map_err(|error| format!("could not run Claude Code: {error}"))?;
         claude_account::read_status(output.success, &output.stdout)
     }
 
@@ -542,7 +543,8 @@ fn read_models(domain: &DomainRuntime, home: &Path, key: &AccountKey) -> Result<
         }
         Provider::Claude => {
             let (backend, _) = domain.sdk().ok_or("The Claude SDK host is not available on this Mac")?;
-            crate::usage_probe::models(backend, home, key)?
+            let hosts = domain.ports().port::<dyn AgentHost>().ok_or("The Claude SDK host is not available on this Mac")?;
+            crate::usage_probe::models(&*hosts, backend, home, key)?
         }
     };
     if catalog.models.is_empty() { return Err("This account did not advertise any models".into()); }

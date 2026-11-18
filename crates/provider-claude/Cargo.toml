@@ -10,7 +10,7 @@ sdk_fixture = []
 
 [dependencies]
 alondra-agent-protocol.workspace = true
-alondra-agent-runtime.workspace = true
+alondra-engine-ports.workspace = true
 alondra-agent-application.workspace = true
 alondra-provider-contract.workspace = true
 alondra-foundation.workspace = true
@@ -20,6 +20,7 @@ serde_json.workspace = true
 getrandom = "0.4.3"
 
 [dev-dependencies]
+alondra-agent-runtime.workspace = true
 alondra-scenarios-transcript.workspace = true
 alondra-domain.workspace = true
 alondra-provider-conformance.workspace = true

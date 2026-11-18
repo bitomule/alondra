@@ -3,7 +3,7 @@ use crate::engine::OrchestratorOf as _;
 use crate::domain_store::batch_effects::BatchReport;
 use crate::orchestrator_process::{Output, ProcessOwner, Stream, bounded};
 use crate::orchestrator_provider::Batch;
-use alondra_agent_runtime::owned_host::VerifiedArtifact;
+use alondra_engine_ports::agent_host::VerifiedArtifact;
 use alondra_provider_codex::{BatchHost, CodexConfiguration, HostEvent, McpServer, OrchestratorProfile};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -339,7 +339,7 @@ fn configuration(batch: &Batch) -> anyhow::Result<CodexConfiguration> {
         state_directory, host_environment: backend.host_environment, native_executable: backend.native,
         native_directory: batch.directory.clone(), native_environment, profile_id: "alondra".into(),
         account_id: batch.selection.account.account.as_str().to_owned(), host_release: env!("CARGO_PKG_VERSION").into(),
-        io_timeout: Duration::from_secs(backend.io_timeout_seconds), confinement: backend.confinement, launcher: backend.launcher, worker: None,
+        io_timeout: Duration::from_secs(backend.io_timeout_seconds), confinement: backend.confinement, hosts: alondra_engine_ports::agent_host::of(batch.domain.ports())?, worker: None,
     })
 }
 fn profile(batch: &Batch) -> anyhow::Result<OrchestratorProfile> {
