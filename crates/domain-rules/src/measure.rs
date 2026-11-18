@@ -5,6 +5,7 @@ use std::cell::Cell;
 
 thread_local! {
     static CARDS_READ: Cell<u64> = const { Cell::new(0) };
+    static PAUSE_QUERIES: Cell<u64> = const { Cell::new(0) };
     static TASKS_READ: Cell<u64> = const { Cell::new(0) };
 }
 
@@ -24,4 +25,13 @@ pub fn cards_read() -> u64 {
 
 pub(super) fn card_read() {
     CARDS_READ.with(|count| count.set(count.get() + 1));
+}
+
+/// Indexed pause resolutions on this thread.
+pub fn pause_queries() -> u64 {
+    PAUSE_QUERIES.with(Cell::get)
+}
+
+pub(super) fn pause_query() {
+    PAUSE_QUERIES.with(|count| count.set(count.get() + 1));
 }

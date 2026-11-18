@@ -30,6 +30,7 @@ pub struct DomainRuntime {
     /// A holder that panics leaves it whole, so it is recovered: its only write swaps one `Arc`,
     /// built outside it.
     snapshot: RwLock<Arc<ReadSnapshot>>,
+    snapshot_changed: watch::Sender<u64>,
     approval_home: PathBuf,
     /// A holder that panics leaves it whole, so it is recovered: each change is one insert, retain
     /// or remove; what it shares with the store changes under the store's guard, which exits.
@@ -198,6 +199,7 @@ impl DomainRuntime {
             store: RuntimeMutex::new(store),
             reads: Mutex::new(reads),
             snapshot: RwLock::new(Arc::new(ReadSnapshot::build(state))),
+            snapshot_changed: watch::channel(0).0,
             approval_home: home.to_path_buf(),
             authority: RuntimeMutex::new(authority),
             operations_live: Default::default(), operations_changed: watch::channel(0).0,
@@ -445,7 +447,12 @@ impl DomainRuntime {
                 log!("{task} waits on card {card} that the inbox does not list");
             }
         }
-        *self.snapshot.write_or_recover("the domain snapshot") = snapshot;
+        {
+            let mut current = self.snapshot.write_or_recover("the domain snapshot");
+            *current = snapshot;
+            self.snapshot_changed.send_modify(|generation| *generation = generation.wrapping_add(1));
+        }
+        self.seals.wake();
     }
     pub fn publish_batch_report(&self, run: &str, cursor: u64, evidence: &[u8], report: &crate::domain_store::batch_effects::BatchReport) -> Result<(), StoreError> {
         let mut store = self.store.lock_or_exit("the domain store");
@@ -486,6 +493,12 @@ impl DomainRuntime {
     }
     pub fn subscribe(&self) -> watch::Receiver<Revision> {
         self.changed.subscribe()
+    }
+    /// Changes when a snapshot is replaced, including a reload at the same domain revision.
+    /// Release the receiver's borrow before reading the snapshot: publication holds the snapshot
+    /// lock while announcing its generation, then releases both before waking SDK owners.
+    pub fn subscribe_snapshots(&self) -> watch::Receiver<u64> {
+        self.snapshot_changed.subscribe()
     }
     /// Wakes whoever waits on a change of the domain after something outside it ended, such as the
     /// thread that stops a host: the waiter looks again at what that end settled.
@@ -1350,6 +1363,106 @@ mod snapshot_tests {
     use super::*;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[test]
+    fn snapshot_publication_wakes_owners_after_invalidation_without_clock_advance() {
+        use alondra_core::clock;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        for reload in [false, true] {
+            let time = clock::VirtualRuntime::new(0).unwrap();
+            let _entered = time.enter();
+            let directory = crate::test_support::Directory::new();
+            std::fs::create_dir_all(&directory).unwrap();
+            let runtime = Arc::new(DomainRuntime::open_unwired(&directory).unwrap());
+            let register = |id: &str| {
+                let snapshot = runtime.read();
+                CommandEnvelope {
+                    protocol_version: PROTOCOL_VERSION,
+                    data_epoch: snapshot.state().data_epoch.clone(),
+                    command_id: id.into(),
+                    expected_revision: snapshot.state().revision,
+                    command: Command::RegisterAgent { agent_id: id.into(), name: id.into(), at: 0 },
+                }
+            };
+            runtime.execute(&Actor::System, &register("agent-a"), None, || Ok(())).unwrap();
+            assert!(runtime.seals.take_all().is_empty());
+            let before = runtime.read();
+            let mut snapshots = runtime.subscribe_snapshots();
+            let generation = *snapshots.borrow_and_update();
+            let domain_changes = runtime.subscribe();
+
+            // Observe the actual notification while it holds the same monitor as wait_for's
+            // predicate. Reading the snapshot here also checks publication released its locks.
+            let notifications = Arc::new(Mutex::new(Vec::new()));
+            let observed = notifications.clone();
+            let at_wake = snapshots.clone();
+            let weak = Arc::downgrade(&runtime);
+            runtime.seals.on_wake(move || {
+                let domain = weak.upgrade().unwrap();
+                let changed = at_wake.has_changed().unwrap();
+                let current_generation = *at_wake.borrow();
+                let snapshot = domain.read();
+                observed.lock().unwrap().push((changed, current_generation, snapshot.state().revision));
+            });
+
+            let (ready, waiting) = mpsc::channel();
+            let waiter_domain = runtime.clone();
+            let waiter_changes = snapshots.clone();
+            let cleanup = Arc::new(AtomicBool::new(false));
+            let waiter_cleanup = cleanup.clone();
+            let waiter = clock::spawn_thread(move || {
+                let first = std::cell::Cell::new(true);
+                let committed = waiter_domain.seals.wait_for(&"no-seals".into(), Duration::from_secs(60), || {
+                    let changed = waiter_changes.has_changed().unwrap();
+                    if first.replace(false) {
+                        ready.send(()).unwrap();
+                    }
+                    changed || waiter_cleanup.load(Ordering::SeqCst)
+                });
+                assert!(seals::empty(&committed));
+                clock::now_millis()
+            });
+            waiting.recv().unwrap();
+            let command = register("agent-b");
+            if reload {
+                let connection = rusqlite::Connection::open(crate::domain_database_migration::active_path(&directory)).unwrap();
+                assert_eq!(connection.execute("UPDATE agents SET name='Renamed' WHERE id='agent-a'", []).unwrap(), 1);
+                runtime.reload();
+            } else {
+                runtime.execute(&Actor::System, &command, None, || Ok(())).unwrap();
+            }
+            let notifications_at_publish = notifications.lock().unwrap().clone();
+            // A removed or reordered wake still releases the thread, then fails on the captured
+            // operations, rather than waiting for a real timeout or advancing the virtual clock.
+            if !notifications_at_publish.iter().any(|(changed, _, _)| *changed) {
+                cleanup.store(true, Ordering::SeqCst);
+                runtime.seals.wake();
+            }
+            assert_eq!(waiter.join().unwrap(), 0);
+            assert_eq!(clock::now_millis(), 0);
+            let after = runtime.read();
+            let expected_revision = before.state().revision + u64::from(!reload);
+            assert_eq!(notifications_at_publish, vec![(true, generation + 1, expected_revision)]);
+            assert_eq!(*snapshots.borrow_and_update(), generation + 1);
+            assert_eq!(after.state().revision, expected_revision);
+            assert!(after.index().describes(after.state()));
+            assert!(runtime.seals.take_all().is_empty(), "the wake requires no committed seals");
+            if reload {
+                assert_eq!(before.state().agents[&AgentId::from("agent-a")].name, "agent-a");
+                assert_eq!(after.state().agents[&AgentId::from("agent-a")].name, "Renamed");
+                assert!(!domain_changes.has_changed().unwrap(), "reload keeps the existing revision channel's contract");
+                runtime.reload();
+            } else {
+                assert!(!before.state().agents.contains_key(&AgentId::from("agent-b")));
+                assert!(after.state().agents.contains_key(&AgentId::from("agent-b")));
+                assert!(domain_changes.has_changed().unwrap());
+                runtime.execute(&Actor::System, &command, None, || Ok(())).unwrap();
+            }
+            assert!(!snapshots.has_changed().unwrap(), "reusing the published state sends no event");
+            assert_eq!(notifications.lock().unwrap().len(), 1, "reusing the snapshot does not wake owners");
+        }
+    }
 
     #[test]
     fn reads_never_wait_for_the_store_and_see_each_commit() {
