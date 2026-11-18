@@ -115,13 +115,18 @@ impl World {
 
     /// The same on a release's own backend, with no configuration file: the host is read when it
     /// starts and the user's Claude Code is found on the PATH, here the fixture behind a `claude`
-    /// that tells its release.
+    /// that tells its release. Its first `claude --version` fails, as one that does not answer in
+    /// time on a busy Mac: the admission that asked it fails and the move stays at its step.
     fn installed() -> Self {
         Self::with(|home, backend| {
             let bin = home.join("bin");
             std::fs::create_dir(&bin).unwrap();
             let claude = bin.join("claude");
-            std::fs::write(&claude, format!("#!/bin/sh\n[ \"$1\" = --version ] && {{ echo '2.1.321 (Claude Code)'; exit 0; }}\nexec {} \"$@\"\n", backend.native.display())).unwrap();
+            let answered = home.join("version-asked");
+            std::fs::write(&claude, format!(
+                "#!/bin/sh\nif [ \"$1\" = --version ]; then\n  [ -e {answered} ] || {{ : > {answered}; exit 1; }}\n  echo '2.1.321 (Claude Code)'; exit 0\nfi\nexec {native} \"$@\"\n",
+                answered = answered.display(), native = backend.native.display(),
+            )).unwrap();
             std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o700)).unwrap();
             backend.native_environment.insert("PATH".into(), format!("{}:/usr/bin:/bin", bin.display()));
             backend.native = PathBuf::new();
@@ -213,6 +218,20 @@ impl World {
 
     fn step(&self) -> Option<HandoverStep> {
         handover_of(&self.domain, &AgentId(SESSION.into())).map(|handover| handover.step)
+    }
+
+    /// Ticks the moves, as the daemon's loop does, until the move records `step`: a step that
+    /// failed leaves the move where it was for the next tick. The bound only ends a move that
+    /// never gets there.
+    async fn tick_until(&self, step: HandoverStep) {
+        const TICKS: usize = 5;
+        for _ in 0..TICKS {
+            tick(&self.domain).await;
+            if self.step() == Some(step) {
+                return;
+            }
+        }
+        assert_eq!(self.step(), Some(step), "the move did not reach {step:?} in {TICKS} ticks");
     }
 
     fn starts(&self) -> Vec<serde_json::Value> {
@@ -313,8 +332,7 @@ async fn a_move_cut_after_its_admission_starts_the_host_and_claude_code_a_releas
     world.answer();
     world.plan_move();
     *world.domain.handovers().crash_after.lock().unwrap() = Some(HandoverStep::SdkAdmitted);
-    tick(&world.domain).await;
-    assert_eq!(world.step(), Some(HandoverStep::SdkAdmitted));
+    world.tick_until(HandoverStep::SdkAdmitted).await;
     world.restart().await;
     tick(&world.domain).await;
     assert_eq!(world.launch_status().as_deref(), Some("handed"), "the launch goes out after the crash");
