@@ -105,7 +105,16 @@ See [the process table and its signals](../crates/system/src/lib.rs),
   `node_environment` can add variables; their values may persist in host ownership records.
   MCP servers and provider plugins have their own credentials and access. See
   [environment selection](../crates/engine-kernel/src/sdk_backend.rs).
-- **Optional view diagnostics:** The daemon reads `ALONDRA_VIEW_OBSERVE_SECONDS` once when
+- **Bounded diagnostics without restarting:** On this Mac, run
+  `alondra observe --seconds 900 --delay 120` to start request and view counters on the running
+  daemon. Duration is 1–3600 seconds (default 900); delay is 0–3600 seconds (default 0).
+  Start/end records appear in the existing daemon log. Counting stops automatically and another
+  command can start a fresh window afterward. Overlapping windows are refused, including a
+  pending delay or an observation enabled at startup. The command changes no settings or files
+  and never restarts the daemon. Its local JSON endpoint refuses paired devices, non-loopback
+  peers, proxy headers, browser origins and non-loopback hosts. The command uses this Mac even
+  when the TUI has selected a remote Mac. `--json` prints the accepted duration and delay.
+- **Optional view diagnostics:** For observation at startup, the daemon reads `ALONDRA_VIEW_OBSERVE_SECONDS` once when
   opening its client. An integer from 1 to 3600 enables one aggregate observation window;
   `ALONDRA_VIEW_OBSERVE_DELAY_SECONDS` delays its start by 0 to 3600 seconds (default 60).
   Missing duration or invalid values disable it. The window writes two records to the existing
@@ -117,7 +126,7 @@ See [the process table and its signals](../crates/system/src/lib.rs),
   waiting for changes, with their original long-poll deadlines; another terminal does not make
   them return a superseded response and immediately send a replacement. Each pending terminal's
   views remain included in live sampling until its request ends. Diagnostics record no view keys,
-  device IDs, paths or request contents, create no endpoint or additional file, and stop counting
+  device IDs, paths or request contents, create no additional file, and stop counting
   automatically. Counts near a
   window boundary are approximate under concurrency; they are not CPU measurements. Variables
   must be present in the daemon's own startup environment: exporting them in another terminal
@@ -128,7 +137,7 @@ See [the process table and its signals](../crates/system/src/lib.rs),
   runtime. `ALONDRA_AUTH_OBSERVE_DELAY_SECONDS` (0–3600, default 60) delays it. Missing or invalid
   settings disable it; opening outside a runtime also disables it. The existing daemon log
   receives start/end records containing fixed counter names and numbers, with actual elapsed
-  microseconds for calculating rates. No new endpoint or file is created. Counters distinguish
+  microseconds for calculating rates. No additional file is created. Counters distinguish
   requests, missing signature headers, local unsigned passes, body-read rejections, verification
   attempts, key decoding/preparation, executed ECDSA and verification results. Verification
   success does not imply the handler's later durable authorization succeeded. Replayed requests

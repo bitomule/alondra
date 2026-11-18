@@ -276,10 +276,17 @@ impl Client {
         let seconds = std::env::var("ALONDRA_VIEW_OBSERVE_SECONDS").ok();
         let delay = std::env::var("ALONDRA_VIEW_OBSERVE_DELAY_SECONDS").ok();
         let window = crate::views::observation::window(seconds.as_deref(), delay.as_deref());
-        let observation = if window.is_some() { crate::views::observation::Observation::armed() } else { Default::default() };
-        let client = Self::open_observed(domain, home, gauges, observation);
-        if let Some(window) = window { crate::views::observation::start_window(&client, window); }
+        let client = Self::open_observed(domain, home, gauges, Default::default());
+        if let Some(window) = window { let _ = client.start_view_observation(window.seconds, window.delay_seconds); }
         client
+    }
+
+    pub(crate) fn view_observation_is_running(&self) -> bool {
+        self.view_observation.is_running()
+    }
+
+    pub(crate) fn start_view_observation(&self, seconds: u64, delay_seconds: u64) -> Result<(), crate::views::observation::StartError> {
+        self.view_observation.start_window(seconds, delay_seconds)
     }
 
     pub(crate) fn open_observed(domain: Arc<DomainRuntime>, home: &Path, gauges: crate::machine::Gauges,

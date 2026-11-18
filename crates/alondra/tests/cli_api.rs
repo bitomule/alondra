@@ -194,8 +194,100 @@ fn help_more_lists_the_advanced_commands() {
     let more = mac.run(&["help", "more"]);
     assert!(more.status.success(), "{more:?}");
     let text = String::from_utf8_lossy(&more.stdout);
-    for command in ["cleanup", "metrics", "state", "delivery", "orchestrator"] {
+    for command in ["cleanup", "metrics", "observe", "state", "delivery", "orchestrator"] {
         assert!(text.contains(&format!("  {command}")), "{command}: {text}");
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn observe_posts_once_unsigned_with_a_paired_terminal_and_changes_no_settings() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    use p256::pkcs8::{EncodePrivateKey, LineEnding};
+    use serde_json::{Value, json};
+
+    for (status, reply) in [
+        ("200 OK", json!({"ok":true,"seconds":900,"delay_seconds":120})),
+        ("409 Conflict", json!({"error":"observation_running"})),
+    ] {
+        let mac = Mac::new();
+        let home = mac.root.join("home");
+        let key = p256::ecdsa::SigningKey::from_slice(&[9; 32]).unwrap();
+        std::fs::write(home.join("tui-key.pem"), key.to_pkcs8_pem(LineEnding::LF).unwrap().as_bytes()).unwrap();
+        std::fs::write(home.join("tui-device"), "test-terminal").unwrap();
+        std::fs::write(home.join("config.toml"), "name = \"Fixture Mac\"\nauto_update = false\n").unwrap();
+        let files = || {
+            std::fs::read_dir(&home).unwrap().map(|entry| {
+                let entry = entry.unwrap();
+                (entry.file_name(), std::fs::read(entry.path()).unwrap())
+            }).collect::<std::collections::BTreeMap<_, _>>()
+        };
+        let before = files();
+        let tools = mac.root.join("bin");
+        std::fs::create_dir(&tools).unwrap();
+        for name in ["launchctl", "brew", "alondrad"] {
+            let tool = tools.join(name);
+            std::fs::write(&tool, "#!/bin/sh\nprintf '%s\\n' \"$0 $*\" >> \"$HOME/service-control-called\"\nexit 99\n").unwrap();
+            std::fs::set_permissions(tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let done = stopped.clone();
+        let response = reply.to_string();
+        let server = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                if done.load(Ordering::SeqCst) { break; }
+                stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut request = String::new();
+                reader.read_line(&mut request).unwrap();
+                let mut headers = std::collections::BTreeMap::new();
+                loop {
+                    let mut line = String::new();
+                    assert!(reader.read_line(&mut line).unwrap() > 0);
+                    if line.trim().is_empty() { break; }
+                    let (name, value) = line.split_once(':').unwrap();
+                    headers.insert(name.to_ascii_lowercase(), value.trim().to_owned());
+                }
+                let length = headers.get("content-length").map_or(0, |value| value.parse().unwrap());
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                requests.push((request, headers, body));
+                write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
+            }
+            requests
+        });
+        let output = Command::new(env!("CARGO_BIN_EXE_alondra"))
+            .args(["observe", "--seconds", "900", "--delay", "120", "--json"])
+            .env_clear().env("HOME", &*mac.root).env("ALONDRA_HOME", &home)
+            .env("ALONDRA_PORT", address.port().to_string()).env("ALONDRA_LANG", "en")
+            .env("PATH", format!("{}:/usr/bin:/bin", tools.display())).output();
+        stopped.store(true, Ordering::SeqCst);
+        let _ = TcpStream::connect(address);
+        let requests = server.join().unwrap();
+        let output = output.unwrap();
+        assert_eq!(requests.len(), 1, "observation neither pairs nor retries: {requests:?}");
+        let (request, headers, body) = &requests[0];
+        assert_eq!(request.trim(), "POST /diagnostics/observe HTTP/1.1");
+        assert_eq!(serde_json::from_slice::<Value>(body).unwrap(), json!({"seconds":900,"delay_seconds":120}));
+        for header in ["authorization", "x-alondra-device", "x-alondra-timestamp", "x-alondra-signature"] {
+            assert!(!headers.contains_key(header), "local observation must be unsigned: {headers:?}");
+        }
+        if status == "200 OK" {
+            assert_eq!(document(&output), reply);
+            assert!(output.stderr.is_empty(), "{output:?}");
+        } else {
+            assert!(!output.status.success(), "{output:?}");
+            assert!(output.stdout.is_empty(), "a refused observation prints no success: {output:?}");
+            assert!(String::from_utf8_lossy(&output.stderr).contains("observation_running"), "{output:?}");
+        }
+        assert_eq!(files(), before, "observation leaves configuration and pairing files unchanged");
+        assert!(!mac.root.join("service-control-called").exists(), "observation invokes no service control or installer");
     }
 }
 

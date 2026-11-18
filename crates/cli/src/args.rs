@@ -81,6 +81,16 @@ pub enum Cmd {
         #[command(subcommand)]
         command: ConfigCmd,
     },
+    #[command(about = tr!("Count daemon requests and view work for a bounded window, without restarting", "Cuenta peticiones y trabajo de vistas durante una ventana acotada, sin reiniciar"),
+        after_help = examples(&["alondra observe --seconds 900 --delay 120"]))]
+    Observe {
+        #[arg(long, default_value_t = 900, value_parser = clap::value_parser!(u64).range(1..=3600),
+            help = tr!("Seconds to count (1–3600)", "Segundos de observación (1–3600)"))]
+        seconds: u64,
+        #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u64).range(0..=3600),
+            help = tr!("Seconds before counting starts (0–3600)", "Segundos hasta empezar a contar (0–3600)"))]
+        delay: u64,
+    },
     #[command(about = tr!("A crash report with everything private left out, to send to whoever asked for it", "Un informe de fallo con todo lo privado fuera, para mandárselo a quien te lo pidió"),
         long_about = tr!(
             "Collect a crash report of this Mac with everything private left out and show it in full. Only when it passed the final check can it leave the Mac: sent with your GitHub account as a public issue of the report repository that links it, or saved as a file. It needs no daemon.",
@@ -467,7 +477,7 @@ fn warns_when_older(command: Option<&Cmd>, json: bool) -> bool {
 /// The commands that print a document with `--json`; any other one refuses the flag.
 pub(crate) fn takes_json(command: Option<&Cmd>) -> bool {
     matches!(command, Some(
-        Cmd::Status | Cmd::Doctor { .. } | Cmd::Metrics { .. } | Cmd::Cleanup { .. } | Cmd::Handover { .. } | Cmd::Files { .. }
+        Cmd::Status | Cmd::Observe { .. } | Cmd::Doctor { .. } | Cmd::Metrics { .. } | Cmd::Cleanup { .. } | Cmd::Handover { .. } | Cmd::Files { .. }
         | Cmd::Report { command: None | Some(ReportCmd::List | ReportCmd::Send { .. }), .. }
         | Cmd::Config { command: ConfigCmd::List | ConfigCmd::Get { .. } }
         | Cmd::Device { command: DeviceCmd::List }
@@ -508,6 +518,7 @@ pub fn run(command: Cmd, json: bool, no_input: bool) -> Result<()> {
             ConfigCmd::Set { key, value } => commands::config_set(&key, Some(&value)),
             ConfigCmd::Unset { key } => commands::config_set(&key, None),
         },
+        Cmd::Observe { seconds, delay } => commands::observe(seconds, delay, json),
         Cmd::Status => status(json),
         Cmd::Answer { id, option, text } => cli::answer_cmd(&id, option.as_deref(), &text.join(" ")),
         Cmd::Send { to, reply, text } => cli::send(&to, &text.join(" "), reply),
@@ -944,6 +955,12 @@ mod api_tests {
         assert!(matches!(parsed(&["orchestrator", "retry", "run-1", "--confirm"]).command, Some(Cmd::Orchestrator { command: OrchestratorCmd::Retry { .. } })));
         assert!(matches!(parsed(&["orchestrator", "acknowledge", "run-1", "--confirm"]).command, Some(Cmd::Orchestrator { command: OrchestratorCmd::Acknowledge { .. } })));
         assert_eq!(refused(&["orchestrator", "retry", "run-1"]), ErrorKind::MissingRequiredArgument);
+        assert!(matches!(parsed(&["observe"]).command, Some(Cmd::Observe { seconds: 900, delay: 0 })));
+        assert!(matches!(parsed(&["observe", "--seconds", "900", "--delay", "120"]).command, Some(Cmd::Observe { seconds: 900, delay: 120 })));
+        for args in [["observe", "--seconds", "0"], ["observe", "--seconds", "3601"], ["observe", "--delay", "3601"]] {
+            assert!(Cli::try_parse_from(std::iter::once("alondra").chain(args)).is_err());
+        }
+        assert!(takes_json(parsed(&["observe", "--json"]).command.as_ref()));
         assert!(matches!(parsed(&["config", "list"]).command, Some(Cmd::Config { command: ConfigCmd::List })));
         assert!(matches!(parsed(&["config", "get", "port"]).command, Some(Cmd::Config { command: ConfigCmd::Get { key } }) if key == "port"));
         assert!(matches!(parsed(&["config", "set", "name", "Ada"]).command, Some(Cmd::Config { command: ConfigCmd::Set { key, value } }) if key == "name" && value == "Ada"));
