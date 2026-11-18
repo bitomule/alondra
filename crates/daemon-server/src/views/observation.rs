@@ -17,8 +17,13 @@ pub(crate) enum Metric {
     WakeIssues, WakeMcpStarted, WakeMcpFinished, WakeMcpRemoved,
     FeedRequests, FeedChanged, FeedTimeout, FeedError,
     FeedSupersededTui, FeedSupersededIos, FeedSupersededMac,
+    DigestNodesBytes, DigestPullRequestsBytes, DigestActivityBytes, DigestTaskHistoryBytes,
+    DigestTaskMapsBytes, DigestOtherBytes, DigestStructuralBytes,
+    SamplerNodesBytes, SamplerPullRequestsBytes, SamplerActivityBytes, SamplerTaskHistoryBytes,
+    SamplerTaskMapsBytes, SamplerOtherBytes, SamplerStructuralBytes,
+    NodeOutputRows,
 }
-const NAMES: [&str; 38] = [
+const NAMES: [&str; 53] = [
     "gather_request", "sampler_periodic", "sampler_domain", "sampler_hooks", "sampler_reports",
     "final_hit", "shared_hit", "missing", "unwatched",
     "gather_shared", "gather_sampler", "gather_keyed",
@@ -29,7 +34,15 @@ const NAMES: [&str; 38] = [
     "wake_issues", "wake_mcp_started", "wake_mcp_finished", "wake_mcp_removed",
     "feed_requests", "feed_changed", "feed_timeout", "feed_error",
     "feed_superseded_tui", "feed_superseded_ios", "feed_superseded_mac",
+    "digest_nodes_bytes", "digest_pull_requests_bytes", "digest_activity_bytes", "digest_task_history_bytes",
+    "digest_task_maps_bytes", "digest_other_bytes", "digest_structural_bytes",
+    "sampler_nodes_bytes", "sampler_pull_requests_bytes", "sampler_activity_bytes", "sampler_task_history_bytes",
+    "sampler_task_maps_bytes", "sampler_other_bytes", "sampler_structural_bytes",
+    "node_output_rows",
 ];
+
+#[derive(Clone, Copy)]
+pub(crate) enum Serialization { Digest, Sampler }
 #[derive(Clone, Copy)]
 #[repr(usize)]
 pub(crate) enum Cause {
@@ -157,6 +170,41 @@ impl Observation {
             counts.metrics[metric as usize].fetch_add(value, Ordering::Relaxed);
         }
     }
+    pub(crate) fn serialize_snapshot(&self, live: &alondra_view_model::LiveSnapshot, kind: Serialization) -> Vec<u8> {
+        let Some(counts) = self.active_counts() else {
+            return serde_json::to_vec(live).expect("live snapshot serialization");
+        };
+        let (bytes, breakdown) = super::serialization::serialize(live);
+        self.record_serialization(&counts, kind, bytes.len() as u64, breakdown);
+        bytes
+    }
+
+    fn record_serialization(&self, counts: &Arc<Counts>, kind: Serialization, bytes: u64, parts: super::serialization::Breakdown) {
+        let window = self.0.window.lock_or_recover("the view observation window");
+        if !counts.active.load(Ordering::Relaxed)
+            || !window.counts.as_ref().is_some_and(|current| Arc::ptr_eq(current, counts)) { return; }
+        debug_assert_eq!(parts.total(), bytes);
+        let (serializations, total, components) = match kind {
+            Serialization::Digest => (Metric::DigestSerializations, Metric::DigestBytes, [
+                Metric::DigestNodesBytes, Metric::DigestPullRequestsBytes, Metric::DigestActivityBytes,
+                Metric::DigestTaskHistoryBytes, Metric::DigestTaskMapsBytes, Metric::DigestOtherBytes,
+                Metric::DigestStructuralBytes,
+            ]),
+            Serialization::Sampler => (Metric::SamplerSerializations, Metric::SamplerBytes, [
+                Metric::SamplerNodesBytes, Metric::SamplerPullRequestsBytes, Metric::SamplerActivityBytes,
+                Metric::SamplerTaskHistoryBytes, Metric::SamplerTaskMapsBytes, Metric::SamplerOtherBytes,
+                Metric::SamplerStructuralBytes,
+            ]),
+        };
+        counts.metrics[serializations as usize].fetch_add(1, Ordering::Relaxed);
+        counts.metrics[total as usize].fetch_add(bytes, Ordering::Relaxed);
+        for (metric, bytes) in components.into_iter().zip([
+            parts.nodes, parts.pull_requests, parts.activity, parts.task_history,
+            parts.task_maps, parts.other, parts.structural,
+        ]) {
+            counts.metrics[metric as usize].fetch_add(bytes, Ordering::Relaxed);
+        }
+    }
     pub(crate) fn invalid(&self, stage: Stage, mask: u16) {
         if mask == 0 { return; }
         let Some(counts) = self.active_counts() else { return };
@@ -237,6 +285,68 @@ pub(crate) fn window(seconds: Option<&str>, delay: Option<&str>) -> Option<Windo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_bytes_are_unchanged_and_components_are_counted_only_while_active() {
+        let live: alondra_view_model::LiveSnapshot = serde_json::from_value(serde_json::json!({
+            "issue_error": "fixture text: é 🐦 \n \" \\",
+            "task_options": {"nodes": {"effort": "high"}},
+            "activity": {"task_history": [{"since": "now", "summary": "nested"}]}
+        })).unwrap();
+        let expected = serde_json::to_vec(&live).unwrap();
+        let (_, parts) = super::super::serialization::serialize(&live);
+        let expected_parts = [parts.nodes, parts.pull_requests, parts.activity, parts.task_history,
+            parts.task_maps, parts.other, parts.structural];
+        let observation = Observation::armed();
+        for kind in [Serialization::Digest, Serialization::Sampler] {
+            assert_eq!(observation.serialize_snapshot(&live, kind), expected);
+        }
+        assert!(observation.totals().metrics.iter().all(|value| *value == 0));
+        observation.start();
+        for (kind, prefix) in [(Serialization::Digest, "digest"), (Serialization::Sampler, "sampler")] {
+            assert_eq!(observation.serialize_snapshot(&live, kind), expected);
+            let summary: std::collections::BTreeMap<String, u64> = serde_json::from_str(&observation.summary()).unwrap();
+            assert_eq!(summary[&format!("{prefix}_serializations")], 1);
+            assert_eq!(summary[&format!("{prefix}_bytes")], expected.len() as u64);
+            let mut component_total = 0;
+            for (component, expected) in ["nodes", "pull_requests", "activity", "task_history", "task_maps", "other", "structural"]
+                .into_iter().zip(expected_parts) {
+                let actual = summary[&format!("{prefix}_{component}_bytes")];
+                assert_eq!(actual, expected);
+                component_total += actual;
+            }
+            assert_eq!(component_total, summary[&format!("{prefix}_bytes")]);
+        }
+        let counted = observation.totals();
+        assert_eq!(counted.metrics[Metric::DigestSerializations as usize], 1);
+        assert_eq!(counted.metrics[Metric::SamplerSerializations as usize], 1);
+        observation.stop();
+        for kind in [Serialization::Digest, Serialization::Sampler] {
+            assert_eq!(observation.serialize_snapshot(&live, kind), expected);
+        }
+        assert_eq!(observation.totals(), counted);
+        assert!(!observation.summary().contains("fixture text"));
+        assert!(!observation.summary().contains("nested"));
+    }
+
+    #[test]
+    fn a_serialization_finishing_after_stop_cannot_enter_a_replacement_window() {
+        clock::VirtualRuntime::new(0).unwrap().block_on(async {
+            let observation = Observation::default();
+            observation.start_window(60, 0).unwrap();
+            let captured = observation.active_counts().unwrap();
+            let (bytes, parts) = super::super::serialization::serialize(&alondra_view_model::LiveSnapshot::default());
+            observation.stop();
+            observation.record_serialization(&captured, Serialization::Digest, bytes.len() as u64, parts);
+            assert!(captured.totals().metrics.iter().all(|count| *count == 0));
+            observation.start_window(60, 0).unwrap();
+            observation.record_serialization(&captured, Serialization::Sampler, bytes.len() as u64, parts);
+            assert!(observation.totals().metrics.iter().all(|count| *count == 0));
+            assert!(captured.totals().metrics.iter().all(|count| *count == 0));
+            observation.serialize_snapshot(&alondra_view_model::LiveSnapshot::default(), Serialization::Digest);
+            assert_eq!(observation.totals().metrics[Metric::DigestSerializations as usize], 1);
+        });
+    }
 
     #[test]
     fn configuration_is_explicit_bounded_and_parsed_without_process_environment() {

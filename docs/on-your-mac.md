@@ -119,7 +119,9 @@ See [the process table and its signals](../crates/system/src/lib.rs),
   `ALONDRA_VIEW_OBSERVE_DELAY_SECONDS` delays its start by 0 to 3600 seconds (default 60).
   Missing duration or invalid values disable it. The window writes two records to the existing
   daemon log with fixed counter names and numeric totals for executed view work, serialization
-  bytes and invalidation causes. Feed counters distinguish changed replies, timeout replies
+  bytes and invalidation causes. Byte totals distinguish nodes, pull requests, activity, task
+  history, task maps, other values and JSON structure, during the same serialization pass.
+  Visited agents and emitted nodes are counted separately. Feed counters distinguish changed replies, timeout replies
   (including zero-wait requests), errors and requests superseded by another feed for the same
   device. Superseded counts use the declared view client (`tui`, `ios`, `mac`), not a verified
   application identity. Concurrent TUI requests sharing a device keep their existing connections
