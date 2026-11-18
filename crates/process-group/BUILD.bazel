@@ -10,6 +10,7 @@ foundation_crate(
     crate_name = "alondra_process_group",
     version = "0.1.0",
     deps = all_crate_deps(normal = True),
+    test_visibility = ["//crates/engine-doubles:__pkg__"],
 )
 
 low_opt_rust_test(

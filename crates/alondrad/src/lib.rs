@@ -799,7 +799,7 @@ mod argument_tests {
         std::fs::create_dir(&home).unwrap();
         domain_cutover::refuse_legacy_home(&home).unwrap();
         ensure_domain_protocol(&home).unwrap();
-        let _domain = alondra_engine_sdk::wiring::open(&home).unwrap();
+        let _domain = alondra_engine_sdk::engine_tests::open(&home).unwrap();
         domain_bootstrap::DomainDaemon::open(&home).unwrap();
         assert!(home.join("domain.db").is_file());
         assert!(!home.join("alondra.db").exists());

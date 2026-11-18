@@ -1,6 +1,6 @@
 //! One implementation of each port, by its type. A holder that panics leaves the map whole: one
 //! insert or one lookup each, so a poisoned lock is recovered.
-use crate::admission::AdmissionGate;
+use crate::admission::{AdmissionEngine, AdmissionGate};
 use crate::agent_host::AgentHost;
 use crate::github::GitHub;
 use crate::hosts::SdkHosts;
@@ -15,6 +15,8 @@ use std::sync::{Arc, PoisonError, RwLock};
 /// of the engine asks of it.
 pub trait Runtime: Any + Send + Sync {
     fn ports(&self) -> &Registry;
+    /// The state each piece of the engine keeps in this runtime: read it with [`crate::extension`].
+    fn extensions(&self) -> &crate::extensions::Extensions;
     /// Alondra's home.
     fn home(&self) -> &Path;
     /// The domain's last committed state.
@@ -24,6 +26,8 @@ pub trait Runtime: Any + Send + Sync {
     fn system_command(&self, envelope: CommandEnvelope) -> Result<CommandOutcome, DomainError>;
     /// Wakes the owners of the SDK hosts to what waits for them.
     fn wake_seals(&self);
+    /// The plan `task` starts with, if it has one.
+    fn launch_plan(&self, task: &alondra_domain_rules::TaskId) -> Option<alondra_domain_rules::LaunchPlan>;
 }
 
 #[derive(Default)]
@@ -47,9 +51,10 @@ impl Registry {
     }
 }
 
-fn every_port() -> [(TypeId, &'static str); 6] {
+fn every_port() -> [(TypeId, &'static str); 7] {
     [
         (TypeId::of::<dyn AgentHost>(), "AgentHost"),
+        (TypeId::of::<dyn AdmissionEngine>(), "AdmissionEngine"),
         (TypeId::of::<dyn AdmissionGate>(), "AdmissionGate"),
         (TypeId::of::<GitHub>(), "GitHub"),
         (TypeId::of::<dyn OrchestratorAnswers>(), "OrchestratorAnswers"),
@@ -85,12 +90,12 @@ mod tests {
     #[test]
     fn a_registry_names_every_port_nothing_implements() {
         let registry = Registry::default();
-        assert_eq!(registry.missing(), ["AgentHost", "AdmissionGate", "GitHub", "OrchestratorAnswers", "OrchestratorEngine", "SdkHosts"]);
+        assert_eq!(registry.missing(), ["AgentHost", "AdmissionEngine", "AdmissionGate", "GitHub", "OrchestratorAnswers", "OrchestratorEngine", "SdkHosts"]);
         struct Answers;
         impl OrchestratorAnswers for Answers {
             fn settle_answers(&self, _: &dyn Runtime, _: &alondra_domain_rules::DomainState, _: &std::collections::BTreeSet<alondra_domain_rules::TaskId>) {}
         }
         registry.provide::<dyn OrchestratorAnswers>(Arc::new(Answers));
-        assert_eq!(registry.missing(), ["AgentHost", "AdmissionGate", "GitHub", "OrchestratorEngine", "SdkHosts"]);
+        assert_eq!(registry.missing(), ["AgentHost", "AdmissionEngine", "AdmissionGate", "GitHub", "OrchestratorEngine", "SdkHosts"]);
     }
 }

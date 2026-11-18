@@ -51,19 +51,18 @@ pub(super) struct Watchdog {
     since: Option<Instant>,
     fired: bool,
     restart_pending: bool,
-    #[cfg(any(test, feature = "test-hooks"))]
+    /// The checks a test hands the watchdog in place of its interval, each at the time it says.
     checks: Option<tokio::sync::mpsc::UnboundedReceiver<MonitorCheck>>,
 }
 
 struct MonitorCheck {
     now: Instant,
-    #[cfg(any(test, feature = "test-hooks"))]
+    /// Told once the watchdog acted on this check.
     observed: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl Watchdog {
     async fn next_check(&mut self, interval: &mut tokio::time::Interval) -> MonitorCheck {
-        #[cfg(any(test, feature = "test-hooks"))]
         if let Some(checks) = self.checks.as_mut() {
             return checks
                 .recv()
@@ -73,7 +72,6 @@ impl Watchdog {
         interval.tick().await;
         MonitorCheck {
             now: clock::instant(),
-            #[cfg(any(test, feature = "test-hooks"))]
             observed: None,
         }
     }
@@ -218,7 +216,6 @@ impl Executor {
                     if restarting && let Err(error) = self.interrupt_host() {
                         log!("orchestrator watchdog could not interrupt the host: {error:#}");
                     }
-                    #[cfg(any(test, feature = "test-hooks"))]
                     if let Some(observed) = checked.observed { let _ = observed.send(()); }
                 }
             }
@@ -228,7 +225,7 @@ impl Executor {
             let mut runtime = self.startup_recovery().await?;
             if runtime.active_run.is_none() {
                 runtime.retry_at = None;
-                save(&self.home, &runtime)?;
+                self.save(&runtime)?;
             }
             *watchdog = Watchdog::default();
         }
@@ -236,6 +233,6 @@ impl Executor {
     }
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
+#[cfg(test)]
 #[path = "tests/watchdog.rs"]
-pub(super) mod tests;
+mod tests;

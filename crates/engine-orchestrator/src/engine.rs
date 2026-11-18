@@ -9,6 +9,7 @@ use alondra_engine_kernel::domain_store::OutboxMessage;
 use alondra_engine_ports::orchestrator::{AccountWait, Exhausted, OrchestratorEngine};
 use std::collections::BTreeSet;
 use std::path::Path;
+use crate::locks::Poisonable as _;
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 
@@ -21,6 +22,57 @@ pub struct Orchestrator {
     pub stop: Mutex<Option<(crate::domain_orchestrator::Run, alondra_domain_rules::orchestrator_batch::BatchProblem)>>,
     /// Recovered after panic: each holder inserts or removes one completed-run marker.
     pub runs: Mutex<BTreeSet<String>>,
+    pub injected: Injected,
+}
+
+type Hook = Mutex<Option<Arc<dyn Fn(&str) + Send + Sync>>>;
+type Fault = Mutex<Option<Arc<dyn Fn(&'static str) -> std::io::Result<()> + Send + Sync>>>;
+
+/// What a test injects into the orchestrator of one runtime, at run time: a failure at a named
+/// write, and a look at moments it cannot wait for otherwise. A daemon injects nothing.
+#[derive(Default)]
+pub struct Injected {
+    write: Fault,
+    spawned: Hook,
+    draining: Hook,
+}
+
+impl Injected {
+    /// Each write at a named point (`runtime_write`, `runtime_rename`, `owner_create`, `owner_write`,
+    /// `owner_sync`, `owner_rename`, `owner_directory_sync`, `ack`) asks `fault` first, and fails
+    /// with its error.
+    pub fn fail_writes(&self, fault: impl Fn(&'static str) -> std::io::Result<()> + Send + Sync + 'static) {
+        *self.write.lock_or_recover("the injected writes") = Some(Arc::new(fault));
+    }
+
+    /// `hook` hears the capability of each batch once its host started.
+    pub fn on_spawn(&self, hook: impl Fn(&str) + Send + Sync + 'static) {
+        *self.spawned.lock_or_recover("the injected spawns") = Some(Arc::new(hook));
+    }
+
+    /// `hook` hears each run whose admitted operations the batch is about to wait for.
+    pub fn on_drain(&self, hook: impl Fn(&str) + Send + Sync + 'static) {
+        *self.draining.lock_or_recover("the injected drains") = Some(Arc::new(hook));
+    }
+
+    pub(crate) fn write(&self, point: &'static str) -> std::io::Result<()> {
+        let fault = self.write.lock_or_recover("the injected writes").clone();
+        fault.map_or(Ok(()), |fault| fault(point))
+    }
+
+    pub(crate) fn spawned(&self, capability: &str) {
+        let hook = self.spawned.lock_or_recover("the injected spawns").clone();
+        if let Some(hook) = hook {
+            hook(capability);
+        }
+    }
+
+    pub(crate) fn draining(&self, run: &str) {
+        let hook = self.draining.lock_or_recover("the injected drains").clone();
+        if let Some(hook) = hook {
+            hook(run);
+        }
+    }
 }
 
 alondra_engine_kernel::extension!(Orchestrator);

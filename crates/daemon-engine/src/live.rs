@@ -493,7 +493,7 @@ mod poison_tests {
     }
 }
 
-crate::extension!(Live, |domain: &crate::domain_runtime::DomainRuntime| Live::persisted_in(domain.home()));
+crate::extension!(Live, |runtime: &dyn alondra_engine_ports::Runtime| Live::persisted_in(runtime.home()));
 
 pub trait LiveOf {
     fn live(&self) -> &Live;

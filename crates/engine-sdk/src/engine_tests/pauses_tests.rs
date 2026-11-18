@@ -90,7 +90,7 @@ impl SdkNode {
         let worktree = home.join("worktree");
         std::fs::DirBuilder::new().mode(0o700).create(&worktree).unwrap();
         let (backend, capture) = crate::host_fixtures::fixture_backend(&home, &state);
-        let domain = Arc::new(crate::wiring::open(&home).unwrap());
+        let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         domain.enable_sdk(backend.clone());
         run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateRequest {
             request_id: "r".into(), body: "Write the release notes".into(), auto_merge: false, maintenance: false, message: false });

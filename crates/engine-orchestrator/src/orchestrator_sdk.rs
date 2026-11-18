@@ -56,7 +56,7 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
         Err(error) => { stop(host, &batch.directory); return failed(format!("Cannot own the orchestrator host: {error:#}")); }
     };
     let mut output = Output { stream: Stream::for_input(host.input()), diagnostic: String::new(), exit_ok: false };
-    if let Err(error) = ProcessOwner::record(&batch.directory, host.process_id(), &run).and_then(|()| spawned()) {
+    if let Err(error) = ProcessOwner::record(&batch.directory, host.process_id(), &run, &batch.domain.orchestrator().injected).and_then(|()| spawned()) {
         output.stream.storage_failure=true;
         output.stream.error = Some(bounded(format!("cannot record the SDK host: {error:#}")));
         stop(host, &batch.directory);
@@ -98,8 +98,7 @@ fn run(batch: Batch, spawned: impl FnOnce() -> anyhow::Result<()>, cancelled: &A
             output.stream.storage_failure=true;
             output.stream.error=Some(bounded(format!("The batch report was not committed; its host evidence remains unacknowledged: {error:#}")));break;
         }
-        #[cfg(any(test, feature = "test-hooks"))]
-        if let Err(error) = alondra_daemon_engine_model::faults::write(&batch.home, "ack") {
+        if let Err(error) = batch.domain.orchestrator().injected.write("ack") {
             output.stream.storage_failure = true;
             output.stream.error = Some(format!("The batch ACK could not be written: {error}"));
             break;

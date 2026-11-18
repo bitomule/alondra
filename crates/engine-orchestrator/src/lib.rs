@@ -2,18 +2,14 @@
 //! its watchdog. It knows the engine only through `engine-kernel`: what it asks of the rest of the
 //! engine goes through the ports of engine-ports, which `alondrad` connects when it puts the daemon
 //! together.
-#![cfg_attr(all(feature = "test-hooks", not(test)), allow(dead_code, unused_imports))]
-
-#[cfg(any(test, feature = "test-hooks"))]
+#[cfg(test)]
 #[path = "../../test_support.rs"]
-pub mod test_support;
+mod test_support;
 
 #[macro_use]
 extern crate alondra_daemon_support;
 
 use alondra_daemon_support::{auth, locks, plugins, watcher};
-#[cfg(test)]
-use alondra_daemon_engine::{accounts, live, usage_probe};
 
 pub use alondra_engine_kernel::{domain_database_migration, domain_runtime, domain_store, metrics_capture, options, sdk_backend};
 
@@ -36,12 +32,27 @@ pub fn wire(registry: &Registry) {
     registry.provide::<dyn OrchestratorAnswers>(Arc::new(orchestrator_inbox::Answers));
 }
 
-/// The engine as `alondrad` puts it together, for the orchestrator's tests.
+/// The runtime the orchestrator's tests open: the orchestrator's own port, the real agent hosts,
+/// doubles of the rest of the engine, and the faults a test injects at its home failing the orchestrator's writes there.
 #[cfg(test)]
 mod wiring {
+    use crate::engine::OrchestratorOf as _;
+    use alondra_daemon_engine_model::faults;
+    use alondra_engine_ports::hosts::SdkHosts;
+    use alondra_engine_ports::orchestrator::OrchestratorEngine;
+    use std::sync::Arc;
+
     pub fn open(home: &std::path::Path) -> anyhow::Result<super::DomainRuntime> {
-        let domain = alondra_daemon_engine::wiring::open(home)?;
+        let domain = super::DomainRuntime::open_unwired_at(home, &crate::domain_database_migration::active_path(home))?;
         crate::wire(domain.ports());
+        domain.ports().provide::<dyn OrchestratorEngine>(Arc::new(alondra_engine_doubles::orchestrator::Engine));
+        domain.ports().provide::<dyn SdkHosts>(Arc::new(alondra_engine_doubles::hosts::NoHosts));
+        alondra_agent_runtime::wire(domain.ports(), Default::default());
+        let injected = &domain.orchestrator().injected;
+        let at = home.to_owned();
+        injected.fail_writes(move |point| faults::write(&at, point));
+        let at = home.to_owned();
+        injected.on_spawn(move |capability| faults::spawned(&at, capability));
         Ok(domain)
     }
 }

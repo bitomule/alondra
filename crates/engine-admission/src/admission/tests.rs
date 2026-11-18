@@ -1,7 +1,5 @@
-use crate::live::LiveOf as _;
 use super::*;
 use crate::machine_watch::step_on;
-use crate::node_reports::{Envelope, Report};
 use alondra_core::Machine;
 use alondra_domain_rules::{Actor, AgentId, Command, CommandEnvelope, RuntimeObservation, PROTOCOL_VERSION};
 
@@ -271,8 +269,7 @@ impl Drop for Home {
 fn a_task_the_user_paused_in_the_queue_is_never_let_start_until_they_resume_it() {
     let (_home, domain) = world();
     create(&domain, "t1");
-    let body: LaunchBody = serde_json::from_value(serde_json::json!({"task": "t1", "name": "app/t1", "cwd": "/tmp"})).unwrap();
-    crate::domain_orchestrator_tools::enqueue(&domain, &body, "orchestrator", 5).unwrap();
+    enqueue(&domain, "t1", 5);
     let gate = domain.admission();
     let t1 = Waiting { key: Key::Task("t1".into()), priority: TaskPriority::Normal, resuming: false, since: 5 };
     assert_eq!(gate.ask(&domain, t1.clone(), 10), Ok(()), "the queue is empty, so t1 goes");
@@ -284,6 +281,13 @@ fn a_task_the_user_paused_in_the_queue_is_never_let_start_until_they_resume_it()
 
     release_queued(&domain, &"t1".into()).unwrap();
     assert_eq!(gate.ask(&domain, t1, 40 + IN_FLIGHT), Ok(()), "resumed, it starts again");
+}
+
+/// The orchestrator's launch of `id` waits in the gate's queue, as the engine keeps it.
+fn enqueue(domain: &DomainRuntime, id: &str, now: Millis) {
+    let body: LaunchBody = serde_json::from_value(serde_json::json!({"task": id, "name": format!("app/{id}"), "cwd": "/tmp"})).unwrap();
+    domain.store.lock().unwrap().enqueue_launch(body.task_id(), &body.to_queue(), "orchestrator", now).unwrap();
+    domain.admission().poke();
 }
 
 fn world() -> (Home, Arc<DomainRuntime>) {
@@ -332,7 +336,7 @@ fn start(domain: &DomainRuntime, id: &str, now: Millis) {
         RuntimeObservation::ResourceAvailable,
         RuntimeObservation::TurnStarted { turn: format!("turn-{id}-{now}"), input: next_input(domain, id) },
     ] });
-    domain.report(Envelope { session_id: agent, report: Report::TurnStart }, now);
+    crate::wiring::engine(domain).working(&agent, Some(now));
 }
 
 /// The input the task's node goes on with next.
@@ -390,8 +394,7 @@ fn eight_starts_with_a_limit_of_6_leave_2_queued_in_order_until_a_node_finishes(
 fn a_launch_the_orchestrator_queued_is_kept_across_a_restart_and_leaves_when_its_task_is_cancelled() {
     let (home, domain) = world();
     create(&domain, "t1");
-    let body: LaunchBody = serde_json::from_value(serde_json::json!({"task": "t1", "name": "app/t1", "cwd": "/tmp"})).unwrap();
-    crate::domain_orchestrator_tools::enqueue(&domain, &body, "orchestrator", 5).unwrap();
+    enqueue(&domain, "t1", 5);
     let reopened = crate::wiring::open(&home.0).unwrap();
     let queue = reopened.store.lock().unwrap().launch_queue().unwrap();
     assert_eq!(queue.len(), 1);
@@ -497,14 +500,16 @@ fn a_node_waiting_for_the_user_to_approve_its_plan_leaves_its_slot_to_the_queue_
         create(&domain, id);
     }
     start(&domain, "t1", now);
-    domain.report(Envelope { session_id: "agent-t1".into(), report: Report::ToolStart {
-        tool: "ExitPlanMode".into(), tool_use_id: Some("plan-call".into()), input: serde_json::json!({"plan": "- [ ] Fix it"}) } }, now);
     let t2 = Waiting { key: Key::Task("t2".into()), priority: TaskPriority::Normal, resuming: false, since: now };
     assert!(matches!(gate.ask(&domain, t2.clone(), now), Err(Hold::Slots { working: 1, limit: 1 })), "t1 is at work");
 
-    let card: crate::domain_holds::Card = serde_json::from_value(serde_json::json!({
-        "session_id": "agent-t1", "id": "plan-call", "kind": "plan", "tool": "ExitPlanMode", "input": {"plan": "- [ ] Fix it"}})).unwrap();
-    let crate::domain_holds::Posted::Held(plan) = crate::domain_holds::post(&domain, &card, true).unwrap() else { panic!("the plan is held") };
+    let plan: alondra_domain_rules::InteractionId = "plan-call".into();
+    run(&domain, Actor::System, Command::HoldHook {
+        interaction_id: plan.clone(), task_id: "t1".into(), agent_id: "agent-t1".into(), hold: alondra_domain_rules::Hold::Plan,
+        body: "- [ ] Fix it".into(), options: alondra_domain_rules::Hold::Plan.options(),
+        card: alondra_domain_rules::CardSpec::new(alondra_domain_rules::CardKind::Review, "Task t1")
+            .content(alondra_domain_rules::ContentKind::Plan, "- [ ] Fix it"),
+    });
     assert_eq!(gate.snapshot(&domain, now).unwrap().working, 0, "t1 waits for the user to approve its plan");
     assert_eq!(gate.ask(&domain, t2, now), Ok(()), "its slot goes to the queue");
     start(&domain, "t2", now);
@@ -570,7 +575,7 @@ fn finish(domain: &DomainRuntime, id: &str, now: Millis) {
         card: alondra_domain_rules::CardSpec::question("Ship it?", &options), options,
     });
     run(domain, Actor::System, Command::RecordTurnBoundary { task_id: id.into(), generation: 1, turn, failure: None, failed: None });
-    domain.report(Envelope { session_id: format!("agent-{id}"), report: Report::TurnComplete { answer: "Done".into(), aborted: false } }, now);
+    crate::wiring::engine(domain).working(&format!("agent-{id}"), None);
 }
 
 fn ask(domain: &DomainRuntime, id: &str, now: Millis) -> Result<(), Hold> {
@@ -721,35 +726,6 @@ fn memory_coming_and_going_for_an_hour_tells_the_orchestrator_nothing() {
     assert!(told.is_empty(), "{told:?}");
 }
 
-/// 0.2.64 hung on its first start after an upgrade from 0.2.63 with paused nodes: reading the
-/// start facts held the domain store while the gate handed the old pauses to the node machine,
-/// which needs that store too.
-#[test]
-fn reading_start_facts_hands_pauses_an_older_daemon_saved_without_holding_the_store() {
-    let home = crate::test_support::Directory::new();
-    std::fs::create_dir_all(&home).unwrap();
-    std::fs::write(home.join(FILE), serde_json::json!({
-        "learned": {"cap": null, "since": null}, "last_admission": null,
-        "pauses": {
-            "step": {"step": 180_000, "last_resume": null, "saturated_at": null}, "last_pause": 1, "owed": {}, "held": {},
-            "paused": {"agent-t1": {"task": "t1", "reason": {"kind": "memory"}, "since": 1, "cleanup": "done", "released": false}},
-        },
-    }).to_string()).unwrap();
-    let domain = Arc::new(crate::wiring::open(&home).unwrap());
-    run(&domain, Actor::User { user_id: "u".into() }, Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-    create(&domain, "t1");
-    run(&domain, Actor::System, Command::RegisterAgent { agent_id: AgentId("agent-t1".into()), name: "agent-t1".into(), at: 0 });
-    run(&domain, Actor::User { user_id: "u".into() }, Command::AssignTask { task_id: "t1".into(), agent_id: AgentId("agent-t1".into()), model: None });
-    assert!(!domain.admission().lock().legacy.is_empty(), "the old pause is still waiting to be handed over");
-    let (sent, received) = std::sync::mpsc::channel();
-    let reading = Arc::clone(&domain);
-    std::thread::spawn(move || {
-        let state = reading.state().unwrap();
-        sent.send(crate::start_failures::facts(&reading, &state).is_ok()).ok();
-    });
-    assert_eq!(received.recv_timeout(std::time::Duration::from_secs(5)), Ok(true), "reading the start facts deadlocked");
-}
-
 /// A waiting task raised to High goes ahead of an older Normal one at once, before it asks the
 /// gate again: the queue reads priorities from the domain, not from when each task last asked.
 #[test]
@@ -848,60 +824,12 @@ fn home_with_previous_gate_file() -> crate::test_support::Directory {
 }
 
 #[test]
-fn a_home_with_the_previous_gate_file_starts_with_its_pauses_under_the_new_name() {
-    let home = home_with_previous_gate_file();
-
-    crate::home_renames::apply(&home, &[]).unwrap();
-
-    assert!(!home.join(PREVIOUS_FILE).exists() && !home.join("fleet-gate.next").exists());
-    assert!(home.join(FILE).exists());
-    let domain = crate::wiring::open(&home).unwrap();
-    assert!(held_by_user(&domain, &"t-held".into()), "the task the user paused in the queue stays paused");
-}
-
-#[test]
 fn the_previous_gate_file_is_read_when_it_could_not_move() {
     let home = home_with_previous_gate_file();
 
     let gate = Admission::persisted_in(&home);
 
     assert!(gate.lock().saved.pauses.held.contains_key(&TaskId::from("t-held")));
-}
-
-/// What Settings offers is what the gate applies: automatic, from the node cost the Mac measures,
-/// and the most this Mac takes, also for a number over it in `options.toml`.
-#[test]
-fn settings_offer_the_automatic_limit_the_gate_applies_and_the_most_it_takes() {
-    let (cores, memory) = (11, 16 << 30);
-    let most = NodeLimits::of(cores, memory, 0).most;
-    let over_4_gb = memory.saturating_sub(4 << 30);
-    for (cost, auto) in [(over_4_gb / 2, 2), (128 << 20, NodeLimits::of(cores, memory, 128 << 20).auto)] {
-        let (home, domain) = world();
-        domain.admission().tune(Tuning { spacing: 0, limit: None });
-        let now = alondra_core::now_millis();
-        domain.machine_watch().measure_nodes(now - MIN, vec![cost; 30]);
-        let pacing = domain.admission().live(&domain, now).unwrap();
-        assert_eq!((pacing.fixed, pacing.auto, pacing.limit, pacing.most), (None, auto, auto, most), "{cost} bytes a node");
-
-        let state = domain.state().unwrap();
-        let index = alondra_domain_rules::ReadIndex::build(&state);
-        let live = alondra_view_model::LiveSnapshot { pacing: Some(pacing), ..Default::default() };
-        let context = alondra_views::RenderContext { domain: &state, index: &index, live: &live, client: alondra_view_model::Client::Ios,
-            lang: alondra_view_model::Lang::En, transport: alondra_view_model::Transport::Loopback, cursor: "c", rendered_at: "" };
-        let view = alondra_views::build("machine", context).unwrap();
-        let menu = view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
-            alondra_view_model::Item::Row(row) => row.actions.iter().find(|action| action.id.starts_with("set_limit:")).cloned(),
-            _ => None,
-        }).expect("Settings offer the limit");
-        let ids: Vec<&str> = menu.options.iter().map(|option| option.id.as_str()).collect();
-        let offered: Vec<String> = std::iter::once("auto".to_string()).chain((1..=most).map(|count| count.to_string())).collect();
-        assert_eq!(ids, offered);
-        assert_eq!(menu.options[0].label, format!("Automatic ({auto}) · now"));
-
-        std::fs::write(alondra_core::options::path_in(&home.0), format!("max_working_nodes = {}\n", most + 5)).unwrap();
-        let pacing = domain.admission().live(&domain, now).unwrap();
-        assert_eq!((pacing.fixed, pacing.limit), (Some(most + 5), most), "a number over the most works as the most");
-    }
 }
 
 #[test]
@@ -942,30 +870,40 @@ fn a_thread_that_panicked_holding_the_gate_does_not_stop_it() {
     assert_eq!(domain.admission().live(&domain, now).unwrap().working, 1);
 }
 
+/// A node the usage limit paused waits while usage holds new work and until its own account may
+/// take work again; then it comes back.
 #[test]
-fn another_providers_capacity_does_not_admit_a_usage_paused_node() {
-    use alondra_core::accounts::{AccountId, AccountKey, AccountState, AccountStatus, Provider};
-    use alondra_core::usage::{Share, UsageReading, WindowKind, WindowReading};
+fn a_usage_paused_node_comes_back_only_once_its_account_may_take_work() {
     let (_home, domain) = world();
     domain.admission().ignore_mac();
     create(&domain, "t1");
     start(&domain, "t1", 1_000);
-    let status = |provider| AccountStatus { provider, id: AccountId::default_account(), name: "Personal".into(), state: AccountState::SignedIn,
-        native_identity: None, email: None, plan: None, billing: Default::default(), sign_ins: 0, profile: None };
-    run(&domain, Actor::System, Command::RecordAccounts { accounts: vec![status(Provider::Claude), status(Provider::Codex)], reserve: alondra_core::usage::default_reserve() });
-    let record = |provider, windows| crate::usage_probe::record_for_provider(&domain, &AccountKey::new(provider, AccountId::default_account()),
-        UsageReading { windows, plan: None, complete: true }, 1_000);
-    record(Provider::Claude, vec![WindowReading { kind: WindowKind::Session, used: Share::FULL, resets_at: Some(9_000), exhausted: true }]);
-    record(Provider::Codex, vec![
-        WindowReading { kind: WindowKind::Other("codex:account:primary:300".into()), used: Share::of(0.2), resets_at: Some(9_000), exhausted: false },
-        WindowReading { kind: WindowKind::Other("codex:account:secondary:10080".into()), used: Share::of(0.2), resets_at: Some(9_000), exhausted: false },
-    ]);
-    domain.live().usage_pause.resume(2_000);
+    let engine = crate::wiring::engine(&domain);
+    engine.script().usage_ready_at.insert("t1".into(), 9_000);
     assert!(domain.admission().hold_back(&domain, "agent-t1", Reason::Usage, 2_000));
-    assert!(!domain.admission().snapshot(&domain, 2_000).unwrap().queue.iter().any(|waiting| waiting.key == Key::Resume("agent-t1".into())),
-        "global Codex capacity cannot release this Claude account");
-    assert!(domain.admission().snapshot(&domain, 9_000).unwrap().queue.iter().any(|waiting| waiting.key == Key::Resume("agent-t1".into())),
-        "its own declared reset admits the same node");
+    let back = |now| domain.admission().snapshot(&domain, now).unwrap().queue.iter().any(|waiting| waiting.key == Key::Resume("agent-t1".into()));
+    assert!(!back(2_000), "its account is still at its limit");
+    engine.script().usage_paused = true;
+    assert!(!back(9_000), "usage still holds new work");
+    engine.script().usage_paused = false;
+    assert!(back(9_000), "its own account's reset lets it back");
+}
+
+/// The gate paces starts a minute apart with the automatic limit until it is told otherwise: only
+/// a test that is not about pacing unpaces it.
+#[test]
+fn the_gate_paces_starts_a_minute_apart_until_it_is_told_otherwise() {
+    let (_home, domain) = world();
+    for id in ["t1", "t2"] {
+        create(&domain, id);
+    }
+    domain.admission().tune(Tuning::default());
+    let now = alondra_core::now_millis();
+    assert_eq!(ask(&domain, "t1", now), Ok(()));
+    start(&domain, "t1", now);
+    assert_eq!(ask(&domain, "t2", now), Err(Hold::Spacing { until: now + SPACING }), "a minute after t1");
+    domain.admission().tune(Tuning::UNPACED);
+    assert_eq!(ask(&domain, "t2", now), Ok(()), "unpaced, it starts at once");
 }
 
 /// 4 Nov: the gate resumed t-oss-9-export every minute at the head of the queue, the node machine
@@ -1006,7 +944,7 @@ fn paused_by_user(domain: &DomainRuntime, id: &str, priority: TaskPriority, at: 
     }
     start(domain, id, at);
     domain.admission().pause_by_user(domain, &format!("agent-{id}"), at).unwrap();
-    domain.report(Envelope { session_id: format!("agent-{id}"), report: Report::TurnComplete { answer: String::new(), aborted: true } }, at);
+    crate::wiring::engine(domain).working(&format!("agent-{id}"), None);
 }
 
 /// A node the gate let back takes its turn with what it was told, if anything waits for it.
@@ -1017,7 +955,7 @@ fn goes_on(domain: &DomainRuntime, id: &str, now: Millis) {
             RuntimeObservation::TurnStarted { turn: format!("turn-{id}-{now}"), input },
         ] });
     }
-    domain.report(Envelope { session_id: format!("agent-{id}"), report: Report::TurnStart }, now);
+    crate::wiring::engine(domain).working(&format!("agent-{id}"), Some(now));
 }
 
 fn still_paused(domain: &DomainRuntime, id: &str) -> bool {
@@ -1198,7 +1136,7 @@ fn growing_swap_holds_a_resume_in_the_queue_and_a_quiet_minute_releases_it() {
     create_in(&domain, "t1", "app");
     start(&domain, "t1", 1_000);
     gate.pause_by_user(&domain, "agent-t1", 1_000).unwrap();
-    domain.report(Envelope { session_id: "agent-t1".into(), report: Report::TurnComplete { answer: String::new(), aborted: true } }, 1_000);
+    crate::wiring::engine(&domain).working("agent-t1", None);
     for step in 0..=30 {
         swap_sample(&domain, 7_300_000_000, 20 * GB + step * 10_000_000, 10_000 + step as Millis * SAMPLE);
     }

@@ -14,11 +14,10 @@
 //! gate starts them; the automatic launches, the scheduled runs and the revival of lost nodes keep
 //! their own durable claims and only ask the gate, which wakes them when their turn comes. Nodes
 //! paused for the machine (`pauses`) wait here too and the gate tells them to carry on.
-use crate::hosts::HostsOf as _;
-use crate::live::LiveOf as _;
+use crate::engine::EngineOf as _;
 use crate::AdmissionOf as _;
 use crate::locks::Poisonable as _;
-use crate::domain_orchestrator_tools::{LaunchBody, Origin, launch_from, request_choices};
+use alondra_daemon_engine_model::LaunchBody;
 use crate::domain_runtime::DomainRuntime;
 use crate::pauses::{Pauses, Paused, Reason};
 pub use alondra_engine_ports::admission::{FILE, Hold, Key, PREVIOUS_FILE, Waiting, open_task_of, priority_of, run_priority};
@@ -122,23 +121,24 @@ struct Saved {
     turn_waits: BTreeMap<TaskId, Millis>,
 }
 
-/// The pacing the gate keeps to; tests start without spacing and with the highest limit unless
-/// they set their own. A number the user chose in options.toml still holds, so a sandbox can fill
-/// its slots.
-#[derive(Clone, Copy, Debug)]
+/// The pacing the gate keeps to: a minute between starts and the automatic limit, unless a test
+/// sets its own (`Admission::tune`). A number the user chose in options.toml still holds, so a
+/// sandbox can fill its slots.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tuning {
     pub spacing: Millis,
     /// The limit in place of automatic.
     pub limit: Option<Limit>,
 }
 
+impl Tuning {
+    /// No spacing and the highest limit: the pacing of a test that is not about pacing.
+    pub const UNPACED: Tuning = Tuning { spacing: 0, limit: Some(Limit::Fixed(UNPACED)) };
+}
+
 impl Default for Tuning {
     fn default() -> Self {
-        if cfg!(any(test, feature = "test-hooks")) {
-            Self { spacing: 0, limit: Some(Limit::Fixed(UNPACED)) }
-        } else {
-            Self { spacing: SPACING, limit: None }
-        }
+        Self { spacing: SPACING, limit: None }
     }
 }
 
@@ -276,6 +276,11 @@ impl Admission {
         self.inner.lock_or_recover("the admission gate")
     }
 
+    /// Whether pauses an older daemon saved still wait to be handed to the node machine.
+    pub fn holds_old_pauses(&self) -> bool {
+        !self.lock().legacy.is_empty()
+    }
+
     /// The gate with the pauses the node machine holds now: the only place they live.
     fn lock_with(&self, domain: &DomainRuntime) -> std::sync::MutexGuard<'_, Inner> {
         let mut inner = self.lock();
@@ -309,7 +314,6 @@ impl Admission {
         self.save_failures.record(file, written);
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn poison(&self) {
         self.inner.poison();
     }
@@ -343,7 +347,7 @@ impl Admission {
         if inner.saved.pauses.paused.get(session).is_some_and(|paused| paused.reason.holds()) {
             return true;
         }
-        let turn_since = domain.live().mods.session(session).and_then(|reported| reported.working_since);
+        let turn_since = domain.engine().report(session).and_then(|reported| reported.working_since);
         inner.saved.pauses.paused.insert(session.to_owned(), Paused {
             task, reason, since: now, cut: None, turn_since, cleanup: crate::pauses::Cleanup::Done, released: false,
         });
@@ -487,7 +491,6 @@ impl Admission {
     }
 
     /// Whether the gate gave `task` a slot that still counts for it.
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn gave_slot(&self, task: &TaskId) -> bool {
         let inner = self.lock();
         inner.turns.contains(task) || inner.taken.contains_key(task)
@@ -598,7 +601,7 @@ impl Admission {
             Some(LivePaused {
                 task_id: entry.task.0.clone(),
                 session: Some(session.clone()),
-                at: crate::usage_pause::clock_text(entry.since, now, false),
+                at: alondra_engine_ports::usage::clock_text(entry.since, now, false),
                 reason: match &entry.reason {
                     Reason::Memory => LivePauseReason::Memory,
                     Reason::Declared { .. } | Reason::Disk => LivePauseReason::Machine,
@@ -609,7 +612,7 @@ impl Admission {
                 },
                 retry: match &entry.reason {
                     Reason::ApiError(retry) => Some(alondra_view_model::LiveRetry {
-                        at: crate::usage_pause::clock_text(retry.at, now, false), attempt: retry.attempt,
+                        at: alondra_engine_ports::usage::clock_text(retry.at, now, false), attempt: retry.attempt,
                     }),
                     _ => None,
                 },
@@ -623,7 +626,7 @@ impl Admission {
         }).chain(pauses.held.iter().map(|(task, held)| LivePaused {
             task_id: task.0.clone(),
             session: None,
-            at: crate::usage_pause::clock_text(held.since, now, false),
+            at: alondra_engine_ports::usage::clock_text(held.since, now, false),
             reason: LivePauseReason::User,
             fine_minutes: None,
             next: false,
@@ -756,7 +759,7 @@ fn hand_pauses(domain: &DomainRuntime, wanted: &BTreeMap<String, Paused>) -> BTr
         let key = event.key();
         let resume = matches!(event, NodeEvent::Resumed);
         let resumes = resume && state.through_sdk(&AgentId(session.clone()));
-        match crate::domain_agent_lifecycle::node_event(domain, &AgentId(session.clone()), event) {
+        match domain.engine().node_event(&AgentId(session.clone()), event) {
             Ok(true) if resumes => resumed.extend(open_task_of(&state, session)),
             Ok(_) => {}
             Err(error) => {
@@ -785,7 +788,7 @@ fn lifecycle_revision(state: &DomainState, session: &str) -> Option<u64> {
 fn resume_locked(domain: &DomainRuntime, inner: &mut Inner, session: &str, now: Millis) {
     let Some(mut paused) = inner.saved.pauses.paused.remove(session) else { return };
     if let Reason::ApiError(retry) = &paused.reason && retry.outage {
-        domain.live().api_watch.probed(now);
+        domain.engine().api_watch().probed(now);
     }
     if inner.saved.pauses.resumed.remove(session).is_some() {
         paused.reason = Reason::ByUser;
@@ -815,9 +818,9 @@ fn tell_to_go_on(domain: &DomainRuntime, session: &str, text: &str) -> bool {
             return true;
         }
         let command = format!("resume-{session}-{}", crate::auth::random_hex(8));
-        return crate::domain_messages::tell_sdk_node(domain, &task, crate::node_push::ALONDRA, text, &command, false).is_ok();
+        return domain.engine().tell_node(&task, text, &command);
     }
-    crate::sdk_handover::tell(domain, session, crate::node_push::ALONDRA, text, true).is_ok()
+    domain.engine().tell_session(session, text)
 }
 
 /// Whether the task of a node of the Agent SDK already has what it goes on with, as a pause by the
@@ -1085,7 +1088,7 @@ fn queued_launches(domain: &DomainRuntime, state: &DomainState, now: Millis) -> 
 
 /// What `options.toml` sets and what this Mac takes with its nodes measured at what `mac` says.
 fn node_limits(domain: &DomainRuntime, mac: &MacState) -> (NodeLimit, NodeLimits) {
-    let file = crate::options::options_at(domain.home()).unwrap_or_default();
+    let file = alondra_daemon_engine_model::options::options_at(domain.home()).unwrap_or_default();
     let (cores, memory) = if mac.cpus > 0 && mac.memory_total > 0 { (mac.cpus, mac.memory_total) } else { machine_size() };
     (file.max_working_nodes, NodeLimits::of(cores, memory, mac.node_cost.unwrap_or(crate::node_cost::DEFAULT)))
 }
@@ -1136,7 +1139,7 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
     busy.retain(|task| !turn_waits.contains_key(task));
     let paused = |task: &TaskId| crate::pauses::session_of(state, task).is_some_and(|session| inner.saved.pauses.paused.contains_key(&session));
     let waiting_again: BTreeSet<&Key> = queued.iter()
-        .filter(|waiting| !matches!(&waiting.key, Key::Task(task) if domain.live().is_launching(&task.0)))
+        .filter(|waiting| !matches!(&waiting.key, Key::Task(task) if domain.engine().is_launching(task)))
         .map(|waiting| &waiting.key).collect();
     let in_flight: Vec<Option<TaskId>> = inner.admitted.iter()
         .filter(|(key, at)| now - at < IN_FLIGHT && !waiting_again.contains(key) && !inner.at_work.contains(key))
@@ -1173,17 +1176,17 @@ fn snapshot_locked(domain: &DomainRuntime, state: &DomainState, inner: &Inner, q
     for waiting in queued.into_iter().filter(|waiting| still_waits(state, &waiting.key)) {
         all.insert(waiting.key.clone(), waiting);
     }
-    let usage_clear = !domain.live().usage_pause.is_active();
-    let probe = crate::api_failures::outage_probe(&inner.saved.pauses.paused, &domain.live().api_watch, now);
+    let usage_clear = !domain.engine().usage_paused();
+    let probe = alondra_engine_ports::api::outage_probe(&inner.saved.pauses.paused, domain.engine().api_watch(), now);
     let resumed = &inner.saved.pauses.resumed;
     let held_turns: BTreeSet<TaskId> = turns_held_for_disk(state).collect();
     let returning = inner.saved.pauses.paused.iter()
         .filter(|(_, paused)| !(paused.reason == Reason::Disk && held_turns.contains(&paused.task)))
         .filter(|(session, _)| inner.refused.get(*session).is_none_or(|refused| lifecycle_revision(state, session) != Some(*refused)))
         .filter(|(session, paused)| resumed.contains_key(*session) || match &paused.reason {
-        Reason::ApiError(retry) if retry.outage => domain.live().api_watch.answered_since(paused.since) || probe.as_ref() == Some(*session),
+        Reason::ApiError(retry) if retry.outage => domain.engine().api_watch().answered_since(paused.since) || probe.as_ref() == Some(*session),
         _ => paused.returns(usage_clear && (!matches!(paused.reason, Reason::Usage)
-            || crate::usage_pause::task_usage_ready(state, &paused.task, paused.since, now)), domain.live().api_watch.answered_since(paused.since), now),
+            || domain.engine().usage_ready(state, &paused.task, paused.since, now)), domain.engine().api_watch().answered_since(paused.since), now),
     });
     for (session, paused) in returning {
         let key = Key::Resume(session.clone());
@@ -1238,7 +1241,7 @@ pub fn hold_queued(domain: &DomainRuntime, task: &TaskId, now: Millis) -> Result
             let state = domain.state().map_err(|_| NOT_QUEUED)?;
             let key = Key::Task(task.clone());
             let waits = domain.admission().lock().asking.contains_key(&key)
-                && state.tasks.get(task).is_some_and(|task| crate::launch_plans::candidate(&state, task));
+                && state.tasks.get(task).is_some_and(|task| alondra_engine_ports::launch::candidate(&state, task));
             if !waits {
                 return Err(NOT_QUEUED);
             }
@@ -1385,16 +1388,15 @@ pub async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) -> anyhow
     let Some(row) = domain.store.lock_or_exit("the domain store").launch_queue()?.into_iter().find(|row| row.task_id == task) else {
         return Ok(());
     };
-    let body = LaunchBody::from_queue(&row.body)?;
-    let choices = |request: &alondra_domain_rules::RequestId| request_choices(domain, request).ok().flatten();
+    LaunchBody::from_queue(&row.body)?;
     log!("the admission gate starts {task}, queued since {}", row.enqueued_at);
-    match launch_from(domain, home, body, choices, Origin::Admitted).await {
+    match domain.engine().launch(home, row.body.clone()).await {
         Ok(_) => {
             let mut store = domain.store.lock_or_exit("the domain store");
             store.dequeue_launch(&task)?;
             store.set_start_retry(&task, None)?;
         }
-        Err(_) if crate::start_failures::ended(domain, &task)? => {}
+        Err(_) if domain.engine().start_ended(&task).map_err(anyhow::Error::msg)? => {}
         Err(error) => {
             log!("the admission gate could not start {task}: {}", error.message);
             refused(domain, &task, &error, now)?;
@@ -1405,10 +1407,10 @@ pub async fn pass_at(domain: &DomainRuntime, home: &Path, now: Millis) -> anyhow
 
 /// A launch the gate let through and that did not start stays in the queue: a refusal that clears
 /// by itself (usage, disk) is tried again on a later turn, any other is a failed start, tried again
-/// by itself and then put to the user. `launch_from` records the failures it knows.
+/// by itself and then put to the user. The launch records the failures it knows.
 fn refused(domain: &DomainRuntime, task: &TaskId, error: &alondra_domain_rules::DomainError, now: Millis) -> anyhow::Result<()> {
     domain.admission().not_started(&Key::Task(task.clone()));
-    if domain.live().is_launching(&task.0) || matches!(error.code.as_str(), "launch_failed" | "workspace_untrusted" | "usage_exhausted" | "worktrees_unavailable" | "disk_low" | "account_unavailable" | "account_check_in_progress"
+    if domain.engine().is_launching(task) || matches!(error.code.as_str(), "launch_failed" | "workspace_untrusted" | "usage_exhausted" | "worktrees_unavailable" | "disk_low" | "account_unavailable" | "account_check_in_progress"
         | alondra_domain_rules::capability_capacity_card::CAPABILITY_CAPACITY_CODE) {
         return Ok(());
     }
@@ -1416,10 +1418,7 @@ fn refused(domain: &DomainRuntime, task: &TaskId, error: &alondra_domain_rules::
     if !still_waits(&state, &Key::Task(task.clone())) {
         return Ok(());
     }
-    match crate::start_failures::problem_of(&error.code, &error.message, None) {
-        Some(problem) => crate::start_failures::failed(domain, task, problem, now),
-        None => Ok(()),
-    }
+    domain.engine().start_failed(task, error, now).map_err(anyhow::Error::msg)
 }
 
 #[cfg(test)]

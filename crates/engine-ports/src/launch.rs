@@ -45,3 +45,15 @@ impl std::fmt::Display for Failed {
         f.write_str(&self.why)
     }
 }
+
+/// A task the automatic launch may start: not started, with no node, its request open, no plan review
+/// pending and no schedule run behind it.
+pub fn candidate(state: &alondra_domain_rules::DomainState, task: &alondra_domain_rules::Task) -> bool {
+    task.state == alondra_domain_rules::TaskState::NotStarted
+        && !task.started
+        && task.agent_id.is_none()
+        && !task.archived
+        && !state.plan_review_pending(&task.id)
+        && state.requests.get(&task.request_id).is_some_and(|request| !request.closed)
+        && !state.schedule.runs.values().any(|run| run.task_id.as_ref() == Some(&task.id))
+}

@@ -12,7 +12,7 @@ async fn registration_response(service: &Service, phone: &SecretKey, id: &str, p
 async fn registration_after_a_forgotten_binding_recovers_with_a_newer_revision() {
     let (_directory, service, phone) = push_fixture();
     activate_push(&service);
-    let domain = Arc::new(alondra_engine_sdk::wiring::open(&service.home).unwrap());
+    let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&service.home).unwrap());
     let service = service.with_domain(domain);
     let binding = URL_SAFE_NO_PAD.encode([4u8; 32]);
     let body = json!({"push_binding":binding,"preferences_revision":1,"quiet_start":null,"quiet_end":null});
@@ -68,7 +68,7 @@ fn registration_rejections_keep_the_typed_reason_on_the_wire_and_in_the_log() {
     runtime.block_on(async {
         let (_directory, service, phone) = push_fixture();
         activate_push(&service);
-        let domain = Arc::new(alondra_engine_sdk::wiring::open(&service.home).unwrap());
+        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&service.home).unwrap());
         let service = service.with_domain(domain);
         let binding = URL_SAFE_NO_PAD.encode([4u8; 32]);
         for (id, body, reason) in [
@@ -94,7 +94,7 @@ fn registration_rejections_keep_the_typed_reason_on_the_wire_and_in_the_log() {
         assert_eq!(key["body"]["kind"], "invalid_activity_key");
 
         let (_directory, service, phone) = push_fixture();
-        let domain = Arc::new(alondra_engine_sdk::wiring::open(&service.home).unwrap());
+        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&service.home).unwrap());
         let service = service.with_domain(domain);
         let public_key = URL_SAFE_NO_PAD.encode(phone.public_key().to_sec1_bytes());
         for (id, path, body) in [
@@ -118,7 +118,7 @@ fn registration_rejections_keep_the_typed_reason_on_the_wire_and_in_the_log() {
 
         let (_directory, mut service, _) = push_fixture();
         activate_push(&service);
-        let domain = Arc::new(alondra_engine_sdk::wiring::open(&service.home).unwrap());
+        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&service.home).unwrap());
         service = service.with_domain(domain);
         let home = service.home.clone();
         service.journal.before_write = Some(Arc::new(move |stage, _| {

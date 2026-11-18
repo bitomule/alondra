@@ -1,4 +1,4 @@
-//! The orchestrator's inbox over the engine's own fixtures: what it hands back, reminds and settles
+//! The orchestrator's inbox over the engine's and the SDK's own fixtures: what it hands back, reminds and settles
 //! when a dependency is cancelled, a start refuses a plan, a node stops or a decision holds plans.
 
 /// A task that waits for a cancelled one is the orchestrator's to re-plan, handed back at every rest.
@@ -10,7 +10,7 @@ mod cancelled_dependencies {
     /// The orchestrator ended a turn: what it still has to re-plan is handed to it again.
     fn rest(f: &Fixture) {
         f.domain.orchestrator_rests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        crate::orchestrator_inbox::hand_replans(&f.domain);
+        alondra_engine_orchestrator::orchestrator_inbox::hand_replans(&f.domain);
     }
 
     /// 20 October: a cancelled dependency put a card in front of the user at once. The task never
@@ -19,6 +19,7 @@ mod cancelled_dependencies {
     /// cancelled task is the orchestrator's decision.
     #[tokio::test]
     async fn a_cancelled_dependency_is_the_orchestrators_to_decide_and_never_the_users() {
+        super::super::wired();
         let f = world();
         open_task(&f, "f0");
         create(&f, "f1", &["f0"], Some(&plan(&f, "app/f1")));
@@ -28,14 +29,14 @@ mod cancelled_dependencies {
         assert_eq!(launches(&f), 0);
         assert!(problem(&f, "f1").is_none(), "the orchestrator re-plans it first");
 
-        crate::orchestrator_inbox::hand_replans(&f.domain);
+        alondra_engine_orchestrator::orchestrator_inbox::hand_replans(&f.domain);
         let notices = || told(&f).into_iter().filter(|id| id.starts_with("dependency-cancelled-f1--f0-")).collect::<Vec<_>>();
         assert_eq!(notices(), ["dependency-cancelled-f1--f0-0"]);
         let state = f.domain.state().unwrap();
         let notice = &state.interactions[&"dependency-cancelled-f1--f0-0".into()].body;
         assert!(notice.contains("“Task f1” (f1) waits for “Task f0” (f0), which was cancelled") && notice.contains("set_dependencies")
             && notice.contains("cancel_task") && notice.contains("yours to decide"), "{notice}");
-        crate::orchestrator_inbox::hand_replans(&f.domain);
+        alondra_engine_orchestrator::orchestrator_inbox::hand_replans(&f.domain);
         assert_eq!(notices().len(), 1, "once per rest");
         for _ in 0..3 {
             rest(&f);
@@ -54,6 +55,7 @@ mod cancelled_dependencies {
     /// asked, and a card from before that asked the user is withdrawn.
     #[tokio::test]
     async fn a_task_the_orchestrator_re_points_follows_its_replacement_and_its_old_card_is_withdrawn() {
+        super::super::wired();
         let f = world();
         open_task(&f, "f0");
         open_task(&f, "f2");
@@ -78,6 +80,7 @@ mod cancelled_dependencies {
     /// nobody is told anything.
     #[tokio::test]
     async fn cancelling_and_re_pointing_in_the_same_batch_tells_nobody() {
+        super::super::wired();
         let f = world();
         open_task(&f, "f0");
         open_task(&f, "f2");
@@ -92,6 +95,7 @@ mod cancelled_dependencies {
 
     #[tokio::test]
     async fn a_delivery_dependency_cancelled_stays_with_the_orchestrator_and_its_cancel_closes_the_task() {
+        super::super::wired();
         let f = world();
         open_task(&f, "a");
         create(&f, "after", &[], Some(&plan(&f, "app/after")));
@@ -117,22 +121,23 @@ mod refused_plans {
 
     #[tokio::test]
     async fn a_refused_plan_the_orchestrator_leaves_is_handed_back_at_every_rest_and_never_cancelled_for_it() {
+        super::super::wired();
         let f = world();
-        crate::wire(f.domain.ports());
+        alondra_engine_orchestrator::wire(f.domain.ports());
         refused_plan(&f);
         refuse_its_start(&f).await;
         let reminders = || f.domain.state().unwrap().interactions.values()
             .filter(|i| i.id.0.starts_with(alondra_domain_rules::orchestrator_cards::PLAN_REFUSED_NOTICE_PREFIX)).count();
-        crate::orchestrator_inbox::hand_replans(&f.domain);
-        crate::orchestrator_inbox::hand_replans(&f.domain);
+        alondra_engine_orchestrator::orchestrator_inbox::hand_replans(&f.domain);
+        alondra_engine_orchestrator::orchestrator_inbox::hand_replans(&f.domain);
         assert_eq!(reminders(), 1, "once per rest");
         for _ in 0..3 {
             f.domain.orchestrator_rests.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            crate::orchestrator_inbox::hand_replans(&f.domain);
+            alondra_engine_orchestrator::orchestrator_inbox::hand_replans(&f.domain);
         }
         assert_eq!(reminders(), 4);
         for hour in 0..30 {
-            crate::orchestrator_inbox::settle_overdue(&f.domain, hour * 3_600_000);
+            alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&f.domain, hour * 3_600_000);
         }
         let state = f.domain.state().unwrap();
         assert!(!state.tasks[&TaskId::from("t")].cancelled(), "no clock cancels it for the orchestrator");
@@ -156,34 +161,35 @@ mod stopped_nodes {
     /// and no card ever asks the user.
     #[test]
     fn a_stop_left_unsettled_is_reminded_once_then_handed_back_and_both_outlive_a_restart() {
+        super::super::wired();
         use alondra_domain_rules::{STALL_ATTEMPTS, UNSETTLED_INSTRUCT};
         use alondra_domain_rules::orchestrator_cards::STALL_NOTICE_PREFIX;
         const MINUTE: i64 = 60_000;
         let (fixture, mut store, execution) = running();
         let normalizer = woken(&mut store, &execution);
         let runtime = runtime(&fixture, store);
-        crate::wire(runtime.ports());
+        alondra_engine_orchestrator::wire(runtime.ports());
         let state = Arc::clone(runtime.read().state());
         runtime.own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, WOKEN_CURSOR), &normalizer, no_home(), false)).unwrap();
         let case = stall_case_of("turn-2");
-        crate::orchestrator_inbox::settle(&runtime);
-        crate::orchestrator_inbox::settle_overdue(&runtime, 0);
+        alondra_engine_orchestrator::orchestrator_inbox::settle(&runtime);
+        alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&runtime, 0);
         assert!(!runtime.state().unwrap().interactions.keys().any(|id| id.0.starts_with(STALL_NOTICE_PREFIX)), "nothing before its deadline");
-        crate::orchestrator_inbox::settle_overdue(&runtime, 10 * MINUTE);
+        alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&runtime, 10 * MINUTE);
         let state = runtime.state().unwrap();
         assert!(state.interactions.contains_key(&InteractionId::from(format!("{STALL_NOTICE_PREFIX}{case}").as_str())), "the orchestrator is reminded");
         assert!(state.open(&state.interactions[&case]) && !state.tasks[&task()].over(), "it gets one more go first");
         assert_eq!(state.tasks[&task()].stalls, 1);
         assert!(STALL_ATTEMPTS > state.tasks[&task()].stalls);
         let runtime = runtime_reopened(&fixture, runtime);
-        crate::wire(runtime.ports());
+        alondra_engine_orchestrator::wire(runtime.ports());
         let state = runtime.state().unwrap();
         assert_eq!(state.tasks[&task()].stalls, 1, "the count outlives the restart");
         assert!(state.open(&state.interactions[&case]), "and so does the case");
-        crate::orchestrator_inbox::settle_overdue(&runtime, 30 * MINUTE);
-        crate::orchestrator_inbox::settle_overdue(&runtime, 40 * MINUTE);
+        alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&runtime, 30 * MINUTE);
+        alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&runtime, 40 * MINUTE);
         let runtime = runtime_reopened(&fixture, runtime);
-        crate::wire(runtime.ports());
+        alondra_engine_orchestrator::wire(runtime.ports());
         let state = runtime.state().unwrap();
         assert!(!state.open(&state.interactions[&case]), "Alondra settled it, and that outlives the restart");
         assert!(matches!(state.lifecycle_journal[&task()].iter().rev().find(|record| matches!(record, LifecycleRecord::Answered { .. })),
@@ -198,19 +204,20 @@ mod stopped_nodes {
     /// The orchestrator's instruction settles the case for good: no reminder follows it.
     #[test]
     fn a_stop_the_orchestrator_settles_gets_no_reminder() {
+        super::super::wired();
         use alondra_domain_rules::orchestrator_cards::STALL_NOTICE_PREFIX;
         let (fixture, mut store, execution) = running();
         let normalizer = woken(&mut store, &execution);
         let runtime = runtime(&fixture, store);
-        crate::wire(runtime.ports());
+        alondra_engine_orchestrator::wire(runtime.ports());
         let state = Arc::clone(runtime.read().state());
         runtime.own(scope_of(&state), |owner| owner.stage_observation(&binding(), 1, &batch(&execution, WOKEN_CURSOR), &normalizer, no_home(), false)).unwrap();
-        crate::orchestrator_inbox::settle_overdue(&runtime, 0);
+        alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&runtime, 0);
         let state = Arc::clone(runtime.read().state());
         let settle = Command::SettleStall { case_id: stall_case_of("turn-2"), task_id: task(), outcome: alondra_domain_rules::StallOutcome::Instruct { text: "Present it".into() } };
         let fresh = CommandEnvelope { expected_revision: state.revision, ..envelope(&state, "orchestrator-instructs", settle) };
         runtime.execute(&Actor::Orchestrator { generation: state.orchestrator_generation }, &fresh, None, || Ok(())).unwrap();
-        crate::orchestrator_inbox::settle_overdue(&runtime, 11 * 60_000);
+        alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&runtime, 11 * 60_000);
         assert!(!runtime.state().unwrap().interactions.keys().any(|id| id.0.starts_with(STALL_NOTICE_PREFIX)));
     }
 }
@@ -231,21 +238,22 @@ mod held_plans {
 
     #[test]
     fn an_unreviewed_plan_is_released_unchanged_and_its_node_is_told() {
+        super::super::wired();
         let (_home, domain) = redraft();
-        crate::wire(domain.ports());
+        alondra_engine_orchestrator::wire(domain.ports());
         let queued = alondra_daemon_engine_model::LaunchBody::from_plan("d".into(), &plan("d", "Phase D: 360 px everywhere")).to_queue();
         domain.store.lock().unwrap().enqueue_launch(&"d".into(), &queued, "auto", 1).unwrap();
         settle(&domain, "c-same", "c", PlanReviewOutcome::Unchanged { reason: "Phase C does not depend on the print size".into() }).unwrap();
-        crate::orchestrator_inbox::settle(&domain);
+        alondra_engine_orchestrator::orchestrator_inbox::settle(&domain);
         assert_eq!(reminders(&domain), 0, "a handled batch reminds of nothing");
         for minutes in [0, 10] {
-            crate::orchestrator_inbox::settle_overdue(&domain, minutes * MINUTE);
+            alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&domain, minutes * MINUTE);
         }
         assert_eq!(reminders(&domain), 1, "reminded at its deadline");
         let reminder = domain.state().unwrap().interactions.values().find(|i| i.id.0.starts_with(PLAN_REVIEW_NOTICE_PREFIX)).unwrap().body.clone();
         assert!(reminder.contains("Phase D: 360 px everywhere") && !reminder.contains("Phase C: group"), "only what is still held: {reminder}");
         assert!(held(&domain.state().unwrap(), &"d".into()).is_some(), "one more go for the orchestrator first");
-        crate::orchestrator_inbox::settle_overdue(&domain, 21 * MINUTE);
+        alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&domain, 21 * MINUTE);
         let state = domain.state().unwrap();
         assert!(held(&state, &"d".into()).is_none() && held(&state, &"e".into()).is_none(), "released");
         assert!(matches!(state.plan_reviews[&"decision-1".into()].dependents[&TaskId::from("d")].as_ref().unwrap().outcome, PlanReviewOutcome::Unchanged { .. }));
@@ -257,5 +265,97 @@ mod held_plans {
         let body = alondra_daemon_engine_model::LaunchBody::from_queue(&queue.iter().find(|row| row.task_id == "d".into()).unwrap().body).unwrap();
         assert!(body.to_queue()["body"]["prompt"].as_str().unwrap().starts_with(note), "its first input carries the note");
         assert!(state.interactions.values().all(|i| i.id.0 == "decision-1" || i.recipient != Recipient::User), "no card for the user");
+    }
+}
+
+/// The daemon's one clock does not age what the orchestrator owes while the usage limit holds it.
+mod usage_hold {
+    use alondra_daemon_engine::live::LiveOf as _;
+    use alondra_domain_rules::*;
+    use alondra_domain_rules::orchestrator_cards::STALL_NOTICE_PREFIX;
+    use crate::domain_runtime::DomainRuntime;
+
+    const MINUTE: i64 = 60_000;
+
+    fn system(domain: &DomainRuntime, command: Command) {
+        let state = domain.state().unwrap();
+        let shown = format!("{command:?}");
+        domain.execute_as_system(CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: format!("c-{}", state.revision).into(),
+            expected_revision: state.revision, command,
+        }).unwrap_or_else(|error| panic!("{shown} was refused: {error:?}"));
+    }
+
+    fn as_actor(domain: &DomainRuntime, actor: Actor, command: Command) {
+        let state = domain.state().unwrap();
+        domain.execute(&actor, &CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: format!("c-{}", state.revision).into(),
+            expected_revision: state.revision, command,
+        }, None, || Ok(())).unwrap();
+    }
+
+    fn task() -> TaskId {
+        "t".into()
+    }
+
+    fn open_case(domain: &DomainRuntime) -> Option<InteractionId> {
+        let state = domain.state().unwrap();
+        state.interactions.values().find(|i| is_stall_case(i) && state.open(i)).map(|i| i.id.clone())
+    }
+
+    /// The node of task `t` starts each turn with what it was told last and stops with nothing,
+    /// until a case about it is open.
+    fn stop_until_a_case(domain: &DomainRuntime) -> InteractionId {
+        for n in 0.. {
+            if let Some(case) = open_case(domain) {
+                return case;
+            }
+            let state = domain.state().unwrap();
+            let turn = format!("turn-{}-{n}", state.revision);
+            let input = state.lifecycle_of(&task()).unwrap().pending_inputs().first().map(|input| input.as_str().to_owned()).expect("something to start the turn with");
+            system(domain, Command::RecordRuntimeFacts { task_id: task(), generation: 1, facts: vec![RuntimeObservation::TurnStarted { turn: turn.clone(), input }] });
+            system(domain, Command::RecordTurnBoundary { task_id: task(), generation: 1, turn, failure: None, failed: None });
+        }
+        unreachable!()
+    }
+
+    /// Task `t`, whose node runs a turn through the SDK and stops until its first case is open.
+    fn stalled(domain: &DomainRuntime) -> InteractionId {
+        system(domain, Command::RegisterAgent { agent_id: "a".into(), name: "A".into(), at: 0 });
+        as_actor(domain, Actor::User { user_id: "u".into() }, Command::CreateRequest {
+            request_id: "r".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
+        });
+        as_actor(domain, Actor::Orchestrator { generation: 0 }, Command::CreateTask {
+            plan_items: None, continues: None, task_id: task(), request_id: "r".into(), title: "Task".into(), agent_id: None, review_prs: false,
+            dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
+        });
+        crate::domain_store::admit_through_sdk(domain, &task(), "a");
+        system(domain, Command::RecordRuntimeFacts { task_id: task(), generation: 1, facts: vec![RuntimeObservation::ResourceAvailable] });
+        stop_until_a_case(domain)
+    }
+
+    fn reminded(domain: &DomainRuntime, case: &InteractionId) -> bool {
+        domain.state().unwrap().interactions.contains_key(&InteractionId::from(format!("{STALL_NOTICE_PREFIX}{case}").as_str()))
+    }
+
+    #[test]
+    fn no_fallback_runs_while_the_usage_limit_holds_the_orchestrator() {
+        super::super::wired();
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = alondra_daemon_engine::wiring::open(&home).unwrap();
+        alondra_engine_orchestrator::wire(domain.ports());
+        let case = stalled(&domain);
+        domain.live().usage_pause.exhaust(Some(2 * 60 * MINUTE), 0);
+        for minutes in (0..=60).step_by(5) {
+            alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&domain, minutes * MINUTE);
+        }
+        assert!(!reminded(&domain, &case), "an hour held by the usage limit counts for nothing");
+        assert!(domain.state().unwrap().open(&domain.state().unwrap().interactions[&case]));
+        domain.live().usage_pause.resume(60 * MINUTE);
+        for minutes in [61, 71] {
+            alondra_engine_orchestrator::orchestrator_inbox::settle_overdue(&domain, minutes * MINUTE);
+        }
+        assert!(reminded(&domain, &case), "the clock runs again once the limit is over");
     }
 }

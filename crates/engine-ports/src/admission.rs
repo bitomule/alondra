@@ -3,7 +3,7 @@
 use crate::Runtime;
 use crate::machine::NoRoom;
 use alondra_core::Millis;
-use alondra_domain_rules::{ApiRetry, DomainState, ScheduleRun, TaskId, TaskPriority, TaskState};
+use alondra_domain_rules::{AgentId, ApiRetry, DomainError, DomainState, NodeEvent, ScheduleRun, TaskId, TaskPriority, TaskState};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -198,4 +198,41 @@ pub trait AdmissionGate: Send + Sync {
     fn refuse_launch(&self, runtime: &dyn Runtime, cwd: &Path) -> Option<String>;
     /// Whether the Mac's disk is under its floor.
     fn disk_low(&self, runtime: &dyn Runtime) -> bool;
+}
+
+/// What a node's mod last reported, as the gate reads it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NodeReport {
+    pub working_since: Option<Millis>,
+    pub peer_pid: Option<u32>,
+    /// The command its turn is running, in a short label.
+    pub running: Option<String>,
+}
+
+/// What the admission gate asks of the rest of the engine, which `daemon-engine` provides.
+pub trait AdmissionEngine: Send + Sync {
+    fn report(&self, runtime: &dyn Runtime, session: &str) -> Option<NodeReport>;
+    /// The turn the live view counts for `session`'s node.
+    fn turn(&self, runtime: &dyn Runtime, session: &str) -> Option<u64>;
+    /// Stops the turn of a `claude --bg` node down its connection. False when it is not connected.
+    fn interrupt(&self, runtime: &dyn Runtime, session: &str) -> bool;
+    fn is_closed(&self, runtime: &dyn Runtime, session: &str) -> bool;
+    fn is_launching(&self, runtime: &dyn Runtime, task: &TaskId) -> bool;
+    /// Whether new work waits for the usage pause.
+    fn usage_paused(&self, runtime: &dyn Runtime) -> bool;
+    fn api_watch<'a>(&self, runtime: &'a dyn Runtime) -> &'a crate::api::ApiWatch;
+    /// Whether the account `task` runs on may take work again after the limit that paused it at `since`.
+    fn usage_ready(&self, state: &DomainState, task: &TaskId, since: Millis, now: Millis) -> bool;
+    /// Gives `text` from Alondra to the node of the Agent SDK of `task`, as an input with `command`.
+    fn tell_node(&self, runtime: &dyn Runtime, task: &TaskId, text: &str, command: &str) -> bool;
+    /// Sends `text` from Alondra to `session`'s node down its connection.
+    fn tell_session(&self, runtime: &dyn Runtime, session: &str, text: &str) -> bool;
+    /// Records `event` on `agent`'s node. True when it changed the node.
+    fn node_event(&self, runtime: &dyn Runtime, agent: &AgentId, event: NodeEvent) -> Result<bool, String>;
+    /// Starts the launch the gate's queue kept, `queued` as it was stored.
+    fn launch<'a>(&'a self, runtime: &'a dyn Runtime, home: &'a Path, queued: serde_json::Value) -> crate::hosts::Launched<'a>;
+    /// Whether `task` ended, so a start of it that failed is no failure.
+    fn start_ended(&self, runtime: &dyn Runtime, task: &TaskId) -> Result<bool, String>;
+    /// A start of `task` failed with `error`: it is tried again by itself and then put to the user.
+    fn start_failed(&self, runtime: &dyn Runtime, task: &TaskId, error: &DomainError, now: Millis) -> Result<(), String>;
 }

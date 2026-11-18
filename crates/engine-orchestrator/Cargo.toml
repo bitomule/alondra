@@ -5,9 +5,6 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
-[features]
-test-hooks = ["dep:tempfile", "alondra-daemon-engine-model/test-hooks", "alondra-engine-kernel/test-hooks", "alondra-daemon-support/test-hooks"]
-
 [dependencies]
 alondra-engine-ports.workspace = true
 alondra-core.workspace = true
@@ -26,13 +23,12 @@ libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sysinfo.workspace = true
-tempfile = { workspace = true, optional = true }
 tokio.workspace = true
 
 [dev-dependencies]
+alondra-agent-runtime.workspace = true
 alondra-codex-protocol.workspace = true
-alondra-daemon-engine = { workspace = true, features = ["test-hooks"] }
-alondra-engine-sdk = { workspace = true, features = ["test-hooks"] }
+alondra-engine-doubles.workspace = true
 alondra-daemon-engine-model = { workspace = true, features = ["test-hooks"] }
 alondra-daemon-support = { workspace = true, features = ["test-hooks"] }
 alondra-engine-kernel = { workspace = true, features = ["test-hooks"] }

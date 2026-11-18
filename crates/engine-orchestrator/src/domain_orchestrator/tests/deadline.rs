@@ -1,7 +1,6 @@
 //! What a task waits for from the orchestrator has a deadline: a stopped node's case is reminded
 //! after 10 minutes and settled by Alondra after 20, however busy or failing the orchestrator is,
 //! and never while the usage limit holds it.
-use crate::live::LiveOf as _;
 use super::testing::fixture;
 use super::*;
 use alondra_domain_rules::{
@@ -147,23 +146,4 @@ fn after_three_cases_the_task_closes_with_its_result() {
     assert_eq!(state.tasks[&task()].stall_closing, Some(StallClosing::Unsettled), "closed with what it got done");
     assert!(state.tasks[&task()].cancelled(), "{:?}", state.tasks[&task()].state);
     assert!(user_cards(&domain).is_empty());
-}
-
-#[test]
-fn no_fallback_runs_while_the_usage_limit_holds_the_orchestrator() {
-    let home = crate::test_support::Directory::new();
-    std::fs::create_dir_all(&home).unwrap();
-    let domain = crate::wiring::open(&home).unwrap();
-    let case = stalled(&domain);
-    domain.live().usage_pause.exhaust(Some(2 * 60 * MINUTE), 0);
-    for minutes in (0..=60).step_by(5) {
-        crate::orchestrator_inbox::settle_overdue(&domain, minutes * MINUTE);
-    }
-    assert!(!reminded(&domain, &case), "an hour held by the usage limit counts for nothing");
-    assert!(domain.state().unwrap().open(&domain.state().unwrap().interactions[&case]));
-    domain.live().usage_pause.resume(60 * MINUTE);
-    for minutes in [61, 71] {
-        crate::orchestrator_inbox::settle_overdue(&domain, minutes * MINUTE);
-    }
-    assert!(reminded(&domain, &case), "the clock runs again once the limit is over");
 }

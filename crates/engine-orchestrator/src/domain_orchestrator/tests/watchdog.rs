@@ -1,5 +1,3 @@
-#[cfg(test)]
-use crate::live::LiveOf as _;
 use super::*;
 use alondra_core::clock::Instant;
 
@@ -105,27 +103,16 @@ fn diagnostic_chatter_and_unrelated_domain_activity_do_not_mask_a_stall() {
     assert!(f.cards(PROBLEM_PREFIX).is_empty() && f.cards(STUCK_PROBLEM_PREFIX).is_empty());
 }
 
-type DrainSender = tokio::sync::oneshot::Sender<()>;
-static DRAINS: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::BTreeMap<String, DrainSender>>,
-> = std::sync::LazyLock::new(Default::default);
-
-pub(crate) fn draining(run: &str) {
-    if let Some(sender) = DRAINS.lock().unwrap().remove(run) {
-        let _ = sender.send(());
-    }
-}
-
-struct DrainNotice(String);
-impl Drop for DrainNotice {
-    fn drop(&mut self) {
-        DRAINS.lock().unwrap().remove(&self.0);
-    }
-}
-fn on_drain(run: &str) -> (DrainNotice, tokio::sync::oneshot::Receiver<()>) {
+/// Told when the batch of `run` starts waiting for its admitted operations.
+fn on_drain(f: &crate::domain_orchestrator::testing::Fixture, run: &str) -> tokio::sync::oneshot::Receiver<()> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
-    assert!(DRAINS.lock().unwrap().insert(run.into(), sender).is_none());
-    (DrainNotice(run.into()), receiver)
+    let (run, sender) = (run.to_owned(), std::sync::Mutex::new(Some(sender)));
+    f.domain().orchestrator().injected.on_drain(move |draining| {
+        if draining == run && let Some(sender) = sender.lock().unwrap().take() {
+            let _ = sender.send(());
+        }
+    });
+    receiver
 }
 
 struct Clock(tokio::sync::mpsc::UnboundedSender<MonitorCheck>);
@@ -330,7 +317,7 @@ async fn a_watchdog_cancels_a_held_provider_and_the_next_request_runs_without_a_
     let running = tokio::spawn(async move { executor.supervised_tick(&mut watchdog).await });
     f.held().await;
     let run = load(&f.executor.home).unwrap().active_run.unwrap().id;
-    let (_notice, drained) = on_drain(&run);
+    let drained = on_drain(&f, &run);
     let stop = f
         .domain()
         .orchestrator()
@@ -389,7 +376,7 @@ async fn watchdog_keeps_monitoring_until_an_admitted_physical_writer_finishes() 
     let running = tokio::spawn(async move { executor.supervised_tick(&mut watchdog).await });
     f.held().await;
     let run = load(&f.executor.home).unwrap().active_run.unwrap().id;
-    let (_notice, drained) = on_drain(&run);
+    let drained = on_drain(&f, &run);
     let stop = f
         .domain()
         .orchestrator()
@@ -463,6 +450,10 @@ async fn watchdog_keeps_monitoring_until_an_admitted_physical_writer_finishes() 
     assert!(f.cards(PROBLEM_PREFIX).is_empty() && f.cards(STUCK_PROBLEM_PREFIX).is_empty());
 }
 
+fn usage(f: &crate::domain_orchestrator::testing::Fixture) -> &alondra_engine_doubles::orchestrator::Usage {
+    alondra_engine_doubles::orchestrator::usage(f.domain())
+}
+
 #[test]
 fn account_usage_and_explicit_user_waits_do_not_trigger_the_watchdog() {
     use crate::domain_orchestrator::testing::fixture;
@@ -472,27 +463,24 @@ fn account_usage_and_explicit_user_waits_do_not_trigger_the_watchdog() {
     let start = Instant::now();
     let mut watchdog = Watchdog::default();
     assert!(!f.executor.watchdog_due(&mut watchdog, start));
-    f.domain()
-        .live()
-        .account_wait
-        .wait_for("Sign in to the selected account");
+    f.domain().engine().account_wait().wait_for("Sign in to the selected account");
     assert!(
         !f.executor
             .watchdog_due(&mut watchdog, start + STALLED_AFTER * 2)
     );
     f.domain().engine().account_wait().end();
-    f.domain().live().usage_pause.exhaust(Some(1_000), 0);
+    usage(&f).exhaust(1_000, 0);
     assert!(
         !f.executor
             .watchdog_due(&mut watchdog, start + STALLED_AFTER * 4)
     );
-    f.domain().live().usage_pause.resume(1_000);
-    f.domain().live().usage_pause.pause_by_user(2_000, 1_000);
+    usage(&f).resume();
+    usage(&f).pause_by_user(2_000, 1_000);
     assert!(
         !f.executor
             .watchdog_due(&mut watchdog, start + STALLED_AFTER * 6)
     );
-    f.domain().live().usage_pause.resume(2_000);
+    usage(&f).resume();
     let mut runtime = load(&f.executor.home).unwrap();
     runtime.active_run = Some(Run {
         id: "explicit-decision".into(),

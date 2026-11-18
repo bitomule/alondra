@@ -101,7 +101,7 @@ impl Executor {
                         runtime.last_error = None;
                         runtime.failure = None;
                         runtime.cancel_requested = false;
-                        save(&self.home, &runtime)?;
+                        self.save(&runtime)?;
                     }
                     continue;
                 }
@@ -306,14 +306,14 @@ impl Executor {
                 if continuation {
                     // Keep remaining goals durable before their old claims disappear from
                     // discovery, including when a different run owns the runtime record.
-                    save(&self.home, &runtime)?;
+                    self.save(&runtime)?;
                 }
                 self.domain
                     .store
                     .lock_or_exit("the domain store")
                     .reconcile_orchestrator_batch(&run.id, continuation)?;
                 if !continuation {
-                    save(&self.home, &runtime)?;
+                    self.save(&runtime)?;
                 }
                 if !continuation || legacy_resolution {
                     self.domain

@@ -32,7 +32,7 @@ pub fn author_of(actor_kind: &str) -> String {
     }
 }
 
-pub const ALONDRA: &str = "Alondra";
+pub use alondra_engine_ports::outbox::ALONDRA;
 
 pub(crate) fn message_line(id: &str, text: &str, as_user: bool) -> String {
     serde_json::json!({"id": id, "text": text, "as_user": as_user}).to_string()

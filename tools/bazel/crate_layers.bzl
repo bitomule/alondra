@@ -114,7 +114,6 @@ LAYER_EXCEPTIONS = {
         "crates/provider-claude",
     ],
     "crates/engine-admission": [
-        "crates/daemon-engine",
         "crates/daemon-engine-machine",
         "crates/daemon-engine-model",
         "crates/daemon-support",

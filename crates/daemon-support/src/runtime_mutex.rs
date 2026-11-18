@@ -37,7 +37,6 @@ impl<T> RuntimeMutex<T> {
         self.inner.clear_poison();
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn poison(&self) where T: Send {
         crate::locks::poison(&self.inner);
     }

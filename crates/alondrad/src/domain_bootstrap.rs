@@ -1426,7 +1426,7 @@ mod tests {
     fn the_daemon_implements_every_port() {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        drop(alondra_engine_sdk::wiring::open(&home).unwrap());
+        drop(alondra_engine_sdk::engine_tests::open(&home).unwrap());
         let daemon = DomainDaemon::over(&home, DomainRuntime::open_unwired_at(&home, &crate::domain_database_migration::active_path(&home)).unwrap()).unwrap();
         assert_eq!(daemon.domain.ports().missing(), Vec::<&str>::new(), "a port nothing implements");
     }
@@ -1462,7 +1462,7 @@ mod tests {
         use crate::device_usage::{EXPIRED_KEPT_MS, Expired, ExpiryReason};
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&*home).unwrap();
-        drop(alondra_engine_sdk::wiring::open(&home).unwrap());
+        drop(alondra_engine_sdk::engine_tests::open(&home).unwrap());
         let state = DomainDaemon::open(&home).unwrap();
         let key = STANDARD.encode(SigningKey::from_slice(&[7u8; 32]).unwrap().verifying_key().to_sec1_bytes());
         state.auth.pair(&state.auth.new_pairing_code(), "iPhone", &key).unwrap();
@@ -1497,7 +1497,7 @@ mod tests {
         }
         let home = scratch_directory.parent().unwrap().join(format!("alondra-cleanup-route-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
-        drop(alondra_engine_sdk::wiring::open(&home).unwrap());
+        drop(alondra_engine_sdk::engine_tests::open(&home).unwrap());
         let state = DomainDaemon::open(&home).unwrap();
         let sessions = Arc::new(Untouchable(Default::default()));
         state.client().use_sessions(sessions.clone());
@@ -1522,7 +1522,7 @@ mod tests {
         use axum::extract::connect_info::MockConnectInfo;
         let home = scratch_directory.parent().unwrap().join(format!("alondra-pair-loopback-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
-        drop(alondra_engine_sdk::wiring::open(&home).unwrap());
+        drop(alondra_engine_sdk::engine_tests::open(&home).unwrap());
         for (peer, refused) in [("192.168.1.5:5000", true), ("127.0.0.1:5000", false)] {
             let state = DomainDaemon::open(&home).unwrap();
             let auth = state.auth();
@@ -1552,7 +1552,7 @@ mod tests {
         use axum::extract::connect_info::MockConnectInfo;
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        drop(alondra_engine_sdk::wiring::open(&home).unwrap());
+        drop(alondra_engine_sdk::engine_tests::open(&home).unwrap());
         let state = DomainDaemon::open(&home).unwrap();
         let auth = state.auth();
         let app = router(state)
@@ -1631,7 +1631,7 @@ mod tests {
         let mac = SigningKey::from_slice(&[7u8; 32]).unwrap();
         std::fs::write(home.join("service-keys/public.json"), json!({"mac_id": "mac-test",
             "signing_key": URL_SAFE_NO_PAD.encode(mac.verifying_key().to_sec1_bytes())}).to_string()).unwrap();
-        drop(alondra_engine_sdk::wiring::open(&home).unwrap());
+        drop(alondra_engine_sdk::engine_tests::open(&home).unwrap());
         let state = DomainDaemon::open(&home).unwrap();
         let auth = state.auth();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1685,7 +1685,7 @@ mod tests {
             "relay_url = \"http://127.0.0.1:1/\"\nmac_id = \"mac-test\"\nowner_sub = \"owner\"\nsigning_key_path = \"service-keys/mac-signing.key\"\nagreement_key_path = \"service-keys/mac-agreement.key\"\n{devices}"
         );
         std::fs::write(home.join("service.toml"), config("devices = []\n")).unwrap();
-        drop(alondra_engine_sdk::wiring::open(&home).unwrap());
+        drop(alondra_engine_sdk::engine_tests::open(&home).unwrap());
         let state = DomainDaemon::open(&home).unwrap();
         let auth = state.auth();
         let service = Arc::new(crate::service::Service::open(&home, 0, auth.clone()).unwrap().unwrap());
@@ -1753,7 +1753,7 @@ mod tests {
         let home = scratch_directory.parent().unwrap().join(format!(
             "alondra-domain-bootstrap-schema-{}", crate::auth::random_hex(8)));
         std::fs::create_dir(&home).unwrap();
-        let domain = alondra_engine_sdk::wiring::open(&home).unwrap();
+        let domain = alondra_engine_sdk::engine_tests::open(&home).unwrap();
         let before = domain.state().unwrap();
         domain.execute(&Actor::User { user_id: "bootstrap-test".into() }, &CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: before.data_epoch.clone(),
@@ -1791,7 +1791,7 @@ mod tests {
     async fn views_and_changes_answer_while_a_writer_holds_the_domain_store() {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        drop(alondra_engine_sdk::wiring::open(&home).unwrap());
+        drop(alondra_engine_sdk::engine_tests::open(&home).unwrap());
         let auth = Auth::open(&home).unwrap();
         let key = SigningKey::from_slice(&[9u8; 32]).unwrap();
         let pairing = auth.new_pairing_code();
@@ -1905,7 +1905,7 @@ mod tests {
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir(&home).unwrap();
-        let domain = alondra_engine_sdk::wiring::open(&home).unwrap();
+        let domain = alondra_engine_sdk::engine_tests::open(&home).unwrap();
         let epoch = domain.state().unwrap().data_epoch.0.clone();
         drop(domain);
         let auth = Auth::open(&home).unwrap();
@@ -2416,7 +2416,7 @@ mod tests {
             format!("projects_root = {:?}\n", home.to_str().unwrap()),
         )
         .unwrap();
-        let _domain_epoch = alondra_engine_sdk::wiring::open(&home)
+        let _domain_epoch = alondra_engine_sdk::engine_tests::open(&home)
             .unwrap()
             .state()
             .unwrap()

@@ -4,14 +4,18 @@
 //! `wire` when it puts the daemon together, and a piece that needs a port asks the registry.
 pub mod admission;
 pub mod agent_host;
+pub mod api;
+pub mod extensions;
 pub mod github;
 pub mod hosts;
 pub mod launch;
 pub mod machine;
 pub mod orchestrator;
 pub mod outbox;
+pub mod usage;
 mod registry;
 
+pub use extensions::extension;
 pub use registry::{Registry, Runtime};
 
 #[cfg(test)]

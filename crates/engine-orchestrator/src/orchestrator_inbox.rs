@@ -17,7 +17,7 @@ use crate::domain_runtime::DomainRuntime;
 use alondra_engine_ports::Runtime;
 use alondra_domain_rules::obligation_policy::{ANSWER, Millis};
 use alondra_domain_rules::{
-    Author, CardKind, Command, DomainState, InboxCard, Interaction, InteractionId, InteractionPayload, PlanReview, PlanReviewOutcome, QuestionOption,
+    Author, CardKind, CardSpec, Command, DomainState, InboxCard, Interaction, InteractionId, InteractionPayload, PlanReview, PlanReviewOutcome, QuestionOption,
     Request, RequestId, STALL_ATTEMPTS, Scope, StallOutcome, StartProblem, SystemCard, Task, TaskId, UNSETTLED_INSTRUCT,
 };
 use alondra_domain_rules::orchestrator_cards::{
@@ -378,16 +378,15 @@ pub struct Answers;
 
 impl alondra_engine_ports::orchestrator::OrchestratorAnswers for Answers {
     fn settle_answers(&self, runtime: &dyn Runtime, state: &DomainState, due: &BTreeSet<TaskId>) {
-        let domain = DomainRuntime::of(runtime);
-        settle_answers(domain, state, due);
+        settle_answers(runtime, state, due);
     }
 }
 
 /// What the orchestrator owes the `due` tasks past its deadline: a reminder the first time, then
 /// Alondra's own outcome.
-fn settle_answers(domain: &DomainRuntime, state: &DomainState, due: &BTreeSet<TaskId>) {
+fn settle_answers(runtime: &dyn Runtime, state: &DomainState, due: &BTreeSet<TaskId>) {
     for (step, tasks) in overdue(state, due) {
-        if carry_out(domain, state, &step) {
+        if carry_out(runtime, state, &step) {
             log!("the orchestrator owed {} past its deadline: {step:?}", tasks.iter().map(|task| task.0.as_str()).collect::<Vec<_>>().join(", "));
         }
     }
@@ -407,37 +406,65 @@ pub fn command_of(step: &Step) -> Option<Command> {
 }
 
 /// Whether `step` was carried out.
-fn carry_out(domain: &DomainRuntime, state: &DomainState, step: &Step) -> bool {
-    let done = match step {
-        Step::Close { request, withdrawn } => domain.close_request_by_system(request, *withdrawn).map(drop),
-        Step::Remind { id, card, text, .. } => domain.tell_orchestrator(id, Some(card.clone()), text.clone()).map(drop),
+fn carry_out(runtime: &dyn Runtime, state: &DomainState, step: &Step) -> bool {
+    let current = runtime.state();
+    let (command_id, command) = match step {
+        Step::Close { request, withdrawn } => (format!("settle-{request}"), Command::CloseRequest {
+            request_id: request.clone(), answer: None, withdrawn: *withdrawn, title: None, headline: None, folded_into: None,
+        }),
+        Step::Remind { id, card, text, .. } | Step::Tell { id, card, text } => (format!("tell-{id}"), told(id, card, text.clone())),
         Step::Raise { request, id, card, problem } => {
             let (need, why) = problem.text(alondra_view_model::Lang::En);
             let option = |id: &str, label: &str| QuestionOption { id: id.into(), label: label.into(), description: None };
-            domain.raise_worded_problem_in(
-                Scope::Orchestrator { request_id: Some(request.clone()) },
-                id, Some(card.clone()), UNSPLIT_CAUSE, need, why, problem.to_body(),
-                vec![option(UNSPLIT_RETRY, UNSPLIT_RETRY_LABEL), option(UNSPLIT_CLOSE, UNSPLIT_CLOSE_LABEL)],
-                Some(UNSPLIT_RETRY),
-            ).map(drop)
+            let mut spec = CardSpec::new(CardKind::Problem, need).why(why);
+            spec.recommended = Some(UNSPLIT_RETRY.to_owned());
+            spec.system = Some(card.clone());
+            (format!("raise-{id}"), Command::RaiseProblem {
+                attachments: vec![], interaction_id: id.clone().into(), scope: Scope::Orchestrator { request_id: Some(request.clone()) },
+                body: problem.to_body(), options: vec![option(UNSPLIT_RETRY, UNSPLIT_RETRY_LABEL), option(UNSPLIT_CLOSE, UNSPLIT_CLOSE_LABEL)],
+                card: spec.cause(UNSPLIT_CAUSE),
+            })
         }
-        Step::Tell { id, card, text } => domain.tell_orchestrator(id, Some(card.clone()), text.clone()).map(drop),
-        Step::Withdraw { question } => domain.withdraw_problem(question).map(drop),
+        Step::Withdraw { question } => (format!("withdraw-{question}-{}", current.revision), Command::Withdraw { interaction_id: question.clone() }),
         Step::TellPlanReview { id, card, review, number } => {
-            let plan_of = |task: &alondra_domain_rules::TaskId| domain.launch_plan(task).ok().flatten();
+            let plan_of = |task: &alondra_domain_rules::TaskId| runtime.launch_plan(task);
             let text = format!("Reminder {number}: these plans are still not reviewed. If they are still not in {} minutes, Alondra starts each with the plan it has and tells its node what the user decided. {}",
                 ANSWER / 60_000, crate::domain_store::wording::orchestrator_text(state, review, &plan_of));
-            domain.tell_orchestrator(id, Some(card.clone()), text).map(drop)
+            (format!("tell-{id}"), told(id, card, text))
         }
-        Step::ReleaseUnreviewed { review, task, note } => {
-            domain.settle_plan_review_by_system(review, task, PlanReviewOutcome::Unchanged { reason: note.clone() }).map(drop)
-        }
-        Step::SettleStall { case, task, outcome } => domain.settle_unsettled_stall(case, task, outcome.clone()).map(drop),
+        Step::ReleaseUnreviewed { review, task, note } => (format!("settle-{review}-{task}"), Command::SettlePlanReview {
+            review_id: review.clone(), task_id: task.clone(), outcome: PlanReviewOutcome::Unchanged { reason: note.clone() },
+        }),
+        Step::SettleStall { case, task, outcome } => (format!("settle-{case}"), Command::SettleStall { case_id: case.clone(), task_id: task.clone(), outcome: outcome.clone() }),
+    };
+    let done = if creates_card(step) && current.interactions.contains_key(&InteractionId(card_id(step).to_owned())) {
+        Err(alondra_domain_rules::DomainError::new("invalid_input", "Already told"))
+    } else {
+        runtime.system_command(alondra_domain_rules::CommandEnvelope {
+            protocol_version: alondra_domain_rules::PROTOCOL_VERSION, data_epoch: current.data_epoch.clone(),
+            command_id: command_id.into(), expected_revision: current.revision, command,
+        })
     };
     if let Err(error) = &done {
         log!("could not settle the orchestrator's inbox ({step:?}): {error:?}");
     }
     done.is_ok()
+}
+
+fn told(id: &str, card: &SystemCard, text: String) -> Command {
+    crate::domain_runtime::problems::tell_command(id, Some(card.clone()), text)
+}
+
+/// Whether `step` creates the card its id names, which must not exist yet.
+fn creates_card(step: &Step) -> bool {
+    matches!(step, Step::Remind { .. } | Step::Tell { .. } | Step::TellPlanReview { .. } | Step::Raise { .. })
+}
+
+fn card_id(step: &Step) -> &str {
+    match step {
+        Step::Remind { id, .. } | Step::Tell { id, .. } | Step::TellPlanReview { id, .. } | Step::Raise { id, .. } => id,
+        _ => "",
+    }
 }
 
 #[cfg(test)]
@@ -763,6 +790,47 @@ mod tests {
         assert_eq!(cards(&domain, UNANSWERED_NOTICE_PREFIX).len(), 1);
     }
 
+    /// The clock asks the orchestrator through its port on whatever runtime the root gives it: the
+    /// answers are settled through the runtime's context alone, never by taking it for the kernel's.
+    #[test]
+    fn the_clock_settles_what_the_orchestrator_owes_on_any_runtime() {
+        struct Context(std::sync::Arc<DomainRuntime>);
+        impl Runtime for Context {
+            fn ports(&self) -> &alondra_engine_ports::Registry {
+                self.0.ports()
+            }
+            fn extensions(&self) -> &alondra_engine_ports::extensions::Extensions {
+                Runtime::extensions(&*self.0)
+            }
+            fn home(&self) -> &std::path::Path {
+                Runtime::home(&*self.0)
+            }
+            fn state(&self) -> std::sync::Arc<DomainState> {
+                Runtime::state(&*self.0)
+            }
+            fn system_command(&self, envelope: CommandEnvelope) -> Result<alondra_domain_rules::CommandOutcome, alondra_domain_rules::DomainError> {
+                self.0.system_command(envelope)
+            }
+            fn wake_seals(&self) {
+                self.0.wake_seals();
+            }
+            fn launch_plan(&self, task: &TaskId) -> Option<alondra_domain_rules::LaunchPlan> {
+                Runtime::launch_plan(&*self.0, task)
+            }
+        }
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = std::sync::Arc::new(crate::wiring::open(&home).unwrap());
+        sdk_node_with_task(&domain);
+        ask(&domain, "q");
+        node_step(&domain);
+        settle(&domain);
+        let state = domain.state().unwrap();
+        use alondra_engine_ports::orchestrator::OrchestratorAnswers as _;
+        Answers.settle_answers(&Context(domain.clone()), &state, &BTreeSet::from(["t".into()]));
+        assert_eq!(cards(&domain, UNANSWERED_NOTICE_PREFIX), [format!("{UNANSWERED_NOTICE_PREFIX}q-1")]);
+    }
+
     #[test]
     fn an_answered_question_or_one_of_a_task_that_ended_is_left_alone() {
         let home = crate::test_support::Directory::new();
@@ -898,6 +966,3 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-#[path = "orchestrator_inbox/engine_tests.rs"]
-mod engine_tests;

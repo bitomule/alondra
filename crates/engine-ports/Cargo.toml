@@ -10,6 +10,7 @@ alondra-core.workspace = true
 alondra-domain-rules.workspace = true
 alondra-foundation.workspace = true
 alondra-process-group.workspace = true
+libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
