@@ -167,6 +167,14 @@ LAYER_EXCEPTIONS = {
     ],
 }
 
+# The output adapters a package's test hooks link although its production crate may not use them.
+# Every test above those hooks reruns when the adapter changes, so this list only shrinks too.
+TEST_HOOK_EXCEPTIONS = {
+    # Their tests start nodes through the real Agent SDK and Codex hosts.
+    "crates/daemon-engine": ["crates/agent-runtime"],
+    "crates/engine-sdk": ["crates/agent-runtime"],
+}
+
 def layer_violation(package, dependency):
     """Why `package` may not depend on `dependency`, or None when it may."""
     if package == dependency or dependency in LAYER_EXCEPTIONS.get(package, []):

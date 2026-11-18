@@ -13,6 +13,8 @@ import xml.etree.ElementTree as ElementTree
 
 # The number of entries in LAYER_EXCEPTIONS. It only goes down: lower it with every entry removed.
 EXCEPTION_CEILING = 55
+# The number of entries in TEST_HOOK_EXCEPTIONS, which only goes down too.
+TEST_HOOK_EXCEPTION_CEILING = 2
 
 # rules_rust compiles a crate's build.rs into a binary of its own.
 BUILD_SCRIPT_MACROS = {"cargo_build_script"}
@@ -55,6 +57,44 @@ def violation(table, package, dependency):
     return f"a crate of layer {layer} may depend only on layers {', '.join(table['allowed_dependencies'][layer])}"
 
 
+def hooks_linking_adapters(table, targets):
+    """A testonly library linking an output adapter its production crate may not use: every test
+    above those hooks would rerun on each edit of the adapter."""
+    found = []
+    used = set()
+    allowed = table["test_hook_exceptions"]
+    for label, target in sorted(targets.items()):
+        package = package_of(label)
+        if not target["testonly"] or target["kind"] != "rust_library" or package not in table["crate_layers"]:
+            continue
+        for dependency in target["deps"]:
+            dependency_package = package_of(dependency)
+            if table["crate_layers"].get(dependency_package) != "adapter-out":
+                continue
+            if dependency_package in allowed.get(package, []):
+                used.add((package, dependency_package))
+                continue
+            reason = violation(table, package, dependency_package)
+            if reason:
+                found.append(
+                    f"{label} depends on {dependency}: test hooks may not link an output adapter their crate "
+                    f"may not use ({reason}). Keep the fakes that need it under #[cfg(test)], or fake the port."
+                )
+    entries = {(package, dependency) for package, dependencies in allowed.items() for dependency in dependencies}
+    for package, dependency in sorted(entries - used):
+        found.append(
+            f"The test hook exception {package} -> {dependency} is no longer used: remove it from TEST_HOOK_EXCEPTIONS."
+        )
+    if len(entries) > TEST_HOOK_EXCEPTION_CEILING:
+        found.append(
+            f"TEST_HOOK_EXCEPTIONS has {len(entries)} entries, over its ceiling of {TEST_HOOK_EXCEPTION_CEILING}: "
+            "the list only shrinks. Keep the fakes that need the adapter under #[cfg(test)], or fake the port."
+        )
+    elif len(entries) < TEST_HOOK_EXCEPTION_CEILING:
+        found.append(f"TEST_HOOK_EXCEPTIONS has {len(entries)} entries: lower TEST_HOOK_EXCEPTION_CEILING to {len(entries)}.")
+    return found
+
+
 def problems(table, targets):
     found = []
     macros = set(table["role_macros"])
@@ -86,6 +126,7 @@ def problems(table, targets):
             reason = violation(table, package, dependency_package)
             if reason:
                 found.append(f"{label} depends on {dependency}: {reason}.")
+    found += hooks_linking_adapters(table, targets)
     entries = {(package, dependency) for package, dependencies in table["exceptions"].items() for dependency in dependencies}
     for package, dependency in sorted(entries - used):
         found.append(
