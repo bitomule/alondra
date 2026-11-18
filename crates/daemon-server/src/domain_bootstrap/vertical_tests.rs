@@ -38,6 +38,7 @@ struct Fixture {
     client: reqwest::Client,
     domain: Arc<DomainRuntime>,
     key: SigningKey,
+    auth: Arc<Auth>,
     device_id: String,
     orchestrator: String,
     agent: String,
@@ -56,7 +57,7 @@ impl Fixture {
         let store = alondra_engine_sdk::engine_tests::open(&home).unwrap();
         let epoch = store.state().unwrap().data_epoch.0.clone();
         drop(store);
-        let auth = Auth::open(&home).unwrap();
+        let auth = Arc::new(Auth::open(&home).unwrap());
         let key = SigningKey::from_slice(&[13u8; 32]).unwrap();
         let pairing = auth.new_pairing_code();
         let device = auth
@@ -106,7 +107,7 @@ impl Fixture {
         let base = format!("http://{}", listener.local_addr().unwrap());
         let daemon = state.clone();
         let app = router(state).layer(axum::middleware::from_fn_with_state(
-            Arc::new(Auth::open(&home).unwrap()),
+            auth.clone(),
             crate::auth::guard,
         ));
         let server = ServerGuard(Some(tokio::spawn(async move {
@@ -124,6 +125,7 @@ impl Fixture {
             client: reqwest::Client::new(),
             domain,
             key,
+            auth,
             device_id: device.id,
             orchestrator,
             agent,
@@ -258,6 +260,31 @@ impl Fixture {
         let _ = server.await;
         drop(self.domain);
     }
+}
+
+#[tokio::test]
+async fn cached_views_still_require_the_current_paired_device_key() {
+    let mut fixture = Fixture::start().await;
+    let path = "/views/home?protocol=1&client=ios&lang=en";
+    assert_eq!(fixture.get_signed(path).await.0, StatusCode::OK);
+    assert_eq!(fixture.get_signed(path).await.0, StatusCode::OK);
+    let first_device = fixture.device_id.clone();
+    let first_key = fixture.key.clone();
+    fixture.key = SigningKey::from_slice(&[29u8; 32]).unwrap();
+    assert_eq!(fixture.get_signed(path).await.0, StatusCode::UNAUTHORIZED,
+        "a warm view does not authorize another key under the same device id");
+    let auth = fixture.auth.clone();
+    let device = auth.pair(&auth.new_pairing_code(), "replacement-fixture",
+        &STANDARD.encode(fixture.key.verifying_key().to_sec1_bytes())).unwrap();
+    fixture.device_id = device.id;
+    assert_eq!(fixture.get_signed(path).await.0, StatusCode::OK,
+        "a newly paired device can read the current view");
+    assert!(auth.revoke(&first_device).unwrap());
+    fixture.device_id = first_device;
+    fixture.key = first_key;
+    assert_eq!(fixture.get_signed(path).await.0, StatusCode::UNAUTHORIZED,
+        "the old device loses access even while the view is cached");
+    fixture.finish().await;
 }
 
 #[tokio::test]

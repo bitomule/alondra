@@ -34,7 +34,7 @@ impl Version {
 }
 
 /// The inputs a view is rendered from: the domain revision and the live data it was given.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Input {
     cursor: String,
     live_revision: String,
@@ -45,10 +45,18 @@ impl Input {
     pub(crate) fn of(domain: &DomainState, live: &LiveSnapshot) -> Self {
         let live_hash =
             Sha256::digest(serde_json::to_vec(live).expect("live snapshot serialization"));
+        Self::with_digest(domain, &live_hash)
+    }
+
+    pub(crate) fn prepared(domain: &DomainState, live: &super::live::Snapshot) -> Self {
+        Self::with_digest(domain, &live.digest())
+    }
+
+    fn with_digest(domain: &DomainState, live_hash: &[u8]) -> Self {
         let clock = serde_json::to_vec(&(
             domain.data_epoch.clone(),
             domain.revision,
-            live_hash.as_slice(),
+            live_hash,
         ))
         .expect("view clock serialization");
         Self {

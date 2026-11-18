@@ -199,6 +199,8 @@ pub enum Expect {
     GhCalls { calls: Vec<String> },
     PrMergedInto { pr: u64, branch: String },
     TaskState { task: String, state: alondra_domain_rules::TaskState },
+    /// Each start-problem decision pass reads at most this many times the card population.
+    StartProblemReads { max_passes: u64 },
     /// Every transcript of the case was played to its end: the daemon sent what each expected and
     /// received everything it said.
     TranscriptsPlayed,

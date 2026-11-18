@@ -16,6 +16,7 @@ alondra-view-model.workspace = true
 alondra-views.workspace = true
 alondra-daemon-engine = { workspace = true, features = ["test-hooks"] }
 alondra-engine-sdk = { workspace = true, features = ["test-hooks"] }
+alondra-engine-orchestrator.workspace = true
 alondra-daemon-support = { workspace = true, features = ["test-hooks"] }
 alondra-scenarios-transcript.workspace = true
 base64 = "0.23.1"

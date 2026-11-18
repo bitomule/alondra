@@ -910,6 +910,7 @@ dependencies = [
  "alondra-daemon-engine",
  "alondra-daemon-support",
  "alondra-domain-rules",
+ "alondra-engine-orchestrator",
  "alondra-engine-sdk",
  "alondra-scenarios-transcript",
  "alondra-view-model",

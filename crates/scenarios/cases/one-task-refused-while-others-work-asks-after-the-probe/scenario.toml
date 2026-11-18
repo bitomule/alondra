@@ -68,3 +68,7 @@ present = true
 check = "task_state"
 task = "t2"
 state = "running"
+
+[[step.expect]]
+check = "start_problem_reads"
+max_passes = 1

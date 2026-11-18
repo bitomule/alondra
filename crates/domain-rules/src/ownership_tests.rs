@@ -426,6 +426,13 @@ impl World {
     }
 
     fn check(&self, steps: &[Step]) -> Result<(), String> {
+        let problems = StartProblems::new(&self.s);
+        for task in self.s.tasks.values() {
+            assert_eq!(problems.open(&task.id), self.s.open_start_problem(&task.id));
+            assert_eq!(problems.last(&task.id), self.s.last_start_problem(&task.id));
+            assert_eq!(problems.plan_refusal(&task.id), self.s.open_plan_refusal(&task.id));
+            assert_eq!(problems.replanned_for(task), self.s.replanned_for(task));
+        }
         let none = StartFacts::default();
         if let Some(card) = self.s.interactions.values().find(|i| i.system_card == Some(SystemCard::StartProblem)
             && matches!(serde_json::from_str(&i.body), Ok(StartProblem::PlanRefused { .. })) && i.recipient != Recipient::Orchestrator)
@@ -535,6 +542,32 @@ fn a_closed_node_asks_the_user() {
     w.react();
     let closed = w.s.open_start_problem(&"t1".into()).expect("a card for the closed node");
     assert_eq!(closed.card.effective_title(), "Relaunch “Task t1” or cancel it");
+}
+
+#[test]
+fn start_problem_index_preserves_first_open_and_last_order_ties() {
+    let mut w = World::new();
+    w.apply(&Step::Create { scheduled: false, plan: true, deps: vec![] });
+    w.must(Actor::System, Command::RaiseStartProblem {
+        task_id: "t1".into(), problem: StartProblem::NodeClosed,
+    });
+    let task = TaskId::from("t1");
+    let card = w.s.open_start_problem(&task).unwrap().clone();
+    w.s.interactions.clear();
+    for id in ["a", "b", "c"] {
+        let id = InteractionId::from(id);
+        w.s.interactions.insert(id.clone(), Interaction { id, ..card.clone() });
+    }
+    w.s.interactions.get_mut(&"c".into()).unwrap().withdrawn = true;
+    let problems = StartProblems::new(&w.s);
+    assert_eq!(problems.open(&task).unwrap().id, InteractionId::from("a"));
+    assert_eq!(problems.last(&task).unwrap().id, InteractionId::from("c"));
+    assert_eq!(problems.open(&task), w.s.open_start_problem(&task));
+    assert_eq!(problems.last(&task), w.s.last_start_problem(&task));
+    drop(problems);
+    w.s.interactions.get_mut(&"a".into()).unwrap().withdrawn = true;
+    assert_eq!(StartProblems::new(&w.s).open(&task).unwrap().id, InteractionId::from("b"),
+        "the next pass sees the changed card without retaining an old index");
 }
 
 /// A task with `dependencies` on a task that is cancelled waits for its re-plan.
