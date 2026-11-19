@@ -17,13 +17,11 @@ use alondra_store::{AdapterState, AuthorityScope, CommittedCommand, CommittedCon
 use std::collections::BTreeMap;
 
 /// The SQLite store behind a journal, for the tests that read its tables or drive its test hooks.
-#[cfg(any(test, feature = "test-hooks"))]
 pub trait AsSqlite {
     fn sqlite(&self) -> &DomainStore;
     fn sqlite_mut(&mut self) -> &mut DomainStore;
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
 impl AsSqlite for dyn Journal + '_ {
     fn sqlite(&self) -> &DomainStore {
         self.as_any().downcast_ref().expect("the journal is the SQLite store")

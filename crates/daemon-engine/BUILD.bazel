@@ -1,9 +1,8 @@
 load("//tools/bazel:crates.bzl", "application_crate")
 load("//tools:tree.bzl", "repo_tree")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
-load("//tools:rust_test.bzl", "LOW_OPT_LEVEL", "low_opt_rust_test")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
 
@@ -23,9 +22,10 @@ WORKSPACE_DEPS = [
 
 application_crate(
     name = "daemon_engine",
-    srcs = production_sources(test_only = ["src/host_fixtures.rs", "src/machine_hooks.rs"]),
+    srcs = production_sources(test_only = ["src/wiring/owner_fixtures.rs"]) + ["//crates:test_support.rs"],
     crate_name = "alondra_daemon_engine",
     version = VERSION,
+    test_visibility = ["//crates/machine-model:__pkg__"],
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-engine-machine:daemon_engine_machine",
@@ -35,34 +35,6 @@ application_crate(
         "//crates/engine-mcp:engine_mcp",
         "//crates/engine-worktrees:engine_worktrees",
         "//crates/engine-kernel:engine_kernel",
-    ],
-)
-
-# alondrad's unit tests build against the hooks and fixtures its tests drive: a store that traces
-# its reads, an SDK slice with a fake native Claude, a fake GitHub.
-rust_library(
-    name = "daemon_engine_test_hooks",
-    testonly = True,
-    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
-    crate_features = ["test-hooks"],
-    crate_name = "alondra_daemon_engine",
-    crate_root = "src/lib.rs",
-    edition = "2024",
-    rustc_flags = [LOW_OPT_LEVEL],
-    version = VERSION,
-    visibility = ["//crates/alondrad:__pkg__", "//crates/daemon-server:__pkg__", "//crates/engine-admission:__pkg__", "//crates/engine-orchestrator:__pkg__", "//crates/engine-sdk:__pkg__", "//crates/machine-model:__pkg__", "//crates/scenarios:__pkg__"],
-    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/agent-runtime:agent_runtime"] + [
-        "//crates/engine-doubles:engine_doubles",
-        "//crates/codex-protocol:codex_protocol",
-        "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
-        "//crates/store-sqlite:store_sqlite_test_hooks",
-        "//crates/daemon-engine-machine:daemon_engine_machine_test_hooks",
-        "//crates/daemon-support:daemon_support_test_hooks",
-        "//crates/engine-github:engine_github_test_hooks",
-        "//crates/engine-live:engine_live_test_hooks",
-        "//crates/engine-mcp:engine_mcp_test_hooks",
-        "//crates/engine-worktrees:engine_worktrees_test_hooks",
-        "//crates/engine-kernel:engine_kernel_test_hooks",
     ],
 )
 
@@ -76,16 +48,16 @@ ENGINE_TEST_COMPILE_DATA = [
 
 ENGINE_TEST_DEPS = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/agent-runtime:agent_runtime"] + [
     "//crates/codex-protocol:codex_protocol",
-    "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
-    "//crates/store-sqlite:store_sqlite_test_hooks",
-    "//crates/daemon-engine-machine:daemon_engine_machine_test_hooks",
-    "//crates/daemon-support:daemon_support_test_hooks",
+    "//crates/daemon-engine-model:daemon_engine_model",
+    "//crates/store-sqlite:store_sqlite",
+    "//crates/daemon-engine-machine:daemon_engine_machine",
+    "//crates/daemon-support:daemon_support",
     "//crates/engine-doubles:engine_doubles",
-    "//crates/engine-github:engine_github_test_hooks",
-    "//crates/engine-live:engine_live_test_hooks",
-    "//crates/engine-mcp:engine_mcp_test_hooks",
-    "//crates/engine-worktrees:engine_worktrees_test_hooks",
-    "//crates/engine-kernel:engine_kernel_test_hooks",
+    "//crates/engine-github:engine_github",
+    "//crates/engine-live:engine_live",
+    "//crates/engine-mcp:engine_mcp",
+    "//crates/engine-worktrees:engine_worktrees",
+    "//crates/engine-kernel:engine_kernel",
 ]
 
 # The engine's one test target. A few of its tests start the pinned Agent SDK host with a fake
@@ -120,27 +92,21 @@ rust_inputs_test(
     required_sources = ["crates/daemon-engine/src/lib.rs", "crates/daemon-engine/src/wiring.rs"],
     source_dir = "crates/daemon-engine/src/",
     target_under_test = ":daemon_engine",
-    test_only_sources = ["crates/daemon-engine/src/host_fixtures.rs", "crates/daemon-engine/src/machine_hooks.rs", "crates/daemon-engine/src/wiring/owner_tests.rs", "crates/test_support.rs"],
+    fixture_sources = ["crates/test_support.rs"],
+    test_only_sources = ["crates/daemon-engine/src/wiring/owner_tests.rs", "crates/daemon-engine/src/wiring/owner_fixtures.rs"],
     test_sources = False,
 )
 
-rust_inputs_test(
-    name = "test_hooks_inputs_test",
-    size = "small",
-    required_sources = ["crates/daemon-engine/src/lib.rs", "crates/daemon-engine/src/wiring.rs"],
-    source_dir = "crates/daemon-engine/src/",
-    target_under_test = ":daemon_engine_test_hooks",
-    test_only_sources = ["crates/daemon-engine/src/host_fixtures.rs", "crates/daemon-engine/src/machine_hooks.rs", "crates/daemon-engine/src/wiring/owner_tests.rs", "crates/test_support.rs"],
-    test_sources = True,
-)
-
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
+
+# The SQLite-backed fixtures of an SDK node's owner, which the tests of the crates above include.
+exports_files(["src/wiring/owner_fixtures.rs"], visibility = ["//crates/daemon-server:__pkg__", "//crates/engine-sdk:__pkg__"])
 
 # The crate's production sources: the crash report's log catalog reads them, and fails on a test
 # file among them; alondrad's lock policy test reads them too.
 filegroup(
     name = "report_sources",
-    srcs = production_sources(test_only = ["src/host_fixtures.rs", "src/machine_hooks.rs"]),
+    srcs = production_sources(test_only = ["src/wiring/owner_fixtures.rs"]),
     visibility = ["//crates/alondra:__pkg__", "//crates/cli-report:__pkg__", "//crates/alondrad:__pkg__", "//crates/daemon-server:__pkg__"],
 )
 

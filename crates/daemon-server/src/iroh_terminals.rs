@@ -41,7 +41,6 @@ impl IrohTerminals {
         Self { path: Some(path), hellos: Mutex::new(hellos), dial: Mutex::default() }
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn empty() -> Self {
         Self { path: None, hellos: Mutex::default(), dial: Mutex::default() }
     }

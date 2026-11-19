@@ -2,7 +2,7 @@
 //! `views` renders from it stay the same.
 use crate::domain_runtime::DomainRuntime;
 use alondra_store_sqlite::retention_fixtures::ended_task;
-use alondra_store_sqlite::tests::Fixture;
+use alondra_store_sqlite::testing::Fixture;
 use alondra_domain_rules::{DomainState, ReadIndex};
 
 #[test]

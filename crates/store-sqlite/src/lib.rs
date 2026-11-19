@@ -1,15 +1,13 @@
 //! Relational authority for domain v2. The legacy event store remains technical
 //! evidence only; these rows are never reconstructed by legacy event replay.
-#![cfg_attr(all(feature = "test-hooks", not(test)), allow(dead_code, unused_imports))]
 pub use alondra_engine_ports::journal::{generation_provider, schedule_command, Attached, AutoLaunch, AutoLaunchReason, AutoLaunchState, BatchOwner, Commit, DeliveryClaim, DeliveryEvidence, DeliveryEvidenceItem, HistoryStep, PostMergeCheck, QueuedLaunch, RequestLaunch, StoreError, TaskClosing, TransportIdentity, UserPushHistory};
 #[macro_use]
 extern crate alondra_foundation;
 use alondra_daemon_support::{auth, locks, save};
 use alondra_daemon_engine_model::options;
-#[cfg(any(test, feature = "test-hooks"))]
+#[cfg(test)]
 #[path = "../../test_support.rs"]
-pub mod test_support;
-#[cfg(any(test, feature = "test-hooks"))]
+mod test_support;
 pub mod testing;
 
 use crate::locks::Poisonable as _;
@@ -19,13 +17,11 @@ mod command;
 mod connection;
 mod read_changes;
 pub use read_changes::{ReadChange, ReadCursor, ReadDelta};
-#[cfg(any(test, feature = "test-hooks"))]
 pub mod live_read_trace;
 mod owner;
 mod discarded_observations;
 pub use discarded_observations::{AdapterRefusal, DiscardReason};
 pub use owner::{OwnerTransaction, Preparer, StagedOutcome};
-#[cfg(any(test, feature = "test-hooks"))]
 pub use owner::{Refuse, carried_refusal, refuse_next};
 pub mod model_metrics;
 mod codex_metrics;
@@ -37,7 +33,6 @@ pub mod provider_transition;
 pub use account_move::{AccountMove, Plan as AccountMovePlan, Step as AccountMoveStep};
 mod handover;
 pub use handover::{Handover, Process as HandoverProcess, Step as HandoverStep, copy_path as handover_copy_path};
-#[cfg(any(test, feature = "test-hooks"))]
 pub use handover::Plan as HandoverPlan;
 mod repository;
 mod typed_cards;
@@ -46,7 +41,6 @@ pub mod domain_database_migration;
 mod journal;
 mod recovery_copies;
 pub use journal::Sqlite;
-#[cfg(any(test, feature = "test-hooks"))]
 pub use journal::AsSqlite;
 mod provider_accounts;
 mod pr_adoption;
@@ -313,15 +307,6 @@ const EVENTS_VIEW: &str = "CREATE VIEW events AS SELECT revision AS seq,0 AS at,
 
 
 
-
-
-
-
-
-
-
-
-#[cfg(any(test, feature = "test-hooks"))]
 pub use repository::statement_counts;
 
 
@@ -366,16 +351,13 @@ pub struct DomainStore {
     /// across a connection replacement.
     pub conn: Connection,
     read_identity: read_changes::Identity,
-    #[cfg(any(test, feature = "test-hooks"))]
     live_read_trace: Option<live_read_trace::Sink>,
-    #[cfg(any(test, feature = "test-hooks"))]
     before_live_read: Option<Box<dyn Fn(&str) + Send>>,
     cached: Option<Cached>,
     aggregates: alondra_store::AggregateCache,
     /// The folders no task's worktree can be: a worktree is recorded only once git lists it.
     protected: alondra_engine_ports::worktrees::WorktreeRules,
     decisions: Option<Arc<dyn wording::SdkDecisions>>,
-    #[cfg(any(test, feature = "test-hooks"))]
     after_commit: Option<Box<dyn FnMut() + Send>>,
 }
 /// The generation of the credential new executions on `account` run with: one more each time it
@@ -424,7 +406,6 @@ fn recorded_worktree_storage(conn: &Connection, path: &str) -> Result<Option<(st
     Ok(None)
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
 thread_local! {
     /// How many times this thread read the whole domain because its cached copy was stale.
     pub static FULL_LOADS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -446,7 +427,6 @@ fn state_in(cached: &Option<Cached>, tx: &Connection) -> Result<(Arc<DomainState
             Ok((Arc::clone(&c.state), true, version))
         }
         _ => {
-            #[cfg(any(test, feature = "test-hooks"))]
             FULL_LOADS.with(|loads| loads.set(loads.get() + 1));
             let mut state = repository::load(tx)?;
             if let Some(c) = cached {
@@ -456,12 +436,15 @@ fn state_in(cached: &Option<Cached>, tx: &Connection) -> Result<(Arc<DomainState
         }
     }
 }
-/// The ports a store not yet protected checks worktrees with: none, so asking panics, outside
-/// tests, which check them with the Mac's own git.
+/// The ports a store not yet protected checks worktrees with: what a test registered for the stores
+/// its thread opens (`testing::wire_stores_with`), else none, so asking panics.
 fn unprotected_ports() -> Arc<alondra_engine_ports::Registry> {
     let ports = Arc::new(alondra_engine_ports::Registry::default());
-    #[cfg(any(test, feature = "test-hooks"))]
+    #[cfg(test)]
     alondra_engine_doubles::machine::wire(&ports, alondra_daemon_support::watcher::claude_home);
+    if let Some(wire) = testing::STORE_PORTS.with(std::cell::Cell::get) {
+        wire(&ports);
+    }
     ports
 }
 
@@ -518,7 +501,6 @@ impl std::ops::Deref for ReadTransaction<'_> {
     }
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
 impl std::ops::DerefMut for ReadTransaction<'_> {
     fn deref_mut(&mut self) -> &mut DomainStore {
         &mut self.0
@@ -532,12 +514,10 @@ impl Drop for ReadTransaction<'_> {
 }
 
 impl DomainStore {
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn on_live_read(&mut self, hook: impl Fn(&str) + Send + 'static) {
         self.before_live_read = Some(Box::new(hook));
     }
     /// Records that `task` entered `state` at `at`, after the newest revision.
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn add_history_step(&mut self, task: &str, state: &str, at: i64) {
         let tx = self.conn.transaction().unwrap();
         let (epoch, revision): (String, i64) = tx.query_row(
@@ -552,7 +532,6 @@ impl DomainStore {
     }
     /// Adds `tasks` finished Tasks and `steps` state changes to every Task after the newest
     /// revision: the history a long-lived domain carries.
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn add_task_history(&mut self, tasks: usize, steps: usize) {
         let tx = rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Deferred).unwrap();
         let request: String = tx.query_row("SELECT id FROM requests LIMIT 1", [], |row| row.get(0)).unwrap();
@@ -590,18 +569,15 @@ impl DomainStore {
         }
         tx.commit().unwrap();
     }
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn begin_live_read_trace(&mut self) {
         assert!(self.live_read_trace.is_none(), "live read trace already active");
         self.live_read_trace = Some(Default::default());
     }
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn end_live_read_trace(&mut self) -> Vec<live_read_trace::LiveStoreRead> {
         let sink = self.live_read_trace.take().expect("live read trace not active");
         let events = sink.lock_or_recover("the live read trace").clone();
         events
     }
-    #[cfg(any(test, feature = "test-hooks"))]
     fn trace_live_read(&self, getter: &'static str) -> Option<live_read_trace::Read> {
         if let Some(hook) = &self.before_live_read { hook(getter); }
         self.live_read_trace.as_ref().map(|sink| live_read_trace::Read::new(sink.clone(), getter))
@@ -803,11 +779,8 @@ impl DomainStore {
                 unprotected_ports(),
             ),
             decisions: None,
-            #[cfg(any(test, feature = "test-hooks"))]
             live_read_trace: None,
-            #[cfg(any(test, feature = "test-hooks"))]
             before_live_read: None,
-            #[cfg(any(test, feature = "test-hooks"))]
             after_commit: None,
         }
     }
@@ -830,11 +803,9 @@ impl DomainStore {
         check_schema(&conn)?;
         Ok(Self::from_connection(conn))
     }
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn on_commit(&mut self, hook: impl FnMut() + Send + 'static) {
         self.after_commit = Some(Box::new(hook));
     }
-    #[cfg(any(test, feature = "test-hooks"))]
     /// Rows this connection has written since it was opened.
     pub fn rows_written(&self) -> u64 {
         self.conn.total_changes()
@@ -899,14 +870,11 @@ impl DomainStore {
     }
     /// The project and effort each Request was asked for with, by Request.
     pub fn request_launch_summaries(&self) -> Result<std::collections::BTreeMap<RequestId, (Option<String>, Option<String>)>> {
-        #[cfg(any(test, feature = "test-hooks"))]
         let mut trace = self.trace_live_read("request_launch_summaries");
         let mut query = self.conn.prepare("SELECT request_id,project,json_extract(options,'$.effort') FROM request_launch")?;
-        #[cfg(any(test, feature = "test-hooks"))]
         if let Some(trace) = &mut trace { trace.statement(); }
-        let rows = query.query_map([], |row| { #[cfg(any(test, feature = "test-hooks"))] if let Some(trace) = &mut trace { trace.row(); } Ok((RequestId(row.get(0)?), (row.get(1)?, row.get(2)?))) })?;
+        let rows = query.query_map([], |row| { if let Some(trace) = &mut trace { trace.row(); } Ok((RequestId(row.get(0)?), (row.get(1)?, row.get(2)?))) })?;
         let values = rows.collect::<rusqlite::Result<_>>()?;
-        #[cfg(any(test, feature = "test-hooks"))]
         if let Some(trace) = &mut trace { trace.complete(); }
         Ok(values)
     }
@@ -944,7 +912,6 @@ impl DomainStore {
         })?;
         let mut staged = staged;
         staged.commit.sealed = Some(journal.commit()?);
-        #[cfg(any(test, feature = "test-hooks"))]
         if !staged.commit.replayed && let Some(hook) = &mut self.after_commit {
             hook();
         }
@@ -1086,17 +1053,14 @@ impl DomainStore {
     }
     /// When each Task last entered its state.
     pub fn task_state_times(&self) -> Result<std::collections::BTreeMap<TaskId, i64>> {
-        #[cfg(any(test, feature = "test-hooks"))]
         let mut trace = self.trace_live_read("task_state_times");
         // task_history's key starts with revision, so a per-task max(revision) subquery scans
         // the whole history once per row; one grouped pass stays linear.
         let mut query = self.conn.prepare("SELECT h.task_id,a.at FROM (SELECT task_id,max(revision) AS revision FROM task_history GROUP BY task_id) h
             JOIN command_audit a ON a.revision=h.revision")?;
-        #[cfg(any(test, feature = "test-hooks"))]
         if let Some(trace) = &mut trace { trace.statement(); }
-        let rows = query.query_map([], |row| { #[cfg(any(test, feature = "test-hooks"))] if let Some(trace) = &mut trace { trace.row(); } Ok((TaskId(row.get(0)?), row.get(1)?)) })?;
+        let rows = query.query_map([], |row| { if let Some(trace) = &mut trace { trace.row(); } Ok((TaskId(row.get(0)?), row.get(1)?)) })?;
         let values = rows.collect::<rusqlite::Result<_>>()?;
-        #[cfg(any(test, feature = "test-hooks"))]
         if let Some(trace) = &mut trace {
             trace.vm_steps(query.get_status(rusqlite::StatementStatus::VmStep));
             trace.complete();
@@ -1105,15 +1069,12 @@ impl DomainStore {
     }
     /// When each Task first started running.
     pub fn task_started_times(&self) -> Result<std::collections::BTreeMap<TaskId, i64>> {
-        #[cfg(any(test, feature = "test-hooks"))]
         let mut trace = self.trace_live_read("task_started_times");
         let mut query = self.conn.prepare("SELECT h.task_id,a.at FROM (SELECT task_id,min(revision) AS revision FROM task_history WHERE state='running' GROUP BY task_id) h
             JOIN command_audit a ON a.revision=h.revision")?;
-        #[cfg(any(test, feature = "test-hooks"))]
         if let Some(trace) = &mut trace { trace.statement(); }
-        let rows = query.query_map([], |row| { #[cfg(any(test, feature = "test-hooks"))] if let Some(trace) = &mut trace { trace.row(); } Ok((TaskId(row.get(0)?), row.get(1)?)) })?;
+        let rows = query.query_map([], |row| { if let Some(trace) = &mut trace { trace.row(); } Ok((TaskId(row.get(0)?), row.get(1)?)) })?;
         let values = rows.collect::<rusqlite::Result<_>>()?;
-        #[cfg(any(test, feature = "test-hooks"))]
         if let Some(trace) = &mut trace {
             trace.vm_steps(query.get_status(rusqlite::StatementStatus::VmStep));
             trace.complete();
@@ -1121,20 +1082,16 @@ impl DomainStore {
         Ok(values)
     }
     pub fn request_times(&self) -> Result<std::collections::BTreeMap<RequestId, i64>> {
-        #[cfg(any(test, feature = "test-hooks"))]
         let mut trace = self.trace_live_read("request_times");
         let mut query = self.conn.prepare("SELECT id,created_at FROM requests")?;
-        #[cfg(any(test, feature = "test-hooks"))]
         if let Some(trace) = &mut trace { trace.statement(); }
-        let rows = query.query_map([], |row| { #[cfg(any(test, feature = "test-hooks"))] if let Some(trace) = &mut trace { trace.row(); } Ok((RequestId(row.get(0)?), row.get(1)?)) })?;
+        let rows = query.query_map([], |row| { if let Some(trace) = &mut trace { trace.row(); } Ok((RequestId(row.get(0)?), row.get(1)?)) })?;
         let values = rows.collect::<rusqlite::Result<_>>()?;
-        #[cfg(any(test, feature = "test-hooks"))]
         if let Some(trace) = &mut trace { trace.complete(); }
         Ok(values)
     }
     /// When the commits of these revisions were made.
     pub fn revision_times(&self, revisions: &[Revision]) -> Result<std::collections::BTreeMap<Revision, i64>> {
-        #[cfg(any(test, feature = "test-hooks"))]
         let mut trace = self.trace_live_read("revision_times");
         let mut times = std::collections::BTreeMap::new();
         if revisions.is_empty() {
@@ -1145,12 +1102,10 @@ impl DomainStore {
             let mut query = self.conn.prepare(&format!(
                 "SELECT revision,at FROM command_audit WHERE revision IN ({marks})"
             ))?;
-            #[cfg(any(test, feature = "test-hooks"))]
             if let Some(trace) = &mut trace { trace.statement(); }
             let rows = query.query_map(
                 rusqlite::params_from_iter(revisions.iter().map(|revision| *revision as i64)),
                 |row| {
-                    #[cfg(any(test, feature = "test-hooks"))]
                     if let Some(trace) = &mut trace { trace.row(); }
                     Ok((row.get::<_, i64>(0)? as Revision, row.get::<_, i64>(1)?))
                 },
@@ -1160,7 +1115,6 @@ impl DomainStore {
                 times.insert(revision, at);
             }
         }
-        #[cfg(any(test, feature = "test-hooks"))]
         if let Some(trace) = &mut trace { trace.complete(); }
         Ok(times)
     }
@@ -1261,7 +1215,6 @@ impl DomainStore {
         let plan: Option<String> = self.conn.query_row("SELECT plan FROM task_launch_plans WHERE task_id=?1", [&task_id.0], |row| row.get(0)).optional()?;
         plan.map(|plan| serde_json::from_str(&plan).context("stored launch plan")).transpose()
     }
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn set_launch_plan(&mut self, task_id: &TaskId, plan: &alondra_daemon_engine_model::LaunchPlan, now: i64) -> Result<()> {
         self.conn.execute(
             "INSERT INTO task_launch_plans(task_id,plan,role,at) VALUES(?1,?2,?3,?4) ON CONFLICT(task_id) DO UPDATE SET plan=excluded.plan,role=excluded.role,at=excluded.at",
@@ -1397,14 +1350,11 @@ impl DomainStore {
         Ok(())
     }
     pub fn launch_refusals(&self) -> Result<Vec<(TaskId, String, Option<String>)>> {
-        #[cfg(any(test, feature = "test-hooks"))]
         let mut trace = self.trace_live_read("launch_refusals");
         let mut query = self.conn.prepare("SELECT task_id,reason,detail FROM launch_refusals ORDER BY task_id")?;
-        #[cfg(any(test, feature = "test-hooks"))]
         if let Some(trace) = &mut trace { trace.statement(); }
-        let rows = query.query_map([], |row| { #[cfg(any(test, feature = "test-hooks"))] if let Some(trace) = &mut trace { trace.row(); } Ok((TaskId(row.get(0)?), row.get(1)?, row.get(2)?)) })?;
+        let rows = query.query_map([], |row| { if let Some(trace) = &mut trace { trace.row(); } Ok((TaskId(row.get(0)?), row.get(1)?, row.get(2)?)) })?;
         let values = rows.collect::<rusqlite::Result<_>>()?;
-        #[cfg(any(test, feature = "test-hooks"))]
         if let Some(trace) = &mut trace { trace.complete(); }
         Ok(values)
     }
@@ -1445,7 +1395,6 @@ impl DomainStore {
         Ok(())
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn forget_launch_plan(&mut self, task_id: &TaskId) -> Result<()> {
         self.conn.execute("DELETE FROM task_launch_plans WHERE task_id=?1", [&task_id.0])?;
         self.note_side_write();
@@ -1453,14 +1402,11 @@ impl DomainStore {
     }
     /// Every start Alondra tries again by itself: attempts so far and when next, by task.
     pub fn start_retries(&self) -> Result<std::collections::BTreeMap<TaskId, (u8, i64)>> {
-        #[cfg(any(test, feature = "test-hooks"))]
         let mut trace = self.trace_live_read("start_retries");
         let mut query = self.conn.prepare("SELECT task_id,attempts,retry_at FROM start_retries")?;
-        #[cfg(any(test, feature = "test-hooks"))]
         if let Some(trace) = &mut trace { trace.statement(); }
-        let rows = query.query_map([], |row| { #[cfg(any(test, feature = "test-hooks"))] if let Some(trace) = &mut trace { trace.row(); } Ok((TaskId(row.get(0)?), (row.get::<_, i64>(1)?.clamp(1, 255) as u8, row.get(2)?))) })?;
+        let rows = query.query_map([], |row| { if let Some(trace) = &mut trace { trace.row(); } Ok((TaskId(row.get(0)?), (row.get::<_, i64>(1)?.clamp(1, 255) as u8, row.get(2)?))) })?;
         let values = rows.collect::<rusqlite::Result<_>>()?;
-        #[cfg(any(test, feature = "test-hooks"))]
         if let Some(trace) = &mut trace { trace.complete(); }
         Ok(values)
     }
@@ -1488,27 +1434,21 @@ impl DomainStore {
     }
     /// Which of these tasks ever had a launch recorded, in one statement.
     pub fn launched_tasks<'a>(&self, tasks: impl IntoIterator<Item = &'a TaskId>) -> Result<std::collections::BTreeSet<TaskId>> {
-        #[cfg(any(test, feature = "test-hooks"))]
         let mut trace = self.trace_live_read("launched_tasks");
         let ids = serde_json::to_string(&tasks.into_iter().map(|task| task.0.as_str()).collect::<Vec<_>>())?;
         let mut query = self.conn.prepare("SELECT DISTINCT task_id FROM model_decisions
             WHERE task_id IN (SELECT value FROM json_each(?1)) AND kind IN('launch','relaunch')")?;
-        #[cfg(any(test, feature = "test-hooks"))]
         if let Some(trace) = &mut trace { trace.statement(); }
-        let rows = query.query_map([ids], |row| { #[cfg(any(test, feature = "test-hooks"))] if let Some(trace) = &mut trace { trace.row(); } Ok(TaskId(row.get(0)?)) })?;
+        let rows = query.query_map([ids], |row| { if let Some(trace) = &mut trace { trace.row(); } Ok(TaskId(row.get(0)?)) })?;
         let values = rows.collect::<rusqlite::Result<_>>()?;
-        #[cfg(any(test, feature = "test-hooks"))]
         if let Some(trace) = &mut trace { trace.complete(); }
         Ok(values)
     }
     /// Whether a launch of this task was ever recorded.
     pub fn task_was_launched(&self, task_id: &TaskId) -> Result<bool> {
-        #[cfg(any(test, feature = "test-hooks"))]
         let mut trace = self.trace_live_read("task_was_launched");
-        #[cfg(any(test, feature = "test-hooks"))]
         if let Some(trace) = &mut trace { trace.statement(); }
-        let value = self.conn.query_row("SELECT EXISTS(SELECT 1 FROM model_decisions WHERE task_id=?1 AND kind IN('launch','relaunch'))", [&task_id.0], |row| { #[cfg(any(test, feature = "test-hooks"))] if let Some(trace) = &mut trace { trace.row(); } row.get(0) })?;
-        #[cfg(any(test, feature = "test-hooks"))]
+        let value = self.conn.query_row("SELECT EXISTS(SELECT 1 FROM model_decisions WHERE task_id=?1 AND kind IN('launch','relaunch'))", [&task_id.0], |row| { if let Some(trace) = &mut trace { trace.row(); } row.get(0) })?;
         if let Some(trace) = &mut trace { trace.complete(); }
         Ok(value)
     }
@@ -1573,12 +1513,10 @@ impl DomainStore {
         self.note_side_write();
         Ok(())
     }
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn conn_for_test(&self) -> &Connection {
         &self.conn
     }
     /// A merge attempt a node claimed under the flow where nodes merged their own PRs.
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn claim_as_node(&mut self, authorization: &str, agent: &str) {
         self.conn.execute("UPDATE merge_authorizations SET attempt='claimed',claimed_by=?2 WHERE id=?1", params![authorization, agent]).unwrap();
     }
@@ -1588,14 +1526,11 @@ impl DomainStore {
         Ok(())
     }
     pub fn cancel_reasons(&self) -> Result<std::collections::BTreeMap<TaskId, String>> {
-        #[cfg(any(test, feature = "test-hooks"))]
         let mut trace = self.trace_live_read("cancel_reasons");
         let mut query = self.conn.prepare("SELECT task_id,reason FROM task_cancel_reason")?;
-        #[cfg(any(test, feature = "test-hooks"))]
         if let Some(trace) = &mut trace { trace.statement(); }
-        let rows = query.query_map([], |row| { #[cfg(any(test, feature = "test-hooks"))] if let Some(trace) = &mut trace { trace.row(); } Ok((TaskId(row.get(0)?), row.get(1)?)) })?;
+        let rows = query.query_map([], |row| { if let Some(trace) = &mut trace { trace.row(); } Ok((TaskId(row.get(0)?), row.get(1)?)) })?;
         let values = rows.collect::<rusqlite::Result<_>>()?;
-        #[cfg(any(test, feature = "test-hooks"))]
         if let Some(trace) = &mut trace { trace.complete(); }
         Ok(values)
     }
@@ -1702,7 +1637,6 @@ impl DomainStore {
         if changed > 0 { self.note_side_write(); }
         Ok(changed)
     }
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn set_message_created_at_for_test(&mut self, id: i64, at: i64) -> Result<()> {
         self.conn.execute(
             "UPDATE command_audit SET at=?1 WHERE revision=(SELECT revision FROM domain_messages WHERE id=?2)",
@@ -1710,7 +1644,6 @@ impl DomainStore {
         )?;
         Ok(())
     }
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn message_outbox_state_for_test(&self, id: i64) -> Result<String> {
         Ok(self.conn.query_row(
             "SELECT state FROM domain_outbox WHERE message_id=?1", [id], |row| row.get(0),
@@ -1719,14 +1652,12 @@ impl DomainStore {
     pub fn claim_message(&mut self, id: i64) -> Result<Option<DeliveryClaim>> {
         self.claim_message_inner(id, false, None)
     }
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn claim_orchestrator_message(&mut self, id: i64) -> Result<Option<DeliveryClaim>> {
         self.claim_message_inner(id, true, None)
     }
     pub fn orchestrator_delivery(&self, attempt_id: i64) -> Result<Option<String>> {
         Ok(self.conn.query_row("SELECT session_id FROM orchestrator_deliveries WHERE attempt_id=?1", [attempt_id], |r| r.get(0)).optional()?)
     }
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn claim_orchestrator_message_at_for_test(
         &mut self,
         id: i64,
@@ -1768,7 +1699,6 @@ impl DomainStore {
         epoch: alondra_domain_rules::DataEpoch,
         selection: Option<&alondra_daemon_engine_model::BatchSelection>,
     ) -> Result<(Vec<DeliveryClaim>, BatchOwner)> {
-        #[cfg(any(test, feature = "test-hooks"))]
         self.orchestrator_write_fault("claim")?;
         if let Some(selection) = selection {
             let state = self.load()?;
@@ -1808,7 +1738,6 @@ impl DomainStore {
             }
         }
         let owner = BatchOwner::issued(run, session, epoch);
-        #[cfg(any(test, feature = "test-hooks"))]
         alondra_daemon_engine_model::faults::database_write(&tx, "claim_commit")?;
         tx.commit()?;
         if changed || recorded > 0 {
@@ -1823,7 +1752,6 @@ impl DomainStore {
         state: alondra_core::delivery::State,
         reason: Option<&str>,
     ) -> Result<bool> {
-        #[cfg(any(test, feature = "test-hooks"))]
         self.orchestrator_write_fault("delivery_finish")?;
         use alondra_core::delivery::State;
         let status = match state {
@@ -1844,7 +1772,6 @@ impl DomainStore {
             "UPDATE domain_outbox SET state=?2 WHERE message_id=?1",
             params![id, status],
         )?;
-        #[cfg(any(test, feature = "test-hooks"))]
         alondra_daemon_engine_model::faults::database_write(&tx, "delivery_commit")?;
         tx.commit()?;
         self.note_side_write();
@@ -1965,13 +1892,11 @@ impl DomainStore {
     }
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
-pub mod tests;
+#[cfg(test)]
+mod tests;
 #[cfg(test)]
 mod write_cost_tests;
-#[cfg(any(test, feature = "test-hooks"))]
 pub mod retention_fixtures;
-#[cfg(any(test, feature = "test-hooks"))]
 #[path = "load_bench.rs"]
 pub mod load_bench;
 #[cfg(test)]

@@ -406,7 +406,7 @@ fn a_file_only_tests_compile_never_enters_the_catalog() {
     };
     write(
         "crates/daemon-engine/src/lib.rs",
-        "pub mod shipped;\n#[cfg(test)]\nmod helpers;\n#[cfg(any(test, feature = \"test-hooks\"))]\n#[path = \"world/fake.rs\"]\npub mod fake;\n#[cfg(test)]\nmod tests;\nfn f() { log!(\"the shipped engine started\"); }\n",
+        "pub mod shipped;\n#[cfg(test)]\nmod helpers;\n#[cfg(test)]\n#[path = \"world/fake.rs\"]\npub mod fake;\n#[cfg(test)]\nmod tests;\nfn f() { log!(\"the shipped engine started\"); }\n",
     );
     write("crates/daemon-engine/src/shipped.rs", "fn f() { log!(\"a shipped module logged\"); }\n");
     write("crates/daemon-engine/src/helpers.rs", "mod deeper;\nfn f() { log!(\"a test helper logged\"); }\n");

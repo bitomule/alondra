@@ -1,7 +1,7 @@
 //! The producer transport while a client reads views and the feed through alondrad's routes.
 use alondra_store_sqlite::AsSqlite as _;
 use alondra_engine_admission::AdmissionOf as _;
-use alondra_daemon_engine::domain_transport::tests::*;
+use alondra_daemon_engine::domain_transport::fixtures::*;
 use alondra_daemon_engine::domain_transport::*;
 use alondra_domain_rules::*;
 use serde_json::{Value, json};
@@ -136,6 +136,7 @@ fn an_answer_the_node_cannot_take_yet_waits_instead_of_being_dropped() {
 
 #[test]
 fn claudes_question_reaches_every_client_with_explanations_in_the_body() {
+    super::wired();
     use alondra_views::{Client, Item, RenderContext, Transport, build, live::LiveSnapshot, text::Lang};
     let fixture = Fixture::new();
     let domain = fixture.open();

@@ -7,6 +7,7 @@ pub mod checkpoint;
 pub mod claude_host;
 pub mod claude_peer;
 pub mod codex_peer;
+pub mod engine;
 pub mod error;
 pub mod format;
 pub mod from_report;

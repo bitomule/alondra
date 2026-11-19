@@ -71,7 +71,6 @@ impl From<ServiceApprovalError> for String {
     }
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
 #[derive(Default)]
 struct RequestCryptoWork {
     decodes: std::sync::atomic::AtomicUsize,
@@ -79,7 +78,6 @@ struct RequestCryptoWork {
     verifications: std::sync::atomic::AtomicUsize,
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
 impl RequestCryptoWork {
     fn counts(&self) -> (usize, usize, usize) {
         use std::sync::atomic::Ordering::Relaxed;
@@ -141,7 +139,6 @@ pub struct Auth {
     service_verifier: Mutex<HttpChallengeVerifier>,
     usage: crate::device_usage::DeviceUsage,
     observation: Observation,
-    #[cfg(any(test, feature = "test-hooks"))]
     request_crypto: RequestCryptoWork,
     #[cfg(test)]
     verification_hook: Mutex<Option<Arc<dyn Fn(VerificationStage) + Send + Sync>>>,
@@ -213,12 +210,10 @@ impl Auth {
     }
     pub fn observation_running(&self) -> bool { self.observation.running() }
     /// Counts actual key decoding, key preparation, and ECDSA verification attempts, in that order.
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn request_crypto_counts_for_test(&self) -> (usize, usize, usize) {
         self.request_crypto.counts()
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn verify_request_for_test(&self, headers: &HeaderMap, method: &str, path_and_query: &str,
         body: &[u8], local: bool) -> Result<Signed, &'static str> {
         self.verify(headers, method, path_and_query, body, local)
@@ -231,11 +226,9 @@ impl Auth {
     }
 
     fn prepare_request_key(&self, encoded: &str, observed: &RequestObservation) -> Result<VerifyingKey, &'static str> {
-        #[cfg(any(test, feature = "test-hooks"))]
         self.request_crypto.decodes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         observed.add(Metric::KeyDecodes);
         let raw = B64.decode(encoded).map_err(|_| "stored key is corrupt")?;
-        #[cfg(any(test, feature = "test-hooks"))]
         self.request_crypto.preparations.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         observed.add(Metric::KeyPreparations);
         VerifyingKey::from_sec1_bytes(&raw).map_err(|_| "stored key is corrupt")
@@ -262,7 +255,6 @@ impl Auth {
             service_verifier: Mutex::new(HttpChallengeVerifier::new(120_000, 4096)?),
             usage: crate::device_usage::DeviceUsage::at(home),
             observation: observation::configured(),
-            #[cfg(any(test, feature = "test-hooks"))]
             request_crypto: RequestCryptoWork::default(),
             #[cfg(test)]
             verification_hook: Mutex::default(),
@@ -432,7 +424,6 @@ impl Auth {
             let der = B64.decode(signature_b64).map_err(|_| "signature badly encoded")?;
             let signature = Signature::from_der(&der).map_err(|_| "malformed signature")?;
             let message = signed_message(method, path_and_query, timestamp, body);
-            #[cfg(any(test, feature = "test-hooks"))]
             self.request_crypto.verifications.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             observed.add(Metric::Ecdsa);
             key.verify(message.as_bytes(), &signature).map_err(|_| "wrong signature")?;

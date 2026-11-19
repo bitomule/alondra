@@ -1,8 +1,7 @@
 load("//tools/bazel:crates.bzl", "application_crate")
 load("//tools:tree.bzl", "repo_tree")
-load("//tools:rust_test.bzl", "LOW_OPT_LEVEL", "low_opt_rust_test")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
@@ -17,36 +16,15 @@ WORKSPACE_DEPS = [
     "//crates/view-model:view_model",
 ]
 
-# Compiled only under `#[cfg(test)]` or the `test-hooks` feature, though its name does not say so.
-TEST_ONLY = ["src/github_world.rs"]
-
 application_crate(
     name = "engine_github",
-    srcs = production_sources(test_only = TEST_ONLY),
+    srcs = production_sources(),
     crate_name = "alondra_engine_github",
     version = VERSION,
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-support:daemon_support",
         "//crates/engine-kernel:engine_kernel",
-    ],
-)
-
-rust_library(
-    name = "engine_github_test_hooks",
-    testonly = True,
-    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
-    crate_features = ["test-hooks"],
-    crate_name = "alondra_engine_github",
-    crate_root = "src/lib.rs",
-    edition = "2024",
-    rustc_flags = [LOW_OPT_LEVEL],
-    version = VERSION,
-    visibility = ["//crates/engine-sdk:__pkg__", "//crates/daemon-engine:__pkg__"],
-    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
-        "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
-        "//crates/daemon-support:daemon_support_test_hooks",
-        "//crates/engine-kernel:engine_kernel_test_hooks",
     ],
 )
 
@@ -61,11 +39,11 @@ low_opt_rust_test(
     env = {"HOME": "."},
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
-        "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
-        "//crates/daemon-support:daemon_support_test_hooks",
+        "//crates/daemon-engine-model:daemon_engine_model",
+        "//crates/daemon-support:daemon_support",
         "//crates/engine-doubles:engine_doubles",
-        "//crates/engine-kernel:engine_kernel_test_hooks",
-        "//crates/store-sqlite:store_sqlite_test_hooks",
+        "//crates/engine-kernel:engine_kernel",
+        "//crates/store-sqlite:store_sqlite",
         "//crates/github-gh:github_gh",
     ],
 )
@@ -76,7 +54,7 @@ rust_inputs_test(
     required_sources = ["crates/engine-github/src/lib.rs", "crates/engine-github/src/domain_github.rs"],
     source_dir = "crates/engine-github/src/",
     target_under_test = ":engine_github",
-    test_only_sources = ["crates/engine-github/src/github_world.rs", "crates/engine-github/src/domain_merges/tests.rs", "crates/test_support.rs"],
+    test_only_sources = ["crates/engine-github/src/domain_merges/tests.rs", "crates/test_support.rs"],
     test_sources = False,
 )
 
@@ -86,7 +64,7 @@ exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 # file among them; alondrad's lock policy test reads them too.
 filegroup(
     name = "report_sources",
-    srcs = production_sources(test_only = TEST_ONLY),
+    srcs = production_sources(),
     visibility = ["//crates/alondra:__pkg__", "//crates/cli-report:__pkg__", "//crates/alondrad:__pkg__", "//crates/daemon-server:__pkg__"],
 )
 

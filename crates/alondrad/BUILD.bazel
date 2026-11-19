@@ -3,7 +3,6 @@ load("//tools:tree.bzl", "repo_tree")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps", "crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
 
@@ -31,34 +30,7 @@ root_library(
         "//crates/store-sqlite:store_sqlite",
         "//crates/views:views",
     ],
-)
-
-# The daemon as a scenario assembles it: the same root over the server built against the engine's
-# test hooks (the one fake GitHub), so a conversation runs the production loops over fake edges.
-rust_library(
-    name = "alondrad_scenarios_lib",
-    crate_features = ["test-hooks"],
-    testonly = True,
-    srcs = production_sources(exclude = ["src/main.rs"]),
-    crate_name = "alondrad",
-    crate_root = "src/lib.rs",
-    edition = "2024",
-    version = VERSION,
-    visibility = ["//crates/scenarios:__pkg__"],
-    deps = all_crate_deps(normal = True) + [
-        "//crates/agent-runtime:agent_runtime",
-        "//crates/core:alondra_core",
-        "//crates/github-gh:github_gh",
-        "//crates/system:system",
-        "//crates/host:host",
-        "//crates/daemon-engine:daemon_engine_test_hooks",
-        "//crates/daemon-server:daemon_server_scenarios_lib",
-        "//crates/engine-admission:engine_admission_on_test_hooks",
-        "//crates/engine-ports:engine_ports",
-        "//crates/engine-sdk:engine_sdk_test_hooks",
-        "//crates/store-sqlite:store_sqlite",
-        "//crates/views:views",
-    ],
+    test_visibility = ["//crates/scenarios:__pkg__"],
 )
 
 root_binary(
@@ -112,12 +84,14 @@ low_opt_rust_test(
         "//crates/github-gh:github_gh",
         "//crates/system:system",
         "//crates/host:host",
-        "//crates/daemon-engine:daemon_engine_test_hooks",
-        "//crates/daemon-server:daemon_server_scenarios_lib",
-        "//crates/engine-admission:engine_admission_on_test_hooks",
+        "//crates/daemon-engine:daemon_engine",
+        "//crates/daemon-server:daemon_server",
+        "//crates/daemon-support:daemon_support",
+        "//crates/engine-doubles:engine_doubles",
+        "//crates/engine-admission:engine_admission",
         "//crates/engine-ports:engine_ports",
-        "//crates/engine-sdk:engine_sdk_test_hooks",
-        "//crates/store-sqlite:store_sqlite_test_hooks",
+        "//crates/engine-sdk:engine_sdk",
+        "//crates/store-sqlite:store_sqlite",
         "//crates/views:views",
     ],
     edition = "2024",
@@ -199,8 +173,13 @@ low_opt_rust_test(
     deps = all_crate_deps(normal = True, normal_dev = True) + [
         "//crates/core:alondra_core",
         "//crates/domain:domain",
+        "//crates/agent-runtime:agent_runtime",
+        "//crates/daemon-engine:daemon_engine",
+        "//crates/daemon-support:daemon_support",
         "//crates/domain-rules:domain_rules",
-        "//crates/engine-sdk:engine_sdk_test_hooks",
+        "//crates/engine-admission:engine_admission",
+        "//crates/engine-doubles:engine_doubles",
+        "//crates/engine-sdk:engine_sdk",
         "//crates/process-group:process_group",
         "//crates/store-sqlite:store_sqlite",
     ],

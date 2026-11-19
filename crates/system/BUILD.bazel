@@ -3,7 +3,6 @@ load("//tools:tree.bzl", "repo_tree")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
 
@@ -22,20 +21,6 @@ adapter_out_crate(
     srcs = production_sources(),
     crate_name = "alondra_system",
     version = VERSION,
-    deps = all_crate_deps(normal = True) + WORKSPACE_DEPS,
-)
-
-# The tests of the engine's crates make worktrees with its `worktree::testing` helpers.
-rust_library(
-    name = "system_test_hooks",
-    testonly = True,
-    srcs = glob(["src/**/*.rs"]),
-    crate_features = ["test-hooks"],
-    crate_name = "alondra_system",
-    crate_root = "src/lib.rs",
-    edition = "2024",
-    version = VERSION,
-    visibility = ["//crates:__subpackages__", "//tools/sandbox:__pkg__"],
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS,
 )
 

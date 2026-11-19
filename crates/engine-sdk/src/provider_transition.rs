@@ -24,10 +24,8 @@ pub(crate) struct Transitions {
     advancing:tokio::sync::Mutex<()>,
     /// A holder that panics leaves it whole, so it is recovered: one insert or remove each.
     fences:Mutex<BTreeMap<String,EndedHost>>,
-    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) crash_at:Mutex<Option<Phase>>,
 }
-#[cfg(any(test, feature = "test-hooks"))]
 impl Transitions {
     /// What a daemon that dies lets go of: the ended hosts it held as proof.
     pub(crate) fn die(&self){*self.crash_at.lock().unwrap()=None;self.fences.lock().unwrap().clear();}
@@ -403,7 +401,6 @@ pub async fn advance(domain:&Arc<DomainRuntime>,task:&TaskId)->Result<Phase,Doma
     let _advance=domain.selection_changes().advancing.lock().await;
     loop{
         let change=current(domain,task)?.ok_or_else(||failure("No selection change is pending"))?;
-        #[cfg(any(test, feature = "test-hooks"))]
         if *domain.selection_changes().crash_at.lock().unwrap()==Some(change.phase){return Err(failure("the daemon died"))}
         let plan=&change.plan;
         if plan.kind==Kind::Model && plan.target_account!=plan.source.account{return Err(failure("The account and provider of this native session cannot change; create a new node"))}

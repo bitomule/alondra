@@ -118,7 +118,6 @@ impl DomainStore {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn usage_row(&self, session: &str, model: &str) -> Option<(Option<String>, Option<i64>, [i64; 4], bool)> {
         self.conn.query_row(
             "SELECT task_id,cost_micros,input,output,cache_read,cache_write,complete FROM usage_sessions WHERE session_id=?1 AND model=?2",
@@ -127,7 +126,6 @@ impl DomainStore {
         ).optional().unwrap()
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn steps_row(&self, session: &str) -> Option<(Option<String>, StepCounts)> {
         self.conn.query_row(
             "SELECT task_id,steps,subagent_steps,looks,polls,tool_calls FROM session_steps WHERE session_id=?1",
@@ -136,7 +134,6 @@ impl DomainStore {
         ).optional().unwrap()
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn pr_lines(&self, task_id: &str) -> Option<i64> {
         self.conn.query_row("SELECT pr_lines FROM task_metrics WHERE task_id=?1", [task_id], |r| r.get(0)).unwrap()
     }

@@ -161,6 +161,10 @@ impl Drop for Scratch {
 
 #[cfg(test)]
 mod tests {
+    fn machine_doubles(ports: &alondra_engine_ports::Registry) {
+        alondra_engine_doubles::machine::wire(ports, alondra_daemon_support::watcher::claude_home);
+    }
+
     use super::*;
     use std::collections::BTreeMap;
 
@@ -208,7 +212,7 @@ mod tests {
             .unwrap();
         let lock = alondra_core::home_lock::HomeLock::recovery(&home).unwrap();
         let before = contents(&home);
-        let refused = run(&config, &alondra_store_sqlite::Sqlite, |_| {}).unwrap_err();
+        let refused = run(&config, &alondra_store_sqlite::Sqlite, machine_doubles).unwrap_err();
         drop(lock);
         assert!(
             format!("{refused:#}").contains("still holds legacy data"),
@@ -260,11 +264,11 @@ mod tests {
         });
         std::fs::write(home.join(alondra_daemon_engine::sdk_backend::FILE), backend.to_string()).unwrap();
         let before = contents(&home);
-        let admitted = run_for(&config, &user, &alondra_store_sqlite::Sqlite, |_| {}).unwrap();
+        let admitted = run_for(&config, &user, &alondra_store_sqlite::Sqlite, machine_doubles).unwrap();
         assert!(admitted.contains("SDK backend configuration") && admitted.contains("admitted"), "{admitted}");
         assert_eq!(contents(&home), before, "preflight must not write to the HOME it checks");
         std::fs::write(&artifact, b"another artifact").unwrap();
-        let refused = format!("{:#}", run_for(&config, &user, &alondra_store_sqlite::Sqlite, |_| {}).unwrap_err());
+        let refused = format!("{:#}", run_for(&config, &user, &alondra_store_sqlite::Sqlite, machine_doubles).unwrap_err());
         assert!(refused.contains("does not have the SHA256"), "{refused}");
     }
 
@@ -273,7 +277,7 @@ mod tests {
         let (home, config) = committed_domain_home("migration-markerless");
         let before = contents(&home);
         assert!(
-            run(&config, &alondra_store_sqlite::Sqlite, |_| {})
+            run(&config, &alondra_store_sqlite::Sqlite, machine_doubles)
                 .unwrap()
                 .contains("canonical domain state starts")
         );
@@ -288,7 +292,7 @@ mod tests {
         crate::domain_database_migration::prepare_test_migration(&home);
         let before = contents(&home);
         assert!(
-            run(&config, &alondra_store_sqlite::Sqlite, |_| {})
+            run(&config, &alondra_store_sqlite::Sqlite, machine_doubles)
                 .unwrap()
                 .contains("canonical domain state starts")
         );
@@ -303,7 +307,7 @@ mod tests {
         assert!(crate::domain_database_migration::migrate(&home).unwrap());
         let before = contents(&home);
         assert!(
-            run(&config, &alondra_store_sqlite::Sqlite, |_| {})
+            run(&config, &alondra_store_sqlite::Sqlite, machine_doubles)
                 .unwrap()
                 .contains("canonical domain state starts")
         );
@@ -320,7 +324,7 @@ mod tests {
             .execute("UPDATE domain_meta SET revision=revision+1", [])
             .unwrap();
         let before = contents(&home);
-        assert!(run(&config, &alondra_store_sqlite::Sqlite, |_| {}).is_err());
+        assert!(run(&config, &alondra_store_sqlite::Sqlite, machine_doubles).is_err());
         assert_eq!(contents(&home), before);
         std::fs::remove_dir_all(home).unwrap();
     }

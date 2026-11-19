@@ -616,7 +616,7 @@ mod tests {
         let scratch_directory = crate::test_support::Directory::new();
         let home = Home(scratch_directory.parent().unwrap().join(format!("alondra-conflicts-{}", crate::auth::random_hex(8))));
         std::fs::create_dir(&home.0).unwrap();
-        let domain = alondra_engine_sdk::engine_tests::open(&home.0).unwrap();
+        let domain = crate::engine_tests::open(&home.0).unwrap();
         let user = Actor::User { user_id: "user".into() };
         run(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent".into(), name: "Agent".into(), at: 0 });
         run(&domain, user.clone(), "request", Command::CreateRequest { request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
@@ -657,7 +657,7 @@ mod tests {
         let scratch_directory = crate::test_support::Directory::new();
         let home = Home(scratch_directory.parent().unwrap().join(format!("alondra-conflicts-merge-{}", crate::auth::random_hex(8))));
         std::fs::create_dir(&home.0).unwrap();
-        let domain = alondra_engine_sdk::engine_tests::open(&home.0).unwrap();
+        let domain = crate::engine_tests::open(&home.0).unwrap();
         let user = Actor::User { user_id: "user".into() };
         run(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent".into(), name: "Agent".into(), at: 0 });
         run(&domain, user.clone(), "request", Command::CreateRequest { request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
@@ -802,7 +802,7 @@ mod tests {
     fn foreground_fixture() -> (crate::test_support::Directory, std::sync::Arc<crate::client_routes::Client>, alondra_domain_rules::PullRequest) {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let domain = std::sync::Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let domain = std::sync::Arc::new(crate::engine_tests::open(&home).unwrap());
         run(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent".into(), name: "Fixture".into(), at: 0 });
         run(&domain, Actor::User { user_id: "user".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Review".into(), auto_merge: false, maintenance: false, message: false,
@@ -837,7 +837,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_presented_pr_whose_description_cites_an_image_missing_from_the_branch_is_refused_naming_it() {
-        use crate::pr_images::tests::{FakeGitHub, PNG};
+        use crate::pr_images::fake::{FakeGitHub, PNG};
         let (_home, client, pr) = foreground_fixture();
         let view = std::sync::Arc::new(super::FakePrView::default());
         let answer = |body: &str| json!({
@@ -1214,7 +1214,7 @@ mod tests {
     async fn provider_merge_state_requires_the_requested_head_and_base() {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let domain = std::sync::Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let domain = std::sync::Arc::new(crate::engine_tests::open(&home).unwrap());
         let before = domain.state().unwrap();
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         let source = std::sync::Arc::new(super::FakePrView::default());
@@ -1241,7 +1241,7 @@ mod tests {
     async fn provider_cached_clean_answer_for_another_base_is_not_authority() {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let domain = std::sync::Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let domain = std::sync::Arc::new(crate::engine_tests::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain, &home, Default::default());
         let source = std::sync::Arc::new(super::FakePrView::default());
         client.use_pr_view(source);
@@ -1256,7 +1256,7 @@ mod tests {
     fn provider_stale_conflicts_do_not_hand_back_a_new_head_or_base() {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let domain = alondra_engine_sdk::engine_tests::open(&home).unwrap();
+        let domain = crate::engine_tests::open(&home).unwrap();
         run(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent".into(), name: "Fixture".into(), at: 0 });
         run(&domain, Actor::User { user_id: "user".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Review".into(), auto_merge: false, maintenance: false, message: false,
@@ -1286,7 +1286,7 @@ mod tests {
     async fn provider_partial_details_are_visible_in_a_real_view_before_first_release() {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let domain = std::sync::Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let domain = std::sync::Arc::new(crate::engine_tests::open(&home).unwrap());
         for number in 1..=2 {
             let agent = format!("agent-{number}");
             let request = format!("request-{number}");

@@ -259,7 +259,7 @@ async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnc
     let mac = CalmMac::default();
     let seams = seams_of(&github, &pushes, &mac, launcher, backend);
     alondrad::scenario_phone::prepare(&config.home).map_err(|e| invalid(&format!("{e:#}")))?;
-    let domain = alondra_engine_sdk::engine_tests::open(&config.home).map_err(|e| invalid(&format!("{e:#}")))?;
+    let domain = crate::engine::open(&config.home).map_err(|e| invalid(&format!("{e:#}")))?;
     let daemon = assemble::start_over(&config, domain, seams).await.map_err(|e| invalid(&format!("{e:#}")))?;
     let phone = Phone::pair(&daemon, std::net::SocketAddr::new(config.listen, config.port)).map_err(|e| invalid(&e))?;
     let destination = alondrad::scenario_phone::Phone::new(phone.device(), PHONE_SECRET).map_err(|e| invalid(&format!("{e:#}")))?;
@@ -903,7 +903,7 @@ impl Context<'_> {
             None => (Launcher::new(RefusingLauncher(self.leaks.clone())), Backend::Given(None)),
         };
         let seams = seams_of(&self.github, &self.pushes, &self.mac, launcher, backend);
-        let domain = alondra_engine_sdk::engine_tests::open(&self.config.home).map_err(|e| Self::failed(index, format!("{e:#}")))?;
+        let domain = crate::engine::open(&self.config.home).map_err(|e| Self::failed(index, format!("{e:#}")))?;
         let daemon = assemble::start_over(&self.config, domain, seams).await.map_err(|e| Self::failed(index, format!("{e:#}")))?;
         self.daemon = Some(daemon);
         self.pass(Duration::from_secs(1), index).await

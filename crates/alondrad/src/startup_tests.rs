@@ -7,7 +7,7 @@ use tokio::sync::oneshot;
 async fn workers_receive_the_configured_admission_gate() {
     let home = crate::test_support::Directory::new();
     std::fs::create_dir_all(&home).unwrap();
-    let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+    let domain = Arc::new(crate::engine::open(&home).unwrap());
     domain.admission().tune(admission::Tuning { spacing: 0, limit: Some(admission::Limit::Fixed(1)) });
     let mut config = Config::defaults();
     config.home = home.to_path_buf();
@@ -20,7 +20,7 @@ async fn workers_receive_the_configured_admission_gate() {
 async fn the_listener_is_supervised_while_release_maintenance_waits_for_the_writer() {
     let home = crate::test_support::Directory::new();
     std::fs::create_dir_all(&home).unwrap();
-    let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+    let domain = Arc::new(crate::engine::open(&home).unwrap());
     let state = domain_bootstrap::DomainDaemon::over_shared(&home, domain.clone()).unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut server = std::pin::pin!(axum::serve(listener,
@@ -63,7 +63,7 @@ async fn the_port_answers_while_hosts_are_still_being_taken_over() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let home = crate::test_support::Directory::new();
     std::fs::create_dir_all(&home).unwrap();
-    let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+    let domain = Arc::new(crate::engine::open(&home).unwrap());
     let state = domain_bootstrap::DomainDaemon::over_shared(&home, domain.clone()).unwrap();
     let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let mut config = Config::defaults();
@@ -101,11 +101,11 @@ async fn the_port_answers_while_hosts_are_still_being_taken_over() {
 fn the_daemon_implements_every_port() {
     let home = crate::test_support::Directory::new();
     std::fs::create_dir_all(&home).unwrap();
-    drop(alondra_engine_sdk::wiring::open(&home, &alondra_store_sqlite::Sqlite).unwrap());
+    drop(crate::engine::open(&home).unwrap());
     alondra_daemon_engine::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
     let runtime = domain_runtime::DomainRuntime::open_unwired_at(&home, &alondra_engine_ports::journal::active_path(&home)).unwrap();
+    crate::wire(runtime.ports());
     let daemon = domain_bootstrap::DomainDaemon::over(&home, runtime).unwrap();
-    crate::wire(daemon.domain().ports());
     assert_eq!(daemon.domain().ports().missing(), Vec::<&str>::new(), "a port nothing implements");
 }
 

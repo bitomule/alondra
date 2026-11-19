@@ -48,7 +48,7 @@ impl Fixture {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir(&home).unwrap();
         if let Some(accounts)=accounts { std::fs::write(alondra_core::options::path_in(&home),accounts.to_toml()).unwrap(); }
-        drop(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        drop(crate::engine_tests::open(&home).unwrap());
         let auth = Auth::open(&home).unwrap();
         let key = SigningKey::from_slice(&[31u8; 32]).unwrap();
         let device = auth.pair(&auth.new_pairing_code(), "terminal", &STANDARD.encode(key.verifying_key().to_sec1_bytes())).unwrap();
@@ -308,7 +308,7 @@ async fn times_are_the_commits_own_and_survive_a_restart() {
     assert_eq!(history.len(), 3, "one step per state the task entered, closing while its node is closed: {history:?}");
     assert_eq!(history.last().map(|step| step.at), cancelled["tasks"]["task-1"]["state_since"].as_i64());
 
-    let reopened = alondra_engine_sdk::engine_tests::open(&fixture.home).unwrap();
+    let reopened = crate::engine_tests::open(&fixture.home).unwrap();
     assert_eq!(reopened.store.lock().unwrap().task_state_times().unwrap(), fixture.domain.store.lock().unwrap().task_state_times().unwrap(), "times are in the database");
     assert_eq!(reopened.store.lock().unwrap().request_times().unwrap().len(), 3);
 }
@@ -466,7 +466,7 @@ async fn closing_an_interactive_session_only_closes_it() {
 #[tokio::test(flavor = "multi_thread")]
 async fn closing_a_node_that_runs_through_the_sdk_is_refused_because_it_ends_with_its_task() {
     let fixture = Fixture::start().await;
-    let sdk = crate::sdk_owner::tests::SdkLaunches::enable(&fixture.domain, &fixture.home);
+    let sdk = crate::sdk_owner::fixtures::SdkLaunches::enable(&fixture.domain, &fixture.home);
     let worktree = fixture.home.join("worktree");
     std::fs::create_dir(&worktree).unwrap();
     fixture.user("request-sdk", Command::CreateRequest { request_id: "request-sdk".into(), body: "Write the release notes".into(), auto_merge: false, maintenance: false, message: false });
@@ -773,7 +773,7 @@ async fn a_new_request_reaches_the_orchestrators_next_batch() {
 
     let root = crate::test_support::Directory::new();
     std::fs::create_dir(&root).unwrap();
-    let orchestrator = crate::domain_orchestrator::testing::Fixture::over(root, fixture.domain.clone(), fixture.home.to_path_buf(), alondra_engine_sdk::sdk_owner::tests::HostRoot::new());
+    let orchestrator = crate::domain_orchestrator::testing::Fixture::over(root, fixture.domain.clone(), fixture.home.to_path_buf(), alondra_engine_sdk::sdk_owner::fixtures::HostRoot::new());
     orchestrator.tick().await;
     let prompt = orchestrator.prompts().pop().expect("the batch reached Claude");
     assert!(prompt.contains("The user created Request request-1") && prompt.contains("(no task of its own): Make the editor readable"), "{prompt}");
@@ -1291,7 +1291,7 @@ fn runtime_progress_slow_issue_refreshes_leave_the_view_read_lane_free() {
     let directory = crate::test_support::Directory::new();
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::write(alondra_core::options::path_in(&directory), "[issues]\nowners = [\"fixture\"]\n").unwrap();
-    let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&directory).unwrap());
+    let domain = Arc::new(crate::engine_tests::open(&directory).unwrap());
     let client = Client::open(domain, &directory, Default::default());
     let (entered, started) = tokio::sync::oneshot::channel();
     let release = Arc::new(tokio::sync::Semaphore::new(0));
@@ -1323,7 +1323,7 @@ fn issue_picker_refresh_notifies_feeds_without_rebuilding_warm_shared_views() {
     let directory = crate::test_support::Directory::new();
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::write(alondra_core::options::path_in(&directory), "[issues]\nowners = [\"fixture\"]\n").unwrap();
-    let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&directory).unwrap());
+    let domain = Arc::new(crate::engine_tests::open(&directory).unwrap());
     let observation = Observation::armed();
     observation.start();
     let client = Client::open_observed(domain.clone(), &directory, Default::default(), observation.clone());

@@ -400,7 +400,7 @@ mod tests {
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir_all(&home).unwrap();
-        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         rusqlite::Connection::open(home.join("domain.db"))
             .unwrap()
             .execute_batch("DROP TABLE domain_outbox")
@@ -482,7 +482,7 @@ mod tests {
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir_all(&home).unwrap();
-        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         let client = crate::client_routes::Client::open(
             domain.clone(),
             &home,
@@ -636,7 +636,7 @@ mod tests {
                 .unwrap()
         );
         drop(domain);
-        let reopened = alondra_engine_sdk::engine_tests::open(&home).unwrap();
+        let reopened = crate::engine_tests::open(&home).unwrap();
         let recovered = reopened
             .store
             .lock()
@@ -672,7 +672,7 @@ mod tests {
             crate::auth::random_hex(16)
         ));
         std::fs::create_dir_all(&home).unwrap();
-        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         apply_command(
             &domain,
@@ -1093,7 +1093,7 @@ mod tests {
         let scratch_directory = crate::test_support::Directory::new();
         let home = scratch_directory.parent().unwrap().join(format!("alondra-orchestrator-answer-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
-        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         let orchestrator = Actor::Orchestrator { generation: 0 };
         apply_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
@@ -1146,7 +1146,7 @@ mod tests {
         let scratch_directory = crate::test_support::Directory::new();
         let home = scratch_directory.parent().unwrap().join(format!("alondra-{name}-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
-        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         apply_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into(), at: 0 });
         apply_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
@@ -1225,7 +1225,7 @@ mod tests {
         let scratch_directory = crate::test_support::Directory::new();
         let home = scratch_directory.parent().unwrap().join(format!("alondra-withdrawn-push-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
-        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         let agent = Actor::Agent { agent_id: "agent-a".into() };
         apply_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into(), at: 0 });
@@ -1262,7 +1262,7 @@ mod tests {
         let scratch_directory = crate::test_support::Directory::new();
         let home = scratch_directory.parent().unwrap().join(format!("alondra-repeated-push-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
-        let open = || Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let open = || Arc::new(crate::engine_tests::open(&home).unwrap());
         let domain = open();
         apply_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into(), at: 0 });
         apply_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {

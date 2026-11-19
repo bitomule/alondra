@@ -18,7 +18,7 @@ use alondra_store::{
 };
 use alondra_engine_ports::journal::owner::ObservationRefusal;
 use crate::domain_runtime::DomainRuntime;
-use alondra_store_sqlite::tests::{Fixture, seeded};
+use alondra_store_sqlite::testing::{Fixture, seeded};
 use alondra_agent_application::{Normalization, ObservationMetadata};
 use alondra_foundation::{ContinuationId, ExecutionStamp, InputId, TurnId, WorkId};
 use alondra_store::InputPayload;
@@ -28,7 +28,7 @@ use std::path::PathBuf;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::os::unix::fs::OpenOptionsExt;
 use std::sync::mpsc;
-use alondra_daemon_engine::wiring::owner_tests::*;
+use crate::engine_tests::owner_fixtures::*;
 
 #[test]
 fn card_raw_observation_journal_and_checkpoint_commit_together_and_publish_before_acknowledging() {
@@ -191,7 +191,7 @@ fn a_crash_before_publication_acknowledges_nothing_and_the_replay_acknowledges_o
     assert_eq!(card(&observer, "owner-card"), Some((None, false)), "the transaction itself committed");
     drop(runtime);
 
-    let restarted = crate::engine_tests::open_at(&fixture.0, &fixture.path()).unwrap();
+    let restarted = crate::engine_fixtures::open_at(&fixture.0, &fixture.path()).unwrap();
     let published = Arc::clone(restarted.read().state());
     assert!(published.interactions.contains_key(&InteractionId::from("owner-card")));
     let (acceptance, outcomes) = restarted.own(scope_of(&published), work).unwrap();

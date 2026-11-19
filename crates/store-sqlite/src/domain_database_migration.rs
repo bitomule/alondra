@@ -165,7 +165,6 @@ impl SourceFence {
     }
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
 pub fn prepare_test_migration(home: &Path) {
     let result = migrate_locked(home, |phase| {
         if phase == Checkpoint::Prepared {

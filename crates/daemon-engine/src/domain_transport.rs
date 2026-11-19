@@ -7,7 +7,6 @@
 //! session's own activity proves: its assigned Task has started.
 use crate::gate::GateOf as _;
 use crate::live::LiveOf as _;
-#[cfg(any(test, feature = "test-hooks"))]
 use crate::allow_always::AllowAlwaysWait as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
@@ -810,11 +809,12 @@ pub fn render(state: &DomainState, message: &OutboxMessage) -> String {
     }
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
-pub mod tests {
+/// The transport as tests here and in the crates above drive it.
+pub mod fixtures {
     use super::*;
     use alondra_domain_rules::*;
     use std::collections::BTreeMap;
+
 
     pub struct Fixture(pub crate::test_support::Directory);
     impl Fixture {
@@ -869,13 +869,159 @@ pub mod tests {
         ] });
     }
 
-    fn command(domain: &Arc<DomainRuntime>, actor: Actor, id: &str, command: Command) {
+    pub fn command(domain: &Arc<DomainRuntime>, actor: Actor, id: &str, command: Command) {
         let state = domain.state().unwrap();
         domain.execute(&actor, &CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
             command_id: id.into(), expected_revision: state.revision, command,
         }, None, || Ok(())).unwrap();
     }
+
+    pub fn free_text_question(domain: &Arc<DomainRuntime>, id: &str, actor: Actor, scope: Scope, recipient: Recipient, body: &str) {
+        command(domain, actor, &format!("ask-{id}"), Command::AskQuestion {
+            attachments: vec![], interaction_id: id.into(), scope, recipient,
+            body: body.into(), blocking: false, options: vec![], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Provide, "Answer the question"),
+        });
+    }
+
+    pub fn free_text_answer(domain: &Arc<DomainRuntime>, actor: Actor, id: &str, text: &str) {
+        command(domain, actor, &format!("answer-{id}"), Command::AnswerQuestion {
+            attachments: vec![], interaction_id: id.into(), option_id: String::new(),
+            inputs: BTreeMap::from([("text".into(), InputValue::Text(text.into()))]),
+        });
+    }
+
+    pub fn outbox_message(domain: &Arc<DomainRuntime>, id: &str, recipient_kind: &str) -> OutboxMessage {
+        domain.store.lock_or_recover("a test's fixture").pending_messages().unwrap().into_iter()
+            .find(|message| message.interaction_id.as_deref() == Some(id) && message.recipient_kind == recipient_kind)
+            .unwrap()
+    }
+
+    pub fn node_with_task(domain: &Arc<DomainRuntime>) {
+        domain.live().mods.loaded_in("agent-a");
+        command(domain, Actor::System, "register", Command::RegisterAgent {
+            agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
+        });
+        command(domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
+            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
+        });
+        command(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
+            task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
+            agent_id: Some("agent-a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
+            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+        });
+    }
+
+    pub fn agent_actor() -> Actor {
+        Actor::Agent { agent_id: "agent-a".into() }
+    }
+
+    pub fn user_actor() -> Actor {
+        Actor::User { user_id: "u".into() }
+    }
+
+    pub fn task_scope() -> Scope {
+        Scope::Task { task_id: "task".into() }
+    }
+
+    pub fn option(id: &str) -> QuestionOption {
+        QuestionOption { id: id.into(), label: id.into(), description: None }
+    }
+
+
+    pub struct Silent;
+    impl crate::usage_pause::Alerts for Silent {
+        async fn tell(&self, _: impl Fn(bool) -> String + Send + Sync, _: bool) {}
+    }
+
+    pub async fn hook(domain: &Arc<DomainRuntime>, payload: Value, ack: Option<u8>) -> (Value, Result<()>) {
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let body = serde_json::to_vec(&json!({"launched": true, "payload": payload})).unwrap();
+        client.write_u32(body.len() as u32).await.unwrap();
+        client.write_all(&body).await.unwrap();
+        let mut bytes = vec![];
+        let (result, _) = tokio::join!(handle(server, domain), async {
+            client.read_to_end(&mut bytes).await.unwrap();
+            if let Some(ack) = ack {
+                let _ = client.write_u8(ack).await;
+            }
+            drop(client);
+        });
+        assert_eq!(u16::from_be_bytes([bytes[0], bytes[1]]), 200);
+        (serde_json::from_slice(&bytes[2..]).unwrap(), result)
+    }
+
+    pub async fn send_hook(client: &mut UnixStream, payload: Value) {
+        let body = serde_json::to_vec(&json!({"launched": true, "payload": payload})).unwrap();
+        client.write_u32(body.len() as u32).await.unwrap();
+        client.write_all(&body).await.unwrap();
+    }
+
+    pub fn working_agent(domain: &Arc<DomainRuntime>, agent: &str) {
+        working_agent_without_mod(domain, agent);
+        domain.live().mods.loaded_in(agent);
+    }
+
+    pub fn working_agent_without_mod(domain: &Arc<DomainRuntime>, agent: &str) {
+        let user = || Actor::User { user_id: "u".into() };
+        command(domain, Actor::System, &format!("register-{agent}"), Command::RegisterAgent { agent_id: agent.into(), name: agent.into(), at: 0 });
+        command(domain, user(), &format!("request-{agent}"),
+            Command::CreateRequest { request_id: format!("request-{agent}").into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
+        command(domain, Actor::Orchestrator { generation: 0 }, &format!("task-{agent}"), Command::CreateTask { plan_items: None, continues: None,
+            task_id: format!("task-{agent}").into(), request_id: format!("request-{agent}").into(),
+            title: "Task".into(), agent_id: Some(agent.into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
+            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
+        });
+    }
+
+    pub fn single_question(agent: &str) -> Value {
+        let mut card = ask(agent);
+        card["input"]["questions"].as_array_mut().unwrap().truncate(1);
+        card
+    }
+
+    pub fn ask(agent: &str) -> Value {
+        json!({"session_id": agent, "id": "toolu-ask", "kind": "question",
+            "input": {"questions": [
+                {"header":"Database", "question": "Which database?", "options": [{"label": "Postgres", "description": "Shared server"}, {"label": "SQLite"}]},
+                {"question": "Also migrate the old rows?"}]}})
+    }
+
+    pub async fn reply(client: &mut UnixStream) -> Value {
+        let mut bytes = vec![];
+        client.read_to_end(&mut bytes).await.unwrap();
+        let _ = client.write_u8(6).await;
+        assert_eq!(u16::from_be_bytes([bytes[0], bytes[1]]), 200);
+        serde_json::from_slice(&bytes[2..]).unwrap()
+    }
+
+    pub fn answer(domain: &Arc<DomainRuntime>, id: &InteractionId, option: &str, note: Option<&str>) {
+        answer_with(domain, id, option, note.map(|note| BTreeMap::from([(Hold::NOTE.to_owned(), InputValue::Text(note.into()))])).unwrap_or_default());
+    }
+
+    pub fn answer_with(domain: &Arc<DomainRuntime>, id: &InteractionId, option: &str, inputs: BTreeMap<String, InputValue>) {
+        command(domain, Actor::User { user_id: "u".into() }, &format!("answer-{id}"), Command::AnswerQuestion {
+            attachments: vec![], interaction_id: id.clone(), option_id: option.into(), inputs,
+        });
+    }
+
+    pub fn three_questions(agent: &str) -> Value {
+        json!({"session_id": agent, "id": "toolu-three", "kind": "question",
+            "input": {"questions": [
+                {"question": "How do the devices reach the Mac?", "header": "Network", "options": [
+                    {"label": "LAN and Tailscale (Recommended)", "description": "Works at home and away"},
+                    {"label": "LAN only", "description": "Only at home"}]},
+                {"question": "Which port should it listen on?", "options": [{"label": "7777"}, {"label": "8080 (Recommended)"}]},
+                {"question": "Keep the old pairings?", "options": [{"label": "Keep them"}, {"label": "Pair again"}]}]}})
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alondra_domain_rules::*;
+    use std::collections::BTreeMap;
+    use super::fixtures::*;
 
     /// An Agent with a Task, a question and the User's answer queued for it.
     fn answered_question(domain: &Arc<DomainRuntime>, agent: &str) {
@@ -1029,26 +1175,6 @@ pub mod tests {
         assert_eq!(render(&state, &message), "Answer to your card question (Answer the question): New API. Keep the old response format");
     }
 
-    pub fn free_text_question(domain: &Arc<DomainRuntime>, id: &str, actor: Actor, scope: Scope, recipient: Recipient, body: &str) {
-        command(domain, actor, &format!("ask-{id}"), Command::AskQuestion {
-            attachments: vec![], interaction_id: id.into(), scope, recipient,
-            body: body.into(), blocking: false, options: vec![], card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Provide, "Answer the question"),
-        });
-    }
-
-    pub fn free_text_answer(domain: &Arc<DomainRuntime>, actor: Actor, id: &str, text: &str) {
-        command(domain, actor, &format!("answer-{id}"), Command::AnswerQuestion {
-            attachments: vec![], interaction_id: id.into(), option_id: String::new(),
-            inputs: BTreeMap::from([("text".into(), InputValue::Text(text.into()))]),
-        });
-    }
-
-    pub fn outbox_message(domain: &Arc<DomainRuntime>, id: &str, recipient_kind: &str) -> OutboxMessage {
-        domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
-            .find(|message| message.interaction_id.as_deref() == Some(id) && message.recipient_kind == recipient_kind)
-            .unwrap()
-    }
-
     /// Request 9a5996ed (5 Oct): every answer reached the node inside Claude Code's plugin notice,
     /// about 180 characters around a «Hecho.».
     #[test]
@@ -1092,33 +1218,6 @@ pub mod tests {
     fn rendered_for(domain: &Arc<DomainRuntime>, id: &str, recipient_kind: &str) -> String {
         let state = domain.state().unwrap();
         render(&state, &outbox_message(domain, id, recipient_kind))
-    }
-
-    pub fn node_with_task(domain: &Arc<DomainRuntime>) {
-        domain.live().mods.loaded_in("agent-a");
-        command(domain, Actor::System, "register", Command::RegisterAgent {
-            agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
-        });
-        command(domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
-            request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,
-        });
-        command(domain, Actor::Orchestrator { generation: 0 }, "task", Command::CreateTask { plan_items: None, continues: None,
-            task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
-            agent_id: Some("agent-a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
-        });
-    }
-
-    pub fn agent_actor() -> Actor {
-        Actor::Agent { agent_id: "agent-a".into() }
-    }
-
-    pub fn user_actor() -> Actor {
-        Actor::User { user_id: "u".into() }
-    }
-
-    pub fn task_scope() -> Scope {
-        Scope::Task { task_id: "task".into() }
     }
 
     #[test]
@@ -1188,10 +1287,6 @@ pub mod tests {
     }
 
     const NOT_THE_USERS: &str = "\nThis is the orchestrator's answer, not a decision of the user: never present it as theirs.";
-
-    fn option(id: &str) -> QuestionOption {
-        QuestionOption { id: id.into(), label: id.into(), description: None }
-    }
 
     fn pick(domain: &Arc<DomainRuntime>, actor: Actor, id: &str, option: &str) {
         command(domain, actor, &format!("answer-{id}"), Command::AnswerQuestion {
@@ -1331,35 +1426,6 @@ pub mod tests {
         });
         assert_eq!(recorded.load(std::sync::atomic::Ordering::Relaxed), 2);
         assert_eq!(guarded.load(std::sync::atomic::Ordering::Relaxed), 1);
-    }
-
-
-    pub struct Silent;
-    impl crate::usage_pause::Alerts for Silent {
-        async fn tell(&self, _: impl Fn(bool) -> String + Send + Sync, _: bool) {}
-    }
-
-    pub async fn hook(domain: &Arc<DomainRuntime>, payload: Value, ack: Option<u8>) -> (Value, Result<()>) {
-        let (mut client, server) = UnixStream::pair().unwrap();
-        let body = serde_json::to_vec(&json!({"launched": true, "payload": payload})).unwrap();
-        client.write_u32(body.len() as u32).await.unwrap();
-        client.write_all(&body).await.unwrap();
-        let mut bytes = vec![];
-        let (result, _) = tokio::join!(handle(server, domain), async {
-            client.read_to_end(&mut bytes).await.unwrap();
-            if let Some(ack) = ack {
-                let _ = client.write_u8(ack).await;
-            }
-            drop(client);
-        });
-        assert_eq!(u16::from_be_bytes([bytes[0], bytes[1]]), 200);
-        (serde_json::from_slice(&bytes[2..]).unwrap(), result)
-    }
-
-    pub async fn send_hook(client: &mut UnixStream, payload: Value) {
-        let body = serde_json::to_vec(&json!({"launched": true, "payload": payload})).unwrap();
-        client.write_u32(body.len() as u32).await.unwrap();
-        client.write_all(&body).await.unwrap();
     }
 
     /// 13 October: 1,863 replies went to hooks Claude Code had already killed at their five
@@ -1935,36 +2001,6 @@ pub mod tests {
         assert!(domain.live().mods.session("session-a").unwrap().connection_lost());
     }
 
-    pub fn working_agent(domain: &Arc<DomainRuntime>, agent: &str) {
-        working_agent_without_mod(domain, agent);
-        domain.live().mods.loaded_in(agent);
-    }
-
-    fn working_agent_without_mod(domain: &Arc<DomainRuntime>, agent: &str) {
-        let user = || Actor::User { user_id: "u".into() };
-        command(domain, Actor::System, &format!("register-{agent}"), Command::RegisterAgent { agent_id: agent.into(), name: agent.into(), at: 0 });
-        command(domain, user(), &format!("request-{agent}"),
-            Command::CreateRequest { request_id: format!("request-{agent}").into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false });
-        command(domain, Actor::Orchestrator { generation: 0 }, &format!("task-{agent}"), Command::CreateTask { plan_items: None, continues: None,
-            task_id: format!("task-{agent}").into(), request_id: format!("request-{agent}").into(),
-            title: "Task".into(), agent_id: Some(agent.into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
-        });
-    }
-
-    pub fn single_question(agent: &str) -> Value {
-        let mut card = ask(agent);
-        card["input"]["questions"].as_array_mut().unwrap().truncate(1);
-        card
-    }
-
-    fn ask(agent: &str) -> Value {
-        json!({"session_id": agent, "id": "toolu-ask", "kind": "question",
-            "input": {"questions": [
-                {"header":"Database", "question": "Which database?", "options": [{"label": "Postgres", "description": "Shared server"}, {"label": "SQLite"}]},
-                {"question": "Also migrate the old rows?"}]}})
-    }
-
     fn permission(agent: &str) -> Value {
         json!({"session_id": agent, "id": "toolu-bash", "kind": "permission", "tool": "Bash",
             "input": {"command": "rm -rf build", "description": "Clean the build"}})
@@ -1995,24 +2031,6 @@ pub mod tests {
         let body = serde_json::to_vec(frame).unwrap();
         client.write_u32(body.len() as u32).await.unwrap();
         client.write_all(&body).await.unwrap();
-    }
-
-    pub async fn reply(client: &mut UnixStream) -> Value {
-        let mut bytes = vec![];
-        client.read_to_end(&mut bytes).await.unwrap();
-        let _ = client.write_u8(6).await;
-        assert_eq!(u16::from_be_bytes([bytes[0], bytes[1]]), 200);
-        serde_json::from_slice(&bytes[2..]).unwrap()
-    }
-
-    fn answer(domain: &Arc<DomainRuntime>, id: &InteractionId, option: &str, note: Option<&str>) {
-        answer_with(domain, id, option, note.map(|note| BTreeMap::from([(Hold::NOTE.to_owned(), InputValue::Text(note.into()))])).unwrap_or_default());
-    }
-
-    fn answer_with(domain: &Arc<DomainRuntime>, id: &InteractionId, option: &str, inputs: BTreeMap<String, InputValue>) {
-        command(domain, Actor::User { user_id: "u".into() }, &format!("answer-{id}"), Command::AnswerQuestion {
-            attachments: vec![], interaction_id: id.clone(), option_id: option.into(), inputs,
-        });
     }
 
     /// A frame as Claude Code's hook or the node mod's helper sends it, answered by the user from a card while it waits.
@@ -2389,16 +2407,6 @@ pub mod tests {
             assert_eq!(state.interactions[&id].card.recommended.as_deref(), Some("o1"));
             assert!(agent_outbox(&domain, "agent-a").is_empty());
         }
-    }
-
-    pub fn three_questions(agent: &str) -> Value {
-        json!({"session_id": agent, "id": "toolu-three", "kind": "question",
-            "input": {"questions": [
-                {"question": "How do the devices reach the Mac?", "header": "Network", "options": [
-                    {"label": "LAN and Tailscale (Recommended)", "description": "Works at home and away"},
-                    {"label": "LAN only", "description": "Only at home"}]},
-                {"question": "Which port should it listen on?", "options": [{"label": "7777"}, {"label": "8080 (Recommended)"}]},
-                {"question": "Keep the old pairings?", "options": [{"label": "Keep them"}, {"label": "Pair again"}]}]}})
     }
 
     const GROUP: [&str; 3] = ["hold-question-toolu-three-q1", "hold-question-toolu-three-q2", "hold-question-toolu-three-q3"];

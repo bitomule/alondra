@@ -231,6 +231,8 @@ fn signed_links(html: &str) -> BTreeMap<String, String> {
     links
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
+#[path = "pr_images_fake.rs"]
+pub mod fake;
+#[cfg(test)]
 #[path = "pr_images_tests.rs"]
-pub mod tests;
+mod tests;

@@ -5,7 +5,8 @@ use crate::sdk_owner::SdkOwners as _;
 use crate::live::LiveOf as _;
 use crate::idle_compaction::ContextsOf as _;
 use alondra_engine_admission::AdmissionOf as _;
-use super::codex_tests::{claude_ready, configured, git, launch, request_move, resumed_threads, transcript, until_moved};
+use super::codex_tests::{claude_ready, git, request_move, resumed_threads, until_moved};
+use crate::sdk_owner::fixtures::codex::{configured, launch, transcript};
 use super::*;
 use crate::idle_release::{Rests, Timing, pass};
 

@@ -392,7 +392,7 @@ pub async fn run(domain: Arc<DomainRuntime>, observer: Arc<impl PrObserver>, pol
     }
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
+#[cfg(test)]
 /// GitHub from memory: the facts of each PR, the closes it took, the ones it was asked for, and
 /// the error it refuses closes with, if any. A close it takes leaves the PR closed.
 pub struct FakeObserver(
@@ -401,7 +401,7 @@ pub struct FakeObserver(
     pub std::sync::Mutex<Option<String>>,
     pub std::sync::atomic::AtomicUsize,
 );
-#[cfg(any(test, feature = "test-hooks"))]
+#[cfg(test)]
 impl FakeObserver {
     pub fn new() -> Self {
         Self(Default::default(), Default::default(), Default::default(), Default::default())
@@ -410,7 +410,7 @@ impl FakeObserver {
         self.0.lock().unwrap().insert(number, facts);
     }
 }
-#[cfg(any(test, feature = "test-hooks"))]
+#[cfg(test)]
 impl PrObserver for FakeObserver {
     fn observe<'a>(&'a self, _: &'a str, _: &'a str, number: u64) -> Observed<'a> {
         let facts = self.0.lock().unwrap().get(&number).cloned()
@@ -430,7 +430,7 @@ impl PrObserver for FakeObserver {
     }
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
+#[cfg(test)]
 pub mod tests {
     #[cfg(test)]
     use alondra_store_sqlite::AsSqlite as _;

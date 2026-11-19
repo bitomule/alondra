@@ -91,7 +91,6 @@ pub(super) fn load(home: &Path, state: &DomainState) -> Result<Authority> {
 /// Written before any new token is exposed and after every revocation, so a
 /// restart can neither resurrect a revoked bearer nor forget a live one.
 pub(super) fn persist(home: &Path, authority: &Authority) -> Result<()> {
-    #[cfg(any(test, feature = "test-hooks"))]
     alondra_daemon_engine_model::faults::write(home, "capability")?;
     let registry = Registry {
         format: 1,
@@ -108,17 +107,13 @@ pub(super) fn persist(home: &Path, authority: &Authority) -> Result<()> {
         Err(error) => return Err(error).with_context(|| format!("clearing {}", next.display())),
     }
     let written = (|| {
-        #[cfg(any(test, feature = "test-hooks"))]
         alondra_daemon_engine_model::faults::write(home, "capability_create")?;
         let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600)
             .custom_flags(libc::O_NOFOLLOW).open(&next)?;
-        #[cfg(any(test, feature = "test-hooks"))]
         alondra_daemon_engine_model::faults::write(home, "capability_write")?;
         file.write_all(&serde_json::to_vec(&registry)?)?;
-        #[cfg(any(test, feature = "test-hooks"))]
         alondra_daemon_engine_model::faults::write(home, "capability_sync")?;
         file.sync_all()?;
-        #[cfg(any(test, feature = "test-hooks"))]
         alondra_daemon_engine_model::faults::write(home, "capability_rename")?;
         std::fs::rename(&next, home.join(FILE))
     })();
@@ -126,7 +121,6 @@ pub(super) fn persist(home: &Path, authority: &Authority) -> Result<()> {
         let _ = std::fs::remove_file(&next);
     }
     written.with_context(|| format!("writing {}", home.join(FILE).display()))?;
-    #[cfg(any(test, feature = "test-hooks"))]
     alondra_daemon_engine_model::faults::write(home, "capability_directory_sync")?;
     File::open(home)?.sync_all()?;
     Ok(())

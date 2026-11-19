@@ -22,15 +22,15 @@ impl Base<'_> {
         match self {
             Self::Stored(cached) => state_in(cached, conn),
             Self::Draft(state, version) => {
-                #[cfg(any(test, feature = "test-hooks"))]
-                assert_draft_is_what_a_reload_reads(state, conn)?;
+                if alondra_foundation::under_test() {
+                    assert_draft_is_what_a_reload_reads(state, conn)?;
+                }
                 Ok((Arc::clone(state), true, *version))
             }
         }
     }
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
 fn assert_draft_is_what_a_reload_reads(draft: &DomainState, conn: &Connection) -> Result<()> {
     let mut reloaded = repository::load(conn)?;
     reloaded.mcp = draft.mcp.clone();

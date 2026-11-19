@@ -11,7 +11,6 @@ thread_local! {
     static WRITES: Cell<u64> = const { Cell::new(0) };
     static SCANS: Cell<u64> = const { Cell::new(0) };
 }
-#[cfg(any(test, feature = "test-hooks"))]
 /// Writing statements and full-table scans issued on this thread so far. Tests
 /// pin a command's cost with these instead of the wall clock.
 pub fn statement_counts() -> (u64, u64) {
@@ -134,7 +133,6 @@ fn schedule_row(schedule: &Schedule) -> Result<Map<String, Value>> {
 /// Save schedule definitions before their runs so the run FK and claim-revision
 /// guard see the current definition. Callers own the transaction containing any
 /// Request/Task rows linked by a newly sent run.
-#[cfg(any(test, feature = "test-hooks"))]
 pub(super) fn save_schedule_state(c: &Connection, schedule: &ScheduleState) -> Result<()> {
     schedule.validate()?;
     for definition in schedule.schedules.values() {

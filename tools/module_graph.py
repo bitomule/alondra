@@ -7,8 +7,9 @@ crates. Reads sources only; nothing is built.
     python3 tools/module_graph.py --production crates/daemon-engine/src
 
 `--production` counts only what the library compiles outside its tests: the files `lib.rs` reaches
-through its `mod` declarations, without comments or the items only tests or the `test-hooks` feature
-compile. That is the graph a crate
+through its `mod` declarations, without comments, the items only tests compile, or the fixtures a crate
+compiles for the tests of the crates above it (modules named `fixtures`, `testing`, `fake` or
+`*_fixtures`), which no production module reaches. That is the graph a crate
 split has to cut."""
 import collections
 import os
@@ -16,9 +17,11 @@ import re
 import sys
 from pathlib import Path
 
-TEST_ONLY = re.compile(r'#\[cfg\((?:test|any\(test,\s*feature\s*=\s*"test-hooks"\))\)\]')
+TEST_ONLY = re.compile(r"#\[cfg\(test\)\]")
 MOD = re.compile(r"((?:#\[[^\]]*\]\s*)*)(?:pub(?:\([^)]*\))?\s+)?mod\s+([a-z_0-9]+)\s*;")
 PATH = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
+FIXTURES = re.compile(r"(?:fixtures|testing|fake|[a-z_0-9]+_fixtures)")
+INLINE_FIXTURES = re.compile(r"(?:pub(?:\([^)]*\))?\s+)?mod\s+(?:fixtures|testing|fake|[a-z_0-9]+_fixtures)\s*\{")
 
 
 def modules(root):
@@ -125,9 +128,8 @@ def item_end(code, at):
 
 
 def without_tests(code, text):
-    """`code` with the items under `#[cfg(test)]` or `#[cfg(any(test, feature = "test-hooks"))]`
-    blanked, attributes after it included. `text` is the source `code` blanked its literals of, so the
-    feature's name can be read."""
+    """`code` with the items under `#[cfg(test)]` blanked, attributes after it included. `text` is the
+    source `code` blanked its literals of."""
     out, index = [], 0
     for found in TEST_ONLY.finditer(text):
         start = found.start()
@@ -152,18 +154,33 @@ def child_file(parent, name, path):
     return None
 
 
+def without_fixtures(code):
+    """`code` with its inline fixture modules blanked."""
+    out, index = [], 0
+    for found in INLINE_FIXTURES.finditer(code):
+        if found.start() < index:
+            continue
+        out.append(code[index:found.start()])
+        index = item_end(code, found.start())
+        out.append(blank(code[found.start():index]))
+    out.append(code[index:])
+    return "".join(out)
+
+
 def production_modules(root):
     """Each module `lib.rs` declares, with the production code of every file it reaches."""
     found = {}
 
     def visit(file, module):
         text = file.read_text()
-        code = without_tests(code_only(text), text)
+        code = without_fixtures(without_tests(code_only(text), text))
         if module is not None:
             found[module]["files"].append(code)
             found[module]["lines"] += sum(1 for line in code.splitlines() if line.strip())
         for declared in MOD.finditer(code):
             name = declared.group(2)
+            if FIXTURES.fullmatch(name):
+                continue
             path = PATH.search(text[declared.start(1):declared.end(1)])
             child = child_file(file, name, path.group(1) if path else None)
             if child is None or not Path(os.path.normpath(child)).is_relative_to(os.path.normpath(root)):

@@ -819,13 +819,13 @@ pub async fn run(
     }
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
-pub mod tests {
+#[cfg(test)]
+mod tests {
     use alondra_store_sqlite::AsSqlite as _;
     use alondra_engine_admission::AdmissionOf as _;
     use crate::sdk_owner::SdkOwners as _;
     use super::*;
-    use crate::sdk_owner::tests::SdkLaunches;
+    use crate::sdk_owner::fixtures::SdkLaunches;
     use alondra_domain_rules::{InteractionId, InteractionPayload, Schedule, ScheduleFrequency};
     use std::collections::BTreeMap;
 
@@ -1040,7 +1040,7 @@ pub mod tests {
         schedule.title = "Changed title".into();
         schedule.revision += 1;
         execute_system(&fixture.domain, Command::UpdateSchedule { schedule }).unwrap();
-        let reopened = crate::engine_tests::open(&fixture.home).unwrap();
+        let reopened = crate::engine_fixtures::open(&fixture.home).unwrap();
         finish_claim(&reopened, &fixture.home, &run.id).unwrap();
         assert_eq!(reopened.state().unwrap().schedule.runs[&run.id], saved);
         assert_eq!(old_path.canonicalize().unwrap(), old_path);
@@ -1054,8 +1054,8 @@ pub mod tests {
     }
     impl Fixture {
         pub fn open(home: &Path) -> DomainRuntime {
-            let domain = crate::engine_tests::open(home).unwrap();
-            crate::sdk_owner::tests::measure_healthy_machine(&domain);
+            let domain = crate::engine_fixtures::open(home).unwrap();
+            crate::sdk_owner::fixtures::measure_healthy_machine(&domain);
             domain
         }
 

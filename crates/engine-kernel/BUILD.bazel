@@ -1,8 +1,7 @@
 load("//tools/bazel:crates.bzl", "application_crate")
 load("//tools:tree.bzl", "repo_tree")
-load("//tools:rust_test.bzl", "LOW_OPT_LEVEL", "low_opt_rust_test")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
@@ -21,11 +20,10 @@ WORKSPACE_DEPS = [
     "//crates/store:store",
 ]
 
-# Compiled only under `#[cfg(test)]` or the `test-hooks` feature, though their names do not say so.
+# Compiled only under `#[cfg(test)]`, though their names do not say so.
 TEST_ONLY = [
     "src/domain_store/runtime_metrics.rs",
     "src/domain_store/runtime_metrics_fold.rs",
-    "src/domain_store/runtime_owner.rs",
     "src/domain_store/runtime_retention.rs",
 ]
 
@@ -39,24 +37,7 @@ application_crate(
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-support:daemon_support",
     ],
-)
-
-rust_library(
-    name = "engine_kernel_test_hooks",
-    testonly = True,
-    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
-    crate_features = ["test-hooks"],
-    crate_name = "alondra_engine_kernel",
-    crate_root = "src/lib.rs",
-    edition = "2024",
-    rustc_flags = [LOW_OPT_LEVEL],
-    version = VERSION,
-    visibility = ["//crates/alondrad:__pkg__", "//crates/daemon-server:__pkg__", "//crates/engine-sdk:__pkg__", "//crates/daemon-engine:__pkg__", "//crates/engine-live:__pkg__", "//crates/engine-mcp:__pkg__", "//crates/engine-worktrees:__pkg__", "//crates/engine-admission:__pkg__", "//crates/engine-github:__pkg__", "//crates/engine-orchestrator:__pkg__"],
-    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
-        "//crates/daemon-engine-machine:daemon_engine_machine_test_hooks",
-        "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
-        "//crates/daemon-support:daemon_support_test_hooks",
-    ] + ["//crates/engine-doubles:engine_doubles"],
+    test_visibility = ["//crates/daemon-server:__pkg__"],
 )
 
 low_opt_rust_test(
@@ -70,10 +51,10 @@ low_opt_rust_test(
     env = {"HOME": "."},
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
-        "//crates/daemon-engine-machine:daemon_engine_machine_test_hooks",
-        "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
-        "//crates/store-sqlite:store_sqlite_test_hooks",
-        "//crates/daemon-support:daemon_support_test_hooks",
+        "//crates/daemon-engine-machine:daemon_engine_machine",
+        "//crates/daemon-engine-model:daemon_engine_model",
+        "//crates/store-sqlite:store_sqlite",
+        "//crates/daemon-support:daemon_support",
     ] + ["//crates/engine-doubles:engine_doubles"],
 )
 
@@ -83,7 +64,7 @@ rust_inputs_test(
     required_sources = ["crates/engine-kernel/src/lib.rs", "crates/engine-kernel/src/domain_runtime.rs"],
     source_dir = "crates/engine-kernel/src/",
     target_under_test = ":engine_kernel",
-    test_only_sources = ["crates/engine-kernel/src/domain_store/runtime_owner.rs", "crates/test_support.rs"],
+    test_only_sources = ["crates/engine-kernel/src/domain_store/runtime_metrics.rs", "crates/test_support.rs"],
     test_sources = False,
 )
 

@@ -1,7 +1,7 @@
 //! The orchestrator's tools over the daemon's own routes.
 use crate::domain_store::model_metrics::Decision;
 use crate::domain_store::model_metrics::DecisionKind;
-use alondra_engine_sdk::engine_tests::orchestrator_tools_tests::*;
+use alondra_engine_sdk::engine_fixtures::orchestrator_tools::*;
 use alondra_daemon_engine::domain_orchestrator_tools::*;
 use crate::domain_runtime::DomainRuntime;
 use crate::test_support::Directory;
@@ -17,7 +17,7 @@ async fn a_review_that_asks_for_changes_twice_shows_its_rounds_in_the_metrics() 
     let root = Directory::new();
     let home = root.join("home");
     std::fs::create_dir_all(&home).unwrap();
-    drop(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+    drop(crate::engine_tests::open(&home).unwrap());
     let daemon = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
     let domain = daemon.domain();
     command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Make the editor readable".into(), auto_merge: false, maintenance: false, message: false });

@@ -18,7 +18,7 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::sdk_node_fixture::*;
+use crate::engine_fixtures::sdk_node_fixture::*;
 const MIN: Millis = 60_000;
 const SAMPLE: Millis = 10_000;
 
@@ -86,7 +86,7 @@ async fn resuming_a_paused_sdk_node_whose_host_died_resumes_its_session_in_a_new
     node.domain.join_retakes();
     assert!(node.domain.owns_sdk_host(&AgentId(node.agent())), "a new host took the task over");
     let capture = node.capture.clone();
-    let told = move || crate::sdk_owner::tests::not_wakes(std::fs::read_to_string(format!("{}.prompts", capture.display())).unwrap_or_default()
+    let told = move || crate::sdk_owner::fixtures::not_wakes(std::fs::read_to_string(format!("{}.prompts", capture.display())).unwrap_or_default()
         .lines().map(|line| serde_json::from_str(line).unwrap())).iter().any(|prompt: &String| prompt.contains("resumed you"));
     changed.wait_for(|_| told()).await.unwrap();
     node.domain.stop_sdk_owners();
@@ -173,7 +173,7 @@ async fn a_host_that_dies_under_a_disk_hold_of_a_delivery_sent_back_goes_on_once
     node.gate_look().await;
     assert!(domain.admission().paused(&domain, &node.agent()).is_none(), "the pause ended");
     let capture = node.capture.clone();
-    let told = move || crate::sdk_owner::tests::not_wakes(std::fs::read_to_string(format!("{}.prompts", capture.display())).unwrap_or_default()
+    let told = move || crate::sdk_owner::fixtures::not_wakes(std::fs::read_to_string(format!("{}.prompts", capture.display())).unwrap_or_default()
         .lines().map(|line| serde_json::from_str(line).unwrap())).iter().any(|prompt: &String| prompt.contains("held your next turn"));
     tokio::time::timeout(std::time::Duration::from_secs(60), changed.wait_for(|_| told())).await.expect("nothing told the session to go on").unwrap();
     domain.stop_sdk_owners();

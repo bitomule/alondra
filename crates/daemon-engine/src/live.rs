@@ -238,7 +238,6 @@ impl Live {
         self.launching.send_if_modified(|launching| launching.remove(task_id));
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub async fn until_launch_ends(&self, task_id: &str) {
         let mut launching = self.launching.subscribe();
         launching.wait_for(|launching| !launching.contains(task_id)).await.expect("Live owns the sender");
@@ -323,7 +322,6 @@ impl Live {
         clients.iter().any(|client| presence.get(*client).is_some_and(|at| *at >= since))
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn last_touched(&self, client: &str) -> Option<i64> {
         self.presence.lock_or_recover("the client presence").get(client).copied()
     }

@@ -61,7 +61,7 @@ fn relaunch_wait(earlier: usize) -> Duration {
 
 /// Tests relaunch at once: what they check is that a relaunch happens, never how long it waits.
 fn pause_before_relaunch(earlier: usize) -> Duration {
-    if cfg!(any(test, feature = "test-hooks")) { Duration::ZERO } else { relaunch_wait(earlier) }
+    if alondra_foundation::under_test() { Duration::ZERO } else { relaunch_wait(earlier) }
 }
 
 /// What an SDK execution's binding lets the domain ask of it.
@@ -137,7 +137,6 @@ impl<'a> TakeoverTurn<'a> {
     pub(crate) fn wait(domain: &'a DomainRuntime, task: &TaskId) -> Self {
         let mut taking = domain.sdk_owners().taking_over.lock_or_recover("the takeovers under way");
         while taking.contains(task) {
-            #[cfg(any(test, feature = "test-hooks"))]
             domain.takeover_waited();
             taking = domain.sdk_owners().takeover_done.wait(taking).unwrap_or_else(std::sync::PoisonError::into_inner);
         }
@@ -287,11 +286,8 @@ pub struct Driver {
     opening_deadline: Option<Instant>,
     /// Inputs that are themselves the resend of one this host refused before offering it.
     refused: BTreeSet<InputId>,
-    #[cfg(any(test, feature = "test-hooks"))]
     pub refuse_offers: usize,
-    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fail_next_step: bool,
-    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) panic_next_step: bool,
 }
 
@@ -597,7 +593,6 @@ pub fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Lau
         })
         .map_err(failed("admitting the execution"))?;
     unadmitted.admitted();
-    #[cfg(any(test, feature = "test-hooks"))]
     if match &continuation {
         Some(Continuation::Node(_)) => *domain.handovers().crash_after.lock().unwrap() == Some(crate::domain_store::HandoverStep::SdkAdmitted),
         Some(Continuation::Moved { .. }) => *domain.moves().crash_after.lock().unwrap() == Some(crate::domain_store::AccountMoveStep::Admitted),
@@ -886,7 +881,6 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
             Ok(adoption)
         })
         .map_err(failed("reserving the next owner"))?;
-    #[cfg(any(test, feature = "test-hooks"))]
     domain.owner_reserved();
     let mut reserved = domain.seals.take(&task);
     let grant = reserved.owners.pop().ok_or_else(|| Failed::new("the reservation issued no owner grant".into()))?;
@@ -1343,13 +1337,11 @@ pub(crate) fn reads_as_working(state: &DomainState) -> Vec<TaskId> {
 /// Whether an adopted host's process is gone. A host whose process this daemon could not learn is
 /// taken as running.
 fn adopted_without_process(host: Option<HostStop>) -> std::io::Result<bool> {
-    #[cfg(any(test, feature = "test-hooks"))]
     if ADOPTED_PROCESS_GONE.with(|gone| gone.replace(false)) {
         return Ok(true);
     }
     host.map_or(Ok(false), |host| host.gone())
 }
-#[cfg(any(test, feature = "test-hooks"))]
 thread_local! {
     /// The next host this thread adopts reads as having no process, as a host whose process died
     /// while its endpoint still answered.
@@ -1396,10 +1388,8 @@ fn retake_with_policy(domain: &DomainRuntime, task: TaskId,explicit_account_retr
     if retakes.iter().any(|(taking, _)| *taking == task) {
         return;
     }
-    #[cfg(any(test, feature = "test-hooks"))]
     let refusal = crate::domain_store::carried_refusal();
     retakes.push((task.clone(), alondra_core::clock::spawn_thread(move || {
-        #[cfg(any(test, feature = "test-hooks"))]
         refusal();
         take_again(&runtime, &backend, &task, explicit_account_retry);
         runtime.wake_subscribers();
@@ -1707,7 +1697,7 @@ impl Driver {
 
     fn new(domain: Arc<DomainRuntime>, worker: Worker, scope: AuthorityScope, task: TaskId, agent: AgentId, opening_timeout: Duration) -> Self {
         let pause = Mutex::new(PauseSubscription::new(&domain, &agent));
-        Self { pause, in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, conversation: None, new_session: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout, opening_deadline: None, refused: BTreeSet::new(), #[cfg(any(test, feature = "test-hooks"))] refuse_offers: 0, #[cfg(any(test, feature = "test-hooks"))] fail_next_step: false, #[cfg(any(test, feature = "test-hooks"))] panic_next_step: false }
+        Self { pause, in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, conversation: None, new_session: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout, opening_deadline: None, refused: BTreeSet::new(), refuse_offers: 0, fail_next_step: false, panic_next_step: false }
     }
 
     pub fn agent(&self) -> &AgentId {
@@ -1721,7 +1711,6 @@ impl Driver {
     }
 
     /// The driver no longer holds its execution, as one whose owner is gone though its value lives.
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn let_go(&mut self) {
         self.in_hand = None;
     }
@@ -1872,7 +1861,6 @@ impl Driver {
     }
 
     fn submit(&mut self, command: &alondra_store::CommittedCommand) -> Handoff {
-        #[cfg(any(test, feature = "test-hooks"))]
         if self.refuse_offers > 0 {
             self.refuse_offers -= 1;
             self.worker.discard_prepared();
@@ -2016,7 +2004,6 @@ impl Driver {
             log!("{line} ({}, task {})", self.agent, self.task);
         }
         for observation in self.sealed().observations {
-            #[cfg(any(test, feature = "test-hooks"))]
             self.domain.before_acknowledge();
             self.worker.acknowledge(&observation).map_err(adapter("acknowledging the observation"))?;
         }
@@ -2187,11 +2174,9 @@ impl Driver {
     }
 
     fn step_once(&mut self, stopped: &dyn Fn() -> bool, now: Instant) -> Result<(), Failed> {
-        #[cfg(any(test, feature = "test-hooks"))]
         if std::mem::take(&mut self.fail_next_step) {
             return Err(Failed::new("a step of the owner failed".into()));
         }
-        #[cfg(any(test, feature = "test-hooks"))]
         assert!(!std::mem::take(&mut self.panic_next_step), "a step of the owner panicked");
         if self.worker.native_liveness().map_err(adapter("checking the native process"))? == Some(alondra_provider_codex::NativeLiveness::Lost) {
             self.host_closed = true;
@@ -2242,7 +2227,6 @@ impl Driver {
         Ok(())
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn rebind(&mut self, domain: Arc<DomainRuntime>) {
         self.pause = Mutex::new(PauseSubscription::new(&domain, &self.agent));
         self.domain = domain;
@@ -2250,7 +2234,6 @@ impl Driver {
 
     /// Claims and records the next waiting dispatch but does not send it: the crash state a daemon
     /// leaves when it dies after recording a command and before the host receives it.
-    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn claim_and_record_without_sending(&mut self) -> bool {
         self.sealed();
         let Some(permit) = self.permits.pop_front() else {
@@ -2267,7 +2250,6 @@ impl Driver {
 
     /// Claims, records and sends the next waiting dispatch to the host, but does not record its
     /// receipt: the crash state a daemon leaves when it dies after the host offered the input.
-    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn claim_record_and_offer_without_receipt(&mut self) -> bool {
         self.sealed();
         let Some(permit) = self.permits.pop_front() else {
@@ -2285,7 +2267,6 @@ impl Driver {
 
     /// Claims, records and sends the next waiting dispatch, and records its receipt as uncertain: an
     /// owner stopped while the host read the input never learns that the host took it.
-    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn claim_record_and_offer_with_an_uncertain_receipt(&mut self) -> bool {
         self.sealed();
         let Some(permit) = self.permits.pop_front() else {
@@ -2305,7 +2286,6 @@ impl Driver {
 
     /// Claims and records the next waiting control but does not send it: the crash state a daemon
     /// leaves when it dies after recording a control and before the host receives it.
-    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn claim_and_record_control_without_sending(&mut self) -> bool {
         self.sealed();
         let Some(permit) = self.controls.pop_front() else {
@@ -2320,19 +2300,16 @@ impl Driver {
         true
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn pending_controls(&mut self) -> usize {
         self.sealed();
         self.controls.len()
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn pending_permits(&mut self) -> usize {
         self.sealed();
         self.permits.len()
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn waits_for_host(&mut self) -> bool {
         self.expects_host().unwrap()
     }
@@ -2483,7 +2460,6 @@ fn stale(error: &anyhow::Error) -> bool {
 
 fn failed_step(driver: &Driver, error: &Failed) {
     log!("the SDK owner of {} stopped: {error}", driver.task);
-    #[cfg(any(test, feature = "test-hooks"))]
     driver.domain.owner_failed(error.to_string());
 }
 
@@ -2665,7 +2641,6 @@ impl Owner {
 
     /// The owner goes as a daemon that crashes takes it: its connection to the host closes and
     /// nothing is recorded or stopped, so the host runs on for the daemon that comes back.
-    #[cfg(any(test, feature = "test-hooks"))]
     fn crash(mut self) {
         self.crashed.store(true, Ordering::SeqCst);
         self.stopped.store(true, Ordering::SeqCst);
@@ -2738,9 +2713,11 @@ impl Drop for Owner {
     }
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
+#[path = "sdk_owner/fixtures.rs"]
+pub mod fixtures;
+#[cfg(test)]
 #[path = "sdk_owner/tests.rs"]
-pub mod tests;
+mod tests;
 
 /// What this daemon keeps about the SDK hosts it owns and the executions it takes over.
 #[derive(Default)]
@@ -2773,14 +2750,10 @@ pub struct Owners {
     /// The tasks whose session took no turn on the input offered again: their owner puts a host
     /// that resumes the same session in place of its own, and the input waits for a slot.
     pub requeues: Mutex<BTreeSet<TaskId>>,
-    #[cfg(any(test, feature = "test-hooks"))]
     after_owner_reserved: Mutex<Option<Box<dyn FnOnce() + Send>>>,
-    #[cfg(any(test, feature = "test-hooks"))]
     takeover_waits: Mutex<Option<Box<dyn FnMut() + Send>>>,
-    #[cfg(any(test, feature = "test-hooks"))]
     owner_failures: Mutex<Option<Box<dyn Fn(String) + Send>>>,
     /// The nodes whose driver a test steps by hand, with no owner thread: they count as owned.
-    #[cfg(any(test, feature = "test-hooks"))]
     pub driven_by_hand: Mutex<BTreeSet<AgentId>>,
 }
 
@@ -2803,15 +2776,12 @@ pub trait SdkOwners {
     /// node costs. A group two owners name is measured once.
     fn node_footprints(&self) -> std::io::Result<BTreeMap<AgentId, u64>>;
 
-    #[cfg(any(test, feature = "test-hooks"))]
     fn node_groups(&self) -> Vec<i32>;
 
     /// Every owner goes as a crash of the daemon takes it, leaving its host running.
-    #[cfg(any(test, feature = "test-hooks"))]
     fn crash_sdk_owners(&self);
 
     /// Whether a takeover, retake or halt of an SDK execution is under way on a thread of its own.
-    #[cfg(any(test, feature = "test-hooks"))]
     fn retaking(&self) -> bool;
 
     /// Keeps `owner` as the owner of its node's host, in place of any of that node that ended on
@@ -2834,28 +2804,21 @@ pub trait SdkOwners {
     fn halt_sdk_host(&self, agent: &AgentId) -> Option<Result<(), Failed>>;
 
     /// Runs `hook` once, as the next takeover has reserved its owner and not yet looked for the host.
-    #[cfg(any(test, feature = "test-hooks"))]
     fn after_owner_reserved(&self, hook: impl FnOnce() + Send + 'static);
 
-    #[cfg(any(test, feature = "test-hooks"))]
     fn owner_reserved(&self);
 
     /// Runs `hook` each time a takeover waits for another of the same task.
-    #[cfg(any(test, feature = "test-hooks"))]
     fn on_takeover_wait(&self, hook: impl FnMut() + Send + 'static);
 
-    #[cfg(any(test, feature = "test-hooks"))]
     fn takeover_waited(&self);
 
     /// Every failure an SDK owner reports from now on.
-    #[cfg(any(test, feature = "test-hooks"))]
     fn owner_failures(&self) -> std::sync::mpsc::Receiver<String>;
 
     /// Calls `hook` with every failure an SDK owner reports from now on.
-    #[cfg(any(test, feature = "test-hooks"))]
     fn on_owner_failure(&self, hook: impl Fn(String) + Send + 'static);
 
-    #[cfg(any(test, feature = "test-hooks"))]
     fn owner_failed(&self, why: String);
 }
 
@@ -2884,7 +2847,6 @@ impl SdkOwners for crate::domain_runtime::DomainRuntime {
     }
 
     fn owns_sdk_host(&self, agent: &AgentId) -> bool {
-        #[cfg(any(test, feature = "test-hooks"))]
         if self.sdk_owners().driven_by_hand.lock().expect("driven by hand poisoned").contains(agent) {
             return true;
         }
@@ -2906,18 +2868,15 @@ impl SdkOwners for crate::domain_runtime::DomainRuntime {
         Ok(footprints)
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     fn node_groups(&self) -> Vec<i32> {
         self.sdk_owners().held.lock_or_recover("the SDK owners").iter()
             .filter_map(|owner| owner.host().and_then(|host| host.process_group())).collect()
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     fn retaking(&self) -> bool {
         self.sdk_owners().retakes.lock_or_recover("the retakes").iter().any(|(_, retake)| !retake.is_finished())
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     fn crash_sdk_owners(&self) {
         self.join_retakes();
         let owners = std::mem::take(&mut *self.sdk_owners().held.lock_or_recover("the SDK owners"));
@@ -2955,12 +2914,10 @@ impl SdkOwners for crate::domain_runtime::DomainRuntime {
         take_sdk_owner(self, agent).map(|mut owner| owner.halt())
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     fn after_owner_reserved(&self, hook: impl FnOnce() + Send + 'static) {
         *self.sdk_owners().after_owner_reserved.lock().unwrap() = Some(Box::new(hook));
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     fn owner_reserved(&self) {
         let hook = self.sdk_owners().after_owner_reserved.lock().unwrap().take();
         if let Some(hook) = hook {
@@ -2968,31 +2925,26 @@ impl SdkOwners for crate::domain_runtime::DomainRuntime {
         }
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     fn on_takeover_wait(&self, hook: impl FnMut() + Send + 'static) {
         *self.sdk_owners().takeover_waits.lock().unwrap() = Some(Box::new(hook));
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     fn takeover_waited(&self) {
         if let Some(hook) = self.sdk_owners().takeover_waits.lock().unwrap().as_mut() {
             hook();
         }
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     fn owner_failures(&self) -> std::sync::mpsc::Receiver<String> {
         let (sender, failures) = std::sync::mpsc::channel();
         self.on_owner_failure(move |why| drop(sender.send(why)));
         failures
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     fn on_owner_failure(&self, hook: impl Fn(String) + Send + 'static) {
         *self.sdk_owners().owner_failures.lock().unwrap() = Some(Box::new(hook));
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     fn owner_failed(&self, why: String) {
         if let Some(hook) = self.sdk_owners().owner_failures.lock().unwrap().as_ref() {
             hook(why);
@@ -3041,7 +2993,6 @@ fn retake_told(domain: &DomainRuntime, command: &Command) {
 }
 
 /// The SDK host of `agent` is one a test plays by hand, with no owner thread: it counts as owned.
-#[cfg(any(test, feature = "test-hooks"))]
 pub fn drive_by_hand(domain: &DomainRuntime, agent: &AgentId) {
     domain.sdk_owners().driven_by_hand.lock().expect("driven by hand poisoned").insert(agent.clone());
 }

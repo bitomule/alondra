@@ -93,12 +93,10 @@ impl RevokedDevices {
         kept.iter().find(|tombstone| tombstone.device_id == device_id)?.keys().map(|(signing, _)| signing)
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn empty() -> Self {
         Self { path: PathBuf::from("/nonexistent/revoked-devices.json"), kept: Mutex::new(Vec::new()) }
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn len(&self) -> usize {
         self.kept.lock_or_recover("the revoked devices").len()
     }

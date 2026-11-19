@@ -4,33 +4,29 @@
 
 use std::path::PathBuf;
 
-#[cfg(not(any(test, feature = "test-hooks")))]
+/// The Claude folder of the profile the daemon's nodes run with by default. A test never reads the
+/// Mac's own: it gets the one it set on its thread with `use_claude_home_for_test`, else, under
+/// `bazel test`, an empty folder of the thread's own.
 pub fn claude_home() -> PathBuf {
+    if let Some(home) = TEST_CLAUDE_HOME.with(|home| home.borrow().clone()) {
+        return home;
+    }
+    if alondra_foundation::under_test() {
+        return EMPTY_CLAUDE_HOME.with(|home| home.path().to_path_buf());
+    }
     claude_home_in(&|key: &str| std::env::var(key).ok())
 }
 
-/// The Claude folder of the profile the daemon's nodes run with by default.
-#[cfg_attr(all(feature = "test-hooks", not(test)), allow(dead_code))]
 fn claude_home_in(env: &impl Fn(&str) -> Option<String>) -> PathBuf {
     use alondra_core::claude_account::{config_folder, configured_profile};
     config_folder(configured_profile(env).as_deref(), &alondra_core::config::home_dir(env))
 }
 
-/// A unit test never reads the Mac's own Claude home: it gets the one it set on its thread with
-/// `use_claude_home_for_test`, else an empty folder of its own.
-#[cfg(any(test, feature = "test-hooks"))]
-pub fn claude_home() -> PathBuf {
-    TEST_CLAUDE_HOME.with(|home| home.borrow().clone())
-        .unwrap_or_else(|| EMPTY_CLAUDE_HOME.with(|home| home.to_path_buf()))
-}
-
-#[cfg(any(test, feature = "test-hooks"))]
 thread_local! {
-    static EMPTY_CLAUDE_HOME: crate::test_support::Directory = crate::test_support::Directory::new();
+    static EMPTY_CLAUDE_HOME: tempfile::TempDir = tempfile::Builder::new().prefix("claude-home-").tempdir().expect("a Claude home for the test");
     static TEST_CLAUDE_HOME: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
 pub fn use_claude_home_for_test(home: &std::path::Path) {
     TEST_CLAUDE_HOME.with(|current| *current.borrow_mut() = Some(home.to_path_buf()));
 }

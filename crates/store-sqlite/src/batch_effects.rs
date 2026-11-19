@@ -125,7 +125,6 @@ impl DomainStore {
     }
 
     pub fn record_batch_report(&mut self, run: &str, cursor: u64, evidence: &[u8], report: &BatchReport) -> Result<()> {
-        #[cfg(any(test, feature = "test-hooks"))]
         self.orchestrator_write_fault("report")?;
         use sha2::Digest;
         ensure!(cursor > 0 && !report.kind.is_empty() && report.kind.len() <= 128, "invalid batch report");
@@ -142,7 +141,6 @@ impl DomainStore {
             ensure!(cursor <= 65536 && bytes.saturating_add(i64::try_from(encoded.len())?) <= 32 * 1024 * 1024, "The batch report journal is full; retain its unacknowledged host evidence");
             tx.execute("INSERT INTO orchestrator_batch_reports(run,cursor,digest,report) VALUES(?1,?2,?3,?4)", params![run,i64::try_from(cursor)?,digest,encoded])?;
         }
-        #[cfg(any(test, feature = "test-hooks"))]
         alondra_daemon_engine_model::faults::database_write(&tx, "report_commit")?;
         tx.commit()?;
         self.note_side_write();
@@ -203,12 +201,10 @@ impl DomainStore {
     }
 
     pub fn finish_batch(&mut self, run: &str) -> Result<()> {
-        #[cfg(any(test, feature = "test-hooks"))]
         self.orchestrator_write_fault("finish_batch")?;
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute("UPDATE orchestrator_batch_runs SET ended=1 WHERE run=?1", [run])?;
         tx.execute("UPDATE orchestrator_batch_effects SET pinned=0 WHERE run=?1", [run])?;
-        #[cfg(any(test, feature = "test-hooks"))]
         alondra_daemon_engine_model::faults::database_write(&tx, "finish_batch_commit")?;
         tx.commit()?;
         self.note_side_write();

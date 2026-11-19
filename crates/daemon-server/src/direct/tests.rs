@@ -444,7 +444,7 @@ async fn an_unused_device_is_unpaired_on_its_own_and_told_so_while_the_one_in_us
     let in_use = Phone::new("client-b", 40);
     let home = home_with(&[&unused, &in_use], None);
     std::fs::write(home.join("device-usage.json"), r#"{"tracking_since_ms": 0}"#).unwrap();
-    drop(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+    drop(crate::engine_tests::open(&home).unwrap());
     let daemon = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
     let auth = daemon.auth();
     let service = Arc::new(Service::open(&home, 0, auth.clone()).unwrap().unwrap());

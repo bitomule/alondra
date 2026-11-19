@@ -218,5 +218,6 @@ fn tell(domain: &DomainRuntime, id: &str, body: String) {
     }
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
-pub mod tests;
+pub mod fixtures;
+#[cfg(test)]
+mod tests;

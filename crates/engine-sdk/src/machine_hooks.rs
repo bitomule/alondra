@@ -1,6 +1,5 @@
 //! What the model of the whole machine (`crates/machine-model`) runs of the hosts' owners and the
-//! moves between providers: their decisions, called as they are. Only the `test-hooks` feature
-//! opens these functions; the crate keeps them private.
+//! moves between providers: their decisions, called as they are.
 use alondra_core::Millis;
 use alondra_domain_rules::{AgentId, Command, DomainError, DomainState, TaskId};
 use std::collections::BTreeMap;

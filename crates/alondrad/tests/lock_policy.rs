@@ -3,10 +3,9 @@
 //! fail, as the machine watch's lock did on 25 October.
 use std::path::{Path, PathBuf};
 
-const SOURCES: [&str; 15] = ["crates/alondrad/src", "crates/daemon-server/src", "crates/daemon-support/src", "crates/system/src", "crates/foundation/src", "crates/daemon-engine/src", "crates/daemon-engine-model/src", "crates/store-sqlite/src", "crates/daemon-engine-machine/src", "crates/engine-github/src", "crates/engine-live/src", "crates/engine-mcp/src", "crates/engine-worktrees/src", "crates/engine-kernel/src", "crates/engine-orchestrator/src"];
-/// What marks an item that only tests compile: alondrad's tests also build the support and engine
-/// crates with their `test-hooks` feature.
-const TEST_ONLY: [&str; 2] = ["#[cfg(test)]", "#[cfg(any(test, feature = \"test-hooks\"))]"];
+const SOURCES: [&str; 15] = ["crates/alondrad/src", "crates/daemon-server/src", "crates/daemon-support/src", "crates/system/src", "crates/foundation/src", "crates/daemon-engine/src", "crates/daemon-engine-model/src", "crates/daemon-engine-store/src", "crates/daemon-engine-machine/src", "crates/engine-github/src", "crates/engine-live/src", "crates/engine-mcp/src", "crates/engine-worktrees/src", "crates/engine-kernel/src", "crates/engine-orchestrator/src"];
+/// What marks an item that only tests compile.
+const TEST_ONLY: [&str; 1] = ["#[cfg(test)]"];
 
 fn next_test_only(text: &str) -> Option<(usize, usize)> {
     TEST_ONLY.iter().filter_map(|marker| text.find(marker).map(|at| (at, marker.len()))).min()
@@ -150,7 +149,6 @@ fn no_lock_of_the_daemon_panics_every_later_reader() {
 fn the_panic_check_sees_a_lock_unwrapped_over_lines_and_ignores_test_items() {
     let text = "fn a() {\n    x.lock()\n        .unwrap();\n}\n#[cfg(test)]\nfn b() { y.lock().unwrap(); }\n\
         struct S {\n    #[cfg(test)]\n    hook: Mutex<Option<Box<dyn Fn(u8, u8)>>>,\n}\nfn c() { z.read().expect(\"poisoned\"); \
-        w.wait_timeout(g, d).map_err(|_| e)?; child.wait().map_err(|_| e)?; }\n\
-        #[cfg(any(test, feature = \"test-hooks\"))]\nfn d() { v.lock().unwrap(); }\n";
+        w.wait_timeout(g, d).map_err(|_| e)?; child.wait().map_err(|_| e)?; }\n";
     assert_eq!(poison_panics(&without_test_items(text)), [2, 11, 11]);
 }

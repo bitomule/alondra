@@ -351,11 +351,9 @@ pub fn named_as_test(file: &std::path::Path) -> bool {
     name == "tests.rs" || name.ends_with("_tests.rs") || file.ends_with("crates/test_support.rs") || file.parent().is_some_and(|dir| dir.components().any(|part| part.as_os_str() == "tests"))
 }
 
-/// Whether a `#[cfg(...)]` condition holds only when tests are compiled, with or without the
-/// `test-hooks` feature other crates' tests build with.
+/// Whether a `#[cfg(...)]` condition holds only when tests are compiled.
 fn test_condition(condition: &str) -> bool {
-    let hooks = "feature = \"test-hooks\"";
-    condition == "test" || condition == hooks || condition == format!("any(test, {hooks})") || condition.starts_with("all(test,")
+    condition == "test" || condition.starts_with("all(test,")
 }
 
 fn normalized(path: &std::path::Path) -> std::path::PathBuf {
@@ -405,7 +403,7 @@ fn declared_modules(file: &std::path::Path, source: &str) -> Vec<(Vec<std::path:
 }
 
 /// The files among `files` that only tests compile: test modules by name, modules declared under
-/// `#[cfg(test)]` or the `test-hooks` feature, and every module below one of them.
+/// `#[cfg(test)]`, and every module below one of them.
 pub fn test_only(files: &[(std::path::PathBuf, String)]) -> std::collections::BTreeSet<std::path::PathBuf> {
     let present: std::collections::BTreeSet<std::path::PathBuf> = files.iter().map(|(file, _)| normalized(file)).collect();
     let mut edges = Vec::new();

@@ -86,21 +86,21 @@ class GraphTest(unittest.TestCase):
         self.assertEqual(graph.main_cycle(self.source), ([], 0))
         self.assertNotIn("fixtures", graph.production_modules(self.source))
 
-    def test_what_only_the_test_hooks_feature_compiles_never_makes_a_cycle(self):
+    def test_the_fixtures_a_crate_compiles_for_the_tests_above_it_never_make_a_cycle(self):
         self.crate({
-            "lib.rs": "mod a;\nmod b;\n#[cfg(any(test, feature = \"test-hooks\"))]\npub mod hooks;\n",
-            "a.rs": "use crate::b;\n",
-            "b.rs": "#[cfg(any(test, feature = \"test-hooks\"))]\npub mod tests { use crate::a; }\n#[cfg(feature = \"other\")]\nfn f() { crate::hooks::g(); }\n",
-            "hooks.rs": "use crate::a; use crate::b;\n",
-            "c.rs": "pub struct S {\n    #[cfg(any(test, feature = \"test-hooks\"))]\n    hook: Option<Box<dyn Fn(u8, u8)>>,\n    kept: u8,\n}\nfn g() { crate::a::f(); }\n",
+            "lib.rs": "mod a;\nmod b;\npub mod engine_fixtures;\n",
+            "a.rs": "use crate::b;\npub mod fixtures { use crate::engine_fixtures; }\n#[path = \"a/owner.rs\"]\npub mod owner_fixtures;\n",
+            "a/owner.rs": "use crate::b;\n",
+            "b.rs": "pub mod testing { use crate::a; }\nfn g() {}\n",
+            "engine_fixtures.rs": "use crate::a; use crate::b;\n",
         })
         self.assertEqual(graph.main_cycle(self.source), ([], 0))
-        self.assertNotIn("hooks", graph.production_modules(self.source))
+        self.assertNotIn("engine_fixtures", graph.production_modules(self.source))
 
     def test_a_field_only_tests_compile_hides_only_that_field(self):
         self.crate({
             "lib.rs": "mod a;\nmod b;\n",
-            "a.rs": "pub struct S {\n    #[cfg(any(test, feature = \"test-hooks\"))]\n    hook: Option<Box<dyn Fn(u8, u8) -> u8>>,\n    #[cfg(test)]\n    seen: std::collections::BTreeMap<u8, u8>,\n    kept: u8,\n}\nfn f() { crate::b::g(); }\n",
+            "a.rs": "pub struct S {\n    #[cfg(test)]\n    hook: Option<Box<dyn Fn(u8, u8) -> u8>>,\n    #[cfg(test)]\n    seen: std::collections::BTreeMap<u8, u8>,\n    kept: u8,\n}\nfn f() { crate::b::g(); }\n",
             "b.rs": "use crate::a;\n",
         })
         self.assertEqual(graph.main_cycle(self.source)[0], ["a", "b"])

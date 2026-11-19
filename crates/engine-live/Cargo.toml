@@ -5,9 +5,6 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
-[features]
-test-hooks = ["dep:tempfile", "alondra-daemon-support/test-hooks", "alondra-engine-kernel/test-hooks"]
-
 [dependencies]
 alondra-foundation.workspace = true
 alondra-core.workspace = true
@@ -21,10 +18,7 @@ alondra-view-model.workspace = true
 libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tempfile = { workspace = true, optional = true }
 tokio.workspace = true
 
 [dev-dependencies]
-alondra-daemon-support = { workspace = true, features = ["test-hooks"] }
-alondra-engine-kernel = { workspace = true, features = ["test-hooks"] }
 tempfile.workspace = true
