@@ -351,7 +351,7 @@ pub fn open_report(target: &str) -> Result<()> {
     let host = Mac::new();
     if Path::new(target).is_file() {
         let (id, dir, files) = open_file(host.home(), Path::new(target))?;
-        print!("{}", received_summary(&id, &dir, &files));
+        print!("{}", received_summary(&id, &dir, &files)?);
         return Ok(());
     }
     let gh = github::Gh::default();
@@ -359,7 +359,7 @@ pub fn open_report(target: &str) -> Result<()> {
     let (id, dir, files) = open_issue(host.home(), &repo, &issue)?;
     let (number, author) = (issue.number, issue.author.as_str());
     println!("{}", trf!("Issue #{number}, sent by {author}", "Issue #{number}, enviado por {author}"));
-    print!("{}", received_summary(&id, &dir, &files));
+    print!("{}", received_summary(&id, &dir, &files)?);
     Ok(())
 }
 
@@ -681,11 +681,15 @@ pub fn summary_json(built: &Built, repo: Option<&str>) -> Value {
 }
 
 /// What `alondra report open` prints: the user's words, the versions, the checks that did not pass,
-/// the failures in the lifecycle journal and what was left out.
-pub fn received_summary(id: &str, dir: &Path, files: &Files) -> String {
+/// the failures in the lifecycle journal and what was left out. Someone else wrote the report, so
+/// the text holds no terminal control characters: only its line breaks are kept.
+pub fn received_summary(id: &str, dir: &Path, files: &Files) -> Result<String> {
     let get = |name: &str| files.iter().find(|(n, _)| n == name).map(|(_, t)| t.as_str());
     let json_of = |name: &str| get(name).and_then(|t| serde_json::from_str::<Value>(t).ok()).unwrap_or(Value::Null);
     let manifest = json_of(bundle::MANIFEST);
+    if !manifest.is_object() {
+        bail!(tr!("the report's manifest cannot be read; it was not shown", "no se puede leer el manifiesto del informe; no se ha mostrado"));
+    }
     let versions = json_of("versions.json");
     let machine = json_of("machine.json");
     let created = manifest["created_at"].as_str().unwrap_or_default();
@@ -728,5 +732,18 @@ pub fn received_summary(id: &str, dir: &Path, files: &Files) -> String {
     }
     let dir = dir.display();
     out.push_str(&trf!("\nIts files are in {dir}\n", "\nSus ficheros están en {dir}\n"));
-    out
+    Ok(printable(&out))
+}
+
+/// `text` without the characters a terminal reads as commands (C0 and C1 controls, which start
+/// every escape sequence, and the marks that reverse the direction of the text), keeping line
+/// breaks and showing a tab as a space.
+fn printable(text: &str) -> String {
+    let reorders = |c: char| matches!(c, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
+    text.chars().filter_map(|c| match c {
+        '\n' => Some(c),
+        '\t' => Some(' '),
+        c if c.is_control() || reorders(c) => None,
+        c => Some(c),
+    }).collect()
 }
