@@ -1,5 +1,4 @@
 use super::*;
-use alondra_core::codex_account::*;
 use alondra_core::accounts::AccountId;
 use crate::test_support::Directory;
 

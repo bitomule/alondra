@@ -139,25 +139,12 @@ impl Probe {
         }
     }
 
-    pub(crate) fn notification(&mut self, wait: Duration) -> Result<Option<Value>, String> {
-        self.check_cancelled()?;
-        if let Some(message) = self.notifications.pop_front() { return Ok(Some(message)); }
-        let left = self.until.checked_duration_since(Instant::now()).ok_or("Codex sign-in expired")?;
-        match self.output.recv_timeout(wait.min(left)) {
-            Ok(message) => message.map(Some),
-            Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
-            Err(mpsc::RecvTimeoutError::Disconnected) => Err("Codex sign-in ended before completion".into()),
-        }
-    }
-
     fn check_cancelled(&self) -> Result<(), String> {
         if self.cancelled.as_ref().is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
             return Err("Codex sign-in cancelled; the previous session was preserved".into());
         }
         Ok(())
     }
-
-    pub(crate) fn extend_deadline(&mut self, timeout: Duration) { self.until = Instant::now() + timeout; }
 }
 
 pub fn probe(command: Command, account: AccountKey, now: alondra_foundation::Millis) -> Result<ProbeReport, String> {
