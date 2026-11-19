@@ -1,17 +1,23 @@
-//! What the engine relies on from the `Worktrees`, `Disk`, `MachineProbe`, `Accounts`, `Processes`
-//! and `Plugins` ports. The doubles of this crate pass it in their unit tests; `crates/system` passes
-//! it with the Mac's own git, disks, gauges, files and processes, so a double never drifts from what
-//! the daemon really does.
+//! What the engine relies on from the `Worktrees`, `Disk`, `MachineProbe`, `Accounts`, `Processes`,
+//! `Plugins` and `AgentHost` ports. The doubles of this crate pass it in their unit tests;
+//! `crates/system` passes it with the Mac's own git, disks, gauges, files and processes, and
+//! `crates/agent-runtime` with a host process of its own, so a double never drifts from what the
+//! daemon really does.
 use crate::test_support::Directory;
 pub mod github;
+use alondra_engine_ports::agent_host::{AdoptedEndpoint, AgentHost, EndedHost, HostFolder, HostLaunch, HostStop, LaunchIdentity, LaunchedHost, Retained, VerifiedArtifact};
 use alondra_engine_ports::disk::Disk;
 use alondra_engine_ports::machine::MachineProbe;
 use alondra_core::secret_destination::SecretDestination;
 use alondra_domain_rules::{Actor, Command, CommandEnvelope, DomainState, LaunchPlan, PROTOCOL_VERSION, TaskId, WorktreeOrigin};
 use alondra_engine_ports::worktrees::{LaunchError, Protected, TaskWorktree, Workplace, Worktrees, CHECK_LIMIT};
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::future::Future as _;
-use std::path::Path;
-use std::time::Duration;
+use std::io;
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// A missing path has no volume; a real folder is on one, with sane space.
 pub fn disk(disk: &dyn Disk) {
@@ -330,4 +336,235 @@ pub fn plugins(plugins: &dyn alondra_engine_ports::plugins::Plugins) {
     std::fs::write(claude_home.join("plugins/known_marketplaces.json"), serde_json::json!({"alondra": {"installLocation": marketplace}}).to_string()).unwrap();
     assert_eq!(plugins.registered(&claude_home, NODE), Some(marketplace.join(NODE)));
     assert_eq!(plugins.registered(&claude_home, ORCHESTRATOR), None);
+}
+
+/// How an implementation of `AgentHost` has a host to run, and how the contract speaks to the one
+/// it reached.
+pub trait HostFixture {
+    /// The executable and the artifact a launch runs.
+    fn artifact(&self) -> VerifiedArtifact;
+    /// The environment of the host launched in `state_dir`.
+    fn environment(&self, state_dir: &Path) -> BTreeMap<String, String>;
+    /// The process id the host at the other end of `stream` answers with.
+    fn process_id(&self, stream: UnixStream) -> u32;
+    /// Tells the host at the other end of `stream` to end by itself, with success.
+    fn exit(&self, stream: UnixStream);
+}
+
+/// One folder and the hosts the contract runs in it, one after another. Whatever it launched is
+/// ended when it goes, also when an assertion failed with a host still running.
+struct Hosted<'a> {
+    hosts: &'a dyn AgentHost,
+    fixture: &'a dyn HostFixture,
+    state: PathBuf,
+    launched: RefCell<Vec<HostStop>>,
+}
+
+impl Drop for Hosted<'_> {
+    fn drop(&mut self) {
+        for host in self.launched.borrow().iter() {
+            let _ = host.kill();
+        }
+    }
+}
+
+impl Hosted<'_> {
+    fn soon() -> Instant {
+        Instant::now() + Duration::from_secs(10)
+    }
+
+    fn make_folder(&self) {
+        use std::os::unix::fs::DirBuilderExt as _;
+        std::fs::DirBuilder::new().mode(0o700).create(&self.state).unwrap();
+    }
+
+    fn start(&self, build: &mut dyn FnMut(&LaunchIdentity) -> io::Result<Vec<u8>>) -> io::Result<Box<dyn LaunchedHost>> {
+        let environment = self.fixture.environment(&self.state);
+        let launch = HostLaunch { artifact: self.fixture.artifact(), state_dir: &self.state, environment: &environment, confinement: None };
+        let host = self.hosts.launch(launch, build)?;
+        self.launched.borrow_mut().push(host.stopper());
+        Ok(host)
+    }
+
+    /// A host launched in the folder with `bootstrap`, built once for that folder, and reached.
+    fn launch(&self, bootstrap: &[u8]) -> Box<dyn LaunchedHost> {
+        let mut built = Vec::new();
+        let mut host = self
+            .start(&mut |identity| {
+                built.push(identity.state_dir().to_path_buf());
+                Ok(bootstrap.to_vec())
+            })
+            .unwrap_or_else(|error| panic!("a free folder takes a host: {error}"));
+        assert_eq!(built, [self.state.clone()], "a launch builds its bootstrap once, for its folder");
+        assert_eq!(host.identity().state_dir(), self.state);
+        assert_eq!(host.observed_exit().unwrap(), None, "a host just launched runs");
+        let stream = host.wait_for_socket(Self::soon()).unwrap();
+        assert_eq!(self.fixture.process_id(stream), host.process_id(), "its socket reaches the host launched");
+        assert!(matches!(self.hosts.claim(&self.state).unwrap(), Retained::Held), "a live host holds its folder");
+        host
+    }
+
+    /// Why a launch in the folder is refused, before any bootstrap is built.
+    fn refusal(&self) -> io::ErrorKind {
+        refused(self.start(&mut |_| panic!("a refused launch builds no bootstrap")))
+    }
+
+    /// The endpoint of the host in the folder and the bootstrap its adoption inspected, once.
+    fn adopt(&self) -> (Box<dyn AdoptedEndpoint>, Vec<u8>) {
+        let mut inspected = Vec::new();
+        let endpoint = self
+            .hosts
+            .adopt(&self.state, &mut |folder, bootstrap| {
+                assert_eq!(folder.state_dir(), self.state);
+                inspected.push(bootstrap.to_vec());
+                Ok(())
+            })
+            .unwrap_or_else(|error| panic!("a folder that retains a bootstrap is adopted: {error}"));
+        assert_eq!(inspected.len(), 1, "an adoption inspects the bootstrap once");
+        assert_eq!(endpoint.identity().state_dir(), self.state);
+        (endpoint, inspected.remove(0))
+    }
+
+    /// The claim of the folder once its host ended, with the bootstrap it ran with.
+    fn ended(&self, bootstrap: &[u8]) -> EndedHost {
+        let Retained::Ended(ended) = self.hosts.claim(&self.state).unwrap() else { panic!("a host that ended leaves its folder to claim") };
+        assert_eq!(ended.bootstrap(), bootstrap, "the claim holds the bootstrap the host ran with");
+        assert_eq!(ended.state_dir(), self.state);
+        ended
+    }
+
+    /// Retires the ended host as `name`, and makes the folder again for the next one.
+    fn retire(&self, ended: EndedHost, name: &str) {
+        let archive = self.state.with_file_name(name);
+        let bootstrap = ended.bootstrap().to_vec();
+        ended.retire(&archive).unwrap();
+        assert!(matches!(self.hosts.claim(&self.state).unwrap(), Retained::Absent), "retiring frees the folder");
+        assert_eq!(std::fs::read(HostFolder::at(archive).ownership_path()).unwrap(), bootstrap, "the ended host is kept as evidence");
+        self.make_folder();
+    }
+}
+
+fn refused<T>(result: io::Result<T>) -> io::ErrorKind {
+    match result {
+        Ok(_) => panic!("nothing was refused"),
+        Err(error) => error.kind(),
+    }
+}
+
+fn assert_running(host: &HostStop, process: u32) {
+    let group = i32::try_from(process).expect("a process id fits a process group number");
+    assert!(!host.gone().unwrap(), "a running host is not gone");
+    assert_eq!(host.process_group(), Some(group), "a host leads the group its process id names");
+    assert_eq!(host.process().unwrap().map(|host| host.pid), Some(group));
+    assert!(host.tree().unwrap().iter().all(|under| under.pid != group), "a host is not one of the processes under it");
+    assert!(host.footprint().unwrap().is_some(), "a running host's memory is measured");
+}
+
+fn assert_gone(host: &HostStop) {
+    assert!(host.gone().unwrap(), "a host that ended is gone");
+    assert_eq!(host.process().unwrap(), None);
+    assert_eq!(host.tree().unwrap(), vec![], "nothing is under a host that ended");
+}
+
+/// A host's life in its folder as the engine relies on it: launched once with the bootstrap built
+/// for it, held while it runs, adopted with that bootstrap and reached, stopped or ended and its
+/// exit observed, claimed once ended, retired to free the folder for the next one. The handle that
+/// stops a host answers for its processes the same way before and after it ends.
+pub fn agent_host(hosts: &dyn AgentHost, fixture: &dyn HostFixture) {
+    use std::os::unix::fs::DirBuilderExt as _;
+    use std::os::unix::process::ExitStatusExt as _;
+    let scratch = Directory::for_unix_socket();
+    std::fs::DirBuilder::new().mode(0o700).create(&scratch).unwrap();
+    let room = Hosted { hosts, fixture, state: scratch.join("host"), launched: RefCell::default() };
+    let state = &room.state;
+    let nothing_to_adopt = || refused(hosts.adopt(state, &mut |_, _| panic!("nothing to inspect where no host ran")));
+
+    assert!(matches!(hosts.claim(state).unwrap(), Retained::Absent), "no folder, no host");
+    assert_eq!(room.refusal(), io::ErrorKind::NotFound, "a host is launched in a folder that exists");
+    assert_eq!(nothing_to_adopt(), io::ErrorKind::NotFound);
+    assert_eq!(refused(hosts.end_holders(state)), io::ErrorKind::NotFound);
+    room.make_folder();
+    assert!(matches!(hosts.claim(state).unwrap(), Retained::Absent), "a folder no host wrote its bootstrap in");
+    assert_eq!(nothing_to_adopt(), io::ErrorKind::NotFound);
+    assert_eq!(refused(hosts.end_holders(state)), io::ErrorKind::NotFound);
+
+    assert_eq!(refused(room.start(&mut |_| Err(io::ErrorKind::InvalidData.into()))), io::ErrorKind::InvalidData, "a launch fails as the build of its bootstrap did");
+    assert_eq!(refused(room.start(&mut |_| Ok(vec![]))), io::ErrorKind::PermissionDenied, "an empty bootstrap starts no host");
+    assert!(matches!(hosts.claim(state).unwrap(), Retained::Absent), "a launch that failed leaves nothing to claim");
+
+    let mut first = room.launch(b"first bootstrap");
+    let process = first.process_id();
+    let stop = first.stopper();
+    assert_running(&stop, process);
+    assert_eq!(room.refusal(), io::ErrorKind::Other, "a live host's folder takes no other");
+    let (adopted, bootstrap) = room.adopt();
+    assert_eq!(bootstrap, b"first bootstrap", "an adoption reads the bootstrap the launch retained, byte for byte");
+    let reached = adopted.stopper();
+    assert_eq!(reached.process_group(), None, "an adopted host is not known before it is reached");
+    assert!(!reached.gone().unwrap(), "and is taken as running");
+    assert_eq!(fixture.process_id(adopted.connect(Hosted::soon()).unwrap()), process, "an adoption reaches the host that runs there");
+    assert_running(&reached, process);
+    assert_eq!(reached.process().unwrap(), stop.process().unwrap(), "both handles name the same process");
+    assert_eq!(refused(hosts.adopt(state, &mut |_, _| Err(io::ErrorKind::InvalidData.into()))), io::ErrorKind::InvalidData, "an adoption fails as its inspection did");
+
+    stop.request().unwrap();
+    let status = first.wait().unwrap();
+    assert_eq!(first.observed_exit().unwrap(), Some(status), "the exit waited for is the exit observed");
+    assert_eq!(first.wait().unwrap(), status, "waiting again answers the same");
+    assert_gone(&stop);
+    assert_eq!(stop.process_group(), None);
+    assert_eq!(stop.footprint().unwrap(), None);
+    stop.request().unwrap();
+    stop.kill().unwrap();
+    assert!(stop.request_graceful_stop(Duration::ZERO).unwrap(), "a host that ended has stopped");
+    assert_gone(&reached);
+    assert_eq!(refused(first.wait_for_socket(Hosted::soon())), io::ErrorKind::ConnectionAborted, "no connection to a host that exited");
+    assert!(adopted.connect(Hosted::soon()).is_err());
+
+    let (unreachable, bootstrap) = room.adopt();
+    assert_eq!(bootstrap, b"first bootstrap", "the bootstrap of a host that ended is still read");
+    assert!(unreachable.connect(Hosted::soon()).is_err(), "but nothing is reached there");
+    let claimed = room.ended(b"first bootstrap");
+    assert!(matches!(hosts.claim(state).unwrap(), Retained::Held), "a claim keeps the folder until it is retired or dropped");
+    assert_eq!(room.refusal(), io::ErrorKind::Other, "a claimed folder takes no host");
+    drop(claimed);
+    assert_eq!(room.refusal(), io::ErrorKind::PermissionDenied, "a bootstrap not retired never lets another host in");
+    let Retained::Ended(ended) = hosts.end_holders(state).unwrap() else { panic!("ending the holders of a folder nothing holds claims it") };
+    assert_eq!(ended.bootstrap(), b"first bootstrap");
+    room.retire(ended, "first.ended");
+
+    let mut second = room.launch(b"second bootstrap");
+    fixture.exit(second.wait_for_socket(Hosted::soon()).unwrap());
+    let status = second.wait().unwrap();
+    assert!(status.success(), "a host that ends by itself says how");
+    assert_eq!(second.observed_exit().unwrap(), Some(status));
+    room.retire(room.ended(b"second bootstrap"), "second.ended");
+
+    let mut third = room.launch(b"third bootstrap");
+    third.stopper().kill().unwrap();
+    assert_eq!(third.wait().unwrap().signal(), Some(libc::SIGKILL), "a killed host ends killed");
+    room.retire(room.ended(b"third bootstrap"), "third.ended");
+
+    let mut fourth = room.launch(b"fourth bootstrap");
+    let (mut adopted, _) = room.adopt();
+    adopted.stop().unwrap();
+    assert_eq!(fourth.observed_exit().unwrap(), None, "an adopted host never reached is not stopped");
+    drop(adopted.connect(Hosted::soon()).unwrap());
+    adopted.stop().unwrap();
+    let status = fourth.wait().unwrap();
+    assert_eq!(fourth.observed_exit().unwrap(), Some(status), "the stop of an adopted host ends it");
+    assert_gone(&adopted.stopper());
+    room.retire(room.ended(b"fourth bootstrap"), "fourth.ended");
+
+    let fifth = room.launch(b"fifth bootstrap");
+    let process = fifth.process_id();
+    drop(fifth);
+    assert!(matches!(hosts.claim(state).unwrap(), Retained::Held), "a host outlives the handle that launched it");
+    let (adopted, bootstrap) = room.adopt();
+    assert_eq!(bootstrap, b"fifth bootstrap");
+    assert_eq!(fixture.process_id(adopted.connect(Hosted::soon()).unwrap()), process, "and still answers");
+    let Retained::Ended(ended) = hosts.end_holders(state).unwrap() else { panic!("ending the holders of a live host ends it and claims its folder") };
+    assert_eq!(ended.bootstrap(), b"fifth bootstrap");
+    assert_eq!(adopted.stopper().process().unwrap(), None, "the host whose holders were ended no longer runs");
+    room.retire(ended, "fifth.ended");
 }

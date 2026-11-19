@@ -72,6 +72,9 @@ pub trait StopHandle: Send + Sync {
     fn request_graceful_stop(&self, timeout: Duration) -> io::Result<bool>;
     fn request_after_interrupt(&self) -> io::Result<()>;
     fn process_group(&self) -> Option<i32>;
+    fn gone(&self) -> io::Result<bool>;
+    fn tree(&self) -> io::Result<Vec<Member>>;
+    fn footprint(&self) -> io::Result<Option<u64>>;
 }
 
 #[derive(Clone)]
@@ -99,6 +102,20 @@ impl HostStop {
     /// `None` once the host is gone or before an adopted host was reached.
     pub fn process_group(&self) -> Option<i32> {
         self.0.process_group()
+    }
+    /// Whether the bound host's process is gone. An adopted host this daemon never reached is taken
+    /// as running.
+    pub fn gone(&self) -> io::Result<bool> {
+        self.0.gone()
+    }
+    /// The processes under the host right now, by parentage and whatever their group: what a stop
+    /// of the host alone leaves running. The host is not one of them.
+    pub fn tree(&self) -> io::Result<Vec<Member>> {
+        self.0.tree()
+    }
+    /// The bytes the host's process group holds; `None` where `process_group` is.
+    pub fn footprint(&self) -> io::Result<Option<u64>> {
+        self.0.footprint()
     }
 }
 

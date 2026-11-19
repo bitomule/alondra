@@ -562,6 +562,26 @@ impl StopHandle for Stopper {
             Leader::Adopted(peer) => (*peer.lock().expect("adopted host peer poisoned")).map(|host| host.pid),
         }
     }
+    /// A launched host is gone once reaped. An adopted one is gone when no process has the PID this
+    /// daemon reached; one it never reached is taken as running.
+    fn gone(&self) -> io::Result<bool> {
+        match &self.0 {
+            Leader::Launched(leader) => match *leader.lock().expect("owned host leader poisoned") {
+                Some(pid) => Ok(alondra_process_group::process(pid.as_raw_nonzero().get())?.is_none()),
+                None => Ok(true),
+            },
+            Leader::Adopted(peer) => match *peer.lock().expect("adopted host peer poisoned") {
+                Some(host) => Ok(alondra_process_group::process(host.pid)?.is_none()),
+                None => Ok(false),
+            },
+        }
+    }
+    fn tree(&self) -> io::Result<Vec<alondra_process_group::Member>> {
+        self.process_group().map_or(Ok(vec![]), alondra_process_group::tree)
+    }
+    fn footprint(&self) -> io::Result<Option<u64>> {
+        self.process_group().map(alondra_process_group::footprint).transpose()
+    }
 }
 impl Stopper {
     fn send(&self, sig: rustix::process::Signal) -> io::Result<()> {

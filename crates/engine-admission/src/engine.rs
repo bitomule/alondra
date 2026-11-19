@@ -35,8 +35,8 @@ impl Hosts<'_> {
         self.port.owns(self.runtime, agent)
     }
 
-    pub fn node_groups_by_agent(&self) -> Vec<(AgentId, i32)> {
-        self.port.node_groups_by_agent(self.runtime)
+    pub fn node_footprints(&self) -> std::io::Result<std::collections::BTreeMap<AgentId, u64>> {
+        self.port.node_footprints(self.runtime)
     }
 
     pub fn halt(&self, task: TaskId, agent: AgentId) {

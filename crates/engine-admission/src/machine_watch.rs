@@ -954,11 +954,7 @@ pub fn pace(domain: &DomainRuntime, machine: &Machine) {
     let watch = &domain.machine_watch();
     let now = if machine.at == 0 { now_millis() } else { machine.at };
     let Some(before) = watch.sample(machine, now) else { return };
-    let mut seen = BTreeSet::new();
-    let footprints = domain.hosts().node_groups_by_agent().into_iter().filter(|(_, group)| seen.insert(*group))
-        .map(|(agent, group)| alondra_process_group::footprint(group).map(|bytes| (agent, bytes)))
-        .collect::<std::io::Result<BTreeMap<_, _>>>();
-    match footprints {
+    match domain.hosts().node_footprints() {
         Ok(footprints) => watch.measure_node_memory(now_millis(), footprints),
         Err(error) => watch.nodes_unavailable(&error),
     }

@@ -473,6 +473,47 @@ without the queue's wait:
   host: run one at a time, a test without a host takes 0.05 s (median) and one with a host 0.9 to
   1.8 s.
 
+## A double of `AgentHost` and the contract it shares with the real hosts (2026-11-18)
+
+About 330 tests of `//crates/engine-sdk:engine_sdk_test` start a real Agent SDK host (Node) each:
+0.9 to 1.8 s a test, against 0.05 s for a test with no host. The engine reaches hosts only through
+the port `AgentHost`, so a double of the port takes the process out of those tests. This step
+delivers the double, the contract both implementations pass and the change of the port a double
+needs. No test runs on the double yet.
+
+- `engine-doubles/src/agent_host.rs`: `InProcessHosts` implements `AgentHost` with no process and
+  no provider's protocol. Each folder holds, in memory, the host that runs there: the bootstrap it
+  was launched with, whether it lives, its exit and what was asked of it. A test plays the host
+  through the trait `Serve` (what it does on a connection, one end of a `UnixStream::pair()`, and
+  when it is asked to stop) and reads what happened (`live`, `launches`, `connections`, `stops`,
+  `probed`). A test that restarts its daemon gives the same hosts to the next runtime (`provide`),
+  so a host outlives the daemon as a process does. A host's process id is a number above every
+  kernel's highest, so it never names a real process, and a provider's command line (`run`) is
+  answered by the test and never executed.
+- `engine-doubles/src/contract.rs`: `agent_host(hosts, fixture)` is what the engine relies on from
+  the port, written against the real adapter first. `engine_doubles_test` runs it on the double and
+  `//crates/agent-runtime:owned_host_test` on `ProcessHosts` with its fixture binary
+  (`the_process_hosts_keep_the_contract_of_the_port`), so the double cannot drift from the hosts
+  the daemon starts. The test of an adapter may link `engine-doubles`, as `system`'s does; the
+  crate gained no dependency. The contract launches five hosts one after another in one folder:
+  0.54 s on the real adapter, with five processes, and 0.03 s on the double, each run alone on the
+  shared Mac.
+- What the contract fixed that a double could have got wrong: the caller makes the host's folder,
+  private, and a launch in a missing one is refused; a host outlives the handle that launched it;
+  the bootstrap of a host that ended is still adopted, and only its connection fails; an adopted
+  host is not known, nor stopped, before its endpoint was reached; a claim holds the folder until
+  it is retired or dropped, and a bootstrap not retired never lets another host in.
+- The handle that stops a host answers for its processes: `HostStop::gone`, `tree` and
+  `footprint`. The engine handed a host's process group number to `process-group` in three places,
+  which a double could not answer and must never get a real number for: the check of an adopted
+  host's process and the processes under a released or halted host (`engine-sdk`), and the memory
+  of each node in the machine watch (`engine-admission`). `agent-runtime` makes the same calls
+  behind the port now. The machine watch asks `SdkHosts::node_footprints`, answered by the owner of
+  each host, in place of `node_groups_by_agent`, which had no other caller and is gone.
+- Still around the port, for the steps that move tests onto the double: the Codex provider asks
+  `process-group` for its native process, and the engine and the providers read a host folder's
+  `host.lock` by its path in a few places, which is why the double writes the bootstrap there too.
+
 ## Admission and orchestrator without the engine (phase 4a, 2026-11-18)
 
 `engine-admission` and `engine-orchestrator` compile and test without `daemon-engine` and without
