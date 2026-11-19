@@ -94,7 +94,8 @@ fn freshly_rebuilt_equal_projections_do_not_serialize_in_the_sampler() {
     assert!(sample_changed(Snapshot::new(live.clone()), &mut last, &observation));
     let before = observation.totals();
     assert_eq!(before.metrics[Metric::SamplerSerializations as usize],
-        serde_json::to_value(&live).unwrap().as_object().unwrap().len() as u64);
+        serde_json::to_value(&live).unwrap().as_object().unwrap().len() as u64 - 1,
+        "the empty node tree needs no JSON serialization");
     assert!(before.metrics[Metric::SamplerBytes as usize] > 0);
     for _ in 0..32 {
         assert!(!sample_changed(Snapshot::new(live.clone()), &mut last, &observation));

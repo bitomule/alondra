@@ -33,6 +33,7 @@ adapter_out_crate(
     crate_name = "alondra_provider_claude",
     version = "0.1.0",
     deps = _PROVIDER_DEPS,
+    test_visibility = ["//crates/daemon-server:__pkg__"],
 )
 
 low_opt_rust_test(

@@ -278,7 +278,7 @@ fn mac_name() -> String {
 /// What the status header says right now: the counts the phone's Live Activity shows.
 async fn current(domain: &DomainRuntime, client: &crate::client_routes::Client) -> ActivityCounts {
     let read = domain.read();
-    let live = crate::views::live::gather(client, read.state(), Lang::En, &[], false, false).await;
+    let live = crate::views::live::gather(client, &read, Lang::En, &[], false, false).await;
     crate::screens::get().activity_counts(&RenderContext {
         domain: read.state(), index: read.index(), live: &live, client: Client::Mac, lang: Lang::En,
         transport: Transport::Loopback, cursor: "", rendered_at: "",

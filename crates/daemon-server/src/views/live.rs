@@ -38,7 +38,7 @@ impl Snapshot {
     pub(crate) fn new(live: LiveSnapshot) -> Self { Self::observed(live, &Observation::default()) }
 
     fn observed(live: LiveSnapshot, observation: &Observation) -> Self {
-        Self::from_components(super::components::Components::new(live), observation)
+        Self::from_components(super::components::Components::new(live, observation), observation)
     }
 
     fn from_components(parts: super::components::Components, observation: &Observation) -> Self {
@@ -101,7 +101,7 @@ impl serde::Serialize for Snapshot {
 }
 
 /// A cache whose holder panicked is emptied: the next read fills it again.
-fn cache<T: Default>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+pub(super) fn cache<T: Default>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     lock.lock().unwrap_or_else(|poisoned| {
         log!("a live read cache was emptied: a thread panicked holding it");
         lock.clear_poison();
@@ -136,6 +136,7 @@ impl LiveReadCache {
 pub(crate) struct LiveSnapshots {
     /// A holder that panics empties it: see `cache`.
     entries: Mutex<HashMap<String, (Facts, Snapshot)>>,
+    nodes: super::node_rows::Cache,
     #[cfg(test)]
     gathered: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
@@ -153,7 +154,8 @@ struct Facts {
     store_rows: u64,
     pull_requests: u64,
     contexts: u64,
-    domain: watch::Receiver<alondra_domain_rules::Revision>,
+    snapshot: alondra_domain_rules::NodeChangeCursor,
+    domain: watch::Receiver<u64>,
     hooks: watch::Receiver<()>,
     reports: watch::Receiver<()>,
     usage: watch::Receiver<Option<crate::usage_pause::Exhausted>>,
@@ -164,9 +166,10 @@ struct Facts {
 impl Facts {
     /// None when the store already holds a newer revision than `state`: a snapshot read now
     /// would mix the two.
-    fn observe(client: &crate::client_routes::Client, state: &DomainState) -> Option<Self> {
+    fn observe(client: &crate::client_routes::Client, read: &alondra_domain_rules::ReadSnapshot) -> Option<Self> {
+        let state = read.state();
         let live = client.domain.live();
-        let domain = client.domain.subscribe();
+        let domain = client.domain.subscribe_snapshots();
         let hooks = live.changed.subscribe();
         let reports = live.mods.changed.subscribe();
         let usage = live.usage_pause.subscribe();
@@ -180,10 +183,10 @@ impl Facts {
         };
         let mut invalid = 0;
         if newest > state.revision { invalid |= Cause::Revision.bit() | Cause::Store.bit(); }
-        if *domain.borrow() != state.revision { invalid |= Cause::Revision.bit() | Cause::Domain.bit(); }
+        if client.domain.read().state().revision != state.revision { invalid |= Cause::Revision.bit() | Cause::Domain.bit(); }
         client.view_observation.invalid(Stage::Observe, invalid);
         (invalid == 0).then(|| Self {
-            epoch: state.data_epoch.0.clone(), revision: state.revision, store_rows, pull_requests, contexts,
+            epoch: state.data_epoch.0.clone(), revision: state.revision, store_rows, pull_requests, contexts, snapshot: read.node_cursor(),
             domain, hooks, reports, usage, gate, sampled,
         })
     }
@@ -234,7 +237,8 @@ impl LiveSnapshots {
         match previous { Some(previous) => fresh.reuse_components(&previous, &fresh_observation), None => fresh }
     }
 
-    fn get(&self, client: &crate::client_routes::Client, key: &str, state: &DomainState, observed_at: Option<Millis>) -> Option<Snapshot> {
+    fn get(&self, client: &crate::client_routes::Client, key: &str, read: &alondra_domain_rules::ReadSnapshot, observed_at: Option<Millis>) -> Option<Snapshot> {
+        let state = read.state();
         let marks = Marks::now(client);
         let mut entries = cache(&self.entries);
         let Some((facts, live)) = entries.get_mut(key) else {
@@ -242,6 +246,7 @@ impl LiveSnapshots {
             return None;
         };
         let mut invalid = facts.invalid(&marks);
+        if facts.snapshot != read.node_cursor() { invalid |= Cause::Domain.bit(); }
         if facts.epoch != state.data_epoch.0 { invalid |= Cause::Epoch.bit(); }
         if facts.revision != state.revision { invalid |= Cause::Revision.bit(); }
         client.view_observation.invalid(Stage::Lookup, invalid);
@@ -298,45 +303,46 @@ fn node_label(key: &str, lang: Lang) -> String {
 
 pub(crate) async fn gather(
     client: &crate::client_routes::Client,
-    state: &std::sync::Arc<DomainState>,
+    read: &std::sync::Arc<alondra_domain_rules::ReadSnapshot>,
     lang: Lang,
     keys: &[String],
     allow_issue_refresh: bool,
     clock_only: bool,
 ) -> Snapshot {
-    gather_now(client, state, lang, keys, allow_issue_refresh, clock_only, alondra_core::now_millis()).await
+    gather_now(client, read, lang, keys, allow_issue_refresh, clock_only, alondra_core::now_millis()).await
 }
 
 async fn gather_now(
     client: &crate::client_routes::Client,
-    state: &std::sync::Arc<DomainState>,
+    read: &std::sync::Arc<alondra_domain_rules::ReadSnapshot>,
     lang: Lang,
     keys: &[String],
     allow_issue_refresh: bool,
     clock_only: bool,
     now: Millis,
 ) -> Snapshot {
+    let state = read.state();
     client.view_observation.add(Metric::GatherRequest, 1);
     // The live sampler reads clock-only snapshots to notice what no fact announces; it must
     // always look afresh.
     if clock_only {
         #[cfg(test)]
         client.live_snapshots.gathered.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        return Snapshot::observed(gather_at(client, state, lang, keys, allow_issue_refresh, true, now).await, &client.view_observation);
+        return gather_at(client, read, lang, keys, allow_issue_refresh, true, now).await;
     }
     let snapshots = &client.live_snapshots;
     let key = format!("{lang:?}|{}", keys.join("\n"));
     let watched = !keys.iter().any(|key| reads_unwatched_sources(key));
     if !watched { client.view_observation.add(Metric::Unwatched, 1); }
-    if watched && let Some(live) = snapshots.get(client, &key, state, quota_clock(state, keys, now)) {
+    if watched && let Some(live) = snapshots.get(client, &key, read, quota_clock(state, keys, now)) {
         client.view_observation.add(Metric::FinalHit, 1);
         return live;
     }
     // GitHub is awaited before the read lane is taken, so a slow issue search never holds it.
     let issue_data = issue_data(client, keys, allow_issue_refresh).await;
-    let facts = Facts::observe(client, state);
+    let facts = Facts::observe(client, read);
     let shared = format!("{lang:?}|");
-    let live = match snapshots.get(client, &shared, state, None) {
+    let live = match snapshots.get(client, &shared, read, None) {
         Some(live) => {
             client.view_observation.add(Metric::SharedHit, 1);
             live
@@ -344,7 +350,7 @@ async fn gather_now(
         None => {
             #[cfg(test)]
             snapshots.gathered.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let live = Snapshot::observed(gather_at(client, state, lang, &[], false, false, now).await, &client.view_observation);
+            let live = gather_at(client, read, lang, &[], false, false, now).await;
             let live = snapshots.reuse_payload(&shared, live);
             if let Some(facts) = &facts {
                 snapshots.insert(client, shared, facts.clone(), live.clone());
@@ -394,20 +400,20 @@ async fn keyed_at(
 
 async fn gather_at(
     client: &crate::client_routes::Client,
-    state: &std::sync::Arc<DomainState>,
+    read: &std::sync::Arc<alondra_domain_rules::ReadSnapshot>,
     lang: Lang,
     keys: &[String],
     allow_issue_refresh: bool,
     clock_only: bool,
     now: Millis,
-) -> LiveSnapshot {
+) -> Snapshot {
     let issue_data = issue_data(client, keys, allow_issue_refresh).await;
     let client = client.shared();
-    let state = state.clone();
+    let read = read.clone();
     let keys = keys.to_vec();
     let runtime = tokio::runtime::Handle::current();
     let work = client.read_work.clone();
-    work.run(move || runtime.block_on(gather_inner(&client, &state, lang, &keys, issue_data, clock_only, now)))
+    work.run(move || runtime.block_on(gather_inner(&client, &read, lang, &keys, issue_data, clock_only, now)))
         .await.unwrap_or_else(|failed| std::panic::resume_unwind(failed.into_panic()))
 }
 
@@ -424,6 +430,8 @@ async fn issue_data(client: &crate::client_routes::Client, keys: &[String], refr
 
 /// What a snapshot reads from the store, all in one read transaction: one commit's state.
 struct Stored {
+    boundary: Option<crate::domain_store::ReadCursor>,
+    launches_ok: bool,
     launches: BTreeMap<alondra_domain_rules::RequestId, (Option<String>, Option<String>)>,
     refusals: Vec<(TaskId, String, Option<String>)>,
     retries: BTreeMap<TaskId, (u8, i64)>,
@@ -441,15 +449,19 @@ impl Stored {
     fn read(client: &crate::client_routes::Client, state: &DomainState, waiting: &[&alondra_domain_rules::Task], keys: &[String], clock_only: bool) -> Self {
         let store = client.domain.live_read();
         let launched = if waiting.is_empty() { Ok(Default::default()) } else { store.launched_tasks(waiting.iter().map(|task| &task.id)) };
-        let (launches, refusals, retries) = (store.request_launch_summaries().unwrap_or_default(), store.launch_refusals().unwrap_or_default(), store.start_retries().unwrap_or_default());
+        let boundary = store.read_cursor().ok();
+        let launches = store.request_launch_summaries();
+        let launches_ok = launches.is_ok();
+        client.view_observation.add(Metric::NodeStoreRowsRead, launches.as_ref().map_or(0, |rows| rows.len() as u64));
+        let (launches, refusals, retries) = (launches.unwrap_or_default(), store.launch_refusals().unwrap_or_default(), store.start_retries().unwrap_or_default());
         if clock_only {
-            return Self { launches, refusals, retries, launched, revision_times: Ok(Default::default()), request_times: Default::default(),
+            return Self { boundary, launches_ok, launches, refusals, retries, launched, revision_times: Ok(Default::default()), request_times: Default::default(),
                 task_state_times: Default::default(), task_started_times: Default::default(), cancel_reasons: Default::default(), task_spend: vec![] };
         }
         let revisions = state.inbox_orders().iter().map(|(_, order)| *order)
             .chain(state.unanswered_message_revisions().into_iter().map(|(_, revision)| revision)).collect::<Vec<_>>();
         Self {
-            launches, refusals, retries, launched,
+            boundary, launches_ok, launches, refusals, retries, launched,
             revision_times: store.revision_times(&revisions),
             request_times: store.request_times().unwrap_or_default(),
             task_state_times: store.task_state_times().unwrap_or_default(),
@@ -474,13 +486,14 @@ fn waiting_to_start<'a>(client: &crate::client_routes::Client, state: &'a Domain
 
 async fn gather_inner(
     client: &crate::client_routes::Client,
-    state: &DomainState,
+    snapshot: &alondra_domain_rules::ReadSnapshot,
     lang: Lang,
     keys: &[String],
     issue_data: Option<Value>,
     clock_only: bool,
     now: Millis,
-) -> LiveSnapshot {
+) -> Snapshot {
+    let state = snapshot.state();
     client.view_observation.add(if clock_only { Metric::GatherSampler } else { Metric::GatherShared }, 1);
     let (exhausted, waits_for_session) = match client.domain.live().usage_pause.current() {
         Some(standing) if standing.no_session => (None, true),
@@ -509,156 +522,8 @@ async fn gather_inner(
             (task.0, alondra_view_model::LiveLaunchRefusal { reason, detail })
         })
         .collect();
-    let node_tasks = alondra_domain_rules::NodeTasks::new(state);
-    let nodes: Vec<_> = state
-        .agents
-        .values()
-        .inspect(|_| client.view_observation.add(Metric::AgentRows, 1))
-        .filter_map(|agent| {
-            let session_id = agent.id.0.clone();
-            let reported = client.domain.live().mods.session(&session_id).unwrap_or_default();
-            let mine = node_tasks.of(&agent.id);
-            let open_task = mine.iter().any(|task| !task.archived
-                && !matches!(task.state, TaskState::Done | TaskState::Closing | TaskState::Cancelled));
-            let (node, state_since) = match client.domain.live().node(&session_id) {
-                Some(node) => {
-                    let state_since = Some(node.state_since);
-                    (node, state_since)
-                }
-                None if reported.started_at.is_some() || agent.phase.live() || open_task => {
-                    let mut node = alondra_core::Node::new(&session_id, 0);
-                    node.cwd = reported.cwd.clone();
-                    (node, None)
-                }
-                None => return None,
-            };
-            let project = if node.cwd.is_some() || node.is_orchestrator {
-                node.project()
-            } else {
-                launched_project(mine, agent, &launches).unwrap_or_else(|| node.project())
-            };
-            let sdk = (agent.phase == NodePhase::ThroughSdk).then(|| state.sdk_live_of(&agent.id, node_tasks.current(&agent.id)));
-            let state_key = match (&agent.phase, reported.activity()) {
-                (NodePhase::ThroughSdk, _) => match sdk.as_ref().and_then(Option::as_ref) {
-                    Some(live) if matches!(live, alondra_domain::LiveState::Working(alondra_domain::Worker::Turn | alondra_domain::Worker::OwnWork | alondra_domain::Worker::AfterMerge
-                        | alondra_domain::Worker::Alondra(alondra_domain::Step::Starting | alondra_domain::Step::Delivering | alondra_domain::Step::Waking))) => "busy",
-                    Some(alondra_domain::LiveState::WaitingUser(cards)) if cards.iter().all(|card| state.node_pause_card(card)) => "paused",
-                    Some(alondra_domain::LiveState::WaitingCapacity(_)) => "waiting_machine",
-                    _ => "free",
-                },
-                _ => "free",
-            };
-            let state_label = node_label(state_key, lang);
-            let tool = reported.tool.as_ref().map(|tool| match &tool.summary {
-                Some(summary) => format!("{}: {summary}", tool.name),
-                None => tool.name.clone(),
-            });
-            let answer = reported.answer.as_ref().filter(|answer| !answer.text.trim().is_empty());
-            let last_message = reported.last_message();
-            let failure = reported.job.as_ref().filter(|job| job.phase == crate::job_state::Phase::Failed).map(|job| job.detail.clone()).filter(|detail| !detail.is_empty());
-            let summary = failure.or_else(|| tool.clone())
-                .or_else(|| node.daemon_needs.clone())
-                .or_else(|| node.daemon_detail.clone())
-                .map(|summary| summary.lines().next().unwrap_or("").chars().take(141).collect());
-            let running: Vec<(&str, &alondra_core::BackgroundItem)> = reported.background.iter()
-                .filter(|(_, item)| reported.shell_end(item).is_none()).map(|(id, item)| (id.as_str(), item)).collect();
-            let counts = [alondra_core::BackgroundKind::Agent, alondra_core::BackgroundKind::Shell,
-                alondra_core::BackgroundKind::Other].into_iter().filter_map(|kind| {
-                    let count = running.iter().filter(|(_, item)| item.kind == kind).count();
-                    (count > 0).then(|| {
-                        let noun = match (lang, kind) {
-                            (Lang::En, alondra_core::BackgroundKind::Agent) => "subagent",
-                            (Lang::En, alondra_core::BackgroundKind::Shell) => "shell",
-                            (Lang::En, alondra_core::BackgroundKind::Other) => "task",
-                            (Lang::Es, alondra_core::BackgroundKind::Agent) => "subagente",
-                            (Lang::Es, alondra_core::BackgroundKind::Shell) => "shell",
-                            (Lang::Es, alondra_core::BackgroundKind::Other) => "tarea",
-                        };
-                        format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
-                    })
-                }).collect::<Vec<_>>();
-            let background_badge = (!counts.is_empty()).then(|| counts.join(" · "));
-            let context = mine.iter()
-                .find_map(|task| client.domain.contexts().used(&task.id))
-                .map(|used| (used.percent(), used.window));
-            let reported_wait = mine.first()
-                .and_then(|task| {
-                    let lifecycle = state.lifecycle_of(&task.id).ok()?;
-                    alondra_daemon_engine::sdk_live::wait_file(&client.domain, task.account_key().provider, lifecycle.execution()?.instance().as_str())
-                })
-                .and_then(|path| alondra_daemon_engine::sdk_live::read_wait_file(&path))
-                .map(|wait| alondra_view_model::LiveReportedWait { what: wait.what, progress: wait.progress, detail: wait.detail, since: timestamp(wait.since_ms) });
-            Some(LiveNode {
-                agent_id: node.session_id,
-                short_id: Some(node.short_id),
-                cwd: node.cwd.clone(),
-                name: agent.name.clone(),
-                project: Some(project),
-                state_key: Some(state_key.to_owned()),
-                state_label: Some(state_label),
-                summary,
-                needs: node.daemon_needs.clone(),
-                subagents: reported.work.agents.iter().map(|agent| LiveRun {
-                    label: agent.description.clone(),
-                    kind: agent.kind.clone(),
-                    model: agent.model.clone(),
-                    agents: None,
-                    since: timestamp(agent.started_at),
-                    state: run_state(agent.started_at, agent.end),
-                    workflow: None,
-                }).collect(),
-                workflows: reported.work.workflows.iter().map(|workflow| {
-                    let state = workflow.transcript_dir.as_deref()
-                        .and_then(|dir| crate::workflow_state::read(dir, workflow.end.is_some()));
-                    LiveRun {
-                        label: workflow.name.clone(),
-                        kind: None,
-                        model: None,
-                        agents: state.as_ref().map(|state| state.running + state.done)
-                            .or_else(|| workflow.transcript_dir.as_deref().and_then(crate::node_work::workflow_agents)),
-                        since: timestamp(workflow.started_at),
-                        state: run_state(workflow.started_at, workflow.end),
-                        workflow: state,
-                    }
-                }).collect(),
-                steps: reported.work.steps.iter().map(|step| LiveStep {
-                    subject: step.subject.clone(),
-                    state: match step.status {
-                        StepStatus::InProgress => StepState::InProgress,
-                        StepStatus::Completed => StepState::Completed,
-                        StepStatus::Pending | StepStatus::Deleted | StepStatus::Unknown => StepState::Pending,
-                    },
-                    active_form: step.active_form.clone(),
-                }).collect(),
-                background: reported.background.iter().filter(|(id, _)| !reported.work.runs(id))
-                    .map(|(_, item)| (item, reported.shell_end(item)))
-                    .chain(reported.work.ended_tasks.iter().map(|task| (&task.item, Some(task.end))))
-                    .map(|(item, end)| LiveBackground {
-                        kind: serde_json::to_value(item.kind).ok().and_then(|value| value.as_str().map(str::to_owned)).unwrap_or_else(|| "other".into()),
-                        label: item.label.clone(),
-                        since: timestamp(item.started_at),
-                        state: run_state(item.started_at, end),
-                    }).collect(),
-                background_badge,
-                reported_wait,
-                working: matches!(&sdk, Some(Some(alondra_domain::LiveState::Working(alondra_domain::Worker::Turn)))),
-                waiting: matches!(&sdk, Some(Some(alondra_domain::LiveState::WaitingUser(_)))),
-                state_since: state_since.map(timestamp),
-                last_message: last_message.map(|(text, _)| text.to_owned()),
-                last_message_at: last_message.map(|(_, at)| timestamp(at)),
-                last_turn_aborted: answer.is_some_and(|answer| answer.aborted),
-                tool: tool.map(|tool| tool.chars().take(141).collect()),
-                tool_since: reported.tool.as_ref().map(|tool| crate::usage_pause::clock_text(tool.since, now, lang == Lang::Es)),
-                context_percent: context.and_then(|(percent, _)| percent).map(|percent| percent.round().clamp(0.0, 999.0) as u32),
-                context_window: context.and_then(|(_, window)| window),
-                cost_cents: reported.sdk.as_ref().and_then(|readings| readings.cost_cents),
-                model: reported.model.clone(),
-                disconnected: agent.phase == NodePhase::Closed && open_task,
-                waiting_until: exhausted.as_ref().filter(|_| node.usage_limited).map(|exhausted| timestamp(exhausted.until)),
-            })
-        })
-        .inspect(|_| client.view_observation.add(Metric::NodeOutputRows, 1))
-        .collect();
+    let nodes = client.live_snapshots.nodes.gather(client, snapshot, lang, &launches,
+        read.boundary.clone(), read.launches_ok, &exhausted, now);
     let pull_requests = state
         .pull_requests
         .values()
@@ -757,20 +622,19 @@ async fn gather_inner(
         (task.id.0.clone(), alondra_view_model::live::LiveTaskOptions { effort })
     }).collect();
     let task_costs = if clock_only { BTreeMap::new() } else {
-        let nodes_by_agent: BTreeMap<&str, &LiveNode> = nodes.iter().map(|node| (node.agent_id.as_str(), node)).collect();
         read.task_spend.into_iter().filter_map(|(id, (sessions, folded))| {
             let task = state.tasks.get(&TaskId(id.clone()))?;
-            let live = task.agent_id.as_ref().and_then(|agent| nodes_by_agent.get(agent.0.as_str()).copied())
+            let live = task.agent_id.as_ref().and_then(|agent| nodes.get(agent.0.as_str()))
                 .and_then(|node| Some((node.agent_id.as_str(), node.cost_cents?)));
             Some((id.clone(), task_cost_cents(&sessions, folded, live)?))
         }).collect()
     };
     let keyed = gather_keyed(client, state, keys, issue_data).await;
-    LiveSnapshot {
+    let live = LiveSnapshot {
         observed_at: quota_clock(state, keys, now),
         closed_nodes: client.domain.live().closed_sessions(),
         closed_tasks: client.domain.live().user_closed_task_ids(),
-        nodes,
+        nodes: Vec::new(),
         pull_requests,
         orchestrator,
         update,
@@ -806,7 +670,157 @@ async fn gather_inner(
         mcp_probes: keyed.mcp_probes,
         mcp_removed: keyed.mcp_removed,
         metrics: keyed.metrics,
-    }
+    };
+    let mut parts = super::components::Components::new(live, &client.view_observation);
+    parts.nodes = nodes;
+    Snapshot::from_components(parts, &client.view_observation)
+}
+
+pub(super) fn node_row(client: &crate::client_routes::Client, read: &alondra_domain_rules::ReadSnapshot,
+    id: &alondra_domain_rules::AgentId, lang: Lang,
+    launches: &BTreeMap<alondra_domain_rules::RequestId, (Option<String>, Option<String>)>,
+    exhausted: &Option<crate::usage_pause::Exhausted>, now: Millis) -> Option<LiveNode> {
+    client.view_observation.add(Metric::AgentRows, 1);
+    let state = read.state();
+    let agent = state.agents.get(id)?;
+    let reading = read.index().live_node(id)?;
+    let session_id = agent.id.0.clone();
+    let reported = client.domain.live().mods.session(&session_id).unwrap_or_default();
+    let mine: Vec<_> = reading.tasks.iter().filter_map(|id| state.tasks.get(id)).collect();
+    let open_task = reading.open_task;
+    let (node, state_since) = match client.domain.live().node(&session_id) {
+        Some(node) => {
+            let state_since = Some(node.state_since);
+            (node, state_since)
+        }
+        None if reported.started_at.is_some() || agent.phase.live() || open_task => {
+            let mut node = alondra_core::Node::new(&session_id, 0);
+            node.cwd = reported.cwd.clone();
+            (node, None)
+        }
+        None => return None,
+    };
+    let project = if node.cwd.is_some() || node.is_orchestrator {
+        node.project()
+    } else {
+        launched_project(&mine, agent, launches).unwrap_or_else(|| node.project())
+    };
+    let sdk = (agent.phase == NodePhase::ThroughSdk).then(|| reading.sdk.clone());
+    let state_key = match (&agent.phase, reported.activity()) {
+        (NodePhase::ThroughSdk, _) => match sdk.as_ref().and_then(Option::as_ref) {
+            Some(live) if matches!(live, alondra_domain::LiveState::Working(alondra_domain::Worker::Turn | alondra_domain::Worker::OwnWork | alondra_domain::Worker::AfterMerge
+                | alondra_domain::Worker::Alondra(alondra_domain::Step::Starting | alondra_domain::Step::Delivering | alondra_domain::Step::Waking))) => "busy",
+            Some(alondra_domain::LiveState::WaitingUser(_)) if reading.waiting_on_pause => "paused",
+            Some(alondra_domain::LiveState::WaitingCapacity(_)) => "waiting_machine",
+            _ => "free",
+        },
+        _ => "free",
+    };
+    let state_label = node_label(state_key, lang);
+    let tool = reported.tool.as_ref().map(|tool| match &tool.summary {
+        Some(summary) => format!("{}: {summary}", tool.name),
+        None => tool.name.clone(),
+    });
+    let answer = reported.answer.as_ref().filter(|answer| !answer.text.trim().is_empty());
+    let last_message = reported.last_message();
+    let failure = reported.job.as_ref().filter(|job| job.phase == crate::job_state::Phase::Failed).map(|job| job.detail.clone()).filter(|detail| !detail.is_empty());
+    let summary = failure.or_else(|| tool.clone())
+        .or_else(|| node.daemon_needs.clone())
+        .or_else(|| node.daemon_detail.clone())
+        .map(|summary| summary.lines().next().unwrap_or("").chars().take(141).collect());
+    let running: Vec<(&str, &alondra_core::BackgroundItem)> = reported.background.iter()
+        .filter(|(_, item)| reported.shell_end(item).is_none()).map(|(id, item)| (id.as_str(), item)).collect();
+    let counts = [alondra_core::BackgroundKind::Agent, alondra_core::BackgroundKind::Shell,
+        alondra_core::BackgroundKind::Other].into_iter().filter_map(|kind| {
+            let count = running.iter().filter(|(_, item)| item.kind == kind).count();
+            (count > 0).then(|| {
+                let noun = match (lang, kind) {
+                    (Lang::En, alondra_core::BackgroundKind::Agent) => "subagent",
+                    (Lang::En, alondra_core::BackgroundKind::Shell) => "shell",
+                    (Lang::En, alondra_core::BackgroundKind::Other) => "task",
+                    (Lang::Es, alondra_core::BackgroundKind::Agent) => "subagente",
+                    (Lang::Es, alondra_core::BackgroundKind::Shell) => "shell",
+                    (Lang::Es, alondra_core::BackgroundKind::Other) => "tarea",
+                };
+                format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
+            })
+        }).collect::<Vec<_>>();
+    let background_badge = (!counts.is_empty()).then(|| counts.join(" · "));
+    let context = mine.iter()
+        .find_map(|task| client.domain.contexts().used(&task.id))
+        .map(|used| (used.percent(), used.window));
+    let reported_wait = reading.reported_wait.as_ref()
+        .and_then(|(provider, instance)| alondra_daemon_engine::sdk_live::wait_file(&client.domain, *provider, instance))
+        .and_then(|path| alondra_daemon_engine::sdk_live::read_wait_file(&path))
+        .map(|wait| alondra_view_model::LiveReportedWait { what: wait.what, progress: wait.progress, detail: wait.detail, since: timestamp(wait.since_ms) });
+    Some(LiveNode {
+        agent_id: node.session_id,
+        short_id: Some(node.short_id),
+        cwd: node.cwd.clone(),
+        name: agent.name.clone(),
+        project: Some(project),
+        state_key: Some(state_key.to_owned()),
+        state_label: Some(state_label),
+        summary,
+        needs: node.daemon_needs.clone(),
+        subagents: reported.work.agents.iter().map(|agent| LiveRun {
+            label: agent.description.clone(),
+            kind: agent.kind.clone(),
+            model: agent.model.clone(),
+            agents: None,
+            since: timestamp(agent.started_at),
+            state: run_state(agent.started_at, agent.end),
+            workflow: None,
+        }).collect(),
+        workflows: reported.work.workflows.iter().map(|workflow| {
+            let state = workflow.transcript_dir.as_deref()
+                .and_then(|dir| crate::workflow_state::read(dir, workflow.end.is_some()));
+            LiveRun {
+                label: workflow.name.clone(),
+                kind: None,
+                model: None,
+                agents: state.as_ref().map(|state| state.running + state.done)
+                    .or_else(|| workflow.transcript_dir.as_deref().and_then(crate::node_work::workflow_agents)),
+                since: timestamp(workflow.started_at),
+                state: run_state(workflow.started_at, workflow.end),
+                workflow: state,
+            }
+        }).collect(),
+        steps: reported.work.steps.iter().map(|step| LiveStep {
+            subject: step.subject.clone(),
+            state: match step.status {
+                StepStatus::InProgress => StepState::InProgress,
+                StepStatus::Completed => StepState::Completed,
+                StepStatus::Pending | StepStatus::Deleted | StepStatus::Unknown => StepState::Pending,
+            },
+            active_form: step.active_form.clone(),
+        }).collect(),
+        background: reported.background.iter().filter(|(id, _)| !reported.work.runs(id))
+            .map(|(_, item)| (item, reported.shell_end(item)))
+            .chain(reported.work.ended_tasks.iter().map(|task| (&task.item, Some(task.end))))
+            .map(|(item, end)| LiveBackground {
+                kind: serde_json::to_value(item.kind).ok().and_then(|value| value.as_str().map(str::to_owned)).unwrap_or_else(|| "other".into()),
+                label: item.label.clone(),
+                since: timestamp(item.started_at),
+                state: run_state(item.started_at, end),
+            }).collect(),
+        background_badge,
+        reported_wait,
+        working: matches!(&sdk, Some(Some(alondra_domain::LiveState::Working(alondra_domain::Worker::Turn)))),
+        waiting: matches!(&sdk, Some(Some(alondra_domain::LiveState::WaitingUser(_)))),
+        state_since: state_since.map(timestamp),
+        last_message: last_message.map(|(text, _)| text.to_owned()),
+        last_message_at: last_message.map(|(_, at)| timestamp(at)),
+        last_turn_aborted: answer.is_some_and(|answer| answer.aborted),
+        tool: tool.map(|tool| tool.chars().take(141).collect()),
+        tool_since: reported.tool.as_ref().map(|tool| crate::usage_pause::clock_text(tool.since, now, lang == Lang::Es)),
+        context_percent: context.and_then(|(percent, _)| percent).map(|percent| percent.round().clamp(0.0, 999.0) as u32),
+        context_window: context.and_then(|(_, window)| window),
+        cost_cents: reported.sdk.as_ref().and_then(|readings| readings.cost_cents),
+        model: reported.model.clone(),
+        disconnected: agent.phase == NodePhase::Closed && open_task,
+        waiting_until: exhausted.as_ref().filter(|_| node.usage_limited).map(|exhausted| timestamp(exhausted.until)),
+    })
 }
 
 /// What a task's sessions spent in all, in cents: each session's last report, the running one's
@@ -1158,17 +1172,73 @@ mod cache_tests {
     }
 
     #[tokio::test]
+    async fn node_rows_refresh_tool_dates_at_midnight_without_rebuilding_during_the_day() {
+        let observation = Observation::armed();
+        observation.start();
+        let (_home, domain, client) = wait_fixture_observed(observation.clone());
+        execute(&domain, Actor::System, "agent", Command::RegisterAgent {
+            agent_id: "clock-node".into(), name: "Clock".into(), at: 0,
+        });
+        let noon = crate::usage_pause::local_at(1_794_536_820_000, 0, 12, 0);
+        report(&domain, serde_json::json!({"session_id":"clock-node", "event":"tool.start", "tool":"Bash", "input":{"command":"build"}}), noon);
+        let read = domain.read();
+        for lang in [Lang::En, Lang::Es] {
+            let first = gather_now(&client, &read, lang, &[], false, true, noon).await;
+            let before = observation.totals();
+            let same_day = gather_now(&client, &read, lang, &[], false, true, noon + 60_000).await;
+            assert_eq!(same_day.nodes[0].tool_since, first.nodes[0].tool_since);
+            assert_eq!(observation.totals().metrics[Metric::AgentRows as usize], before.metrics[Metric::AgentRows as usize]);
+            let midnight = crate::usage_pause::local_at(noon, 1, 0, 0);
+            let next_day = gather_now(&client, &read, lang, &[], false, true, midnight).await;
+            assert_eq!(next_day.nodes[0].tool_since, Some(crate::usage_pause::clock_text(noon, midnight, lang == Lang::Es)));
+            assert_ne!(next_day.nodes[0].tool_since, first.nodes[0].tool_since);
+            assert_eq!(observation.totals().metrics[Metric::AgentRows as usize] - before.metrics[Metric::AgentRows as usize], 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn workflow_files_without_change_events_remain_fresh_and_count_their_fallback() {
+        let observation = Observation::armed();
+        observation.start();
+        let (home, domain, client) = wait_fixture_observed(observation.clone());
+        execute(&domain, Actor::System, "agent", Command::RegisterAgent {
+            agent_id: "file-node".into(), name: "Files".into(), at: 0,
+        });
+        let dir = home.join("workflow-fixture");
+        fs::create_dir_all(&dir).unwrap();
+        let journal = dir.join("journal.jsonl");
+        let started = "{\"type\":\"started\",\"agentId\":\"worker\",\"label\":\"Review\"}\n";
+        fs::write(&journal, started).unwrap();
+        report(&domain, serde_json::json!({"session_id":"file-node", "event":"workflow.start", "id":"review", "name":"Review", "transcript_dir":dir}), 1_000);
+        let read = domain.read();
+        let first = gather_now(&client, &read, Lang::En, &[], false, true, 2_000).await;
+        assert_eq!(first.nodes[0].workflows[0].workflow.as_ref().unwrap().running, 1);
+        let reports = domain.live().mods.change_cursor();
+        let before = observation.totals();
+        fs::write(&journal, format!("{started}{{\"type\":\"result\",\"agentId\":\"worker\"}}\n")).unwrap();
+        let finished = gather_now(&client, &read, Lang::En, &[], false, true, 2_000).await;
+        assert_eq!(domain.live().mods.change_cursor(), reports, "only the external file changed");
+        assert_eq!(finished.nodes[0].workflows[0].workflow.as_ref().unwrap().running, 0);
+        assert_eq!(finished.nodes[0].workflows[0].workflow.as_ref().unwrap().done, 1);
+        assert_eq!(observation.totals().metrics[Metric::NodeExternalRows as usize] - before.metrics[Metric::NodeExternalRows as usize], 1);
+        assert_eq!(observation.totals().metrics[Metric::AgentRows as usize] - before.metrics[Metric::AgentRows as usize], 1);
+        fs::remove_file(&journal).unwrap();
+        let missing = gather_now(&client, &read, Lang::En, &[], false, true, 2_000).await;
+        assert!(missing.nodes[0].workflows[0].workflow.is_none());
+    }
+
+    #[tokio::test]
     async fn scenario_start_discards_a_gauge_cached_before_the_startup_sample() {
         let (_home, domain, client) = wait_fixture();
-        let state = domain.state().unwrap();
+        let read = domain.read();
         let machine = |cpu_usage| alondra_core::Machine { cpu_usage, ..Default::default() };
         *client.gauges.lock().unwrap() = Some((machine(5.0), None, vec![]));
-        let early = gather(&client, &state, Lang::En, &[], false, true).await;
+        let early = gather(&client, &read, Lang::En, &[], false, true).await;
         assert_eq!(early.gauges.iter().find(|gauge| gauge.id == "cpu").unwrap().text, "5%");
 
         *client.gauges.lock().unwrap() = Some((machine(70.0), None, vec![]));
         client.clear_scenario_gauges();
-        let ready = gather(&client, &state, Lang::En, &[], false, false).await;
+        let ready = gather(&client, &read, Lang::En, &[], false, false).await;
         assert_eq!(ready.gauges.iter().find(|gauge| gauge.id == "cpu").unwrap().text, "70%");
     }
 
@@ -1178,12 +1248,15 @@ mod cache_tests {
         let observation = Observation::armed();
         observation.start();
         let (_home, domain, client) = wait_fixture_observed(observation.clone());
-        let state = domain.state().unwrap();
+        let read = domain.read();
+        let state = read.state();
         let keys = ["home".to_owned()];
-        let first = gather_now(&client, &state, Lang::En, &keys, false, false, 1_000).await;
+        let first = gather_now(&client, &read, Lang::En, &keys, false, false, 1_000).await;
         let wire = serde_json::to_value(&first).unwrap();
         let fields = wire.as_object().unwrap();
-        let bytes: u64 = fields.values().map(|value| serde_json::to_vec(value).unwrap().len() as u64).sum();
+        assert!(first.nodes.is_empty());
+        let bytes: u64 = fields.iter().filter(|(name, _)| name.as_str() != "nodes")
+            .map(|(_, value)| serde_json::to_vec(value).unwrap().len() as u64).sum();
         first.digest();
         first.digest();
         let before = observation.totals();
@@ -1193,9 +1266,9 @@ mod cache_tests {
         assert_eq!(before.metrics[Metric::AgentRows as usize], state.agents.len() as u64);
         assert_eq!(before.metrics[Metric::NodeOutputRows as usize], first.nodes.len() as u64);
         assert_eq!(before.metrics[Metric::PullRequestRows as usize], state.pull_requests.len() as u64);
-        assert_eq!(before.metrics[Metric::DigestSerializations as usize], fields.len() as u64);
+        assert_eq!(before.metrics[Metric::DigestSerializations as usize], fields.len() as u64 - 1);
         assert_eq!(before.metrics[Metric::DigestBytes as usize], bytes);
-        let again = gather_now(&client, &state, Lang::En, &keys, false, false, 1_000).await;
+        let again = gather_now(&client, &read, Lang::En, &keys, false, false, 1_000).await;
         again.digest();
         let warm = observation.totals();
         for metric in [Metric::GatherShared, Metric::GatherKeyed, Metric::WaitingTaskRows,
@@ -1205,13 +1278,13 @@ mod cache_tests {
         assert_eq!(warm.metrics[Metric::FinalHit as usize], before.metrics[Metric::FinalHit as usize] + 1);
 
         for _ in 0..2 {
-            gather_now(&client, &state, Lang::En, &["mcp_servers".into()], false, false, 1_000).await;
+            gather_now(&client, &read, Lang::En, &["mcp_servers".into()], false, false, 1_000).await;
         }
         let unwatched = observation.totals();
         assert_eq!(unwatched.metrics[Metric::GatherShared as usize], 1);
         assert_eq!(unwatched.metrics[Metric::GatherKeyed as usize], before.metrics[Metric::GatherKeyed as usize] + 2);
         let mut last = None;
-        super::super::feed::sample_live(&client, &state, &mut last).await;
+        super::super::feed::sample_live(&client, &read, &mut last).await;
         let sampled = observation.totals();
         assert_eq!(sampled.metrics[Metric::GatherSampler as usize], 1);
         assert!(sampled.metrics[Metric::SamplerSerializations as usize] > 0);
@@ -1225,7 +1298,7 @@ mod cache_tests {
         let observation = Observation::armed();
         observation.start();
         let (_home, domain, client) = wait_fixture_observed(observation.clone());
-        let state = domain.state().unwrap();
+        let read = domain.read();
         let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (weak, once) = (Arc::downgrade(&client), fired.clone());
         domain.reads.lock().unwrap().on_live_read(move |getter| {
@@ -1233,14 +1306,14 @@ mod cache_tests {
                 && let Some(client) = weak.upgrade() { client.feeds.shared_changed(); }
         });
         let home = ["home".to_owned()];
-        gather_now(&client, &state, Lang::En, &home, false, false, 1_000).await;
+        gather_now(&client, &read, Lang::En, &home, false, false, 1_000).await;
         assert!(fired.load(std::sync::atomic::Ordering::SeqCst));
         let raced = observation.totals();
         assert!(raced.invalid_events[Stage::Insert as usize] > 0);
         assert!(raced.causes[Stage::Insert as usize][Cause::Sampled as usize] > 0);
-        gather_now(&client, &state, Lang::En, &home, false, false, 1_000).await;
+        gather_now(&client, &read, Lang::En, &home, false, false, 1_000).await;
         assert_eq!(observation.totals().metrics[Metric::GatherShared as usize], 2);
-        gather_now(&client, &state, Lang::En, &home, false, false, 1_000).await;
+        gather_now(&client, &read, Lang::En, &home, false, false, 1_000).await;
         assert_eq!(observation.totals().metrics[Metric::GatherShared as usize], 2);
     }
 
@@ -1256,13 +1329,13 @@ mod cache_tests {
             assert_eq!(one.join().unwrap(), two.join().unwrap());
         });
         let cold = observation.totals();
-        assert_eq!(cold.metrics[Metric::DigestSerializations as usize], 30);
-        assert_eq!(cold.metrics[Metric::HashOperations as usize], 31);
+        assert_eq!(cold.metrics[Metric::DigestSerializations as usize], 29, "the empty node tree needs no JSON serialization");
+        assert_eq!(cold.metrics[Metric::HashOperations as usize], 30);
         let changed = first.clone().with_clock(Some(60_000));
         changed.digest();
         first.digest();
-        assert_eq!(observation.totals().metrics[Metric::DigestSerializations as usize], 31);
-        assert_eq!(observation.totals().metrics[Metric::HashOperations as usize], 33);
+        assert_eq!(observation.totals().metrics[Metric::DigestSerializations as usize], 30);
+        assert_eq!(observation.totals().metrics[Metric::HashOperations as usize], 32);
         assert_eq!(observation.totals().metrics[Metric::Materializations as usize], 0);
     }
 
@@ -1281,15 +1354,16 @@ mod cache_tests {
             "usedPercent":10,"windowDurationMins":300,"resetsAt":now/1000+7200}}}), None).unwrap();
         state.account_usage = vec![alondra_core::usage::record(None, Provider::Codex, &account, &reading, now, "2026-11-13")];
         let state = Arc::new(state);
-        gather_now(&client, &state, Lang::En, &["home".into()], false, false, now).await;
+        let read = Arc::new(alondra_domain_rules::ReadSnapshot::build(state.clone()));
+        gather_now(&client, &read, Lang::En, &["home".into()], false, false, now).await;
         for key in ["accounts", "new_request", "new_request?project=fixture", "task:room"] {
             let keys = [key.into()];
-            let first = gather_now(&client, &state, Lang::En, &keys, false, false, now).await;
+            let first = gather_now(&client, &read, Lang::En, &keys, false, false, now).await;
             assert_eq!(first.observed_at, Some(now), "{key} keeps its clock after shared cache reuse");
-            let later = gather_now(&client, &state, Lang::En, &keys, false, false, now + 360_000).await;
+            let later = gather_now(&client, &read, Lang::En, &keys, false, false, now + 360_000).await;
             assert_eq!(later.observed_at, Some(now + 360_000), "{key} refreshes its clock on a cached read");
             if !reads_unwatched_sources(key) {
-                let again = gather_now(&client, &state, Lang::En, &keys, false, false, now + 361_000).await;
+                let again = gather_now(&client, &read, Lang::En, &keys, false, false, now + 361_000).await;
                 assert!(Arc::ptr_eq(&later.0, &again.0), "{key} shares the new minute's snapshot");
                 assert_eq!(later.digest(), again.digest());
                 assert_eq!(later.0.serializations.load(std::sync::atomic::Ordering::Relaxed), 1);
@@ -1305,9 +1379,9 @@ mod cache_tests {
     async fn a_live_snapshot_is_gathered_once_until_a_fact_it_reads_changes() {
         let (_home, domain, client) = wait_fixture();
         let home = ["home".to_owned()];
-        let state = domain.state().unwrap();
-        let first = gather(&client, &state, Lang::En, &home, true, false).await;
-        assert_eq!(gather(&client, &state, Lang::En, &home, true, false).await, first);
+        let read = domain.read();
+        let first = gather(&client, &read, Lang::En, &home, true, false).await;
+        assert_eq!(gather(&client, &read, Lang::En, &home, true, false).await, first);
         assert_eq!(gathered(&client), 1, "nothing changed, so the second view reuses the snapshot");
         let getter_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let calls = getter_calls.clone();
@@ -1317,19 +1391,19 @@ mod cache_tests {
         let before = (gathered(&client), keyed(&client));
         domain.reads.lock().unwrap().begin_live_read_trace();
         for _ in 0..3 {
-            assert_eq!(gather(&client, &state, Lang::En, &home, true, false).await, first);
+            assert_eq!(gather(&client, &read, Lang::En, &home, true, false).await, first);
         }
         let trace = domain.reads.lock().unwrap().end_live_read_trace();
         assert_eq!(getter_calls.load(std::sync::atomic::Ordering::Relaxed), 0, "warm snapshots must not call instrumented live getters");
         assert!(trace.is_empty(), "warm snapshots must not execute instrumented live getters: {trace:?}");
         assert_eq!((gathered(&client), keyed(&client)), before, "warm snapshots reuse shared and keyed data");
-        gather(&client, &state, Lang::Es, &home, true, false).await;
+        gather(&client, &read, Lang::Es, &home, true, false).await;
         assert_eq!(gathered(&client), 2, "each language has its own snapshot");
         let task = ["task:room".to_owned()];
-        let history = gather(&client, &state, Lang::En, &task, true, false).await;
+        let history = gather(&client, &read, Lang::En, &task, true, false).await;
         assert_eq!((gathered(&client), keyed(&client)), (2, 3), "a new view key reads only its own data");
         assert!(history.task_history.contains_key("room"));
-        assert_eq!(gather(&client, &state, Lang::En, &task, true, false).await, history);
+        assert_eq!(gather(&client, &read, Lang::En, &task, true, false).await, history);
         assert_eq!(keyed(&client), 3, "and reuses it while nothing changes");
 
         let changes: [(&str, Box<dyn Fn() + '_>); 6] = [
@@ -1343,32 +1417,32 @@ mod cache_tests {
         for (fact, change) in changes {
             let before = gathered(&client);
             change();
-            gather(&client, &state, Lang::En, &home, true, false).await;
+            gather(&client, &read, Lang::En, &home, true, false).await;
             assert_eq!(gathered(&client), before + 1, "{fact} gathers again");
-            gather(&client, &state, Lang::En, &home, true, false).await;
+            gather(&client, &read, Lang::En, &home, true, false).await;
             assert_eq!(gathered(&client), before + 1, "after {fact} the new snapshot is reused");
         }
-        let retried = gather(&client, &state, Lang::En, &home, true, false).await;
+        let retried = gather(&client, &read, Lang::En, &home, true, false).await;
         assert!(matches!(retried.start_waits["retry"], alondra_view_model::LiveStartWait::Retry { .. }));
 
         let before = gathered(&client);
         execute(&domain, Actor::Orchestrator { generation: 0 }, "retitle", Command::TitleRequest { request_id: "request".into(), title: "Work again".into() });
-        gather(&client, &state, Lang::En, &home, true, false).await;
-        gather(&client, &state, Lang::En, &home, true, false).await;
+        gather(&client, &read, Lang::En, &home, true, false).await;
+        gather(&client, &read, Lang::En, &home, true, false).await;
         assert_eq!(gathered(&client), before + 2, "an older revision than the store's is never kept");
-        let state = domain.state().unwrap();
-        gather(&client, &state, Lang::En, &home, true, false).await;
-        gather(&client, &state, Lang::En, &home, true, false).await;
+        let read = domain.read();
+        gather(&client, &read, Lang::En, &home, true, false).await;
+        gather(&client, &read, Lang::En, &home, true, false).await;
         assert_eq!(gathered(&client), before + 3, "the new revision is gathered once");
 
         let (before, keyed_before) = (gathered(&client), keyed(&client));
         for key in ["machine", "new_request?project=app", "issue_picker"] {
-            gather(&client, &state, Lang::En, &[key.to_owned()], false, false).await;
-            gather(&client, &state, Lang::En, &[key.to_owned()], false, false).await;
+            gather(&client, &read, Lang::En, &[key.to_owned()], false, false).await;
+            gather(&client, &read, Lang::En, &[key.to_owned()], false, false).await;
         }
         assert_eq!((gathered(&client), keyed(&client)), (before, keyed_before + 6), "data from files and GitHub is always read afresh");
-        gather(&client, &state, Lang::En, &home, false, true).await;
-        gather(&client, &state, Lang::En, &home, false, true).await;
+        gather(&client, &read, Lang::En, &home, false, true).await;
+        gather(&client, &read, Lang::En, &home, false, true).await;
         assert_eq!(gathered(&client), before + 2, "so are the live sampler's own reads");
     }
 
@@ -1378,16 +1452,16 @@ mod cache_tests {
         let observation = Observation::armed();
         observation.start();
         let (_home, domain, client) = wait_fixture_observed(observation.clone());
-        let state = domain.state().unwrap();
+        let read = domain.read();
         let keys = ["home".to_owned()];
-        let first = gather_now(&client, &state, Lang::En, &keys, false, false, 1_000).await;
+        let first = gather_now(&client, &read, Lang::En, &keys, false, false, 1_000).await;
         let digest = first.digest();
         let before = observation.totals();
         let receiver = client.feeds.subscribe();
         client.mcp_probes.finish("demo", alondra_view_model::LiveMcpProbe::Checking);
         client.feeds.wake();
         assert!(receiver.has_changed().unwrap(), "the delivery notification must still reach feeds");
-        let again = gather_now(&client, &state, Lang::En, &keys, false, false, 1_000).await;
+        let again = gather_now(&client, &read, Lang::En, &keys, false, false, 1_000).await;
         assert_eq!(again.digest(), digest);
         let after = observation.totals();
         for metric in [Metric::GatherShared, Metric::DigestSerializations] {
@@ -1396,12 +1470,12 @@ mod cache_tests {
         }
         assert!(std::sync::Arc::ptr_eq(&first.0, &again.0), "the immutable home snapshot stays shared");
         assert_eq!(first.0.serializations.load(std::sync::atomic::Ordering::Relaxed), 1);
-        let mcp = gather_now(&client, &state, Lang::En, &["mcp_servers".into()], false, false, 1_000).await;
+        let mcp = gather_now(&client, &read, Lang::En, &["mcp_servers".into()], false, false, 1_000).await;
         assert!(matches!(mcp.mcp_probes.get("demo"), Some(alondra_view_model::LiveMcpProbe::Checking)));
         assert_eq!(observation.totals().metrics[Metric::GatherShared as usize], before.metrics[Metric::GatherShared as usize],
             "fresh keyed data reuses the shared snapshot");
         client.feeds.shared_changed();
-        let changed = gather_now(&client, &state, Lang::En, &keys, false, false, 1_000).await;
+        let changed = gather_now(&client, &read, Lang::En, &keys, false, false, 1_000).await;
         changed.digest();
         let after = observation.totals();
         assert_eq!(after.metrics[Metric::GatherShared as usize], before.metrics[Metric::GatherShared as usize] + 1,
@@ -1430,20 +1504,21 @@ mod cache_tests {
                 repository: "demo/reports".into(), number: 7, head: "export-report".into(),
                 base: "main".into(), allowed_methods: vec![alondra_domain_rules::MergeMethod::Squash],
             });
-            let state = domain.state().unwrap();
+            let read = domain.read();
+            let state = read.state();
             state.validate_journal().unwrap();
             client.details.record("pr", Default::default());
             let mut details = client.details.get("pr").unwrap();
             details.title = Some("Export report".into());
             client.details.record("pr", details.clone());
             let keys = ["home".to_owned()];
-            let first = gather_now(&client, &state, lang, &keys, false, false, 1_000).await;
+            let first = gather_now(&client, &read, lang, &keys, false, false, 1_000).await;
             let digest = first.digest();
             assert_eq!(first.pull_requests.iter().find(|pr| pr.id == "pr").unwrap().title.as_deref(), Some("Export report"));
             let before = observation.totals();
 
             client.details.record("pr", details.clone());
-            let unchanged = gather_now(&client, &state, lang, &keys, false, false, 1_000).await;
+            let unchanged = gather_now(&client, &read, lang, &keys, false, false, 1_000).await;
             assert_eq!(unchanged.digest(), digest);
             assert!(Arc::ptr_eq(&first.0, &unchanged.0));
             for metric in [Metric::GatherShared, Metric::DigestSerializations] {
@@ -1453,7 +1528,7 @@ mod cache_tests {
 
             details.title = Some("Export report with totals".into());
             client.details.record("pr", details);
-            let changed = gather_now(&client, &state, lang, &keys, false, false, 1_000).await;
+            let changed = gather_now(&client, &read, lang, &keys, false, false, 1_000).await;
             assert_eq!(changed.pull_requests.iter().find(|pr| pr.id == "pr").unwrap().title.as_deref(), Some("Export report with totals"));
             assert_ne!(changed.digest(), digest);
             let after = observation.totals();
@@ -1461,7 +1536,7 @@ mod cache_tests {
                 assert_eq!(after.metrics[metric as usize], before.metrics[metric as usize] + 1,
                     "a visible PR change rebuilds and serializes once");
             }
-            let warm = gather_now(&client, &state, lang, &keys, false, false, 1_000).await;
+            let warm = gather_now(&client, &read, lang, &keys, false, false, 1_000).await;
             assert_eq!(warm.digest(), changed.digest());
             for metric in [Metric::GatherShared, Metric::DigestSerializations] {
                 assert_eq!(observation.totals().metrics[metric as usize], after.metrics[metric as usize]);
@@ -1472,9 +1547,10 @@ mod cache_tests {
     #[tokio::test]
     async fn unchanged_view_requests_serialize_the_live_snapshot_once() {
         let (_home, domain, client) = wait_fixture();
-        let state = domain.state().unwrap();
+        let read = domain.read();
+        let state = read.state();
         let keys = ["home".to_owned()];
-        let first = gather(&client, &state, Lang::En, &keys, false, false).await;
+        let first = gather(&client, &read, Lang::En, &keys, false, false).await;
         for _ in 0..4 {
             let response = crate::views::routes::respond(&client, "home",
                 "protocol=1&client=ios&lang=en", alondra_view_model::Transport::Loopback, None).await;
@@ -1482,10 +1558,10 @@ mod cache_tests {
         }
         assert_eq!(first.0.serializations.load(std::sync::atomic::Ordering::Relaxed), 1,
             "unchanged view requests must reuse the serialized live digest");
-        assert_eq!(crate::views::cache::Input::of(&state, &first), crate::views::cache::Input::prepared(&state, &first),
+        assert_eq!(crate::views::cache::Input::of(&read, &first), crate::views::cache::Input::prepared(&read, &first),
             "reusing the digest preserves the cursor bytes");
         domain.store.lock().unwrap().set_start_retry(&"retry".into(), Some((1, 2_000_000_000_000))).unwrap();
-        let changed = gather(&client, &state, Lang::En, &keys, false, false).await;
+        let changed = gather(&client, &read, Lang::En, &keys, false, false).await;
         assert_ne!(first.start_waits, changed.start_waits, "a store change reaches the next snapshot");
         assert_ne!(first.digest(), changed.digest(), "the changed snapshot has a different wire digest");
         assert_eq!(changed.digest(), changed.digest());
@@ -1534,18 +1610,18 @@ mod cache_tests {
     async fn a_live_snapshot_read_while_a_fact_changes_is_not_kept() {
         let (_home, domain, client) = wait_fixture();
         let home = ["home".to_owned()];
-        let state = domain.state().unwrap();
+        let read = domain.read();
         let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (weak, once) = (Arc::downgrade(&client), fired.clone());
         domain.reads.lock().unwrap().on_live_read(move |getter| {
             if getter == "task_state_times" && !once.swap(true, std::sync::atomic::Ordering::SeqCst)
                 && let Some(client) = weak.upgrade() { client.feeds.shared_changed(); }
         });
-        gather(&client, &state, Lang::En, &home, true, false).await;
+        gather(&client, &read, Lang::En, &home, true, false).await;
         assert!(fired.load(std::sync::atomic::Ordering::SeqCst));
-        gather(&client, &state, Lang::En, &home, true, false).await;
+        gather(&client, &read, Lang::En, &home, true, false).await;
         assert_eq!(gathered(&client), 2, "the snapshot read across the change is gathered again");
-        gather(&client, &state, Lang::En, &home, true, false).await;
+        gather(&client, &read, Lang::En, &home, true, false).await;
         assert_eq!(gathered(&client), 2, "the one read after it is kept");
     }
 
@@ -1555,8 +1631,8 @@ mod cache_tests {
         observation.start();
         let (_home, domain, client) = wait_fixture_observed(observation.clone());
         let home = ["home".to_owned()];
-        let state = domain.state().unwrap();
-        let first = gather_now(&client, &state, Lang::En, &home, false, false, 1_000).await;
+        let read = domain.read();
+        let first = gather_now(&client, &read, Lang::En, &home, false, false, 1_000).await;
         let digest = first.digest();
         let cold = observation.totals();
         client.feeds.shared_changed();
@@ -1566,15 +1642,15 @@ mod cache_tests {
             if getter == "task_state_times" && !once.swap(true, std::sync::atomic::Ordering::SeqCst)
                 && let Some(client) = weak.upgrade() { client.feeds.shared_changed(); }
         });
-        let raced = gather_now(&client, &state, Lang::En, &home, false, false, 1_000).await;
+        let raced = gather_now(&client, &read, Lang::En, &home, false, false, 1_000).await;
         assert!(fired.load(std::sync::atomic::Ordering::SeqCst));
         assert!(Arc::ptr_eq(&first.0, &raced.0));
         assert_eq!(raced.digest(), digest);
         assert!(observation.totals().invalid_events[Stage::Insert as usize] > 0);
-        let fresh = gather_now(&client, &state, Lang::En, &home, false, false, 1_000).await;
+        let fresh = gather_now(&client, &read, Lang::En, &home, false, false, 1_000).await;
         assert_eq!(fresh.digest(), digest);
         assert_eq!(gathered(&client), 3, "equal content does not validate facts read across a change");
-        gather_now(&client, &state, Lang::En, &home, false, false, 1_000).await.digest();
+        gather_now(&client, &read, Lang::En, &home, false, false, 1_000).await.digest();
         assert_eq!(gathered(&client), 3);
         assert_eq!(observation.totals().metrics[Metric::DigestSerializations as usize], cold.metrics[Metric::DigestSerializations as usize]);
     }
@@ -1586,8 +1662,8 @@ mod cache_tests {
         for (state, at) in [("not_started", start - 600_000), ("running", start), ("needs_you", start + 60_000), ("running", start + 120_000)] {
             domain.store.lock().unwrap().add_history_step("room", state, at);
         }
-        let state = domain.state().unwrap();
-        let live = gather_at(&client, &state, Lang::En, &["home".to_owned()], true, false, start + 180_000).await;
+        let read = domain.read();
+        let live = gather_at(&client, &read, Lang::En, &["home".to_owned()], true, false, start + 180_000).await;
         assert_eq!(live.task_started.get("room"), Some(&alondra_view_model::LiveTaskStart {
             since: timestamp(start), until: None, ran_secs: None,
         }), "the first start counts, not the queue before it nor the restart after the wait");
@@ -1608,9 +1684,9 @@ mod cache_tests {
             let latest: i64 = connection.query_row("SELECT a.at FROM task_history h JOIN command_audit a ON a.revision=h.revision WHERE h.task_id='room' ORDER BY h.revision DESC LIMIT 1", [], |row| row.get(0)).unwrap();
             assert_eq!(tasks, 320, "both fixtures retain the same Task population");
             assert!(history >= tasks * steps as u64, "the real SQL history must be populated");
-            let state = domain.state().unwrap();
+            let read = domain.read();
             domain.reads.lock().unwrap().begin_live_read_trace();
-            let live = gather_at(&client, &state, Lang::En, &["home".to_owned()], true, false, 1_700_000_000_000).await;
+            let live = gather_at(&client, &read, Lang::En, &["home".to_owned()], true, false, 1_700_000_000_000).await;
             let trace = domain.reads.lock().unwrap().end_live_read_trace();
             assert_eq!(live.task_since.len(), 6, "finished archived Tasks stay out of the visible snapshot");
             assert_eq!(live.task_since["room"], timestamp(latest), "the actual latest history value reaches the snapshot");
@@ -1648,9 +1724,10 @@ mod cache_tests {
         use alondra_view_model::LiveStartWait;
         use crate::domain_store::model_metrics::{Decision, DecisionKind};
         let (_home, domain, client) = wait_fixture();
-        let state = domain.state().unwrap();
+        let read = domain.read();
+        let state = read.state();
         let now = 1_700_000_000_000;
-        let initial = gather_at(&client, &state, Lang::En, &[], false, false, now).await;
+        let initial = gather_at(&client, &read, Lang::En, &[], false, false, now).await;
         assert_eq!(initial.start_waits.keys().map(String::as_str).collect::<Vec<_>>(), ["closed", "launch", "relaunch", "retry", "room", "send"]);
         for (id, kind) in [("launch", DecisionKind::Launch), ("relaunch", DecisionKind::Relaunch), ("send", DecisionKind::Send)] {
             domain.record_model_decision(&Decision { task_id: id.into(), request_id: "request".into(), agent_id: None,
@@ -1660,7 +1737,7 @@ mod cache_tests {
         domain.live().remember_closed_task("closed", crate::client_routes::ClosedNode { name: "Closed node".into(), cwd: None, relaunch: crate::client_routes::Relaunch::AskUser });
         domain.store.lock().unwrap().set_start_retry(&"retry".into(), Some((2, now + 60_000))).unwrap();
         domain.reads.lock().unwrap().begin_live_read_trace();
-        let changed = gather_at(&client, &state, Lang::En, &[], false, false, now).await;
+        let changed = gather_at(&client, &read, Lang::En, &[], false, false, now).await;
         let trace = domain.reads.lock().unwrap().end_live_read_trace();
         assert_eq!(domain.state().unwrap().revision, state.revision);
         assert_eq!(changed.start_waits.keys().map(String::as_str).collect::<Vec<_>>(), ["retry", "room", "send"]);
@@ -1671,12 +1748,12 @@ mod cache_tests {
         let launched = trace.iter().filter(|read| read.getter == "launched_tasks").collect::<Vec<_>>();
         assert_eq!(launched.iter().map(|read| (read.statement_attempts, read.rows)).collect::<Vec<_>>(), [(1, 2)],
             "one statement for every waiting task, the live-closed one left out of it");
-        let later = gather_at(&client, &state, Lang::Es, &[], false, false, now + 2 * 86_400_000).await;
+        let later = gather_at(&client, &read, Lang::Es, &[], false, false, now + 2 * 86_400_000).await;
         assert_eq!(later.start_waits["retry"], LiveStartWait::Room,
             "a retry whose time has passed waits for room at the gate, never «Reintento a las» an hour gone by");
         domain.live().forget_closed_task("closed");
         domain.store.lock().unwrap().set_start_retry(&"retry".into(), None).unwrap();
-        let restored = gather_at(&client, &state, Lang::En, &[], false, false, now).await;
+        let restored = gather_at(&client, &read, Lang::En, &[], false, false, now).await;
         assert_eq!(restored.start_waits["closed"], LiveStartWait::Room);
         assert_eq!(restored.start_waits["retry"], LiveStartWait::Room);
     }
@@ -1684,11 +1761,11 @@ mod cache_tests {
     #[tokio::test]
     async fn unreadable_launch_markers_fail_closed_and_trace_the_failed_reads() {
         let (home, domain, client) = wait_fixture();
-        let state = domain.state().unwrap();
+        let read = domain.read();
         let connection = rusqlite::Connection::open(crate::domain_database_migration::active_path(&home)).unwrap();
         connection.execute_batch("DROP TABLE model_decisions").unwrap();
         domain.reads.lock().unwrap().begin_live_read_trace();
-        let live = gather_at(&client, &state, Lang::En, &[], false, false, 1_700_000_000_000).await;
+        let live = gather_at(&client, &read, Lang::En, &[], false, false, 1_700_000_000_000).await;
         let trace = domain.reads.lock().unwrap().end_live_read_trace();
         assert!(live.start_waits.is_empty(), "unknown launch history must not advertise a fresh launch slot");
         let failed: Vec<_> = trace.iter().filter(|read| read.failed).collect();
@@ -1716,11 +1793,12 @@ mod cache_tests {
             launch: Some(alondra_domain_rules::LaunchPlan::new("node", home.to_str().unwrap())),
         });
         report(&domain, serde_json::json!({"session_id": "reported", "event": "session.start", "version": "test"}), 1_000);
-        let state = domain.state().unwrap();
-        let first = gather_at(&client, &state, Lang::En, &[], false, false, 2_000).await;
-        let later = gather_at(&client, &state, Lang::En, &[], false, false, 2_000 + 30 * 60_000).await;
-        let first_view = client.views.render("tasks", &alondra_domain_rules::ReadSnapshot::build(state.clone()), &first, Client::Mac, Lang::En, Transport::Loopback).unwrap();
-        let later_view = client.views.render("tasks", &alondra_domain_rules::ReadSnapshot::build(state.clone()), &later, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        let read = domain.read();
+        let state = read.state();
+        let first = gather_at(&client, &read, Lang::En, &[], false, false, 2_000).await;
+        let later = gather_at(&client, &read, Lang::En, &[], false, false, 2_000 + 30 * 60_000).await;
+        let first_view = client.views.render("tasks", &read, &first, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        let later_view = client.views.render("tasks", &read, &later, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         assert_eq!(client.views.build_count(), 1, "reading an unobserved node again must reuse the view");
         assert_eq!(first.nodes.iter().map(|node| node.agent_id.as_str()).collect::<Vec<_>>(), ["assigned", "connected", "reported"]);
         for node in &first.nodes {
@@ -1740,16 +1818,17 @@ mod cache_tests {
         execute(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "known".into(), name: "Known".into(), at: 0 });
         domain.live().observe(&serde_json::json!({"session_id": "known", "hook_event_name": "Stop", "last_assistant_message": "Ready"}));
         let since = domain.live().node("known").unwrap().state_since;
-        let state = domain.state().unwrap();
-        let before = gather_at(&client, &state, Lang::En, &[], false, false, since + 1).await;
-        let later = gather_at(&client, &state, Lang::En, &[], false, false, since + 30 * 60_000).await;
+        let read = domain.read();
+        let state = read.state();
+        let before = gather_at(&client, &read, Lang::En, &[], false, false, since + 1).await;
+        let later = gather_at(&client, &read, Lang::En, &[], false, false, since + 30 * 60_000).await;
         assert_eq!(before.nodes[0].state_since, Some(timestamp(since)));
         assert_eq!(later.nodes[0].state_since, before.nodes[0].state_since);
-        let before_view = client.views.render("tasks", &alondra_domain_rules::ReadSnapshot::build(state.clone()), &before, Client::Mac, Lang::En, Transport::Loopback).unwrap();
-        let later_view = client.views.render("tasks", &alondra_domain_rules::ReadSnapshot::build(state.clone()), &later, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        let before_view = client.views.render("tasks", &read, &before, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        let later_view = client.views.render("tasks", &read, &later, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         assert_eq!(later_view, before_view, "time alone changes nothing a node shows");
         report(&domain, serde_json::json!({"session_id": "known", "event": "turn.complete", "answer": "New answer"}), since + 1_000);
-        let recent_answer = gather_at(&client, &state, Lang::En, &[], false, false, since + 30 * 60_000).await;
+        let recent_answer = gather_at(&client, &read, Lang::En, &[], false, false, since + 30 * 60_000).await;
         assert_eq!(recent_answer.nodes[0].last_message.as_deref(), Some("New answer"));
         assert_eq!(recent_answer.nodes[0].state_since, Some(timestamp(since)));
     }
@@ -1764,20 +1843,21 @@ mod cache_tests {
         execute(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "reported".into(), name: "Reported".into(), at: 0 });
         report(&domain, serde_json::json!({"session_id": "reported", "event": "session.start", "version": "test"}), 1_000);
         report(&domain, serde_json::json!({"session_id": "reported", "event": "tool.start", "tool": "Bash", "input": {"command": "build"}}), 2_000);
-        let state = domain.state().unwrap();
+        let read = domain.read();
+        let state = read.state();
         let limit = 2_000 + 48 * 60 * 60_000;
-        let working = gather_at(&client, &state, Lang::En, &[], false, false, limit).await;
+        let working = gather_at(&client, &read, Lang::En, &[], false, false, limit).await;
         assert_eq!(working.nodes[0].tool_since, Some(crate::usage_pause::clock_text(2_000, limit, false)));
         domain.live().mods.set_shell_alive("reported", Some(false), limit);
         domain.live().mods.set_shell_alive("reported", Some(false), limit + 1);
-        let working_view = client.views.render("tasks", &alondra_domain_rules::ReadSnapshot::build(state.clone()), &working, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        let working_view = client.views.render("tasks", &read, &working, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         report(&domain, serde_json::json!({"session_id": "reported", "event": "turn.complete", "answer": "Done", "aborted": true}), limit + 2);
-        let answer = gather_at(&client, &state, Lang::En, &[], false, false, limit + 2).await;
+        let answer = gather_at(&client, &read, Lang::En, &[], false, false, limit + 2).await;
         assert_eq!(answer.nodes[0].last_message.as_deref(), Some("Done"));
         assert_eq!(answer.nodes[0].last_message_at, Some(timestamp(limit + 2)));
         assert!(answer.nodes[0].last_turn_aborted);
         assert_eq!(answer.nodes[0].state_since, None);
-        let answer_view = client.views.render("tasks", &alondra_domain_rules::ReadSnapshot::build(state.clone()), &answer, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        let answer_view = client.views.render("tasks", &read, &answer, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         assert_ne!(answer_view.cursor, working_view.cursor);
         assert_eq!(client.views.build_count(), 2);
     }
@@ -1802,19 +1882,19 @@ mod cache_tests {
         ] {
             domain.live().mods.apply_sdk("sdk-a", &observed, at);
         }
-        let state = domain.state().unwrap();
-        let open = gather_at(&client, &state, Lang::En, &[], false, false, 2_400).await;
+        let read = domain.read();
+        let open = gather_at(&client, &read, Lang::En, &[], false, false, 2_400).await;
         let node = &open.nodes[0];
         assert_eq!(node.last_message.as_deref(), Some("The parser checks passed. I am reviewing the diff."));
         assert_eq!(node.last_message_at, Some(timestamp(2_100)));
         assert_eq!(node.tool.as_deref(), Some("Bash: make build"));
         assert_eq!(domain.live().mods.session("sdk-a").unwrap().answer.unwrap().text, "Previous turn.");
         domain.live().mods.apply_sdk("sdk-a", &json!({"type": "system", "subtype": "session_state_changed", "state": "idle"}), 2_500);
-        let idle = gather_at(&client, &state, Lang::En, &[], false, false, 2_500).await;
+        let idle = gather_at(&client, &read, Lang::En, &[], false, false, 2_500).await;
         assert_eq!(idle.nodes[0].last_message, node.last_message, "idle without a result keeps the last words");
         assert_eq!(idle.nodes[0].last_message_at, node.last_message_at);
         domain.live().mods.apply_sdk("sdk-a", &json!({"type": "result", "result": "Review complete."}), 2_600);
-        let ended = gather_at(&client, &state, Lang::En, &[], false, false, 2_700).await;
+        let ended = gather_at(&client, &read, Lang::En, &[], false, false, 2_700).await;
         assert_eq!(ended.nodes[0].last_message.as_deref(), Some("Review complete."));
         assert_eq!(ended.nodes[0].last_message_at, Some(timestamp(2_600)));
     }
@@ -1845,8 +1925,8 @@ mod cache_tests {
         ].into_iter().enumerate() {
             domain.live().mods.apply_sdk("sdk-a", &observed, 1_000 + at as Millis);
         }
-        let state = domain.state().unwrap();
-        let live = gather_at(&client, &state, Lang::En, &[], false, false, 2_000).await;
+        let read = domain.read();
+        let live = gather_at(&client, &read, Lang::En, &[], false, false, 2_000).await;
         let node = live.nodes.iter().find(|node| node.agent_id == "sdk-a").expect("the SDK node is in the snapshot");
         assert_eq!(node.tool.as_deref(), Some("Bash: cargo test"));
         assert_eq!(node.last_message.as_deref(), Some("Notes drafted."));
@@ -1911,10 +1991,11 @@ mod cache_tests {
             reason: "The build ran out of memory".into(),
         }, now));
 
-        let state = domain.state().unwrap();
+        let read = domain.read();
+        let state = Arc::clone(read.state());
         let gate = domain.admission().snapshot(&domain, now).unwrap();
-        let live = gather_at(&client, &state, Lang::En, &[], false, false, now).await;
-        let tasks = client.views.render("tasks", &alondra_domain_rules::ReadSnapshot::build(state.clone()), &live, Client::Mac, Lang::En, Transport::Loopback).unwrap();
+        let live = gather_at(&client, &read, Lang::En, &[], false, false, now).await;
+        let tasks = client.views.render("tasks", &read, &live, Client::Mac, Lang::En, Transport::Loopback).unwrap();
         let mut listed = vec![];
         rows_with(&serde_json::to_value(&tasks).unwrap(), "Working", &mut listed);
         listed.sort();
@@ -1958,7 +2039,8 @@ mod cache_tests {
         let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(std::sync::Mutex::new(None)));
         let mut orders = vec![];
         for id in ["z-first", "a-second"] {
-            let state = domain.state().unwrap();
+            let read = domain.read();
+            let state = read.state();
             domain.execute(&Actor::Orchestrator { generation: 0 }, &CommandEnvelope {
                 protocol_version: 2, data_epoch: state.data_epoch.clone(),
                 command_id: format!("notice-{id}").into(), expected_revision: state.revision,
@@ -1970,17 +2052,18 @@ mod cache_tests {
             }, None, || Ok(())).unwrap();
             orders.push(domain.state().unwrap().revision);
         }
-        let state = domain.state().unwrap();
+        let read = domain.read();
+        let state = read.state();
         let before = serde_json::to_vec(&*state).unwrap();
         let times = domain.store.lock().unwrap().revision_times(&orders).unwrap();
         assert_eq!(times.len(), 2, "both source commits must exist");
         for lang in [Lang::En, Lang::Es] {
-            let snapshot = gather(&client, &state, lang, &[], false, false).await;
+            let snapshot = gather(&client, &read, lang, &[], false, false).await;
             assert_eq!(snapshot.inbox_times.iter().map(|i| (i.id.as_str(), i.at.clone())).collect::<Vec<_>>(), vec![
                 ("interaction:z-first", timestamp(times[&orders[0]])),
                 ("interaction:a-second", timestamp(times[&orders[1]])),
             ]);
-            assert!(gather(&client, &state, lang, &[], false, true).await.inbox_times.is_empty());
+            assert!(gather(&client, &read, lang, &[], false, true).await.inbox_times.is_empty());
         }
         assert_eq!(serde_json::to_vec(&*domain.state().unwrap()).unwrap(), before);
     }
@@ -2021,8 +2104,8 @@ mod cache_tests {
         fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
-        let state = domain.state().unwrap();
-        assert!(gather(&client, &state, Lang::En, &["home".into()], false, false).await.pacing.is_some());
+        let read = domain.read();
+        assert!(gather(&client, &read, Lang::En, &["home".into()], false, false).await.pacing.is_some());
         domain.admission().poison();
         domain.machine_watch().poison();
         crate::locks::poison(&client.live_snapshots.entries);
@@ -2030,7 +2113,7 @@ mod cache_tests {
         crate::locks::poison(&client.views_gauges);
         crate::locks::poison(&client.gauges);
         domain.admission().poke();
-        let live = gather(&client, &state, Lang::En, &["home".into()], false, false).await;
+        let live = gather(&client, &read, Lang::En, &["home".into()], false, false).await;
         assert!(live.pacing.is_some());
         assert!(client.live_snapshots.entries.lock().is_ok_and(|entries| !entries.is_empty()));
     }
@@ -2043,7 +2126,8 @@ mod cache_tests {
         let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(std::sync::Mutex::new(None)));
         for id in ["a", "b"] {
-            let state = domain.state().unwrap();
+            let read = domain.read();
+            let state = read.state();
             domain.execute(&Actor::System, &CommandEnvelope {
                 protocol_version: 2, data_epoch: state.data_epoch.clone(),
                 command_id: format!("register-{id}").into(), expected_revision: state.revision,
@@ -2059,7 +2143,8 @@ mod cache_tests {
         });
         domain.live().observe(&activity_hook("a", "Parser ready"));
         domain.live().observe(&message_hook("b", "Other work"));
-        let state = domain.state().unwrap();
+        let read = domain.read();
+        let state = read.state();
         let activity = activity_source_revision(&client, "a");
         let search = search_source_revision(&client, &state);
         let cache = &client.live_reads;
@@ -2416,7 +2501,8 @@ mod tests {
     use alondra_domain_rules::{Actor, Command, CommandEnvelope, LaunchPlan, PROTOCOL_VERSION};
 
     fn run(domain: &std::sync::Arc<crate::domain_runtime::DomainRuntime>, actor: Actor, id: &str, command: Command) {
-        let state = domain.state().unwrap();
+        let read = domain.read();
+        let state = read.state();
         domain.execute(&actor, &CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
             command_id: id.into(), expected_revision: state.revision, command,
@@ -2443,7 +2529,7 @@ mod tests {
         let read = domain.read();
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let before = alondra_domain_rules::measure::tasks_read();
-        let live = runtime.block_on(gather_inner(&client, read.state(), Lang::En, &[], None, false, alondra_core::now_millis()));
+        let live = runtime.block_on(gather_inner(&client, &read, Lang::En, &[], None, false, alondra_core::now_millis()));
         assert_eq!(live.nodes.len(), nodes, "every node is gathered");
         alondra_domain_rules::measure::tasks_read() - before
     }

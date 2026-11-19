@@ -1,5 +1,5 @@
 use crate::locks::Poisonable as _;
-use alondra_domain_rules::{DomainState, ReadSnapshot};
+use alondra_domain_rules::{NodeChangeCursor, ReadSnapshot};
 use alondra_view_model::{
     BuildError, Client, ClientCapabilities, Lang, LiveSnapshot, RenderContext, Status, Transport, View,
 };
@@ -36,24 +36,27 @@ impl Version {
 /// The inputs a view is rendered from: the domain revision and the live data it was given.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Input {
+    domain: NodeChangeCursor,
     cursor: String,
     live_revision: String,
     capabilities: ClientCapabilities,
 }
 
 impl Input {
-    pub(crate) fn of(domain: &DomainState, live: &LiveSnapshot) -> Self {
-        let live_hash = super::components::Components::new(live.clone()).digest(
-            &super::observation::Observation::default(), super::observation::Serialization::Digest,
+    pub(crate) fn of(read: &ReadSnapshot, live: &LiveSnapshot) -> Self {
+        let observation = super::observation::Observation::default();
+        let live_hash = super::components::Components::new(live.clone(), &observation).digest(
+            &observation, super::observation::Serialization::Digest,
         );
-        Self::with_digest(domain, &live_hash)
+        Self::with_digest(read, &live_hash)
     }
 
-    pub(crate) fn prepared(domain: &DomainState, live: &super::live::Snapshot) -> Self {
-        Self::with_digest(domain, &live.digest())
+    pub(crate) fn prepared(read: &ReadSnapshot, live: &super::live::Snapshot) -> Self {
+        Self::with_digest(read, &live.digest())
     }
 
-    fn with_digest(domain: &DomainState, live_hash: &[u8]) -> Self {
+    fn with_digest(read: &ReadSnapshot, live_hash: &[u8]) -> Self {
+        let domain = read.state();
         let clock = serde_json::to_vec(&(
             domain.data_epoch.clone(),
             domain.revision,
@@ -61,6 +64,7 @@ impl Input {
         ))
         .expect("view clock serialization");
         Self {
+            domain: read.node_cursor(),
             cursor: format!(
                 "c1.{}",
                 base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, clock,)
@@ -102,7 +106,7 @@ pub(crate) struct Cache {
 }
 
 struct Entries<V> {
-    values: HashMap<String, V>,
+    values: HashMap<String, (NodeChangeCursor, V)>,
     newest: VecDeque<String>,
 }
 
@@ -113,19 +117,21 @@ impl<V> Default for Entries<V> {
 }
 
 impl<V: Clone> Entries<V> {
-    fn get(&mut self, key: &str) -> Option<V> {
-        let value = self.values.get(key)?.clone();
+    fn get(&mut self, key: &str, domain: &NodeChangeCursor) -> Option<V> {
+        let (stored, value) = self.values.get(key)?;
+        if stored != domain { return None; }
+        let value = value.clone();
         self.newest.retain(|entry| entry != key);
         self.newest.push_back(key.to_owned());
         Some(value)
     }
 
-    fn insert(&mut self, key: String, value: V, max: usize) {
+    fn insert(&mut self, key: String, domain: NodeChangeCursor, value: V, max: usize) {
         if self.values.contains_key(&key) {
             self.newest.retain(|entry| entry != &key);
         }
         self.newest.push_back(key.clone());
-        self.values.insert(key, value);
+        self.values.insert(key, (domain, value));
         while self.values.len() > max {
             if let Some(oldest) = self.newest.pop_front() {
                 self.values.remove(&oldest);
@@ -149,13 +155,13 @@ impl Cache {
     #[cfg(test)]
     pub(crate) fn serialized_retention(&self) -> (usize, usize) {
         let entries = self.entries.lock_or_recover("the view render cache");
-        let bytes = entries.values.values().map(|view| serde_json::to_vec(view).expect("view serialization").len()).sum();
+        let bytes = entries.values.values().map(|(_, view)| serde_json::to_vec(view).expect("view serialization").len()).sum();
         (entries.values.len(), bytes)
     }
 
     /// The version of a view already rendered from these inputs, without rendering it.
     pub(crate) fn version(&self, key: &str, input: &Input, client: Client, lang: Lang, transport: Transport) -> Option<Version> {
-        self.versions.lock_or_recover("the view version cache").get(&input.key(key, client, lang, transport))
+        self.versions.lock_or_recover("the view version cache").get(&input.key(key, client, lang, transport), &input.domain)
     }
 
     /// The versions of these views, rendering only those never rendered from these inputs.
@@ -188,7 +194,7 @@ impl Cache {
         lang: Lang,
         transport: Transport,
     ) -> Result<View, BuildError> {
-        self.render_from(key, read, live, &Input::of(read.state(), live), client, lang, transport)
+        self.render_from(key, read, live, &Input::of(read, live), client, lang, transport)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -205,7 +211,7 @@ impl Cache {
         let domain = read.state();
         let cursor = &input.cursor;
         let cache_key = input.key(key, client, lang, transport);
-        if let Some(view) = self.entries.lock_or_recover("the view render cache").get(&cache_key) {
+        if let Some(view) = self.entries.lock_or_recover("the view render cache").get(&cache_key, &read.node_cursor()) {
             return Ok(view);
         }
         #[cfg(test)]
@@ -234,8 +240,8 @@ impl Cache {
         view.cursor = format!("c1.{}", base64::Engine::encode(
             &base64::engine::general_purpose::URL_SAFE_NO_PAD, feed_clock,
         ));
-        self.versions.lock_or_recover("the view version cache").insert(cache_key.clone(), Version::of(&view), MAX_VERSIONS);
-        self.entries.lock_or_recover("the view render cache").insert(cache_key, view.clone(), MAX_ENTRIES);
+        self.versions.lock_or_recover("the view version cache").insert(cache_key.clone(), read.node_cursor(), Version::of(&view), MAX_VERSIONS);
+        self.entries.lock_or_recover("the view render cache").insert(cache_key, read.node_cursor(), view.clone(), MAX_ENTRIES);
         Ok(view)
     }
 }
@@ -243,6 +249,7 @@ impl Cache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alondra_domain_rules::DomainState;
     use base64::Engine as _;
 
     fn read(domain: &DomainState) -> ReadSnapshot {
@@ -271,8 +278,8 @@ mod tests {
         let domain = DomainState::new("epoch");
         let read = read(&domain);
         let live = LiveSnapshot::default();
-        let legacy = Input::of(&domain, &live);
-        let modern = Input::of(&domain, &live).with_capabilities(ClientCapabilities::parse("provider_accounts").unwrap());
+        let legacy = Input::of(&read, &live);
+        let modern = Input::of(&read, &live).with_capabilities(ClientCapabilities::parse("provider_accounts").unwrap());
         let first = cache.render_from("accounts", &read, &live, &legacy, Client::Tui, Lang::En, Transport::Loopback).unwrap();
         let second = cache.render_from("accounts", &read, &live, &modern, Client::Tui, Lang::En, Transport::Loopback).unwrap();
         assert_ne!(first.version, second.version);
@@ -287,30 +294,53 @@ mod tests {
         let cache = Cache::default();
         let domain = DomainState::new("epoch");
         let live = LiveSnapshot::default();
-        let first = cache.render("home", &read(&domain), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
-        let second = cache.render("home", &read(&domain), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+        let read = read(&domain);
+        let first = cache.render("home", &read, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+        let second = cache.render("home", &read, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
         assert_eq!(first, second);
         assert_eq!(cache.builds.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn a_reloaded_snapshot_rebuilds_bodies_and_versions_without_changing_wire_identity() {
+        let cache = Cache::default();
+        let domain = DomainState::new("epoch");
+        let before = read(&domain);
+        let after = read(&domain);
+        let live = LiveSnapshot::default();
+        let old = Input::of(&before, &live);
+        let new = Input::of(&after, &live);
+        let first = cache.render_from("home", &before, &live, &old, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+        assert_eq!(old.cursor, new.cursor, "snapshot identity stays out of the wire cursor");
+        assert!(cache.version("home", &new, Client::Ios, Lang::En, Transport::Loopback).is_none());
+        let second = cache.render_from("home", &after, &live, &new, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+        assert_eq!(cache.build_count(), 2);
+        assert_eq!(first, second, "identical domain and live data still serialize identically");
+        assert!(cache.version("home", &old, Client::Ios, Lang::En, Transport::Loopback).is_none());
+        assert_eq!(cache.version("home", &new, Client::Ios, Lang::En, Transport::Loopback), Some(Version::of(&second)));
     }
     #[test]
     fn render_clock_separates_language_epoch_revision_and_live_inbox_times() {
         let cache = Cache::default();
         let mut domain = DomainState::new("epoch");
         let mut live = LiveSnapshot::default();
-        let first = cache.render("home", &read(&domain), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
-        let spanish = cache.render("home", &read(&domain), &live, Client::Ios, Lang::Es, Transport::Loopback).unwrap();
+        let mut snapshot = read(&domain);
+        let first = cache.render("home", &snapshot, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+        let spanish = cache.render("home", &snapshot, &live, Client::Ios, Lang::Es, Transport::Loopback).unwrap();
         assert_ne!(first.status.version, spanish.status.version);
         assert_ne!(first, spanish);
-        assert_eq!(cache.render("home", &read(&domain), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap(), first);
+        assert_eq!(cache.render("home", &snapshot, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap(), first);
         assert_eq!(cache.builds.load(std::sync::atomic::Ordering::Relaxed), 2);
         domain.revision += 1;
-        let revised = cache.render("home", &read(&domain), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+        snapshot = read(&domain);
+        let revised = cache.render("home", &snapshot, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
         assert_ne!(revised.cursor, first.cursor);
         domain.data_epoch = "restored-epoch".into();
-        let restored = cache.render("home", &read(&domain), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+        snapshot = read(&domain);
+        let restored = cache.render("home", &snapshot, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
         assert_ne!(restored.cursor, revised.cursor);
         live.inbox_times.push(alondra_view_model::InboxTime { id: "interaction:notice".into(), at: "2026-09-30T10:00:00Z".into() });
-        let changed = cache.render("home", &read(&domain), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+        let changed = cache.render("home", &snapshot, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
         assert_ne!(changed.cursor, restored.cursor);
         assert_eq!(cache.builds.load(std::sync::atomic::Ordering::Relaxed), 5);
     }
@@ -319,19 +349,20 @@ mod tests {
     fn a_version_outlives_its_view_body() {
         let cache = Cache::default();
         let domain = DomainState::new("epoch");
+        let read = read(&domain);
         let live = |n: usize| LiveSnapshot {
             inbox_times: vec![alondra_view_model::InboxTime { id: format!("interaction:{n}"), at: "2026-09-30T10:00:00Z".into() }],
             ..LiveSnapshot::default()
         };
-        let first = cache.render("home", &read(&domain), &live(0), Client::Ios, Lang::En, Transport::Loopback).unwrap();
+        let first = cache.render("home", &read, &live(0), Client::Ios, Lang::En, Transport::Loopback).unwrap();
         for n in 1..=MAX_ENTRIES {
-            cache.render("home", &read(&domain), &live(n), Client::Ios, Lang::En, Transport::Loopback).unwrap();
+            cache.render("home", &read, &live(n), Client::Ios, Lang::En, Transport::Loopback).unwrap();
         }
         assert_eq!(cache.serialized_retention().0, MAX_ENTRIES, "the first body left");
-        let input = Input::of(&domain, &live(0));
+        let input = Input::of(&read, &live(0));
         assert_eq!(cache.version("home", &input, Client::Ios, Lang::En, Transport::Loopback), Some(Version::of(&first)));
         assert_eq!(cache.version("home", &input, Client::Ios, Lang::Es, Transport::Loopback), None, "another language is another view");
-        assert_eq!(cache.version("home", &Input::of(&domain, &live(MAX_ENTRIES + 1)), Client::Ios, Lang::En, Transport::Loopback), None,
+        assert_eq!(cache.version("home", &Input::of(&read, &live(MAX_ENTRIES + 1)), Client::Ios, Lang::En, Transport::Loopback), None,
             "a view never rendered from these inputs has no version");
     }
 

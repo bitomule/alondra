@@ -150,13 +150,13 @@ pub(super) async fn respond(
         return error_lang(language, "invalid_input", "invalid view parameter");
     };
     let read = client.domain.read();
-    let live = super::live::gather(client, read.state(), language, std::slice::from_ref(&key), true, false).await;
+    let live = super::live::gather(client, &read, language, std::slice::from_ref(&key), true, false).await;
     if key == "issue_picker?refresh=1" {
         client.feeds.wake();
         client.view_observation.add(super::observation::Metric::WakeIssues, 1);
     }
     let service = crate::views::this_service();
-    let input = super::cache::Input::prepared(read.state(), &live).with_capabilities(capabilities);
+    let input = super::cache::Input::prepared(&read, &live).with_capabilities(capabilities);
     if let Some(version) = known.as_deref()
         .and_then(|known| client.views.version(&key, &input, client_kind, language, transport).filter(|v| v.version == known))
     {

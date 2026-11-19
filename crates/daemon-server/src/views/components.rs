@@ -1,5 +1,6 @@
 //! Shared live-view fields with independently memoized content hashes.
 use super::observation::{Metric, Observation, Serialization};
+use super::node_components::Nodes;
 use alondra_core::{issues::Issue, options::{ProjectEntry, Spec}};
 use alondra_view_model::*;
 use serde::{Serialize, Serializer, ser::SerializeStruct};
@@ -89,34 +90,58 @@ fn some<T>(value: &Option<T>) -> bool { value.is_some() }
 fn nonempty_map<K, V>(value: &BTreeMap<K, V>) -> bool { !value.is_empty() }
 fn nonempty_rows<T>(value: &Vec<T>) -> bool { !value.is_empty() }
 
+macro_rules! storage {
+    (nodes, $type:ty) => { Nodes };
+    ($field:ident, $type:ty) => { Part<$type> };
+}
+macro_rules! stored {
+    (nodes, $value:expr, $observation:expr) => { Nodes::new($value, $observation) };
+    ($field:ident, $value:expr, $observation:expr) => { Part::new($value) };
+}
+macro_rules! materialized {
+    (nodes, $value:expr, $observation:expr) => { $value.materialize($observation) };
+    ($field:ident, $value:expr, $observation:expr) => { $value.value().clone() };
+}
+macro_rules! same {
+    (nodes, $left:expr, $right:expr, $observation:expr, $equal:ident) => { $left.same($right, $observation) };
+    ($field:ident, $left:expr, $right:expr, $observation:expr, $equal:ident) => { $left.same($right, $observation, $equal) };
+}
+macro_rules! reused {
+    (nodes, $left:expr, $right:expr, $observation:expr, $equal:ident) => { $left.reuse($right, $observation) };
+    ($field:ident, $left:expr, $right:expr, $observation:expr, $equal:ident) => {
+        if $left.same($right, $observation, $equal) { $left = ($right).clone(); }
+    };
+}
+macro_rules! hashed {
+    (nodes, $value:expr, $observation:expr, $kind:expr) => { $value.digest($observation, $kind) };
+    ($field:ident, $value:expr, $observation:expr, $kind:expr) => { $value.digest(stringify!($field), $observation, $kind) };
+}
+
 macro_rules! components {
     ($($field:ident: $type:ty => $equal:ident, $included:ident;)+) => {
         #[derive(Clone, Debug)]
         pub(super) struct Components {
-            $(pub(super) $field: Part<$type>,)+
+            $(pub(super) $field: storage!($field, $type),)+
         }
 
         impl Components {
-            pub(super) fn new(live: LiveSnapshot) -> Self {
+            pub(super) fn new(live: LiveSnapshot, observation: &Observation) -> Self {
                 // No rest pattern: adding a public field requires assigning its component.
                 let LiveSnapshot { $($field,)+ } = live;
-                Self { $($field: Part::new($field),)+ }
+                Self { $($field: stored!($field, $field, observation),)+ }
             }
 
             pub(super) fn reuse(&mut self, previous: &Self, observation: &Observation) {
-                $(if self.$field.same(&previous.$field, observation, $equal) {
-                    self.$field = previous.$field.clone();
-                })+
+                $(reused!($field, self.$field, &previous.$field, observation, $equal);)+
             }
 
             pub(super) fn same_payload(&self, other: &Self, observation: &Observation) -> bool {
-                true $(&& self.$field.same(&other.$field, observation, $equal))+
+                true $(&& same!($field, self.$field, &other.$field, observation, $equal))+
             }
 
             pub(super) fn materialize(&self, observation: &Observation) -> LiveSnapshot {
                 observation.add(Metric::Materializations, 1);
-                observation.add(Metric::MaterializedNodeRows, self.nodes.value().len() as u64);
-                LiveSnapshot { $($field: self.$field.value().clone(),)+ }
+                LiveSnapshot { $($field: materialized!($field, self.$field, observation),)+ }
             }
 
             pub(super) fn digest(&self, observation: &Observation, kind: Serialization) -> [u8; 32] {
@@ -126,7 +151,7 @@ macro_rules! components {
                 let mut bytes = DOMAIN.len() as u64;
                 $(if $included(self.$field.value()) {
                     let field = stringify!($field).as_bytes();
-                    let digest = self.$field.digest(stringify!($field), observation, kind);
+                    let digest = hashed!($field, self.$field, observation, kind);
                     hash.update((field.len() as u64).to_be_bytes());
                     hash.update(field);
                     hash.update((digest.len() as u64).to_be_bytes());
@@ -207,7 +232,7 @@ mod tests {
                 live.metrics = Some(Default::default());
                 live.nodes.push(LiveNode { agent_id: "node".into(), ..Default::default() });
             }
-            let components = Components::new(live.clone());
+            let components = Components::new(live.clone(), &observation);
             assert_eq!(serde_json::to_vec(&components).unwrap(), serde_json::to_vec(&live).unwrap());
             assert_eq!(components.materialize(&observation), live);
         }
@@ -221,11 +246,11 @@ mod tests {
             nodes: vec![LiveNode::default(); 32],
             ..Default::default()
         };
-        let previous = Components::new(live.clone());
+        let previous = Components::new(live.clone(), &observation);
         let before = previous.digest(&observation, Serialization::Digest);
-        let mut changed = Components::new(LiveSnapshot { waits_for_session: true, ..live });
+        let mut changed = Components::new(LiveSnapshot { waits_for_session: true, ..live }, &observation);
         changed.reuse(&previous, &observation);
-        assert!(Arc::ptr_eq(&changed.nodes.0, &previous.nodes.0));
+        assert!(changed.nodes.same(&previous.nodes, &observation));
         let start = observation.totals();
         assert_ne!(changed.digest(&observation, Serialization::Digest), before);
         let end = observation.totals();
@@ -238,13 +263,13 @@ mod tests {
     fn comparisons_count_only_rows_actually_examined_and_shared_parts_skip_them() {
         let observation = Observation::armed();
         observation.start();
-        let previous = Components::new(LiveSnapshot { nodes: vec![LiveNode::default(); 32], ..Default::default() });
+        let previous = Components::new(LiveSnapshot { nodes: vec![LiveNode::default(); 32], ..Default::default() }, &observation);
         let mut next = Components::new(LiveSnapshot {
             nodes: vec![LiveNode { working: true, ..Default::default() }; 32],
             ..Default::default()
-        });
+        }, &observation);
         next.reuse(&previous, &observation);
-        assert_eq!(observation.totals().metrics[Metric::ComponentRowsCompared as usize], 1);
+        assert_eq!(observation.totals().metrics[Metric::ComponentRowsCompared as usize], 32);
         let before = observation.totals();
         assert!(previous.same_payload(&previous.clone(), &observation));
         assert_eq!(observation.totals(), before);
@@ -260,13 +285,13 @@ mod tests {
             })).unwrap()],
             ..Default::default()
         };
-        let original = Components::new(live.clone());
+        let original = Components::new(live.clone(), &observation);
         let digest = original.digest(&observation, Serialization::Digest);
         for nested in [false, true] {
             let mut changed = live.clone();
             if nested { changed.gauges[0].parts[0].value = -0.0; }
             else { changed.gauges[0].value = -0.0; }
-            let mut changed = Components::new(changed);
+            let mut changed = Components::new(changed, &observation);
             changed.reuse(&original, &observation);
             assert!(!Arc::ptr_eq(&changed.gauges.0, &original.gauges.0));
             assert!(!changed.same_payload(&original, &observation));
@@ -274,8 +299,8 @@ mod tests {
         }
         let mut nan = live;
         nan.gauges[0].value = f64::NAN;
-        let previous = Components::new(nan.clone());
-        let mut next = Components::new(nan.clone());
+        let previous = Components::new(nan.clone(), &observation);
+        let mut next = Components::new(nan.clone(), &observation);
         next.reuse(&previous, &observation);
         assert!(!Arc::ptr_eq(&next.gauges.0, &previous.gauges.0));
         assert_eq!(next.digest(&observation, Serialization::Digest), previous.digest(&observation, Serialization::Digest));

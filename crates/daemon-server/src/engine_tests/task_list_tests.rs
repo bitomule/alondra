@@ -77,13 +77,13 @@ impl Turn {
         let lifecycle = Slice::lifecycle(&self.slice.domain);
         let path = self.slice.backend.state_root.join(lifecycle.execution().unwrap().instance().as_str()).join("wait.json");
         std::fs::write(path, serde_json::to_vec(wait).unwrap()).unwrap();
-        let state = self.slice.domain.state().unwrap();
-        self.runtime.block_on(crate::views::feed::sample_live(&self.client, &state, &mut self.sampled.borrow_mut()));
+        let read = self.slice.domain.read();
+        self.runtime.block_on(crate::views::feed::sample_live(&self.client, &read, &mut self.sampled.borrow_mut()));
     }
 
     fn render(&self, key: &str, client: Client, lang: Lang, transport: Transport) -> Seen {
         let read = self.slice.domain.read();
-        let live = self.runtime.block_on(crate::views::live::gather(&self.client, read.state(), lang, &[key.to_owned()], false, false));
+        let live = self.runtime.block_on(crate::views::live::gather(&self.client, &read, lang, &[key.to_owned()], false, false));
         let mut view = self.client.views.render(key, &read, &live, client, lang, transport).unwrap();
         view.cursor.clear();
         Seen { version: view.version.clone(), body: serde_json::to_string(&view).unwrap() }

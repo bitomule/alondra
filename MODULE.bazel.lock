@@ -743,7 +743,7 @@
         "bzlTransitiveDigest": "UvQf9r2bSvJv7U+jRyqYj19oBr1RA6pb7W74NQs9Qeg=",
         "usagesDigest": "t0oNvYqTkQgAzCqkVoL3Yq31SlGaTSDyalHX8UlrwpE=",
         "recordedFileInputs": {
-          "@@//Cargo.lock": "cf30769b33bab7f91c076aa5e5a4bdf409cf8f27fc57e2a88a4108ea19a15dba",
+          "@@//Cargo.lock": "33ae62ae6bfd9d9d228f735479ed539981ba4d1273ed3a93d577abd1a030ddc0",
           "@@//Cargo.toml": "a408c3b35760c5e11fdde284a7884815a57c5de7c9a896ea4ae96389d640c561",
           "@@//crates/agent-application/Cargo.toml": "ce6a54072a1c5e6bdb9f8a465f40cb283b345542c23a800f2d3f0a53a9e897c9",
           "@@//crates/agent-protocol/Cargo.toml": "125620e279bdef7b2ce0d2b3c57edcfd5296897a2ea47d3d4331f290adc3408b",
@@ -762,7 +762,7 @@
           "@@//crates/daemon-engine-model/Cargo.toml": "c78113690ef8df9713bbf9f8135c83c7e63585b263869b64dba2707936642fb2",
           "@@//crates/daemon-engine-store/Cargo.toml": "ef2291ccfb92815523f4e978f877cc58d6fc20939672d84bf104c42ae9500445",
           "@@//crates/daemon-engine/Cargo.toml": "d2ffae9b1bc906c582dee8bc6b9982fad7fcdf3aad6f760f8d3fb54d447b86d9",
-          "@@//crates/daemon-server/Cargo.toml": "b7a9ceadd97f505e9a424fa409023898b93821cd7b9fcc6573c01ac8fafc132e",
+          "@@//crates/daemon-server/Cargo.toml": "d79a1c6ce80e876e140f69fc24e7131f824353ed8019598ba2f6ab875dcdbee8",
           "@@//crates/daemon-support/Cargo.toml": "822edaa54342dd59dfc736b1a048450e3be70605c753539509fa58f635290cec",
           "@@//crates/domain-rules/Cargo.toml": "4d01cdd536977cfe616331dce4f4547fd0ceceb29c55a1383b20b0d2dd9c84b8",
           "@@//crates/domain/Cargo.toml": "eba560970fabccf60ea3e517b86f23433ab0a9a9813a1046ae2bf3003d1aa710",
