@@ -937,7 +937,7 @@ fn a_saved_report_opens_into_the_same_files() {
     assert_eq!(id, built.id);
     assert_eq!(files, built.files);
     assert_eq!(std::fs::read_to_string(dir.join("tasks.jsonl")).unwrap(), built.files.iter().find(|(n, _)| n == "tasks.jsonl").unwrap().1);
-    let summary = received_summary(&id, &dir, &files);
+    let summary = received_summary(&id, &dir, &files).unwrap();
     assert!(summary.contains("«It stopped after the Mac slept»"), "{summary}");
     assert!(summary.contains("alondrad (fail)"), "{summary}");
     assert!(summary.contains("host_ended"), "{summary}");
@@ -1258,4 +1258,27 @@ fn a_model_that_is_not_private_is_never_masked() {
     let manifest: Value = serde_json::from_str(&built.files.iter().find(|(n, _)| n == "manifest.json").unwrap().1).unwrap();
     assert_eq!(manifest["masked"], json!([]));
     assert!(built.files.iter().any(|(n, t)| n == "tasks.jsonl" && !t.contains("\"model\":\"masked\"")));
+}
+
+#[test]
+fn a_received_report_prints_no_terminal_control_sequences() {
+    let clipboard = "\u{1b}]52;c;ZWNobyBoaQ==\u{7}";
+    let files: bundle::Files = vec![
+        (bundle::MANIFEST.into(), json!({"created_at": format!("2026-10-25{clipboard}"), "omitted": {format!("lines\u{1b}[2J"): 1}}).to_string()),
+        (bundle::DESCRIPTION.into(), format!("It stopped{clipboard}\u{9b}31m\r\u{202e}after the Mac slept\nand again")),
+        ("versions.json".into(), json!({"cli": format!("0.3.5{clipboard}"), "daemon": "0.3.5\u{1b}[1A"}).to_string()),
+    ];
+    let summary = received_summary("r-20261025-00000000", Path::new("/Users/ana/r"), &files).unwrap();
+    assert!(!summary.chars().any(|c| (c.is_control() && c != '\n') || ('\u{202a}'..='\u{202e}').contains(&c)), "{summary:?}");
+    assert!(summary.contains("«It stopped]52;c;ZWNobyBoaQ==31mafter the Mac slept\nand again»"), "{summary:?}");
+    assert!(summary.contains("alondra 0.3.5]52;c;ZWNobyBoaQ== · alondrad 0.3.5[1A"), "{summary:?}");
+}
+
+#[test]
+fn a_received_report_with_an_unreadable_manifest_is_refused() {
+    for manifest in [None, Some("not json"), Some("[1]")] {
+        let mut files: bundle::Files = vec![(bundle::DESCRIPTION.into(), "It stopped".into())];
+        files.extend(manifest.map(|m| (bundle::MANIFEST.to_owned(), m.to_owned())));
+        assert!(received_summary("r-20261025-00000000", Path::new("/Users/ana/r"), &files).is_err(), "{manifest:?}");
+    }
 }
