@@ -33,8 +33,8 @@ impl Hosts<'_> {
         self.port.owns(self.domain, agent)
     }
 
-    pub fn node_groups_by_agent(&self) -> Vec<(AgentId, i32)> {
-        self.port.node_groups_by_agent(self.domain)
+    pub fn node_footprints(&self) -> std::io::Result<std::collections::BTreeMap<AgentId, u64>> {
+        self.port.node_footprints(self.domain)
     }
 
     pub fn stop(&self, agent: &AgentId) -> Result<(), Failed> {
@@ -103,8 +103,8 @@ mod none {
         fn owns(&self, _: &dyn Runtime, _: &AgentId) -> bool {
             false
         }
-        fn node_groups_by_agent(&self, _: &dyn Runtime) -> Vec<(AgentId, i32)> {
-            vec![]
+        fn node_footprints(&self, _: &dyn Runtime) -> std::io::Result<std::collections::BTreeMap<AgentId, u64>> {
+            Ok(Default::default())
         }
         fn stop(&self, _: &dyn Runtime, _: &AgentId) -> Result<(), Failed> {
             Ok(())

@@ -922,7 +922,7 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
             drop(worker);
             return take_host_into(domain, base_backend, task, plugin, relaunch, false,explicit_account_retry, claimed);
         }
-        if adopted_without_process(worker.host_group()).map_err(|error| Failed::new(format!("checking the adopted host's process: {error}")))? {
+        if adopted_without_process(worker.stopper()).map_err(|error| Failed::new(format!("checking the adopted host's process: {error}")))? {
             log!("the SDK host of {task} answered its adoption but its process is gone: its end is recorded");
             drop(worker);
             mark_stopped_by_alondra(&backend.state_root.join(stamp.instance().as_str()));
@@ -1301,15 +1301,14 @@ pub(crate) fn reads_as_working(state: &DomainState) -> Vec<TaskId> {
         .map(|task| task.id.clone()).collect()
 }
 
-/// Whether an adopted host's process, named by the group it leads, is gone. A host whose process
-/// this daemon could not learn is taken as running.
-fn adopted_without_process(group: Option<i32>) -> std::io::Result<bool> {
+/// Whether an adopted host's process is gone. A host whose process this daemon could not learn is
+/// taken as running.
+fn adopted_without_process(host: Option<HostStop>) -> std::io::Result<bool> {
     #[cfg(any(test, feature = "test-hooks"))]
     if ADOPTED_PROCESS_GONE.with(|gone| gone.replace(false)) {
         return Ok(true);
     }
-    let Some(group) = group else { return Ok(false) };
-    Ok(alondra_process_group::process(group)?.is_none())
+    host.map_or(Ok(false), |host| host.gone())
 }
 #[cfg(any(test, feature = "test-hooks"))]
 thread_local! {
@@ -2074,7 +2073,7 @@ impl Driver {
     /// Ends the host and every process under it, as a pause does, and records that the session
     /// waits with no host. Refused because the task moved on meanwhile, the caller replaces it.
     pub fn release_host(&mut self) -> Result<(), Failed> {
-        let tree = self.worker.host_group().map_or(Ok(vec![]), alondra_process_group::tree)
+        let tree = self.worker.stopper().map_or(Ok(vec![]), |host| host.tree())
             .map_err(|error| Failed::new(format!("listing the processes of the host: {error}")))?;
         mark_stopped_by_alondra(self.worker.state_directory());
         self.stop()?;
@@ -2615,12 +2614,12 @@ impl Owner {
         self.ended.load(Ordering::SeqCst) || self.thread.as_ref().is_some_and(std::thread::JoinHandle::is_finished)
     }
 
-    /// The process group of the node's host, while the owner holds one.
-    pub(crate) fn host_group(&self) -> Option<i32> {
+    /// The node's host, while the owner holds one.
+    fn host(&self) -> Option<HostStop> {
         if self.ended() {
             return None;
         }
-        self.host.lock_or_recover("the SDK host stop").as_ref().and_then(|host| host.process_group())
+        self.host.lock_or_recover("the SDK host stop").clone()
     }
 
     /// Tells the owner to stop, asks its host to stop so a read blocked on it returns, and waits
@@ -2640,7 +2639,7 @@ impl Owner {
     /// Stops the host as `close` does and ends every process under it. Each command Claude runs
     /// has a group of its own, so the end of the host's group leaves those running.
     pub fn halt(&mut self) -> Result<(), Failed> {
-        let tree = self.host_group().map_or(Ok(vec![]), alondra_process_group::tree);
+        let tree = self.host().map_or(Ok(vec![]), |host| host.tree());
         let closed = self.close();
         let ended = tree.and_then(|tree| alondra_process_group::end_tree(&tree, HALT_GRACE));
         closed?;
@@ -2734,8 +2733,9 @@ pub trait SdkOwners {
     /// Whether this daemon owns the SDK host of `agent`: an owner of it runs and has not ended.
     fn owns_sdk_host(&self, agent: &AgentId) -> bool;
 
-    /// The process group of every node host this daemon owns now, which is what a node costs.
-    fn node_groups_by_agent(&self) -> Vec<(AgentId, i32)>;
+    /// The bytes the process group of every node host this daemon owns now holds, which is what a
+    /// node costs. A group two owners name is measured once.
+    fn node_footprints(&self) -> std::io::Result<BTreeMap<AgentId, u64>>;
 
     #[cfg(any(test, feature = "test-hooks"))]
     fn node_groups(&self) -> Vec<i32>;
@@ -2825,14 +2825,25 @@ impl SdkOwners for crate::domain_runtime::DomainRuntime {
         self.sdk_owners().held.lock_or_recover("the SDK owners").iter().any(|owner| owner.agent() == agent && !owner.ended())
     }
 
-    fn node_groups_by_agent(&self) -> Vec<(AgentId, i32)> {
-        self.sdk_owners().held.lock_or_recover("the SDK owners").iter()
-            .filter_map(|owner| owner.host_group().map(|group| (owner.agent().clone(), group))).collect()
+    fn node_footprints(&self) -> std::io::Result<BTreeMap<AgentId, u64>> {
+        let hosts: Vec<(AgentId, HostStop)> = self.sdk_owners().held.lock_or_recover("the SDK owners").iter()
+            .filter_map(|owner| owner.host().map(|host| (owner.agent().clone(), host))).collect();
+        let mut seen = BTreeSet::new();
+        let mut footprints = BTreeMap::new();
+        for (agent, host) in hosts {
+            if host.process_group().is_some_and(|group| seen.insert(group))
+                && let Some(bytes) = host.footprint()?
+            {
+                footprints.insert(agent, bytes);
+            }
+        }
+        Ok(footprints)
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
     fn node_groups(&self) -> Vec<i32> {
-        self.node_groups_by_agent().into_iter().map(|(_, group)| group).collect()
+        self.sdk_owners().held.lock_or_recover("the SDK owners").iter()
+            .filter_map(|owner| owner.host().and_then(|host| host.process_group())).collect()
     }
 
     #[cfg(any(test, feature = "test-hooks"))]
@@ -2978,9 +2989,9 @@ impl crate::hosts::SdkHosts for Hosts {
         domain.owns_sdk_host(agent)
     }
 
-    fn node_groups_by_agent(&self, runtime: &dyn Runtime) -> Vec<(AgentId, i32)> {
+    fn node_footprints(&self, runtime: &dyn Runtime) -> std::io::Result<BTreeMap<AgentId, u64>> {
         let domain = DomainRuntime::of(runtime);
-        domain.node_groups_by_agent()
+        domain.node_footprints()
     }
 
     fn stop(&self, runtime: &dyn Runtime, agent: &AgentId) -> Result<(), Failed> {

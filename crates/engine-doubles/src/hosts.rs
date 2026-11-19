@@ -4,6 +4,7 @@ use alondra_domain_rules::{AgentId, DomainError, DomainState, TaskId};
 use alondra_engine_ports::Runtime;
 use alondra_engine_ports::hosts::{Launch, Launched, Reopening, SdkHosts};
 use alondra_engine_ports::launch::Failed;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 const NO_HOST: &str = "no Agent SDK host runs in this test";
@@ -14,8 +15,8 @@ impl SdkHosts for NoHosts {
     fn owns(&self, _: &dyn Runtime, _: &AgentId) -> bool {
         false
     }
-    fn node_groups_by_agent(&self, _: &dyn Runtime) -> Vec<(AgentId, i32)> {
-        vec![]
+    fn node_footprints(&self, _: &dyn Runtime) -> std::io::Result<BTreeMap<AgentId, u64>> {
+        Ok(BTreeMap::new())
     }
     fn stop(&self, _: &dyn Runtime, _: &AgentId) -> Result<(), Failed> {
         Ok(())

@@ -75,6 +75,32 @@ impl Drop for Running<'_> {
         }
     }
 }
+/// The fixture binary as the host of the port's contract: it answers its process id and exits when
+/// told to.
+struct ContractHost;
+impl alondra_engine_doubles::contract::HostFixture for ContractHost {
+    fn artifact(&self) -> VerifiedArtifact {
+        artifact()
+    }
+    fn environment(&self, state_dir: &std::path::Path) -> std::collections::BTreeMap<String, String> {
+        let state = state_dir.to_str().unwrap().to_owned();
+        [("HOME", state.clone()), ("ALONDRA_FIXTURE_MODE", "host".into()), ("ALONDRA_FIXTURE_STATE", state)].into_iter().map(|(name, value)| (name.to_owned(), value)).collect()
+    }
+    fn process_id(&self, mut stream: UnixStream) -> u32 {
+        stream.write_all(b"identity\n").unwrap();
+        let mut identity = String::new();
+        BufReader::new(stream).read_to_string(&mut identity).unwrap();
+        identity.split_once(':').expect("the host answers its process and its group").0.parse().unwrap()
+    }
+    fn exit(&self, mut stream: UnixStream) {
+        stream.write_all(b"exit\n").unwrap();
+    }
+}
+#[test]
+fn the_process_hosts_keep_the_contract_of_the_port() {
+    use alondra_agent_runtime::owned_host::{Launcher, ProcessHosts};
+    alondra_engine_doubles::contract::agent_host(&ProcessHosts::new(Launcher::default()), &ContractHost);
+}
 /// A child of this process held between `fork` and `exec` until dropped, holding a copy of every
 /// descriptor this process had open when it forked.
 struct PausedFork {

@@ -5,6 +5,7 @@ use crate::launch::{Failed, LaunchOptions};
 use alondra_core::accounts::{AccountId, Provider};
 use alondra_domain_rules::{AgentId, DomainError, DomainState, TaskId, TaskModel};
 use std::any::Any;
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -34,8 +35,8 @@ pub type Launched<'a> = Pin<Box<dyn Future<Output = Result<serde_json::Value, Do
 pub trait SdkHosts: Send + Sync {
     /// Whether an owner of this daemon runs `agent`'s host.
     fn owns(&self, runtime: &dyn Runtime, agent: &AgentId) -> bool;
-    /// The process group of every host an owner runs, by its node.
-    fn node_groups_by_agent(&self, runtime: &dyn Runtime) -> Vec<(AgentId, i32)>;
+    /// The bytes the processes of every host an owner runs hold, by its node.
+    fn node_footprints(&self, runtime: &dyn Runtime) -> std::io::Result<BTreeMap<AgentId, u64>>;
     /// Stops `agent`'s host and waits for it.
     fn stop(&self, runtime: &dyn Runtime, agent: &AgentId) -> Result<(), Failed>;
     /// The owner of `task` gives its input back to the queue on its next step.

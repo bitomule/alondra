@@ -192,6 +192,7 @@ checks:
       - "crates/alondrad/**"
       - "crates/daemon-server/**"
       - "crates/domain/**"
+      - "crates/engine-doubles/**"
       - "crates/foundation/**"
       - "crates/process-group/**"
       - "crates/provider-contract/**"
