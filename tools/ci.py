@@ -58,8 +58,12 @@ def manual_reviews(text):
     return reviews
 
 
-def manifest(text):
-    """Accept the manifest's current block syntax; refuse extensions instead of losing checks."""
+def manifest(text, current=None):
+    """Accept the manifest's current block syntax; refuse extensions instead of losing checks.
+
+    With `current`, the base's manifest drops the checks `current` no longer has: removing or
+    renaming one changes MUSTS.yml, which selects every current check, and its old targets may be gone.
+    """
     grammar = re.compile(
         r'version: 1|checks:|  [\w-]+:|    uses: (?:bazel/test|agent)|    paths:|    with:|'
         r'      targets:|      facts:|      - "[^"\\#\n]+"|        - "[^"\\\n]+"|        - //[^\s#]+'
@@ -80,6 +84,8 @@ def manifest(text):
     reviews = manual_reviews(text)
     if not checks or set(checks) | set(reviews) != set(names):
         raise ValueError("Every MUSTS check must be a Bazel check or an explicit manual review")
+    if current is not None:
+        checks = {name: spec for name, spec in checks.items() if name in current}
     if unknown := set(checks) - MAC_CHECKS - LINUX_CHECKS - LOCAL_ONLY_CHECKS:
         raise ValueError(f"Assign a CI runner to new MUSTS checks: {sorted(unknown)}")
     for name, spec in checks.items():
@@ -179,7 +185,7 @@ def select(args):
     current_text = Path("MUSTS.yml").read_text()
     previous_text = command("git", "show", f"{ancestor}:MUSTS.yml").decode()
     current = manifest(current_text)
-    previous = manifest(previous_text)
+    previous = manifest(previous_text, current)
     current, previous, requested = manual_scope(event_name, event, current, previous)
     probe = event_name == "workflow_dispatch"
     matrix = plan(current, previous, paths, force_all=probe)
