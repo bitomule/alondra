@@ -200,6 +200,44 @@ fn everything_the_destructive_mark_flags_the_builder_refuses() {
 }
 
 #[test]
+fn the_value_of_a_wrapper_option_is_not_read_as_the_program() {
+    assert_eq!(risks("sudo -u root rm -rf x"), [Risk { kind: RiskKind::Deletes, part: "rm -rf x".into() }]);
+    assert_eq!(risks("env -C /tmp rm -rf x"), [Risk { kind: RiskKind::Deletes, part: "rm -rf x".into() }]);
+    let kinds = |command: &str| risks(command).into_iter().map(|risk| risk.kind).collect::<Vec<_>>();
+    let deleting = [
+        "sudo -u root rm -rf x", "sudo -g wheel -u root rm -rf x", "sudo --user=root rm -rf x", "sudo --user root rm -rf x",
+        "sudo -iu root rm -rf x", "sudo -uroot rm -rf x", "sudo -E -u root -- rm -rf x", "sudo -C 3 -D /srv -p pw rm -rf x",
+        "doas -u root rm -rf x", "env -C /tmp rm -rf x", "env --chdir=/tmp rm -rf x", "env -u HOME -i A=1 rm -rf x",
+        "env --unset HOME rm -rf x", "env -S rm -rf x", "xargs -I {} rm -rf {}", "xargs -n 1 -P 4 rm -rf", "xargs -0 -L 2 rm",
+        "xargs -d , -a list rm", "xargs --max-procs 4 --delimiter=, rm", "xargs -E END -s 100 rm", "timeout -s KILL 5 rm -rf x",
+        "timeout -k 1 5 rm -rf x", "timeout --signal KILL --kill-after=1 5m rm -rf x", "nice -n 5 rm -rf x",
+        "stdbuf -o L rm -rf x", "sudo -u root timeout -s KILL 5 xargs -n 1 rm",
+    ];
+    for command in deleting {
+        assert_eq!(kinds(command), [RiskKind::Deletes], "{command}");
+    }
+    for command in ["sudo --unknown root rm -rf x", "env --unknown /tmp rm -rf x", "xargs -Z 3 rm", "timeout --unknown KILL 5 rm -rf x"] {
+        assert_eq!(kinds(command), [RiskKind::Deletes], "an unknown option still finds the destructive program: {command}");
+    }
+    assert_eq!(kinds("sudo -u root shred x"), [RiskKind::Deletes]);
+    assert_eq!(kinds("sudo -u root find . -delete"), [RiskKind::Deletes]);
+    assert_eq!(kinds("sudo -u root truncate -s 0 f"), [RiskKind::Deletes]);
+    assert_eq!(kinds("sudo -u root cp a b"), [RiskKind::Overwrites]);
+    assert_eq!(kinds("env -C /tmp sed -i s/a/b/ f"), [RiskKind::Overwrites]);
+    assert_eq!(kinds("sudo -u root git push --force"), [RiskKind::PushForce]);
+    assert_eq!(kinds("env -C /tmp git reset --hard"), [RiskKind::ResetHard]);
+    for command in ["sudo rm -rf /", "sudo -E rm x", "xargs -0 rm", "xargs rm", "timeout 60 rm x", "env A=1 rm x", "nice -n 5 time rm x"] {
+        assert_eq!(kinds(command), [RiskKind::Deletes], "{command}");
+    }
+    for command in [
+        "sudo -u root ls", "env -C /tmp make build", "xargs -I {} echo {}", "timeout -s KILL 5 make test", "sudo --unknown root ls",
+        "xargs -n 1 grep -l x",
+    ] {
+        assert!(risks(command).is_empty(), "{command} is not marked");
+    }
+}
+
+#[test]
 fn claude_code_fills_in_only_the_parts_alondra_cannot_name() {
     let suggests = |rules: &[&str]| serde_json::json!([{
         "type": "addRules", "behavior": "allow", "destination": "localSettings",
@@ -320,3 +358,4 @@ fn rules_are_deterministic_and_ignore_the_order_of_repeated_parts() {
         Ok(())
     }).unwrap();
 }
+

@@ -842,12 +842,14 @@ fn unwrapped(words: &[String]) -> &[String] {
         } else {
             match name {
                 "time" | "nohup" | "command" | "builtin" | "noglob" | "exec" => 1,
-                "sudo" | "doas" | "env" | "xargs" | "nice" | "stdbuf" | "timeout" => {
-                    let options = words[1..].iter().take_while(|w| w.starts_with('-') || assignment(w).is_some()).count();
-                    let duration = usize::from(name == "timeout" && words.get(1 + options).is_some_and(|w| w.trim_end_matches(['s', 'm', 'h', 'd']).parse::<f64>().is_ok()));
-                    1 + options + duration
-                }
-                _ => return words,
+                _ => match wrapper_options(name) {
+                    Some(options) => {
+                        let Some(at) = options_end(&options, words) else { return first_destructive(words) };
+                        let duration = usize::from(name == "timeout" && words.get(at).is_some_and(|w| w.trim_end_matches(['s', 'm', 'h', 'd']).parse::<f64>().is_ok()));
+                        at + duration
+                    }
+                    None => return words,
+                },
             }
         };
         if skip >= words.len() {
@@ -855,6 +857,102 @@ fn unwrapped(words: &[String]) -> &[String] {
         }
         words = &words[skip..];
     }
+}
+
+/// The options a wrapper understands: the short and long ones that take the next word as their
+/// value (unless written `-uroot` or `--user=root`), and those that take none.
+struct WrapperOptions {
+    short_value: &'static str,
+    short_flag: &'static str,
+    long_value: &'static [&'static str],
+    long_flag: &'static [&'static str],
+}
+
+fn wrapper_options(name: &str) -> Option<WrapperOptions> {
+    let options = |short_value, short_flag, long_value, long_flag| WrapperOptions { short_value, short_flag, long_value, long_flag };
+    Some(match name {
+        "sudo" => options(
+            "ugCDhprtUTR",
+            "AbEeHiKklnPSsVvBN",
+            &["user", "group", "close-from", "chdir", "host", "prompt", "role", "type", "other-user", "command-timeout", "chroot"],
+            &[
+                "askpass", "background", "bell", "edit", "help", "login", "non-interactive", "preserve-env", "preserve-groups",
+                "remove-timestamp", "reset-timestamp", "set-home", "shell", "stdin", "list", "validate", "version",
+            ],
+        ),
+        "doas" => options("uC", "nsL", &[], &[]),
+        // `-S` splits its value into the command it runs, so that value is read as the program.
+        "env" => options(
+            "Cu",
+            "i0vS",
+            &["chdir", "unset"],
+            &["ignore-environment", "null", "debug", "split-string", "block-signal", "default-signal", "ignore-signal", "list-signal-handling", "help", "version"],
+        ),
+        "xargs" => options(
+            "InLPsEda",
+            "0tprxoile",
+            &["max-args", "max-lines", "max-procs", "max-chars", "delimiter", "arg-file", "process-slot-var"],
+            &["null", "interactive", "no-run-if-empty", "verbose", "exit", "open-tty", "show-limits", "replace", "eof", "help", "version"],
+        ),
+        "timeout" => options("sk", "vf", &["signal", "kill-after"], &["preserve-status", "foreground", "verbose", "help", "version"]),
+        "nice" => options("n", "0123456789", &["adjustment"], &["help", "version"]),
+        "stdbuf" => options("ioe", "", &["input", "output", "error"], &["help", "version"]),
+        _ => return None,
+    })
+}
+
+/// Where the command a wrapper runs starts, past its options and variables; `None` at an option
+/// the wrapper is not known to have, whose value may be what looks like the program.
+fn options_end(options: &WrapperOptions, words: &[String]) -> Option<usize> {
+    let mut at = 1;
+    while let Some(word) = words.get(at) {
+        if word == "--" {
+            return Some(at + 1);
+        }
+        if word == "-" || assignment(word).is_some() {
+            at += 1;
+        } else if let Some(long) = word.strip_prefix("--") {
+            let (option, inline) = long.split_once('=').map_or((long, false), |(option, _)| (option, true));
+            if options.long_value.contains(&option) {
+                at += if inline { 1 } else { 2 };
+            } else if options.long_flag.contains(&option) {
+                at += 1;
+            } else {
+                return None;
+            }
+        } else if let Some(short) = word.strip_prefix('-') {
+            let mut takes_next = false;
+            for (index, c) in short.char_indices() {
+                if options.short_value.contains(c) {
+                    takes_next = index + c.len_utf8() == short.len();
+                    break;
+                }
+                if !options.short_flag.contains(c) {
+                    return None;
+                }
+            }
+            at += 1 + usize::from(takes_next);
+        } else {
+            return Some(at);
+        }
+    }
+    Some(at)
+}
+
+/// Past an unknown wrapper option, the first word that starts something destructive, so the warning
+/// is never lost to a value read as the program; without one, the words after the options.
+fn first_destructive(words: &[String]) -> &[String] {
+    let rest = &words[1..];
+    for at in 0..rest.len() {
+        if !rest[at].starts_with('-') {
+            let candidate = unwrapped(&rest[at..]);
+            if risk_of(candidate).is_some() {
+                return candidate;
+            }
+        }
+    }
+    let options = rest.iter().take_while(|w| w.starts_with('-') || assignment(w).is_some()).count();
+    unwrapped(&rest[options..])
 }
 
 fn git_subcommand(words: &[String]) -> Option<&str> {
