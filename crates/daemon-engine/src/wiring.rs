@@ -23,7 +23,7 @@ use tokio::sync::watch;
 /// the whole daemon's when a crate above it set `TEST_OPEN`.
 #[cfg(any(test, feature = "test-hooks"))]
 pub fn open(home: &Path) -> Result<DomainRuntime> {
-    open_at(home, &crate::domain_database_migration::active_path(home))
+    open_at(home, &crate::domain_store::active_path(home))
 }
 
 #[cfg(any(test, feature = "test-hooks"))]
@@ -37,7 +37,8 @@ pub fn open_at(home: &Path, database: &Path) -> Result<DomainRuntime> {
 /// The engine alone, with its own observers and the orchestrator's port.
 #[cfg(any(test, feature = "test-hooks"))]
 pub fn open_engine_at(home: &Path, database: &Path) -> Result<DomainRuntime> {
-    let runtime = DomainRuntime::open_observed(home, database, Some(held_cards()), vec![
+    alondra_engine_kernel::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
+    let runtime = DomainRuntime::open_observed(home, database, alondra_engine_kernel::test_journal(), Some(held_cards()), vec![
         Box::new(crate::gate::PauseResume),
         Box::new(crate::sdk_live::EndedWaits),
         Box::new(crate::allow_always::ChosenAlways),

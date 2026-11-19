@@ -1,24 +1,5 @@
 //! What the orchestrator is told when the store stages the effects of a command.
-use alondra_domain_rules::{ANSWER_TEXT, DecisionPrompt, DomainState, Hold, InputValue, InteractionId, InteractionPayload, McpServerOrigin, RequestId, TaskId};
-use alondra_daemon_engine_model::LaunchPlan;
-use alondra_provider_contract::DecisionKind;
-use serde_json::Value;
-use std::path::Path;
-
-/// What the domain is told of a decision Claude asks for through a task's SDK execution: the call
-/// it is about and the card the user would answer, built exactly as a held hook's card.
-pub struct SdkDecision {
-    pub hold: Hold,
-    pub tool: Option<String>,
-    pub input: Value,
-    pub mcp_server: Option<McpServerOrigin>,
-    pub prompt: DecisionPrompt,
-}
-
-/// How the card of a decision Claude asks for is built, which the store does not know.
-pub trait SdkDecisions: Send + Sync {
-    fn decide(&self, task_title: &str, kind: DecisionKind, payload: &Value, worktree: Option<&str>, worktrees: &[String], home: &Path) -> SdkDecision;
-}
+use crate::{ANSWER_TEXT, DomainState, InputValue, InteractionId, InteractionPayload, LaunchPlan, RequestId, TaskId};
 
 /// What the orchestrator does with a request that holds a plan the user approved from a final result.
 pub fn approved_plan_work(state: &DomainState, request: &RequestId) -> Option<String> {

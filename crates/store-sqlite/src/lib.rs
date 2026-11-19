@@ -1,6 +1,7 @@
 //! Relational authority for domain v2. The legacy event store remains technical
 //! evidence only; these rows are never reconstructed by legacy event replay.
 #![cfg_attr(all(feature = "test-hooks", not(test)), allow(dead_code, unused_imports))]
+pub use alondra_engine_ports::journal::{generation_provider, schedule_command, Attached, AutoLaunch, AutoLaunchReason, AutoLaunchState, BatchOwner, Commit, DeliveryClaim, DeliveryEvidence, DeliveryEvidenceItem, HistoryStep, PostMergeCheck, QueuedLaunch, RequestLaunch, StoreError, TaskClosing, TransportIdentity, UserPushHistory};
 #[macro_use]
 extern crate alondra_foundation;
 use alondra_daemon_support::{auth, locks, save};
@@ -12,7 +13,7 @@ pub mod test_support;
 pub mod testing;
 
 use crate::locks::Poisonable as _;
-mod canonical;
+use alondra_engine_ports::journal::canonical;
 pub mod wording;
 mod command;
 mod connection;
@@ -40,6 +41,13 @@ pub use handover::{Handover, Process as HandoverProcess, Step as HandoverStep, c
 pub use handover::Plan as HandoverPlan;
 mod repository;
 mod typed_cards;
+pub mod database_check;
+pub mod domain_database_migration;
+mod journal;
+mod recovery_copies;
+pub use journal::Sqlite;
+#[cfg(any(test, feature = "test-hooks"))]
+pub use journal::AsSqlite;
 mod provider_accounts;
 mod pr_adoption;
 pub mod provider_settings;
@@ -56,10 +64,7 @@ use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::Arc;
 
-pub const SCHEMA_VERSION: i64 = 5;
-/// The schema before every task's lifecycle moved into the store's journal: opening it migrates it.
-pub const PREVIOUS_SCHEMA_VERSION: i64 = 4;
-pub const ORCHESTRATOR_MESSAGE_TTL_MS: i64 = 24 * 60 * 60 * 1_000;
+pub use alondra_engine_ports::journal::{ORCHESTRATOR_MESSAGE_TTL_MS, PREVIOUS_SCHEMA_VERSION, SCHEMA_VERSION};
 const APPLICATION_ID: i64 = 0x414c4432;
 const SCHEDULE_LAUNCH_TRANSITION: &str = include_str!("../../domain-store-schema/schedule_launch_transition.sql");
 const SCHEMA: &str = concat!(
@@ -243,46 +248,9 @@ const POST_MERGE_CHECKS: &str = "CREATE TABLE IF NOT EXISTS post_merge_checks(\
  close_now INTEGER NOT NULL DEFAULT 0 CHECK(close_now IN(0,1)));";
 const TASK_CLOSING_SELECT_ONE: &str = "SELECT task_id,since,failures,last_error,next_attempt,attempted_cleaned_at,rm_started_at,problem_id,ready_since FROM task_closings WHERE task_id=?1";
 const TASK_CLOSING_SELECT_ALL: &str = "SELECT task_id,since,failures,last_error,next_attempt,attempted_cleaned_at,rm_started_at,problem_id,ready_since FROM task_closings ORDER BY task_id";
-/// A check an earlier daemon kept on work a node declared after the merge: the card it may have
-/// raised asking the user whether to close the node.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PostMergeCheck {
-    pub problem_id: Option<String>,
-}
-/// What the closer remembers about closing one task's node, across restarts.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TaskClosing {
-    pub task_id: TaskId,
-    /// Milliseconds: when the closer first saw the task due for closing.
-    pub since: i64,
-    pub failures: u32,
-    pub last_error: Option<String>,
-    /// Milliseconds: no attempt before this.
-    pub next_attempt: i64,
-    /// The task's `wrap_up.cleaned_at` seen at the last failed attempt.
-    pub attempted_cleaned_at: Option<i64>,
-    /// Milliseconds: `claude rm` was started and its result not recorded.
-    pub rm_started_at: Option<i64>,
-    /// Milliseconds: when the closer first found the node ready to close but still working.
-    pub ready_since: Option<i64>,
-    /// The Problem card raised after three failures.
-    pub problem_id: Option<String>,
-}
-impl TaskClosing {
-    fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
-        Ok(Self {
-            task_id: TaskId(row.get(0)?),
-            since: row.get(1)?,
-            failures: row.get(2)?,
-            last_error: row.get(3)?,
-            next_attempt: row.get(4)?,
-            attempted_cleaned_at: row.get(5)?,
-            rm_started_at: row.get(6)?,
-            ready_since: row.get(8)?,
-            problem_id: row.get(7)?,
-        })
-    }
-}
+
+
+
 /// How Alondra starts a task by itself, given with the task and stored with it.
 const TASK_LAUNCH_PLANS: &str = "CREATE TABLE IF NOT EXISTS task_launch_plans(\
  task_id TEXT PRIMARY KEY REFERENCES tasks(id),\
@@ -341,104 +309,22 @@ const TASK_WORKTREES: &str = "CREATE TABLE IF NOT EXISTS task_worktrees(\
 
 const EVENTS_VIEW: &str = "CREATE VIEW events AS SELECT revision AS seq,0 AS at,'domain' AS kind,NULL AS session,command AS body FROM command_audit;";
 
-/// What a command carries into the transaction that commits it.
-pub enum Attached<'a> {
-    None,
-    /// What the user chose for the launch of a new request or card reply.
-    Request(&'a RequestLaunch),
-    Batch(&'a batch_effects::BatchCommand<'a>),
-}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AutoLaunchState {
-    Launching,
-    Launched,
-    Blocked,
-}
-impl AutoLaunchState {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Launching => "launching",
-            Self::Launched => "launched",
-            Self::Blocked => "blocked",
-        }
-    }
-    fn parse(text: &str) -> Self {
-        match text {
-            "launched" => Self::Launched,
-            "blocked" => Self::Blocked,
-            _ => Self::Launching,
-        }
-    }
-}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AutoLaunchReason {
-    UsageExhausted,
-    WorkspaceUntrusted,
-    LaunchFailed,
-}
-impl AutoLaunchReason {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::UsageExhausted => "usage_exhausted",
-            Self::WorkspaceUntrusted => "workspace_untrusted",
-            Self::LaunchFailed => "launch_failed",
-        }
-    }
-    fn parse(text: &str) -> Option<Self> {
-        Some(match text {
-            "usage_exhausted" => Self::UsageExhausted,
-            "workspace_untrusted" => Self::WorkspaceUntrusted,
-            "launch_failed" => Self::LaunchFailed,
-            _ => return None,
-        })
-    }
-}
 
-/// A launch waiting at the gate: the launch as asked, who asked and since when.
-#[derive(Clone, Debug, PartialEq)]
-pub struct QueuedLaunch {
-    pub task_id: TaskId,
-    pub body: serde_json::Value,
-    pub origin: String,
-    pub enqueued_at: i64,
-}
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AutoLaunch {
-    pub task_id: TaskId,
-    pub state: AutoLaunchState,
-    pub reason: Option<AutoLaunchReason>,
-    pub detail: Option<String>,
-    pub at: i64,
-}
-impl AutoLaunch {
-    fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
-        let state: String = row.get(1)?;
-        let reason: Option<String> = row.get(2)?;
-        Ok(Self {
-            task_id: TaskId(row.get(0)?),
-            state: AutoLaunchState::parse(&state),
-            reason: reason.as_deref().and_then(AutoLaunchReason::parse),
-            detail: row.get(3)?,
-            at: row.get(4)?,
-        })
-    }
-}
+
+
+
+
+
+
+
+
 #[cfg(any(test, feature = "test-hooks"))]
 pub use repository::statement_counts;
-pub type TransportIdentity<'a> = (&'a str, &'a str, &'a [u8; 32]);
 
-/// What the user chose when asking for new work, kept with the Request it created.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct RequestLaunch {
-    pub project: Option<String>,
-    pub options: alondra_core::options::Resolved,
-    pub issue: Option<String>,
-    pub issue_text: Option<String>,
-    pub attachments: Vec<AttachmentRef>,
-}
+
 
 /// The last state this connection loaded or committed, valid while no other
 /// connection committed (`data_version`) and this one wrote nothing outside
@@ -449,6 +335,32 @@ struct Cached {
     data_version: i64,
     total_changes: u64,
 }
+fn task_closing_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskClosing> {
+    Ok(TaskClosing {
+        task_id: TaskId(row.get(0)?),
+        since: row.get(1)?,
+        failures: row.get(2)?,
+        last_error: row.get(3)?,
+        next_attempt: row.get(4)?,
+        attempted_cleaned_at: row.get(5)?,
+        rm_started_at: row.get(6)?,
+        ready_since: row.get(8)?,
+        problem_id: row.get(7)?,
+    })
+}
+
+fn auto_launch_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AutoLaunch> {
+    let state: String = row.get(1)?;
+    let reason: Option<String> = row.get(2)?;
+    Ok(AutoLaunch {
+        task_id: TaskId(row.get(0)?),
+        state: AutoLaunchState::parse(&state),
+        reason: reason.as_deref().and_then(AutoLaunchReason::parse),
+        detail: row.get(3)?,
+        at: row.get(4)?,
+    })
+}
+
 pub struct DomainStore {
     /// Replacing this connection requires a new DomainStore; read cursors must never be reused
     /// across a connection replacement.
@@ -468,18 +380,6 @@ pub struct DomainStore {
 }
 /// The generation of the credential new executions on `account` run with: one more each time it
 /// was signed in again after its sign-in expired.
-pub fn generation_provider(state: &DomainState, account: &alondra_core::accounts::AccountKey) -> u64 {
-    state.accounts.iter().find(|status| status.provider == account.provider && status.id == account.account).map_or(0, |status| status.sign_ins) + 1
-}
-pub fn schedule_command(command: &Command) -> bool {
-    matches!(
-        command,
-        Command::CreateSchedule { .. }
-            | Command::UpdateSchedule { .. }
-            | Command::DeleteSchedule { .. }
-            | Command::ClaimScheduleRun { .. }
-    )
-}
 pub fn audit(connection: &Connection) -> Result<()> {
     let result: String = connection.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
     ensure!(result == "ok", "database integrity check failed: {result}");
@@ -565,17 +465,10 @@ fn unprotected_ports() -> Arc<alondra_engine_ports::Registry> {
     ports
 }
 
-/// A full disk anywhere in the error's chain, or SQLite saying its database is full.
-pub fn no_space(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
-        cause.downcast_ref::<std::io::Error>().is_some_and(alondra_engine_ports::disk::io_no_space)
-            || cause.downcast_ref::<rusqlite::Error>().is_some_and(|error| error.sqlite_error_code() == Some(rusqlite::ErrorCode::DiskFull))
-    })
-}
-
 #[cfg(test)]
 #[test]
 fn a_full_disk_is_told_from_other_failures_through_the_whole_chain() {
+    use alondra_engine_ports::journal::no_space;
     let full = || std::io::Error::from_raw_os_error(libc::ENOSPC);
     assert!(no_space(&anyhow::Error::from(full()).context("writing domain-capabilities.json")));
     let sqlite = rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL), None);
@@ -583,86 +476,37 @@ fn a_full_disk_is_told_from_other_failures_through_the_whole_chain() {
     assert!(!no_space(&anyhow::anyhow!("No space left on device")), "only the error itself counts, never its text");
 }
 
-#[derive(Debug)]
-pub enum StoreError {
-    Domain(DomainError),
-    Storage(anyhow::Error),
-}
-impl std::fmt::Display for StoreError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Domain(e) => e.fmt(f),
-            Self::Storage(e) => e.fmt(f),
+impl DomainStore {
+    /// Begins a read transaction on this reader, ending one a holder left open. False when it
+    /// could not: the reader's cursors are then void.
+    pub fn begin_read(&self) -> bool {
+        let mut started = true;
+        if !self.conn.is_autocommit() && let Err(error) = self.conn.execute_batch("ROLLBACK") {
+            log!("a domain read left open could not be ended: {error:#}");
+            started = false;
+        }
+        if let Err(error) = self.conn.execute_batch("BEGIN DEFERRED") {
+            log!("a domain read transaction could not begin: {error:#}");
+            started = false;
+        }
+        if !started { self.read_identity.invalidate(); }
+        started
+    }
+    pub fn end_read(&self) {
+        if !self.conn.is_autocommit() && let Err(error) = self.conn.execute_batch("COMMIT") {
+            log!("a domain read transaction could not end: {error:#}");
+            self.read_identity.invalidate();
         }
     }
-}
-impl std::error::Error for StoreError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Domain(error) => Some(error),
-            Self::Storage(error) => Some(error.as_ref()),
-        }
-    }
-}
-impl StoreError {
-    /// Keeps storage diagnostics in the daemon while the producer receives a stable refusal.
-    pub fn into_domain_error(self, envelope: &CommandEnvelope) -> DomainError {
-        match self {
-            Self::Domain(error) => error,
-            Self::Storage(error) => {
-                let kind = serde_json::to_value(&envelope.command).ok()
-                    .and_then(|value| value["kind"].as_str().map(str::to_owned)).unwrap_or_else(|| "unknown".into());
-                log!("domain storage failure: operation={kind} command_id={} cause={error:#}", envelope.command_id);
-                DomainError::new("storage_unavailable", "domain transaction could not be completed")
-            }
-        }
-    }
-}
-impl From<anyhow::Error> for StoreError {
-    fn from(e: anyhow::Error) -> Self {
-        Self::Storage(e)
-    }
-}
-impl From<rusqlite::Error> for StoreError {
-    fn from(e: rusqlite::Error) -> Self {
-        Self::Storage(e.into())
-    }
-}
-impl From<serde_json::Error> for StoreError {
-    fn from(e: serde_json::Error) -> Self {
-        Self::Storage(e.into())
-    }
-}
-impl From<DomainError> for StoreError {
-    fn from(e: DomainError) -> Self {
-        Self::Domain(e)
-    }
-}
-#[derive(Debug)]
-pub struct Commit {
-    pub state: Arc<DomainState>,
-    pub outcome: CommandOutcome,
-    pub replayed: bool,
-    /// What the store issued with the commit: the dispatches an SDK execution's owner claims.
-    pub sealed: Option<alondra_store::Committed>,
 }
 
-/// One read transaction on a reader connection: every getter called through it reads the same
+/// One read transaction on this store's own reader: every getter called through it reads the same
 /// committed state, never part of a commit. It ends when dropped.
 pub struct ReadTransaction<'a>(std::sync::MutexGuard<'a, DomainStore>, bool);
 
 impl<'a> ReadTransaction<'a> {
     pub fn begin(store: std::sync::MutexGuard<'a, DomainStore>) -> Self {
-        let mut started = true;
-        if !store.conn.is_autocommit() && let Err(error) = store.conn.execute_batch("ROLLBACK") {
-            log!("a domain read left open could not be ended: {error:#}");
-            started = false;
-        }
-        if let Err(error) = store.conn.execute_batch("BEGIN DEFERRED") {
-            log!("a domain read transaction could not begin: {error:#}");
-            started = false;
-        }
-        if !started { store.read_identity.invalidate(); }
+        let started = store.begin_read();
         Self(store, started)
     }
 }
@@ -683,10 +527,7 @@ impl std::ops::DerefMut for ReadTransaction<'_> {
 
 impl Drop for ReadTransaction<'_> {
     fn drop(&mut self) {
-        if !self.0.conn.is_autocommit() && let Err(error) = self.0.conn.execute_batch("COMMIT") {
-            log!("a domain read transaction could not end: {error:#}");
-            self.0.read_identity.invalidate();
-        }
+        self.0.end_read();
     }
 }
 
@@ -775,7 +616,7 @@ impl DomainStore {
             "SELECT digest,result FROM local_command_results WHERE sender=?1 AND request_id=?2",
             params![sender, request_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
-        ).optional()?;
+        ).optional().map_err(anyhow::Error::from)?;
         match stored {
             Some((previous, _)) if previous != digest => Err(DomainError::new(
                 "idempotency_conflict", "request ID reused with different encrypted bytes",
@@ -1094,7 +935,7 @@ impl DomainStore {
         fill_revision: bool,
         attached: Attached<'_>,
     ) -> std::result::Result<Commit, StoreError> {
-        let tx = rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let tx = rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate).map_err(anyhow::Error::from)?;
         let scope = alondra_store::AuthorityScope::new(epoch_of(&self.conn)?)?;
         let mut journal = alondra_store::LifecycleTransaction::attach_cached(tx, scope, &self.aggregates)?;
         let (conn, cached, protected) = (&self.conn, &self.cached, &self.protected);
@@ -1218,49 +1059,17 @@ fn ensure_no_effects(outcome: &CommandOutcome) -> Result<()> {
 }
 
 pub use alondra_engine_ports::outbox::OutboxMessage;
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct UserPushHistory {
-    pub card_pushed_at: Option<u64>,
-    pub sibling_pushed: bool,
-}
+
 /// The host the domain names an orchestrator batch's SDK run by: never a task's.
-const BATCH_HOST: &str = "alondra-sdk-orchestrator";
-
-/// The owner of one orchestrator batch's SDK host. Only the claim of the batch's messages issues
-/// it (`DomainStore::claim_orchestrator_batch`), in the same transaction; it is never cloned.
-#[derive(Debug)]
-pub struct BatchOwner {
-    run: String,
-    session: String,
-    epoch: alondra_domain_rules::DataEpoch,
-}
-
-impl BatchOwner {
-    fn issued(run: &str, session: &str, epoch: alondra_domain_rules::DataEpoch) -> Self {
-        Self { run: run.into(), session: session.into(), epoch }
-    }
-    pub fn run(&self) -> &str {
-        &self.run
-    }
-    pub fn session(&self) -> &str { &self.session }
-    pub fn epoch(&self) -> &alondra_domain_rules::DataEpoch { &self.epoch }
-    pub fn host_name(&self) -> &str { BATCH_HOST }
-}
+use alondra_engine_ports::journal::BATCH_HOST;
 
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DeliveryClaim {
-    pub attempt_id: i64,
-    pub version: u64,
-    pub message: OutboxMessage,
-}
-/// One step of a Task's history.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct HistoryStep {
-    pub at: i64,
-    pub state: String,
-    pub summary: String,
-}
+
+
+
+
+
+
 
 impl DomainStore {
     /// Rows this connection has written, commits and side tables alike, and the newest committed
@@ -1562,11 +1371,11 @@ impl DomainStore {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
     pub fn auto_launch(&self, task_id: &TaskId) -> Result<Option<AutoLaunch>> {
-        Ok(self.conn.query_row("SELECT task_id,state,reason,detail,at FROM auto_launches WHERE task_id=?1", [&task_id.0], AutoLaunch::from_row).optional()?)
+        Ok(self.conn.query_row("SELECT task_id,state,reason,detail,at FROM auto_launches WHERE task_id=?1", [&task_id.0], auto_launch_from_row).optional()?)
     }
     pub fn auto_launches(&self) -> Result<Vec<AutoLaunch>> {
         let mut query = self.conn.prepare("SELECT task_id,state,reason,detail,at FROM auto_launches ORDER BY task_id")?;
-        Ok(query.query_map([], AutoLaunch::from_row)?.collect::<rusqlite::Result<_>>()?)
+        Ok(query.query_map([], auto_launch_from_row)?.collect::<rusqlite::Result<_>>()?)
     }
     /// Takes the one automatic launch of a task: false when it was taken before. A blocked row is
     /// taken again only with `retry`.
@@ -1715,11 +1524,11 @@ impl DomainStore {
             [agent_id], |row| row.get(0))?)
     }
     pub fn task_closing(&self, task_id: &TaskId) -> Result<Option<TaskClosing>> {
-        Ok(self.conn.query_row(TASK_CLOSING_SELECT_ONE, [&task_id.0], TaskClosing::from_row).optional()?)
+        Ok(self.conn.query_row(TASK_CLOSING_SELECT_ONE, [&task_id.0], task_closing_from_row).optional()?)
     }
     pub fn task_closings(&self) -> Result<Vec<TaskClosing>> {
         let mut query = self.conn.prepare(TASK_CLOSING_SELECT_ALL)?;
-        Ok(query.query_map([], TaskClosing::from_row)?.collect::<rusqlite::Result<_>>()?)
+        Ok(query.query_map([], task_closing_from_row)?.collect::<rusqlite::Result<_>>()?)
     }
     /// The closer's row for a task, created the first time it sees the task due for closing.
     pub fn begin_task_closing(&mut self, task_id: &TaskId, now: i64) -> Result<TaskClosing> {
@@ -2043,27 +1852,9 @@ impl DomainStore {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DeliveryEvidence {
-    pub attempt_id: i64,
-    pub message_id: i64,
-    pub state: String,
-    pub version: u64,
-    pub reason: Option<String>,
-}
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DeliveryEvidenceItem {
-    pub attempt_id: i64,
-    pub message_id: i64,
-    pub state: String,
-    pub current_state: String,
-    pub version: u64,
-    pub reason: Option<String>,
-    pub recipient_kind: String,
-    pub task_id: Option<String>,
-    pub interaction_id: Option<String>,
-}
+
+
 impl DomainStore {
     /// One bounded page of technical evidence. The message body remains in the
     /// domain projection; this API carries only IDs and delivery state.
@@ -2095,16 +1886,16 @@ impl DomainStore {
         if version < 1 || expected_version >= MAX_REVISION {
             return Err(DomainError::new("invalid_input", "invalid delivery version").into());
         }
-        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(anyhow::Error::from)?;
         check_schema(&tx)?;
         let current_epoch: String = tx.query_row(
-            "SELECT data_epoch FROM domain_meta WHERE singleton=1", [], |r| r.get(0))?;
+            "SELECT data_epoch FROM domain_meta WHERE singleton=1", [], |r| r.get(0)).map_err(anyhow::Error::from)?;
         if current_epoch != epoch {
             return Err(DomainError::new("stale_epoch", "domain epoch changed").into());
         }
         let previous: Option<(Vec<u8>, String)> = tx.query_row(
             "SELECT digest,result FROM local_command_results WHERE sender=?1 AND request_id=?2",
-            params![sender, request_id], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+            params![sender, request_id], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(anyhow::Error::from)?;
         if let Some((digest, result)) = previous {
             if digest != ciphertext_digest {
                 return Err(DomainError::new("idempotency_conflict", "request ID reused with different encrypted bytes").into());
@@ -2114,20 +1905,20 @@ impl DomainStore {
         let message_id: Option<i64> = tx.query_row(
             "SELECT a.message_id FROM delivery_attempts a JOIN domain_outbox o ON o.message_id=a.message_id \
              WHERE a.id=?1 AND a.version=?2 AND a.state='uncertain' AND o.state='uncertain'",
-            params![attempt_id, version], |r| r.get(0)).optional()?;
+            params![attempt_id, version], |r| r.get(0)).optional().map_err(anyhow::Error::from)?;
         let Some(message_id) = message_id else {
             return Err(DomainError::new("delivery_uncertain", "uncertain delivery changed; refresh evidence").into());
         };
         let status = if retry { "retryable" } else { "discarded" };
         tx.execute("UPDATE delivery_attempts SET state=?3,version=version+1,reason='explicit_user_reconciliation' \
-            WHERE id=?1 AND version=?2 AND state='uncertain'", params![attempt_id,version,status])?;
+            WHERE id=?1 AND version=?2 AND state='uncertain'", params![attempt_id,version,status]).map_err(anyhow::Error::from)?;
         tx.execute("UPDATE domain_outbox SET state=?2 WHERE message_id=?1 AND state='uncertain'",
-            params![message_id,status])?;
+            params![message_id,status]).map_err(anyhow::Error::from)?;
         let result = json!({"attempt_id":attempt_id,"message_id":message_id,
             "version":expected_version+1,"state":status});
         tx.execute("INSERT INTO local_command_results(sender,request_id,digest,result) VALUES(?1,?2,?3,?4)",
-            params![sender,request_id,ciphertext_digest.as_slice(),serde_json::to_string(&result)?])?;
-        tx.commit()?;
+            params![sender,request_id,ciphertext_digest.as_slice(),serde_json::to_string(&result)?]).map_err(anyhow::Error::from)?;
+        tx.commit().map_err(anyhow::Error::from)?;
         self.note_side_write();
         Ok(result)
     }
@@ -2179,10 +1970,10 @@ pub mod tests;
 #[cfg(test)]
 mod write_cost_tests;
 #[cfg(any(test, feature = "test-hooks"))]
+pub mod retention_fixtures;
+#[cfg(any(test, feature = "test-hooks"))]
 #[path = "load_bench.rs"]
 pub mod load_bench;
-#[cfg(any(test, feature = "test-hooks"))]
-pub mod acceptance_cases;
 #[cfg(test)]
 #[path = "acceptance_tests.rs"]
 mod acceptance_tests;

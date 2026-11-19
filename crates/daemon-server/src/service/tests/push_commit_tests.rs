@@ -30,7 +30,7 @@ fn push_commit_retained_writer_keeps_signed_http_reads_serviceable() {
             let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&service.home).unwrap());
             let expected_epoch = domain.state().unwrap().data_epoch.0.clone();
             if path == PUSH_BINDING_ROUTE { service = service.with_domain(domain); }
-            let state = crate::domain_bootstrap::DomainDaemon::open(&service.home).unwrap();
+            let state = crate::domain_bootstrap::DomainDaemon::open(&service.home, &alondra_store_sqlite::Sqlite).unwrap();
             let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(workers).enable_all().build().unwrap();
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let address = listener.local_addr().unwrap();

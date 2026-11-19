@@ -1,6 +1,7 @@
 //! What the daemon reads of each task's lifecycle is what a full replay of its journal gives,
 //! whatever the store went through: a commit SQL refuses, the daemon opening the database again,
 //! another connection writing to it.
+use alondra_store_sqlite::AsSqlite as _;
 use super::*;
 use crate::domain_runtime::DomainRuntime;
 use std::os::unix::fs::DirBuilderExt;
@@ -74,7 +75,7 @@ fn a_commit_sql_refuses_leaves_the_kept_lifecycles_of_the_state_before_it() {
     let home = opened();
     assert_kept(&home.runtime);
     let before = home.runtime.read();
-    home.runtime.store.lock().unwrap().conn
+    home.runtime.store.lock().unwrap().sqlite().conn
         .execute_batch("CREATE TRIGGER fail_journal BEFORE INSERT ON lifecycle_events BEGIN SELECT RAISE(ABORT,'injected journal failure'); END;")
         .unwrap();
     let refused = home.run(&node(), present("delivery-refused")).unwrap_err();
@@ -83,7 +84,7 @@ fn a_commit_sql_refuses_leaves_the_kept_lifecycles_of_the_state_before_it() {
     assert_eq!(after.state().revision, before.state().revision, "nothing was committed");
     assert_eq!(records(after.state()), records(before.state()));
     assert_kept(&home.runtime);
-    home.runtime.store.lock().unwrap().conn.execute_batch("DROP TRIGGER fail_journal").unwrap();
+    home.runtime.store.lock().unwrap().sqlite().conn.execute_batch("DROP TRIGGER fail_journal").unwrap();
     home.run(&node(), present("delivery-kept")).unwrap();
     assert_eq!(records(home.runtime.read().state()), records(before.state()) + 1, "the next commit journals its decision");
     assert_kept(&home.runtime);

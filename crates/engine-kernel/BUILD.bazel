@@ -23,7 +23,6 @@ WORKSPACE_DEPS = [
 
 # Compiled only under `#[cfg(test)]` or the `test-hooks` feature, though their names do not say so.
 TEST_ONLY = [
-    "src/domain_store/retention_fixtures.rs",
     "src/domain_store/runtime_metrics.rs",
     "src/domain_store/runtime_metrics_fold.rs",
     "src/domain_store/runtime_owner.rs",
@@ -38,7 +37,6 @@ application_crate(
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-machine:daemon_engine_machine",
         "//crates/daemon-engine-model:daemon_engine_model",
-        "//crates/daemon-engine-store:daemon_engine_store",
         "//crates/daemon-support:daemon_support",
     ],
 )
@@ -57,7 +55,6 @@ rust_library(
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-machine:daemon_engine_machine_test_hooks",
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
-        "//crates/daemon-engine-store:daemon_engine_store_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",
     ] + ["//crates/engine-doubles:engine_doubles"],
 )
@@ -75,7 +72,7 @@ low_opt_rust_test(
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-machine:daemon_engine_machine_test_hooks",
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
-        "//crates/daemon-engine-store:daemon_engine_store_test_hooks",
+        "//crates/store-sqlite:store_sqlite_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",
     ] + ["//crates/engine-doubles:engine_doubles"],
 )
@@ -86,7 +83,7 @@ rust_inputs_test(
     required_sources = ["crates/engine-kernel/src/lib.rs", "crates/engine-kernel/src/domain_runtime.rs"],
     source_dir = "crates/engine-kernel/src/",
     target_under_test = ":engine_kernel",
-    test_only_sources = ["crates/engine-kernel/src/domain_store/runtime_owner.rs", "crates/engine-kernel/src/domain_store/retention_fixtures.rs", "crates/test_support.rs"],
+    test_only_sources = ["crates/engine-kernel/src/domain_store/runtime_owner.rs", "crates/test_support.rs"],
     test_sources = False,
 )
 

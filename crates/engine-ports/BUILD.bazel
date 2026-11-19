@@ -8,6 +8,10 @@ load("//tools:rust_sources.bzl", "production_sources")
 # The ports the engine's pieces call each other through, and their registry. It depends on no piece
 # of the engine: every piece depends on it, and only the root sees which piece implements which.
 WORKSPACE_DEPS = [
+    "//crates/agent-application:agent_application",
+    "//crates/domain:domain",
+    "//crates/provider-contract:provider_contract",
+    "//crates/store:store",
     "//crates/core:alondra_core",
     "//crates/domain-rules:domain_rules",
     "//crates/foundation:foundation",

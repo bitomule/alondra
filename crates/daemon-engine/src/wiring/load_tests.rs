@@ -1,7 +1,8 @@
 //! Opening the domain replays each task's journal once, in memory linear in its length, however
 //! many inputs one task keeps pending.
 use super::owner_tests::{running, scope_of};
-use crate::domain_store::tests::Fixture;
+use alondra_store_sqlite::tests::Fixture;
+use alondra_store_sqlite::DomainStore;
 use crate::domain_store::*;
 use alondra_domain_rules::*;
 use rusqlite::Connection;
@@ -59,7 +60,7 @@ fn told(notices: usize) -> (Fixture, DomainStore) {
         answers: None,
     }));
     store
-        .own(scope_of(&state), |owner| Ok(alondra_daemon_engine_store::testing::save_journal(owner.journal(), &task, &records, known)?))
+        .own(scope_of(&state), |owner| Ok(alondra_store_sqlite::testing::save_journal(owner.journal(), &task, &records, known)?))
         .unwrap();
     (fixture, store)
 }
@@ -69,7 +70,7 @@ fn told(notices: usize) -> (Fixture, DomainStore) {
 fn open(notices: usize) -> (DomainState, u64, u64) {
     let (_fixture, store) = told(notices);
     let applied = alondra_domain::measure::applied();
-    let (state, bytes) = allocated_by(|| alondra_daemon_engine_store::testing::load(&store.conn).unwrap());
+    let (state, bytes) = allocated_by(|| alondra_store_sqlite::testing::load(&store.conn).unwrap());
     (state, alondra_domain::measure::applied() - applied, bytes)
 }
 
@@ -99,7 +100,7 @@ fn measure_domain_open() {
     let mut samples: Vec<f64> = (0..20)
         .map(|_| {
             let started = std::time::Instant::now();
-            alondra_daemon_engine_store::testing::load(&store.conn).unwrap();
+            alondra_store_sqlite::testing::load(&store.conn).unwrap();
             started.elapsed().as_secs_f64() * 1000.0
         })
         .collect();
@@ -110,13 +111,13 @@ fn measure_domain_open() {
 #[test]
 fn a_journal_whose_told_texts_the_store_let_go_still_opens() {
     let (_fixture, store) = told(3);
-    let before = alondra_daemon_engine_store::testing::load(&store.conn).unwrap();
+    let before = alondra_store_sqlite::testing::load(&store.conn).unwrap();
     let state: String = store.conn.query_row("SELECT state FROM tasks WHERE id='task-1'", [], |row| row.get(0)).unwrap();
     store.conn.execute("UPDATE tasks SET state='done' WHERE id='task-1'", []).unwrap();
     store.conn.execute("UPDATE lifecycle_inputs SET body=NULL WHERE task_id='task-1' AND input_id LIKE '%notice%'", []).unwrap();
     store.conn.execute("UPDATE tasks SET state=?1 WHERE id='task-1'", [state]).unwrap();
 
-    let after = alondra_daemon_engine_store::testing::load(&store.conn).unwrap();
+    let after = alondra_store_sqlite::testing::load(&store.conn).unwrap();
 
     let task: TaskId = "task-1".into();
     let told: Vec<_> = after.lifecycle_journal[&task].iter().filter_map(|record| match record {
@@ -143,7 +144,7 @@ fn pages_read(connection: &Connection) -> i32 {
 fn opening_the_domain_does_not_read_historical_observation_pages() {
     use sha2::Digest as _;
     let (fixture, store, execution) = running();
-    let expected = alondra_daemon_engine_store::testing::load(&store.conn).unwrap();
+    let expected = alondra_store_sqlite::testing::load(&store.conn).unwrap();
     drop(store);
     let mut small = DomainStore::open(&fixture.path()).unwrap();
     assert_eq!(*small.load().unwrap(), expected);

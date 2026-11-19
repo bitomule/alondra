@@ -29,7 +29,6 @@ use alondra_daemon_support::{
 pub use alondra_daemon_engine_model::options;
 pub use alondra_engine_ports::extension;
 
-pub mod domain_database_migration;
 pub mod domain_runtime;
 pub mod domain_sessions;
 pub mod domain_store;
@@ -37,3 +36,18 @@ pub mod metrics_capture;
 pub mod retention;
 pub mod sdk_backend;
 pub mod settings_projection;
+
+/// The journal the tests of the engine open their runtimes on: a test of a crate above the kernel
+/// sets it once, before its first runtime.
+#[cfg(any(test, feature = "test-hooks"))]
+pub static TEST_JOURNAL: std::sync::OnceLock<&'static dyn alondra_engine_ports::journal::JournalFiles> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+pub fn test_journal() -> &'static dyn alondra_engine_ports::journal::JournalFiles {
+    *TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite)
+}
+
+#[cfg(all(feature = "test-hooks", not(test)))]
+pub fn test_journal() -> &'static dyn alondra_engine_ports::journal::JournalFiles {
+    *TEST_JOURNAL.get().expect("the test sets alondra_engine_kernel::TEST_JOURNAL to the journal its runtimes open on")
+}

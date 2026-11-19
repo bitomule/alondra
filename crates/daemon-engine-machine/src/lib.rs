@@ -3,7 +3,7 @@
 #[macro_use]
 extern crate alondra_foundation;
 use alondra_daemon_support::{locks, node_cost};
-use alondra_daemon_engine_store as domain_store;
+use alondra_engine_ports::journal as domain_store;
 #[cfg(any(test, feature = "test-hooks"))]
 #[path = "../../test_support.rs"]
 pub mod test_support;

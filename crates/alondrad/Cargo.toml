@@ -14,6 +14,7 @@ alondra-host.workspace = true
 alondra-foundation.workspace = true
 alondra-engine-ports.workspace = true
 alondra-github-gh.workspace = true
+alondra-store-sqlite.workspace = true
 alondra-process-group.workspace = true
 alondra-core.workspace = true
 alondra-domain-rules.workspace = true

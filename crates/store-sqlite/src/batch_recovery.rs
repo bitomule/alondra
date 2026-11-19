@@ -1,11 +1,7 @@
+pub use alondra_engine_ports::journal::batch::{UnfinishedBatch};
 use super::*;
 
-pub struct UnfinishedBatch {
-    pub run: String,
-    pub ended: bool,
-    pub decision: Option<String>,
-    pub attempts: Vec<DeliveryEvidence>,
-}
+
 
 impl DomainStore {
     pub fn unfinished_orchestrator_batches(

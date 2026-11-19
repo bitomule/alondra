@@ -1,4 +1,5 @@
 //! Append-only selection changes share the task's owner transaction and native execution fence.
+pub use alondra_engine_ports::journal::provider_transition::{prepared_facts, Kind, Phase, Plan, Source, Transition};
 use alondra_daemon_engine_model::LaunchOptionsFile as _;
 use super::*;
 use alondra_core::accounts::AccountKey;
@@ -20,57 +21,13 @@ pub(super) const SCHEMA: &str = r#"CREATE TABLE IF NOT EXISTS provider_transitio
  AND NOT EXISTS(SELECT 1 FROM provider_transition_steps e WHERE e.transition_id=p.transition_id AND e.phase IN('done','aborted')))
  BEGIN SELECT RAISE(ABORT,'a provider transition already holds the task'); END;"#;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Source {
-    pub agent: AgentId,
-    pub instance: String,
-    pub conversation: String,
-    pub generation: u64,
-    pub account: AccountKey,
-    pub configuration: String,
-    pub binding: String,
-    pub driver: String,
-    pub turn_model: bool,
-    pub directory: String,
-    pub host_directory: std::path::PathBuf,
-    pub selection: Option<TaskSelection>,
-    pub disallowed_tools: Vec<String>,
-}
-/// What a selection change does: change the model of the running session, or move the task to
-/// another account, where a new node takes it over from its record.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all="snake_case")]
-pub enum Kind { #[default] Model, Move }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Plan {
-    pub id: String,
-    #[serde(default)]
-    pub kind: Kind,
-    pub task: TaskId,
-    pub expected_selection: String,
-    pub source: Source,
-    pub target_account: AccountKey,
-    pub target_model: ModelSelection,
-    pub intent: TaskSelection,
-    pub reason: String,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all="snake_case")]
-/// `StartRefused` follows a move that ended before its target started, `Done` with `deferred_start`,
-/// once that start is refused for a reason that trying again does not change: no pass tries it
-/// again until the user asks to, which puts it back at `Done`.
-pub enum Phase { Requested, Draining, SourceFenced, ContextReady, TargetAdmitted, TargetReady, Consumed, Done, Aborted, Uncertain, StartRefused }
-impl Phase {
-    pub fn key(self) -> &'static str { match self {
-        Self::Requested=>"requested",Self::Draining=>"draining",Self::SourceFenced=>"source_fenced",Self::ContextReady=>"context_ready",Self::TargetAdmitted=>"target_admitted",Self::TargetReady=>"target_ready",Self::Consumed=>"consumed",Self::Done=>"done",Self::Aborted=>"aborted",Self::Uncertain=>"uncertain",Self::StartRefused=>"start_refused",
-    }}
-    fn parse(value:&str)->Result<Self>{Ok(match value {
-        "requested"=>Self::Requested,"draining"=>Self::Draining,"source_fenced"=>Self::SourceFenced,"context_ready"=>Self::ContextReady,"target_admitted"=>Self::TargetAdmitted,"target_ready"=>Self::TargetReady,"consumed"=>Self::Consumed,"done"=>Self::Done,"aborted"=>Self::Aborted,"uncertain"=>Self::Uncertain,"start_refused"=>Self::StartRefused,_=>anyhow::bail!("unknown provider transition phase"),
-    })}
-}
-#[derive(Clone, Debug)]
-pub struct Transition { pub plan:Plan,pub phase:Phase,pub facts:serde_json::Value }
+
+
+
+
+
+
 
 fn load(c:&Connection,id:&str)->Result<Option<Transition>> {
     let plan:Option<String>=c.query_row("SELECT facts FROM provider_transition_steps WHERE transition_id=?1 AND phase='requested'",[id],|r|r.get(0)).optional()?;
@@ -81,11 +38,6 @@ fn load(c:&Connection,id:&str)->Result<Option<Transition>> {
 fn open(c:&Connection,task:&TaskId)->Result<Option<Transition>> {
     let id:Option<String>=c.query_row("SELECT p.transition_id FROM provider_transition_steps p WHERE p.task_id=?1 AND p.phase='requested' AND NOT EXISTS(SELECT 1 FROM provider_transition_steps e WHERE e.transition_id=p.transition_id AND e.phase IN('done','aborted')) ORDER BY p.sequence DESC LIMIT 1",[&task.0],|r|r.get(0)).optional()?;
     id.map(|id|load(c,&id)).transpose().map(Option::flatten)
-}
-/// The prepared context a move keeps: its facts at `ContextReady`, or under `context` once it
-/// ended waiting for its target to start.
-pub fn prepared_facts(change:Transition)->serde_json::Value {
-    if matches!(change.phase,Phase::Done|Phase::StartRefused){change.facts["context"].clone()}else{change.facts}
 }
 fn insert(c:&Connection,plan:&Plan)->Result<()> {
     anyhow::ensure!(!plan.id.is_empty() && plan.reason.len()<=2000,"invalid provider transition");
@@ -167,7 +119,7 @@ impl OwnerTransaction<'_> {
         let binding=self.execution_binding(stamp)?;
         if binding.id()!=plan.source.binding || binding.driver()!=plan.source.driver || binding.configuration()!=plan.source.configuration{return Err(DomainError::new("stale_native_binding","The native credential or runtime binding changed; this session cannot be transferred").into())}
         let identity=alondra_daemon_engine_model::NativeAccountIdentity::load(&plan.source.host_directory).map_err(|error|StoreError::Storage(anyhow::anyhow!("{error}")))?;
-        self.require_native_identity(&binding,identity.as_ref())?;
+        self.require_native_identity(&binding,identity.as_ref().map(|identity|identity as &dyn alondra_engine_ports::journal::KnownIdentity))?;
         Ok(())
     }
     pub fn validate_selection_source(&mut self,plan:&Plan)->std::result::Result<(),StoreError>{

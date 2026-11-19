@@ -197,7 +197,7 @@ impl SdkNode {
 
     /// How many of the task's inputs the owner claimed to hand to its host.
     pub fn dispatched_inputs(&self) -> i64 {
-        rusqlite::Connection::open(crate::domain_database_migration::active_path(&self.home)).unwrap()
+        rusqlite::Connection::open(crate::domain_store::active_path(&self.home)).unwrap()
             .query_row("SELECT count(*) FROM lifecycle_dispatches WHERE task_id=?1 AND kind='input' AND status NOT IN ('prepared','revoked')", [SDK_TASK], |row| row.get(0)).unwrap()
     }
 

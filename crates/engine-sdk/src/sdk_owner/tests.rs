@@ -1,6 +1,7 @@
 //! The vertical slice through the real owner: the daemon's store, commands and `own`, the pinned
 //! Node host with the official SDK, and a fake native Claude that answers each prompt with a
 //! result. Each step waits on the host's next event, never on a clock.
+use alondra_store_sqlite::AsSqlite as _;
 use alondra_daemon_engine_model::LaunchOptionsFile as _;
 use crate::gate::GateOf as _;
 use crate::sdk_owner::SdkOwners as _;
@@ -660,10 +661,10 @@ struct Work {
 
 fn measured<T>(domain: &DomainRuntime, step: impl FnOnce() -> T) -> (T, Work) {
     use std::sync::atomic::Ordering;
-    let (store, (writes, _), builds) = (alondra_store::measure::counts(), crate::domain_store::statement_counts(), domain.index_builds.load(Ordering::SeqCst));
+    let (store, (writes, _), builds) = (alondra_store::measure::counts(), alondra_store_sqlite::statement_counts(), domain.index_builds.load(Ordering::SeqCst));
     let value = step();
     let done = alondra_store::measure::counts() - store;
-    let (written, _) = crate::domain_store::statement_counts();
+    let (written, _) = alondra_store_sqlite::statement_counts();
     (value, Work {
         transactions: done.transactions,
         aggregate_loads: done.aggregate_loads,
@@ -2420,7 +2421,7 @@ async fn an_execution_that_stays_lost_has_one_open_card_and_one_push_however_man
     let restarted = slice.restart();
     restarted.enable_sdk(slice.backend.clone());
     adopt_all(&restarted, &slice.backend);
-    let pushes = |domain: &DomainRuntime| domain.store.lock().unwrap().conn.query_row(
+    let pushes = |domain: &DomainRuntime| domain.store.lock().unwrap().sqlite().conn.query_row(
         "SELECT COUNT(*) FROM domain_message_user_targets t JOIN domain_messages m ON m.id=t.message_id WHERE m.interaction_id LIKE 'host-lost-%'", [], |row| row.get::<_, i64>(0)).unwrap();
     let try_again = |attempt: u32| {
         let card = open_card(&restarted, HOST_LOST_PREFIX).expect("the task has a card");

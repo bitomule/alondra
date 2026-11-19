@@ -43,13 +43,13 @@ pub use alondra_daemon_support::{
 };
 #[cfg(test)]
 pub use alondra_engine_ports::disk;
+#[cfg(test)]
+pub use alondra_store_sqlite::domain_database_migration;
 pub use alondra_daemon_engine::{
     accounts,
     allow_always,
     claude_access,
     cleanup,
-    database_check,
-    domain_database_migration,
     domain_github,
     domain_holds,
     domain_merges,

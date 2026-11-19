@@ -4,6 +4,7 @@
 //! done; until its admission it can instead be undone, and the task stays on its account's limit.
 //! The daemon goes on from the last step a move reached, so a crash repeats no effect of a step
 //! already recorded.
+pub use alondra_engine_ports::journal::account_move::{AccountMove, Plan, Step};
 use super::*;
 
 /// Created on every open like the SDK handover's journal: a database from before it gains it.
@@ -31,70 +32,13 @@ pub(super) const ACCOUNT_MOVE_STEPS: &str = concat!(
     "BEGIN SELECT RAISE(ABORT,'an account move step comes only after the one before it'); END;",
 );
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Step {
-    Planned,
-    HostStopped,
-    Admitted,
-    Done,
-    Undone,
-}
 
-impl Step {
-    fn key(self) -> &'static str {
-        match self {
-            Self::Planned => "planned",
-            Self::HostStopped => "host_stopped",
-            Self::Admitted => "admitted",
-            Self::Done => "done",
-            Self::Undone => "undone",
-        }
-    }
-    fn parse(key: &str) -> Result<Self> {
-        Ok(match key {
-            "planned" => Self::Planned,
-            "host_stopped" => Self::HostStopped,
-            "admitted" => Self::Admitted,
-            "done" => Self::Done,
-            "undone" => Self::Undone,
-            other => anyhow::bail!("unknown account move step {other}"),
-        })
-    }
-    /// The move is over, done or undone: nothing of it is left to do.
-    pub fn ended(self) -> bool {
-        matches!(self, Self::Done | Self::Undone)
-    }
-}
 
-/// What the plan of a move fixes: the account the task leaves and the one it goes on with, the
-/// card of the limit it leaves, the execution that hit it and its Claude session, which the
-/// execution on the other account resumes in the same folder.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Plan {
-    pub from: alondra_core::accounts::AccountId,
-    pub to: alondra_core::accounts::AccountId,
-    pub card: InteractionId,
-    pub node: AgentId,
-    pub instance: String,
-    pub session: String,
-    pub cwd: String,
-    /// Until when the task moves no more: the reset of the limit it left.
-    pub until: i64,
-}
 
-/// One move as far as it went.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AccountMove {
-    pub task: TaskId,
-    pub number: i64,
-    pub plan: Plan,
-    pub step: Step,
-    /// The node of the execution admitted on the other account.
-    pub agent: Option<AgentId>,
-    /// Why a move was undone.
-    pub undone: Option<String>,
-}
+
+
+
+
 
 impl DomainStore {
     /// Every account move, as far as each went, oldest first.

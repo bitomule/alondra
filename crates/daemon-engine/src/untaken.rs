@@ -2,24 +2,24 @@
 //! that ended while no turn took up its notice. The owner of the host acts on a refusal at once;
 //! the one clock (`obligation_watch`) acts on what is past its deadline. Both stage the same
 //! commands, so a step repeated by either is a repeat the domain recognises by its id.
-use crate::domain_store::{Attached, OwnerTransaction, StoreError};
+use crate::domain_store::{Attached, OwnerJournal, StoreError};
 use alondra_domain_rules::*;
 use alondra_domain::ActivityView;
 use alondra_foundation::InputId;
 
 pub const WORK_ENDED: &str = "Managed native work finished. Inspect its public result, preserve completed work, and continue this task through Alondra.";
 
-fn envelope(owner: &OwnerTransaction<'_>, id: String, command: Command) -> CommandEnvelope {
+fn envelope(owner: &dyn OwnerJournal, id: String, command: Command) -> CommandEnvelope {
     CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: owner.state().data_epoch.clone(), command_id: id.as_str().into(), expected_revision: 0, command }
 }
 
-fn generation(owner: &OwnerTransaction<'_>, task: &TaskId) -> Result<Option<u64>, StoreError> {
+fn generation(owner: &dyn OwnerJournal, task: &TaskId) -> Result<Option<u64>, StoreError> {
     Ok(owner.lifecycle(task)?.execution().map(|stamp| stamp.generation()))
 }
 
 /// The host refused `input` before offering it: the same text goes again as a new input, in the
 /// same step. The new input, if the domain recorded one.
-pub fn resend_refused(owner: &mut OwnerTransaction<'_>, task: &TaskId, input: &InputId) -> Result<Option<InputId>, StoreError> {
+pub fn resend_refused(owner: &mut dyn OwnerJournal, task: &TaskId, input: &InputId) -> Result<Option<InputId>, StoreError> {
     let Some(generation) = generation(owner, task)? else { return Ok(None) };
     let refused = owner.pending_handoffs(task)?.into_iter()
         .find(|(pending, status)| pending.id() == input && status == "rejected")
@@ -34,7 +34,7 @@ pub fn resend_refused(owner: &mut OwnerTransaction<'_>, task: &TaskId, input: &I
 }
 
 /// Work of the node's own ended and no turn took up its notice: the node is told. Whether it was.
-pub fn wake(owner: &mut OwnerTransaction<'_>, task: &TaskId, agent: &AgentId) -> Result<bool, StoreError> {
+pub fn wake(owner: &mut dyn OwnerJournal, task: &TaskId, agent: &AgentId) -> Result<bool, StoreError> {
     let Some((id, command)) = wake_command(owner.state(), task, agent) else { return Ok(false) };
     owner.stage_command(&Actor::System, &envelope(owner, id, command), Attached::None)?;
     Ok(true)

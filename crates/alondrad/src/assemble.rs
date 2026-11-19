@@ -156,7 +156,7 @@ impl Assembled {
 
 /// Opens the domain at `config.home` and assembles the daemon over it: what a scenario starts.
 pub async fn start(config: &Config, seams: Seams) -> Result<Assembled> {
-    start_over(config, alondra_engine_sdk::wiring::open(&config.home)?, seams).await
+    start_over(config, alondra_engine_sdk::wiring::open(&config.home, &alondra_store_sqlite::Sqlite)?, seams).await
 }
 
 /// `start` over a domain the caller opened at `config.home`, so it can prepare the domain before

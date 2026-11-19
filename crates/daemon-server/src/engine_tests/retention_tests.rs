@@ -1,8 +1,8 @@
 //! Retention compacts what an ended task kept (`engine-kernel`'s `retention`), and the screens
 //! `views` renders from it stay the same.
 use crate::domain_runtime::DomainRuntime;
-use crate::domain_store::retention_fixtures::ended_task;
-use crate::domain_store::tests::Fixture;
+use alondra_store_sqlite::retention_fixtures::ended_task;
+use alondra_store_sqlite::tests::Fixture;
 use alondra_domain_rules::{DomainState, ReadIndex};
 
 #[test]

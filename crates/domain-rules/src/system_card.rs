@@ -127,6 +127,16 @@ pub fn reserved_card_id(id: &str) -> bool {
 }
 
 impl SystemCard {
+    /// What a card stored before Alondra recorded its kind is, from its id and the cause it was
+    /// raised with: a refused-cards card names the node it is about in its cause. Only the
+    /// database's one-time upgrade reads it.
+    pub fn of_stored(id: &str, cause: Option<&str>) -> Option<Self> {
+        match cause.and_then(|cause| cause.strip_prefix("refused-cards:")) {
+            Some(owner) => Some(Self::RefusedCards { owner: owner.to_owned() }),
+            None => Self::of_stored_id(id),
+        }
+    }
+
     /// What a card stored before Alondra recorded its kind is, from the id Alondra gave it. Only
     /// the database's one-time upgrade reads it.
     pub fn of_stored_id(id: &str) -> Option<Self> {

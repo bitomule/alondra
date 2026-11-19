@@ -100,7 +100,7 @@ pub(crate) use alondra_daemon_engine_model::retain_selection_options;
 fn failed(what: &str) -> impl Fn(StoreError) -> Failed + '_ {
     move |error| Failed {
         why: format!("{what}: {}", store_text(&error)),
-        no_space: matches!(&error, StoreError::Storage(error) if alondra_daemon_engine_store::no_space(error)),
+        no_space: matches!(&error, StoreError::Storage(error) if alondra_engine_ports::journal::no_space(error)),
         refusal: match &error { StoreError::Domain(error) => Some(error.clone()), StoreError::Storage(_) => None },
     }
 }
@@ -561,7 +561,7 @@ pub fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Lau
             if let Some(recovery)=&recovery{
                 let latest=owner.state().lifecycle_journal.get(&launch.task).and_then(|records|records.iter().rev().find_map(|record|match record{LifecycleRecord::Admitted{execution:Some(execution),..}=>Some(execution),_=>None}));
                 if latest!=Some(&recovery.admission){return Err(DomainError::new("native_session_changed","The original native session changed before recovery; refresh the task").into())}
-                owner.require_native_identity(&binding,recovery.identity.as_ref())?;
+                owner.require_native_identity(&binding,recovery.identity.as_ref().map(|identity| identity as &dyn crate::domain_store::KnownIdentity))?;
                 if let Some(identity)=&recovery.identity{identity.retain(&backend.state_root.join(&agent.0)).map_err(|error|StoreError::Storage(anyhow::anyhow!("{error}")))?;}
             }else{NativeAccountIdentity::save(&backend.state_root.join(&agent.0),actual).map_err(|error|StoreError::Storage(anyhow::anyhow!("{error}")))?;}
             owner.stage_command(&Actor::System, &admit, Attached::None)?;
@@ -771,7 +771,7 @@ pub(crate) fn launch_admitted(domain: Arc<DomainRuntime>, backend: &SdkBackend, 
     configuration.native_environment.extend(node_environment(domain.home(), &agent, capability.expose_for_child_environment()));
     let mut worker = Worker::configured(grant.binding().clone(), configuration).map_err(adapter("configuring the SDK worker"))?;
     let identity=NativeAccountIdentity::load(worker.state_directory())?;
-    domain.own(scope.clone(),|owner|owner.require_native_identity(grant.binding(),identity.as_ref())).map_err(failed("Alondra cannot resume this session"))?;
+    domain.own(scope.clone(),|owner|owner.require_native_identity(grant.binding(),identity.as_ref().map(|identity| identity as &dyn crate::domain_store::KnownIdentity))).map_err(failed("Alondra cannot resume this session"))?;
     let (adapter_state, _) = domain.own(scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
     domain.seals.take(&task);
     worker.install_owner(grant, adapter_state).map_err(adapter("starting the SDK host"))?;
@@ -1042,7 +1042,7 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
     let capability = domain.bind_agent(&agent.0).map_err(failed("issuing the node's capability"))?;
     let unadmitted = Unadmitted { domain: Some(Arc::clone(&domain)), agent: agent.clone() };
     let environment = node_environment(domain.home(), &agent, capability.expose_for_child_environment());
-    domain.own(scope.clone(),|owner|owner.require_native_identity(grant.binding(),identity.as_ref())).map_err(failed("Alondra cannot resume this session"))?;
+    domain.own(scope.clone(),|owner|owner.require_native_identity(grant.binding(),identity.as_ref().map(|identity| identity as &dyn crate::domain_store::KnownIdentity))).map_err(failed("Alondra cannot resume this session"))?;
     worker.relaunch(grant, adapter_state, base, resume, retaken, environment).map_err(|error| Failed::new(format!("its new host could not start ({error:?})")))?;
     if retaken && adoption.receipt_candidates.is_empty() && let Some(archive) = worker.retired_host() && let Err(error) = std::fs::remove_dir_all(&archive) {
         log!("could not remove the folder of the released host of {task} ({}): {error}", archive.display());
@@ -1754,7 +1754,7 @@ impl Driver {
         let identity=NativeAccountIdentity::load(self.worker.state_directory())?;
         let binding=self.worker.binding().clone();
         match self.domain.own(self.scope.clone(), |owner| {
-            owner.require_native_identity(&binding,identity.as_ref())?;
+            owner.require_native_identity(&binding,identity.as_ref().map(|identity| identity as &dyn crate::domain_store::KnownIdentity))?;
             let execution=retained.as_ref().unwrap().execution().clone();
             if owner.provider_transition_blocks(&execution)? { return Ok(Some(owner.lifecycle(execution.task())?.execution()==Some(&execution))); }
             owner.claim(retained.take().unwrap())?; Ok(None)
@@ -2358,7 +2358,7 @@ pub(crate) fn commit_observation<N: alondra_agent_application::ObservationNormal
     generation: u64, batch: &OrderedObservation, normalizer: &N, home: &std::path::Path,identity:Option<&NativeAccountIdentity>) -> Result<(alondra_store::ObservationAcceptance, Vec<String>), StoreError> {
     let stage = |probe: bool| domain
         .own(scope.clone(), |owner| {
-            let acceptance = owner.stage_observation_with_identity(binding, generation, batch, normalizer, home, probe,identity)?;
+            let acceptance = owner.stage_observation_with_identity(binding, generation, batch, normalizer, home, probe,identity.map(|identity| identity as &dyn crate::domain_store::KnownIdentity))?;
             if probe && !owner.unrecorded().is_empty() && owner.work_is_over(batch.execution.task()) {
                 return Err(StoreError::Domain(alondra_domain_rules::DomainError::new("work_is_over", owner.unrecorded().join("; "))));
             }

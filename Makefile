@@ -437,9 +437,9 @@ worktree-volume-bench:
 
 # Latency of /v1/health, views and hooks plus alondrad's CPU under N simulated nodes (tools/load_bench.py).
 load-bench:
-	bazelisk build //crates/alondrad //crates/alondra //crates/daemon-engine-store:daemon_engine_store_test
+	bazelisk build //crates/alondrad //crates/alondra //crates/store-sqlite:store_sqlite_test
 	python3 tools/load_bench.py --daemon .bazel-links/bazel-bin/crates/alondrad/alondrad \
-		--cli .bazel-links/bazel-bin/crates/alondra/alondra --seed .bazel-links/bazel-bin/crates/daemon-engine-store/daemon_engine_store_test $(LOAD_BENCH_ARGS)
+		--cli .bazel-links/bazel-bin/crates/alondra/alondra --seed .bazel-links/bazel-bin/crates/store-sqlite/store_sqlite_test $(LOAD_BENCH_ARGS)
 
 soak:
 	bazelisk build //crates/alondrad

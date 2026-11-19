@@ -200,6 +200,15 @@ pub trait ObservationNormalizer {
 }
 
 /// Normalizes every observation by skipping it: what a discarded observation is staged with.
+impl<N: ObservationNormalizer + ?Sized> ObservationNormalizer for &N {
+    fn normalize(&self, batch: &OrderedObservation, metadata: &ObservationMetadata<'_, '_>) -> std::result::Result<Normalization, AdapterError> {
+        (**self).normalize(batch, metadata)
+    }
+    fn skip(&self, batch: &OrderedObservation, metadata: &ObservationMetadata<'_, '_>) -> std::result::Result<Normalization, AdapterError> {
+        (**self).skip(batch, metadata)
+    }
+}
+
 pub struct Skipping<'normalizer, N>(pub &'normalizer N);
 impl<N: ObservationNormalizer> ObservationNormalizer for Skipping<'_, N> {
     fn normalize(

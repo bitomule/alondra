@@ -2279,11 +2279,11 @@ fn a_read_transaction_reads_one_commit_while_the_writer_writes_beside_it() {
     let fixture = Fixture::new();
     let mut writer = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut writer);
-    let reader = std::sync::Mutex::new(DomainStore::open_readonly(&fixture.path()).unwrap());
+    let reader: std::sync::Mutex<Box<dyn alondra_engine_ports::journal::Journal>> = std::sync::Mutex::new(Box::new(DomainStore::open_readonly(&fixture.path()).unwrap()));
     let before = writer.request_times().unwrap();
-    let (mark, newest) = ReadTransaction::begin(reader.lock().unwrap()).read_mark().unwrap();
+    let (mark, newest) = alondra_engine_ports::journal::ReadTransaction::begin(reader.lock().unwrap()).read_mark().unwrap();
     {
-        let read = ReadTransaction::begin(reader.lock().unwrap());
+        let read = alondra_engine_ports::journal::ReadTransaction::begin(reader.lock().unwrap());
         assert_eq!(read.request_times().unwrap(), before);
         writer.conn.execute_batch("BEGIN IMMEDIATE").unwrap();
         writer.set_start_retry(&"task-1".into(), Some((1, 2))).unwrap();
@@ -2297,7 +2297,7 @@ fn a_read_transaction_reads_one_commit_while_the_writer_writes_beside_it() {
         assert!(read.start_retries().unwrap().is_empty());
         assert_eq!(read.read_mark().unwrap(), (mark, newest));
     }
-    let read = ReadTransaction::begin(reader.lock().unwrap());
+    let read = alondra_engine_ports::journal::ReadTransaction::begin(reader.lock().unwrap());
     assert!(read.request_times().unwrap().contains_key(&"during".into()));
     assert!(read.start_retries().unwrap().contains_key(&"task-1".into()));
     let (after, latest) = read.read_mark().unwrap();

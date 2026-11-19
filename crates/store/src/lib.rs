@@ -59,6 +59,11 @@ const MAX_PAYLOAD: usize = 1_048_576;
 /// digest still answers a copy the host sends again, and no host frame is one byte long.
 const NORMALIZED_EVIDENCE: &[u8] = &[0];
 
+/// SQLite saying its database is full: what a full disk looks like inside the store.
+pub fn disk_full(cause: &(dyn std::error::Error + 'static)) -> bool {
+    cause.downcast_ref::<rusqlite::Error>().is_some_and(|error| error.sqlite_error_code() == Some(rusqlite::ErrorCode::DiskFull))
+}
+
 #[derive(Debug)]
 pub enum Error {
     Database(rusqlite::Error),

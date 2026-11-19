@@ -1,5 +1,6 @@
 //! User messages reach a node through its task lifecycle, or through its mod for legacy nodes.
 //! A task with no node keeps its inputs until its first execution starts.
+use crate::domain_store::IntoDomainError as _;
 use crate::gate::GateOf as _;
 use crate::live::LiveOf as _;
 use alondra_core::clock;
@@ -491,7 +492,7 @@ mod tests {
         assert_eq!(answer["status"], 200, "{answer}");
         assert_eq!(answer["body"]["reaches"], "task");
         let id: TaskId = serde_json::from_value(answer["body"]["task_id"].clone()).unwrap();
-        let mut reopened = crate::domain_store::DomainStore::open(&fixture.0.join("domain.db")).unwrap();
+        let mut reopened = alondra_store_sqlite::DomainStore::open(&fixture.0.join("domain.db")).unwrap();
         let state = reopened.load().unwrap();
         let followup = &state.tasks[&id];
         assert_eq!(followup.title, "Weekly report");
@@ -608,7 +609,7 @@ mod tests {
                 recipient: alondra_domain_rules::Recipient::User, body: "An update".into(), attachments: vec![],
                 card: alondra_domain_rules::CardSpec::derived(alondra_domain_rules::CardKind::Know, "Read the update") },
         }, None, || Ok(())).unwrap();
-        let observer = rusqlite::Connection::open(crate::domain_database_migration::active_path(&fixture.0)).unwrap();
+        let observer = rusqlite::Connection::open(crate::domain_store::active_path(&fixture.0)).unwrap();
         observer.execute_batch("CREATE TRIGGER fail_mark_read BEFORE INSERT ON semantic_receipts
             BEGIN SELECT RAISE(ABORT,'injected mark read cause'); END;").unwrap();
         let error = mark_read(&domain, &user(), "info".into()).unwrap_err();

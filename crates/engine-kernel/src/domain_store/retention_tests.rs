@@ -1,3 +1,4 @@
+use alondra_store_sqlite::AsSqlite as _;
 use super::*;
 use crate::domain_store::tests::{Fixture, seeded};
 use crate::domain_store::retention_fixtures::{agent, ended_task, envelope, long};
@@ -274,7 +275,7 @@ fn a_store_whose_audit_rows_held_their_bodies_is_rebuilt_once_they_all_moved() {
     let fixture = Fixture::new();
     previous_release(&fixture, 3000);
     let runtime = crate::domain_runtime::DomainRuntime::open_unwired_at(&fixture.0, &fixture.path()).unwrap();
-    let now = runtime.store.lock().unwrap().conn.query_row("SELECT max(at) FROM command_audit", [], |row| row.get::<_, i64>(0)).unwrap();
+    let now = runtime.store.lock().unwrap().sqlite().conn.query_row("SELECT max(at) FROM command_audit", [], |row| row.get::<_, i64>(0)).unwrap();
 
     runtime.retain(now).unwrap();
 

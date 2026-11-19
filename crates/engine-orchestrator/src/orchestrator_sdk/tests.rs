@@ -385,14 +385,14 @@ fn fixture_selection() -> alondra_daemon_engine_model::BatchSelection {
 async fn claude_batch_reports_are_durable_before_the_prompt_is_settled(){
     let f=fixture();f.tell("report-proof","Where should the release note go?");f.tick().await;
     assert_eq!(f.attempts(),["handed"]);
-    let db=rusqlite::Connection::open(crate::domain_database_migration::active_path(&f.executor.home)).unwrap();
+    let db=rusqlite::Connection::open(crate::domain_store::active_path(&f.executor.home)).unwrap();
     let (count,first,last):(i64,i64,i64)=db.query_row("SELECT count(*),min(cursor),max(cursor) FROM orchestrator_batch_reports",[],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
     assert!(count>0);assert_eq!(first,1);assert_eq!(last,count);
     let terminal:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM orchestrator_batch_reports WHERE json_extract(report,'$.kind')='result' AND json_extract(report,'$.input_consumed')=1 AND json_extract(report,'$.turn_completed')=1)",[],|row|row.get(0)).unwrap();assert!(terminal);
 }
 #[tokio::test]
 async fn claude_batch_report_commit_failure_retries_after_reports_can_commit(){
-    let f=fixture();let db=rusqlite::Connection::open(crate::domain_database_migration::active_path(&f.executor.home)).unwrap();
+    let f=fixture();let db=rusqlite::Connection::open(crate::domain_store::active_path(&f.executor.home)).unwrap();
     db.execute_batch("CREATE TRIGGER refuse_native_report BEFORE INSERT ON orchestrator_batch_reports BEGIN SELECT RAISE(ABORT,'injected report refusal'); END;").unwrap();
     f.tell("report-refusal","Where should the release note go?");f.tick().await;
     assert_ne!(f.attempts(),["handed"],"without the required report transaction the native prompt cannot settle");

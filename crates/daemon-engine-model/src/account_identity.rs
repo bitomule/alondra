@@ -166,6 +166,13 @@ fn replace_private(directory:&Path,name:&str,bytes:&[u8])->Result<(),Failed>{
     std::fs::File::open(directory).and_then(|folder|folder.sync_all()).map_err(|error|Failed::written(format!("Syncing the native identity folder: {error}"),&error))
 }
 
+impl alondra_engine_ports::journal::KnownIdentity for NativeAccountIdentity {
+    fn change(&self, current: &alondra_core::accounts::AccountStatus) -> Option<&'static str> { NativeAccountIdentity::change(self, current) }
+    fn same_known_native_account(&self, provider: alondra_core::accounts::Provider, current: &alondra_core::accounts::AccountStatus) -> bool {
+        NativeAccountIdentity::same_known_native_account(self, provider, current)
+    }
+}
+
 #[cfg(test)]
 mod tests{
     use super::*;
@@ -257,3 +264,4 @@ mod tests{
     }
 
 }
+

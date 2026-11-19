@@ -1388,6 +1388,7 @@ exec(compile(open(fake).read(), fake, 'exec'), {'__name__': '__main__'})
 
 #[cfg(test)]
 mod tests {
+    use alondra_store_sqlite::AsSqlite as _;
     use super::testing::{Fixture, fixture};
     use super::*;
     use alondra_domain_rules::*;
@@ -1585,16 +1586,16 @@ mod tests {
         let cutoff = now_millis().saturating_sub(crate::domain_store::ORCHESTRATOR_MESSAGE_TTL_MS);
         {
             let mut store = domain.store.lock().unwrap();
-            store.set_message_created_at_for_test(1, cutoff - 1).unwrap();
-            store.set_message_created_at_for_test(2, cutoff).unwrap();
+            store.sqlite_mut().set_message_created_at_for_test(1, cutoff - 1).unwrap();
+            store.sqlite_mut().set_message_created_at_for_test(2, cutoff).unwrap();
             let user_message = store.pending_messages().unwrap().into_iter()
                 .find(|message| message.recipient_kind == "user").unwrap();
-            store.set_message_created_at_for_test(user_message.id, cutoff - 1).unwrap();
+            store.sqlite_mut().set_message_created_at_for_test(user_message.id, cutoff - 1).unwrap();
             store.discard_expired_orchestrator_messages(cutoff).unwrap();
-            assert_eq!(store.message_outbox_state_for_test(1).unwrap(), "discarded");
-            assert_eq!(store.message_outbox_state_for_test(2).unwrap(), "pending");
-            assert_eq!(store.message_outbox_state_for_test(user_message.id).unwrap(), "pending");
-            store.set_message_created_at_for_test(
+            assert_eq!(store.sqlite().message_outbox_state_for_test(1).unwrap(), "discarded");
+            assert_eq!(store.sqlite().message_outbox_state_for_test(2).unwrap(), "pending");
+            assert_eq!(store.sqlite().message_outbox_state_for_test(user_message.id).unwrap(), "pending");
+            store.sqlite_mut().set_message_created_at_for_test(
                 2,
                 now_millis().saturating_sub(crate::domain_store::ORCHESTRATOR_MESSAGE_TTL_MS) + 60_000,
             ).unwrap();
@@ -1602,9 +1603,9 @@ mod tests {
 
         f.tick().await;
 
-        let store = domain.store.lock().unwrap();
-        assert_eq!(store.message_outbox_state_for_test(1).unwrap(), "discarded");
-        assert_eq!(store.message_outbox_state_for_test(2).unwrap(), "handed");
+        let mut store = domain.store.lock().unwrap();
+        assert_eq!(store.sqlite().message_outbox_state_for_test(1).unwrap(), "discarded");
+        assert_eq!(store.sqlite().message_outbox_state_for_test(2).unwrap(), "handed");
         assert_eq!(store.pending_messages().unwrap().iter().filter(|message| message.recipient_kind == "user").count(), 1,
             "user notifications retain their separate delivery policy");
         assert!(store.pending_messages().unwrap().iter().all(|message| message.id != 1));
@@ -1620,21 +1621,21 @@ mod tests {
         ask_orchestrator(&f, 2);
         let created_at = 1_000;
         let mut store = domain.store.lock().unwrap();
-        store.set_message_created_at_for_test(1, created_at).unwrap();
-        store.set_message_created_at_for_test(2, created_at).unwrap();
+        store.sqlite_mut().set_message_created_at_for_test(1, created_at).unwrap();
+        store.sqlite_mut().set_message_created_at_for_test(2, created_at).unwrap();
 
-        let exact_cutoff = store.claim_orchestrator_message_at_for_test(
+        let exact_cutoff = store.sqlite_mut().claim_orchestrator_message_at_for_test(
             1,
             created_at + crate::domain_store::ORCHESTRATOR_MESSAGE_TTL_MS,
         ).unwrap().expect("a message exactly 24 hours old remains eligible");
-        assert_eq!(store.message_outbox_state_for_test(1).unwrap(), "dispatching");
+        assert_eq!(store.sqlite().message_outbox_state_for_test(1).unwrap(), "dispatching");
         assert!(store.finish_message(exact_cutoff.attempt_id, exact_cutoff.version, State::Handed, None).unwrap());
 
-        assert!(store.claim_orchestrator_message_at_for_test(
+        assert!(store.sqlite_mut().claim_orchestrator_message_at_for_test(
             2,
             created_at + crate::domain_store::ORCHESTRATOR_MESSAGE_TTL_MS + 1,
         ).unwrap().is_none(), "a message older than 24 hours is not claimed");
-        assert_eq!(store.message_outbox_state_for_test(2).unwrap(), "discarded");
+        assert_eq!(store.sqlite().message_outbox_state_for_test(2).unwrap(), "discarded");
         assert!(!store.delivery_evidence().unwrap().iter().any(|item| item.message_id == 2),
             "discarding an unclaimed message does not invent a delivery attempt");
     }

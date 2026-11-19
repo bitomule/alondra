@@ -1,3 +1,4 @@
+use alondra_store_sqlite::AsSqlite as _;
 use super::*;
 use crate::domain_store::metrics_fold::tests::with_a_merged_pr;
 use serde_json::json;
@@ -61,11 +62,11 @@ fn a_merged_prs_size_is_asked_until_github_answers_and_then_never_again() {
         let gh = Sizes { answers: vec![None, Some(json!({"additions": 120, "deletions": 30}))], asked: AtomicUsize::new(0) };
         let pass = || tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(pr_sizes(domain, &gh, alondra_core::now_millis()));
         pass();
-        assert_eq!(domain.store.lock().expect("store").pr_lines("task-1"), None, "GitHub did not answer");
+        assert_eq!(domain.store.lock().expect("store").sqlite().pr_lines("task-1"), None, "GitHub did not answer");
         let week_later = alondra_core::now_millis() + crate::domain_store::metrics_fold::SAMPLES_MS;
         assert!(domain.prs_without_size(week_later, 32).unwrap().is_empty(), "a week after the task ended, its size is no longer asked");
         pass();
-        assert_eq!(domain.store.lock().expect("store").pr_lines("task-1"), Some(150));
+        assert_eq!(domain.store.lock().expect("store").sqlite().pr_lines("task-1"), Some(150));
         pass();
         assert_eq!(gh.asked.load(Ordering::SeqCst), 2, "a known size is not asked again");
     });
