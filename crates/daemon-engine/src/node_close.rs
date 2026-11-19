@@ -254,7 +254,8 @@ fn worktrees(porcelain: &[u8]) -> impl Iterator<Item = PathBuf> + '_ {
 }
 
 /// A worktree whose git link is broken can only be deleted by hand. It is deleted only when
-/// its files are exactly its branch, it has no new files and the branch is fully pushed.
+/// its files are exactly its branch, it has no new files and the branch is fully pushed, or kept
+/// in the branch itself when the repository has no remote.
 async fn discard_if_identical(dir: &Path, branch: &str) -> Result<(), String> {
     let repo_git = repository_of(dir)?;
     let index = scratch_index();
@@ -288,7 +289,8 @@ async fn discard_if_identical(dir: &Path, branch: &str) -> Result<(), String> {
     if !untracked?.is_empty() {
         return Err("it has files that are not in git".into());
     }
-    if git(vec!["rev-list".into(), "--count".into(), format!("origin/{branch}..{branch}")]).await? != "0" {
+    let no_remote = git(vec!["remote".into()]).await?.is_empty();
+    if !no_remote && git(vec!["rev-list".into(), "--count".into(), format!("origin/{branch}..{branch}")]).await? != "0" {
         return Err(format!("the branch {branch} has commits that are not pushed"));
     }
     tokio::fs::remove_dir_all(dir).await.map_err(|e| e.to_string())
@@ -300,4 +302,68 @@ fn scratch_index() -> PathBuf {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     std::env::temp_dir().join(format!("alondra-index-{}-{}-{n}", std::process::id(), alondra_core::now_millis()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+
+    /// A repository under `root`, and the worktree of task `t` on branch `worktree-t` with one
+    /// commit of its own.
+    fn task_worktree(root: &Path) -> (PathBuf, PathBuf) {
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        for args in [&["init", "-q", "-b", "main"][..], &["config", "user.email", "t@t"], &["config", "user.name", "t"], &["commit", "-q", "--allow-empty", "-m", "base"]] {
+            run(&repo, args);
+        }
+        let dir = repo.join(".claude/worktrees/t");
+        run(&repo, &["worktree", "add", "-q", "-b", "worktree-t", dir.to_str().unwrap()]);
+        std::fs::write(dir.join("work.txt"), "work").unwrap();
+        run(&dir, &["add", "work.txt"]);
+        run(&dir, &["commit", "-q", "-m", "work"]);
+        (repo, dir)
+    }
+
+    #[tokio::test]
+    async fn a_worktree_of_a_repository_without_a_remote_is_deleted_and_its_branch_keeps_the_commits() {
+        let root = crate::test_support::Directory::new();
+        let (repo, dir) = task_worktree(&root);
+        let head = run(&dir, &["rev-parse", "HEAD"]);
+
+        assert_eq!(discard_if_identical(&dir, "worktree-t").await, Ok(()));
+
+        assert!(!dir.exists(), "the folder is deleted");
+        assert_eq!(run(&repo, &["rev-parse", "refs/heads/worktree-t"]), head, "the branch keeps the task's commits");
+        assert_eq!(run(&repo, &["show", "worktree-t:work.txt"]), "work");
+    }
+
+    #[tokio::test]
+    async fn a_worktree_of_a_repository_without_a_remote_with_uncommitted_files_is_kept() {
+        let root = crate::test_support::Directory::new();
+        let (_repo, dir) = task_worktree(&root);
+        std::fs::write(dir.join("notes.txt"), "draft").unwrap();
+
+        assert_eq!(discard_if_identical(&dir, "worktree-t").await, Err("it has files that are not in git".into()));
+        assert!(dir.join("notes.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn a_worktree_whose_branch_has_commits_its_remote_lacks_is_kept() {
+        let root = crate::test_support::Directory::new();
+        let (repo, dir) = task_worktree(&root);
+        let remote = root.join("remote.git");
+        run(&root, &["init", "-q", "--bare", remote.to_str().unwrap()]);
+        run(&repo, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        run(&repo, &["push", "-q", "origin", "worktree-t"]);
+        run(&dir, &["commit", "-q", "--allow-empty", "-m", "local"]);
+
+        assert_eq!(discard_if_identical(&dir, "worktree-t").await, Err("the branch worktree-t has commits that are not pushed".into()));
+        assert!(dir.exists());
+    }
 }
