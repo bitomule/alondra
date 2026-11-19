@@ -2305,6 +2305,122 @@ fn a_read_transaction_reads_one_commit_while_the_writer_writes_beside_it() {
 }
 
 #[test]
+fn read_changes_follow_commits_not_setters_or_rolled_back_writes() {
+    let fixture = Fixture::new();
+    let mut writer = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut writer);
+    let reader = std::sync::Mutex::new(DomainStore::open_readonly(&fixture.path()).unwrap());
+    let task = TaskId::from("task-1");
+    let before = ReadTransaction::begin(reader.lock().unwrap()).read_cursor().unwrap();
+    writer.conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+    writer.set_start_retry(&task, Some((1, 20))).unwrap();
+    {
+        let read = ReadTransaction::begin(reader.lock().unwrap());
+        assert_eq!(read.changes_since(&before).changed, ReadChange::Unchanged);
+        assert!(read.start_retries().unwrap().is_empty());
+    }
+    writer.conn.execute_batch("ROLLBACK").unwrap();
+    {
+        let read = ReadTransaction::begin(reader.lock().unwrap());
+        assert_eq!(read.changes_since(&before).changed, ReadChange::Unchanged);
+        assert!(read.start_retries().unwrap().is_empty());
+    }
+    {
+        let read = ReadTransaction::begin(reader.lock().unwrap());
+        assert_eq!(read.read_cursor().unwrap(), before);
+        writer.conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+        writer.set_start_retry(&task, Some((2, 30))).unwrap();
+        writer.conn.execute_batch("COMMIT").unwrap();
+        assert_eq!(read.changes_since(&before).changed, ReadChange::Unchanged,
+            "a pinned reader describes its original committed snapshot");
+        assert!(read.start_retries().unwrap().is_empty());
+    }
+    let read = ReadTransaction::begin(reader.lock().unwrap());
+    let delta = read.changes_since(&before);
+    assert_eq!(delta.changed, ReadChange::Reset, "the next transaction observes the unknown commit");
+    assert_eq!(read.start_retries().unwrap().get(&task), Some(&(2, 30)));
+    assert_eq!(read.changes_since(&delta.through.unwrap()).changed, ReadChange::Unchanged);
+}
+
+#[test]
+fn read_changes_reset_for_auxiliary_setters_and_unannotated_external_sql() {
+    let fixture = Fixture::new();
+    let mut writer = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut writer);
+    let reader = std::sync::Mutex::new(DomainStore::open_readonly(&fixture.path()).unwrap());
+    let mut cursor = ReadTransaction::begin(reader.lock().unwrap()).read_cursor().unwrap();
+    let mut reset = || {
+        let read = ReadTransaction::begin(reader.lock().unwrap());
+        let delta = read.changes_since(&cursor);
+        assert_eq!(delta.changed, ReadChange::Reset);
+        cursor = delta.through.unwrap();
+    };
+    writer.set_launch_refusal(&"task-1".into(), Some(("launch_failed", None)), 10).unwrap();
+    reset();
+    writer.set_cancel_reason(&"task-1".into(), "No longer needed").unwrap();
+    reset();
+    writer.record_allowed_rule(&alondra_daemon_engine_model::AllowedRule {
+        id: 0, repo: "/work/project".into(), settings: "/work/settings.json".into(),
+        rule: "Read(*)".into(), added_at: 11, task_id: None,
+        interaction_id: "permission".into(), machine: "test-machine".into(),
+        state: alondra_daemon_engine_model::RuleState::Active,
+    }).unwrap();
+    reset();
+    let rule = writer.allowed_rules().unwrap()[0].id;
+    writer.set_allowed_rule_state(rule, alondra_daemon_engine_model::RuleState::Removed).unwrap();
+    reset();
+    let external = Connection::open(fixture.path()).unwrap();
+    external.execute("INSERT INTO start_retries(task_id,attempts,retry_at) VALUES(?1,?2,?3)", params!["task-1", 3, 40]).unwrap();
+    reset();
+    assert_eq!(ReadTransaction::begin(reader.lock().unwrap()).start_retries().unwrap().get(&"task-1".into()), Some(&(3, 40)));
+}
+
+#[test]
+fn read_changes_cannot_reuse_a_cursor_from_another_reader_or_a_reopened_connection() {
+    let fixture = Fixture::new();
+    let mut writer = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut writer);
+    let first = std::sync::Mutex::new(DomainStore::open_readonly(&fixture.path()).unwrap());
+    let before = ReadTransaction::begin(first.lock().unwrap()).read_cursor().unwrap();
+    let other = std::sync::Mutex::new(DomainStore::open_readonly(&fixture.path()).unwrap());
+    let read = ReadTransaction::begin(other.lock().unwrap());
+    assert_eq!(read.changes_since(&before).changed, ReadChange::Reset);
+    drop(read);
+    drop(first);
+    let reopened = std::sync::Mutex::new(DomainStore::open_readonly(&fixture.path()).unwrap());
+    assert_eq!(ReadTransaction::begin(reopened.lock().unwrap()).changes_since(&before).changed, ReadChange::Reset);
+}
+
+#[test]
+fn read_change_errors_fail_closed_and_invalidate_older_boundaries_after_recovery() {
+    let fixture = Fixture::new();
+    let mut writer = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut writer);
+    let reader = std::sync::Mutex::new(DomainStore::open_readonly(&fixture.path()).unwrap());
+    let before;
+    let original_mark;
+    {
+        let read = ReadTransaction::begin(reader.lock().unwrap());
+        before = read.read_cursor().unwrap();
+        original_mark = read.read_mark().unwrap();
+        read.conn.execute_batch("COMMIT").unwrap();
+        let delta = read.changes_since(&before);
+        assert_eq!(delta.changed, ReadChange::Reset);
+        assert!(delta.through.is_none(), "a missing read transaction has no usable boundary");
+    }
+    {
+        let read = ReadTransaction::begin(reader.lock().unwrap());
+        assert_eq!(read.read_mark().unwrap(), original_mark, "the database itself did not change");
+        assert_eq!(read.changes_since(&before).changed, ReadChange::Reset, "an error invalidates the old identity");
+    }
+    let writer = std::sync::Mutex::new(writer);
+    let read = ReadTransaction::begin(writer.lock().unwrap());
+    let delta = read.changes_since(&before);
+    assert_eq!(delta.changed, ReadChange::Reset);
+    assert!(delta.through.is_none(), "a writable connection cannot certify a committed reader boundary");
+}
+
+#[test]
 fn launched_tasks_answers_for_every_task_in_one_statement() {
     use crate::model_metrics::{Decision, DecisionKind};
     let fixture = Fixture::new();

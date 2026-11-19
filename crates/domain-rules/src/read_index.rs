@@ -7,6 +7,10 @@ use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
+mod node_changes;
+pub use node_changes::{LiveNodeReading, NodeChangeCursor, NodeChanges};
+use node_changes::NodeHistory;
+
 /// What a task shows, from the domain alone: the client's language and the live data of its node
 /// (what it is doing, a pause the machine imposed) are the screen's to add.
 #[derive(Clone, Debug, PartialEq)]
@@ -130,6 +134,7 @@ pub struct ReadIndex {
     schedule_titles: ScheduleTitles,
     tasks: HashMap<TaskId, TaskReading>,
     nodes: HashMap<AgentId, NodeReading>,
+    live_nodes: HashMap<AgentId, LiveNodeReading>,
     acting: Vec<(TaskId, CardRef)>,
     queue: Vec<InteractionId>,
     queue_at: HashMap<InteractionId, usize>,
@@ -230,6 +235,10 @@ impl ReadIndex {
     }
     pub fn node(&self, node: &AgentId) -> Option<&NodeReading> {
         self.nodes.get(node)
+    }
+    /// The domain inputs of a live node row, independent of reports, hooks and files.
+    pub fn live_node(&self, node: &AgentId) -> Option<&LiveNodeReading> {
+        self.live_nodes.get(node)
     }
     /// The card the user can act on for each task that has one, by task.
     pub fn acting(&self) -> &[(TaskId, CardRef)] {
@@ -436,12 +445,13 @@ impl Holds for ReadIndex {
 pub struct ReadSnapshot {
     state: Arc<DomainState>,
     index: Arc<ReadIndex>,
+    node_history: NodeHistory,
 }
 
 impl ReadSnapshot {
     pub fn build(state: Arc<DomainState>) -> Self {
         let index = Arc::new(ReadIndex::build(&state));
-        Self { state, index }
+        Self { state, index, node_history: NodeHistory::default() }
     }
     /// Pairs a state with an index built before, refusing one built from another revision.
     pub fn pair(state: Arc<DomainState>, index: Arc<ReadIndex>) -> std::result::Result<Self, DomainError> {
@@ -456,7 +466,7 @@ impl ReadSnapshot {
             error.current_revision = Some(state.revision);
             return Err(error);
         }
-        Ok(Self { state, index })
+        Ok(Self { state, index, node_history: NodeHistory::default() })
     }
     pub fn state(&self) -> &Arc<DomainState> {
         &self.state
@@ -861,6 +871,7 @@ impl<'a> Builder<'a> {
             .collect();
         for agent in state.agents.values() {
             let all = tasks.remove(&agent.id).unwrap_or_default();
+            index.live_nodes.insert(agent.id.clone(), LiveNodeReading::of(state, agent, &all));
             let mine = || all.iter().copied().filter(|t| !t.archived);
             let task = mine().filter(|t| !t.state.terminal()).max_by_key(|t| t.revision)
                 .or_else(|| mine().max_by_key(|t| t.revision));

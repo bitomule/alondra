@@ -437,8 +437,8 @@ impl DomainRuntime {
         }
         #[cfg(any(test, feature = "test-hooks"))]
         self.index_builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let snapshot = Arc::new(ReadSnapshot::build(Arc::clone(state)));
         let before = self.read();
+        let snapshot = Arc::new(ReadSnapshot::build_after(Arc::clone(state), &before));
         for observer in &self.observers {
             observer.published(self, before.state(), state);
         }
@@ -1451,11 +1451,17 @@ mod snapshot_tests {
             if reload {
                 assert_eq!(before.state().agents[&AgentId::from("agent-a")].name, "agent-a");
                 assert_eq!(after.state().agents[&AgentId::from("agent-a")].name, "Renamed");
+                assert!(matches!(after.node_changes_since(&before.node_cursor()), alondra_domain_rules::NodeChanges::Reset { .. }));
+                assert_eq!(after.index().live_node(&AgentId::from("agent-a")).unwrap().name, "Renamed");
+                assert_eq!(before.index().live_node(&AgentId::from("agent-a")).unwrap().name, "agent-a");
                 assert!(!domain_changes.has_changed().unwrap(), "reload keeps the existing revision channel's contract");
                 runtime.reload();
             } else {
                 assert!(!before.state().agents.contains_key(&AgentId::from("agent-b")));
                 assert!(after.state().agents.contains_key(&AgentId::from("agent-b")));
+                assert_eq!(after.node_changes_since(&before.node_cursor()), alondra_domain_rules::NodeChanges::Changed {
+                    cursor: after.node_cursor(), nodes: [AgentId::from("agent-b")].into_iter().collect(),
+                });
                 assert!(domain_changes.has_changed().unwrap());
                 runtime.execute(&Actor::System, &command, None, || Ok(())).unwrap();
             }

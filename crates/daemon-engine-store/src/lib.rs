@@ -16,6 +16,8 @@ mod canonical;
 pub mod wording;
 mod command;
 mod connection;
+mod read_changes;
+pub use read_changes::{ReadChange, ReadCursor, ReadDelta};
 #[cfg(any(test, feature = "test-hooks"))]
 pub mod live_read_trace;
 mod owner;
@@ -448,7 +450,10 @@ struct Cached {
     total_changes: u64,
 }
 pub struct DomainStore {
+    /// Replacing this connection requires a new DomainStore; read cursors must never be reused
+    /// across a connection replacement.
     pub conn: Connection,
+    read_identity: read_changes::Identity,
     #[cfg(any(test, feature = "test-hooks"))]
     live_read_trace: Option<live_read_trace::Sink>,
     #[cfg(any(test, feature = "test-hooks"))]
@@ -644,17 +649,21 @@ pub struct Commit {
 
 /// One read transaction on a reader connection: every getter called through it reads the same
 /// committed state, never part of a commit. It ends when dropped.
-pub struct ReadTransaction<'a>(std::sync::MutexGuard<'a, DomainStore>);
+pub struct ReadTransaction<'a>(std::sync::MutexGuard<'a, DomainStore>, bool);
 
 impl<'a> ReadTransaction<'a> {
     pub fn begin(store: std::sync::MutexGuard<'a, DomainStore>) -> Self {
+        let mut started = true;
         if !store.conn.is_autocommit() && let Err(error) = store.conn.execute_batch("ROLLBACK") {
             log!("a domain read left open could not be ended: {error:#}");
+            started = false;
         }
         if let Err(error) = store.conn.execute_batch("BEGIN DEFERRED") {
             log!("a domain read transaction could not begin: {error:#}");
+            started = false;
         }
-        Self(store)
+        if !started { store.read_identity.invalidate(); }
+        Self(store, started)
     }
 }
 
@@ -676,6 +685,7 @@ impl Drop for ReadTransaction<'_> {
     fn drop(&mut self) {
         if !self.0.conn.is_autocommit() && let Err(error) = self.0.conn.execute_batch("COMMIT") {
             log!("a domain read transaction could not end: {error:#}");
+            self.0.read_identity.invalidate();
         }
     }
 }
@@ -944,6 +954,7 @@ impl DomainStore {
     fn from_connection(conn: Connection) -> Self {
         Self {
             conn,
+            read_identity: Default::default(),
             cached: None,
             aggregates: Default::default(),
             protected: alondra_engine_ports::worktrees::WorktreeRules::new(
