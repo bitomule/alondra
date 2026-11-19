@@ -39,6 +39,18 @@ impl GhCli {
 }
 
 impl Gh for GhCli {
+    fn head_oid<'a>(&'a self, url: &'a str) -> Read<'a, Result<String, alondra_engine_ports::github::HeadError>> {
+        Box::pin(crate::diff::head(self, url))
+    }
+
+    fn diff<'a>(&'a self, url: &'a str) -> Read<'a, Result<alondra_engine_ports::github::PrDiff, alondra_engine_ports::github::DiffError>> {
+        Box::pin(crate::diff::read(self, url))
+    }
+
+    fn viewed_files<'a>(&'a self, pr: &'a alondra_domain_rules::PullRequest) -> Read<'a, Result<alondra_engine_ports::github::Marks, String>> {
+        Box::pin(crate::pr_viewed::read(self, pr))
+    }
+
     fn view<'a>(&'a self, url: &'a str) -> Read<'a, Option<Value>> {
         Box::pin(async move { self.json(&["pr", "view", url, "--json", FIELDS]).await.ok() })
     }

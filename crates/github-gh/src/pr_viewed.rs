@@ -3,32 +3,10 @@
 //! only reads and sets them, for the account `gh` is signed in with.
 use crate::cli::GhCli;
 use alondra_domain_rules::PullRequest;
-use serde::Serialize;
 use serde_json::Value;
 use std::time::Duration;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Viewed {
-    Viewed,
-    Unviewed,
-    /// Viewed once, then a push changed the file.
-    Changed,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct Mark {
-    pub path: String,
-    pub viewed: Viewed,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Marks {
-    /// GitHub's node id of the pull request, which the mutations take.
-    pub node: String,
-    pub head: String,
-    pub files: Vec<Mark>,
-}
+pub use alondra_engine_ports::github::{Mark, Marks, Viewed};
 
 /// GitHub lists at most 3000 files of a pull request.
 const MAX_FILES: usize = 3000;

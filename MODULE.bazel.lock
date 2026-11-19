@@ -743,7 +743,7 @@
         "bzlTransitiveDigest": "UvQf9r2bSvJv7U+jRyqYj19oBr1RA6pb7W74NQs9Qeg=",
         "usagesDigest": "t0oNvYqTkQgAzCqkVoL3Yq31SlGaTSDyalHX8UlrwpE=",
         "recordedFileInputs": {
-          "@@//Cargo.lock": "4972e65fa414d2b737adf8238bd10a3fef7bd1b0e191afb6e1a0fce71efef47c",
+          "@@//Cargo.lock": "f0984a63ba78bad418bd1bb81ebff8da98aa2ec4a85dba0bc60eab29d4765f01",
           "@@//Cargo.toml": "e45b93c40d9807f1e47a6b57862c77b2557265eee4436a6505a7e14af2c9e904",
           "@@//crates/agent-application/Cargo.toml": "ce6a54072a1c5e6bdb9f8a465f40cb283b345542c23a800f2d3f0a53a9e897c9",
           "@@//crates/agent-protocol/Cargo.toml": "125620e279bdef7b2ce0d2b3c57edcfd5296897a2ea47d3d4331f290adc3408b",
@@ -778,7 +778,7 @@
           "@@//crates/engine-sdk/Cargo.toml": "46b1493940df8d60d6185840ccc06f411875c8df6edddd98654e4f9fbffd2e11",
           "@@//crates/engine-worktrees/Cargo.toml": "d03a2f8e6e48864e0aa7f6f8d7a8ff2ffad6e4687b93a6040f429a5bc458623f",
           "@@//crates/foundation/Cargo.toml": "caec9f866563ad8a66981b042fc84956c23bff0ac76fc7686ff738803424f8b6",
-          "@@//crates/github-gh/Cargo.toml": "f827b8d05531a2795eccb0ce0a79f3ed238df8ba326e15041613a39f4ce21463",
+          "@@//crates/github-gh/Cargo.toml": "eb3a92e413a0cfe28ae37fba53039ae2ed09d003dcc81912f2e84d4b5be6afe1",
           "@@//crates/host/Cargo.toml": "a396454478414396efc634b869926b9de6dd72eb9596fa1090ec86b839db65fb",
           "@@//crates/process-group/Cargo.toml": "1d330951d0ea88c428807ff9639316d1ff63e1bd8ffbf6dfe29b95eb6ecfff2a",
           "@@//crates/provider-claude/Cargo.toml": "0efef3a98323ecb6b06187cec04c6eafd5f45070c5a5ee9b98bd7edc768c51ee",
