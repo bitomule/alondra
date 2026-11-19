@@ -1,5 +1,6 @@
 use crate::locks::Poisonable as _;
 pub(crate) mod cache;
+mod components;
 pub(crate) mod actions;
 pub mod action_results;
 pub(crate) mod feed;
@@ -9,7 +10,8 @@ pub(crate) mod live;
 pub(crate) mod observation;
 pub(crate) mod reset_time;
 pub(crate) mod routes;
-pub(crate) mod serialization;
+#[cfg(test)]
+mod serialization;
 #[cfg(test)]
 mod projection_tests;
 

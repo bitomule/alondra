@@ -11,7 +11,6 @@ use axum::{
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::Serialize;
-use sha2::Digest;
 use std::{
     collections::{HashMap, HashSet},
     sync::{
@@ -181,6 +180,10 @@ pub(crate) fn sample_changed(
         observation.add(Metric::SamplerUnchanged, 1);
         return false;
     }
+    let live = match last.as_ref() {
+        Some(previous) => live.reuse_components(&previous.live, observation),
+        None => live,
+    };
     let digest = live_revision(&live, observation);
     let changed = last.as_ref().is_none_or(|previous| previous.digest != digest);
     *last = Some(Sample { live, digest });
@@ -451,9 +454,8 @@ fn status_view_key(kind: Client) -> &'static str {
     if kind == Client::Mac { "sidebar" } else { "home" }
 }
 
-fn live_revision(live: &alondra_view_model::LiveSnapshot, observation: &Observation) -> String {
-    let bytes = observation.serialize_snapshot(live, super::observation::Serialization::Sampler);
-    let digest = sha2::Sha256::digest(bytes);
+fn live_revision(live: &super::live::Snapshot, observation: &Observation) -> String {
+    let digest = live.content_digest(observation, super::observation::Serialization::Sampler);
     digest[..8]
         .iter()
         .map(|byte| format!("{byte:02x}"))
@@ -836,6 +838,71 @@ mod tests {
         fixture.create_visible_question("visible-change");
         let reply = response_json(handle(&fixture.client, "device-stale", &query(&first.cursor, 0, &open), Transport::Loopback).await).await;
         assert_eq!(reply["stale"], serde_json::json!(["home"]));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_legacy_json_digest_cursor_migrates_without_losing_or_repeating_view_changes() {
+        use sha2::Digest as _;
+        let observation = Observation::armed();
+        let fixture = FeedFixture::observed(observation.clone());
+        let state = fixture.client.domain.state().unwrap();
+        let keys = ["home".to_owned()];
+        let live = super::super::live::gather(&fixture.client, &state, Lang::En, &keys, false, false).await;
+        let old_hash = sha2::Sha256::digest(serde_json::to_vec(&live).unwrap());
+        let old_revision: String = old_hash[..8].iter().map(|byte| format!("{byte:02x}")).collect();
+        let rendered = fixture.client.views.render(
+            "home", &alondra_domain_rules::ReadSnapshot::build(state.clone()), &live,
+            Client::Ios, Lang::En, Transport::Loopback,
+        ).unwrap();
+        assert_eq!(rendered.status.badge, 0);
+        assert!(rendered.sections.iter().find(|section| section.id == "queue").unwrap().card_ids.is_empty());
+        let old_cursor = cursor_for(&state.data_epoch.0, state.revision, &old_revision, &rendered.status.version);
+        assert_eq!(decode_cursor(&old_cursor), Some((
+            state.data_epoch.0.clone(), state.revision, old_revision, rendered.status.version,
+        )));
+        let open = vec![("home".to_owned(), rendered.version)];
+        let migrated = response_json(handle(
+            &fixture.client, "legacy-client", &query(&old_cursor, 0, &open), Transport::Loopback,
+        ).await).await;
+        assert_eq!(migrated["stale"], serde_json::json!([]), "a hash format change is not a visible view change");
+        assert_eq!(migrated["reset"], false);
+        assert_ne!(migrated["cursor"].as_str().unwrap(), old_cursor);
+
+        fixture.create_visible_question("legacy-cursor-change");
+        observation.start();
+        let changed = response_json(handle(
+            &fixture.client, "legacy-client", &query(&old_cursor, 0, &open), Transport::Loopback,
+        ).await).await;
+        assert_eq!(changed["stale"], serde_json::json!(["home"]));
+        assert_eq!(changed["reset"], false);
+        assert_eq!(changed["superseded"], false);
+
+        let state = fixture.client.domain.state().unwrap();
+        let live = super::super::live::gather(&fixture.client, &state, Lang::En, &keys, false, false).await;
+        let refreshed = fixture.client.views.render(
+            "home", &alondra_domain_rules::ReadSnapshot::build(state.clone()), &live,
+            Client::Ios, Lang::En, Transport::Loopback,
+        ).unwrap();
+        let queue = refreshed.sections.iter().find(|section| section.id == "queue").unwrap();
+        assert_eq!(queue.card_ids, ["question-legacy-cursor-change"]);
+        assert_eq!(queue.count, Some(1));
+        assert_eq!(refreshed.status.badge, 1);
+        assert_eq!(refreshed.first_cards.len(), 1);
+        assert_eq!(refreshed.first_cards[0].key, "card:question-legacy-cursor-change");
+        assert_eq!(changed["status"], serde_json::to_value(&refreshed.status).unwrap());
+        let open = vec![("home".to_owned(), refreshed.version)];
+        let current_cursor = changed["cursor"].as_str().unwrap();
+        let unchanged = response_json(handle(
+            &fixture.client, "legacy-client", &query(current_cursor, 0, &open), Transport::Loopback,
+        ).await).await;
+        assert_eq!(unchanged["cursor"], changed["cursor"]);
+        assert_eq!(unchanged["stale"], serde_json::json!([]));
+        assert_eq!(unchanged["reset"], false);
+        assert_eq!(unchanged["superseded"], false);
+        let counts = observation.totals().metrics;
+        assert_eq!(counts[Metric::FeedChanged as usize], 1);
+        assert_eq!(counts[Metric::FeedTimeout as usize], 1);
+        assert_eq!(counts[Metric::FeedError as usize], 0);
     }
 
     #[tokio::test]

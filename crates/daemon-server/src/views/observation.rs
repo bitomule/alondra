@@ -22,8 +22,10 @@ pub(crate) enum Metric {
     SamplerNodesBytes, SamplerPullRequestsBytes, SamplerActivityBytes, SamplerTaskHistoryBytes,
     SamplerTaskMapsBytes, SamplerOtherBytes, SamplerStructuralBytes,
     NodeOutputRows,
+    ComponentComparisons, ComponentRowsCompared, Materializations, MaterializedNodeRows,
+    HashBytes, HashOperations, ComponentSerializations,
 }
-const NAMES: [&str; 53] = [
+const NAMES: [&str; 60] = [
     "gather_request", "sampler_periodic", "sampler_domain", "sampler_hooks", "sampler_reports",
     "final_hit", "shared_hit", "missing", "unwatched",
     "gather_shared", "gather_sampler", "gather_keyed",
@@ -39,6 +41,8 @@ const NAMES: [&str; 53] = [
     "sampler_nodes_bytes", "sampler_pull_requests_bytes", "sampler_activity_bytes", "sampler_task_history_bytes",
     "sampler_task_maps_bytes", "sampler_other_bytes", "sampler_structural_bytes",
     "node_output_rows",
+    "component_comparisons", "component_rows_compared", "materializations", "materialized_node_rows",
+    "hash_bytes", "hash_operations", "component_serializations",
 ];
 
 #[derive(Clone, Copy)]
@@ -170,6 +174,46 @@ impl Observation {
             counts.metrics[metric as usize].fetch_add(value, Ordering::Relaxed);
         }
     }
+    pub(crate) fn serialize_component(
+        &self, field: &'static str, value: &impl serde::Serialize, kind: Serialization,
+    ) -> Vec<u8> {
+        let counts = self.active_counts();
+        let bytes = serde_json::to_vec(value).expect("live component serialization");
+        if let Some(counts) = counts {
+            let window = self.0.window.lock_or_recover("the view observation window");
+            if counts.active.load(Ordering::Relaxed)
+                && window.counts.as_ref().is_some_and(|current| Arc::ptr_eq(current, &counts)) {
+                let (total, nodes, prs, activity, history, maps, other) = match kind {
+                    Serialization::Digest => (Metric::DigestBytes, Metric::DigestNodesBytes,
+                        Metric::DigestPullRequestsBytes, Metric::DigestActivityBytes,
+                        Metric::DigestTaskHistoryBytes, Metric::DigestTaskMapsBytes, Metric::DigestOtherBytes),
+                    Serialization::Sampler => (Metric::SamplerBytes, Metric::SamplerNodesBytes,
+                        Metric::SamplerPullRequestsBytes, Metric::SamplerActivityBytes,
+                        Metric::SamplerTaskHistoryBytes, Metric::SamplerTaskMapsBytes, Metric::SamplerOtherBytes),
+                };
+                let component = match field {
+                    "nodes" => nodes,
+                    "pull_requests" => prs,
+                    "activity" => activity,
+                    "task_history" => history,
+                    "task_options" | "task_since" | "task_usage_until" | "task_started"
+                        | "task_costs" | "cancel_reasons" | "launch_refusals" | "start_waits" => maps,
+                    _ => other,
+                };
+                let serializations = match kind {
+                    Serialization::Digest => Metric::DigestSerializations,
+                    Serialization::Sampler => Metric::SamplerSerializations,
+                };
+                counts.metrics[serializations as usize].fetch_add(1, Ordering::Relaxed);
+                counts.metrics[Metric::ComponentSerializations as usize].fetch_add(1, Ordering::Relaxed);
+                counts.metrics[total as usize].fetch_add(bytes.len() as u64, Ordering::Relaxed);
+                counts.metrics[component as usize].fetch_add(bytes.len() as u64, Ordering::Relaxed);
+            }
+        }
+        bytes
+    }
+
+    #[cfg(test)]
     pub(crate) fn serialize_snapshot(&self, live: &alondra_view_model::LiveSnapshot, kind: Serialization) -> Vec<u8> {
         let Some(counts) = self.active_counts() else {
             return serde_json::to_vec(live).expect("live snapshot serialization");
@@ -179,6 +223,7 @@ impl Observation {
         bytes
     }
 
+    #[cfg(test)]
     fn record_serialization(&self, counts: &Arc<Counts>, kind: Serialization, bytes: u64, parts: super::serialization::Breakdown) {
         let window = self.0.window.lock_or_recover("the view observation window");
         if !counts.active.load(Ordering::Relaxed)
@@ -285,6 +330,52 @@ pub(crate) fn window(seconds: Option<&str>, delay: Option<&str>) -> Option<Windo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn component_counters_measure_each_executed_serialization_and_its_bytes() {
+        let observation = Observation::armed();
+        let value = vec!["synthetic text with an escaped quote: \""];
+        let expected = serde_json::to_vec(&value).unwrap();
+        assert_eq!(observation.serialize_component("nodes", &value, Serialization::Digest), expected);
+        assert!(observation.totals().metrics.iter().all(|count| *count == 0));
+        observation.start();
+        for kind in [Serialization::Digest, Serialization::Sampler] {
+            assert_eq!(observation.serialize_component("nodes", &value, kind), expected);
+        }
+        let totals = observation.totals();
+        assert_eq!(totals.metrics[Metric::ComponentSerializations as usize], 2);
+        for metric in [Metric::DigestSerializations, Metric::SamplerSerializations] {
+            assert_eq!(totals.metrics[metric as usize], 1);
+        }
+        for metric in [Metric::DigestBytes, Metric::DigestNodesBytes, Metric::SamplerBytes, Metric::SamplerNodesBytes] {
+            assert_eq!(totals.metrics[metric as usize], expected.len() as u64);
+        }
+        observation.stop();
+        observation.serialize_component("nodes", &value, Serialization::Sampler);
+        assert_eq!(observation.totals(), totals);
+    }
+
+    #[test]
+    fn component_serialization_cannot_enter_a_window_started_while_it_was_running() {
+        struct ReplaceWindow(Observation);
+        impl serde::Serialize for ReplaceWindow {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                self.0.stop();
+                self.0.start_window(60, 0).unwrap();
+                serializer.serialize_str("synthetic value")
+            }
+        }
+        clock::VirtualRuntime::new(0).unwrap().block_on(async {
+            let observation = Observation::default();
+            observation.start_window(60, 0).unwrap();
+            let old = observation.active_counts().unwrap();
+            observation.serialize_component("nodes", &ReplaceWindow(observation.clone()), Serialization::Digest);
+            assert!(old.totals().metrics.iter().all(|count| *count == 0));
+            assert!(observation.totals().metrics.iter().all(|count| *count == 0));
+            observation.serialize_component("nodes", &vec![1], Serialization::Digest);
+            assert_eq!(observation.totals().metrics[Metric::ComponentSerializations as usize], 1);
+        });
+    }
 
     #[test]
     fn snapshot_bytes_are_unchanged_and_components_are_counted_only_while_active() {

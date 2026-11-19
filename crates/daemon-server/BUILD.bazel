@@ -7,7 +7,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
 
-TEST_ONLY = ["src/operation_journal/process_fixture.rs", "src/views/feed_probe.rs"]
+TEST_ONLY = ["src/operation_journal/process_fixture.rs", "src/views/feed_probe.rs", "src/views/serialization.rs"]
 
 WORKSPACE_DEPS = [
     "//crates/core:alondra_core",

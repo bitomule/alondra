@@ -19,13 +19,14 @@ use sha2::Digest;
 use std::{collections::{BTreeMap, BTreeSet, HashMap}, sync::Mutex};
 use tokio::sync::watch;
 
-/// An immutable published snapshot; readers share its data and its wire digest.
+/// An immutable published snapshot; unchanged fields share their values and content hashes.
 #[derive(Clone, Debug)]
 pub(crate) struct Snapshot(std::sync::Arc<SnapshotData>);
 
 #[derive(Debug)]
 struct SnapshotData {
-    live: LiveSnapshot,
+    parts: super::components::Components,
+    materialized: std::sync::OnceLock<LiveSnapshot>,
     digest: std::sync::OnceLock<[u8; 32]>,
     observation: Observation,
     #[cfg(test)]
@@ -37,9 +38,12 @@ impl Snapshot {
     pub(crate) fn new(live: LiveSnapshot) -> Self { Self::observed(live, &Observation::default()) }
 
     fn observed(live: LiveSnapshot, observation: &Observation) -> Self {
+        Self::from_components(super::components::Components::new(live), observation)
+    }
+
+    fn from_components(parts: super::components::Components, observation: &Observation) -> Self {
         Self(std::sync::Arc::new(SnapshotData {
-            live,
-            digest: std::sync::OnceLock::new(),
+            parts, materialized: std::sync::OnceLock::new(), digest: std::sync::OnceLock::new(),
             observation: observation.clone(),
             #[cfg(test)]
             serializations: std::sync::atomic::AtomicUsize::new(0),
@@ -47,42 +51,52 @@ impl Snapshot {
     }
 
     pub(crate) fn digest(&self) -> [u8; 32] {
+        self.content_digest(&self.0.observation, super::observation::Serialization::Digest)
+    }
+
+    pub(crate) fn content_digest(&self, observation: &Observation, kind: super::observation::Serialization) -> [u8; 32] {
         *self.0.digest.get_or_init(|| {
             #[cfg(test)]
             self.0.serializations.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let bytes = self.0.observation.serialize_snapshot(&self.0.live, super::observation::Serialization::Digest);
-            sha2::Sha256::digest(bytes).into()
+            self.0.parts.digest(observation, kind)
         })
     }
 
     pub(crate) fn same_payload(&self, other: &Self) -> bool {
-        // Floating point equality merges signed zero, but JSON preserves its sign.
-        self.0.live == other.0.live && self.gauges.iter().zip(&other.gauges).all(|(left, right)| {
-            left.value.to_bits() == right.value.to_bits()
-                && left.parts.iter().zip(&right.parts).all(|(left, right)| left.value.to_bits() == right.value.to_bits())
-        })
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+            || self.0.parts.same_payload(&other.0.parts, &self.0.observation)
+    }
+
+    pub(crate) fn reuse_components(self, previous: &Self, observation: &Observation) -> Self {
+        if std::sync::Arc::ptr_eq(&self.0, &previous.0) { return self; }
+        let mut parts = self.0.parts.clone();
+        parts.reuse(&previous.0.parts, observation);
+        if parts.same_payload(&previous.0.parts, observation) { return previous.clone(); }
+        Self::from_components(parts, &self.0.observation)
     }
 
     fn with_clock(self, observed_at: Option<Millis>) -> Self {
-        if self.observed_at == observed_at { return self; }
-        let mut live = self.0.live.clone();
-        live.observed_at = observed_at;
-        Self::observed(live, &self.0.observation)
+        if *self.0.parts.observed_at.value() == observed_at { return self; }
+        let mut parts = self.0.parts.clone();
+        parts.observed_at = super::components::Part::new(observed_at);
+        Self::from_components(parts, &self.0.observation)
     }
 }
 
 impl std::ops::Deref for Snapshot {
     type Target = LiveSnapshot;
-    fn deref(&self) -> &LiveSnapshot { &self.0.live }
+    fn deref(&self) -> &LiveSnapshot {
+        self.0.materialized.get_or_init(|| self.0.parts.materialize(&self.0.observation))
+    }
 }
 
 impl PartialEq for Snapshot {
-    fn eq(&self, other: &Self) -> bool { self.0.live == other.0.live }
+    fn eq(&self, other: &Self) -> bool { **self == **other }
 }
 
 impl serde::Serialize for Snapshot {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.0.live.serialize(serializer)
+        self.0.parts.serialize(serializer)
     }
 }
 
@@ -216,7 +230,8 @@ impl LiveSnapshots {
     /// Facts still require a fresh read. Only its already-proven identical value is reused.
     fn reuse_payload(&self, key: &str, fresh: Snapshot) -> Snapshot {
         let previous = cache(&self.entries).get(key).map(|(_, live)| live.clone());
-        previous.filter(|live| live.same_payload(&fresh)).unwrap_or(fresh)
+        let fresh_observation = fresh.0.observation.clone();
+        match previous { Some(previous) => fresh.reuse_components(&previous, &fresh_observation), None => fresh }
     }
 
     fn get(&self, client: &crate::client_routes::Client, key: &str, state: &DomainState, observed_at: Option<Millis>) -> Option<Snapshot> {
@@ -231,7 +246,7 @@ impl LiveSnapshots {
         if facts.revision != state.revision { invalid |= Cause::Revision.bit(); }
         client.view_observation.invalid(Stage::Lookup, invalid);
         if invalid != 0 { return None; }
-        if live.observed_at != observed_at { *live = live.clone().with_clock(observed_at); }
+        if *live.0.parts.observed_at.value() != observed_at { *live = live.clone().with_clock(observed_at); }
         Some(live.clone())
     }
 
@@ -340,10 +355,10 @@ async fn gather_now(
     if keys.is_empty() {
         return live;
     }
-    let mut live = live.0.live.clone();
-    keyed_at(client, state, keys, issue_data).await.apply(&mut live);
-    live.observed_at = quota_clock(state, keys, now);
-    let live = snapshots.reuse_payload(&key, Snapshot::observed(live, &client.view_observation));
+    let mut parts = live.0.parts.clone();
+    keyed_at(client, state, keys, issue_data).await.apply(&mut parts);
+    parts.observed_at = super::components::Part::new(quota_clock(state, keys, now));
+    let live = snapshots.reuse_payload(&key, Snapshot::from_components(parts, &client.view_observation));
     if watched && let Some(facts) = facts {
         snapshots.insert(client, key, facts, live.clone());
     }
@@ -825,20 +840,20 @@ struct Keyed {
 }
 
 impl Keyed {
-    fn apply(self, live: &mut LiveSnapshot) {
-        live.projects = self.projects;
-        live.options = self.options;
-        live.project_options = self.project_options;
-        live.issues = self.issues;
-        live.issue_error = self.issue_error;
-        live.activity = self.activity;
-        live.task_history = self.task_history;
-        live.search_matches = self.search_matches;
-        live.allowed_rules = self.allowed_rules;
-        live.allow_always_missing = self.allow_always_missing;
-        live.mcp_probes = self.mcp_probes;
-        live.mcp_removed = self.mcp_removed;
-        live.metrics = self.metrics;
+    fn apply(self, live: &mut super::components::Components) {
+        live.projects = super::components::Part::new(self.projects);
+        live.options = super::components::Part::new(self.options);
+        live.project_options = super::components::Part::new(self.project_options);
+        live.issues = super::components::Part::new(self.issues);
+        live.issue_error = super::components::Part::new(self.issue_error);
+        live.activity = super::components::Part::new(self.activity);
+        live.task_history = super::components::Part::new(self.task_history);
+        live.search_matches = super::components::Part::new(self.search_matches);
+        live.allowed_rules = super::components::Part::new(self.allowed_rules);
+        live.allow_always_missing = super::components::Part::new(self.allow_always_missing);
+        live.mcp_probes = super::components::Part::new(self.mcp_probes);
+        live.mcp_removed = super::components::Part::new(self.mcp_removed);
+        live.metrics = super::components::Part::new(self.metrics);
     }
 }
 
@@ -1166,7 +1181,9 @@ mod cache_tests {
         let state = domain.state().unwrap();
         let keys = ["home".to_owned()];
         let first = gather_now(&client, &state, Lang::En, &keys, false, false, 1_000).await;
-        let bytes = serde_json::to_vec(&first.0.live).unwrap().len() as u64;
+        let wire = serde_json::to_value(&first).unwrap();
+        let fields = wire.as_object().unwrap();
+        let bytes: u64 = fields.values().map(|value| serde_json::to_vec(value).unwrap().len() as u64).sum();
         first.digest();
         first.digest();
         let before = observation.totals();
@@ -1176,7 +1193,7 @@ mod cache_tests {
         assert_eq!(before.metrics[Metric::AgentRows as usize], state.agents.len() as u64);
         assert_eq!(before.metrics[Metric::NodeOutputRows as usize], first.nodes.len() as u64);
         assert_eq!(before.metrics[Metric::PullRequestRows as usize], state.pull_requests.len() as u64);
-        assert_eq!(before.metrics[Metric::DigestSerializations as usize], 1);
+        assert_eq!(before.metrics[Metric::DigestSerializations as usize], fields.len() as u64);
         assert_eq!(before.metrics[Metric::DigestBytes as usize], bytes);
         let again = gather_now(&client, &state, Lang::En, &keys, false, false, 1_000).await;
         again.digest();
@@ -1197,9 +1214,9 @@ mod cache_tests {
         super::super::feed::sample_live(&client, &state, &mut last).await;
         let sampled = observation.totals();
         assert_eq!(sampled.metrics[Metric::GatherSampler as usize], 1);
-        assert_eq!(sampled.metrics[Metric::SamplerSerializations as usize], 1);
+        assert!(sampled.metrics[Metric::SamplerSerializations as usize] > 0);
         assert!(sampled.metrics[Metric::SamplerBytes as usize] > 0);
-        assert_eq!(sampled.metrics[Metric::DigestSerializations as usize], 1,
+        assert_eq!(sampled.metrics[Metric::DigestSerializations as usize], before.metrics[Metric::DigestSerializations as usize],
             "the sampler serialization is counted separately");
     }
 
@@ -1238,11 +1255,15 @@ mod cache_tests {
             let two = scope.spawn(|| { barrier.wait(); first.digest() });
             assert_eq!(one.join().unwrap(), two.join().unwrap());
         });
-        assert_eq!(observation.totals().metrics[Metric::DigestSerializations as usize], 1);
+        let cold = observation.totals();
+        assert_eq!(cold.metrics[Metric::DigestSerializations as usize], 30);
+        assert_eq!(cold.metrics[Metric::HashOperations as usize], 31);
         let changed = first.clone().with_clock(Some(60_000));
         changed.digest();
         first.digest();
-        assert_eq!(observation.totals().metrics[Metric::DigestSerializations as usize], 2);
+        assert_eq!(observation.totals().metrics[Metric::DigestSerializations as usize], 31);
+        assert_eq!(observation.totals().metrics[Metric::HashOperations as usize], 33);
+        assert_eq!(observation.totals().metrics[Metric::Materializations as usize], 0);
     }
 
     #[tokio::test]
@@ -1485,6 +1506,30 @@ mod cache_tests {
         assert_eq!(snapshot.0.serializations.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 
+    #[test]
+    fn keyed_variants_share_nodes_without_materializing_the_common_snapshot() {
+        let observation = Observation::armed();
+        observation.start();
+        let common = Snapshot::observed(LiveSnapshot {
+            nodes: vec![LiveNode { last_message: Some("shared content".repeat(1024)), ..Default::default() }; 32],
+            ..Default::default()
+        }, &observation);
+        common.digest();
+        let warm = observation.totals();
+        for index in 0..32 {
+            let mut parts = common.0.parts.clone();
+            Keyed { issue_error: Some(format!("synthetic variant {index}")), ..Default::default() }.apply(&mut parts);
+            let variant = Snapshot::from_components(parts, &observation);
+            variant.digest();
+            for _ in 0..32 { variant.clone().digest(); }
+        }
+        let after = observation.totals();
+        for metric in [Metric::DigestNodesBytes, Metric::Materializations, Metric::MaterializedNodeRows] {
+            assert_eq!(after.metrics[metric as usize] - warm.metrics[metric as usize], 0);
+        }
+        assert_eq!(after.metrics[Metric::ComponentRowsCompared as usize], 0);
+    }
+
     #[tokio::test]
     async fn a_live_snapshot_read_while_a_fact_changes_is_not_kept() {
         let (_home, domain, client) = wait_fixture();
@@ -1513,6 +1558,7 @@ mod cache_tests {
         let state = domain.state().unwrap();
         let first = gather_now(&client, &state, Lang::En, &home, false, false, 1_000).await;
         let digest = first.digest();
+        let cold = observation.totals();
         client.feeds.shared_changed();
         let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (weak, once) = (Arc::downgrade(&client), fired.clone());
@@ -1530,7 +1576,7 @@ mod cache_tests {
         assert_eq!(gathered(&client), 3, "equal content does not validate facts read across a change");
         gather_now(&client, &state, Lang::En, &home, false, false, 1_000).await.digest();
         assert_eq!(gathered(&client), 3);
-        assert_eq!(observation.totals().metrics[Metric::DigestSerializations as usize], 1);
+        assert_eq!(observation.totals().metrics[Metric::DigestSerializations as usize], cold.metrics[Metric::DigestSerializations as usize]);
     }
 
     #[tokio::test]
