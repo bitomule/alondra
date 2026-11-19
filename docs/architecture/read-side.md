@@ -368,6 +368,35 @@ Actions waited behind those reloads for the writer lock: a «Seen» took 49 s an
 worst. On the synthetic domain of the action budget an action now costs 35–42 ms of CPU: about
 6 ms copying the state, 13 ms building the read index and the rest in the command's rules.
 
+## Sharing live snapshot components
+
+The daemon's `views::live::Snapshot` holds each `LiveSnapshot` field in an immutable shared
+component. An equal field reuses its previous storage and SHA256 digest. Changing the observation
+minute or a keyed field therefore does not serialize or hash the unchanged node collection.
+Key variants share the common components. Rendering through `&LiveSnapshot` still materializes
+one owned value lazily; rebuilding a gather still walks sources and compares fresh rows.
+
+The internal content digest combines field names and component hashes with explicit lengths and
+a domain tag. Every `LiveSnapshot` field must be listed: its exhaustive destructuring fails to
+compile when a new field has no component. Serialization keeps the public JSON order and omission
+rules. Gauge equality also checks signed zero; nonfinite values keep JSON's null representation.
+Feed cursors remain opaque `c1` values, and old whole-JSON hashes are accepted without inventing a
+visible change. This digest is for view freshness, not authentication.
+
+Content reuse does not validate the facts behind a gather. Domain, store, report and other source
+marks are still checked before and after it, including before cache insertion. Equal content read
+across a source change cannot make a stale set of marks current.
+
+During a bounded observation window, `digest_serializations` and `sampler_serializations` count
+actual component JSON serializations. Their byte totals and categories count serialized field
+values; `*_structural_bytes` stays zero because no whole snapshot is serialized for these hashes.
+`component_serializations` is their sum. `hash_operations` and `hash_bytes` include both component
+SHA256 computations and the small root manifests. Comparisons count component comparisons and outer
+collection rows actually examined (including short-circuiting), not nested field comparisons.
+`materializations` and `materialized_node_rows` expose full values copied for rendering. These
+counters describe remaining work as well as work avoided; they are not a claim of incremental
+source gathering or a CPU budget result.
+
 ## Rules for new work
 
 1. **A new screen reads the index.** If it needs something the index does not have, add it to

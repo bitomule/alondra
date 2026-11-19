@@ -37,7 +37,8 @@ fn signed_zero_changes_the_wire_payload_in_gauges_and_their_parts() {
         assert!(sample_changed(positive.clone(), &mut last, &observation));
         assert!(sample_changed(negative, &mut last, &observation));
         assert!(sample_changed(positive, &mut last, &observation));
-        assert_eq!(observation.totals().metrics[Metric::SamplerSerializations as usize], 3);
+        assert_eq!(observation.totals().metrics[Metric::SamplerSerializations as usize], 0,
+            "prepared component hashes need no further serialization");
     }
 }
 
@@ -58,7 +59,8 @@ fn nonfinite_readings_keep_the_existing_json_digest_without_extra_changes() {
         assert!(sample_changed(first, &mut last, &observation));
         assert!(!sample_changed(repeated, &mut last, &observation));
         assert!(!sample_changed(infinity, &mut last, &observation));
-        assert_eq!(observation.totals().metrics[Metric::SamplerSerializations as usize], 3);
+        assert_eq!(observation.totals().metrics[Metric::SamplerSerializations as usize], 0,
+            "prepared component hashes need no further serialization");
     }
 }
 
@@ -91,7 +93,8 @@ fn freshly_rebuilt_equal_projections_do_not_serialize_in_the_sampler() {
     let mut last = None;
     assert!(sample_changed(Snapshot::new(live.clone()), &mut last, &observation));
     let before = observation.totals();
-    assert_eq!(before.metrics[Metric::SamplerSerializations as usize], 1);
+    assert_eq!(before.metrics[Metric::SamplerSerializations as usize],
+        serde_json::to_value(&live).unwrap().as_object().unwrap().len() as u64);
     assert!(before.metrics[Metric::SamplerBytes as usize] > 0);
     for _ in 0..32 {
         assert!(!sample_changed(Snapshot::new(live.clone()), &mut last, &observation));
@@ -101,4 +104,40 @@ fn freshly_rebuilt_equal_projections_do_not_serialize_in_the_sampler() {
         assert_eq!(after.metrics[metric as usize] - before.metrics[metric as usize], 0,
             "fresh allocation with the same payload must not repeat JSON serialization");
     }
+}
+
+#[test]
+fn changing_the_clock_does_not_reserialize_unchanged_nodes() {
+    let mut live: LiveSnapshot = serde_json::from_value(serde_json::json!({
+        "nodes": (0..32).map(|id| serde_json::json!({
+            "agent_id": format!("fixture-{id}"), "name": "Node", "working": false,
+            "last_message": "unchanged content ".repeat(128)
+        })).collect::<Vec<_>>()
+    })).unwrap();
+    let observation = observing();
+    let mut last = None;
+    assert!(sample_changed(Snapshot::new(live.clone()), &mut last, &observation));
+    let warm = observation.totals();
+    for minute in 1..=32 {
+        live.observed_at = Some(minute * 60_000);
+        assert!(sample_changed(Snapshot::new(live.clone()), &mut last, &observation));
+    }
+    let repeated = observation.totals();
+    assert_eq!(repeated.metrics[Metric::SamplerNodesBytes as usize]
+        - warm.metrics[Metric::SamplerNodesBytes as usize], 0,
+        "changing a clock must not serialize the unchanged node collection again");
+    assert_eq!(repeated.metrics[Metric::ComponentSerializations as usize]
+        - warm.metrics[Metric::ComponentSerializations as usize], 32);
+    assert_eq!(repeated.metrics[Metric::HashOperations as usize]
+        - warm.metrics[Metric::HashOperations as usize], 64,
+        "each change hashes one scalar component and one bounded root manifest");
+    assert!(repeated.metrics[Metric::HashBytes as usize] - warm.metrics[Metric::HashBytes as usize] < 32 * 4096);
+    assert_eq!(repeated.metrics[Metric::ComponentRowsCompared as usize]
+        - warm.metrics[Metric::ComponentRowsCompared as usize], 32 * 32,
+        "this phase still compares reconstructed nodes; the counter must expose that work");
+    assert_eq!(repeated.metrics[Metric::Materializations as usize], 0);
+    live.nodes[7].last_message = Some("Changed content".into());
+    assert!(sample_changed(Snapshot::new(live), &mut last, &observation));
+    assert!(observation.totals().metrics[Metric::SamplerNodesBytes as usize]
+        > repeated.metrics[Metric::SamplerNodesBytes as usize]);
 }

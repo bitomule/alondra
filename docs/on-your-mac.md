@@ -120,7 +120,10 @@ See [the process table and its signals](../crates/system/src/lib.rs),
   Missing duration or invalid values disable it. The window writes two records to the existing
   daemon log with fixed counter names and numeric totals for executed view work, serialization
   bytes and invalidation causes. Byte totals distinguish nodes, pull requests, activity, task
-  history, task maps, other values and JSON structure, during the same serialization pass.
+  history, task maps and other values. Serializations count each component actually encoded;
+  unchanged components reuse their hashes. JSON structure bytes stay zero for component hashes.
+  Additional aggregate counters expose bytes hashed, hash operations, component comparisons,
+  outer rows compared, materialized snapshots and copied node rows. They do not log the values.
   Visited agents and emitted nodes are counted separately. Feed counters distinguish changed replies, timeout replies
   (including zero-wait requests), errors and requests superseded by another feed for the same
   device. Superseded counts use the declared view client (`tui`, `ios`, `mac`), not a verified

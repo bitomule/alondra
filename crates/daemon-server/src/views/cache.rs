@@ -43,8 +43,9 @@ pub(crate) struct Input {
 
 impl Input {
     pub(crate) fn of(domain: &DomainState, live: &LiveSnapshot) -> Self {
-        let live_hash =
-            Sha256::digest(serde_json::to_vec(live).expect("live snapshot serialization"));
+        let live_hash = super::components::Components::new(live.clone()).digest(
+            &super::observation::Observation::default(), super::observation::Serialization::Digest,
+        );
         Self::with_digest(domain, &live_hash)
     }
 
