@@ -76,6 +76,17 @@ impl DomainState {
         task.pending_selection.as_ref().map(|pending| &pending.account).filter(|account| **account != task.account_key())
     }
 
+    /// Whether the account a started task runs on has used up its session or week at `now`: no
+    /// turn of its node gets through until that resets, even one that still reads as running
+    /// because its end never arrived, so moving it to another account is how it goes on.
+    pub fn out_of_quota(&self, task_id: &TaskId, now: alondra_core::Millis) -> bool {
+        let Some(task) = self.tasks.get(task_id).filter(|task| task.started || task.agent_id.is_some()) else { return false };
+        let account = task.account_key();
+        self.account_usage.iter()
+            .find(|usage| usage.provider == account.provider && usage.account == account.account)
+            .is_some_and(|usage| usage.plan_exhausted(now))
+    }
+
     /// The account the task runs on, or will start on: its execution's, or the one its selection
     /// pins while it has never run.
     fn current_account(&self, task: &Task) -> Option<AccountKey> {

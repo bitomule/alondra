@@ -10254,6 +10254,16 @@ fn client_text_contracts_account_move_is_only_offered_to_rescue_a_stuck_task() {
         let detail = render(&state, &LiveSnapshot::default(), client, Lang::Es, "task:t-1", "");
         assert!(find_action(&detail, "move_task:").is_none(), "{client:?}: an ordinary task does not move accounts");
     }
+    let session = alondra_core::usage::UsageReading { windows: vec![alondra_core::usage::WindowReading {
+        kind: alondra_core::usage::WindowKind::Session, used: alondra_core::usage::Share::FULL, resets_at: Some(5_000), exhausted: false }], plan: None, complete: false };
+    state.account_usage = vec![alondra_core::usage::record(None, Provider::Claude, &AccountId::default_account(), &session, 900, "2026-11-19")];
+    let out = LiveSnapshot { observed_at: Some(1_000), ..LiveSnapshot::default() };
+    let detail = render(&state, &out, Client::Ios, Lang::Es, "task:t-1", "");
+    assert_eq!(find_action(&detail, "move_task:t-1").map(|action| action.label.as_str()), Some("Mover a Codex · Work"),
+        "a task whose account used up its session moves, though its turn still reads as running");
+    let reset = LiveSnapshot { observed_at: Some(5_000), ..LiveSnapshot::default() };
+    assert!(find_action(&render(&state, &reset, Client::Ios, Lang::Es, "task:t-1", ""), "move_task:").is_none(), "once the session resets it stays put");
+    state.account_usage.clear();
     let recovery = state.interactions.get_mut(&"i-1".into()).unwrap();
     recovery.author = Author::System;
     recovery.system_card = Some(alondra_domain_rules::SystemCard::HostLost);
