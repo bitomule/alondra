@@ -1215,11 +1215,12 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     Ok(view)
 }
 
-/// Account rescue is offered only for a provider hold or a failed execution, with each
-/// destination checked by the rule that runs the move.
+/// Account rescue is offered for a provider hold, a failed execution, or an account out of quota
+/// whatever its turn shows, with each destination checked by the rule that runs the move.
 fn move_action(task: &Task, context: &RenderContext<'_>) -> Option<super::Action> {
     let read = context.reading(&task.id)?;
-    let recovery = matches!(read.situation, alondra_domain_rules::Situation::Waiting(alondra_domain_rules::WaitsFor::Usage | alondra_domain_rules::WaitsFor::ProviderApi))
+    let recovery = context.live.observed_at.is_some_and(|now| context.domain.out_of_quota(&task.id, now))
+        || matches!(read.situation, alondra_domain_rules::Situation::Waiting(alondra_domain_rules::WaitsFor::Usage | alondra_domain_rules::WaitsFor::ProviderApi))
         || read.waiting.iter().filter_map(|id| context.domain.interactions.get(id)).any(|card| {
             card.author == alondra_domain_rules::Author::System && matches!(card.system_card,
                 Some(alondra_domain_rules::SystemCard::HostLost | alondra_domain_rules::SystemCard::SessionEnded

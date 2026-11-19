@@ -335,3 +335,24 @@ fn a_task_resting_after_a_move_leaves_the_usage_limit_when_it_moves_again() {
     left_the_limit_for_the_account_it_moved_to(&s, &card);
     assert_eq!(situation(&s), Situation::Waiting(WaitsFor::Slot), "it starts on the account it moved to");
 }
+
+/// A turn the usage limit holds may never end, so its task still reads as at work: the account it
+/// runs on having used up its session is what says that moving it is how it goes on, until the
+/// session resets.
+#[test]
+fn a_task_whose_account_used_up_its_session_is_out_of_quota_while_its_turn_still_runs() {
+    let mut s = on_codex();
+    let t = TaskId::from("t");
+    assert!(!s.out_of_quota(&t, 1_000), "no reading, no limit");
+    let session = |used| alondra_core::usage::UsageReading { windows: vec![alondra_core::usage::WindowReading {
+        kind: alondra_core::usage::WindowKind::Session, used, resets_at: Some(5_000), exhausted: false }], plan: None, complete: false };
+    must(&mut s, Actor::System, Command::RecordAccountUsage { provider: Provider::Codex, account: AccountId::default_account(), reading: session(alondra_core::usage::Share::of(0.98)), at: 800, day: "2026-11-19".into() });
+    assert!(!s.out_of_quota(&t, 1_000), "a session not yet used up leaves the task where it is");
+    must(&mut s, Actor::System, Command::RecordAccountUsage { provider: Provider::Codex, account: AccountId::default_account(), reading: session(alondra_core::usage::Share::FULL), at: 900, day: "2026-11-19".into() });
+    assert!(matches!(s.live_state(&t), Some(LiveState::Working(_))), "the turn the limit holds never ended");
+    assert!(s.out_of_quota(&t, 1_000));
+    assert!(!s.out_of_quota(&TaskId::from("later"), 1_000), "a task that never started runs on no account yet");
+    assert!(!s.out_of_quota(&t, 5_000), "the session reset");
+    move_to(&mut s, claude()).unwrap();
+    assert_eq!(s.moving_to(&t), Some(&claude()), "the open turn does not hold the move back");
+}
