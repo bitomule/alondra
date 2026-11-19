@@ -11,7 +11,7 @@ pub mod test_support;
 extern crate alondra_foundation;
 
 use alondra_daemon_support::{auth, domain_cutover, locks};
-use alondra_engine_kernel::{domain_database_migration, domain_runtime};
+use alondra_engine_kernel::domain_runtime;
 
 pub mod cancelled_worktrees;
 pub mod home_renames;

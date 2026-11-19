@@ -21,20 +21,20 @@ impl Drop for Home {
 }
 
 fn committed_cutover(home: &Path) {
-    let marker = crate::domain_cutover::Marker {
+    let marker = alondra_daemon_support::domain_cutover::Marker {
         format: 1,
-        phase: crate::domain_cutover::Phase::Committed,
+        phase: alondra_daemon_support::domain_cutover::Phase::Committed,
         backup_manifest_sha256: "a".repeat(64),
         source_seq: 0,
         data_epoch: "b".repeat(64),
     };
     fs::write(
-        home.join(crate::domain_cutover::MARKER),
+        home.join(alondra_daemon_support::domain_cutover::MARKER),
         serde_json::to_vec(&marker).unwrap(),
     )
     .unwrap();
     fs::set_permissions(
-        home.join(crate::domain_cutover::MARKER),
+        home.join(alondra_daemon_support::domain_cutover::MARKER),
         fs::Permissions::from_mode(0o600),
     )
     .unwrap();
@@ -42,7 +42,7 @@ fn committed_cutover(home: &Path) {
 
 fn source_database(home: &Path) -> Connection {
     let path = home.join(SOURCE);
-    let store = crate::domain_store::DomainStore::open(&path).unwrap();
+    let store = crate::DomainStore::open(&path).unwrap();
     drop(store);
     let conn = Connection::open(&path).unwrap();
     conn.execute("INSERT INTO schedules
@@ -145,10 +145,7 @@ fn assert_migrated(home: &Path) {
         "source is retained as a private recovery copy"
     );
     assert!(home.join(MARKER).exists());
-    let state = crate::domain_runtime::DomainRuntime::open_unwired(home)
-        .unwrap()
-        .state()
-        .unwrap();
+    let state = crate::DomainStore::open(&active_path(home)).unwrap().load().unwrap();
     let schedule = &state.schedule.schedules[&"schedule-keep".into()];
     assert_eq!(schedule.next_run, Some(4_102_444_799_000));
     assert_eq!(schedule.revision, 7);
@@ -207,7 +204,7 @@ fn committed_migration_allows_normal_writes_and_restarts_without_losing_them() {
     );
 
     let target = home.path().join(DATABASE);
-    let mut store = crate::domain_store::DomainStore::open(&target).unwrap();
+    let mut store = crate::DomainStore::open(&target).unwrap();
     let state = store.load().unwrap();
     let envelope = alondra_domain_rules::CommandEnvelope {
         protocol_version: 2,
@@ -231,7 +228,7 @@ fn committed_migration_allows_normal_writes_and_restarts_without_losing_them() {
 
     let (migrated, _fence) = migrate_and_fence(home.path()).unwrap();
     assert!(migrated);
-    let mut restarted = crate::domain_store::DomainStore::open(&target).unwrap();
+    let mut restarted = crate::DomainStore::open(&target).unwrap();
     let state = restarted.load().unwrap();
     assert!(
         state
@@ -322,14 +319,14 @@ fn interrupted_migration_resumes_at_each_durable_phase() {
 fn migration_refuses_ambiguous_or_uncommitted_sources_without_touching_them() {
     let home = Home::new();
     let source = home.path().join(SOURCE);
-    let _ = crate::domain_store::DomainStore::open(&source).unwrap();
+    let _ = crate::DomainStore::open(&source).unwrap();
     let target = home.path().join(DATABASE);
-    let _ = crate::domain_store::DomainStore::open(&target).unwrap();
+    let _ = crate::DomainStore::open(&target).unwrap();
     assert!(migrate_locked(home.path(), |_| Ok(())).is_err());
     assert!(source.exists() && target.exists());
 
     let other = Home::new();
-    let _ = crate::domain_store::DomainStore::open(&other.path().join(SOURCE)).unwrap();
+    let _ = crate::DomainStore::open(&other.path().join(SOURCE)).unwrap();
     assert!(migrate_locked(other.path(), |_| Ok(())).is_err());
     assert!(other.path().join(SOURCE).exists());
     assert!(
@@ -396,7 +393,7 @@ fn staging_database_with_a_mismatched_owner_record_is_preserved() {
     fs::write(
         &owner,
         serde_json::to_vec(&StageOwner {
-            stage_id: crate::auth::random_hex(12),
+            stage_id: alondra_daemon_support::auth::random_hex(12),
             source_digest: marker.source_digest.clone(),
             source_content_digest: marker.source_content_digest.clone(),
         })
@@ -477,7 +474,7 @@ fn prepared_marker_never_overwrites_an_existing_target() {
     assert!(stopped.is_err());
 
     let target = home.path().join(DATABASE);
-    let _ = crate::domain_store::DomainStore::open(&target).unwrap();
+    let _ = crate::DomainStore::open(&target).unwrap();
     let target_digest = file_digest(&target);
     let source_digest = file_digest(&home.path().join(SOURCE));
     assert!(migrate_locked(home.path(), |_| Ok(())).is_err());

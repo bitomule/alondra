@@ -21,15 +21,11 @@ use std::{
     time::Duration,
 };
 
-pub const DATABASE: &str = "domain.db";
+pub use alondra_engine_ports::journal::{DATABASE, active_path};
 pub const SOURCE: &str = "domain-v2.db";
 const NEXT: &str = "domain.db.next";
 pub const MARKER: &str = "database-migration.json";
 const APPLICATION_ID: i64 = 0x414c4432;
-
-pub fn active_path(home: &Path) -> std::path::PathBuf {
-    home.join(DATABASE)
-}
 
 /// A private preflight snapshot uses SQLite backup, so its source file bytes
 /// differ from the live HOME even though the logical database is identical.
@@ -121,8 +117,8 @@ pub fn migrate_and_fence(home: &Path) -> Result<(bool, Option<SourceFence>)> {
     let source = home.join(SOURCE);
     let migration_marker_exists = home.join(MARKER).exists();
     if !migration_marker_exists {
-        let cutover = crate::domain_cutover::read_marker(home)?;
-        if !cutover.is_some_and(|marker| marker.phase == crate::domain_cutover::Phase::Committed) {
+        let cutover = alondra_daemon_support::domain_cutover::read_marker(home)?;
+        if !cutover.is_some_and(|marker| marker.phase == alondra_daemon_support::domain_cutover::Phase::Committed) {
             return Ok((false, None));
         }
         ensure!(
@@ -192,9 +188,9 @@ fn migrate_locked(
             if !path_exists(&source) {
                 return Ok(false);
             }
-            let cutover = crate::domain_cutover::read_marker(home)?;
+            let cutover = alondra_daemon_support::domain_cutover::read_marker(home)?;
             ensure!(
-                cutover.is_some_and(|m| m.phase == crate::domain_cutover::Phase::Committed),
+                cutover.is_some_and(|m| m.phase == alondra_daemon_support::domain_cutover::Phase::Committed),
                 "refusing database rename before the domain cutover is committed"
             );
             ensure!(
@@ -207,7 +203,7 @@ fn migrate_locked(
             let marker = Marker {
                 format: 2,
                 phase: Phase::Prepared,
-                stage_id: crate::auth::random_hex(12),
+                stage_id: alondra_daemon_support::auth::random_hex(12),
                 source_epoch: epoch,
                 source_revision: revision,
                 source_digest,
@@ -275,7 +271,7 @@ fn migrate_locked(
                     let valid = validate_stage(&stage, &marker).is_ok();
                     if !valid {
                         quarantine_stage(home, &marker)?;
-                        marker.stage_id = crate::auth::random_hex(12);
+                        marker.stage_id = alondra_daemon_support::auth::random_hex(12);
                         write_marker(home, &marker)?;
                         stage = stage_path(home, &marker.stage_id);
                         ensure_stage_owner(home, &marker)?;
@@ -335,7 +331,7 @@ fn inspect_database(path: &Path) -> Result<(String, i64)> {
     let schema: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
     ensure!(
         app_id == APPLICATION_ID
-            && (schema == crate::domain_store::SCHEMA_VERSION || schema == crate::domain_store::PREVIOUS_SCHEMA_VERSION),
+            && (schema == crate::SCHEMA_VERSION || schema == crate::PREVIOUS_SCHEMA_VERSION),
         "database has an unexpected application or schema version"
     );
     let integrity: String = conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
@@ -740,7 +736,7 @@ fn read_marker(home: &Path) -> Result<Option<Marker>> {
 }
 
 fn write_marker(home: &Path, marker: &Marker) -> Result<()> {
-    let next = home.join(format!("{MARKER}.{}.tmp", crate::auth::random_hex(12)));
+    let next = home.join(format!("{MARKER}.{}.tmp", alondra_daemon_support::auth::random_hex(12)));
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)

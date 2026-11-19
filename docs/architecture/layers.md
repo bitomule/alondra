@@ -32,7 +32,7 @@ the application: they talk through ports, and the roots wire them together.
 | ports | `engine-ports`, `provider-contract`, `view-model`, `client-port`, `store`, `agent-application` |
 | application | `engine-kernel`, `daemon-engine`, `daemon-engine-model`, `daemon-engine-machine`, `engine-admission`, `engine-orchestrator`, `engine-sdk`, `engine-github`, `engine-live`, `engine-mcp`, `engine-worktrees`, `daemon-support` (mixed: most of it goes to the `system` adapter), `views` |
 | adapter-in | `daemon-server` (the daemon's routes, transports, pushes and screens' cache), `cli`, `cli-tui`, `cli-mcp`, `cli-report`, `client-transport` |
-| adapter-out | `github-gh`, `provider-claude`, `provider-codex`, `daemon-engine-store`, `agent-runtime`, `system` (git, the task worktrees, the disks, the provider accounts, the processes, Alondra's plugins and the MCP sign-in listeners, behind the `Worktrees`, `Disk`, `Accounts`, `Processes`, `Plugins` and `SignInReturns` ports) |
+| adapter-out | `github-gh`, `provider-claude`, `provider-codex`, `store-sqlite`, `agent-runtime`, `system` (git, the task worktrees, the disks, the provider accounts, the processes, Alondra's plugins and the MCP sign-in listeners, behind the `Worktrees`, `Disk`, `Accounts`, `Processes`, `Plugins` and `SignInReturns` ports) |
 | adapter-private | `agent-protocol` (of `provider-claude`), `codex-protocol` (of `provider-codex`) |
 | root | `alondrad`, `alondra`, `relay`, `scenarios`, `tools/sandbox` |
 

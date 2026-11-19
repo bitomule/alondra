@@ -3,6 +3,7 @@
 //! with the session it resumed and its folder. The node's `claude --bg` process is a real child
 //! process, named by its identity; Claude Code's `claude stop` is the double here. Every wait is
 //! on a fact the domain publishes, never on a clock.
+use alondra_store_sqlite::AsSqlite as _;
 use crate::sdk_owner::SdkOwners as _;
 use crate::live::LiveOf as _;
 use crate::sdk_handover::HandoversOf as _;
@@ -200,7 +201,7 @@ impl World {
             session: SESSION.into(), cwd: self.worktree.to_str().unwrap().into(), name: "release-notes".into(),
             process: Some(self.bg.process), input, outbox: Some(message.id), returning: false,
         };
-        assert!(self.domain.store.lock().unwrap().plan_handover(&AgentId(SESSION.into()), &TaskId::from(TASK), &plan).unwrap());
+        assert!(self.domain.store.lock().unwrap().sqlite_mut().plan_handover(&AgentId(SESSION.into()), &TaskId::from(TASK), &plan).unwrap());
     }
 
     fn waiting_messages(&self) -> usize {

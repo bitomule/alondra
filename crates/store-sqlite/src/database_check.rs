@@ -4,7 +4,7 @@ use std::{fs::{self, OpenOptions}, os::unix::fs::{DirBuilderExt, OpenOptionsExt}
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OpenFlags};
 
-use crate::domain_store::audit;
+use crate::audit;
 
 pub fn run(path: &Path) -> Result<()> {
     let parent = fs::canonicalize(path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new(".")))?;

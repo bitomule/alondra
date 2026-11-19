@@ -2224,7 +2224,7 @@ mod tests {
     }
 
     fn semantic_receipt_count(home: &std::path::Path) -> i64 {
-        let database = crate::domain_database_migration::active_path(home);
+        let database = crate::domain_store::active_path(home);
         let connection = rusqlite::Connection::open(database).unwrap();
         connection.query_row("SELECT count(*) FROM semantic_receipts", [], |row| row.get(0)).unwrap()
     }
@@ -2248,7 +2248,7 @@ mod tests {
         let directory = crate::test_support::Directory::new();
         std::fs::create_dir_all(&directory).unwrap();
         drop(alondra_engine_sdk::engine_tests::open(&directory).unwrap());
-        let daemon = crate::domain_bootstrap::DomainDaemon::open(&directory).unwrap();
+        let daemon = crate::domain_bootstrap::DomainDaemon::open(&directory, &alondra_store_sqlite::Sqlite).unwrap();
         let key = p256::ecdsa::SigningKey::from_slice(&[21u8; 32]).unwrap();
         let public_key = STANDARD.encode(key.verifying_key().to_sec1_bytes());
         let auth = daemon.auth();
@@ -2293,7 +2293,7 @@ mod tests {
         let directory = crate::test_support::Directory::new();
         std::fs::create_dir_all(&directory).unwrap();
         drop(alondra_engine_sdk::engine_tests::open(&directory).unwrap());
-        let daemon = crate::domain_bootstrap::DomainDaemon::open(&directory).unwrap();
+        let daemon = crate::domain_bootstrap::DomainDaemon::open(&directory, &alondra_store_sqlite::Sqlite).unwrap();
         let domain = daemon.domain();
         apply_seed_command(&domain, Actor::User { user_id: "fixture".into() }, "request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false, maintenance: false, message: false,

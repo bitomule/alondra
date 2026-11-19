@@ -31,7 +31,7 @@ rust_library(
     edition = "2024",
     rustc_flags = [LOW_OPT_LEVEL],
     version = VERSION,
-    visibility = ["//crates/alondrad:__pkg__", "//crates/daemon-server:__pkg__", "//crates/engine-sdk:__pkg__", "//crates/daemon-engine:__pkg__", "//crates/engine-admission:__pkg__", "//crates/engine-github:__pkg__", "//crates/engine-kernel:__pkg__", "//crates/engine-orchestrator:__pkg__", "//crates/daemon-engine-machine:__pkg__", "//crates/daemon-engine-store:__pkg__"],
+    visibility = ["//crates/alondrad:__pkg__", "//crates/daemon-server:__pkg__", "//crates/engine-sdk:__pkg__", "//crates/daemon-engine:__pkg__", "//crates/engine-admission:__pkg__", "//crates/engine-github:__pkg__", "//crates/engine-kernel:__pkg__", "//crates/engine-orchestrator:__pkg__", "//crates/daemon-engine-machine:__pkg__", "//crates/store-sqlite:__pkg__"],
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + ["//crates/daemon-support:daemon_support_test_hooks"],
 )
 

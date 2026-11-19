@@ -44,6 +44,7 @@ toml.workspace = true
 
 [dev-dependencies]
 alondra-engine-doubles.workspace = true
+alondra-store-sqlite = { workspace = true, features = ["test-hooks"] }
 alondra-views.workspace = true
 alondra-daemon-support = { workspace = true, features = ["test-hooks"] }
 alondra-daemon-engine = { workspace = true, features = ["test-hooks"] }

@@ -16,7 +16,7 @@ pub mod process_watch;
 
 pub mod disk_peaks;
 use alondra_daemon_engine_machine::{machine_state, swap_disk};
-pub use alondra_engine_kernel::{domain_database_migration, domain_runtime, domain_store};
+pub use alondra_engine_kernel::{domain_runtime, domain_store};
 
 pub mod admission;
 mod engine;
@@ -186,7 +186,8 @@ mod wiring {
     use std::sync::Arc;
 
     pub fn open(home: &std::path::Path) -> anyhow::Result<super::DomainRuntime> {
-        let domain = super::DomainRuntime::open_unwired_at(home, &crate::domain_database_migration::active_path(home))?;
+        alondra_engine_kernel::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
+        let domain = super::DomainRuntime::open_unwired_at(home, &crate::domain_store::active_path(home))?;
         crate::wire(domain.ports());
         domain.ports().provide::<dyn alondra_engine_ports::hosts::SdkHosts>(Arc::new(alondra_engine_doubles::hosts::NoHosts));
         Engine::wire(domain.ports());

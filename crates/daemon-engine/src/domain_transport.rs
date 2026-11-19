@@ -851,13 +851,14 @@ pub mod tests {
         let task: TaskId = task.into();
         domain.own(alondra_store::AuthorityScope::new(state.data_epoch.clone()).unwrap(), |owner| {
             owner.stage_command(&Actor::System, &admit, crate::domain_store::Attached::None)?;
-            let journal = owner.journal();
-            let pending = journal.load(&task)?.pending_inputs()[0].clone();
-            journal.give_input_text(&task, alondra_store::InputPayload::new(pending, "Work").unwrap())?;
-            journal.stage_launch(&task, &alondra_provider_contract::Placement::RemoteWorkspace("sandbox/workspace".into()), &binding)?;
-            let execution = journal.load(&task)?.execution().unwrap().clone();
-            journal.reserve_owner(&execution, 0)?;
-            Ok(())
+            owner.with_lifecycle(&mut |journal| {
+                let pending = journal.load(&task)?.pending_inputs()[0].clone();
+                journal.give_input_text(&task, alondra_store::InputPayload::new(pending, "Work").unwrap())?;
+                journal.stage_launch(&task, &alondra_provider_contract::Placement::RemoteWorkspace("sandbox/workspace".into()), &binding)?;
+                let execution = journal.load(&task)?.execution().unwrap().clone();
+                journal.reserve_owner(&execution, 0)?;
+                Ok(())
+            })
         }).unwrap();
         let state = domain.state().unwrap();
         let Some(LifecycleRecord::Planned { input }) = state.lifecycle_journal.get(&task).and_then(|records| records.iter().next().cloned()) else {

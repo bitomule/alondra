@@ -134,7 +134,7 @@ async fn a_card_withdrawn_before_its_push_left_is_never_noticed() {
 async fn only_a_signed_device_on_this_mac_reads_notices() {
     let fixture = Fixture::new();
     drop(alondra_engine_sdk::engine_tests::open(&fixture.home).unwrap());
-    let state = crate::domain_bootstrap::DomainDaemon::open(&fixture.home).unwrap();
+    let state = crate::domain_bootstrap::DomainDaemon::open(&fixture.home, &alondra_store_sqlite::Sqlite).unwrap();
     let auth = state.auth();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());

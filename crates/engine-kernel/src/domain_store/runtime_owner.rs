@@ -15,7 +15,7 @@ use alondra_store::{
     ObservationAcceptance, OwnerGrant, UnresolvedCommand, UnresolvedControl,
 };
 
-pub(super) use alondra_daemon_engine_store::testing::ObservationRefusal;
+pub(super) use alondra_engine_ports::journal::owner::ObservationRefusal;
 #[cfg(any(test, feature = "test-hooks"))]
 pub fn admit_through_sdk(runtime: &crate::domain_runtime::DomainRuntime, task: &TaskId, agent: &str) {
     admit_through_sdk_with_host(runtime, task, agent, "fixture-service");
@@ -36,12 +36,13 @@ pub fn admit_through_sdk_with_host(runtime: &crate::domain_runtime::DomainRuntim
         1, 1, std::collections::BTreeSet::from([Capability::OfferInput]), "fixture-credential-reference".into(), 1).unwrap();
     runtime.own(AuthorityScope::new(state.data_epoch.clone()).unwrap(), |owner| {
         owner.stage_command(&Actor::System, &admit, Attached::None)?;
-        let journal = owner.journal();
-        let pending = journal.load(task)?.pending_inputs()[0].clone();
-        journal.give_input_text(task, InputPayload::new(pending, "Fixture input").unwrap())?;
-        journal.stage_launch(task, &Placement::RemoteWorkspace("fixture/workspace".into()), &binding)?;
-        let execution = journal.load(task)?.execution().unwrap().clone();
-        journal.reserve_owner(&execution, 0)?;
-        Ok(())
+        owner.with_lifecycle(&mut |journal| {
+            let pending = journal.load(task)?.pending_inputs()[0].clone();
+            journal.give_input_text(task, InputPayload::new(pending, "Fixture input").unwrap())?;
+            journal.stage_launch(task, &Placement::RemoteWorkspace("fixture/workspace".into()), &binding)?;
+            let execution = journal.load(task)?.execution().unwrap().clone();
+            journal.reserve_owner(&execution, 0)?;
+            Ok(())
+        })
     }).unwrap();
 }

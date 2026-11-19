@@ -1,3 +1,4 @@
+use alondra_store_sqlite::AsSqlite as _;
 use alondra_daemon_engine_model::LaunchOptionsFile as _;
 use crate::sdk_owner::SdkOwners as _;
 use crate::live::LiveOf as _;
@@ -2088,7 +2089,7 @@ async fn a_task_created_with_a_codex_launch_plan_starts_on_codex() {
     std::fs::write(alondra_core::options::path_in(&slice._home), accounts.to_toml()).unwrap();
     let plan = LaunchPlan { model: Some("codex/fixture-model".into()),
         ..LaunchPlan::new("release-notes", slice.worktree.to_str().unwrap()) };
-    slice.domain.store.lock().unwrap().set_launch_plan(&TASK.into(), &plan, 1).unwrap();
+    slice.domain.store.lock().unwrap().sqlite_mut().set_launch_plan(&TASK.into(), &plan, 1).unwrap();
     slice.domain.enable_sdk(slice.backend.clone());
     slice.domain.admission().ignore_mac();
     slice.domain.admission().tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(4)) });

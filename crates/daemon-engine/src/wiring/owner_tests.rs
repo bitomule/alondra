@@ -1,6 +1,7 @@
 //! One owner transaction on the real domain database: guarded domain commands, provider
 //! observations and the lifecycle journal commit together, and the runtime publishes the
 //! committed state before it acknowledges. Lifecycle fixtures are not native SDK observations.
+use alondra_store_sqlite::AsSqlite as _;
 use crate::domain_store::*;
 use alondra_domain_rules::*;
 use anyhow::Result;
@@ -16,9 +17,10 @@ use alondra_store::{
     ControlPermit, DispatchAttempt, DispatchPermit, DispatchReceipt, LifecycleTransaction,
     ObservationAcceptance, OwnerGrant, UnresolvedCommand, UnresolvedControl,
 };
-use alondra_daemon_engine_store::testing::ObservationRefusal;
+use alondra_engine_ports::journal::owner::ObservationRefusal;
 use crate::domain_runtime::DomainRuntime;
-use crate::domain_store::tests::{Fixture, seeded};
+use alondra_store_sqlite::tests::{Fixture, seeded};
+use alondra_store_sqlite::DomainStore;
 use alondra_agent_application::{Normalization, ObservationMetadata};
 use alondra_foundation::{ContinuationId, ExecutionStamp, InputId, TurnId, WorkId};
 use alondra_store::InputPayload;
@@ -685,10 +687,10 @@ fn the_cache_after_an_owner_commit_is_what_a_reload_reads() {
         })
         .unwrap();
     let store = runtime.store.lock().unwrap();
-    let (cached_state, total_changes) = store.cached_state().unwrap();
+    let (cached_state, total_changes) = store.sqlite().cached_state().unwrap();
     assert!(Arc::ptr_eq(cached_state, runtime.read().state()), "the cache holds the published state");
-    assert_eq!(total_changes, store.conn.total_changes(), "the cache is current for this connection");
-    assert_eq!(alondra_daemon_engine_store::testing::load(&store.conn).unwrap(), **cached_state, "a reload reads the cached state");
+    assert_eq!(total_changes, store.sqlite().conn.total_changes(), "the cache is current for this connection");
+    assert_eq!(alondra_store_sqlite::testing::load(&store.sqlite().conn).unwrap(), **cached_state, "a reload reads the cached state");
 }
 
 // Every observation of a working node goes through here: reading the whole domain for each of its
@@ -698,7 +700,7 @@ fn an_observation_and_its_commands_never_read_the_whole_domain() {
     let (fixture, store, execution) = running();
     let runtime = runtime(&fixture, store);
     let state = Arc::clone(runtime.read().state());
-    let before = alondra_daemon_engine_store::FULL_LOADS.with(std::cell::Cell::get);
+    let before = alondra_store_sqlite::FULL_LOADS.with(std::cell::Cell::get);
     runtime
         .own(scope_of(&state), |owner| {
             owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Available, no_home(), false)?;
@@ -707,7 +709,7 @@ fn an_observation_and_its_commands_never_read_the_whole_domain() {
             Ok(())
         })
         .unwrap();
-    assert_eq!(alondra_daemon_engine_store::FULL_LOADS.with(std::cell::Cell::get), before);
+    assert_eq!(alondra_store_sqlite::FULL_LOADS.with(std::cell::Cell::get), before);
 }
 
 // An accepted observation whose facts the domain never recorded cannot commit: dropping its
@@ -720,11 +722,13 @@ fn an_observation_whose_facts_the_domain_did_not_record_cannot_commit() {
     let before = counts(&observer);
     let state = Arc::clone(runtime.read().state());
     let unrecorded = runtime.own(scope_of(&state), |owner| {
-        let pending = alondra_agent_application::stage_observation(owner.journal(), &binding(), 1, &batch(&execution, 1), &Normalizer::Available)
-            .map_err(|error| StoreError::Storage(anyhow::anyhow!("{error:?}")))?;
-        assert_eq!(pending.facts().len(), 1, "the observation was normalized to one fact");
-        drop(pending);
-        Ok(())
+        owner.with_lifecycle(&mut |journal| {
+            let pending = alondra_agent_application::stage_observation(journal, &binding(), 1, &batch(&execution, 1), &Normalizer::Available)
+                .map_err(|error| StoreError::Storage(anyhow::anyhow!("{error:?}")))?;
+            assert_eq!(pending.facts().len(), 1, "the observation was normalized to one fact");
+            drop(pending);
+            Ok(())
+        })
     });
     match unrecorded {
         Err(StoreError::Storage(error)) => assert!(
@@ -1229,7 +1233,7 @@ fn a_previous_native_credentials_generation_cannot_change_the_new_accounts_auth_
     assert!(!state.state().account_usage.iter().any(|usage|usage.provider==Provider::Claude && usage.account.is_default() && usage.window(&WindowKind::Weekly).is_some_and(|window|window.reading.exhausted)));
     assert!(state.state().lifecycle_of(&task()).unwrap().turn().is_none(),"the previous task turn still commits");
     assert_eq!(state.state().lifecycle_of(&task()).unwrap().cursor(),Some(3),"Available, TurnStarted and TurnEnded remain three distinct lifecycle facts");
-    let normalized:i64=runtime.store.lock().unwrap().conn.query_row("SELECT cursor FROM provider_normalization_checkpoints WHERE task_id=?1 AND generation=?2",rusqlite::params![TASK,i64::try_from(execution.generation()).unwrap()],|row|row.get(0)).unwrap();
+    let normalized:i64=runtime.store.lock().unwrap().sqlite().conn.query_row("SELECT cursor FROM provider_normalization_checkpoints WHERE task_id=?1 AND generation=?2",rusqlite::params![TASK,i64::try_from(execution.generation()).unwrap()],|row|row.get(0)).unwrap();
     assert_eq!(normalized,2,"the two raw observations still have their exact committed normalization checkpoint");
 }
 

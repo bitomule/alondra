@@ -4,8 +4,6 @@
 use alondra_domain_rules::{MergeFailure, SystemCard};
 use rusqlite::{Transaction, params};
 
-const REFUSED_CARDS_CAUSE: &str = "refused-cards:";
-
 /// Adds the columns a database lacks and fills them from what it already holds.
 pub(super) fn upgrade(tx: &Transaction<'_>) -> anyhow::Result<()> {
     if add_column(tx, "interactions", "system_card")? {
@@ -40,12 +38,7 @@ fn mark_system_cards(tx: &Transaction<'_>) -> anyhow::Result<()> {
     )?;
     let cards: Vec<(String, Option<String>)> = query.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
     for (id, cause) in cards {
-        let owner = cause.as_deref().and_then(|cause| cause.strip_prefix(REFUSED_CARDS_CAUSE));
-        let card = match owner {
-            Some(owner) => Some(SystemCard::RefusedCards { owner: owner.to_owned() }),
-            None => SystemCard::of_stored_id(&id),
-        };
-        if let Some(card) = card {
+        if let Some(card) = SystemCard::of_stored(&id, cause.as_deref()) {
             tx.execute("UPDATE interactions SET system_card=?1 WHERE id=?2", params![serde_json::to_string(&card)?, id])?;
         }
     }

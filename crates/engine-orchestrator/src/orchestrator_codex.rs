@@ -630,7 +630,7 @@ candidates=[{model="fixture-model",reasoning_effort="high"}]
             }
         }
         let terminal = terminal.expect("the normal native exit remains durable");
-        let connection = rusqlite::Connection::open(crate::domain_database_migration::active_path(&f.executor.home)).unwrap();
+        let connection = rusqlite::Connection::open(crate::domain_store::active_path(&f.executor.home)).unwrap();
         let report: String = connection.query_row("SELECT report FROM orchestrator_batch_reports WHERE run=?1 AND cursor=?2", rusqlite::params![run, i64::try_from(terminal).unwrap()], |row| row.get(0)).unwrap();
         let report: Value = serde_json::from_str(&report).unwrap();
         assert_eq!(report["kind"], "process_exited");
@@ -707,7 +707,7 @@ candidates=[{model="fixture-model",reasoning_effort="high"}]
             let host=std::fs::canonicalize(std::env::var("FIXTURE_CODEX_HOST").unwrap()).unwrap();backend.provider=Provider::Codex;backend.origin=None;backend.node=host.clone();backend.host=host;backend.node_sha256=crate::sdk_backend::digest(&backend.node).unwrap();backend.host_sha256=backend.node_sha256.clone();backend.native=native;backend.native_sha256=crate::sdk_backend::digest(&backend.native).unwrap();backend.native_environment.insert("ALONDRA_FAKE_ACCOUNT_FILE".into(),account.display().to_string());backend.native_environment.insert("ALONDRA_FAKE_TRANSCRIPT".into(),trace.display().to_string());
             std::fs::write(f.executor.home.join("codex-backend.json"),serde_json::to_vec(&backend).unwrap()).unwrap();
             f.tell("policy-request","Do not run a model until native payment and identity policy is valid");
-            if refuse_report{rusqlite::Connection::open(crate::domain_database_migration::active_path(&f.executor.home)).unwrap().execute_batch("CREATE TRIGGER reject_policy_report BEFORE INSERT ON orchestrator_batch_reports BEGIN SELECT RAISE(ABORT,'injected report failure'); END;").unwrap();}
+            if refuse_report{rusqlite::Connection::open(crate::domain_store::active_path(&f.executor.home)).unwrap().execute_batch("CREATE TRIGGER reject_policy_report BEFORE INSERT ON orchestrator_batch_reports BEGIN SELECT RAISE(ABORT,'injected report failure'); END;").unwrap();}
             let fault = failed_write.map(|(point, occurrence)| alondra_daemon_engine_model::faults::Injection::at(&f.executor.home,point,occurrence));
             let result = f.executor.tick().await;
             if let Some(fault) = &fault { assert!(result.is_err()); assert!(fault.hits()>0); } else { result.unwrap(); }
@@ -721,7 +721,7 @@ candidates=[{model="fixture-model",reasoning_effort="high"}]
                 assert!(runtime.active_run.is_some(),"losing both the refusal report and runtime write still cannot permit native replay after restart");
             } else if failed_write.is_some() { f.tick().await; }
             let runtime=crate::domain_orchestrator::load(&f.executor.home).unwrap();let run=runtime.last_run_id.as_deref().unwrap();assert_eq!(runtime.failure,Some(if cold_restart {crate::domain_orchestrator::Failure::Interrupted} else {crate::domain_orchestrator::Failure::Denied}),"actual host diagnostic: {:?}",runtime.last_error);assert!(runtime.retry_at.is_none(),"payment denial requires a user decision, never another automatic provider attempt");
-            let reports:Vec<(u64,Vec<u8>,String)>={let conn=rusqlite::Connection::open(crate::domain_database_migration::active_path(&f.executor.home)).unwrap();let mut query=conn.prepare("SELECT cursor,digest,report FROM orchestrator_batch_reports WHERE run=?1 ORDER BY cursor").unwrap();query.query_map([run],|row|Ok((u64::try_from(row.get::<_,i64>(0)?).unwrap(),row.get(1)?,row.get(2)?))).unwrap().map(|row|row.unwrap()).collect()};
+            let reports:Vec<(u64,Vec<u8>,String)>={let conn=rusqlite::Connection::open(crate::domain_store::active_path(&f.executor.home)).unwrap();let mut query=conn.prepare("SELECT cursor,digest,report FROM orchestrator_batch_reports WHERE run=?1 ORDER BY cursor").unwrap();query.query_map([run],|row|Ok((u64::try_from(row.get::<_,i64>(0)?).unwrap(),row.get(1)?,row.get(2)?))).unwrap().map(|row|row.unwrap()).collect()};
             let directory=std::fs::read_dir(&state_root).unwrap().map(|entry|entry.unwrap().path()).find(|path|path.file_name().unwrap().to_string_lossy().starts_with("orchestrator-")).unwrap();
             let mut reader=alondra_codex_protocol::FramedReader::new(std::fs::File::open(directory.join("outbox")).unwrap());let mut acknowledged=0;let mut refusal=None;
             while let Some(frame)=reader.read_received().unwrap(){match &frame.frame().body{

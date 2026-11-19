@@ -3,23 +3,22 @@
 //! more.
 use alondra_core::clock;
 use alondra_engine_ports::admission;
-use crate::{domain_cutover, domain_database_migration as database};
+use crate::domain_cutover;
+use alondra_engine_ports::journal::JournalFiles;
 use anyhow::Result;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::Path;
-use std::time::{Duration, SystemTime};
 
-/// How long the old database stays as a recovery copy after the move to `domain.db`.
-const RECOVERY_WINDOW: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// The plan's limits as the node mods measured them, and the Mac-wide usage pause, with their
 /// half-written copies: each account's usage now lives in the domain, and the pause in memory.
 const RETIRED: [&str; 4] = ["usage.json", "usage.next", "usage-exhausted.json", "usage-exhausted.next"];
 
 /// Run before anything reads HOME. Without the HOME lock (another daemon owns it)
 /// nothing moves; readers still accept the old names. `records` are the previous and current names
-/// of the records kept by the crates above the engine, moved first.
-pub fn apply(home: &Path, records: &[(&str, &str)]) -> Result<()> {
+/// of the records kept by the crates above the engine, moved first; the journal removes the copies
+/// its migrations left once they are no longer a way back.
+pub fn apply(home: &Path, records: &[(&str, &str)], files: &dyn JournalFiles) -> Result<()> {
     if !home.exists() {
         return Ok(());
     }
@@ -35,7 +34,7 @@ pub fn apply(home: &Path, records: &[(&str, &str)]) -> Result<()> {
     for name in RETIRED {
         remove(&home.join(name))?;
     }
-    remove_recovery_copies(home, clock::system_time())
+    files.remove_recovery_copies(home, clock::system_time())
 }
 
 fn rename(home: &Path, from: &str, to: &str) -> Result<()> {
@@ -50,36 +49,6 @@ fn rename(home: &Path, from: &str, to: &str) -> Result<()> {
         fs::rename(&from, home.join(to))?;
     }
     fs::File::open(home)?.sync_all()?;
-    Ok(())
-}
-
-fn remove_recovery_copies(home: &Path, now: SystemTime) -> Result<()> {
-    let Some(committed) = database::committed_at(home)? else {
-        return Ok(());
-    };
-    if !database::active_path(home).exists()
-        || now.duration_since(committed).unwrap_or_default() < RECOVERY_WINDOW
-    {
-        return Ok(());
-    }
-    let source = database::SOURCE;
-    let retired = format!("{}-retired-", source.trim_end_matches(".db"));
-    for entry in fs::read_dir(home)? {
-        let entry = entry?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let copy = name == source
-            || name.strip_prefix(source).is_some_and(|rest| ["-wal", "-shm"].contains(&rest) || rest.starts_with(".old-"))
-            || name.starts_with(&retired);
-        if !copy {
-            continue;
-        }
-        if entry.file_type()?.is_dir() {
-            fs::remove_dir_all(entry.path())?;
-        } else {
-            remove(&entry.path())?;
-        }
-        log!("removed {name}, a copy kept by an earlier migration");
-    }
     Ok(())
 }
 
@@ -123,6 +92,18 @@ mod tests {
 
     const ORCHESTRATOR_RECORD: &[(&str, &str)] = &[("orchestrator-v2.json", "orchestrator.json")];
 
+    /// A journal that left no recovery copies to remove.
+    struct NoCopies;
+    impl JournalFiles for NoCopies {
+        fn open(&self, _: &Path, _: Option<std::sync::Arc<dyn alondra_engine_ports::journal::decisions::SdkDecisions>>) -> Result<Box<dyn alondra_engine_ports::journal::Journal>> { unreachable!() }
+        fn open_readonly(&self, _: &Path) -> Result<Box<dyn alondra_engine_ports::journal::Journal>> { unreachable!() }
+        fn migrate_and_fence(&self, _: &Path) -> Result<(bool, Option<Box<dyn std::any::Any + Send>>)> { unreachable!() }
+        fn validate_preflight_source(&self, _: &Path) -> Result<()> { unreachable!() }
+        fn preflight_staging_files(&self, _: &Path) -> Result<Vec<std::path::PathBuf>> { unreachable!() }
+        fn migration_marker(&self) -> &'static str { unreachable!() }
+        fn remove_recovery_copies(&self, _: &Path, _: std::time::SystemTime) -> Result<()> { Ok(()) }
+    }
+
     fn session_of(home: &Home) -> String {
         let record: serde_json::Value = serde_json::from_slice(&fs::read(home.0.join("orchestrator.json")).unwrap()).unwrap();
         record["session_id"].as_str().unwrap().to_owned()
@@ -134,25 +115,13 @@ mod tests {
         format!(r#"{{"format":1,"phase":"committed","backup_manifest_sha256":"{}","source_seq":0,"data_epoch":"{}"}}"#, "a".repeat(64), "b".repeat(64))
     }
 
-    fn migrated(home: &Home) {
-        home.write(database::MARKER, &format!(
-            r#"{{"format":2,"phase":"committed","stage_id":"{}","source_epoch":"e","source_revision":1,"source_digest":"{}","source_content_digest":"{}"}}"#,
-            "c".repeat(24), "d".repeat(64), "f".repeat(64)));
-        home.write(database::DATABASE, "");
-        for name in ["domain-v2.db", "domain-v2.db-wal", "domain-v2.db-shm", "domain-v2.db.old-1790689699"] {
-            home.write(name, "old");
-        }
-        fs::create_dir(home.0.join("domain-v2-retired-1790619331")).unwrap();
-        home.write("domain-v2-retired-1790619331/domain-v2.db", "old");
-    }
-
     #[test]
     fn the_orchestrator_record_moves_to_its_new_name() {
         let home = Home::new();
         home.write("orchestrator-v2.json", ORCHESTRATOR);
         home.write("orchestrator-v2.json.next", ORCHESTRATOR);
 
-        apply(&home.0, ORCHESTRATOR_RECORD).unwrap();
+        apply(&home.0, ORCHESTRATOR_RECORD, &NoCopies).unwrap();
 
         assert_eq!(home.names(), ["orchestrator.json"]);
         assert_eq!(session_of(&home), "d6ec6dac-9169-4dc0-ab34-0e05a07d7417");
@@ -164,7 +133,7 @@ mod tests {
         home.write("orchestrator-v2.json", ORCHESTRATOR);
         home.write("orchestrator.json", &ORCHESTRATOR.replace("d6ec6dac", "0000aaaa"));
 
-        apply(&home.0, ORCHESTRATOR_RECORD).unwrap();
+        apply(&home.0, ORCHESTRATOR_RECORD, &NoCopies).unwrap();
 
         assert_eq!(home.names(), ["orchestrator.json"]);
         assert!(session_of(&home).starts_with("0000aaaa"));
@@ -176,7 +145,7 @@ mod tests {
         home.write("domain-v2-cutover.json", &cutover_marker());
         assert!(domain_cutover::read_marker(&home.0).unwrap().is_some());
 
-        apply(&home.0, ORCHESTRATOR_RECORD).unwrap();
+        apply(&home.0, ORCHESTRATOR_RECORD, &NoCopies).unwrap();
 
         assert_eq!(home.names(), ["domain-cutover.json"]);
         assert_eq!(domain_cutover::read_marker(&home.0).unwrap().unwrap().phase, domain_cutover::Phase::Committed);
@@ -191,42 +160,8 @@ mod tests {
         home.write("usage-exhausted.next", "{");
         home.write("device-usage.json", r#"{"tracking_since_ms":0}"#);
 
-        apply(&home.0, ORCHESTRATOR_RECORD).unwrap();
+        apply(&home.0, ORCHESTRATOR_RECORD, &NoCopies).unwrap();
 
         assert_eq!(home.names(), ["device-usage.json"], "another file named for usage stays");
-    }
-
-    #[test]
-    fn copies_left_by_a_migration_committed_a_week_ago_are_removed() {
-        let home = Home::new();
-        migrated(&home);
-        home.write("domain.db.old-1791082509", "kept");
-
-        remove_recovery_copies(&home.0, SystemTime::now() + RECOVERY_WINDOW).unwrap();
-
-        assert_eq!(home.names(), ["database-migration.json", "domain.db", "domain.db.old-1791082509"]);
-    }
-
-    #[test]
-    fn copies_stay_while_the_migration_is_recent() {
-        let home = Home::new();
-        migrated(&home);
-        let before = home.names();
-
-        apply(&home.0, ORCHESTRATOR_RECORD).unwrap();
-
-        assert_eq!(home.names(), before);
-    }
-
-    #[test]
-    fn copies_stay_while_the_migration_is_not_committed() {
-        let home = Home::new();
-        migrated(&home);
-        home.write(database::MARKER, &fs::read_to_string(home.0.join(database::MARKER)).unwrap().replace("committed", "prepared"));
-        let before = home.names();
-
-        remove_recovery_copies(&home.0, SystemTime::now() + RECOVERY_WINDOW).unwrap();
-
-        assert_eq!(home.names(), before);
     }
 }

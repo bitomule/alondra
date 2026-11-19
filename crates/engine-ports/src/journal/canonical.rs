@@ -1,3 +1,4 @@
+//! The canonical bytes of a value, so its digest is the same whatever order serde writes it in.
 use anyhow::{Result, ensure};
 use serde::Serialize;
 use serde_json::Value;
@@ -5,14 +6,14 @@ use sha2::{Digest, Sha256};
 
 /// Explicit recursive ordering keeps the receipt stable even if serde_json's
 /// preserve_order feature is enabled by another dependency in a future build.
-pub(super) fn bytes(value: &impl Serialize) -> Result<Vec<u8>> {
+pub fn bytes(value: &impl Serialize) -> Result<Vec<u8>> {
     let value = serde_json::to_value(value)?;
     let mut bytes = Vec::new();
     append(&value, &mut bytes)?;
     Ok(bytes)
 }
 
-pub(super) fn digest(value: &impl Serialize) -> Result<[u8; 32]> {
+pub fn digest(value: &impl Serialize) -> Result<[u8; 32]> {
     Ok(Sha256::digest(bytes(value)?).into())
 }
 

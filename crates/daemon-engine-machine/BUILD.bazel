@@ -15,7 +15,6 @@ application_crate(
     version = VERSION,
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-model:daemon_engine_model",
-        "//crates/daemon-engine-store:daemon_engine_store",
         "//crates/daemon-support:daemon_support",
     ],
 )
@@ -33,7 +32,6 @@ rust_library(
     visibility = ["//crates/engine-sdk:__pkg__", "//crates/daemon-engine:__pkg__", "//crates/engine-admission:__pkg__", "//crates/engine-kernel:__pkg__"],
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
-        "//crates/daemon-engine-store:daemon_engine_store_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",
     ],
 )
@@ -49,7 +47,6 @@ low_opt_rust_test(
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
-        "//crates/daemon-engine-store:daemon_engine_store_test_hooks",
         "//crates/daemon-support:daemon_support_test_hooks",
     ],
 )

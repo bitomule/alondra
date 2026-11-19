@@ -1,6 +1,7 @@
 //! The daemon's root: it opens the engine, registers the screens, assembles the server and
 //! supervises what runs until it has to stop, relaunch or hand over its hosts.
 use alondra_daemon_server::*;
+use alondra_store_sqlite::{database_check, domain_database_migration};
 use alondra_engine_admission::AdmissionOf as _;
 use alondra_engine_sdk::sdk_owner::SdkOwners as _;
 use alondra_daemon_engine::live::LiveOf as _;
@@ -58,7 +59,7 @@ pub fn main() -> Result<()> {
         [flag] if flag == "--preflight" => {
             let checked = Config::load()
                 .map_err(|e| anyhow!("config.toml unreadable: {e}"))
-                .and_then(|config| preflight::run(&config, wire_machine));
+                .and_then(|config| preflight::run(&config, &alondra_store_sqlite::Sqlite, wire_machine));
             match checked {
                 Ok(summary) => println!("preflight ok: {summary}"),
                 Err(e) => {
@@ -121,7 +122,7 @@ async fn run(diagnostic: Option<String>) -> Result<()> {
     let config = Config::load().map_err(|e| anyhow!("config.toml unreadable: {e}"))?;
     log::rotate_when_full(&config.home);
     relaunch::record_supervision(&config.service_label);
-    home_renames::apply(&config.home, domain_orchestrator::RECORDS)?;
+    home_renames::apply(&config.home, domain_orchestrator::RECORDS, &alondra_store_sqlite::Sqlite)?;
     domain_cutover::refuse_legacy_home(&config.home)?;
     let (database_migrated, _source_fence) =
         domain_database_migration::migrate_and_fence(&config.home)?;
@@ -147,7 +148,7 @@ async fn run(diagnostic: Option<String>) -> Result<()> {
     }
     ensure_domain_protocol(&config.home)?;
     sdk_owner::backend::load(&config.home, config.sandbox, &options::user_home())?;
-    let domain = alondra_engine_sdk::wiring::open(&config.home)?;
+    let domain = alondra_engine_sdk::wiring::open(&config.home, &alondra_store_sqlite::Sqlite)?;
     if let Some(device) = diagnostic {
         // Diagnostic delivery uses the same canonical domain store but does not
         // start the long-running workers or HTTP listener.
@@ -572,7 +573,7 @@ mod argument_tests {
         domain_cutover::refuse_legacy_home(&home).unwrap();
         ensure_domain_protocol(&home).unwrap();
         let _domain = alondra_engine_sdk::engine_tests::open(&home).unwrap();
-        domain_bootstrap::DomainDaemon::open(&home).unwrap();
+        domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
         assert!(home.join("domain.db").is_file());
         assert!(!home.join("alondra.db").exists());
         std::fs::remove_dir_all(home).unwrap();
@@ -603,7 +604,7 @@ mod argument_tests {
             scratch_directory.parent().unwrap().join(format!("alondra-domain-guard-{}", auth::random_hex(8)));
         std::fs::create_dir(&home).unwrap();
         let legacy_domain = home.join("domain-v2.db");
-        drop(domain_store::DomainStore::open(&legacy_domain).unwrap());
+        drop(alondra_store_sqlite::DomainStore::open(&legacy_domain).unwrap());
         let conn = rusqlite::Connection::open(&legacy_domain).unwrap();
         conn.execute("UPDATE domain_meta SET revision=1 WHERE singleton=1", [])
             .unwrap();

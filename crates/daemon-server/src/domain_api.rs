@@ -1,5 +1,6 @@
 //! Resource-oriented domain API. Both local HTTP and encrypted transport call the
 //! same runtime through `DomainHost`.
+use crate::domain_store::IntoDomainError as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::auth::{Signed, is_local};
@@ -1502,7 +1503,7 @@ mod tests {
             review_prs: false, dependencies: Default::default(), stack: None, plan_items: None, continues: Some("task-a".into()),
             launch: Some(serde_json::from_value(json!({"name":"node", "cwd":path, "model":"sonnet", "reason":"fixture"})).unwrap()),
         });
-        let observer = rusqlite::Connection::open(crate::domain_database_migration::active_path(&host.home)).unwrap();
+        let observer = rusqlite::Connection::open(crate::domain_store::active_path(&host.home)).unwrap();
         observer.execute_batch("CREATE TRIGGER fail_continuation BEFORE INSERT ON task_checklists WHEN NEW.task_id='continued'
             BEGIN SELECT RAISE(ABORT,'injected continuation cause'); END;").unwrap();
         let before = host.domain.state().unwrap();
@@ -1531,7 +1532,7 @@ mod tests {
         let directory = crate::test_support::Directory::new();
         std::fs::create_dir_all(&directory).unwrap();
         drop(alondra_engine_sdk::engine_tests::open(&directory).unwrap());
-        let host = crate::domain_bootstrap::DomainDaemon::open(&directory).unwrap();
+        let host = crate::domain_bootstrap::DomainDaemon::open(&directory, &alondra_store_sqlite::Sqlite).unwrap();
         let domain = host.domain();
         let state = domain.state().unwrap();
         domain.execute(&Actor::User { user_id: "fixture".into() }, &CommandEnvelope {
@@ -1579,7 +1580,7 @@ mod tests {
             &STANDARD.encode(key.verifying_key().to_sec1_bytes())).unwrap();
         let signed = Some(Extension(Signed { device_id: device.id,
             name: device.name, public_key: device.public_key }));
-        let host = crate::domain_bootstrap::DomainDaemon::open(&home).unwrap();
+        let host = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
         let epoch = host.domain().state().unwrap().data_epoch.0.clone();
 
         let legacy = changes::<crate::domain_bootstrap::DomainDaemon>(State(host.clone()), signed.clone(),
@@ -1958,7 +1959,7 @@ mod tests {
         let directory = crate::test_support::Directory::new();
         std::fs::create_dir_all(&directory).unwrap();
         drop(alondra_engine_sdk::engine_tests::open(&directory).unwrap());
-        let daemon = crate::domain_bootstrap::DomainDaemon::open(&directory).unwrap();
+        let daemon = crate::domain_bootstrap::DomainDaemon::open(&directory, &alondra_store_sqlite::Sqlite).unwrap();
         let host = Arc::new(Host {
             domain: daemon.domain(),
             daemon,

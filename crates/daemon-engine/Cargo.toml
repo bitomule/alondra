@@ -6,9 +6,10 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-test-hooks = ["dep:alondra-agent-runtime", "dep:tempfile", "alondra-daemon-engine-model/test-hooks", "alondra-daemon-engine-store/test-hooks", "alondra-daemon-engine-machine/test-hooks", "alondra-engine-kernel/test-hooks", "alondra-engine-github/test-hooks", "alondra-engine-live/test-hooks", "alondra-engine-mcp/test-hooks", "alondra-engine-worktrees/test-hooks", "alondra-daemon-support/test-hooks"]
+test-hooks = ["dep:alondra-agent-runtime", "dep:tempfile", "dep:alondra-store-sqlite", "alondra-store-sqlite/test-hooks", "alondra-daemon-engine-model/test-hooks", "alondra-daemon-engine-machine/test-hooks", "alondra-engine-kernel/test-hooks", "alondra-engine-github/test-hooks", "alondra-engine-live/test-hooks", "alondra-engine-mcp/test-hooks", "alondra-engine-worktrees/test-hooks", "alondra-daemon-support/test-hooks"]
 
 [dependencies]
+alondra-store-sqlite = { workspace = true, optional = true }
 alondra-agent-runtime = { workspace = true, optional = true }
 alondra-engine-ports.workspace = true
 alondra-agent-application.workspace = true
@@ -17,7 +18,6 @@ alondra-host.workspace = true
 alondra-domain-rules.workspace = true
 alondra-view-model.workspace = true
 alondra-daemon-engine-model.workspace = true
-alondra-daemon-engine-store.workspace = true
 alondra-daemon-engine-machine.workspace = true
 alondra-daemon-support.workspace = true
 alondra-domain.workspace = true
@@ -57,7 +57,7 @@ alondra-engine-mcp = { workspace = true, features = ["test-hooks"] }
 alondra-engine-worktrees = { workspace = true, features = ["test-hooks"] }
 alondra-engine-kernel = { workspace = true, features = ["test-hooks"] }
 alondra-daemon-engine-machine = { workspace = true, features = ["test-hooks"] }
-alondra-daemon-engine-store = { workspace = true, features = ["test-hooks"] }
+alondra-store-sqlite = { workspace = true, features = ["test-hooks"] }
 alondra-codex-protocol.workspace = true
 alondra-daemon-engine-model = { workspace = true, features = ["test-hooks"] }
 alondra-daemon-support = { workspace = true, features = ["test-hooks"] }

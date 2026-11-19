@@ -5,6 +5,7 @@ use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use alondra_core::config::Config;
+use alondra_engine_ports::journal::JournalFiles;
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OpenFlags};
 
@@ -17,21 +18,21 @@ const DATABASES: [&str; 5] = [
 ];
 
 /// `wire` gives the domain the root's output adapters, which this crate does not see.
-pub fn run(config: &Config, wire: fn(&alondra_engine_ports::Registry)) -> Result<String> {
-    run_for(config, &crate::options::user_home(), wire)
+pub fn run(config: &Config, files: &dyn JournalFiles, wire: fn(&alondra_engine_ports::Registry)) -> Result<String> {
+    run_for(config, &crate::options::user_home(), files, wire)
 }
 
 /// `run` for a user whose HOME is `user_home`, where a production SDK backend runs Claude.
-fn run_for(config: &Config, user_home: &Path, wire: fn(&alondra_engine_ports::Registry)) -> Result<String> {
+fn run_for(config: &Config, user_home: &Path, files: &dyn JournalFiles, wire: fn(&alondra_engine_ports::Registry)) -> Result<String> {
     crate::domain_cutover::refuse_legacy_home(&config.home)?;
     alondra_core::home_lock::ensure_ready(&config.home)?;
     let backend = alondra_daemon_engine::sdk_backend::load(&config.home, config.sandbox, user_home)
         .context("the SDK backend configuration is not one this build admits")?;
     let scratch = Scratch::new()?;
-    snapshot(&config.home, &scratch.0)?;
+    snapshot(&config.home, &scratch.0, files)?;
     let mut copy = config.clone();
     copy.home = scratch.0.clone();
-    let started = start(&copy, wire)?;
+    let started = start(&copy, files, wire)?;
     Ok(match backend {
         Some(backend) => format!("{started}; SDK backend configuration {} admitted", backend.configuration_digest()),
         None => started,
@@ -39,23 +40,23 @@ fn run_for(config: &Config, user_home: &Path, wire: fn(&alondra_engine_ports::Re
 }
 
 /// The same canonical bootstrap `run` performs, on a HOME it may freely write.
-fn start(config: &Config, wire: fn(&alondra_engine_ports::Registry)) -> Result<String> {
-    crate::home_renames::apply(&config.home, crate::domain_orchestrator::RECORDS)?;
-    let (_, _source_fence) = crate::domain_database_migration::migrate_and_fence(&config.home)?;
+fn start(config: &Config, files: &dyn JournalFiles, wire: fn(&alondra_engine_ports::Registry)) -> Result<String> {
+    crate::home_renames::apply(&config.home, crate::domain_orchestrator::RECORDS, files)?;
+    let (_, _source_fence) = files.migrate_and_fence(&config.home)?;
     crate::retire_empty_older_sidecar(&config.home)?;
     crate::ensure_domain_protocol(&config.home)?;
-    let domain = alondra_engine_sdk::wiring::open(&config.home)?;
+    let domain = alondra_engine_sdk::wiring::open(&config.home, files)?;
     wire(domain.ports());
     crate::domain_bootstrap::DomainDaemon::over(&config.home, domain)?;
     Ok("canonical domain state starts".into())
 }
 
 /// A consistent copy of each database, read through SQLite so a live writer's WAL is included.
-fn snapshot(home: &Path, into: &Path) -> Result<()> {
+fn snapshot(home: &Path, into: &Path, files: &dyn JournalFiles) -> Result<()> {
     let home = &home
         .canonicalize()
         .with_context(|| format!("reading {}", home.display()))?;
-    crate::domain_database_migration::validate_preflight_source(home)?;
+    files.validate_preflight_source(home)?;
     for name in DATABASES {
         let source = home.join(name);
         match std::fs::symlink_metadata(&source) {
@@ -70,7 +71,7 @@ fn snapshot(home: &Path, into: &Path) -> Result<()> {
             .run_to_completion(4096, std::time::Duration::ZERO, None)
             .with_context(|| format!("copying {name}"))?;
     }
-    for source in crate::domain_database_migration::preflight_staging_files(home)? {
+    for source in files.preflight_staging_files(home)? {
         copy_private_file(&source, &into.join(source.file_name().unwrap()))?;
     }
     let marker = [crate::domain_cutover::MARKER, crate::domain_cutover::PREVIOUS_MARKER]
@@ -80,11 +81,11 @@ fn snapshot(home: &Path, into: &Path) -> Result<()> {
     if let Some(marker) = marker {
         std::fs::copy(&marker, into.join(crate::domain_cutover::MARKER))?;
     }
-    let migration_marker = home.join(crate::domain_database_migration::MARKER);
+    let migration_marker = home.join(files.migration_marker());
     if migration_marker.exists() {
         std::fs::copy(
             &migration_marker,
-            into.join(crate::domain_database_migration::MARKER),
+            into.join(files.migration_marker()),
         )?;
     }
     Ok(())
@@ -207,7 +208,7 @@ mod tests {
             .unwrap();
         let lock = alondra_core::home_lock::HomeLock::recovery(&home).unwrap();
         let before = contents(&home);
-        let refused = run(&config, |_| {}).unwrap_err();
+        let refused = run(&config, &alondra_store_sqlite::Sqlite, |_| {}).unwrap_err();
         drop(lock);
         assert!(
             format!("{refused:#}").contains("still holds legacy data"),
@@ -224,7 +225,7 @@ mod tests {
     fn committed_domain_home(name: &str) -> (crate::test_support::Directory, Config) {
         let (home, config) = home(name);
         let path = home.join("domain-v2.db");
-        let _store = crate::domain_store::DomainStore::open(&path).unwrap();
+        let _store = alondra_store_sqlite::DomainStore::open(&path).unwrap();
         let marker = crate::domain_cutover::Marker {
             format: 1,
             phase: crate::domain_cutover::Phase::Committed,
@@ -259,11 +260,11 @@ mod tests {
         });
         std::fs::write(home.join(alondra_daemon_engine::sdk_backend::FILE), backend.to_string()).unwrap();
         let before = contents(&home);
-        let admitted = run_for(&config, &user, |_| {}).unwrap();
+        let admitted = run_for(&config, &user, &alondra_store_sqlite::Sqlite, |_| {}).unwrap();
         assert!(admitted.contains("SDK backend configuration") && admitted.contains("admitted"), "{admitted}");
         assert_eq!(contents(&home), before, "preflight must not write to the HOME it checks");
         std::fs::write(&artifact, b"another artifact").unwrap();
-        let refused = format!("{:#}", run_for(&config, &user, |_| {}).unwrap_err());
+        let refused = format!("{:#}", run_for(&config, &user, &alondra_store_sqlite::Sqlite, |_| {}).unwrap_err());
         assert!(refused.contains("does not have the SHA256"), "{refused}");
     }
 
@@ -272,7 +273,7 @@ mod tests {
         let (home, config) = committed_domain_home("migration-markerless");
         let before = contents(&home);
         assert!(
-            run(&config, |_| {})
+            run(&config, &alondra_store_sqlite::Sqlite, |_| {})
                 .unwrap()
                 .contains("canonical domain state starts")
         );
@@ -287,7 +288,7 @@ mod tests {
         crate::domain_database_migration::prepare_test_migration(&home);
         let before = contents(&home);
         assert!(
-            run(&config, |_| {})
+            run(&config, &alondra_store_sqlite::Sqlite, |_| {})
                 .unwrap()
                 .contains("canonical domain state starts")
         );
@@ -302,7 +303,7 @@ mod tests {
         assert!(crate::domain_database_migration::migrate(&home).unwrap());
         let before = contents(&home);
         assert!(
-            run(&config, |_| {})
+            run(&config, &alondra_store_sqlite::Sqlite, |_| {})
                 .unwrap()
                 .contains("canonical domain state starts")
         );
@@ -319,7 +320,7 @@ mod tests {
             .execute("UPDATE domain_meta SET revision=revision+1", [])
             .unwrap();
         let before = contents(&home);
-        assert!(run(&config, |_| {}).is_err());
+        assert!(run(&config, &alondra_store_sqlite::Sqlite, |_| {}).is_err());
         assert_eq!(contents(&home), before);
         std::fs::remove_dir_all(home).unwrap();
     }

@@ -301,7 +301,6 @@ dependencies = [
  "alondra-core",
  "alondra-daemon-engine-machine",
  "alondra-daemon-engine-model",
- "alondra-daemon-engine-store",
  "alondra-daemon-support",
  "alondra-domain",
  "alondra-domain-rules",
@@ -319,6 +318,7 @@ dependencies = [
  "alondra-provider-codex",
  "alondra-provider-contract",
  "alondra-store",
+ "alondra-store-sqlite",
  "alondra-view-model",
  "anyhow",
  "axum",
@@ -344,7 +344,6 @@ version = "0.3.57"
 dependencies = [
  "alondra-core",
  "alondra-daemon-engine-model",
- "alondra-daemon-engine-store",
  "alondra-daemon-support",
  "alondra-domain-rules",
  "alondra-engine-ports",
@@ -375,33 +374,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "alondra-daemon-engine-store"
-version = "0.3.57"
-dependencies = [
- "alondra-agent-application",
- "alondra-core",
- "alondra-daemon-engine-model",
- "alondra-daemon-support",
- "alondra-domain",
- "alondra-domain-rules",
- "alondra-engine-doubles",
- "alondra-engine-ports",
- "alondra-foundation",
- "alondra-provider-codex",
- "alondra-provider-contract",
- "alondra-store",
- "anyhow",
- "libc",
- "proptest",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tempfile",
- "tokio",
-]
-
-[[package]]
 name = "alondra-daemon-server"
 version = "0.3.57"
 dependencies = [
@@ -420,6 +392,7 @@ dependencies = [
  "alondra-engine-sdk",
  "alondra-github-gh",
  "alondra-host",
+ "alondra-store-sqlite",
  "alondra-view-model",
  "alondra-views",
  "anyhow",
@@ -532,6 +505,7 @@ dependencies = [
  "alondra-engine-kernel",
  "alondra-engine-ports",
  "alondra-process-group",
+ "alondra-store-sqlite",
  "alondra-view-model",
  "anyhow",
  "libc",
@@ -571,6 +545,7 @@ dependencies = [
  "alondra-engine-ports",
  "alondra-foundation",
  "alondra-github-gh",
+ "alondra-store-sqlite",
  "alondra-view-model",
  "anyhow",
  "rusqlite",
@@ -589,7 +564,6 @@ dependencies = [
  "alondra-core",
  "alondra-daemon-engine-machine",
  "alondra-daemon-engine-model",
- "alondra-daemon-engine-store",
  "alondra-daemon-support",
  "alondra-domain",
  "alondra-domain-rules",
@@ -599,6 +573,7 @@ dependencies = [
  "alondra-host",
  "alondra-provider-contract",
  "alondra-store",
+ "alondra-store-sqlite",
  "anyhow",
  "base64 0.23.1",
  "libc",
@@ -673,6 +648,7 @@ dependencies = [
  "alondra-provider-codex",
  "alondra-provider-contract",
  "alondra-store",
+ "alondra-store-sqlite",
  "alondra-view-model",
  "anyhow",
  "libc",
@@ -690,14 +666,20 @@ dependencies = [
 name = "alondra-engine-ports"
 version = "0.3.57"
 dependencies = [
+ "alondra-agent-application",
  "alondra-core",
+ "alondra-domain",
  "alondra-domain-rules",
  "alondra-foundation",
  "alondra-process-group",
+ "alondra-provider-contract",
+ "alondra-store",
  "alondra-view-model",
+ "anyhow",
  "libc",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
  "tokio",
 ]
@@ -713,7 +695,6 @@ dependencies = [
  "alondra-daemon-engine",
  "alondra-daemon-engine-machine",
  "alondra-daemon-engine-model",
- "alondra-daemon-engine-store",
  "alondra-daemon-support",
  "alondra-domain",
  "alondra-domain-rules",
@@ -728,6 +709,7 @@ dependencies = [
  "alondra-provider-codex",
  "alondra-provider-contract",
  "alondra-store",
+ "alondra-store-sqlite",
  "alondra-view-model",
  "anyhow",
  "axum",
@@ -951,6 +933,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "alondra-store-sqlite"
+version = "0.3.57"
+dependencies = [
+ "alondra-agent-application",
+ "alondra-core",
+ "alondra-daemon-engine-model",
+ "alondra-daemon-support",
+ "alondra-domain",
+ "alondra-domain-rules",
+ "alondra-engine-doubles",
+ "alondra-engine-ports",
+ "alondra-foundation",
+ "alondra-provider-codex",
+ "alondra-provider-contract",
+ "alondra-store",
+ "anyhow",
+ "libc",
+ "proptest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "alondra-system"
 version = "0.3.57"
 dependencies = [
@@ -1024,6 +1033,7 @@ dependencies = [
  "alondra-github-gh",
  "alondra-host",
  "alondra-process-group",
+ "alondra-store-sqlite",
  "alondra-system",
  "alondra-view-model",
  "alondra-views",

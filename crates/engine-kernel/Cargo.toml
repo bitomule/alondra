@@ -6,7 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-test-hooks = ["dep:alondra-engine-doubles", "dep:tempfile", "alondra-daemon-engine-machine/test-hooks", "alondra-daemon-engine-model/test-hooks", "alondra-daemon-engine-store/test-hooks", "alondra-daemon-support/test-hooks"]
+test-hooks = ["dep:alondra-engine-doubles", "dep:tempfile", "alondra-daemon-engine-machine/test-hooks", "alondra-daemon-engine-model/test-hooks", "alondra-daemon-support/test-hooks"]
 
 [dependencies]
 alondra-engine-doubles = { workspace = true, optional = true }
@@ -17,7 +17,6 @@ alondra-host.workspace = true
 alondra-domain-rules.workspace = true
 alondra-daemon-engine-machine.workspace = true
 alondra-daemon-engine-model.workspace = true
-alondra-daemon-engine-store.workspace = true
 alondra-daemon-support.workspace = true
 alondra-domain.workspace = true
 alondra-foundation.workspace = true
@@ -37,7 +36,7 @@ tokio.workspace = true
 alondra-daemon-engine-machine = { workspace = true, features = ["test-hooks"] }
 p256 = { version = "0.14.0", features = ["ecdsa", "pem", "pkcs8"] }
 alondra-daemon-engine-model = { workspace = true, features = ["test-hooks"] }
-alondra-daemon-engine-store = { workspace = true, features = ["test-hooks"] }
+alondra-store-sqlite = { workspace = true, features = ["test-hooks"] }
 alondra-daemon-support = { workspace = true, features = ["test-hooks"] }
 proptest.workspace = true
 tempfile.workspace = true

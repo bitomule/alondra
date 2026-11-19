@@ -1,5 +1,6 @@
 //! A batch's confirmed domain mutations reference the semantic receipts written by that same
 //! transaction. Admission of a tool or loss of its reply is never substituted for this proof.
+pub use alondra_engine_ports::journal::batch::{is_unconfirmed, refused_before_any_effect, TOOL_REFUSALS, BatchCommand, BatchEffectRef, BatchReceiptRef, BatchReport};
 use super::*;
 
 pub(super) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS orchestrator_batch_runs(run TEXT PRIMARY KEY,session TEXT,data_epoch TEXT NOT NULL,selection TEXT CHECK(selection IS NULL OR json_valid(selection)),ended INTEGER NOT NULL DEFAULT 0 CHECK(ended IN(0,1)));\
@@ -9,32 +10,6 @@ CREATE TABLE IF NOT EXISTS orchestrator_batch_reports(run TEXT NOT NULL REFERENC
 CREATE TABLE IF NOT EXISTS orchestrator_tool_operations(run TEXT NOT NULL REFERENCES orchestrator_batch_runs(run),call TEXT NOT NULL,kind TEXT NOT NULL,digest BLOB NOT NULL CHECK(length(digest)=32),request TEXT NOT NULL CHECK(json_valid(request)),state TEXT NOT NULL CHECK(state IN('started','succeeded','uncertain')),result TEXT,error TEXT,PRIMARY KEY(run,call));\
 CREATE TABLE IF NOT EXISTS orchestrator_batch_decisions(run TEXT PRIMARY KEY REFERENCES orchestrator_batch_runs(run),target TEXT NOT NULL CHECK(target IN('discarded','retryable')));";
 
-/// What only the orchestrator's tools answer, before they change anything.
-const TOOL_REFUSALS: &[&str] = &[
-    "node_paused", "task_closed", "model_is_binding", "task_moving", "usage_exhausted", "disk_low",
-    "account_unavailable", "model_unavailable", "unsupported_capability", "workspace_untrusted", "main_checkout",
-    "session_unreachable", "native_session_required", "selection_transition_required",
-];
-
-/// The domain's rules refuse before they commit, so such a call is settled and nothing is left to
-/// reconcile, except `delivery_uncertain`. Any code not known here leaves its effects unknown.
-pub fn refused_before_any_effect(code: Option<&str>) -> bool {
-    code.is_some_and(|code| code != "delivery_uncertain" && (alondra_domain_rules::INTERNAL_CODES.contains(&code) || TOOL_REFUSALS.contains(&code)))
-}
-
-fn error_code(error: Option<&str>) -> Option<String> {
-    error.and_then(|error| serde_json::from_str::<DomainError>(error).ok()).map(|error| error.code)
-}
-
-/// An operation that is neither done nor refused before it changed anything.
-pub fn is_unconfirmed(operation: &(String, String, String, Option<String>, Option<String>)) -> bool {
-    match operation.2.as_str() {
-        "succeeded" => false,
-        "uncertain" => !refused_before_any_effect(error_code(operation.4.as_deref()).as_deref()),
-        _ => true,
-    }
-}
-
 const OPERATION_BYTES: i64 = 32 * 1024 * 1024;
 const OUTCOME_BYTES: usize = 512 * 1024;
 const OUTCOME_RESERVE: i64 = 512;
@@ -43,43 +18,13 @@ fn operation_capacity(conn: &Connection, run: &str) -> rusqlite::Result<(i64, i6
     conn.query_row("SELECT count(*),coalesce(sum(length(CAST(request AS BLOB))+coalesce(length(CAST(result AS BLOB)),0)+coalesce(length(CAST(error AS BLOB)),0)),0),coalesce(sum(state='started'),0) FROM orchestrator_tool_operations WHERE run=?1", [run], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BatchReceiptRef {
-    pub actor: String,
-    pub command_id: String,
-    pub data_epoch: String,
-    pub digest: Vec<u8>,
-}
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BatchEffectRef {
-    pub run: String,
-    pub attempt: u64,
-    pub call: String,
-    pub command_id: String,
-    pub receipt_ref: BatchReceiptRef,
-    pub kind: String,
-    pub revision: u64,
-    pub changed: bool,
-}
 
-pub struct BatchCommand<'a> {
-    pub run: &'a str,
-    pub attempt: u64,
-    pub call: &'a str,
-}
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BatchReport {
-    pub kind: String,
-    pub input_consumed: bool,
-    pub turn_completed: bool,
-    pub native_turn: Option<String>,
-    pub failure: Option<String>,
-    pub public_result: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stop: Option<alondra_domain_rules::orchestrator_batch::BatchStop>,
-}
+
+
+
+
 
 pub(super) fn record(conn: &Connection, batch: &BatchCommand<'_>, actor: &str, envelope: &CommandEnvelope, digest: &[u8], outcome: &CommandOutcome) -> Result<()> {
     ensure!(!conn.is_autocommit(), "a batch effect is recorded in its domain command transaction");

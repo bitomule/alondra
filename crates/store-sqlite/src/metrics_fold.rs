@@ -1,5 +1,6 @@
 //! What sessions spend, recorded as their turns end, and each ended task folded into one row of
 //! `task_metrics` that stays when the samples it came from are pruned (`model_metrics.sql`).
+pub use alondra_engine_ports::journal::metrics::{Spent};
 use super::DomainStore;
 use alondra_core::Millis;
 use alondra_domain_rules::Feedback;
@@ -17,19 +18,7 @@ pub const SAMPLES_MS: i64 = 7 * DAY_MS;
 /// How long each ended task keeps its own row before it is added into its week.
 pub const TASKS_MS: i64 = 90 * DAY_MS;
 
-/// What a session reported as one of its turns ended.
-#[derive(Clone, Debug)]
-pub struct Spent<'a> {
-    pub session_id: &'a str,
-    /// Fixed by the session's first report: a session without a task (the orchestrator, or a node
-    /// no task was known for) is added up by day as it spends instead of folded.
-    pub task_id: Option<&'a str>,
-    pub role: Role,
-    pub provider: &'a str,
-    pub usage: &'a [Usage],
-    pub steps: StepCounts,
-    pub at: Millis,
-}
+
 
 impl DomainStore {
     /// What a task's sessions reported spending, in micros, by session, and the total its last fold

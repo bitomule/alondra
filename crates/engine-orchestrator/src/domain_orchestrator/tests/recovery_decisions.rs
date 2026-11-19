@@ -837,7 +837,7 @@ async fn settled_launch_and_limit_failures_stay_automatic_after_restart() {
             save(&f.executor.home, &runtime).unwrap();
             restarted.tick().await.unwrap();
             assert!(restarted.domain.read().state().requests[&"automatic".into()].closed);
-            rusqlite::Connection::open(crate::domain_database_migration::active_path(
+            rusqlite::Connection::open(crate::domain_store::active_path(
                 &f.executor.home,
             ))
             .unwrap()

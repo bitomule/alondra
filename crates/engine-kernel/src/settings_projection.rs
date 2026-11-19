@@ -1,4 +1,5 @@
-use crate::domain_store::provider_settings::{PendingProjection, ProjectionIdentity, committed, prepare, read_optional, recover_store, replace};
+use crate::domain_store::provider_settings::{PendingProjection, ProjectionIdentity, read_optional};
+use alondra_daemon_engine_model::options::{prepare_pending, replace};
 use crate::domain_store::{Attached, StoreError};
 use crate::domain_runtime::DomainRuntime;
 use crate::locks::Poisonable as _;
@@ -7,8 +8,7 @@ use anyhow::Result;
 use std::path::Path;
 
 pub fn recover(domain: &DomainRuntime, home: &Path) -> Result<()> {
-    let mut store = domain.store.lock_or_exit("the domain store");
-    recover_store(&mut store, home)
+    domain.store.lock_or_exit("the domain store").recover_settings(home)
 }
 
 pub fn apply(domain: &DomainRuntime, home: &Path, actor: &Actor, command: CommandEnvelope, previous: Option<String>, target: String, recorded: Vec<Command>) -> Result<(), StoreError> {
@@ -35,18 +35,18 @@ pub fn apply_authorized(domain: &DomainRuntime, home: &Path, actor: &Actor, comm
             return Err(DomainError::new("stale_config", "The options file changed; refresh Settings before saving").into());
         }
         transaction.record_settings_projection(&projection.identity)?;
-        prepare(home, &projection)?;
+        prepare_pending(home, &serde_json::to_vec(&projection)?)?;
         prepare_accounts(transaction.domain_state())?;
         if read_optional(&alondra_core::options::path_in(home))? != projection.previous {
             return Err(DomainError::new("stale_config", "The options file changed during account preparation; preserve the external edit and reconcile Settings").into());
         }
         replace(&alondra_core::options::path_in(home), projection.target.as_bytes())?;
         Ok(())
-    }, |store| recover_store(store, home));
+    }, |store| store.recover_settings(home));
     match result {
         Ok(_) => Ok(()),
         Err(why) => {
-            let was_committed = { let store = domain.store.lock_or_exit("the domain store"); committed(&store, &identity)? };
+            let was_committed = { let store = domain.store.lock_or_exit("the domain store"); store.settings_committed(&identity)? };
             recover(domain, home)?;
             if was_committed { Ok(()) } else { Err(why) }
         }
@@ -55,6 +55,7 @@ pub fn apply_authorized(domain: &DomainRuntime, home: &Path, actor: &Actor, comm
 
 #[cfg(test)]
 mod tests {
+    use alondra_store_sqlite::AsSqlite as _;
     use super::*;
     use std::{fs, path::PathBuf};
     use alondra_daemon_engine_model::options::{PENDING, pending, read_options};
@@ -104,7 +105,7 @@ mod tests {
         f.runtime.own(scope, |transaction| {
             transaction.stage_command(&user(), command, Attached::None)?;
             transaction.record_settings_projection(&projection.identity)?;
-            prepare(&f.home, projection)?;
+            alondra_daemon_engine_model::options::prepare_pending(&f.home, &serde_json::to_vec(projection)?)?;
             replace(&alondra_core::options::path_in(&f.home), projection.target.as_bytes())?;
             if !commit { return Err(StoreError::Storage(anyhow::anyhow!("simulated crash after rename before SQL commit"))); }
             Ok(())
@@ -145,9 +146,9 @@ mod tests {
         stage_file(&f, &command, &projection, true).unwrap();
         {
             let store = f.runtime.store.lock().unwrap();
-            store.conn.execute("DELETE FROM command_bodies WHERE revision IN (SELECT revision FROM command_audit WHERE command_id=?1)", [&projection.identity.command_id]).unwrap();
-            store.conn.execute("DELETE FROM command_audit WHERE command_id=?1", [&projection.identity.command_id]).unwrap();
-            store.conn.execute("DELETE FROM semantic_receipts WHERE command_id=?1", [&projection.identity.command_id]).unwrap();
+            store.sqlite().conn.execute("DELETE FROM command_bodies WHERE revision IN (SELECT revision FROM command_audit WHERE command_id=?1)", [&projection.identity.command_id]).unwrap();
+            store.sqlite().conn.execute("DELETE FROM command_audit WHERE command_id=?1", [&projection.identity.command_id]).unwrap();
+            store.sqlite().conn.execute("DELETE FROM semantic_receipts WHERE command_id=?1", [&projection.identity.command_id]).unwrap();
         }
         drop(f.runtime);
         let reopened = crate::domain_runtime::DomainRuntime::open_unwired(&f.home).unwrap();
@@ -173,7 +174,7 @@ mod tests {
     fn the_committed_file_is_reconciled_before_the_owner_state_is_published() {
         let f = fixture(); let (command, projection) = change(&f);
         let home = f.home.clone(); let target = projection.target.clone();
-        let database = f.runtime.store.lock().unwrap().conn.path().unwrap().to_owned();
+        let database = f.runtime.store.lock().unwrap().sqlite().conn.path().unwrap().to_owned();
         let (sent, received) = std::sync::mpsc::channel();
         f.runtime.before_owner_publish(move || {
             assert_eq!(read_options(&home).unwrap().as_deref(), Some(target.as_str()));
@@ -203,7 +204,7 @@ mod tests {
         let (command, mut projection) = change(&f);
         stage_file(&f, &command, &projection, true).unwrap();
         projection.identity.command_digest[0] ^= 1;
-        assert!(!committed(&f.runtime.store.lock().unwrap(), &projection.identity).unwrap());
+        assert!(!f.runtime.store.lock().unwrap().settings_committed(&projection.identity).unwrap());
         recover(&f.runtime, &f.home).unwrap();
         assert_eq!(read_options(&f.home).unwrap().as_deref(), Some(projection.target.as_str()));
     }

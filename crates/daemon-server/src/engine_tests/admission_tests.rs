@@ -145,7 +145,7 @@ fn a_home_with_the_previous_gate_file_starts_with_its_pauses_under_the_new_name(
     }).to_string()).unwrap();
     std::fs::write(home.0.join("fleet-gate.next"), "{").unwrap();
 
-    alondra_daemon_engine::home_renames::apply(&home.0, &[]).unwrap();
+    alondra_daemon_engine::home_renames::apply(&home.0, &[], &alondra_store_sqlite::Sqlite).unwrap();
 
     assert!(!home.0.join(PREVIOUS_FILE).exists() && !home.0.join("fleet-gate.next").exists());
     assert!(home.0.join(FILE).exists());

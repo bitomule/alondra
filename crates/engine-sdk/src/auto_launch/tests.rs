@@ -1,3 +1,4 @@
+use alondra_store_sqlite::AsSqlite as _;
 use crate::gate::GateOf as _;
 use crate::sdk_owner::SdkOwners as _;
 use crate::live::LiveOf as _;
@@ -132,7 +133,7 @@ pub fn launches(f: &Fixture) -> usize {
 
 /// The prompt the task's last launch handed its Claude, as the store keeps it.
 fn prompt(f: &Fixture, task: &str) -> String {
-    let database = crate::domain_database_migration::active_path(&f.home);
+    let database = crate::domain_store::active_path(&f.home);
     rusqlite::Connection::open(database).unwrap().query_row(
         "SELECT i.body FROM lifecycle_dispatches d JOIN lifecycle_inputs i ON i.task_id=d.task_id AND i.input_id=d.input_id \
          WHERE d.task_id=?1 AND d.kind='launch' ORDER BY d.id DESC LIMIT 1", [task], |row| row.get(0)).unwrap()
@@ -179,7 +180,7 @@ async fn a_chain_of_three_tasks_starts_each_one_when_the_one_before_is_done() {
     pass(&f.domain, &f.home).await.unwrap();
     assert_eq!(launches(&f), 2);
     assert!(agent_of(&f, "f2").is_some());
-    let decisions = f.domain.store.lock().unwrap().model_decision_rows().unwrap();
+    let decisions = f.domain.store.lock().unwrap().sqlite().model_decision_rows().unwrap();
     let launches: Vec<_> = decisions.iter().filter(|row| row.1 == "launch").map(|row| (row.0.clone(), row.5.clone())).collect();
     assert_eq!(launches, [("f1".to_owned(), Some("A clear, mechanical change".to_owned())), ("f2".to_owned(), Some("A clear, mechanical change".to_owned()))]);
 }
@@ -425,7 +426,7 @@ async fn a_task_of_a_scheduled_request_needs_its_plan_and_takes_the_schedules_mo
 async fn a_task_left_without_a_plan_is_cancelled_saying_why() {
     let f = world();
     create(&f, "old", &[], Some(&plan(&f, "app/old")));
-    f.domain.store.lock().unwrap().forget_launch_plan(&"old".into()).unwrap();
+    f.domain.store.lock().unwrap().sqlite_mut().forget_launch_plan(&"old".into()).unwrap();
     recover(&f.domain).unwrap();
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("old")].state, TaskState::Cancelled);
     assert_eq!(f.domain.store.lock().unwrap().cancel_reasons().unwrap()[&TaskId::from("old")], PLANLESS);
@@ -632,7 +633,7 @@ async fn a_task_with_no_launch_plan_cannot_be_reopened_because_nothing_could_sta
     let f = world();
     create(&f, "f1", &[], Some(&plan(&f, "app/f1")));
     command(&f.domain, Actor::Orchestrator { generation: 0 }, Command::CancelTask { task_id: "f1".into(), reason: None });
-    f.domain.store.lock().unwrap().forget_launch_plan(&"f1".into()).unwrap();
+    f.domain.store.lock().unwrap().sqlite_mut().forget_launch_plan(&"f1".into()).unwrap();
     let state = f.domain.state().unwrap();
     let refused = f.domain.execute(&Actor::Orchestrator { generation: 0 }, &CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "reopen-planless".into(),

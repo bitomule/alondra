@@ -16,7 +16,7 @@ impl Home {
     }
 
     fn database(&self) -> Connection {
-        Connection::open(crate::domain_database_migration::active_path(&self.0)).unwrap()
+        Connection::open(crate::domain_store::active_path(&self.0)).unwrap()
     }
 
     /// What an older daemon saved: the task kept waiting although its dependency is over.

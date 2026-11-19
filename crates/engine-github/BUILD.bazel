@@ -65,6 +65,7 @@ low_opt_rust_test(
         "//crates/daemon-support:daemon_support_test_hooks",
         "//crates/engine-doubles:engine_doubles",
         "//crates/engine-kernel:engine_kernel_test_hooks",
+        "//crates/store-sqlite:store_sqlite_test_hooks",
         "//crates/github-gh:github_gh",
     ],
 )

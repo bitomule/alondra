@@ -30,7 +30,7 @@ use alondra_daemon_engine::{claude_access, domain_orchestrator_reads, host_fixtu
 use alondra_daemon_support::watcher;
 #[cfg(any(test, feature = "test-hooks"))]
 use alondra_engine_admission::{admission, machine_watch};
-pub use alondra_engine_kernel::{domain_database_migration, domain_runtime, domain_store, sdk_backend};
+pub use alondra_engine_kernel::{domain_runtime, domain_store, sdk_backend};
 
 pub mod account_move;
 pub mod auto_launch;

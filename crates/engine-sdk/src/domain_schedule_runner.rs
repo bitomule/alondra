@@ -821,6 +821,7 @@ pub async fn run(
 
 #[cfg(any(test, feature = "test-hooks"))]
 pub mod tests {
+    use alondra_store_sqlite::AsSqlite as _;
     use alondra_engine_admission::AdmissionOf as _;
     use crate::sdk_owner::SdkOwners as _;
     use super::*;
@@ -1417,7 +1418,7 @@ pub mod tests {
     /// was cancelled.
     pub fn leave_launch_waiting(domain: &DomainRuntime, run: &str) {
         let store = domain.store.lock().unwrap();
-        let conn = store.conn_for_test();
+        let conn = store.sqlite().conn_for_test();
         let triggers: Vec<(String, String)> = conn
             .prepare("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND name IN ('schedule_run_result_transition','schedule_launch_transition')")
             .unwrap()

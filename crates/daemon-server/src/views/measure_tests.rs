@@ -24,7 +24,7 @@ async fn measure_real_domain_views() {
     std::fs::copy(&source, home.join("domain.db")).unwrap();
     std::fs::set_permissions(home.join("domain.db"), std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
     let opened = Instant::now();
-    let daemon = crate::domain_bootstrap::DomainDaemon::open(&home).unwrap();
+    let daemon = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
     println!("open daemon: {:.1} ms", ms(opened));
     let client = daemon.client();
     let state = client.domain.state().unwrap();
@@ -152,7 +152,7 @@ async fn measure_background_per_change() {
     std::fs::create_dir_all(&home).unwrap();
     std::fs::copy(&source, home.join("domain.db")).unwrap();
     std::fs::set_permissions(home.join("domain.db"), std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
-    let daemon = crate::domain_bootstrap::DomainDaemon::open(&home).unwrap();
+    let daemon = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
     let client = daemon.client();
     let state = client.domain.state().unwrap();
     let index = alondra_domain_rules::ReadIndex::build(&state);

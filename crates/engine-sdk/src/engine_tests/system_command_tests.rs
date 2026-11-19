@@ -8,8 +8,8 @@ use alondra_core::usage::{Share, UsageReading, WindowKind, WindowReading};
 
 /// Runs `test` on a daemon whose store holds a done task with cards to compact.
 fn with_an_ended_task(test: impl FnOnce(&DomainRuntime)) {
-    let fixture = crate::domain_store::tests::Fixture::new();
-    drop(crate::domain_store::retention_fixtures::ended_task(&fixture));
+    let fixture = alondra_store_sqlite::tests::Fixture::new();
+    drop(alondra_store_sqlite::retention_fixtures::ended_task(&fixture));
     test(&crate::engine_tests::open_at(&fixture.0, &fixture.path()).unwrap());
 }
 

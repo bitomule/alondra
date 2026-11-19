@@ -1,5 +1,6 @@
 //! The model decisions `model_metrics.sql` keeps: the model, effort and approach each ended task
 //! is folded with.
+pub use alondra_engine_ports::journal::metrics::{Decision, DecisionKind};
 use super::DomainStore;
 use alondra_core::Millis;
 use alondra_domain_rules::ModelChooser;
@@ -8,39 +9,11 @@ use alondra_core::task_tags::TaskTags;
 use anyhow::Result;
 use rusqlite::{Transaction, params};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DecisionKind {
-    Launch,
-    Relaunch,
-    Send,
-}
 
-impl DecisionKind {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Launch => "launch",
-            Self::Relaunch => "relaunch",
-            Self::Send => "send",
-        }
-    }
-}
 
-#[derive(Clone, Debug)]
-pub struct Decision {
-    pub task_id: String,
-    pub request_id: String,
-    pub agent_id: Option<String>,
-    pub at: Millis,
-    pub kind: DecisionKind,
-    pub model: Option<String>,
-    pub effort: Option<String>,
-    pub approach: Option<Approach>,
-    pub chosen_by: ModelChooser,
-    pub reason: Option<String>,
-    pub title: String,
-    pub provider: Option<alondra_core::accounts::Provider>,
-    pub tags: Option<TaskTags>,
-}
+
+
+
 
 const ROUTING_COLUMNS: [(&str, &str, &str); 6] = [
     ("model_decisions", "provider", "TEXT"),

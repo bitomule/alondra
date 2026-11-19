@@ -86,7 +86,7 @@ pub(super) fn stage(
                 params![sender, id],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
-            .optional()?;
+            .optional().map_err(anyhow::Error::from)?;
         if let Some((previous, result)) = stored {
             if previous != ciphertext_digest {
                 return Err(DomainError::new(
@@ -108,7 +108,7 @@ pub(super) fn stage(
             });
         }
     }
-    let stored:Option<(Vec<u8>,String)>=conn.query_row("SELECT digest,result FROM semantic_receipts WHERE actor=?1 AND command_id=?2 AND data_epoch=?3",params![actor_key,envelope.command_id.0,envelope.data_epoch.0],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+    let stored:Option<(Vec<u8>,String)>=conn.query_row("SELECT digest,result FROM semantic_receipts WHERE actor=?1 AND command_id=?2 AND data_epoch=?3",params![actor_key,envelope.command_id.0,envelope.data_epoch.0],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(anyhow::Error::from)?;
     if let Some((previous, result)) = stored {
         if previous != digest {
             return Err(DomainError::new(
@@ -155,7 +155,7 @@ pub(super) fn stage(
     if let Command::TellNode { task_id, from_user: true, .. } = &envelope.command
         && !state.is_scheduled_task(task_id)
         && conn.query_row("SELECT EXISTS(SELECT 1 FROM task_closings WHERE task_id=?1 AND rm_started_at IS NOT NULL)",
-            [&task_id.0], |row| row.get::<_, bool>(0))?
+            [&task_id.0], |row| row.get::<_, bool>(0)).map_err(anyhow::Error::from)?
     {
         return Err(DomainError::new("session_unreachable", "The task's session is being removed: nothing was sent. Send the work as a new request").into());
     }
@@ -492,7 +492,7 @@ fn stored_plan(conn: &Connection, task: &TaskId) -> Result<Option<LaunchPlan>> {
 fn queue_for_a_node(conn: &Connection, task: &TaskId, reopened: bool) -> std::result::Result<(), StoreError> {
     let planned: Option<(String, i64)> = conn
         .query_row("SELECT plan,at FROM task_launch_plans WHERE task_id=?1", [&task.0], |row| Ok((row.get(0)?, row.get(1)?)))
-        .optional()?;
+        .optional().map_err(anyhow::Error::from)?;
     let Some((plan, since)) = planned else {
         if reopened {
             return Err(DomainError::new("invalid_input", format!(

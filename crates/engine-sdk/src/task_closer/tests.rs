@@ -1,3 +1,4 @@
+use alondra_store_sqlite::AsSqlite as _;
 use crate::live::LiveOf as _;
 use super::*;
 use crate::domain_store::model_metrics::{Decision, DecisionKind};
@@ -129,7 +130,7 @@ async fn a_user_message_saved_before_removal_keeps_the_task_and_session_open() {
     rig.pass(T0 + MINUTE).await;
     assert_eq!(rig.sessions.removals(), 0);
     assert!(!rig.domain.state().unwrap().tasks[&TaskId::from("t")].over());
-    let mut reopened = crate::domain_store::DomainStore::open(&rig._home.0.join("domain.db")).unwrap();
+    let mut reopened = alondra_store_sqlite::DomainStore::open(&rig._home.0.join("domain.db")).unwrap();
     let state = reopened.load().unwrap();
     assert_eq!(state.tasks[&TaskId::from("t")].pending_user_inputs.len(), 1, "the obligation survives reopening SQLite");
     assert!(!reopened.claim_task_removal(&"t".into(), T0 + MINUTE).unwrap());
@@ -271,7 +272,7 @@ async fn recording_a_closed_node_failure_keeps_its_receipt_and_stops_after_three
         targets: text(), is_final: true, nothing_to_review: false, card: CardSpec::delivery("Review the other result", &[], true),
     });
     command(&rig.domain, user(), "accept-other", Command::AcceptDelivery { presentation_id: "other-final".into(), targets: text() });
-    let database = crate::domain_database_migration::active_path(&rig._home.0);
+    let database = crate::domain_store::active_path(&rig._home.0);
     let connection = rusqlite::Connection::open(database).unwrap();
     connection.execute_batch(r#"CREATE TRIGGER refuse_node_end BEFORE INSERT ON task_history
         WHEN NEW.task_id = 't' AND NEW.state = 'done'
@@ -310,7 +311,7 @@ async fn recording_a_closed_node_failure_keeps_its_receipt_and_stops_after_three
 async fn an_answered_leave_survives_a_failed_receipt_and_a_restart_without_asking_again() {
     let mut rig = Rig::new(thirty_minutes());
     failed_three_times(&rig).await;
-    let database = crate::domain_database_migration::active_path(&rig._home.0);
+    let database = crate::domain_store::active_path(&rig._home.0);
     let connection = rusqlite::Connection::open(database).unwrap();
     connection.execute_batch(r#"CREATE TRIGGER refuse_node_end BEFORE INSERT ON command_audit
         WHEN json_extract(NEW.command, '$.kind') = 'record_node_end'
@@ -546,7 +547,7 @@ async fn a_cancelled_tasks_busy_node_has_its_turn_cut_is_closed_once_idle_and_ge
 async fn a_task_cancelled_before_this_change_is_left_alone() {
     let rig = Rig::new(thirty_minutes());
     command(&rig.domain, user(), "cancel", Command::CancelTask { task_id: "t".into(), reason: None });
-    rig.domain.store.lock().unwrap().conn_for_test().execute("DELETE FROM task_wrap_ups", []).unwrap();
+    rig.domain.store.lock().unwrap().sqlite().conn_for_test().execute("DELETE FROM task_wrap_ups", []).unwrap();
     rig.domain.reload();
     assert!(!rig.task().wrap_up.close_cancelled);
     rig.pass(T0).await;
@@ -1194,7 +1195,7 @@ async fn a_cancelled_task_without_a_node_is_cancelled_by_alondras_cleanup_receip
     assert!(rig.sessions.calls.lock().unwrap().is_empty(), "no node to close");
     assert!(rig.domain.store.lock().unwrap().launch_queue().unwrap().iter().all(|row| row.task_id.0 != "u"));
     assert_eq!(rig.task().state, TaskState::NotStarted, "the other task is untouched");
-    let journal: i64 = rig.domain.store.lock().unwrap().conn_for_test()
+    let journal: i64 = rig.domain.store.lock().unwrap().sqlite().conn_for_test()
         .query_row("SELECT count(*) FROM lifecycle_events WHERE task_id='u'", [], |row| row.get(0)).unwrap();
     assert_eq!(journal, 2, "finished and drained after the plan: the receipt came with the commit that cancelled it");
 }
@@ -1533,7 +1534,7 @@ impl UsersFolders {
 
     /// A row a daemon before this check wrote, straight into the store.
     fn stored_as_worktree_of(&self, domain: &DomainRuntime, task: &str, path: &std::path::Path) {
-        domain.store.lock().unwrap().conn.execute(
+        domain.store.lock().unwrap().sqlite().conn.execute(
             "INSERT INTO task_worktree_records(task_id,path,origin,branch,discard,end) VALUES(?1,?2,'inherited',NULL,0,NULL)",
             rusqlite::params![task, path.to_str().unwrap()],
         ).unwrap();
@@ -1600,7 +1601,7 @@ async fn stored_records_of_folders_that_are_no_worktree_are_ignored_and_the_task
     rig.assert_done(NodeEnd::Closed);
     assert_eq!(rig.task().worktrees[folders.projects.to_str().unwrap()].end, Some(alondra_domain_rules::WorktreeEnd::UsersOwn),
         "the projects root, a git repository, is left as the user's own");
-    let rows: i64 = rig.domain.store.lock().unwrap().conn
+    let rows: i64 = rig.domain.store.lock().unwrap().sqlite().conn
         .query_row("SELECT count(*) FROM task_worktree_records WHERE task_id='t'", [], |row| row.get(0)).unwrap();
     assert_eq!(rows, 2, "no stored row is deleted for them");
     assert!(folders.untouched());
@@ -1661,7 +1662,7 @@ async fn a_persisted_recovery_card_after_cleanup_is_retired_without_resuming_the
         reason: "The host stopped".into(), quiet: false });
     let state = domain.state().unwrap();
     let card = state.interactions.values().find(|card| alondra_domain_rules::retakes(card)).unwrap().id.clone();
-    domain.store.lock().unwrap().conn_for_test().execute(
+    domain.store.lock().unwrap().sqlite().conn_for_test().execute(
         "UPDATE task_wrap_ups SET cleaned_at=?1 WHERE task_id='closing'", [state.revision as i64]).unwrap();
     drop(domain);
     let domain = crate::engine_tests::open(&home.0).unwrap();

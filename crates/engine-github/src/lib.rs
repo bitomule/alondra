@@ -13,14 +13,14 @@ extern crate alondra_foundation;
 use alondra_daemon_support::auth;
 
 use alondra_daemon_engine_model::options;
-#[cfg(any(test, feature = "test-hooks"))]
-use alondra_engine_kernel::domain_database_migration;
 use alondra_engine_kernel::{domain_runtime, domain_store};
 
 /// A runtime that tells no other subsystem of its commits: this crate's tests need none of them.
 #[cfg(any(test, feature = "test-hooks"))]
 fn unwired(home: &std::path::Path) -> anyhow::Result<domain_runtime::DomainRuntime> {
-    domain_runtime::DomainRuntime::open_unwired_at(home, &domain_database_migration::active_path(home))
+    #[cfg(test)]
+    alondra_engine_kernel::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
+    domain_runtime::DomainRuntime::open_unwired_at(home, &alondra_engine_ports::journal::active_path(home))
 }
 
 pub mod domain_github;

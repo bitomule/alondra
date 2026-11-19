@@ -14,7 +14,7 @@ from musts_scopes import matches, parse_checks
 MAC_CHECKS = {
     "crate-agent-runtime", "crate-alondra", "crate-alondrad", "crate-core", "crate-daemon-engine",
     "crate-domain-rules", "crate-view-model", "crate-views",
-    "crate-daemon-engine-machine", "crate-daemon-engine-model", "crate-daemon-engine-store", "crate-engine-admission", "crate-engine-github", "crate-engine-live", "crate-engine-mcp", "crate-engine-worktrees", "crate-engine-kernel", "crate-engine-ports", "crate-system", "crate-host", "crate-engine-doubles", "crate-github-gh", "crate-engine-orchestrator", "crate-engine-sdk", "crate-machine-model",
+    "crate-daemon-engine-machine", "crate-daemon-engine-model", "crate-store-sqlite", "crate-engine-admission", "crate-engine-github", "crate-engine-live", "crate-engine-mcp", "crate-engine-worktrees", "crate-engine-kernel", "crate-engine-ports", "crate-system", "crate-host", "crate-engine-doubles", "crate-github-gh", "crate-engine-orchestrator", "crate-engine-sdk", "crate-machine-model",
     "crate-daemon-support", "crate-process-group", "crate-provider-claude",
     "crate-provider-codex", "local-daemon", "build-from-source",
     "sourcekit-lsp-workspace", "deploy-brew", "deploy-apple", "apple-daemon-process",
@@ -58,8 +58,12 @@ def manual_reviews(text):
     return reviews
 
 
-def manifest(text):
-    """Accept the manifest's current block syntax; refuse extensions instead of losing checks."""
+def manifest(text, current=None):
+    """Accept the manifest's current block syntax; refuse extensions instead of losing checks.
+
+    With `current`, the base's manifest drops the checks `current` no longer has: removing or
+    renaming one changes MUSTS.yml, which selects every current check, and its old targets may be gone.
+    """
     grammar = re.compile(
         r'version: 1|checks:|  [\w-]+:|    uses: (?:bazel/test|agent)|    paths:|    with:|'
         r'      targets:|      facts:|      - "[^"\\#\n]+"|        - "[^"\\\n]+"|        - //[^\s#]+'
@@ -80,6 +84,8 @@ def manifest(text):
     reviews = manual_reviews(text)
     if not checks or set(checks) | set(reviews) != set(names):
         raise ValueError("Every MUSTS check must be a Bazel check or an explicit manual review")
+    if current is not None:
+        checks = {name: spec for name, spec in checks.items() if name in current}
     if unknown := set(checks) - MAC_CHECKS - LINUX_CHECKS - LOCAL_ONLY_CHECKS:
         raise ValueError(f"Assign a CI runner to new MUSTS checks: {sorted(unknown)}")
     for name, spec in checks.items():
@@ -179,7 +185,7 @@ def select(args):
     current_text = Path("MUSTS.yml").read_text()
     previous_text = command("git", "show", f"{ancestor}:MUSTS.yml").decode()
     current = manifest(current_text)
-    previous = manifest(previous_text)
+    previous = manifest(previous_text, current)
     current, previous, requested = manual_scope(event_name, event, current, previous)
     probe = event_name == "workflow_dispatch"
     matrix = plan(current, previous, paths, force_all=probe)

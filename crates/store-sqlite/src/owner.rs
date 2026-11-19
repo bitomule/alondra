@@ -1,6 +1,7 @@
 //! The one SQL transaction that stages domain commands, provider observations and the lifecycle
 //! journal, and commits them together. Only `LifecycleTransaction::commit` commits it, and only
 //! that commit issues the store's seals.
+pub use alondra_engine_ports::journal::owner::{Refuse, carried_refusal, refuse_next, Adoption, ObservationRefusal, OwnerCommit, OwnerDraft, Preparer, StagedOutcome};
 use super::*;
 use alondra_agent_application::{InputMetadata, ObservationNormalizer, ObservedFact};
 use alondra_domain::{RuntimeFact, TaskLifecycle, Trigger};
@@ -13,30 +14,16 @@ use alondra_store::{
     ObservationAcceptance, OwnerGrant, UnresolvedCommand, UnresolvedControl,
 };
 
-/// The provider's part of a dispatch: its metadata for an input, and the exact command it sends.
-pub trait Preparer {
-    fn stage_input(&mut self, metadata: InputMetadata<'_, '_>) -> std::result::Result<(), AdapterError>;
-    fn prepare(&mut self, attempt: &DispatchAttempt, metadata: InputMetadata<'_, '_>) -> std::result::Result<PreparedCommand, AdapterError>;
-}
 
-/// What a daemon takes over: claimed commands to reconcile, and controls whose preparation
-/// recorded no sendable bytes. Only an ended host lets those unrecorded controls be rejected.
-pub struct Adoption {
-    pub stamp: ExecutionStamp,
-    pub directory: String,
-    pub commands: Vec<UnresolvedCommand>,
-    pub controls: Vec<UnresolvedControl>,
-    pub unrecorded_controls: Vec<i64>,
-    pub unrecorded_commands: Vec<i64>,
-    pub receipt_candidates: Vec<alondra_store::ReceiptCandidate>,
-}
+
+
 
 /// Every step runs inside the journal's guard: an error or a panic in any of them poisons the
 /// whole transaction, even when the caller catches it, so it can only roll back.
 pub struct OwnerTransaction<'connection> {
     conn: &'connection Connection,
     protected: &'connection alondra_engine_ports::worktrees::WorktreeRules,
-    journal: LifecycleTransaction<'connection>,
+    pub(crate) journal: LifecycleTransaction<'connection>,
     draft: OwnerDraft,
     /// What the host observed that moves the task's lifecycle and the domain refused to record,
     /// with why: the task's record no longer follows its Claude.
@@ -44,51 +31,13 @@ pub struct OwnerTransaction<'connection> {
     decisions: Option<Arc<dyn super::wording::SdkDecisions>>,
 }
 
-/// What the commands staged so far add up to. A later replay or no-op never takes back an
-/// earlier change, its notification or the outcome another command got.
-#[derive(Debug)]
-pub struct OwnerDraft {
-    pub state: Arc<DomainState>,
-    pub outcomes: Vec<StagedOutcome>,
-    pub domain_changed: bool,
-    pub schedule_changed: bool,
-    version: i64,
-}
 
-#[derive(Debug)]
-pub struct StagedOutcome {
-    pub command_id: CommandId,
-    pub outcome: CommandOutcome,
-    pub replayed: bool,
-}
 
-/// Exists only after the real SQL commit returned. Its seals stay inside until the runtime has
-/// published the committed state.
-#[derive(Debug)]
-pub struct OwnerCommit {
-    pub draft: OwnerDraft,
-    technical: Committed,
-}
-impl OwnerCommit {
-    /// Hands out the seals only once readers see exactly the state this transaction committed.
-    pub fn acknowledge(
-        self,
-        published: &ReadSnapshot,
-    ) -> std::result::Result<(OwnerDraft, Committed), StoreError> {
-        if !Arc::ptr_eq(published.state(), &self.draft.state) {
-            return Err(StoreError::Storage(anyhow::anyhow!(
-                "a committed owner transaction is acknowledged only after its state is published"
-            )));
-        }
-        Ok((self.draft, self.technical))
-    }
-}
 
-impl From<alondra_store::Error> for StoreError {
-    fn from(error: alondra_store::Error) -> Self {
-        Self::Storage(error.into())
-    }
-}
+
+
+
+
 /// A fact the domain records for an SDK execution, as its command carries it.
 fn observed(fact: &RuntimeFact) -> std::result::Result<RuntimeObservation, StoreError> {
     Ok(match fact {
@@ -110,28 +59,6 @@ fn observed(fact: &RuntimeFact) -> std::result::Result<RuntimeObservation, Store
         other => return Err(ObservationRefusal::Unrecordable(format!("the domain does not record {other:?} yet")).into()),
     })
 }
-/// What a test has the domain refuse, once, as it refuses what it cannot record.
-#[cfg(any(test, feature = "test-hooks"))]
-#[derive(Clone, Copy, PartialEq)]
-pub enum Refuse {
-    TurnEnd,
-    DecisionRequest,
-    InterruptAccepted,
-    /// The provider's adapter refuses the next observation, as one it cannot read.
-    Observation,
-}
-
-#[cfg(any(test, feature = "test-hooks"))]
-thread_local! {
-    static REFUSE: std::cell::Cell<Option<Refuse>> = const { std::cell::Cell::new(None) };
-}
-
-/// The next `what` this thread observes is refused.
-#[cfg(any(test, feature = "test-hooks"))]
-pub fn refuse_next(what: Refuse) {
-    REFUSE.with(|refuse| refuse.set(Some(what)));
-}
-
 /// The refusal the test asked for; the run that probes takes it.
 #[cfg(any(test, feature = "test-hooks"))]
 fn refused_for_test(command: &Command, probe: bool) -> Option<StoreError> {
@@ -141,14 +68,7 @@ fn refused_for_test(command: &Command, probe: bool) -> Option<StoreError> {
         Command::RecordInterruptAccepted { .. } => Refuse::InterruptAccepted,
         _ => return None,
     };
-    let refused = REFUSE.with(|refuse| {
-        let asked = refuse.get() == Some(what);
-        if asked && probe {
-            refuse.set(None);
-        }
-        asked
-    });
-    refused.then(|| DomainError::new("conflict", "the test refuses it").into())
+    alondra_engine_ports::journal::owner::take_refusal(what, probe).then(|| DomainError::new("conflict", "the test refuses it").into())
 }
 
 #[cfg(not(any(test, feature = "test-hooks")))]
@@ -156,18 +76,10 @@ fn refused_for_test(_: &Command, _: bool) -> Option<StoreError> {
     None
 }
 
-/// What this thread was asked to refuse, handed to a thread it starts, which refuses it instead.
-#[cfg(any(test, feature = "test-hooks"))]
-pub fn carried_refusal() -> impl FnOnce() + Send {
-    let what = REFUSE.with(|refuse| refuse.replace(None));
-    move || if let Some(what) = what { refuse_next(what) }
-}
-
 /// The adapter's refusal of an observation the test asked for, taken once.
 #[cfg(any(test, feature = "test-hooks"))]
 fn observation_refused_for_test() -> Option<StoreError> {
-    let asked = REFUSE.with(|refuse| refuse.get() == Some(Refuse::Observation) && refuse.replace(None).is_some());
-    asked.then(|| ObservationRefusal::Provider(alondra_agent_application::Error::Adapter(AdapterError::Storage("the test refuses it".into()))).into())
+    alondra_engine_ports::journal::owner::take_refusal(Refuse::Observation, true).then(|| ObservationRefusal::Provider(alondra_agent_application::Error::Adapter(AdapterError::Storage("the test refuses it".into()))).into())
 }
 
 #[cfg(not(any(test, feature = "test-hooks")))]
@@ -201,28 +113,9 @@ fn application_error(error: alondra_agent_application::Error) -> StoreError {
     }
 }
 
-/// Why the owner cannot record an observation, kept typed so that whether it is discarded is
-/// decided on its kind.
-#[derive(Debug)]
-pub enum ObservationRefusal {
-    Provider(alondra_agent_application::Error),
-    /// A fact the domain has no command for, or one that names what the task does not hold.
-    Unrecordable(String),
-}
-impl std::fmt::Display for ObservationRefusal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Provider(error) => write!(f, "provider observation refused: {error:?}"),
-            Self::Unrecordable(what) => write!(f, "provider observation refused: {what}"),
-        }
-    }
-}
-impl std::error::Error for ObservationRefusal {}
-impl From<ObservationRefusal> for StoreError {
-    fn from(refusal: ObservationRefusal) -> Self {
-        Self::Storage(refusal.into())
-    }
-}
+
+
+
 
 impl<'connection> OwnerTransaction<'connection> {
     pub fn domain_state(&self) -> &DomainState { &self.draft.state }
@@ -238,7 +131,7 @@ impl<'connection> OwnerTransaction<'connection> {
         aggregates: &'connection alondra_store::AggregateCache,
         scope: AuthorityScope,
     ) -> std::result::Result<Self, StoreError> {
-        let transaction = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+        let transaction = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate).map_err(anyhow::Error::from)?;
         let journal = LifecycleTransaction::attach_cached(transaction, scope, aggregates)?;
         let (state, version) = journal.inspect(|| {
             check_schema(conn)?;
@@ -331,7 +224,7 @@ impl<'connection> OwnerTransaction<'connection> {
     ) -> std::result::Result<ObservationAcceptance, StoreError> {
         self.stage_observation_with_identity(binding,owner_generation,batch,normalizer,home,probe,None)
     }
-    pub fn stage_observation_with_identity<N:ObservationNormalizer>(&mut self,binding:&ProviderBinding,owner_generation:u64,batch:&OrderedObservation,normalizer:&N,home:&std::path::Path,probe:bool,identity:Option<&alondra_daemon_engine_model::NativeAccountIdentity>)->std::result::Result<ObservationAcceptance,StoreError>{
+    pub fn stage_observation_with_identity<N:ObservationNormalizer>(&mut self,binding:&ProviderBinding,owner_generation:u64,batch:&OrderedObservation,normalizer:&N,home:&std::path::Path,probe:bool,identity:Option<&dyn alondra_engine_ports::journal::KnownIdentity>)->std::result::Result<ObservationAcceptance,StoreError>{
         if let Some(refusal) = observation_refused_for_test() {
             return Err(refusal);
         }
@@ -935,7 +828,7 @@ impl<'connection> OwnerTransaction<'connection> {
 
     /// The commit hands back the attempt; `false` when the control was revoked instead, an
     /// interrupt whose turn or work already ended. A permit some later commit made stale is refused.
-    pub fn require_native_identity(&self,binding:&ProviderBinding,expected:Option<&alondra_daemon_engine_model::NativeAccountIdentity>)->std::result::Result<(),StoreError>{
+    pub fn require_native_identity(&self,binding:&ProviderBinding,expected:Option<&dyn alondra_engine_ports::journal::KnownIdentity>)->std::result::Result<(),StoreError>{
         let Some(expected)=expected else{return Ok(())};
         let Some(provider)=alondra_core::accounts::Provider::from_driver(binding.driver()) else{return Ok(())};
         let id=alondra_daemon_engine_model::account_of(binding.credential());
@@ -951,7 +844,7 @@ impl<'connection> OwnerTransaction<'connection> {
         let safe=matches!(kind.as_str(),"interrupt"|"force_stop") || (kind=="respond" && argument.as_deref().and_then(|argument|serde_json::from_str::<serde_json::Value>(argument).ok()).and_then(|value|value.get("kind").and_then(serde_json::Value::as_str).map(str::to_owned)).is_some_and(|kind|matches!(kind.as_str(),"deny"|"decline")));
         if !safe{
             let expected=alondra_daemon_engine_model::NativeAccountIdentity::load(directory).map_err(|error|StoreError::Storage(anyhow::anyhow!("{error}")))?;
-            let binding=self.execution_binding(permit.execution())?;self.require_native_identity(&binding,expected.as_ref())?;
+            let binding=self.execution_binding(permit.execution())?;self.require_native_identity(&binding,expected.as_ref().map(|expected|expected as &dyn alondra_engine_ports::journal::KnownIdentity))?;
         }
         self.claim_control(permit)
     }
@@ -1002,21 +895,7 @@ impl<'connection> OwnerTransaction<'connection> {
     }
 }
 
-impl OwnerDraft {
-    fn record(&mut self, command: &Command, command_id: &CommandId, commit: Commit) {
-        let fresh = !commit.replayed && commit.outcome.changed;
-        if fresh {
-            self.state = commit.state;
-        }
-        self.domain_changed |= fresh;
-        self.schedule_changed |= fresh && super::schedule_command(command);
-        self.outcomes.push(StagedOutcome {
-            command_id: command_id.clone(),
-            outcome: commit.outcome,
-            replayed: commit.replayed,
-        });
-    }
-}
+
 
 impl DomainStore {
     /// Runs `stage` in one SQL transaction and commits it. Nothing is committed or cached when

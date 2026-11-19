@@ -123,6 +123,17 @@ class SelectionTests(unittest.TestCase):
         for path in ci.BOOTSTRAP:
             self.assertEqual(len(ci.plan(new, old, {path})["include"]), 2)
 
+    def test_a_check_renamed_by_a_pr_leaves_the_base_manifest_and_every_current_check_runs(self):
+        renamed = MANIFEST.replace("crate-domain:", "crate-domain-rules:")
+        old_text = MANIFEST.replace("crate-domain:", "crate-retired:")
+        with self.assertRaises(ValueError):
+            ci.manifest(old_text)
+        new = ci.manifest(renamed)
+        old = ci.manifest(old_text, new)
+        self.assertEqual(set(old), {"crate-alondrad"})
+        jobs = ci.plan(new, old, {"MUSTS.yml", "crates/domain/src/lib.rs"})["include"]
+        self.assertEqual({job["check"] for job in jobs}, {"crate-domain-rules", "crate-alondrad"})
+
     def test_manifest_refuses_unsupported_or_missing_checks_and_target_flags(self):
         invalid = [MANIFEST.replace("bazel/test", "agent"),
                    MANIFEST.replace('"crates/domain/**"', "[crates/domain/**]"),
