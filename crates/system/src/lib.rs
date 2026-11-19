@@ -14,7 +14,6 @@ pub mod claude_account;
 pub mod claude_trust;
 pub mod codex_account;
 pub mod codex_credentials;
-pub mod codex_login;
 pub mod disk;
 pub mod hook_socket;
 pub mod launch_worktree;
