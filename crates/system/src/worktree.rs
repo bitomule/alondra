@@ -124,7 +124,8 @@ async fn unpushed_commits(dir: &Path) -> Option<usize> {
     git(dir, &["rev-list", "--count", "HEAD", "--not", "--remotes"]).await?.parse().ok()
 }
 
-/// What a node would leave behind in its worktree: uncommitted files or commits no remote has.
+/// What a node would leave behind in its worktree: uncommitted files or commits no remote has
+/// and no [`LocalHome`] keeps.
 /// None when the node has no worktree of its own or it is clean.
 pub async fn leftovers(claude_home: &Path, session_id: &str) -> Option<String> {
     leftovers_in(&worktree_of(claude_home, session_id)?).await
@@ -133,7 +134,7 @@ pub async fn leftovers(claude_home: &Path, session_id: &str) -> Option<String> {
 pub async fn leftovers_in(dir: &Path) -> Option<String> {
     let dir = dir.to_path_buf();
     let changed = git(&dir, &["status", "--porcelain"]).await?.lines().count();
-    let unpushed: usize = git(&dir, &["rev-list", "--count", "HEAD", "--not", "--remotes"]).await?.parse().ok()?;
+    let unpushed = unpushed_commits(&dir).await?;
     let mut parts = vec![];
     if changed > 0 {
         parts.push(format!("{changed} uncommitted file(s)"));
@@ -868,6 +869,26 @@ mod tests {
         let refused = final_refusal_in(&DomainState::new("e"), &dir, &TaskId::from("t"), &text).await.expect("an untracked file is refused");
         assert_eq!(refused.code, "worktree_not_clean", "{}", refused.message);
         assert!(refused.message.contains("`notes.txt`") && !refused.message.contains("not pushed"), "{}", refused.message);
+    }
+
+    #[tokio::test]
+    async fn closing_the_node_of_a_repository_without_a_remote_keeps_only_uncommitted_files_back() {
+        let root = crate::test_support::Directory::new();
+        let dir = worktree_without_remote(&root);
+        assert_eq!(leftovers_in(&dir).await, None, "its commit stays in the task's branch");
+        std::fs::write(dir.join("notes.txt"), "draft").unwrap();
+        let left = leftovers_in(&dir).await.expect("an uncommitted file is kept back");
+        assert!(left.contains("1 uncommitted file(s)") && !left.contains("not pushed"), "{left}");
+    }
+
+    #[tokio::test]
+    async fn closing_the_node_of_a_repository_with_a_remote_keeps_unpushed_commits_back() {
+        let root = crate::test_support::Directory::new();
+        let dir = testing::task_worktree(&root, "t");
+        assert_eq!(leftovers_in(&dir).await, None);
+        run(&dir, &["commit", "-q", "--allow-empty", "-m", "local"]);
+        let left = leftovers_in(&dir).await.expect("an unpushed commit is kept back");
+        assert!(left.contains("1 commit(s) not pushed"), "{left}");
     }
 
     #[tokio::test]
