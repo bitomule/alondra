@@ -421,7 +421,6 @@ dependencies = [
  "alondra-foundation",
  "alondra-github-gh",
  "alondra-host",
- "alondra-provider-claude",
  "alondra-view-model",
  "alondra-views",
  "anyhow",

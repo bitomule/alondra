@@ -165,3 +165,7 @@ impl Cache {
         nodes
     }
 }
+
+#[cfg(test)]
+#[path = "node_rows_tests.rs"]
+mod tests;

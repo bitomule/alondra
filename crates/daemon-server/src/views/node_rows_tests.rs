@@ -46,7 +46,7 @@ impl Fixture {
         if count > 0 {
             let task: Task = serde_json::from_value(json!({
                 "id": "row-task", "request_id": "row-request", "agent_id": "node-00000",
-                "title": "Finished work", "state": "Done", "revision": 1, "started": true,
+                "title": "Finished work", "state": "done", "revision": 1, "started": true,
                 "review_prs": false, "final_presentation": null, "pr_id": null,
                 "dependencies": [], "stack": null, "documents": {}, "archived": false
             })).unwrap();
@@ -216,4 +216,56 @@ fn a_gap_in_report_history_uses_full_rows_instead_of_losing_unread_changes() {
     assert_eq!(fixture.delta(&before, Metric::NodeFullBuilds), 1);
     assert_eq!(fixture.delta(&before, Metric::AgentRows), 32);
     assert_eq!(changed.get("node-00007").unwrap().last_message.as_deref(), Some("This unread report must survive a history gap."));
+}
+
+/// What building the view of the nodes costs.
+struct Cost { rows: u64, leaves: u64, hashed_bytes: u64 }
+
+impl Cost {
+    fn of(fixture: &Fixture, before: &Totals) -> Self {
+        Self {
+            rows: fixture.delta(before, Metric::AgentRows),
+            leaves: fixture.delta(before, Metric::NodeLeafSerializations),
+            hashed_bytes: fixture.delta(before, Metric::HashBytes),
+        }
+    }
+
+    /// One changed report costs one row, one serialized component, and a share of the bytes the
+    /// full view hashes that is far below an eighth of them: the other 31 rows hash nothing.
+    fn within_one_row_budget(&self, full_view: &Cost) -> bool {
+        self.rows == 1 && self.leaves == 1 && self.hashed_bytes * 8 < full_view.hashed_bytes
+    }
+}
+
+fn changing_one_report(fixture: &Fixture, cache: &Cache) -> Cost {
+    fixture.result("node-00016", "The final report changed.");
+    let before = fixture.observation.totals();
+    fixture.gather(cache, Lang::En).digest(&fixture.observation, Serialization::Digest);
+    Cost::of(fixture, &before)
+}
+
+fn the_full_view_of_32_nodes(fixture: &Fixture) -> Cost {
+    let before = fixture.observation.totals();
+    fixture.gather(&Cache::default(), Lang::En).digest(&fixture.observation, Serialization::Digest);
+    Cost::of(fixture, &before)
+}
+
+#[test]
+fn one_changed_report_among_32_nodes_costs_one_row_and_none_of_the_other_bytes() {
+    let fixture = Fixture::new(32);
+    let cache = Cache::default();
+    let full_view = the_full_view_of_32_nodes(&fixture);
+    fixture.gather(&cache, Lang::En).digest(&fixture.observation, Serialization::Digest);
+    let changed = changing_one_report(&fixture, &cache);
+    assert_eq!(full_view.rows, 32);
+    assert!(changed.within_one_row_budget(&full_view));
+}
+
+#[test]
+fn rebuilding_every_row_for_one_changed_report_breaks_the_budget() {
+    let fixture = Fixture::new(32);
+    let full_view = the_full_view_of_32_nodes(&fixture);
+    let rebuilt_everything = changing_one_report(&fixture, &Cache::default());
+    assert_eq!(rebuilt_everything.rows, 32);
+    assert!(!rebuilt_everything.within_one_row_budget(&full_view));
 }

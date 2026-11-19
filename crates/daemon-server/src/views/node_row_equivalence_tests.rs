@@ -4,7 +4,7 @@ use serde_json::json;
 use std::sync::Arc;
 
 struct Fixture {
-    client: crate::client_routes::Client,
+    client: Arc<crate::client_routes::Client>,
     home: crate::test_support::Directory,
 }
 
@@ -51,14 +51,7 @@ impl Fixture {
     }
 
     fn context(&self, task: &str, tokens: u64) {
-        use alondra_provider_claude::ContextEvent;
-        let contexts = self.client.domain.contexts();
-        contexts.observed(&task.into(), ContextEvent::Answered {
-            tokens, cache: None, model: Some("fixture-model".into()),
-        }, 1_000);
-        contexts.observed(&task.into(), ContextEvent::Windows(vec![
-            ("fixture-model".into(), 200_000),
-        ]), 1_001);
+        self.client.domain.contexts().measured_for_test(&task.into(), "fixture-model", tokens, 200_000, 1_000);
     }
 
     fn equivalent(&self, state: DomainState, agent: &str,
@@ -146,7 +139,7 @@ fn indexed_node_rows_preserve_reported_work_and_localized_clocks() {
     let rows = fixture.equivalent(state.clone(), "reported", &BTreeMap::new(), &None);
     assert_ne!(rows[0].as_ref().unwrap().background_badge, rows[1].as_ref().unwrap().background_badge);
     for row in rows.into_iter().flatten() {
-        assert_eq!(row.project.as_deref(), Some("row-project"));
+        assert_eq!(row.project.as_deref(), Some("others"));
         assert_eq!(row.subagents.len(), 2);
         assert_eq!(row.workflows.len(), 1);
         assert_eq!(row.steps.len(), 3);

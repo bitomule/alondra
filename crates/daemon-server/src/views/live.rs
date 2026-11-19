@@ -2835,3 +2835,7 @@ mod tests {
         assert_eq!(spanish.parts[0].lines.last().map(String::as_str), Some("Medido hace 2 h"));
     }
 }
+
+#[cfg(test)]
+#[path = "node_row_equivalence_tests.rs"]
+mod node_row_equivalence_tests;

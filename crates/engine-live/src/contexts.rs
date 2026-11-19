@@ -96,6 +96,14 @@ impl Contexts {
         self.changes.record(task.clone());
     }
 
+    /// A conversation of `tokens` on `model`, whose window is `window`: what the driver's answer
+    /// and end of turn say, for tests that cannot link the adapter that names those events.
+    #[cfg(feature = "test-hooks")]
+    pub fn measured_for_test(&self, task: &TaskId, model: &str, tokens: u64, window: u64, at: Millis) {
+        self.observed(task, ContextEvent::Answered { tokens, cache: None, model: Some(model.into()) }, at);
+        self.observed(task, ContextEvent::Windows(vec![(model.into(), window)]), at + 1);
+    }
+
     pub fn forget(&self, task: &TaskId) {
         let mut contexts = self.lock();
         if contexts.remove(task).is_some() { self.changes.record(task.clone()); }

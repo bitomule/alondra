@@ -102,7 +102,6 @@ low_opt_rust_test(
     },
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
         "//crates/views:views",
-        "//crates/provider-claude:provider_claude",
         "//crates/daemon-engine:daemon_engine_test_hooks",
         "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
         "//crates/daemon-engine-store:daemon_engine_store_test_hooks",
