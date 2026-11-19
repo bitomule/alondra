@@ -9,6 +9,7 @@ use crate::locks::Poisonable as _;
 use crate::node_work::End;
 use alondra_view_model::RunOutcome;
 use alondra_core::{BackgroundItem, BackgroundKind, Millis, ToolInFlight};
+use alondra_foundation::changes::{Changes, Cursor, Delta};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -356,9 +357,20 @@ pub struct Reports {
     connections: std::sync::atomic::AtomicU64,
     started: tokio::sync::Notify,
     pub changed: LiveChanges,
+    changes: Changes<String>,
 }
 
 impl Reports {
+    pub fn change_cursor(&self) -> Cursor {
+        let _sessions = self.sessions.lock_or_exit("the node reports");
+        self.changes.cursor()
+    }
+
+    pub fn changes_since(&self, cursor: &Cursor) -> Delta<String> {
+        let _sessions = self.sessions.lock_or_exit("the node reports");
+        self.changes.since(cursor)
+    }
+
     pub fn apply(&self, envelope: Envelope, now: Millis) {
         self.apply_on(envelope, now);
         self.changed.publish();
@@ -371,17 +383,19 @@ impl Reports {
         session.last_event_at = Some(now);
         if let Report::SessionStart { version, cwd, launch_key } = report {
             if let Some(key) = launch_key {
-                self.launches.lock_or_recover("the launch keys").insert(key, id);
+                self.launches.lock_or_recover("the launch keys").insert(key, id.clone());
             }
             session.version = Some(version);
             session.cwd = cwd;
             session.started_at = Some(now);
             session.ended = false;
+            self.changes.record(id);
             drop(sessions);
             self.started.notify_waiters();
             return;
         }
         session.record(report, now);
+        self.changes.record(id);
     }
 
     /// What a node's Agent SDK host observed, as the SDK gave it, and the steps of the turn it
@@ -391,6 +405,7 @@ impl Reports {
         let session = sessions.entry(session_id.to_owned()).or_default();
         session.last_event_at = Some(now);
         let steps = crate::sdk_live::observe(session, message, now);
+        self.changes.record(session_id.to_owned());
         drop(sessions);
         self.changed.publish();
         steps
@@ -401,6 +416,7 @@ impl Reports {
         let session = sessions.entry(session_id.to_owned()).or_default();
         session.last_event_at = Some(now);
         crate::codex_live::observe(session, message, now);
+        self.changes.record(session_id.to_owned());
         drop(sessions);
         self.changed.publish();
     }
@@ -408,6 +424,7 @@ impl Reports {
     pub fn restore_codex_scope(&self,session_id:&str,scope:alondra_provider_codex::LiveScope,now:Millis){
         let mut sessions=self.sessions.lock_or_exit("the node reports");
         crate::codex_live::restore_scope(sessions.entry(session_id.to_owned()).or_default(),scope,now);
+        self.changes.record(session_id.to_owned());
         drop(sessions);self.changed.publish();
     }
 
@@ -416,6 +433,7 @@ impl Reports {
         if let Some(session) = self.sessions.lock_or_exit("the node reports").get_mut(session_id) {
             crate::sdk_live::ended(session, now);
             crate::codex_live::ended(session, now);
+            self.changes.record(session_id.to_owned());
         }
         self.changed.publish();
     }
@@ -426,7 +444,7 @@ impl Reports {
         if let Some(key) = hello.launch_key {
             self.launches.lock_or_recover("the launch keys").insert(key, hello.session_id.clone());
         }
-        let session = sessions.entry(hello.session_id).or_default();
+        let session = sessions.entry(hello.session_id.clone()).or_default();
         session.connection = Some(number);
         session.disconnected_at = None;
         session.ended = false;
@@ -435,6 +453,7 @@ impl Reports {
         session.version = Some(hello.version);
         session.cwd = hello.cwd.or(session.cwd.take());
         session.started_at.get_or_insert(now);
+        self.changes.record(hello.session_id);
         drop(sessions);
         self.started.notify_waiters();
         self.changed.publish();
@@ -449,6 +468,7 @@ impl Reports {
             Some(session) if session.connection == Some(number) => {
                 session.connection = None;
                 session.disconnected_at = Some(alondra_core::now_millis());
+                self.changes.record(session_id.to_owned());
                 self.changed.publish();
                 true
             }
@@ -457,7 +477,12 @@ impl Reports {
     }
 
     pub fn set_peer(&self, session_id: &str, pid: u32) {
-        self.sessions.lock_or_exit("the node reports").entry(session_id.to_owned()).or_default().peer_pid = Some(pid);
+        let mut sessions = self.sessions.lock_or_exit("the node reports");
+        let session = sessions.entry(session_id.to_owned()).or_default();
+        if session.peer_pid != Some(pid) {
+            session.peer_pid = Some(pid);
+            self.changes.record(session_id.to_owned());
+        }
     }
 
     pub fn set_shell_alive(&self, session_id: &str, alive: Option<bool>, now: Millis) {
@@ -469,6 +494,7 @@ impl Reports {
                 let changed = session.shell_alive != alive || session.halt() != halted;
                 session.shell_alive = alive;
                 session.shell_looked_at = Some(now);
+                self.changes.record(session_id.to_owned());
                 changed
             }
             None => false,
@@ -521,6 +547,7 @@ impl Reports {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alondra_foundation::changes::Changed;
     use serde_json::json;
 
     #[test]
@@ -545,6 +572,105 @@ mod tests {
 
     fn hello(session: &str) -> Hello {
         serde_json::from_value(json!({"session_id": session, "version": "2.1.287", "cwd": "/work"})).unwrap()
+    }
+
+    fn changed(reports: &Reports, from: &Cursor, expected: &[&str]) -> Cursor {
+        let delta = reports.changes_since(from);
+        let Changed::Keys(keys) = delta.changed else { panic!("retained report changes must be incremental"); };
+        assert_eq!(keys, expected.iter().map(|id| (*id).to_owned()).collect());
+        delta.through
+    }
+
+    #[test]
+    fn report_changes_survive_coalesced_notifications_for_independent_readers() {
+        let reports = Reports::default();
+        let slow = reports.change_cursor();
+        let mut notification = reports.changed.subscribe();
+        reports.connect(hello("a"), 1);
+        let fast = changed(&reports, &slow, &["a"]);
+        reports.connect(hello("b"), 2);
+        reports.apply(report(json!({"session_id": "a", "event": "turn.start"})), 3);
+        reports.apply(report(json!({"session_id": "b", "event": "session.end"})), 4);
+        assert!(notification.has_changed().unwrap());
+        notification.borrow_and_update();
+        assert!(!notification.has_changed().unwrap(), "the existing watch coalesces the notifications");
+        let fast = changed(&reports, &fast, &["a", "b"]);
+        changed(&reports, &slow, &["a", "b"]);
+        changed(&reports, &fast, &[]);
+        assert_eq!(reports.session("a").unwrap().working_since, Some(3));
+        assert!(reports.session("b").unwrap().ended);
+    }
+
+    #[test]
+    fn every_report_source_records_its_session_before_publishing() {
+        let reports = Reports::default();
+        let mut cursor = reports.change_cursor();
+        reports.apply(report(json!({"session_id": "mod", "event": "session.start", "version": "test"})), 1);
+        cursor = changed(&reports, &cursor, &["mod"]);
+        reports.apply_sdk("sdk", &json!({"type": "system", "subtype": "init", "model": "model"}), 2);
+        cursor = changed(&reports, &cursor, &["sdk"]);
+        reports.apply_codex("codex", &json!({"method": "alondra/threadReady", "params": {"threadId": "thread", "model": "model"}}), 3);
+        cursor = changed(&reports, &cursor, &["codex"]);
+        reports.restore_codex_scope("restored", alondra_provider_codex::LiveScope {
+            thread: "thread".into(), turn: Some("turn".into()), model: Some("model".into()),
+            model_turn: None, rerouted_turn: None, cwd: None,
+        }, 4);
+        cursor = changed(&reports, &cursor, &["restored"]);
+        reports.sdk_ended("sdk", 5);
+        cursor = changed(&reports, &cursor, &["sdk"]);
+        reports.sdk_ended("absent", 6);
+        cursor = changed(&reports, &cursor, &[]);
+        reports.set_peer("peer", 42);
+        cursor = changed(&reports, &cursor, &["peer"]);
+        reports.set_peer("peer", 42);
+        cursor = changed(&reports, &cursor, &[]);
+        reports.set_shell_alive("peer", Some(false), 7);
+        cursor = changed(&reports, &cursor, &["peer"]);
+        reports.set_shell_alive("peer", Some(false), 8);
+        cursor = changed(&reports, &cursor, &["peer"]);
+        assert_eq!(reports.session("peer").unwrap().shell_looked_at, Some(8), "even an unchanged liveness answer has a new observation time");
+        reports.set_shell_alive("absent", Some(false), 9);
+        changed(&reports, &cursor, &[]);
+    }
+
+    #[test]
+    fn a_replaced_connections_late_disconnect_has_no_change_or_notification() {
+        let reports = Reports::default();
+        let first = reports.connect(hello("session"), 1);
+        let second = reports.connect(hello("session"), 2);
+        let cursor = reports.change_cursor();
+        let notification = reports.changed.subscribe();
+        assert!(!reports.disconnect("session", first));
+        changed(&reports, &cursor, &[]);
+        assert!(!notification.has_changed().unwrap());
+        assert!(reports.disconnect("session", second));
+        changed(&reports, &cursor, &["session"]);
+        assert!(notification.has_changed().unwrap());
+        assert_eq!(reports.session("session").unwrap().connection, None);
+    }
+
+    #[test]
+    fn a_report_replacement_between_selection_and_validation_is_not_missed() {
+        let reports = Reports::default();
+        reports.connect(hello("session"), 1);
+        let cursor = reports.change_cursor();
+        let selected = reports.session("session").unwrap();
+        std::thread::scope(|scope| {
+            let (write, begin) = std::sync::mpsc::channel();
+            let (done, written) = std::sync::mpsc::channel();
+            let reports = &reports;
+            let writer = scope.spawn(move || {
+                begin.recv().unwrap();
+                reports.connect(hello("session"), 2);
+                done.send(()).unwrap();
+            });
+            write.send(()).unwrap();
+            written.recv().unwrap();
+            let through = changed(reports, &cursor, &["session"]);
+            assert_ne!(reports.session("session").unwrap().connection, selected.connection);
+            changed(reports, &through, &[]);
+            writer.join().unwrap();
+        });
     }
 
     #[test]

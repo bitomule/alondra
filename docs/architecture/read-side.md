@@ -397,6 +397,30 @@ collection rows actually examined (including short-circuiting), not nested field
 counters describe remaining work as well as work avoided; they are not a claim of incremental
 source gathering or a CPU budget result.
 
+## Identifying changed node inputs
+
+The committed index also holds `LiveNodeReading`: the domain inputs used by a live node row,
+including its name, all task IDs, launch request selection, SDK state and wait-file identity.
+It preserves the node machine's task selection; `task_of_node` has a different selection rule.
+Publication compares these readings once and retains changed IDs, including removals, in an
+immutable history. A reader consults that bounded history rather than scanning every agent.
+Reloading at the same revision starts a new lineage: equal revision numbers alone cannot prove
+equal contents.
+
+Reports and contexts keep independent change histories keyed by session and task. Hooks and
+closed markers distinguish node and task changes. Each mutation records its key under the lock
+that protects the source data, before a subscriber can read the new value. Existing wakeups and
+version counters remain in place. A delta accumulates all changes since a reader's cursor;
+reading it never drains changes needed by another reader. Histories retain at most 4096 IDs;
+an older boundary, a replaced source or an unclassified change requires a full rebuild.
+
+These APIs identify candidates, not proof that a rendered row changed. They do not replace the
+before/after source validation or establish a transaction between independent sources. SQLite
+also remains conservative: a changed committed read mark invalidates its dependent data. Side
+tables include launch options, starts, history, costs, rules and the orchestrator queue;
+`note_side_write` preserving the domain cache does not make those writes irrelevant to views.
+The current view readers still rebuild their sources; consuming the new deltas is separate work.
+
 ## Rules for new work
 
 1. **A new screen reads the index.** If it needs something the index does not have, add it to

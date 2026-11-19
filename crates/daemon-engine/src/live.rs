@@ -1,7 +1,7 @@
 //! What the daemon observes of each Claude session through its hooks and its node mod. The
 //! domain never records it: it is the live state a client shows next to the projection, kept in
 //! memory with the legacy reducer so a node keeps the shape every client already reads.
-use crate::locks::Poisonable as _;
+use crate::locks::{Poisonable as _, AfterPanic as _};
 use alondra_core::{Event, HookEvent, Node, View, now_millis};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -10,6 +10,12 @@ use std::sync::{Mutex, atomic::{AtomicU64, Ordering}};
 const CLOSED_FILE: &str = "closed-sessions.json";
 const CLOSED_TASKS_FILE: &str = "closed-task-nodes.json";
 const ABORTED_REPLACES_FILE: &str = "aborted-replaces.json";
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LiveChangeKey {
+    Node(String),
+    Task(String),
+}
 
 /// What a relaunch needs of the node that closed while it worked on a task.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -49,6 +55,8 @@ pub struct Live {
     view: Mutex<View>,
     sequence: AtomicU64,
     pub changed: crate::node_reports::LiveChanges,
+    /// Recorded while the changed data is locked, before its subscribers are woken.
+    changes: alondra_foundation::changes::Changes<LiveChangeKey>,
     /// A holder that panics leaves it whole, so it is recovered: one insert.
     presence: Mutex<HashMap<String, i64>>,
     pub mods: crate::node_reports::Reports,
@@ -91,6 +99,30 @@ pub struct Live {
 }
 
 impl Live {
+    pub fn change_cursor(&self) -> alondra_foundation::changes::Cursor {
+        self.with_changes(|changes| changes.cursor())
+    }
+
+    pub fn changes_since(&self, cursor: &alondra_foundation::changes::Cursor) -> alondra_foundation::changes::Delta<LiveChangeKey> {
+        self.with_changes(|changes| changes.since(cursor))
+    }
+
+    fn tracked<'a, T>(&self, source: &'a Mutex<T>, what: &str) -> std::sync::MutexGuard<'a, T> {
+        source.lock().or_recover(what, || {
+            self.changes.reset();
+            source.clear_poison();
+        })
+    }
+
+    fn with_changes<T>(&self, read: impl FnOnce(&alondra_foundation::changes::Changes<LiveChangeKey>) -> T) -> T {
+        let _view = self.view.lock_or_exit("the live sessions");
+        let _closed = self.tracked(&self.closed, "the closed sessions");
+        let _tasks = self.tracked(&self.closed_tasks, "the closed sessions");
+        let _aborted = self.tracked(&self.aborted_replaces, "the closed sessions");
+        let _interrupts = self.tracked(&self.close_interrupts, "the close interrupts");
+        read(&self.changes)
+    }
+
     pub fn persisted_in(home: &std::path::Path) -> Self {
         let file = home.join(CLOSED_FILE);
         let closed = std::fs::read(&file).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
@@ -113,8 +145,10 @@ impl Live {
 
     /// The user closed the session: it is not brought back and closes, also after a restart.
     pub fn mark_closed(&self, session_id: &str) {
-        let mut closed = self.closed.lock_or_recover("the closed sessions");
-        closed.insert(session_id.to_owned());
+        let mut closed = self.tracked(&self.closed, "the closed sessions");
+        if closed.insert(session_id.to_owned()) {
+            self.changes.record(LiveChangeKey::Node(session_id.to_owned()));
+        }
         if let Some(file) = &self.closed_file {
             save(file, &*closed);
         }
@@ -124,8 +158,10 @@ impl Live {
 
     /// The task the user's closed node worked on waits for a relaunch, which needs this.
     pub fn remember_closed_task(&self, task_id: &str, node: ClosedNode) {
-        let mut tasks = self.closed_tasks.lock_or_recover("the closed sessions");
+        let mut tasks = self.tracked(&self.closed_tasks, "the closed sessions");
+        let changed = tasks.get(task_id) != Some(&node);
         tasks.insert(task_id.to_owned(), node);
+        if changed { self.changes.record(LiveChangeKey::Task(task_id.to_owned())); }
         if let Some(file) = &self.closed_tasks_file {
             save(file, &*tasks);
         }
@@ -136,16 +172,19 @@ impl Live {
     /// The orchestrator's replacement of this session's node stopped short because the node could
     /// not be stopped: if it ends later, that is why, not the user closing it.
     pub fn note_aborted_replace(&self, session_id: &str, why: &str) {
-        let mut aborted = self.aborted_replaces.lock_or_recover("the closed sessions");
+        let mut aborted = self.tracked(&self.aborted_replaces, "the closed sessions");
+        let changed = aborted.get(session_id).map(String::as_str) != Some(why);
         aborted.insert(session_id.to_owned(), why.to_owned());
+        if changed { self.changes.record(LiveChangeKey::Node(session_id.to_owned())); }
         if let Some(file) = &self.aborted_replaces_file {
             save(file, &*aborted);
         }
     }
 
     pub fn take_aborted_replace(&self, session_id: &str) -> Option<String> {
-        let mut aborted = self.aborted_replaces.lock_or_recover("the closed sessions");
+        let mut aborted = self.tracked(&self.aborted_replaces, "the closed sessions");
         let why = aborted.remove(session_id)?;
+        self.changes.record(LiveChangeKey::Node(session_id.to_owned()));
         if let Some(file) = &self.aborted_replaces_file {
             save(file, &*aborted);
         }
@@ -153,12 +192,13 @@ impl Live {
     }
 
     pub fn closed_task(&self, task_id: &str) -> Option<ClosedNode> {
-        self.closed_tasks.lock_or_recover("the closed sessions").get(task_id).cloned()
+        self.tracked(&self.closed_tasks, "the closed sessions").get(task_id).cloned()
     }
 
     pub fn forget_closed_task(&self, task_id: &str) {
-        let mut tasks = self.closed_tasks.lock_or_recover("the closed sessions");
+        let mut tasks = self.tracked(&self.closed_tasks, "the closed sessions");
         if tasks.remove(task_id).is_none() { return; }
+        self.changes.record(LiveChangeKey::Task(task_id.to_owned()));
         if let Some(file) = &self.closed_tasks_file {
             save(file, &*tasks);
         }
@@ -167,21 +207,21 @@ impl Live {
     }
 
     pub fn closed_task_ids(&self) -> Vec<String> {
-        self.closed_tasks.lock_or_recover("the closed sessions").keys().cloned().collect()
+        self.tracked(&self.closed_tasks, "the closed sessions").keys().cloned().collect()
     }
 
     /// The tasks whose closed node waits for the user to relaunch them.
     pub fn user_closed_task_ids(&self) -> Vec<String> {
-        self.closed_tasks.lock_or_recover("the closed sessions").iter()
+        self.tracked(&self.closed_tasks, "the closed sessions").iter()
             .filter(|(_, node)| node.relaunch == Relaunch::AskUser).map(|(task, _)| task.clone()).collect()
     }
 
     pub fn closed_sessions(&self) -> Vec<String> {
-        self.closed.lock_or_recover("the closed sessions").iter().cloned().collect()
+        self.tracked(&self.closed, "the closed sessions").iter().cloned().collect()
     }
 
     pub fn is_closed(&self, session_id: &str) -> bool {
-        self.closed.lock_or_recover("the closed sessions").contains(session_id)
+        self.tracked(&self.closed, "the closed sessions").contains(session_id)
     }
 
     /// False when something is watching the session's connection back already.
@@ -214,15 +254,16 @@ impl Live {
 
     /// When Alondra last cut the session's turn to close it, if it did.
     pub fn close_interrupted_at(&self, session_id: &str) -> Option<i64> {
-        self.close_interrupts.lock_or_recover("the close interrupts").get(session_id).copied()
+        self.tracked(&self.close_interrupts, "the close interrupts").get(session_id).copied()
     }
 
     pub fn set_close_interrupted(&self, session_id: &str, at: Option<i64>) {
-        let mut interrupts = self.close_interrupts.lock_or_recover("the close interrupts");
-        match at {
+        let mut interrupts = self.tracked(&self.close_interrupts, "the close interrupts");
+        let previous = match at {
             Some(at) => interrupts.insert(session_id.to_owned(), at),
             None => interrupts.remove(session_id),
         };
+        if previous != at { self.changes.record(LiveChangeKey::Node(session_id.to_owned())); }
     }
 
     /// A hook a session sent. What a node of the Agent SDK does is its task's lifecycle, so its
@@ -240,13 +281,15 @@ impl Live {
         let mut view = self.view.lock_or_exit("the live sessions");
         let now = now_millis();
         if !view.nodes.contains_key(&session_id) {
-            view.apply(self.next(), now, &Event::Joined { session_id });
+            view.apply(self.next(), now, &Event::Joined { session_id: session_id.clone() });
         }
         let limit = event.event == "StopFailure" && event.error_type.as_deref() == Some("rate_limit");
         if event.event == "StopFailure" && matches!(event.error_type.as_deref(), Some("authentication_failed" | "billing_error")) {
             self.account_check.notify_one();
         }
-        view.apply(self.next(), now, &Event::Hook(event));
+        let event = Event::Hook(event);
+        view.apply(self.next(), now, &event);
+        self.record_view_change(&event);
         drop(view);
         if limit {
             self.usage_pause.exhaust(self.measured.reset_after_limit(&alondra_core::accounts::AccountId::default_account(), now), now);
@@ -261,6 +304,7 @@ impl Live {
             view.apply(self.next(), now, &Event::Joined { session_id: session_id.to_owned() });
         }
         view.apply(self.next(), now, &Event::PromptSubmitted { session_id: session_id.to_owned(), origin });
+        self.changes.record(LiveChangeKey::Node(session_id.to_owned()));
         drop(view);
         self.changed.publish();
     }
@@ -285,8 +329,35 @@ impl Live {
     }
 
     pub fn apply(&self, event: &Event) {
-        self.view.lock_or_exit("the live sessions").apply(self.next(), now_millis(), event);
+        let mut view = self.view.lock_or_exit("the live sessions");
+        view.apply(self.next(), now_millis(), event);
+        self.record_view_change(event);
+        drop(view);
         self.changed.publish();
+    }
+
+    fn record_view_change(&self, event: &Event) {
+        let session = match event {
+            Event::Hook(hook) if matches!(hook.event.as_str(),
+                "SessionStart" | "SessionEnd" | "UserPromptSubmit" | "PreToolUse"
+                | "PostToolUse" | "PostToolUseFailure" | "PermissionRequest" | "PermissionDenied"
+                | "Elicitation" | "ElicitationResult" | "Notification" | "Stop" | "StopFailure"
+                | "SubagentStart" | "SubagentStop" | "PostCompact" | "PreCompact"
+                | "CwdChanged" | "MessageDisplay") => Some(hook.session_id.as_str()),
+            Event::DaemonSeen(seen) => Some(seen.session_id.as_str()),
+            Event::ProcessExited { session_id, .. } | Event::NodeRemoved { session_id }
+            | Event::Acknowledged { session_id } | Event::MarkedOrchestrator { session_id }
+            | Event::Joined { session_id } | Event::Classified { session_id, .. }
+            | Event::WaitingMachine { session_id, .. } | Event::AttachChanged { session_id, .. }
+            | Event::PromptSubmitted { session_id, .. } | Event::MenuSeen { session_id, .. }
+            | Event::Resumed { session_id, .. } | Event::ContextMeasured { session_id, .. }
+            | Event::Compaction { session_id, .. } | Event::Focused { session_id, .. } => Some(session_id.as_str()),
+            _ => None,
+        };
+        match session {
+            Some(session) => self.changes.record(LiveChangeKey::Node(session.to_owned())),
+            None => self.changes.reset(),
+        }
     }
 
     pub fn node(&self, session_id: &str) -> Option<Node> {
@@ -392,6 +463,150 @@ pub(crate) fn client_node(node: &Node, name: Option<&str>) -> Value {
 }
 
 #[cfg(test)]
+mod change_tests {
+    use super::*;
+    use alondra_foundation::changes::{Changed, Cursor};
+    use std::collections::BTreeSet;
+
+    fn keys(live: &Live, cursor: &Cursor, expected: impl IntoIterator<Item = LiveChangeKey>) -> Cursor {
+        let delta = live.changes_since(cursor);
+        let expected: BTreeSet<_> = expected.into_iter().collect();
+        assert!(matches!(delta.changed, Changed::Keys(actual) if actual == expected));
+        delta.through
+    }
+
+    #[test]
+    fn hooks_and_prompts_name_the_session_before_publishing_the_wake() {
+        let live = Live::default();
+        let cursor = live.change_cursor();
+        let mut wake = live.changed.subscribe();
+        live.observe(&json!({"session_id": "node", "hook_event_name": "Stop", "last_assistant_message": "Ready"}));
+        assert!(wake.has_changed().unwrap());
+        wake.borrow_and_update();
+        let cursor = keys(&live, &cursor, [LiveChangeKey::Node("node".into())]);
+        assert_eq!(live.node("node").unwrap().last_message.as_deref(), Some("Ready"));
+        live.observe_prompt("other", alondra_core::PromptOrigin::Composer);
+        assert!(wake.has_changed().unwrap());
+        keys(&live, &cursor, [LiveChangeKey::Node("other".into())]);
+        assert!(live.node("other").is_some());
+    }
+
+    #[test]
+    fn removals_keep_the_node_key_after_its_data_has_gone() {
+        let live = Live::default();
+        live.apply(&Event::Joined { session_id: "gone".into() });
+        let cursor = live.change_cursor();
+        live.apply(&Event::NodeRemoved { session_id: "gone".into() });
+        let cursor = keys(&live, &cursor, [LiveChangeKey::Node("gone".into())]);
+        assert!(live.node("gone").is_none());
+        live.observe(&json!({"session_id": "gone", "hook_event_name": "SessionStart"}));
+        keys(&live, &cursor, [LiveChangeKey::Node("gone".into())]);
+        assert!(live.node("gone").is_none(), "a late hook cannot undo the reducer's tombstone");
+    }
+
+    #[test]
+    fn closed_tasks_record_replacements_and_removals_without_losing_their_keys() {
+        let live = Live::default();
+        let cursor = live.change_cursor();
+        let mut node = ClosedNode { name: "Node".into(), cwd: None, relaunch: Relaunch::AskUser };
+        live.mark_closed("node");
+        live.remember_closed_task("task", node.clone());
+        let cursor = keys(&live, &cursor, [LiveChangeKey::Node("node".into()), LiveChangeKey::Task("task".into())]);
+        assert_eq!(live.closed_sessions(), ["node"]);
+        assert_eq!(live.user_closed_task_ids(), ["task"]);
+        live.mark_closed("node");
+        live.remember_closed_task("task", node.clone());
+        keys(&live, &cursor, []);
+        node.relaunch = Relaunch::ByItself;
+        live.remember_closed_task("task", node);
+        let cursor = keys(&live, &cursor, [LiveChangeKey::Task("task".into())]);
+        assert!(live.user_closed_task_ids().is_empty());
+        assert!(live.closed_task("task").is_some());
+        live.forget_closed_task("task");
+        let cursor = keys(&live, &cursor, [LiveChangeKey::Task("task".into())]);
+        assert!(live.closed_task("task").is_none());
+        live.forget_closed_task("task");
+        keys(&live, &cursor, []);
+    }
+
+    #[test]
+    fn close_bookkeeping_records_actual_updates_and_deletions() {
+        let live = Live::default();
+        let cursor = live.change_cursor();
+        live.note_aborted_replace("node", "Still running");
+        live.set_close_interrupted("node", Some(1));
+        let cursor = keys(&live, &cursor, [LiveChangeKey::Node("node".into())]);
+        live.note_aborted_replace("node", "Still running");
+        live.set_close_interrupted("node", Some(1));
+        keys(&live, &cursor, []);
+        assert_eq!(live.take_aborted_replace("node").as_deref(), Some("Still running"));
+        live.set_close_interrupted("node", None);
+        let cursor = keys(&live, &cursor, [LiveChangeKey::Node("node".into())]);
+        assert!(live.take_aborted_replace("node").is_none());
+        live.set_close_interrupted("node", None);
+        keys(&live, &cursor, []);
+    }
+
+    #[test]
+    fn unknown_hooks_and_global_events_reset_the_delta() {
+        let live = Live::default();
+        let cursor = live.change_cursor();
+        live.observe(&json!({"session_id": "node", "hook_event_name": "FutureHook"}));
+        let delta = live.changes_since(&cursor);
+        assert!(matches!(delta.changed, Changed::Reset));
+        assert!(live.node("node").is_some());
+        live.apply(&Event::LaunchedOnly);
+        assert!(matches!(live.changes_since(&delta.through).changed, Changed::Reset));
+    }
+
+    #[test]
+    fn recovering_each_source_resets_even_when_a_getter_reads_before_the_cursor() {
+        fn interrupted<T>(source: &Mutex<T>, mutate: impl FnOnce(&mut T)) {
+            let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut value = source.lock().unwrap();
+                mutate(&mut value);
+                panic!("the mutation did not reach its journal");
+            }));
+            assert!(failed.is_err());
+            assert!(source.is_poisoned());
+        }
+
+        for source in 0..4 {
+            for read_first in [false, true] {
+                let live = Live::default();
+                let cursor = live.change_cursor();
+                match source {
+                    0 => interrupted(&live.closed, |closed| { closed.insert("node".into()); }),
+                    1 => interrupted(&live.closed_tasks, |tasks| {
+                        tasks.insert("task".into(), ClosedNode { name: "Node".into(), cwd: None, relaunch: Relaunch::AskUser });
+                    }),
+                    2 => interrupted(&live.aborted_replaces, |aborted| { aborted.insert("node".into(), "Still running".into()); }),
+                    3 => interrupted(&live.close_interrupts, |interrupts| { interrupts.insert("node".into(), 1); }),
+                    _ => unreachable!(),
+                }
+                let read = || match source {
+                    0 => assert!(live.is_closed("node")),
+                    1 => assert_eq!(live.closed_task("task").unwrap().name, "Node"),
+                    2 => assert_eq!(live.take_aborted_replace("node").as_deref(), Some("Still running")),
+                    3 => assert_eq!(live.close_interrupted_at("node"), Some(1)),
+                    _ => unreachable!(),
+                };
+                if read_first { read(); }
+                let delta = live.changes_since(&cursor);
+                assert!(matches!(delta.changed, Changed::Reset), "source {source}, read first {read_first}");
+                if !read_first { read(); }
+                let recovered = live.change_cursor();
+                keys(&live, &recovered, []);
+                assert!(!live.closed.is_poisoned());
+                assert!(!live.closed_tasks.is_poisoned());
+                assert!(!live.aborted_replaces.is_poisoned());
+                assert!(!live.close_interrupts.is_poisoned());
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod sdk_node_tests {
     use super::*;
     use alondra_domain_rules::{Actor, Command, CommandEnvelope, DomainState, LaunchPlan, PROTOCOL_VERSION};
@@ -426,6 +641,10 @@ mod sdk_node_tests {
     fn a_hook_of_a_node_of_the_agent_sdk_never_reaches_the_deduction_of_claude_bg_nodes() {
         let state = world();
         let live = Live::default();
+        let cursor = live.change_cursor();
+        live.observe_hook(&state, &json!({"session_id": "sdk-unseen", "hook_event_name": "Stop"}));
+        assert!(matches!(live.changes_since(&cursor).changed,
+            alondra_foundation::changes::Changed::Keys(keys) if keys.is_empty()));
         for agent in ["sdk-seen", "bg"] {
             live.observe_hook(&state, &json!({"session_id": agent, "hook_event_name": "Stop", "last_assistant_message": "Ready"}));
         }
