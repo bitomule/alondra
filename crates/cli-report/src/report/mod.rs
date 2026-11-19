@@ -262,7 +262,11 @@ pub fn send_report(id: &str, kind: Option<send::Kind>, retry: bool, json: bool) 
     let sent = checked(&host, id).and_then(|files| {
         let gh = github::Gh::default();
         let repo = github::Repo { gh: &gh, name: repo_of(&host)? };
-        let outcome = send::send(&repo, host.home(), id, &files, kind, host.now(), &backoff)?;
+        let outcome = if retry {
+            send::retry(&repo, host.home(), id, &files, host.now(), &backoff)?
+        } else {
+            send::send(&repo, host.home(), id, &files, kind, host.now(), &backoff)?
+        };
         Ok((repo.name, outcome))
     });
     if retry {

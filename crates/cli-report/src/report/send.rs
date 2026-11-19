@@ -160,6 +160,8 @@ pub enum Outcome {
 pub enum Blocked {
     NoRepo,
     NoSuchRepo(String),
+    /// A pending report was going to `saved`, and the report repository is now `current`.
+    RepoChanged { id: String, saved: String, current: String },
     Github(GhError),
 }
 
@@ -175,6 +177,13 @@ impl std::fmt::Display for Blocked {
                 write!(f, "{}", trf!(
                     "GitHub has no repository {repo} that takes issues: check report.repo, or save the report as a file",
                     "GitHub no tiene ningún repositorio {repo} que acepte issues: revisa report.repo, o guarda el informe como fichero"
+                ))
+            }
+            Blocked::RepoChanged { id, saved, current } => {
+                let (id, saved, current) = (id.as_str(), saved.as_str(), current.as_str());
+                write!(f, "{}", trf!(
+                    "report {id} was going to {saved}, but report.repo is now {current}: nothing was sent. To send it to {current}: alondra report send {id}",
+                    "el informe {id} iba a {saved}, pero report.repo ahora es {current}: no se ha enviado nada. Para enviarlo a {current}: alondra report send {id}"
                 ))
             }
             Blocked::Github(error) => error.fmt(f),
@@ -196,11 +205,36 @@ fn lock(dir: &Path) -> Result<std::fs::File> {
 /// Sends report `id`, whose `files` were read back as the preview showed them, to `repo`.
 /// A report GitHub could not take waits `backoff(attempts)` milliseconds for its next try.
 pub fn send(repo: &Repo, home: &Path, id: &str, files: &Files, kind: Option<Kind>, now: i64, backoff: &dyn Fn(u32) -> i64) -> Result<Outcome> {
+    send_to(repo, home, id, files, kind, now, backoff, false)
+}
+
+/// The daemon's try of a pending report: it goes only to the repository it was first sent to. When
+/// `repo` is another one, nothing is sent and the report waits until whoever sends it asks again.
+pub fn retry(repo: &Repo, home: &Path, id: &str, files: &Files, now: i64, backoff: &dyn Fn(u32) -> i64) -> Result<Outcome> {
+    send_to(repo, home, id, files, None, now, backoff, true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn send_to(repo: &Repo, home: &Path, id: &str, files: &Files, kind: Option<Kind>, now: i64, backoff: &dyn Fn(u32) -> i64, retry: bool) -> Result<Outcome> {
     let dir = home.join("reports").join(id);
     let _lock = lock(&dir)?;
+    let saved = read_sending(&dir);
+    if retry {
+        let Some(pending) = saved.as_ref().filter(|s| s.state == State::Pending) else {
+            bail!(trf!("report {id} has nothing pending to send again", "el informe {id} no tiene nada pendiente que reenviar"))
+        };
+        if pending.repo != repo.name {
+            let mut saved = pending.clone();
+            let blocked = Blocked::RepoChanged { id: id.to_owned(), saved: saved.repo.clone(), current: repo.name.clone() };
+            saved.next_at = i64::MAX;
+            saved.last_error = Some(blocked.to_string());
+            write_sending(&dir, &saved)?;
+            return Err(blocked.into());
+        }
+    }
     let file = bundle::armored(id, files);
     let package_sha256 = bundle::sha256(file.as_bytes());
-    let earlier = read_sending(&dir).filter(|s| s.repo == repo.name);
+    let earlier = saved.filter(|s| s.repo == repo.name);
     if let Some(sent) = earlier.as_ref().filter(|s| s.state == State::Sent && s.package_sha256 == package_sha256)
         && let (Some(number), Some(url)) = (sent.issue, sent.url.clone())
     {
