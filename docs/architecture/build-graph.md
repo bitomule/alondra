@@ -571,6 +571,12 @@ once, and its tests link that same library.
   that opens the runtime (`alondrad`'s `engine::open_at`, `engine_admission::for_tests`).
 - `crate_layers_test` fails on a `testonly` library that builds a production crate again, and
   `TEST_HOOK_EXCEPTIONS` left the table.
+- The scenarios now run the engine at full optimization instead of the low-optimization copies,
+  which exposed a race in their harness: between two turns it waited only a moment of calm, not
+  the 250 ms a host's owner may take to look at a new input, so the virtual clock sometimes moved
+  on first. It now waits that long whenever the domain holds an input a running host was not
+  offered. `bazel run //crates/scenarios:accept` sets `BAZEL_TEST`, so a case is accepted as the
+  test plays it.
 
 Measured with `edit_bench`, one edit, before (on main with phase 5b, before any change) and after; Bazel's own
 time without the queue's wait, on the shared Mac:

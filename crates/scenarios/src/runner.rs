@@ -180,7 +180,7 @@ const MACHINE_SAMPLE: Duration = Duration::from_secs(10);
 /// make a moment of calm.
 const CALM_POLLS: u64 = 25;
 /// The polls that outlast the longest wait of a host's owner between two looks at the inputs it
-/// holds (250 ms, while a turn runs).
+/// holds (250 ms, during a turn and between turns).
 const OWNER_WAKE_POLLS: u64 = 150;
 
 struct Context<'a> {
@@ -624,12 +624,13 @@ impl Context<'_> {
                 let domain = domain.clone();
                 move || domain.as_ref().is_some_and(|domain| domain.retaking())
             };
-            // While a turn runs, the owner of its host looks for new inputs only between reads of
-            // the host, which wait up to `OWNER_WAKE`: an input the daemon holds for a host that
-            // was not offered it yet may still go out once that wait ends.
+            // The owner of a host looks for new inputs only between its waits on the host and on
+            // the store, which last up to `OWNER_WAKE`, during a turn and between turns: an input
+            // the daemon holds for a host that was not offered it yet may still go out once that
+            // wait ends.
             let undelivered = move || {
                 let Some(state) = domain.as_ref().and_then(|domain| domain.state().ok()) else { return false };
-                watched.turns().into_iter().any(|(task, offered)| {
+                watched.untaken_offers().into_iter().any(|(task, offered)| {
                     state.lifecycle_of(&task.into()).is_ok_and(|lifecycle| lifecycle.pending_inputs().len() > offered)
                 })
             };

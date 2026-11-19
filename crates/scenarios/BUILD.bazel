@@ -116,7 +116,9 @@ rust_binary(
     crate_root = "src/bin/accept.rs",
     data = [":host_relay"] + glob(["cases/**"]),
     edition = "2024",
-    env = RELAY_ENV,
+    # The daemon decides what only tests change by `BAZEL_TEST`, which `bazel run` does not set: a
+    # case is accepted as `scenarios_test` plays it.
+    env = RELAY_ENV | {"BAZEL_TEST": "1"},
     rustc_flags = ["-Copt-level=0"],
     version = VERSION,
     deps = DEPS + [":scenarios"],

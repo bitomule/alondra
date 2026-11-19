@@ -85,7 +85,7 @@ impl Seals {
         *self.before_wake.lock().unwrap() = Some(Box::new(observe));
     }
 
-        pub fn take_all(&self) -> Vec<Committed> {
+    pub fn take_all(&self) -> Vec<Committed> {
         std::mem::take(&mut *self.queued.lock_or_exit("the SDK seals"))
     }
 }

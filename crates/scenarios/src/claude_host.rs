@@ -316,15 +316,15 @@ impl ClaudeEdge {
         lock(&self.0.hosts).iter().filter(|host| host.task == task).cloned().collect()
     }
 
-    /// Each task whose host runs a turn now, with how many inputs that host was offered and has
-    /// not taken yet.
-    pub fn turns(&self) -> Vec<(String, usize)> {
+    /// Each task whose host runs, with how many inputs that host was offered and has not taken
+    /// yet: none while it rests between turns.
+    pub fn untaken_offers(&self) -> Vec<(String, usize)> {
         lock(&self.0.hosts)
             .iter()
             .filter(|host| host.alive())
-            .filter_map(|host| {
+            .map(|host| {
                 let state = lock(&host.state);
-                state.turn.as_ref().map(|_| (host.task.clone(), state.queued.len()))
+                (host.task.clone(), if state.turn.is_some() { state.queued.len() } else { 0 })
             })
             .collect()
     }
