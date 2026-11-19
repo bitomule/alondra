@@ -5,6 +5,7 @@ pub mod accounts;
 pub mod admission;
 pub mod contract;
 pub mod disk;
+pub mod github;
 pub mod host_root;
 pub mod hosts;
 pub mod machine;

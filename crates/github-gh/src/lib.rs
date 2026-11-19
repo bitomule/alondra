@@ -5,6 +5,9 @@
 mod test_support;
 
 pub mod cli;
+mod diff;
+#[cfg(test)]
+mod diff_tests;
 mod images;
 mod merges;
 pub mod pr_viewed;

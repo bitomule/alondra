@@ -3,6 +3,7 @@
 //! it with the Mac's own git, disks, gauges, files and processes, so a double never drifts from what
 //! the daemon really does.
 use crate::test_support::Directory;
+pub mod github;
 use alondra_engine_ports::disk::Disk;
 use alondra_engine_ports::machine::MachineProbe;
 use alondra_core::secret_destination::SecretDestination;

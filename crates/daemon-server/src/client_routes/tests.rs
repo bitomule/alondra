@@ -1407,62 +1407,142 @@ async fn the_mcp_sign_in_routes_take_only_a_signed_device_and_their_own_body() {
 
 const PR_HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
 
-/// A `gh` for `me/app#7` at `PR_HEAD`: `pr view` gives the head, `pr diff` the diff in `diff`, and
-/// the GraphQL read of its files `marks`.
-fn diff_gh(dir: &std::path::Path, marks: &str) -> alondra_github_gh::GhCli {
-    use std::os::unix::fs::PermissionsExt;
-    let diff = dir.join("diff");
-    std::fs::write(&diff, "diff --git a/src/a.rs b/src/a.rs\n+a\ndiff --git a/src/b.rs b/src/b.rs\n+b\n").unwrap();
-    let marks_file = dir.join("marks");
-    std::fs::write(&marks_file, marks).unwrap();
-    let program = dir.join("gh");
-    std::fs::write(&program, format!(r#"#!/bin/sh
-case "$*" in
-  *viewerViewedState*) cat '{marks}';;
-  *"pr view"*) printf '%s' '{{"headRefOid":"{PR_HEAD}"}}';;
-  *"pr diff"*) cat '{diff}';;
-  *) exit 1;;
-esac
-"#, marks = marks_file.display(), diff = diff.display())).unwrap();
-    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-    alondra_github_gh::GhCli::at(program)
+fn diff_marks(head: &str) -> alondra_engine_ports::github::Marks {
+    use alondra_engine_ports::github::{Mark, Marks, Viewed};
+    Marks { node: "PR_node".into(), head: head.into(), files: vec![
+        Mark { path: "src/a.rs".into(), viewed: Viewed::Viewed },
+        Mark { path: "src/b.rs".into(), viewed: Viewed::Changed },
+    ] }
 }
 
-fn marks_page(head: &str) -> String {
-    json!({"data": {"repository": {"pullRequest": {"id": "PR_node", "headRefOid": head, "files": {
-        "pageInfo": {"hasNextPage": false, "endCursor": null},
-        "nodes": [{"path": "src/a.rs", "viewerViewedState": "VIEWED"}, {"path": "src/b.rs", "viewerViewedState": "DISMISSED"}],
-    }}}}}).to_string()
+fn diff_github(fixture: &Fixture, heads: Vec<Result<String, alondra_engine_ports::github::HeadError>>,
+    diff: Result<Vec<u8>, alondra_engine_ports::github::DiffError>,
+    marks: Result<alondra_engine_ports::github::Marks, String>,
+) -> Arc<alondra_engine_doubles::github::PullRequests> {
+    use alondra_engine_doubles::github::{PrReads, PullRequests};
+    use alondra_engine_ports::github::GitHub;
+    let gh = Arc::new(PullRequests::default());
+    gh.insert("https://github.com/me/app/pull/7", PrReads { heads: heads.into(), diff, marks });
+    let mut port = (*fixture.domain.ports().port::<GitHub>().unwrap()).clone();
+    port.reads = gh.clone();
+    fixture.domain.ports().provide(Arc::new(port));
+    gh
 }
 
-async fn diff_body(fixture: &Fixture, gh: &alondra_github_gh::GhCli) -> Value {
-    let response = crate::domain_api::pull_request_diff_from(&fixture.domain, "pr-1".into(), gh).await;
+fn diff_bytes() -> Vec<u8> {
+    b"diff --git a/src/a.rs b/src/a.rs\n+a\ndiff --git a/src/b.rs b/src/b.rs\n+b\n".to_vec()
+}
+
+async fn diff_response(fixture: &Fixture) -> (StatusCode, Value) {
+    let response = crate::domain_api::pull_request_diff_inner(&fixture.domain, "pr-1".into()).await;
     let status = response.status();
     let body = axum::body::to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
-    assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
-    serde_json::from_slice(&body).unwrap()
+    (status, serde_json::from_slice(&body).unwrap())
+}
+
+async fn diff_body(fixture: &Fixture) -> Value {
+    let (status, body) = diff_response(fixture).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body
 }
 
 #[tokio::test]
 async fn the_diff_of_a_pull_request_carries_the_viewed_mark_github_keeps_for_each_file() {
+    use alondra_engine_doubles::github::Call;
     let fixture = Fixture::start().await;
     seed_work(&fixture);
-    let gh = diff_gh(&fixture.home, &marks_page(PR_HEAD));
-    let body = diff_body(&fixture, &gh).await;
+    let gh = diff_github(&fixture, vec![Ok(PR_HEAD.into())], Ok(diff_bytes()), Ok(diff_marks(PR_HEAD)));
+    let body = diff_body(&fixture).await;
     assert_eq!(body["head"], PR_HEAD);
     assert!(body["diff"].as_str().unwrap().contains("src/b.rs"));
     assert_eq!(body["files"], json!([{"path": "src/a.rs", "viewed": "viewed"}, {"path": "src/b.rs", "viewed": "changed"}]));
+    let url = "https://github.com/me/app/pull/7".to_owned();
+    let calls = gh.calls();
+    assert_eq!(calls.len(), 4);
+    assert_eq!(calls.first(), Some(&Call::Head(url.clone())));
+    assert_eq!(calls.last(), Some(&Call::Head(url.clone())));
+    assert!(calls[1..3].contains(&Call::Diff(url.clone())));
+    assert!(calls[1..3].contains(&Call::Marks(url)));
 }
 
 #[tokio::test]
 async fn the_diff_comes_without_marks_when_github_gives_none_for_its_head() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
-    for marks in [marks_page("fedcba9876543210fedcba9876543210fedcba98"), json!({"errors": [{"message": "boom"}]}).to_string(), "not json".into()] {
-        let gh = diff_gh(&fixture.home, &marks);
-        let body = diff_body(&fixture, &gh).await;
-        assert!(body["diff"].as_str().unwrap().contains("src/a.rs"), "{marks}");
-        assert!(body.get("files").is_none(), "{marks}: {body}");
+    for marks in [Ok(diff_marks("fedcba9876543210fedcba9876543210fedcba98")), Err("GraphQL unavailable".into()), Err("invalid response".into())] {
+        diff_github(&fixture, vec![Ok(PR_HEAD.into())], Ok(diff_bytes()), marks);
+        let body = diff_body(&fixture).await;
+        assert!(body["diff"].as_str().unwrap().contains("src/a.rs"));
+        assert!(body.get("files").is_none(), "{body}");
+    }
+}
+
+#[tokio::test]
+async fn diff_reads_use_the_registered_port_without_process_deadlines() {
+    use std::future::{Future as _, poll_fn};
+    use std::task::Poll;
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    let gh = diff_github(&fixture, vec![Ok(PR_HEAD.into())], Ok(diff_bytes()), Ok(diff_marks(PR_HEAD)));
+    let release = gh.hold_next_head("https://github.com/me/app/pull/7");
+    tokio::time::pause();
+    let read = diff_body(&fixture);
+    tokio::pin!(read);
+    poll_fn(|cx| {
+        assert!(read.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    }).await;
+    tokio::time::advance(std::time::Duration::from_secs(3600)).await;
+    poll_fn(|cx| {
+        assert!(read.as_mut().poll(cx).is_pending(), "the reader must still wait for its port");
+        Poll::Ready(())
+    }).await;
+    release.send(()).unwrap();
+    let body = read.await;
+    assert_eq!(body["head"], PR_HEAD);
+    assert_eq!(body["files"][0]["viewed"], "viewed");
+}
+
+#[tokio::test]
+async fn diff_reads_reject_a_stale_or_unverifiable_head_before_and_after_loading() {
+    use alondra_engine_doubles::github::Call;
+    use alondra_engine_ports::github::{GhFailure, HeadError};
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    for next in [
+        Ok("fedcba9876543210fedcba9876543210fedcba98".into()),
+        Err(HeadError::Unavailable(GhFailure::TimedOut("head unavailable".into()))),
+        Err(HeadError::InvalidResponse),
+        Err(HeadError::InvalidHead),
+    ] {
+        let code = if next.is_ok() { "stale_head" } else { "external_read_failed" };
+        for after in [false, true] {
+            let heads = if after { vec![Ok(PR_HEAD.into()), next.clone()] } else { vec![next.clone()] };
+            let gh = diff_github(&fixture, heads, Ok(diff_bytes()), Ok(diff_marks(PR_HEAD)));
+            let (status, body) = diff_response(&fixture).await;
+            assert_eq!((status, body["code"].as_str()), (StatusCode::CONFLICT, Some(code)), "{body}");
+            assert_eq!(gh.calls().len(), if after { 4 } else { 1 });
+            assert!(matches!(gh.calls().last(), Some(Call::Head(_))));
+        }
+    }
+}
+
+#[tokio::test]
+async fn diff_read_failures_keep_their_errors_without_rechecking_the_head() {
+    use alondra_engine_ports::github::{DiffError, GhFailure};
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    for (error, message) in [
+        (DiffError::Start(GhFailure::Launch(std::io::ErrorKind::NotFound, "missing".into())), "could not start PR diff"),
+        (DiffError::Read, "PR diff timed out"),
+        (DiffError::Finish, "could not load PR diff"),
+    ] {
+        let gh = diff_github(&fixture, vec![Ok(PR_HEAD.into())], Err(error), Ok(diff_marks(PR_HEAD)));
+        let (status, body) = diff_response(&fixture).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["code"], "external_read_failed");
+        assert_eq!(body["message"], message);
+        assert_eq!(gh.calls().len(), 3);
     }
 }
 

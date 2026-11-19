@@ -4,6 +4,7 @@ load("@crates//:defs.bzl", "all_crate_deps")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
+load("@rules_rust//rust:defs.bzl", "rust_binary")
 
 # GitHub through the Mac's `gh`. It implements the `GitHub` port of engine-ports and depends on no
 # piece of the engine: only the roots see it, and editing it rebuilds this crate and their link.
@@ -31,7 +32,16 @@ low_opt_rust_test(
     crate_root = "src/lib.rs",
     edition = "2024",
     version = VERSION,
-    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS,
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/engine-doubles:engine_doubles"],
+    data = [":diff_fixture"],
+    env = {"FIXTURE_DIFF_GH": "$(rootpath :diff_fixture)"},
+)
+
+rust_binary(
+    name = "diff_fixture",
+    testonly = True,
+    srcs = ["fixtures/diff.rs"],
+    edition = "2024",
 )
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

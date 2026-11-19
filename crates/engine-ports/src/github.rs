@@ -311,6 +311,51 @@ pub trait GitHubImages: Send + Sync + 'static {
 
 pub type Read<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+pub const MAX_PR_DIFF_BYTES: usize = 2 * 1024 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrDiff {
+    /// At most MAX_PR_DIFF_BYTES + 1 bytes; the extra byte detects truncation.
+    pub bytes: Vec<u8>,
+    pub truncated: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HeadError {
+    Unavailable(GhFailure),
+    InvalidResponse,
+    InvalidHead,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DiffError {
+    Start(GhFailure),
+    Read,
+    Finish,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Viewed {
+    Viewed,
+    Unviewed,
+    /// Viewed once, then a push changed the file.
+    Changed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct Mark {
+    pub path: String,
+    pub viewed: Viewed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Marks {
+    pub node: String,
+    pub head: String,
+    pub files: Vec<Mark>,
+}
+
 /// An open pull request the signed-in account authored, as GitHub's search names it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthoredPr {
@@ -322,6 +367,21 @@ pub struct AuthoredPr {
 
 /// What Alondra reads from GitHub about a PR, an issue or a branch.
 pub trait Gh: Send + Sync {
+    fn head_oid<'a>(&'a self, url: &'a str) -> Read<'a, Result<String, HeadError>> {
+        let _ = url;
+        Box::pin(async { Err(HeadError::Unavailable(GhFailure::Unreadable("PR heads are not available here".into()))) })
+    }
+
+    fn diff<'a>(&'a self, url: &'a str) -> Read<'a, Result<PrDiff, DiffError>> {
+        let _ = url;
+        Box::pin(async { Err(DiffError::Finish) })
+    }
+
+    fn viewed_files<'a>(&'a self, pr: &'a PullRequest) -> Read<'a, Result<Marks, String>> {
+        let _ = pr;
+        Box::pin(async { Err("viewed files are not available here".into()) })
+    }
+
     /// `gh pr view --json` of the PR at `url`, or nothing when GitHub does not answer.
     fn view<'a>(&'a self, url: &'a str) -> Read<'a, Option<Value>>;
 
@@ -354,6 +414,9 @@ pub trait Gh: Send + Sync {
 }
 
 impl<T: Gh> Gh for Arc<T> {
+    fn head_oid<'a>(&'a self, url: &'a str) -> Read<'a, Result<String, HeadError>> { (**self).head_oid(url) }
+    fn diff<'a>(&'a self, url: &'a str) -> Read<'a, Result<PrDiff, DiffError>> { (**self).diff(url) }
+    fn viewed_files<'a>(&'a self, pr: &'a PullRequest) -> Read<'a, Result<Marks, String>> { (**self).viewed_files(pr) }
     fn view<'a>(&'a self, url: &'a str) -> Read<'a, Option<Value>> { (**self).view(url) }
     fn search_issues<'a>(&'a self, owners: &'a [String]) -> Read<'a, Result<Value, String>> { (**self).search_issues(owners) }
     fn issue_view<'a>(&'a self, repo: &'a str, number: u64) -> Read<'a, Result<Value, String>> { (**self).issue_view(repo, number) }

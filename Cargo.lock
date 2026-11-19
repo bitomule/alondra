@@ -783,6 +783,7 @@ version = "0.3.56"
 dependencies = [
  "alondra-core",
  "alondra-domain-rules",
+ "alondra-engine-doubles",
  "alondra-engine-ports",
  "reqwest",
  "serde",

@@ -18,9 +18,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::process::Stdio;
 use std::sync::Arc;
-use tokio::io::AsyncReadExt;
 
 /// What a domain router needs from its daemon.
 pub trait DomainHost: Send + Sync + 'static {
@@ -317,7 +315,7 @@ pub(crate) fn task_actions_inner(domain: &DomainRuntime, id: String) -> Response
         None => domain_error(DomainError::new("not_found", "task does not exist")),
     }
 }
-const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
+use alondra_engine_ports::github::MAX_PR_DIFF_BYTES as MAX_DIFF_BYTES;
 const MAX_RELAY_DIFF_RESPONSE: usize = 120 * 1024;
 
 async fn pull_request_diff<H: DomainHost>(
@@ -336,12 +334,15 @@ async fn pull_request_diff<H: DomainHost>(
 }
 
 pub(crate) async fn pull_request_diff_inner(domain: &DomainRuntime, id: String) -> Response {
-    pull_request_diff_from(domain, id, &alondra_github_gh::GhCli::new()).await
+    let Some(github) = domain.ports().port::<alondra_engine_ports::github::GitHub>() else {
+        return domain_error(DomainError::new("external_read_failed", "could not verify PR head"));
+    };
+    pull_request_diff_from(domain, id, github.reads.as_ref()).await
 }
 
 /// The diff at the registered head, with the viewed mark GitHub keeps for each file when it gives
 /// them for that same head: a mark that cannot be read never holds back the diff.
-pub(crate) async fn pull_request_diff_from(domain: &DomainRuntime, id: String, gh: &alondra_github_gh::GhCli) -> Response {
+pub(crate) async fn pull_request_diff_from(domain: &DomainRuntime, id: String, gh: &dyn alondra_engine_ports::github::Gh) -> Response {
     let state = match domain.state() {
         Ok(state) => state,
         Err(_) => return storage_error(),
@@ -360,7 +361,7 @@ pub(crate) async fn pull_request_diff_from(domain: &DomainRuntime, id: String, g
     if before != expected_head {
         return domain_error(DomainError::new("stale_head", "registered PR head changed"));
     }
-    let (diff, marks) = tokio::join!(bounded_diff(gh, &url), crate::pr_viewed::read(gh, pr));
+    let (diff, marks) = tokio::join!(bounded_diff(gh, &url), gh.viewed_files(pr));
     let (bytes, truncated) = match diff {
         Ok(result) => result,
         Err(error) => return domain_error(error),
@@ -451,81 +452,28 @@ fn diff_paths(diff: &str) -> std::collections::HashSet<String> {
     paths
 }
 
-pub(crate) async fn bounded_diff(gh: &alondra_github_gh::GhCli, url: &str) -> Result<(Vec<u8>, bool), DomainError> {
-    let mut child = tokio::process::Command::new(gh.program())
-        .args(["pr", "diff", url])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|_| {
-            DomainError::new(
-                "external_read_failed",
-                "could not start PR diff",
-            )
-        })?;
-    let stdout = child.stdout.take().expect("piped stdout");
-    let mut bytes = Vec::new();
-    let read = clock::timeout(
-        std::time::Duration::from_secs(60),
-        stdout
-            .take((MAX_DIFF_BYTES + 1) as u64)
-            .read_to_end(&mut bytes),
-    )
-    .await;
-    if !matches!(read, Ok(Ok(_))) {
-        let _ = child.kill().await;
-        return Err(DomainError::new(
-            "external_read_failed",
-            "PR diff timed out",
-        ));
-    }
-    let truncated = bytes.len() > MAX_DIFF_BYTES;
-    if truncated {
-        let _ = child.kill().await;
-        let _ = child.wait().await;
-    } else {
-        let status = clock::timeout(std::time::Duration::from_secs(5), child.wait()).await;
-        if !matches!(status, Ok(Ok(status)) if status.success()) {
-            return Err(DomainError::new(
-                "external_read_failed",
-                "could not load PR diff",
-            ));
-        }
-    }
-    Ok((bytes, truncated))
+pub(crate) async fn bounded_diff(gh: &dyn alondra_engine_ports::github::Gh, url: &str) -> Result<(Vec<u8>, bool), DomainError> {
+    use alondra_engine_ports::github::DiffError;
+    gh.diff(url).await.map(|diff| (diff.bytes, diff.truncated)).map_err(|error| {
+        let message = match error {
+            DiffError::Start(_) => "could not start PR diff",
+            DiffError::Read => "PR diff timed out",
+            DiffError::Finish => "could not load PR diff",
+        };
+        DomainError::new("external_read_failed", message)
+    })
 }
 
-async fn live_head(gh: &alondra_github_gh::GhCli, url: &str) -> Result<String, Response> {
-    let output = clock::timeout(
-        std::time::Duration::from_secs(20),
-        tokio::process::Command::new(gh.program())
-            .args(["pr", "view", url, "--json", "headRefOid"])
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await;
-    let output = match output {
-        Ok(Ok(output)) if output.status.success() => output,
-        _ => {
-            return Err(domain_error(DomainError::new(
-                "external_read_failed",
-                "could not verify PR head",
-            )));
-        }
-    };
-    let value: Value = serde_json::from_slice(&output.stdout).map_err(|_| {
-        domain_error(DomainError::new(
-            "external_read_failed",
-            "invalid PR head response",
-        ))
-    })?;
-    value
-        .get("headRefOid")
-        .and_then(Value::as_str)
-        .filter(|head| head.len() == 40 && head.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        .map(str::to_owned)
-        .ok_or_else(|| domain_error(DomainError::new("external_read_failed", "invalid PR head")))
+async fn live_head(gh: &dyn alondra_engine_ports::github::Gh, url: &str) -> Result<String, Response> {
+    use alondra_engine_ports::github::HeadError;
+    gh.head_oid(url).await.map_err(|error| {
+        let message = match error {
+            HeadError::Unavailable(_) => "could not verify PR head",
+            HeadError::InvalidResponse => "invalid PR head response",
+            HeadError::InvalidHead => "invalid PR head",
+        };
+        domain_error(DomainError::new("external_read_failed", message))
+    })
 }
 async fn changes<H: DomainHost>(
     State(host): State<Arc<H>>,
