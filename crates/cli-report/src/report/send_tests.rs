@@ -320,10 +320,62 @@ fn a_pending_report_is_sent_again_only_to_the_repository_it_was_first_sent_to() 
     assert!(error.to_string().contains(&format!("alondra report send {}", built.id)), "{error}");
     assert!(gh.0.borrow().issues.is_empty() && gh.0.borrow().gists.is_empty(), "nothing goes to a repository nobody confirmed");
     let held = send::read_sending(&built.dir).unwrap();
-    assert_eq!((held.repo.as_str(), held.state, held.next_at), ("owner/previous", State::Pending, i64::MAX), "the daemon stops trying it");
+    assert_eq!((held.repo.as_str(), held.state, held.next_at), ("owner/previous", State::Pending, NOW + 60_000 + send::backoff_ms(u32::MAX)), "it waits the longest backoff");
+    assert_eq!(held.attempts, 1, "a refused retry is not a try");
     let Outcome::Sent { number, .. } = send::send(&repo(&gh), mac.home(), &built.id, &files, None, NOW + 120_000, &send::backoff_ms).unwrap() else { panic!() };
     assert_eq!(gh.0.borrow().issues[0]["number"], json!(number), "sending it by hand to the new repository is the confirmation");
     assert_eq!(send::read_sending(&built.dir).unwrap().repo, REPO);
+}
+
+#[test]
+fn a_held_report_goes_on_by_itself_once_the_repository_is_the_saved_one_again() {
+    let home = Directory::new();
+    let (mac, built) = built_report(&home);
+    let files = checked(&mac, &built.id).unwrap();
+    let gh = FakeGithub::new();
+    gh.as_user("ana");
+    gh.0.borrow_mut().failing = Some(GhError::Unavailable("GitHub is down".into()));
+    assert!(matches!(send_it(&gh, &mac, &built.id).unwrap(), Outcome::Pending(_)));
+    gh.0.borrow_mut().failing = None;
+    let elsewhere = Repo { gh: &gh, name: "owner/elsewhere".into() };
+    let error = send::retry(&elsewhere, mac.home(), &built.id, &files, NOW + 60_000, &send::backoff_ms).unwrap_err();
+    assert!(matches!(error.downcast_ref::<Blocked>(), Some(Blocked::RepoChanged { .. })), "{error}");
+    assert!(gh.0.borrow().issues.is_empty() && gh.0.borrow().gists.is_empty());
+    let later = send::read_sending(&built.dir).unwrap().next_at;
+    let Outcome::Sent { number, .. } = send::retry(&repo(&gh), mac.home(), &built.id, &files, later, &send::backoff_ms).unwrap() else { panic!() };
+    assert_eq!(Public::parse(&issue(&gh, number).body).unwrap().id, built.id);
+    assert_eq!(send::read_sending(&built.dir).unwrap().state, State::Sent);
+}
+
+#[test]
+fn a_retry_with_nothing_pending_sends_nothing() {
+    let home = Directory::new();
+    let (mac, built) = built_report(&home);
+    let files = checked(&mac, &built.id).unwrap();
+    let gh = FakeGithub::new();
+    gh.as_user("ana");
+    assert!(send::retry(&repo(&gh), mac.home(), &built.id, &files, NOW, &send::backoff_ms).is_err(), "never sent: nothing to try again");
+    let Outcome::Sent { .. } = send_it(&gh, &mac, &built.id).unwrap() else { panic!() };
+    let calls = gh.0.borrow().calls.len();
+    assert!(send::retry(&repo(&gh), mac.home(), &built.id, &files, NOW, &send::backoff_ms).is_err(), "already sent");
+    assert_eq!(gh.0.borrow().calls.len(), calls, "neither try reached GitHub");
+    assert_eq!(gh.0.borrow().issues.len(), 1);
+}
+
+#[test]
+fn a_retry_that_fails_before_github_waits_the_longest_backoff() {
+    let home = Directory::new();
+    let (mac, built) = built_report(&home);
+    let gh = FakeGithub::new();
+    gh.as_user("ana");
+    gh.0.borrow_mut().failing = Some(GhError::Unavailable("GitHub is down".into()));
+    assert!(matches!(send_it(&gh, &mac, &built.id).unwrap(), Outcome::Pending(_)));
+    let due = send::read_sending(&built.dir).unwrap().next_at;
+    send::postpone(mac.home(), &built.id, due - 1, &send::backoff_ms, "not due yet").unwrap();
+    assert_eq!(send::read_sending(&built.dir).unwrap().next_at, due, "a try not yet due keeps its time");
+    send::postpone(mac.home(), &built.id, due, &send::backoff_ms, "the final check refused it").unwrap();
+    let postponed = send::read_sending(&built.dir).unwrap();
+    assert_eq!((postponed.state, postponed.next_at, postponed.last_error.as_deref()), (State::Pending, due + send::backoff_ms(u32::MAX), Some("the final check refused it")));
 }
 
 #[test]

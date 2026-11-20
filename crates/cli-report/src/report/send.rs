@@ -209,7 +209,9 @@ pub fn send(repo: &Repo, home: &Path, id: &str, files: &Files, kind: Option<Kind
 }
 
 /// The daemon's try of a pending report: it goes only to the repository it was first sent to. When
-/// `repo` is another one, nothing is sent and the report waits until whoever sends it asks again.
+/// `repo` is another one, nothing is sent: the report waits the longest backoff and tries again,
+/// so it goes on by itself once the repository is the saved one again, or whoever sends it asks for
+/// the new one with `alondra report send <id>`.
 pub fn retry(repo: &Repo, home: &Path, id: &str, files: &Files, now: i64, backoff: &dyn Fn(u32) -> i64) -> Result<Outcome> {
     send_to(repo, home, id, files, None, now, backoff, true)
 }
@@ -226,7 +228,7 @@ fn send_to(repo: &Repo, home: &Path, id: &str, files: &Files, kind: Option<Kind>
         if pending.repo != repo.name {
             let mut saved = pending.clone();
             let blocked = Blocked::RepoChanged { id: id.to_owned(), saved: saved.repo.clone(), current: repo.name.clone() };
-            saved.next_at = i64::MAX;
+            saved.next_at = now + backoff(u32::MAX);
             saved.last_error = Some(blocked.to_string());
             write_sending(&dir, &saved)?;
             return Err(blocked.into());
@@ -284,6 +286,17 @@ fn send_to(repo: &Repo, home: &Path, id: &str, files: &Files, kind: Option<Kind>
         }
         Err(Failure::Other(error)) => Err(error),
     }
+}
+
+/// A daemon's try of report `id` that failed before it could reach GitHub (its final check, no
+/// report repository) waits the longest backoff, so the daemon does not start it again every minute.
+pub fn postpone(home: &Path, id: &str, now: i64, backoff: &dyn Fn(u32) -> i64, why: &str) -> Result<()> {
+    let dir = home.join("reports").join(id);
+    let _lock = lock(&dir)?;
+    let Some(mut sending) = read_sending(&dir).filter(|s| s.state == State::Pending && s.next_at <= now) else { return Ok(()) };
+    sending.next_at = now + backoff(u32::MAX);
+    sending.last_error = Some(why.to_owned());
+    write_sending(&dir, &sending)
 }
 
 enum Failure {

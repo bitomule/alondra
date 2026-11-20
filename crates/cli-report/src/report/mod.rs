@@ -270,6 +270,9 @@ pub fn send_report(id: &str, kind: Option<send::Kind>, retry: bool, json: bool) 
         Ok((repo.name, outcome))
     });
     if retry {
+        if let Err(error) = &sent {
+            let _ = send::postpone(host.home(), id, host.now(), &backoff, &error.to_string());
+        }
         return sent.map(drop);
     }
     if json {
