@@ -40,7 +40,7 @@ mod retention;
 pub use retention::EvidenceRetention;
 mod task_context;
 mod context_handoff;
-pub use context_handoff::{HANDOFF_RESERVED_TOKENS, HandoffBudget, HandoffError, PreparedHandoff, estimated_tokens, handoff_capacity, prepare_context_handoff};
+pub use context_handoff::{HANDOFF_RESERVED_TOKENS, HANDOFF_TOKEN_CAP, HandoffBudget, HandoffError, PreparedHandoff, RefreshParts, estimated_tokens, handoff_capacity, prepare_context_handoff, prepare_refresh_handoff};
 pub use task_context::{native_context_id, ContextEntry, ContextPage, ContextRef, ContextSource, HistoryCoverage, TaskContextItem, CONTEXT_ITEM_BYTES, TASK_CONTEXT_BYTES, TASK_CONTEXT_ITEMS, TOOL_EXCERPT_BYTES};
 
 use alondra_domain::{
