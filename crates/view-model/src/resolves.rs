@@ -1,11 +1,21 @@
 use crate::action_id::{ActionId, Verb};
-use alondra_domain_rules::{DeliveryTarget, DomainState, Interaction, InteractionId, InteractionPayload, PrId, PrState, PullRequest};
+use alondra_domain_rules::{DeliveryTarget, DomainState, Interaction, InteractionId, InteractionPayload, PrId, PrState, PullRequest, Scope};
 
 /// Whether an action, applied now, takes its card out of the queue. The clients hide the card the
 /// moment it is sent when this is true, and leave it in place otherwise: they never work it out
 /// from the action's name. The daemon decides what a message becomes with the same rule.
 pub fn resolves_card(domain: &DomainState, action: &ActionId) -> bool {
     always_resolves(action.verb) || (handed_back(domain, action) && !reply_nobody_attends(domain, action))
+        || reply_reads_information(domain, action)
+}
+
+/// A reply to information reads it as it hands the text over: to the orchestrator under it, or to
+/// the task's node while that node can take it.
+fn reply_reads_information(domain: &DomainState, action: &ActionId) -> bool {
+    action.verb == Verb::Reply
+        && domain.interactions.get(&InteractionId(action.subject.clone()))
+            .is_some_and(|interaction| matches!(interaction.payload, InteractionPayload::Information { .. })
+                && (matches!(interaction.scope, Scope::Orchestrator { .. }) || domain.node_attends(interaction)))
 }
 
 /// A reply to a delivery takes it away while its node acts on it, and the delivery comes back once

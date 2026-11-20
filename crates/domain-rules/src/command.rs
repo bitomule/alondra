@@ -94,7 +94,8 @@ pub enum Command {
         #[serde(default)]
         message: bool,
     },
-    /// A user's message to the orchestrator with its card context captured in the same commit.
+    /// A user's message to the orchestrator with its card context captured in the same commit. A
+    /// reply to information is also its reading: the card leaves the inbox with it.
     CreateCardReply {
         request_id: RequestId,
         interaction_id: InteractionId,

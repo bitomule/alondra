@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:request-done-r-accounts",
   "client": "ios",
-  "version": "vd15515b9409ad48f",
+  "version": "v1b6c9025801e418c",
   "cursor": "cursor-1",
   "title": "Hecho en parte: se canceló 1 de 3 tareas",
   "status": {
@@ -82,7 +82,7 @@
           "why": "Ya puedes guardar dos cuentas de Claude y cambiar entre ellas en Ajustes. La documentación se dejó para más adelante.",
           "meta": "Dos cuentas de Claude",
           "reply": {
-            "id": "msg:view@27",
+            "id": "reply:request-done-r-accounts@19",
             "label": "Responder",
             "style": "secondary",
             "role": "neutral",
@@ -96,7 +96,7 @@
             "attachments": true,
             "enabled": true,
             "stamp": "Enviado",
-            "resolves_card": false
+            "resolves_card": true
           },
           "link": {
             "kind": "view",

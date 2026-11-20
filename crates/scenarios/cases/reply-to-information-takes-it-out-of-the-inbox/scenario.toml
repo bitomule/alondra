@@ -1,0 +1,38 @@
+name = "a written reply to the orchestrator's information reaches the orchestrator and takes the card out of the inbox"
+max_virtual = "1h"
+
+[[step]]
+do = "inform"
+card = "weekly-notice"
+title = "The weekly report is ready"
+body = "The weekly report covers the five tasks that ended this week."
+
+[[step]]
+do = "checkpoint"
+name = "notice-shown"
+screens = ["home"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "The weekly report is ready"
+
+[[step]]
+do = "reply"
+card = "weekly-notice"
+text = "Why did the export task take so long?"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "notice-replied"
+screens = ["home"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "The weekly report is ready"
+present = false

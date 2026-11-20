@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:request-done-r-accounts",
   "client": "tui",
-  "version": "va8123fa67d6aa4ed",
+  "version": "v0e6d732c92821f96",
   "cursor": "cursor-1",
   "title": "Hecho en parte: se canceló 1 de 3 tareas",
   "status": {
@@ -82,7 +82,7 @@
           "why": "Ya puedes guardar dos cuentas de Claude y cambiar entre ellas en Ajustes. La documentación se dejó para más adelante.",
           "meta": "Dos cuentas de Claude",
           "reply": {
-            "id": "msg:view@27",
+            "id": "reply:request-done-r-accounts@19",
             "label": "Responder",
             "style": "secondary",
             "role": "neutral",
@@ -97,7 +97,7 @@
             "enabled": true,
             "stamp": "Enviado",
             "key": "r",
-            "resolves_card": false
+            "resolves_card": true
           },
           "link": {
             "kind": "view",

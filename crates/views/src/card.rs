@@ -1962,7 +1962,8 @@ fn local_action(label: &str, key: &str, local: LocalLink) -> Action {
 
 /// Text to the node (or the orchestrator) the card came from; every card has it but a task's start
 /// problem, which no node is behind, and a machine card, which Alondra raises itself. Under an
-/// open question it is the answer to that question, the orchestrator's included.
+/// open question it is the answer to that question, the orchestrator's included, and under
+/// information it goes with the card and reads it.
 fn reply_action(item: &InboxItem, interaction: Option<&Interaction>, context: &RenderContext<'_>) -> Option<Action> {
     let lang = context.lang;
     let interaction = interaction.filter(|interaction| {
@@ -1999,7 +2000,7 @@ fn reply_action(item: &InboxItem, interaction: Option<&Interaction>, context: &R
             action_id(Verb::Reply, &interaction.id.0, interaction.revision, None)?,
             tf!(lang, "Reply to {node}…", "Responder a {node}…", node = node_name(item, context)),
         )
-    } else if answers {
+    } else if answers || matches!(interaction.payload, InteractionPayload::Information { .. }) {
         (action_id(Verb::Reply, &interaction.id.0, interaction.revision, None)?, t!(lang, "Reply…", "Responder…").into())
     } else {
         (

@@ -103,6 +103,9 @@ struct Body {
     maintenance: bool,
     #[serde(default)]
     message: bool,
+    /// The card this message replies to: the request keeps it, and a reply to information reads it.
+    #[serde(default)]
+    reply_to: Option<String>,
 }
 
 fn refused(message: impl Into<String>) -> Reply {
@@ -182,6 +185,8 @@ impl Client {
             maintenance: bool,
             #[serde(default)]
             from_claude: bool,
+            #[serde(default)]
+            reply_to: Option<String>,
         }
         let Ok(message) = serde_json::from_value::<Message>(body.clone()) else {
             return Ok(Reply::error(DomainError::new("invalid_input", "invalid message")));
@@ -194,7 +199,7 @@ impl Client {
             message.text
         };
         let request = json!({"request_id": format!("request-{}", crate::auth::random_hex(16)),
-            "text": text, "options": {}, "attachments": message.attachments, "maintenance": message.maintenance, "message": true});
+            "text": text, "options": {}, "attachments": message.attachments, "maintenance": message.maintenance, "message": true, "reply_to": message.reply_to});
         self.new_request(user_id, &request, transport, authorize).await
     }
 
@@ -252,7 +257,10 @@ impl Client {
             data_epoch: state.data_epoch.clone(),
             command_id: format!("request-{}", body.request_id).into(),
             expected_revision: 0,
-            command: Command::CreateRequest { request_id: body.request_id.into(), body: body.text, auto_merge, maintenance: body.maintenance, message: body.message },
+            command: match body.reply_to {
+                Some(card) => Command::CreateCardReply { request_id: body.request_id.into(), interaction_id: card.into(), body: body.text, auto_merge },
+                None => Command::CreateRequest { request_id: body.request_id.into(), body: body.text, auto_merge, maintenance: body.maintenance, message: body.message },
+            },
         };
         let outcome = self.domain.execute_with(&Actor::User { user_id: user_id.to_owned() }, &envelope, transport, Some(&launch), || {
             authorize().map_err(|_| DomainError::new("forbidden", "device approval was revoked").into())

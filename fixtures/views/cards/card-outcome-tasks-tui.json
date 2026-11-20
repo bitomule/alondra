@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:request-tasks-r-sync-1",
   "client": "tui",
-  "version": "v27581b8cc902dc4d",
+  "version": "v12877f7514d79a33",
   "cursor": "cursor-1",
   "title": "I created 3 tasks",
   "status": {
@@ -82,7 +82,7 @@
           "why": "First “Guardar las notas con su versión”; then “Sincronizar desde el iPhone” and “Sincronizar desde el Mac”, in parallel.",
           "meta": "Sincronizar notas",
           "reply": {
-            "id": "msg:view@27",
+            "id": "reply:request-tasks-r-sync-1@27",
             "label": "Reply",
             "style": "secondary",
             "role": "neutral",
@@ -97,7 +97,7 @@
             "enabled": true,
             "stamp": "Sent",
             "key": "r",
-            "resolves_card": false
+            "resolves_card": true
           },
           "link": {
             "kind": "view",

@@ -119,6 +119,25 @@ fn a_card_reply_keeps_the_card_and_every_task_of_its_request() {
 }
 
 #[test]
+fn a_reply_to_information_reads_it_and_takes_it_out_of_the_inbox() {
+    for scope in [Scope::Orchestrator { request_id: Some("r".into()) }, scope("t")] {
+        let mut s = fixture();
+        ok(&mut s, Actor::System, inform("notice", scope, "The weekly report is ready."));
+        let pending = |s: &DomainState| inbox_items(s).iter().any(|item| item.id.ends_with(":notice") && item.pending);
+        assert!(pending(&s), "the notice waits for the user");
+        let outcome = ok(&mut s, user(), card_reply("follow-up", "notice", "Why did it take so long?"));
+        assert!(!pending(&s), "a reply settles the notice like any answered card");
+        assert!(matches!(&s.interactions[&"notice".into()].payload,
+            InteractionPayload::Information { read_by } if read_by.contains("u")));
+        assert_eq!(s.requests[&"follow-up".into()].body, "Why did it take so long?");
+        assert!(outcome.effects.iter().any(|effect| matches!(effect,
+            DomainEffect::NotifyOrchestrator { request_id: Some(id), .. } if id.0 == "follow-up")),
+            "the reply still reaches the orchestrator");
+        assert_cards_usable(&s);
+    }
+}
+
+#[test]
 fn a_card_reply_can_name_one_task_or_no_task() {
     for scope in [scope("t"), Scope::Orchestrator { request_id: None }] {
         let mut s = fixture();
