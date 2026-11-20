@@ -823,8 +823,11 @@ impl ClaudeModel {
                     self.emit(host, state, "status", json!({"type": "rate_limit_event", "uuid": event, "session_id": host.session,
                         "rate_limit_info": {"status": "rejected", "resetsAt": resets_at / 1000, "rateLimitType": "five_hour", "utilization": 1.0}}));
                 }
+                let unused = json!({"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+                    "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 0}});
                 self.emit(host, state, "message", json!({"type": "assistant", "uuid": answer, "parent_tool_use_id": null, "user_message_uuid": last,
-                    "user_message_uuids": taken, "error": error.error, "session_id": host.session}));
+                    "user_message_uuids": taken, "error": error.error, "session_id": host.session,
+                    "message": {"role": "assistant", "model": "<synthetic>", "content": [], "usage": unused}}));
                 let terminal = if limited { "blocking_limit" } else { "api_error" };
                 let mut payload = json!({"type": "result", "subtype": "success", "uuid": result, "user_message_uuid": last, "user_message_uuids": taken,
                     "is_error": true, "terminal_reason": terminal, "session_id": host.session});
