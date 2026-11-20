@@ -80,6 +80,21 @@ The envelope goes through the same handler as the direct listener, with one rece
 the same envelope gets the same answer whichever path it took, and a repeated mutation never
 runs twice. Approval is checked again on every stream.
 
+## The client's connection
+
+The CLI keeps one connection per Mac and reuses it while it stays open. Every connection starts
+on the relay and moves to a direct path once iroh finds one. Three things make it dial again:
+
+- **After the Mac sleeps.** The client sees the wall clock run ahead of the monotonic one, which
+  stands still while the Mac sleeps. It then dials a new connection from a new endpoint, which
+  looks for paths on the network the Mac woke up on.
+- **After two minutes only on the relay.** It tries a new endpoint, at most once every ten
+  minutes, and keeps the old connection until the new one is accepted.
+- **After failures.** It waits 5, 15, 30 and then 60 seconds after each failure in a row before
+  dialing again; meanwhile requests to a Mac paired directly take the HTTP route. An answer starts
+  the waits over. For a Mac paired through the account, only a connection that was open and failed
+  waits; availability checks still dial a Mac that could not be reached.
+
 ## Limits
 
 32 streams at a time per connection (unidirectional streams are not accepted) and 64
