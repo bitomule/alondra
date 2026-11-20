@@ -24,7 +24,7 @@ low_opt_rust_test(
     crate_root = "src/lib.rs",
     edition = "2024",
     # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
-    env = {"HOME": "."},
+    env = {"HOME": ".", "TEST_EXECS": "/bin/cat /bin/sh /bin/sleep tmpdir"},
     version = "0.1.0",
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS,
 )

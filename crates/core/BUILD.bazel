@@ -21,6 +21,7 @@ exports_files(glob(["fixtures/*.jsonl"]))
 
 low_opt_rust_test(
     name = "alondra_core_test",
+    env = {"TEST_EXECS": "/bin/sh /usr/bin/git /usr/bin/true tmpdir"},
     timeout = "moderate",
     srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
     compile_data = glob(["fixtures/*.jsonl", "fixtures/*.json"]) + ["src/model_sheets.toml"],

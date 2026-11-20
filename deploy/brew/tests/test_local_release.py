@@ -4,6 +4,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import shutil
@@ -229,7 +230,7 @@ class LocalReleaseTests(unittest.TestCase):
             self.fail(f'Unexpected command before release validation: {args}')
         with patch.object(l, 'run', side_effect=fake), self.assertRaises(subprocess.CalledProcessError):
             l.prepare('0.1.2', 'source', self.root / 'artifacts')
-        self.assertEqual(calls[-1], ('bazelisk', 'test', l.RELEASE_CONFIG, '//crates/...', '//deploy/brew/...', *l.RELEASE_ONLY_TESTS))
+        self.assertEqual(calls[-1], ('bazelisk', 'test', l.RELEASE_CONFIG, l.TEST_WRAPPER, '//crates/...', '//deploy/brew/...', l.WRAPPER_TEST, *l.RELEASE_ONLY_TESTS))
 
     def test_a_release_names_tests_that_exist_and_that_no_wildcard_runs(self):
         self.assertIn('//crates/alondrad:codex_adoption_process_test', l.RELEASE_ONLY_TESTS)
@@ -238,7 +239,11 @@ class LocalReleaseTests(unittest.TestCase):
             declared = (REPO_ROOT / package / 'BUILD.bazel').read_text()
             self.assertIn(f'name = "{name}"', declared, f'{label} is not declared in {package}')
             target = declared[declared.index(f'name = "{name}"'):]
-            self.assertIn('tags = ["manual"]', target[:target.index('\n)\n')], f'{label} runs with every wildcard already')
+            target = target[:target.index('\n)\n')]
+            tags = re.search(r'tags = \[([^\]]*)\]', target)
+            tags = re.findall(r'"([^"]+)"', tags.group(1)) if tags else []
+            self.assertIn('manual', tags, f'{label} runs with every wildcard already')
+            self.assertIn('e2e', tags, f'{label} is no end-to-end test: tag it e2e or let every edit run it')
 
     def test_disk_guard_accepts_threshold_and_rejects_below_it(self):
         sufficient = type('Usage', (), {'free': l.LOW_FREE})()

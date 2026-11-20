@@ -28,6 +28,7 @@ adapter_in_crate(
 # The screens are compared with what the daemon's renderer builds, so the test renders real views.
 low_opt_rust_test(
     name = "cli_tui_test",
+    env = {"TEST_EXECS": "/bin/sh /usr/bin/defaults /usr/bin/id tmpdir"},
     size = "small",
     srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
     compile_data = ["//fixtures/diffs"],

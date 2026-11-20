@@ -1,0 +1,6 @@
+# Every test runs under this repository's wrapper: its own short TMPDIR under /tmp, removed when it
+# ends (macOS caps a unix socket path at 104 bytes, and the default one under /var/folders is too
+# long for the daemon's sockets), and the guard that refuses every program the test does not
+# declare. A user bazelrc that sets another --run_under imports this file as its last line
+# (docs/running-tests.md).
+test --run_under=//tools:test_tmpdir

@@ -15,6 +15,7 @@ foundation_crate(
 
 low_opt_rust_test(
     name = "process_group_test",
+    env = {"TEST_EXECS": "/bin/cat /bin/sh /bin/sleep"},
     size = "small",
     crate = ":process_group",
     edition = "2024",

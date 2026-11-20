@@ -88,6 +88,144 @@ materialized locally.
   use `@Suite(.temporaryFiles)` and `TestFiles.directory()`. The tree is removed on success and
   failure.
 
+## Programs a test runs
+
+A test runs no external tool: no `git`, `gh`, `claude`, `codex`, Node host, `launchctl` or any
+other program but its own executable and the interpreter of its script. The test wrapper
+(`tools/test-tmpdir.sh`, which every `bazel test` runs under) turns that into a kernel sandbox: any
+other exec fails with `Operation not permitted`, and a failing test prints how to see what was
+refused. The kernel names the refused program only in the unified log, so run the test again
+while this runs in another terminal:
+
+```sh
+log stream --style compact --predicate 'sender == "Sandbox" AND eventMessage CONTAINS "process-exec"'
+```
+
+The test's own executable is its resolved path, so a test that runs itself again still may. A
+script test also runs the interpreter its first line names and what Bazel's launchers run before
+it: `dirname`, `basename`, `uname`, `ln`, `env`, `bash`, the `python3` on its `PATH` and the
+programs of Bazel's external repositories, the toolchains (the Node of a `js_test`). A program of
+this repository is never part of the test: a sibling binary is an exception like any other.
+
+The exceptions of today are declared per target, in its BUILD `env`, one entry per program:
+
+```starlark
+env = {"TEST_EXECS": "/usr/bin/git $(rootpath :alondra) tmpdir"},
+```
+
+- a system path under `/bin`, `/sbin`, `/usr/bin`, `/usr/sbin` or `/usr/libexec`. An Xcode shim
+  (`/usr/bin/git`, `/usr/bin/python3`) brings the tool it runs and the `/bin/sh` and `xcodebuild`
+  it asks the first time a new `HOME` runs it;
+- `$(rootpath <label>)` of an executable the target lists in `data`;
+- `path:<name>`: the program of that name the test's `PATH` finds, for a tool installed outside the
+  system folders (the Claude Code `//:plugin_mod_test` runs);
+- `tmpdir`: programs the test writes under its own `TMPDIR` or `TEST_TMPDIR` (fake `gh`, `claude`);
+- `own-sandbox`, alone: the test starts `sandbox-exec` itself, which cannot run inside the guard's
+  sandbox, so the target runs without the guard;
+- `e2e`, alone, on a `manual` target tagged `e2e`: an end-to-end test that exists to run a real
+  tool. It leaves the validation of every edit and runs with the release, which names it in
+  `RELEASE_ONLY_TESTS` (`deploy/brew/local-release.py`); `bazelisk test <target>` runs it on
+  request.
+
+The list only shrinks. `//tools:test_execs_test` fails on a malformed entry, on a program with no
+reason in `tools/test_execs.tsv`, and when the entries pass `EXEC_CEILING` or `OWN_SANDBOX_CEILING`
+in `tools/test_execs.py`; a change that removes an entry lowers the ceiling. A test that needs
+a program runs it inside the test, or uses a double, instead of adding an entry. The table below is
+generated from the BUILD files: `bazel run //tools:test_execs -- write` rewrites it.
+
+<!-- test-execs:begin -->
+| Program | Targets | Why |
+|---|---|---|
+| `tmpdir` | `//:sourcekit_lsp_workspace_test`, `//agent-host:probe_test`, `//agent-host:umask_test`, `//crates/alondra:cli_api_test`, `//crates/alondra:doctor_service_test`, `//crates/alondrad:launcher_test`, `//crates/alondrad:relaunch_test`, `//crates/cli-tui:cli_tui_test`, `//crates/cli:cli_test`, `//crates/core:alondra_core_test`, `//crates/daemon-engine:daemon_engine_test`, `//crates/daemon-server:daemon_server_test`, `//crates/daemon-support:daemon_support_test`, `//crates/engine-github:engine_github_test`, `//crates/engine-kernel:engine_kernel_test`, `//crates/engine-mcp:engine_mcp_test`, `//crates/engine-orchestrator:engine_orchestrator_test`, `//crates/engine-sdk:engine_sdk_test`, `//crates/github-gh:github_gh_test`, `//crates/host:host_test`, `//crates/provider-claude:sdk_worker_test`, `//crates/system:system_test`, `//deploy/apple:increment_version_test`, `//deploy/brew:local_release_test`, `//tools:bazel_artifact_paths_test`, `//tools:buildbuddy_credential_helper_test`, `//tools:plugin_mod_test_tmpdir_test`, `//tools:reap_test_hosts_test` | Fake `gh`, `claude`, `codex`, `brew` and daemons the tests write under their own temporary folder. |
+| `/bin/sh` | `//agent-host:umask_test`, `//crates/alondra:cli_api_test`, `//crates/alondra:doctor_service_test`, `//crates/alondrad:launcher_test`, `//crates/alondrad:relaunch_test`, `//crates/cli-tui:cli_tui_test`, `//crates/cli:cli_test`, `//crates/core:alondra_core_test`, `//crates/daemon-engine:daemon_engine_test`, `//crates/daemon-server:daemon_server_test`, `//crates/daemon-support:daemon_support_test`, `//crates/engine-github:engine_github_test`, `//crates/engine-mcp:engine_mcp_test`, `//crates/github-gh:github_gh_test`, `//crates/host:host_test`, `//crates/process-group:process_group_test`, `//crates/system:system_test`, `//deploy/apple:increment_version_test`, `//deploy/brew:local_release_test`, `//tools/worktree_setup_test:setup_test`, `//tools:bazel_artifact_paths_test`, `//tools:plugin_mod_test_tmpdir_test` | Tests run shell snippets as the process under test. |
+| `/usr/bin/git` | `//crates/cli:cli_test`, `//crates/core:alondra_core_test`, `//crates/daemon-engine:daemon_engine_test`, `//crates/daemon-server:daemon_server_test`, `//crates/engine-github:engine_github_test`, `//crates/engine-kernel:engine_kernel_test`, `//crates/engine-orchestrator:engine_orchestrator_test`, `//crates/engine-sdk:engine_sdk_test`, `//crates/system:system_test`, `//deploy/apple:increment_version_test`, `//tools/sandbox:alondra-sandbox_test`, `//tools/worktree_setup_test:setup_test`, `//tools:public_data_guard_test`, `//tools:worktree_volume_bench_test` | The engine and CLI tests make real repositories and worktrees. |
+| `/bin/cat` | `//crates/agent-runtime:readiness_test`, `//crates/alondra:doctor_service_test`, `//crates/cli:cli_test`, `//crates/daemon-engine:daemon_engine_test`, `//crates/daemon-server:daemon_server_test`, `//crates/engine-github:engine_github_test`, `//crates/engine-mcp:engine_mcp_test`, `//crates/engine-orchestrator:engine_orchestrator_test`, `//crates/github-gh:github_gh_test`, `//crates/host:host_test`, `//crates/process-group:process_group_test`, `//tools:buildbuddy_credential_helper_test` | Tests that need a process that reads its input. |
+| `/usr/bin/id` | `//crates/alondra:cli_api_test`, `//crates/alondra:doctor_service_test`, `//crates/alondrad:relaunch_test`, `//crates/cli-tui:cli_tui_test`, `//crates/daemon-engine:daemon_engine_test`, `//crates/daemon-server:daemon_server_test`, `//crates/engine-orchestrator:engine_orchestrator_test`, `//crates/engine-sdk:engine_sdk_test`, `//crates/scenarios:scenarios_harness_test`, `//crates/system:system_test` | The code under test asks `id` for the user it runs as. |
+| `/bin/sleep` | `//crates/alondrad:launcher_test`, `//crates/daemon-server:daemon_server_test`, `//crates/daemon-support:daemon_support_test`, `//crates/engine-orchestrator:engine_orchestrator_test`, `//crates/engine-sdk:engine_sdk_test`, `//crates/host:host_test`, `//crates/process-group:process_group_test`, `//crates/scenarios:scenarios_harness_test`, `//tools:reap_test_hosts_test` | Tests that need a process that keeps running for a while. |
+| `/usr/bin/python3` | `//agent-host:umask_test`, `//crates/daemon-engine:daemon_engine_test`, `//crates/daemon-server:daemon_server_test`, `//crates/engine-orchestrator:engine_orchestrator_test`, `//crates/engine-sdk:engine_sdk_test`, `//crates/provider-claude:sdk_worker_test`, `//crates/scenarios:from_report_bin_test`, `//crates/system:system_test` | `HostRoot` fixtures start a Python reaper beside each host; some tests run Python fakes. |
+| `//agent-host:persistent-fake-claude.py` | `//agent-host:consecutive_inputs_test`, `//agent-host:controls_test`, `//agent-host:decisions_test`, `//agent-host:host_stop_test`, `//agent-host:probe_test`, `//agent-host:reconcile_test`, `//agent-host:umask_test` | A fake Claude Code the hosts under test talk to. |
+| `//crates/alondra:alondra` | `//crates/alondra:cli_api_test`, `//crates/alondra:doctor_json_test`, `//crates/alondra:doctor_service_test`, `//crates/alondra:domain_mcp_test`, `//crates/alondra:hook_transport_test`, `//crates/alondra:version_test`, `//crates/daemon-server:daemon_server_test` | CLI tests run the real `alondra` binary. |
+| `/usr/bin/defaults` | `//crates/alondra:cli_api_test`, `//crates/alondra:doctor_service_test`, `//crates/cli-tui:cli_tui_test`, `//crates/cli:cli_test`, `//crates/daemon-server:daemon_server_test`, `//crates/scenarios:from_report_bin_test` | The code under test reads macOS preferences with `defaults`. |
+| `/usr/sbin/lsof` | `//crates/alondra:cli_api_test`, `//crates/alondra:doctor_service_test`, `//crates/daemon-server:daemon_server_test`, `//crates/engine-orchestrator:engine_orchestrator_test`, `//crates/engine-sdk:engine_sdk_test`, `//tools:reap_test_hosts_test` | Reapers and the doctor find the processes that hold a file. |
+| `/bin/rm` | `//:plugin_mod_test`, `//crates/alondra:doctor_service_test`, `//crates/daemon-engine:daemon_engine_test`, `//deploy/apple:increment_version_test`, `//tools:plugin_mod_test_tmpdir_test` | The plugin test script removes its work folder. |
+| `/usr/bin/true` | `//crates/agent-runtime:readiness_test`, `//crates/core:alondra_core_test`, `//crates/daemon-support:daemon_support_test`, `//crates/engine-live:engine_live_test`, `//crates/engine-orchestrator:engine_orchestrator_test` | Tests that need a process that starts and exits at once. |
+| `own-sandbox` | `//agent-host:sea_test`, `//crates/agent-runtime:owned_host_test`, `//crates/scenarios:scenarios_test`, `//deploy/brew:upgrade_rehearsal_test`, `//tools:bazel_test_tmpdir_test` | The test starts sandbox-exec itself, which cannot run inside the guard's sandbox, so the target runs unguarded. |
+| `//agent-host:alondra-host` | `//crates/daemon-engine:daemon_engine_test`, `//crates/daemon-server:daemon_server_test`, `//crates/engine-orchestrator:engine_orchestrator_test`, `//crates/engine-sdk:engine_sdk_test` | Engine and server tests run the host a release ships. |
+| `/usr/bin/plutil` | `//crates/alondra:cli_api_test`, `//crates/alondra:doctor_service_test`, `//crates/cli:cli_test`, `//crates/system:system_test` | The CLI writes and checks the launchd plist with `plutil`. |
+| `/usr/bin/touch` | `//crates/alondra:doctor_service_test`, `//crates/daemon-server:daemon_server_test`, `//crates/daemon-support:daemon_support_test`, `//crates/engine-github:engine_github_test` | Fake `gh` scripts leave a mark that they ran. |
+| `/bin/cp` | `//:plugin_mod_test`, `//deploy/apple:increment_version_test`, `//tools:plugin_mod_test_tmpdir_test` | The plugin test script copies the plugin it tests. |
+| `/bin/kill` | `//crates/alondrad:launcher_test`, `//crates/daemon-server:daemon_server_test`, `//crates/engine-sdk:engine_sdk_test` | Tests and their fakes signal the processes they started. |
+| `/bin/mkdir` | `//agent-host:umask_test`, `//crates/alondra:doctor_service_test`, `//deploy/apple:increment_version_test` | The test script lays out a throwaway repository. |
+| `/bin/mv` | `//crates/alondra:doctor_service_test`, `//crates/system:system_test`, `//tools/worktree_setup_test:setup_test` | The worktree setup script moves its generated rc file into place. |
+| `/usr/bin/grep` | `//crates/alondra:doctor_service_test`, `//tools/worktree_setup_test:setup_test`, `//tools:bazel_artifact_paths_test` | The worktree setup script checks the lines it already wrote. |
+| `/usr/bin/mkfifo` | `//crates/daemon-server:daemon_server_test`, `//crates/engine-orchestrator:engine_orchestrator_test`, `//crates/engine-sdk:engine_sdk_test` | Tests make named pipes to hold a fake host until they release it. |
+| `/usr/bin/mktemp` | `//deploy/apple:increment_version_test`, `//tools/worktree_setup_test:setup_test`, `//tools:plugin_mod_test_tmpdir_test` | The plugin test script makes its own work folder. |
+| `/usr/bin/wc` | `//crates/alondra:doctor_service_test`, `//crates/daemon-server:daemon_server_test`, `//crates/engine-github:engine_github_test` | Fake scripts count the calls they received. |
+| `//agent-host:alondra-codex-host` | `//crates/engine-orchestrator:engine_orchestrator_test`, `//crates/engine-sdk:engine_sdk_test` | Orchestrator tests run the Codex host a release ships. |
+| `//crates/alondrad:alondrad` | `//crates/alondrad:info_commands_test`, `//crates/daemon-server:daemon_server_test` | Tests run the real daemon binary. |
+| `/bin/ls` | `//crates/daemon-engine:daemon_engine_test`, `//crates/daemon-server:daemon_server_test` | Fake scripts list the folders they were given. |
+| `/usr/bin/head` | `//crates/daemon-server:daemon_server_test`, `//crates/engine-github:engine_github_test` | Fake `gh` scripts print part of a recorded answer. |
+| `/usr/bin/make` | `//deploy/apple:increment_version_test`, `//tools:bazel_artifact_paths_test` | The test runs Makefile targets to check the paths they print. |
+| `/usr/bin/pgrep` | `//crates/engine-orchestrator:engine_orchestrator_test`, `//crates/engine-sdk:engine_sdk_test` | Python reapers beside each host find the processes they end. |
+| `/usr/bin/sw_vers` | `//crates/alondra:cli_api_test`, `//crates/alondra:doctor_service_test` | The CLI's doctor reads the macOS version. |
+| `//agent-host:alondra-codex-plan-legacy-fixture-host` | `//crates/engine-sdk:engine_sdk_test` | A Codex host built from an older plan format. |
+| `//agent-host:codex-legacy-fixture` | `//crates/engine-sdk:engine_sdk_test` | A Codex host of an older release. |
+| `//agent-host:descendant-fake-claude.py` | `//agent-host:sdk_descendant_test` | A fake Claude Code that leaves a descendant behind. |
+| `//agent-host:fake-codex.py` | `//agent-host:codex_session_test` | A fake Codex the Codex host under test talks to. |
+| `//agent-host:pinned_node` | `//crates/provider-claude:sdk_worker_test` | The SDK worker tests run the host on the pinned Node. |
+| `//crates/alondra:fake_daemon` | `//crates/alondra:doctor_service_test` | A daemon double the doctor talks to. |
+| `//crates/alondrad:alondrad-launcher` | `//crates/alondrad:launcher_test` | The launcher's tests run the launcher. |
+| `//crates/github-gh:diff_fixture` | `//crates/github-gh:github_gh_test` | A double of `gh pr diff` the tests run in its place. |
+| `//crates/scenarios:host_relay` | `//crates/scenarios:scenarios_harness_test` | Scenarios run the relay between the daemon and a recorded host. |
+| `//tools:buildbuddy-credential-helper.sh` | `//tools:buildbuddy_credential_helper_test` | The test runs the credential helper it tests. |
+| `/bin/chmod` | `//deploy/apple:increment_version_test` | The test script makes a refusing git hook executable. |
+| `/bin/df` | `//crates/system:system_test` | The disk checks read free space with `df`. |
+| `/bin/ps` | `//tools:reap_test_hosts_test` | The test host reaper lists processes. |
+| `/usr/bin/codesign` | `//tools:reap_test_hosts_test` | The reaper tells test hosts by their code signature. |
+| `/usr/bin/lsbom` | `//deploy/apple:prepare_test` | The Apple release script reads the bill of materials of its package. |
+| `/usr/bin/mkbom` | `//deploy/apple:prepare_test` | The Apple release script rewrites the bill of materials of its package. |
+| `/usr/bin/pkgbuild` | `//deploy/apple:prepare_test` | The Apple release script builds the macOS installer package. |
+| `/usr/bin/productbuild` | `//deploy/apple:prepare_test` | The Apple release script builds the macOS installer product. |
+| `/usr/bin/sed` | `//deploy/apple:increment_version_test` | The test script reads the version and build number. |
+| `/usr/bin/sips` | `//crates/daemon-support:daemon_support_test` | The daemon makes app icons with `sips`. |
+| `/usr/bin/sourcekit-lsp` | `//:sourcekit_lsp_workspace_test` | The test starts the real SourceKit-LSP. |
+| `/usr/bin/tail` | `//tools/worktree_setup_test:setup_test` | The worktree setup script checks how a file ends. |
+| `/usr/bin/xattr` | `//deploy/apple:prepare_test` | The Apple release script clears extended attributes. |
+| `/usr/bin/xcode-select` | `//:sourcekit_lsp_workspace_test` | SourceKit-LSP asks where Xcode is. |
+| `/usr/bin/xcrun` | `//:sourcekit_lsp_workspace_test` | The test starts the real SourceKit-LSP through `xcrun`. |
+| `/usr/sbin/diskutil` | `//crates/system:system_test` | The disk checks ask `diskutil` about volumes. |
+| `/usr/sbin/pkgutil` | `//deploy/apple:prepare_test` | The Apple release script checks the package it built. |
+| `e2e` | `//crates/alondrad:codex_adoption_process_test` | End to end: runs without the guard, only when the release names it in `RELEASE_ONLY_TESTS` or on request. |
+| `path:claude` | `//:plugin_mod_test` | The node mod's tests run with the Claude Code on PATH (`claude plugin test`). |
+| (none: not guarded) | `//apple/...` | Swift tests drive simulators, `xcodebuild` and the Xcode tools; they run without the guard. |
+| (none: not guarded) | `//tests/...` | The opt-in suites run real daemons, relays and the native Claude on request; they run without the guard. |
+| (none: not guarded) | every `rust_doc_test` | rustdoc compiles each example with the C toolchain and runs it from its own temporary folder; doctests run without the guard. |
+<!-- test-execs:end -->
+
+The guard runs only under the repository's wrapper. `.bazelrc` imports
+`tools/test-wrapper.bazelrc`, which sets `test --run_under=//tools:test_tmpdir`; a `--run_under` in
+your own `~/.bazelrc` is read after it and wins, and the tests then run unguarded. If yours sets
+one, add this as its last line; it changes nothing in other repositories:
+
+```
+try-import %workspace%/tools/test-wrapper.bazelrc
+```
+
+`//tools:test_wrapper_test` fails, with that line, when the tests of a run did not run under the
+repository's wrapper; `bazelisk test //tools:test_wrapper_test` tells whether yours is in effect.
+The release passes `--run_under=//tools:test_tmpdir` itself and runs that test too.
+
+What the guard does not cover:
+
+- a failure names the test, never the refused program: only the unified log does, as above;
+- it is the macOS kernel sandbox, so on Linux (part of CI) tests run unguarded;
+- the kernel never lets a sandboxed process start a set-user-ID program (`/bin/ps`), so a declared
+  one runs outside the sandbox, and what it starts is not guarded;
+- a program a declared one starts is guarded too, so it is declared on the test's target as well;
+- a test already inside another sandbox (Bazel's `darwin-sandbox` strategy) runs unguarded: macOS
+  sandboxes do not nest. Tests here run with the local strategy;
+- the targets of the table's last rows: Swift, the opt-in suites, doctests, `own-sandbox` and `e2e`.
+
 ## Limits
 
 Every test target declares `size` or `timeout`, and `//tools:test_limits_test` fails on one that

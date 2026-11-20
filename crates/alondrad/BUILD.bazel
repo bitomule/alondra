@@ -60,6 +60,7 @@ root_binary(
 
 low_opt_rust_test(
     name = "launcher_test",
+    env = {"TEST_EXECS": "$(rootpath :alondrad-launcher) /bin/kill /bin/sh /bin/sleep tmpdir"},
     size = "small",
     srcs = ["tests/launcher.rs", "//crates:test_support.rs"],
     crate_root = "tests/launcher.rs",
@@ -118,6 +119,7 @@ low_opt_rust_test(
 
 low_opt_rust_test(
     name = "relaunch_test",
+    env = {"TEST_EXECS": "/bin/sh /usr/bin/id tmpdir"},
     timeout = "moderate",
     srcs = ["tests/relaunch.rs"],
     data = [":alondrad"],
@@ -129,6 +131,7 @@ low_opt_rust_test(
 
 low_opt_rust_test(
     name = "info_commands_test",
+    env = {"TEST_EXECS": "$(rootpath :alondrad)"},
     size = "small",
     srcs = ["tests/info_commands.rs", "//crates:test_support.rs"],
     crate_root = "tests/info_commands.rs",
@@ -166,8 +169,12 @@ low_opt_rust_test(
         "FIXTURE_NATIVE": "$(rootpath //agent-host:persistent-fake-claude.py)",
         "FIXTURE_NODE": "$(rootpath //agent-host:alondra-host)",
         "HOME": ".",
+        "TEST_EXECS": "e2e",
     },
-    tags = ["manual"],
+    tags = [
+        "e2e",
+        "manual",
+    ],
     target_compatible_with = ["@platforms//os:macos"],
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + [

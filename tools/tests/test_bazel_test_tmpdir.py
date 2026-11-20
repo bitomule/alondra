@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -47,25 +48,102 @@ def remove(path):
     subprocess.run(["rm", "-rf", str(path)], check=True)
 
 
+GUARDED = unittest.skipUnless(sys.platform == "darwin", "the exec guard is the macOS kernel sandbox")
+
+
 class BazelTestTmpdirTest(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix="btt-"))
         self.addCleanup(remove, self.root)
 
-    def run_wrapped(self, script):
-        env = dict(os.environ, BAZEL_TEST_TMPDIR_ROOT=str(self.root))
-        return subprocess.run([str(wrapper), "/bin/sh", "-c", script], env=env).returncode
+    def environment(self, execs="own-sandbox", **more):
+        environment = dict(os.environ, BAZEL_TEST_TMPDIR_ROOT=str(self.root), TEST_EXECS=execs, TEST_TARGET="//crates/a:a_test")
+        environment.update(more)
+        return environment
 
-    def run_executable(self, contents, *arguments, input=None):
+    def run_wrapped(self, script):
+        return subprocess.run([str(wrapper), "/bin/sh", "-c", script], env=self.environment()).returncode
+
+    def run_executable(self, contents, *arguments, input=None, **environment):
         executable = self.root / "test-executable"
         executable.write_bytes(contents)
         executable.chmod(0o755)
         return subprocess.run(
             [str(wrapper), str(executable), *arguments],
-            env=dict(os.environ, BAZEL_TEST_TMPDIR_ROOT=str(self.root)),
+            env=self.environment(**environment),
             capture_output=True,
             input=input,
         )
+
+    def run_guarded(self, script, execs="", target="//crates/a:a_test"):
+        return subprocess.run(
+            [str(wrapper), "/bin/sh", "-c", script],
+            env=self.environment(execs, TEST_TARGET=target),
+            capture_output=True,
+            text=True,
+        )
+
+    @GUARDED
+    def test_a_test_that_runs_an_undeclared_program_fails_and_says_how_to_see_it(self):
+        result = self.run_guarded("/usr/bin/true")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("/usr/bin/true: Operation not permitted", result.stderr)
+        self.assertIn("exec guard: this test may run only its own executable", result.stderr)
+        self.assertIn("log stream", result.stderr)
+
+    def test_a_declared_program_runs(self):
+        result = self.run_guarded("/usr/bin/true", "/usr/bin/true")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("exec guard", result.stderr)
+
+    @GUARDED
+    def test_children_of_a_declared_program_are_guarded_too(self):
+        result = self.run_guarded("/usr/bin/env /usr/bin/true", "/usr/bin/env")
+        self.assertNotEqual(result.returncode, 0)
+
+    @GUARDED
+    def test_programs_the_test_writes_under_its_tmpdir_run_when_declared(self):
+        script = 'printf "#!/bin/sh\\nexit 0\\n" > "$TMPDIR/fake" && chmod +x "$TMPDIR/fake" && "$TMPDIR/fake"'
+        self.assertNotEqual(self.run_guarded(script, "/usr/bin/printf /bin/chmod").returncode, 0)
+        self.assertEqual(self.run_guarded(script, "/usr/bin/printf /bin/chmod tmpdir").returncode, 0)
+
+    def test_a_script_test_runs_its_interpreter_and_itself_again(self):
+        script = f'#!{sys.executable}\nimport os, sys\nif len(sys.argv) == 1:\n    os.execv(sys.argv[0], [sys.argv[0], "again"])\nprint("ran", sys.argv[1])\n'.encode()
+        result = self.run_executable(script, execs="")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, b"ran again\n")
+
+    @GUARDED
+    def test_a_declared_set_user_id_program_runs(self):
+        result = self.run_guarded("/bin/ps -p $$ >/dev/null", "/bin/ps")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @GUARDED
+    def test_a_program_declared_by_name_runs_from_the_path(self):
+        self.assertNotEqual(self.run_guarded("id -u").returncode, 0)
+        result = self.run_guarded("id -u", "path:id")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @GUARDED
+    def test_a_script_test_runs_what_its_launcher_needs_and_nothing_else(self):
+        launcher = b'#!/usr/bin/env bash\nset -e\ndirname /a/b >/dev/null\nuname -s >/dev/null\n/usr/bin/true\n'
+        result = self.run_executable(launcher, execs="")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"/usr/bin/true: Operation not permitted", result.stderr)
+        self.assertNotIn(b"dirname: Operation not permitted", result.stderr)
+        self.assertNotIn(b"uname: Operation not permitted", result.stderr)
+
+    def test_swift_targets_doctests_and_end_to_end_tests_run_without_the_guard(self):
+        self.assertEqual(self.run_guarded("/usr/bin/true", target="//apple/Feature:FeatureTests").returncode, 0)
+        self.assertEqual(self.run_guarded("/usr/bin/true", "e2e").returncode, 0)
+        doctest = self.root / "crate_test.rustdoc_test.sh"
+        doctest.write_text("#!/bin/sh\n/usr/bin/true\n")
+        doctest.chmod(0o755)
+        result = subprocess.run([str(wrapper), str(doctest)], env=self.environment(""), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_the_test_knows_it_runs_under_this_wrapper(self):
+        self.assertEqual(self.run_wrapped('test "$ALONDRA_TEST_WRAPPER" = 1'), 0)
 
     def test_unrecognized_bytes_are_never_interpreted_as_shell(self):
         marker = self.root / "shell-fallback-ran"

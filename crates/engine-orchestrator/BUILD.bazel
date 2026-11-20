@@ -59,6 +59,7 @@ low_opt_rust_test(
         "FIXTURE_NODE": "$(rootpath //agent-host:alondra-host)",
         "FIXTURE_ORCHESTRATOR_NATIVE": "$(rootpath //agent-host:orchestrator-fake-claude.py)",
         "HOME": ".",
+        "TEST_EXECS": "$(rootpath //agent-host:alondra-codex-host) $(rootpath //agent-host:alondra-host) /bin/cat /bin/sleep /usr/bin/git /usr/bin/id /usr/bin/mkfifo /usr/bin/pgrep /usr/bin/python3 /usr/bin/true /usr/sbin/lsof tmpdir",
     },
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [

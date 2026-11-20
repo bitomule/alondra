@@ -67,6 +67,7 @@ js_run_binary(
 exports_files(["host-entitlements.plist"])
 js_test(
     name = "sea_test",
+    env = {"TEST_EXECS": "own-sandbox"},
     timeout = "moderate",
     entry_point = "sea.test.mjs",
     data = [":sea", ":bundle", "fake-claude.py"],
@@ -148,6 +149,7 @@ js_test(
 )
 js_test(
     name = "host_stop_test",
+    env = {"TEST_EXECS": "$(rootpath :persistent-fake-claude.py)"},
     size = "small",
     no_copy_to_bin = ["//crates/agent-protocol:wire_fixtures"],
     entry_point = "host-stop.test.mjs",
@@ -155,6 +157,7 @@ js_test(
 )
 js_test(
     name = "controls_test",
+    env = {"TEST_EXECS": "$(rootpath :persistent-fake-claude.py)"},
     size = "small",
     no_copy_to_bin = ["//crates/agent-protocol:wire_fixtures"],
     entry_point = "controls.test.mjs",
@@ -162,6 +165,7 @@ js_test(
 )
 js_test(
     name = "consecutive_inputs_test",
+    env = {"TEST_EXECS": "$(rootpath :persistent-fake-claude.py)"},
     size = "small",
     no_copy_to_bin = ["//crates/agent-protocol:wire_fixtures"],
     entry_point = "consecutive-inputs.test.mjs",
@@ -169,6 +173,7 @@ js_test(
 )
 js_test(
     name = "decisions_test",
+    env = {"TEST_EXECS": "$(rootpath :persistent-fake-claude.py)"},
     size = "small",
     no_copy_to_bin = ["//crates/agent-protocol:wire_fixtures"],
     entry_point = "decisions.test.mjs",
@@ -176,6 +181,7 @@ js_test(
 )
 js_test(
     name = "umask_test",
+    env = {"TEST_EXECS": "$(rootpath :persistent-fake-claude.py) /bin/mkdir /bin/sh /usr/bin/python3 tmpdir"},
     size = "small",
     no_copy_to_bin = ["//crates/agent-protocol:wire_fixtures"],
     entry_point = "umask.test.mjs",
@@ -183,6 +189,7 @@ js_test(
 )
 js_test(
     name = "reconcile_test",
+    env = {"TEST_EXECS": "$(rootpath :persistent-fake-claude.py)"},
     size = "small",
     no_copy_to_bin = ["//crates/agent-protocol:wire_fixtures"],
     entry_point = "reconcile.test.mjs",
@@ -196,6 +203,7 @@ pinned_node(
 
 js_test(
     name = "sdk_descendant_test",
+    env = {"TEST_EXECS": "$(rootpath :descendant-fake-claude.py)"},
     size = "small",
     entry_point = "session-descendant.test.mjs",
     data = [":host_lib", "descendant-fake-claude.py", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
@@ -229,6 +237,7 @@ js_test(
 )
 js_test(
     name = "probe_test",
+    env = {"TEST_EXECS": "$(rootpath :persistent-fake-claude.py) tmpdir"},
     size = "small",
     entry_point = "probe.test.mjs",
     data = [":host_lib", "persistent-fake-claude.py", ":node_modules/@anthropic-ai/claude-agent-sdk", ":node_modules/@modelcontextprotocol/sdk", ":node_modules/zod"],
@@ -266,6 +275,7 @@ js_run_binary(
 
 js_test(
     name = "codex_session_test",
+    env = {"TEST_EXECS": "$(rootpath :fake-codex.py)"},
     timeout = "moderate",
     entry_point = "codex-session.test.mjs",
     data = [":host_lib", ":codex_bundle", "fake-codex.py", "codex-exit-fixture.mjs", "codex-host-failure.mjs", "codex-failed-cleanup-fixture.mjs", "codex-ack-progress-fixture.mjs", ":node_modules/zod"],

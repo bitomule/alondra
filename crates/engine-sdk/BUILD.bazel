@@ -97,7 +97,7 @@ low_opt_rust_test(
     crate_root = "src/lib.rs",
     data = SDK_TEST_DATA,
     edition = "2024",
-    env = SDK_TEST_ENV,
+    env = SDK_TEST_ENV | {"TEST_EXECS": "$(rootpath //agent-host:alondra-codex-host) $(rootpath //agent-host:alondra-codex-plan-legacy-fixture-host) $(rootpath //agent-host:alondra-host) $(rootpath //agent-host:codex-legacy-fixture) /bin/kill /bin/sleep /usr/bin/git /usr/bin/id /usr/bin/mkfifo /usr/bin/pgrep /usr/bin/python3 /usr/sbin/lsof tmpdir"},
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/agent-runtime:agent_runtime"] + TEST_HOOKS_DEPS,
 )

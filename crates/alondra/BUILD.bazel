@@ -85,15 +85,16 @@ root_binary(
     crate_root = "tests/" + name + ".rs",
     data = [":alondra"],
     edition = "2024",
+    env = {"TEST_EXECS": execs},
     rustc_env = {"CARGO_BIN_EXE_alondra": "$(rootpath :alondra)"},
     deps = all_crate_deps(normal = True, normal_dev = True),
-) for name in [
-    "cli_api",
-    "doctor_json",
-    "domain_mcp",
-    "hook_transport",
-    "version",
-]]
+) for name, execs in {
+    "cli_api": "$(rootpath :alondra) /bin/sh /usr/bin/defaults /usr/bin/id /usr/bin/plutil /usr/bin/sw_vers /usr/sbin/lsof tmpdir",
+    "doctor_json": "$(rootpath :alondra)",
+    "domain_mcp": "$(rootpath :alondra)",
+    "hook_transport": "$(rootpath :alondra)",
+    "version": "$(rootpath :alondra)",
+}.items()]
 
 # The sources of every crate of the binary, for the tests that read what a person sees.
 CLI_SOURCES = glob(["src/**/*.rs"]) + [
@@ -139,6 +140,7 @@ rust_binary(
 
 low_opt_rust_test(
     name = "doctor_service_test",
+    env = {"TEST_EXECS": "$(rootpath :alondra) $(rootpath :fake_daemon) /bin/cat /bin/mkdir /bin/mv /bin/rm /bin/sh /usr/bin/defaults /usr/bin/grep /usr/bin/id /usr/bin/plutil /usr/bin/sw_vers /usr/bin/touch /usr/bin/wc /usr/sbin/lsof tmpdir"},
     timeout = "moderate",
     srcs = ["tests/doctor_service.rs", "//crates:test_support.rs"],
     crate_root = "tests/doctor_service.rs",

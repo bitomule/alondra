@@ -104,6 +104,14 @@ or in the private repository that keeps it, never here.
   (`docs/running-tests.md`). `//tools:test_limits_test` fails on one that does not.
 - Tests never touch the real `~/.alondra`, launchd job, Keychain, Homebrew install or provider
   logins. Use temporary `HOME` fixtures, removed on success and failure.
+- A test runs no external tool (`git`, `gh`, `claude`, `codex`, a Node host, `launchctl`, any program
+  but its own executable and the interpreter of its script): the test wrapper's sandbox refuses the
+  exec. Today's exceptions are declared per target in `env = {"TEST_EXECS": ...}`, one entry per
+  program, each with its reason in `tools/test_execs.tsv`; the list only shrinks
+  (`//tools:test_execs_test` holds a ceiling). Never add an entry: run the work inside the test or
+  use a double. A test that exists to run a real tool is an end-to-end test: tagged `e2e`, `manual`,
+  `TEST_EXECS = "e2e"`, and named in the release's `RELEASE_ONLY_TESTS`, so it leaves the validation
+  of every edit (`docs/running-tests.md`, "Programs a test runs").
 - Rust disk fixtures hold `crate::test_support::Directory` until their files, databases and tasks are
   closed; never use `std::env::temp_dir()` in tests. Swift tests that write files use
   `@Suite(.temporaryFiles)` and `TestFiles.directory()`.

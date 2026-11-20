@@ -14,6 +14,7 @@ sh_test(
 
 sh_test(
     name = "bazel_artifact_paths_test",
+    env = {"TEST_EXECS": "/bin/sh /usr/bin/grep /usr/bin/make tmpdir"},
     srcs = ["tests/test_bazel_artifact_paths.py"],
     data = ["//:Makefile"],
     size = "small",
@@ -70,6 +71,7 @@ sh_test(
 # Reads a private literals file outside the checkout (ALONDRA_PRIVATE_LITERALS), so it is never cached.
 sh_test(
     name = "public_data_guard_test",
+    env = {"TEST_EXECS": "/usr/bin/git"},
     srcs = ["tests/test_public_data_guard.py"],
     data = [
         "public_data_guard.py",
@@ -97,6 +99,7 @@ sh_test(
 
 sh_test(
     name = "worktree_volume_bench_test",
+    env = {"TEST_EXECS": "/usr/bin/git"},
     srcs = ["tests/test_worktree_volume_bench.py"],
     data = ["worktree_volume_bench.py"],
     size = "small",
@@ -229,6 +232,7 @@ sh_test(
 
 sh_test(
     name = "buildbuddy_credential_helper_test",
+    env = {"TEST_EXECS": "$(rootpath :buildbuddy-credential-helper.sh) /bin/cat tmpdir"},
     srcs = ["tests/test_buildbuddy_credential_helper.py"],
     data = ["buildbuddy-credential-helper.sh"],
     size = "small",
@@ -238,6 +242,7 @@ sh_test(
     name = "public_build_inputs_test",
     srcs = ["tests/test_public_build_inputs.py"],
     data = [
+        "test-wrapper.bazelrc",
         "//:.bazelrc",
         "//:Makefile",
         "//signing:checked_in",
@@ -253,13 +258,44 @@ sh_binary(
 
 sh_test(
     name = "bazel_test_tmpdir_test",
+    timeout = "moderate",
     srcs = ["tests/test_bazel_test_tmpdir.py"],
     data = ["test-tmpdir.sh"],
+    env = {"TEST_EXECS": "own-sandbox"},
+)
+
+# Fails when this run's tests ran under another wrapper than :test_tmpdir, so without the guard.
+# `manual` until the maintainers' own bazelrc import tools/test-wrapper.bazelrc; the release runs it.
+sh_test(
+    name = "test_wrapper_test",
+    srcs = ["tests/test_test_wrapper.py"],
+    size = "small",
+    tags = ["manual"],
+)
+
+# `bazel run //tools:test_execs -- write`: the table of the programs tests run, in
+# docs/running-tests.md, from the TEST_EXECS of every test target.
+sh_binary(
+    name = "test_execs",
+    srcs = ["test_execs.py"],
+    data = ["//tools/bazel:rules"],
+)
+
+sh_test(
+    name = "test_execs_test",
+    srcs = ["tests/test_test_execs.py"],
+    data = [
+        "test_execs.py",
+        "test_execs.tsv",
+        "//:docs/running-tests.md",
+        "//tools/bazel:rules",
+    ],
     size = "small",
 )
 
 sh_test(
     name = "plugin_mod_test_tmpdir_test",
+    env = {"TEST_EXECS": "/bin/sh /usr/bin/mktemp /bin/rm /bin/cp tmpdir"},
     srcs = ["tests/test_plugin_mod_test_tmpdir.py"],
     data = ["plugin-mod-test.sh"],
     size = "small",
@@ -267,6 +303,7 @@ sh_test(
 
 sh_test(
     name = "reap_test_hosts_test",
+    env = {"TEST_EXECS": "/bin/ps /bin/sleep /usr/bin/codesign /usr/sbin/lsof tmpdir"},
     srcs = ["tests/test_reap_test_hosts.py"],
     data = ["reap-test-hosts.py"],
     size = "small",

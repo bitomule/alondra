@@ -1,0 +1,62 @@
+# Why a test runs each program its target lists in TEST_EXECS, one line per program:
+# program<TAB>reason. tools/test_execs.py fails on a program with no line and a line no target uses.
+tmpdir	Fake `gh`, `claude`, `codex`, `brew` and daemons the tests write under their own temporary folder.
+/usr/bin/git	The engine and CLI tests make real repositories and worktrees.
+/usr/bin/python3	`HostRoot` fixtures start a Python reaper beside each host; some tests run Python fakes.
+/usr/bin/id	The code under test asks `id` for the user it runs as.
+/usr/bin/defaults	The code under test reads macOS preferences with `defaults`.
+/usr/bin/true	Tests that need a process that starts and exits at once.
+/bin/sleep	Tests that need a process that keeps running for a while.
+/bin/sh	Tests run shell snippets as the process under test.
+/bin/cat	Tests that need a process that reads its input.
+/bin/cp	The plugin test script copies the plugin it tests.
+/bin/rm	The plugin test script removes its work folder.
+/usr/bin/mktemp	The plugin test script makes its own work folder.
+/bin/df	The disk checks read free space with `df`.
+/usr/sbin/diskutil	The disk checks ask `diskutil` about volumes.
+/usr/bin/plutil	The CLI writes and checks the launchd plist with `plutil`.
+/usr/bin/sips	The daemon makes app icons with `sips`.
+/usr/bin/xattr	The Apple release script clears extended attributes.
+/usr/bin/make	The test runs Makefile targets to check the paths they print.
+/usr/bin/codesign	The reaper tells test hosts by their code signature.
+/usr/bin/xcrun	The test starts the real SourceKit-LSP through `xcrun`.
+path:claude	The node mod's tests run with the Claude Code on PATH (`claude plugin test`).
+//crates/alondra:alondra	CLI tests run the real `alondra` binary.
+//crates/alondra:fake_daemon	A daemon double the doctor talks to.
+//crates/alondrad:alondrad	Tests run the real daemon binary.
+//crates/alondrad:alondrad-launcher	The launcher's tests run the launcher.
+//agent-host:pinned_node	The SDK worker tests run the host on the pinned Node.
+//crates/scenarios:host_relay	Scenarios run the relay between the daemon and a recorded host.
+//tools:buildbuddy-credential-helper.sh	The test runs the credential helper it tests.
+/usr/bin/sw_vers	The CLI's doctor reads the macOS version.
+/usr/sbin/lsof	Reapers and the doctor find the processes that hold a file.
+/usr/bin/touch	Fake `gh` scripts leave a mark that they ran.
+/usr/bin/mkfifo	Tests make named pipes to hold a fake host until they release it.
+/bin/ps	The test host reaper lists processes.
+/usr/bin/pkgbuild	The Apple release script builds the macOS installer package.
+/usr/bin/productbuild	The Apple release script builds the macOS installer product.
+/usr/bin/sourcekit-lsp	The test starts the real SourceKit-LSP.
+/bin/chmod	The test script makes a refusing git hook executable.
+/bin/mkdir	The test script lays out a throwaway repository.
+/usr/bin/sed	The test script reads the version and build number.
+/bin/mv	The worktree setup script moves its generated rc file into place.
+/usr/bin/grep	The worktree setup script checks the lines it already wrote.
+/usr/bin/tail	The worktree setup script checks how a file ends.
+//agent-host:alondra-host	Engine and server tests run the host a release ships.
+//agent-host:persistent-fake-claude.py	A fake Claude Code the hosts under test talk to.
+//agent-host:descendant-fake-claude.py	A fake Claude Code that leaves a descendant behind.
+//agent-host:fake-codex.py	A fake Codex the Codex host under test talks to.
+/bin/kill	Tests and their fakes signal the processes they started.
+/usr/bin/head	Fake `gh` scripts print part of a recorded answer.
+/usr/bin/wc	Fake scripts count the calls they received.
+/bin/ls	Fake scripts list the folders they were given.
+/usr/sbin/pkgutil	The Apple release script checks the package it built.
+/usr/bin/xcode-select	SourceKit-LSP asks where Xcode is.
+//agent-host:alondra-codex-host	Orchestrator tests run the Codex host a release ships.
+/usr/bin/pgrep	Python reapers beside each host find the processes they end.
+/usr/bin/lsbom	The Apple release script reads the bill of materials of its package.
+//agent-host:alondra-codex-plan-legacy-fixture-host	A Codex host built from an older plan format.
+//agent-host:codex-legacy-fixture	A Codex host of an older release.
+/usr/bin/mkbom	The Apple release script rewrites the bill of materials of its package.
+own-sandbox	The test starts sandbox-exec itself, which cannot run inside the guard's sandbox, so the target runs unguarded.
+//crates/github-gh:diff_fixture	A double of `gh pr diff` the tests run in its place.
