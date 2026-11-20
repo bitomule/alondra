@@ -171,6 +171,11 @@ pub enum Step {
     /// The user presses the option `option` of the card the daemon shows for `task` whose id starts
     /// with `card`, as the app does it from the view.
     Answer { card: String, option: String, #[serde(default)] text: Option<String> },
+    /// The orchestrator tells the user something, as `publish_information` does: a card `card`
+    /// with this title and body, under no request.
+    Inform { card: String, title: String, body: String },
+    /// The user writes `text` in the reply field of the card `card` of the home, as the app does.
+    Reply { card: String, text: String },
     /// Files of the daemon's home are written as another process of the Mac writes them, each
     /// whole at once: every `path` is relative to the home and stays inside it.
     WriteHome { #[serde(rename = "file")] files: Vec<HomeFile> },

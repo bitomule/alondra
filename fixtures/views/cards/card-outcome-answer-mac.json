@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:r-encrypt-answer",
   "client": "mac",
-  "version": "vcb295700941a9c6c",
+  "version": "v7bf65fa86085dcf1",
   "cursor": "cursor-1",
   "title": "Sí: el iPhone ya cifra las imágenes antes de subirlas",
   "status": {
@@ -87,7 +87,7 @@
             "summary": "2 points"
           },
           "reply": {
-            "id": "msg:view@27",
+            "id": "reply:r-encrypt-answer@2",
             "label": "Reply",
             "style": "secondary",
             "role": "neutral",
@@ -102,7 +102,7 @@
             "enabled": true,
             "stamp": "Sent",
             "key": "r",
-            "resolves_card": false
+            "resolves_card": true
           },
           "link": {
             "kind": "view",

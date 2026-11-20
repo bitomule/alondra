@@ -10,7 +10,8 @@ use crate::http::{PHONE_SECRET, Phone};
 use alondra_agent_runtime::owned_host::{HostLauncher, HostSpawn, Launcher};
 use crate::claude_host::{ApiError, ClaudeEdge};
 use alondra_domain_rules::{
-    Actor, CardSpec, Command, CommandEnvelope, DeliveryTarget, LaunchPlan, MergeMethod, NodeEnd, PROTOCOL_VERSION, StackDependency,
+    Actor, CardKind, CardSpec, Command, CommandEnvelope, DeliveryTarget, LaunchPlan, MergeMethod, NodeEnd, PROTOCOL_VERSION, Recipient, Scope,
+    StackDependency,
 };
 use alondra_views::action_id::ActionId;
 use alondra_daemon_engine::github_world::GithubWorld;
@@ -553,6 +554,22 @@ impl Context<'_> {
             },
             Step::Press { presentation, action, text, screen } => self.press(index, presentation, action, text.as_deref(), screen.as_deref().unwrap_or("home")).await?,
             Step::Answer { card, option, text } => self.answer(index, card, option, text.as_deref()).await?,
+            Step::Inform { card, title, body } => {
+                self.command(index, orchestrator(), Command::PublishInformation {
+                    attachments: Vec::new(), interaction_id: card.clone().into(), scope: Scope::Orchestrator { request_id: None },
+                    recipient: Recipient::User, body: body.clone(), card: CardSpec::new(CardKind::Know, title),
+                })?;
+                self.settle().await?;
+            }
+            Step::Reply { card, text } => {
+                let (client, lang) = ("ios", "en");
+                let view = self.view("home", client, lang).await?;
+                let Some(action) = find_reply(&view, card) else {
+                    return Err(ScenarioError::ActionMissing { presentation: card.to_owned(), action: "reply".into(), view: checkpoint::render(&view) });
+                };
+                self.send_action(index, &view, &action, "reply", typed_input(Some(text)), client, lang).await?;
+                self.settle().await?;
+            }
             Step::Node { task, account, model } => self.start_claude_node(index, task, account, model.as_deref()).await?,
             Step::Conversation { task, tokens } => self.edge(index)?.set_conversation(task, *tokens),
             Step::TurnEnd { task } => {
@@ -1388,6 +1405,16 @@ fn find_option(view: &Value, card: &str, option: &str) -> Option<Value> {
                 && candidate["id"].as_str().and_then(|id| ActionId::parse(id).ok()).is_some_and(|id| id.subject.starts_with(card))
         })
         .cloned()
+}
+
+/// The reply field of the card `card` of a view.
+fn find_reply(view: &Value, card: &str) -> Option<Value> {
+    match view {
+        Value::Object(map) if map.get("id").and_then(Value::as_str) == Some(card) && map.contains_key("reply") => Some(map["reply"].clone()),
+        Value::Object(map) => map.values().find_map(|inner| find_reply(inner, card)),
+        Value::Array(items) => items.iter().find_map(|inner| find_reply(inner, card)),
+        _ => None,
+    }
 }
 
 /// An error the API answers with, as the SDK names it: only one of the SDK's own.
