@@ -8,10 +8,10 @@
 //! (platform.claude.com/docs/en/build-with-claude/prompt-caching). That start is when this daemon
 //! handed the input to the host or saw a tool's result go back to Claude. A host this daemon did
 //! not hand anything to says nothing: its events may have waited in its journal, so their time is
-//! not the request's. What is measured lives in memory; a restarted daemon compacts again after
-//! the task's next turn.
+//! not the request's. The last request of each task is kept in Alondra's home: a restarted daemon
+//! still compacts in time, and never asks twice for the same request.
 use crate::live::LiveOf as _;
-pub use alondra_engine_live::contexts::{Contexts, ContextsOf, Reading, Used};
+pub use alondra_engine_live::contexts::{Contexts, ContextsOf, LastRequest, Reading, SessionStart, StartKind, Used};
 use alondra_core::clock;
 use crate::domain_runtime::DomainRuntime;
 use alondra_domain_rules::{Command, CommandEnvelope, DomainState, PROTOCOL_VERSION, TaskId};

@@ -1933,6 +1933,11 @@ fn the_tasks_claude_loads_the_users_profile_and_alondras_plugin_settings_and_cap
     let one: String = sha2::Sha256::digest(b"1").iter().map(|byte| format!("{byte:02x}")).collect();
     assert_eq!(capture["env_value_sha256"]["CLAUDE_CODE_ENABLE_TODO_TOOLS"].as_str(), Some(one.as_str()),
         "the node has Claude Code's task list, which shows as its steps: {environment:?}");
+    let digest = |value: &str| sha2::Sha256::digest(value.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    assert_eq!(capture["env_value_sha256"]["CLAUDE_CODE_PROMPT_CACHE_TTL"].as_str(), Some(digest("1h").as_str()),
+        "the conversation's prompt cache lasts an hour whatever the account pays: {environment:?}");
+    assert_eq!(capture["env_value_sha256"]["CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL"].as_str(), Some(digest("5m").as_str()),
+        "a subagent's lasts five minutes: {environment:?}");
     driver.stop().unwrap();
 }
 

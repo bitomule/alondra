@@ -1,6 +1,6 @@
 //! What sessions spend, recorded as their turns end, and each ended task folded into one row of
 //! `task_metrics` that stays when the samples it came from are pruned (`model_metrics.sql`).
-pub use alondra_engine_ports::journal::metrics::{Spent};
+pub use alondra_engine_ports::journal::metrics::{RecordedStart, SessionStarted, Spent};
 use super::DomainStore;
 use alondra_core::Millis;
 use alondra_domain_rules::Feedback;
@@ -48,6 +48,29 @@ impl DomainStore {
         tx.commit()?;
         self.note_side_write();
         Ok(())
+    }
+
+    pub fn record_session_start(&mut self, started: &SessionStarted<'_>) -> Result<()> {
+        let count = |tokens: u64| i64::try_from(tokens).unwrap_or(i64::MAX);
+        self.conn.execute(
+            "INSERT INTO session_starts(task_id,session_id,kind,requested_at,since_previous,tokens,written_1h,written_5m,read) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![started.task_id, started.session_id, started.kind, started.requested_at, started.since_previous,
+                count(started.tokens), count(started.written_1h), count(started.written_5m), count(started.read)],
+        )?;
+        self.note_side_write();
+        Ok(())
+    }
+
+    /// The host starts of `task`, the earliest first.
+    pub fn session_starts(&self, task: &str) -> Result<Vec<RecordedStart>> {
+        let mut statement = self.conn.prepare_cached(
+            "SELECT session_id,kind,requested_at,since_previous,tokens,written_1h,written_5m,read FROM session_starts WHERE task_id=?1 ORDER BY requested_at,rowid")?;
+        let count = |value: i64| u64::try_from(value).unwrap_or(0);
+        let starts = statement.query_map([task], |row| Ok(RecordedStart {
+            session_id: row.get(0)?, kind: row.get(1)?, requested_at: row.get(2)?, since_previous: row.get(3)?,
+            tokens: count(row.get(4)?), written_1h: count(row.get(5)?), written_5m: count(row.get(6)?), read: count(row.get(7)?),
+        }))?.collect::<rusqlite::Result<_>>()?;
+        Ok(starts)
     }
 
     pub fn record_release(&mut self, version: &str, at: Millis) -> Result<()> {
@@ -295,7 +318,11 @@ pub(super) fn samples_of_folded_tasks(tx: &Transaction<'_>, now: i64, limit: i64
         &format!("DELETE FROM session_steps WHERE session_id IN(SELECT session_id FROM session_steps WHERE task_id IN({folded}) ORDER BY task_id LIMIT ?2)"),
         params![now - SAMPLES_MS, limit - usage],
     )? as i64;
-    Ok((usage + steps) as usize)
+    let starts = tx.execute(
+        &format!("DELETE FROM session_starts WHERE rowid IN(SELECT rowid FROM session_starts WHERE task_id IN({folded}) ORDER BY task_id LIMIT ?2)"),
+        params![now - SAMPLES_MS, limit - usage - steps],
+    )? as i64;
+    Ok((usage + steps + starts) as usize)
 }
 
 /// The sessions without a task that spent nothing for a week: their days already hold what they

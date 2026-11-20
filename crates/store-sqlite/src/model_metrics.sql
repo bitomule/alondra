@@ -208,3 +208,19 @@ CREATE TABLE IF NOT EXISTS codex_usage_baselines (
  last_at INTEGER NOT NULL,
  PRIMARY KEY(account,thread_id)
 ) WITHOUT ROWID;
+
+-- What starting each host of a task wrote to and read from the prompt cache, from its first
+-- request, and how long after the task's request before it that request went out. Kept until the
+-- task's samples go.
+CREATE TABLE IF NOT EXISTS session_starts (
+ task_id TEXT NOT NULL CHECK(length(task_id)>0),
+ session_id TEXT NOT NULL CHECK(length(session_id)>0),
+ kind TEXT NOT NULL CHECK(kind IN('new','resumed','handoff')),
+ requested_at INTEGER NOT NULL,
+ since_previous INTEGER CHECK(since_previous IS NULL OR since_previous>=0),
+ tokens INTEGER NOT NULL CHECK(tokens>=0),
+ written_1h INTEGER NOT NULL CHECK(written_1h>=0),
+ written_5m INTEGER NOT NULL CHECK(written_5m>=0),
+ read INTEGER NOT NULL CHECK(read>=0)
+);
+CREATE INDEX IF NOT EXISTS session_starts_task ON session_starts(task_id);

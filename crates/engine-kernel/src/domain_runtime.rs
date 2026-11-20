@@ -851,6 +851,14 @@ impl DomainRuntime {
         self.store.lock_or_exit("the domain store").record_spend(spent)
     }
 
+    pub fn record_session_start(&self, started: &alondra_engine_ports::journal::metrics::SessionStarted<'_>) -> Result<()> {
+        self.store.lock_or_exit("the domain store").record_session_start(started)
+    }
+
+    pub fn session_starts(&self, task: &str) -> Result<Vec<alondra_engine_ports::journal::metrics::RecordedStart>> {
+        self.store.lock_or_exit("the domain store").session_starts(task)
+    }
+
     pub fn record_release(&self, version: &str, at: alondra_core::Millis) -> Result<()> {
         self.store.lock_or_exit("the domain store").record_release(version, at)
     }

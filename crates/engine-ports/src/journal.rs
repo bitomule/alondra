@@ -24,7 +24,7 @@ use alondra_store::AuthorityScope;
 use anyhow::Result;
 use batch::{BatchEffectRef, BatchReport, UnfinishedBatch};
 use handover::{Handover, Process};
-use metrics::{Decision, Spent};
+use metrics::{Decision, SessionStarted, Spent};
 use owner::{Adoption, OwnerCommit};
 use provider_transition::{Phase, Plan as TransitionPlan, Source};
 use crate::agent_host::EndedHost;
@@ -189,6 +189,8 @@ pub trait Journal: Send {
     fn record_pr_lines(&mut self, task_id: &str, lines: i64) -> Result<()>;
     fn record_release(&mut self, version: &str, at: Millis) -> Result<()>;
     fn record_spend(&mut self, spent: &Spent<'_>) -> Result<()>;
+    fn record_session_start(&mut self, started: &SessionStarted<'_>) -> Result<()>;
+    fn session_starts(&self, task_id: &str) -> Result<Vec<metrics::RecordedStart>>;
     fn refused_move(&self, task:&TaskId) ->Result<Option<Transition>>;
     fn refused_moves(&self) ->Result<Vec<Transition>>;
     fn request_launch(&mut self, request_id: &RequestId) -> Result<Option<RequestLaunch>>;

@@ -6,7 +6,7 @@ use alondra_daemon_engine_model::{LaunchOptionsFile as _, WrittenFailure as _};
 use crate::gate::GateOf as _;
 use alondra_engine_ports::Runtime;
 use crate::live::LiveOf as _;
-use crate::idle_compaction::ContextsOf as _;
+use crate::idle_compaction::{ContextsOf as _, SessionStart, StartKind};
 use crate::account_move::MovesOf as _;
 use crate::sdk_handover::HandoversOf as _;
 use alondra_core::clock;
@@ -601,6 +601,7 @@ pub fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Lau
     driver.sealed();
     driver.worker.install_owner(grant, state).map_err(adapter("starting the SDK host"))?;
     driver.log_host("started");
+    driver.domain.contexts().launched(&driver.task, start_kind(continuation.as_ref()));
     let permit = driver.permits.pop_front().ok_or_else(|| Failed::new("the admission issued no launch permit".into()))?;
     if let Err(failed) = driver.dispatch(permit) {
         let (directory, runtime) = (driver.worker.state_directory().to_path_buf(), Arc::clone(&driver.domain));
@@ -609,6 +610,15 @@ pub fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Lau
     }
     driver.awaiting = first;
     Ok(driver)
+}
+
+/// How a host that starts for `continuation` runs its conversation.
+fn start_kind(continuation: Option<&Continuation>) -> StartKind {
+    match continuation {
+        Some(Continuation::Transition { .. }) => StartKind::Handoff,
+        Some(_) => StartKind::Resumed,
+        None => StartKind::New,
+    }
 }
 
 /// The capability a host was started or adopted with. One a host that resumes the node was
@@ -778,6 +788,7 @@ pub(crate) fn launch_admitted(domain: Arc<DomainRuntime>, backend: &SdkBackend, 
     unadmitted.admitted();
     let mut driver = Driver::new(domain, worker, scope, task.clone(), agent, Duration::from_secs(backend.io_timeout_seconds));
     driver.log_host("started, as its admission's first host");
+    driver.domain.contexts().launched(&driver.task, StartKind::New);
     if let Err(failed) = driver.dispatch(permit) {
         let (directory, runtime) = (driver.worker.state_directory().to_path_buf(), Arc::clone(&driver.domain));
         drop(driver);
@@ -1044,6 +1055,7 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
     let environment = node_environment(domain.home(), &agent, capability.expose_for_child_environment());
     domain.own(scope.clone(),|owner|owner.require_native_identity(grant.binding(),identity.as_ref().map(|identity| identity as &dyn crate::domain_store::KnownIdentity))).map_err(failed("Alondra cannot resume this session"))?;
     worker.relaunch(grant, adapter_state, base, resume, retaken, environment).map_err(|error| Failed::new(format!("its new host could not start ({error:?})")))?;
+    domain.contexts().launched(&task, if resume { StartKind::Resumed } else { StartKind::New });
     if retaken && adoption.receipt_candidates.is_empty() && let Some(archive) = worker.retired_host() && let Err(error) = std::fs::remove_dir_all(&archive) {
         log!("could not remove the folder of the released host of {task} ({}): {error}", archive.display());
     }
@@ -1627,6 +1639,11 @@ pub(crate) fn own_worktree_edits(worktree: &std::path::Path) -> Vec<String> {
 /// host reports what Claude does. Outside a terminal Claude Code offers no task list unless
 /// `CLAUDE_CODE_ENABLE_TODO_TOOLS` asks for it; with it the node plans in steps, as it did as a
 /// `claude --bg` session, and the task's detail shows them.
+///
+/// The conversation's prompt cache lasts an hour, also once an account pays for usage beyond its
+/// plan, where Claude Code would drop it to five minutes: a node often waits minutes between
+/// requests. A subagent's lasts five minutes, which costs 1.25 times the input to write against
+/// twice for an hour, and a subagent seldom waits (code.claude.com/docs/en/prompt-caching).
 fn node_environment(home: &std::path::Path, agent: &AgentId, capability: &str) -> BTreeMap<String, String> {
     let mut environment = BTreeMap::from([
         ("ALONDRA_HOME".to_owned(), home.display().to_string()),
@@ -1635,6 +1652,8 @@ fn node_environment(home: &std::path::Path, agent: &AgentId, capability: &str) -
         ("ALONDRA_DOMAIN_PROTOCOL".to_owned(), "2".to_owned()),
         ("ALONDRA_SDK_HOST".to_owned(), "1".to_owned()),
         ("CLAUDE_CODE_ENABLE_TODO_TOOLS".to_owned(), "1".to_owned()),
+        ("CLAUDE_CODE_PROMPT_CACHE_TTL".to_owned(), "1h".to_owned()),
+        ("CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL".to_owned(), "5m".to_owned()),
     ]);
     for name in ["ALONDRA_PORT", "ALONDRA_SANDBOX"] {
         if let Ok(value) = std::env::var(name) {
@@ -1645,6 +1664,20 @@ fn node_environment(home: &std::path::Path, agent: &AgentId, capability: &str) -
 }
 
 impl Driver {
+    /// Keeps what starting this host wrote to the prompt cache, by the task it works for.
+    fn record_start(&self, start: &SessionStart) {
+        let started = alondra_engine_ports::journal::metrics::SessionStarted {
+            task_id: self.task.0.as_str(), session_id: &self.agent.0, kind: start.kind.as_str(), requested_at: start.requested_at,
+            since_previous: start.since_previous, tokens: start.tokens, written_1h: start.cached.written_1h, written_5m: start.cached.written_5m, read: start.cached.read,
+        };
+        log!("the {} host of {} wrote {} tokens to the prompt cache for an hour and {} for five minutes, and read {}, {}",
+            start.kind.as_str(), self.task, start.cached.written_1h, start.cached.written_5m, start.cached.read,
+            start.since_previous.map_or_else(|| "with no earlier request timed".to_owned(), |since| format!("{} s after the request before it", since / 1000)));
+        if let Err(error) = self.domain.record_session_start(&started) {
+            log!("could not record what starting the host of {} wrote to the prompt cache: {error:#}", self.task);
+        }
+    }
+
     fn new(domain: Arc<DomainRuntime>, worker: Worker, scope: AuthorityScope, task: TaskId, agent: AgentId, opening_timeout: Duration) -> Self {
         let pause = Mutex::new(PauseSubscription::new(&domain, &agent));
         Self { pause, in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout, opening_deadline: None, refused: BTreeSet::new(), #[cfg(any(test, feature = "test-hooks"))] refuse_offers: 0, #[cfg(any(test, feature = "test-hooks"))] fail_next_step: false, #[cfg(any(test, feature = "test-hooks"))] panic_next_step: false }
@@ -1942,8 +1975,9 @@ impl Driver {
         if let Some(answered) = self.worker.answered_control(&batch) {
             self.results.retain(|awaited| *awaited != answered);
         }
-        if let Some(event) = self.worker.context_event(&batch) {
-            self.domain.contexts().observed(&self.task, event, alondra_core::now_millis());
+        if let Some(event) = self.worker.context_event(&batch)
+            && let Some(start) = self.domain.contexts().observed(&self.task, event, alondra_core::now_millis()) {
+            self.record_start(&start);
         }
         feed(self.worker.provider(), &self.domain, &self.agent, &batch);
         if let Some(line) = alondra_provider_claude::sdk_message(&batch).and_then(|message| claude_said(&message, &mut self.claude_session)) {

@@ -16,7 +16,7 @@ mod wire;
 pub use adapter::{
     ClaudeConfiguration, ClaudeWorker, Found, WorkerProfile, answered_by_event, answered_control, native_exited,
 };
-pub use context::{ContextEvent, context_event, sdk_message};
+pub use context::{Cached, ContextEvent, context_event, sdk_message};
 pub use mcp::{mcp_traits, remove_arguments, settings_file, still_configured};
 pub use elicitation::{elicitation_content, only_text_field};
 pub use ended::{EndedJournal, Retained};
