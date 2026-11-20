@@ -195,13 +195,35 @@ fn handoff_refusal(error:alondra_store::HandoffError)->String{
         alondra_store::HandoffError::IncompleteHistory(reason)=>format!("The task's public conversation is incomplete: {reason}"),
     }
 }
-/// What a refresh tells its new session after the task's records: why it starts, and where the
-/// conversation before it is and how to search it instead of reading it whole.
-fn refresh_note(plan:&Plan)->Option<String>{
-    let file=plan.conversation_file.as_ref().filter(|_|plan.kind==Kind::Refresh)?.display();
-    Some(format!("\nThis task goes on after a pause, in a new session with the same model and account. \
-        The whole conversation of the session before this one is in {file}: read it only when these records do not hold what you need. \
-        Each of its turns starts with a line `## Turn N`: find the one you need with `grep -n '## Turn' {file}` and read that turn, never the whole file.\n"))
+fn branch_of(directory:&str)->Option<String>{
+    let output=std::process::Command::new("git").arg("-C").arg(directory).args(["rev-parse","--abbrev-ref","HEAD"]).output().ok()?;
+    let name=String::from_utf8(output.stdout).ok()?.trim().to_owned();
+    (output.status.success() && !name.is_empty()).then_some(name)
+}
+/// What a refresh starts from: the worktree, the plan and the assistant's last message, with the
+/// task's complete records and the plan written beside the conversation file to read on demand.
+fn refresh_handoff(state:&DomainState,plan:&Plan,canonical:&str,entries:&[ContextEntry],window:Option<u64>)->Result<PreparedHandoff,StoreError>{
+    let task=state.tasks.get(&plan.task).ok_or_else(||failure("Task missing"))?;
+    let conversation=plan.conversation_file.as_ref().ok_or_else(||failure("A refresh needs the conversation file"))?;
+    let folder=conversation.parent().ok_or_else(||failure("The conversation file has no folder"))?;
+    let write=|name:&str,text:&str|->Result<String,StoreError>{
+        let file=folder.join(name);
+        alondra_foundation::save::atomic(&file,text.as_bytes()).map_err(|error|failure(format!("{name} could not be written: {error}")))?;
+        Ok(file.display().to_string())
+    };
+    let records_file=write("task-records.md",canonical)?;
+    let approved=crate::domain_orchestrator_tools::approved_plan(state,task);
+    let plan_file=if approved.is_empty(){None}else{Some(write("approved-plan.md",&approved)?)};
+    let parts=alondra_store::RefreshParts{
+        worktree:plan.source.directory.clone(),
+        branch:branch_of(&plan.source.directory),
+        pull_requests:state.task_prs(task).map(|pr|format!("https://{}/{}/pull/{}",pr.host,pr.repository,pr.number)).collect(),
+        plan:Some(approved).filter(|text|!text.is_empty()),plan_file,
+        last_assistant_message:entries.iter().rev().find(|entry|entry.item.source==alondra_store::ContextSource::Assistant).map(|entry|entry.item.content.clone()),
+        records_file,conversation_file:conversation.display().to_string(),
+    };
+    let through=entries.last().map(|entry|entry.reference.clone());
+    alondra_store::prepare_refresh_handoff(&parts,"Continue this Alondra task.",through,HandoffBudget{destination_context_tokens:window,reserved_tokens:alondra_store::HANDOFF_RESERVED_TOKENS}).map_err(|error|failure(handoff_refusal(error)).into())
 }
 /// The context the new execution of `plan` starts from: the task's canonical context and its
 /// retained public records, within the window of the model it starts with.
@@ -219,12 +241,8 @@ fn handoff(owner:&mut dyn OwnerJournal,plan:&Plan)->Result<PreparedHandoff,Store
     }
     if plan.source.selection.as_ref().and_then(|selection|selection.effective.as_ref()).is_none(){return Err(failure("This older execution has no complete retained public history; continue its current native session").into())}
     let window=owner.state().model_catalogs.iter().find(|catalog|catalog.account==plan.target_account).and_then(|catalog|catalog.models.iter().find(|model|model.model==plan.target_model.model.model)).and_then(|model|model.context_window);
-    let mut prepared=alondra_store::prepare_context_handoff(&canonical,"Continue this Alondra task from its public records. The user changed its provider or model. Preserve completed work and answer through Alondra.",&entries,&coverage,None,HandoffBudget{destination_context_tokens:window,reserved_tokens:alondra_store::HANDOFF_RESERVED_TOKENS}).map_err(|error|failure(handoff_refusal(error)))?;
-    if let Some(note)=refresh_note(plan){
-        prepared.estimated_context_tokens=prepared.estimated_context_tokens.saturating_add(alondra_store::estimated_tokens(&note));
-        prepared.context.push_str(&note);
-    }
-    Ok(prepared)
+    if plan.kind==Kind::Refresh{return refresh_handoff(owner.state(),plan,&canonical,&entries,window)}
+    alondra_store::prepare_context_handoff(&canonical,"Continue this Alondra task from its public records. The user changed its provider or model. Preserve completed work and answer through Alondra.",&entries,&coverage,None,HandoffBudget{destination_context_tokens:window,reserved_tokens:alondra_store::HANDOFF_RESERVED_TOKENS}).map_err(|error|failure(handoff_refusal(error)).into())
 }
 fn prepare_context(domain:&DomainRuntime,plan:&Plan)->Result<PreparedHandoff,DomainError>{
     domain.own(scope(domain)?,|owner|{
