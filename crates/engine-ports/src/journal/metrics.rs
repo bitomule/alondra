@@ -40,6 +40,34 @@ pub struct Decision {
     pub tags: Option<TaskTags>,
 }
 
+/// What starting a host of a task wrote to and read from the prompt cache: its first request,
+/// `since_previous` after the task's request before it, unknown when none was timed.
+#[derive(Clone, Copy, Debug)]
+pub struct SessionStarted<'a> {
+    pub task_id: &'a str,
+    pub session_id: &'a str,
+    pub kind: &'a str,
+    pub requested_at: Millis,
+    pub since_previous: Option<Millis>,
+    pub tokens: u64,
+    pub written_1h: u64,
+    pub written_5m: u64,
+    pub read: u64,
+}
+
+/// A host start of a task as the journal keeps it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordedStart {
+    pub session_id: String,
+    pub kind: String,
+    pub requested_at: Millis,
+    pub since_previous: Option<Millis>,
+    pub tokens: u64,
+    pub written_1h: u64,
+    pub written_5m: u64,
+    pub read: u64,
+}
+
 /// What a session reported as one of its turns ended.
 #[derive(Clone, Debug)]
 pub struct Spent<'a> {

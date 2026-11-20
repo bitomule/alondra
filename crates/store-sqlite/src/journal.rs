@@ -169,6 +169,8 @@ impl Journal for DomainStore {
     fn record_pr_lines(&mut self, task_id: &str, lines: i64) -> Result<()> { DomainStore::record_pr_lines(self, task_id, lines) }
     fn record_release(&mut self, version: &str, at: Millis) -> Result<()> { DomainStore::record_release(self, version, at) }
     fn record_spend(&mut self, spent: &Spent<'_>) -> Result<()> { DomainStore::record_spend(self, spent) }
+    fn record_session_start(&mut self, started: &alondra_engine_ports::journal::metrics::SessionStarted<'_>) -> Result<()> { DomainStore::record_session_start(self, started) }
+    fn session_starts(&self, task_id: &str) -> Result<Vec<alondra_engine_ports::journal::metrics::RecordedStart>> { DomainStore::session_starts(self, task_id) }
     fn refused_move(&self, task:&TaskId) ->Result<Option<Transition>> { DomainStore::refused_move(self, task) }
     fn refused_moves(&self) ->Result<Vec<Transition>> { DomainStore::refused_moves(self) }
     fn request_launch(&mut self, request_id: &RequestId) -> Result<Option<RequestLaunch>> { DomainStore::request_launch(self, request_id) }

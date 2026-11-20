@@ -146,16 +146,16 @@ fn update_context(contexts:&crate::contexts::Contexts,task:&alondra_domain_rules
     let params=message.get("params").unwrap_or(&Value::Null);
     if current.thread.is_none() || text(params,"threadId")!=current.thread.as_deref(){return}
     match text(message,"method"){
-        Some("alondra/inputAccepted")=>contexts.observed(task,ContextEvent::Requested,now),
+        Some("alondra/inputAccepted")=>{contexts.observed(task,ContextEvent::Requested,now);}
         Some("thread/tokenUsage/updated") if text(params,"turnId").is_some() && text(params,"turnId")==current.turn.as_deref() && text(params,"turnId")==current.model_turn.as_deref()=>{
             let Some(tokens)=params.pointer("/tokenUsage/last/totalTokens").and_then(Value::as_u64) else{return};
             if let Some(model)=current.model.as_ref(){
                 if let Some(window)=params.pointer("/tokenUsage/modelContextWindow").and_then(Value::as_u64).filter(|window|*window>0){contexts.observed(task,ContextEvent::Windows(vec![(model.clone(),window)]),now);}
-                contexts.observed(task,ContextEvent::Answered{tokens,cache:None,model:Some(model.clone())},now);
+                contexts.observed(task,ContextEvent::Answered{tokens,cache:None,model:Some(model.clone()),cached:Default::default()},now);
             }
         }
-        Some("thread/compacted")=>contexts.observed(task,ContextEvent::Compacted,now),
-        Some("item/completed") if params.pointer("/item/type").and_then(Value::as_str)==Some("contextCompaction")=>contexts.observed(task,ContextEvent::Compacted,now),
+        Some("thread/compacted")=>{contexts.observed(task,ContextEvent::Compacted,now);}
+        Some("item/completed") if params.pointer("/item/type").and_then(Value::as_str)==Some("contextCompaction")=>{contexts.observed(task,ContextEvent::Compacted,now);}
         _=>{}
     }
 }
