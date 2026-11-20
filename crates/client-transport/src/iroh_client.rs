@@ -14,9 +14,10 @@ use std::fs;
 use std::io::Write as _;
 use std::net::SocketAddr;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::Path;
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime};
 
 const ALPN: &[u8] = b"alondra/1";
 const KEY_FILE: &str = "iroh-client.key";
@@ -111,37 +112,195 @@ pub fn key(home: &Path) -> Result<SecretKey> {
     }
 }
 
-/// The process's one iroh endpoint and the runtime that drives it.
-struct Local {
-    runtime: tokio::runtime::Runtime,
-    endpoint: Endpoint,
+/// The process's one runtime, which drives every endpoint it binds.
+static RUNTIME: OnceLock<std::result::Result<tokio::runtime::Runtime, String>> = OnceLock::new();
+
+fn runtime() -> Result<&'static tokio::runtime::Runtime> {
+    RUNTIME
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_name("alondra-iroh")
+                .enable_all()
+                .build()
+                .map_err(|error| format!("{error:#}"))
+        })
+        .as_ref()
+        .map_err(|error| anyhow!("iroh endpoint unavailable: {error}"))
 }
 
-static LOCAL: OnceLock<std::result::Result<Arc<Local>, String>> = OnceLock::new();
+/// The iroh endpoint a home dials from. A newer one replaces it after the Mac slept or when a
+/// connection stays on the relay; it closes once no session uses it.
+struct Local {
+    runtime: &'static tokio::runtime::Runtime,
+    endpoint: Endpoint,
+    home: PathBuf,
+    generation: u64,
+}
+
+impl Drop for Local {
+    fn drop(&mut self) {
+        let endpoint = self.endpoint.clone();
+        self.runtime.spawn(async move { endpoint.close().await });
+    }
+}
+
+static LOCALS: Mutex<BTreeMap<PathBuf, Arc<Local>>> = Mutex::new(BTreeMap::new());
+static GENERATIONS: AtomicU64 = AtomicU64::new(0);
+
+fn locals() -> std::sync::MutexGuard<'static, BTreeMap<PathBuf, Arc<Local>>> {
+    LOCALS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 fn local(home: &Path) -> Result<Arc<Local>> {
-    LOCAL
-        .get_or_init(|| {
-            let start = || -> Result<Local> {
-                let key = key(home)?;
-                let runtime = tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(2)
-                    .thread_name("alondra-iroh")
-                    .enable_all()
-                    .build()?;
-                let endpoint = runtime.block_on(
-                    Endpoint::builder(presets::Minimal)
-                        .secret_key(key)
-                        .relay_mode(RelayMode::Custom(iroh::RelayMap::empty()))
-                        .portmapper_config(PortmapperConfig::Disabled)
-                        .bind(),
-                )?;
-                Ok(Local { runtime, endpoint })
-            };
-            start().map(Arc::new).map_err(|error| format!("{error:#}"))
-        })
-        .clone()
-        .map_err(|error| anyhow!("iroh endpoint unavailable: {error}"))
+    let mut locals = locals();
+    if let Some(local) = locals.get(home) {
+        return Ok(local.clone());
+    }
+    let local = bind(home)?;
+    locals.insert(home.to_path_buf(), local.clone());
+    Ok(local)
+}
+
+fn bind(home: &Path) -> Result<Arc<Local>> {
+    let runtime = runtime()?;
+    let key = key(home)?;
+    let endpoint = runtime
+        .block_on(
+            Endpoint::builder(presets::Minimal)
+                .secret_key(key)
+                .relay_mode(RelayMode::Custom(iroh::RelayMap::empty()))
+                .portmapper_config(PortmapperConfig::Disabled)
+                .bind(),
+        )
+        .map_err(|error| anyhow!("iroh endpoint unavailable: {error:#}"))?;
+    let generation = GENERATIONS.fetch_add(1, Ordering::SeqCst) + 1;
+    Ok(Arc::new(Local { runtime, endpoint, home: home.to_path_buf(), generation }))
+}
+
+/// A wall clock reading beside a monotonic one. On macOS the monotonic clock stands still while
+/// the Mac sleeps, so the wall clock running ahead of it tells that the Mac slept.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Clocks {
+    pub(crate) wall: SystemTime,
+    pub(crate) monotonic: Instant,
+}
+
+impl Clocks {
+    fn now() -> Self {
+        Self { wall: SystemTime::now(), monotonic: Instant::now() }
+    }
+}
+
+/// How far the wall clock must run ahead of the monotonic one to count as a sleep.
+pub(crate) const SLEPT: Duration = Duration::from_secs(30);
+
+pub(crate) fn slept(before: Clocks, now: Clocks) -> bool {
+    let wall = now.wall.duration_since(before.wall).unwrap_or_default();
+    wall.saturating_sub(now.monotonic.saturating_duration_since(before.monotonic)) > SLEPT
+}
+
+static AWAKE: Mutex<BTreeMap<PathBuf, Clocks>> = Mutex::new(BTreeMap::new());
+
+fn awake() -> std::sync::MutexGuard<'static, BTreeMap<PathBuf, Clocks>> {
+    AWAKE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// True once after the Mac slept since `home` last asked; its endpoint is then retired, so the
+/// next connection holepunches on the network the Mac woke up on.
+pub fn woke(home: &Path) -> bool {
+    let now = Clocks::now();
+    let before = awake().insert(home.to_path_buf(), now);
+    let slept = before.is_some_and(|before| slept(before, now));
+    if slept {
+        locals().remove(home);
+    }
+    slept
+}
+
+/// Makes `home` read as if the Mac had slept for `asleep` since it last asked.
+#[cfg(test)]
+pub(crate) fn pretend_slept(home: &Path, asleep: Duration) {
+    let mut awake = awake();
+    let clocks = awake.entry(home.to_path_buf()).or_insert_with(Clocks::now);
+    clocks.wall -= asleep;
+}
+
+/// The generation of the endpoint `home` dials from now, if it has one.
+#[cfg(test)]
+pub(crate) fn generation(home: &Path) -> Option<u64> {
+    locals().get(home).map(|local| local.generation)
+}
+
+/// How many connections `home` started dialing.
+#[cfg(test)]
+pub(crate) fn dials(home: &Path) -> usize {
+    DIALS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(home).copied().unwrap_or(0)
+}
+
+#[cfg(test)]
+static DIALS: Mutex<BTreeMap<PathBuf, usize>> = Mutex::new(BTreeMap::new());
+
+/// How long iroh waits after each failure in a row before it dials the Mac again.
+pub(crate) const BACKOFF: [Duration; 4] =
+    [Duration::from_secs(5), Duration::from_secs(15), Duration::from_secs(30), Duration::from_secs(60)];
+
+/// When a link to a Mac may dial again: after each failure in a row it waits longer, and an
+/// answer or a sleep starts it over.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Backoff {
+    failures: usize,
+    until: Option<Instant>,
+}
+
+impl Backoff {
+    pub(crate) fn ready(&self, now: Instant) -> bool {
+        self.until.is_none_or(|until| now >= until)
+    }
+
+    pub(crate) fn failed(&mut self, now: Instant) {
+        self.hold(now, BACKOFF[self.failures.min(BACKOFF.len() - 1)]);
+        self.failures += 1;
+    }
+
+    /// Waits at least `wait`, without counting a failure.
+    pub(crate) fn hold(&mut self, now: Instant, wait: Duration) {
+        self.until = Some(self.until.map_or(now + wait, |until| until.max(now + wait)));
+    }
+
+    pub(crate) fn answered(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// How long a connection may go only through the relay before a new one tries to go direct.
+pub(crate) const RELAY_STUCK: Duration = Duration::from_secs(2 * 60);
+/// The least time between two of those tries.
+pub(crate) const RELAY_RETRY: Duration = Duration::from_secs(10 * 60);
+
+/// Follows whether a connection keeps going through the relay, and says when to try a new one.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RelayWatch {
+    since: Option<Instant>,
+    tried: Option<Instant>,
+}
+
+impl RelayWatch {
+    /// The connection's path seen at `now`; true when a new connection should try to go direct.
+    pub(crate) fn seen(&mut self, path: Option<PathKind>, now: Instant) -> bool {
+        if !matches!(path, Some(PathKind::Relay)) {
+            self.since = None;
+            return false;
+        }
+        let since = *self.since.get_or_insert(now);
+        let stuck = now.saturating_duration_since(since) >= RELAY_STUCK;
+        if stuck && self.tried.is_none_or(|tried| now.saturating_duration_since(tried) >= RELAY_RETRY) {
+            self.since = None;
+            self.tried = Some(now);
+            return true;
+        }
+        false
+    }
 }
 
 /// How the connection reaches the Mac right now.
@@ -185,7 +344,22 @@ pub struct Identity<'a> {
 
 /// Connects to the Mac `dial` names and says hello as `identity`, within `CONNECT_TIMEOUT`.
 pub fn connect(home: &Path, dial: &Dial, identity: &Identity) -> Result<Session> {
-    let local = local(home)?;
+    connect_from(local(home)?, dial, identity)
+}
+
+/// Like `connect`, from a new endpoint that becomes the one `home` dials from once the Mac
+/// accepts it; until then the current one and its sessions go on.
+pub fn connect_afresh(home: &Path, dial: &Dial, identity: &Identity) -> Result<Session> {
+    let session = connect_from(bind(home)?, dial, identity)?;
+    locals().insert(home.to_path_buf(), session.local.clone());
+    Ok(session)
+}
+
+fn connect_from(local: Arc<Local>, dial: &Dial, identity: &Identity) -> Result<Session> {
+    #[cfg(test)]
+    {
+        *DIALS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry(local.home.clone()).or_default() += 1;
+    }
     let mac: EndpointId = dial.endpoint.parse().context("invalid Mac iroh endpoint")?;
     let mut addr = EndpointAddr::new(mac);
     for ip in dial.addrs.iter().filter_map(|addr| addr.parse::<SocketAddr>().ok()) {
@@ -251,6 +425,12 @@ impl Session {
 
     pub fn is_closed(&self) -> bool {
         self.connection.close_reason().is_some()
+    }
+
+    /// Open, and dialed from the endpoint its home dials from now.
+    pub fn is_usable(&self) -> bool {
+        let current = locals().get(&self.local.home).is_some_and(|local| local.generation == self.local.generation);
+        current && !self.is_closed()
     }
 
     /// The path iroh uses for this connection now.
@@ -322,6 +502,66 @@ mod tests {
         assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         assert!(key(&home).is_err());
+    }
+
+    #[test]
+    fn the_mac_slept_when_the_wall_clock_runs_ahead_of_the_monotonic_one() {
+        let before = Clocks { wall: SystemTime::now(), monotonic: Instant::now() };
+        let after = |wall: u64, monotonic: u64| Clocks {
+            wall: before.wall + Duration::from_secs(wall),
+            monotonic: before.monotonic + Duration::from_secs(monotonic),
+        };
+        assert!(slept(before, after(600, 1)), "ten minutes asleep");
+        assert!(slept(before, after(45, 5)), "forty seconds asleep");
+        assert!(!slept(before, after(20, 20)), "awake all along");
+        assert!(!slept(before, after(25, 0)), "under the threshold");
+        let back = Clocks { wall: before.wall - Duration::from_secs(600), monotonic: before.monotonic };
+        assert!(!slept(before, back), "a wall clock set back is no sleep");
+    }
+
+    #[test]
+    fn failures_in_a_row_wait_longer_until_an_answer_starts_over() {
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        let mut backoff = Backoff::default();
+        assert!(backoff.ready(start));
+        let mut now = start;
+        for wait in [5, 15, 30, 60, 60] {
+            backoff.failed(now);
+            assert!(!backoff.ready(now + Duration::from_secs(wait - 1)), "waits {wait} s");
+            now += Duration::from_secs(wait);
+            assert!(backoff.ready(now), "ready after {wait} s");
+        }
+        backoff.answered();
+        backoff.failed(now);
+        assert!(backoff.ready(now + Duration::from_secs(5)), "an answer starts the waits over");
+        let mut held = Backoff::default();
+        held.hold(start, Duration::from_secs(60));
+        held.failed(start);
+        assert!(!held.ready(at(59)), "a failure never shortens a longer hold");
+        assert!(held.ready(at(60)));
+    }
+
+    #[test]
+    fn a_connection_only_on_the_relay_for_two_minutes_tries_a_new_one_at_most_every_ten() {
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        let relay = Some(PathKind::Relay);
+        let direct = Some(PathKind::Direct("192.0.2.1:7".parse().unwrap()));
+        let mut watch = RelayWatch::default();
+        assert!(!watch.seen(relay, at(0)));
+        assert!(!watch.seen(relay, at(119)));
+        assert!(watch.seen(relay, at(120)), "two minutes on the relay");
+        assert!(!watch.seen(relay, at(121)));
+        assert!(!watch.seen(relay, at(300)), "stuck again, but the last try was five minutes ago");
+        assert!(watch.seen(relay, at(720)), "ten minutes after the last try");
+        let mut watch = RelayWatch::default();
+        assert!(!watch.seen(relay, at(0)));
+        assert!(!watch.seen(direct, at(100)), "a direct path is never stuck");
+        assert!(!watch.seen(relay, at(130)), "the relay time starts over after a direct path");
+        assert!(!watch.seen(None, at(200)));
+        assert!(!watch.seen(relay, at(260)));
+        assert!(watch.seen(relay, at(380)));
     }
 
     #[test]

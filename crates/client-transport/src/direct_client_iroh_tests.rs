@@ -256,6 +256,36 @@ fn a_request_goes_over_iroh_when_the_mac_is_reachable_there() {
 }
 
 #[test]
+fn after_the_mac_slept_the_next_request_dials_a_new_connection_from_a_new_endpoint() {
+    let (http, iroh) = (Http::start(), FakeIroh::start(Behaviour::Answer));
+    let terminal = terminal(&http, Some(iroh.dial()));
+    read(&terminal).unwrap();
+    read(&terminal).unwrap();
+    let before = crate::iroh_client::generation(&terminal.home);
+    assert_eq!(crate::iroh_client::dials(&terminal.home), 1, "awake, the open connection is reused");
+    crate::iroh_client::pretend_slept(&terminal.home, Duration::from_secs(10 * 60));
+    assert_eq!(read(&terminal).unwrap(), (200, json!({"path": "/capabilities"})));
+    assert_eq!(crate::iroh_client::dials(&terminal.home), 2, "the Mac slept: a new connection");
+    assert_ne!(crate::iroh_client::generation(&terminal.home), before, "dialed from a new endpoint");
+    assert_eq!(iroh.received().len(), 3);
+    assert!(http.received().is_empty(), "nothing went over HTTP");
+    read(&terminal).unwrap();
+    assert_eq!(crate::iroh_client::dials(&terminal.home), 2, "and the new connection is reused");
+}
+
+#[test]
+fn a_connection_that_keeps_failing_waits_before_it_is_dialed_again() {
+    let (http, iroh) = (Http::start(), FakeIroh::start(Behaviour::DropAfterRequest));
+    let terminal = terminal(&http, Some(iroh.dial()));
+    *http.routes.lock().unwrap() = json!({"lan": [], "iroh_endpoint": iroh.dial().endpoint, "iroh_addrs": iroh.dial().addrs});
+    for _ in 0..3 {
+        assert_eq!(read(&terminal).unwrap(), (200, json!({"path": "/capabilities"})));
+    }
+    assert_eq!(crate::iroh_client::dials(&terminal.home), 1, "the reads after the failure go over HTTP and dial nothing");
+    assert_eq!(iroh.received().len(), 1);
+}
+
+#[test]
 fn an_envelope_lost_mid_request_on_iroh_goes_byte_for_byte_over_http() {
     let (http, iroh) = (Http::start(), FakeIroh::start(Behaviour::DropAfterRequest));
     let terminal = terminal(&http, Some(iroh.dial()));
