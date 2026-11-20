@@ -1,7 +1,9 @@
 //! Crash reports `alondra report` could not send because GitHub could not take them then: every
 //! minute (every second in a sandbox with fast timing) the daemon asks its own CLI to send again
-//! each one whose next try is due, in silence.
+//! each one whose next try is due, in silence. A report held for the user to decide on is read
+//! here too; its card lives in the daemon engine.
 use alondra_core::clock;
+use alondra_domain_rules::report_held_card::Held;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -33,6 +35,38 @@ pub fn due(reports: &Path, now: i64) -> Vec<String> {
         .collect();
     ids.sort();
     ids
+}
+
+/// A pending report the daemon's tries send nothing for until the user decides, and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldReport {
+    pub id: String,
+    /// The repository it was going to.
+    pub saved: String,
+    pub held: Held,
+}
+
+#[derive(serde::Deserialize)]
+struct Pending {
+    repo: String,
+    state: String,
+    #[serde(default)]
+    held: Option<Held>,
+}
+
+/// The pending reports in `reports` that are held, by id.
+pub fn held(reports: &Path) -> Vec<HeldReport> {
+    let Ok(entries) = std::fs::read_dir(reports) else { return Vec::new() };
+    let mut held: Vec<HeldReport> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let id = entry.file_name().to_string_lossy().into_owned();
+            let pending: Pending = serde_json::from_slice(&std::fs::read(entry.path().join("sending.json")).ok()?).ok()?;
+            (is_report_id(&id) && pending.state == "pending").then_some(HeldReport { id, saved: pending.repo, held: pending.held? })
+        })
+        .collect();
+    held.sort_by(|a, b| a.id.cmp(&b.id));
+    held
 }
 
 fn send_again(cli: &Path, home: &Path, id: &str) {
@@ -91,5 +125,22 @@ mod tests {
         assert_eq!(due(&reports, 2_000), vec!["r-20261026-00000001".to_owned()]);
         assert_eq!(due(&reports, 5_000), vec!["r-20261026-00000001".to_owned(), "r-20261026-00000002".to_owned()]);
         assert!(due(&dir.join("nothing"), 5_000).is_empty());
+    }
+
+    #[test]
+    fn only_pending_reports_that_say_why_they_are_held_are_held() {
+        let dir = crate::test_support::Directory::new();
+        let reports = dir.join("reports");
+        let changed = serde_json::json!({"reason": "repo_changed", "current": "ana/otros"});
+        report(&reports, "r-20261026-00000001", Some(serde_json::json!({"state": "pending", "repo": "ana/informes", "held": changed})));
+        report(&reports, "r-20261026-00000002", Some(serde_json::json!({"state": "pending", "repo": "ana/informes"})));
+        report(&reports, "r-20261026-00000003", Some(serde_json::json!({"state": "sent", "repo": "ana/informes", "held": changed})));
+        report(&reports, "r-20261026-00000004", Some(serde_json::json!({"state": "pending", "repo": "ana/informes", "held": {"reason": "newer"}})));
+        report(&reports, "received", Some(serde_json::json!({"state": "pending", "repo": "ana/informes", "held": changed})));
+        assert_eq!(held(&reports), vec![
+            HeldReport { id: "r-20261026-00000001".into(), saved: "ana/informes".into(), held: Held::RepoChanged { current: "ana/otros".into(), refused: None } },
+            HeldReport { id: "r-20261026-00000004".into(), saved: "ana/informes".into(), held: Held::Unknown },
+        ]);
+        assert!(held(&dir.join("nothing")).is_empty());
     }
 }

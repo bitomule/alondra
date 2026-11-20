@@ -257,7 +257,7 @@ async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnc
     };
     probe(&launcher);
     let mac = CalmMac::default();
-    let seams = seams_of(&github, &pushes, &mac, launcher, backend);
+    let seams = seams_of(&github, &pushes, &mac, launcher, backend, &leaks);
     alondrad::scenario_phone::prepare(&config.home).map_err(|e| invalid(&format!("{e:#}")))?;
     let domain = crate::engine::open(&config.home).map_err(|e| invalid(&format!("{e:#}")))?;
     let daemon = assemble::start_over(&config, domain, seams).await.map_err(|e| invalid(&format!("{e:#}")))?;
@@ -304,7 +304,7 @@ async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnc
     Ok((context.outcome, result.err()))
 }
 
-fn seams_of(github: &Arc<GithubWorld>, pushes: &RecordedPushes, mac: &CalmMac, launcher: Launcher, backend: Backend) -> Seams {
+fn seams_of(github: &Arc<GithubWorld>, pushes: &RecordedPushes, mac: &CalmMac, launcher: Launcher, backend: Backend, leaks: &Arc<Mutex<Vec<String>>>) -> Seams {
     Seams {
         github: GithubSeams::of(github.clone()),
         push: Pushes::new(pushes.clone()),
@@ -313,9 +313,10 @@ fn seams_of(github: &Arc<GithubWorld>, pushes: &RecordedPushes, mac: &CalmMac, l
             let publication = mac.1.clone();
             Arc::new(move || publication.publish())
         }),
-        launcher,
+        launcher: Launcher::new(crate::reports_cli::ReportsCli { inner: launcher, leaks: leaks.clone() }),
         backend,
         world: assemble::World::Isolated,
+        own_cli: Some(crate::reports_cli::SCENARIO_CLI.into()),
     }
 }
 
@@ -594,6 +595,11 @@ impl Context<'_> {
             Step::Restart { lose } => self.restart(index, lose, None).await?,
             Step::Update => self.restart(index, &[], Some(alondra_engine_sdk::sdk_owner::backend::this_release())).await?,
             Step::HostCanStart { task } => self.edge(index)?.set_startable(task, true),
+            Step::WriteHome { files } => {
+                for file in files {
+                    self.write_home(index, &file.path, &file.text)?;
+                }
+            }
             Step::Advance { by } => self.pass(parse_duration(by)?, index).await?,
             Step::Rest { max } => self.rest(parse_duration(max)?, index).await?,
             Step::Checkpoint(checkpoint) => self.checkpoint(index, checkpoint).await?,
@@ -903,7 +909,7 @@ impl Context<'_> {
             Some((launcher, backend)) => (launcher, Backend::Given(Some(backend))),
             None => (Launcher::new(RefusingLauncher(self.leaks.clone())), Backend::Given(None)),
         };
-        let seams = seams_of(&self.github, &self.pushes, &self.mac, launcher, backend);
+        let seams = seams_of(&self.github, &self.pushes, &self.mac, launcher, backend, &self.leaks);
         let domain = crate::engine::open(&self.config.home).map_err(|e| Self::failed(index, format!("{e:#}")))?;
         let daemon = assemble::start_over(&self.config, domain, seams).await.map_err(|e| Self::failed(index, format!("{e:#}")))?;
         self.daemon = Some(daemon);
@@ -913,6 +919,20 @@ impl Context<'_> {
     /// Whether the scenario starts a node of the task on the provider, which then admits it.
     fn runs_on_a_provider(&self, task: &str) -> bool {
         self.scenario.steps.iter().any(|step| matches!(step, Step::Node { task: named, .. } if named == task))
+    }
+
+    fn write_home(&self, index: usize, path: &str, text: &str) -> Result<(), ScenarioError> {
+        let relative = Path::new(path);
+        if relative.components().any(|part| !matches!(part, std::path::Component::Normal(_))) {
+            return Err(Self::failed(index, format!("{path} is not a path inside the daemon's home")));
+        }
+        let file = self.config.home.join(relative);
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| Self::failed(index, e))?;
+        }
+        let next = file.with_extension("next");
+        std::fs::write(&next, text).map_err(|e| Self::failed(index, e))?;
+        std::fs::rename(&next, &file).map_err(|e| Self::failed(index, e))
     }
 
     /// Lets virtual time pass, with the daemon's loops running through it.

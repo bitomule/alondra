@@ -1397,6 +1397,9 @@ fn pace_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Opt
     if matches!(interaction.system_card, Some(SystemCard::LocalNetwork)) {
         return alondra_domain_rules::local_network_card::LocalNetworkCard::from_body(&interaction.body).map(|card| card.text(lang));
     }
+    if matches!(interaction.system_card, Some(SystemCard::ReportHeld { .. })) {
+        return alondra_domain_rules::report_held_card::ReportHeldCard::from_body(&interaction.body).map(|card| card.text(lang));
+    }
     if matches!(interaction.system_card, Some(SystemCard::CapabilityCapacity)) {
         return alondra_domain_rules::capability_capacity_card::CapabilityCapacityCard::from_body(&interaction.body).map(|card| card.text(lang));
     }
@@ -1479,6 +1482,13 @@ fn fixed_option_text(interaction: &Interaction, option: &QuestionOption, lang: L
         && let Some((label, description)) = alondra_domain_rules::local_network_card::option_text(&option.id, &option.label, lang)
     {
         return (label.into(), Some(description.into()));
+    }
+    if interaction.author == Author::System
+        && matches!(interaction.system_card, Some(SystemCard::ReportHeld { .. }))
+        && let Some(card) = alondra_domain_rules::report_held_card::ReportHeldCard::from_body(&interaction.body)
+        && let Some((label, description)) = card.option_text(&option.id, lang)
+    {
+        return (label, Some(description));
     }
     if interaction.author == Author::System
         && matches!(interaction.system_card, Some(SystemCard::CapabilityCapacity))

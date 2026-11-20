@@ -75,6 +75,8 @@ pub struct Seams {
     pub launcher: Launcher,
     pub backend: Backend,
     pub world: World,
+    /// The `alondra` CLI the daemon runs for the user's answers about held crash reports.
+    pub own_cli: Option<std::path::PathBuf>,
 }
 
 impl Seams {
@@ -87,6 +89,7 @@ impl Seams {
             launcher: Launcher::default(),
             backend: Backend::Resolve,
             world: World::Real,
+            own_cli: alondra_host::brew::own_cli(),
         }
     }
 }
@@ -333,6 +336,7 @@ pub(crate) async fn assemble_with(
     tasks.spawn(account_move::run(state_domain.clone()));
     tasks.spawn(provider_transition::run(state_domain.clone()));
     tasks.spawn(obligation_watch::run(state_domain.clone()));
+    tasks.spawn(alondra_daemon_engine::report_held_card::run(domain.clone(), config.home.clone(), seams.own_cli.clone(), config.fast_timing));
     let compaction = if config.fast_timing { &idle_compaction::Timing::SANDBOX } else { &idle_compaction::Timing::LIVE };
     tasks.spawn(idle_compaction::run(state_domain.clone(), compaction));
     let release = if config.fast_timing { &idle_release::Timing::SANDBOX } else { &idle_release::Timing::LIVE };

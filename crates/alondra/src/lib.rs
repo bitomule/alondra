@@ -34,6 +34,7 @@ fn run(command: Option<Cmd>, json: bool, no_input: bool) -> Result<()> {
                     Ok(())
                 }
                 Some(ReportCmd::Send { id, kind, retry }) => report::send_report(&id, kind, retry, json),
+                Some(ReportCmd::Keep { id }) => report::keep_report(&id),
                 Some(ReportCmd::List) => report::list_reports(json),
                 Some(ReportCmd::Open { target }) => report::open_report(&target),
                 Some(ReportCmd::Delete { target }) => report::delete_report(&target),

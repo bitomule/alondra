@@ -83,6 +83,7 @@ pub mod node_exit;
 pub mod node_push;
 pub use alondra_daemon_engine_model::options;
 pub mod plan_reviews;
+pub mod report_held_card;
 pub use alondra_daemon_engine_model::reply;
 pub mod sdk_handover;
 pub use alondra_daemon_engine_model::settings_file;

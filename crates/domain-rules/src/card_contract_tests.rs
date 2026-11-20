@@ -55,6 +55,7 @@ fn sample(kind: SystemCardKind) -> SystemCard {
         K::PaceResume => SystemCard::PaceResume { day: "2026-11-07".into() },
         K::Machine => SystemCard::Machine,
         K::LocalNetwork => SystemCard::LocalNetwork,
+        K::ReportHeld => SystemCard::ReportHeld { report: "r-20261120-1a2b3c4d".into() },
         K::CapabilityCapacity => SystemCard::CapabilityCapacity,
         K::McpWait => SystemCard::McpWait,
         K::ClaudeSignedOut => SystemCard::ClaudeSignedOut,

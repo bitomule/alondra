@@ -1,0 +1,108 @@
+name = "a crash report held because report.repo changed asks where it goes: sent to the new repository, kept on the Mac, or gone once sent another way"
+max_virtual = "30m"
+
+[[step]]
+do = "write_home"
+[[step.file]]
+path = "reports/r-20261120-0000000a/sending.json"
+text = '{"repo": "ana/informes", "kind": "other", "state": "pending", "package_sha256": "", "attempts": 1, "held": {"reason": "repo_changed", "current": "ana/otros"}}'
+
+[[step]]
+do = "rest"
+max = "1m"
+
+[[step]]
+do = "checkpoint"
+name = "a-report-held"
+screens = ["home"]
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "Report r-20261120-0000000a is not being sent: report.repo changed"
+
+[[step]]
+do = "answer"
+card = "report-held-r-20261120-0000000a"
+option = "send"
+
+[[step]]
+do = "rest"
+max = "1m"
+
+[[step]]
+do = "checkpoint"
+name = "sent-to-the-new-repository"
+screens = ["home"]
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "report.repo changed"
+present = false
+
+[[step]]
+do = "write_home"
+[[step.file]]
+path = "reports/r-20261120-0000000b/sending.json"
+text = '{"repo": "ana/informes", "kind": "other", "state": "pending", "package_sha256": "", "attempts": 1, "held": {"reason": "repo_changed", "current": "ana/otros"}}'
+
+[[step]]
+do = "rest"
+max = "1m"
+
+[[step]]
+do = "answer"
+card = "report-held-r-20261120-0000000b"
+option = "keep"
+
+[[step]]
+do = "rest"
+max = "1m"
+
+[[step]]
+do = "checkpoint"
+name = "kept-on-the-mac"
+screens = ["home"]
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "report.repo changed"
+present = false
+
+[[step]]
+do = "write_home"
+[[step.file]]
+path = "reports/r-20261120-0000000c/sending.json"
+text = '{"repo": "ana/informes", "kind": "other", "state": "pending", "package_sha256": "", "attempts": 1, "held": {"reason": "repo_changed", "current": "ana/otros"}}'
+
+[[step]]
+do = "rest"
+max = "1m"
+
+[[step]]
+do = "checkpoint"
+name = "another-report-held"
+screens = ["home"]
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "Report r-20261120-0000000c is not being sent: report.repo changed"
+
+[[step]]
+do = "write_home"
+[[step.file]]
+path = "reports/r-20261120-0000000c/sending.json"
+text = '{"repo": "ana/otros", "kind": "other", "state": "sent", "package_sha256": "", "attempts": 2, "issue": 7, "url": "https://github.com/ana/otros/issues/7"}'
+
+[[step]]
+do = "rest"
+max = "1m"
+
+[[step]]
+do = "checkpoint"
+name = "sent-another-way"
+screens = ["home"]
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "report.repo changed"
+present = false

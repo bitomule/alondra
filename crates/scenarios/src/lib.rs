@@ -12,6 +12,7 @@ pub mod error;
 pub mod format;
 pub mod from_report;
 pub mod http;
+pub mod reports_cli;
 pub mod runner;
 
 pub use error::ScenarioError;

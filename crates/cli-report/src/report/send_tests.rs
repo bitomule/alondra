@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 
 use super::github::{GhError, GhResult, Github, Repo, classify};
-use super::send::{self, Blocked, Kind, Outcome, Public, State};
+use super::send::{self, Blocked, Held, Kind, Outcome, Public, State};
 use super::tests::{FakeMac, NOW, full_home, hours_before, private_values};
 use super::*;
 use crate::test_support::Directory;
@@ -322,9 +322,59 @@ fn a_pending_report_is_sent_again_only_to_the_repository_it_was_first_sent_to() 
     let held = send::read_sending(&built.dir).unwrap();
     assert_eq!((held.repo.as_str(), held.state, held.next_at), ("owner/previous", State::Pending, NOW + 60_000 + send::backoff_ms(u32::MAX)), "it waits the longest backoff");
     assert_eq!(held.attempts, 1, "a refused retry is not a try");
+    assert_eq!(held.held, Some(Held::RepoChanged { current: REPO.into(), refused: None }), "it says why it is held, apart from its error's text");
     let Outcome::Sent { number, .. } = send::send(&repo(&gh), mac.home(), &built.id, &files, None, NOW + 120_000, &send::backoff_ms).unwrap() else { panic!() };
     assert_eq!(gh.0.borrow().issues[0]["number"], json!(number), "sending it by hand to the new repository is the confirmation");
-    assert_eq!(send::read_sending(&built.dir).unwrap().repo, REPO);
+    let sent = send::read_sending(&built.dir).unwrap();
+    assert_eq!((sent.repo.as_str(), sent.held), (REPO, None));
+}
+
+#[test]
+fn a_refused_send_to_the_new_repository_keeps_the_report_held_and_says_why() {
+    let home = Directory::new();
+    let (mac, built) = built_report(&home);
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let files = checked(&mac, &built.id).unwrap();
+    let gh = FakeGithub::new();
+    gh.as_user("ana");
+    gh.0.borrow_mut().failing = Some(GhError::Unavailable("GitHub is down".into()));
+    let previous = Repo { gh: &gh, name: "owner/previous".into() };
+    send::send(&previous, mac.home(), &built.id, &files, None, NOW, &send::backoff_ms).unwrap();
+    gh.0.borrow_mut().failing = None;
+    send::retry(&repo(&gh), mac.home(), &built.id, &files, NOW + 60_000, &send::backoff_ms).unwrap_err();
+    gh.0.borrow_mut().failing = Some(GhError::SignedOut);
+    let error = send::send(&repo(&gh), mac.home(), &built.id, &files, None, NOW + 120_000, &send::backoff_ms).unwrap_err();
+    let held = send::read_sending(&built.dir).unwrap();
+    assert_eq!((held.repo.as_str(), held.state), ("owner/previous", State::Pending), "still the saved repository");
+    assert_eq!(held.held, Some(Held::RepoChanged { current: REPO.into(), refused: Some(error.to_string()) }));
+    send::retry(&repo(&gh), mac.home(), &built.id, &files, held.next_at, &send::backoff_ms).unwrap_err();
+    assert_eq!(send::read_sending(&built.dir).unwrap().held, held.held, "the daemon's next try keeps the refusal to the same repository");
+    let other = Repo { gh: &gh, name: "owner/other".into() };
+    send::retry(&other, mac.home(), &built.id, &files, held.next_at, &send::backoff_ms).unwrap_err();
+    assert_eq!(send::read_sending(&built.dir).unwrap().held, Some(Held::RepoChanged { current: "owner/other".into(), refused: None }), "a refusal from another repository is not this one's");
+}
+
+#[test]
+fn a_report_kept_on_this_mac_is_not_tried_again_but_can_still_be_sent_by_hand() {
+    let home = Directory::new();
+    let (mac, built) = built_report(&home);
+    let files = checked(&mac, &built.id).unwrap();
+    let gh = FakeGithub::new();
+    gh.as_user("ana");
+    assert!(send::keep(mac.home(), &built.id).is_err(), "nothing pending to keep");
+    gh.0.borrow_mut().failing = Some(GhError::Unavailable("GitHub is down".into()));
+    let previous = Repo { gh: &gh, name: "owner/previous".into() };
+    send::send(&previous, mac.home(), &built.id, &files, None, NOW, &send::backoff_ms).unwrap();
+    gh.0.borrow_mut().failing = None;
+    send::retry(&repo(&gh), mac.home(), &built.id, &files, NOW + 60_000, &send::backoff_ms).unwrap_err();
+    send::keep(mac.home(), &built.id).unwrap();
+    let kept = send::read_sending(&built.dir).unwrap();
+    assert_eq!((kept.state, kept.held), (State::Kept, None));
+    assert!(send::retry(&previous, mac.home(), &built.id, &files, NOW + 120_000, &send::backoff_ms).is_err(), "the daemon's tries leave it alone");
+    assert!(gh.0.borrow().issues.is_empty());
+    assert!(send::keep(mac.home(), "../elsewhere").is_err());
+    let Outcome::Sent { .. } = send::send(&repo(&gh), mac.home(), &built.id, &files, None, NOW + 180_000, &send::backoff_ms).unwrap() else { panic!() };
+    assert_eq!(send::read_sending(&built.dir).unwrap().state, State::Sent);
 }
 
 #[test]
@@ -344,7 +394,8 @@ fn a_held_report_goes_on_by_itself_once_the_repository_is_the_saved_one_again() 
     let later = send::read_sending(&built.dir).unwrap().next_at;
     let Outcome::Sent { number, .. } = send::retry(&repo(&gh), mac.home(), &built.id, &files, later, &send::backoff_ms).unwrap() else { panic!() };
     assert_eq!(Public::parse(&issue(&gh, number).body).unwrap().id, built.id);
-    assert_eq!(send::read_sending(&built.dir).unwrap().state, State::Sent);
+    let sent = send::read_sending(&built.dir).unwrap();
+    assert_eq!((sent.state, sent.held), (State::Sent, None), "back to the saved repository, it is no longer held");
 }
 
 #[test]

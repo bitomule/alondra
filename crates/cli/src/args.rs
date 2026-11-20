@@ -268,6 +268,11 @@ pub enum ReportCmd {
         #[arg(long, hide = true)]
         retry: bool,
     },
+    #[command(about = tr!("Keep a pending report on this Mac: Alondra stops sending it on its own", "Deja en este Mac un informe pendiente: Alondra deja de enviarlo sola"))]
+    Keep {
+        #[arg(help = tr!("The report's id, as alondra report printed it", "El id del informe, como lo mostró alondra report"))]
+        id: String,
+    },
     #[command(about = tr!("The open reports of the report repository", "Los informes abiertos del repositorio de informes"))]
     List,
     #[command(about = tr!("Open a report: an issue of the report repository or a file someone sent you", "Abre un informe: un issue del repositorio de informes o un fichero que te mandaron"))]

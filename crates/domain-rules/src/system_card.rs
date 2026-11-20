@@ -15,6 +15,8 @@ pub enum SystemCard {
     PaceResume { day: String },
     Machine,
     LocalNetwork,
+    /// A crash report waits on this Mac because `report.repo` changed since it was first sent.
+    ReportHeld { report: String },
     /// The node credential registry has no room: new starts wait.
     CapabilityCapacity,
     McpWait,
@@ -79,12 +81,13 @@ pub enum InboxCard {
 }
 
 /// The ids Alondra's own cards were named with: a node or the orchestrator may not name a card so.
-pub const RESERVED_PREFIXES: [&str; 37] = [
+pub const RESERVED_PREFIXES: [&str; 38] = [
     super::NODE_PAUSE_PREFIX,
     alondra_core::usage::OVER_PACE_PREFIX,
     alondra_core::usage::PACE_RESUME_PREFIX,
     alondra_core::machine_incident::MACHINE_PREFIX,
     crate::local_network_card::LOCAL_NETWORK_PREFIX,
+    crate::report_held_card::REPORT_HELD_PREFIX,
     super::MCP_WAIT_PREFIX,
     super::SIGNED_OUT_PREFIX,
     super::OUTAGE_PREFIX,
