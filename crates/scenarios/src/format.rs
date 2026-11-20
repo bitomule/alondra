@@ -115,8 +115,12 @@ pub enum Step {
     /// card of the presentation, as the app does it from the view.
     Press { presentation: String, action: String, #[serde(default)] text: Option<String>, #[serde(default)] screen: Option<String> },
     /// The node of `task` starts on Claude, on `account`, as a launch in production starts it: the
-    /// daemon starts its SDK host, which takes the task's first input as a turn.
-    Node { task: String, #[serde(default = "Step::default_account")] account: String },
+    /// daemon starts its SDK host, which takes the task's first input as a turn. With `model`, the
+    /// task runs that model of the account's catalog, as a launch that resolved its selection.
+    Node { task: String, #[serde(default = "Step::default_account")] account: String, #[serde(default)] model: Option<String> },
+    /// The conversation of the node of `task` holds `tokens` from now on, and its hosts' answers say
+    /// what each request read from the prompt cache and wrote to it.
+    Conversation { task: String, tokens: u64 },
     /// The turn of the node of `task` ends: on the error the API answers while it fails for the
     /// node's account, with Claude's answer otherwise. A node with an input waiting takes it next.
     TurnEnd { task: String },
@@ -221,6 +225,9 @@ pub enum Expect {
     /// How many SDK hosts the daemon started for `task`, how many of them run now, and how many
     /// Claude sessions they held between them.
     Hosts { task: String, started: usize, running: usize, sessions: usize },
+    /// The first request of the last host started for `task` wrote at most `max` tokens to the
+    /// prompt cache.
+    CacheWritten { task: String, max: u64 },
 }
 
 impl Expect {

@@ -15,6 +15,8 @@ use crate::locks::Poisonable as _;
 pub use alondra_engine_kernel::sdk_backend as backend;
 mod worker;
 mod claude_history;
+mod conversation_file;
+mod session_refresh;
 mod node_environment;
 pub use alondra_daemon_engine::untaken;
 pub(crate) use alondra_daemon_engine_model::NativeAccountIdentity;
@@ -258,6 +260,10 @@ pub struct Driver {
     /// This host resumes a released session that has not started a turn: what it was handed may
     /// not have been read.
     resumes_released: bool,
+    /// This host resumes its session on the first input it is handed, which decides first whether
+    /// a new session takes the conversation over instead (`session_refresh`). A control it took
+    /// first opened the session already.
+    resumed: Option<session_refresh::Resumed>,
     /// This replacement was handed an input and did not take it: its end is watched and its place
     /// taken by another host after `relaunch_wait`.
     untaken: bool,
@@ -508,8 +514,12 @@ pub fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Lau
     let binding = binding_for(provider, backend, capabilities, &launch.account, crate::accounts::generation_provider(&state, &AccountKey { provider, account: launch.account.clone() }))?;
     let mut configuration = configuration(&domain, backend, &binding, &launch.directory, &agent.0, true, Some(worker_profile(&launch.plugin, &launch.options, &launch.directory)?))?;
     if let Some(Continuation::Transition { id }) = &continuation {
-        let prepared = crate::provider_transition::retained_handoff(&domain, &launch.task, id).map_err(|error|Failed::new(error.message))?;
-        configuration.worker.as_mut().ok_or_else(||Failed::new("The transfer has no worker profile".into()))?.handoff_context=Some(prepared.context);
+        let (prepared, conversation) = crate::provider_transition::retained_handoff(&domain, &launch.task, id).map_err(|error|Failed::new(error.message))?;
+        let profile = configuration.worker.as_mut().ok_or_else(||Failed::new("The transfer has no worker profile".into()))?;
+        profile.handoff_context = Some(prepared.context);
+        if let Some(folder) = conversation.as_deref().and_then(std::path::Path::parent) {
+            read_also(&mut profile.settings, folder);
+        }
     }
     launch.options.save(&configuration.state_directory)?;
     let scope = AuthorityScope::new(state.data_epoch.clone()).map_err(|error| Failed::new(format!("{error:?}")))?;
@@ -610,6 +620,14 @@ pub fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Lau
     }
     driver.awaiting = first;
     Ok(driver)
+}
+
+/// Lets Claude read `folder` besides its worktree, without asking.
+fn read_also(settings: &mut serde_json::Map<String, serde_json::Value>, folder: &std::path::Path) {
+    let permissions = settings.entry("permissions").or_insert_with(|| serde_json::json!({}));
+    if let Some(permissions) = permissions.as_object_mut() {
+        permissions.insert("additionalDirectories".into(), serde_json::json!([folder]));
+    }
 }
 
 /// How a host that starts for `continuation` runs its conversation.
@@ -1067,6 +1085,7 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
     }
     unadmitted.admitted();
     let mut driver = Driver::new(domain, worker, scope, task, agent, Duration::from_secs(backend.io_timeout_seconds));
+    driver.resumed = resume.then(|| session_refresh::Resumed { native_environment: on_account.native_environment.clone(), directory: adoption.directory.clone() });
     driver.replacement = true;
     driver.resuming_since = retaken.then_some(taken_at);
     driver.resumes_released = retaken;
@@ -1680,7 +1699,7 @@ impl Driver {
 
     fn new(domain: Arc<DomainRuntime>, worker: Worker, scope: AuthorityScope, task: TaskId, agent: AgentId, opening_timeout: Duration) -> Self {
         let pause = Mutex::new(PauseSubscription::new(&domain, &agent));
-        Self { pause, in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout, opening_deadline: None, refused: BTreeSet::new(), #[cfg(any(test, feature = "test-hooks"))] refuse_offers: 0, #[cfg(any(test, feature = "test-hooks"))] fail_next_step: false, #[cfg(any(test, feature = "test-hooks"))] panic_next_step: false }
+        Self { pause, in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, resumed: None, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout, opening_deadline: None, refused: BTreeSet::new(), #[cfg(any(test, feature = "test-hooks"))] refuse_offers: 0, #[cfg(any(test, feature = "test-hooks"))] fail_next_step: false, #[cfg(any(test, feature = "test-hooks"))] panic_next_step: false }
     }
 
     pub fn agent(&self) -> &AgentId {
@@ -1740,6 +1759,9 @@ impl Driver {
             .map_err(failed("recording the control"))?;
         let control = self.sealed().control_commands.pop().ok_or_else(|| Failed::new("the control left no seal".into()))?;
         let handoff = self.worker.submit_control(&control).unwrap_or(Handoff::Uncertain);
+        if handoff == Handoff::Offered {
+            self.resumed = None;
+        }
         let awaited = (handoff == Handoff::Offered).then(|| answered_by_event(control.bytes())).flatten();
         let accepted = match (handoff, control.attempt().operation()) {
             (Handoff::Offered, alondra_store::ControlOperation::Control(alondra_domain::Control::Interrupt { turn: Some(turn) })) => {
@@ -1783,6 +1805,10 @@ impl Driver {
     /// with no SQL held, and records how the handoff went.
     fn dispatch(&mut self, permit: DispatchPermit) -> Result<(), Failed> {
         let input = permit.input().clone();
+        if let Some(resumed) = self.resumed.take()
+            && session_refresh::refresh(&self.domain, &self.task, self.worker.provider(), self.worker.state_directory(), &resumed) {
+            log!("input {} of {} waits for the new session that takes its conversation over", input.as_str(), self.task);
+        }
         let mut retained = Some(permit);
         let identity=NativeAccountIdentity::load(self.worker.state_directory())?;
         let binding=self.worker.binding().clone();

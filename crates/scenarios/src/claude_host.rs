@@ -70,6 +70,10 @@ struct World {
     limit_resets_at: Option<i64>,
     /// Tasks no new host can start for.
     unstartable: BTreeSet<String>,
+    /// How many tokens each session's conversation holds, for the tasks whose answers report what
+    /// their requests cost; the hosts of other tasks report nothing.
+    conversations: BTreeMap<String, u64>,
+    sized: BTreeSet<String>,
 }
 
 /// What went wrong between the daemon and the hosts, or something a host was asked it does not do.
@@ -145,6 +149,8 @@ struct HostState {
     /// Claude's session runs nothing.
     busy: bool,
     ended: bool,
+    /// What the first request of this host's session wrote to the prompt cache, once it answered.
+    first_written: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -175,6 +181,8 @@ struct Native {
     env: BTreeMap<String, String>,
     #[serde(default)]
     resume: Option<Value>,
+    #[serde(default)]
+    cwd: Option<String>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -235,6 +243,62 @@ impl ClaudeEdge {
             world.signed_out.remove(account);
         } else {
             world.signed_out.insert(account.to_owned());
+        }
+    }
+
+    /// The conversation of `task`'s node holds `tokens` from now on: the answers of its hosts say
+    /// what each request read from the prompt cache and wrote to it, a resumed session's first
+    /// request writing its whole conversation again, as one whose cache expired does, and Claude
+    /// Code keeps each session's transcript where it keeps a real one.
+    pub fn set_conversation(&self, task: &str, tokens: u64) {
+        let running = self.running(task);
+        let mut world = lock(&self.0.world);
+        world.sized.insert(task.to_owned());
+        if let Some(host) = running {
+            world.conversations.insert(host.session.clone(), tokens);
+        }
+    }
+
+    /// What the first request of the last host started for `task` wrote to the prompt cache.
+    pub fn first_written(&self, task: &str) -> Option<u64> {
+        self.hosts_of(task).last().and_then(|host| lock(&host.state).first_written)
+    }
+
+    /// The usage an answer of `host` reports, its request having sent `sent` new tokens; none for
+    /// a task whose conversation is not sized.
+    fn usage(&self, host: &Host, state: &mut HostState, sent: u64) -> Option<Value> {
+        let mut world = lock(&self.0.world);
+        if !world.sized.contains(&host.task) {
+            return None;
+        }
+        let held = world.conversations.get(&host.session).copied().unwrap_or(0);
+        let (written, read) = if state.first_written.is_none() && (host.resumes || held == 0) { (held + sent, 0) } else { (sent, held) };
+        state.first_written.get_or_insert(written);
+        world.conversations.insert(host.session.clone(), held + sent);
+        Some(json!({"input_tokens": 3, "output_tokens": 100, "cache_creation_input_tokens": written, "cache_read_input_tokens": read,
+            "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": written}}))
+    }
+
+    /// Appends the prompt to the native transcript of `host`'s session, for a sized task, as Claude
+    /// Code writes it in its profile's project folder.
+    fn transcribe(&self, host: &Host, prompt: &str) {
+        let Some(cwd) = host.bootstrap.native.cwd.as_deref() else { return };
+        if !lock(&self.0.world).sized.contains(&host.task) {
+            return;
+        }
+        let environment = &host.bootstrap.native.env;
+        let Some(home) = environment.get("HOME") else { return };
+        let profile = alondra_core::claude_account::configured_profile(&|key: &str| environment.get(key).cloned());
+        let bucket: String = cwd.chars().map(|character| if character.is_ascii_alphanumeric() { character } else { '-' }).collect();
+        let folder = alondra_core::claude_account::config_folder(profile.as_deref(), Path::new(home)).join("projects").join(bucket);
+        let record = json!({"type": "user", "sessionId": host.session, "cwd": cwd, "timestamp": "2026-11-19T10:00:00.000Z", "message": {"role": "user", "content": prompt}});
+        let written = std::fs::create_dir_all(&folder).and_then(|()| {
+            use std::io::Write as _;
+            let mut file = std::fs::OpenOptions::new().create(true).append(true).open(folder.join(format!("{}.jsonl", host.session)))?;
+            writeln!(file, "{record}")
+        });
+        if let Err(error) = written {
+            self.troubled(format!("the transcript of {} could not be written: {error}", host.session));
         }
     }
 
@@ -359,6 +423,7 @@ impl ClaudeEdge {
     fn offered(&self, host: &Host, state: &mut HostState, input: String, prompt: String) {
         let queued = self.uuid();
         self.emit(host, state, "status", json!({"type": "command_lifecycle", "state": "queued", "uuid": queued, "command_uuid": input, "session_id": host.session}));
+        self.transcribe(host, &prompt);
         state.prompts.insert(input.clone(), prompt.clone());
         state.queued.push_back((input, prompt));
         if state.turn.is_none() {
@@ -389,8 +454,13 @@ impl ClaudeEdge {
                 Some(error) => self.finish_turn(host, state, Some(error)),
                 None => {
                     let answer = self.uuid();
-                    self.emit(host, state, "message", json!({"type": "assistant", "uuid": answer, "parent_tool_use_id": null, "user_message_uuid": input,
-                        "user_message_uuids": [input], "message": {"role": "assistant", "content": [{"type": "text", "text": "Working on it"}]}, "session_id": host.session}));
+                    let sent = state.prompts.get(&input).map_or(0, |prompt| prompt.len() as u64 / 4) + 1_000;
+                    let mut message = json!({"type": "assistant", "uuid": answer, "parent_tool_use_id": null, "user_message_uuid": input,
+                        "user_message_uuids": [input], "message": {"role": "assistant", "content": [{"type": "text", "text": "Working on it"}]}, "session_id": host.session});
+                    if let Some(usage) = self.usage(host, state, sent) {
+                        message["message"]["usage"] = usage;
+                    }
+                    self.emit(host, state, "message", message);
                 }
             }
         }
@@ -404,8 +474,12 @@ impl ClaudeEdge {
         let (answer, result) = (self.uuid(), self.uuid());
         match &error {
             None => {
-                self.emit(host, state, "message", json!({"type": "assistant", "uuid": answer, "parent_tool_use_id": null, "user_message_uuid": last,
-                    "user_message_uuids": taken, "message": {"role": "assistant", "content": [{"type": "text", "text": "Done"}]}, "session_id": host.session}));
+                let mut message = json!({"type": "assistant", "uuid": answer, "parent_tool_use_id": null, "user_message_uuid": last,
+                    "user_message_uuids": taken, "message": {"role": "assistant", "content": [{"type": "text", "text": "Done"}]}, "session_id": host.session});
+                if let Some(usage) = self.usage(host, state, 100) {
+                    message["message"]["usage"] = usage;
+                }
+                self.emit(host, state, "message", message);
                 self.emit(host, state, "result", json!({"type": "result", "subtype": "success", "uuid": result, "user_message_uuid": last, "user_message_uuids": taken,
                     "is_error": false, "stop_reason": "end_turn", "terminal_reason": "completed", "result": "Done", "session_id": host.session}));
             }

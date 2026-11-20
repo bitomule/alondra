@@ -171,6 +171,7 @@ pub trait Journal: Send {
     fn protect(&mut self, protected: crate::worktrees::WorktreeRules);
     fn protected(&self) -> &crate::worktrees::WorktreeRules;
     fn provider_transition(&self, task:&TaskId) ->Result<Option<Transition>>;
+    fn latest_provider_transition(&self, task:&TaskId) ->Result<Option<Transition>>;
     fn provider_transition_finished(&self, id:&str) ->Result<bool>;
     fn provider_transitions(&self) ->Result<Vec<Transition>>;
     fn prs_without_size(&self, now: Millis, limit: usize) -> Result<Vec<(String, String)>>;

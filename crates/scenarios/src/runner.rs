@@ -552,7 +552,8 @@ impl Context<'_> {
             },
             Step::Press { presentation, action, text, screen } => self.press(index, presentation, action, text.as_deref(), screen.as_deref().unwrap_or("home")).await?,
             Step::Answer { card, option, text } => self.answer(index, card, option, text.as_deref()).await?,
-            Step::Node { task, account } => self.start_claude_node(index, task, account).await?,
+            Step::Node { task, account, model } => self.start_claude_node(index, task, account, model.as_deref()).await?,
+            Step::Conversation { task, tokens } => self.edge(index)?.set_conversation(task, *tokens),
             Step::TurnEnd { task } => {
                 self.edge(index)?.end_turn(task, None).map_err(|why| Self::failed(index, why))?;
                 self.settle().await?;
@@ -827,7 +828,7 @@ impl Context<'_> {
     /// The task's node starts on Claude as a launch in production starts it, on `account`: the
     /// daemon picks the model, writes the mission and starts the host it supervises, after the
     /// accounts were checked through the same edge.
-    async fn start_claude_node(&mut self, index: usize, task: &str, account: &str) -> Result<(), ScenarioError> {
+    async fn start_claude_node(&mut self, index: usize, task: &str, account: &str, model: Option<&str>) -> Result<(), ScenarioError> {
         use alondra_core::accounts::{AccountId, Provider};
         for _ in 0..30 {
             if alondra_daemon_engine::accounts::require_initial_check(&self.daemon().domain).is_ok() {
@@ -843,7 +844,20 @@ impl Context<'_> {
             .map_err(|e| Self::failed(index, e))?;
         let state = self.daemon().domain.state().map_err(|e| Self::failed(index, e))?;
         let title = state.tasks.get(&task.to_owned().into()).map(|task| task.title.clone()).unwrap_or_default();
-        let options = alondra_engine_sdk::sdk_owner::LaunchOptions { provider: Provider::Claude, ..Default::default() };
+        let mut options = alondra_engine_sdk::sdk_owner::LaunchOptions { provider: Provider::Claude, ..Default::default() };
+        if let Some(model) = model {
+            use alondra_core::model_selection::{ModelCandidate, ModelProfile, TaskSelection};
+            let key = alondra_core::accounts::AccountKey::new(Provider::Claude, account.clone());
+            let catalog = state.model_catalogs.iter().find(|catalog| catalog.account == key).ok_or_else(|| Self::failed(index, format!("{account} has no model catalog")))?;
+            let effective = catalog.resolve(&ModelCandidate { model: model.to_owned(), reasoning_effort: Some("high".into()) }).map_err(|why| Self::failed(index, why))?;
+            let mut selection = TaskSelection::automatic(ModelProfile::General);
+            selection.request_model(Some(effective.model.clone()));
+            selection.account = Some(key);
+            selection.native_tool_denials = Some(vec![]);
+            (options.model, options.effort) = (Some(model.to_owned()), effective.reasoning_effort.clone());
+            selection.effective = Some(effective);
+            options.selection = Some(selection);
+        }
         alondra_engine_sdk::sdk_owner::launch(&self.daemon().domain, alondra_engine_sdk::sdk_owner::Launch {
             task: task.to_owned().into(), name: task.to_owned(), directory: directory.display().to_string(), prompt: title, plugin, options,
             model: None, account,
@@ -1267,6 +1281,14 @@ impl Context<'_> {
                         format!("{started} hosts started for {task}, {running} running, {sessions} sessions"),
                         format!("{} started, {alive} running, {} sessions", hosts.len(), held.len()),
                     ));
+                }
+            }
+            Expect::CacheWritten { task, max } => {
+                let edge = self.claude.as_ref().ok_or_else(|| ScenarioError::Invalid("a case with Codex nodes plays no Claude host".into()))?;
+                match edge.first_written(task) {
+                    Some(written) if written <= *max => {}
+                    written => return Err(failed(format!("the first request of the last host of {task} wrote at most {max} tokens to the prompt cache"),
+                        written.map_or_else(|| "it answered nothing that says".to_owned(), |written| format!("it wrote {written}")))),
                 }
             }
             Expect::TaskState { task, state } => {

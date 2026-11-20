@@ -1,0 +1,81 @@
+name = "a large conversation the usage limit held past its prompt cache goes on in a new session, which writes little to the cache"
+max_virtual = "6h"
+
+[[step]]
+do = "request"
+text = "Write the release notes"
+task = "t1"
+title = "Write the release notes"
+
+[[step]]
+do = "node"
+task = "t1"
+model = "demo-model"
+
+[[step]]
+do = "conversation"
+task = "t1"
+tokens = 250000
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "provider_down"
+error = "rate_limit"
+status = 429
+
+[[step]]
+do = "tell"
+task = "t1"
+text = "Add the changelog too"
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "held-by-the-limit"
+screens = ["task:t1"]
+
+[[step.expect]]
+check = "view_shows"
+screen = "task:t1"
+text = "Claude limit"
+
+[[step]]
+do = "advance"
+by = "30m"
+
+[[step]]
+do = "provider_up"
+
+[[step]]
+do = "advance"
+by = "3h"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "checkpoint"
+name = "a-new-session-goes-on"
+
+[[step.expect]]
+check = "hosts"
+task = "t1"
+started = 3
+running = 1
+sessions = 2
+
+[[step.expect]]
+check = "cache_written"
+task = "t1"
+max = 20000

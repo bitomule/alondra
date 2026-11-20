@@ -151,6 +151,7 @@ impl Journal for DomainStore {
     fn protect(&mut self, protected: alondra_engine_ports::worktrees::WorktreeRules) { DomainStore::protect(self, protected) }
     fn protected(&self) -> &alondra_engine_ports::worktrees::WorktreeRules { DomainStore::protected(self) }
     fn provider_transition(&self, task:&TaskId) ->Result<Option<Transition>> { DomainStore::provider_transition(self, task) }
+    fn latest_provider_transition(&self, task:&TaskId) ->Result<Option<Transition>> { DomainStore::latest_provider_transition(self, task) }
     fn provider_transition_finished(&self, id:&str) ->Result<bool> { DomainStore::provider_transition_finished(self, id) }
     fn provider_transitions(&self) ->Result<Vec<Transition>> { DomainStore::provider_transitions(self) }
     fn prs_without_size(&self, now: Millis, limit: usize) -> Result<Vec<(String, String)>> { DomainStore::prs_without_size(self, now, limit) }
