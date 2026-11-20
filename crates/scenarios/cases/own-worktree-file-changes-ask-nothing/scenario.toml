@@ -1,0 +1,100 @@
+name = "a node that changes files of its own worktree is not stopped by a card, and one that reaches outside it through a link still asks"
+max_virtual = "1h"
+
+[[step]]
+do = "request"
+text = "Clean up the scratch files and resolve the merge"
+task = "t1"
+title = "Clean up and resolve the merge"
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "worktree"
+task = "t1"
+files = [".scratch/run/start", "src/a.rs"]
+outside_link = "shared"
+
+[[step]]
+do = "permission"
+task = "t1"
+request = "edit-scratch"
+command = "sed -i '' 's/a/b/' .scratch/run/start"
+
+[[step]]
+do = "permission"
+task = "t1"
+request = "take-theirs"
+command = "git checkout --theirs -- a.rs"
+cwd = "src"
+
+[[step]]
+do = "permission"
+task = "t1"
+request = "remove-link"
+command = "rm shared"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "own-files"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "answered"
+task = "t1"
+request = "edit-scratch"
+answer = "allow"
+
+[[step.expect]]
+check = "answered"
+task = "t1"
+request = "take-theirs"
+answer = "allow"
+
+[[step.expect]]
+check = "answered"
+task = "t1"
+request = "remove-link"
+answer = "allow"
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "destructivo"
+present = false
+
+[[step]]
+do = "permission"
+task = "t1"
+request = "through-link"
+command = "rm shared/secret"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "outside"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "answered"
+task = "t1"
+request = "through-link"
+answer = "none"
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "destructivo"

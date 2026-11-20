@@ -1039,6 +1039,10 @@ pub struct CardSpec {
     /// why it is not offered. Only the daemon sets it, and only a held permission acts on it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allow_for_task: Option<alondra_core::allow_for_task::AllowForTask>,
+    /// A command permission whose every part only changes files inside the task's own worktrees,
+    /// read on disk when it was asked: Alondra allows it without a card. Only the daemon sets it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub own_worktree: bool,
     /// The work a final result proposes, as a plan with checklist lines: the user approves it,
     /// which starts its implementation as a new Task, or only archives the result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1161,6 +1165,7 @@ impl CardSpec {
             cause: None,
             allow_always: None,
             allow_for_task: None,
+            own_worktree: false,
             plan: None,
             kept_at: None,
             secret_destination: None,

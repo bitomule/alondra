@@ -535,6 +535,36 @@ fn allowed(s: &DomainState) -> Vec<(String, u32)> {
     s.tasks[&TaskId::from("t")].allowed.iter().map(|(card, grant)| (card.0.clone(), grant.uses)).collect()
 }
 
+/// A command the daemon read on disk as changing only files of the task's own worktree.
+fn own_files(epoch: u64, command: &str) -> Command {
+    let Command::RecordDecisionRequest { task_id, generation, epoch, hold, tool, input, mcp_server, mut prompt } = bash_in(epoch, command, WORKTREE) else { unreachable!() };
+    if let DecisionPrompt::Card { card, .. } = &mut prompt {
+        card.own_worktree = true;
+    }
+    Command::RecordDecisionRequest { task_id, generation, epoch, hold, tool, input, mcp_server, prompt }
+}
+
+// A node waited overnight on a card to run `sed -i` on a file of its own `.scratch`, and another
+// on `git checkout --theirs` during a merge in its own worktree. What the daemon read as changing
+// only the task's own files is allowed by Alondra, with no card; the rest is carded as before.
+#[test]
+fn a_change_to_files_of_the_tasks_own_worktree_is_allowed_without_a_card() {
+    let mut s = world();
+    sdk_turn(&mut s, "t", "a");
+    for (epoch, command) in [(1, "sed -i '' 's/a/b/' .scratch/run/start"), (2, "git checkout --theirs -- src/a.rs")] {
+        let outcome = must(&mut s, Actor::System, own_files(epoch, command));
+        assert!(outcome.created_ids.is_empty(), "{command}: no card");
+        assert_eq!(last(&s, "t"), LifecycleRecord::DecidedByPolicy { epoch, decision: DecisionRecord::Allow }, "{command}");
+        settle(&mut s, epoch);
+    }
+    let card = ask(&mut s, 3, "sed -i '' 's/a/b/' .scratch/run/start", WORKTREE).expect("without the daemon's reading it asks");
+    decide(&mut s, 3, &card, Hold::ALLOW);
+    must(&mut s, Actor::System, own_files(4, "git reset --hard"));
+    assert!(matches!(last(&s, "t"), LifecycleRecord::DecidedByPolicy { epoch: 4, decision: DecisionRecord::Deny { .. } }),
+        "throwing work away stays denied whatever the reading says");
+    assert_aggregate_rules(&s);
+}
+
 #[test]
 fn a_deletion_allowed_in_the_task_runs_again_only_as_the_same_command_from_the_same_folder() {
     let mut s = world();

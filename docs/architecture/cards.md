@@ -88,6 +88,27 @@ removes its card while PR #62 keeps its merge and feedback actions:
 |---|---|
 | ![Two PR review cards in the Spanish TUI](../images/pr-deliveries/two-open-prs-es.png) | ![Only the open PR remains in the Spanish TUI](../images/pr-deliveries/one-pr-closed-es.png) |
 
+## Permissions Alondra answers itself
+
+A command a node asks to run becomes a `permission` card unless Alondra decides it, recording the
+decision in the task:
+
+- The git commands of the conflict flow, in the task's worktree and on its branch, are allowed;
+  `git reset --hard` and a force-push to another branch are denied
+  ([task_git](../crates/core/src/task_git.rs)).
+- A command whose every part only changes files of the task's own worktrees is allowed:
+  `rm` (also of a subfolder), `rmdir`, `unlink`, `mv`, `sed -i` with substitutions or deletions,
+  `truncate`, `chmod` and `git checkout`/`git restore` of paths. The daemon reads the disk when
+  the request arrives: each path's folder is canonicalized and its last name is not followed, so
+  a link that points outside is removed and never entered. The path must stay strictly inside a
+  linked worktree of the task, never on its root, a `.git` or another worktree. A path that
+  leaves it, a pattern, a variable, a wrapper, any other program in the command, or one of the
+  user's «ask» rules keeps the card ([own_worktree](../crates/core/src/own_worktree.rs)).
+- What the user allowed «in this task» is allowed again.
+
+Everything else is the user's, and the card marks with «⚠️ destructivo» what deletes, overwrites
+or forces, read from the command's words.
+
 ## Catalog
 
 | Type | Created by | Read by | Kind | Reader can | Carries | About | Need | Goes away when |
