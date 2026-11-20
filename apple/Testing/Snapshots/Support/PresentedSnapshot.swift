@@ -37,7 +37,7 @@ func assertPresented<Content: View>(
     let image = await steadyImage(of: window, bounds: bounds)
     host.presentedViewController?.dismiss(animated: false)
     window.isHidden = true
-    assertAppSnapshot(of: image, as: .image(perceptualPrecision: 0.98), named: name, file: file, testName: testName, line: line)
+    assertAppSnapshot(of: image, as: Snapshotting<UIImage, UIImage>.image(perceptualPrecision: 0.98).asRecorded, named: name, file: file, testName: testName, line: line)
 }
 
 /// The window once it stops changing. The alert's glass and shadow keep stepping in for about half
