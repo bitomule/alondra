@@ -248,3 +248,4 @@ crates/core/src/task_git.rs	&& !text.contains("..")	security-parse	shell command
 crates/core/src/task_git.rs	text.strip_prefix("origin/").is_some_and(safe_ref)	security-parse	shell command policy that parses the command it judges (G-12)
 crates/core/src/task_git.rs	let own_source = source.is_none_or(|s| s == "HEAD" || s == branch || s == format!("refs/heads/{branch}"));	security-parse	shell command policy that parses the command it judges (G-12)
 crates/foundation/src/locks.rs	assert!(stderr.contains(&format!("{what}: a thread panicked holding it and may have left it half-changed")), "{stderr}");	format	a test helper asserting the daemon's own exit line
+crates/engine-sdk/src/sdk_owner/conversation_file.rs	text.lines().map(|line| if line.starts_with(TURN) { format!("\\{line}") } else { line.to_owned() }).collect::<Vec<_>>().join("\n")	format	escapes a turn heading inside the Markdown Alondra itself writes

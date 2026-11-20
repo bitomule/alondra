@@ -500,3 +500,112 @@ async fn a_node_whose_host_closed_while_it_rests_holds_no_capability_until_its_s
     assert!(holds(&slice.domain), "the host that resumes the session is issued a new one");
     slice.domain.stop_sdk_owners();
 }
+
+/// A model selection of Claude's fixture catalog, as a launch records it.
+fn claude_selection() -> alondra_core::model_selection::TaskSelection {
+    use alondra_core::model_selection::*;
+    let key = ModelKey { provider: Provider::Claude, model: "claude-fixture".into() };
+    let mut selection = TaskSelection::automatic(ModelProfile::General);
+    selection.request_model(Some(key.clone()));
+    selection.effective = Some(ModelSelection { model: key, reasoning_effort: Some("high".into()), catalog_revision: "claude-catalog-1".into() });
+    selection.account = Some(AccountKey::native(Provider::Claude));
+    selection.native_tool_denials = Some(vec![]);
+    selection
+}
+
+/// How a resting conversation of `tokens` goes on once told something, its last request made
+/// `ago` milliseconds before: what each native Claude started with, and what the last was told.
+struct Resumption { session: String, starts: Vec<serde_json::Value>, prompt: String, settings: serde_json::Value }
+
+async fn resumed_after(slice: &Slice, tokens: u64, ago: alondra_core::Millis, selected: bool) -> Resumption {
+    enable(slice);
+    claude_ready(slice);
+    let selection = selected.then(claude_selection);
+    let mut driver = start_bound(Arc::clone(&slice.domain), &slice.backend, Launch {
+        task: TASK.into(), name: "Release notes".into(), directory: slice.worktree.to_str().unwrap().into(), prompt: "large-context".into(), plugin: slice.plugin.clone(),
+        options: LaunchOptions { provider: Provider::Claude, model: selected.then(|| "claude-fixture".into()), effort: selected.then(|| "high".into()), selection, ..LaunchOptions::default() },
+        model: None, account: AccountId::default_account(),
+    }, capabilities(), None, None).unwrap();
+    slice.settle(&mut driver);
+    let session = slice.starts().last().unwrap()["session"].as_str().unwrap().to_owned();
+    slice.domain.add_sdk_owner(Owner::spawn(driver));
+    look_after_the_wait(&slice.domain);
+    until_released(&slice.domain, &[TASK]).await;
+    let (task, requested_at) = (TaskId::from(TASK), alondra_core::now_millis() - ago);
+    slice.domain.contexts().handed(&task, requested_at);
+    slice.domain.contexts().observed(&task, alondra_provider_claude::ContextEvent::Answered {
+        tokens, cache: Some(std::time::Duration::from_secs(3600)), model: None, cached: Default::default(),
+    }, requested_at);
+
+    tell(slice, TASK, "Now the changelog.").await;
+    let mut changed = slice.domain.subscribe();
+    let goes_on = async {
+        loop {
+            let open = slice.domain.store.lock_or_exit("the domain store").provider_transition(&task).unwrap().is_some();
+            if !open && prompts_at(&slice.capture).last().is_some_and(|prompt| prompt.ends_with("Now the changelog.")) { break }
+            if open {
+                crate::provider_transition::advance(&slice.domain, &task).await.unwrap();
+            }
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(100), changed.changed()).await;
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(60), goes_on).await.unwrap_or_else(|_| panic!("the message never reached Claude: {:?}", prompts_at(&slice.capture)));
+    let capture: serde_json::Value = serde_json::from_slice(&std::fs::read(&slice.capture).unwrap()).unwrap();
+    let args: Vec<&str> = capture["args"].as_array().unwrap().iter().filter_map(serde_json::Value::as_str).collect();
+    let settings = args.iter().position(|arg| *arg == "--settings").map(|at| serde_json::from_str(args[at + 1]).unwrap()).unwrap_or_default();
+    Resumption { session, starts: slice.starts(), prompt: prompts_at(&slice.capture).last().unwrap().clone(), settings }
+}
+
+const HOURS_AGO: alondra_core::Millis = 4 * 60 * 60_000;
+
+// 19 November: four nodes came back from a usage limit hours later, each resumed its conversation,
+// and the first request of each wrote it whole to the prompt cache again: 2.1 million tokens at
+// twice the price of their input. A large conversation whose cache expired goes on in a new session
+// of the same model and account, which carries on from the task's records and finds the whole
+// conversation before it in a file it reads only when it needs to.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_large_conversation_whose_cache_expired_goes_on_in_a_new_session_that_can_read_the_old_one() {
+    let slice = Slice::new();
+    let resumed = resumed_after(&slice, 250_403, HOURS_AGO, true).await;
+    slice.domain.stop_sdk_owners();
+    let last = resumed.starts.last().unwrap();
+    assert_eq!(resumed.starts.len(), 2, "{:?}", resumed.starts);
+    assert!(last["resume"].is_null() && last["session"].as_str() != Some(resumed.session.as_str()), "a new session, not the old one resumed: {:?}", resumed.starts);
+    assert_eq!(last["history"], 0, "nothing of the old conversation is sent again: {last}");
+    let folder = slice._home.join("files/tasks").join(TASK);
+    let file = folder.join(format!("conversation-{}.md", resumed.session));
+    assert!(resumed.prompt.contains("Current input:\n") && resumed.prompt.ends_with("Now the changelog."), "{}", resumed.prompt);
+    assert!(resumed.prompt.contains(&file.display().to_string()) && resumed.prompt.contains("grep -n '## Turn'"), "the new session is told where the old conversation is and how to search it: {}", resumed.prompt);
+    let conversation = std::fs::read_to_string(&file).unwrap();
+    assert!(conversation.contains("## Turn 1 · ") && conversation.contains("large-context"), "{conversation}");
+    assert!(!resumed.prompt.contains("## Turn 1 · "), "the conversation itself is not in the prompt: {}", resumed.prompt);
+    assert_eq!(resumed.settings["permissions"]["additionalDirectories"], serde_json::json!([folder]), "the new session reads its task's folder: {}", resumed.settings);
+    assert!(slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].pending_selection.is_none(), "the task keeps its own selection, with nothing pending");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_large_conversation_whose_cache_still_holds_resumes() {
+    let slice = Slice::new();
+    let resumed = resumed_after(&slice, 250_403, 0, true).await;
+    slice.domain.stop_sdk_owners();
+    assert_eq!(resumed.starts.last().unwrap()["resume"].as_str(), Some(resumed.session.as_str()), "{:?}", resumed.starts);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_small_conversation_whose_cache_expired_resumes() {
+    let slice = Slice::new();
+    let resumed = resumed_after(&slice, 90_000, HOURS_AGO, true).await;
+    slice.domain.stop_sdk_owners();
+    assert_eq!(resumed.starts.last().unwrap()["resume"].as_str(), Some(resumed.session.as_str()), "{:?}", resumed.starts);
+}
+
+// A task with no model recorded cannot say which model a new session would start with: its
+// conversation resumes, as it did before.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_conversation_no_handoff_can_be_prepared_for_resumes() {
+    let slice = Slice::new();
+    let resumed = resumed_after(&slice, 250_403, HOURS_AGO, false).await;
+    slice.domain.stop_sdk_owners();
+    assert_eq!(resumed.starts.last().unwrap()["resume"].as_str(), Some(resumed.session.as_str()), "{:?}", resumed.starts);
+    assert!(slice.domain.store.lock_or_exit("the domain store").latest_provider_transition(&TASK.into()).unwrap().is_none(), "nothing was requested");
+}

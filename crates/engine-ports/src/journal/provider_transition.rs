@@ -22,11 +22,13 @@ pub struct Source {
     pub disallowed_tools: Vec<String>,
 }
 
-/// What a selection change does: change the model of the running session, or move the task to
-/// another account, where a new node takes it over from its record.
+/// What a selection change does: change the model of the running session, move the task to
+/// another account, where a new node takes it over from its record, or start a new session with
+/// the same model and account that carries on from that record and the conversation before it,
+/// once resuming the conversation would write it whole to the prompt cache again.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all="snake_case")]
-pub enum Kind { #[default] Model, Move }
+pub enum Kind { #[default] Model, Move, Refresh }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Plan {
@@ -40,6 +42,10 @@ pub struct Plan {
     pub target_model: ModelSelection,
     pub intent: TaskSelection,
     pub reason: String,
+    /// The file that holds the conversation of the session a refresh leaves, which the new session
+    /// reads only when it needs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_file: Option<std::path::PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

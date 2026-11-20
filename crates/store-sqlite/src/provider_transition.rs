@@ -91,6 +91,11 @@ fn handoff(c:&Connection,task:&TaskId)->Result<Option<Transition>> {
 impl DomainStore {
     pub fn provider_transition_finished(&self,id:&str)->Result<bool>{Ok(self.conn.query_row("SELECT EXISTS(SELECT 1 FROM provider_transition_steps WHERE transition_id=?1 AND phase IN('done','aborted'))",[id],|row|row.get(0))?)}
     pub fn provider_transition(&self,task:&TaskId)->Result<Option<Transition>> {open(&self.conn,task)}
+    /// The task's latest selection change, whatever became of it.
+    pub fn latest_provider_transition(&self,task:&TaskId)->Result<Option<Transition>> {
+        let id:Option<String>=self.conn.query_row("SELECT transition_id FROM provider_transition_steps WHERE task_id=?1 AND phase='requested' ORDER BY sequence DESC LIMIT 1",[&task.0],|r|r.get(0)).optional()?;
+        id.map(|id|load(&self.conn,&id)).transpose().map(Option::flatten)
+    }
     pub fn deferred_move(&self,task:&TaskId)->Result<Option<Transition>> {deferred(&self.conn,task)}
     pub fn deferred_moves(&self)->Result<Vec<Transition>> {
         let mut statement=self.conn.prepare("SELECT DISTINCT task_id FROM provider_transition_steps WHERE phase='done' AND json_extract(facts,'$.deferred_start')=1 ORDER BY task_id")?;
@@ -115,7 +120,7 @@ impl OwnerTransaction<'_> {
         let stamp=lifecycle.execution().ok_or_else(||DomainError::new("native_session_required","The source native session is unavailable"))?;
         let same_account=plan.kind==Kind::Move || plan.target_account==plan.source.account;
         if stamp.instance().as_str()!=plan.source.instance || stamp.conversation().as_str()!=plan.source.conversation || stamp.generation()!=plan.source.generation || self.state().tasks[&plan.task].account_key()!=plan.source.account || !same_account{return Err(DomainError::new("immutable_session","The active native session changed; refresh instead of transferring it").into())}
-        if plan.kind==Kind::Move{return Ok(())}
+        if matches!(plan.kind,Kind::Move|Kind::Refresh){return Ok(())}
         let binding=self.execution_binding(stamp)?;
         if binding.id()!=plan.source.binding || binding.driver()!=plan.source.driver || binding.configuration()!=plan.source.configuration{return Err(DomainError::new("stale_native_binding","The native credential or runtime binding changed; this session cannot be transferred").into())}
         let identity=alondra_daemon_engine_model::NativeAccountIdentity::load(&plan.source.host_directory).map_err(|error|StoreError::Storage(anyhow::anyhow!("{error}")))?;
@@ -127,7 +132,7 @@ impl OwnerTransaction<'_> {
         let catalog=self.state().model_catalogs.iter().find(|catalog|catalog.account==plan.target_account).ok_or_else(||DomainError::new("model_catalog_unavailable","Refresh this account's model catalog"))?;
         let candidate=alondra_core::model_selection::ModelCandidate{model:plan.target_model.model.model.clone(),reasoning_effort:plan.target_model.reasoning_effort.clone()};
         if catalog.resolve(&candidate).as_ref()!=Ok(&plan.target_model){return Err(DomainError::new("stale_model_catalog","The native model catalog changed; refresh the requested model").into())}
-        if plan.kind==Kind::Move{return Ok(())}
+        if matches!(plan.kind,Kind::Move|Kind::Refresh){return Ok(())}
         let effective=plan.source.selection.as_ref().and_then(|selection|selection.effective.as_ref()).ok_or_else(||DomainError::new("native_session_required","The source model identity is unavailable"))?;
         if effective.reasoning_effort!=plan.target_model.reasoning_effort{return Err(DomainError::new("unsupported_live_effort","The verified model control cannot change reasoning effort").into())}
         Ok(())

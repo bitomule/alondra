@@ -1,27 +1,45 @@
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 const WITNESS_BYTES: u64 = 8 * 1024 * 1024;
 
 pub(super) fn available(environment: &BTreeMap<String, String>, session: &str, directory: &Path) -> bool {
-    let Ok(session) = alondra_foundation::MessageUuid::new(session) else { return false };
+    transcript(environment, session, directory).is_some()
+}
+
+/// The native transcript of `session`, which Claude Code keeps in a project folder of the profile
+/// `environment` selects, once a conversation record of it in `directory` proves it is that session's.
+pub(super) fn transcript(environment: &BTreeMap<String, String>, session: &str, directory: &Path) -> Option<PathBuf> {
+    let session = alondra_foundation::MessageUuid::new(session).ok()?;
     if !normal_absolute(directory) || !std::fs::symlink_metadata(directory).is_ok_and(|meta| meta.is_dir() && !meta.file_type().is_symlink()) {
-        return false;
+        return None;
     }
-    let Some(home) = environment.get("HOME").map(Path::new).filter(|home| normal_absolute(home)) else { return false };
+    let home = environment.get("HOME").map(Path::new).filter(|home| normal_absolute(home))?;
     let profile = alondra_core::claude_account::configured_profile(&|key: &str| environment.get(key).cloned());
-    if profile.as_ref().is_some_and(|profile| !normal_absolute(profile)) { return false; }
+    if profile.as_ref().is_some_and(|profile| !normal_absolute(profile)) { return None; }
     let projects = alondra_core::claude_account::config_folder(profile.as_deref(), home).join("projects");
     // Managed Claude accounts deliberately share this root through a link to the native profile.
-    let Ok(projects) = projects.canonicalize() else { return false };
-    let Ok(buckets) = std::fs::read_dir(projects) else { return false };
+    let projects = projects.canonicalize().ok()?;
     let file = format!("{}.jsonl", session.as_str());
-    buckets.filter_map(Result::ok).any(|bucket| {
-        bucket.file_type().is_ok_and(|kind| kind.is_dir() && !kind.is_symlink())
-            && witnessed(&bucket.path().join(&file), session.as_str(), directory)
+    std::fs::read_dir(projects).ok()?.filter_map(Result::ok).find_map(|bucket| {
+        let path = bucket.path().join(&file);
+        (bucket.file_type().is_ok_and(|kind| kind.is_dir() && !kind.is_symlink()) && witnessed(&path, session.as_str(), directory)).then_some(path)
     })
+}
+
+/// The transcripts of the subagents the session of `transcript` ran, which Claude Code keeps in a
+/// folder named after the session, next to its transcript.
+pub(super) fn subagent_transcripts(transcript: &Path) -> Vec<PathBuf> {
+    let folder = transcript.with_extension("").join("subagents");
+    let mut found: Vec<PathBuf> = std::fs::read_dir(folder).into_iter().flatten().filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "jsonl"))
+        .collect();
+    found.sort();
+    found
 }
 
 fn normal_absolute(path: &Path) -> bool {
@@ -53,7 +71,6 @@ fn witnessed(path: &Path, session: &str, directory: &Path) -> bool {
 mod tests {
     use super::*;
     use crate::test_support::Directory;
-    use std::path::PathBuf;
 
     const SESSION: &str = "00000000-0000-4000-8000-000000000001";
 

@@ -10,7 +10,7 @@
 use alondra_domain_rules::{DomainState, InteractionId, Scope};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 const DAY: Duration = Duration::from_secs(24 * 60 * 60);
@@ -41,13 +41,15 @@ pub struct Report {
     pub keep_bytes: u64,
 }
 
-/// A task's scratch folder, where its node writes what is not part of the work: it goes with the
-/// task.
+/// A task's scratch folder, where its node and Alondra write what is not part of the work: it goes
+/// with the task. A task id that would name another folder has none.
+pub fn task_scratch(home: &Path, task: &str) -> Option<PathBuf> {
+    (!task.is_empty() && !task.contains(['/', '\\']) && !task.starts_with('.')).then(|| home.join("files/tasks").join(task))
+}
+
 pub fn remove_task_scratch(home: &Path, task: &str) -> std::io::Result<()> {
-    if task.is_empty() || task.contains(['/', '\\']) || task.starts_with('.') {
-        return Ok(());
-    }
-    match std::fs::remove_dir_all(home.join("files/tasks").join(task)) {
+    let Some(folder) = task_scratch(home, task) else { return Ok(()) };
+    match std::fs::remove_dir_all(folder) {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
         _ => Ok(()),
     }
