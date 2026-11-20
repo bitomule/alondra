@@ -563,14 +563,18 @@ once, and its tests link that same library.
   wait before relaunching a host, shorter acknowledgement and settings waits, and the check of each
   owner transaction against a reload. The installed daemon carries these branches, inert without
   that variable ([on your Mac](../on-your-mac.md)).
-- Fixtures other crates' tests use are production modules (`testing` of `daemon-engine-store`,
-  the kernel's `retention_fixtures` and `runtime_owner`, the `*_fixtures` modules of
-  `daemon-engine` and `engine-sdk`); what one crate alone uses stays in `#[cfg(test)]`. The GitHub
-  fakes, which only use `engine-ports`, moved to `engine-doubles`.
-- The gate, the machine doubles and the runtime of a test are registered at run time by the test
-  that opens the runtime (`alondrad`'s `engine::open_at`, `engine_admission::for_tests`).
+- Fixtures other crates' tests use are production modules (`testing` and `retention_fixtures` of
+  `store-sqlite`, the kernel's `runtime_owner`, the `*_fixtures` modules of `daemon-engine` and
+  `engine-sdk`); what one crate alone uses stays in `#[cfg(test)]`. The owner's fixtures, which
+  read the SQLite journal, are compiled by no production crate: `daemon-engine`, `engine-sdk` and
+  `daemon-server` include `wiring/owner_fixtures.rs` in their test binaries (`#[path]`), so the
+  engine stays off the `store-sqlite` adapter.
+- The gate, the machine doubles, the journal and the runtime of a test are registered at run time
+  by the test that opens the runtime (`wiring::open_with`, `TEST_JOURNAL`,
+  `engine_admission::for_tests`).
 - `crate_layers_test` fails on a `testonly` library that builds a production crate again, and
-  `TEST_HOOK_EXCEPTIONS` left the table.
+  `TEST_HOOK_EXCEPTIONS` (agent-runtime and store-sqlite for `daemon-engine` and `engine-sdk`)
+  left the table.
 - The scenarios now run the engine at full optimization instead of the low-optimization copies,
   which exposed a race in their harness: between two turns it waited only a moment of calm, not
   the 250 ms a host's owner may take to look at a new input, so the virtual clock sometimes moved

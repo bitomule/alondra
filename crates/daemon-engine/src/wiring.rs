@@ -28,6 +28,8 @@ pub fn open(home: &Path) -> Result<DomainRuntime> {
 
 /// `open` at `database`, on the journal the test set (`alondra_engine_kernel::TEST_JOURNAL`).
 pub fn open_at(home: &Path, database: &Path) -> Result<DomainRuntime> {
+    #[cfg(test)]
+    alondra_engine_kernel::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
     open_on(home, database, alondra_engine_kernel::test_journal())
 }
 

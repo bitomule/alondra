@@ -3,7 +3,7 @@
 //! fail, as the machine watch's lock did on 25 October.
 use std::path::{Path, PathBuf};
 
-const SOURCES: [&str; 15] = ["crates/alondrad/src", "crates/daemon-server/src", "crates/daemon-support/src", "crates/system/src", "crates/foundation/src", "crates/daemon-engine/src", "crates/daemon-engine-model/src", "crates/daemon-engine-store/src", "crates/daemon-engine-machine/src", "crates/engine-github/src", "crates/engine-live/src", "crates/engine-mcp/src", "crates/engine-worktrees/src", "crates/engine-kernel/src", "crates/engine-orchestrator/src"];
+const SOURCES: [&str; 15] = ["crates/alondrad/src", "crates/daemon-server/src", "crates/daemon-support/src", "crates/system/src", "crates/foundation/src", "crates/daemon-engine/src", "crates/daemon-engine-model/src", "crates/store-sqlite/src", "crates/daemon-engine-machine/src", "crates/engine-github/src", "crates/engine-live/src", "crates/engine-mcp/src", "crates/engine-worktrees/src", "crates/engine-kernel/src", "crates/engine-orchestrator/src"];
 /// What marks an item that only tests compile.
 const TEST_ONLY: [&str; 1] = ["#[cfg(test)]"];
 
