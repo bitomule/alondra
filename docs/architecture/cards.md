@@ -101,9 +101,11 @@ decision in the task:
   `truncate`, `chmod` and `git checkout`/`git restore` of paths. The daemon reads the disk when
   the request arrives: each path's folder is canonicalized and its last name is not followed, so
   a link that points outside is removed and never entered. The path must stay strictly inside a
-  linked worktree of the task, never on its root, a `.git` or another worktree. A path that
-  leaves it, a pattern, a variable, a wrapper, any other program in the command, or one of the
-  user's «ask» rules keeps the card ([own_worktree](../crates/core/src/own_worktree.rs)).
+  linked worktree of the task, never on its root, a `.git` (in any case) or another worktree. A
+  `cd` counts only to a folder named from `/` or `./` with no `..`, where the shell lands as the
+  disk says. A path that leaves the worktree, a pattern, a variable, a word zsh expands (`=node`),
+  a wrapper, any other program in the command, a `post-checkout` hook git would run, or one of
+  the user's «ask» rules keeps the card ([own_worktree](../crates/core/src/own_worktree.rs)).
 - What the user allowed «in this task» is allowed again.
 
 Everything else is the user's, and the card marks with «⚠️ destructivo» what deletes, overwrites

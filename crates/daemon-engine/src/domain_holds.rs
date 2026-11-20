@@ -624,23 +624,30 @@ mod own_worktree_tests {
     use super::*;
     use crate::test_support::Directory;
 
-    /// A linked worktree of the task and the user's own checkout, each with a `.scratch` file.
+    fn git(dir: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git").current_dir(dir).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1")
+            .args(["-c", "user.name=Ana", "-c", "user.email=ana@example.com"]).args(args).output().unwrap();
+        assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    /// The user's own checkout `main` and `wt`, a linked worktree of it that is the task's, each
+    /// with a `.scratch` file; the repository's hooks folder is empty.
     fn folders() -> (Directory, String, String) {
         let dir = Directory::new();
-        for (folder, git_is_file) in [("wt", true), ("main", false)] {
-            std::fs::create_dir_all(dir.join(folder).join(".scratch")).unwrap();
-            std::fs::write(dir.join(folder).join(".scratch/start"), "a\n").unwrap();
-            std::fs::create_dir_all(dir.join(folder).join("src")).unwrap();
-            std::fs::write(dir.join(folder).join("src/a.rs"), "a\n").unwrap();
-            if git_is_file {
-                std::fs::write(dir.join(folder).join(".git"), "gitdir: /repo/.git/worktrees/wt\n").unwrap();
-            } else {
-                std::fs::create_dir_all(dir.join(folder).join(".git")).unwrap();
-            }
+        let (main, wt, hooks) = (dir.join("main"), dir.join("wt"), dir.join("hooks"));
+        std::fs::create_dir_all(&main).unwrap();
+        std::fs::create_dir_all(&hooks).unwrap();
+        git(&main, &["init", "-q", "-b", "main"]);
+        git(&main, &["commit", "-q", "--allow-empty", "-m", "Start"]);
+        git(&main, &["config", "core.hooksPath", &hooks.display().to_string()]);
+        git(&main, &["worktree", "add", "-q", "-b", "worktree-wt", &wt.display().to_string()]);
+        for folder in [&main, &wt] {
+            std::fs::create_dir_all(folder.join(".scratch")).unwrap();
+            std::fs::write(folder.join(".scratch/start"), "a\n").unwrap();
+            std::fs::create_dir_all(folder.join("src")).unwrap();
+            std::fs::write(folder.join("src/a.rs"), "a\n").unwrap();
         }
-        let wt = dir.join("wt").display().to_string();
-        let main = dir.join("main").display().to_string();
-        (dir, wt, main)
+        (dir, wt.display().to_string(), main.display().to_string())
     }
 
     fn carded(command: &str, cwd: &str, request: Value, worktrees: &[String], home: &Path) -> bool {

@@ -12,7 +12,7 @@
 //! the command itself would close that window; the check accepts it and never turns a failed read
 //! into a permission.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::allow_always::{self, Direction, Word};
 
@@ -61,6 +61,10 @@ pub fn judge(command: &str, cwd: &str, roots: &[PathBuf]) -> Result<(), Keeps> {
     for part in &parts {
         if part.redirects.iter().any(|(direction, target)| *direction != Direction::Write || target.glob || target.text != "/dev/null") {
             return Err(Keeps::NotFileChange);
+        }
+        // zsh turns a word that starts with `=` into the path of the program it names.
+        if part.words.iter().any(|word| word.text.starts_with('=')) {
+            return Err(Keeps::Unreadable);
         }
         let words = allow_always::strip(&part.words).map_err(|_| Keeps::Unreadable)?;
         let (program, args) = words.split_first().ok_or(Keeps::Unreadable)?;
@@ -117,10 +121,10 @@ impl Here<'_> {
     fn owned(&self, real: &Path) -> Result<(), Keeps> {
         let root = self.root_holding(real).ok_or(Keeps::Outside)?;
         let within = real.strip_prefix(root).map_err(|_| Keeps::Outside)?;
-        if within.as_os_str().is_empty() || within.components().any(|c| c.as_os_str() == ".git") {
+        if within.as_os_str().is_empty() || holds_git(within) {
             return Err(Keeps::Protected);
         }
-        if self.roots.iter().any(|other| other.starts_with(real)) {
+        if self.roots.iter().any(|other| folded_within(other, real)) {
             return Err(Keeps::Protected);
         }
         Ok(())
@@ -205,12 +209,17 @@ impl Here<'_> {
 
     fn cd(&mut self, args: &[Word]) -> Result<(), Keeps> {
         let [target] = args else { return Err(Keeps::NotFileChange) };
-        if target.glob || target.text.is_empty() || target.text == "-" {
+        // The shell takes `..` off the name before it without following links, and looks a bare
+        // name up in `CDPATH` first: only a folder named from `/` or `./`, with no `..`, lands
+        // where the disk says.
+        let text = target.text.as_str();
+        let anchored = text.starts_with('/') || text.starts_with("./");
+        if target.glob || !anchored || Path::new(text).components().any(|c| c == Component::ParentDir) {
             return Err(Keeps::Uncertain);
         }
-        let real = self.folder(&target.text)?;
+        let real = self.folder(text)?;
         let root = self.root_holding(&real).ok_or(Keeps::Outside)?;
-        if real.strip_prefix(root).is_ok_and(|within| within.components().any(|c| c.as_os_str() == ".git")) {
+        if real.strip_prefix(root).is_ok_and(holds_git) {
             return Err(Keeps::Protected);
         }
         self.base = real;
@@ -366,7 +375,8 @@ impl Here<'_> {
     fn chmod(&self, args: &[Word]) -> Result<(), Keeps> {
         let [mode, files @ ..] = args else { return Err(Keeps::NotFileChange) };
         let mode_chars = |c: char| matches!(c, '0'..='7' | 'u' | 'g' | 'o' | 'a' | 'r' | 'w' | 'x' | 'X' | 's' | 't' | '+' | '-' | '=' | ',');
-        if mode.glob || mode.text.is_empty() || !mode.text.chars().all(mode_chars) || files.is_empty() {
+        // GNU chmod reads an option anywhere: no file may look like one.
+        if mode.glob || mode.text.is_empty() || !mode.text.chars().all(mode_chars) || files.is_empty() || files.iter().any(|file| file.text.starts_with('-')) {
             return Err(Keeps::NotFileChange);
         }
         files.iter().try_for_each(|file| self.written(file, true).map(drop))
@@ -428,8 +438,38 @@ impl Here<'_> {
                 return Err(Keeps::Outside);
             }
         }
+        self.runs_no_hook()
+    }
+
+    /// Checking out paths runs git's `post-checkout` hook, which the node may have written: a
+    /// repository with one, wherever `core.hooksPath` puts it, keeps asking.
+    fn runs_no_hook(&self) -> Result<(), Keeps> {
+        let output = std::process::Command::new("git")
+            .current_dir(&self.base)
+            .args(["rev-parse", "--path-format=absolute", "--git-path", "hooks/post-checkout"])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|_| Keeps::Uncertain)?;
+        let hook = String::from_utf8(output.stdout).map_err(|_| Keeps::Uncertain)?;
+        let hook = Path::new(hook.trim_end());
+        if !output.status.success() || !hook.is_absolute() || std::fs::symlink_metadata(hook).is_ok() {
+            return Err(Keeps::Uncertain);
+        }
         Ok(())
     }
+}
+
+/// Whether a path inside a worktree goes through a `.git`, named in any case: the disk may not
+/// tell `.GIT` from `.git`.
+fn holds_git(within: &Path) -> bool {
+    within.components().any(|c| c.as_os_str().to_str().is_none_or(|name| name.to_lowercase() == ".git"))
+}
+
+/// Whether `path` is `folder` or inside it, comparing names in any case.
+fn folded_within(path: &Path, folder: &Path) -> bool {
+    let fold = |c: Component| c.as_os_str().to_str().map(str::to_lowercase);
+    let mut path = path.components();
+    folder.components().all(|f| path.next().is_some_and(|p| fold(p).is_some() && fold(p) == fold(f)))
 }
 
 fn backup_suffix(suffix: &str) -> bool {

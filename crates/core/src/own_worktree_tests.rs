@@ -1,8 +1,15 @@
 use super::*;
 use crate::test_support::Directory;
 
-/// A linked worktree `wt` of the task with a subagent's worktree nested in it, the user's own
-/// checkout `main` beside it, and an `outside` folder that links in `wt` point to.
+fn git(dir: &Path, args: &[&str]) {
+    let output = std::process::Command::new("git").current_dir(dir).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1")
+        .args(["-c", "user.name=Ana", "-c", "user.email=ana@example.com"]).args(args).output().unwrap();
+    assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+}
+
+/// The user's own checkout `main` and `wt`, a linked worktree of it that is the task's, with a
+/// subagent's worktree nested in it and an `outside` folder that links in `wt` point to. The
+/// repository's hooks live in `hooks`, empty.
 struct Fixture {
     dir: Directory,
     roots: Vec<PathBuf>,
@@ -12,19 +19,25 @@ impl Fixture {
     fn new() -> Self {
         let dir = Directory::new();
         let at = |path: &str| dir.join(path);
-        for folder in ["outside/dir", "wt/.scratch/x", "wt/.scratch/empty", "wt/src", "wt/sub/deep", "wt/holder/nested", "main/.git"] {
+        std::fs::create_dir_all(at("main")).unwrap();
+        std::fs::create_dir_all(at("hooks")).unwrap();
+        git(&at("main"), &["init", "-q", "-b", "main"]);
+        git(&at("main"), &["commit", "-q", "--allow-empty", "-m", "Start"]);
+        git(&at("main"), &["config", "core.hooksPath", &at("hooks").display().to_string()]);
+        git(&at("main"), &["worktree", "add", "-q", "-b", "worktree-wt", &at("wt").display().to_string()]);
+        for folder in ["outside/dir", "wt/.scratch/x", "wt/.scratch/empty", "wt/src", "wt/sub/deep", "wt/holder/nested"] {
             std::fs::create_dir_all(at(folder)).unwrap();
         }
         for file in ["outside/secret", "outside/shared", "outside/dir/f", "wt/.scratch/x/start", "wt/.scratch/a.log", "wt/src/a.rs", "wt/sub/f",
             "wt/sub/deep/g", "wt/s.sh", "wt/log", "wt/a", "main/f"] {
             std::fs::write(at(file), "a\n").unwrap();
         }
-        std::fs::write(at("wt/.git"), "gitdir: /repo/.git/worktrees/wt\n").unwrap();
         std::fs::write(at("wt/holder/nested/.git"), "gitdir: /repo/.git/worktrees/nested\n").unwrap();
         std::os::unix::fs::symlink(at("outside"), at("wt/link-out")).unwrap();
         std::os::unix::fs::symlink(at("outside/secret"), at("wt/file-link-out")).unwrap();
         std::os::unix::fs::symlink(at("outside/missing"), at("wt/dangling")).unwrap();
         std::os::unix::fs::symlink(at("wt/sub"), at("wt/link-in")).unwrap();
+        std::os::unix::fs::symlink(at("wt/sub/deep"), at("wt/deep-link")).unwrap();
         std::fs::hard_link(at("outside/shared"), at("wt/hard")).unwrap();
         let recorded = [at("wt"), at("wt/holder/nested"), at("main")].map(|p| p.display().to_string());
         let roots = roots(recorded.iter().map(String::as_str));
@@ -92,9 +105,10 @@ fn file_changes_inside_the_worktree_ask_nothing() {
         "git restore --staged -- src/a.rs",
         "git restore --source=origin/main --worktree src/a.rs",
         "git restore -s HEAD~1 sub/f",
-        "cd sub && rm f",
-        "cd sub && git checkout -- .",
-        "cd .scratch; rm -rf x",
+        "cd ./sub && rm f",
+        "cd ./sub && git checkout -- .",
+        "cd ./.scratch; rm -rf x",
+        "cd ./link-in && rm -f ../a",
         "rm -f a 2>/dev/null",
         "rm -f a || true",
         "timeout 5 rm a",
@@ -102,6 +116,7 @@ fn file_changes_inside_the_worktree_ask_nothing() {
     ] {
         assert_eq!(f.judged(command), Ok(()), "{command}");
     }
+    assert_eq!(f.judged(&format!("cd {} && rm f", f.path("wt/sub"))), Ok(()));
 }
 
 #[test]
@@ -112,8 +127,8 @@ fn paths_that_resolve_outside_the_worktree_keep_asking() {
         (format!("rm {outside}"), Keeps::Outside),
         ("rm ../outside/secret".into(), Keeps::Outside),
         ("rm ../main/f".into(), Keeps::Outside),
-        ("cd .. && rm outside/secret".into(), Keeps::Outside),
-        ("cd link-out && rm secret".into(), Keeps::Outside),
+        (format!("cd {} && rm secret", f.path("outside")), Keeps::Outside),
+        ("cd ./link-out && rm secret".into(), Keeps::Outside),
         ("rm link-out/secret".into(), Keeps::Outside),
         ("rm -rf link-out/".into(), Keeps::Outside),
         ("rm -rf link-out/.".into(), Keeps::Outside),
@@ -143,12 +158,16 @@ fn the_worktree_its_git_and_the_worktrees_it_holds_are_never_changed() {
     for (command, keeps) in [
         ("rm -rf .", Keeps::Protected),
         ("rm -rf ./", Keeps::Protected),
-        ("cd sub && rm -rf ..", Keeps::Uncertain),
+        ("cd ./sub && rm -rf ..", Keeps::Uncertain),
         ("rm -rf *", Keeps::Protected),
         ("rm -rf .*", Keeps::Uncertain),
         ("rm -rf */f", Keeps::Uncertain),
         ("rm .git", Keeps::Protected),
-        ("cd .scratch && rm -rf ../.git", Keeps::Protected),
+        ("cd ./.scratch && rm -rf ../.git", Keeps::Protected),
+        ("rm .GIT", Keeps::Protected),
+        ("mv sub .GIT", Keeps::Protected),
+        ("rm -rf HOLDER", Keeps::Protected),
+        ("rm -rf holder/NESTED", Keeps::Protected),
         ("rm -rf holder", Keeps::Protected),
         ("rm -rf holder/nested", Keeps::Protected),
         ("rm holder/nested/.git", Keeps::Protected),
@@ -184,6 +203,14 @@ fn what_the_words_do_not_show_keeps_asking() {
         ("rm a | cat", Keeps::NotFileChange),
         ("cd", Keeps::NotFileChange),
         ("cd - && rm a", Keeps::Uncertain),
+        ("cd .. && rm outside/secret", Keeps::Uncertain),
+        ("cd ./deep-link/../.. && rm -rf main", Keeps::Uncertain),
+        ("cd sub && rm f", Keeps::Uncertain),
+        ("rm =node", Keeps::Unreadable),
+        ("chmod 000 =node", Keeps::Unreadable),
+        ("truncate -s 0 =node", Keeps::Unreadable),
+        ("chmod 600 -R sub", Keeps::NotFileChange),
+        ("chmod 600 sub -L", Keeps::NotFileChange),
         ("cd s* && rm a", Keeps::Uncertain),
         ("rm", Keeps::NotFileChange),
         ("rm --no-preserve-root a", Keeps::NotFileChange),
@@ -255,6 +282,16 @@ fn git_changes_only_paths_and_keeps_asking_for_everything_else() {
     ] {
         assert_eq!(f.judged(command), Err(keeps), "{command}");
     }
+}
+
+#[test]
+fn checking_out_paths_asks_when_the_repository_has_a_post_checkout_hook() {
+    let f = Fixture::new();
+    assert_eq!(f.judged("git checkout --theirs -- src/a.rs"), Ok(()));
+    std::fs::write(f.dir.join("hooks/post-checkout"), "#!/bin/sh\n").unwrap();
+    assert_eq!(f.judged("git checkout --theirs -- src/a.rs"), Err(Keeps::Uncertain), "git would run the hook");
+    assert_eq!(f.judged("git restore src/a.rs"), Err(Keeps::Uncertain));
+    assert_eq!(f.judged("rm src/a.rs"), Ok(()), "only git runs it");
 }
 
 #[test]
