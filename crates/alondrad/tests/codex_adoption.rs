@@ -18,8 +18,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 /// The engine the slice of this test opens: the daemon's, over the doubles of the Mac.
-fn open_at(home: &Path, database: &Path) -> anyhow::Result<alondra_engine_sdk::domain_runtime::DomainRuntime> {
-    let runtime = alondra_engine_sdk::wiring::open_at(home, database)?;
+fn open_at(home: &Path, database: &Path, files: &dyn alondra_engine_sdk::domain_store::JournalFiles) -> anyhow::Result<alondra_engine_sdk::domain_runtime::DomainRuntime> {
+    let runtime = alondra_engine_sdk::wiring::open_at(home, database, files)?;
     alondra_engine_doubles::machine::wire(runtime.ports(), alondra_daemon_support::watcher::claude_home);
     alondra_agent_runtime::wire(runtime.ports(), Default::default());
     alondra_engine_admission::for_tests(&runtime);
@@ -225,6 +225,7 @@ impl Drop for RetainedNativeFixture {
 }
 
 fn prove_actual_daemon_adoption(mode: &str) {
+    alondra_daemon_engine::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
     alondra_daemon_engine::wiring::open_with(open_at);
     let (slice, driver, trace, profile) = daemon_fixture(mode);
     let mut retained = RetainedNativeFixture { slice, driver: Some(driver) };
