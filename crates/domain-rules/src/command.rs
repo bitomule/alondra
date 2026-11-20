@@ -497,10 +497,6 @@ pub enum Command {
         branch: String,
         status: OpenPrStatus,
     },
-    RequestPrAdoption {
-        pr: OpenedPr,
-        branch: String,
-    },
     /// A cancelled task's pull request is open on GitHub: Alondra closes it with the cancel's
     /// reason, as the cancel itself would have.
     ClosePrOfCancelledTask {
