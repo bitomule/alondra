@@ -616,7 +616,8 @@ async fn measured_went_on_after(slice: &mut Slice, tokens: u64, ago: alondra_cor
     let goes_on = async {
         loop {
             let open = slice.domain.store.lock_or_exit("the domain store").provider_transition(&task).unwrap().is_some();
-            if !open && prompts_at(&slice.capture).last().is_some_and(|prompt| prompt.ends_with("Now the changelog.")) { break }
+            let pending = slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].pending_selection.is_some();
+            if !open && !pending && prompts_at(&slice.capture).last().is_some_and(|prompt| prompt.ends_with("Now the changelog.")) { break }
             if open {
                 match crate::provider_transition::advance(&slice.domain, &task).await {
                     Ok(_) => {}
@@ -659,6 +660,23 @@ async fn a_large_conversation_whose_cache_expired_goes_on_in_a_new_session_that_
     assert!(!resumed.prompt.contains("## Turn 1 · "), "the conversation itself is not in the prompt: {}", resumed.prompt);
     assert_eq!(resumed.settings["permissions"]["additionalDirectories"], serde_json::json!([folder]), "the new session reads its task's folder: {}", resumed.settings);
     assert!(slice.domain.state().unwrap().tasks[&TaskId::from(TASK)].pending_selection.is_none(), "the task keeps its own selection, with nothing pending");
+}
+
+// 20 November: the task's records came to 64,085 tokens with the message that continued it, 85 over
+// what the handoff could take, and the new session was refused: its conversation resumed and wrote
+// 178,677 tokens to the cache again. The handoff of a new session is a few thousand tokens however
+// large the task's records are.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_task_with_records_of_64000_tokens_still_goes_on_in_a_new_session() {
+    let records = "The request, repeated. ".repeat(3 * 64_000 / 23);
+    let mut slice = Slice::with_request_body(HostRoot::new(), "domain.sqlite", &records);
+    let resumed = resumed_after(&mut slice, 250_403, HOURS_AGO, true).await;
+    slice.domain.stop_sdk_owners();
+    let last = resumed.starts.last().unwrap();
+    assert!(last["resume"].is_null() && last["session"].as_str() != Some(resumed.session.as_str()), "a new session, not the old one resumed: {:?}", resumed.starts);
+    assert!(alondra_store::estimated_tokens(&resumed.prompt) < alondra_store::HANDOFF_TOKEN_CAP, "{}", resumed.prompt.len());
+    let kept = std::fs::read_to_string(slice._home.join("files/tasks").join(TASK).join("task-records.md")).unwrap();
+    assert!(kept.contains(&records), "the complete records are in a file to search");
 }
 
 #[tokio::test(flavor = "multi_thread")]

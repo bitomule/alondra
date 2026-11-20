@@ -201,7 +201,9 @@ impl Slice {
 
     pub fn with_hosts(state: HostRoot) -> Self { Self::with_database_name(state,"domain.sqlite") }
 
-    pub fn with_database_name(state: HostRoot,name:&str)->Self {
+    pub fn with_database_name(state: HostRoot,name:&str)->Self { Self::with_request_body(state,name,"Write the release notes") }
+
+    pub fn with_request_body(state: HostRoot,name:&str,request:&str)->Self {
         let home = Directory::new();
         std::fs::DirBuilder::new().mode(0o700).create(&home).unwrap();
         let worktree = home.join("worktree");
@@ -216,7 +218,7 @@ impl Slice {
         slice.on_acknowledge(|| {});
         slice.run(&Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest {
             request_id: "sdk-slice-request".into(),
-            body: "Write the release notes".into(),
+            body: request.into(),
             auto_merge: false,
             maintenance: false,
             message: false,

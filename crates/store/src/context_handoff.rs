@@ -98,6 +98,73 @@ pub fn prepare_context_handoff(canonical: &str, new_input: &str, entries: &[Cont
     Ok(PreparedHandoff { estimated_context_tokens: estimated_tokens(&context), context, new_input: new_input.into(), digest: hash.finalize().to_vec(), references, coverage, omitted_items, destination_window_known: budget.destination_context_tokens.is_some() })
 }
 
+/// What a new session of the same model and account starts from, in a few thousand tokens: the rest
+/// of the task is in files it reads on demand.
+#[derive(Clone, Debug)]
+pub struct RefreshParts {
+    pub worktree: String,
+    pub branch: Option<String>,
+    pub pull_requests: Vec<String>,
+    pub plan: Option<String>,
+    pub plan_file: Option<String>,
+    pub last_assistant_message: Option<String>,
+    pub records_file: String,
+    pub conversation_file: String,
+}
+
+/// What an approved plan may take inside the handoff before it goes to its file.
+const INLINE_PLAN_TOKENS: u64 = 3_000;
+/// What the assistant's last message may take inside the handoff.
+const LAST_MESSAGE_TOKENS: u64 = 3_000;
+
+fn tail(text: &str, tokens: u64) -> String {
+    let limit = (tokens * 3) as usize;
+    if text.len() <= limit { return text.to_owned(); }
+    let mut start = text.len() - limit;
+    while !text.is_char_boundary(start) { start += 1; }
+    format!("[the beginning of this message is cut; it is in the conversation file]\n{}", &text[start..])
+}
+
+fn refresh_context(parts: &RefreshParts, plan_inline: bool, last_message: Option<&str>) -> String {
+    let mut text = String::from("Alondra task context (this session continues the previous one of this task)\n");
+    text.push_str(&format!("\nWorktree: {}\n", parts.worktree));
+    if let Some(branch) = &parts.branch { text.push_str(&format!("Branch: {branch}\n")); }
+    for pull_request in &parts.pull_requests { text.push_str(&format!("Pull request: {pull_request}\n")); }
+    match (&parts.plan, &parts.plan_file) {
+        (Some(plan), _) if plan_inline => text.push_str(&format!("\n{plan}\n")),
+        (_, Some(file)) => text.push_str(&format!("\nThe plan the user approved is in {file}: read it before you go on.\n")),
+        _ => {}
+    }
+    if let Some(message) = last_message {
+        text.push_str(&format!("\n## Your last message before this session\n{message}\n"));
+    }
+    text.push_str(&format!("\n## Where the rest is\nThe whole conversation of the session before this one is in {conversation}. \
+Do not read it whole: it is reference material. Each of its turns starts with a line `## Turn N`: find the one you need with `grep -n '## Turn' {conversation}` and read only that turn.\n\
+The task's complete records (cards, reports, decisions, every input) are in {records}: search it with grep and read only the part you need, never the whole file.\n\
+Go on with the message that follows.\n", conversation = parts.conversation_file, records = parts.records_file));
+    text
+}
+
+/// The short handoff of a refresh. It always fits: the plan goes to its file when it is long or
+/// when the whole does not fit, then the assistant's last message is cut; only the fixed lines
+/// (paths, worktree, branch) can still not fit.
+pub fn prepare_refresh_handoff(parts: &RefreshParts, new_input: &str, through: Option<ContextRef>, budget: HandoffBudget) -> std::result::Result<PreparedHandoff, HandoffError> {
+    let capacity = handoff_capacity(budget).and_then(|tokens| tokens.checked_sub(estimated_tokens(new_input))).ok_or(HandoffError::NewInputTooLarge)?;
+    let available = capacity.min(HANDOFF_TOKEN_CAP);
+    let plan_fits = parts.plan.as_deref().is_some_and(|plan| estimated_tokens(plan) <= INLINE_PLAN_TOKENS);
+    let message = parts.last_assistant_message.as_deref().map(|message| tail(message, LAST_MESSAGE_TOKENS));
+    let mut context = refresh_context(parts, plan_fits, message.as_deref());
+    if estimated_tokens(&context) > available { context = refresh_context(parts, false, message.as_deref()); }
+    if estimated_tokens(&context) > available { context = refresh_context(parts, false, None); }
+    if estimated_tokens(&context) > available { return Err(HandoffError::CriticalContextTooLarge { needed: estimated_tokens(&context), available }); }
+    let mut hash = Sha256::new();
+    hash.update((context.len() as u64).to_be_bytes());
+    hash.update(context.as_bytes());
+    hash.update(new_input.as_bytes());
+    let coverage = HistoryCoverage { through, ..Default::default() };
+    Ok(PreparedHandoff { estimated_context_tokens: estimated_tokens(&context), context, new_input: new_input.into(), digest: hash.finalize().to_vec(), references: vec![], coverage, omitted_items: 0, destination_window_known: budget.destination_context_tokens.is_some() })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,4 +241,30 @@ mod tests {
         assert!(prepare_context_handoff("Task", "New", &unsorted, &HistoryCoverage::default(), None, budget()).is_err());
     }
 
+
+    fn parts(plan: &str, message: &str) -> RefreshParts {
+        RefreshParts { worktree: "/work/tree".into(), branch: Some("feature".into()), pull_requests: vec!["https://github.com/o/r/pull/1".into()], plan: Some(plan.into()), plan_file: Some("/files/plan.md".into()), last_assistant_message: Some(message.into()), records_file: "/files/records.md".into(), conversation_file: "/files/conversation.md".into() }
+    }
+    fn unknown() -> HandoffBudget { HandoffBudget { destination_context_tokens: None, reserved_tokens: 4_096 } }
+
+    #[test]
+    fn refresh_handoff_is_short_and_names_where_the_rest_is() {
+        let prepared = prepare_refresh_handoff(&parts("Approved plan", "Last words"), "Go on", None, unknown()).unwrap();
+        for wanted in ["/work/tree", "feature", "pull/1", "Approved plan", "Last words", "/files/conversation.md", "/files/records.md", "Do not read it whole"] {
+            assert!(prepared.context.contains(wanted), "{wanted}");
+        }
+        assert!(prepared.estimated_context_tokens < 1_000);
+    }
+
+    #[test]
+    fn refresh_handoff_sends_a_long_plan_by_its_path_and_always_fits() {
+        let huge = "p".repeat(3 * 200_000);
+        let prepared = prepare_refresh_handoff(&parts(&huge, &huge), "Go on", None, unknown()).unwrap();
+        assert!(prepared.context.contains("/files/plan.md"));
+        assert!(!prepared.context.contains(&huge));
+        assert!(prepared.estimated_context_tokens <= HANDOFF_TOKEN_CAP);
+        let tight = HandoffBudget { destination_context_tokens: Some(6_000), reserved_tokens: 4_096 };
+        let small = prepare_refresh_handoff(&parts("Plan", &huge), "Go on", None, tight).unwrap();
+        assert!(small.estimated_context_tokens + estimated_tokens("Go on") <= 1_904);
+    }
 }
