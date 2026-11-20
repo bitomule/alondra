@@ -260,10 +260,12 @@ pub struct Driver {
     /// This host resumes a released session that has not started a turn: what it was handed may
     /// not have been read.
     resumes_released: bool,
-    /// This host resumes its session on the first input it is handed, which decides first whether
-    /// a new session takes the conversation over instead (`session_refresh`). A control it took
-    /// first opened the session already.
-    resumed: Option<session_refresh::Resumed>,
+    /// Where this host's Claude keeps the conversation of its session. Each input it is handed
+    /// first decides whether a new session takes that conversation over (`session_refresh`).
+    conversation: Option<session_refresh::Conversation>,
+    /// This host's session started empty and has not been handed an input yet: nothing of it is
+    /// cached to expire.
+    new_session: bool,
     /// This replacement was handed an input and did not take it: its end is watched and its place
     /// taken by another host after `relaunch_wait`.
     untaken: bool,
@@ -605,6 +607,8 @@ pub fn start_bound(domain: Arc<DomainRuntime>, backend: &SdkBackend, launch: Lau
         return Err(Failed::new("the daemon died after the admission's commit".into()));
     }
     let mut driver = Driver::new(domain, worker, scope, launch.task, agent, Duration::from_secs(backend.io_timeout_seconds));
+    driver.conversation = Some(session_refresh::Conversation { native_environment: backend.native_environment.clone(), directory: launch.directory.clone() });
+    driver.new_session = start_kind(continuation.as_ref()) != StartKind::Resumed;
     let mut sealed = driver.sealed();
     let grant = sealed.owners.pop().ok_or_else(|| Failed::new("the admission issued no owner grant".into()))?;
     let (state, _) = driver.domain.own(driver.scope.clone(), |owner| owner.adapter_state(&grant)).map_err(failed("reading the provider state"))?;
@@ -805,6 +809,8 @@ pub(crate) fn launch_admitted(domain: Arc<DomainRuntime>, backend: &SdkBackend, 
     worker.install_owner(grant, adapter_state).map_err(adapter("starting the SDK host"))?;
     unadmitted.admitted();
     let mut driver = Driver::new(domain, worker, scope, task.clone(), agent, Duration::from_secs(backend.io_timeout_seconds));
+    driver.conversation = Some(session_refresh::Conversation { native_environment: backend.native_environment.clone(), directory: adoption.directory.clone() });
+    driver.new_session = true;
     driver.log_host("started, as its admission's first host");
     driver.domain.contexts().launched(&driver.task, StartKind::New);
     if let Err(failed) = driver.dispatch(permit) {
@@ -963,6 +969,7 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
             log!("the live SDK host of {task} runs the release before: it goes on, and once the node rests a host of this release takes its place");
         }
         let mut driver = Driver::new(domain, worker, scope, task.clone(), agent, Duration::from_secs(backend.io_timeout_seconds));
+        driver.conversation = Some(session_refresh::Conversation { native_environment: on_account.native_environment.clone(), directory: adoption.directory.clone() });
         if let Some(scope)=live_scope{driver.domain.contexts().forget(&driver.task);driver.domain.live().mods.restore_codex_scope(&driver.agent.0,scope,alondra_core::now_millis());}
         driver.log_host("was adopted");
         driver.receive_permits(reserved.permits);
@@ -1085,7 +1092,8 @@ fn take_host_into(domain: Arc<DomainRuntime>, backend: &SdkBackend, task: TaskId
     }
     unadmitted.admitted();
     let mut driver = Driver::new(domain, worker, scope, task, agent, Duration::from_secs(backend.io_timeout_seconds));
-    driver.resumed = resume.then(|| session_refresh::Resumed { native_environment: on_account.native_environment.clone(), directory: adoption.directory.clone() });
+    driver.conversation = Some(session_refresh::Conversation { native_environment: on_account.native_environment.clone(), directory: adoption.directory.clone() });
+    driver.new_session = !resume;
     driver.replacement = true;
     driver.resuming_since = retaken.then_some(taken_at);
     driver.resumes_released = retaken;
@@ -1699,7 +1707,7 @@ impl Driver {
 
     fn new(domain: Arc<DomainRuntime>, worker: Worker, scope: AuthorityScope, task: TaskId, agent: AgentId, opening_timeout: Duration) -> Self {
         let pause = Mutex::new(PauseSubscription::new(&domain, &agent));
-        Self { pause, in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, resumed: None, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout, opening_deadline: None, refused: BTreeSet::new(), #[cfg(any(test, feature = "test-hooks"))] refuse_offers: 0, #[cfg(any(test, feature = "test-hooks"))] fail_next_step: false, #[cfg(any(test, feature = "test-hooks"))] panic_next_step: false }
+        Self { pause, in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, conversation: None, new_session: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout, opening_deadline: None, refused: BTreeSet::new(), #[cfg(any(test, feature = "test-hooks"))] refuse_offers: 0, #[cfg(any(test, feature = "test-hooks"))] fail_next_step: false, #[cfg(any(test, feature = "test-hooks"))] panic_next_step: false }
     }
 
     pub fn agent(&self) -> &AgentId {
@@ -1759,9 +1767,6 @@ impl Driver {
             .map_err(failed("recording the control"))?;
         let control = self.sealed().control_commands.pop().ok_or_else(|| Failed::new("the control left no seal".into()))?;
         let handoff = self.worker.submit_control(&control).unwrap_or(Handoff::Uncertain);
-        if handoff == Handoff::Offered {
-            self.resumed = None;
-        }
         let awaited = (handoff == Handoff::Offered).then(|| answered_by_event(control.bytes())).flatten();
         let accepted = match (handoff, control.attempt().operation()) {
             (Handoff::Offered, alondra_store::ControlOperation::Control(alondra_domain::Control::Interrupt { turn: Some(turn) })) => {
@@ -1805,8 +1810,8 @@ impl Driver {
     /// with no SQL held, and records how the handoff went.
     fn dispatch(&mut self, permit: DispatchPermit) -> Result<(), Failed> {
         let input = permit.input().clone();
-        if let Some(resumed) = self.resumed.take()
-            && session_refresh::refresh(&self.domain, &self.task, self.worker.provider(), self.worker.state_directory(), &resumed) {
+        if !self.new_session && let Some(conversation) = &self.conversation
+            && session_refresh::refresh(&self.domain, &self.task, self.worker.provider(), self.worker.state_directory(), conversation) {
             log!("input {} of {} waits for the new session that takes its conversation over", input.as_str(), self.task);
         }
         let mut retained = Some(permit);
@@ -1854,6 +1859,7 @@ impl Driver {
                 log!("{} resumed its released session: its host took the input {} ms after the work arrived", self.task, alondra_core::clock::since(since).as_millis());
             }
             self.awaiting = Some(input.clone());
+            self.new_session = false;
             self.replacement = false;
             self.relaunches = 0;
         } else if self.replacement {
