@@ -14,6 +14,7 @@ pub mod from_report;
 pub mod http;
 pub mod reports_cli;
 pub mod runner;
+pub mod timing;
 
 pub use error::ScenarioError;
 pub use format::Scenario;

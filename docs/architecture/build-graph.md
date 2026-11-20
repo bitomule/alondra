@@ -658,6 +658,70 @@ state primed; its load average was 45 to 51 during the last runs:
 - Next cut: move the fakes that need a `GhCli` into `github-gh`'s own test hooks, so the subsystem's
   hooks stop linking the adapter.
 
+## Where a scenario's real seconds go (phase 2, 2026-11-19)
+
+The runner now prints each case's real time and its breakdown. 93 to 98% of a case was the runner's
+own wait for calm (`settle`: 2 ms sleeps, 25 quiet looks in a row, 150 while an input waits on the
+owner's wake), once per virtual second and after every step. The other suspects were small: the
+`F_FULLFSYNC` calls of one 12 s case took 0.31 s, its 26 process spawns ran beside the wait, and
+assembly took 0.05 to 0.12 s. Shortening the sleep moved a checkpoint by 2 s, so the calm criterion
+stays. What changed: a virtual clock keeps the deadlines of the timed waits pending on it (every
+sleep, interval, timeout and monitor wait registers its deadline when it is made and forgets it when
+it ends or is dropped), and before each virtual second the runner asks whether one falls inside it
+(`clock::deadline_within`). When none does, the advance can wake nobody, on whatever thread, and
+the runner does not wait for calm after it: 439 of 1,347 virtual seconds over the 16 cases. The
+others still wait, including the about 900 that wake a loop which changes nothing; those belong to
+the harness.
+
+Each case in its own shard of `scenarios_test` (16 shards, `--nocache_test_results`), before this
+change in one run and after it in three; every accepted checkpoint is unchanged:
+
+| Case | Before | After |
+|---|---:|---:|
+| answering-one-pr-card-keeps-the-other | 4.46 s | 3.04 to 3.39 s |
+| codex-turn-cut-and-resumed | 0.99 s | 0.74 to 0.98 s |
+| draft-pr-delivery-refused-until-ready | 6.49 s | 3.88 to 4.52 s |
+| integrated-delivery-presented-again-is-a-report | 13.11 s | 8.53 to 9.63 s |
+| login-expired-holds-only-its-account | 13.24 s | 8.40 to 9.66 s |
+| one-task-refused-while-others-work-asks-after-the-probe | 5.16 s | 4.16 to 4.75 s |
+| paused-node-coming-back-can-be-paused-again | 12.49 s | 9.45 to 11.03 s |
+| provider-outage-opens-no-refusal-cards | 8.04 s | 5.29 to 5.99 s |
+| reply-after-login-expired-on-integrated-delivery | 5.00 s | 3.25 to 3.44 s |
+| restart-loses-a-host-and-a-retake-brings-it-back | 10.20 s | 5.92 to 6.96 s |
+| restart-mid-turn-keeps-the-work | 12.98 s | 8.11 to 9.35 s |
+| stack-declared-retargeted-before-merge | 4.45 s | 2.87 to 3.28 s |
+| stack-undeclared-retargeted-before-merge | 7.91 s | 5.09 to 5.99 s |
+| update-replaces-hosts-it-cannot-adopt | 7.21 s | 4.46 to 4.71 s |
+| usage-limit-closes-merged-delivery | 7.67 s | 5.10 to 5.71 s |
+| user-message-survives-a-restart | 11.94 s | 7.33 to 8.63 s |
+
+The 16 cases sum 131.3 s before and 85.6 to 98.0 s after. Since the wait is idle,
+the cases now run in 16 shards. `scenarios_test` with `--nocache_test_results` (the first three
+rows before this change, with three runs each unless noted):
+
+| Shards | Test target (longest shard) | Peak memory, each shard / all shards |
+|---|---|---|
+| 4 | 39.6 s (one run) | 59 MB (one shard) / about 0.24 GB, estimated |
+| 8 | 23.0, 21.4, 21.5 s (a fourth run: 21.5 s, one case failed on the known usage-gauge timing) | 53 to 57 MB / 0.44 GB |
+| 16 | 18.2, 17.7, 16.9 s | 49 to 58 MB / 0.85 to 0.87 GB summed, at most 11 at once |
+| 16, after this change | 15.0, 14.7, 13.3 s | 50 to 58 MB / 0.87 to 0.88 GB summed |
+
+These rows predate the change that holds virtual time for the daemon threads the clock wakes.
+With it, on 20 cases, `paused-node-coming-back-can-be-paused-again` takes 51.5 s (three runs:
+51.46, 51.50, 51.60 s, 43 s of them in its rests) with or without this change, so the longest
+shard is that case; the other 19 take 4 to 15 s.
+
+A shard spends 1.4 to 4.9 s outside its case (start and end of the process and of the test
+wrapper); where is not measured.
+
+The durability of `engine_sdk_test`, sampled with `/usr/bin/sample` every 10 ms over one full run
+(545 tests, 141 s): SQLite commits plus `sync_all` are 28% of the summed time of the test threads
+(428 of 1,529 thread-seconds). The sync calls a durability switch would remove, SQLite's `fsync`
+and `sync_all`'s `F_FULLFSYNC`, are 5.5% (84 thread-seconds); the weight is the WAL `pwrite`
+inside the commits (339 thread-seconds). The share of wall-clock time, the contention between the
+11 or so tests that run at once (the Mac was also swapping), and the sampler's own cost are not
+measured.
+
 ## Output adapter `system`: git, worktrees and disks (2026-11-18)
 
 `crates/system` runs git, makes and deletes the task worktrees and reads the disks. The engine asks

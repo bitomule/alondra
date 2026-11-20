@@ -270,6 +270,85 @@ fn a_thread_waiting_for_a_stream_holds_no_virtual_time() {
 }
 
 #[test]
+fn no_pending_deadline_inside_the_window_means_the_advance_wakes_nobody() {
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        assert!(!deadline_within(HOUR));
+        let waiting = tokio::spawn(sleep(2 * HOUR));
+        assert!(!deadline_within(HOUR));
+        assert!(deadline_within(2 * HOUR));
+        advance(2 * HOUR).await;
+        waiting.await.unwrap();
+        assert!(!deadline_within(HOUR));
+    });
+}
+
+#[test]
+fn every_kind_of_timed_wait_is_pending_from_the_moment_it_is_made() {
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        let until = sleep_until(instant() + HOUR);
+        assert!(deadline_within(HOUR));
+        drop(until);
+        let timed = timeout(HOUR, std::future::pending::<()>());
+        assert!(deadline_within(HOUR));
+        drop(timed);
+        let timed_at = timeout_at(instant() + HOUR, std::future::pending::<()>());
+        assert!(deadline_within(HOUR));
+        drop(timed_at);
+        assert!(!deadline_within(HOUR));
+        let mut ticks = interval_at(instant() + HOUR, HOUR);
+        assert!(deadline_within(HOUR));
+        ticks.tick().await;
+        assert!(!deadline_within(HOUR - Duration::from_secs(1)));
+        assert!(deadline_within(HOUR));
+    });
+}
+
+#[test]
+fn a_finished_or_dropped_wait_is_forgotten() {
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        assert!(timeout(HOUR, std::future::ready(())).await.is_ok());
+        assert!(!deadline_within(2 * HOUR));
+        sleep(HOUR).await;
+        assert!(!deadline_within(2 * HOUR));
+        let first = sleep(HOUR);
+        let second = sleep(HOUR);
+        drop(first);
+        assert!(deadline_within(HOUR));
+        drop(second);
+        assert!(!deadline_within(HOUR));
+    });
+}
+
+#[test]
+fn a_wait_on_another_thread_is_pending_before_the_advance() {
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    // The runtime keeps busy instead of awaiting the threads: idle, its paused clock would jump
+    // to their deadlines on its own.
+    runtime.block_on(async {
+        let sleeper = spawn_thread(|| blocking_sleep(HOUR));
+        while !deadline_within(HOUR) {
+            tokio::task::yield_now().await;
+        }
+        advance(HOUR).await;
+        tokio::task::spawn_blocking(move || sleeper.join().unwrap()).await.unwrap();
+        assert!(!deadline_within(2 * HOUR));
+
+        let (_sender, receiver) = channel::<()>();
+        let receiving = spawn_thread(move || recv_timeout(&receiver, HOUR));
+        while !deadline_within(HOUR) {
+            tokio::task::yield_now().await;
+        }
+        advance(HOUR).await;
+        let received = tokio::task::spawn_blocking(move || receiving.join().unwrap()).await.unwrap();
+        assert_eq!(received, Err(std::sync::mpsc::RecvTimeoutError::Timeout));
+        assert!(!deadline_within(2 * HOUR));
+    });
+}
+
+#[test]
 fn a_thread_of_the_blocking_pool_holds_no_virtual_time_after_its_wait() {
     let runtime = VirtualRuntime::new(EPOCH).unwrap();
     runtime.block_on(async {
@@ -287,4 +366,16 @@ fn a_thread_of_the_blocking_pool_holds_no_virtual_time_after_its_wait() {
         task.await.unwrap();
         assert_eq!(working(), 0);
     });
+}
+
+#[test]
+fn each_virtual_clock_has_its_own_deadlines_and_the_system_clock_none() {
+    let first = VirtualRuntime::new(EPOCH).unwrap();
+    let second = VirtualRuntime::new(EPOCH).unwrap();
+    let pending = first.block_on(async { sleep(HOUR) });
+    assert!(first.block_on(async { deadline_within(HOUR) }));
+    assert!(!second.block_on(async { deadline_within(HOUR) }));
+    assert_ne!(first.clock(), second.clock());
+    assert!(!deadline_within(HOUR));
+    drop(pending);
 }
