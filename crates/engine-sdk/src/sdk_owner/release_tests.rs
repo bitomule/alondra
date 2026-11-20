@@ -533,7 +533,36 @@ async fn resumed_after(slice: &mut Slice, tokens: u64, ago: alondra_core::Millis
     went_on_after(slice, tokens, ago, selected, Standing::Released).await
 }
 
+/// Where the daemon finds how large the resting conversation is and when its cache expires.
+#[derive(Clone, Copy, PartialEq)]
+enum Measured {
+    /// In the reading it kept of the task's last request.
+    Stored,
+    /// Only in Claude Code's transcript of the session: the task's last request came before
+    /// readings were kept, or the reading was lost. The daemon restarts without its readings and
+    /// adopts the host.
+    InTranscript,
+}
+
 async fn went_on_after(slice: &mut Slice, tokens: u64, ago: alondra_core::Millis, selected: bool, standing: Standing) -> Resumption {
+    measured_went_on_after(slice, tokens, ago, selected, standing, Measured::Stored).await
+}
+
+/// `millis` as the RFC 3339 time Claude Code stamps each transcript record with.
+fn rfc3339(millis: alondra_core::Millis) -> String {
+    let (days, rest) = (millis / 86_400_000, millis % 86_400_000);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let (day, month) = (doy - (153 * mp + 2) / 5 + 1, if mp < 10 { mp + 3 } else { mp - 9 });
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z", rest / 3_600_000, rest / 60_000 % 60, rest / 1_000 % 60, rest % 1_000)
+}
+
+async fn measured_went_on_after(slice: &mut Slice, tokens: u64, ago: alondra_core::Millis, selected: bool, standing: Standing, measured: Measured) -> Resumption {
     enable(slice);
     claude_ready(slice);
     let selection = selected.then(claude_selection);
@@ -553,6 +582,9 @@ async fn went_on_after(slice: &mut Slice, tokens: u64, ago: alondra_core::Millis
         Standing::Live => {}
         Standing::Adopted => {
             slice.domain.crash_sdk_owners();
+            if measured == Measured::InTranscript {
+                std::fs::remove_file(slice.domain.home().join("context-readings.json")).unwrap();
+            }
             slice.domain = slice.restart();
             enable(slice);
             let adopted = adopt(Arc::clone(&slice.domain), &slice.backend, TASK.into(), Some(&slice.plugin)).unwrap();
@@ -561,10 +593,23 @@ async fn went_on_after(slice: &mut Slice, tokens: u64, ago: alondra_core::Millis
     }
     let slice: &Slice = slice;
     let (task, requested_at) = (TaskId::from(TASK), alondra_core::now_millis() - ago);
-    slice.domain.contexts().handed(&task, requested_at);
-    slice.domain.contexts().observed(&task, alondra_provider_claude::ContextEvent::Answered {
-        tokens, cache: Some(std::time::Duration::from_secs(3600)), model: None, cached: Default::default(),
-    }, requested_at);
+    match measured {
+        Measured::Stored => {
+            slice.domain.contexts().handed(&task, requested_at);
+            slice.domain.contexts().observed(&task, alondra_provider_claude::ContextEvent::Answered {
+                tokens, cache: Some(std::time::Duration::from_secs(3600)), model: None, cached: Default::default(),
+            }, requested_at);
+        }
+        Measured::InTranscript => {
+            assert_eq!(slice.domain.contexts().last_request(&task), None, "the daemon kept no reading of the conversation");
+            let transcript = claude_history::transcript(&slice.backend.native_environment, &session, &slice.worktree).expect("the session's transcript");
+            let answer = serde_json::json!({"type": "assistant", "sessionId": session, "isSidechain": false, "timestamp": rfc3339(requested_at),
+                "message": {"role": "assistant", "content": [], "usage": {"input_tokens": 3, "cache_read_input_tokens": tokens - 2_003, "cache_creation_input_tokens": 2_000,
+                    "output_tokens": 400, "cache_creation": {"ephemeral_1h_input_tokens": 2_000, "ephemeral_5m_input_tokens": 0}}}});
+            let mut file = std::fs::OpenOptions::new().append(true).open(transcript).unwrap();
+            std::io::Write::write_all(&mut file, format!("{answer}\n").as_bytes()).unwrap();
+        }
+    }
 
     tell(slice, TASK, "Now the changelog.").await;
     let mut changed = slice.domain.subscribe();
@@ -671,4 +716,35 @@ async fn a_large_conversation_whose_live_host_is_told_something_before_its_cache
     let resumed = went_on_after(&mut slice, 458_795, 0, true, Standing::Live).await;
     slice.domain.stop_sdk_owners();
     assert_eq!(resumed.starts.len(), 1, "the same host and session go on: {:?}", resumed.starts);
+}
+
+// 20 November: a task paused before readings were kept was resumed hours later with no reading of
+// its conversation, went on in the same session, and its first input wrote 155,628 tokens to the
+// prompt cache. Without a stored reading, the size and the cache's expiry come from the last answer
+// in Claude Code's transcript of the session.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_large_conversation_with_no_stored_reading_whose_transcript_shows_its_cache_expired_goes_on_in_a_new_session() {
+    let mut slice = Slice::new();
+    let resumed = measured_went_on_after(&mut slice, 250_000, HOURS_AGO, true, Standing::Adopted, Measured::InTranscript).await;
+    slice.domain.stop_sdk_owners();
+    let last = resumed.starts.last().unwrap();
+    assert_eq!(resumed.starts.len(), 2, "{:?}", resumed.starts);
+    assert!(last["resume"].is_null() && last["session"].as_str() != Some(resumed.session.as_str()), "a new session, not the old one going on: {:?}", resumed.starts);
+    let file = slice._home.join("files/tasks").join(TASK).join(format!("conversation-{}.md", resumed.session));
+    assert!(resumed.prompt.contains(&file.display().to_string()) && resumed.prompt.ends_with("Now the changelog."), "{}", resumed.prompt);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_large_conversation_with_no_stored_reading_whose_transcript_shows_its_cache_holds_resumes() {
+    let mut slice = Slice::new();
+    let resumed = measured_went_on_after(&mut slice, 250_000, 0, true, Standing::Adopted, Measured::InTranscript).await;
+    slice.domain.stop_sdk_owners();
+    assert_eq!(resumed.starts.len(), 1, "the same host and session go on: {:?}", resumed.starts);
+}
+
+#[test]
+fn a_transcript_time_is_written_as_claude_code_writes_it() {
+    for at in ["1970-01-01T00:00:00.000Z", "2026-02-28T23:59:59.999Z", "2028-02-29T12:30:05.042Z", "2026-11-20T07:38:00.000Z"] {
+        assert_eq!(rfc3339(crate::watcher::parse_rfc3339_millis(at).unwrap()), at);
+    }
 }
