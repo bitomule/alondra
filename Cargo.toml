@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/agent-protocol", "crates/codex-protocol", "crates/foundation", "crates/daemon-support", "crates/system", "crates/daemon-engine", "crates/daemon-engine-model", "crates/store-sqlite", "crates/daemon-engine-machine", "crates/engine-kernel", "crates/engine-ports", "crates/engine-doubles", "crates/engine-github", "crates/github-gh", "crates/engine-live", "crates/engine-mcp", "crates/engine-worktrees", "crates/engine-orchestrator", "crates/engine-admission", "crates/engine-sdk", "crates/domain", "crates/store", "crates/provider-contract", "crates/agent-application", "crates/process-group", "crates/host", "crates/agent-runtime", "crates/provider-claude", "crates/provider-codex", "crates/provider-conformance", "crates/core", "crates/domain-rules", "crates/view-model", "crates/views", "crates/alondrad", "crates/alondra", "crates/e2e", "crates/relay", "crates/scenarios-transcript", "crates/scenarios", "crates/daemon-server", "crates/client-port", "crates/client-transport", "crates/cli", "crates/cli-tui", "crates/cli-mcp", "crates/cli-report"]
 
 [workspace.package]
-version = "0.3.58"
+version = "0.3.59"
 edition = "2024"
 license = "Elastic-2.0"
 publish = false
