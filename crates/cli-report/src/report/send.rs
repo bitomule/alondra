@@ -19,12 +19,15 @@ pub const TITLE_PREFIX: &str = "Crash report r-";
 
 
 pub use alondra_client_port::report::send::Kind;
+pub use alondra_domain_rules::report_held_card::Held;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
     Pending,
     Sent,
+    /// Whoever sent it chose to keep it on this Mac: nothing sends it again on its own.
+    Kept,
 }
 
 /// `sending.json` in the report's folder.
@@ -48,6 +51,9 @@ pub struct Sending {
     pub last_error: Option<String>,
     #[serde(default)]
     pub sent_at: Option<i64>,
+    /// Why the daemon's tries send nothing until whoever sent it chooses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held: Option<Held>,
 }
 
 pub fn read_sending(dir: &Path) -> Option<Sending> {
@@ -228,6 +234,11 @@ fn send_to(repo: &Repo, home: &Path, id: &str, files: &Files, kind: Option<Kind>
         if pending.repo != repo.name {
             let mut saved = pending.clone();
             let blocked = Blocked::RepoChanged { id: id.to_owned(), saved: saved.repo.clone(), current: repo.name.clone() };
+            let refused = match &saved.held {
+                Some(Held::RepoChanged { current, refused }) if *current == repo.name => refused.clone(),
+                _ => None,
+            };
+            saved.held = Some(Held::RepoChanged { current: repo.name.clone(), refused });
             saved.next_at = now + backoff(u32::MAX);
             saved.last_error = Some(blocked.to_string());
             write_sending(&dir, &saved)?;
@@ -236,6 +247,8 @@ fn send_to(repo: &Repo, home: &Path, id: &str, files: &Files, kind: Option<Kind>
     }
     let file = bundle::armored(id, files);
     let package_sha256 = bundle::sha256(file.as_bytes());
+    let held_elsewhere = saved.clone().filter(|s| s.repo != repo.name && s.state == State::Pending
+        && matches!(&s.held, Some(Held::RepoChanged { current, .. }) if *current == repo.name));
     let earlier = saved.filter(|s| s.repo == repo.name);
     if let Some(sent) = earlier.as_ref().filter(|s| s.state == State::Sent && s.package_sha256 == package_sha256)
         && let (Some(number), Some(url)) = (sent.issue, sent.url.clone())
@@ -254,9 +267,11 @@ fn send_to(repo: &Repo, home: &Path, id: &str, files: &Files, kind: Option<Kind>
         next_at: now,
         last_error: None,
         sent_at: None,
+        held: None,
     });
     sending.kind = kind;
     sending.attempts += 1;
+    sending.held = None;
     match deliver(repo, id, files, &file, kind) {
         Ok(issue) => {
             sending.state = State::Sent;
@@ -281,6 +296,9 @@ fn send_to(repo: &Repo, home: &Path, id: &str, files: &Files, kind: Option<Kind>
                 earlier.next_at = i64::MAX;
                 earlier.last_error = Some(blocked.to_string());
                 let _ = write_sending(&dir, &earlier);
+            } else if let Some(mut held) = held_elsewhere {
+                held.held = Some(Held::RepoChanged { current: repo.name.clone(), refused: Some(blocked.to_string()) });
+                let _ = write_sending(&dir, &held);
             }
             Err(blocked.into())
         }
@@ -296,6 +314,22 @@ pub fn postpone(home: &Path, id: &str, now: i64, backoff: &dyn Fn(u32) -> i64, w
     let Some(mut sending) = read_sending(&dir).filter(|s| s.state == State::Pending && s.next_at <= now) else { return Ok(()) };
     sending.next_at = now + backoff(u32::MAX);
     sending.last_error = Some(why.to_owned());
+    write_sending(&dir, &sending)
+}
+
+/// Keeps pending report `id` on this Mac: the daemon no longer sends it, and only
+/// `alondra report send <id>` does.
+pub fn keep(home: &Path, id: &str) -> Result<()> {
+    if !bundle::is_id(id) {
+        bail!(trf!("{id} is not a report id; alondra report prints it", "{id} no es el id de un informe; alondra report lo muestra"));
+    }
+    let dir = home.join("reports").join(id);
+    let _lock = lock(&dir)?;
+    let Some(mut sending) = read_sending(&dir).filter(|s| s.state == State::Pending) else {
+        bail!(trf!("report {id} has nothing pending to keep", "el informe {id} no tiene nada pendiente que guardar"))
+    };
+    sending.state = State::Kept;
+    sending.held = None;
     write_sending(&dir, &sending)
 }
 

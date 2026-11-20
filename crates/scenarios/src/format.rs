@@ -42,6 +42,13 @@ pub struct World {
     pub release: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HomeFile {
+    pub path: String,
+    pub text: String,
+}
+
 impl Step {
     fn server_error() -> String {
         "server_error".into()
@@ -164,6 +171,9 @@ pub enum Step {
     /// The user presses the option `option` of the card the daemon shows for `task` whose id starts
     /// with `card`, as the app does it from the view.
     Answer { card: String, option: String, #[serde(default)] text: Option<String> },
+    /// Files of the daemon's home are written as another process of the Mac writes them, each
+    /// whole at once: every `path` is relative to the home and stays inside it.
+    WriteHome { #[serde(rename = "file")] files: Vec<HomeFile> },
     /// Virtual time passes.
     Advance { by: String },
     /// The daemon runs until nothing changes for a while.

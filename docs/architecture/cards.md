@@ -111,6 +111,7 @@ removes its card while PR #62 keeps its merge and feedback actions:
 | `system:pace_resume` | alondra | user | decide | decides | — | task | its author | answered, withdrawn, resumed |
 | `system:machine` | alondra | user | problem | decides | — | task | its author | answered, withdrawn, replaced, resolved, task_ended |
 | `system:local_network` | alondra | user | problem | decides | — | task | its author | answered, withdrawn, replaced, resolved, task_ended |
+| `system:report_held` | alondra | user | problem | decides | — | task | its author | answered, withdrawn, replaced, resolved, task_ended |
 | `system:capability_capacity` | alondra | user | problem | decides | — | task | its author | answered, withdrawn, replaced, resolved, task_ended |
 | `system:mcp_wait` | alondra | user | problem | decides | — | mcp_server | its author | answered, resolved, task_ended |
 | `system:claude_signed_out` | alondra | user | problem | decides | — | task | its author | answered, resolved, task_ended |

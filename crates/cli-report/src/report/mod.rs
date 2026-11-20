@@ -284,6 +284,17 @@ pub fn send_report(id: &str, kind: Option<send::Kind>, retry: bool, json: bool) 
     Ok(())
 }
 
+/// `alondra report keep`: keeps a pending report on this Mac.
+pub fn keep_report(id: &str) -> Result<()> {
+    let host = Mac::new();
+    send::keep(host.home(), id)?;
+    println!("{}", trf!(
+        "Report {id} stays on this Mac and Alondra no longer sends it. To send it: alondra report send {id}",
+        "El informe {id} se queda en este Mac y Alondra ya no lo envía. Para enviarlo: alondra report send {id}"
+    ));
+    Ok(())
+}
+
 /// What `alondra report send --json` prints: sent, pending, or refused with why, so whoever asked
 /// gets the answer in the same document either way.
 pub fn sent_json(id: &str, sent: &Result<(String, send::Outcome)>) -> Value {

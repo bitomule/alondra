@@ -1,0 +1,363 @@
+{
+  "client": "ios",
+  "cursor": "<cursor>",
+  "data_epoch": "<data_epoch>",
+  "first_cards": [
+    {
+      "client": "ios",
+      "cursor": "<cursor>",
+      "data_epoch": "<data_epoch>",
+      "key": "card:report-held-r-20261120-0000000c-1794733333000",
+      "protocol": 1,
+      "sections": [
+        {
+          "collapsed": false,
+          "id": "card",
+          "items": [
+            {
+              "actions": [
+                {
+                  "attachments": false,
+                  "enabled": true,
+                  "id": "ans:report-held-r-20261120-0000000c-1794733333000@<revision>",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "Enviarlo a ana/otros",
+                  "option_id": "send",
+                  "presentation": "button",
+                  "resolves_card": true,
+                  "role": "advance",
+                  "stamp": "Respondida",
+                  "style": "primary"
+                },
+                {
+                  "attachments": false,
+                  "enabled": true,
+                  "id": "ans:report-held-r-20261120-0000000c-1794733333000@<revision>",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "Dejarlo en este Mac",
+                  "option_id": "keep",
+                  "presentation": "button",
+                  "resolves_card": true,
+                  "role": "neutral",
+                  "stamp": "Respondida",
+                  "style": "secondary"
+                }
+              ],
+              "detail": "included",
+              "eyebrow": {
+                "text": "Problema",
+                "tone": "critical"
+              },
+              "icon": "warning",
+              "id": "report-held-r-20261120-0000000c-1794733333000",
+              "kind": "problem",
+              "link": {
+                "key": "card:report-held-r-20261120-0000000c-1794733333000",
+                "kind": "view"
+              },
+              "meta": "Alondra",
+              "need": "Resuelve el problema",
+              "reply": {
+                "attachments": true,
+                "enabled": true,
+                "id": "msg:view@<revision>",
+                "input": {
+                  "kind": "text",
+                  "multiline": true,
+                  "placeholder": "Responder…",
+                  "required": true
+                },
+                "label": "Responder",
+                "presentation": "button",
+                "resolves_card": false,
+                "role": "neutral",
+                "stamp": "Enviado",
+                "style": "secondary"
+              },
+              "state": {
+                "text": "No bloquea",
+                "tone": "neutral"
+              },
+              "subtitle": "Iba a ana/informes y report.repo es ahora ana/otros. No se envía nada hasta que elijas.",
+              "timestamps": [
+                {
+                  "at": "2026-11-15T09:02:13.000+00:00",
+                  "format": "relative",
+                  "role": "created"
+                }
+              ],
+              "title": "El informe r-20261120-0000000c no se envía: report.repo cambió",
+              "title_is_separate": true,
+              "type": "card",
+              "why": "Iba a ana/informes y report.repo es ahora ana/otros. No se envía nada hasta que elijas."
+            }
+          ]
+        },
+        {
+          "collapsed": false,
+          "id": "content",
+          "items": [
+            {
+              "commentable": false,
+              "text": "Enviarlo a ana/otros\n\nAlondra lo envía ahora a ana/otros",
+              "truncated": false,
+              "type": "markdown"
+            },
+            {
+              "commentable": false,
+              "text": "Dejarlo en este Mac\n\nNo se envía y Alondra deja de reintentarlo; puedes enviarlo luego con alondra report send r-20261120-0000000c",
+              "truncated": false,
+              "type": "markdown"
+            }
+          ]
+        }
+      ],
+      "status": {
+        "badge": 1,
+        "counts": [
+          {
+            "id": "inbox",
+            "label": "Bandeja",
+            "value": 1
+          },
+          {
+            "id": "tasks",
+            "label": "Tareas",
+            "value": 0
+          },
+          {
+            "id": "working",
+            "label": "trabajando",
+            "value": 0
+          },
+          {
+            "id": "needs_you",
+            "label": "esperando por ti",
+            "value": 0
+          },
+          {
+            "id": "queued",
+            "label": "en cola",
+            "value": 0
+          },
+          {
+            "id": "paused",
+            "label": "en pausa",
+            "value": 0
+          },
+          {
+            "id": "other_waiting",
+            "label": "en espera",
+            "value": 0
+          }
+        ],
+        "gauges": [
+          {
+            "detail": "Puedes seguir: Claude tiene margen",
+            "id": "usage",
+            "label": "Claude",
+            "level": "calm",
+            "parts": [
+              {
+                "detail": "Aún sin medir",
+                "group": "Claude",
+                "label": "Default",
+                "level": "calm",
+                "lines": [
+                  "Aún sin medir"
+                ],
+                "text": "con margen",
+                "value": 1.0
+              }
+            ],
+            "text": "con margen",
+            "value": 0.0
+          },
+          {
+            "id": "memory",
+            "label": "RAM",
+            "level": "calm",
+            "text": "25%",
+            "value": 0.25
+          },
+          {
+            "id": "cpu",
+            "label": "CPU",
+            "level": "calm",
+            "text": "5%",
+            "value": 0.05
+          },
+          {
+            "id": "disk",
+            "label": "Disco",
+            "level": "calm",
+            "text": "550 GB libres",
+            "value": 0.5
+          }
+        ],
+        "orchestrator": {
+          "text": "inactivo",
+          "tone": "neutral"
+        },
+        "summary": "1 pregunta · 0 tareas trabajando",
+        "summary_parts": [
+          {
+            "count": 1,
+            "id": "questions",
+            "one": "{count} pregunta",
+            "other": "{count} preguntas"
+          },
+          {
+            "count": 0,
+            "id": "working",
+            "one": "{count} tarea trabajando",
+            "other": "{count} tareas trabajando"
+          }
+        ],
+        "version": "<version>"
+      },
+      "title": "El informe r-20261120-0000000c no se envía: report.repo cambió",
+      "version": "<version>",
+      "view": "card"
+    }
+  ],
+  "key": "home",
+  "protocol": 1,
+  "sections": [
+    {
+      "card_ids": [
+        "report-held-r-20261120-0000000c-1794733333000"
+      ],
+      "card_waits": [
+        "question"
+      ],
+      "collapsed": false,
+      "count": 1,
+      "id": "queue",
+      "items": [],
+      "title": "Te espera"
+    }
+  ],
+  "service": {
+    "capabilities": [
+      "account_presentation",
+      "model_selection",
+      "provider_accounts"
+    ],
+    "version": "<version>",
+    "views_protocol": {
+      "max": 1,
+      "min": 1
+    }
+  },
+  "status": {
+    "badge": 1,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 1
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 0
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 0
+      },
+      {
+        "id": "needs_you",
+        "label": "esperando por ti",
+        "value": 0
+      },
+      {
+        "id": "queued",
+        "label": "en cola",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "en pausa",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "en espera",
+        "value": 0
+      }
+    ],
+    "gauges": [
+      {
+        "detail": "Puedes seguir: Claude tiene margen",
+        "id": "usage",
+        "label": "Claude",
+        "level": "calm",
+        "parts": [
+          {
+            "detail": "Aún sin medir",
+            "group": "Claude",
+            "label": "Default",
+            "level": "calm",
+            "lines": [
+              "Aún sin medir"
+            ],
+            "text": "con margen",
+            "value": 1.0
+          }
+        ],
+        "text": "con margen",
+        "value": 0.0
+      },
+      {
+        "id": "memory",
+        "label": "RAM",
+        "level": "calm",
+        "text": "25%",
+        "value": 0.25
+      },
+      {
+        "id": "cpu",
+        "label": "CPU",
+        "level": "calm",
+        "text": "5%",
+        "value": 0.05
+      },
+      {
+        "id": "disk",
+        "label": "Disco",
+        "level": "calm",
+        "text": "550 GB libres",
+        "value": 0.5
+      }
+    ],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    },
+    "summary": "1 pregunta · 0 tareas trabajando",
+    "summary_parts": [
+      {
+        "count": 1,
+        "id": "questions",
+        "one": "{count} pregunta",
+        "other": "{count} preguntas"
+      },
+      {
+        "count": 0,
+        "id": "working",
+        "one": "{count} tarea trabajando",
+        "other": "{count} tareas trabajando"
+      }
+    ],
+    "version": "<version>"
+  },
+  "version": "<version>",
+  "view": "home"
+}
