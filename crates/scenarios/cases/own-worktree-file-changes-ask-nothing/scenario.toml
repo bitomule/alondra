@@ -1,4 +1,4 @@
-name = "a node that changes files of its own worktree is not stopped by a card, and one that reaches outside it through a link still asks"
+name = "a node that changes files of its own worktree is not stopped by a card; one that reaches outside it through a link, or works in another task's worktree, still asks"
 max_virtual = "1h"
 
 [[step]]
@@ -8,8 +8,17 @@ task = "t1"
 title = "Clean up and resolve the merge"
 
 [[step]]
+do = "task"
+id = "t2"
+title = "Review the merge"
+
+[[step]]
 do = "node"
 task = "t1"
+
+[[step]]
+do = "node"
+task = "t2"
 
 [[step]]
 do = "rest"
@@ -98,3 +107,29 @@ answer = "none"
 check = "view_shows"
 screen = "home"
 text = "destructivo"
+
+[[step]]
+do = "worktree"
+task = "t2"
+from = "t1"
+
+[[step]]
+do = "permission"
+task = "t2"
+request = "other-task"
+command = "rm src/a.rs"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "another-tasks-worktree"
+screens = ["home"]
+
+[[step.expect]]
+check = "answered"
+task = "t2"
+request = "other-task"
+answer = "none"

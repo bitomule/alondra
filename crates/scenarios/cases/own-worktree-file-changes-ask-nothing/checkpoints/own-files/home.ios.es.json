@@ -40,12 +40,12 @@
       {
         "id": "tasks",
         "label": "Tareas",
-        "value": 1
+        "value": 2
       },
       {
         "id": "working",
         "label": "trabajando",
-        "value": 1
+        "value": 2
       },
       {
         "id": "needs_you",
@@ -116,10 +116,10 @@
       "text": "inactivo",
       "tone": "neutral"
     },
-    "summary": "1 tarea trabajando",
+    "summary": "2 tareas trabajando",
     "summary_parts": [
       {
-        "count": 1,
+        "count": 2,
         "id": "working",
         "one": "{count} tarea trabajando",
         "other": "{count} tareas trabajando"

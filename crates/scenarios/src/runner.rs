@@ -558,7 +558,14 @@ impl Context<'_> {
             Step::Answer { card, option, text } => self.answer(index, card, option, text.as_deref()).await?,
             Step::Node { task, account, model } => self.start_claude_node(index, task, account, model.as_deref()).await?,
             Step::Conversation { task, tokens } => self.edge(index)?.set_conversation(task, *tokens),
-            Step::Worktree { task, files, outside_link } => self.worktree(index, task, files, outside_link.as_deref())?,
+            Step::Worktree { task, from: Some(other), .. } => {
+                let path = self.worktrees.get(other).cloned().ok_or_else(|| Self::failed(index, format!("task {other} has no worktree")))?;
+                self.command(index, Actor::System, Command::RecordTaskWorktree {
+                    task_id: task.clone().into(), path: path.display().to_string(), origin: alondra_domain_rules::WorktreeOrigin::Entered, branch: None,
+                })?;
+                self.worktrees.insert(task.clone(), path);
+            }
+            Step::Worktree { task, files, outside_link, from: None } => self.worktree(index, task, files, outside_link.as_deref())?,
             Step::Permission { task, request, command, cwd } => {
                 let top = self.worktrees.get(task).ok_or_else(|| Self::failed(index, format!("task {task} has no worktree")))?;
                 let cwd = cwd.as_deref().map_or_else(|| top.clone(), |cwd| top.join(cwd));

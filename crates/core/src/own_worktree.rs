@@ -7,6 +7,10 @@
 //! on its root, a `.git` or another worktree of the task. Anything it cannot read for certain keeps
 //! asking, and so does every part of the command that is not one of these operations.
 //!
+//! A command holds one change, run from the folder Claude Code reports, beside nothing but `true`:
+//! a `cd` may not take effect (in a pipe, behind a wrapper, when it fails) and an earlier change may
+//! remake what a later one names, so neither is read as the disk shows it now.
+//!
 //! The disk is read when the request arrives and the shell runs the command after Alondra answers:
 //! a process of the same task could swap a folder for a symlink in between. Only Alondra running
 //! the command itself would close that window; the check accepts it and never turns a failed read
@@ -31,14 +35,23 @@ pub enum Keeps {
     Uncertain,
 }
 
+/// What marks a folder of task worktrees kept outside the repositories.
+const STORAGE_RECORD: &str = ".alondra-repository.json";
+
 /// The task's worktrees the check trusts, canonicalized: the recorded folders that are linked git
-/// worktrees, whose `.git` is a file. A main checkout, the user's own folder, never counts.
+/// worktrees, whose `.git` is a file, in a repository's `.claude/worktrees` or Alondra's worktree
+/// storage. A main checkout, the user's own folder, never counts, nor does any other linked
+/// worktree a node entered. The caller passes only the worktrees no other task holds.
 pub fn roots<'a>(recorded: impl IntoIterator<Item = &'a str>) -> Vec<PathBuf> {
+    let alondras = |folder: &Path| {
+        folder.parent().is_some_and(|parent| parent.ends_with(".claude/worktrees") || std::fs::symlink_metadata(parent.join(STORAGE_RECORD)).is_ok())
+    };
     let mut roots: Vec<PathBuf> = recorded
         .into_iter()
         .filter_map(|path| {
             let real = std::fs::canonicalize(path).ok()?;
-            std::fs::symlink_metadata(real.join(".git")).ok()?.is_file().then_some(real)
+            let linked = std::fs::symlink_metadata(real.join(".git")).ok()?.is_file();
+            (linked && (alondras(Path::new(path)) || alondras(&real))).then_some(real)
         })
         .collect();
     roots.sort();
@@ -55,15 +68,17 @@ pub fn judge(command: &str, cwd: &str, roots: &[PathBuf]) -> Result<(), Keeps> {
         return Err(Keeps::Outside);
     }
     let base = std::fs::canonicalize(cwd).map_err(|_| Keeps::Uncertain)?;
-    let mut here = Here { roots, base };
+    let here = Here { roots, base };
     here.root_holding(&here.base).ok_or(Keeps::Outside)?;
     let parts = allow_always::parse(command).filter(|parts| !parts.is_empty()).ok_or(Keeps::Unreadable)?;
+    let mut changes = 0;
     for part in &parts {
         if part.redirects.iter().any(|(direction, target)| *direction != Direction::Write || target.glob || target.text != "/dev/null") {
             return Err(Keeps::NotFileChange);
         }
-        // zsh turns a word that starts with `=` into the path of the program it names.
-        if part.words.iter().any(|word| word.text.starts_with('=')) {
+        // zsh turns a word that starts with `=` into the path of the program it names, and with
+        // `extendedglob` reads an unquoted `^` or `~` as a pattern.
+        if part.words.iter().any(|word| word.pattern || word.text.starts_with('=')) {
             return Err(Keeps::Unreadable);
         }
         let words = allow_always::strip(&part.words).map_err(|_| Keeps::Unreadable)?;
@@ -71,9 +86,14 @@ pub fn judge(command: &str, cwd: &str, roots: &[PathBuf]) -> Result<(), Keeps> {
         if program.glob || program.text.contains('/') {
             return Err(Keeps::NotFileChange);
         }
+        if matches!(program.text.as_str(), "true" | ":") && args.is_empty() {
+            continue;
+        }
+        changes += 1;
+        if changes > 1 {
+            return Err(Keeps::NotFileChange);
+        }
         match program.text.as_str() {
-            "cd" => here.cd(args)?,
-            "true" | ":" if args.is_empty() => {}
             "rm" => here.rm(args)?,
             "rmdir" => here.rmdir(args)?,
             "unlink" => match args {
@@ -87,6 +107,9 @@ pub fn judge(command: &str, cwd: &str, roots: &[PathBuf]) -> Result<(), Keeps> {
             "git" => here.git(args)?,
             _ => return Err(Keeps::NotFileChange),
         }
+    }
+    if changes == 0 {
+        return Err(Keeps::NotFileChange);
     }
     Ok(())
 }
@@ -196,34 +219,13 @@ impl Here<'_> {
     fn written(&self, word: &Word, in_place: bool) -> Result<PathBuf, Keeps> {
         let real = self.followed(word)?;
         self.owned(&real)?;
-        if in_place {
-            if let Ok(metadata) = std::fs::metadata(&real) {
-                use std::os::unix::fs::MetadataExt;
-                if metadata.is_file() && metadata.nlink() > 1 {
-                    return Err(Keeps::Uncertain);
-                }
+        if let Ok(metadata) = std::fs::metadata(&real) {
+            use std::os::unix::fs::MetadataExt;
+            if !(metadata.is_file() || metadata.is_dir()) || (in_place && metadata.is_file() && metadata.nlink() > 1) {
+                return Err(Keeps::Uncertain);
             }
         }
         Ok(real)
-    }
-
-    fn cd(&mut self, args: &[Word]) -> Result<(), Keeps> {
-        let [target] = args else { return Err(Keeps::NotFileChange) };
-        // The shell takes `..` off the name before it without following links, and looks a bare
-        // name up in `CDPATH` first: only a folder named from `/` or `./`, with no `..`, lands
-        // where the disk says.
-        let text = target.text.as_str();
-        let anchored = text.starts_with('/') || text.starts_with("./");
-        if target.glob || !anchored || Path::new(text).components().any(|c| c == Component::ParentDir) {
-            return Err(Keeps::Uncertain);
-        }
-        let real = self.folder(text)?;
-        let root = self.root_holding(&real).ok_or(Keeps::Outside)?;
-        if real.strip_prefix(root).is_ok_and(holds_git) {
-            return Err(Keeps::Protected);
-        }
-        self.base = real;
-        Ok(())
     }
 
     /// The words after the options, with the options checked against `known`.
@@ -272,6 +274,11 @@ impl Here<'_> {
             return Err(Keeps::NotFileChange);
         }
         for source in sources {
+            // A source named with a trailing `/` moves the folder a link points to, under the
+            // link's name.
+            if source.text == "." || source.text.ends_with('/') || source.text.ends_with("/.") {
+                return Err(Keeps::Uncertain);
+            }
             self.removed(source, false)?;
         }
         if destination.glob {
@@ -300,17 +307,21 @@ impl Here<'_> {
                 positional.push(word);
                 continue;
             }
+            // BSD sed reads options only up to its first operand, GNU sed anywhere.
+            if !positional.is_empty() {
+                return Err(Keeps::Uncertain);
+            }
             match text {
                 "--" => ended = true,
-                "-i" => {
-                    in_place = true;
-                    if let Some(suffix) = args.get(at).filter(|next| !next.glob && (next.text.is_empty() || next.text.starts_with('.'))) {
-                        if !backup_suffix(&suffix.text) {
-                            return Err(Keeps::Uncertain);
-                        }
+                // BSD sed takes the next word as the backup suffix and GNU sed never does: only an
+                // empty one reads the same to both.
+                "-i" => match args.get(at) {
+                    Some(next) if !next.glob && next.text.is_empty() => {
+                        in_place = true;
                         at += 1;
                     }
-                }
+                    _ => return Err(Keeps::Uncertain),
+                },
                 "-e" => {
                     let script = args.get(at).filter(|next| !next.glob).ok_or(Keeps::Uncertain)?;
                     scripts.push(&script.text);
@@ -438,21 +449,36 @@ impl Here<'_> {
                 return Err(Keeps::Outside);
             }
         }
-        self.runs_no_hook()
+        self.own_repository(repository)
     }
 
-    /// Checking out paths runs git's `post-checkout` hook, which the node may have written: a
-    /// repository with one, wherever `core.hooksPath` puts it, keeps asking.
-    fn runs_no_hook(&self) -> Result<(), Keeps> {
+    /// The repository git uses from here is the worktree itself, with its git folder outside every
+    /// worktree of the task, and without a `post-checkout` hook, which checking out paths runs. A
+    /// repository nested in the worktree, or a `.git` pointed at a folder the node wrote, could make
+    /// git run what its configuration names.
+    fn own_repository(&self, repository: &Path) -> Result<(), Keeps> {
         let output = std::process::Command::new("git")
             .current_dir(&self.base)
-            .args(["rev-parse", "--path-format=absolute", "--git-path", "hooks/post-checkout"])
+            .args(["-c", "core.fsmonitor=false", "rev-parse", "--path-format=absolute", "--show-toplevel", "--absolute-git-dir", "--git-common-dir"])
+            .args(["--git-path", "hooks/post-checkout"])
             .stdin(std::process::Stdio::null())
             .output()
             .map_err(|_| Keeps::Uncertain)?;
-        let hook = String::from_utf8(output.stdout).map_err(|_| Keeps::Uncertain)?;
-        let hook = Path::new(hook.trim_end());
-        if !output.status.success() || !hook.is_absolute() || std::fs::symlink_metadata(hook).is_ok() {
+        if !output.status.success() {
+            return Err(Keeps::Uncertain);
+        }
+        let text = String::from_utf8(output.stdout).map_err(|_| Keeps::Uncertain)?;
+        let [top, git_dir, common, hook] = text.lines().map(Path::new).collect::<Vec<_>>()[..] else { return Err(Keeps::Uncertain) };
+        let real = |path: &Path| std::fs::canonicalize(path).map_err(|_| Keeps::Uncertain);
+        if real(top)? != repository {
+            return Err(Keeps::Uncertain);
+        }
+        for folder in [real(git_dir)?, real(common)?] {
+            if self.roots.iter().any(|root| folded_within(&folder, root)) {
+                return Err(Keeps::Uncertain);
+            }
+        }
+        if !hook.is_absolute() || std::fs::symlink_metadata(hook).is_ok() {
             return Err(Keeps::Uncertain);
         }
         Ok(())
@@ -478,13 +504,17 @@ fn backup_suffix(suffix: &str) -> bool {
 
 /// A ref named by plain characters only, as `task_git` reads them.
 fn safe_ref(text: &str) -> bool {
-    !text.is_empty() && !text.starts_with(['-', '/']) && !text.contains("..") && text.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '-' | '~' | '^'))
+    !text.is_empty() && !text.starts_with(['-', '/']) && !text.contains("..") && text.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '-'))
 }
 
 /// A sed script of `s` and `d` commands only, each with an optional line, `$` or `/regex/`
 /// address (or a range of two), separated by `;` or new lines. No flag that writes a file (`w`)
-/// or runs one (`e`), and no other command.
+/// or runs one (`e`), no other command, and no bracket expression.
 pub(crate) fn safe_sed_script(script: &str) -> bool {
+    // BSD sed skips a delimiter inside a bracket expression and this reading would not.
+    if script.contains('[') {
+        return false;
+    }
     let chars: Vec<char> = script.chars().collect();
     let mut at = 0;
     let mut commands = 0;

@@ -14,7 +14,8 @@ pub struct SdkDecision {
     pub prompt: DecisionPrompt,
 }
 
-/// How the card of a decision Claude asks for is built, which the store does not know.
+/// How the card of a decision Claude asks for is built, which the store does not know. `worktrees`
+/// are the task's open worktrees; `exclusive` those of them no other task has open or keeps.
 pub trait SdkDecisions: Send + Sync {
-    fn decide(&self, task_title: &str, kind: DecisionKind, payload: &Value, worktree: Option<&str>, worktrees: &[String], home: &Path) -> SdkDecision;
+    fn decide(&self, task_title: &str, kind: DecisionKind, payload: &Value, worktree: Option<&str>, worktrees: &[String], exclusive: &[String], home: &Path) -> SdkDecision;
 }

@@ -176,7 +176,8 @@ pub enum Step {
     WriteHome { #[serde(rename = "file")] files: Vec<HomeFile> },
     /// The worktree Alondra makes for `task`: a linked worktree of a new repository, in its
     /// `.claude/worktrees`, holding `files`, and `outside_link`, a link to a folder outside it.
-    Worktree { task: String, #[serde(default)] files: Vec<String>, #[serde(default)] outside_link: Option<String> },
+    /// With `from`, the node of `task` enters the worktree of that other task instead.
+    Worktree { task: String, #[serde(default)] files: Vec<String>, #[serde(default)] outside_link: Option<String>, #[serde(default)] from: Option<String> },
     /// The node of `task` asks permission to run `command` in Bash from `cwd`, a folder of the
     /// task's worktree (its top when absent), as Claude Code asks; `request` names the request.
     Permission { task: String, request: String, command: String, #[serde(default)] cwd: Option<String> },

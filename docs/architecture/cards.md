@@ -96,16 +96,20 @@ decision in the task:
 - The git commands of the conflict flow, in the task's worktree and on its branch, are allowed;
   `git reset --hard` and a force-push to another branch are denied
   ([task_git](../crates/core/src/task_git.rs)).
-- A command whose every part only changes files of the task's own worktrees is allowed:
-  `rm` (also of a subfolder), `rmdir`, `unlink`, `mv`, `sed -i` with substitutions or deletions,
-  `truncate`, `chmod` and `git checkout`/`git restore` of paths. The daemon reads the disk when
-  the request arrives: each path's folder is canonicalized and its last name is not followed, so
-  a link that points outside is removed and never entered. The path must stay strictly inside a
-  linked worktree of the task, never on its root, a `.git` (in any case) or another worktree. A
-  `cd` counts only to a folder named from `/` or `./` with no `..`, where the shell lands as the
-  disk says. A path that leaves the worktree, a pattern, a variable, a word zsh expands (`=node`),
-  a wrapper, any other program in the command, a `post-checkout` hook git would run, or one of
-  the user's «ask» rules keeps the card ([own_worktree](../crates/core/src/own_worktree.rs)).
+- A command that makes one change to files of the task's own worktrees is allowed: `rm` (also of
+  a subfolder), `rmdir`, `unlink`, `mv`, `sed -i` with substitutions or deletions, `truncate`,
+  `chmod` and `git checkout`/`git restore` of paths, beside nothing but `true`. The daemon reads
+  the disk when the request arrives: each path's folder is canonicalized and its last name is not
+  followed, so a link that points outside is removed and never entered. The path must stay
+  strictly inside a linked worktree the task holds alone, in a repository's `.claude/worktrees` or
+  Alondra's worktree storage, never on its root, a `.git` (in any case) or another worktree. git
+  must run in that worktree's own repository, with its git folder outside it and no
+  `post-checkout` hook. Everything else keeps the card
+  ([own_worktree](../crates/core/src/own_worktree.rs)): a path that leaves the worktree or cannot
+  be read for certain, a `cd` or a second change in the same command, a pattern, a variable, a
+  word zsh expands (`=node`, an unquoted `^` or `~`), a wrapper, any other program, a `sed` whose
+  BSD and GNU readings differ (`-i` with a suffix word, an option after the first file, a bracket
+  expression), or one of the user's «ask» rules.
 - What the user allowed «in this task» is allowed again.
 
 Everything else is the user's, and the card marks with «⚠️ destructivo» what deletes, overwrites

@@ -181,12 +181,12 @@
           {
             "id": "tasks",
             "label": "Tareas",
-            "value": 1
+            "value": 2
           },
           {
             "id": "working",
             "label": "trabajando",
-            "value": 0
+            "value": 1
           },
           {
             "id": "needs_you",
@@ -257,7 +257,7 @@
           "text": "inactivo",
           "tone": "neutral"
         },
-        "summary": "1 pregunta · 0 tareas trabajando",
+        "summary": "1 pregunta · 1 tarea trabajando",
         "summary_parts": [
           {
             "count": 1,
@@ -266,7 +266,7 @@
             "other": "{count} preguntas"
           },
           {
-            "count": 0,
+            "count": 1,
             "id": "working",
             "one": "{count} tarea trabajando",
             "other": "{count} tareas trabajando"
@@ -319,12 +319,12 @@
       {
         "id": "tasks",
         "label": "Tareas",
-        "value": 1
+        "value": 2
       },
       {
         "id": "working",
         "label": "trabajando",
-        "value": 0
+        "value": 1
       },
       {
         "id": "needs_you",
@@ -395,7 +395,7 @@
       "text": "inactivo",
       "tone": "neutral"
     },
-    "summary": "1 pregunta · 0 tareas trabajando",
+    "summary": "1 pregunta · 1 tarea trabajando",
     "summary_parts": [
       {
         "count": 1,
@@ -404,7 +404,7 @@
         "other": "{count} preguntas"
       },
       {
-        "count": 0,
+        "count": 1,
         "id": "working",
         "one": "{count} tarea trabajando",
         "other": "{count} tareas trabajando"

@@ -320,12 +320,12 @@
       {
         "id": "tasks",
         "label": "Tasks",
-        "value": 1
+        "value": 2
       },
       {
         "id": "working",
         "label": "working",
-        "value": 1
+        "value": 2
       },
       {
         "id": "needs_you",
@@ -396,10 +396,10 @@
       "text": "idle",
       "tone": "neutral"
     },
-    "summary": "1 task working",
+    "summary": "2 tasks working",
     "summary_parts": [
       {
-        "count": 1,
+        "count": 2,
         "id": "working",
         "one": "{count} task working",
         "other": "{count} tasks working"

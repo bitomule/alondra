@@ -298,17 +298,17 @@ pub(crate) use crate::domain_store::wording::SdkDecision;
 pub struct HeldCards;
 
 impl crate::domain_store::wording::SdkDecisions for HeldCards {
-    fn decide(&self, task_title: &str, kind: DecisionKind, payload: &Value, worktree: Option<&str>, worktrees: &[String], home: &Path) -> SdkDecision {
-        sdk_decision(task_title, kind, payload, worktree, worktrees, home)
+    fn decide(&self, task_title: &str, kind: DecisionKind, payload: &Value, worktree: Option<&str>, worktrees: &[String], exclusive: &[String], home: &Path) -> SdkDecision {
+        sdk_decision(task_title, kind, payload, worktree, worktrees, exclusive, home)
     }
 }
 
 /// The decision the host persisted with `payload`, for a task that works in `worktree` and whose
-/// open worktrees are `worktrees`: a tool call is `{tool, input, request, cwd}` with the SDK's
+/// open worktrees are `worktrees`, `exclusive` those no other task holds: a tool call is `{tool, input, request, cwd}` with the SDK's
 /// options in `request` and the folder Claude Code runs it from in `cwd`; an MCP server's request
 /// for input is its form. «Allow always» is offered as for a held permission prompt, and «allow in
 /// this task» for a command that stays in the task's folders.
-pub(crate) fn sdk_decision(task_title: &str, kind: DecisionKind, payload: &Value, worktree: Option<&str>, worktrees: &[String], home: &Path) -> SdkDecision {
+pub(crate) fn sdk_decision(task_title: &str, kind: DecisionKind, payload: &Value, worktree: Option<&str>, worktrees: &[String], exclusive: &[String], home: &Path) -> SdkDecision {
     let hold = match kind {
         DecisionKind::Permission => Hold::Permission,
         DecisionKind::Question => Hold::Question,
@@ -348,7 +348,7 @@ pub(crate) fn sdk_decision(task_title: &str, kind: DecisionKind, payload: &Value
             let mut prompt = card(body, options, None, Some(&need), allow);
             if let DecisionPrompt::Card { card, .. } = &mut prompt {
                 card.allow_for_task = Some(for_task);
-                card.own_worktree = own_worktree(tool.as_deref(), &input, payload.get("cwd").and_then(Value::as_str), request, worktrees);
+                card.own_worktree = own_worktree(tool.as_deref(), &input, payload.get("cwd").and_then(Value::as_str), request, exclusive);
             }
             prompt
         }
@@ -630,11 +630,12 @@ mod own_worktree_tests {
         assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
     }
 
-    /// The user's own checkout `main` and `wt`, a linked worktree of it that is the task's, each
-    /// with a `.scratch` file; the repository's hooks folder is empty.
+    /// The user's own checkout `main` and `wt`, a linked worktree of it in its `.claude/worktrees`
+    /// that is the task's, each with a `.scratch` file; the repository's hooks folder is empty.
     fn folders() -> (Directory, String, String) {
         let dir = Directory::new();
-        let (main, wt, hooks) = (dir.join("main"), dir.join("wt"), dir.join("hooks"));
+        let (main, hooks) = (dir.join("main"), dir.join("hooks"));
+        let wt = main.join(".claude/worktrees/wt");
         std::fs::create_dir_all(&main).unwrap();
         std::fs::create_dir_all(&hooks).unwrap();
         git(&main, &["init", "-q", "-b", "main"]);
@@ -652,7 +653,7 @@ mod own_worktree_tests {
 
     fn carded(command: &str, cwd: &str, request: Value, worktrees: &[String], home: &Path) -> bool {
         let payload = json!({"tool": "Bash", "input": {"command": command}, "request": request, "cwd": cwd});
-        let decision = sdk_decision("Task", DecisionKind::Permission, &payload, worktrees.first().map(String::as_str), worktrees, home);
+        let decision = sdk_decision("Task", DecisionKind::Permission, &payload, worktrees.first().map(String::as_str), worktrees, worktrees, home);
         let DecisionPrompt::Card { card, .. } = decision.prompt else { panic!("a permission is a card") };
         card.own_worktree
     }
