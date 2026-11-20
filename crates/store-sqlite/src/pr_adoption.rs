@@ -1,8 +1,9 @@
-use alondra_domain_rules::{DomainState, OpenedPr};
+use alondra_domain_rules::DomainState;
 use anyhow::{Result, ensure};
 use rusqlite::{Connection, Transaction, params};
 
-pub(super) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS pr_adoptions(host TEXT NOT NULL,repository TEXT NOT NULL,number INTEGER NOT NULL CHECK(number>0),PRIMARY KEY(host,repository,number));
+// Alondra adopts only PRs its own tasks registered: the PRs it once offered to adopt are dropped.
+pub(super) const SCHEMA: &str = "DROP TABLE IF EXISTS pr_adoptions;
 CREATE TABLE IF NOT EXISTS pull_request_tasks(task_id TEXT NOT NULL REFERENCES tasks(id),pr_id TEXT NOT NULL REFERENCES pull_requests(id),PRIMARY KEY(task_id,pr_id));
 CREATE INDEX IF NOT EXISTS pull_request_tasks_pr ON pull_request_tasks(pr_id,task_id);";
 
@@ -33,10 +34,6 @@ pub(super) fn upgrade(tx: &Transaction<'_>) -> rusqlite::Result<()> {
 }
 
 pub(super) fn save(c: &Connection, before: &DomainState, after: &DomainState) -> Result<()> {
-    ensure!(before.pr_adoptions.is_subset(&after.pr_adoptions), "PR adoption requests are retained");
-    for pr in after.pr_adoptions.difference(&before.pr_adoptions) {
-        super::repository::exec(c, "INSERT INTO pr_adoptions(host,repository,number) VALUES(?1,?2,?3)", params![pr.host, pr.repository, i64::try_from(pr.number)?])?;
-    }
     for (pr, tasks) in &after.pr_task_history {
         ensure!(before.pr_task_history.get(pr).is_none_or(|old| old.is_subset(tasks)), "PR ownership history is retained");
         for task in tasks.iter().filter(|task| before.pr_task_history.get(pr).is_none_or(|old| !old.contains(*task))) {
@@ -55,8 +52,6 @@ pub(super) fn load(c: &Connection, state: &mut DomainState) -> Result<()> {
         let (pr, task) = pair?;
         state.pr_task_history.entry(pr.into()).or_default().insert(task.into());
     }
-    state.pr_adoptions = c.prepare("SELECT host,repository,number FROM pr_adoptions")?.query_map([], |r|
-        Ok(OpenedPr { host: r.get(0)?, repository: r.get(1)?, number: r.get::<_, i64>(2)? as u64 }))?.collect::<rusqlite::Result<_>>()?;
     Ok(())
 }
 

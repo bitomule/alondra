@@ -1,6 +1,8 @@
 use super::*;
 use alondra_domain_rules::*;
-use std::os::unix::fs::PermissionsExt;
+use crate::github_world::GithubWorld;
+use alondra_engine_ports::github::{Closed, Gh, GhFailure, Observed, PrObserver, Read};
+use std::sync::Mutex;
 
 fn command(domain: &DomainRuntime, actor: Actor, command: Command) {
     let state = domain.state().unwrap();
@@ -27,10 +29,47 @@ fn task(domain: &DomainRuntime, id: &str, number: Option<u64>) {
     }
 }
 
+/// GitHub's search of the user's open PRs and the branch of each, over the world that answers the
+/// rest; every read the sweep makes is recorded.
+struct Authored {
+    world: Arc<GithubWorld>,
+    prs: Mutex<Vec<(String, u64, String)>>,
+    calls: Mutex<Vec<String>>,
+}
+
+impl Gh for Authored {
+    fn view<'a>(&'a self, url: &'a str) -> Read<'a, Option<serde_json::Value>> { self.world.view(url) }
+    fn authored_open_prs(&self) -> Read<'_, Result<Vec<AuthoredPr>, GhFailure>> {
+        self.calls.lock().unwrap().push("search prs".into());
+        let found = self.prs.lock().unwrap().iter().map(|(repository, number, _)| AuthoredPr {
+            repository: repository.clone(), number: *number, url: format!("https://github.com/{repository}/pull/{number}"),
+        }).collect();
+        Box::pin(async { Ok(found) })
+    }
+    fn head_ref<'a>(&'a self, url: &'a str) -> Read<'a, Result<String, GhFailure>> {
+        self.calls.lock().unwrap().push(format!("pr view {url} headRefName"));
+        let branch = self.prs.lock().unwrap().iter()
+            .find(|(repository, number, _)| url == format!("https://github.com/{repository}/pull/{number}"))
+            .map(|(_, _, branch)| branch.clone()).expect("the branch of a PR the search found");
+        Box::pin(async { Ok(branch) })
+    }
+}
+
+impl PrObserver for Authored {
+    fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Observed<'a> {
+        self.calls.lock().unwrap().push(format!("pr view {number} status"));
+        self.world.observe(host, repository, number)
+    }
+    fn close<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, comment: &'a str) -> Closed<'a> {
+        self.world.close(host, repository, number, comment)
+    }
+}
+
 struct Fixture {
     root: crate::test_support::Directory,
     domain: DomainRuntime,
     options: OptionsFile,
+    github: Arc<Authored>,
     gh: GitHub,
 }
 
@@ -43,45 +82,43 @@ impl Fixture {
         std::fs::create_dir_all(projects.join("checkout/.git")).unwrap();
         std::fs::write(projects.join("checkout/.git/config"), "[remote \"origin\"]\nurl = https://github.com/owner/repo.git\n").unwrap();
         let options = OptionsFile { projects_root: Some(projects.to_string_lossy().into()), ..Default::default() };
-        let program = root.join("gh");
-        std::fs::write(&program, format!(r#"#!/bin/sh
-printf '%s\n' "$*" >> '{}'
-if [ "$1 $2" = 'search prs' ]; then
-    cat '{}'
-elif [ "$1 $2" = 'pr view' ]; then
-    case "$5" in
-        headRefName) cat '{}' ;;
-        *) cat '{}' ;;
-    esac
-elif [ "$1 $2" = 'repo view' ]; then
-    printf '%s' '{{"squashMergeAllowed":true}}'
-else
-    exit 9
-fi
-"#, root.join("calls").display(), root.join("search.json").display(), root.join("branch.json").display(), root.join("status.json").display())).unwrap();
-        std::fs::write(root.join("status.json"), r#"{"state":"OPEN","headRefOid":"1111111111111111111111111111111111111111","baseRefName":"main","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","statusCheckRollup":[]}"#).unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
-        Self { root, domain, options, gh: GitHub::of(Arc::new(alondra_github_gh::GhCli::at(program))) }
+        let world = Arc::new(GithubWorld::new());
+        let github = Arc::new(Authored { world: world.clone(), prs: Mutex::default(), calls: Mutex::default() });
+        let gh = GitHub { observer: github.clone(), merger: world.clone(), images: world, reads: github.clone() };
+        Self { root, domain, options, github, gh }
     }
+    /// GitHub's search finds PR `number` of `repo`, open from `branch`.
     fn result(&self, number: u64, repo: &str, branch: &str) {
-        std::fs::write(self.root.join("search.json"), serde_json::to_vec(&serde_json::json!([{
-            "repository": {"nameWithOwner": repo}, "number": number, "url": format!("https://github.com/{repo}/pull/{number}")
-        }])).unwrap()).unwrap();
-        std::fs::write(self.root.join("branch.json"), serde_json::to_vec(&serde_json::json!({"headRefName":branch})).unwrap()).unwrap();
+        self.github.prs.lock().unwrap().push((repo.into(), number, branch.into()));
+        self.github.world.open_pr_at(number, branch, "main", &"1".repeat(40));
     }
     async fn sweep(&self) { sweep(&self.domain, &self.gh, &self.options, &self.root).await.unwrap(); }
-    fn calls(&self) -> String { std::fs::read_to_string(self.root.join("calls")).unwrap() }
+    fn calls(&self) -> String { self.github.calls.lock().unwrap().join("\n") }
+}
+
+/// Task `id` registered PR `number`, was cancelled, and GitHub closed the PR: nothing is pending for it.
+fn cancelled_with_closed_pr(f: &Fixture, id: &str, number: u64) {
+    task(&f.domain, id, Some(number));
+    command(&f.domain, user(), Command::CancelTask { task_id: id.into(), reason: None });
+    command(&f.domain, Actor::System, Command::RecordNodeEnd { task_id: id.into(), end: NodeEnd::Closed, agent_id: None });
+    command(&f.domain, Actor::System, Command::ObservePrState { pr_id: hosted_pr_id("github.com", "owner/repo", number),
+        head: "1".repeat(40), base: "main".into(), state: PrState::Closed, merged_head: None });
+}
+
+fn closing(f: &Fixture, id: &str) -> bool {
+    matches!(f.domain.state().unwrap().tasks[&id.into()].open_pr, Some(OpenPrPending::Close { .. }))
 }
 
 #[tokio::test]
 async fn release_branches_are_excluded_and_prefixes_are_configurable() {
     let mut f = Fixture::new();
+    cancelled_with_closed_pr(&f, "closed", 117);
     f.result(117, "owner/repo", "release-plz-2026");
     f.sweep().await;
-    assert!(f.domain.state().unwrap().pr_adoptions.is_empty());
+    assert!(!closing(&f, "closed"));
     f.options.pr_sweep_ignore_branch_prefixes = vec!["ship-".into()];
     f.sweep().await;
-    assert_eq!(f.domain.state().unwrap().pr_adoptions.len(), 1);
+    assert!(closing(&f, "closed"));
 }
 
 #[tokio::test]
@@ -89,38 +126,45 @@ async fn a_live_tasks_registered_pr_is_skipped_without_reading_its_branch() {
     let f = Fixture::new();
     task(&f.domain, "live", Some(7));
     f.result(7, "owner/repo", "feature");
+    let before = f.domain.state().unwrap();
     f.sweep().await;
-    assert_eq!(f.calls().lines().count(), 1);
-    assert!(f.domain.state().unwrap().pr_adoptions.is_empty());
+    assert_eq!(f.calls(), "search prs");
+    assert_eq!(f.domain.state().unwrap(), before);
 }
 
 #[tokio::test]
 async fn a_live_tasks_worktree_branch_is_skipped() {
     let f = Fixture::new();
+    cancelled_with_closed_pr(&f, "closed", 7);
     task(&f.domain, "live", None);
     f.result(7, "owner/repo", "worktree-live");
     f.sweep().await;
-    assert!(f.domain.state().unwrap().pr_adoptions.is_empty());
+    assert!(!closing(&f, "closed"));
 }
 
+/// A PR opened from another Mac or by hand is not this daemon's: the sweep never reads its branch,
+/// never adopts it and never asks anyone to, now, on a later sweep or after a restart.
 #[tokio::test]
-async fn two_sweeps_and_a_restart_request_adoption_only_once() {
+async fn a_pr_no_task_registered_is_never_read_or_adopted() {
     let f = Fixture::new();
+    cancelled_with_closed_pr(&f, "closed", 8);
     f.result(7, "owner/repo", "feature");
+    f.result(8, "owner/repo", "worktree-closed");
+    let before = f.domain.state().unwrap();
     f.sweep().await;
-    let before = f.domain.state().unwrap().requests.len();
     f.sweep().await;
-    assert_eq!(f.domain.state().unwrap().requests.len(), before);
-    assert_eq!(f.calls().lines().filter(|c| c.starts_with("search prs")).count(), 2);
-    assert_eq!(f.calls().lines().filter(|c| c.starts_with("pr view")).count(), 1);
     let home = f.root.join("home");
     drop(f.domain);
     let domain = crate::unwired(&home).unwrap();
     sweep(&domain, &f.gh, &f.options, &f.root).await.unwrap();
     let state = domain.state().unwrap();
-    assert_eq!(state.requests.len(), before);
-    assert_eq!(state.pr_adoptions.len(), 1);
-    assert!(state.requests.values().any(|r| r.body.contains("Adopt the PR owner/repo#7: deliver it or close it with the reason")));
+    assert_eq!(state.requests, before.requests, "no request asks to adopt it");
+    assert_eq!(state.interactions.len(), before.interactions.len(), "no card offers it");
+    assert!(state.pull_requests.values().all(|p| p.number != 7), "no task takes it");
+    assert!(matches!(state.tasks[&"closed".into()].open_pr, Some(OpenPrPending::Close { .. })), "the registered PR is still handled");
+    let calls = f.github.calls.lock().unwrap().join("\n");
+    assert!(!calls.contains("pull/7") && !calls.contains("pr view 7"), "nothing about PR 7 is read beyond the search: {calls}");
+    assert_eq!(calls.lines().filter(|c| c.contains("pull/8 headRefName")).count(), 1);
 }
 
 #[tokio::test]
@@ -130,8 +174,7 @@ async fn a_repository_outside_the_projects_root_is_ignored() {
     std::fs::write(f.root.join("outside/.git/config"), "[remote \"origin\"]\nurl = https://github.com/owner/outside.git\n").unwrap();
     f.result(7, "owner/outside", "feature");
     f.sweep().await;
-    assert_eq!(f.calls().lines().count(), 1);
-    assert!(f.domain.state().unwrap().pr_adoptions.is_empty());
+    assert_eq!(f.calls(), "search prs");
 }
 
 fn adopt(f: &Fixture, task_id: &str, checks: PrChecks) {
@@ -157,7 +200,6 @@ async fn adopting_a_closed_tasks_open_pr_reopens_and_delivers_it() {
     assert!(task.agent_id.is_none());
     assert!(task.final_presentation.is_some());
     assert!(task.open_pr.is_none());
-    assert!(state.pr_adoptions.is_empty());
 }
 
 #[tokio::test]
@@ -175,7 +217,7 @@ async fn the_sweep_closes_the_open_pr_of_a_cancelled_task_once_and_the_close_sur
     let task = &state.tasks[&"closed".into()];
     assert_eq!(task.open_pr, Some(OpenPrPending::Close { comment: "Cancelled in Alondra: Work".into() }));
     assert_eq!((task.state, state.pull_requests[&pr_id].state), (TaskState::Cancelled, PrState::Open));
-    assert!(task.final_presentation.is_none() && state.pr_adoptions.is_empty(), "it is closed, not delivered");
+    assert!(task.final_presentation.is_none(), "it is closed, not delivered");
     drop(state);
     f.sweep().await;
     let home = f.root.join("home");
@@ -185,7 +227,7 @@ async fn the_sweep_closes_the_open_pr_of_a_cancelled_task_once_and_the_close_sur
     let before = domain.state().unwrap();
     sweep(&domain, &f.gh, &f.options, &f.root).await.unwrap();
     assert_eq!(domain.state().unwrap(), before, "another sweep after restart leaves the pending close alone");
-    let calls = std::fs::read_to_string(f.root.join("calls")).unwrap();
+    let calls = f.github.calls.lock().unwrap().join("\n");
     assert_eq!(calls.lines().filter(|call| call.starts_with("pr view")).count(), 2,
         "only the first sweep reads the branch and status");
 }
@@ -231,7 +273,7 @@ async fn the_users_pending_close_is_not_undone_by_a_sweep() {
     command(&f.domain, Actor::System, Command::RecordNodeEnd { task_id: "closed".into(), end: NodeEnd::Closed, agent_id: None });
     f.result(7, "owner/repo", "feature");
     f.sweep().await;
-    assert_eq!(f.calls().lines().count(), 1);
+    assert_eq!(f.calls(), "search prs");
     assert!(matches!(f.domain.state().unwrap().tasks[&"closed".into()].open_pr, Some(OpenPrPending::Close { .. })));
 }
 

@@ -1249,7 +1249,6 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RecordModelProfiles { .. }
         | Command::SetModelProfile { .. }
         | Command::SetMergeMethod { .. }
-        | Command::RequestPrAdoption { .. }
         | Command::SetBranchUpdate { .. } => None,
     }
 }
