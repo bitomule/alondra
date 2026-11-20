@@ -1329,6 +1329,33 @@ async fn a_codex_session_that_never_starts_is_relaunched_past_the_old_limit_with
     drop(slice);
 }
 
+// On a busy Mac the native app-server can take longer to open its thread than any transport
+// deadline. The host answers the start once the thread is open, and the node goes on from there.
+#[test]
+fn a_codex_thread_that_opens_after_the_transport_deadline_still_starts_the_node() {
+    let slice = Slice::new();
+    let trace = configured(&slice, "complete");
+    let opened = slice._home.join("codex-thread-may-open");
+    let path = slice._home.join("codex-backend.json");
+    let mut backend: SdkBackend = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    backend.native_environment.insert("ALONDRA_FAKE_OPEN_AFTER".into(), opened.display().to_string());
+    std::fs::write(&path, serde_json::to_vec(&backend).unwrap()).unwrap();
+    let transport = std::time::Duration::from_secs(backend.io_timeout_seconds);
+    let watched = trace.clone();
+    let opener = std::thread::spawn(move || {
+        while !transcript(&watched).iter().any(|message| message["method"] == "thread/start") {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        std::thread::sleep(transport);
+        std::fs::write(opened, b"").unwrap();
+    });
+    let mut driver = launch(&slice);
+    opener.join().unwrap();
+    slice.settle(&mut driver);
+    assert!(transcript(&trace).iter().any(|message| message["method"] == "turn/start"), "the node's turn started on the thread that opened late");
+    driver.stop().unwrap();
+}
+
 #[test]
 fn relaunches_wait_longer_each_time_up_to_five_minutes_and_then_keep_that_pace() {
     let waits: Vec<u64> = (0..8).map(|earlier| relaunch_wait(earlier).as_secs()).collect();
@@ -2277,10 +2304,12 @@ async fn a_paused_task_moves_at_once_and_starts_on_the_new_account_when_resumed(
     let slice=Slice::new();let task:TaskId=TASK.into();
     let source=working_on_codex(&slice);
     slice.domain.admission().ignore_mac();
+    let held=slice.domain.sdk_owners().retakes_held_after_waking.hold();
     slice.domain.gate().pause_by_user(&source.0,alondra_core::now_millis()).unwrap();
     slice.domain.subscribe().wait_for(|_|paused_by_the_user(&slice)).await.unwrap();
     request_move(&slice);
-    assert_eq!(settled_move(&slice).await,"done");
+    assert_eq!(settled_move(&slice).await,"done","the halt that replaced the paused host woke the move before its thread returned");
+    drop(held);
     let state=slice.domain.state().unwrap();
     assert!(state.tasks[&task].pending_selection.is_none());
     assert!(paused_by_the_user(&slice),"a paused task stays paused");

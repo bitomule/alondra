@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-import json, os, sys, subprocess, threading
+import json, os, sys, subprocess, threading, time
 import signal
 if os.environ.get('ALONDRA_FAKE_ARGV'):
     with open(os.environ['ALONDRA_FAKE_ARGV'], 'w') as target: json.dump(sys.argv[1:], target)
@@ -92,6 +92,8 @@ for line in sys.stdin:
     result = {}
     if method == 'config/read': result = fixture.get('configRead', {'config': {'mcp_servers': {name: {'command': '/untrusted'} for name in json.loads(os.environ.get('ALONDRA_FAKE_INHERITED_MCP_NAMES', '["inherited-danger"]'))}}})
     elif method in ['thread/start', 'thread/resume']:
+        if os.environ.get('ALONDRA_FAKE_OPEN_AFTER'):
+            while not os.path.exists(os.environ['ALONDRA_FAKE_OPEN_AFTER']): time.sleep(0.01)
         if method == 'thread/start': thread = fixture.get('freshThreadId', thread)
         else: thread = message.get('params', {}).get('threadId', thread)
         retain_thread(thread, message.get('params', {}).get('cwd'))

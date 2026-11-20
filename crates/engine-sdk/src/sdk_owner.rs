@@ -277,6 +277,8 @@ pub struct Driver {
     /// host takes its place and gets what is pending again, since a session that never opened read
     /// nothing.
     opening_deadline: Option<Instant>,
+    /// Whether an input is being handed to the host, which a stop asked from outside waits out.
+    handoffs: Handoffs,
     /// Inputs that are themselves the resend of one this host refused before offering it.
     refused: BTreeSet<InputId>,
     #[cfg(any(test, feature = "test-hooks"))]
@@ -1266,7 +1268,7 @@ pub fn close_hosts_of_ended_nodes(domain: &DomainRuntime, state: &DomainState) {
             continue;
         }
         log!("the node {agent} ended with its task, but its SDK host still runs: it is closed");
-        retakes.push((task, alondra_core::clock::spawn_thread(move || {
+        retakes.push((task, Retake::spawn(runtime, move |runtime| {
             if let Err(failed) = runtime.close_sdk_host(&agent) {
                 log!("the SDK host of the ended node {agent} did not close: {failed}");
             }
@@ -1359,11 +1361,10 @@ fn retake_with_policy(domain: &DomainRuntime, task: TaskId,explicit_account_retr
     }
     #[cfg(any(test, feature = "test-hooks"))]
     let refusal = crate::domain_store::carried_refusal();
-    retakes.push((task.clone(), alondra_core::clock::spawn_thread(move || {
+    retakes.push((task.clone(), Retake::spawn(runtime, move |runtime| {
         #[cfg(any(test, feature = "test-hooks"))]
         refusal();
-        take_again(&runtime, &backend, &task, explicit_account_retry);
-        runtime.wake_subscribers();
+        take_again(runtime, &backend, &task, explicit_account_retry);
     })));
 }
 
@@ -1453,15 +1454,45 @@ pub fn halt(domain: &DomainRuntime, task: TaskId, agent: AgentId) {
     if retakes.iter().any(|(taking, _)| *taking == task) {
         return;
     }
-    retakes.push((task.clone(), alondra_core::clock::spawn_thread(move || {
+    retakes.push((task.clone(), Retake::spawn(runtime, move |runtime| {
         match runtime.halt_sdk_host(&agent) {
             None => return,
             Some(Ok(())) => log!("the SDK host of {task} and every process under it stopped for its pause"),
             Some(Err(failed)) => log!("the SDK host of {task} did not stop cleanly for its pause: {failed}"),
         }
-        take_again(&runtime, &backend, &task, false);
-        runtime.wake_subscribers();
+        take_again(runtime, &backend, &task, false);
     })));
+}
+
+/// A takeover, a halt or a close of a host, on a thread of its own. It reads as finished once its
+/// work is done and before it wakes the waiters on the domain: one that looks again then never
+/// finds it under way only because its thread has not returned yet, with nothing left to wake it.
+pub struct Retake {
+    done: Arc<AtomicBool>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+impl Retake {
+    fn spawn(runtime: Arc<DomainRuntime>, work: impl FnOnce(&Arc<DomainRuntime>) + Send + 'static) -> Self {
+        let done = Arc::new(AtomicBool::new(false));
+        let finished = Arc::clone(&done);
+        let thread = alondra_core::clock::spawn_thread(move || {
+            work(&runtime);
+            finished.store(true, Ordering::SeqCst);
+            runtime.wake_subscribers();
+            #[cfg(any(test, feature = "test-hooks"))]
+            runtime.sdk_owners().retakes_held_after_waking.wait();
+        });
+        Self { done, thread }
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.done.load(Ordering::SeqCst)
+    }
+
+    pub fn join(self) -> std::thread::Result<()> {
+        self.thread.join()
+    }
 }
 
 /// Whether a retake of `task`, or the halt that replaces its host for a pause, is under way.
@@ -1647,7 +1678,7 @@ fn node_environment(home: &std::path::Path, agent: &AgentId, capability: &str) -
 impl Driver {
     fn new(domain: Arc<DomainRuntime>, worker: Worker, scope: AuthorityScope, task: TaskId, agent: AgentId, opening_timeout: Duration) -> Self {
         let pause = Mutex::new(PauseSubscription::new(&domain, &agent));
-        Self { pause, in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout, opening_deadline: None, refused: BTreeSet::new(), #[cfg(any(test, feature = "test-hooks"))] refuse_offers: 0, #[cfg(any(test, feature = "test-hooks"))] fail_next_step: false, #[cfg(any(test, feature = "test-hooks"))] panic_next_step: false }
+        Self { pause, in_hand: Some(InHand::new(&domain, &task)), capability: domain.agent_capability(&agent.0), domain, worker, scope, task, agent, permits: VecDeque::new(), controls: VecDeque::new(), awaiting: None, replacement: false, results: vec![], host_closed: false, owner_failed: false, native_account_refusal:None, native_failure: None, identity_kept: false, claude_session: None, moves_to_this_release: false, releases: false, resuming_since: None, resumes_released: false, untaken: false, requeued: false, relaunches: 0, silent_hosts: 0, plugin: None, opening_timeout, opening_deadline: None, handoffs: Handoffs::default(), refused: BTreeSet::new(), #[cfg(any(test, feature = "test-hooks"))] refuse_offers: 0, #[cfg(any(test, feature = "test-hooks"))] fail_next_step: false, #[cfg(any(test, feature = "test-hooks"))] panic_next_step: false }
     }
 
     pub fn agent(&self) -> &AgentId {
@@ -1749,6 +1780,11 @@ impl Driver {
     /// Claims the dispatch, records the exact command under the owner, hands it to the host
     /// with no SQL held, and records how the handoff went.
     fn dispatch(&mut self, permit: DispatchPermit) -> Result<(), Failed> {
+        let handoffs = self.handoffs.clone();
+        let Some(_handing) = handoffs.begin() else {
+            self.permits.push_front(permit);
+            return Ok(());
+        };
         let input = permit.input().clone();
         let mut retained = Some(permit);
         let identity=NativeAccountIdentity::load(self.worker.state_directory())?;
@@ -2440,10 +2476,12 @@ pub struct Owner {
     thread: Option<std::thread::JoinHandle<Result<(), Failed>>>,
     /// The daemon went as a crash takes it: the owner lets go of its host without stopping it.
     crashed: Arc<AtomicBool>,
+    handoffs: Handoffs,
 }
 
 impl Owner {
     pub fn spawn(mut driver: Driver) -> Self {
+        let handoffs = driver.handoffs.clone();
         let stopped = Arc::new(AtomicBool::new(false));
         let interrupt = Arc::new(AtomicBool::new(false));
         let interrupting = Arc::clone(&interrupt);
@@ -2584,7 +2622,7 @@ impl Owner {
             stopped
         })
         .expect("spawning the SDK owner");
-        Self { stopped, ended, interrupt, release, domain, host, agent, state_directory, thread: Some(thread), crashed }
+        Self { stopped, ended, interrupt, release, domain, host, agent, state_directory, thread: Some(thread), crashed, handoffs }
     }
 
     /// Asks the owner to close its host once its task rests with nothing in it.
@@ -2622,7 +2660,9 @@ impl Owner {
         self.host.lock_or_recover("the SDK host stop").clone()
     }
 
-    /// Tells the owner to stop, asks its host to stop so a read blocked on it returns, and waits
+    /// Tells the owner to stop, waits out an input it is handing to its host, which a host stopped
+    /// in the middle would leave uncertain and so hold its execution, asks its host to stop so a
+    /// read blocked on it returns, and waits
     /// until the owner has seen the host exit and its whole process group end. An error says the
     /// group did not empty, or the owner could not see it end.
     pub(crate) fn stop(&mut self) -> Result<(), Failed> {
@@ -2650,6 +2690,7 @@ impl Owner {
         self.stopped.store(true, Ordering::SeqCst);
         mark_stopped_by_alondra(&self.state_directory);
         self.domain.seals.wake();
+        self.handoffs.stop();
         let interrupt = self.interrupt.load(Ordering::SeqCst);
         if let Some(host) = self.host.lock_or_recover("the SDK host stop").as_ref()
             && let Err(error) = if interrupt { host.request_after_interrupt() } else { host.request() }
@@ -2661,6 +2702,46 @@ impl Owner {
             Some(Ok(stopped)) => stopped,
             Some(Err(_)) => Err(Failed::new(format!("the SDK owner of {} panicked", self.agent))),
         }
+    }
+}
+
+/// Whether a driver is handing an input to its host, from the claim to the recorded receipt, and
+/// whether its owner was told to stop. Once told, no new handoff starts and the stop waits for the
+/// one under way: an input is never left uncertain by a stop.
+#[derive(Clone, Default)]
+struct Handoffs(Arc<clock::Monitor<HandoffState>>);
+
+#[derive(Default)]
+struct HandoffState {
+    stopping: bool,
+    handing: bool,
+}
+
+impl Handoffs {
+    fn begin(&self) -> Option<Handing<'_>> {
+        let mut state = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.stopping {
+            return None;
+        }
+        state.handing = true;
+        Some(Handing(self))
+    }
+
+    fn stop(&self) {
+        let mut state = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.stopping = true;
+        while state.handing {
+            state = self.0.wait(state, WAKE).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+}
+
+struct Handing<'a>(&'a Handoffs);
+
+impl Drop for Handing<'_> {
+    fn drop(&mut self) {
+        self.0.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).handing = false;
+        self.0.0.notify_all();
     }
 }
 
@@ -2676,6 +2757,42 @@ impl Drop for Owner {
 #[path = "sdk_owner/tests.rs"]
 pub mod tests;
 
+/// A door the retake threads of a test wait at after waking the domain's waiters, closed only
+/// while the test holds it.
+#[cfg(any(test, feature = "test-hooks"))]
+#[derive(Default)]
+pub struct HoldAfterWaking {
+    held: Mutex<bool>,
+    opened: std::sync::Condvar,
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+pub struct HeldAfterWaking<'a>(&'a HoldAfterWaking);
+
+#[cfg(any(test, feature = "test-hooks"))]
+impl Drop for HeldAfterWaking<'_> {
+    fn drop(&mut self) {
+        *self.0.held.lock_or_recover("the retake hold") = false;
+        self.0.opened.notify_all();
+    }
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+impl HoldAfterWaking {
+    /// Holds the door until what it returns is dropped, a failing test included.
+    pub fn hold(&self) -> HeldAfterWaking<'_> {
+        *self.held.lock_or_recover("the retake hold") = true;
+        HeldAfterWaking(self)
+    }
+
+    fn wait(&self) {
+        let mut held = self.held.lock_or_recover("the retake hold");
+        while *held {
+            held = self.opened.wait(held).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+}
+
 /// What this daemon keeps about the SDK hosts it owns and the executions it takes over.
 #[derive(Default)]
 pub struct Owners {
@@ -2686,7 +2803,11 @@ pub struct Owners {
     /// The executions being taken over again, each with its task, while that runs.
     /// A holder that panics leaves it whole, so it is recovered: a retain and then one push of a
     /// thread already spawned.
-    pub retakes: Mutex<Vec<(TaskId, std::thread::JoinHandle<()>)>>,
+    pub retakes: Mutex<Vec<(TaskId, Retake)>>,
+    /// Holds each retake's thread after it woke the waiters on the domain, until the test lets it
+    /// return: what reads a retake as under way must not need its thread to have returned.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub retakes_held_after_waking: HoldAfterWaking,
     /// The tasks whose SDK execution is in hand, with how many hold it: a launch or a takeover
     /// under way, or the driver of its host. Nothing takes over an execution in hand.
     /// A holder that panics leaves it whole, so it is recovered: one count up or down.

@@ -183,14 +183,19 @@ impl Connection {
 
     /// The caller is the private adapter's submit path, after the controller has
     /// persisted exact command bytes and rechecked its real DispatchAttempt.
+    ///
+    /// `deadline` bounds the transport: writing the command and reading each frame once its bytes
+    /// arrive. The wait for the receipt is the host's work, such as opening its native session, and
+    /// lasts while `host_lives`: the host bounds that work itself and answers it with a receipt.
     pub fn submit(
         &mut self,
         owner: &impl HostOwner,
         prepared: &PreparedCommand,
         deadline: Instant,
+        host_lives: &mut dyn FnMut() -> bool,
     ) -> Result<Handoff, AdapterError> {
         self.check_owner(owner)?;
-        let result = self.submit_inner(prepared, deadline);
+        let result = self.submit_inner(prepared, deadline, host_lives);
         if result.is_err() {
             self.failed = true;
         }
@@ -200,7 +205,9 @@ impl Connection {
         &mut self,
         prepared: &PreparedCommand,
         deadline: Instant,
+        host_lives: &mut dyn FnMut() -> bool,
     ) -> Result<Handoff, AdapterError> {
+        let transport = deadline.saturating_duration_since(Instant::now());
         let mut input = FramedReader::new(Cursor::new(prepared.bytes()));
         let received = input
             .read_received()
@@ -224,7 +231,7 @@ impl Connection {
         write(&mut self.writer, prepared.bytes(), deadline)?;
         let expected_command = command.command_id.clone();
         loop {
-            let received = receive(&mut self.reader, &self.read_deadline, deadline)?;
+            let received = self.answer(transport, host_lives)?;
             match &received.frame().body {
                 Body::Receipt(receipt) => {
                     match self.commands.receipt(receipt) {
@@ -261,9 +268,10 @@ impl Connection {
         owner: &OwnerGrant,
         prepared: &PreparedCommand,
         deadline: Instant,
+        host_lives: &mut dyn FnMut() -> bool,
     ) -> Result<Handoff, AdapterError> {
         self.check_owner(owner)?;
-        let result = self.reconcile_inner(prepared, deadline);
+        let result = self.reconcile_inner(prepared, deadline, host_lives);
         if result.is_err() {
             self.failed = true;
         }
@@ -273,7 +281,9 @@ impl Connection {
         &mut self,
         prepared: &PreparedCommand,
         deadline: Instant,
+        host_lives: &mut dyn FnMut() -> bool,
     ) -> Result<Handoff, AdapterError> {
+        let transport = deadline.saturating_duration_since(Instant::now());
         let mut input = FramedReader::new(Cursor::new(prepared.bytes()));
         let received = input.read_received().map_err(protocol)?.ok_or_else(|| invalid("missing command"))?;
         if input.read_received().map_err(protocol)?.is_some() {
@@ -293,7 +303,7 @@ impl Connection {
         write(&mut self.writer, prepared.bytes(), deadline)?;
         let expected_command = command.command_id.clone();
         loop {
-            let received = receive(&mut self.reader, &self.read_deadline, deadline)?;
+            let received = self.answer(transport, host_lives)?;
             match &received.frame().body {
                 Body::Receipt(receipt) => {
                     if receipt.command_id == expected_command {
@@ -308,6 +318,19 @@ impl Connection {
                 _ => return Err(invalid("unexpected host response after attach")),
             }
         }
+    }
+    /// The next frame of the host's answer to a command. Until its first bytes arrive the host is
+    /// working, which takes as long as it takes while it lives; the frame itself is transport.
+    fn answer(&mut self, transport: std::time::Duration, host_lives: &mut dyn FnMut() -> bool) -> Result<ReceivedFrame, AdapterError> {
+        if transport.is_zero() {
+            return Err(AdapterError::Disconnected);
+        }
+        while !alondra_foundation::readable(&self.probe, transport).map_err(disconnected)? {
+            if !host_lives() {
+                return Err(AdapterError::Disconnected);
+            }
+        }
+        receive(&mut self.reader, &self.read_deadline, Instant::now() + transport)
     }
     pub(super) fn supports_plan_supersession(&self) -> bool {
         self.capabilities.iter().any(|capability| capability == "plan_supersession")
@@ -646,19 +669,27 @@ mod tests {
             })
         }
     }
-    // A host of an earlier release announces the capabilities it was built with. An action it did
-    // not announce is refused before any offer, and not a byte of it reaches the host, which might
-    // not even read it.
-    #[test]
-    fn an_action_the_host_did_not_announce_is_refused_without_reaching_it() {
+    const TASK_CAPABILITIES: [&str; 6] = ["streaming_input", "owner_attach", "commit_ack", "exact_decisions", "native_account_policy", "causal_child_continuations"];
+    struct Attached {
+        owner: FixtureOwner,
+        connection: Connection,
+        fence: Fence,
+        execution: Execution,
+    }
+    /// An owner attached to a host played by `host` on its own thread, from the moment the attach
+    /// is granted: `host` gets the host's reader and writer.
+    fn attached<T: Send + 'static>(
+        capabilities: &[&str],
+        host: impl FnOnce(&mut FramedReader<UnixStream>, &mut UnixStream) -> T + Send + 'static,
+    ) -> (Attached, std::thread::JoinHandle<T>) {
         let owner = FixtureOwner("epoch-test".into());
         let control = ControlIdentity { profile_id: "default".into(), account_id: "account-test".into(), host_instance_id: "instance-test".into(), secret: [7; 32], host_release: "0.3.5".into() };
         let launched = LaunchedAs { host_sha256: "b".repeat(64), executable_sha256: "c".repeat(64), sdk_version: SDK_VERSION.into() };
-        let (daemon, host) = UnixStream::pair().unwrap();
+        let (daemon, stream) = UnixStream::pair().unwrap();
         let (fence, execution) = (fence(&owner, &control), execution(&owner));
         let hello = Frame::new(Body::Hello(alondra_codex_protocol::Hello {
             protocol_versions: vec![alondra_codex_protocol::PROTOCOL_VERSION],
-            capabilities: ["streaming_input", "owner_attach", "commit_ack", "exact_decisions", "native_account_policy", "causal_child_continuations"].map(String::from).to_vec(),
+            capabilities: capabilities.iter().map(|capability| capability.to_string()).collect(),
             fence: fence.clone(),
             host_release: control.host_release.clone(),
             host_sha256: launched.host_sha256.clone(),
@@ -672,34 +703,103 @@ mod tests {
             executable_sha256: launched.executable_sha256.clone(),
         }));
         let secret = control.secret;
-        let host = std::thread::spawn(move || {
-            let mut writer = alondra_codex_protocol::FramedWriter::new(host.try_clone().unwrap());
-            let mut reader = FramedReader::new(host);
-            writer.write(&hello).unwrap();
-            writer.write(&challenge).unwrap();
+        let thread = std::thread::spawn(move || {
+            let mut writer = stream.try_clone().unwrap();
+            let mut reader = FramedReader::new(stream);
+            send(&mut writer, &hello);
+            send(&mut writer, &challenge);
             let Some(Frame { body: Body::Attach(attach), .. }) = reader.read().unwrap() else { panic!("the owner attaches") };
             let proof = alondra_codex_protocol::host_proof(&secret, &attach).unwrap();
-            writer.write(&Frame::new(Body::Attached(alondra_codex_protocol::Attached {
+            send(&mut writer, &Frame::new(Body::Attached(alondra_codex_protocol::Attached {
                 fence: attach.fence.clone(),
                 execution: attach.execution.clone(),
                 host_instance_id: attach.host_instance_id.clone(),
                 owner_generation: attach.owner_generation,
                 proof,
-            }))).unwrap();
-            std::iter::from_fn(|| reader.read().ok().flatten()).count()
+            })));
+            host(&mut reader, &mut writer)
         });
-        let deadline = Instant::now() + Duration::from_secs(30);
-        let mut connection = Connection::attach(daemon, &owner, &launched, &control, 0, deadline).unwrap();
-        let clear = connection.prepare(&owner, Command {
-            fence,
-            execution,
+        let connection = Connection::attach(daemon, &owner, &launched, &control, 0, Instant::now() + Duration::from_secs(30)).unwrap();
+        (Attached { owner, connection, fence, execution }, thread)
+    }
+    /// Writes `frame` whole in one write, so the owner reads all of it once its first byte arrives.
+    fn send(stream: &mut UnixStream, frame: &Frame) {
+        stream.write_all(&encode(frame).unwrap()).unwrap();
+    }
+    fn clear_auth(attached: &Attached) -> PreparedCommand {
+        attached.connection.prepare(&attached.owner, Command {
+            fence: attached.fence.clone(),
+            execution: attached.execution.clone(),
             command_id: "command-test".into(),
             deadline_ms: 123_456_789,
             action: alondra_codex_protocol::Action::McpClearAuth { server: "linear".into() },
-        }).unwrap();
-        assert_eq!(connection.submit(&owner, &clear, deadline).unwrap(), Handoff::RefusedBeforeOffer);
-        drop(connection);
+        }).unwrap()
+    }
+    // A host of an earlier release announces the capabilities it was built with. An action it did
+    // not announce is refused before any offer, and not a byte of it reaches the host, which might
+    // not even read it.
+    #[test]
+    fn an_action_the_host_did_not_announce_is_refused_without_reaching_it() {
+        let (mut attached, host) = attached(&TASK_CAPABILITIES, |reader, _| std::iter::from_fn(|| reader.read().ok().flatten()).count());
+        let clear = clear_auth(&attached);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        assert_eq!(attached.connection.submit(&attached.owner, &clear, deadline, &mut || true).unwrap(), Handoff::RefusedBeforeOffer);
+        drop(attached);
         assert_eq!(host.join().unwrap(), 0, "the host got nothing after the attach");
+    }
+    // Opening a native session can take a host longer than any transport deadline on a busy Mac.
+    // The host answers the command once it is done, and that answer is the command's outcome.
+    #[test]
+    fn a_receipt_the_host_sends_after_the_transport_deadline_is_the_outcome_of_its_command() {
+        let transport = Duration::from_millis(20);
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let mut capabilities = TASK_CAPABILITIES.to_vec();
+        capabilities.push("mcp_clear_auth");
+        let (mut attached, host) = attached(&capabilities, move |reader, writer| {
+            let Some((Frame { body: Body::Command(command), .. }, digest)) = reader.read_with_digest().unwrap() else { panic!("the owner sends its command") };
+            released.recv().unwrap();
+            send(writer, &Frame::new(Body::Receipt(alondra_codex_protocol::Receipt {
+                fence: command.fence,
+                execution: command.execution,
+                command_id: command.command_id,
+                command_sha256: digest,
+                outcome: ReceiptOutcome::Accepted { phase: ReceiptPhase::Applied },
+            })));
+            released.recv().ok();
+        });
+        let clear = clear_auth(&attached);
+        let deadline = Instant::now() + transport;
+        let mut asked = 0;
+        let handoff = attached.connection.submit(&attached.owner, &clear, deadline, &mut || {
+            asked += 1;
+            if asked == 1 {
+                release.send(()).unwrap();
+            }
+            true
+        });
+        assert!(asked >= 1, "the host answered only after the transport deadline passed");
+        assert_eq!(handoff.unwrap(), Handoff::Offered);
+        drop(release);
+        host.join().unwrap();
+    }
+    // A host that dies while it works on a command never answers: the owner learns it from the
+    // host's life, not from a clock.
+    #[test]
+    fn a_host_that_dies_while_it_works_on_a_command_disconnects_the_owner() {
+        let (holding, held) = std::sync::mpsc::channel::<()>();
+        let mut capabilities = TASK_CAPABILITIES.to_vec();
+        capabilities.push("mcp_clear_auth");
+        let (mut attached, host) = attached(&capabilities, move |reader, _| {
+            reader.read().unwrap();
+            held.recv().ok();
+        });
+        let clear = clear_auth(&attached);
+        let mut lives = [true, true, false].into_iter();
+        let handoff = attached.connection.submit(&attached.owner, &clear, Instant::now() + Duration::from_millis(20), &mut || lives.next().unwrap());
+        assert!(matches!(handoff, Err(AdapterError::Disconnected)), "{handoff:?}");
+        assert_eq!(lives.next(), None, "the owner asked whether the host lived until it did not");
+        drop(holding);
+        host.join().unwrap();
     }
     #[test]
     fn a_task_host_that_cannot_carry_decisions_is_refused_and_an_orchestrator_host_needs_none() {

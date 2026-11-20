@@ -590,6 +590,14 @@ enum Host {
     Adopted(AdoptedHost<OwnerGrant>, LaunchedAs),
 }
 impl Host {
+    /// The owner, and whether the host process still lives, read apart from it while it answers.
+    fn owner_and_liveness(&self) -> (&OwnerGrant, impl FnMut() -> bool + 'static) {
+        let stop = match self {
+            Self::Launched(host) => host.stopper(),
+            Self::Adopted(host, _) => host.stopper(),
+        };
+        (self.owner(), move || matches!(stop.gone(), Ok(false)))
+    }
     fn owner(&self) -> &OwnerGrant {
         match self {
             Host::Launched(host) => host.owner(),
@@ -742,10 +750,11 @@ impl CodexAdapter {
         if stamp != host.owner().execution() {
             return Err(AdapterError::InvalidObservation);
         }
+        let (owner, mut host_lives) = host.owner_and_liveness();
         self.connection
             .as_mut()
             .ok_or(AdapterError::Disconnected)?
-            .submit(host.owner(), command, deadline)
+            .submit(owner, command, deadline, &mut host_lives)
     }
     /// Re-sends the exact recorded command bytes of an unresolved dispatch and reads the host's
     /// definitive answer. The owner is rechecked; the lane is the adopted one.
@@ -753,7 +762,8 @@ impl CodexAdapter {
         let deadline = self.deadline()?;
         let host = self.host.as_ref().ok_or(AdapterError::Disconnected)?;
         let prepared = PreparedCommand::new(command.to_vec())?;
-        self.connection.as_mut().ok_or(AdapterError::Disconnected)?.reconcile(host.owner(), &prepared, deadline)
+        let (owner, mut host_lives) = host.owner_and_liveness();
+        self.connection.as_mut().ok_or(AdapterError::Disconnected)?.reconcile(owner, &prepared, deadline, &mut host_lives)
     }
     /// Opens the owner lane to the current host, from the cursor already committed in SQL.
     fn connect(&mut self, committed_cursor: u64) -> Result<(), AdapterError> {

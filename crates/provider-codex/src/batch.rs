@@ -219,7 +219,8 @@ impl<O: HostOwner> BatchHost<O> {
             action,
         };
         let prepared = self.connection.prepare(owner, command)?;
-        self.connection.submit(owner, &prepared, deadline(self.io_timeout)?)
+        let stop = self.host.stopper();
+        self.connection.submit(owner, &prepared, deadline(self.io_timeout)?, &mut || matches!(stop.gone(), Ok(false)))
     }
 }
 
