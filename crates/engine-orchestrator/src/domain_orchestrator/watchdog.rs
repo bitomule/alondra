@@ -62,7 +62,7 @@ struct MonitorCheck {
 }
 
 impl Watchdog {
-    async fn next_check(&mut self, interval: &mut tokio::time::Interval) -> MonitorCheck {
+    async fn next_check(&mut self, interval: &mut clock::Interval) -> MonitorCheck {
         if let Some(checks) = self.checks.as_mut() {
             return checks
                 .recv()

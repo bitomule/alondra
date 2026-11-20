@@ -185,6 +185,12 @@ a Mac. The world decides what the provider answers:
   cases whose name contains it. `//crates/scenarios:scenarios_harness_test` tests the harness
   itself: it names each failure with its own error, runs a scenario twice to the same bytes, and
   refuses anything that reaches a real process.
+- `scenarios_test` runs in 16 shards, about one case each, so an edit waits for the longest case.
+  Each case's line carries its real time (`scenario <name> ... ok (7.42 s)`), followed by where it
+  went: assembly, steps by kind, the runner's waits for calm, checkpoints, teardown. Nearly all of it
+  is those waits. The clock is virtual and knows the deadlines of the daemon's pending timed waits,
+  so the runner waits for calm after a virtual second only when one of them fell inside it
+  (`clock::deadline_within`, asked before the advance); a second that can wake nobody needs no wait.
 - `bazel run //crates/scenarios:accept -- <case>...` writes what the checkpoints read into each
   case's folder; the pull request shows that diff for a reviewer to read.
 - `bazel run //crates/scenarios:ablate -- <case> --revert <file>...` runs only that case without

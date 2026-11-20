@@ -7,6 +7,7 @@ use crate::claude_peer::{Activity, Seen};
 use crate::error::ScenarioError;
 use crate::format::{Checkpoint, Expect, GithubChange, Scenario, Step, parse_duration};
 use crate::http::{PHONE_SECRET, Phone};
+use crate::timing::{self, Timings};
 use alondra_agent_runtime::owned_host::{HostLauncher, HostSpawn, Launcher};
 use crate::claude_host::{ApiError, ClaudeEdge};
 use alondra_domain_rules::{
@@ -22,7 +23,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How long the daemon must stay unchanged, in virtual seconds, for it to count as resting. The
 /// scenario daemon polls every couple of seconds, so this outlasts every loop's period.
@@ -34,6 +35,8 @@ const REPOSITORY_HOST: &str = "github.com";
 pub struct Outcome {
     /// Every checkpoint passed, in order, with the files it read.
     pub checkpoints: Vec<(String, Files)>,
+    /// The real time the run took, by phase.
+    pub timings: Timings,
 }
 
 /// The Mac of a scenario: always rested, with room for everything. It counts the samples the
@@ -132,7 +135,7 @@ pub fn run(scenario: &Scenario, accepted: Option<&Path>) -> Result<Outcome, Scen
 pub fn run_partial(scenario: &Scenario) -> (Outcome, Option<ScenarioError>) {
     match run_inner(scenario, None, |_| (), None) {
         Ok((outcome, failure)) => (outcome, failure),
-        Err(error) => (Outcome { checkpoints: Vec::new() }, Some(error)),
+        Err(error) => (Outcome { checkpoints: Vec::new(), timings: Timings::default() }, Some(error)),
     }
 }
 
@@ -230,6 +233,7 @@ async fn execute(
     // Tokio jumps a paused clock to its next timer whenever the runtime waits, as it does on a view
     // read over HTTP, unless a blocking task runs: one runs for the whole scenario, so virtual time
     // moves only when a step moves it.
+    let assembling = Instant::now();
     let (thaw, frozen) = std::sync::mpsc::channel::<()>();
     let freeze = tokio::task::spawn_blocking(move || frozen.recv().ok());
     let budget = parse_duration(&scenario.max_virtual)?;
@@ -305,14 +309,18 @@ async fn execute(
         commands: 0,
         spent: Duration::ZERO,
         budget,
-        outcome: Outcome { checkpoints: Vec::new() },
+        outcome: Outcome { checkpoints: Vec::new(), timings: Timings::default() },
     };
+    context.outcome.timings.assembled(assembling);
+    let warming = Instant::now();
     let checked = context.accounts_checked().await;
+    context.outcome.timings.accounts_checked(warming);
     drop(startup_probe);
     let result = match checked {
         Ok(()) => steps(&mut context).await,
         Err(error) => Err(error),
     };
+    let tearing_down = Instant::now();
     drop(thaw);
     freeze.await.ok();
     if let Some(daemon) = &context.daemon {
@@ -323,6 +331,8 @@ async fn execute(
     if let Some(edge) = &context.claude {
         edge.end_all();
     }
+    drop(home);
+    context.outcome.timings.torn_down(tearing_down);
     Ok((context.outcome, result.err()))
 }
 
@@ -344,14 +354,22 @@ fn seams_of(github: &Arc<GithubWorld>, pushes: &RecordedPushes, mac: &CalmMac, l
 
 async fn steps(context: &mut Context<'_>) -> Result<(), ScenarioError> {
     for (index, step) in context.scenario.steps.iter().enumerate() {
-        context.step(index, step).await?;
-        if context.daemon.is_some() {
-            context.settle().await?;
-        }
-        context.peer_failure()?;
-        if let Some(what) = context.leaks.lock().unwrap_or_else(std::sync::PoisonError::into_inner).first() {
-            return Err(ScenarioError::Leak(what.clone()));
-        }
+        let started = Instant::now();
+        let carried = carry_out(context, index, step).await;
+        context.outcome.timings.stepped(timing::kind(step), started);
+        carried?;
+    }
+    Ok(())
+}
+
+async fn carry_out(context: &mut Context<'_>, index: usize, step: &Step) -> Result<(), ScenarioError> {
+    context.step(index, step).await?;
+    if context.daemon.is_some() {
+        context.settle().await?;
+    }
+    context.peer_failure()?;
+    if let Some(what) = context.leaks.lock().unwrap_or_else(std::sync::PoisonError::into_inner).first() {
+        return Err(ScenarioError::Leak(what.clone()));
     }
     Ok(())
 }
@@ -675,6 +693,13 @@ impl Context<'_> {
     /// a frame nor a commit moved for a moment, so the next step reads what the daemon did with
     /// them. Past the patience the run ends, naming what kept moving.
     async fn settle(&self) -> Result<(), ScenarioError> {
+        let started = Instant::now();
+        let settled = self.wait_for_calm().await;
+        self.outcome.timings.settled(started);
+        settled
+    }
+
+    async fn wait_for_calm(&self) -> Result<(), ScenarioError> {
         if let Some(edge) = &self.claude {
             let edge = edge.clone();
             let domain = self.daemon.as_ref().map(|daemon| daemon.domain.clone());
@@ -697,20 +722,29 @@ impl Context<'_> {
                 let domain = self.daemon.as_ref().map(|daemon| daemon.domain.clone());
                 move || domain.as_ref().map_or(0, |domain| domain.read().state().revision)
             };
+            let timings = self.outcome.timings.clone();
             let unsettled = tokio::task::spawn_blocking(move || {
                 let (mut last, mut calm, mut patience) = ((edge.activity(), revision()), 0, PATIENCE_MS);
+                let (mut polls, mut resets, mut owner_wake, mut probing) = (0, 0, false, Duration::ZERO);
                 loop {
                     std::thread::sleep(Duration::from_millis(2));
+                    let probed = Instant::now();
+                    polls += 1;
                     let now = (edge.activity(), revision());
                     let working = alondra_core::clock::working();
                     if now != last || working > 0 {
                         (last, calm) = (now, 0);
+                        resets += 1;
                     } else {
                         calm += 1;
                     }
-                    let enough = if undelivered() { OWNER_WAKE_POLLS } else { CALM_POLLS };
+                    let waiting_for_owner = undelivered();
+                    owner_wake |= waiting_for_owner;
+                    let enough = if waiting_for_owner { OWNER_WAKE_POLLS } else { CALM_POLLS };
                     let (committed, retaking) = (edge.committed(), retaking());
+                    probing += probed.elapsed();
                     if calm >= enough && committed && !retaking && working == 0 {
+                        timings.polled(polls, resets, owner_wake, probing);
                         return None;
                     }
                     patience = patience.saturating_sub(2);
@@ -1050,17 +1084,24 @@ impl Context<'_> {
         std::fs::rename(&next, &file).map_err(|e| Self::failed(index, e))
     }
 
-    /// Lets virtual time pass, with the daemon's loops running through it.
+    /// Lets virtual time pass, with the daemon's loops running through it. The daemon was calm
+    /// before (every step ends settled, with no thread of it working), so when no timed wait
+    /// pending on the clock ends within the advance, the advance wakes nobody and needs no settle.
     async fn pass(&mut self, by: Duration, index: usize) -> Result<(), ScenarioError> {
         self.spent += by;
         if self.spent > self.budget {
             return Err(ScenarioError::NoRest { at_step: index, spent_secs: self.spent.as_secs() });
         }
+        let advancing = Instant::now();
+        let idle = alondra_core::clock::working() == 0 && !alondra_core::clock::deadline_within(by);
         alondra_core::clock::advance(by).await;
         for _ in 0..16 {
             tokio::task::yield_now().await;
         }
-        self.settle().await?;
+        self.outcome.timings.advanced(advancing, idle);
+        if !idle {
+            self.settle().await?;
+        }
         self.peer_failure()?;
         match self.claude.as_ref().and_then(ClaudeEdge::trouble) {
             Some(trouble) => Err(Self::failed(index, format!("the Claude host: {}", trouble.0))),
@@ -1239,6 +1280,13 @@ impl Context<'_> {
     }
 
     async fn checkpoint(&mut self, _index: usize, checkpoint: &Checkpoint) -> Result<(), ScenarioError> {
+        let started = Instant::now();
+        let read = self.read_checkpoint(checkpoint).await;
+        self.outcome.timings.checkpointed(started);
+        read
+    }
+
+    async fn read_checkpoint(&mut self, checkpoint: &Checkpoint) -> Result<(), ScenarioError> {
         let mut files = Files::new();
         let world = &self.scenario.world;
         for screen in &checkpoint.screens {

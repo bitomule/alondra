@@ -102,7 +102,7 @@ rust_binary(
 sh_test(
     name = "scenarios_test",
     size = "medium",
-    shard_count = 4,
+    shard_count = 16,
     srcs = ["run_scenarios.sh"],
     data = [":host_relay", ":scenarios_runner"] + glob(["cases/**"]),
     env = {"HOME": ".", "TZ": "UTC"} | RELAY_ENV,
