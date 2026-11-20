@@ -277,7 +277,7 @@
       {
         "id": "tasks",
         "label": "Tasks",
-        "value": 1
+        "value": 2
       },
       {
         "id": "working",
@@ -292,7 +292,7 @@
       {
         "id": "queued",
         "label": "queued",
-        "value": 1
+        "value": 2
       },
       {
         "id": "paused",
