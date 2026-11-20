@@ -2519,7 +2519,10 @@ impl Owner {
                     if driver.releases {
                         break;
                     }
-                    if let Err(error) = driver.step(&told) {
+                    // A request to close the host ends the owner's wait at once, as a stop does:
+                    // the host closes at the instant `idle_release` asks, not on a later wake.
+                    let woken = || told() || releasing.load(Ordering::SeqCst);
+                    if let Err(error) = driver.step(&woken) {
                         // Told to stop, the owner ended its host itself: what the host's end
                         // breaks in the step it was reading is that end, not a failure.
                         if !told() {

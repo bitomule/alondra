@@ -46,7 +46,7 @@
           "subtitle": "The Claude API kept failing after Claude Code's own retries. Alondra tries one task again every 2 minutes; when Claude answers, every waiting task goes on.",
           "timestamps": [
             {
-              "at": "2026-11-15T09:01:16.000+00:00",
+              "at": "2026-11-15T09:01:14.000+00:00",
               "format": "relative",
               "role": "created"
             }
@@ -117,7 +117,7 @@
           "subtitle": "The Claude API kept failing after Claude Code's own retries. Alondra tries one task again every 2 minutes; when Claude answers, every waiting task goes on.",
           "timestamps": [
             {
-              "at": "2026-11-15T09:01:16.000+00:00",
+              "at": "2026-11-15T09:01:14.000+00:00",
               "format": "relative",
               "role": "created"
             }

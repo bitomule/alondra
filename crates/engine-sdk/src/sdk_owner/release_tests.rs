@@ -22,8 +22,8 @@ fn enable(slice: &Slice) {
 fn look_after_the_wait(domain: &DomainRuntime) {
     let mut rests = Rests::default();
     let now = alondra_core::now_millis();
-    pass(domain, &mut rests, now, &WAIT);
-    pass(domain, &mut rests, now + WAIT.wait, &WAIT);
+    pass(domain, &mut rests, now, now, &WAIT);
+    pass(domain, &mut rests, now + WAIT.wait, now + WAIT.wait, &WAIT);
 }
 
 async fn until_released(domain: &DomainRuntime, tasks: &[&str]) {
@@ -131,8 +131,8 @@ async fn a_node_rests_with_its_host_until_the_wait_passes() {
     let (_, host) = resting_node(&slice);
     let mut rests = Rests::default();
     let now = alondra_core::now_millis();
-    pass(&slice.domain, &mut rests, now, &WAIT);
-    pass(&slice.domain, &mut rests, now + WAIT.wait - 1, &WAIT);
+    pass(&slice.domain, &mut rests, now, now, &WAIT);
+    pass(&slice.domain, &mut rests, now + WAIT.wait - 1, now + WAIT.wait - 1, &WAIT);
     assert!(!lifecycle(&slice.domain).host_released());
     assert_eq!(survivors(&host).len(), host.len());
     slice.domain.stop_sdk_owners();

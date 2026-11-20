@@ -9,6 +9,20 @@
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// How long this relay takes to exit once told to stop, when the scenario's world says so.
+static SLOW_EXIT_MS: AtomicU64 = AtomicU64::new(0);
+
+extern "C" fn exit_slowly(_: libc::c_int) {
+    let millis = SLOW_EXIT_MS.load(Ordering::SeqCst);
+    let pause = libc::timespec { tv_sec: (millis / 1000) as libc::time_t, tv_nsec: ((millis % 1000) * 1_000_000) as libc::c_long };
+    // SAFETY: nanosleep and _exit are async-signal-safe.
+    unsafe {
+        libc::nanosleep(&pause, std::ptr::null_mut());
+        libc::_exit(0)
+    }
+}
 
 fn pipe(mut from: UnixStream, mut to: UnixStream) {
     let _ = std::io::copy(&mut from, &mut to);
@@ -24,6 +38,11 @@ fn main() {
         eprintln!("usage: host_relay <socket> <back>");
         std::process::exit(2);
     };
+    if let Some(millis) = std::env::var("SCENARIO_HOST_SLOW_EXIT_MS").ok().and_then(|value| value.parse().ok()) {
+        SLOW_EXIT_MS.store(millis, Ordering::SeqCst);
+        // SAFETY: the handler only calls async-signal-safe functions.
+        unsafe { libc::signal(libc::SIGTERM, exit_slowly as libc::sighandler_t) };
+    }
     let Ok(listener) = UnixListener::bind(&socket) else { std::process::exit(1) };
     if std::env::var_os("SCENARIO_TEST_BOUND").is_some() {
         let _ = writeln!(std::io::stdout(), "bound");
