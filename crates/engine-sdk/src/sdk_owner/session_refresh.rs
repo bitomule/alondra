@@ -4,10 +4,10 @@
 //! and account, from the task's records, and the conversation before it waits in a file the new
 //! session reads only when it needs something of it.
 //!
-//! The decision is taken once per host that would resume a session, when that host is handed its
-//! first input: every host that resumes one opens its Claude only then, whether it took over a
-//! released host, a crashed one, one a restart left, or the one a pause put in place hours before
-//! the input arrived. Only then is the time since the last request known.
+//! The decision is taken whenever a host whose session already holds a conversation is handed an
+//! input: one that resumes a released, crashed or left session, one a restart adopted while it ran,
+//! and one that stayed alive through a pause of hours. Only then is the time since the last request
+//! known. A live host is ended by the refresh, as a move ends it.
 use super::*;
 use crate::idle_compaction::LastRequest;
 use alondra_core::Millis;
@@ -16,13 +16,13 @@ use alondra_core::Millis;
 /// below it, rewriting the cache costs less than what a new session reads again to go on.
 pub(crate) const FROM_TOKENS: u64 = 100_000;
 
-/// What a host that resumes a session needs to find the conversation it resumes.
-pub(super) struct Resumed {
+/// What a host needs to find the conversation its session holds.
+pub(super) struct Conversation {
     pub native_environment: BTreeMap<String, String>,
     pub directory: String,
 }
 
-/// Whether a session about to be resumed for a pending input starts anew instead: a Claude
+/// Whether a session that would go on with a pending input starts anew instead: a Claude
 /// conversation of at least `FROM_TOKENS` whose last request's cache, for as long as the provider
 /// said it lasts, expired by `now`.
 pub(crate) fn starts_anew(provider: Provider, last: Option<LastRequest>, now: Millis, pending_input: bool) -> bool {
@@ -30,15 +30,19 @@ pub(crate) fn starts_anew(provider: Provider, last: Option<LastRequest>, now: Mi
         && last.is_some_and(|last| last.tokens >= FROM_TOKENS && now >= last.requested_at.saturating_add(last.cache_ms))
 }
 
-/// Decides, for the host of `task` in `host_directory` that would resume `resumed`, whether its
-/// session starts anew, and requests that new session when it does: the conversation file is
+/// Decides, for the host of `task` in `host_directory` whose session holds `conversation`, whether
+/// that session starts anew, and requests that new session when it does: the conversation file is
 /// written and the refresh is committed, so the input waits for the new session. A refresh that
-/// cannot be prepared leaves the session to resume, and says why.
-pub(super) fn refresh(domain: &DomainRuntime, task: &TaskId, provider: Provider, host_directory: &std::path::Path, resumed: &Resumed) -> bool {
-    let (pending, conversation, instance) = {
+/// cannot be prepared leaves the session to go on, and says why. A session in the middle of a turn
+/// goes on, and while a change of the task's session is under way nothing more is requested.
+pub(super) fn refresh(domain: &DomainRuntime, task: &TaskId, provider: Provider, host_directory: &std::path::Path, conversation: &Conversation) -> bool {
+    let (pending, stamp_conversation, instance) = {
         let read = domain.read();
         let Ok(lifecycle) = read.state().lifecycle_of(task) else { return false };
         let Some(stamp) = lifecycle.execution() else { return false };
+        if lifecycle.turn().is_some() || matches!(lifecycle.activity(), ActivityView::Working | ActivityView::OwnWork) {
+            return false;
+        }
         (!lifecycle.pending_inputs().is_empty(), stamp.conversation().as_str().to_owned(), stamp.instance().as_str().to_owned())
     };
     let last = domain.contexts().last_request(task);
@@ -50,10 +54,13 @@ pub(super) fn refresh(domain: &DomainRuntime, task: &TaskId, provider: Provider,
         log!("{task} resumes its conversation of {tokens} tokens, whose prompt cache expired, instead of starting a new session: {why}");
         false
     };
-    let (latest, metadata) = {
+    let (open, latest, metadata) = {
         let store = domain.store.lock_or_exit("the domain store");
-        (store.latest_provider_transition(task), store.conversation_metadata(task, &conversation))
+        (store.provider_transition(task), store.latest_provider_transition(task), store.conversation_metadata(task, &stamp_conversation))
     };
+    if !matches!(open, Ok(None)) {
+        return false;
+    }
     if let Ok(Some(change)) = latest
         && change.plan.kind == crate::domain_store::provider_transition::Kind::Refresh
         && change.plan.source.instance == instance
@@ -63,7 +70,7 @@ pub(super) fn refresh(domain: &DomainRuntime, task: &TaskId, provider: Provider,
     let Some(session) = metadata.ok().flatten().as_deref().and_then(alondra_provider_claude::conversation_session) else {
         return resumes("its session is not recorded");
     };
-    let Some(transcript) = claude_history::transcript(&resumed.native_environment, &session, std::path::Path::new(&resumed.directory)) else {
+    let Some(transcript) = claude_history::transcript(&conversation.native_environment, &session, std::path::Path::new(&conversation.directory)) else {
         return resumes("Claude Code's transcript of the session was not found");
     };
     let file = match write_conversation(domain.home(), task, &session, &transcript) {
