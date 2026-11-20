@@ -75,6 +75,8 @@ pub struct Seams {
     pub launcher: Launcher,
     pub backend: Backend,
     pub world: World,
+    /// The `alondra` CLI the daemon runs for the user's answers about held crash reports.
+    pub own_cli: Option<std::path::PathBuf>,
 }
 
 impl Seams {
@@ -87,6 +89,7 @@ impl Seams {
             launcher: Launcher::default(),
             backend: Backend::Resolve,
             world: World::Real,
+            own_cli: alondra_host::brew::own_cli(),
         }
     }
 }
@@ -113,7 +116,6 @@ type Serving = Pin<Box<dyn Future<Output = std::io::Result<()>> + Send>>;
 
 /// A daemon that is serving, with the loops the supervisor watches.
 pub struct Assembled {
-    #[cfg(feature = "test-hooks")]
     client: Arc<client_routes::Client>,
     pub addr: SocketAddr,
     pub domain: Arc<domain_runtime::DomainRuntime>,
@@ -132,11 +134,9 @@ pub struct Assembled {
 }
 
 impl Assembled {
-    #[cfg(feature = "test-hooks")]
     pub fn clear_scenario_gauges(&self) {
         self.client.clear_scenario_gauges();
     }
-    #[cfg(feature = "test-hooks")]
     pub async fn shared_tui_feed_work_for_test(&self, secret: &[u8; 32], device: &str, first_timestamp: i64) -> std::result::Result<(u64, usize), String> {
         self.client.shared_tui_feed_work_for_test(&self.auth, secret, device, first_timestamp).await
     }
@@ -336,6 +336,7 @@ pub(crate) async fn assemble_with(
     tasks.spawn(account_move::run(state_domain.clone()));
     tasks.spawn(provider_transition::run(state_domain.clone()));
     tasks.spawn(obligation_watch::run(state_domain.clone()));
+    tasks.spawn(alondra_daemon_engine::report_held_card::run(domain.clone(), config.home.clone(), seams.own_cli.clone(), config.fast_timing));
     let compaction = if config.fast_timing { &idle_compaction::Timing::SANDBOX } else { &idle_compaction::Timing::LIVE };
     tasks.spawn(idle_compaction::run(state_domain.clone(), compaction));
     let release = if config.fast_timing { &idle_release::Timing::SANDBOX } else { &idle_release::Timing::LIVE };
@@ -360,7 +361,6 @@ pub(crate) async fn assemble_with(
     client.use_pr_view(seams.github.view.clone());
     client.use_pr_images(seams.github.images.clone());
     client.use_pr_merger(seams.github.merger.clone());
-    #[cfg(feature = "test-hooks")]
     let observed_client = client.clone();
     tasks.spawn(client.run(seams.github.view.clone()));
     let orchestrator = config.wake.then(|| {
@@ -379,7 +379,6 @@ pub(crate) async fn assemble_with(
         tasks.spawn(reports::retry_pending(config.home.clone(), alondra_host::brew::own_cli(), config.fast_timing));
     }
     Ok(Assembled {
-        #[cfg(feature = "test-hooks")]
         client: observed_client,
         addr,
         domain: owners,

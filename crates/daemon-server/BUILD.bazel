@@ -3,11 +3,10 @@ load("//tools:tree.bzl", "repo_tree")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
 
-TEST_ONLY = ["src/operation_journal/process_fixture.rs", "src/views/feed_probe.rs", "src/views/serialization.rs"]
+TEST_ONLY = ["src/operation_journal/process_fixture.rs", "src/views/serialization.rs"]
 
 WORKSPACE_DEPS = [
     "//crates/foundation:foundation",
@@ -38,27 +37,6 @@ adapter_in_crate(
     ],
 )
 
-# The server as a scenario assembles it: the same sources, built against the engine's test hooks
-# (the one fake GitHub), so a conversation runs the production loops over fake edges.
-rust_library(
-    name = "daemon_server_scenarios_lib",
-    testonly = True,
-    crate_features = ["test-hooks"],
-    srcs = production_sources(test_only = TEST_ONLY) + ["src/views/feed_probe.rs"],
-    crate_name = "alondra_daemon_server",
-    crate_root = "src/lib.rs",
-    edition = "2024",
-    version = VERSION,
-    visibility = ["//crates/alondrad:__pkg__", "//crates/scenarios:__pkg__"],
-    deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
-        "//crates/daemon-engine:daemon_engine_test_hooks",
-        "//crates/daemon-support:daemon_support_test_hooks",
-        "//crates/engine-admission:engine_admission_on_test_hooks",
-        "//crates/engine-orchestrator:engine_orchestrator_on_test_hooks",
-        "//crates/engine-sdk:engine_sdk_test_hooks",
-    ],
-)
-
 # The server's tests render with the real screens: they are the only test target here that
 # links `views`, and it takes about 25 s.
 low_opt_rust_test(
@@ -81,7 +59,7 @@ low_opt_rust_test(
         "//fixtures/views:cards",
         "//crates/alondrad:Info.plist",
     ],
-    srcs = glob(["src/**/*.rs"]),
+    srcs = glob(["src/**/*.rs"]) + ["//crates/daemon-engine:src/wiring/owner_fixtures.rs"],
     crate_name = "alondra_daemon_server",
     crate_root = "src/lib.rs",
     # Bazel test-setup resolves a relative HOME to this test's TEST_TMPDIR.
@@ -102,15 +80,19 @@ low_opt_rust_test(
     },
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
         "//crates/views:views",
-        "//crates/daemon-engine:daemon_engine_test_hooks",
-        "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
-        "//crates/store-sqlite:store_sqlite_test_hooks",
-        "//crates/daemon-support:daemon_support_test_hooks",
+        "//crates/daemon-engine:daemon_engine",
+        "//crates/daemon-engine-model:daemon_engine_model",
+        "//crates/store-sqlite:store_sqlite",
+        "//crates/daemon-support:daemon_support",
+        "//crates/agent-runtime:agent_runtime",
         "//crates/engine-doubles:engine_doubles",
-        "//crates/engine-kernel:engine_kernel_test_hooks",
-        "//crates/engine-admission:engine_admission_on_test_hooks",
-        "//crates/engine-orchestrator:engine_orchestrator_on_test_hooks",
-        "//crates/engine-sdk:engine_sdk_test_hooks",
+        "//crates/engine-kernel:engine_kernel",
+        "//crates/engine-admission:engine_admission",
+        "//crates/engine-orchestrator:engine_orchestrator",
+        "//crates/engine-sdk:engine_sdk",
+        "//crates/agent-application:agent_application",
+        "//crates/provider-contract:provider_contract",
+        "//crates/store:store",
     ],
     data = [
         "//crates/alondrad:alondrad",

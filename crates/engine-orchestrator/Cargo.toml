@@ -27,13 +27,10 @@ sysinfo.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-alondra-store-sqlite = { workspace = true, features = ["test-hooks"] }
+alondra-store-sqlite.workspace = true
 alondra-agent-runtime.workspace = true
 alondra-codex-protocol.workspace = true
 alondra-engine-doubles.workspace = true
-alondra-daemon-engine-model = { workspace = true, features = ["test-hooks"] }
-alondra-daemon-support = { workspace = true, features = ["test-hooks"] }
-alondra-engine-kernel = { workspace = true, features = ["test-hooks"] }
 alondra-provider-contract.workspace = true
 proptest.workspace = true
 rusqlite.workspace = true

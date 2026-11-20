@@ -18,7 +18,7 @@ impl Fixture {
     fn new(count: usize) -> Self {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         let state = domain.read();
         domain.execute(&Actor::Orchestrator { generation: 0 }, &CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.state().data_epoch.clone(),

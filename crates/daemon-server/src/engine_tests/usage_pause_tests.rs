@@ -6,6 +6,7 @@ use alondra_core::now_millis;
 
 #[test]
 fn the_over_pace_card_has_the_numbers_and_two_options_and_reads_in_each_devices_language() {
+    super::wired();
     use alondra_views::{Lang, push_content};
     let (domain, home) = over_pace_domain();
     raise_over_pace_card(&domain, now_millis());

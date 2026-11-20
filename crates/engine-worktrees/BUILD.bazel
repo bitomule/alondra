@@ -1,8 +1,7 @@
 load("//tools/bazel:crates.bzl", "application_crate")
 load("//tools:tree.bzl", "repo_tree")
-load("//tools:rust_test.bzl", "LOW_OPT_LEVEL", "low_opt_rust_test")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
@@ -28,23 +27,6 @@ application_crate(
     ],
 )
 
-rust_library(
-    name = "engine_worktrees_test_hooks",
-    testonly = True,
-    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
-    crate_features = ["test-hooks"],
-    crate_name = "alondra_engine_worktrees",
-    crate_root = "src/lib.rs",
-    edition = "2024",
-    rustc_flags = [LOW_OPT_LEVEL],
-    version = VERSION,
-    visibility = ["//crates/daemon-engine:__pkg__"],
-    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
-        "//crates/daemon-support:daemon_support_test_hooks",
-        "//crates/engine-kernel:engine_kernel_test_hooks",
-    ],
-)
-
 low_opt_rust_test(
     name = "engine_worktrees_test",
     size = "small",
@@ -56,8 +38,8 @@ low_opt_rust_test(
     env = {"HOME": "."},
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
-        "//crates/daemon-support:daemon_support_test_hooks",
-        "//crates/engine-kernel:engine_kernel_test_hooks",
+        "//crates/daemon-support:daemon_support",
+        "//crates/engine-kernel:engine_kernel",
     ],
 )
 

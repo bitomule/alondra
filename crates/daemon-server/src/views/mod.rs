@@ -6,7 +6,6 @@ mod node_rows;
 pub(crate) mod actions;
 pub mod action_results;
 pub(crate) mod feed;
-#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) mod feed_probe;
 pub(crate) mod live;
 pub(crate) mod observation;

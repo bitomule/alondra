@@ -24,7 +24,7 @@ use alondra_store::AuthorityScope;
 use anyhow::Result;
 use batch::{BatchEffectRef, BatchReport, UnfinishedBatch};
 use handover::{Handover, Process};
-use metrics::{Decision, Spent};
+use metrics::{Decision, SessionStarted, Spent};
 use owner::{Adoption, OwnerCommit};
 use provider_transition::{Phase, Plan as TransitionPlan, Source};
 use crate::agent_host::EndedHost;
@@ -171,6 +171,7 @@ pub trait Journal: Send {
     fn protect(&mut self, protected: crate::worktrees::WorktreeRules);
     fn protected(&self) -> &crate::worktrees::WorktreeRules;
     fn provider_transition(&self, task:&TaskId) ->Result<Option<Transition>>;
+    fn latest_provider_transition(&self, task:&TaskId) ->Result<Option<Transition>>;
     fn provider_transition_finished(&self, id:&str) ->Result<bool>;
     fn provider_transitions(&self) ->Result<Vec<Transition>>;
     fn prs_without_size(&self, now: Millis, limit: usize) -> Result<Vec<(String, String)>>;
@@ -191,6 +192,8 @@ pub trait Journal: Send {
     fn record_pr_lines(&mut self, task_id: &str, lines: i64) -> Result<()>;
     fn record_release(&mut self, version: &str, at: Millis) -> Result<()>;
     fn record_spend(&mut self, spent: &Spent<'_>) -> Result<()>;
+    fn record_session_start(&mut self, started: &SessionStarted<'_>) -> Result<()>;
+    fn session_starts(&self, task_id: &str) -> Result<Vec<metrics::RecordedStart>>;
     fn refused_move(&self, task:&TaskId) ->Result<Option<Transition>>;
     fn refused_moves(&self) ->Result<Vec<Transition>>;
     fn request_launch(&mut self, request_id: &RequestId) -> Result<Option<RequestLaunch>>;

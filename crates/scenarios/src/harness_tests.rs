@@ -294,3 +294,49 @@ screens = [\"task:t2\"]
     assert!(read(0, "task-t1.ios.en.json").contains("\"2026-11-15T09:00:10.000+00:00\""), "{}", read(0, "task-t1.ios.en.json"));
     assert!(read(1, "task-t2.ios.en.json").contains("\"2026-11-15T09:25:10.000+00:00\""), "{}", read(1, "task-t2.ios.en.json"));
 }
+
+/// A host takes real time to exit once the daemon stops it, while virtual time waits: the daemon
+/// closes the host of a task that rests after its turn, and whatever that closing takes in real
+/// time, it lands at the instant that started it, so what comes after keeps its instant.
+#[test]
+fn a_host_slow_to_exit_moves_no_instant() {
+    let text = r#"
+name = "a resting node whose host closes"
+max_virtual = "1h"
+
+[[step]]
+do = "request"
+text = "Export the report"
+task = "t1"
+title = "Add the export"
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "login_expired"
+account = "default"
+
+[[step]]
+do = "turn_end"
+task = "t1"
+
+[[step]]
+do = "rest"
+max = "10m"
+
+[[step]]
+do = "task"
+id = "t2"
+title = "Add the summary"
+
+[[step]]
+do = "checkpoint"
+name = "after-the-rest"
+screens = ["task:t2"]
+"#;
+    let at_once = run(&scenario(text), None).expect("the scenario runs");
+    let slowly = crate::runner::run_with_slow_host_exits(&scenario(text), std::time::Duration::from_millis(400)).expect("the scenario runs");
+    assert_eq!(at_once.checkpoints, slowly.checkpoints);
+}

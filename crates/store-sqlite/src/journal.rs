@@ -17,13 +17,11 @@ use alondra_store::{AdapterState, AuthorityScope, CommittedCommand, CommittedCon
 use std::collections::BTreeMap;
 
 /// The SQLite store behind a journal, for the tests that read its tables or drive its test hooks.
-#[cfg(any(test, feature = "test-hooks"))]
 pub trait AsSqlite {
     fn sqlite(&self) -> &DomainStore;
     fn sqlite_mut(&mut self) -> &mut DomainStore;
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
 impl AsSqlite for dyn Journal + '_ {
     fn sqlite(&self) -> &DomainStore {
         self.as_any().downcast_ref().expect("the journal is the SQLite store")
@@ -151,6 +149,7 @@ impl Journal for DomainStore {
     fn protect(&mut self, protected: alondra_engine_ports::worktrees::WorktreeRules) { DomainStore::protect(self, protected) }
     fn protected(&self) -> &alondra_engine_ports::worktrees::WorktreeRules { DomainStore::protected(self) }
     fn provider_transition(&self, task:&TaskId) ->Result<Option<Transition>> { DomainStore::provider_transition(self, task) }
+    fn latest_provider_transition(&self, task:&TaskId) ->Result<Option<Transition>> { DomainStore::latest_provider_transition(self, task) }
     fn provider_transition_finished(&self, id:&str) ->Result<bool> { DomainStore::provider_transition_finished(self, id) }
     fn provider_transitions(&self) ->Result<Vec<Transition>> { DomainStore::provider_transitions(self) }
     fn prs_without_size(&self, now: Millis, limit: usize) -> Result<Vec<(String, String)>> { DomainStore::prs_without_size(self, now, limit) }
@@ -170,6 +169,8 @@ impl Journal for DomainStore {
     fn record_pr_lines(&mut self, task_id: &str, lines: i64) -> Result<()> { DomainStore::record_pr_lines(self, task_id, lines) }
     fn record_release(&mut self, version: &str, at: Millis) -> Result<()> { DomainStore::record_release(self, version, at) }
     fn record_spend(&mut self, spent: &Spent<'_>) -> Result<()> { DomainStore::record_spend(self, spent) }
+    fn record_session_start(&mut self, started: &alondra_engine_ports::journal::metrics::SessionStarted<'_>) -> Result<()> { DomainStore::record_session_start(self, started) }
+    fn session_starts(&self, task_id: &str) -> Result<Vec<alondra_engine_ports::journal::metrics::RecordedStart>> { DomainStore::session_starts(self, task_id) }
     fn refused_move(&self, task:&TaskId) ->Result<Option<Transition>> { DomainStore::refused_move(self, task) }
     fn refused_moves(&self) ->Result<Vec<Transition>> { DomainStore::refused_moves(self) }
     fn request_launch(&mut self, request_id: &RequestId) -> Result<Option<RequestLaunch>> { DomainStore::request_launch(self, request_id) }

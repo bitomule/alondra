@@ -1,9 +1,8 @@
 //! The engine's MCP servers: what a node waits for while a server signs in, the sign-in's return,
 //! and the checks and deletions the user asks for on the MCP servers screen. It sits on
 //! `engine-kernel` and names no other engine subsystem.
-#![cfg_attr(all(feature = "test-hooks", not(test)), allow(dead_code, unused_imports))]
 
-#[cfg(any(test, feature = "test-hooks"))]
+#[cfg(test)]
 #[path = "../../test_support.rs"]
 pub mod test_support;
 

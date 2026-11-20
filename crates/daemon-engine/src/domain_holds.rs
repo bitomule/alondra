@@ -298,17 +298,17 @@ pub(crate) use crate::domain_store::wording::SdkDecision;
 pub struct HeldCards;
 
 impl crate::domain_store::wording::SdkDecisions for HeldCards {
-    fn decide(&self, task_title: &str, kind: DecisionKind, payload: &Value, worktree: Option<&str>, worktrees: &[String], home: &Path) -> SdkDecision {
-        sdk_decision(task_title, kind, payload, worktree, worktrees, home)
+    fn decide(&self, task_title: &str, kind: DecisionKind, payload: &Value, worktree: Option<&str>, worktrees: &[String], exclusive: &[String], home: &Path) -> SdkDecision {
+        sdk_decision(task_title, kind, payload, worktree, worktrees, exclusive, home)
     }
 }
 
 /// The decision the host persisted with `payload`, for a task that works in `worktree` and whose
-/// open worktrees are `worktrees`: a tool call is `{tool, input, request, cwd}` with the SDK's
+/// open worktrees are `worktrees`, `exclusive` those no other task holds: a tool call is `{tool, input, request, cwd}` with the SDK's
 /// options in `request` and the folder Claude Code runs it from in `cwd`; an MCP server's request
 /// for input is its form. «Allow always» is offered as for a held permission prompt, and «allow in
 /// this task» for a command that stays in the task's folders.
-pub(crate) fn sdk_decision(task_title: &str, kind: DecisionKind, payload: &Value, worktree: Option<&str>, worktrees: &[String], home: &Path) -> SdkDecision {
+pub(crate) fn sdk_decision(task_title: &str, kind: DecisionKind, payload: &Value, worktree: Option<&str>, worktrees: &[String], exclusive: &[String], home: &Path) -> SdkDecision {
     let hold = match kind {
         DecisionKind::Permission => Hold::Permission,
         DecisionKind::Question => Hold::Question,
@@ -348,6 +348,7 @@ pub(crate) fn sdk_decision(task_title: &str, kind: DecisionKind, payload: &Value
             let mut prompt = card(body, options, None, Some(&need), allow);
             if let DecisionPrompt::Card { card, .. } = &mut prompt {
                 card.allow_for_task = Some(for_task);
+                card.own_worktree = own_worktree(tool.as_deref(), &input, payload.get("cwd").and_then(Value::as_str), request, exclusive);
             }
             prompt
         }
@@ -388,6 +389,17 @@ pub(crate) fn sdk_decision(task_title: &str, kind: DecisionKind, payload: &Value
 
 /// The folders a task's commands may stay in for «allow in this task»: its worktrees and Alondra's
 /// files folder, each as written and as the disk resolves it.
+/// Whether every part of the command only changes files inside the task's own worktrees, as the
+/// disk reads now; never when one of the user's «ask» rules matched it.
+fn own_worktree(tool: Option<&str>, input: &Value, cwd: Option<&str>, request: &Value, worktrees: &[String]) -> bool {
+    if tool != Some(alondra_core::allow_always::TOOL) || request.get("matchedAskRule").is_some_and(|rule| !rule.is_null()) {
+        return false;
+    }
+    let (Some(command), Some(cwd)) = (input.get("command").and_then(Value::as_str), cwd) else { return false };
+    let roots = alondra_core::own_worktree::roots(worktrees.iter().map(String::as_str));
+    alondra_core::own_worktree::judge(command, cwd, &roots).is_ok()
+}
+
 fn task_folders<'a>(worktrees: impl Iterator<Item = &'a str>, home: &Path) -> Vec<PathBuf> {
     let mut folders = vec![];
     for folder in worktrees.map(PathBuf::from).chain([home.join("files")]) {
@@ -604,5 +616,59 @@ mod card_title_tests {
         let card = hold_card(Hold::Plan, body, &[], None, Some("Fix parser\nwith tests"));
         assert_eq!(card.title.as_deref(), Some("Fix parser with tests"));
         assert_eq!(card.content.unwrap().body, body);
+    }
+}
+
+#[cfg(test)]
+mod own_worktree_tests {
+    use super::*;
+    use crate::test_support::Directory;
+
+    fn git(dir: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git").current_dir(dir).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1")
+            .args(["-c", "user.name=Ana", "-c", "user.email=ana@example.com"]).args(args).output().unwrap();
+        assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    /// The user's own checkout `main` and `wt`, a linked worktree of it in its `.claude/worktrees`
+    /// that is the task's, each with a `.scratch` file; the repository's hooks folder is empty.
+    fn folders() -> (Directory, String, String) {
+        let dir = Directory::new();
+        let (main, hooks) = (dir.join("main"), dir.join("hooks"));
+        let wt = main.join(".claude/worktrees/wt");
+        std::fs::create_dir_all(&main).unwrap();
+        std::fs::create_dir_all(&hooks).unwrap();
+        git(&main, &["init", "-q", "-b", "main"]);
+        git(&main, &["commit", "-q", "--allow-empty", "-m", "Start"]);
+        git(&main, &["config", "core.hooksPath", &hooks.display().to_string()]);
+        git(&main, &["worktree", "add", "-q", "-b", "worktree-wt", &wt.display().to_string()]);
+        for folder in [&main, &wt] {
+            std::fs::create_dir_all(folder.join(".scratch")).unwrap();
+            std::fs::write(folder.join(".scratch/start"), "a\n").unwrap();
+            std::fs::create_dir_all(folder.join("src")).unwrap();
+            std::fs::write(folder.join("src/a.rs"), "a\n").unwrap();
+        }
+        (dir, wt.display().to_string(), main.display().to_string())
+    }
+
+    fn carded(command: &str, cwd: &str, request: Value, worktrees: &[String], home: &Path) -> bool {
+        let payload = json!({"tool": "Bash", "input": {"command": command}, "request": request, "cwd": cwd});
+        let decision = sdk_decision("Task", DecisionKind::Permission, &payload, worktrees.first().map(String::as_str), worktrees, worktrees, home);
+        let DecisionPrompt::Card { card, .. } = decision.prompt else { panic!("a permission is a card") };
+        card.own_worktree
+    }
+
+    #[test]
+    fn a_command_that_only_changes_files_of_the_tasks_own_worktree_is_marked_for_alondra_to_allow() {
+        let (dir, wt, main) = folders();
+        let home = dir.join("home");
+        let own = [wt.clone()];
+        assert!(carded("sed -i '' 's/a/b/' .scratch/start", &wt, json!({}), &own, &home));
+        assert!(carded("git checkout --theirs -- src/a.rs", &wt, json!({}), &own, &home));
+        assert!(!carded("rm ../main/src/a.rs", &wt, json!({}), &own, &home), "a path outside the worktree");
+        assert!(!carded("sed -i '' 's/a/b/' .scratch/start", &wt, json!({"matchedAskRule": {"ruleContent": "sed:*"}}), &own, &home),
+            "one of the user's rules says to ask");
+        assert!(!carded("sed -i '' 's/a/b/' .scratch/start", &main, json!({}), &[main.clone()], &home), "the user's own checkout");
+        assert!(!carded("sed -i '' 's/a/b/' .scratch/start", &wt, json!({}), &[], &home), "a task without open worktrees");
     }
 }

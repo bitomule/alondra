@@ -257,7 +257,6 @@ pub fn begin_initial_check(domain: &DomainRuntime) {
 }
 
 /// The check after startup is done: a scenario has no account to probe, so it says so itself.
-#[cfg(any(test, feature = "test-hooks"))]
 pub fn finish_initial_check(domain: &DomainRuntime) {
     domain.live().initial_account_check_pending.store(false, std::sync::atomic::Ordering::Release);
 }
@@ -1041,7 +1040,6 @@ impl Refused {
 /// Writes `next` over the section `seen` names: prepares the folder of each account it adds,
 /// signs out each one it takes away and deletes its folder once the file no longer names it. An
 /// account open tasks still run on (`working`) is not taken away.
-#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) fn store(accounts: &dyn Accounts, home: &Path, user_home: &Path, claude: Option<&Claude>, seen: &str, next: &AccountsConfig, working: &[AccountId]) -> Result<(), Refused> {
     let working: Vec<_> = working.iter().cloned().map(|account| AccountKey::new(Provider::Claude, account)).collect();
     store_provider(accounts, home, user_home, claude, None, seen, next, &working)
@@ -1081,7 +1079,6 @@ fn cleanup_account_folders(accounts: &dyn Accounts, home: &Path, removed: &[Acco
     }
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
 fn store_provider(accounts: &dyn Accounts, home: &Path, user_home: &Path, claude: Option<&Claude>, codex: Option<&Codex>, seen: &str, next: &AccountsConfig, working: &[AccountKey]) -> Result<(), Refused> {
     let current = config(home).map_err(Refused::Invalid)?;
     if version(&current) != seen {
@@ -1128,6 +1125,8 @@ fn sign_out(home: &Path, claude: Option<&Claude>, id: &AccountId) -> Result<(), 
     Ok(())
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
+#[path = "accounts_fixtures.rs"]
+pub mod fixtures;
+#[cfg(test)]
 #[path = "accounts_tests.rs"]
-pub mod tests;
+mod tests;

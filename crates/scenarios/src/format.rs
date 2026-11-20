@@ -42,6 +42,13 @@ pub struct World {
     pub release: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HomeFile {
+    pub path: String,
+    pub text: String,
+}
+
 impl Step {
     fn server_error() -> String {
         "server_error".into()
@@ -115,8 +122,12 @@ pub enum Step {
     /// card of the presentation, as the app does it from the view.
     Press { presentation: String, action: String, #[serde(default)] text: Option<String>, #[serde(default)] screen: Option<String> },
     /// The node of `task` starts on Claude, on `account`, as a launch in production starts it: the
-    /// daemon starts its SDK host, which takes the task's first input as a turn.
-    Node { task: String, #[serde(default = "Step::default_account")] account: String },
+    /// daemon starts its SDK host, which takes the task's first input as a turn. With `model`, the
+    /// task runs that model of the account's catalog, as a launch that resolved its selection.
+    Node { task: String, #[serde(default = "Step::default_account")] account: String, #[serde(default)] model: Option<String> },
+    /// The conversation of the node of `task` holds `tokens` from now on, and its hosts' answers say
+    /// what each request read from the prompt cache and wrote to it.
+    Conversation { task: String, tokens: u64 },
     /// The turn of the node of `task` ends: on the error the API answers while it fails for the
     /// node's account, with Claude's answer otherwise. A node with an input waiting takes it next.
     TurnEnd { task: String },
@@ -160,6 +171,21 @@ pub enum Step {
     /// The user presses the option `option` of the card the daemon shows for `task` whose id starts
     /// with `card`, as the app does it from the view.
     Answer { card: String, option: String, #[serde(default)] text: Option<String> },
+    /// The orchestrator tells the user something, as `publish_information` does: a card `card`
+    /// with this title and body, under no request.
+    Inform { card: String, title: String, body: String },
+    /// The user writes `text` in the reply field of the card `card` of the home, as the app does.
+    Reply { card: String, text: String },
+    /// Files of the daemon's home are written as another process of the Mac writes them, each
+    /// whole at once: every `path` is relative to the home and stays inside it.
+    WriteHome { #[serde(rename = "file")] files: Vec<HomeFile> },
+    /// The worktree Alondra makes for `task`: a linked worktree of a new repository, in its
+    /// `.claude/worktrees`, holding `files`, and `outside_link`, a link to a folder outside it.
+    /// With `from`, the node of `task` enters the worktree of that other task instead.
+    Worktree { task: String, #[serde(default)] files: Vec<String>, #[serde(default)] outside_link: Option<String>, #[serde(default)] from: Option<String> },
+    /// The node of `task` asks permission to run `command` in Bash from `cwd`, a folder of the
+    /// task's worktree (its top when absent), as Claude Code asks; `request` names the request.
+    Permission { task: String, request: String, command: String, #[serde(default)] cwd: Option<String> },
     /// Virtual time passes.
     Advance { by: String },
     /// The daemon runs until nothing changes for a while.
@@ -218,9 +244,15 @@ pub enum Expect {
     /// The view `screen` as the iOS app reads it in English shows (or, with `present = false`, does
     /// not show) this text.
     ViewShows { screen: String, text: String, #[serde(default = "Expect::shown")] present: bool },
+    /// What the daemon answered the permission `request` of the node of `task`: `allow`, `deny`,
+    /// or `none` while it waits on the user's card.
+    Answered { task: String, request: String, answer: String },
     /// How many SDK hosts the daemon started for `task`, how many of them run now, and how many
     /// Claude sessions they held between them.
     Hosts { task: String, started: usize, running: usize, sessions: usize },
+    /// The first request of the last host started for `task` wrote at most `max` tokens to the
+    /// prompt cache.
+    CacheWritten { task: String, max: u64 },
 }
 
 impl Expect {

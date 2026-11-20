@@ -13,9 +13,15 @@
 //! The runtime sees its tasks and its blocking pool, never a thread of its own: while such a thread
 //! works, an idle runtime still jumps to its next timer. Work that virtual time must wait for runs
 //! on the blocking pool, which holds virtual time until it ends.
+//!
+//! A test that moves virtual time itself waits first for [`working`] to reach zero: the threads of
+//! its own the runtime started, or woke with a timer or a notification, that do not wait again yet.
+//! What such a thread does in real time (ending a process, writing the store) then lands at the
+//! instant that woke it, however long it takes.
 
 use std::cell::Cell;
 use std::future::Future;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -26,11 +32,178 @@ use crate::Millis;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Clock {
     System,
-    Virtual { epoch_millis: Millis, origin: Instant },
+    Virtual { epoch_millis: Millis, origin: Instant, work: &'static Work },
+}
+
+/// How many threads of a virtual runtime work in real time: each started with [`spawn_thread`] or
+/// woken by the runtime's clock or a notification, until it waits again on the clock or on a stream,
+/// or ends. One lives for each virtual runtime, for as long as the process.
+///
+/// While any works, a task of the runtime's blocking pool waits for them, so the runtime does not
+/// jump to its next timer on its own either.
+#[derive(Debug, Default)]
+pub struct Work {
+    count: AtomicUsize,
+    held: std::sync::Mutex<Hold>,
+    idle: std::sync::Condvar,
+}
+
+#[derive(Debug, Default)]
+struct Hold {
+    /// The runtime, until it ends.
+    runtime: Option<tokio::runtime::Handle>,
+    /// A task of its blocking pool waits for the threads that work.
+    waiting: bool,
+}
+
+impl PartialEq for Work {
+    fn eq(&self, other: &Work) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+
+impl Eq for Work {}
+
+impl Work {
+    fn add(&'static self) {
+        let mut held = self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.count.fetch_add(1, Ordering::SeqCst);
+        if held.waiting {
+            return;
+        }
+        let Some(runtime) = held.runtime.clone() else { return };
+        held.waiting = true;
+        drop(held);
+        // Spawning it holds the runtime's own jumps at once; the task lets go once none works.
+        runtime.spawn_blocking(move || {
+            let mut held = self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            while self.count.load(Ordering::SeqCst) > 0 && held.runtime.is_some() {
+                held = self.idle.wait(held).unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+            held.waiting = false;
+        });
+    }
+
+    fn remove(&self) {
+        let _held = self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.count.fetch_sub(1, Ordering::SeqCst) == 1 {
+            self.idle.notify_all();
+        }
+    }
+
+    /// The runtime ends: nothing waits for its threads any more.
+    fn end(&self) {
+        self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).runtime = None;
+        self.idle.notify_all();
+    }
+}
+
+/// Whether this thread counts in its runtime's [`Work`], and the unit it holds there while it works.
+struct Held {
+    counted: Cell<bool>,
+    unit: Cell<Option<&'static Work>>,
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        if let Some(work) = self.unit.take() {
+            work.remove();
+        }
+    }
 }
 
 thread_local! {
     static CURRENT: Cell<Clock> = const { Cell::new(Clock::System) };
+    static HELD: Held = const { Held { counted: Cell::new(false), unit: Cell::new(None) } };
+}
+
+/// The thread waits: virtual time no longer waits for it.
+fn rest() {
+    let _ = HELD.try_with(|held| {
+        if let Some(work) = held.unit.take() {
+            work.remove();
+        }
+    });
+}
+
+/// The thread works again. `handed` says whoever woke it already counted it: a thread that does not
+/// count gives that unit back at once.
+fn resume(work: &'static Work, handed: bool) {
+    let counted = HELD.try_with(|held| {
+        if !held.counted.get() {
+            return false;
+        }
+        if !handed {
+            work.add();
+        }
+        if let Some(previous) = held.unit.replace(Some(work)) {
+            previous.remove();
+        }
+        true
+    });
+    if handed && counted != Ok(true) {
+        work.remove();
+    }
+}
+
+/// One wait of a thread on the virtual clock. The timer or the notification that ends it counts the
+/// thread as working before the thread runs, so no test sees the runtime idle in between.
+struct Waiter {
+    work: &'static Work,
+    woken: std::sync::Mutex<bool>,
+}
+
+impl Waiter {
+    fn new(work: &'static Work) -> Arc<Waiter> {
+        Arc::new(Waiter { work, woken: std::sync::Mutex::new(false) })
+    }
+
+    fn wake(&self) {
+        let mut woken = self.woken.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !*woken {
+            *woken = true;
+            self.work.add();
+        }
+    }
+
+    fn woken(&self) -> bool {
+        *self.woken.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Ends the wait: whether a wake counted the thread, which then holds that unit.
+    fn claim(&self) -> bool {
+        std::mem::replace(&mut *self.woken.lock().unwrap_or_else(std::sync::PoisonError::into_inner), true)
+    }
+}
+
+/// How many threads of the current virtual runtime work in real time; zero under the system clock.
+pub fn working() -> usize {
+    match Clock::current() {
+        Clock::Virtual { work, .. } => work.count.load(Ordering::SeqCst),
+        Clock::System => 0,
+    }
+}
+
+/// A wait for a stream another thread writes, such as a host's socket: what ends it is that
+/// writer's, never the clock's, so virtual time does not wait for the thread while it lasts.
+pub struct StreamWait(Option<&'static Work>);
+
+pub fn stream_wait() -> StreamWait {
+    match Clock::current() {
+        Clock::Virtual { work, .. } => {
+            rest();
+            StreamWait(Some(work))
+        }
+        Clock::System => StreamWait(None),
+    }
+}
+
+impl Drop for StreamWait {
+    fn drop(&mut self) {
+        if let Some(work) = self.0 {
+            resume(work, false);
+        }
+    }
 }
 
 pub struct Entered {
@@ -58,7 +231,7 @@ impl Clock {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as Millis)
                 .unwrap_or(0),
-            Clock::Virtual { epoch_millis, origin } => {
+            Clock::Virtual { epoch_millis, origin, .. } => {
                 epoch_millis.saturating_add(Instant::now().saturating_duration_since(origin).as_millis() as Millis)
             }
         }
@@ -115,7 +288,17 @@ pub async fn timeout<F: Future>(duration: Duration, future: F) -> Result<F::Outp
 /// own, so it ends when virtual time reaches it, never after real time.
 pub fn blocking_sleep(duration: Duration) {
     match (Clock::current(), tokio::runtime::Handle::try_current()) {
-        (Clock::Virtual { .. }, Ok(runtime)) => runtime.block_on(tokio::time::sleep(duration)),
+        (Clock::Virtual { work, .. }, Ok(runtime)) => {
+            let waiter = Waiter::new(work);
+            let (timer, deadline) = (waiter.clone(), Instant::now() + duration);
+            let woken = runtime.spawn(async move {
+                tokio::time::sleep_until(deadline).await;
+                timer.wake();
+            });
+            rest();
+            let _ = runtime.block_on(woken);
+            resume(work, waiter.claim());
+        }
         _ => std::thread::sleep(duration),
     }
 }
@@ -126,11 +309,33 @@ pub fn since(start: Instant) -> Duration {
 }
 
 /// The runtime of the virtual clock current on this thread, when there is one.
-fn virtual_runtime() -> Option<tokio::runtime::Handle> {
+fn virtual_runtime() -> Option<(tokio::runtime::Handle, &'static Work)> {
     match Clock::current() {
-        Clock::Virtual { .. } => tokio::runtime::Handle::try_current().ok(),
+        Clock::Virtual { work, .. } => tokio::runtime::Handle::try_current().ok().map(|runtime| (runtime, work)),
         Clock::System => None,
     }
+}
+
+/// Counts a thread about to start under `clock` as working until it first waits, so virtual time
+/// waits for what it does from its first instant.
+fn starting(clock: Clock) -> Option<&'static Work> {
+    match clock {
+        Clock::Virtual { work, .. } => {
+            work.add();
+            Some(work)
+        }
+        Clock::System => None,
+    }
+}
+
+/// The started thread takes over the unit [`starting`] counted for it.
+fn started(unit: Option<&'static Work>) {
+    let _ = HELD.try_with(|held| {
+        held.counted.set(true);
+        if let Some(previous) = held.unit.replace(unit) {
+            previous.remove();
+        }
+    });
 }
 
 /// A thread that keeps the clock of the thread that starts it, and its runtime when it has one,
@@ -154,10 +359,20 @@ where
         Some(name) => std::thread::Builder::new().name(name),
         None => std::thread::Builder::new(),
     };
-    builder.spawn(move || {
-        let _entered = enter(clock, runtime.as_ref());
-        work()
-    })
+    let unit = starting(clock);
+    builder
+        .spawn(move || {
+            let _entered = enter(clock, runtime.as_ref());
+            started(unit);
+            let done = work();
+            rest();
+            done
+        })
+        .inspect_err(|_| {
+            if let Some(work) = unit {
+                work.remove();
+            }
+        })
 }
 
 /// [`std::thread::scope`] whose threads keep the clock and the runtime of the thread that opens it.
@@ -182,9 +397,13 @@ impl<'scope> Scope<'scope, '_> {
         T: Send + 'scope,
     {
         let (clock, runtime) = (self.clock, self.runtime.clone());
+        let unit = starting(clock);
         self.inner.spawn(move || {
             let _entered = enter(clock, runtime.as_ref());
-            work()
+            started(unit);
+            let done = work();
+            rest();
+            done
         })
     }
 }
@@ -194,7 +413,13 @@ impl<'scope> Scope<'scope, '_> {
 /// still wakes it at once.
 pub struct Monitor<T> {
     shared: Arc<(std::sync::Mutex<T>, std::sync::Condvar)>,
+    /// The threads waiting under a virtual clock, which a notification counts as working.
+    waiters: Arc<std::sync::Mutex<Vec<Arc<Waiter>>>>,
 }
+
+/// How often a thread waiting under a virtual clock looks, in real time, whether its wait ended: a
+/// notification sent while it was between counting itself as waiting and sleeping is not lost.
+const LOOK_AGAIN: Duration = Duration::from_millis(10);
 
 impl<T: Default> Default for Monitor<T> {
     fn default() -> Self {
@@ -204,7 +429,7 @@ impl<T: Default> Default for Monitor<T> {
 
 impl<T> Monitor<T> {
     pub fn new(value: T) -> Monitor<T> {
-        Monitor { shared: Arc::new((std::sync::Mutex::new(value), std::sync::Condvar::new())) }
+        Monitor { shared: Arc::new((std::sync::Mutex::new(value), std::sync::Condvar::new())), waiters: Arc::default() }
     }
 
     pub fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, T>> {
@@ -212,6 +437,9 @@ impl<T> Monitor<T> {
     }
 
     pub fn notify_all(&self) {
+        for waiter in self.waiters.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter() {
+            waiter.wake();
+        }
         self.shared.1.notify_all();
     }
 
@@ -229,21 +457,35 @@ impl<T: Send + 'static> Monitor<T> {
         timeout: Duration,
     ) -> std::sync::LockResult<std::sync::MutexGuard<'a, T>> {
         let (_, condvar) = &*self.shared;
-        let Some(runtime) = virtual_runtime() else {
+        let Some((runtime, work)) = virtual_runtime() else {
             return match condvar.wait_timeout(guard, timeout) {
                 Ok((guard, _)) => Ok(guard),
                 Err(poisoned) => Err(std::sync::PoisonError::new(poisoned.into_inner().0)),
             };
         };
-        let shared = self.shared.clone();
+        let waiter = Waiter::new(work);
+        self.waiters.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(waiter.clone());
+        let (shared, timer) = (self.shared.clone(), waiter.clone());
         let deadline = instant() + timeout;
         let _deadline = Deadline(runtime.spawn(async move {
             tokio::time::sleep_until(deadline).await;
+            timer.wake();
             let (lock, condvar) = &*shared;
             drop(lock.lock());
             condvar.notify_all();
         }));
-        condvar.wait(guard)
+        rest();
+        let mut guard = guard;
+        let waited = loop {
+            match condvar.wait_timeout(guard, LOOK_AGAIN) {
+                Ok((again, _)) if waiter.woken() => break Ok(again),
+                Ok((again, _)) => guard = again,
+                Err(poisoned) => break Err(std::sync::PoisonError::new(poisoned.into_inner().0)),
+            }
+        };
+        self.waiters.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|other| !Arc::ptr_eq(other, &waiter));
+        resume(work, waiter.claim());
+        waited
     }
 }
 
@@ -338,7 +580,9 @@ impl VirtualRuntime {
             })
             .build()?;
         let origin = runtime.block_on(async { Instant::now() });
-        let clock = Clock::Virtual { epoch_millis, origin };
+        let work: &'static Work = Box::leak(Box::default());
+        work.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).runtime = Some(runtime.handle().clone());
+        let clock = Clock::Virtual { epoch_millis, origin, work };
         shared.set(clock).ok();
         Ok(VirtualRuntime { runtime, clock })
     }
@@ -355,6 +599,14 @@ impl VirtualRuntime {
     pub fn block_on<F: Future>(&self, future: F) -> F::Output {
         let _entered = self.clock.enter();
         self.runtime.block_on(future)
+    }
+}
+
+impl Drop for VirtualRuntime {
+    fn drop(&mut self) {
+        if let Clock::Virtual { work, .. } = self.clock {
+            work.end();
+        }
     }
 }
 

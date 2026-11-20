@@ -6,7 +6,7 @@ use crate::live::LiveOf as _;
 use alondra_core::clock;
 use crate::locks::Poisonable as _;
 use crate::domain_runtime::DomainRuntime;
-use crate::domain_store::{Attached,StoreError};
+use crate::domain_store::{Attached,OwnerJournal,StoreError};
 use crate::domain_store::provider_transition::{Kind,Plan,Phase,Transition,prepared_facts};
 use alondra_engine_ports::agent_host::{EndedHost,Retained};
 use alondra_core::accounts::AccountKey;
@@ -24,10 +24,8 @@ pub(crate) struct Transitions {
     advancing:tokio::sync::Mutex<()>,
     /// A holder that panics leaves it whole, so it is recovered: one insert or remove each.
     fences:Mutex<BTreeMap<String,EndedHost>>,
-    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) crash_at:Mutex<Option<Phase>>,
 }
-#[cfg(any(test, feature = "test-hooks"))]
 impl Transitions {
     /// What a daemon that dies lets go of: the ended hosts it held as proof.
     pub(crate) fn die(&self){*self.crash_at.lock().unwrap()=None;self.fences.lock().unwrap().clear();}
@@ -67,7 +65,7 @@ pub fn request(domain:&DomainRuntime,actor:&Actor,task:&TaskId,target_account:Ac
         if effective.model!=target_model.model && !source.turn_model{return Err(DomainError::new("unsupported_live_model","This native session cannot change its model in place; create a new node").into())}
         if target_account.provider==alondra_core::accounts::Provider::Codex && !source.disallowed_tools.is_empty(){return Err(DomainError::new("unsupported_tool_policy","Codex cannot enforce this task's tool deny list; keep the current provider or explicitly revise the task policy").into())}
         owner.stage_command(actor,&command,Attached::None)?;
-        owner.request_provider_transition(&Plan{id:id.clone(),kind:Kind::Model,task:task.clone(),expected_selection:expected_selection.into(),source,target_account,target_model,intent,reason:reason.into()})
+        owner.request_provider_transition(&Plan{id:id.clone(),kind:Kind::Model,task:task.clone(),expected_selection:expected_selection.into(),source,target_account,target_model,intent,reason:reason.into(),conversation_file:None})
     }).map_err(store_failure)?;
     Ok(json!({"task_id":task,"transition":id,"status":"pending"}))
 }
@@ -93,7 +91,7 @@ pub fn request_move(domain:&DomainRuntime,actor:&Actor,task:&TaskId,account:Acco
         if owner.state().lifecycle_of(task)?.execution()!=Some(&execution){return Err(DomainError::new("stale_execution","The task's execution changed; refresh before moving it").into())}
         let source=owner.selection_source(task,host_directory)?;
         owner.stage_command(actor,&command,Attached::None)?;
-        owner.request_provider_transition(&Plan{id:id.clone(),kind:Kind::Move,task:task.clone(),expected_selection:expected_selection.into(),source,target_account:account,target_model:pending.model,intent,reason:pending.reason})
+        owner.request_provider_transition(&Plan{id:id.clone(),kind:Kind::Move,task:task.clone(),expected_selection:expected_selection.into(),source,target_account:account,target_model:pending.model,intent,reason:pending.reason,conversation_file:None})
     }).map_err(store_failure)?;
     Ok(json!({"task_id":task,"transition":id,"status":"pending"}))
 }
@@ -158,7 +156,7 @@ fn abort_unapplied_model_change(domain: &DomainRuntime, change: &Transition) -> 
     }).map_err(store_failure).map(|(aborted, _)| aborted)
 }
 fn classify(plan:&Plan)->SelectionTransition{
-    if plan.kind==Kind::Move{return SelectionTransition::CreateWithHandoff}
+    if matches!(plan.kind,Kind::Move|Kind::Refresh){return SelectionTransition::CreateWithHandoff}
     if plan.target_account!=plan.source.account{return SelectionTransition::Reject("An active node keeps its account and provider".into())}
     let Some(model)=plan.source.selection.as_ref().and_then(|selection|selection.effective.clone()) else{return SelectionTransition::CreateWithHandoff};
     let current=ActiveSelection{account:plan.source.account.clone(),model,configuration:plan.source.configuration.clone()};
@@ -166,13 +164,16 @@ fn classify(plan:&Plan)->SelectionTransition{
     let capabilities=TransitionCapabilities{turn_scoped_model:plan.source.turn_model,turn_scoped_reasoning:false,native_resume:false,pinned_account:plan.intent.account.clone(),requested_model:plan.intent.requested.clone(),requested_reasoning_effort:plan.intent.requested_reasoning_effort.clone(),allow_model_substitution:plan.intent.allow_model_substitution,..Default::default()};
     classify_transition(&current,&target,&capabilities,None)
 }
-pub(crate) fn retained_handoff(domain:&DomainRuntime,task:&TaskId,id:&str)->Result<PreparedHandoff,DomainError>{
+/// The context the target of the change `id` starts from, and the file of the conversation before
+/// it that a refresh lets it read.
+pub(crate) fn retained_handoff(domain:&DomainRuntime,task:&TaskId,id:&str)->Result<(PreparedHandoff,Option<std::path::PathBuf>),DomainError>{
     let change=match current(domain,task)?{
         Some(change)=>change,
         None=>domain.store.lock_or_exit("the domain store").deferred_move(task).map_err(failure)?.ok_or_else(||failure("The transfer context is missing"))?,
     };
     if change.plan.id!=id || !matches!(change.phase,Phase::ContextReady|Phase::Done){return Err(failure("The transfer is not ready for its target"))}
-    serde_json::from_value(prepared_facts(change)).map_err(failure)
+    let file=change.plan.conversation_file.clone();
+    Ok((serde_json::from_value(prepared_facts(change)).map_err(failure)?,file))
 }
 fn drained(domain:&DomainRuntime,plan:&Plan)->Result<bool,DomainError>{
     let state=domain.state().map_err(failure)?;let lifecycle=state.lifecycle_of(&plan.task)?;
@@ -194,26 +195,65 @@ fn handoff_refusal(error:alondra_store::HandoffError)->String{
         alondra_store::HandoffError::IncompleteHistory(reason)=>format!("The task's public conversation is incomplete: {reason}"),
     }
 }
+/// What a refresh tells its new session after the task's records: why it starts, and where the
+/// conversation before it is and how to search it instead of reading it whole.
+fn refresh_note(plan:&Plan)->Option<String>{
+    let file=plan.conversation_file.as_ref().filter(|_|plan.kind==Kind::Refresh)?.display();
+    Some(format!("\nThis task goes on after a pause, in a new session with the same model and account. \
+        The whole conversation of the session before this one is in {file}: read it only when these records do not hold what you need. \
+        Each of its turns starts with a line `## Turn N`: find the one you need with `grep -n '## Turn' {file}` and read that turn, never the whole file.\n"))
+}
+/// The context the new execution of `plan` starts from: the task's canonical context and its
+/// retained public records, within the window of the model it starts with.
+fn handoff(owner:&mut dyn OwnerJournal,plan:&Plan)->Result<PreparedHandoff,StoreError>{
+    let task=owner.state().tasks.get(&plan.task).ok_or_else(||failure("Task missing"))?;
+    let canonical=critical_context(owner.state(),task)?;
+    let mut entries:Vec<ContextEntry>=vec![];let mut after=None;let mut coverage;
+    loop{
+        let page=owner.retained_context(&plan.task,after.as_ref(),128)?;coverage=page.coverage;
+        let next=page.next;let last=page.entries.last().map(|entry|entry.reference.clone());entries.extend(page.entries);
+        if entries.len()>8192{return Err(failure("Public context exceeds the supported transfer page bound").into())}
+        if next.is_none(){break}
+        if last.as_ref().is_none_or(|last|Some(last.sequence)!=next){return Err(failure("Public context pagination did not advance").into())}
+        after=last;
+    }
+    if plan.source.selection.as_ref().and_then(|selection|selection.effective.as_ref()).is_none(){return Err(failure("This older execution has no complete retained public history; continue its current native session").into())}
+    let window=owner.state().model_catalogs.iter().find(|catalog|catalog.account==plan.target_account).and_then(|catalog|catalog.models.iter().find(|model|model.model==plan.target_model.model.model)).and_then(|model|model.context_window);
+    let mut prepared=alondra_store::prepare_context_handoff(&canonical,"Continue this Alondra task from its public records. The user changed its provider or model. Preserve completed work and answer through Alondra.",&entries,&coverage,None,HandoffBudget{destination_context_tokens:window,reserved_tokens:alondra_store::HANDOFF_RESERVED_TOKENS}).map_err(|error|failure(handoff_refusal(error)))?;
+    if let Some(note)=refresh_note(plan){
+        prepared.estimated_context_tokens=prepared.estimated_context_tokens.saturating_add(alondra_store::estimated_tokens(&note));
+        prepared.context.push_str(&note);
+    }
+    Ok(prepared)
+}
 fn prepare_context(domain:&DomainRuntime,plan:&Plan)->Result<PreparedHandoff,DomainError>{
     domain.own(scope(domain)?,|owner|{
-        let task=owner.state().tasks.get(&plan.task).ok_or_else(||failure("Task missing"))?;
-        let canonical=critical_context(owner.state(),task)?;
-        let mut entries:Vec<ContextEntry>=vec![];let mut after=None;let mut coverage;
-        loop{
-            let page=owner.retained_context(&plan.task,after.as_ref(),128)?;coverage=page.coverage;
-            let next=page.next;let last=page.entries.last().map(|entry|entry.reference.clone());entries.extend(page.entries);
-            if entries.len()>8192{return Err(failure("Public context exceeds the supported transfer page bound").into())}
-            if next.is_none(){break}
-            if last.as_ref().is_none_or(|last|Some(last.sequence)!=next){return Err(failure("Public context pagination did not advance").into())}
-            after=last;
-        }
-        if plan.source.selection.as_ref().and_then(|selection|selection.effective.as_ref()).is_none(){return Err(failure("This older execution has no complete retained public history; continue its current native session").into())}
-        let window=owner.state().model_catalogs.iter().find(|catalog|catalog.account==plan.target_account).and_then(|catalog|catalog.models.iter().find(|model|model.model==plan.target_model.model.model)).and_then(|model|model.context_window);
-        let prepared=alondra_store::prepare_context_handoff(&canonical,"Continue this Alondra task from its public records. The user changed its provider or model. Preserve completed work and answer through Alondra.",&entries,&coverage,None,HandoffBudget{destination_context_tokens:window,reserved_tokens:alondra_store::HANDOFF_RESERVED_TOKENS}).map_err(|error|failure(handoff_refusal(error)))?;
+        let prepared=handoff(owner,plan)?;
         if let Some(through)=&prepared.coverage.through{owner.pin_context(&plan.id,through)?;}
         owner.provider_transition_phase(&plan.id,Phase::SourceFenced,Phase::ContextReady,serde_json::to_value(&prepared).map_err(failure)?)?;
         Ok(prepared)
     }).map_err(store_failure).map(|(value,_)|value)
+}
+/// Starts the task's execution in `host_directory` again as a new session of its model and
+/// account, in the owner's transaction that decided it: the new session carries on from the task's
+/// records and reads the conversation before it from `conversation_file` when it needs to. The
+/// task keeps a pending selection equal to its own until the new session took its input, so every
+/// hold of a selection change holds it meanwhile. Nothing is requested when the handoff could not
+/// be prepared now.
+pub(crate) fn request_refresh(owner:&mut dyn OwnerJournal,task:&TaskId,host_directory:std::path::PathBuf,conversation_file:std::path::PathBuf)->Result<String,StoreError>{
+    let source=owner.selection_source(task,host_directory)?;
+    let intent=source.selection.clone().ok_or_else(||failure("The task has no model selection"))?;
+    let target_model=intent.effective.clone().ok_or_else(||failure("The execution's model is unknown"))?;
+    let plan=Plan{id:format!("refresh-{}",crate::auth::random_hex(16)),kind:Kind::Refresh,task:task.clone(),expected_selection:owner.state().task_selection_stamp(task).unwrap_or_default(),
+        target_account:source.account.clone(),target_model,intent,reason:"The prompt cache of the conversation expired".into(),conversation_file:Some(conversation_file),source};
+    handoff(owner,&plan)?;
+    owner.validate_selection_source(&plan)?;
+    let pending=PendingTaskSelection{account:plan.target_account.clone(),model:plan.target_model.clone(),reason:plan.reason.clone()};
+    let command=CommandEnvelope{protocol_version:PROTOCOL_VERSION,data_epoch:owner.state().data_epoch.clone(),command_id:format!("{}-pending",plan.id).as_str().into(),expected_revision:0,
+        command:Command::RecordTaskSelection{task_id:task.clone(),selection:plan.intent.clone(),pending:Some(pending)}};
+    owner.stage_command(&Actor::System,&command,Attached::None)?;
+    owner.request_provider_transition(&plan)?;
+    Ok(plan.id)
 }
 /// Ends the execution a task moves from and seals it: its host stops, what it did is committed
 /// with its end, and the ended host is the proof that nothing of it writes any more.
@@ -361,7 +401,6 @@ pub async fn advance(domain:&Arc<DomainRuntime>,task:&TaskId)->Result<Phase,Doma
     let _advance=domain.selection_changes().advancing.lock().await;
     loop{
         let change=current(domain,task)?.ok_or_else(||failure("No selection change is pending"))?;
-        #[cfg(any(test, feature = "test-hooks"))]
         if *domain.selection_changes().crash_at.lock().unwrap()==Some(change.phase){return Err(failure("the daemon died"))}
         let plan=&change.plan;
         if plan.kind==Kind::Model && plan.target_account!=plan.source.account{return Err(failure("The account and provider of this native session cannot change; create a new node"))}
@@ -376,10 +415,10 @@ pub async fn advance(domain:&Arc<DomainRuntime>,task:&TaskId)->Result<Phase,Doma
                 SelectionTransition::Reject(reason)=>return Err(failure(reason)),
                 SelectionTransition::Keep=>{apply_selection(domain,plan,Phase::Requested,Phase::Done,json!({"unchanged_execution":true}))?;return Ok(Phase::Done)},
                 SelectionTransition::ApplyNextTurn=>phase(domain,&change,Phase::Draining,json!({}))?,
-                SelectionTransition::CreateWithHandoff if plan.kind==Kind::Move=>phase(domain,&change,Phase::Draining,json!({}))?,
+                SelectionTransition::CreateWithHandoff if matches!(plan.kind,Kind::Move|Kind::Refresh)=>phase(domain,&change,Phase::Draining,json!({}))?,
                 _=>return Err(failure("This change requires a new native session; create a new node instead")),
             },
-            Phase::Draining if plan.kind==Kind::Move=>{
+            Phase::Draining if matches!(plan.kind,Kind::Move|Kind::Refresh)=>{
                 if crate::sdk_owner::being_retaken(domain,task){return Ok(Phase::Draining)}
                 end_source(domain,plan)?
             }

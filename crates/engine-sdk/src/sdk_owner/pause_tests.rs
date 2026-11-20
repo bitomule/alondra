@@ -1,5 +1,5 @@
 use super::*;
-use super::tests::{Slice, envelope};
+use super::fixtures::{Slice, envelope};
 
 fn move_node(domain: &DomainRuntime, agent: &AgentId, command: &str, event: NodeEvent) {
     let state = domain.read();

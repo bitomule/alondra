@@ -87,7 +87,7 @@ impl SdkNode {
         let worktree = home.join("worktree");
         std::fs::DirBuilder::new().mode(0o700).create(&worktree).unwrap();
         let (backend, capture) = crate::host_fixtures::fixture_backend(&home, &state);
-        let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
+        let domain = Arc::new(crate::engine_fixtures::open(&home).unwrap());
         domain.enable_sdk(backend.clone());
         run(&domain, Actor::Orchestrator { generation: 0 }, Command::CreateRequest {
             request_id: "r".into(), body: "Write the release notes".into(), auto_merge: false, maintenance: false, message: false });
@@ -173,7 +173,7 @@ impl SdkNode {
 
     /// The prompts Claude got, besides the wake Alondra sends after a turn that ended empty.
     pub fn prompts(&self) -> Vec<String> {
-        crate::sdk_owner::tests::not_wakes(std::fs::read_to_string(format!("{}.prompts", self.capture.display())).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()))
+        crate::sdk_owner::fixtures::not_wakes(std::fs::read_to_string(format!("{}.prompts", self.capture.display())).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()))
     }
 
     pub fn pending_inputs(&self) -> usize {
@@ -233,7 +233,7 @@ impl SdkNode {
     /// The node's host dies while it is paused and no owner of the daemon is left to replace it.
     pub fn lose_host(&mut self) {
         std::fs::DirBuilder::new().mode(0o700).create(self.home.join("plugin")).unwrap();
-        crate::sdk_owner::tests::kill_host(&self.driver);
+        crate::sdk_owner::fixtures::kill_host(&self.driver);
         self.domain.sdk_owners().driven_by_hand.lock().unwrap().remove(self.driver.agent());
         self.driver.let_go();
         assert!(!self.domain.owns_sdk_host(&AgentId(self.agent())));
@@ -254,7 +254,7 @@ impl SdkNode {
     }
 
     pub fn host_lost_card(&self) -> Option<alondra_domain_rules::Interaction> {
-        crate::sdk_owner::tests::open_card(&self.domain, alondra_domain_rules::HOST_LOST_PREFIX)
+        crate::sdk_owner::fixtures::open_card(&self.domain, alondra_domain_rules::HOST_LOST_PREFIX)
     }
 }
 

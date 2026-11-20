@@ -27,7 +27,7 @@ fn push_commit_retained_writer_keeps_signed_http_reads_serviceable() {
         for path in ["/v1/service/push-binding", PUSH_BINDING_ROUTE] {
             let (_directory, mut service, phone) = push_fixture();
             activate_push(&service);
-            let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&service.home).unwrap());
+            let domain = Arc::new(crate::engine_tests::open(&service.home).unwrap());
             let expected_epoch = domain.state().unwrap().data_epoch.0.clone();
             if path == PUSH_BINDING_ROUTE { service = service.with_domain(domain); }
             let state = crate::domain_bootstrap::DomainDaemon::open(&service.home, &alondra_store_sqlite::Sqlite).unwrap();

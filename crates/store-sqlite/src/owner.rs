@@ -60,7 +60,6 @@ fn observed(fact: &RuntimeFact) -> std::result::Result<RuntimeObservation, Store
     })
 }
 /// The refusal the test asked for; the run that probes takes it.
-#[cfg(any(test, feature = "test-hooks"))]
 fn refused_for_test(command: &Command, probe: bool) -> Option<StoreError> {
     let what = match command {
         Command::RecordTurnBoundary { .. } => Refuse::TurnEnd,
@@ -71,20 +70,9 @@ fn refused_for_test(command: &Command, probe: bool) -> Option<StoreError> {
     alondra_engine_ports::journal::owner::take_refusal(what, probe).then(|| DomainError::new("conflict", "the test refuses it").into())
 }
 
-#[cfg(not(any(test, feature = "test-hooks")))]
-fn refused_for_test(_: &Command, _: bool) -> Option<StoreError> {
-    None
-}
-
 /// The adapter's refusal of an observation the test asked for, taken once.
-#[cfg(any(test, feature = "test-hooks"))]
 fn observation_refused_for_test() -> Option<StoreError> {
     alondra_engine_ports::journal::owner::take_refusal(Refuse::Observation, true).then(|| ObservationRefusal::Provider(alondra_agent_application::Error::Adapter(AdapterError::Storage("the test refuses it".into()))).into())
-}
-
-#[cfg(not(any(test, feature = "test-hooks")))]
-fn observation_refused_for_test() -> Option<StoreError> {
-    None
 }
 
 fn command_name(command: &Command) -> &'static str {
@@ -389,7 +377,7 @@ impl<'connection> OwnerTransaction<'connection> {
                     }).flatten();
                     let kept = alondra_store::DecisionRequest::new(request.clone(), tool_use.clone(), *kind, payload.clone())?;
                     self.journal.put_decision_request(&execution, *epoch, &kept)?;
-                    let (payload, worktree, worktrees) = self.journal.inspect(|| {
+                    let (payload, worktree, worktrees, exclusive) = self.journal.inspect(|| {
                         let payload: serde_json::Value = serde_json::from_slice(payload).map_err(|error| StoreError::Storage(error.into()))?;
                         let worktree = conn
                             .query_row("SELECT dir FROM task_worktrees WHERE task_id=?1", rusqlite::params![task_id.0], |row| row.get::<_, String>(0))
@@ -399,10 +387,16 @@ impl<'connection> OwnerTransaction<'connection> {
                             .prepare("SELECT path FROM task_worktree_records WHERE task_id=?1 AND \"end\" IS NULL ORDER BY path")
                             .and_then(|mut open| open.query_map(rusqlite::params![task_id.0], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>())
                             .map_err(|error| StoreError::Storage(error.into()))?;
-                        Ok::<_, StoreError>((payload, worktree, worktrees))
+                        let exclusive = conn
+                            .prepare("SELECT path FROM task_worktree_records r WHERE task_id=?1 AND \"end\" IS NULL AND NOT EXISTS (\
+                                SELECT 1 FROM task_worktree_records o WHERE o.path=r.path AND o.task_id<>?1 \
+                                AND (o.\"end\" IS NULL OR o.\"end\" IN ('kept_by_user','users_own'))) ORDER BY path")
+                            .and_then(|mut open| open.query_map(rusqlite::params![task_id.0], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>())
+                            .map_err(|error| StoreError::Storage(error.into()))?;
+                        Ok::<_, StoreError>((payload, worktree, worktrees, exclusive))
                     })?;
                     let decisions = self.decisions.as_ref().ok_or_else(|| StoreError::Storage(anyhow::anyhow!("this store was opened without a way to build the card of a decision")))?;
-                    let asked = decisions.decide(self.state().tasks.get(&task_id).map(|task| task.title.as_str()).unwrap_or("Plan"), *kind, &payload, worktree.as_deref(), &worktrees, home);
+                    let asked = decisions.decide(self.state().tasks.get(&task_id).map(|task| task.title.as_str()).unwrap_or("Plan"), *kind, &payload, worktree.as_deref(), &worktrees, &exclusive, home);
                     commands.push(Command::RecordDecisionRequest {
                         task_id: task_id.clone(),
                         generation,
@@ -881,7 +875,6 @@ impl<'connection> OwnerTransaction<'connection> {
     }
 
     /// Lifecycle fixtures for states no typed owner step produces yet.
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn journal(&mut self) -> &mut LifecycleTransaction<'connection> {
         &mut self.journal
     }

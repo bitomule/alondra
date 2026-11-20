@@ -1,6 +1,6 @@
 use super::*;
 use crate::domain_store::metrics_fold::tests::{done_task, insert_task, spend, steps, usage};
-use crate::domain_store::tests::Fixture;
+use crate::domain_store::testing::Fixture;
 use alondra_core::metrics::Role;
 use alondra_core::metrics::report::{Metric, Query, report};
 

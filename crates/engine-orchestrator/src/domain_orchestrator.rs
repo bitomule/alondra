@@ -911,6 +911,9 @@ fn summary(state: &DomainState, ages: &Ages, choices: impl Fn(&alondra_domain_ru
             format!(" (tasks: {listed}{ended})")
         };
         text.push_str(&format!("request {}{age}{marker}: {body}\n", request.id));
+        if let Some(card) = &request.reply_to {
+            text.push_str(&format!("  the user wrote it as a reply to the card {} “{}”\n", card.interaction_id, one_line(&card.title)));
+        }
         if tight && !unsplit {
             continue;
         }
@@ -2102,6 +2105,21 @@ mod tests {
         let state = f.executor.domain.state().unwrap();
         let text = summary(&state, &no_ages(), |request| (request.0 == "r").then(|| "  options: project App · Effort: hard".to_owned()));
         assert!(text.contains("request r (tasks: t not_started): Work\n  options: project App · Effort: hard\ntask t"), "{text}");
+    }
+
+    #[test]
+    fn a_reply_to_a_card_names_the_card_it_answers() {
+        let f = fixture();
+        command(&f.executor.domain, Actor::Orchestrator { generation: 0 }, "notice", Command::PublishInformation {
+            attachments: vec![], interaction_id: "notice".into(), scope: Scope::Orchestrator { request_id: None },
+            recipient: alondra_domain_rules::Recipient::User, body: "The weekly report is ready.".into(),
+            card: alondra_domain_rules::CardSpec::new(alondra_domain_rules::CardKind::Know, "Read the weekly report"),
+        });
+        command(&f.executor.domain, Actor::User { user_id: "u".into() }, "reply", Command::CreateCardReply {
+            request_id: "reply".into(), interaction_id: "notice".into(), body: "Why so late?".into(), auto_merge: false,
+        });
+        let text = summary(&f.executor.domain.state().unwrap(), &no_ages(), |_| None);
+        assert!(text.contains("request reply (no task of its own): Why so late?\n  the user wrote it as a reply to the card notice “Read the weekly report”\n"), "{text}");
     }
 
     fn no_ages() -> Ages {

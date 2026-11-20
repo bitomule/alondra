@@ -497,6 +497,14 @@ async fn execute_external(
                     };
                     (agent, Some(task_id.0.clone()))
                 }
+                Scope::Orchestrator { .. } if matches!(interaction.payload, InteractionPayload::Information { .. }) => {
+                    let text = request.input.text.as_deref().unwrap_or_default().trim();
+                    if text.is_empty() { return Ok(error_value_lang(lang, "invalid_input", "text is required")); }
+                    let body = json!({"text":text,"attachments":attachments,"reply_to":interaction_id,
+                        "from_claude":flag(&request.input, "from_claude")});
+                    let reply = client.write(&user_id, Write::OrchestratorMessage, &body, transport, &authorize).await?;
+                    return Ok(to_applied(reply.status.as_u16(), reply.body));
+                }
                 Scope::Orchestrator { .. } => return Ok(no_longer_available(lang, "This item has no active node")),
             };
             if !state.agents.contains_key(&agent) { return Ok(no_longer_available(lang, "This node is no longer available")); }
@@ -2247,7 +2255,7 @@ mod tests {
         use base64::{Engine as _, engine::general_purpose::STANDARD};
         let directory = crate::test_support::Directory::new();
         std::fs::create_dir_all(&directory).unwrap();
-        drop(alondra_engine_sdk::engine_tests::open(&directory).unwrap());
+        drop(crate::engine_tests::open(&directory).unwrap());
         let daemon = crate::domain_bootstrap::DomainDaemon::open(&directory, &alondra_store_sqlite::Sqlite).unwrap();
         let key = p256::ecdsa::SigningKey::from_slice(&[21u8; 32]).unwrap();
         let public_key = STANDARD.encode(key.verifying_key().to_sec1_bytes());
@@ -2292,7 +2300,7 @@ mod tests {
         use std::future::Future;
         let directory = crate::test_support::Directory::new();
         std::fs::create_dir_all(&directory).unwrap();
-        drop(alondra_engine_sdk::engine_tests::open(&directory).unwrap());
+        drop(crate::engine_tests::open(&directory).unwrap());
         let daemon = crate::domain_bootstrap::DomainDaemon::open(&directory, &alondra_store_sqlite::Sqlite).unwrap();
         let domain = daemon.domain();
         apply_seed_command(&domain, Actor::User { user_id: "fixture".into() }, "request", Command::CreateRequest {
@@ -2381,7 +2389,7 @@ for line in sys.stdin:
         std::fs::write(&native, SIGNED_IN_CODEX).unwrap();
         std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::write(alondra_core::options::path_in(&home), alondra_core::accounts::AccountsConfig::fresh().to_toml()).unwrap();
-        let domain = std::sync::Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let domain = std::sync::Arc::new(crate::engine_tests::open(&home).unwrap());
         domain.enable_sdk(alondra_daemon_engine::sdk_backend::SdkBackend { provider: Provider::Codex, origin: None, native,
             node: directory.join("unused-node"), host: directory.join("unused-host"), node_sha256: String::new(), host_sha256: String::new(), native_sha256: String::new(),
             host_environment: Default::default(), native_environment: crate::test_support::fixture_environment(&user),
@@ -2424,7 +2432,7 @@ for line in sys.stdin:
         let _home = TestHome(home.clone());
         let options = alondra_core::options::path_in(&home);
         fs::write(&options, "# mine\n[defaults]\neffort = \"light\"\n").unwrap();
-        let domain = std::sync::Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let domain = std::sync::Arc::new(crate::engine_tests::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         let state = domain.state().unwrap();
 
@@ -2493,7 +2501,7 @@ for line in sys.stdin:
         let home = crate::test_support::Directory::new();
         fs::create_dir(&home).unwrap();
         let _home = TestHome(home.to_path_buf());
-        let domain = std::sync::Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let domain = std::sync::Arc::new(crate::engine_tests::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
             agent_id: "agent-a".into(), name: "Agent A".into(), at: 0
@@ -2919,7 +2927,7 @@ for line in sys.stdin:
     fn action_home() -> (ActionHome, std::sync::Arc<crate::domain_runtime::DomainRuntime>, std::sync::Arc<crate::client_routes::Client>) {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir(&home).unwrap();
-        let domain = std::sync::Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let domain = std::sync::Arc::new(crate::engine_tests::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         (ActionHome(home), domain, client)
     }
@@ -3176,6 +3184,7 @@ for line in sys.stdin:
         let after = domain.state().unwrap();
         let pending = after.tasks[&alondra_domain_rules::TaskId::from("task")].pending_user_inputs.clone();
         assert_eq!(pending.len(), 1);
+        assert!(alondra_domain_rules::ReadIndex::build(&after).waiting_card(&"info".into()).is_none(), "the reply read the update");
         let reply = execute(&domain, &client, &home.0, "test-device", other, None, || Ok(())).await;
         let body: Value = serde_json::from_slice(&axum::body::to_bytes(reply.into_body(), 1024 * 1024).await.unwrap()).unwrap();
         assert_eq!(body["outcome"], "no_longer_available");
@@ -4020,6 +4029,30 @@ for line in sys.stdin:
         };
         assert_eq!(answer.inputs["text"], alondra_domain_rules::InputValue::Text("Neither: keep the old one".into()));
         assert!(alondra_domain_rules::ReadIndex::build(&state).waiting_card(&"question".into()).is_none());
+    }
+
+    /// A reply to the orchestrator's information reaches the orchestrator with the card it is about
+    /// and reads the card, which leaves the inbox like any answered card.
+    #[tokio::test]
+    async fn a_reply_to_the_orchestrators_information_reads_it_and_reaches_the_orchestrator() {
+        use alondra_domain_rules::{CardKind, CardSpec, Recipient, Scope};
+        let (home, domain, client) = action_home();
+        apply_seed_command(&domain, Actor::Orchestrator { generation: 0 }, "notice", Command::PublishInformation {
+            attachments: vec![], interaction_id: "notice".into(), scope: Scope::Orchestrator { request_id: None },
+            recipient: Recipient::User, body: "The weekly report is ready.".into(),
+            card: CardSpec::derived(CardKind::Know, "Read the weekly report"),
+        });
+        let state = domain.state().unwrap();
+        assert!(alondra_domain_rules::ReadIndex::build(&state).waiting_card(&"notice".into()).is_some());
+        let reply = ActionId::new(Verb::Reply, "notice", state.interactions[&"notice".into()].revision, None).unwrap();
+        assert!(alondra_view_model::resolves_card(&state, &reply), "the client takes the card out as it sends the reply");
+        let applied = act(&home, &domain, &client, FIRST, reply, None, Some("Why so late?")).await;
+        assert_eq!(applied["outcome"], "applied", "{applied}");
+        let state = domain.state().unwrap();
+        assert!(alondra_domain_rules::ReadIndex::build(&state).waiting_card(&"notice".into()).is_none(), "the reply read the notice");
+        let request = state.requests.values().find(|request| request.reply_to.is_some()).expect("the reply is a request to the orchestrator");
+        assert_eq!(request.body, "Why so late?");
+        assert_eq!(request.reply_to.as_ref().unwrap().interaction_id, "notice".into());
     }
 
     /// The user wrote «Hazlo tú» under the orchestrator's Decide card: it is the answer to that card,

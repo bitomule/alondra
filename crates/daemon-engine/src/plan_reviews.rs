@@ -10,8 +10,8 @@ pub fn held(state: &DomainState, task: &TaskId) -> Option<String> {
         "{task} waits for the orchestrator to review its plan after the user's decision on «{source}»: it starts once settle_plan_review settles it"))
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
-pub mod tests {
+/// A plan held for the orchestrator's review, as tests here and above set it up.
+pub mod fixtures {
     use super::*;
     use alondra_daemon_engine_model::LaunchPlan;
     use crate::domain_runtime::DomainRuntime;
@@ -20,7 +20,8 @@ pub mod tests {
     };
     use std::collections::{BTreeMap, BTreeSet};
 
-    fn run(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) -> Result<(), alondra_domain_rules::DomainError> {
+
+    pub fn run(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) -> Result<(), alondra_domain_rules::DomainError> {
         let state = domain.state().unwrap();
         domain.execute(&actor, &CommandEnvelope {
             protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: id.into(),
@@ -31,14 +32,14 @@ pub mod tests {
         })
     }
 
-    fn must(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
+    pub fn must(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
         let shown = format!("{command:?}");
         if let Err(error) = run(domain, actor, id, command) {
             panic!("{shown} was refused: {error:?}");
         }
     }
 
-    fn orchestrator() -> Actor {
+    pub fn orchestrator() -> Actor {
         Actor::Orchestrator { generation: 0 }
     }
 
@@ -46,7 +47,7 @@ pub mod tests {
         LaunchPlan { mission: Some(mission.into()), ..LaunchPlan::new(name, "/tmp") }
     }
 
-    fn task(domain: &DomainRuntime, id: &str, agent: Option<&str>, dependencies: &[&str], mission: &str) {
+    pub fn task(domain: &DomainRuntime, id: &str, agent: Option<&str>, dependencies: &[&str], mission: &str) {
         must(domain, orchestrator(), &format!("create-{id}"), Command::CreateTask {
             task_id: id.into(), request_id: "r".into(), title: format!("Redraft index · Phase {}", id.to_uppercase()), agent_id: agent.map(Into::into),
             review_prs: false, dependencies: dependencies.iter().map(|d| TaskId::from(*d)).collect(), stack: None, launch: Some(plan(id, mission)),
@@ -82,13 +83,25 @@ pub mod tests {
         (home, domain)
     }
 
+    pub fn settle(domain: &DomainRuntime, id: &str, task: &str, outcome: PlanReviewOutcome) -> Result<(), alondra_domain_rules::DomainError> {
+        run(domain, orchestrator(), id, Command::SettlePlanReview { review_id: "decision-1".into(), task_id: task.into(), outcome })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alondra_daemon_engine_model::LaunchPlan;
+    use crate::domain_runtime::DomainRuntime;
+    use alondra_domain_rules::{
+        Actor, CardKind, CardSpec, Command, CommandEnvelope, PROTOCOL_VERSION, PlanReviewOutcome, QuestionOption, Recipient, Scope, SuggestionDecision,
+    };
+    use std::collections::{BTreeMap, BTreeSet};
+    use super::fixtures::*;
+
     fn orchestrator_messages(domain: &DomainRuntime) -> Vec<String> {
         let store = domain.store.lock().unwrap();
         store.pending_messages().unwrap().into_iter().filter(|m| m.recipient_kind == "orchestrator").map(|m| m.message).collect()
-    }
-
-    pub fn settle(domain: &DomainRuntime, id: &str, task: &str, outcome: PlanReviewOutcome) -> Result<(), alondra_domain_rules::DomainError> {
-        run(domain, orchestrator(), id, Command::SettlePlanReview { review_id: "decision-1".into(), task_id: task.into(), outcome })
     }
 
     #[test]

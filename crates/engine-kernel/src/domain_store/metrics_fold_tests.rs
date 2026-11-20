@@ -1,6 +1,6 @@
 use super::*;
 use crate::domain_store::model_metrics::{Decision as Chosen, DecisionKind as ChosenKind};
-use crate::domain_store::tests::{Fixture, seeded};
+use crate::domain_store::testing::{Fixture, seeded};
 use alondra_domain_rules::*;
 use alondra_core::options::Approach;
 
@@ -194,6 +194,27 @@ fn a_task_folded_again_after_its_samples_went_keeps_what_it_spent() {
     let refolded = row(&store);
     assert_eq!((refolded.measured, refolded.sessions, refolded.steps), (true, 1, [40, 1, 10, 1]), "the spend folded before stays");
     assert_eq!(spent_by_model(&store).len(), 2);
+}
+
+fn started<'a>(task: &'a str, kind: &'a str, at: Millis, written_1h: u64) -> SessionStarted<'a> {
+    SessionStarted { task_id: task, session_id: "agent-1", kind, requested_at: at, since_previous: Some(4 * 60 * 60_000), tokens: written_1h + 13_000, written_1h, written_5m: 0, read: 13_000 }
+}
+
+#[test]
+fn each_host_start_keeps_what_it_wrote_to_the_prompt_cache_until_its_task_samples_go() {
+    let fixture = Fixture::new();
+    let mut store = done_task(&fixture);
+    store.record_session_start(&started("task-1", "resumed", 20, 594_517)).unwrap();
+    store.record_session_start(&started("task-1", "new", 10, 0)).unwrap();
+    store.record_session_start(&started("task-open", "resumed", 5, 1)).unwrap();
+    let starts = store.session_starts("task-1").unwrap();
+    assert_eq!(starts.iter().map(|start| (start.kind.as_str(), start.requested_at, start.written_1h)).collect::<Vec<_>>(), vec![("new", 10, 0), ("resumed", 20, 594_517)]);
+    assert_eq!((starts[1].since_previous, starts[1].read, starts[1].tokens), (Some(4 * 60 * 60_000), 13_000, 607_517));
+    store.fold_ended_tasks(64).unwrap();
+    let finished = row(&store).finished_at;
+    assert_eq!(pass(&mut store, samples_of_folded_tasks, finished + SAMPLES_MS + 1, 256), 5, "its spend on two models, its steps and its two starts");
+    assert!(store.session_starts("task-1").unwrap().is_empty());
+    assert_eq!(store.session_starts("task-open").unwrap().len(), 1, "an open task keeps its starts");
 }
 
 #[test]

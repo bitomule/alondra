@@ -1,8 +1,7 @@
 load("//tools/bazel:crates.bzl", "adapter_out_crate")
 load("//tools:tree.bzl", "repo_tree")
-load("//tools:rust_test.bzl", "LOW_OPT_LEVEL", "low_opt_rust_test")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
@@ -20,7 +19,7 @@ exports_files(["src/tests.rs", "src/schedule_acceptance_tests.rs"], visibility =
 
 adapter_out_crate(
     name = "store_sqlite",
-    srcs = production_sources(test_only = ["src/live_read_trace.rs", "src/load_bench.rs", "src/retention_fixtures.rs", "src/testing.rs"]),
+    srcs = production_sources(),
     compile_data = SQL,
     crate_name = "alondra_store_sqlite",
     version = VERSION,
@@ -28,24 +27,7 @@ adapter_out_crate(
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-support:daemon_support",
     ],
-)
-
-rust_library(
-    name = "store_sqlite_test_hooks",
-    testonly = True,
-    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
-    compile_data = SQL,
-    crate_features = ["test-hooks"],
-    crate_name = "alondra_store_sqlite",
-    crate_root = "src/lib.rs",
-    edition = "2024",
-    rustc_flags = [LOW_OPT_LEVEL],
-    version = VERSION,
-    visibility = ["//crates/alondrad:__pkg__", "//crates/daemon-engine:__pkg__", "//crates/daemon-server:__pkg__", "//crates/engine-admission:__pkg__", "//crates/engine-github:__pkg__", "//crates/engine-kernel:__pkg__", "//crates/engine-orchestrator:__pkg__", "//crates/engine-sdk:__pkg__"],
-    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
-        "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
-        "//crates/daemon-support:daemon_support_test_hooks",
-    ] + ["//crates/engine-doubles:engine_doubles"],
+    test_visibility = ["//crates/alondrad:__pkg__", "//crates/daemon-engine:__pkg__", "//crates/daemon-engine-machine:__pkg__", "//crates/daemon-server:__pkg__", "//crates/engine-admission:__pkg__", "//crates/engine-github:__pkg__", "//crates/engine-kernel:__pkg__", "//crates/engine-orchestrator:__pkg__", "//crates/engine-sdk:__pkg__", "//crates/scenarios:__pkg__"],
 )
 
 low_opt_rust_test(
@@ -59,8 +41,8 @@ low_opt_rust_test(
     env = {"HOME": "."},
     version = VERSION,
     deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + [
-        "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
-        "//crates/daemon-support:daemon_support_test_hooks",
+        "//crates/daemon-engine-model:daemon_engine_model",
+        "//crates/daemon-support:daemon_support",
     ] + ["//crates/engine-doubles:engine_doubles"],
 )
 
@@ -72,14 +54,14 @@ rust_inputs_test(
     required_sources = ["crates/store-sqlite/src/lib.rs"],
     source_dir = "crates/store-sqlite/src/",
     target_under_test = ":store_sqlite",
-    test_only_sources = ["crates/store-sqlite/src/live_read_trace.rs", "crates/store-sqlite/src/load_bench.rs", "crates/store-sqlite/src/retention_fixtures.rs", "crates/store-sqlite/src/testing.rs"],
+    test_only_sources = ["crates/test_support.rs"],
     test_sources = False,
 )
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 filegroup(
     name = "report_sources",
-    srcs = production_sources(test_only = ["src/live_read_trace.rs", "src/load_bench.rs", "src/retention_fixtures.rs", "src/testing.rs"]),
+    srcs = production_sources(),
     visibility = ["//crates/alondra:__pkg__", "//crates/cli-report:__pkg__", "//crates/alondrad:__pkg__", "//crates/daemon-server:__pkg__"],
 )
 

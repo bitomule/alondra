@@ -119,6 +119,9 @@ impl DomainState {
                 return self.decide(lifecycles, task, LifecycleRecord::DecidedByPolicy { epoch, decision });
             }
         }
+        if hold == Hold::Permission && matches!(prompt, DecisionPrompt::Card { card, .. } if card.own_worktree) {
+            return self.decide(lifecycles, task, LifecycleRecord::DecidedByPolicy { epoch, decision: DecisionRecord::Allow });
+        }
         if hold == Hold::Permission && self.allowed_in_task(task, prompt) {
             return self.decide(lifecycles, task, LifecycleRecord::DecidedByPolicy { epoch, decision: DecisionRecord::Allow });
         }

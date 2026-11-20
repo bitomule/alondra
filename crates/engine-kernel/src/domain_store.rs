@@ -50,20 +50,20 @@ pub mod provider_settings {
 /// The SQLite journal itself, for the tests that read its tables.
 #[cfg(test)]
 pub use alondra_store_sqlite::{DomainStore, statement_counts, testing};
-#[cfg(any(test, feature = "test-hooks"))]
-pub use owner::{admit_through_sdk, admit_through_sdk_with_host};
-#[cfg(any(test, feature = "test-hooks"))]
+pub use owner_fixtures::{admit_through_sdk, admit_through_sdk_with_host};
 #[path = "domain_store/runtime_owner.rs"]
-mod owner;
+mod owner_fixtures;
 #[cfg(test)]
-pub mod tests {
-pub use alondra_store_sqlite::tests::*;
-#[cfg(test)]
+mod tests {
 use super::*;
+use alondra_store_sqlite::testing::continuation_fixture;
 #[test]
 fn a_continuation_storage_failure_rolls_back_the_transfer_and_publication() {
     for deferred in [false, true] {
-        let (fixture, _root, store, command, _) = continuation_fixture();
+        let root = crate::test_support::Directory::new();
+        let worktree = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "original");
+        alondra_store_sqlite::testing::wire_stores_with(|ports| alondra_engine_doubles::machine::wire(ports, alondra_daemon_support::watcher::claude_home));
+        let (fixture, store, command, _) = continuation_fixture(&worktree);
         drop(store);
         let runtime = crate::domain_runtime::DomainRuntime::open_unwired_at(&fixture.0, &fixture.path()).unwrap();
         let observer = Connection::open(fixture.path()).unwrap();

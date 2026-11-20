@@ -17,12 +17,21 @@ pub enum ContextEvent {
     /// back to it.
     Requested,
     /// `model` answered a request of the root conversation `tokens` long; `cache` is how long
-    /// the prompt cache that request wrote lasts, unknown when it wrote none.
-    Answered { tokens: u64, cache: Option<Duration>, model: Option<String> },
+    /// the prompt cache that request wrote lasts, unknown when it wrote none, and `cached` what it
+    /// wrote to and read from that cache.
+    Answered { tokens: u64, cache: Option<Duration>, model: Option<String>, cached: Cached },
     /// A turn ended, and Claude said the context window of each model it used in it.
     Windows(Vec<(String, u64)>),
     /// Claude compacted the conversation: what was measured before no longer holds.
     Compacted,
+}
+
+/// The tokens a request wrote to the prompt cache, by how long they last, and read from it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Cached {
+    pub written_1h: u64,
+    pub written_5m: u64,
+    pub read: u64,
 }
 
 pub fn context_event(observation: &OrderedObservation) -> Option<ContextEvent> {
@@ -44,17 +53,18 @@ fn of(payload: &Value) -> Option<ContextEvent> {
         "assistant" if root => {
             let usage = payload.pointer("/message/usage")?;
             let count = |field: &str| usage.get(field).and_then(Value::as_u64).unwrap_or(0);
-            let cached = |field: &str| usage.get("cache_creation").and_then(|created| created.get(field)).and_then(Value::as_u64).unwrap_or(0) > 0;
+            let created = |field: &str| usage.get("cache_creation").and_then(|created| created.get(field)).and_then(Value::as_u64).unwrap_or(0);
             let tokens = count("input_tokens") + count("cache_creation_input_tokens") + count("cache_read_input_tokens") + count("output_tokens");
-            let cache = if cached("ephemeral_1h_input_tokens") {
+            let cached = Cached { written_1h: created("ephemeral_1h_input_tokens"), written_5m: created("ephemeral_5m_input_tokens"), read: count("cache_read_input_tokens") };
+            let cache = if cached.written_1h > 0 {
                 Some(HOUR)
-            } else if cached("ephemeral_5m_input_tokens") {
+            } else if cached.written_5m > 0 {
                 Some(FIVE_MINUTES)
             } else {
                 None
             };
             let model = payload.pointer("/message/model").and_then(Value::as_str).map(str::to_owned);
-            Some(ContextEvent::Answered { tokens, cache, model })
+            Some(ContextEvent::Answered { tokens, cache, model, cached })
         }
         "result" => {
             let windows: Vec<(String, u64)> = payload.get("modelUsage").and_then(Value::as_object).into_iter().flatten()
@@ -80,26 +90,26 @@ mod tests {
     fn an_answer_measures_everything_its_request_sent_and_answered_and_how_long_its_cache_lasts() {
         let hour = answer(json!({"input_tokens": 3, "cache_creation_input_tokens": 1_000, "cache_read_input_tokens": 250_000, "output_tokens": 400,
             "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 1_000}}));
-        assert_eq!(of(&hour), Some(ContextEvent::Answered { tokens: 251_403, cache: Some(HOUR), model: None }));
+        assert_eq!(of(&hour), Some(ContextEvent::Answered { tokens: 251_403, cache: Some(HOUR), model: None, cached: Cached { written_1h: 1_000, written_5m: 0, read: 250_000 } }));
         let minutes = answer(json!({"input_tokens": 3, "cache_creation_input_tokens": 10, "cache_read_input_tokens": 0, "output_tokens": 1,
             "cache_creation": {"ephemeral_5m_input_tokens": 10, "ephemeral_1h_input_tokens": 0}}));
-        assert_eq!(of(&minutes), Some(ContextEvent::Answered { tokens: 14, cache: Some(FIVE_MINUTES), model: None }));
+        assert_eq!(of(&minutes), Some(ContextEvent::Answered { tokens: 14, cache: Some(FIVE_MINUTES), model: None, cached: Cached { written_1h: 0, written_5m: 10, read: 0 } }));
     }
 
     #[test]
     fn an_answer_that_cached_nothing_says_nothing_of_when_the_cache_ends() {
         let read_only = answer(json!({"input_tokens": 3, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 300_000, "output_tokens": 1,
             "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 0}}));
-        assert_eq!(of(&read_only), Some(ContextEvent::Answered { tokens: 300_004, cache: None, model: None }));
+        assert_eq!(of(&read_only), Some(ContextEvent::Answered { tokens: 300_004, cache: None, model: None, cached: Cached { read: 300_000, ..Cached::default() } }));
         let unsplit = answer(json!({"input_tokens": 1, "output_tokens": 1, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}));
-        assert_eq!(of(&unsplit), Some(ContextEvent::Answered { tokens: 2, cache: None, model: None }));
+        assert_eq!(of(&unsplit), Some(ContextEvent::Answered { tokens: 2, cache: None, model: None, cached: Cached::default() }));
     }
 
     #[test]
     fn an_answer_names_its_model_and_a_turns_result_the_window_of_each_model() {
         let mut answered = answer(json!({"input_tokens": 1, "output_tokens": 1}));
         answered["message"]["model"] = json!("claude-opus-5-5");
-        assert_eq!(of(&answered), Some(ContextEvent::Answered { tokens: 2, cache: None, model: Some("claude-opus-5-5".into()) }));
+        assert_eq!(of(&answered), Some(ContextEvent::Answered { tokens: 2, cache: None, model: Some("claude-opus-5-5".into()), cached: Cached::default() }));
         let result = json!({"type": "result", "subtype": "success", "modelUsage": {
             "claude-opus-5-5": {"inputTokens": 9, "contextWindow": 1_000_000},
             "claude-haiku-4-5-20251001": {"inputTokens": 3, "contextWindow": 200_000},

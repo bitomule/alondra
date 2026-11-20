@@ -1,8 +1,7 @@
 load("//tools/bazel:crates.bzl", "application_crate")
 load("//tools:tree.bzl", "repo_tree")
-load("//tools:rust_test.bzl", "LOW_OPT_LEVEL", "low_opt_rust_test")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
@@ -15,24 +14,11 @@ WORKSPACE_DEPS = [
 
 application_crate(
     name = "daemon_engine_model",
-    srcs = production_sources(test_only = ["src/faults.rs"]),
+    srcs = production_sources(),
     crate_name = "alondra_daemon_engine_model",
     version = VERSION,
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + ["//crates/daemon-support:daemon_support"],
-)
-
-rust_library(
-    name = "daemon_engine_model_test_hooks",
-    testonly = True,
-    srcs = glob(["src/**/*.rs"]),
-    crate_features = ["test-hooks"],
-    crate_name = "alondra_daemon_engine_model",
-    crate_root = "src/lib.rs",
-    edition = "2024",
-    rustc_flags = [LOW_OPT_LEVEL],
-    version = VERSION,
-    visibility = ["//crates/alondrad:__pkg__", "//crates/daemon-server:__pkg__", "//crates/engine-sdk:__pkg__", "//crates/daemon-engine:__pkg__", "//crates/engine-admission:__pkg__", "//crates/engine-github:__pkg__", "//crates/engine-kernel:__pkg__", "//crates/engine-orchestrator:__pkg__", "//crates/daemon-engine-machine:__pkg__", "//crates/store-sqlite:__pkg__"],
-    deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + ["//crates/daemon-support:daemon_support_test_hooks"],
+    test_visibility = ["//crates/daemon-server:__pkg__"],
 )
 
 low_opt_rust_test(
@@ -55,7 +41,6 @@ rust_inputs_test(
     required_sources = ["crates/daemon-engine-model/src/lib.rs"],
     source_dir = "crates/daemon-engine-model/src/",
     target_under_test = ":daemon_engine_model",
-    test_only_sources = ["crates/daemon-engine-model/src/faults.rs"],
     test_sources = False,
 )
 
@@ -63,7 +48,7 @@ exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 
 filegroup(
     name = "report_sources",
-    srcs = production_sources(test_only = ["src/faults.rs"]),
+    srcs = production_sources(),
     visibility = ["//crates/alondra:__pkg__", "//crates/cli-report:__pkg__", "//crates/alondrad:__pkg__", "//crates/daemon-server:__pkg__"],
 )
 

@@ -1,4 +1,5 @@
-//! Find authored PRs whose work no longer has a live owner.
+//! Find the open PRs a task of this daemon registered whose work no longer has a live owner.
+//! A PR no task registered is someone else's: the sweep never reads or adopts it.
 use alondra_core::clock;
 use crate::domain_github::execute_system;
 use alondra_engine_ports::github::{AuthoredPr, GitHub};
@@ -27,10 +28,10 @@ fn registered<'a>(state: &'a DomainState, pr: &OpenedPr) -> Option<&'a PullReque
         p.host == pr.host && p.repository == pr.repository && p.number == pr.number)
 }
 
-fn excluded(state: &DomainState, pr: &OpenedPr) -> bool {
-    state.pr_adoptions.contains(pr) || registered(state, pr).is_some_and(|p|
-        state.tasks.get(&p.task_id).is_some_and(|t|
-            !t.state.terminal() || matches!(t.open_pr, Some(OpenPrPending::Close { .. }))))
+/// The task that registered `pr`, when its work has no live owner and nothing is closing it.
+fn ownerless<'a>(state: &'a DomainState, pr: &OpenedPr) -> Option<&'a PullRequest> {
+    registered(state, pr).filter(|p| state.tasks.get(&p.task_id).is_some_and(|t|
+        t.state.terminal() && !matches!(t.open_pr, Some(OpenPrPending::Close { .. }))))
 }
 
 fn branch_excluded(state: &DomainState, branch: &str, prefixes: &[String]) -> bool {
@@ -68,26 +69,22 @@ pub async fn sweep(domain: &DomainRuntime, github: &GitHub, options: &OptionsFil
     let prs = github.reads.authored_open_prs().await.map_err(|e| anyhow::anyhow!(e.to_string())).context("searching the open PRs")?;
     for found in prs {
         let Some(pr) = identity(&found) else { continue };
-        if !repositories.contains(&pr.repository) || excluded(&*domain.state()?, &pr) { continue; }
+        if !repositories.contains(&pr.repository) || ownerless(&*domain.state()?, &pr).is_none() { continue; }
         let branch = match github.reads.head_ref(&found.url).await {
             Ok(branch) => branch,
             Err(error) => { log!("open PR sweep could not read the branch of {}: {error}", found.url); continue; }
         };
         let state = domain.state()?;
-        if excluded(&state, &pr) || branch_excluded(&state, &branch, &options.pr_sweep_ignore_branch_prefixes) { continue; }
-        let owner = registered(&state, &pr).map(|p| (p.task_id.clone(), p.id.clone()));
-        let command = if let Some((task_id, pr_id)) = owner {
-            let facts = match github.observer.observe(&pr.host, &pr.repository, pr.number).await {
-                Ok(facts) => facts,
-                Err(error) => { log!("open PR sweep could not read {}: {error}", found.url); continue; }
-            };
-            if state.tasks.get(&task_id).is_some_and(|task| task.state == TaskState::Cancelled) {
-                Command::ClosePrOfCancelledTask { task_id, pr_id, branch, status: facts.status() }
-            } else {
-                Command::AdoptOpenPr { task_id, pr_id, branch, status: facts.status() }
-            }
+        let Some((task_id, pr_id)) = ownerless(&state, &pr).map(|p| (p.task_id.clone(), p.id.clone())) else { continue };
+        if branch_excluded(&state, &branch, &options.pr_sweep_ignore_branch_prefixes) { continue; }
+        let facts = match github.observer.observe(&pr.host, &pr.repository, pr.number).await {
+            Ok(facts) => facts,
+            Err(error) => { log!("open PR sweep could not read {}: {error}", found.url); continue; }
+        };
+        let command = if state.tasks.get(&task_id).is_some_and(|task| task.state == TaskState::Cancelled) {
+            Command::ClosePrOfCancelledTask { task_id, pr_id, branch, status: facts.status() }
         } else {
-            Command::RequestPrAdoption { pr, branch }
+            Command::AdoptOpenPr { task_id, pr_id, branch, status: facts.status() }
         };
         if let Err(error) = execute_system(domain, command) {
             log!("open PR sweep could not handle {}: {error}", found.url);

@@ -3,7 +3,7 @@ load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("//:version.bzl", "VERSION")
 
 # The model of the whole machine: generated histories through the real domain and the decisions of
-# the daemon's loops, reached through the engine's `test-hooks` API (`machine_hooks`). The checks
+# the daemon's loops, reached through the engine's `machine_hooks` modules. The checks
 # share one run per history across their properties; on a busy machine they alone take minutes, so
 # they keep their own crate and time limit instead of the engine's unit target.
 low_opt_rust_test(
@@ -18,10 +18,10 @@ low_opt_rust_test(
     deps = [
         "//crates/core:alondra_core",
         "//crates/domain-rules:domain_rules",
-        "//crates/daemon-engine:daemon_engine_test_hooks",
-        "//crates/engine-admission:engine_admission_on_test_hooks",
-        "//crates/engine-orchestrator:engine_orchestrator_on_test_hooks",
-        "//crates/engine-sdk:engine_sdk_test_hooks",
+        "//crates/daemon-engine:daemon_engine",
+        "//crates/engine-admission:engine_admission",
+        "//crates/engine-orchestrator:engine_orchestrator",
+        "//crates/engine-sdk:engine_sdk",
         "//crates/domain:domain",
         "//crates/foundation:foundation",
         "@crates//:proptest",

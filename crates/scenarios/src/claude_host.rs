@@ -10,7 +10,7 @@
 //! what it had not acknowledged.
 
 use alondra_agent_protocol::{
-    Action, Attach, Attached, Body, Challenge, Command, Fence, Frame, FramedReader, FramedWriter, Hello, PROTOCOL_VERSION, command_digest,
+    Action, Attach, Attached, Body, Challenge, Command, Decision, Fence, Frame, FramedReader, FramedWriter, Hello, PROTOCOL_VERSION, command_digest,
     host_proof, verify_owner_proof,
 };
 use alondra_agent_runtime::owned_host::{HostLauncher, HostSpawn, ProbeOutput, ProbeRun};
@@ -70,7 +70,17 @@ struct World {
     limit_resets_at: Option<i64>,
     /// Tasks no new host can start for.
     unstartable: BTreeSet<String>,
+    /// How many tokens each session's conversation holds, for the tasks whose answers report what
+    /// their requests cost; the hosts of other tasks report nothing.
+    conversations: BTreeMap<String, u64>,
+    sized: BTreeSet<String>,
+    /// How long each host takes to exit once told to stop, as a Claude Code that finishes writing
+    /// before it goes; without it, a host exits at once.
+    slow_exit: Option<std::time::Duration>,
 }
+
+/// The variable that tells a host's relay how many milliseconds it takes to exit once told to stop.
+pub const SLOW_EXIT: &str = "SCENARIO_HOST_SLOW_EXIT_MS";
 
 /// What went wrong between the daemon and the hosts, or something a host was asked it does not do.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -145,6 +155,10 @@ struct HostState {
     /// Claude's session runs nothing.
     busy: bool,
     ended: bool,
+    /// What the first request of this host's session wrote to the prompt cache, once it answered.
+    first_written: Option<u64>,
+    /// What the daemon answered each permission Claude asked, by request: `allow` or `deny`.
+    answers: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -175,6 +189,8 @@ struct Native {
     env: BTreeMap<String, String>,
     #[serde(default)]
     resume: Option<Value>,
+    #[serde(default)]
+    cwd: Option<String>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -209,6 +225,11 @@ impl ClaudeEdge {
         }))
     }
 
+    /// Every host started from now on takes `by` to exit once the daemon tells it to stop.
+    pub fn set_slow_exit(&self, by: std::time::Duration) {
+        lock(&self.0.world).slow_exit = Some(by);
+    }
+
     pub fn hold_startup_probe(&self) -> StartupProbeGate {
         *lock(&self.0.startup_probe.0) = true;
         StartupProbeGate(self.clone())
@@ -238,6 +259,62 @@ impl ClaudeEdge {
         }
     }
 
+    /// The conversation of `task`'s node holds `tokens` from now on: the answers of its hosts say
+    /// what each request read from the prompt cache and wrote to it, a resumed session's first
+    /// request writing its whole conversation again, as one whose cache expired does, and Claude
+    /// Code keeps each session's transcript where it keeps a real one.
+    pub fn set_conversation(&self, task: &str, tokens: u64) {
+        let running = self.running(task);
+        let mut world = lock(&self.0.world);
+        world.sized.insert(task.to_owned());
+        if let Some(host) = running {
+            world.conversations.insert(host.session.clone(), tokens);
+        }
+    }
+
+    /// What the first request of the last host started for `task` wrote to the prompt cache.
+    pub fn first_written(&self, task: &str) -> Option<u64> {
+        self.hosts_of(task).last().and_then(|host| lock(&host.state).first_written)
+    }
+
+    /// The usage an answer of `host` reports, its request having sent `sent` new tokens; none for
+    /// a task whose conversation is not sized.
+    fn usage(&self, host: &Host, state: &mut HostState, sent: u64) -> Option<Value> {
+        let mut world = lock(&self.0.world);
+        if !world.sized.contains(&host.task) {
+            return None;
+        }
+        let held = world.conversations.get(&host.session).copied().unwrap_or(0);
+        let (written, read) = if state.first_written.is_none() && (host.resumes || held == 0) { (held + sent, 0) } else { (sent, held) };
+        state.first_written.get_or_insert(written);
+        world.conversations.insert(host.session.clone(), held + sent);
+        Some(json!({"input_tokens": 3, "output_tokens": 100, "cache_creation_input_tokens": written, "cache_read_input_tokens": read,
+            "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": written}}))
+    }
+
+    /// Appends the prompt to the native transcript of `host`'s session, for a sized task, as Claude
+    /// Code writes it in its profile's project folder.
+    fn transcribe(&self, host: &Host, prompt: &str) {
+        let Some(cwd) = host.bootstrap.native.cwd.as_deref() else { return };
+        if !lock(&self.0.world).sized.contains(&host.task) {
+            return;
+        }
+        let environment = &host.bootstrap.native.env;
+        let Some(home) = environment.get("HOME") else { return };
+        let profile = alondra_core::claude_account::configured_profile(&|key: &str| environment.get(key).cloned());
+        let bucket: String = cwd.chars().map(|character| if character.is_ascii_alphanumeric() { character } else { '-' }).collect();
+        let folder = alondra_core::claude_account::config_folder(profile.as_deref(), Path::new(home)).join("projects").join(bucket);
+        let record = json!({"type": "user", "sessionId": host.session, "cwd": cwd, "timestamp": "2026-11-19T10:00:00.000Z", "message": {"role": "user", "content": prompt}});
+        let written = std::fs::create_dir_all(&folder).and_then(|()| {
+            use std::io::Write as _;
+            let mut file = std::fs::OpenOptions::new().create(true).append(true).open(folder.join(format!("{}.jsonl", host.session)))?;
+            writeln!(file, "{record}")
+        });
+        if let Err(error) = written {
+            self.troubled(format!("the transcript of {} could not be written: {error}", host.session));
+        }
+    }
+
     pub fn set_startable(&self, task: &str, startable: bool) {
         let mut world = lock(&self.0.world);
         if startable {
@@ -252,15 +329,15 @@ impl ClaudeEdge {
         lock(&self.0.hosts).iter().filter(|host| host.task == task).cloned().collect()
     }
 
-    /// Each task whose host runs a turn now, with how many inputs that host was offered and has
-    /// not taken yet.
-    pub fn turns(&self) -> Vec<(String, usize)> {
+    /// Each task whose host runs, with how many inputs that host was offered and has not taken
+    /// yet: none while it rests between turns.
+    pub fn untaken_offers(&self) -> Vec<(String, usize)> {
         lock(&self.0.hosts)
             .iter()
             .filter(|host| host.alive())
-            .filter_map(|host| {
+            .map(|host| {
                 let state = lock(&host.state);
-                state.turn.as_ref().map(|_| (host.task.clone(), state.queued.len()))
+                (host.task.clone(), if state.turn.is_some() { state.queued.len() } else { 0 })
             })
             .collect()
     }
@@ -354,11 +431,31 @@ impl ClaudeEdge {
         Ok(())
     }
 
+    /// Claude asks permission to run `command` in Bash from `cwd`, in the turn it runs, as Claude
+    /// Code asks for a tool its rules do not allow; `request` names the request.
+    pub fn ask_permission(&self, task: &str, request: &str, command: &str, cwd: &str) -> Result<(), String> {
+        let host = self.running(task).ok_or_else(|| format!("no host of {task} runs"))?;
+        let mut state = lock(&host.state);
+        if state.turn.is_none() {
+            return Err(format!("the node of {task} has no turn running to ask from"));
+        }
+        let tool_use = format!("toolu_{}", self.uuid().replace('-', ""));
+        self.event(&host, &mut state, json!({"type": "decision_requested", "request_id": request, "tool_use_id": tool_use, "kind": "permission",
+            "payload": {"tool": "Bash", "input": {"command": command}, "request": {}, "cwd": cwd}}));
+        Ok(())
+    }
+
+    /// What the daemon answered the permission `request` of `task`'s node, if it has.
+    pub fn answer_of(&self, task: &str, request: &str) -> Option<String> {
+        self.hosts_of(task).iter().find_map(|host| lock(&host.state).answers.get(request).cloned())
+    }
+
     /// An input reaches the host: it opens a turn when none runs, and waits in Claude's queue when
     /// one does. A turn the API refuses ends at once.
     fn offered(&self, host: &Host, state: &mut HostState, input: String, prompt: String) {
         let queued = self.uuid();
         self.emit(host, state, "status", json!({"type": "command_lifecycle", "state": "queued", "uuid": queued, "command_uuid": input, "session_id": host.session}));
+        self.transcribe(host, &prompt);
         state.prompts.insert(input.clone(), prompt.clone());
         state.queued.push_back((input, prompt));
         if state.turn.is_none() {
@@ -389,8 +486,13 @@ impl ClaudeEdge {
                 Some(error) => self.finish_turn(host, state, Some(error)),
                 None => {
                     let answer = self.uuid();
-                    self.emit(host, state, "message", json!({"type": "assistant", "uuid": answer, "parent_tool_use_id": null, "user_message_uuid": input,
-                        "user_message_uuids": [input], "message": {"role": "assistant", "content": [{"type": "text", "text": "Working on it"}]}, "session_id": host.session}));
+                    let sent = state.prompts.get(&input).map_or(0, |prompt| prompt.len() as u64 / 4) + 1_000;
+                    let mut message = json!({"type": "assistant", "uuid": answer, "parent_tool_use_id": null, "user_message_uuid": input,
+                        "user_message_uuids": [input], "message": {"role": "assistant", "content": [{"type": "text", "text": "Working on it"}]}, "session_id": host.session});
+                    if let Some(usage) = self.usage(host, state, sent) {
+                        message["message"]["usage"] = usage;
+                    }
+                    self.emit(host, state, "message", message);
                 }
             }
         }
@@ -404,8 +506,12 @@ impl ClaudeEdge {
         let (answer, result) = (self.uuid(), self.uuid());
         match &error {
             None => {
-                self.emit(host, state, "message", json!({"type": "assistant", "uuid": answer, "parent_tool_use_id": null, "user_message_uuid": last,
-                    "user_message_uuids": taken, "message": {"role": "assistant", "content": [{"type": "text", "text": "Done"}]}, "session_id": host.session}));
+                let mut message = json!({"type": "assistant", "uuid": answer, "parent_tool_use_id": null, "user_message_uuid": last,
+                    "user_message_uuids": taken, "message": {"role": "assistant", "content": [{"type": "text", "text": "Done"}]}, "session_id": host.session});
+                if let Some(usage) = self.usage(host, state, 100) {
+                    message["message"]["usage"] = usage;
+                }
+                self.emit(host, state, "message", message);
                 self.emit(host, state, "result", json!({"type": "result", "subtype": "success", "uuid": result, "user_message_uuid": last, "user_message_uuids": taken,
                     "is_error": false, "stop_reason": "end_turn", "terminal_reason": "completed", "result": "Done", "session_id": host.session}));
             }
@@ -475,6 +581,15 @@ impl ClaudeEdge {
         self.tick();
         match command.action {
             Action::Start { input_id, prompt, .. } | Action::Offer { input_id, prompt } => self.offered(host, state, input_id.to_string(), prompt),
+            Action::Respond { request_id, epoch, decision, .. } => {
+                let answer = match decision {
+                    Decision::Allow { .. } => "allow",
+                    Decision::Deny { .. } => "deny",
+                    _ => "other",
+                };
+                state.answers.insert(request_id.0.clone(), answer.to_owned());
+                self.event(host, state, json!({"type": "decision_settled", "request_id": request_id.0, "epoch": epoch, "outcome": "answered"}));
+            }
             Action::Interrupt | Action::ForceStop | Action::Close => {
                 if state.turn.is_some() {
                     let taken = state.turn.take().unwrap_or_default();
@@ -662,7 +777,11 @@ impl HostLauncher for ClaudeEdge {
         // host's folder, which the daemon hands over as its input, for as long as it lives: a
         // daemon that comes back finds it held, and finds it at the other end of the socket.
         let relay = relay().map_err(std::io::Error::other)?;
-        let child = Process::new(relay)
+        let mut relay = Process::new(relay);
+        if let Some(by) = lock(&self.0.world).slow_exit {
+            relay.env(SLOW_EXIT, by.as_millis().to_string());
+        }
+        let child = relay
             .arg(&bootstrap.socket_path)
             .arg(&back)
             .stdin(Stdio::from(spawn.stdin))

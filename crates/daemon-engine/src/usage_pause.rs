@@ -487,7 +487,6 @@ fn legacy_account_retry_ready(usage: &alondra_core::usage::AccountUsage, now: Mi
 }
 
 /// What the tests here and the server's tests of the over-pace card's notifications start from.
-#[cfg(any(test, feature = "test-hooks"))]
 pub mod fixtures {
     use super::*;
     use crate::domain_runtime::DomainRuntime;

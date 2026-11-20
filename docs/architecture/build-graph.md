@@ -207,9 +207,8 @@ and only `alondrad`, the machine model and the scenarios see it (Bazel visibilit
   `engine-doubles` (`admission::Engine`, `hosts::NoHosts`). The ones that need the whole engine are
   in `alondrad` (`engine_tests/admission_tests.rs`). The engine's own test binary does not link the
   gate: a runtime without one lets every start and turn through.
-- Until the `test-hooks` builds go (phase 4b), the test binaries that link them (`alondrad`,
-  `engine-sdk`, the machine model) take `engine_admission_on_test_hooks`, the same production sources
-  built over those builds, as `engine-orchestrator` does.
+- The test binaries that need the gate (`alondrad`, `engine-sdk`, the machine model) link the
+  production `engine_admission` and register it with `engine_admission::for_tests`.
 
 ## The SDK and the launching of tasks
 
@@ -345,7 +344,7 @@ alondra, alondrad, scenarios
    domain, foundation
 ```
 
-- The engine's libraries and their test-hooks builds depend on `view-model`, never on `views`.
+- The engine's libraries depend on `view-model`, never on `views`.
   Only test binaries that render a screen to check it (the engine's and the kernel's unit tests)
   and the binaries link `views`.
 - Each crate has its unit target and compiles only its production sources. The domain tests that
@@ -552,6 +551,50 @@ passed when run again alone.
   the gate and the orchestrator no longer reach their tests.
 - The rest is phase 4b: the remaining `test-hooks` builds (`engine-github`'s among them) and the `*_on_test_hooks` copies go, so no
   crate is compiled twice.
+
+## No crate compiled twice (phase 4b, 2026-11-19)
+
+The `test-hooks` feature and its 14 second builds are gone: the twelve `*_test_hooks` libraries and
+the two `*_on_test_hooks` copies (`engine_admission`, `engine_orchestrator`). Each crate compiles
+once, and its tests link that same library.
+
+- What only tests change is decided at run time by `alondra_foundation::under_test()`, which reads
+  `BAZEL_TEST` once: an empty Claude folder of the test's own, no flush after atomic writes, no
+  wait before relaunching a host, shorter acknowledgement and settings waits, and the check of each
+  owner transaction against a reload. The installed daemon carries these branches, inert without
+  that variable ([on your Mac](../on-your-mac.md)).
+- Fixtures other crates' tests use are production modules (`testing` and `retention_fixtures` of
+  `store-sqlite`, the kernel's `runtime_owner`, the `*_fixtures` modules of `daemon-engine` and
+  `engine-sdk`); what one crate alone uses stays in `#[cfg(test)]`. The owner's fixtures, which
+  read the SQLite journal, are compiled by no production crate: `daemon-engine`, `engine-sdk` and
+  `daemon-server` include `wiring/owner_fixtures.rs` in their test binaries (`#[path]`), so the
+  engine stays off the `store-sqlite` adapter.
+- The gate, the machine doubles, the journal and the runtime of a test are registered at run time
+  by the test that opens the runtime (`wiring::open_with`, `TEST_JOURNAL`,
+  `engine_admission::for_tests`).
+- `crate_layers_test` fails on a `testonly` library that builds a production crate again, and
+  `TEST_HOOK_EXCEPTIONS` (agent-runtime and store-sqlite for `daemon-engine` and `engine-sdk`)
+  left the table.
+- The scenarios now run the engine at full optimization instead of the low-optimization copies,
+  which exposed a race in their harness: between two turns it waited only a moment of calm, not
+  the 250 ms a host's owner may take to look at a new input, so the virtual clock sometimes moved
+  on first. It now waits that long whenever the domain holds an input a running host was not
+  offered. `bazel run //crates/scenarios:accept` sets `BAZEL_TEST`, so a case is accepted as the
+  test plays it.
+
+Measured with `edit_bench`, one edit, before (on main with phase 5b, before any change) and after; Bazel's own
+time without the queue's wait, on the shared Mac:
+
+| Edit | Crates reopened | Test targets reopened | Actions run (rustc / clippy / tests) | Build: critical path | Edit + test |
+|---|---:|---:|---|---:|---:|
+| `engine-live/src/node_reports.rs` (before) | 17 | 50 | 87 (21 / 8 / 57) | 19 s | 287 s (a test failed under load) |
+| `engine-live/src/node_reports.rs` (after) | 12 | 49 | 83 (16 / 8 / 58) | 29 s | 254 s |
+
+- The edit compiles 16 crates and test binaries instead of 21. Its build time rose with the
+  Mac's load between runs; the action count is the stable figure.
+- Edit + test is still dominated by `engine_sdk_test` (211 s of the 236 s critical path), whose
+  tests start real Agent SDK hosts one at a time. The phase target (≤ 90 s edit + test) is not met
+  for edits that reach `engine-sdk`.
 
 ## Screens and input adapters (phase 6, 2026-11-18)
 

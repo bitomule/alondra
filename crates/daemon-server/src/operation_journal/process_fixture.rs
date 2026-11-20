@@ -151,7 +151,7 @@ async fn full_stack_fixture_server() {
         !home.join("service.toml").exists() || !fresh,
         "initialized fixture domain cannot disappear"
     );
-    let domain = alondra_engine_sdk::engine_tests::open(&home).unwrap();
+    let domain = crate::engine_tests::open(&home).unwrap();
     if fresh {
         seed(
             &domain,

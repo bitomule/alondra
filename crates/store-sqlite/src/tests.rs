@@ -1,23 +1,9 @@
 use super::*;
+pub use crate::testing::{Fixture, agent, execute, seeded};
+use crate::testing::envelope;
 use std::collections::BTreeSet;
 use std::os::unix::fs::DirBuilderExt;
 use std::{fs, path::PathBuf};
-pub struct Fixture(pub crate::test_support::Directory);
-impl Fixture {
-    pub fn new() -> Self {
-        let p = crate::test_support::Directory::new();
-        fs::DirBuilder::new().mode(0o700).create(&p).unwrap();
-        Self(p)
-    }
-    pub fn path(&self) -> PathBuf {
-        self.0.join("domain.sqlite")
-    }
-}
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).unwrap();
-    }
-}
 fn attachment(id: &str) -> AttachmentRef {
     AttachmentRef {
         id: id.into(),
@@ -31,31 +17,6 @@ fn user() -> Actor {
     Actor::User {
         user_id: "user-1".into(),
     }
-}
-pub fn agent() -> Actor {
-    Actor::Agent {
-        agent_id: "agent-1".into(),
-    }
-}
-fn envelope(store: &mut DomainStore, id: &str, command: Command) -> CommandEnvelope {
-    let s = store.load().unwrap();
-    CommandEnvelope {
-        protocol_version: 2,
-        data_epoch: s.data_epoch.clone(),
-        command_id: id.into(),
-        expected_revision: s.revision,
-        command,
-    }
-}
-pub fn execute(store: &mut DomainStore, actor: &Actor, id: &str, command: Command) -> Commit {
-    let e = envelope(store, id, command);
-    let committed = store.execute_authenticated(actor, &e, None).unwrap();
-    assert_eq!(
-        store.load().unwrap(),
-        committed.state,
-        "SQL roundtrip for {id}"
-    );
-    committed
 }
 #[test]
 fn worktrees_root_wait_reason_migrates_without_losing_previous_launch_refusals() {
@@ -74,41 +35,6 @@ fn worktrees_root_wait_reason_migrates_without_losing_previous_launch_refusals()
     assert_eq!(store.launch_refusals().unwrap(), vec![("task-1".into(), "worktrees_unavailable".into(), None)]);
 }
 
-pub fn seeded(store: &mut DomainStore) {
-    execute(
-        store,
-        &Actor::Orchestrator { generation: 0 },
-        "request",
-        Command::CreateRequest {
-            request_id: "request-1".into(),
-            body: "Do useful work".into(), auto_merge: false, maintenance: false, message: false,
-        },
-    );
-    execute(
-        store,
-        &Actor::System,
-        "agent",
-        Command::RegisterAgent {
-            agent_id: "agent-1".into(),
-            name: "Fixture".into(), at: 0
-        },
-    );
-    execute(
-        store,
-        &Actor::Orchestrator { generation: 0 },
-        "task",
-        Command::CreateTask { plan_items: None, continues: None,
-            task_id: "task-1".into(),
-            request_id: "request-1".into(),
-            title: "Goal".into(),
-            agent_id: Some("agent-1".into()),
-            review_prs: true,
-            dependencies: BTreeSet::new(),
-            stack: None,
-            launch: Some(alondra_domain_rules::LaunchPlan::new("node", "/tmp")),
-        },
-    );
-}
 fn present(store: &mut DomainStore) {
     execute(
         store,
@@ -2547,39 +2473,11 @@ fn a_continuation_and_the_worktree_it_was_handed_survive_a_restart() {
     assert_eq!(state.tasks[&TaskId::from("t-claude")].worktrees[worktree].origin, WorktreeOrigin::Inherited);
 }
 
-pub fn continuation_fixture() -> (Fixture, crate::test_support::Directory, DomainStore, CommandEnvelope, Checklist) {
-    let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
-    seeded(&mut store);
-    execute(&mut store, &Actor::Orchestrator { generation: 0 }, "title", Command::TitleRequest {
-        request_id: "request-1".into(), title: "The answer".into(),
-    });
-    let root = crate::test_support::Directory::new();
-    let worktree = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "original");
-    let path = worktree.to_str().unwrap();
-    execute(&mut store, &Actor::System, "worktree", Command::RecordTaskWorktree {
-        task_id: "task-1".into(), path: path.into(), origin: WorktreeOrigin::Task, branch: Some("worktree-original".into()),
-    });
-    let plan = "- [ ] Build the answer\n- [ ] Check the answer\n";
-    execute(&mut store, &Actor::System, "plan", Command::HoldHook {
-        interaction_id: "plan".into(), task_id: "task-1".into(), agent_id: "agent-1".into(), hold: Hold::Plan,
-        body: plan.into(), options: Hold::Plan.options(), card: CardSpec::new(CardKind::Review, "Plan").content(ContentKind::Plan, plan),
-    });
-    execute(&mut store, &user(), "approve", Command::AnswerQuestion {
-        attachments: vec![], interaction_id: "plan".into(), option_id: Hold::APPROVE.into(), inputs: Default::default(),
-    });
-    let checklist = store.load().unwrap().checklists[&TaskId::from("task-1")].clone();
-    let command = envelope(&mut store, "continue", Command::CreateTask {
-        task_id: "continued".into(), request_id: "request-1".into(), title: "Continue the answer".into(), agent_id: None,
-        review_prs: false, dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", path)),
-        plan_items: None, continues: Some("task-1".into()),
-    });
-    (fixture, root, store, command, checklist)
-}
-
 #[test]
 fn a_continuation_inherits_the_approved_checklist_and_existing_worktree_after_restart() {
-    let (fixture, _root, mut store, command, checklist) = continuation_fixture();
+    let root = crate::test_support::Directory::new();
+    let worktree = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "original");
+    let (fixture, mut store, command, checklist) = crate::testing::continuation_fixture(&worktree);
     let commit = store.execute_authenticated(&Actor::Orchestrator { generation: 0 }, &command, None).unwrap();
     assert_eq!(store.load().unwrap(), commit.state);
     let path = commit.state.tasks[&TaskId::from("continued")].worktrees.keys().next().unwrap().clone();
@@ -2599,7 +2497,9 @@ fn a_continuation_inherits_the_approved_checklist_and_existing_worktree_after_re
 #[test]
 fn a_checklist_cannot_disappear_without_one_new_matching_continuation() {
     for invalid in ["missing", "changed", "existing", "other-request", "duplicate"] {
-        let (_fixture, _root, mut store, command, _) = continuation_fixture();
+        let root = crate::test_support::Directory::new();
+        let worktree = alondra_engine_doubles::worktrees::testing::task_worktree(&root, "original");
+        let (_fixture, mut store, command, _) = crate::testing::continuation_fixture(&worktree);
         let before = store.load().unwrap();
         let mut after = DomainState::clone(&before);
         after.execute(&Actor::Orchestrator { generation: 0 }, &command).unwrap();

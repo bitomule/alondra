@@ -30,9 +30,7 @@ pub(crate) struct Feeds {
     open: Mutex<HashMap<String, (String, Instant)>>,
     /// Concurrent terminals share a device identity, but can watch different screens.
     active_tui: Mutex<HashMap<u64, String>>,
-    #[cfg(any(test, feature = "test-hooks"))]
     test_waiting: AtomicU64,
-    #[cfg(any(test, feature = "test-hooks"))]
     test_displacements: AtomicU64,
     next: AtomicU64,
     clock: watch::Sender<u64>,
@@ -46,9 +44,7 @@ impl Default for Feeds {
         let (shared, _) = watch::channel(0);
         Self {
             waiters: Mutex::default(), cache: Mutex::default(), open: Mutex::default(), active_tui: Mutex::default(),
-            #[cfg(any(test, feature = "test-hooks"))]
             test_waiting: AtomicU64::new(0),
-            #[cfg(any(test, feature = "test-hooks"))]
             test_displacements: AtomicU64::new(0),
             next: AtomicU64::new(0), clock, shared, observation: Observation::default(),
         }
@@ -56,7 +52,6 @@ impl Default for Feeds {
 }
 
 impl Feeds {
-    #[cfg(any(test, feature = "test-hooks"))]
     pub(super) fn test_progress(&self) -> (u64, u64) {
         (self.test_waiting.load(Ordering::Relaxed), self.test_displacements.load(Ordering::Relaxed))
     }
@@ -281,7 +276,6 @@ pub(crate) async fn handle(
     let mut live_changes = client.feeds.clock.subscribe();
     let mut previous = None;
     let mut displaced = false;
-    #[cfg(any(test, feature = "test-hooks"))]
     let mut counted_wait = false;
     loop {
         let current = match current(client, kind, lang, transport, &views, capabilities, previous.as_ref()).await {
@@ -317,7 +311,6 @@ pub(crate) async fn handle(
             .into_response();
         }
         previous = Some(current.clone());
-        #[cfg(any(test, feature = "test-hooks"))]
         if kind == Client::Tui && !counted_wait {
             client.feeds.test_waiting.fetch_add(1, Ordering::Relaxed);
             counted_wait = true;
@@ -326,7 +319,6 @@ pub(crate) async fn handle(
         tokio::pin!(timeout);
         tokio::select! {
             _ = &mut cancel_rx, if !displaced => {
-                #[cfg(any(test, feature = "test-hooks"))]
                 if kind == Client::Tui { client.feeds.test_displacements.fetch_add(1, Ordering::Relaxed); }
                 if kind == Client::Tui {
                     // Another terminal shares this key. Keep this connection subscribed instead
@@ -599,7 +591,7 @@ mod tests {
         fn observed(observation: Observation) -> Self {
             let home = crate::test_support::Directory::new();
             fs::create_dir(&home).unwrap();
-            let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+            let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
             let client = crate::client_routes::Client::open_observed(
                 domain,
                 &home,

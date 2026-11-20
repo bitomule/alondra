@@ -1397,6 +1397,9 @@ fn pace_text(interaction: &Interaction, domain: &DomainState, lang: Lang) -> Opt
     if matches!(interaction.system_card, Some(SystemCard::LocalNetwork)) {
         return alondra_domain_rules::local_network_card::LocalNetworkCard::from_body(&interaction.body).map(|card| card.text(lang));
     }
+    if matches!(interaction.system_card, Some(SystemCard::ReportHeld { .. })) {
+        return alondra_domain_rules::report_held_card::ReportHeldCard::from_body(&interaction.body).map(|card| card.text(lang));
+    }
     if matches!(interaction.system_card, Some(SystemCard::CapabilityCapacity)) {
         return alondra_domain_rules::capability_capacity_card::CapabilityCapacityCard::from_body(&interaction.body).map(|card| card.text(lang));
     }
@@ -1479,6 +1482,13 @@ fn fixed_option_text(interaction: &Interaction, option: &QuestionOption, lang: L
         && let Some((label, description)) = alondra_domain_rules::local_network_card::option_text(&option.id, &option.label, lang)
     {
         return (label.into(), Some(description.into()));
+    }
+    if interaction.author == Author::System
+        && matches!(interaction.system_card, Some(SystemCard::ReportHeld { .. }))
+        && let Some(card) = alondra_domain_rules::report_held_card::ReportHeldCard::from_body(&interaction.body)
+        && let Some((label, description)) = card.option_text(&option.id, lang)
+    {
+        return (label, Some(description));
     }
     if interaction.author == Author::System
         && matches!(interaction.system_card, Some(SystemCard::CapabilityCapacity))
@@ -1952,7 +1962,8 @@ fn local_action(label: &str, key: &str, local: LocalLink) -> Action {
 
 /// Text to the node (or the orchestrator) the card came from; every card has it but a task's start
 /// problem, which no node is behind, and a machine card, which Alondra raises itself. Under an
-/// open question it is the answer to that question, the orchestrator's included.
+/// open question it is the answer to that question, the orchestrator's included, and under
+/// information it goes with the card and reads it.
 fn reply_action(item: &InboxItem, interaction: Option<&Interaction>, context: &RenderContext<'_>) -> Option<Action> {
     let lang = context.lang;
     let interaction = interaction.filter(|interaction| {
@@ -1989,7 +2000,7 @@ fn reply_action(item: &InboxItem, interaction: Option<&Interaction>, context: &R
             action_id(Verb::Reply, &interaction.id.0, interaction.revision, None)?,
             tf!(lang, "Reply to {node}…", "Responder a {node}…", node = node_name(item, context)),
         )
-    } else if answers {
+    } else if answers || matches!(interaction.payload, InteractionPayload::Information { .. }) {
         (action_id(Verb::Reply, &interaction.id.0, interaction.revision, None)?, t!(lang, "Reply…", "Responder…").into())
     } else {
         (

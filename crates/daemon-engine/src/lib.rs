@@ -1,14 +1,14 @@
 //! The daemon's engine: the domain runtime and its store, the nodes and their Agent SDK hosts and
 //! the transports, everything below the admission gate and the routes and views that `alondrad`
 //! serves. It asks the gate through the port of engine-ports (`gate`).
-#![cfg_attr(all(feature = "test-hooks", not(test)), allow(dead_code, unused_imports))]
 
-#[cfg(any(test, feature = "test-hooks"))]
 #[path = "../../test_support.rs"]
 pub mod test_support;
 
 #[macro_use]
 extern crate alondra_foundation;
+#[cfg(test)]
+extern crate self as alondra_daemon_engine;
 
 use alondra_daemon_support::{
     approval_lease,
@@ -34,7 +34,6 @@ use alondra_daemon_support::{
 #[cfg(target_os = "macos")]
 use alondra_daemon_support::schedule_clock;
 
-#[cfg(any(test, feature = "test-hooks"))]
 pub use alondra_engine_kernel::TEST_JOURNAL;
 pub use alondra_engine_kernel::{
     domain_runtime,
@@ -51,7 +50,6 @@ pub use alondra_engine_github::{domain_github, domain_merges, open_pr_sweep, pr_
 pub use alondra_engine_live::{codex_live, contexts, node_reports, node_work, sdk_live};
 pub use alondra_engine_mcp::{mcp_probe, mcp_remove, mcp_sign_in, mcp_waits};
 pub use alondra_engine_worktrees::{cancelled_worktrees, home_renames, task_worktrees};
-#[cfg(any(test, feature = "test-hooks"))]
 pub use alondra_engine_github::github_world;
 
 pub mod accounts;
@@ -67,7 +65,6 @@ pub mod domain_orchestrator_reads;
 pub mod domain_orchestrator_tools;
 pub mod domain_transport;
 pub mod gate;
-#[cfg(any(test, feature = "test-hooks"))]
 pub mod host_fixtures;
 pub mod hosts;
 pub mod idle_compaction;
@@ -79,7 +76,6 @@ pub mod local_actions;
 pub mod local_network_card;
 pub mod machine;
 pub use alondra_daemon_engine_machine::machine_state;
-#[cfg(feature = "test-hooks")]
 pub mod machine_hooks;
 pub use alondra_daemon_engine_machine::native_probe;
 pub mod node_close;
@@ -87,6 +83,7 @@ pub mod node_exit;
 pub mod node_push;
 pub use alondra_daemon_engine_model::options;
 pub mod plan_reviews;
+pub mod report_held_card;
 pub use alondra_daemon_engine_model::reply;
 pub mod sdk_handover;
 pub use alondra_daemon_engine_model::settings_file;

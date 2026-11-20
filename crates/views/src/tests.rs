@@ -6142,8 +6142,9 @@ fn an_answer_waits_in_every_inbox_after_its_request_closes() {
     assert_eq!(card.title, "Cifrar imágenes con R2 es posible");
     assert_eq!(card.meta.as_deref(), Some("Cifrar imágenes vía R2"), "signed with its request, never with the orchestrator");
     assert!(card.actions.iter().any(|action| action.id.starts_with("read:")));
-    assert!(card.reply.as_ref().is_some_and(|reply| reply.id.starts_with("msg:view@")),
-        "the answer is replied to the orchestrator");
+    let reply = card.reply.as_ref().expect("the answer can be replied to");
+    assert!(reply.id.starts_with("reply:a7efd99d-answer@"), "the reply goes with the answer it is about: {}", reply.id);
+    assert!(reply.resolves_card, "replying to the answer reads it, like answering any card");
     let pushed = push_content(&with_cards(&state), "a7efd99d-answer", Lang::Es).unwrap();
     let alert = pushed.alert.unwrap();
     assert_eq!(alert.title, "Cifrar imágenes con R2 es posible");
@@ -7435,7 +7436,7 @@ fn every_card_action_says_whether_it_takes_its_card_out() {
     let notice = "f12d034b-249e-4487-a89b-57de38c26372";
     assert_eq!(resolving(&state, &format!("card:{notice}")), owned(&[
         (&format!("read:{notice}"), true), (&format!("reply:{notice}"), false),
-    ]), "a notice leaves when read; a reply to it is a message to its node");
+    ]), "a notice leaves when read; a reply reads a task's notice only when its node can take it, and this one's cannot");
     assert_eq!(resolving(&state, "card:hf-weekly-2026-09-30"), owned(&[
         ("merge:hf-weekly-2026-09-30", true), ("close_unmerged:hf-weekly-2026-09-30", true), ("", false),
         ("changes:github.com/example/repo#12", true),

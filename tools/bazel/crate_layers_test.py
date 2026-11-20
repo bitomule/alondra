@@ -4,7 +4,8 @@
 Fails when a production rust_library or rust_binary is declared without a role macro, when a package
 that ships Rust has no layer or a layer names a package with no crate, when a production dependency
 breaks the rule (in any branch of a select), when a test outside the root depends on a crate or
-binary of the root, and when an exception list keeps an entry nothing uses or grows past its ceiling.
+binary of the root, when an exception list keeps an entry nothing uses or grows past its ceiling, and
+when a test-only library builds a production crate a second time.
 """
 import json
 import os
@@ -13,8 +14,6 @@ import xml.etree.ElementTree as ElementTree
 
 # The number of entries in LAYER_EXCEPTIONS. It only goes down: lower it with every entry removed.
 EXCEPTION_CEILING = 56
-# The number of entries in TEST_HOOK_EXCEPTIONS, which only goes down too.
-TEST_HOOK_EXCEPTION_CEILING = 4
 
 # The number of packages in ROOT_TEST_CONSUMERS, which only goes down too.
 ROOT_TEST_CONSUMER_CEILING = 5
@@ -32,6 +31,7 @@ def read_targets(path):
     for rule in ElementTree.parse(path).getroot().iter("rule"):
         attributes = {child.get("name"): child for child in rule}
         testonly = attributes.get("testonly")
+        crate_name = attributes.get("crate_name")
         generator = attributes.get("generator_function")
         deps = []
         for name in ("deps", "proc_macro_deps"):
@@ -41,6 +41,7 @@ def read_targets(path):
             "kind": rule.get("class"),
             "location": rule.get("location"),
             "testonly": testonly is not None and testonly.get("value") == "true",
+            "crate_name": crate_name.get("value") if crate_name is not None else rule.get("name").split(":")[-1],
             "generator": generator.get("value") if generator is not None else None,
             "deps": deps,
         }
@@ -60,42 +61,21 @@ def violation(table, package, dependency):
     return f"a crate of layer {layer} may depend only on layers {', '.join(table['allowed_dependencies'][layer])}"
 
 
-def hooks_linking_adapters(table, targets):
-    """A testonly library linking an output adapter its production crate may not use: every test
-    above those hooks would rerun on each edit of the adapter."""
-    found = []
-    used = set()
-    allowed = table["test_hook_exceptions"]
-    for label, target in sorted(targets.items()):
-        package = package_of(label)
-        if not target["testonly"] or target["kind"] != "rust_library" or package not in table["crate_layers"]:
-            continue
-        for dependency in target["deps"]:
-            dependency_package = package_of(dependency)
-            if table["crate_layers"].get(dependency_package) != "adapter-out":
-                continue
-            if dependency_package in allowed.get(package, []):
-                used.add((package, dependency_package))
-                continue
-            reason = violation(table, package, dependency_package)
-            if reason:
-                found.append(
-                    f"{label} depends on {dependency}: test hooks may not link an output adapter their crate "
-                    f"may not use ({reason}). Keep the fakes that need it under #[cfg(test)], or fake the port."
-                )
-    entries = {(package, dependency) for package, dependencies in allowed.items() for dependency in dependencies}
-    for package, dependency in sorted(entries - used):
-        found.append(
-            f"The test hook exception {package} -> {dependency} is no longer used: remove it from TEST_HOOK_EXCEPTIONS."
-        )
-    if len(entries) > TEST_HOOK_EXCEPTION_CEILING:
-        found.append(
-            f"TEST_HOOK_EXCEPTIONS has {len(entries)} entries, over its ceiling of {TEST_HOOK_EXCEPTION_CEILING}: "
-            "the list only shrinks. Keep the fakes that need the adapter under #[cfg(test)], or fake the port."
-        )
-    elif len(entries) < TEST_HOOK_EXCEPTION_CEILING:
-        found.append(f"TEST_HOOK_EXCEPTIONS has {len(entries)} entries: lower TEST_HOOK_EXCEPTION_CEILING to {len(entries)}.")
-    return found
+def second_builds(targets):
+    """A test-only library that builds a production crate again, as the `test-hooks` builds did:
+    every crate between it and the tests compiles twice, and an edit reruns both. A test registers
+    the doubles it needs at run time instead."""
+    production = {
+        target["crate_name"]: label
+        for label, target in targets.items()
+        if not target["testonly"] and target["kind"] == "rust_library"
+    }
+    return [
+        f"{label} builds the crate of {production[target['crate_name']]} a second time for tests: "
+        "register the test's doubles at run time instead (docs/architecture/build-graph.md)."
+        for label, target in sorted(targets.items())
+        if target["testonly"] and target["kind"] == "rust_library" and target["crate_name"] in production
+    ]
 
 
 def read_rules(path):
@@ -192,7 +172,7 @@ def problems(table, targets):
             reason = violation(table, package, dependency_package)
             if reason:
                 found.append(f"{label} depends on {dependency}: {reason}.")
-    found += hooks_linking_adapters(table, targets)
+    found += second_builds(targets)
     entries = {(package, dependency) for package, dependencies in table["exceptions"].items() for dependency in dependencies}
     for package, dependency in sorted(entries - used):
         found.append(

@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:request-tasks-r-sync-1",
   "client": "mac",
-  "version": "v8a52da24d733f306",
+  "version": "vabde442bdc70136c",
   "cursor": "cursor-1",
   "title": "He creado 3 tareas",
   "status": {
@@ -82,7 +82,7 @@
           "why": "Primero «Guardar las notas con su versión»; «Sincronizar desde el iPhone» y «Sincronizar desde el Mac» después, en paralelo.",
           "meta": "Sincronizar notas",
           "reply": {
-            "id": "msg:view@27",
+            "id": "reply:request-tasks-r-sync-1@27",
             "label": "Responder",
             "style": "secondary",
             "role": "neutral",
@@ -97,7 +97,7 @@
             "enabled": true,
             "stamp": "Enviado",
             "key": "r",
-            "resolves_card": false
+            "resolves_card": true
           },
           "link": {
             "kind": "view",

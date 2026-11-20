@@ -12,8 +12,7 @@ def production_sources(srcs = ["src/**/*.rs"], test_only = [], exclude = []):
 
     Args:
       srcs: glob patterns of the crate's sources.
-      test_only: files compiled only under `#[cfg(test)]` or the `test-hooks` feature whose name
-        does not say so.
+      test_only: files compiled only under `#[cfg(test)]` whose name does not say so.
       exclude: other files the target leaves out, such as a binary's `src/main.rs`.
 
     Returns:

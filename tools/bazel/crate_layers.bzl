@@ -179,16 +179,6 @@ LAYER_EXCEPTIONS = {
     ],
 }
 
-# The output adapters a package's test hooks link although its production crate may not use them.
-# Every test above those hooks reruns when the adapter changes, so this list only shrinks too.
-TEST_HOOK_EXCEPTIONS = {
-    # Their tests start nodes through the real Agent SDK and Codex hosts.
-    # Their fixtures, which the tests of the crates above share, stage in and read a real SQLite
-    # store.
-    "crates/daemon-engine": ["crates/agent-runtime", "crates/store-sqlite"],
-    "crates/engine-sdk": ["crates/agent-runtime", "crates/store-sqlite"],
-}
-
 # The packages outside the root whose tests run a crate or a binary of the root: they rerun on
 # every edit of the daemon. Any other test that reaches the root, through `deps` or `data`, fails
 # `crate_layers_test`; this list only shrinks.

@@ -1,7 +1,7 @@
 //! A store with one done task whose cards are worth compacting, for the tests of retention here
 //! and of the engine's commands that race with it.
 use crate::DomainStore;
-use crate::tests::{Fixture, seeded};
+use crate::testing::{Fixture, seeded};
 use alondra_domain_rules::*;
 
 pub fn envelope(store: &mut DomainStore, id: &str, command: Command) -> CommandEnvelope {

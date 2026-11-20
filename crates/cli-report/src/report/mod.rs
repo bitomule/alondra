@@ -270,6 +270,9 @@ pub fn send_report(id: &str, kind: Option<send::Kind>, retry: bool, json: bool) 
         Ok((repo.name, outcome))
     });
     if retry {
+        if let Err(error) = &sent {
+            let _ = send::postpone(host.home(), id, host.now(), &backoff, &error.to_string());
+        }
         return sent.map(drop);
     }
     if json {
@@ -278,6 +281,17 @@ pub fn send_report(id: &str, kind: Option<send::Kind>, retry: bool, json: bool) 
     }
     let (repo, outcome) = sent?;
     println!("{}", outcome_notice(&repo, &outcome));
+    Ok(())
+}
+
+/// `alondra report keep`: keeps a pending report on this Mac.
+pub fn keep_report(id: &str) -> Result<()> {
+    let host = Mac::new();
+    send::keep(host.home(), id)?;
+    println!("{}", trf!(
+        "Report {id} stays on this Mac and Alondra no longer sends it. To send it: alondra report send {id}",
+        "El informe {id} se queda en este Mac y Alondra ya no lo envía. Para enviarlo: alondra report send {id}"
+    ));
     Ok(())
 }
 

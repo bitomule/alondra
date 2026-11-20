@@ -2,6 +2,7 @@
 //! all see the same pull requests, so a scenario changes GitHub once and every part of the daemon
 //! finds it changed. It lets happen what GitHub lets happen: a PR merges into whatever base it
 //! has, however stale, and someone else can merge or close a PR at any time.
+use alondra_daemon_support::locks::Poisonable as _;
 use crate::domain_github::{Closed, GhFailure, Observed, PrFacts, PrObserver};
 use crate::domain_merges::{Checks, MergeState, Pending, PrMerger, Status};
 use crate::pr_images::{Failure, Fetch, GitHubImages};
@@ -63,7 +64,7 @@ impl GithubWorld {
     }
 
     fn world(&self) -> std::sync::MutexGuard<'_, World> {
-        self.0.lock().unwrap()
+        self.0.lock_or_recover("a test's fixture")
     }
 
     fn change<T>(&self, number: u64, change: impl FnOnce(&mut Pr) -> T) -> T {

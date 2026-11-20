@@ -572,7 +572,7 @@ mod tests {
         clock::VirtualRuntime::new(0).unwrap().block_on(async {
             let home = crate::test_support::Directory::new();
             std::fs::create_dir(&home).unwrap();
-            let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+            let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
             let observation = Observation::default();
             let client = crate::client_routes::Client::open_observed(
                 domain, &home, Arc::new(Mutex::new(None)), observation.clone(),

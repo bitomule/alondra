@@ -3,7 +3,7 @@
 //! gate hands old pauses over, a home renamed by an older daemon, Settings, and usage readings.
 //! The gate's own decisions are tested in engine-admission, against doubles of the engine.
 use alondra_daemon_engine::domain_transport::PAUSED_BY_USER;
-use alondra_daemon_engine::domain_transport::tests::*;
+use alondra_daemon_engine::domain_transport::fixtures::*;
 use alondra_daemon_engine::gate::GateOf as _;
 use alondra_daemon_engine::live::LiveOf as _;
 use alondra_engine_admission::AdmissionOf as _;

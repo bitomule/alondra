@@ -595,7 +595,7 @@ mod tests {
     fn fixture() -> (crate::test_support::Directory, Arc<DomainDaemon>) {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        drop(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        drop(crate::engine_tests::open(&home).unwrap());
         let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
         (home, state)
     }

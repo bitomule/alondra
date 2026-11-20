@@ -24,7 +24,7 @@ fn world() -> World {
     let project = root.join("App");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&project).unwrap();
-    let domain = alondra_engine_sdk::engine_tests::open(&home).unwrap();
+    let domain = crate::engine_tests::open(&home).unwrap();
     let state = domain.state().unwrap();
     domain.execute(&Actor::User { user_id: "u".into() }, &CommandEnvelope {
         protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: "request".into(), expected_revision: state.revision,

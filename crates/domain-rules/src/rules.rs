@@ -3451,7 +3451,7 @@ impl DomainState {
                 }
             }
             Command::CreateCardReply { request_id, interaction_id, body, auto_merge } => {
-                user(actor)?;
+                let reader = user(actor)?;
                 let Some(card) = self.interactions.get(interaction_id)
                     .filter(|card| !card.withdrawn && card.recipient == Recipient::User) else {
                     return refuse("invalid_input", "interaction_id", "Choose an existing card addressed to the user");
@@ -3476,6 +3476,14 @@ impl DomainState {
                     maintenance: false, message: true,
                 }, effects, created, lifecycles)?;
                 self.requests.get_mut(request_id).unwrap().reply_to = Some(reference);
+                let revision = self.revision + 1;
+                let card = self.interactions.get_mut(interaction_id).expect("the card was found above");
+                if let InteractionPayload::Information { read_by } = &mut card.payload
+                    && read_by.is_empty()
+                {
+                    read_by.insert(reader);
+                    card.revision = revision;
+                }
             }
             Command::CreateRequest { request_id, body, auto_merge, maintenance, message } => {
                 self.manager(actor)?;
@@ -5279,21 +5287,6 @@ impl DomainState {
                 t.open_pr = Some(OpenPrPending::Deliver { result });
                 self.decide(lifecycles, task_id, LifecycleRecord::Reopened { input: self.next_input(task_id) })?;
                 self.settle_open_pr(actor, task_id, status, Some(pr_id), effects, created, lifecycles)?;
-            }
-            Command::RequestPrAdoption { pr, branch } => {
-                system(actor)?;
-                nonempty(branch)?;
-                if self.branch_has_live_task(branch) { return Ok(()); }
-                canonical_pr(&pr.host, &pr.repository, pr.number)?;
-                if self.pr_adoptions.contains(pr) || self.pull_requests.values().any(|p|
-                    p.host == pr.host && p.repository == pr.repository && p.number == pr.number) { return Ok(()); }
-                let request_id = RequestId(format!("adopt-pr-{}", self.revision + 1));
-                let body = format!("Adopt the PR {}#{}: deliver it or close it with the reason. URL: https://{}/{}/pull/{}",
-                    pr.repository, pr.number, pr.host, pr.repository, pr.number);
-                self.requests.insert(request_id.clone(), Request { origin: RequestOrigin::Orchestrator, ..Request::new(request_id.clone(), body) });
-                self.pr_adoptions.insert(pr.clone());
-                effects.push(DomainEffect::NotifyOrchestrator { interaction_id: None, request_id: Some(request_id.clone()) });
-                created.push(request_id.0);
             }
             Command::ReopenTask { task_id } => {
                 self.reopen_guard(actor, task_id)?;

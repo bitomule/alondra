@@ -15,7 +15,9 @@ use std::path::Path;
 use std::time::Duration;
 
 /// How long a message waits for its acknowledgement before the answer says it is still on its way.
-const ACK_WAIT: Duration = Duration::from_millis(if cfg!(any(test, feature = "test-hooks")) { 200 } else { 3000 });
+fn ack_wait() -> Duration {
+    Duration::from_millis(if alondra_foundation::under_test() { 200 } else { 3000 })
+}
 
 #[derive(Deserialize, Clone, Copy, Default, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -167,7 +169,7 @@ pub async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, name: &s
         domain.gate().release_by_user_message(&agent.0);
     }
     let delivered = match told {
-        crate::sdk_handover::Told::Pushed(acked) => match clock::timeout(ACK_WAIT, acked).await {
+        crate::sdk_handover::Told::Pushed(acked) => match clock::timeout(ack_wait(), acked).await {
             Ok(Ok(())) => State::Handed,
             _ => State::Dispatching,
         },

@@ -14,44 +14,67 @@ use alondra_core::Millis;
 use alondra_core::accounts::{AccountId, AccountKey, Provider};
 use alondra_domain_rules::{AgentId, DomainError, DomainState, NodeEvent, TaskId};
 use alondra_core::model_selection::{SelectionDecision, TaskSelection};
+use alondra_engine_ports::journal::JournalFiles;
 use anyhow::Result;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::watch;
 
-/// The engine as its tests open it: the engine's own observers and the orchestrator's port, or
-/// the whole daemon's when a crate above it set `TEST_OPEN`.
-#[cfg(any(test, feature = "test-hooks"))]
+/// The engine as its fixtures open it: as the test said on its thread with `open_with`, else, in the
+/// engine's own tests, the engine alone with the doubles of the ports it does not own.
 pub fn open(home: &Path) -> Result<DomainRuntime> {
     open_at(home, &crate::domain_store::active_path(home))
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
+/// `open` at `database`, on the journal the test set (`alondra_engine_kernel::TEST_JOURNAL`).
 pub fn open_at(home: &Path, database: &Path) -> Result<DomainRuntime> {
-    match TEST_OPEN.get() {
-        Some(open) => open(home, database),
-        None => open_engine_at(home, database),
-    }
+    #[cfg(test)]
+    alondra_engine_kernel::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
+    open_on(home, database, alondra_engine_kernel::test_journal())
 }
 
-/// The engine alone, with its own observers and the orchestrator's port.
-#[cfg(any(test, feature = "test-hooks"))]
-pub fn open_engine_at(home: &Path, database: &Path) -> Result<DomainRuntime> {
-    alondra_engine_kernel::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
-    let runtime = DomainRuntime::open_observed(home, database, alondra_engine_kernel::test_journal(), Some(held_cards()), vec![
+/// `open_at` on `files`.
+pub fn open_on(home: &Path, database: &Path, files: &dyn JournalFiles) -> Result<DomainRuntime> {
+    let open = TEST_OPEN.with(std::cell::Cell::get);
+    #[cfg(test)]
+    let open = open.or(Some(engine_alone as Opener));
+    let open = open.expect("a test that opens the engine's fixtures says how on its thread, with wiring::open_with");
+    open(home, database, files)
+}
+
+/// How a test opens a runtime at a home, its database and the journal it is kept in.
+pub type Opener = fn(&Path, &Path, &dyn JournalFiles) -> Result<DomainRuntime>;
+
+thread_local! {
+    static TEST_OPEN: std::cell::Cell<Option<Opener>> = const { std::cell::Cell::new(None) };
+}
+
+/// How the engine's fixtures open runtimes on this thread: a crate above the engine opens them with
+/// its observers and ports, as `alondrad` does when it puts the daemon together.
+pub fn open_with(open: Opener) {
+    TEST_OPEN.with(|current| current.set(Some(open)));
+}
+
+/// The engine alone, with its own observers and the ports it gives the orchestrator and the gate.
+pub fn open_engine_at(home: &Path, database: &Path, files: &dyn JournalFiles) -> Result<DomainRuntime> {
+    let runtime = DomainRuntime::open_observed(home, database, files, Some(held_cards()), vec![
         Box::new(crate::gate::PauseResume),
         Box::new(crate::sdk_live::EndedWaits),
         Box::new(crate::allow_always::ChosenAlways),
     ])?;
     wire(runtime.ports());
-    alondra_agent_runtime::wire(runtime.ports(), Default::default());
     Ok(runtime)
 }
 
-/// How the tests of a crate above the engine open the runtime the engine's fixtures open: with
-/// that crate's observers and ports, as `alondrad` does when it puts the daemon together.
-#[cfg(any(test, feature = "test-hooks"))]
-pub static TEST_OPEN: std::sync::OnceLock<fn(&Path, &Path) -> Result<DomainRuntime>> = std::sync::OnceLock::new();
+#[cfg(test)]
+fn engine_alone(home: &Path, database: &Path, files: &dyn JournalFiles) -> Result<DomainRuntime> {
+    let runtime = open_engine_at(home, database, files)?;
+    alondra_engine_doubles::machine::wire(runtime.ports(), alondra_daemon_support::watcher::claude_home);
+    runtime.ports().provide::<dyn alondra_engine_ports::admission::AdmissionGate>(Arc::new(alondra_engine_doubles::gate::OpenGate::default()));
+    runtime.ports().provide::<dyn crate::hosts::SdkHosts>(Arc::new(alondra_engine_doubles::hosts::NoHosts));
+    alondra_agent_runtime::wire(runtime.ports(), Default::default());
+    Ok(runtime)
+}
 
 /// The decisions of the cards a node's mod holds.
 pub fn held_cards() -> Arc<crate::domain_holds::HeldCards> {
@@ -192,12 +215,18 @@ impl AdmissionEngine for Engine {
     }
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
+#[cfg(test)]
+#[path = "wiring/owner_fixtures.rs"]
+pub mod owner_fixtures;
+#[cfg(test)]
 #[path = "wiring/owner_tests.rs"]
-pub mod owner_tests;
+mod owner_tests;
 #[cfg(test)]
 #[path = "wiring/load_tests.rs"]
 mod load_tests;
 #[cfg(test)]
 #[path = "wiring/metrics_tests.rs"]
 mod metrics_tests;
+#[cfg(test)]
+#[path = "wiring/opening_tests.rs"]
+mod opening_tests;

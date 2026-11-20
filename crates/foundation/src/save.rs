@@ -22,8 +22,7 @@ pub fn atomic(file: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// their run waiting for it. No test can see whether the bytes reached the platter, so under
 /// `bazel test`, which sets `BAZEL_TEST`, the flush is skipped.
 fn flush_to_disk(written: &std::fs::File) -> std::io::Result<()> {
-    static UNDER_TEST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if *UNDER_TEST.get_or_init(|| std::env::var_os("BAZEL_TEST").is_some()) {
+    if crate::under_test() {
         return Ok(());
     }
     written.sync_all()

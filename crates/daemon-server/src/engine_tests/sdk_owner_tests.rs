@@ -5,8 +5,8 @@ use alondra_engine_sdk::sdk_owner::SdkOwners as _;
 use alondra_daemon_engine::live::LiveOf as _;
 use alondra_domain::ActivityView;
 use crate::domain_store::StoreError;
-use alondra_engine_sdk::sdk_owner::tests::codex_tests::*;
-use alondra_engine_sdk::sdk_owner::tests::*;
+use alondra_engine_sdk::sdk_owner::fixtures::codex::*;
+use alondra_engine_sdk::sdk_owner::fixtures::*;
 use alondra_engine_sdk::sdk_owner::*;
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::accounts::{AccountId, Provider};
@@ -194,7 +194,7 @@ fn a_reply_claude_holds_reads_as_being_delivered_with_no_deadline() {
     super::wired();
     use alondra_views::{Client, RenderContext, Transport, build, live::LiveSnapshot, text::Lang};
     use alondra_daemon_engine::obligation_watch::pass;
-    use alondra_engine_sdk::sdk_owner::tests::untaken::{drive_by_hand, enforcing_every_deadline, until_prompted};
+    use alondra_engine_sdk::sdk_owner::fixtures::untaken::{drive_by_hand, enforcing_every_deadline, until_prompted};
     let slice = Slice::new();
     let mut driver = slice.launch_working();
     let node = Actor::Agent { agent_id: driver.agent().clone() };
@@ -464,7 +464,7 @@ async fn an_actual_codex_cli_asks_enters_native_plan_and_presents_the_result_thr
     }
     let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let port=listener.local_addr().unwrap().port();
     let journey=slice._home.join("native-journey.json");std::fs::write(&journey,serde_json::to_vec(&serde_json::json!({"task":TASK,"expected_answer":"English."})).unwrap()).unwrap();
-    let (_model,model_trace,code_home,selected)=native_model_fixture(&slice,Some((&journey,port)));
+    let (_model,model_trace,code_home,selected)=native_model_fixture(&slice,Some((&journey,port)),alondra_engine_doubles::accounts::codex_fixture());
     let daemon=crate::domain_bootstrap::DomainDaemon::over_shared(&slice._home,Arc::clone(&slice.domain)).unwrap();
     let outbox_domain=Arc::clone(&slice.domain);let outbox_home=slice._home.to_path_buf();
     let push=Arc::new(crate::push::Push::open(&outbox_home).unwrap());assert!(!push.enabled());
@@ -675,6 +675,7 @@ fn node_offers(domain: &DomainRuntime, agent: &AgentId) -> Vec<String> {
 
 #[test]
 fn a_task_launched_through_the_sdk_ends_its_turn_with_one_card_readers_see_before_the_host_is_acknowledged() {
+    super::wired();
     let slice = Slice::new();
     let acknowledged = watch_acknowledgements(&slice);
     let mut driver = slice.launch();
@@ -702,6 +703,7 @@ fn a_task_launched_through_the_sdk_ends_its_turn_with_one_card_readers_see_befor
 // inside the turn that waits for it: that turn goes on with it and ends on one card.
 #[test]
 fn a_command_claude_code_tracks_as_work_ends_inside_its_turn_and_the_turn_ends_with_one_card() {
+    super::wired();
     let slice = Slice::new();
     let mut driver = slice.launch_with("foreground-command");
     slice.read_turn_result(&mut driver);

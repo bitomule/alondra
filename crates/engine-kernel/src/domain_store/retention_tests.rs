@@ -1,6 +1,6 @@
 use alondra_store_sqlite::AsSqlite as _;
 use super::*;
-use crate::domain_store::tests::{Fixture, seeded};
+use crate::domain_store::testing::{Fixture, seeded};
 use crate::domain_store::retention_fixtures::{agent, ended_task, envelope, long};
 use crate::domain_store::DomainStore;
 use alondra_domain_rules::*;

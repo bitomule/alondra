@@ -5,7 +5,7 @@
 mod cancelled_dependencies {
     use alondra_domain_rules::{Actor, Command, TaskId, TaskState};
     use alondra_engine_sdk::auto_launch::pass;
-    use alondra_engine_sdk::auto_launch::tests::{Fixture, command, create, launches, open_task, plan, problem, told, user, world};
+    use alondra_engine_sdk::auto_launch::fixtures::{Fixture, command, create, launches, open_task, plan, problem, told, user, world};
 
     /// The orchestrator ended a turn: what it still has to re-plan is handed to it again.
     fn rest(f: &Fixture) {
@@ -117,14 +117,16 @@ mod cancelled_dependencies {
 /// A launch plan the start refused stays the orchestrator's until it decides.
 mod refused_plans {
     use alondra_domain_rules::TaskId;
-    use alondra_engine_sdk::engine_tests::orchestrator_tools_tests::{refuse_its_start, refused_plan, world};
+    use alondra_engine_sdk::engine_fixtures::orchestrator_tools::{refuse_its_start, refused_plan, world};
+    use alondra_store_sqlite::AsSqlite as _;
 
     #[tokio::test]
     async fn a_refused_plan_the_orchestrator_leaves_is_handed_back_at_every_rest_and_never_cancelled_for_it() {
         super::super::wired();
         let f = world();
         alondra_engine_orchestrator::wire(f.domain.ports());
-        refused_plan(&f);
+        let plan = refused_plan(&f);
+        f.domain.store.lock().unwrap().sqlite_mut().set_launch_plan(&"t".into(), &plan, 1).unwrap();
         refuse_its_start(&f).await;
         let reminders = || f.domain.state().unwrap().interactions.values()
             .filter(|i| i.id.0.starts_with(alondra_domain_rules::orchestrator_cards::PLAN_REFUSED_NOTICE_PREFIX)).count();
@@ -153,7 +155,7 @@ mod refused_plans {
 /// A stopped node's case is reminded to the orchestrator and then settled by Alondra.
 mod stopped_nodes {
     use alondra_domain_rules::*;
-    use alondra_daemon_engine::wiring::owner_tests::*;
+    use crate::engine_tests::owner_fixtures::*;
     use std::sync::Arc;
 
     /// A stopped node's case the orchestrator leaves unsettled comes back to it once, and after that
@@ -227,7 +229,7 @@ mod held_plans {
     use alondra_domain_rules::{PlanReviewOutcome, Recipient, TaskId};
     use alondra_domain_rules::orchestrator_cards::PLAN_REVIEW_NOTICE_PREFIX;
     use alondra_daemon_engine::plan_reviews::held;
-    use alondra_daemon_engine::plan_reviews::tests::{plan, redraft, settle};
+    use alondra_daemon_engine::plan_reviews::fixtures::{plan, redraft, settle};
     use alondra_engine_kernel::domain_runtime::DomainRuntime;
 
     fn reminders(domain: &DomainRuntime) -> usize {

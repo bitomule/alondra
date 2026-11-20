@@ -2,9 +2,8 @@
 //! observes (the call it runs, what it said last, its subagents, workflows and task list), and what
 //! each SDK task measured of its conversation. Nothing here moves a node's state, which the domain
 //! alone decides. It sits on `engine-kernel` and names no other engine subsystem.
-#![cfg_attr(all(feature = "test-hooks", not(test)), allow(dead_code, unused_imports))]
 
-#[cfg(any(test, feature = "test-hooks"))]
+#[cfg(test)]
 #[path = "../../test_support.rs"]
 pub mod test_support;
 

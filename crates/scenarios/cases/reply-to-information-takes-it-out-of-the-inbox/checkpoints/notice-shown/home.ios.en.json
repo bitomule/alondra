@@ -1,0 +1,331 @@
+{
+  "client": "ios",
+  "cursor": "<cursor>",
+  "data_epoch": "<data_epoch>",
+  "empty": {
+    "text": "Nothing is waiting for you",
+    "tone": "neutral"
+  },
+  "first_cards": [
+    {
+      "client": "ios",
+      "cursor": "<cursor>",
+      "data_epoch": "<data_epoch>",
+      "key": "card:weekly-notice",
+      "protocol": 1,
+      "sections": [
+        {
+          "collapsed": false,
+          "id": "card",
+          "items": [
+            {
+              "actions": [
+                {
+                  "attachments": false,
+                  "enabled": true,
+                  "id": "read:weekly-notice@<revision>",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "label": "Seen",
+                  "presentation": "button",
+                  "resolves_card": true,
+                  "role": "neutral",
+                  "stamp": "Read",
+                  "style": "secondary"
+                }
+              ],
+              "detail": "included",
+              "eyebrow": {
+                "text": "FYI",
+                "tone": "neutral"
+              },
+              "icon": "notice",
+              "id": "weekly-notice",
+              "kind": "know",
+              "link": {
+                "key": "card:weekly-notice",
+                "kind": "view"
+              },
+              "meta": "Alondra",
+              "need": "Read this update",
+              "reply": {
+                "attachments": true,
+                "enabled": true,
+                "id": "reply:weekly-notice@<revision>",
+                "input": {
+                  "kind": "text",
+                  "multiline": true,
+                  "placeholder": "Reply…",
+                  "required": true
+                },
+                "label": "Reply",
+                "presentation": "button",
+                "resolves_card": true,
+                "role": "neutral",
+                "stamp": "Sent",
+                "style": "secondary"
+              },
+              "state": {
+                "text": "Doesn't block",
+                "tone": "neutral"
+              },
+              "timestamps": [
+                {
+                  "at": "2026-11-15T09:00:10.000+00:00",
+                  "format": "relative",
+                  "role": "created"
+                }
+              ],
+              "title": "The weekly report is ready",
+              "title_is_separate": true,
+              "type": "card"
+            }
+          ]
+        }
+      ],
+      "status": {
+        "badge": 0,
+        "counts": [
+          {
+            "id": "inbox",
+            "label": "Inbox",
+            "value": 1
+          },
+          {
+            "id": "tasks",
+            "label": "Tasks",
+            "value": 0
+          },
+          {
+            "id": "working",
+            "label": "working",
+            "value": 0
+          },
+          {
+            "id": "needs_you",
+            "label": "waiting for you",
+            "value": 0
+          },
+          {
+            "id": "queued",
+            "label": "queued",
+            "value": 0
+          },
+          {
+            "id": "paused",
+            "label": "paused",
+            "value": 0
+          },
+          {
+            "id": "other_waiting",
+            "label": "waiting",
+            "value": 0
+          }
+        ],
+        "gauges": [
+          {
+            "detail": "You can go on: Claude has room",
+            "id": "usage",
+            "label": "Claude",
+            "level": "calm",
+            "parts": [
+              {
+                "detail": "Not measured yet",
+                "group": "Claude",
+                "label": "Default",
+                "level": "calm",
+                "lines": [
+                  "Not measured yet"
+                ],
+                "text": "with room",
+                "value": 1.0
+              }
+            ],
+            "text": "with room",
+            "value": 0.0
+          },
+          {
+            "id": "memory",
+            "label": "RAM",
+            "level": "calm",
+            "text": "25%",
+            "value": 0.25
+          },
+          {
+            "id": "cpu",
+            "label": "CPU",
+            "level": "calm",
+            "text": "5%",
+            "value": 0.05
+          },
+          {
+            "id": "disk",
+            "label": "Disk",
+            "level": "calm",
+            "text": "550 GB free",
+            "value": 0.5
+          }
+        ],
+        "orchestrator": {
+          "text": "idle",
+          "tone": "neutral"
+        },
+        "summary": "1 to read · 0 tasks working",
+        "summary_parts": [
+          {
+            "count": 1,
+            "id": "to_read",
+            "one": "{count} to read",
+            "other": "{count} to read"
+          },
+          {
+            "count": 0,
+            "id": "working",
+            "one": "{count} task working",
+            "other": "{count} tasks working"
+          }
+        ],
+        "version": "<version>"
+      },
+      "title": "The weekly report is ready",
+      "version": "<version>",
+      "view": "card"
+    }
+  ],
+  "key": "home",
+  "protocol": 1,
+  "sections": [
+    {
+      "card_ids": [
+        "weekly-notice"
+      ],
+      "card_waits": [
+        "read"
+      ],
+      "collapsed": false,
+      "count": 0,
+      "id": "queue",
+      "items": [],
+      "title": "Waiting for You"
+    }
+  ],
+  "service": {
+    "capabilities": [
+      "account_presentation",
+      "model_selection",
+      "provider_accounts"
+    ],
+    "version": "<version>",
+    "views_protocol": {
+      "max": 1,
+      "min": 1
+    }
+  },
+  "status": {
+    "badge": 0,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 1
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 0
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "needs_you",
+        "label": "waiting for you",
+        "value": 0
+      },
+      {
+        "id": "queued",
+        "label": "queued",
+        "value": 0
+      },
+      {
+        "id": "paused",
+        "label": "paused",
+        "value": 0
+      },
+      {
+        "id": "other_waiting",
+        "label": "waiting",
+        "value": 0
+      }
+    ],
+    "gauges": [
+      {
+        "detail": "You can go on: Claude has room",
+        "id": "usage",
+        "label": "Claude",
+        "level": "calm",
+        "parts": [
+          {
+            "detail": "Not measured yet",
+            "group": "Claude",
+            "label": "Default",
+            "level": "calm",
+            "lines": [
+              "Not measured yet"
+            ],
+            "text": "with room",
+            "value": 1.0
+          }
+        ],
+        "text": "with room",
+        "value": 0.0
+      },
+      {
+        "id": "memory",
+        "label": "RAM",
+        "level": "calm",
+        "text": "25%",
+        "value": 0.25
+      },
+      {
+        "id": "cpu",
+        "label": "CPU",
+        "level": "calm",
+        "text": "5%",
+        "value": 0.05
+      },
+      {
+        "id": "disk",
+        "label": "Disk",
+        "level": "calm",
+        "text": "550 GB free",
+        "value": 0.5
+      }
+    ],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    },
+    "summary": "1 to read · 0 tasks working",
+    "summary_parts": [
+      {
+        "count": 1,
+        "id": "to_read",
+        "one": "{count} to read",
+        "other": "{count} to read"
+      },
+      {
+        "count": 0,
+        "id": "working",
+        "one": "{count} task working",
+        "other": "{count} tasks working"
+      }
+    ],
+    "version": "<version>"
+  },
+  "version": "<version>",
+  "view": "home"
+}

@@ -12,7 +12,7 @@ impl Fixture {
     fn new() -> Self {
         let home = crate::test_support::Directory::new();
         std::fs::create_dir_all(&home).unwrap();
-        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain, &home, Default::default());
         Self { client, home }
     }
@@ -51,7 +51,12 @@ impl Fixture {
     }
 
     fn context(&self, task: &str, tokens: u64) {
-        self.client.domain.contexts().measured_for_test(&task.into(), "fixture-model", tokens, 200_000, 1_000);
+        use alondra_daemon_engine::idle_compaction::ContextEvent;
+        let contexts = self.client.domain.contexts();
+        let _ = contexts.observed(&task.into(), ContextEvent::Answered {
+            tokens, cache: None, model: Some("fixture-model".into()), cached: Default::default(),
+        }, 1_000);
+        let _ = contexts.observed(&task.into(), ContextEvent::Windows(vec![("fixture-model".into(), 200_000)]), 1_001);
     }
 
     fn equivalent(&self, state: DomainState, agent: &str,
@@ -170,7 +175,7 @@ fn indexed_node_rows_preserve_sdk_turn_and_pause_states() {
     let fixture = Fixture::new();
     fixture.agent("sdk-node", "SDK worker");
     fixture.task("current");
-    alondra_daemon_engine::domain_transport::tests::admitted_sdk_execution(&fixture.client.domain, "current", "sdk-node", 0);
+    alondra_daemon_engine::domain_transport::fixtures::admitted_sdk_execution(&fixture.client.domain, "current", "sdk-node", 0);
     let state = fixture.client.domain.read().state().as_ref().clone();
     for row in fixture.equivalent(state, "sdk-node", &BTreeMap::new(), &None).into_iter().flatten() {
         assert_eq!(row.state_key.as_deref(), Some("busy"));

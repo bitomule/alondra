@@ -1,8 +1,7 @@
 load("//tools/bazel:crates.bzl", "application_crate")
 load("//tools:tree.bzl", "repo_tree")
-load("//tools:rust_test.bzl", "LOW_OPT_LEVEL", "low_opt_rust_test")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
@@ -27,30 +26,11 @@ application_crate(
     srcs = production_sources(),
     crate_name = "alondra_engine_orchestrator",
     version = VERSION,
+    test_visibility = ["//crates/machine-model:__pkg__"],
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine-model:daemon_engine_model",
         "//crates/daemon-support:daemon_support",
         "//crates/engine-kernel:engine_kernel",
-    ],
-)
-
-# The same production sources built over the test-hooks builds of the crates below it: alondrad's
-# tests, the machine model and the scenarios still link those builds, and a test binary holds one
-# copy of each crate. It goes when those test-hooks builds go.
-rust_library(
-    name = "engine_orchestrator_on_test_hooks",
-    testonly = True,
-    srcs = production_sources(),
-    crate_name = "alondra_engine_orchestrator",
-    crate_root = "src/lib.rs",
-    edition = "2024",
-    rustc_flags = [LOW_OPT_LEVEL],
-    version = VERSION,
-    visibility = ["//crates/alondrad:__pkg__", "//crates/daemon-server:__pkg__", "//crates/machine-model:__pkg__", "//crates/scenarios:__pkg__"],
-    deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
-        "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
-        "//crates/daemon-support:daemon_support_test_hooks",
-        "//crates/engine-kernel:engine_kernel_test_hooks",
     ],
 )
 
@@ -85,10 +65,10 @@ low_opt_rust_test(
         "//crates/agent-runtime:agent_runtime",
         "//crates/codex-protocol:codex_protocol",
         "//crates/engine-doubles:engine_doubles",
-        "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
-        "//crates/daemon-support:daemon_support_test_hooks",
-        "//crates/engine-kernel:engine_kernel_test_hooks",
-        "//crates/store-sqlite:store_sqlite_test_hooks",
+        "//crates/daemon-engine-model:daemon_engine_model",
+        "//crates/daemon-support:daemon_support",
+        "//crates/engine-kernel:engine_kernel",
+        "//crates/store-sqlite:store_sqlite",
         "//crates/provider-contract:provider_contract",
     ],
 )

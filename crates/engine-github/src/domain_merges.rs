@@ -6,6 +6,7 @@
 //! merge counts only when GitHub reports the PR merged. A merge GitHub refuses goes back to the
 //! node with GitHub's reason, as feedback on that delivery. A merge the user authorized does not
 //! wait for required checks the rulesets let the signed-in account bypass: it merges past them.
+use alondra_daemon_support::locks::Poisonable as _;
 use alondra_core::clock;
 use alondra_core::clock::Instant;
 use crate::domain_github::{GhFailure, execute_system, pr_url};
@@ -607,7 +608,6 @@ impl Merger {
         }
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn tracked(&self) -> usize {
         self.waited.len() + self.pressed.len() + self.transient.len() + self.queued.len() + self.bypass_refused.len() + self.trouble.len()
             + self.merge_trouble.len() + self.action.len()
@@ -735,7 +735,6 @@ pub async fn run(domain: Arc<DomainRuntime>, github: Arc<impl PrMerger>, mut mer
     }
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
 pub struct FakeGithub {
     pub statuses: std::sync::Mutex<BTreeMap<u64, Result<Status, GhFailure>>>,
     pub merges: std::sync::Mutex<BTreeMap<u64, Result<(), GhFailure>>>,
@@ -768,7 +767,6 @@ pub struct FakeGithub {
     pub on_default: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
 impl FakeGithub {
     pub fn new() -> Self {
         Self { statuses: Default::default(), merges: Default::default(), queue: Default::default(),
@@ -779,40 +777,39 @@ impl FakeGithub {
             retargets: Default::default(), after_retarget: Default::default(), on_draft: Default::default(), on_default: Default::default() }
     }
     pub fn open(&self, number: u64, head: &str, checks: Checks) {
-        self.statuses.lock().unwrap().insert(number, Ok(Status { state: PrState::Open, head: head.into(), head_ref: String::new(), base: "main".into(), checks,
+        self.statuses.lock_or_recover("a test's fixture").insert(number, Ok(Status { state: PrState::Open, head: head.into(), head_ref: String::new(), base: "main".into(), checks,
             passed: BTreeSet::new(), merge_state: MergeState::Clean }));
     }
     /// An open PR whose `mergeStateStatus` is BLOCKED.
     pub fn open_blocked(&self, number: u64, head: &str, checks: Checks) {
         self.open(number, head, checks);
-        if let Some(Ok(status)) = self.statuses.lock().unwrap().get_mut(&number) {
+        if let Some(Ok(status)) = self.statuses.lock_or_recover("a test's fixture").get_mut(&number) {
             status.merge_state = MergeState::Other;
         }
     }
 }
 
 
-#[cfg(any(test, feature = "test-hooks"))]
 impl FakeGithub {
     fn fake_merge<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod, call: String) -> Pending<'a, ()> {
-        let result = self.merges.lock().unwrap().get(&pr.number).cloned().unwrap_or(Ok(()));
-        self.calls.lock().unwrap().push(call);
+        let result = self.merges.lock_or_recover("a test's fixture").get(&pr.number).cloned().unwrap_or(Ok(()));
+        self.calls.lock_or_recover("a test's fixture").push(call);
         if result.is_err()
-            && let Some(merge_state) = self.refused_as.lock().unwrap().get(&pr.number)
-            && let Some(Ok(status)) = self.statuses.lock().unwrap().get_mut(&pr.number)
+            && let Some(merge_state) = self.refused_as.lock_or_recover("a test's fixture").get(&pr.number)
+            && let Some(Ok(status)) = self.statuses.lock_or_recover("a test's fixture").get_mut(&pr.number)
         {
             status.merge_state = *merge_state;
         }
         if result.is_err()
-            && self.merged_anyway.lock().unwrap().contains(&pr.number)
-            && let Some(Ok(status)) = self.statuses.lock().unwrap().get_mut(&pr.number)
+            && self.merged_anyway.lock_or_recover("a test's fixture").contains(&pr.number)
+            && let Some(Ok(status)) = self.statuses.lock_or_recover("a test's fixture").get_mut(&pr.number)
         {
             status.state = PrState::Merged;
         }
         if result.is_ok() {
-            self.merged.lock().unwrap().push((pr.number, head.to_owned(), method));
-            if !self.queue.lock().unwrap().contains_key(&pr.number)
-                && let Some(Ok(status)) = self.statuses.lock().unwrap().get_mut(&pr.number)
+            self.merged.lock_or_recover("a test's fixture").push((pr.number, head.to_owned(), method));
+            if !self.queue.lock_or_recover("a test's fixture").contains_key(&pr.number)
+                && let Some(Ok(status)) = self.statuses.lock_or_recover("a test's fixture").get_mut(&pr.number)
             {
                 status.state = PrState::Merged;
             }
@@ -821,29 +818,28 @@ impl FakeGithub {
     }
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
 impl PrMerger for FakeGithub {
     fn default_branch<'a>(&'a self, _pr: &'a PullRequest) -> Pending<'a, String> {
-        let hook = self.on_default.lock().unwrap().take();
+        let hook = self.on_default.lock_or_recover("a test's fixture").take();
         if let Some(hook) = hook { hook(); }
-        let base = self.default_base.lock().unwrap().clone();
+        let base = self.default_base.lock_or_recover("a test's fixture").clone();
         Box::pin(async move { Ok(base) })
     }
     fn retarget<'a>(&'a self, pr: &'a PullRequest, base: &'a str) -> Pending<'a, ()> {
-        self.retargets.lock().unwrap().push((pr.number, base.to_owned()));
-        self.calls.lock().unwrap().push(format!("retarget {} {base}", pr.number));
-        if let Some(Ok(status)) = self.statuses.lock().unwrap().get_mut(&pr.number) {
+        self.retargets.lock_or_recover("a test's fixture").push((pr.number, base.to_owned()));
+        self.calls.lock_or_recover("a test's fixture").push(format!("retarget {} {base}", pr.number));
+        if let Some(Ok(status)) = self.statuses.lock_or_recover("a test's fixture").get_mut(&pr.number) {
             status.base = base.to_owned();
-            if let Some(next) = self.after_retarget.lock().unwrap().remove(&pr.number) { *status = next; }
+            if let Some(next) = self.after_retarget.lock_or_recover("a test's fixture").remove(&pr.number) { *status = next; }
         }
         Box::pin(async { Ok(()) })
     }
     fn status<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, Status> {
         self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        if let Some(hook) = self.on_read.lock().unwrap().take() {
+        if let Some(hook) = self.on_read.lock_or_recover("a test's fixture").take() {
             hook();
         }
-        let status = self.statuses.lock().unwrap().get(&pr.number).cloned().unwrap_or_else(|| Err(GhFailure::Exit(Some(1), "no such PR".into())));
+        let status = self.statuses.lock_or_recover("a test's fixture").get(&pr.number).cloned().unwrap_or_else(|| Err(GhFailure::Exit(Some(1), "no such PR".into())));
         Box::pin(async move { status })
     }
     fn merge<'a>(&'a self, pr: &'a PullRequest, head: &'a str, method: MergeMethod) -> Pending<'a, ()> {
@@ -853,38 +849,38 @@ impl PrMerger for FakeGithub {
         self.fake_merge(pr, head, method, format!("merge {} --admin", pr.number))
     }
     fn bypassable_checks<'a>(&'a self, pr: &'a PullRequest, _base: &'a str) -> Pending<'a, Vec<String>> {
-        self.calls.lock().unwrap().push(format!("bypassable {}", pr.number));
-        let bypassable = self.bypassable.lock().unwrap().get(&pr.number).cloned().unwrap_or(Ok(vec![]));
+        self.calls.lock_or_recover("a test's fixture").push(format!("bypassable {}", pr.number));
+        let bypassable = self.bypassable.lock_or_recover("a test's fixture").get(&pr.number).cloned().unwrap_or(Ok(vec![]));
         Box::pin(async move { bypassable })
     }
     fn is_draft<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
-        let hook = self.on_draft.lock().unwrap().take();
+        let hook = self.on_draft.lock_or_recover("a test's fixture").take();
         if let Some(hook) = hook { hook(); }
-        let draft = self.drafts.lock().unwrap().get(&pr.number).cloned().unwrap_or(Ok(false));
+        let draft = self.drafts.lock_or_recover("a test's fixture").get(&pr.number).cloned().unwrap_or(Ok(false));
         Box::pin(async move { draft })
     }
     fn ready<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, ()> {
-        self.calls.lock().unwrap().push(format!("ready {}", pr.number));
-        let result = self.readies.lock().unwrap().get(&pr.number).cloned().unwrap_or(Ok(()));
+        self.calls.lock_or_recover("a test's fixture").push(format!("ready {}", pr.number));
+        let result = self.readies.lock_or_recover("a test's fixture").get(&pr.number).cloned().unwrap_or(Ok(()));
         Box::pin(async move { result })
     }
     fn required_checks<'a>(&'a self, pr: &'a PullRequest, _base: &'a str) -> Pending<'a, Vec<String>> {
-        self.calls.lock().unwrap().push(format!("required {}", pr.number));
-        let required = self.required.lock().unwrap().get(&pr.number).cloned().unwrap_or(Ok(vec![]));
+        self.calls.lock_or_recover("a test's fixture").push(format!("required {}", pr.number));
+        let required = self.required.lock_or_recover("a test's fixture").get(&pr.number).cloned().unwrap_or(Ok(vec![]));
         Box::pin(async move { required })
     }
     fn can_merge<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
-        let allowed = !self.no_access.lock().unwrap().contains(&pr.number);
+        let allowed = !self.no_access.lock_or_recover("a test's fixture").contains(&pr.number);
         Box::pin(async move { Ok(allowed) })
     }
     fn in_queue<'a>(&'a self, pr: &'a PullRequest) -> Pending<'a, bool> {
-        if self.merged_by_queue.lock().unwrap().contains(&pr.number)
-            && let Some(Ok(status)) = self.statuses.lock().unwrap().get_mut(&pr.number)
+        if self.merged_by_queue.lock_or_recover("a test's fixture").contains(&pr.number)
+            && let Some(Ok(status)) = self.statuses.lock_or_recover("a test's fixture").get_mut(&pr.number)
         {
             status.state = PrState::Merged;
             return Box::pin(async { Ok(false) });
         }
-        let queued = self.queue.lock().unwrap().get(&pr.number).copied().unwrap_or(false);
+        let queued = self.queue.lock_or_recover("a test's fixture").get(&pr.number).copied().unwrap_or(false);
         Box::pin(async move { Ok(queued) })
     }
 }

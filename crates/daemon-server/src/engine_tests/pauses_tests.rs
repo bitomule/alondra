@@ -1,7 +1,7 @@
 //! What the screens show of a paused node of the Agent SDK and what they offer for it: the engine's
-//! pauses (`engine-sdk`'s `engine_tests::pauses_tests`) driven step by step, rendered by `views`.
-use alondra_engine_sdk::engine_tests::sdk_node_fixture::*;
-use alondra_engine_sdk::engine_tests::wired;
+//! pauses (`engine-sdk`'s `engine_tests/pauses_tests.rs`) driven step by step, rendered by `views`.
+use alondra_engine_sdk::engine_fixtures::sdk_node_fixture::*;
+use super::wired;
 use alondra_engine_admission::AdmissionOf as _;
 use alondra_engine_admission::admission::Key;
 use alondra_engine_admission::pauses::Reason;

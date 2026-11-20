@@ -6,6 +6,7 @@ pub mod admission;
 pub mod agent_host;
 pub mod contract;
 pub mod disk;
+pub mod gate;
 pub mod github;
 pub mod host_root;
 pub mod hosts;

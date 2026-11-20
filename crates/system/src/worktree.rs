@@ -648,7 +648,7 @@ async fn delete_saved_branch(repository: &Path, branch: &str) {
     }
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
+#[cfg(test)]
 pub mod testing {
     use std::path::{Path, PathBuf};
 

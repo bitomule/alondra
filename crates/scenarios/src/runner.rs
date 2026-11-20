@@ -10,7 +10,8 @@ use crate::http::{PHONE_SECRET, Phone};
 use alondra_agent_runtime::owned_host::{HostLauncher, HostSpawn, Launcher};
 use crate::claude_host::{ApiError, ClaudeEdge};
 use alondra_domain_rules::{
-    Actor, CardSpec, Command, CommandEnvelope, DeliveryTarget, LaunchPlan, MergeMethod, NodeEnd, PROTOCOL_VERSION, StackDependency,
+    Actor, CardKind, CardSpec, Command, CommandEnvelope, DeliveryTarget, LaunchPlan, MergeMethod, NodeEnd, PROTOCOL_VERSION, Recipient, Scope,
+    StackDependency,
 };
 use alondra_views::action_id::ActionId;
 use alondra_daemon_engine::github_world::GithubWorld;
@@ -19,7 +20,7 @@ use alondrad::assemble::{self, Assembled, Backend, GithubSeams, Pushes, Seams};
 use alondrad::push_transport::{RecordedPushes, SentPush};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -129,7 +130,7 @@ pub fn run(scenario: &Scenario, accepted: Option<&Path>) -> Result<Outcome, Scen
 
 /// Runs the scenario as far as it goes: the checkpoints it passed, and the failure that stopped it.
 pub fn run_partial(scenario: &Scenario) -> (Outcome, Option<ScenarioError>) {
-    match run_inner(scenario, None, |_| ()) {
+    match run_inner(scenario, None, |_| (), None) {
         Ok((outcome, failure)) => (outcome, failure),
         Err(error) => (Outcome { checkpoints: Vec::new() }, Some(error)),
     }
@@ -138,7 +139,16 @@ pub fn run_partial(scenario: &Scenario) -> (Outcome, Option<ScenarioError>) {
 /// `run`, with `probe` handed the launcher the daemon starts processes through, once it is
 /// assembled: how a test of the harness makes something reach for a process.
 pub fn run_with(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnce(&Launcher)) -> Result<Outcome, ScenarioError> {
-    match run_inner(scenario, accepted, probe)? {
+    match run_inner(scenario, accepted, probe, None)? {
+        (outcome, None) => Ok(outcome),
+        (_, Some(failure)) => Err(failure),
+    }
+}
+
+/// `run`, with every Claude host taking `by` to exit once the daemon tells it to stop.
+#[cfg(test)]
+pub(crate) fn run_with_slow_host_exits(scenario: &Scenario, by: Duration) -> Result<Outcome, ScenarioError> {
+    match run_inner(scenario, None, |_| {}, Some(by))? {
         (outcome, None) => Ok(outcome),
         (_, Some(failure)) => Err(failure),
     }
@@ -148,12 +158,13 @@ fn run_inner(
     scenario: &Scenario,
     accepted: Option<&Path>,
     probe: impl FnOnce(&Launcher),
+    slow_exit: Option<Duration>,
 ) -> Result<(Outcome, Option<ScenarioError>), ScenarioError> {
     if std::env::var("TZ").as_deref() != Ok("UTC") {
         return Err(ScenarioError::Invalid("scenarios run with TZ=UTC: the views show local time, which differs from Mac to Mac".into()));
     }
     let runtime = alondra_core::clock::VirtualRuntime::new(EPOCH_MILLIS).map_err(|error| ScenarioError::Invalid(error.to_string()))?;
-    runtime.block_on(execute(scenario, accepted, probe))
+    runtime.block_on(execute(scenario, accepted, probe, slow_exit))
 }
 
 /// 2026-11-15 09:00 UTC: every scenario starts at the same instant.
@@ -180,7 +191,7 @@ const MACHINE_SAMPLE: Duration = Duration::from_secs(10);
 /// make a moment of calm.
 const CALM_POLLS: u64 = 25;
 /// The polls that outlast the longest wait of a host's owner between two looks at the inputs it
-/// holds (250 ms, while a turn runs).
+/// holds (250 ms, during a turn and between turns).
 const OWNER_WAKE_POLLS: u64 = 150;
 
 struct Context<'a> {
@@ -202,13 +213,20 @@ struct Context<'a> {
     /// The inputs the user's messages became, by task, in the order the user wrote them.
     told: BTreeMap<String, std::collections::VecDeque<(String, String)>>,
     request: Option<String>,
+    /// The worktree each task has on disk, by task.
+    worktrees: BTreeMap<String, PathBuf>,
     commands: u64,
     spent: Duration,
     budget: Duration,
     outcome: Outcome,
 }
 
-async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnce(&Launcher)) -> Result<(Outcome, Option<ScenarioError>), ScenarioError> {
+async fn execute(
+    scenario: &Scenario,
+    accepted: Option<&Path>,
+    probe: impl FnOnce(&Launcher),
+    slow_exit: Option<Duration>,
+) -> Result<(Outcome, Option<ScenarioError>), ScenarioError> {
     // Tokio jumps a paused clock to its next timer whenever the runtime waits, as it does on a view
     // read over HTTP, unless a blocking task runs: one runs for the whole scenario, so virtual time
     // moves only when a step moves it.
@@ -242,6 +260,9 @@ async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnc
     let mut startup_probe = None;
     let (launcher, backend, peer) = if codex.is_empty() {
         let edge = ClaudeEdge::new(&config.home, leaks.clone());
+        if let Some(by) = slow_exit {
+            edge.set_slow_exit(by);
+        }
         startup_probe = Some(edge.hold_startup_probe());
         let launcher = Launcher::new(edge.clone());
         let backend = claude_backend(&config.home, &scenario.world.release).map_err(|e| invalid(&e))?;
@@ -257,9 +278,9 @@ async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnc
     };
     probe(&launcher);
     let mac = CalmMac::default();
-    let seams = seams_of(&github, &pushes, &mac, launcher, backend);
+    let seams = seams_of(&github, &pushes, &mac, launcher, backend, &leaks);
     alondrad::scenario_phone::prepare(&config.home).map_err(|e| invalid(&format!("{e:#}")))?;
-    let domain = alondra_engine_sdk::engine_tests::open(&config.home).map_err(|e| invalid(&format!("{e:#}")))?;
+    let domain = crate::engine::open(&config.home).map_err(|e| invalid(&format!("{e:#}")))?;
     let daemon = assemble::start_over(&config, domain, seams).await.map_err(|e| invalid(&format!("{e:#}")))?;
     let phone = Phone::pair(&daemon, std::net::SocketAddr::new(config.listen, config.port)).map_err(|e| invalid(&e))?;
     let destination = alondrad::scenario_phone::Phone::new(phone.device(), PHONE_SECRET).map_err(|e| invalid(&format!("{e:#}")))?;
@@ -280,6 +301,7 @@ async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnc
         capabilities: BTreeMap::new(),
         told: BTreeMap::new(),
         request: None,
+        worktrees: BTreeMap::new(),
         commands: 0,
         spent: Duration::ZERO,
         budget,
@@ -304,7 +326,7 @@ async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnc
     Ok((context.outcome, result.err()))
 }
 
-fn seams_of(github: &Arc<GithubWorld>, pushes: &RecordedPushes, mac: &CalmMac, launcher: Launcher, backend: Backend) -> Seams {
+fn seams_of(github: &Arc<GithubWorld>, pushes: &RecordedPushes, mac: &CalmMac, launcher: Launcher, backend: Backend, leaks: &Arc<Mutex<Vec<String>>>) -> Seams {
     Seams {
         github: GithubSeams::of(github.clone()),
         push: Pushes::new(pushes.clone()),
@@ -313,9 +335,10 @@ fn seams_of(github: &Arc<GithubWorld>, pushes: &RecordedPushes, mac: &CalmMac, l
             let publication = mac.1.clone();
             Arc::new(move || publication.publish())
         }),
-        launcher,
+        launcher: Launcher::new(crate::reports_cli::ReportsCli { inner: launcher, leaks: leaks.clone() }),
         backend,
         world: assemble::World::Isolated,
+        own_cli: Some(crate::reports_cli::SCENARIO_CLI.into()),
     }
 }
 
@@ -552,7 +575,38 @@ impl Context<'_> {
             },
             Step::Press { presentation, action, text, screen } => self.press(index, presentation, action, text.as_deref(), screen.as_deref().unwrap_or("home")).await?,
             Step::Answer { card, option, text } => self.answer(index, card, option, text.as_deref()).await?,
-            Step::Node { task, account } => self.start_claude_node(index, task, account).await?,
+            Step::Inform { card, title, body } => {
+                self.command(index, orchestrator(), Command::PublishInformation {
+                    attachments: Vec::new(), interaction_id: card.clone().into(), scope: Scope::Orchestrator { request_id: None },
+                    recipient: Recipient::User, body: body.clone(), card: CardSpec::new(CardKind::Know, title),
+                })?;
+                self.settle().await?;
+            }
+            Step::Reply { card, text } => {
+                let (client, lang) = ("ios", "en");
+                let view = self.view("home", client, lang).await?;
+                let Some(action) = find_reply(&view, card) else {
+                    return Err(ScenarioError::ActionMissing { presentation: card.to_owned(), action: "reply".into(), view: checkpoint::render(&view) });
+                };
+                self.send_action(index, &view, &action, "reply", typed_input(Some(text)), client, lang).await?;
+                self.settle().await?;
+            }
+            Step::Node { task, account, model } => self.start_claude_node(index, task, account, model.as_deref()).await?,
+            Step::Conversation { task, tokens } => self.edge(index)?.set_conversation(task, *tokens),
+            Step::Worktree { task, from: Some(other), .. } => {
+                let path = self.worktrees.get(other).cloned().ok_or_else(|| Self::failed(index, format!("task {other} has no worktree")))?;
+                self.command(index, Actor::System, Command::RecordTaskWorktree {
+                    task_id: task.clone().into(), path: path.display().to_string(), origin: alondra_domain_rules::WorktreeOrigin::Entered, branch: None,
+                })?;
+                self.worktrees.insert(task.clone(), path);
+            }
+            Step::Worktree { task, files, outside_link, from: None } => self.worktree(index, task, files, outside_link.as_deref())?,
+            Step::Permission { task, request, command, cwd } => {
+                let top = self.worktrees.get(task).ok_or_else(|| Self::failed(index, format!("task {task} has no worktree")))?;
+                let cwd = cwd.as_deref().map_or_else(|| top.clone(), |cwd| top.join(cwd));
+                self.edge(index)?.ask_permission(task, request, command, &cwd.display().to_string()).map_err(|why| Self::failed(index, why))?;
+                self.settle().await?;
+            }
             Step::TurnEnd { task } => {
                 self.edge(index)?.end_turn(task, None).map_err(|why| Self::failed(index, why))?;
                 self.settle().await?;
@@ -593,6 +647,11 @@ impl Context<'_> {
             Step::Restart { lose } => self.restart(index, lose, None).await?,
             Step::Update => self.restart(index, &[], Some(alondra_engine_sdk::sdk_owner::backend::this_release())).await?,
             Step::HostCanStart { task } => self.edge(index)?.set_startable(task, true),
+            Step::WriteHome { files } => {
+                for file in files {
+                    self.write_home(index, &file.path, &file.text)?;
+                }
+            }
             Step::Advance { by } => self.pass(parse_duration(by)?, index).await?,
             Step::Rest { max } => self.rest(parse_duration(max)?, index).await?,
             Step::Checkpoint(checkpoint) => self.checkpoint(index, checkpoint).await?,
@@ -612,8 +671,9 @@ impl Context<'_> {
     /// The Claude hosts answer the daemon in real time, beside the virtual clock: waits, in the
     /// runtime's blocking pool (which keeps the clock where it is), until no takeover of a host is
     /// under way, the daemon is attached to every host that runs and acknowledged what each said,
-    /// and neither a frame nor a commit moved for a moment, so the next step reads what the daemon
-    /// did with them. Past the patience the run ends, naming what kept moving.
+    /// no thread of the daemon works on what the clock woke it for (`clock::working`), and neither
+    /// a frame nor a commit moved for a moment, so the next step reads what the daemon did with
+    /// them. Past the patience the run ends, naming what kept moving.
     async fn settle(&self) -> Result<(), ScenarioError> {
         if let Some(edge) = &self.claude {
             let edge = edge.clone();
@@ -623,12 +683,13 @@ impl Context<'_> {
                 let domain = domain.clone();
                 move || domain.as_ref().is_some_and(|domain| domain.retaking())
             };
-            // While a turn runs, the owner of its host looks for new inputs only between reads of
-            // the host, which wait up to `OWNER_WAKE`: an input the daemon holds for a host that
-            // was not offered it yet may still go out once that wait ends.
+            // The owner of a host looks for new inputs only between its waits on the host and on
+            // the store, which last up to `OWNER_WAKE`, during a turn and between turns: an input
+            // the daemon holds for a host that was not offered it yet may still go out once that
+            // wait ends.
             let undelivered = move || {
                 let Some(state) = domain.as_ref().and_then(|domain| domain.state().ok()) else { return false };
-                watched.turns().into_iter().any(|(task, offered)| {
+                watched.untaken_offers().into_iter().any(|(task, offered)| {
                     state.lifecycle_of(&task.into()).is_ok_and(|lifecycle| lifecycle.pending_inputs().len() > offered)
                 })
             };
@@ -641,14 +702,15 @@ impl Context<'_> {
                 loop {
                     std::thread::sleep(Duration::from_millis(2));
                     let now = (edge.activity(), revision());
-                    if now != last {
+                    let working = alondra_core::clock::working();
+                    if now != last || working > 0 {
                         (last, calm) = (now, 0);
                     } else {
                         calm += 1;
                     }
                     let enough = if undelivered() { OWNER_WAKE_POLLS } else { CALM_POLLS };
                     let (committed, retaking) = (edge.committed(), retaking());
-                    if calm >= enough && committed && !retaking {
+                    if calm >= enough && committed && !retaking && working == 0 {
                         return None;
                     }
                     patience = patience.saturating_sub(2);
@@ -656,6 +718,9 @@ impl Context<'_> {
                         let mut moving = Vec::new();
                         if calm < enough {
                             moving.push("frames or commits");
+                        }
+                        if working > 0 {
+                            moving.push("a thread of the daemon the clock woke, still working");
                         }
                         if !committed {
                             moving.push("a host the daemon did not attach to or acknowledge");
@@ -694,10 +759,32 @@ impl Context<'_> {
         .await
         .unwrap_or(false);
         if settled {
-            return Ok(());
+            return Self::threads_rest().await;
         }
         let seen = peer.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         Err(ScenarioError::HostsStalled { started: seen.remaining.len(), expected: hosts, remaining: seen.remaining.clone() })
+    }
+
+    /// Waits, in the blocking pool, until no thread of the daemon works on what the clock woke it
+    /// for (`clock::working`), so the next step reads what each did with its instant.
+    async fn threads_rest() -> Result<(), ScenarioError> {
+        let rested = tokio::task::spawn_blocking(|| {
+            let mut patience = PATIENCE_MS;
+            while alondra_core::clock::working() > 0 {
+                if patience == 0 {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+                patience = patience.saturating_sub(2);
+            }
+            true
+        })
+        .await
+        .unwrap_or(false);
+        match rested {
+            true => Ok(()),
+            false => Err(ScenarioError::Unsettled(format!("a thread of the daemon the clock woke, still working, after {} s", PATIENCE_MS / 1000))),
+        }
     }
 
     /// The task's node starts on Codex as a launch in production starts it: the daemon picks the
@@ -820,6 +907,42 @@ impl Context<'_> {
         Ok(())
     }
 
+    /// Makes the worktree of `task` as Alondra does, a linked worktree of a repository of its own,
+    /// and records it as the task's.
+    fn worktree(&mut self, index: usize, task: &str, files: &[String], outside_link: Option<&str>) -> Result<(), ScenarioError> {
+        let failed = |why: &dyn std::fmt::Display| Self::failed(index, why);
+        let place = self.config.home.parent().ok_or_else(|| failed(&"the home has no folder"))?.join("repos").join(task);
+        let top = place.join(".claude").join("worktrees").join(task);
+        let branch = format!("worktree-{task}");
+        let git = |dir: &Path, args: &[&str]| -> Result<(), ScenarioError> {
+            let output = std::process::Command::new("git").current_dir(dir).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1")
+                .args(["-c", "user.name=Ana", "-c", "user.email=ana@example.com"]).args(args).output().map_err(|e| failed(&e))?;
+            if !output.status.success() {
+                return Err(failed(&format!("git {args:?}: {}", String::from_utf8_lossy(&output.stderr))));
+            }
+            Ok(())
+        };
+        std::fs::create_dir_all(&place).map_err(|e| failed(&e))?;
+        git(&place, &["init", "-q", "-b", "main"])?;
+        git(&place, &["commit", "-q", "--allow-empty", "-m", "Start"])?;
+        git(&place, &["worktree", "add", "-q", "-b", &branch, &top.display().to_string()])?;
+        for file in files {
+            let path = top.join(file);
+            std::fs::create_dir_all(path.parent().unwrap_or(&top)).and_then(|()| std::fs::write(&path, "a\n")).map_err(|e| failed(&e))?;
+        }
+        if let Some(link) = outside_link {
+            let outside = place.join("outside");
+            std::fs::create_dir_all(&outside).and_then(|()| std::fs::write(outside.join("secret"), "a\n")).map_err(|e| failed(&e))?;
+            std::os::unix::fs::symlink(&outside, top.join(link)).map_err(|e| failed(&e))?;
+        }
+        let top = top.canonicalize().map_err(|e| failed(&e))?;
+        self.command(index, Actor::System, Command::RecordTaskWorktree {
+            task_id: task.to_owned().into(), path: top.display().to_string(), origin: alondra_domain_rules::WorktreeOrigin::Task, branch: Some(branch),
+        })?;
+        self.worktrees.insert(task.to_owned(), top);
+        Ok(())
+    }
+
     fn edge(&self, index: usize) -> Result<&ClaudeEdge, ScenarioError> {
         self.claude.as_ref().ok_or_else(|| Self::failed(index, "a case with Codex nodes plays no Claude"))
     }
@@ -827,7 +950,7 @@ impl Context<'_> {
     /// The task's node starts on Claude as a launch in production starts it, on `account`: the
     /// daemon picks the model, writes the mission and starts the host it supervises, after the
     /// accounts were checked through the same edge.
-    async fn start_claude_node(&mut self, index: usize, task: &str, account: &str) -> Result<(), ScenarioError> {
+    async fn start_claude_node(&mut self, index: usize, task: &str, account: &str, model: Option<&str>) -> Result<(), ScenarioError> {
         use alondra_core::accounts::{AccountId, Provider};
         for _ in 0..30 {
             if alondra_daemon_engine::accounts::require_initial_check(&self.daemon().domain).is_ok() {
@@ -843,7 +966,20 @@ impl Context<'_> {
             .map_err(|e| Self::failed(index, e))?;
         let state = self.daemon().domain.state().map_err(|e| Self::failed(index, e))?;
         let title = state.tasks.get(&task.to_owned().into()).map(|task| task.title.clone()).unwrap_or_default();
-        let options = alondra_engine_sdk::sdk_owner::LaunchOptions { provider: Provider::Claude, ..Default::default() };
+        let mut options = alondra_engine_sdk::sdk_owner::LaunchOptions { provider: Provider::Claude, ..Default::default() };
+        if let Some(model) = model {
+            use alondra_core::model_selection::{ModelCandidate, ModelProfile, TaskSelection};
+            let key = alondra_core::accounts::AccountKey::new(Provider::Claude, account.clone());
+            let catalog = state.model_catalogs.iter().find(|catalog| catalog.account == key).ok_or_else(|| Self::failed(index, format!("{account} has no model catalog")))?;
+            let effective = catalog.resolve(&ModelCandidate { model: model.to_owned(), reasoning_effort: Some("high".into()) }).map_err(|why| Self::failed(index, why))?;
+            let mut selection = TaskSelection::automatic(ModelProfile::General);
+            selection.request_model(Some(effective.model.clone()));
+            selection.account = Some(key);
+            selection.native_tool_denials = Some(vec![]);
+            (options.model, options.effort) = (Some(model.to_owned()), effective.reasoning_effort.clone());
+            selection.effective = Some(effective);
+            options.selection = Some(selection);
+        }
         alondra_engine_sdk::sdk_owner::launch(&self.daemon().domain, alondra_engine_sdk::sdk_owner::Launch {
             task: task.to_owned().into(), name: task.to_owned(), directory: directory.display().to_string(), prompt: title, plugin, options,
             model: None, account,
@@ -888,8 +1024,8 @@ impl Context<'_> {
             Some((launcher, backend)) => (launcher, Backend::Given(Some(backend))),
             None => (Launcher::new(RefusingLauncher(self.leaks.clone())), Backend::Given(None)),
         };
-        let seams = seams_of(&self.github, &self.pushes, &self.mac, launcher, backend);
-        let domain = alondra_engine_sdk::engine_tests::open(&self.config.home).map_err(|e| Self::failed(index, format!("{e:#}")))?;
+        let seams = seams_of(&self.github, &self.pushes, &self.mac, launcher, backend, &self.leaks);
+        let domain = crate::engine::open(&self.config.home).map_err(|e| Self::failed(index, format!("{e:#}")))?;
         let daemon = assemble::start_over(&self.config, domain, seams).await.map_err(|e| Self::failed(index, format!("{e:#}")))?;
         self.daemon = Some(daemon);
         self.pass(Duration::from_secs(1), index).await
@@ -898,6 +1034,20 @@ impl Context<'_> {
     /// Whether the scenario starts a node of the task on the provider, which then admits it.
     fn runs_on_a_provider(&self, task: &str) -> bool {
         self.scenario.steps.iter().any(|step| matches!(step, Step::Node { task: named, .. } if named == task))
+    }
+
+    fn write_home(&self, index: usize, path: &str, text: &str) -> Result<(), ScenarioError> {
+        let relative = Path::new(path);
+        if relative.components().any(|part| !matches!(part, std::path::Component::Normal(_))) {
+            return Err(Self::failed(index, format!("{path} is not a path inside the daemon's home")));
+        }
+        let file = self.config.home.join(relative);
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| Self::failed(index, e))?;
+        }
+        let next = file.with_extension("next");
+        std::fs::write(&next, text).map_err(|e| Self::failed(index, e))?;
+        std::fs::rename(&next, &file).map_err(|e| Self::failed(index, e))
     }
 
     /// Lets virtual time pass, with the daemon's loops running through it.
@@ -1257,6 +1407,13 @@ impl Context<'_> {
                     return Err(failed(format!("{screen} {verb} {wanted:?}"), rendered));
                 }
             }
+            Expect::Answered { task, request, answer } => {
+                let edge = self.claude.as_ref().ok_or_else(|| ScenarioError::Invalid("a case with Codex nodes plays no Claude host".into()))?;
+                let actual = edge.answer_of(task, request).unwrap_or_else(|| "none".into());
+                if actual != *answer {
+                    return Err(failed(format!("the permission {request} of {task} answered {answer}"), actual));
+                }
+            }
             Expect::Hosts { task, started, running, sessions } => {
                 let edge = self.claude.as_ref().ok_or_else(|| ScenarioError::Invalid("a case with Codex nodes plays no Claude host".into()))?;
                 let hosts = edge.hosts_of(task);
@@ -1267,6 +1424,14 @@ impl Context<'_> {
                         format!("{started} hosts started for {task}, {running} running, {sessions} sessions"),
                         format!("{} started, {alive} running, {} sessions", hosts.len(), held.len()),
                     ));
+                }
+            }
+            Expect::CacheWritten { task, max } => {
+                let edge = self.claude.as_ref().ok_or_else(|| ScenarioError::Invalid("a case with Codex nodes plays no Claude host".into()))?;
+                match edge.first_written(task) {
+                    Some(written) if written <= *max => {}
+                    written => return Err(failed(format!("the first request of the last host of {task} wrote at most {max} tokens to the prompt cache"),
+                        written.map_or_else(|| "it answered nothing that says".to_owned(), |written| format!("it wrote {written}")))),
                 }
             }
             Expect::TaskState { task, state } => {
@@ -1345,6 +1510,16 @@ fn find_option(view: &Value, card: &str, option: &str) -> Option<Value> {
                 && candidate["id"].as_str().and_then(|id| ActionId::parse(id).ok()).is_some_and(|id| id.subject.starts_with(card))
         })
         .cloned()
+}
+
+/// The reply field of the card `card` of a view.
+fn find_reply(view: &Value, card: &str) -> Option<Value> {
+    match view {
+        Value::Object(map) if map.get("id").and_then(Value::as_str) == Some(card) && map.contains_key("reply") => Some(map["reply"].clone()),
+        Value::Object(map) => map.values().find_map(|inner| find_reply(inner, card)),
+        Value::Array(items) => items.iter().find_map(|inner| find_reply(inner, card)),
+        _ => None,
+    }
 }
 
 /// An error the API answers with, as the SDK names it: only one of the SDK's own.

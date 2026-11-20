@@ -175,6 +175,11 @@ a Mac. The world decides what the provider answers:
   release this one does not adopt is ended and replaced by one that resumes its session.
 - `check = "hosts"` counts the hosts started for a task, those running, and the Claude sessions
   they held.
+- `write_home` writes files of the daemon's home (`[[step.file]]`, a path inside it and its text),
+  each whole at once, as another process of the Mac does, such as a crash report's
+  `sending.json`. The daemon runs its own CLI (`alondra report send` and `report keep`) through
+  the same edge, which does to `sending.json` what the real CLI does; any other command of it is
+  a leak.
 
 - `bazel test //crates/scenarios:scenarios_test` runs every case; `--test_arg=<name>` runs the
   cases whose name contains it. `//crates/scenarios:scenarios_harness_test` tests the harness

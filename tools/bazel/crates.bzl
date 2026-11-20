@@ -23,7 +23,6 @@ load(
     "PRIVATE_TO",
     "ROOT",
     "ROOT_TEST_CONSUMERS",
-    "TEST_HOOK_EXCEPTIONS",
     "layer_violation",
 )
 
@@ -97,7 +96,6 @@ def _layer_table_impl(ctx):
         allowed_dependencies = ALLOWED_DEPENDENCIES,
         private_to = PRIVATE_TO,
         exceptions = LAYER_EXCEPTIONS,
-        test_hook_exceptions = TEST_HOOK_EXCEPTIONS,
         root_test_consumers = ROOT_TEST_CONSUMERS,
         role_macros = ROLE_MACROS,
     )))

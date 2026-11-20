@@ -160,3 +160,131 @@ fn on_the_system_clock_the_waits_are_the_standard_ones() {
     assert!(sender.send(2).is_err());
     assert_eq!(spawn_thread(Clock::current).join().unwrap(), Clock::System);
 }
+
+/// Yields to the runtime until `done`, for at most ten real seconds: what a thread does in real time
+/// has no virtual instant to wait for.
+async fn until(what: &str, done: impl Fn() -> bool) {
+    let limit = std::time::Instant::now() + Duration::from_secs(10);
+    while !done() {
+        assert!(std::time::Instant::now() < limit, "{what}");
+        tokio::task::yield_now().await;
+    }
+}
+
+/// A thread the clock woke at the end of its wait counts as working before it runs, and until it
+/// waits again or ends: virtual time that waits for it lets nothing it does land a second later.
+#[test]
+fn a_thread_the_clock_wakes_works_until_it_waits_again() {
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        let (go, gone) = std::sync::mpsc::channel::<()>();
+        let monitor = std::sync::Arc::new(Monitor::new(()));
+        let waiting = monitor.clone();
+        let thread = spawn_thread(move || {
+            drop(waiting.wait(waiting.lock().unwrap(), Duration::from_secs(1)).unwrap());
+            let at = now_millis();
+            gone.recv().ok();
+            at
+        });
+        until("the started thread waits on the clock", || working() == 0).await;
+        advance(Duration::from_secs(1)).await;
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(working(), 1, "the timer counts the thread it wakes");
+        go.send(()).unwrap();
+        until("the thread ended", || thread.is_finished()).await;
+        assert_eq!(thread.join().unwrap(), EPOCH + 1_000);
+        assert_eq!(working(), 0);
+    });
+}
+
+#[test]
+fn a_notified_thread_works_until_it_waits_again() {
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        let (go, gone) = std::sync::mpsc::channel::<()>();
+        let monitor = std::sync::Arc::new(Monitor::new(false));
+        let waiting = monitor.clone();
+        let thread = spawn_thread(move || {
+            let mut ready = waiting.lock().unwrap();
+            while !*ready {
+                ready = waiting.wait(ready, HOUR).unwrap();
+            }
+            drop(ready);
+            gone.recv().ok();
+        });
+        until("the started thread waits on the clock", || working() == 0).await;
+        *monitor.lock().unwrap() = true;
+        monitor.notify_all();
+        assert_eq!(working(), 1, "the notification counts the thread it wakes");
+        go.send(()).unwrap();
+        until("the thread ended", || thread.is_finished()).await;
+        assert_eq!(working(), 0);
+        assert_eq!(now_millis(), EPOCH);
+    });
+}
+
+#[test]
+fn a_thread_the_clock_wakes_from_a_blocking_sleep_works_until_it_ends() {
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        let (go, gone) = std::sync::mpsc::channel::<()>();
+        let thread = spawn_thread(move || {
+            blocking_sleep(Duration::from_secs(1));
+            gone.recv().ok();
+        });
+        until("the started thread sleeps on the clock", || working() == 0).await;
+        advance(Duration::from_secs(1)).await;
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(working(), 1);
+        go.send(()).unwrap();
+        until("the thread ended", || thread.is_finished()).await;
+        assert_eq!(working(), 0);
+    });
+}
+
+/// A wait for a stream ends when its writer writes, never on the clock: the thread does not hold
+/// virtual time while it waits, and works again once it reads.
+#[test]
+fn a_thread_waiting_for_a_stream_holds_no_virtual_time() {
+    use std::io::Write as _;
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        let (reader, mut writer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let (go, gone) = std::sync::mpsc::channel::<()>();
+        let thread = spawn_thread(move || {
+            let read = crate::readable(&reader, HOUR).unwrap();
+            gone.recv().ok();
+            read
+        });
+        until("the started thread waits for its stream", || working() == 0).await;
+        writer.write_all(b"x").unwrap();
+        until("the thread read its stream", || working() == 1).await;
+        go.send(()).unwrap();
+        assert!(thread.join().unwrap());
+        assert_eq!(working(), 0);
+    });
+}
+
+#[test]
+fn a_thread_of_the_blocking_pool_holds_no_virtual_time_after_its_wait() {
+    let runtime = VirtualRuntime::new(EPOCH).unwrap();
+    runtime.block_on(async {
+        let monitor = std::sync::Arc::new(Monitor::new(false));
+        let waiting = monitor.clone();
+        let task = tokio::task::spawn_blocking(move || {
+            let mut ready = waiting.lock().unwrap();
+            while !*ready {
+                ready = waiting.wait(ready, HOUR).unwrap();
+            }
+        });
+        until("the blocking task waits", || !monitor.waiters.lock().unwrap().is_empty()).await;
+        *monitor.lock().unwrap() = true;
+        monitor.notify_all();
+        task.await.unwrap();
+        assert_eq!(working(), 0);
+    });
+}

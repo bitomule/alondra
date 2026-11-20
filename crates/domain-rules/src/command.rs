@@ -94,7 +94,8 @@ pub enum Command {
         #[serde(default)]
         message: bool,
     },
-    /// A user's message to the orchestrator with its card context captured in the same commit.
+    /// A user's message to the orchestrator with its card context captured in the same commit. A
+    /// reply to information is also its reading: the card leaves the inbox with it.
     CreateCardReply {
         request_id: RequestId,
         interaction_id: InteractionId,
@@ -496,10 +497,6 @@ pub enum Command {
         pr_id: PrId,
         branch: String,
         status: OpenPrStatus,
-    },
-    RequestPrAdoption {
-        pr: OpenedPr,
-        branch: String,
     },
     /// A cancelled task's pull request is open on GitHub: Alondra closes it with the cancel's
     /// reason, as the cancel itself would have.

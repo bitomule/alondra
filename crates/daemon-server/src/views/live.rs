@@ -1145,7 +1145,7 @@ mod cache_tests {
     fn wait_fixture_observed(observation: Observation) -> (crate::test_support::Directory, Arc<crate::domain_runtime::DomainRuntime>, Arc<crate::client_routes::Client>) {
         let home = crate::test_support::Directory::new();
         fs::create_dir_all(&home).unwrap();
-        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         // Opened off the runtime so the live sampler does not start: these tests gather by hand
         // and play the sampler with `feeds.shared_changed()`.
         let client = std::thread::scope(|scope| scope.spawn(||
@@ -1779,7 +1779,7 @@ mod cache_tests {
         use alondra_view_model::{Client, Transport};
         let home = crate::test_support::Directory::new();
         fs::create_dir_all(&home).unwrap();
-        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
         for id in ["connected", "reported", "assigned", "hidden"] {
             execute(&domain, Actor::System, id, Command::RegisterAgent { agent_id: id.into(), name: id.into(), at: 0 });
@@ -1814,7 +1814,7 @@ mod cache_tests {
         use alondra_view_model::{Client, Transport};
         let home = crate::test_support::Directory::new();
         fs::create_dir_all(&home).unwrap();
-        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
         execute(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "known".into(), name: "Known".into(), at: 0 });
         domain.live().observe(&serde_json::json!({"session_id": "known", "hook_event_name": "Stop", "last_assistant_message": "Ready"}));
@@ -1839,7 +1839,7 @@ mod cache_tests {
         use alondra_view_model::{Client, Transport};
         let home = crate::test_support::Directory::new();
         fs::create_dir_all(&home).unwrap();
-        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
         execute(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "reported".into(), name: "Reported".into(), at: 0 });
         report(&domain, serde_json::json!({"session_id": "reported", "event": "session.start", "version": "test"}), 1_000);
@@ -1868,7 +1868,7 @@ mod cache_tests {
         use serde_json::json;
         let home = crate::test_support::Directory::new();
         fs::create_dir_all(&home).unwrap();
-        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         let client = std::thread::scope(|scope| scope.spawn(||
             crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)))).join().unwrap());
         execute(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "sdk-a".into(), name: "Writer".into(), at: 0 });
@@ -1905,7 +1905,7 @@ mod cache_tests {
         use serde_json::json;
         let home = crate::test_support::Directory::new();
         fs::create_dir_all(&home).unwrap();
-        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
         execute(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "sdk-a".into(), name: "Writer".into(), at: 0 });
         let message = |parent: Option<&str>, content: Value| json!({"type": "assistant", "parent_tool_use_id": parent,
@@ -1965,7 +1965,7 @@ mod cache_tests {
         use crate::node_reports::{Envelope, Report};
         let home = crate::test_support::Directory::new();
         fs::create_dir_all(&home).unwrap();
-        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         domain.admission().tune(crate::admission::Tuning { spacing: 0, limit: Some(crate::admission::Limit::Fixed(2)) });
         let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
         execute(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
@@ -2036,7 +2036,7 @@ mod cache_tests {
         use alondra_domain_rules::{Recipient, Scope};
         let home = crate::test_support::Directory::new();
         fs::create_dir_all(&home).unwrap();
-        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(std::sync::Mutex::new(None)));
         let mut orders = vec![];
         for id in ["z-first", "a-second"] {
@@ -2074,7 +2074,7 @@ mod cache_tests {
     fn an_open_task_screen_reads_its_nodes_activity_and_a_finished_one_does_not() {
         let home = crate::test_support::Directory::new();
         fs::create_dir_all(&home).unwrap();
-        let domain = alondra_engine_sdk::engine_tests::open(&home).unwrap();
+        let domain = crate::engine_tests::open(&home).unwrap();
         let run = |actor: Actor, id: &str, command: Command| {
             let state = domain.state().unwrap();
             domain.execute(&actor, &CommandEnvelope {
@@ -2103,7 +2103,7 @@ mod cache_tests {
     async fn live_reads_go_on_after_threads_panicked_holding_the_gate_the_machine_watch_and_the_caches() {
         let home = crate::test_support::Directory::new();
         fs::create_dir_all(&home).unwrap();
-        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(Mutex::new(None)));
         let read = domain.read();
         assert!(gather(&client, &read, Lang::En, &["home".into()], false, false).await.pacing.is_some());
@@ -2124,7 +2124,7 @@ mod cache_tests {
         let scratch_directory = crate::test_support::Directory::new();
         let home = scratch_directory.parent().unwrap().join(format!("alondra-live-cache-{}", crate::auth::random_hex(8)));
         fs::create_dir(&home).unwrap();
-        let domain = Arc::new(alondra_engine_sdk::engine_tests::open(&home).unwrap());
+        let domain = Arc::new(crate::engine_tests::open(&home).unwrap());
         let client = crate::client_routes::Client::open(domain.clone(), &home, Arc::new(std::sync::Mutex::new(None)));
         for id in ["a", "b"] {
             let read = domain.read();
@@ -2512,7 +2512,7 @@ mod tests {
 
     /// The tasks one live gather looks at in a domain of `nodes` nodes of the Agent SDK, one task each.
     fn tasks_read_by_a_gather(nodes: usize) -> u64 {
-        let fixture = alondra_daemon_engine::domain_transport::tests::Fixture::new();
+        let fixture = alondra_daemon_engine::domain_transport::fixtures::Fixture::new();
         let domain = fixture.open();
         for n in 0..nodes {
             let (agent, request, task) = (format!("sdk-{n}"), format!("request-{n}"), format!("task-{n}"));
@@ -2524,7 +2524,7 @@ mod tests {
                 task_id: task.as_str().into(), request_id: request.as_str().into(), title: "Task".into(), agent_id: None, review_prs: false,
                 dependencies: Default::default(), stack: None, launch: Some(LaunchPlan::new("node", "/tmp")),
             });
-            alondra_daemon_engine::domain_transport::tests::admitted_sdk_execution(&domain, &task, &agent, n);
+            alondra_daemon_engine::domain_transport::fixtures::admitted_sdk_execution(&domain, &task, &agent, n);
         }
         let client = crate::client_routes::Client::open(domain.clone(), &fixture.0, Default::default());
         let read = domain.read();
