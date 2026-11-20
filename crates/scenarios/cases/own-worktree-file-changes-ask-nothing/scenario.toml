@@ -1,0 +1,135 @@
+name = "a node that changes files of its own worktree is not stopped by a card; one that reaches outside it through a link, or works in another task's worktree, still asks"
+max_virtual = "1h"
+
+[[step]]
+do = "request"
+text = "Clean up the scratch files and resolve the merge"
+task = "t1"
+title = "Clean up and resolve the merge"
+
+[[step]]
+do = "task"
+id = "t2"
+title = "Review the merge"
+
+[[step]]
+do = "node"
+task = "t1"
+
+[[step]]
+do = "node"
+task = "t2"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "worktree"
+task = "t1"
+files = [".scratch/run/start", "src/a.rs"]
+outside_link = "shared"
+
+[[step]]
+do = "permission"
+task = "t1"
+request = "edit-scratch"
+command = "sed -i '' 's/a/b/' .scratch/run/start"
+
+[[step]]
+do = "permission"
+task = "t1"
+request = "take-theirs"
+command = "git checkout --theirs -- a.rs"
+cwd = "src"
+
+[[step]]
+do = "permission"
+task = "t1"
+request = "remove-link"
+command = "rm shared"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "own-files"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "answered"
+task = "t1"
+request = "edit-scratch"
+answer = "allow"
+
+[[step.expect]]
+check = "answered"
+task = "t1"
+request = "take-theirs"
+answer = "allow"
+
+[[step.expect]]
+check = "answered"
+task = "t1"
+request = "remove-link"
+answer = "allow"
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "destructivo"
+present = false
+
+[[step]]
+do = "permission"
+task = "t1"
+request = "through-link"
+command = "rm shared/secret"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "outside"
+screens = ["home", "task:t1"]
+
+[[step.expect]]
+check = "answered"
+task = "t1"
+request = "through-link"
+answer = "none"
+
+[[step.expect]]
+check = "view_shows"
+screen = "home"
+text = "destructivo"
+
+[[step]]
+do = "worktree"
+task = "t2"
+from = "t1"
+
+[[step]]
+do = "permission"
+task = "t2"
+request = "other-task"
+command = "rm src/a.rs"
+
+[[step]]
+do = "rest"
+max = "5m"
+
+[[step]]
+do = "checkpoint"
+name = "another-tasks-worktree"
+screens = ["home"]
+
+[[step.expect]]
+check = "answered"
+task = "t2"
+request = "other-task"
+answer = "none"

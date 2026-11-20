@@ -174,6 +174,13 @@ pub enum Step {
     /// Files of the daemon's home are written as another process of the Mac writes them, each
     /// whole at once: every `path` is relative to the home and stays inside it.
     WriteHome { #[serde(rename = "file")] files: Vec<HomeFile> },
+    /// The worktree Alondra makes for `task`: a linked worktree of a new repository, in its
+    /// `.claude/worktrees`, holding `files`, and `outside_link`, a link to a folder outside it.
+    /// With `from`, the node of `task` enters the worktree of that other task instead.
+    Worktree { task: String, #[serde(default)] files: Vec<String>, #[serde(default)] outside_link: Option<String>, #[serde(default)] from: Option<String> },
+    /// The node of `task` asks permission to run `command` in Bash from `cwd`, a folder of the
+    /// task's worktree (its top when absent), as Claude Code asks; `request` names the request.
+    Permission { task: String, request: String, command: String, #[serde(default)] cwd: Option<String> },
     /// Virtual time passes.
     Advance { by: String },
     /// The daemon runs until nothing changes for a while.
@@ -232,6 +239,9 @@ pub enum Expect {
     /// The view `screen` as the iOS app reads it in English shows (or, with `present = false`, does
     /// not show) this text.
     ViewShows { screen: String, text: String, #[serde(default = "Expect::shown")] present: bool },
+    /// What the daemon answered the permission `request` of the node of `task`: `allow`, `deny`,
+    /// or `none` while it waits on the user's card.
+    Answered { task: String, request: String, answer: String },
     /// How many SDK hosts the daemon started for `task`, how many of them run now, and how many
     /// Claude sessions they held between them.
     Hosts { task: String, started: usize, running: usize, sessions: usize },

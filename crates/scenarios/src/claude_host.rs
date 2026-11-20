@@ -10,7 +10,7 @@
 //! what it had not acknowledged.
 
 use alondra_agent_protocol::{
-    Action, Attach, Attached, Body, Challenge, Command, Fence, Frame, FramedReader, FramedWriter, Hello, PROTOCOL_VERSION, command_digest,
+    Action, Attach, Attached, Body, Challenge, Command, Decision, Fence, Frame, FramedReader, FramedWriter, Hello, PROTOCOL_VERSION, command_digest,
     host_proof, verify_owner_proof,
 };
 use alondra_agent_runtime::owned_host::{HostLauncher, HostSpawn, ProbeOutput, ProbeRun};
@@ -151,6 +151,8 @@ struct HostState {
     ended: bool,
     /// What the first request of this host's session wrote to the prompt cache, once it answered.
     first_written: Option<u64>,
+    /// What the daemon answered each permission Claude asked, by request: `allow` or `deny`.
+    answers: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -418,6 +420,25 @@ impl ClaudeEdge {
         Ok(())
     }
 
+    /// Claude asks permission to run `command` in Bash from `cwd`, in the turn it runs, as Claude
+    /// Code asks for a tool its rules do not allow; `request` names the request.
+    pub fn ask_permission(&self, task: &str, request: &str, command: &str, cwd: &str) -> Result<(), String> {
+        let host = self.running(task).ok_or_else(|| format!("no host of {task} runs"))?;
+        let mut state = lock(&host.state);
+        if state.turn.is_none() {
+            return Err(format!("the node of {task} has no turn running to ask from"));
+        }
+        let tool_use = format!("toolu_{}", self.uuid().replace('-', ""));
+        self.event(&host, &mut state, json!({"type": "decision_requested", "request_id": request, "tool_use_id": tool_use, "kind": "permission",
+            "payload": {"tool": "Bash", "input": {"command": command}, "request": {}, "cwd": cwd}}));
+        Ok(())
+    }
+
+    /// What the daemon answered the permission `request` of `task`'s node, if it has.
+    pub fn answer_of(&self, task: &str, request: &str) -> Option<String> {
+        self.hosts_of(task).iter().find_map(|host| lock(&host.state).answers.get(request).cloned())
+    }
+
     /// An input reaches the host: it opens a turn when none runs, and waits in Claude's queue when
     /// one does. A turn the API refuses ends at once.
     fn offered(&self, host: &Host, state: &mut HostState, input: String, prompt: String) {
@@ -549,6 +570,15 @@ impl ClaudeEdge {
         self.tick();
         match command.action {
             Action::Start { input_id, prompt, .. } | Action::Offer { input_id, prompt } => self.offered(host, state, input_id.to_string(), prompt),
+            Action::Respond { request_id, epoch, decision, .. } => {
+                let answer = match decision {
+                    Decision::Allow { .. } => "allow",
+                    Decision::Deny { .. } => "deny",
+                    _ => "other",
+                };
+                state.answers.insert(request_id.0.clone(), answer.to_owned());
+                self.event(host, state, json!({"type": "decision_settled", "request_id": request_id.0, "epoch": epoch, "outcome": "answered"}));
+            }
             Action::Interrupt | Action::ForceStop | Action::Close => {
                 if state.turn.is_some() {
                     let taken = state.turn.take().unwrap_or_default();

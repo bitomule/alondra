@@ -294,10 +294,12 @@ fn subcommand(text: &str) -> bool {
 pub(crate) struct Word {
     pub(crate) text: String,
     pub(crate) glob: bool,
+    /// It holds an unquoted `^` or `~`, which zsh's `extendedglob` reads as a pattern.
+    pub(crate) pattern: bool,
 }
 impl Word {
     fn plain(text: &str) -> Word {
-        Word { text: text.into(), glob: false }
+        Word { text: text.into(), glob: false, pattern: false }
     }
 }
 
@@ -331,7 +333,7 @@ pub(crate) fn parse(command: &str) -> Option<Vec<Part>> {
     let mut chars = command.chars().peekable();
 
     fn push(word: &mut Option<Word>, c: char, glob: bool) {
-        let w = word.get_or_insert(Word { text: String::new(), glob: false });
+        let w = word.get_or_insert(Word { text: String::new(), glob: false, pattern: false });
         w.text.push(c);
         w.glob |= glob;
     }
@@ -420,7 +422,7 @@ pub(crate) fn parse(command: &str) -> Option<Vec<Part>> {
                 pending = Some(if c == '>' { Direction::Write } else { Direction::Read });
             }
             '\'' => {
-                word.get_or_insert(Word { text: String::new(), glob: false });
+                word.get_or_insert(Word { text: String::new(), glob: false, pattern: false });
                 loop {
                     match chars.next()? {
                         '\'' => break,
@@ -429,7 +431,7 @@ pub(crate) fn parse(command: &str) -> Option<Vec<Part>> {
                 }
             }
             '"' => {
-                word.get_or_insert(Word { text: String::new(), glob: false });
+                word.get_or_insert(Word { text: String::new(), glob: false, pattern: false });
                 loop {
                     match chars.next()? {
                         '"' => break,
@@ -452,6 +454,12 @@ pub(crate) fn parse(command: &str) -> Option<Vec<Part>> {
             '~' if word.as_ref().is_none_or(|w| w.text.is_empty() || w.text.ends_with(['=', ':'])) => return None,
             '$' | '`' | '(' | ')' | '{' | '}' | '#' | '!' => return None,
             '*' | '?' | '[' | ']' => push(&mut word, c, true),
+            '^' | '~' => {
+                push(&mut word, c, false);
+                if let Some(w) = word.as_mut() {
+                    w.pattern = true;
+                }
+            }
             c => push(&mut word, c, false),
         }
         if word.is_some() {

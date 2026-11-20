@@ -19,7 +19,7 @@ use alondrad::assemble::{self, Assembled, Backend, GithubSeams, Pushes, Seams};
 use alondrad::push_transport::{RecordedPushes, SentPush};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -202,6 +202,8 @@ struct Context<'a> {
     /// The inputs the user's messages became, by task, in the order the user wrote them.
     told: BTreeMap<String, std::collections::VecDeque<(String, String)>>,
     request: Option<String>,
+    /// The worktree each task has on disk, by task.
+    worktrees: BTreeMap<String, PathBuf>,
     commands: u64,
     spent: Duration,
     budget: Duration,
@@ -280,6 +282,7 @@ async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnc
         capabilities: BTreeMap::new(),
         told: BTreeMap::new(),
         request: None,
+        worktrees: BTreeMap::new(),
         commands: 0,
         spent: Duration::ZERO,
         budget,
@@ -555,6 +558,20 @@ impl Context<'_> {
             Step::Answer { card, option, text } => self.answer(index, card, option, text.as_deref()).await?,
             Step::Node { task, account, model } => self.start_claude_node(index, task, account, model.as_deref()).await?,
             Step::Conversation { task, tokens } => self.edge(index)?.set_conversation(task, *tokens),
+            Step::Worktree { task, from: Some(other), .. } => {
+                let path = self.worktrees.get(other).cloned().ok_or_else(|| Self::failed(index, format!("task {other} has no worktree")))?;
+                self.command(index, Actor::System, Command::RecordTaskWorktree {
+                    task_id: task.clone().into(), path: path.display().to_string(), origin: alondra_domain_rules::WorktreeOrigin::Entered, branch: None,
+                })?;
+                self.worktrees.insert(task.clone(), path);
+            }
+            Step::Worktree { task, files, outside_link, from: None } => self.worktree(index, task, files, outside_link.as_deref())?,
+            Step::Permission { task, request, command, cwd } => {
+                let top = self.worktrees.get(task).ok_or_else(|| Self::failed(index, format!("task {task} has no worktree")))?;
+                let cwd = cwd.as_deref().map_or_else(|| top.clone(), |cwd| top.join(cwd));
+                self.edge(index)?.ask_permission(task, request, command, &cwd.display().to_string()).map_err(|why| Self::failed(index, why))?;
+                self.settle().await?;
+            }
             Step::TurnEnd { task } => {
                 self.edge(index)?.end_turn(task, None).map_err(|why| Self::failed(index, why))?;
                 self.settle().await?;
@@ -825,6 +842,42 @@ impl Context<'_> {
         // the scenario starts. Its first visible view must use the completed startup sample.
         self.daemon().clear_scenario_gauges();
         self.view("home", "ios", "en").await?;
+        Ok(())
+    }
+
+    /// Makes the worktree of `task` as Alondra does, a linked worktree of a repository of its own,
+    /// and records it as the task's.
+    fn worktree(&mut self, index: usize, task: &str, files: &[String], outside_link: Option<&str>) -> Result<(), ScenarioError> {
+        let failed = |why: &dyn std::fmt::Display| Self::failed(index, why);
+        let place = self.config.home.parent().ok_or_else(|| failed(&"the home has no folder"))?.join("repos").join(task);
+        let top = place.join(".claude").join("worktrees").join(task);
+        let branch = format!("worktree-{task}");
+        let git = |dir: &Path, args: &[&str]| -> Result<(), ScenarioError> {
+            let output = std::process::Command::new("git").current_dir(dir).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1")
+                .args(["-c", "user.name=Ana", "-c", "user.email=ana@example.com"]).args(args).output().map_err(|e| failed(&e))?;
+            if !output.status.success() {
+                return Err(failed(&format!("git {args:?}: {}", String::from_utf8_lossy(&output.stderr))));
+            }
+            Ok(())
+        };
+        std::fs::create_dir_all(&place).map_err(|e| failed(&e))?;
+        git(&place, &["init", "-q", "-b", "main"])?;
+        git(&place, &["commit", "-q", "--allow-empty", "-m", "Start"])?;
+        git(&place, &["worktree", "add", "-q", "-b", &branch, &top.display().to_string()])?;
+        for file in files {
+            let path = top.join(file);
+            std::fs::create_dir_all(path.parent().unwrap_or(&top)).and_then(|()| std::fs::write(&path, "a\n")).map_err(|e| failed(&e))?;
+        }
+        if let Some(link) = outside_link {
+            let outside = place.join("outside");
+            std::fs::create_dir_all(&outside).and_then(|()| std::fs::write(outside.join("secret"), "a\n")).map_err(|e| failed(&e))?;
+            std::os::unix::fs::symlink(&outside, top.join(link)).map_err(|e| failed(&e))?;
+        }
+        let top = top.canonicalize().map_err(|e| failed(&e))?;
+        self.command(index, Actor::System, Command::RecordTaskWorktree {
+            task_id: task.to_owned().into(), path: top.display().to_string(), origin: alondra_domain_rules::WorktreeOrigin::Task, branch: Some(branch),
+        })?;
+        self.worktrees.insert(task.to_owned(), top);
         Ok(())
     }
 
@@ -1290,6 +1343,13 @@ impl Context<'_> {
                 if rendered.contains(wanted.as_str()) != *present {
                     let verb = if *present { "shows" } else { "does not show" };
                     return Err(failed(format!("{screen} {verb} {wanted:?}"), rendered));
+                }
+            }
+            Expect::Answered { task, request, answer } => {
+                let edge = self.claude.as_ref().ok_or_else(|| ScenarioError::Invalid("a case with Codex nodes plays no Claude host".into()))?;
+                let actual = edge.answer_of(task, request).unwrap_or_else(|| "none".into());
+                if actual != *answer {
+                    return Err(failed(format!("the permission {request} of {task} answered {answer}"), actual));
                 }
             }
             Expect::Hosts { task, started, running, sessions } => {

@@ -212,7 +212,7 @@ impl Scope<'_> {
             if (candidate.starts_with("//") || !candidate.starts_with('/')) && !climbs {
                 return true;
             }
-            self.path_holds(&Word { text: candidate.to_owned(), glob: word.glob }, base)
+            self.path_holds(&Word { text: candidate.to_owned(), glob: word.glob, pattern: word.pattern }, base)
         })
     }
 
