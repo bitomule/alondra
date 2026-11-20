@@ -114,6 +114,18 @@ none on the piece that implements a port it uses.
   `OrchestratorAnswers` (`orchestrator.rs`), `SdkHosts` (`hosts.rs`), `AgentHost` (`agent_host.rs`) and `GitHub` (`github.rs`, see "Output adapters"). The values they carry moved with them:
   `LaunchOptions` and `Failed` (`launch.rs`), `NoRoom` (`machine.rs`) and `OutboxMessage`
   (`outbox.rs`). The crates they came from re-export them, so their callers did not change.
+- `Journal` (`journal.rs`) is how the runtime speaks to where the domain is kept: the writer that
+  commits commands and the engine's own records, the reader the screens use, and the owner
+  transaction (`OwnerJournal`) that stages a provider's observations with the domain's commands.
+  The runtime holds them as `Box<dyn Journal>` and never names the store behind them;
+  `JournalFiles` opens them and migrates or checks the database on disk. The SQLite adapter,
+  `store-sqlite`, implements both (`alondra_store_sqlite::Sqlite`), and only `alondrad` names it: it
+  hands it to the opening of the runtime and to the preflight. The runtime opens its journal before
+  any `wire` runs, so it is given to `DomainRuntime::open_observed` rather than asked of the
+  registry. The values the journal carries moved with it (`StoreError`, `Commit`, `TaskClosing`,
+  the handover, account move and provider transition records, the batch reports…), and the store
+  re-exports them, so its own code did not change. A test that reads the store's tables reaches the
+  SQLite store behind the port with `AsSqlite` (`journal.sqlite().conn`).
 - The registry (`Registry`) maps each port's type to its implementation: `provide::<dyn P>(…)`
   gives it, `port::<dyn P>()` asks for it, and `missing()` names every port nothing implements. The
   runtime holds one (`domain.ports()`).
@@ -666,3 +678,30 @@ runs as) cannot go to `system`, which an input adapter may not link: it moved fr
 - `host` is still linked by `daemon-support`, `daemon-engine` and `engine-kernel` (the user name,
   the programs on the PATH, the Claude Code release check, the record of failed starts), so an edit
   of it reopens most of the engine; less than when the same code was in `core`.
+
+## The store behind `Journal` (phase 5e, 2026-11-19)
+
+- `store-sqlite` is the old `daemon-engine-store` with `domain_database_migration` (from
+  `engine-kernel`) and `database_check` (from `daemon-engine`). What only decides moved to
+  `domain-rules`: `acceptance_cases`, the wording the orchestrator is told, and which stored card is
+  one of Alondra's own (`SystemCard::of_stored`); the store keeps the SQL that upgrades old
+  databases.
+- `engine-kernel`, `daemon-engine`, `daemon-engine-machine` and `engine-sdk` no longer depend on the store
+  in production: four layer exceptions go. The fixtures `daemon-engine` and `engine-sdk` share under
+  `test-hooks` read the real SQLite store, so both gain a test-hook exception to `store-sqlite`.
+
+Measured with `edit_bench --edit crates/store-sqlite/src/command.rs` on the shared Mac, the
+incremental state primed:
+
+| `store-sqlite/src/command.rs` | Crates reopened | Test targets reopened | Actions run (rustc / clippy / tests) | Critical path | Edit + build or test |
+|---|---:|---:|---|---:|---:|
+| Build | 14 | 47 | 35 (22 / 12 / 0) | 26 s | 51 s |
+| Test | 14 | 47 | 98 (22 / 12 / 63) | 252 s | 267 s |
+
+- Building meets the phase's goal (≤ 30 s on the critical path).
+- Edit + test misses it (≤ 90 s): through the `test-hooks` fixtures above, every test target of the
+  engine and the roots still links the store, the scenario shards among them. That run failed only
+  on `prose_decisions_test`, whose allowlist still named the line that moved to `domain-rules`;
+  it is fixed in the same change.
+- Next cut: the engine's shared fixtures stage through `Journal` instead of the SQLite store, so
+  their test hooks stop linking the adapter.

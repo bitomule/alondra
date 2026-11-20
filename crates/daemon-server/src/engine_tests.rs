@@ -18,5 +18,6 @@ mod usage_pause_tests;
 
 /// Opens every runtime the engine's fixtures open as the daemon does, with the gate of a test.
 pub(crate) fn wired() {
+    alondra_engine_kernel::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
     alondra_daemon_engine::wiring::TEST_OPEN.get_or_init(|| alondra_engine_sdk::engine_tests::open_at);
 }

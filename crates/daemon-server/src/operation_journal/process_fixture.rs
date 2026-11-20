@@ -40,7 +40,7 @@ fn emit(value: Value) {
     out.flush().unwrap();
 }
 fn effects(home: &Path) -> i64 {
-    let c = Connection::open(crate::domain_database_migration::active_path(home)).unwrap();
+    let c = Connection::open(crate::domain_store::active_path(home)).unwrap();
     c.query_row(
         "SELECT count(*) FROM interactions WHERE id='fixture-question' AND answer IS NOT NULL",
         [],
@@ -145,7 +145,7 @@ async fn full_stack_fixture_server() {
         Err(error) => panic!("invalid fixture HOME: {error}"),
     });
     std::fs::create_dir_all(&**home).unwrap();
-    let database = crate::domain_database_migration::active_path(&home);
+    let database = crate::domain_store::active_path(&home);
     let fresh = !database.exists();
     assert!(
         !home.join("service.toml").exists() || !fresh,
@@ -272,7 +272,7 @@ async fn full_stack_fixture_server() {
         return;
     }
     drop(domain);
-    let state = crate::domain_bootstrap::DomainDaemon::open(&home).unwrap();
+    let state = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
     let signing = SigningKey::from_slice(&[41u8; 32]).unwrap();
     let auth = state.auth();
     let device = auth

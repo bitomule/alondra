@@ -430,7 +430,7 @@ async fn issue_data(client: &crate::client_routes::Client, keys: &[String], refr
 
 /// What a snapshot reads from the store, all in one read transaction: one commit's state.
 struct Stored {
-    boundary: Option<crate::domain_store::ReadCursor>,
+    boundary: Option<alondra_engine_ports::journal::ReadCursor>,
     launches_ok: bool,
     launches: BTreeMap<alondra_domain_rules::RequestId, (Option<String>, Option<String>)>,
     refusals: Vec<(TaskId, String, Option<String>)>,
@@ -1120,6 +1120,7 @@ fn digest_hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod cache_tests {
+    use alondra_store_sqlite::AsSqlite as _;
     use super::*;
     use alondra_domain_rules::{Actor, Command, CommandEnvelope};
     use std::{fs, sync::Arc};
@@ -1301,7 +1302,7 @@ mod cache_tests {
         let read = domain.read();
         let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (weak, once) = (Arc::downgrade(&client), fired.clone());
-        domain.reads.lock().unwrap().on_live_read(move |getter| {
+        domain.reads.lock().unwrap().sqlite_mut().on_live_read(move |getter| {
             if getter == "task_state_times" && !once.swap(true, std::sync::atomic::Ordering::SeqCst)
                 && let Some(client) = weak.upgrade() { client.feeds.shared_changed(); }
         });
@@ -1385,15 +1386,15 @@ mod cache_tests {
         assert_eq!(gathered(&client), 1, "nothing changed, so the second view reuses the snapshot");
         let getter_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let calls = getter_calls.clone();
-        domain.reads.lock().unwrap().on_live_read(move |_| {
+        domain.reads.lock().unwrap().sqlite_mut().on_live_read(move |_| {
             calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         });
         let before = (gathered(&client), keyed(&client));
-        domain.reads.lock().unwrap().begin_live_read_trace();
+        domain.reads.lock().unwrap().sqlite_mut().begin_live_read_trace();
         for _ in 0..3 {
             assert_eq!(gather(&client, &read, Lang::En, &home, true, false).await, first);
         }
-        let trace = domain.reads.lock().unwrap().end_live_read_trace();
+        let trace = domain.reads.lock().unwrap().sqlite_mut().end_live_read_trace();
         assert_eq!(getter_calls.load(std::sync::atomic::Ordering::Relaxed), 0, "warm snapshots must not call instrumented live getters");
         assert!(trace.is_empty(), "warm snapshots must not execute instrumented live getters: {trace:?}");
         assert_eq!((gathered(&client), keyed(&client)), before, "warm snapshots reuse shared and keyed data");
@@ -1613,7 +1614,7 @@ mod cache_tests {
         let read = domain.read();
         let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (weak, once) = (Arc::downgrade(&client), fired.clone());
-        domain.reads.lock().unwrap().on_live_read(move |getter| {
+        domain.reads.lock().unwrap().sqlite_mut().on_live_read(move |getter| {
             if getter == "task_state_times" && !once.swap(true, std::sync::atomic::Ordering::SeqCst)
                 && let Some(client) = weak.upgrade() { client.feeds.shared_changed(); }
         });
@@ -1638,7 +1639,7 @@ mod cache_tests {
         client.feeds.shared_changed();
         let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (weak, once) = (Arc::downgrade(&client), fired.clone());
-        domain.reads.lock().unwrap().on_live_read(move |getter| {
+        domain.reads.lock().unwrap().sqlite_mut().on_live_read(move |getter| {
             if getter == "task_state_times" && !once.swap(true, std::sync::atomic::Ordering::SeqCst)
                 && let Some(client) = weak.upgrade() { client.feeds.shared_changed(); }
         });
@@ -1660,7 +1661,7 @@ mod cache_tests {
         let (_home, domain, client) = wait_fixture();
         let start = 1_700_000_000_000;
         for (state, at) in [("not_started", start - 600_000), ("running", start), ("needs_you", start + 60_000), ("running", start + 120_000)] {
-            domain.store.lock().unwrap().add_history_step("room", state, at);
+            domain.store.lock().unwrap().sqlite_mut().add_history_step("room", state, at);
         }
         let read = domain.read();
         let live = gather_at(&client, &read, Lang::En, &["home".to_owned()], true, false, start + 180_000).await;
@@ -1675,8 +1676,8 @@ mod cache_tests {
         let mut measured = Vec::new();
         for steps in [2, 20] {
             let (home, domain, client) = wait_fixture();
-            domain.store.lock().unwrap().add_task_history(314, steps);
-            let connection = rusqlite::Connection::open(crate::domain_database_migration::active_path(&home)).unwrap();
+            domain.store.lock().unwrap().sqlite_mut().add_task_history(314, steps);
+            let connection = rusqlite::Connection::open(crate::domain_store::active_path(&home)).unwrap();
             let tasks: i64 = connection.query_row("SELECT count(*) FROM tasks", [], |row| row.get(0)).unwrap();
             let tasks = u64::try_from(tasks).unwrap();
             let history: i64 = connection.query_row("SELECT count(*) FROM task_history", [], |row| row.get(0)).unwrap();
@@ -1685,9 +1686,9 @@ mod cache_tests {
             assert_eq!(tasks, 320, "both fixtures retain the same Task population");
             assert!(history >= tasks * steps as u64, "the real SQL history must be populated");
             let read = domain.read();
-            domain.reads.lock().unwrap().begin_live_read_trace();
+            domain.reads.lock().unwrap().sqlite_mut().begin_live_read_trace();
             let live = gather_at(&client, &read, Lang::En, &["home".to_owned()], true, false, 1_700_000_000_000).await;
-            let trace = domain.reads.lock().unwrap().end_live_read_trace();
+            let trace = domain.reads.lock().unwrap().sqlite_mut().end_live_read_trace();
             assert_eq!(live.task_since.len(), 6, "finished archived Tasks stay out of the visible snapshot");
             assert_eq!(live.task_since["room"], timestamp(latest), "the actual latest history value reaches the snapshot");
             let mut getters = BTreeMap::new();
@@ -1736,9 +1737,9 @@ mod cache_tests {
         }
         domain.live().remember_closed_task("closed", crate::client_routes::ClosedNode { name: "Closed node".into(), cwd: None, relaunch: crate::client_routes::Relaunch::AskUser });
         domain.store.lock().unwrap().set_start_retry(&"retry".into(), Some((2, now + 60_000))).unwrap();
-        domain.reads.lock().unwrap().begin_live_read_trace();
+        domain.reads.lock().unwrap().sqlite_mut().begin_live_read_trace();
         let changed = gather_at(&client, &read, Lang::En, &[], false, false, now).await;
-        let trace = domain.reads.lock().unwrap().end_live_read_trace();
+        let trace = domain.reads.lock().unwrap().sqlite_mut().end_live_read_trace();
         assert_eq!(domain.state().unwrap().revision, state.revision);
         assert_eq!(changed.start_waits.keys().map(String::as_str).collect::<Vec<_>>(), ["retry", "room", "send"]);
         assert_eq!(changed.start_waits["room"], LiveStartWait::Room);
@@ -1762,11 +1763,11 @@ mod cache_tests {
     async fn unreadable_launch_markers_fail_closed_and_trace_the_failed_reads() {
         let (home, domain, client) = wait_fixture();
         let read = domain.read();
-        let connection = rusqlite::Connection::open(crate::domain_database_migration::active_path(&home)).unwrap();
+        let connection = rusqlite::Connection::open(crate::domain_store::active_path(&home)).unwrap();
         connection.execute_batch("DROP TABLE model_decisions").unwrap();
-        domain.reads.lock().unwrap().begin_live_read_trace();
+        domain.reads.lock().unwrap().sqlite_mut().begin_live_read_trace();
         let live = gather_at(&client, &read, Lang::En, &[], false, false, 1_700_000_000_000).await;
-        let trace = domain.reads.lock().unwrap().end_live_read_trace();
+        let trace = domain.reads.lock().unwrap().sqlite_mut().end_live_read_trace();
         assert!(live.start_waits.is_empty(), "unknown launch history must not advertise a fresh launch slot");
         let failed: Vec<_> = trace.iter().filter(|read| read.failed).collect();
         assert_eq!(failed.len(), 1);

@@ -1,8 +1,9 @@
 //! Serialization boundary for the SQL domain and its authenticated producers.
+use crate::domain_store::IntoDomainError as _;
 use crate::locks::{Poisonable as _, PoisonableRw as _};
 use crate::domain_authority::{Authority, Capability, Principal};
 use crate::runtime_mutex::RuntimeMutex;
-use crate::domain_store::{schedule_command, DomainStore, OwnerTransaction, StagedOutcome, StoreError, TransportIdentity};
+use crate::domain_store::{schedule_command, Journal, JournalFiles, OwnerJournal, StagedOutcome, StoreError, TransportIdentity};
 use alondra_domain_rules::*;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -20,11 +21,11 @@ pub struct DomainRuntime {
     /// A holder that panics can leave it half-changed, so the daemon exits: the guard stays held
     /// after the SQLite commit while the snapshot is published, the commit acknowledged, its seals
     /// kept and the watchers woken; a fresh start rebuilds all of them from the database.
-    pub store: RuntimeMutex<DomainStore>,
+    pub store: RuntimeMutex<Box<dyn Journal>>,
     /// A read-only connection of the views' own: in WAL it reads the last commit while a commit
     /// holds `store`, so a screen never waits for the writer. A holder that panics leaves it
     /// whole, so it is recovered: the next read ends the transaction it left open.
-    pub reads: Mutex<DomainStore>,
+    pub reads: Mutex<Box<dyn Journal>>,
     /// The last committed state and the read index built from it. Readers take them without the
     /// store, a transaction or a copy; only a commit replaces them, while it still holds the store.
     /// A holder that panics leaves it whole, so it is recovered: its only write swaps one `Arc`,
@@ -149,13 +150,13 @@ impl DomainRuntime {
     /// A runtime that tells no subsystem of its commits, for the kernel's own tests.
     #[cfg(test)]
     pub fn open_unwired(home: &Path) -> Result<Self> {
-        Self::open_unwired_at(home, &crate::domain_database_migration::active_path(home))
+        Self::open_unwired_at(home, &crate::domain_store::active_path(home))
     }
 
     /// The same at `database`, for the tests of the kernel and of the subsystem crates.
     #[cfg(any(test, feature = "test-hooks"))]
     pub fn open_unwired_at(home: &Path, database: &Path) -> Result<Self> {
-        Self::open_observed(home, database, None, vec![])
+        Self::open_observed(home, database, crate::test_journal(), None, vec![])
     }
 
     /// The runtime of the domain database at `database`, telling `observers` of every commit,
@@ -163,15 +164,13 @@ impl DomainRuntime {
     pub fn open_observed(
         home: &Path,
         database: &Path,
+        files: &dyn JournalFiles,
         decisions: Option<Arc<dyn crate::domain_store::wording::SdkDecisions>>,
         observers: Vec<Box<dyn CommitObserver>>,
     ) -> Result<Self> {
-        let mut store = DomainStore::open(database)?;
-        if let Some(decisions) = decisions {
-            store = store.with_decisions(decisions);
-        }
-        let reads = DomainStore::open_readonly(database)?;
-        crate::domain_store::provider_settings::recover_store(&mut store, home)?;
+        let mut store = files.open(database, decisions)?;
+        let reads = files.open_readonly(database)?;
+        store.recover_settings(home)?;
         let options = crate::options::options_at(home).unwrap_or_default();
         let home_of_user = crate::options::user_home();
         let projects_root = options.projects_root(&home_of_user);
@@ -322,7 +321,8 @@ impl DomainRuntime {
                 break;
             }
         }
-        for policy in &crate::domain_store::retention::POLICIES {
+        let policies = self.store.lock_or_exit("the domain store").retention_policies();
+        for policy in policies {
             let mut changed = 0;
             loop {
                 let pass = self.store.lock_or_exit("the domain store").retain(policy, now, PASS)?;
@@ -331,7 +331,7 @@ impl DomainRuntime {
                     break;
                 }
             }
-            retained.tables.push((policy.name, changed));
+            retained.tables.push((policy, changed));
         }
         retained.compacted = self.compact_ended_tasks()?;
         self.store.lock_or_exit("the domain store").reclaim_space(4096)?;
@@ -374,7 +374,7 @@ impl DomainRuntime {
     pub fn own<T>(
         &self,
         scope: alondra_store::AuthorityScope,
-        stage: impl FnOnce(&mut OwnerTransaction<'_>) -> Result<T, StoreError>,
+        stage: impl FnOnce(&mut dyn OwnerJournal) -> Result<T, StoreError>,
     ) -> Result<(T, Vec<StagedOutcome>), StoreError> {
         self.own_projected(scope, stage, |_| Ok(()))
     }
@@ -382,13 +382,13 @@ impl DomainRuntime {
     pub fn own_projected<T>(
         &self,
         scope: alondra_store::AuthorityScope,
-        stage: impl FnOnce(&mut OwnerTransaction<'_>) -> Result<T, StoreError>,
-        project: impl FnOnce(&mut DomainStore) -> anyhow::Result<()>,
+        stage: impl FnOnce(&mut dyn OwnerJournal) -> Result<T, StoreError>,
+        project: impl FnOnce(&mut dyn Journal) -> anyhow::Result<()>,
     ) -> Result<(T, Vec<StagedOutcome>), StoreError> {
         let mut store = self.store.lock_or_exit("the domain store");
         let _approval = crate::approval_lease::ApprovalLease::shared(&self.approval_home)?;
         let (value, commit) = store.own(scope, stage)?;
-        if let Err(why) = project(&mut store) {
+        if let Err(why) = project(&mut **store) {
             log!("The authority transaction committed; its recoverable settings projection needs repair before another settings read: {why:#}");
         }
         #[cfg(any(test, feature = "test-hooks"))]
@@ -1426,7 +1426,7 @@ mod snapshot_tests {
             waiting.recv().unwrap();
             let command = register("agent-b");
             if reload {
-                let connection = rusqlite::Connection::open(crate::domain_database_migration::active_path(&directory)).unwrap();
+                let connection = rusqlite::Connection::open(crate::domain_store::active_path(&directory)).unwrap();
                 assert_eq!(connection.execute("UPDATE agents SET name='Renamed' WHERE id='agent-a'", []).unwrap(), 1);
                 runtime.reload();
             } else {
@@ -1682,3 +1682,5 @@ mod mcp_flow_tests;
 mod wait_review_tests;
 #[cfg(test)]
 mod poison_tests;
+#[cfg(test)]
+mod journal_tests;

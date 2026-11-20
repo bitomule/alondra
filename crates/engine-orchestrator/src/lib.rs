@@ -12,7 +12,7 @@ extern crate alondra_foundation;
 use alondra_daemon_support::{auth, locks, watcher};
 use alondra_engine_ports::plugins;
 
-pub use alondra_engine_kernel::{domain_database_migration, domain_runtime, domain_store, metrics_capture, options, sdk_backend};
+pub use alondra_engine_kernel::{domain_runtime, domain_store, metrics_capture, options, sdk_backend};
 
 pub mod domain_orchestrator;
 pub mod engine;
@@ -44,7 +44,8 @@ mod wiring {
     use std::sync::Arc;
 
     pub fn open(home: &std::path::Path) -> anyhow::Result<super::DomainRuntime> {
-        let domain = super::DomainRuntime::open_unwired_at(home, &crate::domain_database_migration::active_path(home))?;
+        alondra_engine_kernel::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
+        let domain = super::DomainRuntime::open_unwired_at(home, &crate::domain_store::active_path(home))?;
         crate::wire(domain.ports());
         domain.ports().provide::<dyn OrchestratorEngine>(Arc::new(alondra_engine_doubles::orchestrator::Engine));
         domain.ports().provide::<dyn SdkHosts>(Arc::new(alondra_engine_doubles::hosts::NoHosts));

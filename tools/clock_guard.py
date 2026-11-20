@@ -25,7 +25,7 @@ CRATES = [
     "engine-admission",
     "engine-sdk",
     "daemon-engine-model",
-    "daemon-engine-store",
+    "store-sqlite",
     "daemon-support",
 ]
 

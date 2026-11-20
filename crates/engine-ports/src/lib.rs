@@ -11,6 +11,7 @@ pub mod extensions;
 pub mod github;
 pub mod hooks;
 pub mod hosts;
+pub mod journal;
 pub mod launch;
 pub mod machine;
 pub mod orchestrator;

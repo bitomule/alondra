@@ -1,4 +1,5 @@
 //! Owner transactions of SDK hosts on the real domain database, with the whole engine.
+use alondra_store_sqlite::AsSqlite as _;
 use crate::sdk_owner::SdkOwners as _;
 use crate::domain_store::*;
 use alondra_domain_rules::*;
@@ -15,9 +16,9 @@ use alondra_store::{
     ControlPermit, DispatchAttempt, DispatchPermit, DispatchReceipt, LifecycleTransaction,
     ObservationAcceptance, OwnerGrant, UnresolvedCommand, UnresolvedControl,
 };
-use alondra_daemon_engine_store::testing::ObservationRefusal;
+use alondra_engine_ports::journal::owner::ObservationRefusal;
 use crate::domain_runtime::DomainRuntime;
-use crate::domain_store::tests::{Fixture, seeded};
+use alondra_store_sqlite::tests::{Fixture, seeded};
 use alondra_agent_application::{Normalization, ObservationMetadata};
 use alondra_foundation::{ContinuationId, ExecutionStamp, InputId, TurnId, WorkId};
 use alondra_store::InputPayload;
@@ -95,8 +96,8 @@ fn a_deferred_commit_failure_issues_no_seal_publication_or_cache() {
     assert!(Arc::ptr_eq(runtime.read().state(), read_before.state()), "nothing is published");
     assert!(runtime.take_acknowledgements().is_empty(), "no seal leaves a failed commit");
     let store = runtime.store.lock().unwrap();
-    assert!(Arc::ptr_eq(store.cached_state().unwrap().0, read_before.state()), "the cache keeps the committed state");
-    assert!(store.conn.is_autocommit());
+    assert!(Arc::ptr_eq(store.sqlite().cached_state().unwrap().0, read_before.state()), "the cache keeps the committed state");
+    assert!(store.sqlite().conn.is_autocommit());
 }
 
 #[test]
@@ -176,7 +177,7 @@ fn a_crash_before_publication_acknowledges_nothing_and_the_replay_acknowledges_o
     let read_before = runtime.read();
     let state = Arc::clone(read_before.state());
     let command = envelope(&state, "owner-ask", ask("owner-card"));
-    let work = |owner: &mut OwnerTransaction<'_>| {
+    let work = |owner: &mut dyn OwnerJournal| {
         let acceptance = owner.stage_observation(&binding(), 1, &batch(&execution, 1), &Normalizer::Available, no_home(), false)?;
         owner.stage_command(&agent(), &command, Attached::None)?;
         Ok(acceptance)
@@ -229,7 +230,7 @@ fn settling_the_case_of_a_stopped_node_tells_the_task_how_to_go_on_in_one_commit
     let held: i64 = store.conn.query_row("SELECT count(*) FROM lifecycle_cards", [], |r| r.get(0)).unwrap();
     assert_eq!(held, 0, "the lifecycle no longer requires it");
     drop(store);
-    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    let mut reopened = alondra_store_sqlite::DomainStore::open(&fixture.path()).unwrap();
     let (pending, _, cards) = journal_after(&mut reopened);
     assert_eq!((pending.len(), cards), (1, 0), "the task waits to be told, with no card left");
 }
@@ -326,7 +327,7 @@ fn every_observation_ends_settled_or_discarded_and_none_settleable_is_lost() {
         let expected: Vec<i64> = (1..).zip(&refused).filter(|(_, refuses)| **refuses).map(|(cursor, _)| cursor).collect();
         prop_assert_eq!(discarded(&fixture).into_iter().map(|(cursor, _)| cursor).collect::<Vec<_>>(), expected);
         let state = Arc::clone(runtime.read().state());
-        let (checkpoint, _) = runtime.own(scope_of(&state), |owner| Ok(owner.journal().normalization_checkpoint(&execution)?.map(|checkpoint| checkpoint.cursor()))).unwrap();
+        let (checkpoint, _) = runtime.own(scope_of(&state), |owner| Ok(owner.normalization_checkpoint(&execution)?.map(|checkpoint| checkpoint.cursor()))).unwrap();
         prop_assert_eq!(checkpoint, Some(refused.len() as u64));
     });
 }

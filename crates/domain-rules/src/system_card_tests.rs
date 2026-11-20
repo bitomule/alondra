@@ -146,6 +146,13 @@ fn a_stored_card_gets_the_kind_its_id_was_written_with() {
 }
 
 #[test]
+fn a_stored_refused_cards_card_names_its_node_from_its_cause() {
+    assert_eq!(SystemCard::of_stored("unheard-1", Some("refused-cards:node-7")), Some(SystemCard::RefusedCards { owner: "node-7".into() }));
+    assert_eq!(SystemCard::of_stored("request-done-r-1", Some("something else")), Some(SystemCard::RequestDone));
+    assert_eq!(SystemCard::of_stored("database-choice", None), None);
+}
+
+#[test]
 fn a_kind_a_newer_daemon_wrote_reads_as_unknown() {
     let card: SystemCard = serde_json::from_str(r#"{"kind":"something_new","detail":1}"#).unwrap();
     assert_eq!(card, SystemCard::Unknown);

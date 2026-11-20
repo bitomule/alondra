@@ -1,6 +1,7 @@
 //! A node's turn, read by its live session and captured by the kernel's metrics.
-use crate::domain_store::DomainStore;
-use crate::domain_store::tests::{Fixture, seeded};
+use alondra_store_sqlite::AsSqlite as _;
+use alondra_store_sqlite::DomainStore;
+use alondra_store_sqlite::tests::{Fixture, seeded};
 use crate::live::LiveOf as _;
 use crate::metrics_capture::node_turn;
 use alondra_domain_rules::*;
@@ -52,9 +53,9 @@ fn a_nodes_turn_records_what_it_spent_and_its_steps_for_the_task_it_works_on() {
         node_turn(domain, &agent, &result(), steps, 11);
 
         let store = domain.store.lock().expect("store");
-        let (task, cost, tokens, complete) = store.usage_row("agent-1", "claude-opus-5-5").expect("the session's spend on opus");
+        let (task, cost, tokens, complete) = store.sqlite().usage_row("agent-1", "claude-opus-5-5").expect("the session's spend on opus");
         assert_eq!((task.as_deref(), cost, tokens, complete), (Some("task-1"), Some(1_500_000), [120, 4_000, 900_000, 30_000], true));
-        assert_eq!(store.steps_row("agent-1"), Some((Some("task-1".into()), StepCounts { steps: 2, subagent_steps: 1, looks: 1, polls: 1, tool_calls: 3 })),
+        assert_eq!(store.sqlite().steps_row("agent-1"), Some((Some("task-1".into()), StepCounts { steps: 2, subagent_steps: 1, looks: 1, polls: 1, tool_calls: 3 })),
             "m1 waits, its two messages being one call; m2 is the subagent's look; m3 only wrote");
     });
 }

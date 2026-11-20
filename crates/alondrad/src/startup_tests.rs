@@ -101,8 +101,9 @@ async fn the_port_answers_while_hosts_are_still_being_taken_over() {
 fn the_daemon_implements_every_port() {
     let home = crate::test_support::Directory::new();
     std::fs::create_dir_all(&home).unwrap();
-    drop(alondra_engine_sdk::wiring::open(&home).unwrap());
-    let runtime = domain_runtime::DomainRuntime::open_unwired_at(&home, &domain_database_migration::active_path(&home)).unwrap();
+    drop(alondra_engine_sdk::wiring::open(&home, &alondra_store_sqlite::Sqlite).unwrap());
+    alondra_daemon_engine::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
+    let runtime = domain_runtime::DomainRuntime::open_unwired_at(&home, &alondra_engine_ports::journal::active_path(&home)).unwrap();
     let daemon = domain_bootstrap::DomainDaemon::over(&home, runtime).unwrap();
     crate::wire(daemon.domain().ports());
     assert_eq!(daemon.domain().ports().missing(), Vec::<&str>::new(), "a port nothing implements");

@@ -1,6 +1,6 @@
 use super::*;
-pub use alondra_daemon_engine_store::metrics_fold::*;
-pub(super) use alondra_daemon_engine_store::testing::{DAY_MS, samples_of_folded_tasks, idle_sessions_without_task, tasks_into_weeks};
+pub use alondra_store_sqlite::metrics_fold::*;
+pub(super) use alondra_store_sqlite::testing::{DAY_MS, samples_of_folded_tasks, idle_sessions_without_task, tasks_into_weeks};
 use alondra_core::Millis;
 use alondra_domain_rules::Feedback;
 use alondra_core::metrics::fold::{Decision, DecisionKind, TaskFacts, fold_task};

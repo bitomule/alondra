@@ -432,6 +432,8 @@ impl PrObserver for FakeObserver {
 
 #[cfg(any(test, feature = "test-hooks"))]
 pub mod tests {
+    #[cfg(test)]
+    use alondra_store_sqlite::AsSqlite as _;
     use super::*;
     use alondra_domain_rules::*;
     use std::collections::BTreeSet;
@@ -858,7 +860,7 @@ pub mod tests {
             ("newer-head", facts(OTHER, PrState::Open))] {
             let (_fixture, domain) = open(tag);
             authorized(&domain);
-            domain.store.lock().unwrap().claim_as_node("auth", "a");
+            domain.store.lock().unwrap().sqlite_mut().claim_as_node("auth", "a");
             domain.reload();
             let observer = FakeObserver::new();
             observer.set(7, Ok(remote.clone()));
@@ -887,7 +889,7 @@ pub mod tests {
     async fn a_node_claim_of_a_superseded_delivery_is_reconciled_and_the_user_can_merge_again() {
         let (_fixture, domain) = open("superseded-claim");
         authorized(&domain);
-        domain.store.lock().unwrap().claim_as_node("auth", "a");
+        domain.store.lock().unwrap().sqlite_mut().claim_as_node("auth", "a");
         domain.reload();
         let observer = FakeObserver::new();
         observer.set(7, Ok(facts(OTHER, PrState::Open)));
@@ -958,7 +960,7 @@ pub mod tests {
         registered(&domain);
         drop(domain);
         let held = serde_json::to_string(&OpenPrPending::Deliver { result: None }).unwrap();
-        rusqlite::Connection::open(crate::domain_database_migration::active_path(&fixture.0)).unwrap()
+        rusqlite::Connection::open(crate::domain_store::active_path(&fixture.0)).unwrap()
             .execute("INSERT INTO task_open_prs(task_id,pending) VALUES('t',?1)", [held]).unwrap();
         let domain = crate::unwired(&fixture.0).unwrap();
         assert_eq!(domain.state().unwrap().tasks[&"t".into()].open_pr, Some(OpenPrPending::Deliver { result: None }));

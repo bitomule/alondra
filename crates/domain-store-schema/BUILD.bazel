@@ -1,6 +1,6 @@
 load("//tools:tree.bzl", "repo_tree")
 
-# The domain store's schema. daemon-engine-store creates and migrates the store with it, and the
+# The domain store's schema. store-sqlite creates and migrates the store with it, and the
 # crates below it create a store for their tests from the same files, so it sits below them all.
 exports_files(
     ["schema.sql", "schedule_launch_transition.sql"],

@@ -70,7 +70,7 @@ CRATE_LAYERS = {
     "crates/client-transport": ADAPTER_IN,
     "crates/provider-claude": ADAPTER_OUT,
     "crates/provider-codex": ADAPTER_OUT,
-    "crates/daemon-engine-store": ADAPTER_OUT,
+    "crates/store-sqlite": ADAPTER_OUT,
     "crates/system": ADAPTER_OUT,
     "crates/agent-runtime": ADAPTER_OUT,
     "crates/agent-protocol": ADAPTER_PRIVATE,
@@ -95,7 +95,6 @@ LAYER_EXCEPTIONS = {
     "crates/daemon-engine": [
         "crates/daemon-engine-machine",
         "crates/daemon-engine-model",
-        "crates/daemon-engine-store",
         "crates/daemon-support",
         "crates/engine-github",
         "crates/engine-kernel",
@@ -107,13 +106,12 @@ LAYER_EXCEPTIONS = {
     ],
     "crates/daemon-engine-machine": [
         "crates/daemon-engine-model",
-        "crates/daemon-engine-store",
         "crates/daemon-support",
     ],
     "crates/daemon-engine-model": [
         "crates/daemon-support",
     ],
-    "crates/daemon-engine-store": [
+    "crates/store-sqlite": [
         "crates/daemon-engine-model",
         "crates/daemon-support",
         "crates/provider-codex",
@@ -144,7 +142,6 @@ LAYER_EXCEPTIONS = {
     "crates/engine-kernel": [
         "crates/daemon-engine-machine",
         "crates/daemon-engine-model",
-        "crates/daemon-engine-store",
         "crates/daemon-support",
     ],
     "crates/engine-live": [
@@ -169,7 +166,6 @@ LAYER_EXCEPTIONS = {
         "crates/daemon-engine",
         "crates/daemon-engine-machine",
         "crates/daemon-engine-model",
-        "crates/daemon-engine-store",
         "crates/daemon-support",
         "crates/engine-admission",
         "crates/engine-github",
@@ -187,8 +183,10 @@ LAYER_EXCEPTIONS = {
 # Every test above those hooks reruns when the adapter changes, so this list only shrinks too.
 TEST_HOOK_EXCEPTIONS = {
     # Their tests start nodes through the real Agent SDK and Codex hosts.
-    "crates/daemon-engine": ["crates/agent-runtime"],
-    "crates/engine-sdk": ["crates/agent-runtime"],
+    # Their fixtures, which the tests of the crates above share, stage in and read a real SQLite
+    # store.
+    "crates/daemon-engine": ["crates/agent-runtime", "crates/store-sqlite"],
+    "crates/engine-sdk": ["crates/agent-runtime", "crates/store-sqlite"],
 }
 
 # The packages outside the root whose tests run a crate or a binary of the root: they rerun on

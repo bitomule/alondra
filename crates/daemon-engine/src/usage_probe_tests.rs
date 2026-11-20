@@ -433,7 +433,7 @@ fn the_account_rows_recorded_before_the_margin_fix_load_and_spread_work_to_claud
     std::fs::create_dir_all(&home).unwrap();
     drop(crate::wiring::open(&home).unwrap());
     {
-        let connection = rusqlite::Connection::open(crate::domain_database_migration::active_path(&home)).unwrap();
+        let connection = rusqlite::Connection::open(crate::domain_store::active_path(&home)).unwrap();
         connection.execute("INSERT INTO accounts(singleton,accounts,reserve) VALUES(1,?1,?2) ON CONFLICT(singleton) DO UPDATE SET accounts=excluded.accounts, reserve=excluded.reserve",
             rusqlite::params![rows["accounts"]["accounts"].to_string(), rows["accounts"]["reserve"].as_i64().unwrap()]).unwrap();
         for row in rows["account_usage"].as_array().unwrap() {

@@ -1,3 +1,4 @@
+use alondra_store_sqlite::AsSqlite as _;
 use super::*;
 use crate::views::observation::{Serialization, Totals};
 use alondra_domain_rules::{Actor, Agent, Command, CommandEnvelope, NodePhase, Task, PROTOCOL_VERSION};
@@ -55,7 +56,7 @@ impl Fixture {
         Self { client, read: Arc::new(ReadSnapshot::build(Arc::new(state))), observation, _home: home }
     }
 
-    fn inputs(&self) -> (Launches, Option<crate::domain_store::ReadCursor>) {
+    fn inputs(&self) -> (Launches, Option<alondra_engine_ports::journal::ReadCursor>) {
         let store = self.client.domain.live_read();
         let boundary = Some(store.read_cursor().unwrap());
         let launches = store.request_launch_summaries().unwrap();
@@ -156,7 +157,7 @@ fn a_committed_launch_project_invalidates_rows_without_a_domain_revision_change(
     let revision = fixture.client.domain.read().state().revision;
     // Insert the previously absent launch in a real SQLite commit. This table is immutable;
     // the test neither drops its triggers nor pretends a setter announces affected nodes.
-    fixture.client.domain.store.lock().unwrap().conn.execute(
+    fixture.client.domain.store.lock().unwrap().sqlite_mut().conn.execute(
         "INSERT INTO request_launch(request_id,project,options,attachments) VALUES(?1,?2,'{}','[]')",
         ["row-request", "Project Cedar"],
     ).unwrap();

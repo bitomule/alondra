@@ -3,6 +3,7 @@
 //! with the session it resumed, its folder and the account folder it ran with, and refuses a turn
 //! with Claude's usage limit when told. Every wait is on a fact the domain publishes, never on a
 //! clock.
+use alondra_store_sqlite::AsSqlite as _;
 use crate::sdk_owner::SdkOwners as _;
 use crate::account_move::MovesOf as _;
 use super::*;
@@ -268,7 +269,7 @@ fn historical(world:&World,step:AccountMoveStep,source_node:AgentId)->i64{
     let store=world.domain.store.lock().unwrap();
     let metadata=store.conversation_metadata(&TASK.into(),stamp.conversation().as_str()).unwrap().unwrap();
     let plan=AccountMovePlan{from:work(),to:AccountId::default_account(),card:state.held_by_limit(&TASK.into()).map(|held|held.card).unwrap_or_else(||"historical-limit".into()),node:source_node,instance:stamp.instance().as_str().into(),session:alondra_provider_claude::conversation_session(&metadata).unwrap(),cwd:world.worktree.to_str().unwrap().into(),until:i64::MAX};
-    let conn=store.conn_for_test();let number:i64=conn.query_row("SELECT coalesce(max(number),0)+1 FROM account_move_steps WHERE task_id=?1",[TASK],|row|row.get(0)).unwrap();
+    let conn=store.sqlite().conn_for_test();let number:i64=conn.query_row("SELECT coalesce(max(number),0)+1 FROM account_move_steps WHERE task_id=?1",[TASK],|row|row.get(0)).unwrap();
     for (kind,facts) in [("planned",serde_json::to_value(&plan).unwrap()),("host_stopped",serde_json::json!({})),("admitted",serde_json::json!({"agent":world.node()})),("done",serde_json::json!({}))]{
         conn.execute("INSERT INTO account_move_steps(task_id,number,step,at,facts) VALUES(?1,?2,?3,0,?4)",rusqlite::params![TASK,number,kind,facts.to_string()]).unwrap();
         if (kind=="planned" && step==AccountMoveStep::Planned)||(kind=="host_stopped" && step==AccountMoveStep::HostStopped)||(kind=="admitted" && step==AccountMoveStep::Admitted){break}

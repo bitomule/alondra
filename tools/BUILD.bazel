@@ -168,7 +168,7 @@ sh_test(
         "//crates/engine-orchestrator:tree",
         "//crates/engine-sdk:tree",
         "//crates/daemon-engine-model:tree",
-        "//crates/daemon-engine-store:tree",
+        "//crates/store-sqlite:tree",
         "//crates/daemon-support:tree",
     ],
     size = "small",

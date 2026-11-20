@@ -1,6 +1,8 @@
-use std::fs::File;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write as _;
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::io::Read;
-use anyhow::{Result, ensure};
+use anyhow::{Context as _, Result, ensure};
 use crate::locks::Poisonable as _;
 use std::path::{Path, PathBuf};
 
@@ -71,3 +73,38 @@ pub fn read_optional(path: &Path) -> Result<Option<String>> {
         Err(why) => Err(why.into()),
     }
 }
+
+fn temporary(path: &Path) -> PathBuf {
+    path.with_file_name(format!(".{}.{}.next", path.file_name().expect("settings file name").to_string_lossy(), alondra_daemon_support::auth::random_hex(16)))
+}
+
+fn write_private(path: &Path, bytes: &[u8]) -> Result<PathBuf> {
+    let next = temporary(path);
+    let result = (|| {
+        let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&next)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        Ok::<_, std::io::Error>(())
+    })();
+    if let Err(why) = result { let _ = fs::remove_file(&next); return Err(why.into()); }
+    Ok(next)
+}
+
+pub fn sync_parent(path: &Path) -> Result<()> { File::open(path.parent().context("settings parent missing")?)?.sync_all()?; Ok(()) }
+
+pub fn replace(path: &Path, bytes: &[u8]) -> Result<()> {
+    let next = write_private(path, bytes)?;
+    if let Err(why) = fs::rename(&next, path) { let _ = fs::remove_file(&next); return Err(why.into()); }
+    sync_parent(path)
+}
+
+/// Writes `options.pending` in HOME, refusing when another settings change still waits there.
+pub fn prepare_pending(home: &Path, bytes: &[u8]) -> Result<()> {
+    let path = home.join(PENDING);
+    let next = write_private(&path, bytes)?;
+    let linked = fs::hard_link(&next, &path);
+    let _ = fs::remove_file(&next);
+    linked.context("another settings change is awaiting reconciliation")?;
+    sync_parent(&path)
+}
+

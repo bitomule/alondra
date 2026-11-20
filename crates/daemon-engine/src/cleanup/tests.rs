@@ -1,3 +1,4 @@
+use alondra_store_sqlite::AsSqlite as _;
 use crate::live::LiveOf as _;
 use super::*;
 use crate::domain_store::model_metrics::{Decision, DecisionKind};
@@ -148,7 +149,7 @@ impl Rig {
 
     /// The task ended before wrap-ups existed: its node end was never recorded.
     fn forget_wrap_up(&self, task: &str) {
-        self.domain.store.lock().unwrap().conn_for_test().execute("DELETE FROM task_wrap_ups WHERE task_id=?1", [task]).unwrap();
+        self.domain.store.lock().unwrap().sqlite().conn_for_test().execute("DELETE FROM task_wrap_ups WHERE task_id=?1", [task]).unwrap();
         self.domain.reload();
     }
 
@@ -339,7 +340,7 @@ async fn sessions_from_before_launch_decisions_were_kept_still_count_as_alondras
     rig.old_session(None, Some("launch-1"));
     rig.old_session(None, None);
     rig.old_session(Some(user()), None);
-    assert!(rig.domain.store.lock().unwrap().model_decision_rows().unwrap().is_empty(), "no decision was ever recorded");
+    assert!(rig.domain.store.lock().unwrap().sqlite().model_decision_rows().unwrap().is_empty(), "no decision was ever recorded");
     let report = rig.run(true).await;
     assert_eq!(names(&report["close"]), ["Node 1", "Node 2", "Node 3"], "the user's own sessions are not listed: {report}");
 }
@@ -350,7 +351,7 @@ async fn a_node_the_user_left_open_and_a_task_in_progress_are_not_closed() {
     let kept = rig.session(Task::Cancelled, true);
     let open = rig.session(Task::Open, true);
     let _ = (&kept, &open);
-    rig.domain.store.lock().unwrap().conn_for_test().execute("INSERT OR REPLACE INTO task_wrap_ups(task_id,close_cancelled,node_end) VALUES('t1',0,'kept_by_user')", []).unwrap();
+    rig.domain.store.lock().unwrap().sqlite().conn_for_test().execute("INSERT OR REPLACE INTO task_wrap_ups(task_id,close_cancelled,node_end) VALUES('t1',0,'kept_by_user')", []).unwrap();
     rig.domain.reload();
     let report = rig.run(true).await;
     for list in ["close", "kept", "failed"] {

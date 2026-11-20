@@ -353,7 +353,7 @@ pub(crate) fn publish_probe(domain: &DomainRuntime, home: &Path, fence: ProbeFen
     publish_probe_with(domain, home, fence, commands, |_| Ok(()))
 }
 
-fn publish_probe_with<T>(domain: &DomainRuntime, home: &Path, fence: ProbeFence, commands: Vec<Command>, finish: impl FnOnce(&mut crate::domain_store::OwnerTransaction<'_>) -> Result<T, crate::domain_store::StoreError>) -> Result<T, String> {
+fn publish_probe_with<T>(domain: &DomainRuntime, home: &Path, fence: ProbeFence, commands: Vec<Command>, finish: impl FnOnce(&mut dyn crate::domain_store::OwnerJournal) -> Result<T, crate::domain_store::StoreError>) -> Result<T, String> {
     commit_probe(domain, home, fence, commands, finish).map_err(|why| why.to_string())
 }
 
@@ -361,7 +361,7 @@ pub(crate) fn publish_current_probe(domain: &DomainRuntime, home: &Path, fence: 
     commit_probe(domain, home, fence, commands, |_| Ok(()))
 }
 
-fn commit_probe<T>(domain: &DomainRuntime, home: &Path, fence: ProbeFence, commands: Vec<Command>, finish: impl FnOnce(&mut crate::domain_store::OwnerTransaction<'_>) -> Result<T, crate::domain_store::StoreError>) -> Result<T, crate::domain_store::StoreError> {
+fn commit_probe<T>(domain: &DomainRuntime, home: &Path, fence: ProbeFence, commands: Vec<Command>, finish: impl FnOnce(&mut dyn crate::domain_store::OwnerJournal) -> Result<T, crate::domain_store::StoreError>) -> Result<T, crate::domain_store::StoreError> {
     use crate::domain_store::{Attached, StoreError};
     use alondra_domain_rules::DomainError;
     let scope = alondra_store::AuthorityScope::new(fence.state.data_epoch.clone()).map_err(StoreError::from)?;

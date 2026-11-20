@@ -1,7 +1,7 @@
 //! Opt-in measurements of signed card requests and the live store reads behind them, against a
-//! domain `domain_store::load_bench` seeds.
-use alondra_daemon_engine::domain_store::load_bench::*;
-use alondra_daemon_engine::domain_store::*;
+//! domain `store-sqlite`'s `load_bench` seeds.
+use alondra_store_sqlite::AsSqlite as _;
+use alondra_store_sqlite::load_bench::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "opt-in isolated signed card request measurement; no production service"]
@@ -16,12 +16,12 @@ async fn repeated_card_requests() {
 
     let home = crate::test_support::Directory::new();
     std::fs::create_dir_all(&home).unwrap();
-    let database = crate::domain_database_migration::active_path(&home);
+    let database = crate::domain_store::active_path(&home);
     {
-        let mut store = DomainStore::open(&database).unwrap();
+        let mut store = alondra_store_sqlite::DomainStore::open(&database).unwrap();
         seed(&mut store, 20);
     }
-    let daemon = crate::domain_bootstrap::DomainDaemon::open(&home).unwrap();
+    let daemon = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
     let signing = SigningKey::from_slice(&[9; 32]).unwrap();
     let auth = daemon.auth();
     let device = auth.pair(&auth.new_pairing_code(), "Request benchmark",
@@ -153,17 +153,17 @@ async fn trace_card_live_store_reads() {
     let home = crate::test_support::Directory::new();
     std::fs::create_dir_all(&home).unwrap();
     {
-        let database = crate::domain_database_migration::active_path(&home);
-        let mut store = DomainStore::open(&database).unwrap();
+        let database = crate::domain_store::active_path(&home);
+        let mut store = alondra_store_sqlite::DomainStore::open(&database).unwrap();
         seed(&mut store, 20);
     }
-    let daemon = crate::domain_bootstrap::DomainDaemon::open(&home).unwrap();
+    let daemon = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
     let client = daemon.client();
     let read = client.domain.read();
     let before = process_resources();
-    client.domain.reads.lock().unwrap().begin_live_read_trace();
+    client.domain.reads.lock().unwrap().sqlite_mut().begin_live_read_trace();
     let live = crate::views::live::gather(&client, &read, Lang::En, &["card:info-0".into()], true, false).await;
-    let trace = client.domain.reads.lock().unwrap().end_live_read_trace();
+    let trace = client.domain.reads.lock().unwrap().sqlite_mut().end_live_read_trace();
     let after = process_resources();
     let mut getters = std::collections::BTreeMap::<&str, (usize, usize, usize, usize, f64)>::new();
     for read in &trace {

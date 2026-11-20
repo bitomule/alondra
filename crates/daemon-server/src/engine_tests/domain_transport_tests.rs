@@ -1,4 +1,5 @@
 //! The producer transport while a client reads views and the feed through alondrad's routes.
+use alondra_store_sqlite::AsSqlite as _;
 use alondra_engine_admission::AdmissionOf as _;
 use alondra_daemon_engine::domain_transport::tests::*;
 use alondra_daemon_engine::domain_transport::*;
@@ -20,7 +21,7 @@ fn runtime_progress_view_and_feed_sql_and_render_run_outside_the_async_worker() 
     let domain = fixture.open();
     working_agent(&domain, "isolation");
     let client = crate::client_routes::Client::open(domain.clone(), &fixture.0, Default::default());
-    domain.reads.lock().unwrap().begin_live_read_trace();
+    domain.reads.lock().unwrap().sqlite_mut().begin_live_read_trace();
     let driver = std::thread::current().id();
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     runtime.block_on(async {
@@ -38,7 +39,7 @@ fn runtime_progress_view_and_feed_sql_and_render_run_outside_the_async_worker() 
         let runtime = client.read("/runtime").await.expect("runtime route");
         assert_eq!(runtime.status(), axum::http::StatusCode::OK);
     });
-    let reads = domain.reads.lock().unwrap().end_live_read_trace();
+    let reads = domain.reads.lock().unwrap().sqlite_mut().end_live_read_trace();
     assert!(!reads.is_empty());
     assert!(reads.iter().any(|read| read.rows > 0), "the real populated store was read");
     assert!(reads.iter().all(|read| read.thread != format!("{driver:?}")), "SQLite ran on the async worker: {reads:?}");
@@ -58,7 +59,7 @@ fn runtime_progress_a_held_view_and_hook_recording_do_not_stop_guards_or_machine
     let (entered, started) = tokio::sync::oneshot::channel();
     let (release, held) = std::sync::mpsc::channel();
     let entered = std::sync::Mutex::new(Some(entered));
-    domain.reads.lock().unwrap().on_live_read(move |_| {
+    domain.reads.lock().unwrap().sqlite_mut().on_live_read(move |_| {
         // A wrong-thread regression fails before the controlled block, rather than hanging.
         if let Some(entered) = entered.lock().unwrap().take() {
             assert_ne!(std::thread::current().id(), driver, "view SQL occupies the async worker");

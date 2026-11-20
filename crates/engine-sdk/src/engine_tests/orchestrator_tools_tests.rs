@@ -1,4 +1,5 @@
 //! The launch tools' tests (`domain_orchestrator_tools`), which start nodes through the SDK.
+use alondra_store_sqlite::AsSqlite as _;
 use alondra_core::clock;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::model_metrics::{Decision, DecisionKind};
@@ -928,7 +929,7 @@ async fn a_message_with_an_approach_ends_with_how_to_work() {
 type DecisionRow = (String, String, Option<String>, Option<String>, Option<String>, Option<String>);
 
 pub fn decisions(domain: &DomainRuntime) -> Vec<DecisionRow> {
-    domain.store.lock().unwrap().model_decision_rows().unwrap()
+    domain.store.lock().unwrap().sqlite().model_decision_rows().unwrap()
 }
 
 fn row(kind: &str, model: Option<&str>, effort: Option<&str>, approach: Option<&str>, reason: Option<&str>) -> DecisionRow {
@@ -951,7 +952,7 @@ async fn with_auto_effort_a_launch_without_a_reason_is_refused_before_claude_run
     let answer = launch(&f.domain, &f.home, launch_body(&f, json!({"reason": null})), |_| Some(hard_choices())).await.unwrap();
     assert_eq!(decisions(&f.domain), [row("launch", Some("opus"), Some("xhigh"), Some("solo"), None)],
         "the user's effort needs no reason");
-    assert_eq!(f.domain.store.lock().unwrap().model_decision_meta().unwrap(), [(agent_of(&answer).0, "user".to_owned(), "Editor colours".to_owned())]);
+    assert_eq!(f.domain.store.lock().unwrap().sqlite().model_decision_meta().unwrap(), [(agent_of(&answer).0, "user".to_owned(), "Editor colours".to_owned())]);
 }
 
 #[tokio::test]
@@ -960,7 +961,7 @@ async fn every_launch_records_the_model_effort_approach_and_reason_the_orchestra
     let f = world();
     let answer = launch(&f.domain, &f.home, launch_body(&f, json!({"model": "sonnet", "effort": "medium", "approach": "subagents"})), |_| None).await.unwrap();
     assert_eq!(decisions(&f.domain), [row("launch", Some("sonnet"), Some("medium"), Some("subagents"), Some("Colour tokens in one file: sonnet"))]);
-    assert_eq!(f.domain.store.lock().unwrap().model_decision_meta().unwrap(), [(agent_of(&answer).0, "orchestrator".to_owned(), "Editor colours".to_owned())]);
+    assert_eq!(f.domain.store.lock().unwrap().sqlite().model_decision_meta().unwrap(), [(agent_of(&answer).0, "orchestrator".to_owned(), "Editor colours".to_owned())]);
 }
 
 #[tokio::test]
@@ -1149,7 +1150,7 @@ async fn a_launch_of_a_task_with_a_plan_needs_no_name_or_cwd() {
         model: Some("sonnet".into()), effort: None, approach: Some(alondra_core::options::Approach::Solo),
         reason: Some("Colour tokens in one file".into()), role: None, tags: None, project: None,
     };
-    f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &plan, 1).unwrap();
+    f.domain.store.lock().unwrap().sqlite_mut().set_launch_plan(&"t".into(), &plan, 1).unwrap();
     let body: LaunchBody = serde_json::from_value(json!({"task": "t"})).unwrap();
     let answer = launch(&f.domain, &f.home, body, |_| None).await.unwrap();
     let (folders, prompts) = f.launched(1).await;
@@ -1166,9 +1167,9 @@ async fn a_decision_keeps_the_provider_and_the_tags_of_the_plan_or_of_the_launch
     let tags = serde_json::from_value(json!({"kind": "docs", "areas": ["ui"], "risks": ["user_visible"]})).unwrap();
     let plan = alondra_daemon_engine_model::LaunchPlan { model: Some("sonnet".into()), reason: Some("Docs only".into()), tags: Some(tags),
         ..alondra_daemon_engine_model::LaunchPlan::new("app/docs", f.project.to_str().unwrap()) };
-    f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &plan, 1).unwrap();
+    f.domain.store.lock().unwrap().sqlite_mut().set_launch_plan(&"t".into(), &plan, 1).unwrap();
     launch(&f.domain, &f.home, serde_json::from_value(json!({"task": "t"})).unwrap(), |_| None).await.unwrap();
-    let routing = f.domain.store.lock().unwrap().model_decision_routing().unwrap();
+    let routing = f.domain.store.lock().unwrap().sqlite().model_decision_routing().unwrap();
     assert_eq!(routing, [(Some("claude".into()), Some("docs".into()), Some(r#"["ui"]"#.into()), Some(r#"["user_visible"]"#.into()))]);
 
     let repeated: LaunchBody = serde_json::from_value(json!({"task": "t", "tags": {"kind": "fix", "risks": ["security", "security"]}})).unwrap();
@@ -1181,7 +1182,7 @@ async fn a_decision_keeps_the_provider_and_the_tags_of_the_plan_or_of_the_launch
 async fn a_launch_of_a_task_left_without_a_plan_needs_a_name_and_a_folder() {
     super::wired();
     let f = world();
-    f.domain.store.lock().unwrap().forget_launch_plan(&"t".into()).unwrap();
+    f.domain.store.lock().unwrap().sqlite_mut().forget_launch_plan(&"t".into()).unwrap();
     let body: LaunchBody = serde_json::from_value(json!({"task": "t", "model": "sonnet", "reason": "x"})).unwrap();
     let refused = launch(&f.domain, &f.home, body, |_| None).await.unwrap_err();
     assert_eq!(refused.code, "invalid_input");
@@ -1388,7 +1389,7 @@ async fn a_replacement_whose_stop_fails_launches_nothing_and_the_old_node_keeps_
 
 fn release_reasons(f: &Fixture) -> Vec<String> {
     let store = f.domain.store.lock().unwrap();
-    let mut query = store.conn_for_test().prepare(
+    let mut query = store.sqlite().conn_for_test().prepare(
         "SELECT json_extract(command,'$.reason') FROM command_bodies WHERE json_extract(command,'$.kind')='release_task' ORDER BY revision").unwrap();
     query.query_map([], |row| row.get(0)).unwrap().map(Result::unwrap).collect()
 }
@@ -1881,7 +1882,7 @@ async fn a_launch_of_one_phase_of_an_approved_plan_carries_the_whole_plan_and_na
     let original = alondra_daemon_engine_model::LaunchPlan { mission: Some("Implement the read index; preserve the approved scope.".into()),
         model: Some("claude/opus".into()), reason: Some("Implementation".into()),
         ..alondra_daemon_engine_model::LaunchPlan::new("app/index", f.project.to_str().unwrap()) };
-    f.domain.store.lock().unwrap().set_launch_plan(&"index".into(), &original, 1).unwrap();
+    f.domain.store.lock().unwrap().sqlite_mut().set_launch_plan(&"index".into(), &original, 1).unwrap();
     let checklist = f.domain.state().unwrap().checklists[&TaskId::from("index")].clone();
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("index")].state, TaskState::WaitingDependency);
     partial_plan(&f, "index", json!({"model": "claude/sonnet"})).unwrap();
@@ -2011,7 +2012,7 @@ async fn with_codex_connected_a_launch_still_starts_on_the_claude_account_with_t
     assert_eq!(config_dir_sha256(&f), Some(sha256(folder.to_str().unwrap())), "Claude runs with the work account's folder");
     let task = f.domain.state().unwrap().tasks[&TaskId::from("t")].clone();
     assert_eq!(task.account.as_ref().map(|account| account.as_str()), Some("work"), "the task keeps the account its execution runs on");
-    let stored: String = rusqlite::Connection::open(crate::domain_database_migration::active_path(&f.home)).unwrap()
+    let stored: String = rusqlite::Connection::open(crate::domain_store::active_path(&f.home)).unwrap()
         .query_row("SELECT account FROM task_accounts WHERE task_id='t'", [], |row| row.get(0)).unwrap();
     assert_eq!(stored, "work");
 }
@@ -2261,7 +2262,7 @@ async fn an_unstarted_selection_keeps_the_fallback_account_when_the_original_req
         let file = crate::options::options_at(&f.home).unwrap();
         command(&f.domain, Actor::System, Command::RecordAccountConfiguration { order: vec![AccountKey::native(Provider::Claude), work.clone()], version: alondra_core::accounts::config_version(&file.accounts) });
         let plan = alondra_daemon_engine_model::LaunchPlan { model: Some("opus".into()), ..alondra_daemon_engine_model::LaunchPlan::new("app/editor", f.project.to_str().unwrap()) };
-        f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &plan, 1).unwrap();
+        f.domain.store.lock().unwrap().sqlite_mut().set_launch_plan(&"t".into(), &plan, 1).unwrap();
         launch(&f.domain, &f.home, launch_body(&f, json!({})), |_| Some(choices.clone())).await.unwrap();
         f.launched(1).await;
         f.sdk().until_answered("t").await;
@@ -2286,7 +2287,7 @@ async fn a_plan_naming_opus_without_provider_starts_on_claude_when_claude_and_co
     connect_claude_and_codex(&f);
     let plan = alondra_daemon_engine_model::LaunchPlan { model: Some("opus".into()), effort: Some("medium".into()), reason: Some("Design work".into()),
         ..alondra_daemon_engine_model::LaunchPlan::new("app/editor", f.project.to_str().unwrap()) };
-    f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &plan, 1).unwrap();
+    f.domain.store.lock().unwrap().sqlite_mut().set_launch_plan(&"t".into(), &plan, 1).unwrap();
     let body: LaunchBody = serde_json::from_value(json!({"task": "t"})).unwrap();
     launch(&f.domain, &f.home, body, |_| None).await.unwrap();
     f.launched(1).await;
@@ -2335,7 +2336,7 @@ pub fn refused_plan(f: &Fixture) {
     connect_claude_and_codex(f);
     let stored = alondra_daemon_engine_model::LaunchPlan { effort: Some("medium".into()), reason: Some("Layout fix".into()),
         ..alondra_daemon_engine_model::LaunchPlan::new("app/editor", f.project.to_str().unwrap()) };
-    f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &stored, 1).unwrap();
+    f.domain.store.lock().unwrap().sqlite_mut().set_launch_plan(&"t".into(), &stored, 1).unwrap();
 }
 
 pub async fn refuse_its_start(f: &Fixture) -> alondra_domain_rules::Interaction {
@@ -2445,7 +2446,7 @@ fn stored_selection(f: &Fixture) -> alondra_daemon_engine_model::LaunchPlan {
         role: Some(alondra_domain_rules::TaskRole::Implementation), project: Some("App".into()),
         ..alondra_daemon_engine_model::LaunchPlan::new("app/editor", f.project.to_str().unwrap())
     };
-    f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &plan, 1).unwrap();
+    f.domain.store.lock().unwrap().sqlite_mut().set_launch_plan(&"t".into(), &plan, 1).unwrap();
     plan
 }
 
@@ -2479,12 +2480,12 @@ fn partial_launch_plan_reads_the_complete_stored_mission_without_writing() {
     let f = world();
     let mut before = stored_selection(&f);
     before.mission = Some("Saved context.\n".repeat(2_000));
-    f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &before, 1).unwrap();
+    f.domain.store.lock().unwrap().sqlite_mut().set_launch_plan(&"t".into(), &before, 1).unwrap();
     let mark = f.domain.store.lock().unwrap().write_mark().unwrap();
     assert_eq!(get_launch_plan(&f.domain, &"t".into()).unwrap(), json!({"task": "t", "launch": before}));
     assert_eq!(f.domain.store.lock().unwrap().write_mark().unwrap(), mark);
     assert_eq!(get_launch_plan(&f.domain, &"missing".into()).unwrap_err().code, "not_found");
-    f.domain.store.lock().unwrap().forget_launch_plan(&"t".into()).unwrap();
+    f.domain.store.lock().unwrap().sqlite_mut().forget_launch_plan(&"t".into()).unwrap();
     assert_eq!(get_launch_plan(&f.domain, &"t".into()).unwrap_err().code, "not_found");
 }
 
@@ -2758,7 +2759,7 @@ async fn an_unstarted_selection_waits_without_a_card_then_starts_on_an_active_pr
     command(&f.domain, Actor::System, Command::RecordTaskSelection { task_id: "t".into(), selection: intent.clone(), pending: None });
     let plan = alondra_daemon_engine_model::LaunchPlan { model: Some("codex/gpt-6".into()), effort: Some("medium".into()),
         ..alondra_daemon_engine_model::LaunchPlan::new("app/editor", f.project.to_str().unwrap()) };
-    f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &plan, 1).unwrap();
+    f.domain.store.lock().unwrap().sqlite_mut().set_launch_plan(&"t".into(), &plan, 1).unwrap();
     std::fs::write(alondra_core::options::path_in(&f.home), "[accounts]\nconnected = []\n").unwrap();
     let cards = f.domain.state().unwrap().interactions.len();
     for _ in 0..=alondra_domain_rules::START_RETRIES.len() {
@@ -2807,7 +2808,7 @@ async fn reopening_a_legacy_task_admits_its_retained_project_policy_after_the_pr
         ..alondra_daemon_engine_model::LaunchPlan::new("app/editor", original.to_str().unwrap())
     };
     crate::launch_plans::validate(&f.domain, &f.home, &"r".into(), &saved).unwrap();
-    f.domain.store.lock().unwrap().set_launch_plan(&"t".into(), &saved, 1).unwrap();
+    f.domain.store.lock().unwrap().sqlite_mut().set_launch_plan(&"t".into(), &saved, 1).unwrap();
     f.domain.set_task_worktree(&"t".into(), original.to_str().unwrap()).unwrap();
     give(&f, "t", "agent-b");
     command(&f.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::StartTask { task_id: "t".into() });

@@ -9,7 +9,7 @@ fn a_retained_sqlite_writer_does_not_occupy_the_daemon_runtime() {
     let (_directory, mut service, phone) = push_fixture();
     activate_push(&service);
     drop(alondra_engine_sdk::engine_tests::open(&service.home).unwrap());
-    let state = crate::domain_bootstrap::DomainDaemon::open(&service.home).unwrap();
+    let state = crate::domain_bootstrap::DomainDaemon::open(&service.home, &alondra_store_sqlite::Sqlite).unwrap();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2).enable_all().build().unwrap();
 

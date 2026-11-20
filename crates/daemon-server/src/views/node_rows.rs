@@ -34,7 +34,7 @@ struct Entry {
     state: Arc<DomainState>,
     domain: NodeChangeCursor,
     sources: Sources,
-    store: crate::domain_store::ReadCursor,
+    store: alondra_engine_ports::journal::ReadCursor,
     launches: Arc<Launches>,
     /// These sources still lack a complete event contract; never silently retain their values.
     external: BTreeSet<AgentId>,
@@ -75,13 +75,13 @@ fn has_external_source(client: &Client, read: &ReadSnapshot, id: &AgentId) -> bo
 
 impl Cache {
     pub(super) fn gather(&self, client: &Client, read: &ReadSnapshot, lang: Lang,
-        launches: &Launches, boundary: Option<crate::domain_store::ReadCursor>, launches_ok: bool,
+        launches: &Launches, boundary: Option<alondra_engine_ports::journal::ReadCursor>, launches_ok: bool,
         usage: &Option<crate::usage_pause::Exhausted>, now: i64) -> Nodes {
         self.gather_checked(client, read, lang, launches, boundary, launches_ok, usage, now, || {})
     }
 
     fn gather_checked(&self, client: &Client, read: &ReadSnapshot, lang: Lang,
-        launches: &Launches, boundary: Option<crate::domain_store::ReadCursor>, launches_ok: bool,
+        launches: &Launches, boundary: Option<alondra_engine_ports::journal::ReadCursor>, launches_ok: bool,
         usage: &Option<crate::usage_pause::Exhausted>, now: i64, after_build: impl FnOnce()) -> Nodes {
         let observation = &client.view_observation;
         let mut entries = super::live::cache(&self.0);

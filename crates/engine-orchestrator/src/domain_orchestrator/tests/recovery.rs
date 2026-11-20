@@ -438,7 +438,7 @@ async fn a_claude_denial_cannot_be_replayed_after_losing_both_final_writes_and_r
     let f = fixture();
     request(&f, "denied");
     f.mark_once("fixture:denied");
-    rusqlite::Connection::open(crate::domain_database_migration::active_path(&f.executor.home)).unwrap()
+    rusqlite::Connection::open(crate::domain_store::active_path(&f.executor.home)).unwrap()
         .execute_batch("CREATE TRIGGER reject_terminal_report BEFORE INSERT ON orchestrator_batch_reports WHEN json_extract(NEW.report,'$.kind')='result' BEGIN SELECT RAISE(ABORT,'injected terminal report failure'); END;").unwrap();
     let fault = faults::Injection::at(&f.executor.home, "runtime_write", 3);
     assert!(f.executor.tick().await.is_err());

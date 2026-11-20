@@ -1,13 +1,63 @@
-//! Domain storage lives in its own crate; runtime-dependent fixtures stay with the engine.
-pub use alondra_daemon_engine_store::*;
+//! The journal the runtime speaks to, through the engine's port; runtime-dependent fixtures stay
+//! with the engine.
+pub use alondra_engine_ports::journal::*;
+pub use alondra_engine_ports::journal::{Journal, JournalFiles, OwnerJournal, ReadTransaction};
+pub use alondra_engine_ports::journal::account_move::{AccountMove, Plan as AccountMovePlan, Step as AccountMoveStep};
+pub use alondra_engine_ports::journal::handover::{Handover, Plan as HandoverPlan, Process as HandoverProcess, Step as HandoverStep, copy_path as handover_copy_path};
+pub use alondra_engine_ports::journal::owner::{
+    AdapterRefusal, Adoption, DiscardReason, ObservationRefusal, OwnerCommit, OwnerDraft, Preparer, Refuse, StagedOutcome, carried_refusal, refuse_next,
+};
+pub use alondra_engine_ports::journal::provider_transition;
+
+/// The refusal a producer gets for a command the journal could not commit.
+pub trait IntoDomainError {
+    fn into_domain_error(self, envelope: &alondra_domain_rules::CommandEnvelope) -> alondra_domain_rules::DomainError;
+}
+
+impl IntoDomainError for StoreError {
+    /// Keeps storage diagnostics in the daemon while the producer receives a stable refusal.
+    fn into_domain_error(self, envelope: &alondra_domain_rules::CommandEnvelope) -> alondra_domain_rules::DomainError {
+        match self {
+            Self::Domain(error) => error,
+            Self::Storage(error) => {
+                let kind = serde_json::to_value(&envelope.command).ok()
+                    .and_then(|value| value["kind"].as_str().map(str::to_owned)).unwrap_or_else(|| "unknown".into());
+                log!("domain storage failure: operation={kind} command_id={} cause={error:#}", envelope.command_id);
+                alondra_domain_rules::DomainError::new("storage_unavailable", "domain transaction could not be completed")
+            }
+        }
+    }
+}
+/// What the journal records of the orchestrator's batches.
+pub mod batch_effects {
+    pub use alondra_engine_ports::journal::batch::*;
+}
+pub mod model_metrics {
+    pub use alondra_engine_ports::journal::metrics::{Decision, DecisionKind};
+}
+#[cfg(not(test))]
+pub mod metrics_fold {
+    pub use alondra_engine_ports::journal::metrics::Spent;
+}
+pub mod wording {
+    pub use alondra_domain_rules::orchestrator_wording::{approved_plan_work, orchestrator_text};
+    pub use alondra_engine_ports::journal::decisions::{SdkDecision, SdkDecisions};
+}
+pub mod provider_settings {
+    pub use alondra_daemon_engine_model::options::{pending, read_optional, read_options};
+    pub use alondra_engine_ports::journal::settings::{PendingProjection, ProjectionIdentity};
+}
+/// The SQLite journal itself, for the tests that read its tables.
+#[cfg(test)]
+pub use alondra_store_sqlite::{DomainStore, statement_counts, testing};
 #[cfg(any(test, feature = "test-hooks"))]
 pub use owner::{admit_through_sdk, admit_through_sdk_with_host};
 #[cfg(any(test, feature = "test-hooks"))]
 #[path = "domain_store/runtime_owner.rs"]
 mod owner;
-#[cfg(any(test, feature = "test-hooks"))]
+#[cfg(test)]
 pub mod tests {
-pub use alondra_daemon_engine_store::tests::*;
+pub use alondra_store_sqlite::tests::*;
 #[cfg(test)]
 use super::*;
 #[test]
@@ -55,9 +105,8 @@ fn a_continuation_storage_failure_rolls_back_the_transfer_and_publication() {
 #[cfg(test)]
 #[path = "domain_store/runtime_metrics_fold.rs"]
 pub mod metrics_fold;
-#[cfg(any(test, feature = "test-hooks"))]
-#[path = "domain_store/retention_fixtures.rs"]
-pub mod retention_fixtures;
+#[cfg(test)]
+pub use alondra_store_sqlite::retention_fixtures;
 #[cfg(test)]
 #[path = "domain_store/runtime_retention.rs"]
 pub mod retention;
@@ -66,7 +115,7 @@ pub mod retention;
 mod metrics;
 #[cfg(test)]
 mod repository {
-pub use alondra_daemon_engine_store::testing::{load, save_journal};
+pub use alondra_store_sqlite::testing::{load, save_journal};
 }
 #[cfg(test)]
 mod lifecycle_cache_tests;

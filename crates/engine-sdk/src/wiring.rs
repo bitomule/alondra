@@ -5,16 +5,17 @@
 use crate::domain_runtime::{CommitObserver, DomainRuntime};
 use crate::hosts::SdkHosts;
 use alondra_engine_ports::Registry;
+use alondra_engine_ports::journal::JournalFiles;
 use anyhow::Result;
 use std::path::Path;
 use std::sync::Arc;
 
-pub fn open(home: &Path) -> Result<DomainRuntime> {
-    open_at(home, &crate::domain_database_migration::active_path(home))
+pub fn open(home: &Path, files: &dyn JournalFiles) -> Result<DomainRuntime> {
+    open_at(home, &crate::domain_store::active_path(home), files)
 }
 
-pub fn open_at(home: &Path, database: &Path) -> Result<DomainRuntime> {
-    let runtime = DomainRuntime::open_observed(home, database, Some(alondra_daemon_engine::wiring::held_cards()), observers())?;
+pub fn open_at(home: &Path, database: &Path, files: &dyn JournalFiles) -> Result<DomainRuntime> {
+    let runtime = DomainRuntime::open_observed(home, database, files, Some(alondra_daemon_engine::wiring::held_cards()), observers())?;
     alondra_daemon_engine::wiring::wire(runtime.ports());
     wire(runtime.ports());
     alondra_engine_admission::wire(runtime.ports());

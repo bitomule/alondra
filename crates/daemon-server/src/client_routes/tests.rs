@@ -1,5 +1,6 @@
 //! Public routes are exercised with signed requests. Views use the same client
 //! in-process, so their reads and actions exercise that client directly.
+use alondra_store_sqlite::AsSqlite as _;
 use alondra_engine_admission::AdmissionOf as _;
 use alondra_engine_sdk::sdk_owner::SdkOwners as _;
 use alondra_daemon_engine::live::LiveOf as _;
@@ -51,7 +52,7 @@ impl Fixture {
         let auth = Auth::open(&home).unwrap();
         let key = SigningKey::from_slice(&[31u8; 32]).unwrap();
         let device = auth.pair(&auth.new_pairing_code(), "terminal", &STANDARD.encode(key.verifying_key().to_sec1_bytes())).unwrap();
-        let state = DomainDaemon::open(&home).unwrap();
+        let state = DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
         let domain = state.domain();
         let client = state.client();
         let app = crate::domain_bootstrap::router(state.clone())
@@ -1367,11 +1368,11 @@ fn issue_picker_refresh_notifies_feeds_without_rebuilding_warm_shared_views() {
         assert_eq!(after_refresh.metrics[Metric::GatherShared as usize], before_refresh.metrics[Metric::GatherShared as usize]);
 
         // The refresh has its own keyed snapshot and digest; only the following warm reads must reuse theirs.
-        domain.reads.lock().unwrap().begin_live_read_trace();
+        domain.reads.lock().unwrap().sqlite_mut().begin_live_read_trace();
         for (key, lang, expected) in warm {
             assert_eq!(view(&client, key, lang).await, expected);
         }
-        let trace = domain.reads.lock().unwrap().end_live_read_trace();
+        let trace = domain.reads.lock().unwrap().sqlite_mut().end_live_read_trace();
         assert!(trace.is_empty(), "an issue-only refresh must not rerun shared store getters: {trace:?}");
         let after_warm_reads = observation.totals();
         for metric in [Metric::GatherShared, Metric::GatherKeyed, Metric::DigestSerializations] {

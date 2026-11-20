@@ -303,6 +303,30 @@ fn a_send_cut_halfway_stays_pending_and_the_next_try_finishes_it() {
 }
 
 #[test]
+fn a_pending_report_is_sent_again_only_to_the_repository_it_was_first_sent_to() {
+    let home = Directory::new();
+    let (mac, built) = built_report(&home);
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let files = checked(&mac, &built.id).unwrap();
+    let gh = FakeGithub::new();
+    gh.as_user("ana");
+    gh.0.borrow_mut().failing = Some(GhError::Unavailable("GitHub is down".into()));
+    let previous = Repo { gh: &gh, name: "owner/previous".into() };
+    let pending = send::send(&previous, mac.home(), &built.id, &files, None, NOW, &send::backoff_ms).unwrap();
+    assert!(matches!(pending, Outcome::Pending(_)), "{pending:?}");
+    gh.0.borrow_mut().failing = None;
+    let error = send::retry(&repo(&gh), mac.home(), &built.id, &files, NOW + 60_000, &send::backoff_ms).unwrap_err();
+    assert!(matches!(error.downcast_ref::<Blocked>(), Some(Blocked::RepoChanged { .. })), "{error}");
+    assert!(error.to_string().contains(&format!("alondra report send {}", built.id)), "{error}");
+    assert!(gh.0.borrow().issues.is_empty() && gh.0.borrow().gists.is_empty(), "nothing goes to a repository nobody confirmed");
+    let held = send::read_sending(&built.dir).unwrap();
+    assert_eq!((held.repo.as_str(), held.state, held.next_at), ("owner/previous", State::Pending, i64::MAX), "the daemon stops trying it");
+    let Outcome::Sent { number, .. } = send::send(&repo(&gh), mac.home(), &built.id, &files, None, NOW + 120_000, &send::backoff_ms).unwrap() else { panic!() };
+    assert_eq!(gh.0.borrow().issues[0]["number"], json!(number), "sending it by hand to the new repository is the confirmation");
+    assert_eq!(send::read_sending(&built.dir).unwrap().repo, REPO);
+}
+
+#[test]
 fn backoff_doubles_from_a_minute_up_to_half_an_hour() {
     assert_eq!([1, 2, 3, 5, 6, 20].map(send::backoff_ms), [60_000, 120_000, 240_000, 960_000, 1_800_000, 1_800_000]);
 }

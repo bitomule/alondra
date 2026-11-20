@@ -8,7 +8,7 @@ const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
 fn open() -> (crate::test_support::Directory, DomainRuntime) {
     let home = crate::test_support::Directory::new();
     std::fs::create_dir(&home).unwrap();
-    let domain = DomainRuntime::open_unwired_at(&home, &crate::domain_database_migration::active_path(&home)).unwrap();
+    let domain = DomainRuntime::open_unwired_at(&home, &crate::domain_store::active_path(&home)).unwrap();
     (home, domain)
 }
 

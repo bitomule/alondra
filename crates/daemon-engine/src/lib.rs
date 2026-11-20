@@ -34,8 +34,9 @@ use alondra_daemon_support::{
 #[cfg(target_os = "macos")]
 use alondra_daemon_support::schedule_clock;
 
+#[cfg(any(test, feature = "test-hooks"))]
+pub use alondra_engine_kernel::TEST_JOURNAL;
 pub use alondra_engine_kernel::{
-    domain_database_migration,
     domain_runtime,
     domain_sessions,
     domain_store,
@@ -59,7 +60,6 @@ pub mod api_failures;
 pub mod claude_access;
 pub mod claude_trust;
 pub mod cleanup;
-pub mod database_check;
 pub mod domain_agent_lifecycle;
 pub mod domain_holds;
 pub mod domain_messages;
