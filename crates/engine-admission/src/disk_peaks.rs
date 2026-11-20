@@ -96,7 +96,6 @@ impl Estimates {
         }
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn projects(&self) -> usize {
         self.0.len()
     }

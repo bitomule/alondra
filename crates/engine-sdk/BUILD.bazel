@@ -1,8 +1,7 @@
 load("//tools/bazel:crates.bzl", "application_crate")
 load("//tools:tree.bzl", "repo_tree")
-load("//tools:rust_test.bzl", "LOW_OPT_LEVEL", "low_opt_rust_test")
+load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
@@ -26,9 +25,10 @@ WORKSPACE_DEPS = [
 
 application_crate(
     name = "engine_sdk",
-    srcs = production_sources(test_only = ["src/machine_hooks.rs"]),
+    srcs = production_sources() + ["//crates:test_support.rs"],
     crate_name = "alondra_engine_sdk",
     version = VERSION,
+    test_visibility = ["//crates/machine-model:__pkg__"],
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS + [
         "//crates/daemon-engine:daemon_engine",
         "//crates/daemon-engine-machine:daemon_engine_machine",
@@ -42,32 +42,16 @@ application_crate(
 
 TEST_HOOKS_DEPS = [
     "//crates/codex-protocol:codex_protocol",
-    "//crates/daemon-engine:daemon_engine_test_hooks",
-    "//crates/daemon-engine-machine:daemon_engine_machine_test_hooks",
-    "//crates/daemon-engine-model:daemon_engine_model_test_hooks",
-    "//crates/store-sqlite:store_sqlite_test_hooks",
-    "//crates/daemon-support:daemon_support_test_hooks",
-    "//crates/engine-admission:engine_admission_on_test_hooks",
+    "//crates/daemon-engine:daemon_engine",
+    "//crates/daemon-engine-machine:daemon_engine_machine",
+    "//crates/daemon-engine-model:daemon_engine_model",
+    "//crates/store-sqlite:store_sqlite",
+    "//crates/daemon-support:daemon_support",
+    "//crates/engine-admission:engine_admission",
     "//crates/engine-doubles:engine_doubles",
-    "//crates/engine-github:engine_github_test_hooks",
-    "//crates/engine-kernel:engine_kernel_test_hooks",
+    "//crates/engine-github:engine_github",
+    "//crates/engine-kernel:engine_kernel",
 ]
-
-# alondrad's tests, the machine model and the scenarios build against it: the SDK slice with a fake
-# native Claude, the automatic launch's world, the hosts' owners' decisions.
-rust_library(
-    name = "engine_sdk_test_hooks",
-    testonly = True,
-    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
-    crate_features = ["test-hooks"],
-    crate_name = "alondra_engine_sdk",
-    crate_root = "src/lib.rs",
-    edition = "2024",
-    rustc_flags = [LOW_OPT_LEVEL],
-    version = VERSION,
-    visibility = ["//crates/alondrad:__pkg__", "//crates/daemon-server:__pkg__", "//crates/engine-orchestrator:__pkg__", "//crates/machine-model:__pkg__", "//crates/scenarios:__pkg__"],
-    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/agent-runtime:agent_runtime"] + TEST_HOOKS_DEPS,
-)
 
 SDK_TEST_DATA = [
     "//agent-host:alondra-codex-host",
@@ -107,7 +91,7 @@ SDK_TEST_COMPILE_DATA = [
 low_opt_rust_test(
     name = "engine_sdk_test",
     size = "large",
-    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs", "//crates/daemon-engine:src/wiring/owner_fixtures.rs"],
     compile_data = SDK_TEST_COMPILE_DATA,
     crate_name = "alondra_engine_sdk",
     crate_root = "src/lib.rs",
@@ -124,7 +108,7 @@ rust_inputs_test(
     required_sources = ["crates/engine-sdk/src/lib.rs", "crates/engine-sdk/src/wiring.rs"],
     source_dir = "crates/engine-sdk/src/",
     target_under_test = ":engine_sdk",
-    test_only_sources = ["crates/engine-sdk/src/machine_hooks.rs", "crates/test_support.rs"],
+    fixture_sources = ["crates/test_support.rs"],
     test_sources = False,
 )
 
@@ -134,7 +118,7 @@ exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 # file among them; alondrad's lock policy test reads them too.
 filegroup(
     name = "report_sources",
-    srcs = production_sources(test_only = ["src/machine_hooks.rs"]),
+    srcs = production_sources(),
     visibility = ["//crates/alondra:__pkg__", "//crates/cli-report:__pkg__", "//crates/alondrad:__pkg__", "//crates/daemon-server:__pkg__"],
 )
 

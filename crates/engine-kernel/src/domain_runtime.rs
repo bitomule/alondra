@@ -52,7 +52,6 @@ pub struct DomainRuntime {
     /// send and acknowledge.
     pub seals: seals::Seals,
     /// Makes every write of the capability registry fail as on a full disk.
-    #[cfg(any(test, feature = "test-hooks"))]
     pub full_disk: std::sync::atomic::AtomicBool,
     /// What each subsystem keeps, without the runtime naming it.
     extensions: extensions::Extensions,
@@ -66,14 +65,10 @@ pub struct DomainRuntime {
     /// Counts what the orchestrator did, for the watchdog that tells a working orchestrator from a
     /// stuck one.
     orchestrator_progress: std::sync::atomic::AtomicU64,
-    #[cfg(any(test, feature = "test-hooks"))]
     before_owner_publish: Mutex<Option<Box<dyn FnMut() + Send>>>,
-    #[cfg(any(test, feature = "test-hooks"))]
     before_next_commit: Mutex<Option<Box<dyn FnOnce(&DomainRuntime) + Send>>>,
-    #[cfg(any(test, feature = "test-hooks"))]
     before_acknowledge: Mutex<Option<Box<dyn FnMut() + Send>>>,
     /// How many read indexes publication built: one per commit that changed the domain.
-    #[cfg(any(test, feature = "test-hooks"))]
     pub index_builds: std::sync::atomic::AtomicU64,
 }
 pub use alondra_daemon_engine_model::retention::Retained;
@@ -154,7 +149,6 @@ impl DomainRuntime {
     }
 
     /// The same at `database`, for the tests of the kernel and of the subsystem crates.
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn open_unwired_at(home: &Path, database: &Path) -> Result<Self> {
         Self::open_observed(home, database, crate::test_journal(), None, vec![])
     }
@@ -176,7 +170,7 @@ impl DomainRuntime {
         let projects_root = options.projects_root(&home_of_user);
         store.fill_task_projects(&projects_root)?;
         let ports = Arc::new(alondra_engine_ports::Registry::default());
-        #[cfg(any(test, feature = "test-hooks"))]
+        #[cfg(test)]
         alondra_engine_doubles::machine::wire(&ports, alondra_daemon_support::watcher::claude_home);
         store.protect(alondra_engine_ports::worktrees::WorktreeRules::new(
             alondra_engine_ports::worktrees::Protected { home: home_of_user, projects_root },
@@ -208,20 +202,15 @@ impl DomainRuntime {
             held: Default::default(),
             rejections: Default::default(),
             seals: Default::default(),
-            #[cfg(any(test, feature = "test-hooks"))]
             full_disk: Default::default(),
             extensions: Default::default(),
             observers,
             ports,
             orchestrator_rests: Default::default(),
             orchestrator_progress: Default::default(),
-            #[cfg(any(test, feature = "test-hooks"))]
             before_owner_publish: Default::default(),
-            #[cfg(any(test, feature = "test-hooks"))]
             before_next_commit: Default::default(),
-            #[cfg(any(test, feature = "test-hooks"))]
             before_acknowledge: Default::default(),
-            #[cfg(any(test, feature = "test-hooks"))]
             index_builds: Default::default(),
         };
         runtime.review_waits()?;
@@ -391,8 +380,7 @@ impl DomainRuntime {
         if let Err(why) = project(&mut **store) {
             log!("The authority transaction committed; its recoverable settings projection needs repair before another settings read: {why:#}");
         }
-        #[cfg(any(test, feature = "test-hooks"))]
-        if let Some(hook) = self.before_owner_publish.lock().unwrap().as_mut() {
+        if let Some(hook) = self.before_owner_publish.lock_or_recover("a test's hook").as_mut() {
             hook();
         }
         self.publish(&commit.draft.state);
@@ -407,26 +395,21 @@ impl DomainRuntime {
         drop(store);
         Ok((value, draft.outcomes))
     }
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn take_acknowledgements(&self) -> Vec<alondra_store::Committed> {
         self.seals.take_all()
     }
     /// Runs `hook` once, as the next command reaches the writer lock.
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn before_next_commit(&self, hook: impl FnOnce(&DomainRuntime) + Send + 'static) {
-        *self.before_next_commit.lock().unwrap() = Some(Box::new(hook));
+        *self.before_next_commit.lock_or_recover("a test's hook") = Some(Box::new(hook));
     }
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn before_owner_publish(&self, hook: impl FnMut() + Send + 'static) {
-        *self.before_owner_publish.lock().unwrap() = Some(Box::new(hook));
+        *self.before_owner_publish.lock_or_recover("a test's hook") = Some(Box::new(hook));
     }
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn on_acknowledge(&self, hook: impl FnMut() + Send + 'static) {
-        *self.before_acknowledge.lock().unwrap() = Some(Box::new(hook));
+        *self.before_acknowledge.lock_or_recover("a test's hook") = Some(Box::new(hook));
     }
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn before_acknowledge(&self) {
-        if let Some(hook) = self.before_acknowledge.lock().unwrap().as_mut() {
+        if let Some(hook) = self.before_acknowledge.lock_or_recover("a test's hook").as_mut() {
             hook();
         }
     }
@@ -435,7 +418,6 @@ impl DomainRuntime {
         if Arc::ptr_eq(self.read().state(), state) {
             return;
         }
-        #[cfg(any(test, feature = "test-hooks"))]
         self.index_builds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let before = self.read();
         let snapshot = Arc::new(ReadSnapshot::build_after(Arc::clone(state), &before));
@@ -473,9 +455,8 @@ impl DomainRuntime {
 
     /// After a test writes domain rows straight to SQL, or through another runtime on the
     /// same file: the daemon itself only changes the domain by committing commands.
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn reload(&self) {
-        let state = self.store.lock().unwrap().load().unwrap();
+        let state = self.store.lock_or_exit("the domain store").load().unwrap();
         self.publish(&state);
     }
     pub fn schedule_request_tools(
@@ -613,7 +594,6 @@ impl DomainRuntime {
     }
 
     fn persist_authority(&self, authority: &Authority) -> Result<()> {
-        #[cfg(any(test, feature = "test-hooks"))]
         if self.full_disk.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(anyhow::Error::from(std::io::Error::from_raw_os_error(libc::ENOSPC)).context("writing the domain capability registry"));
         }
@@ -908,7 +888,6 @@ impl DomainRuntime {
 
     /// A fixture's synchronous actor step takes its revision on the writer lane, as an internal
     /// producer does. Client tests use `execute_with` to exercise their optimistic revision.
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn execute_fixture(&self, actor: &Actor, envelope: CommandEnvelope) -> Result<CommandOutcome, StoreError> {
         let envelope = CommandEnvelope { expected_revision: 0, ..envelope };
         self.commit(actor, &envelope, None, None, true, || Ok(()))
@@ -923,9 +902,8 @@ impl DomainRuntime {
         on_current: bool,
         authorize: impl FnOnce() -> std::result::Result<(), StoreError>,
     ) -> Result<CommandOutcome, StoreError> {
-        #[cfg(any(test, feature = "test-hooks"))]
         {
-            let hook = self.before_next_commit.lock().unwrap().take();
+            let hook = self.before_next_commit.lock_or_recover("a test's hook").take();
             if let Some(hook) = hook {
                 hook(self);
             }

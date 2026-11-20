@@ -107,9 +107,7 @@ pub struct Handovers {
     pub moving: tokio::sync::Mutex<()>,
     /// A move stops right after recording this step, as a daemon that dies then does: the
     /// admission dies after its commit, before its host starts.
-    #[cfg(any(test, feature = "test-hooks"))]
     pub crash_after: std::sync::Mutex<Option<HandoverStep>>,
-    #[cfg(any(test, feature = "test-hooks"))]
     pub turn_deadline: std::sync::Mutex<Option<std::time::Duration>>,
 }
 
@@ -118,8 +116,7 @@ const TURN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl Handovers {
     pub(crate) fn turn_deadline(&self) -> std::time::Duration {
-        #[cfg(any(test, feature = "test-hooks"))]
-        if let Some(deadline) = *self.turn_deadline.lock().unwrap() {
+        if let Some(deadline) = *self.turn_deadline.lock_or_recover("the turn deadline a test set") {
             return deadline;
         }
         TURN_DEADLINE
@@ -129,7 +126,6 @@ impl Handovers {
         Arc::clone(self.sessions.get_or_init(|| Arc::new(ClaudeSessions)))
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn use_sessions(&self, sessions: Arc<dyn BgSessions>) {
         assert!(self.sessions.set(sessions).is_ok(), "the sessions are set once");
     }

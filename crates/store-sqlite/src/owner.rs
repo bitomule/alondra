@@ -60,7 +60,6 @@ fn observed(fact: &RuntimeFact) -> std::result::Result<RuntimeObservation, Store
     })
 }
 /// The refusal the test asked for; the run that probes takes it.
-#[cfg(any(test, feature = "test-hooks"))]
 fn refused_for_test(command: &Command, probe: bool) -> Option<StoreError> {
     let what = match command {
         Command::RecordTurnBoundary { .. } => Refuse::TurnEnd,
@@ -71,20 +70,9 @@ fn refused_for_test(command: &Command, probe: bool) -> Option<StoreError> {
     alondra_engine_ports::journal::owner::take_refusal(what, probe).then(|| DomainError::new("conflict", "the test refuses it").into())
 }
 
-#[cfg(not(any(test, feature = "test-hooks")))]
-fn refused_for_test(_: &Command, _: bool) -> Option<StoreError> {
-    None
-}
-
 /// The adapter's refusal of an observation the test asked for, taken once.
-#[cfg(any(test, feature = "test-hooks"))]
 fn observation_refused_for_test() -> Option<StoreError> {
     alondra_engine_ports::journal::owner::take_refusal(Refuse::Observation, true).then(|| ObservationRefusal::Provider(alondra_agent_application::Error::Adapter(AdapterError::Storage("the test refuses it".into()))).into())
-}
-
-#[cfg(not(any(test, feature = "test-hooks")))]
-fn observation_refused_for_test() -> Option<StoreError> {
-    None
 }
 
 fn command_name(command: &Command) -> &'static str {
@@ -881,7 +869,6 @@ impl<'connection> OwnerTransaction<'connection> {
     }
 
     /// Lifecycle fixtures for states no typed owner step produces yet.
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn journal(&mut self) -> &mut LifecycleTransaction<'connection> {
         &mut self.journal
     }

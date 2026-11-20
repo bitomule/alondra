@@ -5,13 +5,7 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
-[features]
-test-hooks = ["dep:alondra-agent-runtime", "dep:alondra-engine-doubles", "dep:tempfile", "alondra-daemon-engine/test-hooks", "alondra-daemon-engine-model/test-hooks", "dep:alondra-store-sqlite", "alondra-store-sqlite/test-hooks", "alondra-daemon-engine-machine/test-hooks", "alondra-engine-kernel/test-hooks", "alondra-engine-github/test-hooks", "alondra-daemon-support/test-hooks"]
-
 [dependencies]
-alondra-store-sqlite = { workspace = true, optional = true }
-alondra-agent-runtime = { workspace = true, optional = true }
-alondra-engine-doubles = { workspace = true, optional = true }
 alondra-engine-ports.workspace = true
 alondra-daemon-engine.workspace = true
 alondra-engine-admission.workspace = true
@@ -42,21 +36,14 @@ rusqlite = { workspace = true, features = ["backup"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.11.0"
-tempfile = { workspace = true, optional = true }
 tokio.workspace = true
 toml.workspace = true
 url = "2.5"
+tempfile.workspace = true
 
 [dev-dependencies]
 alondra-agent-runtime.workspace = true
 alondra-engine-doubles.workspace = true
-alondra-daemon-engine = { workspace = true, features = ["test-hooks"] }
-alondra-engine-github = { workspace = true, features = ["test-hooks"] }
-alondra-engine-kernel = { workspace = true, features = ["test-hooks"] }
-alondra-daemon-engine-machine = { workspace = true, features = ["test-hooks"] }
-alondra-store-sqlite = { workspace = true, features = ["test-hooks"] }
+alondra-store-sqlite.workspace = true
 alondra-codex-protocol.workspace = true
-alondra-daemon-engine-model = { workspace = true, features = ["test-hooks"] }
-alondra-daemon-support = { workspace = true, features = ["test-hooks"] }
 proptest.workspace = true
-tempfile.workspace = true

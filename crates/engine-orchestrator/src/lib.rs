@@ -46,6 +46,7 @@ mod wiring {
     pub fn open(home: &std::path::Path) -> anyhow::Result<super::DomainRuntime> {
         alondra_engine_kernel::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
         let domain = super::DomainRuntime::open_unwired_at(home, &crate::domain_store::active_path(home))?;
+        alondra_engine_doubles::machine::wire(domain.ports(), alondra_daemon_support::watcher::claude_home);
         crate::wire(domain.ports());
         domain.ports().provide::<dyn OrchestratorEngine>(Arc::new(alondra_engine_doubles::orchestrator::Engine));
         domain.ports().provide::<dyn SdkHosts>(Arc::new(alondra_engine_doubles::hosts::NoHosts));

@@ -1,6 +1,5 @@
 //! The admission gate as the rest of the engine sees it: the port of engine-ports, which `engine-admission`
-//! provides when the daemon is put together. The engine's own tests open a runtime without it, and
-//! their gate lets every start and turn through at once.
+//! provides when the daemon is put together. A test registers a double of it.
 use crate::domain_runtime::DomainRuntime;
 use alondra_engine_ports::admission::{AdmissionGate, Hold, Key, Paused, Pauses, Reason, Waiting};
 use alondra_core::Millis;
@@ -16,8 +15,6 @@ pub trait GateOf {
 impl GateOf for DomainRuntime {
     fn gate(&self) -> Gate<'_> {
         let port = self.ports().port::<dyn AdmissionGate>();
-        #[cfg(any(test, feature = "test-hooks"))]
-        let port = port.or_else(|| Some(open::gate()));
         Gate { domain: self, port: port.expect("the daemon gives the runtime its admission gate") }
     }
 }
@@ -133,74 +130,5 @@ impl crate::domain_runtime::CommitObserver for PauseResume {
             Ok(alondra_domain_rules::CommandOutcome { revision, changed: false, effects: vec![], created_ids: vec![], superseded_acceptances: vec![],
                 effect: vec!["The paused node resumes now.".into()] })
         }))
-    }
-}
-
-/// The gate of a runtime nobody gave one: it holds nothing back and keeps no pause.
-#[cfg(any(test, feature = "test-hooks"))]
-mod open {
-    use super::*;
-    use alondra_engine_ports::Runtime;
-    use std::sync::LazyLock;
-
-    struct Open(watch::Sender<u64>);
-
-    static OPEN: LazyLock<Arc<Open>> = LazyLock::new(|| Arc::new(Open(watch::Sender::new(0))));
-
-    pub(super) fn gate() -> Arc<dyn AdmissionGate> {
-        OPEN.clone()
-    }
-
-    impl AdmissionGate for Open {
-        fn ask(&self, _: &dyn Runtime, _: Waiting, _: Millis) -> Result<(), Hold> {
-            Ok(())
-        }
-        fn forget(&self, _: &dyn Runtime, _: &Key) {}
-        fn not_started(&self, _: &dyn Runtime, _: &Key) {}
-        fn poke(&self, _: &dyn Runtime) {}
-        fn changes(&self, _: &dyn Runtime) -> watch::Receiver<u64> {
-            self.0.subscribe()
-        }
-        fn may_take_turn(&self, _: &dyn Runtime, _: &TaskId, _: Millis) -> bool {
-            true
-        }
-        fn waits_for_slot(&self, _: &dyn Runtime, _: &DomainState, _: &TaskId) -> bool {
-            false
-        }
-        fn owner_ended(&self, _: &dyn Runtime, _: &TaskId) {}
-        fn hold_back(&self, _: &dyn Runtime, _: &str, _: Reason, _: Millis) -> bool {
-            false
-        }
-        fn pause_by_user(&self, _: &dyn Runtime, _: &str, _: Millis) -> Result<(), &'static str> {
-            Err("This runtime has no admission gate")
-        }
-        fn resume_now(&self, _: &dyn Runtime, _: &str, _: Millis) -> bool {
-            false
-        }
-        fn release_by_user_message(&self, _: &dyn Runtime, _: &str) {}
-        fn paused(&self, _: &dyn Runtime, _: &str) -> Option<Paused> {
-            None
-        }
-        fn paused_by_user(&self, _: &dyn Runtime, _: &str) -> bool {
-            false
-        }
-        fn holding(&self, _: &dyn Runtime, _: &str) -> Option<Reason> {
-            None
-        }
-        fn pauses(&self, _: &dyn Runtime) -> Pauses {
-            Pauses::default()
-        }
-        fn held_by_user(&self, _: &dyn Runtime, _: &TaskId) -> bool {
-            false
-        }
-        fn queued_text(&self, _: &dyn Runtime, _: &TaskId, _: Millis) -> String {
-            "It waits in the queue for a free slot.".into()
-        }
-        fn refuse_launch(&self, _: &dyn Runtime, _: &Path) -> Option<String> {
-            None
-        }
-        fn disk_low(&self, _: &dyn Runtime) -> bool {
-            false
-        }
     }
 }

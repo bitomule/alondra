@@ -23,12 +23,8 @@ tokio.workspace = true
 alondra-view-model.workspace = true
 
 [dev-dependencies]
-alondra-store-sqlite = { workspace = true, features = ["test-hooks"] }
+alondra-store-sqlite.workspace = true
 alondra-engine-doubles.workspace = true
 proptest.workspace = true
 rusqlite.workspace = true
-alondra-daemon-engine-machine = { workspace = true, features = ["test-hooks"] }
-alondra-daemon-engine-model = { workspace = true, features = ["test-hooks"] }
-alondra-daemon-support = { workspace = true, features = ["test-hooks"] }
-alondra-engine-kernel = { workspace = true, features = ["test-hooks"] }
 tempfile.workspace = true

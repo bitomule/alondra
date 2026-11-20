@@ -133,8 +133,8 @@ impl Pushes {
 }
 
 /// A node mod connected for a session, for tests of what is written down its connection.
-#[cfg(any(test, feature = "test-hooks"))]
 pub mod testing {
+    use crate::locks::Poisonable as _;
     use crate::domain_runtime::DomainRuntime;
     use crate::live::LiveOf as _;
     use serde_json::Value;
@@ -159,7 +159,7 @@ pub mod testing {
                     if let (Some(id), false) = (line["id"].as_str(), silent.load(Ordering::Relaxed)) {
                         domain.live().pushes.acknowledged(&session, &[id.to_owned()]);
                     }
-                    lines.lock().unwrap().push(line);
+                    lines.lock_or_recover("a test's fixture").push(line);
                 }
             });
             node
@@ -176,14 +176,14 @@ pub mod testing {
         }
 
         fn stamped(&self) -> Vec<(String, String)> {
-            self.lines.lock().unwrap().iter().filter_map(|line| line["text"].as_str()).map(|text| {
+            self.lines.lock_or_recover("a test's fixture").iter().filter_map(|line| line["text"].as_str()).map(|text| {
                 let (stamp, said) = text.strip_prefix("[From ").and_then(|rest| rest.split_once("] ")).expect("every message is stamped");
                 (stamp.rsplit_once(" · ").expect("the stamp has a time").0.to_owned(), said.to_owned())
             }).collect()
         }
 
         pub fn interrupts(&self) -> usize {
-            self.lines.lock().unwrap().iter().filter(|line| line["interrupt"] == true).count()
+            self.lines.lock_or_recover("a test's fixture").iter().filter(|line| line["interrupt"] == true).count()
         }
     }
 }

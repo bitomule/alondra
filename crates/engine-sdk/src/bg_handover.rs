@@ -85,7 +85,6 @@ pub(crate) async fn advance(domain: &Arc<DomainRuntime>, agent: &AgentId) -> Res
     loop {
         let handover = handover_of(domain, agent).ok_or_else(|| format!("{agent} has no move"))?;
         let step = handover.step;
-        #[cfg(any(test, feature = "test-hooks"))]
         if *domain.handovers().crash_after.lock().unwrap() == Some(step) && step != HandoverStep::SdkAdmitted {
             return Err(format!("the daemon died after {step:?}"));
         }

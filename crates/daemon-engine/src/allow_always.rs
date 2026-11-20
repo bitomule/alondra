@@ -105,10 +105,10 @@ fn machine() -> String {
     if read { String::from_utf8_lossy(&name[..end]).into_owned() } else { String::new() }
 }
 
-#[cfg(not(any(test, feature = "test-hooks")))]
-const WRITE_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
-#[cfg(any(test, feature = "test-hooks"))]
-const WRITE_WAIT: std::time::Duration = std::time::Duration::from_millis(300);
+/// How long a write of «Allow always» rules waits for the settings file; tests wait less.
+fn write_wait() -> std::time::Duration {
+    if alondra_foundation::under_test() { std::time::Duration::from_millis(300) } else { std::time::Duration::from_secs(15) }
+}
 
 /// Each rule chosen for the repo `cwd` belongs to, remembered as pending; the repo's settings file,
 /// or `None` outside a repo that can keep them.
@@ -140,7 +140,7 @@ pub(crate) async fn chosen(domain: &std::sync::Arc<crate::domain_runtime::Domain
     let settings = domain.hook_work.run(move || remember(&recording, cwd.as_deref(), &offered, task_id.as_deref(), &interaction_id)).await?;
     let Some(settings) = settings else { return Ok(()) };
     let started = clock::instant();
-    while alondra_core::clock::since(started) < WRITE_WAIT {
+    while alondra_core::clock::since(started) < write_wait() {
         let settings = settings.clone();
         let offered = rules.to_vec();
         let written = domain.hook_work.run(move || {
@@ -165,16 +165,14 @@ pub(crate) fn chosen_through_sdk(domain: &crate::domain_runtime::DomainRuntime, 
     Ok(())
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
 pub(crate) struct ConfirmationWait {
     pub entered: tokio::sync::oneshot::Sender<()>,
     pub release: tokio::sync::oneshot::Receiver<()>,
 }
 
 async fn wait_for_write(_domain: &crate::domain_runtime::DomainRuntime) {
-    #[cfg(any(test, feature = "test-hooks"))]
     {
-        let confirmation = _domain.allow_always_wait().lock().unwrap().take();
+        let confirmation = _domain.allow_always_wait().lock_or_recover("the «Allow always» write a test holds").take();
         if let Some(confirmation) = confirmation {
             confirmation.entered.send(()).unwrap();
             confirmation.release.await.unwrap();
@@ -198,7 +196,7 @@ pub fn reconcile(domain: &crate::domain_runtime::DomainRuntime) -> Vec<AllowedRu
         let has = present.contains(&rules::settings_entry(&row.rule));
         let next = match (row.state, has) {
             (RuleState::Pending | RuleState::Missing, true) => RuleState::Active,
-            (RuleState::Pending, false) if now - row.added_at >= WRITE_WAIT.as_millis() as i64 => {
+            (RuleState::Pending, false) if now - row.added_at >= write_wait().as_millis() as i64 => {
                 log!("allow always: Claude Code did not write {} to {} for task {}", row.rule, row.settings, row.task_id.as_deref().unwrap_or("-"));
                 RuleState::Missing
             }
@@ -553,19 +551,15 @@ impl crate::domain_runtime::CommitObserver for ChosenAlways {
 }
 
 /// What a test holds the next write of «Allow always» rules on.
-#[cfg(any(test, feature = "test-hooks"))]
 #[derive(Default)]
 pub(crate) struct Waits(pub std::sync::Mutex<Option<ConfirmationWait>>);
 
-#[cfg(any(test, feature = "test-hooks"))]
 crate::extension!(Waits);
 
-#[cfg(any(test, feature = "test-hooks"))]
 pub trait AllowAlwaysWait {
     fn allow_always_wait(&self) -> &std::sync::Mutex<Option<ConfirmationWait>>;
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
 impl AllowAlwaysWait for crate::domain_runtime::DomainRuntime {
     fn allow_always_wait(&self) -> &std::sync::Mutex<Option<ConfirmationWait>> {
         &self.extension::<Waits>().0

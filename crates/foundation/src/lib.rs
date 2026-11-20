@@ -15,6 +15,13 @@ pub use execution::*;
 pub use mcp::*;
 pub use poll::readable;
 
+/// Whether this process runs under `bazel test`, which sets `BAZEL_TEST` (launchd never does): what
+/// only tests need, such as a Claude home of their own, is decided here at run time.
+pub fn under_test() -> bool {
+    static UNDER_TEST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *UNDER_TEST.get_or_init(|| std::env::var_os("BAZEL_TEST").is_some())
+}
+
 #[cfg(test)]
 #[path = "../../test_support.rs"]
 mod test_support;

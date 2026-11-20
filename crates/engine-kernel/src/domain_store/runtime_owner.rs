@@ -16,12 +16,10 @@ use alondra_store::{
 };
 
 pub(super) use alondra_engine_ports::journal::owner::ObservationRefusal;
-#[cfg(any(test, feature = "test-hooks"))]
 pub fn admit_through_sdk(runtime: &crate::domain_runtime::DomainRuntime, task: &TaskId, agent: &str) {
     admit_through_sdk_with_host(runtime, task, agent, "fixture-service");
 }
 
-#[cfg(any(test, feature = "test-hooks"))]
 pub fn admit_through_sdk_with_host(runtime: &crate::domain_runtime::DomainRuntime, task: &TaskId, agent: &str, host: &str) {
     let state = runtime.state().unwrap();
     let admit = CommandEnvelope {

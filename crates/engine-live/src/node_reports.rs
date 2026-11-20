@@ -507,21 +507,18 @@ impl Reports {
     }
 
     /// What a session whose mod loaded reports first, for tests that launch through a fake Claude.
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn loaded_in(&self, session_id: &str) {
         self.loaded_for(session_id, None);
     }
 
     /// A fake Claude's launch whose mod loads: the session reports the key of the settings file
     /// the launch passed with `--settings`, as the real mod reports `ALONDRA_DOMAIN_SETTINGS`.
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn loaded_by(&self, session_id: &str, launch_args: &[String]) {
         let settings = launch_args.windows(2).find(|pair| pair[0] == "--settings").expect("a launch passes --settings");
         let key = std::path::Path::new(&settings[1]).file_stem().and_then(|stem| stem.to_str()).expect("a settings file name");
         self.loaded_for(session_id, Some(key));
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn loaded_for(&self, session_id: &str, launch_key: Option<&str>) {
         let report = Report::SessionStart { version: "2.1.287".into(), cwd: None, launch_key: launch_key.map(str::to_owned) };
         self.apply(Envelope { session_id: session_id.into(), report }, alondra_core::now_millis());

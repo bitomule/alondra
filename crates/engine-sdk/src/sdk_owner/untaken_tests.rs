@@ -8,30 +8,13 @@ use alondra_engine_admission::AdmissionOf as _;
 use crate::obligation_watch::{Watch, pass};
 use alondra_domain_rules::obligation_policy::Millis;
 use alondra_domain::{Owed, Party};
+use crate::sdk_owner::fixtures::untaken::*;
+use crate::sdk_owner::fixtures::untaken::drive_by_hand;
 
 pub const S: Millis = 1000;
 
-pub fn enforcing_every_deadline() -> Watch {
-    Watch::enforcing(|owed| matches!(owed, Owed::HandInput | Owed::Wake))
-}
-
 pub fn tell(slice: &Slice, text: &str, id: &str) {
     crate::domain_messages::tell_sdk_node(&slice.domain, &TASK.into(), "Alice", text, id, true).unwrap();
-}
-
-pub fn told(slice: &Slice, text: &str) -> usize {
-    slice.prompts().iter().filter(|prompt| prompt.contains(text)).count()
-}
-
-/// Sends what the store issues and reads the host until Claude got `text` `times` times.
-pub fn until_prompted(slice: &Slice, driver: &mut Driver, text: &str, times: usize) {
-    while told(slice, text) < times {
-        if driver.pending_permits() > 0 {
-            driver.step(&|| false).unwrap();
-        } else if let Err(error) = driver.observe() {
-            panic!("{error} before Claude got {text:?} {times} times: {:?}", slice.prompts());
-        }
-    }
 }
 
 /// A resting session is told `text`, its host is handed it, and Claude got it.
@@ -53,11 +36,6 @@ pub fn journal(slice: &Slice) -> Vec<LifecycleRecord> {
 
 fn work_ended_told(slice: &Slice) -> usize {
     journal(slice).iter().filter(|record| matches!(record, LifecycleRecord::Told { text: Some(text), .. } if text == crate::untaken::WORK_ENDED)).count()
-}
-
-/// The test steps the owner of `driver` itself, as the daemon would.
-pub fn drive_by_hand(slice: &Slice, driver: &Driver) {
-    slice.domain.sdk_owners().driven_by_hand.lock().unwrap().insert(driver.agent().clone());
 }
 
 

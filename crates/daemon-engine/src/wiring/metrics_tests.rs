@@ -1,7 +1,7 @@
 //! A node's turn, read by its live session and captured by the kernel's metrics.
 use alondra_store_sqlite::AsSqlite as _;
 use alondra_store_sqlite::DomainStore;
-use alondra_store_sqlite::tests::{Fixture, seeded};
+use alondra_store_sqlite::testing::{Fixture, seeded};
 use crate::live::LiveOf as _;
 use crate::metrics_capture::node_turn;
 use alondra_domain_rules::*;

@@ -103,8 +103,7 @@ def normalized(text):
     return " ".join(text.split())
 
 
-# alondrad's tests also build the support crate with its `test-hooks` feature.
-TEST_ONLY = ("#[cfg(test)]", '#[cfg(any(test, feature = "test-hooks"))]')
+TEST_ONLY = ("#[cfg(test)]",)
 
 
 def without_cfg_test(text):

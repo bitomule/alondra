@@ -2,6 +2,14 @@ use super::*;
 use crate::test_support::Directory;
 use alondra_core::accounts::{Distribution, Policy, ProviderAccount};
 use std::os::unix::fs::PermissionsExt as _;
+use super::fixtures::*;
+
+fn fixture() -> Fixture {
+    fixture_with(
+        std::sync::Arc::new(alondra_agent_runtime::owned_host::ProcessHosts::new(Default::default())),
+        std::sync::Arc::new(alondra_engine_doubles::accounts::Accounts::default()),
+    )
+}
 
 #[test]
 fn codex_login_credential_destination_matches_the_native_working_directory() {
@@ -17,55 +25,6 @@ fn codex_login_credential_destination_matches_the_native_working_directory() {
         assert_eq!(native.command(None).get_current_dir(), Some(user_home.as_path()));
         assert_eq!(native.profile(Path::new("/fixture-service"), &account), expected);
     }
-}
-
-/// A Claude Code that keeps each folder's sign-in as a file in it, and logs every sign-out. An API
-/// key in its environment signs every folder in.
-const FAKE: &str = r#"#!/bin/sh
-folder="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-case "$1 $2" in
-  "auth status")
-    if [ -n "$ANTHROPIC_API_KEY" ]; then printf '{"loggedIn":true,"authMethod":"api_key"}';
-    elif [ -f "$folder/signed-in" ]; then printf '{"loggedIn":true,"email":"%s","subscriptionType":"max"}' "$(cat "$folder/signed-in")"; else printf '{"loggedIn":false}'; exit 1; fi ;;
-  "auth logout")
-    [ -f "$HOME/refuse-logout" ] && exit 2
-    echo "$folder" >> "$HOME/logouts"; rm -f "$folder/signed-in" ;;
-  *) exit 64 ;;
-esac
-"#;
-
-pub struct Fixture {
-    pub _scratch: Directory,
-    pub home: PathBuf,
-    pub user_home: PathBuf,
-    pub claude: Claude,
-    pub accounts: alondra_engine_doubles::accounts::Accounts,
-}
-
-pub fn fixture() -> Fixture {
-    let scratch = Directory::new();
-    let user_home = scratch.join("user");
-    let bin = scratch.join("bin");
-    std::fs::create_dir_all(user_home.join(".claude/skills/mine")).unwrap();
-    std::fs::create_dir_all(user_home.join(".claude/projects")).unwrap();
-    std::fs::write(user_home.join(".claude/settings.json"), "{}").unwrap();
-    std::fs::write(user_home.join(".claude/signed-in"), "me@example.org").unwrap();
-    std::fs::create_dir_all(&bin).unwrap();
-    std::fs::write(bin.join("claude"), FAKE).unwrap();
-    std::fs::set_permissions(bin.join("claude"), std::fs::Permissions::from_mode(0o700)).unwrap();
-    let home = user_home.join(".alondra");
-    std::fs::create_dir_all(&home).unwrap();
-    std::fs::write(alondra_core::options::path_in(&home), AccountsConfig::default().to_toml()).unwrap();
-    let claude = Claude {
-        executable: bin.join("claude"),
-        user_home: user_home.clone(),
-        path: format!("{}:/usr/bin:/bin", bin.display()),
-        username: alondra_host::user::effective_username().unwrap(),
-        environment: BTreeMap::new(),
-        timeout: None,
-        hosts: std::sync::Arc::new(alondra_agent_runtime::owned_host::ProcessHosts::new(Default::default())),
-    };
-    Fixture { _scratch: scratch, home, user_home, claude, accounts: Default::default() }
 }
 
 #[test]
@@ -88,14 +47,6 @@ fn claude_account_probes_keep_the_native_deadline_for_installed_and_pinned_backe
         assert_eq!(claude.executable, f.claude.executable);
         assert_eq!(claude.timeout, Some(Duration::from_secs(10)), "native probes stay bounded, including pinned custom binaries");
     }
-}
-
-pub fn work() -> ProviderAccount {
-    ProviderAccount { id: AccountId::parse("work").unwrap(), name: "Work".into(), enabled: true, billing: AccountBilling::default() }
-}
-
-pub fn with(accounts: Vec<ProviderAccount>) -> AccountsConfig {
-    AccountsConfig { claude: accounts, ..AccountsConfig::default() }
 }
 
 #[test]
@@ -158,18 +109,6 @@ fn first_install_and_explicit_codex_only_configuration_never_seed_a_claude_accou
     assert!(options_file(&f.home).unwrap().model_profiles.is_empty());
 }
 
-impl Fixture {
-    pub fn store(&self, next: &AccountsConfig) -> Result<(), Refused> {
-        let seen = version(&config(&self.home).unwrap());
-        store(&self.accounts, &self.home, &self.user_home, Some(&self.claude), &seen, next, &[])
-    }
-    fn claude_tree(&self) -> Vec<String> {
-        let mut names: Vec<String> = std::fs::read_dir(self.user_home.join(".claude")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
-        names.sort();
-        names
-    }
-}
-
 #[test]
 fn adding_an_account_writes_the_section_and_prepares_its_folder_linked_to_claude() {
     let f = fixture();
@@ -192,7 +131,7 @@ fn a_change_made_against_an_older_section_is_refused_and_changes_nothing() {
     let text = std::fs::read_to_string(alondra_core::options::path_in(&f.home)).unwrap();
     let stale = version(&AccountsConfig::default());
     let next = with(vec![work(), ProviderAccount { id: AccountId::parse("other").unwrap(), name: "Other".into(), ..work() }]);
-    assert_eq!(store(&f.accounts, &f.home, &f.user_home, Some(&f.claude), &stale, &next, &[]), Err(Refused::Stale));
+    assert_eq!(store(&*f.accounts, &f.home, &f.user_home, Some(&f.claude), &stale, &next, &[]), Err(Refused::Stale));
     assert_eq!(std::fs::read_to_string(alondra_core::options::path_in(&f.home)).unwrap(), text);
     assert!(!f.home.join("accounts/other").exists());
     let broken = with(vec![work(), work()]);
@@ -338,7 +277,7 @@ fn an_account_that_cannot_be_signed_out_stays() {
     assert!(folder.join("signed-in").is_file());
     assert_eq!(config(&f.home).unwrap(), with(vec![work()]));
     let seen = version(&config(&f.home).unwrap());
-    assert!(matches!(store(&f.accounts, &f.home, &f.user_home, None, &seen, &AccountsConfig::default(), &[]), Err(Refused::SignOut(_))), "without Claude Code nothing signs it out");
+    assert!(matches!(store(&*f.accounts, &f.home, &f.user_home, None, &seen, &AccountsConfig::default(), &[]), Err(Refused::SignOut(_))), "without Claude Code nothing signs it out");
 }
 
 #[test]
@@ -347,7 +286,7 @@ fn an_account_open_tasks_run_on_is_not_removed() {
     f.store(&with(vec![work()])).unwrap();
     std::fs::write(f.home.join("accounts/work/signed-in"), "work@example.org").unwrap();
     let seen = version(&config(&f.home).unwrap());
-    let refused = store(&f.accounts, &f.home, &f.user_home, Some(&f.claude), &seen, &with(vec![]), &[AccountId::parse("work").unwrap()]);
+    let refused = store(&*f.accounts, &f.home, &f.user_home, Some(&f.claude), &seen, &with(vec![]), &[AccountId::parse("work").unwrap()]);
     assert_eq!(refused, Err(Refused::InUse("Work".into())));
     assert_eq!(config(&f.home).unwrap(), with(vec![work()]), "the section is as it was");
     assert!(f.home.join("accounts/work/signed-in").exists(), "still signed in, its folder kept");

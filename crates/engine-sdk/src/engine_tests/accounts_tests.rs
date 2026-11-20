@@ -15,10 +15,17 @@ use serde_json::json;
 use alondra_daemon_engine::reply::Reply;
 use crate::domain_runtime::DomainRuntime;
 use alondra_daemon_engine::accounts::*;
-use alondra_daemon_engine::accounts::tests::*;
+use alondra_daemon_engine::accounts::fixtures::*;
 use crate::test_support::Directory;
 use alondra_core::accounts::{Distribution, ProviderAccount};
 use std::os::unix::fs::PermissionsExt as _;
+
+fn fixture() -> Fixture {
+    fixture_with(
+        std::sync::Arc::new(alondra_agent_runtime::owned_host::ProcessHosts::new(Default::default())),
+        std::sync::Arc::new(alondra_engine_doubles::accounts::Accounts::default()),
+    )
+}
 
 /// A Settings button writes `options.toml`, then the domain records the change, and it survives a
 /// restart; one its rules refuse leaves the file as it was.
@@ -30,7 +37,7 @@ fn a_settings_change_writes_the_file_and_the_domain_and_survives_a_restart() {
     let user = Actor::User { user_id: "device:test".into() };
     let order = |domain: &DomainRuntime| domain.read().state().accounts.iter().map(|a| a.id.to_string()).collect::<Vec<_>>();
     {
-        let domain = crate::engine_tests::open(&f.home).unwrap();
+        let domain = crate::engine_fixtures::open(&f.home).unwrap();
         check(&domain, &f.home);
         assert_eq!(order(&domain), ["default", "work"]);
 
@@ -51,7 +58,7 @@ fn a_settings_change_writes_the_file_and_the_domain_and_survives_a_restart() {
         let refused = change(&domain, &f.home, &Actor::System, &AccountChange::SetPolicy { policy: Policy::Margin });
         assert!(matches!(refused, Err(ChangeRefused::Domain(ref e)) if e.code == "forbidden"), "only the user changes the accounts: {refused:?}");
     }
-    let restarted = crate::engine_tests::open(&f.home).unwrap();
+    let restarted = crate::engine_fixtures::open(&f.home).unwrap();
     assert_eq!(restarted.read().state().account_policy, Policy::Chain, "the policy survives a restart");
     assert!(restarted.read().state().account_moves, "so does moving nodes");
     assert_eq!(order(&restarted), ["work", "default"]);
@@ -60,8 +67,8 @@ fn a_settings_change_writes_the_file_and_the_domain_and_survives_a_restart() {
 #[test]
 fn the_actual_codex_metadata_check_keeps_external_auth_unavailable_and_api_keys_out_of_automatic_work() {
     super::wired();
-    let f = fixture(); let domain = Arc::new(crate::engine_tests::open(&f.home).unwrap());
-    let _hosts = crate::sdk_owner::tests::SdkLaunches::enable(&domain, &f.home);
+    let f = fixture(); let domain = Arc::new(crate::engine_fixtures::open(&f.home).unwrap());
+    let _hosts = crate::sdk_owner::fixtures::SdkLaunches::enable(&domain, &f.home);
     let native = f._scratch.join("codex-native");
     std::fs::copy(std::env::var("FIXTURE_CODEX_NATIVE").unwrap(), &native).unwrap();
     std::fs::set_permissions(&native, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -111,8 +118,8 @@ async fn a_stale_startup_account_check_retries_and_releases_account_selection() 
     super::wired();
     use alondra_core::model_selection::{ModelProfile, TaskSelection};
     let f = fixture();
-    let domain = Arc::new(crate::engine_tests::open(&f.home).unwrap());
-    let _hosts = crate::sdk_owner::tests::SdkLaunches::enable(&domain, &f.home);
+    let domain = Arc::new(crate::engine_fixtures::open(&f.home).unwrap());
+    let _hosts = crate::sdk_owner::fixtures::SdkLaunches::enable(&domain, &f.home);
     let native = f._scratch.join("codex-native");
     std::fs::copy(std::env::var("FIXTURE_CODEX_NATIVE").unwrap(), &native).unwrap();
     let options = alondra_core::options::path_in(&f.home);

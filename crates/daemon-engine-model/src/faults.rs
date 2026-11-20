@@ -1,3 +1,5 @@
+//! Faults and spawns a test injects for one Alondra home: nothing happens until a test asks for one.
+use alondra_daemon_support::locks::Poisonable as _;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
@@ -17,8 +19,7 @@ impl Injection {
         assert!(occurrence > 0);
         assert!(
             FAULTS
-                .lock()
-                .unwrap()
+                .lock_or_recover("the injected faults")
                 .insert(
                     home.to_owned(),
                     Fault {
@@ -32,33 +33,32 @@ impl Injection {
         Self(home.to_owned())
     }
     pub fn hits(&self) -> usize {
-        FAULTS.lock().unwrap()[&self.0].hits
+        FAULTS.lock_or_recover("the injected faults")[&self.0].hits
     }
 }
 impl Drop for Injection {
     fn drop(&mut self) {
-        FAULTS.lock().unwrap().remove(&self.0);
+        FAULTS.lock_or_recover("the injected faults").remove(&self.0);
     }
 }
 
 pub struct SpawnHook(PathBuf);
 impl Drop for SpawnHook {
     fn drop(&mut self) {
-        SPAWNS.lock().unwrap().remove(&self.0);
+        SPAWNS.lock_or_recover("the injected faults").remove(&self.0);
     }
 }
 pub fn on_spawn(home: &Path, hook: impl FnOnce(&str) + Send + 'static) -> SpawnHook {
     assert!(
         SPAWNS
-            .lock()
-            .unwrap()
+            .lock_or_recover("the injected faults")
             .insert(home.to_owned(), Box::new(hook))
             .is_none()
     );
     SpawnHook(home.to_owned())
 }
 pub fn spawned(home: &Path, bearer: &str) {
-    let hook = SPAWNS.lock().unwrap().remove(home);
+    let hook = SPAWNS.lock_or_recover("the injected faults").remove(home);
     if let Some(hook) = hook {
         hook(bearer);
     }
@@ -82,8 +82,7 @@ pub fn owner_write(directory: &Path, point: &'static str) -> std::io::Result<()>
 
 pub fn write(home: &Path, point: &'static str) -> std::io::Result<()> {
     if let Some(fault) = FAULTS
-        .lock()
-        .unwrap()
+        .lock_or_recover("the injected faults")
         .get_mut(home)
         .filter(|fault| fault.point == point)
     {

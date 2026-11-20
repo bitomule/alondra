@@ -10,7 +10,6 @@ mod account_identity;
 mod launch;
 mod state;
 
-#[cfg(any(test, feature = "test-hooks"))]
 pub mod faults;
 pub mod issues;
 pub mod options;

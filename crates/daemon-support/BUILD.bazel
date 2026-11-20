@@ -3,7 +3,6 @@ load("//tools:tree.bzl", "repo_tree")
 load("//tools:rust_inputs_test.bzl", "rust_inputs_test")
 load("//tools:rust_test.bzl", "low_opt_rust_test")
 load("@crates//:defs.bzl", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//:version.bzl", "VERSION")
 load("//tools:rust_sources.bzl", "production_sources")
 
@@ -21,21 +20,6 @@ application_crate(
     crate_name = "alondra_daemon_support",
     version = VERSION,
     deps = all_crate_deps(normal = True) + WORKSPACE_DEPS,
-)
-
-# alondrad's and the engine's unit tests build against the hooks its tests drive: a poisoned lock, a full disk, a
-# Claude home of the test's own.
-rust_library(
-    name = "daemon_support_test_hooks",
-    testonly = True,
-    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
-    crate_features = ["test-hooks"],
-    crate_name = "alondra_daemon_support",
-    crate_root = "src/lib.rs",
-    edition = "2024",
-    version = VERSION,
-    visibility = ["//crates/engine-sdk:__pkg__", "//crates/alondrad:__pkg__", "//crates/daemon-server:__pkg__", "//crates/daemon-engine:__pkg__", "//crates/engine-admission:__pkg__", "//crates/engine-github:__pkg__", "//crates/engine-kernel:__pkg__", "//crates/engine-live:__pkg__", "//crates/engine-mcp:__pkg__", "//crates/engine-worktrees:__pkg__", "//crates/engine-orchestrator:__pkg__", "//crates/daemon-engine-machine:__pkg__", "//crates/store-sqlite:__pkg__", "//crates/daemon-engine-model:__pkg__", "//crates/scenarios:__pkg__"],
-    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS,
 )
 
 low_opt_rust_test(
@@ -60,16 +44,6 @@ rust_inputs_test(
     target_under_test = ":daemon_support",
     test_only_sources = ["crates/test_support.rs"],
     test_sources = False,
-)
-
-rust_inputs_test(
-    name = "test_hooks_inputs_test",
-    size = "small",
-    required_sources = ["crates/daemon-support/src/lib.rs"],
-    source_dir = "crates/daemon-support/src/",
-    target_under_test = ":daemon_support_test_hooks",
-    test_only_sources = ["crates/test_support.rs"],
-    test_sources = True,
 )
 
 exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])

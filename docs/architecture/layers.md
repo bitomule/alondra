@@ -36,13 +36,11 @@ the application: they talk through ports, and the roots wire them together.
 | adapter-private | `agent-protocol` (of `provider-claude`), `codex-protocol` (of `provider-codex`) |
 | root | `alondrad`, `alondra`, `relay`, `scenarios`, `tools/sandbox` |
 
-`machine-model`, `provider-conformance`, the `*_test_hooks` libraries and other `testonly` targets
-are tests: they have no layer and the rule does not apply to them, with one exception. A
-`testonly` library of a package with a layer (its test hooks) may not link an output adapter that
-the package's production crate may not use: every test that links those hooks would rerun on each
-edit of the adapter. The fakes that need the adapter stay in the crate's own unit tests
-(`#[cfg(test)]`), or fake the port instead. `TEST_HOOK_EXCEPTIONS` in the table lists the hooks that
-still do, and only shrinks, like the exceptions below.
+`machine-model`, `provider-conformance`, `engine-doubles` and other `testonly` targets are tests:
+they have no layer and the rule does not apply to them, with one exception. No `testonly` library
+builds a production crate a second time, as the `test-hooks` builds did: every crate between it and
+its tests would compile twice. A test registers the doubles it needs in the runtime it opens, and
+what only tests change is set at run time.
 
 A test has the layer of its package too. A test outside the root may not depend on a crate or a
 binary of the root, through `deps` or `data` at any depth: it would rerun on every edit of every
@@ -79,9 +77,9 @@ are declared as before.
 - **`//tools/bazel:crate_layers_test`.** A `genquery` reads every Rust target under `//:tree`. The
   test fails on a production `rust_library` or `rust_binary` whose `generator_function` is not a
   role macro, on a package with crates but no layer (or the reverse), on a forbidden dependency in
-  any branch of a `select`, on test hooks that link an output adapter their crate may not use, on
-  an unused exception, and on a test outside the root that reaches a crate or binary of the root
-  (a second `genquery` gives every rule with what it reads, and the test follows them). It runs in
+  any branch of a `select`, on a `testonly` library that builds a production crate again, on an
+  unused exception, and on a test outside the root that reaches a crate or binary of the root (a
+  second `genquery` gives every rule with what it reads, and the test follows them). It runs in
   MUSTS (`crate-layers`) and CI.
 
 Why this combination, for Bazel 8.4:

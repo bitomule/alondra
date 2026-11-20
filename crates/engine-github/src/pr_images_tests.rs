@@ -1,94 +1,12 @@
 use super::*;
+use super::fake::*;
 use crate::test_support::Directory;
 use std::collections::BTreeSet;
 use std::sync::Mutex;
 
-pub const PNG: &[u8] = b"\x89PNG\r\n\x1a\nshot";
 const JPG: &[u8] = &[0xff, 0xd8, 0xff, 0xe0, b'j', b'p', b'g'];
 const HEAD: &str = "8d0e5fb7edcc190633b9fc0b868f7051e48bc0f9";
 const UUID: &str = "3bae41ae-ce20-495d-bb1b-ad4229a6e245";
-
-/// GitHub as a test sets it: files by repository, reference and path, readable repositories, the
-/// rendered description and what each signed link gives.
-#[derive(Default)]
-pub struct FakeGitHub(Mutex<Fake>);
-
-#[derive(Default)]
-pub struct Fake {
-    files: BTreeMap<(String, String, String), Vec<u8>>,
-    sizes: BTreeMap<String, u64>,
-    repositories: BTreeSet<String>,
-    html: String,
-    signed: BTreeMap<String, Vec<u8>>,
-    every_call: Option<Failure>,
-    calls: Vec<String>,
-}
-
-impl FakeGitHub {
-    pub fn with(files: &[(&str, &str, &str, &[u8])]) -> Self {
-        let fake = Self::default();
-        {
-            let mut state = fake.0.lock().unwrap();
-            for (repository, reference, path, bytes) in files {
-                state.files.insert(((*repository).into(), (*reference).into(), (*path).into()), bytes.to_vec());
-                state.repositories.insert((*repository).into());
-            }
-            state.repositories.insert("o/r".into());
-        }
-        fake
-    }
-
-    fn set(&self, change: impl FnOnce(&mut Fake)) {
-        change(&mut self.0.lock().unwrap());
-    }
-
-    fn calls(&self) -> Vec<String> {
-        self.0.lock().unwrap().calls.clone()
-    }
-
-    fn answer<T>(&self, call: String, answer: impl FnOnce(&Fake) -> Result<T, Failure>) -> Result<T, Failure> {
-        let mut state = self.0.lock().unwrap();
-        state.calls.push(call);
-        if let Some(failure) = state.every_call.clone() {
-            return Err(failure);
-        }
-        answer(&state)
-    }
-}
-
-impl GitHubImages for FakeGitHub {
-    fn size<'a>(&'a self, _: &'a str, repository: &'a str, path: &'a str, reference: &'a str) -> Fetch<'a, u64> {
-        let answer = self.answer(format!("size {repository} {reference} {path}"), |state| {
-            let file = state.files.get(&(repository.into(), reference.into(), path.into())).ok_or(Failure::NotFound)?;
-            Ok(state.sizes.get(path).copied().unwrap_or(file.len() as u64))
-        });
-        Box::pin(async move { answer })
-    }
-
-    fn file<'a>(&'a self, _: &'a str, repository: &'a str, path: &'a str, reference: &'a str) -> Fetch<'a, Vec<u8>> {
-        let answer = self.answer(format!("file {repository} {reference} {path}"), |state| {
-            state.files.get(&(repository.into(), reference.into(), path.into())).cloned().ok_or(Failure::NotFound)
-        });
-        Box::pin(async move { answer })
-    }
-
-    fn repository<'a>(&'a self, _: &'a str, repository: &'a str) -> Fetch<'a, ()> {
-        let answer = self.answer(format!("repository {repository}"), |state| {
-            state.repositories.contains(repository).then_some(()).ok_or(Failure::NotFound)
-        });
-        Box::pin(async move { answer })
-    }
-
-    fn body_html<'a>(&'a self, _: &'a str, repository: &'a str, number: u64) -> Fetch<'a, String> {
-        let answer = self.answer(format!("body_html {repository} {number}"), |state| Ok(state.html.clone()));
-        Box::pin(async move { answer })
-    }
-
-    fn download<'a>(&'a self, url: &'a str) -> Fetch<'a, Vec<u8>> {
-        let answer = self.answer(format!("download {url}"), |state| state.signed.get(url).cloned().ok_or(Failure::NotFound));
-        Box::pin(async move { answer })
-    }
-}
 
 fn target() -> Target<'static> {
     Target { host: "github.com", repository: "o/r", number: 87, head: HEAD }

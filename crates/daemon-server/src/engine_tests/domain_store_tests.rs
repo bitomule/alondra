@@ -1,5 +1,5 @@
 //! The domain store as alondrad's preflight reads it.
-use alondra_store_sqlite::tests::*;
+use alondra_store_sqlite::testing::*;
 use alondra_store_sqlite::DomainStore;
 use alondra_domain_rules::*;
 use std::fs;

@@ -29,7 +29,7 @@ struct World {
     worktree: PathBuf,
     database: PathBuf,
     home: Directory,
-    _state: crate::sdk_owner::tests::HostRoot,
+    _state: crate::sdk_owner::fixtures::HostRoot,
 }
 
 fn envelope(state: &DomainState, id: &str, command: Command) -> CommandEnvelope {
@@ -53,13 +53,13 @@ impl World {
     fn with_accounts(moving: bool) -> Self {
         let home = Directory::new();
         std::fs::DirBuilder::new().mode(0o700).create(&home).unwrap();
-        let state = crate::sdk_owner::tests::HostRoot::new();
+        let state = crate::sdk_owner::fixtures::HostRoot::new();
         let worktree = home.join("worktree");
         std::fs::DirBuilder::new().mode(0o700).create(&worktree).unwrap();
         std::fs::DirBuilder::new().mode(0o700).create(home.join(crate::plugins::NODE)).unwrap();
         std::fs::create_dir_all(home.join(".claude/projects")).unwrap();
         alondra_engine_ports::accounts::Accounts::prepare_claude(&alondra_engine_doubles::accounts::Accounts::default(), &home, &work(), &home.join(".claude")).unwrap();
-        let (backend, capture) = crate::sdk_owner::tests::fixture_backend(&home, &state);
+        let (backend, capture) = crate::sdk_owner::fixtures::fixture_backend(&home, &state);
         let database = home.join("domain.sqlite");
         let domain = Self::boot(&home, &database, &backend);
         let world = Self { domain, backend, capture, worktree, database, home, _state: state };
@@ -76,7 +76,7 @@ impl World {
     }
 
     fn boot(home: &Path, database: &Path, backend: &crate::sdk_backend::SdkBackend) -> Arc<DomainRuntime> {
-        let domain = Arc::new(crate::engine_tests::open_at(home, database).unwrap());
+        let domain = Arc::new(crate::engine_fixtures::open_at(home, database).unwrap());
         domain.enable_sdk(backend.clone());
         domain
     }
@@ -136,7 +136,7 @@ impl World {
 
     /// The prompts Claude got, besides the wake Alondra sends after a turn that ended empty.
     fn prompts(&self) -> Vec<String> {
-        crate::sdk_owner::tests::not_wakes(std::fs::read_to_string(format!("{}.prompts", self.capture.display())).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()))
+        crate::sdk_owner::fixtures::not_wakes(std::fs::read_to_string(format!("{}.prompts", self.capture.display())).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()))
     }
 
     fn node(&self) -> AgentId {

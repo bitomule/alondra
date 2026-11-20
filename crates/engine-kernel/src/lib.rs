@@ -2,9 +2,8 @@
 //! commit and its observers, capabilities, sessions, retention, the settings projection and the
 //! capture of metrics. It names none of the subsystems above it: each keeps its state as an
 //! extension of the runtime and hears of commits through the observers the engine registers.
-#![cfg_attr(all(feature = "test-hooks", not(test)), allow(dead_code, unused_imports))]
 
-#[cfg(any(test, feature = "test-hooks"))]
+#[cfg(test)]
 #[path = "../../test_support.rs"]
 pub mod test_support;
 
@@ -39,15 +38,10 @@ pub mod settings_projection;
 
 /// The journal the tests of the engine open their runtimes on: a test of a crate above the kernel
 /// sets it once, before its first runtime.
-#[cfg(any(test, feature = "test-hooks"))]
 pub static TEST_JOURNAL: std::sync::OnceLock<&'static dyn alondra_engine_ports::journal::JournalFiles> = std::sync::OnceLock::new();
 
-#[cfg(test)]
 pub fn test_journal() -> &'static dyn alondra_engine_ports::journal::JournalFiles {
-    *TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite)
-}
-
-#[cfg(all(feature = "test-hooks", not(test)))]
-pub fn test_journal() -> &'static dyn alondra_engine_ports::journal::JournalFiles {
+    #[cfg(test)]
+    TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
     *TEST_JOURNAL.get().expect("the test sets alondra_engine_kernel::TEST_JOURNAL to the journal its runtimes open on")
 }

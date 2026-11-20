@@ -180,7 +180,7 @@ const MACHINE_SAMPLE: Duration = Duration::from_secs(10);
 /// make a moment of calm.
 const CALM_POLLS: u64 = 25;
 /// The polls that outlast the longest wait of a host's owner between two looks at the inputs it
-/// holds (250 ms, while a turn runs).
+/// holds (250 ms, during a turn and between turns).
 const OWNER_WAKE_POLLS: u64 = 150;
 
 struct Context<'a> {
@@ -259,7 +259,7 @@ async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnc
     let mac = CalmMac::default();
     let seams = seams_of(&github, &pushes, &mac, launcher, backend);
     alondrad::scenario_phone::prepare(&config.home).map_err(|e| invalid(&format!("{e:#}")))?;
-    let domain = alondra_engine_sdk::engine_tests::open(&config.home).map_err(|e| invalid(&format!("{e:#}")))?;
+    let domain = crate::engine::open(&config.home).map_err(|e| invalid(&format!("{e:#}")))?;
     let daemon = assemble::start_over(&config, domain, seams).await.map_err(|e| invalid(&format!("{e:#}")))?;
     let phone = Phone::pair(&daemon, std::net::SocketAddr::new(config.listen, config.port)).map_err(|e| invalid(&e))?;
     let destination = alondrad::scenario_phone::Phone::new(phone.device(), PHONE_SECRET).map_err(|e| invalid(&format!("{e:#}")))?;
@@ -624,12 +624,13 @@ impl Context<'_> {
                 let domain = domain.clone();
                 move || domain.as_ref().is_some_and(|domain| domain.retaking())
             };
-            // While a turn runs, the owner of its host looks for new inputs only between reads of
-            // the host, which wait up to `OWNER_WAKE`: an input the daemon holds for a host that
-            // was not offered it yet may still go out once that wait ends.
+            // The owner of a host looks for new inputs only between its waits on the host and on
+            // the store, which last up to `OWNER_WAKE`, during a turn and between turns: an input
+            // the daemon holds for a host that was not offered it yet may still go out once that
+            // wait ends.
             let undelivered = move || {
                 let Some(state) = domain.as_ref().and_then(|domain| domain.state().ok()) else { return false };
-                watched.turns().into_iter().any(|(task, offered)| {
+                watched.untaken_offers().into_iter().any(|(task, offered)| {
                     state.lifecycle_of(&task.into()).is_ok_and(|lifecycle| lifecycle.pending_inputs().len() > offered)
                 })
             };
@@ -903,7 +904,7 @@ impl Context<'_> {
             None => (Launcher::new(RefusingLauncher(self.leaks.clone())), Backend::Given(None)),
         };
         let seams = seams_of(&self.github, &self.pushes, &self.mac, launcher, backend);
-        let domain = alondra_engine_sdk::engine_tests::open(&self.config.home).map_err(|e| Self::failed(index, format!("{e:#}")))?;
+        let domain = crate::engine::open(&self.config.home).map_err(|e| Self::failed(index, format!("{e:#}")))?;
         let daemon = assemble::start_over(&self.config, domain, seams).await.map_err(|e| Self::failed(index, format!("{e:#}")))?;
         self.daemon = Some(daemon);
         self.pass(Duration::from_secs(1), index).await

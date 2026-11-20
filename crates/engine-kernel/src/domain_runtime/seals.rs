@@ -64,7 +64,6 @@ impl Seals {
         queued.retain(|committed| !empty(committed));
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn observations_of(&self, task: &TaskId) -> usize {
         self.queued.lock_or_exit("the SDK seals").iter()
             .map(|committed| committed.observations.iter().filter(|observation| observation.execution().task() == task).count())
@@ -86,7 +85,6 @@ impl Seals {
         *self.before_wake.lock().unwrap() = Some(Box::new(observe));
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn take_all(&self) -> Vec<Committed> {
         std::mem::take(&mut *self.queued.lock_or_exit("the SDK seals"))
     }

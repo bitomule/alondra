@@ -1,4 +1,4 @@
-#[cfg(any(test, feature = "test-hooks"))]
+#[cfg(test)]
 #[path = "../../test_support.rs"]
 mod test_support;
 

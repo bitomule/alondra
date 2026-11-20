@@ -1,3 +1,4 @@
+use crate::locks::Poisonable as _;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
@@ -5,20 +6,18 @@ use tokio::sync::Semaphore;
 #[derive(Clone)]
 pub struct BlockingWork(
     Arc<Semaphore>,
-    #[cfg(any(test, feature = "test-hooks"))] Arc<std::sync::Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>,
+    Arc<std::sync::Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>,
 );
 
 impl BlockingWork {
     pub fn new(workers: usize) -> Self {
-        Self(Arc::new(Semaphore::new(workers)), #[cfg(any(test, feature = "test-hooks"))] Default::default())
+        Self(Arc::new(Semaphore::new(workers)), Default::default())
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn available(&self) -> usize { self.0.available_permits() }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn on_start(&self, hook: impl Fn() + Send + Sync + 'static) {
-        *self.1.lock().unwrap() = Some(Arc::new(hook));
+        *self.1.lock_or_recover("the blocking work's start hook") = Some(Arc::new(hook));
     }
 
     pub async fn run<R: Send + 'static>(
@@ -26,11 +25,9 @@ impl BlockingWork {
         work: impl FnOnce() -> R + Send + 'static,
     ) -> Result<R, tokio::task::JoinError> {
         let permit = self.0.clone().acquire_owned().await.expect("blocking work closed");
-        #[cfg(any(test, feature = "test-hooks"))]
-        let hook = self.1.lock().unwrap().clone();
+            let hook = self.1.lock_or_recover("the blocking work's start hook").clone();
         tokio::task::spawn_blocking(move || {
-            #[cfg(any(test, feature = "test-hooks"))]
-            if let Some(hook) = hook { hook(); }
+                    if let Some(hook) = hook { hook(); }
             let _permit = permit;
             work()
         }).await

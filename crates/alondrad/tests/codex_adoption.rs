@@ -5,8 +5,8 @@ use alondra_core::accounts::Provider;
 use alondra_domain::ActivityView;
 use alondra_domain_rules::Scope;
 use alondra_store_sqlite::domain_database_migration::DATABASE;
-use alondra_engine_sdk::sdk_owner::tests::codex_tests::{configured, launch, transcript};
-use alondra_engine_sdk::sdk_owner::tests::{DECISION_CARDS, HostRoot, Slice, TASK, advance, owner_generation, runfile};
+use alondra_engine_sdk::sdk_owner::fixtures::codex::{configured, launch, transcript};
+use alondra_engine_sdk::sdk_owner::fixtures::{DECISION_CARDS, HostRoot, Slice, TASK, advance, owner_generation, runfile};
 use alondra_engine_sdk::sdk_owner::{Driver, backend};
 use rusqlite::Connection;
 use std::io::{BufRead, BufReader};
@@ -16,6 +16,15 @@ use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread::JoinHandle;
 use std::time::Duration;
+
+/// The engine the slice of this test opens: the daemon's, over the doubles of the Mac.
+fn open_at(home: &Path, database: &Path) -> anyhow::Result<alondra_engine_sdk::domain_runtime::DomainRuntime> {
+    let runtime = alondra_engine_sdk::wiring::open_at(home, database)?;
+    alondra_engine_doubles::machine::wire(runtime.ports(), alondra_daemon_support::watcher::claude_home);
+    alondra_agent_runtime::wire(runtime.ports(), Default::default());
+    alondra_engine_admission::for_tests(&runtime);
+    Ok(runtime)
+}
 
 struct ActualDaemon {
     process: Child,
@@ -216,6 +225,7 @@ impl Drop for RetainedNativeFixture {
 }
 
 fn prove_actual_daemon_adoption(mode: &str) {
+    alondra_daemon_engine::wiring::open_with(open_at);
     let (slice, driver, trace, profile) = daemon_fixture(mode);
     let mut retained = RetainedNativeFixture { slice, driver: Some(driver) };
     let slice = &retained.slice;

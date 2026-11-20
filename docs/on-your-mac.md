@@ -162,6 +162,14 @@ See [the process table and its signals](../crates/system/src/lib.rs),
   `~/.alondra/apns.json` names an Apple `.p8` private key file, team,
   key ID and topic. The daemon reads that key to send notifications when direct APNs is
   configured. See [push](../crates/daemon-support/src/push.rs).
+- **`BAZEL_TEST` (tests only):** `bazel test` sets it; setup never installs it into the launchd
+  job or a provider environment. When present in the daemon's or CLI's own environment, the
+  process behaves as under test: it reads an empty temporary Claude folder instead of
+  `~/.claude`, skips the flush to disk after atomic writes, relaunches a lost host without
+  waiting, shortens the message acknowledgement and «Allow always» settings waits, and checks
+  each owner transaction against a reload of the database. See
+  [under test](../crates/foundation/src/lib.rs) and
+  [Claude folder](../crates/daemon-support/src/watcher.rs).
 
 ## Connections
 

@@ -1,7 +1,7 @@
 //! Opening the domain replays each task's journal once, in memory linear in its length, however
 //! many inputs one task keeps pending.
-use super::owner_tests::{running, scope_of};
-use alondra_store_sqlite::tests::Fixture;
+use super::owner_fixtures::{running, scope_of};
+use alondra_store_sqlite::testing::Fixture;
 use alondra_store_sqlite::DomainStore;
 use crate::domain_store::*;
 use alondra_domain_rules::*;

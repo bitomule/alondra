@@ -86,6 +86,7 @@ checks:
       - "crates/foundation/src/daemon_log.rs"
       - "crates/foundation/src/log.rs"
       - "crates/foundation/src/save.rs"
+      - "crates/foundation/src/lib.rs"
       - "crates/core/src/home_lock.rs"
       - "crates/core/src/issues.rs"
       - "crates/core/src/launcher.rs"

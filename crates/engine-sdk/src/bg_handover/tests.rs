@@ -88,7 +88,7 @@ struct World {
     worktree: PathBuf,
     database: PathBuf,
     home: Directory,
-    _state: crate::sdk_owner::tests::HostRoot,
+    _state: crate::sdk_owner::fixtures::HostRoot,
 }
 
 fn envelope(state: &DomainState, id: &str, command: Command) -> CommandEnvelope {
@@ -141,11 +141,11 @@ impl World {
     fn with(release: impl FnOnce(&Path, &mut crate::sdk_backend::SdkBackend)) -> Self {
         let home = Directory::new();
         std::fs::DirBuilder::new().mode(0o700).create(&home).unwrap();
-        let state = crate::sdk_owner::tests::HostRoot::new();
+        let state = crate::sdk_owner::fixtures::HostRoot::new();
         let worktree = home.join("worktree");
         std::fs::DirBuilder::new().mode(0o700).create(&worktree).unwrap();
         std::fs::DirBuilder::new().mode(0o700).create(home.join(crate::plugins::NODE)).unwrap();
-        let (mut backend, capture) = crate::sdk_owner::tests::fixture_backend(&home, &state);
+        let (mut backend, capture) = crate::sdk_owner::fixtures::fixture_backend(&home, &state);
         release(&home, &mut backend);
         std::fs::write(format!("{}.transcript-{SESSION}", capture.display()), "the claude --bg session's first prompt\n").unwrap();
         let database = home.join("domain.sqlite");
@@ -167,8 +167,8 @@ impl World {
     }
 
     fn boot(home: &Path, database: &Path, backend: &crate::sdk_backend::SdkBackend, bg: &Arc<Bg>) -> Arc<DomainRuntime> {
-        let domain = Arc::new(crate::engine_tests::open_at(home, database).unwrap());
-        crate::sdk_owner::tests::measure_healthy_machine(&domain);
+        let domain = Arc::new(crate::engine_fixtures::open_at(home, database).unwrap());
+        crate::sdk_owner::fixtures::measure_healthy_machine(&domain);
         domain.enable_sdk(backend.clone());
         domain.handovers().use_sessions(Arc::clone(bg) as Arc<dyn BgSessions>);
         domain
@@ -241,7 +241,7 @@ impl World {
 
     /// The prompts Claude got, besides the wake Alondra sends after a turn that ended empty.
     fn prompts(&self) -> Vec<String> {
-        crate::sdk_owner::tests::not_wakes(std::fs::read_to_string(format!("{}.prompts", self.capture.display())).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()))
+        crate::sdk_owner::fixtures::not_wakes(std::fs::read_to_string(format!("{}.prompts", self.capture.display())).unwrap_or_default().lines().map(|line| serde_json::from_str(line).unwrap()))
     }
 
     /// How the store left the launch of the task's current SDK execution.
@@ -264,7 +264,7 @@ impl World {
     /// rests on the card it ended on.
     async fn until_answered(&self) {
         let mut changed = self.domain.subscribe();
-        while !self.domain.read().state().interactions.keys().any(|card| crate::sdk_owner::tests::rests_on(TASK, card)) {
+        while !self.domain.read().state().interactions.keys().any(|card| crate::sdk_owner::fixtures::rests_on(TASK, card)) {
             changed.changed().await.unwrap();
         }
     }

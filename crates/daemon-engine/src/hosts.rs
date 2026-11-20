@@ -1,6 +1,6 @@
 //! The Agent SDK hosts as the rest of the engine sees them: what it asks of `engine-sdk`, which owns
 //! every host, through the port `engine-sdk` gives the registry when the daemon is put together.
-//! The engine's own tests open a runtime without it: no host runs there.
+//! A test registers a double of it.
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::accounts::{AccountId, Provider};
 use alondra_daemon_engine_model::Failed;
@@ -16,8 +16,6 @@ pub trait HostsOf {
 impl HostsOf for DomainRuntime {
     fn hosts(&self) -> Hosts<'_> {
         let port = self.ports().port::<dyn SdkHosts>();
-        #[cfg(any(test, feature = "test-hooks"))]
-        let port = port.or_else(|| Some(Arc::new(none::NoHosts)));
         Hosts { domain: self, port: port.expect("the daemon gives the runtime the owner of its SDK hosts") }
     }
 }
@@ -87,51 +85,5 @@ impl Hosts<'_> {
 
     pub fn moving(&self, task: &TaskId) -> bool {
         self.port.moving(self.domain, task)
-    }
-}
-
-/// The hosts of a runtime nobody gave an owner: none runs, and nothing starts.
-#[cfg(any(test, feature = "test-hooks"))]
-mod none {
-    use super::*;
-    use crate::sdk_backend::NO_HOST;
-    use alondra_engine_ports::Runtime;
-
-    pub(super) struct NoHosts;
-
-    impl SdkHosts for NoHosts {
-        fn owns(&self, _: &dyn Runtime, _: &AgentId) -> bool {
-            false
-        }
-        fn node_footprints(&self, _: &dyn Runtime) -> std::io::Result<std::collections::BTreeMap<AgentId, u64>> {
-            Ok(Default::default())
-        }
-        fn stop(&self, _: &dyn Runtime, _: &AgentId) -> Result<(), Failed> {
-            Ok(())
-        }
-        fn requeue(&self, _: &dyn Runtime, _: &TaskId) {}
-        fn halt(&self, _: &dyn Runtime, _: TaskId, _: AgentId) {}
-        fn take_if_unowned(&self, _: &dyn Runtime, _: &TaskId) {}
-        fn take_working_unowned(&self, _: &dyn Runtime, _: &DomainState, _: alondra_core::Millis) {}
-        fn close_hosts_of_ended_nodes(&self, _: &dyn Runtime, _: &DomainState) {}
-        fn retake_waiting_for_space(&self, _: &dyn Runtime) {}
-        fn original_directory(&self, _: &dyn Runtime, _: &TaskId) -> Result<Option<String>, Failed> {
-            Ok(None)
-        }
-        fn require_recoverable_session(&self, _: &dyn Runtime, _: &TaskId, _: Provider, _: &AccountId, _: &str) -> Result<(), Failed> {
-            Err(Failed::new(NO_HOST.into()))
-        }
-        fn prepare_reopening(&self, _: &dyn Runtime, _: &TaskId, _: Provider, _: &AccountId, _: &Path, _: String, _: bool) -> Result<Reopening, Failed> {
-            Err(Failed::new(NO_HOST.into()))
-        }
-        fn end_unowned_host(&self, _: &dyn Runtime, _: TaskId) -> Result<(), Failed> {
-            Ok(())
-        }
-        fn launch<'a>(&'a self, _: &'a dyn Runtime, _: Launch, _: Option<Reopening>) -> Launched<'a> {
-            Box::pin(async { Err(DomainError::new("unavailable", NO_HOST)) })
-        }
-        fn moving(&self, _: &dyn Runtime, _: &TaskId) -> bool {
-            false
-        }
     }
 }

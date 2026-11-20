@@ -13,10 +13,12 @@ def _rust_inputs_test_impl(ctx):
         test_inputs = [
             source
             for source in inputs
-            if source == "crates/test_support.rs" or (source.startswith(ctx.attr.source_dir) and (
+            if source not in ctx.attr.fixture_sources and (source == "crates/test_support.rs" or (source.startswith(ctx.attr.source_dir) and (
                 source.endswith("_tests.rs") or source.endswith("/tests.rs") or "/tests/" in source
-            ))
+            )))
         ]
+        for source in ctx.attr.fixture_sources:
+            asserts.true(env, source in inputs, "{} must compile the fixture {} the tests above it build on".format(action.mnemonic, source))
         for source in ctx.attr.test_only_sources:
             asserts.equals(
                 env,
@@ -35,5 +37,8 @@ rust_inputs_test = analysistest.make(
         "source_dir": attr.string(mandatory = True),
         "required_sources": attr.string_list(mandatory = True),
         "test_only_sources": attr.string_list(default = []),
+        # Test support the crate compiles for the tests of the crates above it, which have no
+        # build of their own to take it from.
+        "fixture_sources": attr.string_list(default = []),
     },
 )

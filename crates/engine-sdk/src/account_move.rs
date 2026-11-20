@@ -27,7 +27,6 @@ pub(crate) struct Moves {
     moving: tokio::sync::Mutex<()>,
     /// A move stops right after recording this step, as a daemon that dies then does: the
     /// admission dies after its commit, before its host starts.
-    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) crash_after: std::sync::Mutex<Option<AccountMoveStep>>,
 }
 
@@ -147,7 +146,6 @@ pub(crate) async fn advance(domain: &Arc<DomainRuntime>, task: &TaskId) -> Resul
     loop {
         let moving = latest(domain, task).ok_or_else(|| format!("{task} has no account move"))?;
         let step = moving.step;
-        #[cfg(any(test, feature = "test-hooks"))]
         if *domain.moves().crash_after.lock().unwrap() == Some(step) && step != AccountMoveStep::Admitted {
             return Err(format!("the daemon died after {step:?}"));
         }

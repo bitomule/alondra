@@ -25,12 +25,10 @@ pub struct Ran {
 }
 
 impl Ran {
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn ok(stdout: impl Into<String>) -> Self {
         Self { success: true, stdout: stdout.into(), stderr: String::new() }
     }
 
-    #[cfg(any(test, feature = "test-hooks"))]
     pub fn failed(stderr: impl Into<String>) -> Self {
         Self { success: false, stdout: String::new(), stderr: stderr.into() }
     }

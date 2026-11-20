@@ -572,7 +572,7 @@ mod argument_tests {
         std::fs::create_dir(&home).unwrap();
         domain_cutover::refuse_legacy_home(&home).unwrap();
         ensure_domain_protocol(&home).unwrap();
-        let _domain = alondra_engine_sdk::engine_tests::open(&home).unwrap();
+        let _domain = crate::engine::open(&home).unwrap();
         domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
         assert!(home.join("domain.db").is_file());
         assert!(!home.join("alondra.db").exists());
@@ -629,5 +629,31 @@ mod argument_tests {
                 .contains("prepared")
         );
         std::fs::remove_dir_all(home).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod engine {
+    /// Opens every runtime the engine's fixtures open on this thread as the daemon does, with the gate
+    /// of a test.
+    pub fn wired() {
+        alondra_daemon_engine::TEST_JOURNAL.get_or_init(|| &alondra_store_sqlite::Sqlite);
+        alondra_daemon_engine::wiring::open_with(open_at);
+    }
+
+    /// The runtime as the daemon opens it, with the doubles of the Mac and a gate that is unpaced and
+    /// launches on the disk the machine watch measured.
+    pub fn open_at(home: &std::path::Path, database: &std::path::Path, files: &dyn alondra_engine_ports::journal::JournalFiles) -> anyhow::Result<alondra_engine_sdk::domain_runtime::DomainRuntime> {
+        let runtime = alondra_engine_sdk::wiring::open_at(home, database, files)?;
+        alondra_engine_doubles::machine::wire(runtime.ports(), alondra_daemon_support::watcher::claude_home);
+        alondra_agent_runtime::wire(runtime.ports(), Default::default());
+        alondra_engine_admission::for_tests(&runtime);
+        Ok(runtime)
+    }
+
+    /// `open_at` at the home's active database; the engine's fixtures this thread opens open the same.
+    pub fn open(home: &std::path::Path) -> anyhow::Result<alondra_engine_sdk::domain_runtime::DomainRuntime> {
+        wired();
+        open_at(home, &alondra_engine_ports::journal::active_path(home), &alondra_store_sqlite::Sqlite)
     }
 }
