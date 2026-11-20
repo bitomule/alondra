@@ -202,6 +202,7 @@ low_opt_rust_test(
         "//crates/domain-rules:domain_rules",
         "//crates/engine-sdk:engine_sdk_test_hooks",
         "//crates/process-group:process_group",
+        "//crates/store-sqlite:store_sqlite",
     ],
 )
 

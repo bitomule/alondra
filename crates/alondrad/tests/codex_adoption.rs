@@ -4,7 +4,7 @@
 use alondra_core::accounts::Provider;
 use alondra_domain::ActivityView;
 use alondra_domain_rules::Scope;
-use alondra_engine_sdk::domain_database_migration::DATABASE;
+use alondra_store_sqlite::domain_database_migration::DATABASE;
 use alondra_engine_sdk::sdk_owner::tests::codex_tests::{configured, launch, transcript};
 use alondra_engine_sdk::sdk_owner::tests::{DECISION_CARDS, HostRoot, Slice, TASK, advance, owner_generation, runfile};
 use alondra_engine_sdk::sdk_owner::{Driver, backend};
