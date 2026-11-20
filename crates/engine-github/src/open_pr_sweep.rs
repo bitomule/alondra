@@ -93,7 +93,7 @@ pub async fn sweep(domain: &DomainRuntime, github: &GitHub, options: &OptionsFil
     Ok(())
 }
 
-pub async fn run(domain: Arc<DomainRuntime>, home: std::path::PathBuf) {
+pub async fn run(domain: Arc<DomainRuntime>, home: std::path::PathBuf, user_home: std::path::PathBuf) {
     let mut interval = clock::interval_at(clock::instant() + FIRST_SWEEP, SWEEP_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -105,7 +105,7 @@ pub async fn run(domain: Arc<DomainRuntime>, home: std::path::PathBuf) {
                     log!("open PR sweep has no GitHub to read");
                     continue;
                 };
-                if let Err(error) = sweep(&domain, &github, &options, &crate::options::user_home()).await {
+                if let Err(error) = sweep(&domain, &github, &options, &user_home).await {
                     log!("open PR sweep failed: {error}");
                 }
             }

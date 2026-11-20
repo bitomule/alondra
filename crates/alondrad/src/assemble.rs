@@ -77,6 +77,8 @@ pub struct Seams {
     pub world: World,
     /// The `alondra` CLI the daemon runs for the user's answers about held crash reports.
     pub own_cli: Option<std::path::PathBuf>,
+    /// The home of the user whose projects the daemon sweeps for open pull requests.
+    pub user_home: std::path::PathBuf,
 }
 
 impl Seams {
@@ -90,6 +92,7 @@ impl Seams {
             backend: Backend::Resolve,
             world: World::Real,
             own_cli: alondra_host::brew::own_cli(),
+            user_home: options::user_home(),
         }
     }
 }
@@ -350,7 +353,7 @@ pub(crate) async fn assemble_with(
         (domain_merges::Merger::default(), std::time::Duration::from_secs(60))
     };
     tasks.spawn(domain_merges::run(merges_domain, Arc::new(seams.github.merger.clone()), merger));
-    tasks.spawn(alondra_daemon_engine::open_pr_sweep::run(domain.clone(), config.home.clone()));
+    tasks.spawn(alondra_daemon_engine::open_pr_sweep::run(domain.clone(), config.home.clone(), seams.user_home.clone()));
     let github = tasks.spawn(domain_github::run(
         domain,
         Arc::new(seams.github.observer.clone()),

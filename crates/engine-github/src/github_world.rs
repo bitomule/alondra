@@ -7,7 +7,7 @@ use crate::domain_github::{Closed, GhFailure, Observed, PrFacts, PrObserver};
 use crate::domain_merges::{Checks, MergeState, Pending, PrMerger, Status};
 use crate::pr_images::{Failure, Fetch, GitHubImages};
 use alondra_domain_rules::{MergeMethod, PrChecks, PrMergeable, PrState, PullRequest};
-use alondra_engine_ports::github::{Gh, Read};
+use alondra_engine_ports::github::{AuthoredPr, Gh, Read};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
@@ -33,9 +33,11 @@ struct Pr {
 struct World {
     prs: BTreeMap<u64, Pr>,
     default_branch: String,
+    repository: String,
     delete_head_on_merge: bool,
     commits: u64,
     calls: Vec<String>,
+    reads: Vec<String>,
     merges: Vec<(u64, String, MergeMethod)>,
     retargets: Vec<(u64, String)>,
     closes: Vec<(u64, String)>,
@@ -54,9 +56,11 @@ impl GithubWorld {
         Self(Mutex::new(World {
             prs: BTreeMap::new(),
             default_branch: "main".into(),
+            repository: "owner/repo".into(),
             delete_head_on_merge: false,
             commits: 0,
             calls: Vec::new(),
+            reads: Vec::new(),
             merges: Vec::new(),
             retargets: Vec::new(),
             closes: Vec::new(),
@@ -69,6 +73,11 @@ impl GithubWorld {
 
     fn change<T>(&self, number: u64, change: impl FnOnce(&mut Pr) -> T) -> T {
         change(self.world().prs.get_mut(&number).unwrap_or_else(|| panic!("the world has no PR {number}")))
+    }
+
+    /// The repository the world's pull requests belong to, as `owner/repo`.
+    pub fn set_repository(&self, repository: &str) {
+        self.world().repository = repository.into();
     }
 
     /// Opens PR `number` from branch `head_ref` into `base`; a PR whose base is another PR's head
@@ -146,6 +155,11 @@ impl GithubWorld {
 
     /// Every `gh` call Alondra made that changes something, in order, as `gh` would be typed:
     /// `edit 8 --base main`, `merge 8`, `ready 8`, `close 8`.
+    /// The searches and branch reads the daemon made, in order: what a sweep of open PRs asks.
+    pub fn sweep_reads(&self) -> Vec<String> {
+        self.world().reads.clone()
+    }
+
     pub fn gh_calls(&self) -> Vec<String> {
         self.world().calls.clone()
     }
@@ -338,6 +352,23 @@ fn rollup(checks: &Checks) -> Vec<Value> {
 impl Gh for GithubWorld {
     fn view<'a>(&'a self, url: &'a str) -> Read<'a, Option<Value>> {
         Box::pin(async move { self.viewed(url) })
+    }
+    fn authored_open_prs(&self) -> Read<'_, Result<Vec<AuthoredPr>, GhFailure>> {
+        let mut world = self.world();
+        world.reads.push("search open PRs".into());
+        let world = world;
+        let found = world.prs.iter().filter(|(_, pr)| pr.state == PrState::Open).map(|(number, _)| AuthoredPr {
+            repository: world.repository.clone(), number: *number, url: format!("https://github.com/{}/pull/{number}", world.repository),
+        }).collect();
+        Box::pin(async { Ok(found) })
+    }
+    fn head_ref<'a>(&'a self, url: &'a str) -> Read<'a, Result<String, GhFailure>> {
+        let found = number_of(url).and_then(|number| {
+            let mut world = self.world();
+            world.reads.push(format!("branch of PR {number}"));
+            world.prs.get(&number).map(|pr| pr.head_ref.clone())
+        });
+        Box::pin(async move { found.ok_or_else(|| GhFailure::Unreadable(format!("the world has no PR at {url}"))) })
     }
 }
 
