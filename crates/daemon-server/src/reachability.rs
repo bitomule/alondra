@@ -108,8 +108,10 @@ pub(crate) struct Inputs {
     pub(crate) offered: Option<Offered>,
     /// The endpoint's own IP addresses: interfaces, the public one iroh saw, and a mapped one.
     pub(crate) endpoint_addrs: Vec<SocketAddr>,
-    /// iroh got an external address from the router's port mapping. With an easy NAT the mapped
-    /// address can be the very one the relay sees, so the addresses alone cannot tell.
+    /// iroh got an external address from the port mapping of the network this Mac is on now. With
+    /// an easy NAT the mapped address can be the very one the relay sees, so the addresses alone
+    /// cannot tell. A mapping that counts only while the router offers some protocol: one won on
+    /// another network says nothing about this one.
     pub(crate) portmapped: bool,
     /// This Mac's interface addresses.
     pub(crate) interface_ips: Vec<IpAddr>,
@@ -208,7 +210,33 @@ fn mapped(inputs: &Inputs, observed: Option<SocketAddrV4>) -> Option<SocketAddr>
         }
         SocketAddr::V6(_) => false,
     });
-    distinct.or(observed.filter(|_| inputs.portmapped).map(SocketAddr::V4))
+    let portmapped = inputs.portmapped && inputs.offered.is_none_or(Offered::any);
+    distinct.or(observed.filter(|_| portmapped).map(SocketAddr::V4))
+}
+
+/// iroh counts the external addresses the router's port mapping gave since the process started and
+/// never counts back, so a mapping won at home would stay for good. A mapping counts only when the
+/// counter rose after this Mac last changed its gateway or its IPv4 addresses. IPv6 addresses are
+/// left out: privacy addresses rotate on the same network.
+#[derive(Default)]
+pub(crate) struct PortmapEpoch {
+    network: Option<(Vec<Ipv4Addr>, Option<IpAddr>)>,
+    baseline: u64,
+}
+
+impl PortmapEpoch {
+    /// Whether the counter rose on the current network, and whether the network just changed.
+    pub(crate) fn observe(&mut self, interface_ips: &[IpAddr], gateway: Option<IpAddr>, counter: u64) -> (bool, bool) {
+        let mut v4s: Vec<Ipv4Addr> = interface_ips.iter().filter_map(|ip| if let IpAddr::V4(v4) = ip { Some(*v4) } else { None }).collect();
+        v4s.sort();
+        let network = Some((v4s, gateway));
+        let changed = self.network.is_some() && self.network != network;
+        if changed {
+            self.baseline = counter;
+        }
+        self.network = network;
+        (counter > self.baseline, changed)
+    }
 }
 
 fn lan_ip(inputs: &Inputs) -> Option<IpAddr> {
@@ -480,19 +508,26 @@ pub(crate) async fn watch(endpoint: Endpoint, port_fixed: bool, portmapper: &Por
     let mut probe = alondra_core::clock::interval(PROBE_EVERY);
     let mut refresh = alondra_core::clock::interval(REFRESH);
     let mut logged: Option<Reachability> = None;
+    let mut epoch = PortmapEpoch::default();
     loop {
         let (interface_ips, gateway) = interfaces().await;
         let same_network = match &crate::iroh_endpoint::relay_state().url {
             Some(url) => relay_on_same_network(url, &interface_ips).await,
             None => false,
         };
+        let (portmapped, moved) = epoch.observe(&interface_ips, gateway, endpoint.metrics().net_report.portmap_external_address_updated.get());
+        if moved && probing {
+            change(|live| live.inputs.offered = None);
+            let offered = probe_router().await;
+            change(|live| live.inputs.offered = offered);
+        }
         change(|live| {
             live.inputs.report = reports.get().as_ref().map(NetFacts::from);
             live.inputs.endpoint_addrs = addrs.get().ip_addrs().copied().collect();
             live.inputs.interface_ips = interface_ips;
             live.inputs.gateway = gateway;
             live.inputs.relay_on_same_network = same_network;
-            live.inputs.portmapped = endpoint.metrics().net_report.portmap_external_address_updated.get() > 0;
+            live.inputs.portmapped = portmapped;
         });
         if let Some(now) = current().filter(|now| logged.as_ref().is_none_or(|was| (was.verdict, &was.reasons) != (now.verdict, &now.reasons))) {
             log!("direct connection: {:?} {:?}", now.verdict, now.reasons);
