@@ -45,6 +45,26 @@ fn an_envelope_lost_on_iroh_is_an_error_that_says_to_check_the_mac() {
 }
 
 #[test]
+fn a_connection_lost_on_iroh_waits_before_it_is_dialed_again() {
+    let (home, iroh) = (home(), FakeIroh::start(Behaviour::DropAfterRequest));
+    crate::direct_client::keep_dial(&home, fake::MAC, Some(iroh.dial())).unwrap();
+    assert!(read(&home, || None).is_err());
+    assert!(read(&home, || panic!("the dial is known")).is_err());
+    assert_eq!(crate::iroh_client::dials(&home), 1, "the second read does not dial again at once");
+    assert_eq!(iroh.received().len(), 1);
+}
+
+#[test]
+fn after_the_mac_slept_an_account_mac_is_dialed_from_a_new_endpoint() {
+    let (home, iroh) = (home(), FakeIroh::start(Behaviour::Answer));
+    crate::direct_client::keep_dial(&home, fake::MAC, Some(iroh.dial())).unwrap();
+    read(&home, || None).unwrap();
+    crate::iroh_client::pretend_slept(&home, Duration::from_secs(10 * 60));
+    assert_eq!(read(&home, || None).unwrap().0, 200);
+    assert_eq!(crate::iroh_client::dials(&home), 2);
+}
+
+#[test]
 fn a_refusal_over_iroh_is_the_macs_answer_and_is_not_sent_again() {
     let (home, iroh) = (home(), FakeIroh::start(Behaviour::Refuse("idempotency_conflict")));
     crate::direct_client::keep_dial(&home, fake::MAC, Some(iroh.dial())).unwrap();

@@ -19,6 +19,8 @@ const IROH_NODE_PROOF_DOMAIN: &[u8] = b"alondra-iroh-node-v1\0";
 enum Link {
     Open(Arc<Session>),
     Down,
+    /// The open connection failed: any call dials again once the wait is over.
+    Lost(iroh_client::Backoff),
 }
 
 static LINKS: Mutex<BTreeMap<(PathBuf, String), Link>> = Mutex::new(BTreeMap::new());
@@ -73,10 +75,22 @@ impl Profile {
                 }
             },
             Err(_) => {
-                self.set_link(home, None);
+                self.failed(home);
                 OverIroh::Unanswered
             }
         }
+    }
+
+    /// The open connection failed: the next dial waits longer than the last one did.
+    fn failed(&self, home: &Path) {
+        let mut links = LINKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let key = (home.to_path_buf(), self.mac_id.clone());
+        let mut backoff = match links.get(&key) {
+            Some(Link::Lost(backoff)) => *backoff,
+            _ => iroh_client::Backoff::default(),
+        };
+        backoff.failed(Instant::now());
+        links.insert(key, Link::Lost(backoff));
     }
 
     fn set_link(&self, home: &Path, link: Option<Link>) {
@@ -90,9 +104,11 @@ impl Profile {
 
     fn iroh_session(&self, home: &Path, learn: impl FnOnce() -> Option<Dial>, retry_unavailable: bool) -> Option<Arc<Session>> {
         let key = (home.to_path_buf(), self.mac_id.clone());
+        let woke = iroh_client::woke(home);
         match LINKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&key) {
-            Some(Link::Open(session)) if !session.is_closed() => return Some(session.clone()),
-            Some(Link::Down) if !retry_unavailable => return None,
+            Some(Link::Open(session)) if session.is_usable() => return Some(session.clone()),
+            Some(Link::Down) if !woke && !retry_unavailable => return None,
+            Some(Link::Lost(backoff)) if !woke && !backoff.ready(Instant::now()) => return None,
             _ => {}
         }
         let signing = self.signing().ok()?;

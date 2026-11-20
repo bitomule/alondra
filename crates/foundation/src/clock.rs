@@ -21,18 +21,21 @@
 
 use std::cell::Cell;
 use std::future::Future;
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-pub use tokio::time::{Instant, Interval, error::Elapsed};
+pub use tokio::time::{Instant, MissedTickBehavior, error::Elapsed};
 
 use crate::Millis;
 
+/// A virtual clock knows the deadlines of the timed waits pending on it, so whoever drives it can
+/// tell, before moving the time forward, whether the move can wake anyone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Clock {
     System,
-    Virtual { epoch_millis: Millis, origin: Instant, work: &'static Work },
+    Virtual { epoch_millis: Millis, origin: Instant, work: &'static Work, deadlines: &'static Deadlines },
 }
 
 /// How many threads of a virtual runtime work in real time: each started with [`spawn_thread`] or
@@ -111,6 +114,57 @@ impl Drop for Held {
         }
     }
 }
+
+/// The deadlines of the timed waits pending on one virtual clock, each with how many waits share it.
+#[derive(Debug, Default)]
+pub struct Deadlines(Mutex<BTreeMap<Instant, usize>>);
+
+impl Deadlines {
+    fn pending(&self) -> std::sync::MutexGuard<'_, BTreeMap<Instant, usize>> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// One timed wait's deadline, registered on the current virtual clock from the moment the wait is
+/// made until it ends or is dropped.
+struct Pending {
+    deadlines: Option<&'static Deadlines>,
+    at: Instant,
+}
+
+impl Pending {
+    fn new(at: Instant) -> Pending {
+        let deadlines = match Clock::current() {
+            Clock::Virtual { deadlines, .. } => Some(deadlines),
+            Clock::System => None,
+        };
+        if let Some(deadlines) = deadlines {
+            *deadlines.pending().entry(at).or_default() += 1;
+        }
+        Pending { deadlines, at }
+    }
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        let Some(deadlines) = self.deadlines else { return };
+        let mut pending = deadlines.pending();
+        if let Some(waits) = pending.get_mut(&self.at) {
+            *waits -= 1;
+            if *waits == 0 {
+                pending.remove(&self.at);
+            }
+        }
+    }
+}
+
+impl PartialEq for Deadlines {
+    fn eq(&self, other: &Deadlines) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+
+impl Eq for Deadlines {}
 
 thread_local! {
     static CURRENT: Cell<Clock> = const { Cell::new(Clock::System) };
@@ -260,28 +314,73 @@ pub fn instant() -> Instant {
     Clock::current().instant()
 }
 
-pub async fn sleep(duration: Duration) {
-    tokio::time::sleep(duration).await
+/// Whether a timed wait pending on the current virtual clock ends within `window` from now, so
+/// moving the time forward by `window` would wake it; never on the system clock.
+pub fn deadline_within(window: Duration) -> bool {
+    match Clock::current() {
+        Clock::Virtual { deadlines, .. } => {
+            let horizon = instant() + window;
+            deadlines.pending().range(..=horizon).next().is_some()
+        }
+        Clock::System => false,
+    }
 }
 
-pub async fn sleep_until(deadline: Instant) {
-    tokio::time::sleep_until(deadline).await
+pub fn sleep(duration: Duration) -> impl Future<Output = ()> + Send {
+    sleep_until(instant() + duration)
+}
+
+pub fn sleep_until(deadline: Instant) -> impl Future<Output = ()> + Send {
+    let pending = Pending::new(deadline);
+    async move {
+        tokio::time::sleep_until(deadline).await;
+        drop(pending);
+    }
+}
+
+/// [`tokio::time::Interval`] on the current clock; its next tick stays registered as pending.
+pub struct Interval {
+    ticks: tokio::time::Interval,
+    next: Pending,
+}
+
+impl Interval {
+    fn new(start: Instant, period: Duration) -> Interval {
+        Interval { ticks: tokio::time::interval_at(start, period), next: Pending::new(start) }
+    }
+
+    /// The tick after `at` is registered at `at + period`: no later than tokio schedules it,
+    /// whichever the missed-tick behaviour.
+    pub async fn tick(&mut self) -> Instant {
+        let at = self.ticks.tick().await;
+        self.next = Pending::new(at + self.ticks.period());
+        at
+    }
+
+    pub fn set_missed_tick_behavior(&mut self, behavior: MissedTickBehavior) {
+        self.ticks.set_missed_tick_behavior(behavior);
+    }
 }
 
 pub fn interval(period: Duration) -> Interval {
-    tokio::time::interval(period)
+    Interval::new(instant(), period)
 }
 
 pub fn interval_at(start: Instant, period: Duration) -> Interval {
-    tokio::time::interval_at(start, period)
+    Interval::new(start, period)
 }
 
-pub async fn timeout_at<F: Future>(deadline: Instant, future: F) -> Result<F::Output, Elapsed> {
-    tokio::time::timeout_at(deadline, future).await
+pub fn timeout_at<F: Future>(deadline: Instant, future: F) -> impl Future<Output = Result<F::Output, Elapsed>> {
+    let pending = Pending::new(deadline);
+    async move {
+        let ended = tokio::time::timeout_at(deadline, future).await;
+        drop(pending);
+        ended
+    }
 }
 
-pub async fn timeout<F: Future>(duration: Duration, future: F) -> Result<F::Output, Elapsed> {
-    tokio::time::timeout(duration, future).await
+pub fn timeout<F: Future>(duration: Duration, future: F) -> impl Future<Output = Result<F::Output, Elapsed>> {
+    timeout_at(instant() + duration, future)
 }
 
 /// Waits on a thread that is allowed to block. In a virtual runtime the wait is the runtime's
@@ -291,6 +390,7 @@ pub fn blocking_sleep(duration: Duration) {
         (Clock::Virtual { work, .. }, Ok(runtime)) => {
             let waiter = Waiter::new(work);
             let (timer, deadline) = (waiter.clone(), Instant::now() + duration);
+            let _pending = Pending::new(deadline);
             let woken = runtime.spawn(async move {
                 tokio::time::sleep_until(deadline).await;
                 timer.wake();
@@ -467,6 +567,7 @@ impl<T: Send + 'static> Monitor<T> {
         self.waiters.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(waiter.clone());
         let (shared, timer) = (self.shared.clone(), waiter.clone());
         let deadline = instant() + timeout;
+        let _pending = Pending::new(deadline);
         let _deadline = Deadline(runtime.spawn(async move {
             tokio::time::sleep_until(deadline).await;
             timer.wake();
@@ -582,7 +683,9 @@ impl VirtualRuntime {
         let origin = runtime.block_on(async { Instant::now() });
         let work: &'static Work = Box::leak(Box::default());
         work.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).runtime = Some(runtime.handle().clone());
-        let clock = Clock::Virtual { epoch_millis, origin, work };
+        // Leaked so the clock stays `Copy` on every thread that carries it: one map per runtime.
+        let deadlines: &'static Deadlines = Box::leak(Box::default());
+        let clock = Clock::Virtual { epoch_millis, origin, work, deadlines };
         shared.set(clock).ok();
         Ok(VirtualRuntime { runtime, clock })
     }

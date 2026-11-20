@@ -25,7 +25,8 @@ const STORE: &str = "direct-macs.json";
 const LOCK: &str = "direct-macs.lock";
 const HELLO_TIMEOUT: Duration = Duration::from_millis(1500);
 const PAIRING_WAIT: Duration = Duration::from_secs(130);
-/// After an iroh connection failed, requests go over HTTP this long before iroh is tried again.
+/// After the Mac refused this terminal's dial as someone else's, requests go over HTTP this long
+/// before iroh is tried again.
 const IROH_RETRY: Duration = Duration::from_secs(60);
 
 /// One Mac this terminal paired with directly.
@@ -251,7 +252,14 @@ fn key_changed(name: &str) -> anyhow::Error {
 enum IrohLink {
     Untried,
     Open(Arc<crate::iroh_client::Session>),
-    Down(Instant),
+    Down,
+}
+
+/// The iroh link to one Mac, when it may dial again, and how long it has gone through the relay.
+struct Iroh {
+    link: IrohLink,
+    backoff: crate::iroh_client::Backoff,
+    relay: crate::iroh_client::RelayWatch,
 }
 
 /// What became of a request sent over iroh.
@@ -288,7 +296,7 @@ pub struct Connection {
     mac: DirectMac,
     home: PathBuf,
     current: Mutex<Option<String>>,
-    iroh: Mutex<IrohLink>,
+    iroh: Mutex<Iroh>,
     learned: AtomicBool,
 }
 
@@ -302,7 +310,7 @@ impl Connection {
             mac,
             home: home.to_path_buf(),
             current: Mutex::new(None),
-            iroh: Mutex::new(IrohLink::Untried),
+            iroh: Mutex::new(Iroh { link: IrohLink::Untried, backoff: Default::default(), relay: Default::default() }),
             learned: AtomicBool::new(false),
         }
     }
@@ -313,7 +321,7 @@ impl Connection {
 
     /// The route in use and how it reaches the Mac, once one answered.
     pub fn route(&self) -> Option<(String, RouteKind)> {
-        if let IrohLink::Open(session) = &*self.iroh.lock().expect("iroh lock poisoned")
+        if let IrohLink::Open(session) = &self.iroh.lock().expect("iroh lock poisoned").link
             && let Some(path) = session.path()
         {
             let shown = match path {
@@ -327,24 +335,50 @@ impl Connection {
         Some((current, kind))
     }
 
+    /// The open iroh connection, or a new one. After the Mac slept, and now and then while the
+    /// connection only goes through the relay, a new one is dialed from a new endpoint, which
+    /// looks for a direct path again; after failures it waits before dialing.
     fn iroh_session(&self) -> Option<Arc<crate::iroh_client::Session>> {
-        let mut link = self.iroh.lock().expect("iroh lock poisoned");
-        match &*link {
-            IrohLink::Open(session) if !session.is_closed() => return Some(session.clone()),
-            IrohLink::Down(since) if since.elapsed() < IROH_RETRY => return None,
-            _ => {}
+        let mut guard = self.iroh.lock().expect("iroh lock poisoned");
+        let iroh = &mut *guard;
+        let now = Instant::now();
+        if crate::iroh_client::woke(&self.home) {
+            iroh.backoff.answered();
+        }
+        let stuck = match &iroh.link {
+            IrohLink::Open(session) if session.is_usable() => {
+                if !iroh.relay.seen(session.path(), now) {
+                    return Some(session.clone());
+                }
+                Some(session.clone())
+            }
+            _ => None,
+        };
+        if stuck.is_none() && !iroh.backoff.ready(now) {
+            return None;
         }
         let dial = crate::iroh_client::load_dial(&self.home, &self.mac.mac_id)?;
         let signing = SigningKey::from_slice(&B64.decode(&self.mac.signing_key).ok()?).ok()?;
         let identity = crate::iroh_client::Identity { mac_id: &self.mac.mac_id, device_id: &self.mac.device_id, signing: &signing };
+        if let Some(stuck) = stuck {
+            return Some(match crate::iroh_client::connect_afresh(&self.home, &dial, &identity) {
+                Ok(session) => {
+                    let session = Arc::new(session);
+                    iroh.link = IrohLink::Open(session.clone());
+                    session
+                }
+                Err(_) => stuck,
+            });
+        }
         match crate::iroh_client::connect(&self.home, &dial, &identity) {
             Ok(session) => {
                 let session = Arc::new(session);
-                *link = IrohLink::Open(session.clone());
+                iroh.link = IrohLink::Open(session.clone());
                 Some(session)
             }
             Err(_) => {
-                *link = IrohLink::Down(Instant::now());
+                iroh.link = IrohLink::Down;
+                iroh.backoff.failed(now);
                 None
             }
         }
@@ -357,14 +391,24 @@ impl Connection {
     }
 
     fn iroh_down(&self) {
-        *self.iroh.lock().expect("iroh lock poisoned") = IrohLink::Down(Instant::now());
+        let mut iroh = self.iroh.lock().expect("iroh lock poisoned");
+        iroh.link = IrohLink::Down;
+        iroh.backoff.hold(Instant::now(), IROH_RETRY);
+    }
+
+    fn iroh_answered(&self) {
+        self.iroh.lock().expect("iroh lock poisoned").backoff.answered();
     }
 
     fn over_iroh(&self, bytes: &[u8], request_id: &str, timeout: Duration, observer: Option<&crate::client::availability::ResponseObserver>) -> OverIroh {
         use crate::iroh_client::Reply;
         let Some(session) = self.iroh_session() else { return OverIroh::NotSent };
         let name = &self.mac.name;
-        match session.send(bytes, timeout + Duration::from_secs(5)) {
+        let sent = session.send(bytes, timeout + Duration::from_secs(5));
+        if matches!(&sent, Ok(Reply::Sealed(_))) || matches!(&sent, Ok(Reply::Refused { error, .. }) if error != "wrong_mac") {
+            self.iroh_answered();
+        }
+        match sent {
             Ok(Reply::Sealed(sealed)) => {
                 if let Some(observer) = observer { observer.received(); }
                 OverIroh::Answered(self.open(&sealed, request_id))
@@ -391,7 +435,9 @@ impl Connection {
                 }
             },
             Err(failed) => {
-                *self.iroh.lock().expect("iroh lock poisoned") = IrohLink::Untried;
+                let mut iroh = self.iroh.lock().expect("iroh lock poisoned");
+                iroh.link = IrohLink::Untried;
+                iroh.backoff.failed(Instant::now());
                 if failed.sent { OverIroh::Lost } else { OverIroh::NotSent }
             }
         }
@@ -400,13 +446,17 @@ impl Connection {
     /// Learns, once per connection, how to dial the Mac over iroh when that is not known or no
     /// longer works.
     fn learn_dial_once(&self) {
-        let known = crate::iroh_client::load_dial(&self.home, &self.mac.mac_id).is_some();
-        let working = matches!(*self.iroh.lock().expect("iroh lock poisoned"), IrohLink::Open(_));
-        if (known && working) || self.learned.swap(true, Ordering::SeqCst) {
+        let known = crate::iroh_client::load_dial(&self.home, &self.mac.mac_id);
+        let working = matches!(self.iroh.lock().expect("iroh lock poisoned").link, IrohLink::Open(_));
+        if (known.is_some() && working) || self.learned.swap(true, Ordering::SeqCst) {
             return;
         }
         if self.learn_routes(&self.home).is_ok() {
-            *self.iroh.lock().expect("iroh lock poisoned") = IrohLink::Untried;
+            let mut iroh = self.iroh.lock().expect("iroh lock poisoned");
+            iroh.link = IrohLink::Untried;
+            if crate::iroh_client::load_dial(&self.home, &self.mac.mac_id) != known {
+                iroh.backoff.answered();
+            }
         }
     }
 

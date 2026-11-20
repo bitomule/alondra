@@ -24,10 +24,11 @@ fn main() {
         if index % shards != shard || !(filters.is_empty() || filters.iter().any(|filter| name.contains(filter.as_str()))) {
             continue;
         }
+        let started = std::time::Instant::now();
         match alondra_scenarios::check(case) {
-            Ok(_) => println!("scenario {name} ... ok"),
+            Ok(outcome) => println!("scenario {name} ... ok ({:.2} s)\n{}", started.elapsed().as_secs_f64(), outcome.timings.line()),
             Err(error) => {
-                println!("scenario {name} ... FAILED\n{error}");
+                println!("scenario {name} ... FAILED ({:.2} s)\n{error}", started.elapsed().as_secs_f64());
                 failed.push(name);
             }
         }
