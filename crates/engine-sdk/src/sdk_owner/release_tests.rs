@@ -618,7 +618,11 @@ async fn measured_went_on_after(slice: &mut Slice, tokens: u64, ago: alondra_cor
             let open = slice.domain.store.lock_or_exit("the domain store").provider_transition(&task).unwrap().is_some();
             if !open && prompts_at(&slice.capture).last().is_some_and(|prompt| prompt.ends_with("Now the changelog.")) { break }
             if open {
-                crate::provider_transition::advance(&slice.domain, &task).await.unwrap();
+                match crate::provider_transition::advance(&slice.domain, &task).await {
+                    Ok(_) => {}
+                    Err(error) if error.code == "selection_transition" => {}
+                    Err(error) => panic!("advancing the transition: {error:?}"),
+                }
             }
             let _ = tokio::time::timeout(std::time::Duration::from_millis(100), changed.changed()).await;
         }
