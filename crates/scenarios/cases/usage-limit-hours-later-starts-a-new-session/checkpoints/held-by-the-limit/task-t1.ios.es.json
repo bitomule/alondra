@@ -277,7 +277,7 @@
       {
         "id": "tasks",
         "label": "Tareas",
-        "value": 1
+        "value": 2
       },
       {
         "id": "working",
@@ -292,7 +292,7 @@
       {
         "id": "queued",
         "label": "en cola",
-        "value": 1
+        "value": 2
       },
       {
         "id": "paused",

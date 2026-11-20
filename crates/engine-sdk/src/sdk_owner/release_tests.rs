@@ -542,6 +542,13 @@ enum Measured {
     /// readings were kept, or the reading was lost. The daemon restarts without its readings and
     /// adopts the host.
     InTranscript,
+    /// In the reading it kept, after which the next request failed on the usage limit with an
+    /// answer that used no tokens.
+    StoredThenLimited,
+    /// In Claude Code's transcript, the reading the daemon kept saying 0 tokens, as one replaced by
+    /// a failed request's answer did before. The daemon restarts with that reading and adopts the
+    /// host.
+    InTranscriptOverEmpty,
 }
 
 async fn went_on_after(slice: &mut Slice, tokens: u64, ago: alondra_core::Millis, selected: bool, standing: Standing) -> Resumption {
@@ -582,8 +589,14 @@ async fn measured_went_on_after(slice: &mut Slice, tokens: u64, ago: alondra_cor
         Standing::Live => {}
         Standing::Adopted => {
             slice.domain.crash_sdk_owners();
-            if measured == Measured::InTranscript {
-                std::fs::remove_file(slice.domain.home().join("context-readings.json")).unwrap();
+            let readings = slice.domain.home().join("context-readings.json");
+            match measured {
+                Measured::InTranscript => std::fs::remove_file(readings).unwrap(),
+                Measured::InTranscriptOverEmpty => {
+                    let empty = serde_json::json!({TASK: {"tokens": 0, "requested_at": alondra_core::now_millis() - ago / 2, "cache_ms": 3_600_000, "compactable": false}});
+                    std::fs::write(readings, empty.to_string()).unwrap();
+                }
+                Measured::Stored | Measured::StoredThenLimited => {}
             }
             slice.domain = slice.restart();
             enable(slice);
@@ -594,14 +607,21 @@ async fn measured_went_on_after(slice: &mut Slice, tokens: u64, ago: alondra_cor
     let slice: &Slice = slice;
     let (task, requested_at) = (TaskId::from(TASK), alondra_core::now_millis() - ago);
     match measured {
-        Measured::Stored => {
+        Measured::Stored | Measured::StoredThenLimited => {
             slice.domain.contexts().handed(&task, requested_at);
             slice.domain.contexts().observed(&task, alondra_provider_claude::ContextEvent::Answered {
                 tokens, cache: Some(std::time::Duration::from_secs(3600)), model: None, cached: Default::default(),
             }, requested_at);
+            if measured == Measured::StoredThenLimited {
+                let limited_at = requested_at + ago / 2;
+                slice.domain.contexts().handed(&task, limited_at);
+                slice.domain.contexts().observed(&task, alondra_provider_claude::ContextEvent::Answered {
+                    tokens: 0, cache: None, model: Some("<synthetic>".into()), cached: Default::default(),
+                }, limited_at);
+            }
         }
-        Measured::InTranscript => {
-            assert_eq!(slice.domain.contexts().last_request(&task), None, "the daemon kept no reading of the conversation");
+        Measured::InTranscript | Measured::InTranscriptOverEmpty => {
+            assert_eq!(slice.domain.contexts().last_request(&task), None, "the daemon holds no reading of the conversation");
             let transcript = claude_history::transcript(&slice.backend.native_environment, &session, &slice.worktree).expect("the session's transcript");
             let answer = serde_json::json!({"type": "assistant", "sessionId": session, "isSidechain": false, "timestamp": rfc3339(requested_at),
                 "message": {"role": "assistant", "content": [], "usage": {"input_tokens": 3, "cache_read_input_tokens": tokens - 2_003, "cache_creation_input_tokens": 2_000,
@@ -762,6 +782,31 @@ async fn a_large_conversation_with_no_stored_reading_whose_transcript_shows_its_
     let resumed = measured_went_on_after(&mut slice, 250_000, 0, true, Standing::Adopted, Measured::InTranscript).await;
     slice.domain.stop_sdk_owners();
     assert_eq!(resumed.starts.len(), 1, "the same host and session go on: {:?}", resumed.starts);
+}
+
+// 20 November: five nodes came back from a usage limit and resumed their conversations, the
+// largest writing 206,811 tokens to the prompt cache: the last request of each had failed on the
+// limit, and its answer, which used no tokens, had replaced the reading of the conversation with
+// one of 0 tokens. An answer that used no tokens leaves the reading as it was, and a reading of 0
+// tokens is no reading: the transcript says how large the conversation is.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_large_conversation_whose_last_request_hit_the_usage_limit_goes_on_in_a_new_session() {
+    let mut slice = Slice::new();
+    let resumed = measured_went_on_after(&mut slice, 250_000, HOURS_AGO, true, Standing::Live, Measured::StoredThenLimited).await;
+    slice.domain.stop_sdk_owners();
+    let last = resumed.starts.last().unwrap();
+    assert_eq!(resumed.starts.len(), 2, "{:?}", resumed.starts);
+    assert!(last["resume"].is_null() && last["session"].as_str() != Some(resumed.session.as_str()), "a new session, not the old one going on: {:?}", resumed.starts);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_large_conversation_whose_kept_reading_says_no_tokens_goes_on_in_a_new_session() {
+    let mut slice = Slice::new();
+    let resumed = measured_went_on_after(&mut slice, 250_000, HOURS_AGO, true, Standing::Adopted, Measured::InTranscriptOverEmpty).await;
+    slice.domain.stop_sdk_owners();
+    let last = resumed.starts.last().unwrap();
+    assert_eq!(resumed.starts.len(), 2, "{:?}", resumed.starts);
+    assert!(last["resume"].is_null() && last["session"].as_str() != Some(resumed.session.as_str()), "a new session, not the old one going on: {:?}", resumed.starts);
 }
 
 #[test]

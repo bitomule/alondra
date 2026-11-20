@@ -127,7 +127,8 @@ pub struct Contexts {
 impl Contexts {
     pub fn persisted_in(home: &Path) -> Self {
         let file = home.join(FILE);
-        let last = std::fs::read(&file).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+        let last: BTreeMap<TaskId, LastRequest> = std::fs::read(&file).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+        let last = last.into_iter().filter(|(_, last)| last.tokens > 0).collect();
         Self { measured: Mutex::new(Inner { last, ..Inner::default() }), file: Some(file), ..Self::default() }
     }
 
@@ -168,8 +169,12 @@ impl Contexts {
 
     /// The host said `event` at `at`. Only a conversation this driver handed an input to times its
     /// requests; any says its size. The first answer to a new host's first request says what
-    /// starting it cost.
+    /// starting it cost. An answer that used no tokens, as the one Claude writes itself for an
+    /// error, a usage limit or a refusal, made no request and measures nothing.
     pub fn observed(&self, task: &TaskId, event: ContextEvent, at: Millis) -> Option<SessionStart> {
+        if matches!(event, ContextEvent::Answered { tokens: 0, .. }) {
+            return None;
+        }
         let mut guard = self.lock();
         let inner = &mut *guard;
         let measured = inner.measured.entry(task.clone()).or_default();
@@ -506,5 +511,43 @@ mod tests {
         contexts.handed(&"t-2".into(), 5);
         let started = contexts.observed(&"t-2".into(), hour(20_000, Cached::default()), 6).unwrap();
         assert_eq!((started.kind, started.since_previous), (StartKind::New, None));
+    }
+
+    // 20 November: the last request before a usage limit failed, and Claude's answer for it, which
+    // used no tokens, replaced the reading of a 250,000-token conversation with one of 0 tokens.
+    // When the limit renewed hours later, the conversation looked small and resumed whole.
+    #[test]
+    fn an_answer_that_used_no_tokens_leaves_the_last_request_as_it_was() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&*home).unwrap();
+        let task = TaskId::from("t-1");
+        let contexts = Contexts::persisted_in(&home);
+        contexts.handed(&task, 1_000);
+        contexts.observed(&task, hour(250_000, Cached::default()), 2_000);
+        contexts.launched(&task, StartKind::Resumed);
+        contexts.handed(&task, 1_000 + HOUR);
+        let limited = ContextEvent::Answered { tokens: 0, cache: None, model: Some("<synthetic>".into()), cached: Cached::default() };
+        assert_eq!(contexts.observed(&task, limited, 1_001 + HOUR), None);
+        let kept = Some(LastRequest { tokens: 250_000, requested_at: 1_000, cache_ms: HOUR, compactable: true });
+        assert_eq!(contexts.last_request(&task), kept);
+        assert_eq!(Contexts::persisted_in(&home).last_request(&task).map(|last| (last.tokens, last.requested_at)), Some((250_000, 1_000)));
+        assert_eq!(contexts.used(&task).map(|used| used.tokens), Some(250_000));
+        let started = contexts.observed(&task, hour(251_000, Cached::default()), 2_000 + 5 * HOUR).expect("the first request that answered says what starting cost");
+        assert_eq!(started.tokens, 251_000);
+    }
+
+    #[test]
+    fn a_kept_reading_of_no_tokens_is_no_reading() {
+        let home = crate::test_support::Directory::new();
+        std::fs::create_dir_all(&*home).unwrap();
+        let kept = serde_json::json!({
+            "t-limited": {"tokens": 0, "requested_at": 1_000, "cache_ms": HOUR, "compactable": true},
+            "t-measured": {"tokens": 250_000, "requested_at": 1_000, "cache_ms": HOUR, "compactable": false},
+        });
+        std::fs::write(home.join(FILE), kept.to_string()).unwrap();
+        let contexts = Contexts::persisted_in(&home);
+        assert_eq!(contexts.last_request(&"t-limited".into()), None);
+        assert!(contexts.readings().is_empty());
+        assert_eq!(contexts.last_request(&"t-measured".into()).map(|last| last.tokens), Some(250_000));
     }
 }

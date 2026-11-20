@@ -1,4 +1,4 @@
-name = "a large conversation the usage limit held past its prompt cache goes on in a new session, which writes little to the cache"
+name = "large conversations the usage limit held past their prompt cache go on in new sessions, which write little to the cache, though the request that hit the limit answered with no tokens"
 max_virtual = "6h"
 
 [[step]]
@@ -22,6 +22,26 @@ do = "turn_end"
 task = "t1"
 
 [[step]]
+do = "request"
+text = "Write the migration guide"
+task = "t2"
+title = "Write the migration guide"
+
+[[step]]
+do = "node"
+task = "t2"
+model = "demo-model"
+
+[[step]]
+do = "conversation"
+task = "t2"
+tokens = 180000
+
+[[step]]
+do = "turn_end"
+task = "t2"
+
+[[step]]
 do = "provider_down"
 error = "rate_limit"
 status = 429
@@ -34,6 +54,15 @@ text = "Add the changelog too"
 [[step]]
 do = "turn_end"
 task = "t1"
+
+[[step]]
+do = "tell"
+task = "t2"
+text = "Cover the config changes too"
+
+[[step]]
+do = "turn_end"
+task = "t2"
 
 [[step]]
 do = "rest"
@@ -78,4 +107,16 @@ sessions = 2
 [[step.expect]]
 check = "cache_written"
 task = "t1"
+max = 20000
+
+[[step.expect]]
+check = "hosts"
+task = "t2"
+started = 3
+running = 1
+sessions = 2
+
+[[step.expect]]
+check = "cache_written"
+task = "t2"
 max = 20000
