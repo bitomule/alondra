@@ -1370,7 +1370,7 @@ pub fn close_hosts_of_ended_nodes(domain: &dyn Runtime, state: &DomainState) {
             continue;
         }
         log!("the node {agent} ended with its task, but its SDK host still runs: it is closed");
-        retakes.push((task, alondra_core::clock::spawn_thread(move || {
+        retakes.push((task, Retake::spawn(runtime, move |runtime| {
             if let Err(failed) = runtime.close_sdk_host(&agent) {
                 log!("the SDK host of the ended node {agent} did not close: {failed}");
             }
@@ -1460,10 +1460,9 @@ fn retake_with_policy(domain: &dyn Runtime, task: TaskId,explicit_account_retry:
         return;
     }
     let refusal = crate::domain_store::carried_refusal();
-    retakes.push((task.clone(), alondra_core::clock::spawn_thread(move || {
+    retakes.push((task.clone(), Retake::spawn(runtime, move |runtime| {
         refusal();
-        take_again(&runtime, &backend, &task, explicit_account_retry);
-        runtime.wake_subscribers();
+        take_again(runtime, &backend, &task, explicit_account_retry);
     })));
 }
 
@@ -1553,15 +1552,44 @@ pub fn halt(domain: &dyn Runtime, task: TaskId, agent: AgentId) {
     if retakes.iter().any(|(taking, _)| *taking == task) {
         return;
     }
-    retakes.push((task.clone(), alondra_core::clock::spawn_thread(move || {
+    retakes.push((task.clone(), Retake::spawn(runtime, move |runtime| {
         match runtime.halt_sdk_host(&agent) {
             None => return,
             Some(Ok(())) => log!("the SDK host of {task} and every process under it stopped for its pause"),
             Some(Err(failed)) => log!("the SDK host of {task} did not stop cleanly for its pause: {failed}"),
         }
-        take_again(&runtime, &backend, &task, false);
-        runtime.wake_subscribers();
+        take_again(runtime, &backend, &task, false);
     })));
+}
+
+/// A takeover, a halt or a close of a host, on a thread of its own. It reads as finished once its
+/// work is done and before it wakes the waiters on the domain: one that looks again then never
+/// finds it under way only because its thread has not returned yet, with nothing left to wake it.
+pub struct Retake {
+    done: Arc<AtomicBool>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+impl Retake {
+    fn spawn(runtime: Arc<dyn Runtime>, work: impl FnOnce(&Arc<dyn Runtime>) + Send + 'static) -> Self {
+        let done = Arc::new(AtomicBool::new(false));
+        let finished = Arc::clone(&done);
+        let thread = alondra_core::clock::spawn_thread(move || {
+            work(&runtime);
+            finished.store(true, Ordering::SeqCst);
+            runtime.wake_subscribers();
+            runtime.sdk_owners().retakes_held_after_waking.wait();
+        });
+        Self { done, thread }
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.done.load(Ordering::SeqCst)
+    }
+
+    pub fn join(self) -> std::thread::Result<()> {
+        self.thread.join()
+    }
 }
 
 /// Whether a retake of `task`, or the halt that replaces its host for a pause, is under way.
@@ -2869,6 +2897,38 @@ pub use crate::engine_fixtures::owner as fixtures;
 #[path = "sdk_owner/tests.rs"]
 mod tests;
 
+/// A door the retake threads of a test wait at after waking the domain's waiters, closed only
+/// while the test holds it.
+#[derive(Default)]
+pub struct HoldAfterWaking {
+    held: Mutex<bool>,
+    opened: std::sync::Condvar,
+}
+
+pub struct HeldAfterWaking<'a>(&'a HoldAfterWaking);
+
+impl Drop for HeldAfterWaking<'_> {
+    fn drop(&mut self) {
+        *self.0.held.lock_or_recover("the retake hold") = false;
+        self.0.opened.notify_all();
+    }
+}
+
+impl HoldAfterWaking {
+    /// Holds the door until what it returns is dropped, a failing test included.
+    pub fn hold(&self) -> HeldAfterWaking<'_> {
+        *self.held.lock_or_recover("the retake hold") = true;
+        HeldAfterWaking(self)
+    }
+
+    fn wait(&self) {
+        let mut held = self.held.lock_or_recover("the retake hold");
+        while *held {
+            held = self.opened.wait(held).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+}
+
 /// What this daemon keeps about the SDK hosts it owns and the executions it takes over.
 #[derive(Default)]
 pub struct Owners {
@@ -2879,7 +2939,10 @@ pub struct Owners {
     /// The executions being taken over again, each with its task, while that runs.
     /// A holder that panics leaves it whole, so it is recovered: a retain and then one push of a
     /// thread already spawned.
-    pub retakes: Mutex<Vec<(TaskId, std::thread::JoinHandle<()>)>>,
+    pub retakes: Mutex<Vec<(TaskId, Retake)>>,
+    /// Holds each retake's thread after it woke the waiters on the domain, until the test lets it
+    /// return: what reads a retake as under way must not need its thread to have returned.
+    pub retakes_held_after_waking: HoldAfterWaking,
     /// The tasks whose SDK execution is in hand, with how many hold it: a launch or a takeover
     /// under way, or the driver of its host. Nothing takes over an execution in hand.
     /// A holder that panics leaves it whole, so it is recovered: one count up or down.

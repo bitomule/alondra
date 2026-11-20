@@ -2124,10 +2124,12 @@ async fn a_paused_task_moves_at_once_and_starts_on_the_new_account_when_resumed(
     let slice=Slice::new();let task:TaskId=TASK.into();
     let source=working_on_codex(&slice);
     slice.domain.admission().ignore_mac();
+    let held=slice.domain.sdk_owners().retakes_held_after_waking.hold();
     slice.domain.gate().pause_by_user(&source.0,alondra_core::now_millis()).unwrap();
     slice.domain.subscribe().wait_for(|_|paused_by_the_user(&slice)).await.unwrap();
     request_move(&slice);
-    assert_eq!(settled_move(&slice).await,"done");
+    assert_eq!(settled_move(&slice).await,"done","the halt that replaced the paused host woke the move before its thread returned");
+    drop(held);
     let state=slice.domain.state().unwrap();
     assert!(state.tasks[&task].pending_selection.is_none());
     assert!(paused_by_the_user(&slice),"a paused task stays paused");
