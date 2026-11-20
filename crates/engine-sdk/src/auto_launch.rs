@@ -219,5 +219,5 @@ fn tell(domain: &DomainRuntime, id: &str, body: String) {
 }
 
 pub mod fixtures;
-#[cfg(test)]
+#[cfg(all(test, not(feature = "real-hosts")))]
 mod tests;

@@ -206,7 +206,7 @@ fn write_conversation(home: &std::path::Path, task: &TaskId, session: &str, tran
     Ok(file)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "real-hosts")))]
 mod tests {
     use super::*;
 

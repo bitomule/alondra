@@ -150,6 +150,10 @@ impl Served {
     pub fn end(&self, status: ExitStatus) {
         self.0.end(status);
     }
+    /// Waits until the host ends, however it ends, and returns how.
+    pub fn wait(&self) -> ExitStatus {
+        self.0.wait()
+    }
     /// Keeps the host's end of a connection open until the host ends.
     pub fn hold(&self, stream: UnixStream) {
         let mut life = self.0.life();

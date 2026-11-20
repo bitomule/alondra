@@ -1,4 +1,4 @@
 # Tests that keep a generous limit and run in every validation: target, a tab, and why.
 //apple/Testing/TriageTouch:TriageTouchUITests	Creates and boots a simulator of its own every run, about 140 seconds, because the shared pool cannot install the UI test runner with Xcode 27.
-//crates/engine-sdk:engine_sdk_test	The SDK owners', the launches' and the closing of tasks' tests, most of them through a real Agent SDK host, a fake Claude or Codex, or the alondra and alondrad binaries; the crate keeps one test target.
+//crates/engine-sdk:engine_sdk_host_test	The SDK owners' tests that need a real Agent SDK or Codex host or a fake native Claude or Codex: about 150 to 170 seconds under load.
 //crates/engine-orchestrator:engine_orchestrator_test	151 tests, most of them through a real Agent SDK host or a fake Claude or Codex, about 60 seconds; the orchestrator crate keeps one test target.

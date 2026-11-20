@@ -87,6 +87,14 @@ materialized locally.
 - Fixtures that write files own them: Rust tests use `crate::test_support::Directory`, Swift tests
   use `@Suite(.temporaryFiles)` and `TestFiles.directory()`. The tree is removed on success and
   failure.
+- A test of the engine that launches a node starts no process: `engine-sdk`'s `model_fixture`
+  gives its domain the doubled hosts of `engine-doubles`, and `//crates/provider-claude:claude_host_model`
+  plays each Claude host and its native Claude. `//crates/engine-sdk:engine_sdk_test` has no host
+  executable among its inputs. A test that needs the real Node or Codex host, or a fake native
+  Claude's scripted behaviour the model does not play, goes under the feature `real-hosts`, which
+  only `//crates/engine-sdk:engine_sdk_host_test` compiles. What the model plays is kept honest by
+  the behaviour cases of `provider-claude/src/host_cases/`, which `sdk_worker_test` runs on the real
+  host and `claude_host_model_test` on the model.
 
 ## Programs a test runs
 
@@ -254,7 +262,7 @@ The slowest targets, measured in a full run on a busy machine:
 
 | Target | Seconds | Limit |
 |---|---:|---:|
-| `//crates/engine-sdk:engine_sdk_test` | 226.7 | 600 |
+| `//crates/engine-sdk:engine_sdk_host_test` | 164.0 | 600 |
 | `//apple/Testing/TriageTouch:TriageTouchUITests` | 200.0 | 600 |
 | `//apple/Testing/Snapshots:AlondraTriageSnapshotTests` | 140.3 | 300 |
 | `//apple/Testing/Snapshots:AlondraDetailSnapshotTests` | 110.1 | 300 |

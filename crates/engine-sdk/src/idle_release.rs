@@ -119,7 +119,7 @@ pub async fn run(domain: Arc<DomainRuntime>, timing: &'static Timing) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "real-hosts")))]
 mod tests {
     use super::*;
 

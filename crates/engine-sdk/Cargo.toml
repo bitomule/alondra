@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+real-hosts = []
+
 [dependencies]
 alondra-engine-ports.workspace = true
 alondra-daemon-engine.workspace = true

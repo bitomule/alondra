@@ -118,7 +118,7 @@ fn collect_toml_references(value: &toml::Value, names: &mut BTreeSet<String>) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "real-hosts")))]
 mod tests {
     use super::*;
 

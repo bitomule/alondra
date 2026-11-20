@@ -243,6 +243,6 @@ async fn tick(domain: &Arc<DomainRuntime>) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "real-hosts"))]
 #[path = "bg_handover/tests.rs"]
 mod tests;

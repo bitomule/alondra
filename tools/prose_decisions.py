@@ -103,7 +103,11 @@ def normalized(text):
     return " ".join(text.split())
 
 
-TEST_ONLY = ("#[cfg(test)]",)
+TEST_ONLY = (
+    "#[cfg(test)]",
+    '#[cfg(all(test, feature = "real-hosts"))]',
+    '#[cfg(all(test, not(feature = "real-hosts")))]',
+)
 
 
 def without_cfg_test(text):

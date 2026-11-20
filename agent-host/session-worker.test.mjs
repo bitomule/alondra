@@ -15,15 +15,16 @@ const value = (args, flag) => {
   return at === -1 ? undefined : args[at + 1];
 };
 
-try {
+// A task's Claude runs the model, effort and tools its launch chose, in the session the host was
+// given: a new one, or the one it resumes.
+const launch = async (name, { worker, resume = false, sessionId = '00000000-0000-4000-8000-0000000000b2' }) => {
   const { Session } = await import('./session.js');
-  const home = join(root, 'home');
+  const home = join(root, `${name}-home`);
   mkdirSync(home);
-  const capture = join(root, 'capture.json');
+  const capture = join(root, `${name}-capture.json`);
   let env;
   const run = new Session({
-    executable: '/fixture/original-claude', cwd: root, sessionId: '00000000-0000-4000-8000-0000000000b2',
-    worker: { plugins: ['/fixture/plugin'], settings: { env: { ALONDRA_PRODUCER: 'node' }, permissions: { deny: ['Bash(alondra answer:*)'] } } },
+    executable: '/fixture/original-claude', cwd: root, sessionId, resume, worker,
     env: { HOME: home, PATH: '/fixture/no-js-runtime', FIXTURE_SCENARIO: 'success', FIXTURE_CAPTURE: capture, ALONDRA_DOMAIN_PROTOCOL: '2' },
     spawn: (options) => {
       env = options.env;
@@ -33,17 +34,34 @@ try {
   });
   run.offer('00000000-0000-4000-8000-0000000000a1', 'the task');
   await run.finished;
-  const args = JSON.parse(readFileSync(capture)).args;
+  return { args: JSON.parse(readFileSync(capture)).args, env, home };
+};
+
+try {
+  const { args, env, home } = await launch('profile', { worker: { plugins: ['/fixture/plugin'], settings: { env: { ALONDRA_PRODUCER: 'node' }, permissions: { deny: ['Bash(alondra answer:*)'] } } } });
   assert.equal(value(args, '--setting-sources'), 'user,project,local', args.join(' '));
   assert(!args.includes('--strict-mcp-config'), `the user's MCP servers load: ${args.join(' ')}`);
   assert.equal(value(args, '--mcp-config'), undefined, args.join(' '));
   assert.deepEqual(args.flatMap((arg, at) => arg.startsWith('--plugin-dir=') ? [arg.slice(13)] : args[at - 1] === '--plugin-dir' ? [arg] : []), ['/fixture/plugin'], args.join(' '));
   assert.deepEqual(JSON.parse(value(args, '--settings')).permissions.deny, ['Bash(alondra answer:*)']);
   assert.equal(value(args, '--permission-mode'), 'auto', args.join(' '));
+  assert.equal(value(args, '--model'), undefined, `no model unless the launch chose one: ${args.join(' ')}`);
+  assert.equal(value(args, '--effort'), undefined, `no effort unless the launch chose one: ${args.join(' ')}`);
+  assert.equal(value(args, '--session-id'), '00000000-0000-4000-8000-0000000000b2', args.join(' '));
+  assert.equal(value(args, '--resume'), undefined, args.join(' '));
   assert.equal(env.HOME, home);
   assert.equal(env.CLAUDE_CONFIG_DIR, undefined, 'the default profile');
   assert.equal(env.CLAUDE_HOME, undefined, 'the default profile');
   assert.equal(env.ALONDRA_DOMAIN_PROTOCOL, '2');
+
+  const chosen = await launch('chosen', { worker: { plugins: [], settings: {}, model: 'opus', effort: 'xhigh', disallowed_tools: ['Bash', 'WebFetch'] } });
+  assert.equal(value(chosen.args, '--model'), 'opus', chosen.args.join(' '));
+  assert.equal(value(chosen.args, '--effort'), 'xhigh', chosen.args.join(' '));
+  assert.deepEqual(value(chosen.args, '--disallowedTools')?.split(','), ['Bash', 'WebFetch'], chosen.args.join(' '));
+
+  const resumed = await launch('resumed', { worker: { plugins: [], settings: {} }, resume: true, sessionId: '00000000-0000-4000-8000-0000000000B3' });
+  assert.equal(value(resumed.args, '--resume'), '00000000-0000-4000-8000-0000000000b3', `it resumes its session, by its lowercase id: ${resumed.args.join(' ')}`);
+  assert.equal(value(resumed.args, '--session-id'), undefined, resumed.args.join(' '));
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

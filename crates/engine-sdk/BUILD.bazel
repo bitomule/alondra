@@ -84,15 +84,31 @@ SDK_TEST_COMPILE_DATA = [
     "//fixtures/domain-v2:acceptance.json",
 ]
 
-# Most of the SDK's tests run a real Agent SDK host or a fake Claude or Codex, so its one test
-# target carries them. It never carries a binary of the root: they link every crate, so an edit
-# anywhere would rerun these tests. The tests that start the real daemon are
-# //crates/alondrad:codex_adoption_process_test.
+# The SDK's tests run on the doubled hosts of engine-doubles, which the Claude host model plays:
+# no process starts and no host executable is an input. It never carries a binary of the root:
+# they link every crate, so an edit anywhere would rerun these tests.
 low_opt_rust_test(
     name = "engine_sdk_test",
-    size = "large",
+    size = "medium",
     srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs", "//crates/daemon-engine:src/wiring/owner_fixtures.rs"],
     compile_data = SDK_TEST_COMPILE_DATA,
+    crate_name = "alondra_engine_sdk",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    env = {"HOME": "."},
+    version = VERSION,
+    deps = all_crate_deps(normal = True, normal_dev = True) + WORKSPACE_DEPS + ["//crates/provider-claude:claude_host_model"] + TEST_HOOKS_DEPS,
+)
+
+# The tests that still need a real Agent SDK or Codex host, or a fake native Claude or Codex: the
+# same sources with the feature real-hosts, which compiles only them. The tests that start the real
+# daemon are //crates/alondrad:codex_adoption_process_test.
+low_opt_rust_test(
+    name = "engine_sdk_host_test",
+    size = "large",
+    srcs = glob(["src/**/*.rs"]) + ["//crates:test_support.rs"],
+    compile_data = SDK_TEST_COMPILE_DATA,
+    crate_features = ["real-hosts"],
     crate_name = "alondra_engine_sdk",
     crate_root = "src/lib.rs",
     data = SDK_TEST_DATA,

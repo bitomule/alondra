@@ -819,13 +819,13 @@ pub async fn run(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "real-hosts")))]
 mod tests {
     use alondra_store_sqlite::AsSqlite as _;
     use alondra_engine_admission::AdmissionOf as _;
     use crate::sdk_owner::SdkOwners as _;
     use super::*;
-    use crate::sdk_owner::fixtures::SdkLaunches;
+    use crate::model_fixture::SdkLaunches;
     use alondra_domain_rules::{InteractionId, InteractionPayload, Schedule, ScheduleFrequency};
     use std::collections::BTreeMap;
 
@@ -1321,7 +1321,7 @@ mod tests {
         let registry = std::fs::read_to_string(fixture.home.join("domain-capabilities.json")).unwrap();
         assert!(registry.contains(&agent.0), "the node holds a durable bearer");
         sdk.until_answered(&task.id.0).await;
-        let capture: serde_json::Value = serde_json::from_slice(&std::fs::read(&sdk.capture).unwrap()).unwrap();
+        let capture = sdk.capture();
         let environment: Vec<&str> = capture["env_keys"].as_array().unwrap().iter().filter_map(serde_json::Value::as_str).collect();
         assert!(environment.contains(&"ALONDRA_DOMAIN_CAPABILITY"), "its Claude reaches Alondra with that bearer: {environment:?}");
         run_cycle(&fixture.domain, &fixture.home, false).await.unwrap();

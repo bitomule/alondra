@@ -20,6 +20,9 @@ use crate::node_close::Answer;
 use crate::node_push::testing::Node;
 use crate::sdk_handover::BgSessions;
 use alondra_daemon_engine_model::LaunchOptions;
+#[cfg(all(test, not(feature = "real-hosts")))]
+use crate::model_fixture::SdkLaunches;
+#[cfg(any(not(test), feature = "real-hosts"))]
 use crate::sdk_owner::fixtures::SdkLaunches;
 use crate::test_support::Directory;
 use alondra_domain_rules::{AttachmentRef, Command, CommandEnvelope, ModelChooser, PROTOCOL_VERSION, TaskModel, TaskState};

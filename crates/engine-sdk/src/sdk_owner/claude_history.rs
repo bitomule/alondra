@@ -67,7 +67,7 @@ fn witnessed(path: &Path, session: &str, directory: &Path) -> bool {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "real-hosts")))]
 mod tests {
     use super::*;
     use crate::test_support::Directory;
