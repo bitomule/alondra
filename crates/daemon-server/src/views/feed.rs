@@ -101,9 +101,9 @@ impl Feeds {
         keys
     }
 
-    fn cached_current(&self, key: &str, epoch: &str, revision: u64, wake: u64) -> Option<Current> {
+    fn cached_current(&self, key: &str, epoch: &str, revision: u64, wake: u64, domain: &alondra_domain_rules::NodeChangeCursor) -> Option<Current> {
         self.cache.lock_or_recover("the feed cache").get(key)
-            .filter(|current| same_input_revision(
+            .filter(|current| &current.domain == domain && same_input_revision(
                 &current.epoch, current.clock.1, current.wake, epoch, revision, wake,
             ))
             .cloned()
@@ -121,8 +121,8 @@ pub(crate) fn start_clock(client: &Arc<crate::client_routes::Client>) {
             Duration::from_secs(5),
         );
         let Some(initial_client) = weak.upgrade() else { return };
-        let mut domain_changes = initial_client.domain.subscribe();
-        let mut state = initial_client.domain.state().ok();
+        let mut domain_changes = initial_client.domain.subscribe_snapshots();
+        let mut read = initial_client.domain.read();
         let mut hook_changes = initial_client.domain.live().changed.subscribe();
         let mut report_changes = initial_client.domain.live().mods.changed.subscribe();
         let observation = initial_client.view_observation.clone();
@@ -137,18 +137,17 @@ pub(crate) fn start_clock(client: &Arc<crate::client_routes::Client>) {
                 observation.clone(),
             ).await else { break };
             let Some(client) = weak.upgrade() else { break };
-            if domain_advanced || state.is_none() {
-                state = client.domain.state().ok();
+            if domain_advanced {
+                read = client.domain.read();
             }
-            let Some(state) = state.as_ref() else { continue };
-            sample_live(&client, state, &mut last).await;
+            sample_live(&client, &read, &mut last).await;
         }
     });
 }
 
 async fn next_sample(
     periodic: impl std::future::Future<Output = ()>,
-    domain_changes: &mut watch::Receiver<alondra_domain_rules::Revision>,
+    domain_changes: &mut watch::Receiver<u64>,
     hook_changes: &mut watch::Receiver<()>,
     report_changes: &mut watch::Receiver<()>,
     observation: Observation,
@@ -188,11 +187,11 @@ pub(crate) fn sample_changed(
 
 pub(crate) async fn sample_live(
     client: &crate::client_routes::Client,
-    state: &Arc<alondra_domain_rules::DomainState>,
+    read: &Arc<alondra_domain_rules::ReadSnapshot>,
     last: &mut Option<Sample>,
 ) -> bool {
     let keys = client.feeds.live_keys();
-    let live = super::live::gather(client, state, Lang::En, &keys, false, true).await;
+    let live = super::live::gather(client, read, Lang::En, &keys, false, true).await;
     if !sample_changed(live, last, &client.view_observation) { return false; }
     client.feeds.shared_changed();
     true
@@ -212,6 +211,7 @@ struct Reply {
 
 #[derive(Clone)]
 struct Current {
+    domain: alondra_domain_rules::NodeChangeCursor,
     cursor: String,
     status: alondra_view_model::Status,
     stale: Vec<String>,
@@ -272,7 +272,7 @@ pub(crate) async fn handle(
         let _ = old.send(());
     }
     let started = clock::instant();
-    let mut domain_changes = client.domain.subscribe();
+    let mut domain_changes = client.domain.subscribe_snapshots();
     let mut live_changes = client.feeds.clock.subscribe();
     let mut previous = None;
     let mut displaced = false;
@@ -365,7 +365,8 @@ async fn current(
     let state = read.state();
     let wake = *client.feeds.clock.borrow();
     let cache_key = feed_key(kind, lang, transport, views, capabilities);
-    if let Some(current) = client.feeds.cached_current(&cache_key, &state.data_epoch.0, state.revision, wake) {
+    let domain = read.node_cursor();
+    if let Some(current) = client.feeds.cached_current(&cache_key, &state.data_epoch.0, state.revision, wake, &domain) {
         return Ok(current);
     }
     let cached = client.feeds.cache.lock_or_recover("the feed cache")
@@ -375,10 +376,10 @@ async fn current(
     let mut keys = Vec::with_capacity(views.len() + 1);
     keys.push(status_key.to_owned());
     keys.extend(views.iter().filter(|(key, _)| super::routes::valid_open_key(key)).map(|(key, _)| key.clone()));
-    let live = super::live::gather(client, &state, lang, &keys, false, false).await;
-    let input = super::cache::Input::prepared(state, &live).with_capabilities(capabilities);
+    let live = super::live::gather(client, &read, lang, &keys, false, false).await;
+    let input = super::cache::Input::prepared(&read, &live).with_capabilities(capabilities);
     let clock = (state.data_epoch.0.clone(), state.revision, input.live_revision().to_owned());
-    if let Some(previous) = previous.filter(|previous| previous.clock == clock) {
+    if let Some(previous) = previous.filter(|previous| previous.domain == domain && previous.clock == clock) {
         let mut current = previous.clone();
         current.wake = wake;
         cache_current(client, cache_key, &current);
@@ -411,7 +412,7 @@ async fn current(
     let bytes = serde_json::to_vec(&tuple).expect("feed cursor serialization");
     let cursor = format!("c1.{}", URL_SAFE_NO_PAD.encode(bytes));
     let current = Current {
-        cursor, status, stale, epoch: clock.0.clone(), clock, wake,
+        domain, cursor, status, stale, epoch: clock.0.clone(), clock, wake,
         live_keys: keys.into_iter().filter(|key| super::routes::valid_open_key(key)).collect(),
     };
     cache_current(client, cache_key, &current);
@@ -786,7 +787,9 @@ mod tests {
     #[test]
     fn cached_feed_input_is_invalidated_by_domain_or_live_changes() {
         let feeds = Feeds::default();
+        let read = alondra_domain_rules::ReadSnapshot::build(Arc::new(alondra_domain_rules::DomainState::new("epoch")));
         let current = Current {
+            domain: read.node_cursor(),
             cursor: "cursor-1".into(),
             status: alondra_view_model::Status {
                 version: "v0000000000000000".into(), summary: "Ready".into(), summary_parts: vec![], badge: 0,
@@ -798,10 +801,13 @@ mod tests {
             wake: 8, live_keys: vec!["home".into()],
         };
         cache_current_for_test(&feeds, "ios/en/home", &current);
-        assert_eq!(feeds.cached_current("ios/en/home", "epoch", 4, 8).unwrap().cursor, "cursor-1");
-        assert!(feeds.cached_current("ios/en/home", "epoch", 5, 8).is_none(), "domain revision invalidates the stored view");
-        assert!(feeds.cached_current("ios/en/home", "epoch", 4, 9).is_none(), "live wake invalidates the stored view");
-        assert!(feeds.cached_current("ios/en/home", "new-epoch", 4, 8).is_none(), "new epoch invalidates the stored view");
+        assert_eq!(feeds.cached_current("ios/en/home", "epoch", 4, 8, &current.domain).unwrap().cursor, "cursor-1");
+        assert!(feeds.cached_current("ios/en/home", "epoch", 5, 8, &current.domain).is_none(), "domain revision invalidates the stored view");
+        assert!(feeds.cached_current("ios/en/home", "epoch", 4, 9, &current.domain).is_none(), "live wake invalidates the stored view");
+        assert!(feeds.cached_current("ios/en/home", "new-epoch", 4, 8, &current.domain).is_none(), "new epoch invalidates the stored view");
+        let reloaded = alondra_domain_rules::ReadSnapshot::build(read.state().clone());
+        assert!(feeds.cached_current("ios/en/home", "epoch", 4, 8, &reloaded.node_cursor()).is_none(),
+            "a reload invalidates the stored view even when its epoch, revision and wake match");
     }
 
     fn cache_current_for_test(feeds: &Feeds, key: &str, current: &Current) {
@@ -822,9 +828,9 @@ mod tests {
     #[tokio::test]
     async fn a_domain_change_to_an_open_view_answers_stale() {
         let fixture = FeedFixture::new();
-        let state = fixture.client.domain.state().unwrap();
-        let live = super::super::live::gather(&fixture.client, &state, Lang::En, &["home".into()], false, false).await;
-        let rendered = fixture.client.views.render("home", &alondra_domain_rules::ReadSnapshot::build(state.clone()), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+        let read = fixture.client.domain.read();
+        let live = super::super::live::gather(&fixture.client, &read, Lang::En, &["home".into()], false, false).await;
+        let rendered = fixture.client.views.render("home", &read, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
         let open = vec![("home".to_owned(), rendered.version)];
         let first = fixture.initial(&open).await;
         fixture.create_visible_question("visible-change");
@@ -837,13 +843,14 @@ mod tests {
         use sha2::Digest as _;
         let observation = Observation::armed();
         let fixture = FeedFixture::observed(observation.clone());
-        let state = fixture.client.domain.state().unwrap();
+        let read = fixture.client.domain.read();
+        let state = read.state();
         let keys = ["home".to_owned()];
-        let live = super::super::live::gather(&fixture.client, &state, Lang::En, &keys, false, false).await;
+        let live = super::super::live::gather(&fixture.client, &read, Lang::En, &keys, false, false).await;
         let old_hash = sha2::Sha256::digest(serde_json::to_vec(&live).unwrap());
         let old_revision: String = old_hash[..8].iter().map(|byte| format!("{byte:02x}")).collect();
         let rendered = fixture.client.views.render(
-            "home", &alondra_domain_rules::ReadSnapshot::build(state.clone()), &live,
+            "home", &read, &live,
             Client::Ios, Lang::En, Transport::Loopback,
         ).unwrap();
         assert_eq!(rendered.status.badge, 0);
@@ -869,10 +876,10 @@ mod tests {
         assert_eq!(changed["reset"], false);
         assert_eq!(changed["superseded"], false);
 
-        let state = fixture.client.domain.state().unwrap();
-        let live = super::super::live::gather(&fixture.client, &state, Lang::En, &keys, false, false).await;
+        let read = fixture.client.domain.read();
+        let live = super::super::live::gather(&fixture.client, &read, Lang::En, &keys, false, false).await;
         let refreshed = fixture.client.views.render(
-            "home", &alondra_domain_rules::ReadSnapshot::build(state.clone()), &live,
+            "home", &read, &live,
             Client::Ios, Lang::En, Transport::Loopback,
         ).unwrap();
         let queue = refreshed.sections.iter().find(|section| section.id == "queue").unwrap();
@@ -971,6 +978,35 @@ mod tests {
     }
 
     #[test]
+    fn a_same_revision_reload_triggers_sampling_without_a_periodic_tick() {
+        let fixture = FeedFixture::new();
+        let (agent, _) = fixture.node_on_task("reload");
+        let before = fixture.client.domain.read();
+        let revisions = fixture.client.domain.subscribe();
+        let mut snapshots = fixture.client.domain.subscribe_snapshots();
+        let mut hooks = fixture.client.domain.live().changed.subscribe();
+        let mut reports = fixture.client.domain.live().mods.changed.subscribe();
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let mut last = None;
+            assert!(sample_live(&fixture.client, &before, &mut last).await);
+            assert!(poll_sample(&mut snapshots, &mut hooks, &mut reports).is_pending());
+            let connection = rusqlite::Connection::open(crate::domain_database_migration::active_path(&fixture.home)).unwrap();
+            assert_eq!(connection.execute("UPDATE agents SET name='Reloaded node' WHERE id=?1", [&agent]).unwrap(), 1);
+            fixture.client.domain.reload();
+            assert!(!revisions.has_changed().unwrap());
+            assert_eq!(poll_sample(&mut snapshots, &mut hooks, &mut reports), std::task::Poll::Ready(Some(true)));
+            let after = fixture.client.domain.read();
+            assert_eq!(before.state().revision, after.state().revision);
+            assert_ne!(before.node_cursor(), after.node_cursor());
+            assert!(sample_live(&fixture.client, &after, &mut last).await);
+            let live = super::super::live::gather(&fixture.client, &after, Lang::En, &[], false, false).await;
+            assert_eq!(live.nodes.iter().find(|node| node.agent_id == agent).unwrap().name, "Reloaded node");
+            assert_eq!(before.state().agents[&alondra_domain_rules::AgentId::from(agent.as_str())].name, "Unseen agent");
+        });
+    }
+
+    #[test]
     fn node_reports_publish_without_domain_or_periodic_clock_and_coalesce_bursts() {
         // Open outside the runtime so this test owns the single sampler's progression.
         let observation = Observation::armed();
@@ -994,18 +1030,19 @@ mod tests {
         fixture.client.domain.report(report("echo first"), 1_700_000_000_000);
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
-            let state = fixture.client.domain.state().unwrap();
-            let mut domain_changes = fixture.client.domain.subscribe();
+            let read = fixture.client.domain.read();
+            let state = read.state();
+            let mut domain_changes = fixture.client.domain.subscribe_snapshots();
             let mut hook_changes = fixture.client.domain.live().changed.subscribe();
             let mut report_changes = fixture.client.domain.live().mods.changed.subscribe();
             assert!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes).is_pending());
-            let live = super::super::live::gather(&fixture.client, &state, Lang::En, &[key.clone()], false, false).await;
-            let rendered = fixture.client.views.render(&key, &alondra_domain_rules::ReadSnapshot::build(state.clone()), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+            let live = super::super::live::gather(&fixture.client, &read, Lang::En, &[key.clone()], false, false).await;
+            let rendered = fixture.client.views.render(&key, &read, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
             let open = vec![(key.clone(), rendered.version)];
             let first = fixture.initial(&open).await;
             let _ = response_json(handle(&fixture.client, "device-report", &query(&first.cursor, 0, &open), Transport::Loopback).await).await;
             let mut last = None;
-            assert!(sample_live(&fixture.client, &state, &mut last).await);
+            assert!(sample_live(&fixture.client, &read, &mut last).await);
             let before = *fixture.client.feeds.clock.borrow();
             assert!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes).is_pending());
             for index in 0..64 {
@@ -1017,21 +1054,21 @@ mod tests {
             println!("reports=64 trigger={triggered:?} domain_commits=0 periodic_ticks=0");
             assert_eq!(triggered, std::task::Poll::Ready(Some(false)),
                 "the normal node report path must trigger sampling with the periodic clock withheld");
-            assert!(sample_live(&fixture.client, &state, &mut last).await);
+            assert!(sample_live(&fixture.client, &read, &mut last).await);
             assert_eq!(*fixture.client.feeds.clock.borrow(), before + 1);
             assert!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes).is_pending(), "64 reports retain one sampling permit");
             let reply = response_json(handle(&fixture.client, "device-report", &query(&first.cursor, 0, &open), Transport::Loopback).await).await;
             assert_eq!(reply["stale"], serde_json::json!([key]), "{reply}");
-            let live = super::super::live::gather(&fixture.client, &state, Lang::En, &[key.clone()], false, false).await;
-            let rendered = fixture.client.views.render(&key, &alondra_domain_rules::ReadSnapshot::build(state.clone()), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+            let live = super::super::live::gather(&fixture.client, &read, Lang::En, &[key.clone()], false, false).await;
+            let rendered = fixture.client.views.render(&key, &read, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
             assert!(serde_json::to_string(&rendered).unwrap().contains("echo burst-63"), "the final activity reaches the view");
             let digest = live.digest();
             let before_duplicate = observation.totals();
             fixture.client.domain.report(report("echo burst-63"), 1_700_000_000_064);
             assert_eq!(poll_sample(&mut domain_changes, &mut hook_changes, &mut report_changes), std::task::Poll::Ready(Some(false)));
-            assert!(!sample_live(&fixture.client, &state, &mut last).await, "an unchanged visible report does not wake clients");
+            assert!(!sample_live(&fixture.client, &read, &mut last).await, "an unchanged visible report does not wake clients");
             assert_eq!(*fixture.client.feeds.clock.borrow(), before + 1);
-            let unchanged = super::super::live::gather(&fixture.client, &state, Lang::En, &[key.clone()], false, false).await;
+            let unchanged = super::super::live::gather(&fixture.client, &read, Lang::En, &[key.clone()], false, false).await;
             assert_eq!(unchanged.digest(), digest);
             let after_duplicate = observation.totals();
             let delta = |metric: Metric| after_duplicate.metrics[metric as usize] - before_duplicate.metrics[metric as usize];
@@ -1040,14 +1077,14 @@ mod tests {
                 "an identical visible report must not serialize either live projection again");
             fixture.client.domain.report(report("echo changed-again"), 1_700_000_000_065);
             let before_change = observation.totals();
-            assert!(sample_live(&fixture.client, &state, &mut last).await);
+            assert!(sample_live(&fixture.client, &read, &mut last).await);
             let after_change = observation.totals();
             for metric in [Metric::SharedWake, Metric::SamplerSerializations] {
                 assert_eq!(after_change.metrics[metric as usize], before_change.metrics[metric as usize] + 1);
             }
-            let changed = super::super::live::gather(&fixture.client, &state, Lang::En, &[key.clone()], false, false).await;
+            let changed = super::super::live::gather(&fixture.client, &read, Lang::En, &[key.clone()], false, false).await;
             assert_ne!(changed.digest(), digest);
-            let rendered = fixture.client.views.render(&key, &alondra_domain_rules::ReadSnapshot::build(state.clone()), &changed, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+            let rendered = fixture.client.views.render(&key, &read, &changed, Client::Ios, Lang::En, Transport::Loopback).unwrap();
             assert!(serde_json::to_string(&rendered).unwrap().contains("echo changed-again"));
             println!("reports=64 sample_permits=1 visible_wakes=1 domain_commits=0 latest_activity=echo burst-63 duplicate_wakes=0 periodic_ticks=0");
         });
@@ -1058,7 +1095,7 @@ mod tests {
         let fixture = FeedFixture::new();
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
-            let mut domain_changes = fixture.client.domain.subscribe();
+            let mut domain_changes = fixture.client.domain.subscribe_snapshots();
             let mut hook_changes = fixture.client.domain.live().changed.subscribe();
             let mut report_changes = fixture.client.domain.live().mods.changed.subscribe();
             fixture.client.domain.live().observe(&serde_json::json!({"hook_event_name": "Stop"}));
@@ -1085,14 +1122,14 @@ mod tests {
             Arc::new(std::sync::Mutex::new(None)),
         );
         let weak = Arc::downgrade(&retired);
-        let mut retired_domain = retired.domain.subscribe();
+        let mut retired_domain = retired.domain.subscribe_snapshots();
         let mut retired_hooks = retired.domain.live().changed.subscribe();
         let mut retired_reports = retired.domain.live().mods.changed.subscribe();
         drop(retired);
         assert!(weak.upgrade().is_none());
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
-            let mut domain_changes = fixture.client.domain.subscribe();
+            let mut domain_changes = fixture.client.domain.subscribe_snapshots();
             let mut hook_changes = fixture.client.domain.live().changed.subscribe();
             let mut report_changes = fixture.client.domain.live().mods.changed.subscribe();
             fixture.client.domain.report(crate::node_reports::Envelope {
@@ -1122,15 +1159,15 @@ mod tests {
             let _ = response_json(handle(&fixture.client, "device-node", &query(&current.cursor, 0, &open), Transport::Loopback).await).await;
             assert!(!current.live_keys.is_empty(), "the open task view is registered for live sampling");
             let mut last = None;
-            assert!(sample_live(&fixture.client, &fixture.client.domain.state().unwrap(), &mut last).await);
+            assert!(sample_live(&fixture.client, &fixture.client.domain.read(), &mut last).await);
             let first_wake = *fixture.client.feeds.clock.borrow();
-            assert!(!sample_live(&fixture.client, &fixture.client.domain.state().unwrap(), &mut last).await,
+            assert!(!sample_live(&fixture.client, &fixture.client.domain.read(), &mut last).await,
                 "an unchanged node projection does not wake the feed");
             fixture.client.domain.live().observe(&serde_json::json!({
                 "session_id": agent, "hook_event_name": "PreToolUse", "tool_name": "Bash",
                 "tool_input": {"command": "echo second"}, "cwd": "/tmp/feed-project"
             }));
-            assert!(sample_live(&fixture.client, &fixture.client.domain.state().unwrap(), &mut last).await,
+            assert!(sample_live(&fixture.client, &fixture.client.domain.read(), &mut last).await,
                 "a changed node activity projection wakes the feed");
             assert_eq!(*fixture.client.feeds.clock.borrow(), first_wake + 1);
         });
@@ -1144,17 +1181,17 @@ mod tests {
         let tool = |command: &str| serde_json::json!({"type": "assistant", "parent_tool_use_id": null, "message": {"role": "assistant",
             "content": [{"type": "tool_use", "id": format!("toolu-{}", command.len()), "name": "Bash", "input": {"command": command}}]}});
         fixture.client.domain.live().mods.apply_sdk(agent, &tool("echo first"), alondra_core::now_millis());
-        let state = fixture.client.domain.state().unwrap();
-        let live = super::super::live::gather(&fixture.client, &state, Lang::En, &[key.clone()], false, false).await;
-        let rendered = fixture.client.views.render(&key, &alondra_domain_rules::ReadSnapshot::build(state.clone()), &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+        let read = fixture.client.domain.read();
+        let live = super::super::live::gather(&fixture.client, &read, Lang::En, &[key.clone()], false, false).await;
+        let rendered = fixture.client.views.render(&key, &read, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
         let open = vec![(key.clone(), rendered.version)];
         let first = fixture.initial(&open).await;
         let unchanged = response_json(handle(&fixture.client, "device-activity", &query(&first.cursor, 0, &open), Transport::Loopback).await).await;
         assert_eq!(unchanged["stale"], serde_json::json!([]), "{unchanged}");
         let mut last = None;
-        sample_live(&fixture.client, &fixture.client.domain.state().unwrap(), &mut last).await;
+        sample_live(&fixture.client, &fixture.client.domain.read(), &mut last).await;
         fixture.client.domain.live().mods.apply_sdk(agent, &tool("echo second, again"), alondra_core::now_millis());
-        assert!(sample_live(&fixture.client, &fixture.client.domain.state().unwrap(), &mut last).await);
+        assert!(sample_live(&fixture.client, &fixture.client.domain.read(), &mut last).await);
         let reply = response_json(handle(&fixture.client, "device-activity", &query(&first.cursor, 0, &open), Transport::Loopback).await).await;
         assert_eq!(reply["stale"], serde_json::json!([key]), "{reply}");
     }
@@ -1165,7 +1202,7 @@ mod tests {
         let before = fixture.initial(&[]).await;
         let again = fixture.initial(&[]).await;
         assert_eq!(before.cursor, again.cursor);
-        assert_eq!(fixture.client.feeds.cached_current("Ios/En/Loopback/[]", &before.epoch, before.clock.1, before.wake).unwrap().cursor,
+        assert_eq!(fixture.client.feeds.cached_current("Ios/En/Loopback/[]", &before.epoch, before.clock.1, before.wake, &before.domain).unwrap().cursor,
             before.cursor);
     }
 
@@ -1349,11 +1386,11 @@ mod tests {
         let tool = |command: &str| serde_json::json!({"type":"assistant", "parent_tool_use_id":null,
             "message":{"role":"assistant", "content":[{"type":"tool_use", "id":command, "name":"Bash", "input":{"command":command}}]}});
         fixture.client.domain.live().mods.apply_sdk(&agent, &tool("first"), alondra_core::now_millis());
-        let state = fixture.client.domain.state().unwrap();
+        let read = fixture.client.domain.read();
         let mut queries = Vec::new();
         for key in [&first_key, &second_key] {
-            let live = super::super::live::gather(&fixture.client, &state, Lang::En, &[key.clone()], false, false).await;
-            let view = fixture.client.views.render(key, &alondra_domain_rules::ReadSnapshot::build(state.clone()), &live,
+            let live = super::super::live::gather(&fixture.client, &read, Lang::En, &[key.clone()], false, false).await;
+            let view = fixture.client.views.render(key, &read, &live,
                 Client::Tui, Lang::En, Transport::Loopback).unwrap();
             let views = vec![(key.clone(), view.version)];
             let initial = current(&fixture.client, Client::Tui, Lang::En, Transport::Loopback, &views, ClientCapabilities::default(), None).await.unwrap();
@@ -1367,9 +1404,9 @@ mod tests {
         let keys = fixture.client.feeds.live_keys_at(clock::instant() + Duration::from_secs(61));
         assert!(keys.contains(&first_key) && keys.contains(&second_key), "pending connections keep both screens sampled: {keys:?}");
         let mut last = None;
-        sample_live(&fixture.client, &state, &mut last).await;
+        sample_live(&fixture.client, &read, &mut last).await;
         fixture.client.domain.live().mods.apply_sdk(&agent, &tool("second"), alondra_core::now_millis());
-        assert!(sample_live(&fixture.client, &state, &mut last).await);
+        assert!(sample_live(&fixture.client, &read, &mut last).await);
         let reply = response_json(first.await).await;
         assert_eq!(reply["superseded"], false);
         assert_eq!(reply["stale"], serde_json::json!([first_key]));

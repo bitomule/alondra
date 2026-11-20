@@ -24,8 +24,9 @@ pub(crate) enum Metric {
     NodeOutputRows,
     ComponentComparisons, ComponentRowsCompared, Materializations, MaterializedNodeRows,
     HashBytes, HashOperations, ComponentSerializations,
+    NodeTreeVisits, NodeTreeCopies, NodeLeafComparisons, NodeLeafSerializations, NodeMaterializedRows, NodeFullBuilds, NodeIncrementalBuilds, NodeSourceRaces, NodeExternalRows, NodeStoreRowsCompared, NodeStoreRowsRead,
 }
-const NAMES: [&str; 60] = [
+const NAMES: [&str; 71] = [
     "gather_request", "sampler_periodic", "sampler_domain", "sampler_hooks", "sampler_reports",
     "final_hit", "shared_hit", "missing", "unwatched",
     "gather_shared", "gather_sampler", "gather_keyed",
@@ -43,6 +44,7 @@ const NAMES: [&str; 60] = [
     "node_output_rows",
     "component_comparisons", "component_rows_compared", "materializations", "materialized_node_rows",
     "hash_bytes", "hash_operations", "component_serializations",
+    "node_tree_visits", "node_tree_copies", "node_leaf_comparisons", "node_leaf_serializations", "node_materialized_rows", "node_full_builds", "node_incremental_builds", "node_source_races", "node_external_rows", "node_store_rows_compared", "node_store_rows_read",
 ];
 
 #[derive(Clone, Copy)]

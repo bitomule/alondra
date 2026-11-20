@@ -6,6 +6,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+alondra-foundation.workspace = true
 alondra-engine-ports.workspace = true
 alondra-core.workspace = true
 alondra-host.workspace = true
@@ -44,7 +45,6 @@ alondra-agent-runtime.workspace = true
 alondra-engine-doubles.workspace = true
 alondra-store-sqlite.workspace = true
 alondra-agent-application.workspace = true
-alondra-foundation.workspace = true
 alondra-provider-contract.workspace = true
 alondra-store.workspace = true
 alondra-views.workspace = true

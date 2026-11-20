@@ -104,9 +104,8 @@ async fn repeated_card_requests() {
         for _ in 0..20 {
             let start = Instant::now();
             let read = client.domain.read();
-            let state = std::sync::Arc::clone(read.state());
             let state_at = Instant::now();
-            let live = crate::views::live::gather(&client, &state, Lang::En, &[key.to_owned()], true, false).await;
+            let live = crate::views::live::gather(&client, &read, Lang::En, &[key.to_owned()], true, false).await;
             let live_at = Instant::now();
             let mut view = client.views.render(key, &read, &live, Client::Mac, Lang::En, Transport::Loopback).map_err(|error| anyhow::anyhow!("render: {error:?}"))?;
             let render_at = Instant::now();
@@ -160,10 +159,10 @@ async fn trace_card_live_store_reads() {
     }
     let daemon = crate::domain_bootstrap::DomainDaemon::open(&home, &alondra_store_sqlite::Sqlite).unwrap();
     let client = daemon.client();
-    let state = client.domain.state().unwrap();
+    let read = client.domain.read();
     let before = process_resources();
     client.domain.reads.lock().unwrap().sqlite_mut().begin_live_read_trace();
-    let live = crate::views::live::gather(&client, &state, Lang::En, &["card:info-0".into()], true, false).await;
+    let live = crate::views::live::gather(&client, &read, Lang::En, &["card:info-0".into()], true, false).await;
     let trace = client.domain.reads.lock().unwrap().sqlite_mut().end_live_read_trace();
     let after = process_resources();
     let mut getters = std::collections::BTreeMap::<&str, (usize, usize, usize, usize, f64)>::new();

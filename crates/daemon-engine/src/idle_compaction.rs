@@ -11,7 +11,7 @@
 //! not the request's. The last request of each task is kept in Alondra's home: a restarted daemon
 //! still compacts in time, and never asks twice for the same request.
 use crate::live::LiveOf as _;
-pub use alondra_engine_live::contexts::{Contexts, ContextsOf, LastRequest, Reading, SessionStart, StartKind, Used};
+pub use alondra_engine_live::contexts::{ContextEvent, Contexts, ContextsOf, LastRequest, Reading, SessionStart, StartKind, Used};
 use alondra_core::clock;
 use crate::domain_runtime::DomainRuntime;
 use alondra_domain_rules::{Command, CommandEnvelope, DomainState, PROTOCOL_VERSION, TaskId};

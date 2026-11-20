@@ -1,25 +1,9 @@
 //! Conservative boundaries for live reads on one stable, read-only SQLite connection.
 use super::{ReadTransaction, Revision};
+pub use alondra_engine_ports::journal::ReadCursor;
 use crate::locks::Poisonable as _;
 use anyhow::{Result, ensure};
 use std::sync::{Arc, Mutex};
-
-/// Opaque and local to one DomainStore reader. Reopening or replacing a connection requires a
-/// new DomainStore and a fresh cursor, even if its SQLite counters happen to be identical.
-#[derive(Clone, Debug)]
-pub struct ReadCursor {
-    identity: Arc<()>,
-    mark: (u64, Revision),
-    local_writes: u64,
-}
-
-impl PartialEq for ReadCursor {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.identity, &other.identity)
-            && self.mark == other.mark && self.local_writes == other.local_writes
-    }
-}
-impl Eq for ReadCursor {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReadChange {
@@ -54,17 +38,15 @@ impl Identity {
     }
 }
 
-impl ReadTransaction<'_> {
+impl super::DomainStore {
     /// Pins and identifies the committed snapshot this read transaction sees. Only read-only
     /// connections qualify: a writer's uncommitted changes cannot become a read boundary.
     pub fn read_cursor(&self) -> Result<ReadCursor> {
         let cursor = (|| {
-            ensure!(self.1 && !self.conn.is_autocommit(), "a read boundary requires an active read transaction");
+            ensure!(!self.conn.is_autocommit(), "a read boundary requires an active read transaction");
             ensure!(self.conn.is_readonly("main")?, "a read boundary requires a read-only connection");
             let mark = self.read_mark()?;
-            Ok(ReadCursor {
-                identity: self.read_identity.current(), mark, local_writes: self.conn.total_changes(),
-            })
+            Ok(ReadCursor::new(self.read_identity.current(), mark, self.conn.total_changes()))
         })();
         if cursor.is_err() { self.read_identity.invalidate(); }
         cursor

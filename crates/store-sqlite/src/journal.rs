@@ -155,6 +155,7 @@ impl Journal for DomainStore {
     fn prs_without_size(&self, now: Millis, limit: usize) -> Result<Vec<(String, String)>> { DomainStore::prs_without_size(self, now, limit) }
     fn public_task_context(&self, task: &TaskId, after: Option<&alondra_store::ContextRef>, limit: usize) -> Result<alondra_store::ContextPage> { DomainStore::public_task_context(self, task, after, limit) }
     fn read_mark(&self) -> Result<(u64, Revision)> { DomainStore::read_mark(self) }
+    fn read_cursor(&self) -> Result<alondra_engine_ports::journal::ReadCursor> { DomainStore::read_cursor(self) }
     fn reclaim_space(&self, pages: u32) -> Result<()> { DomainStore::reclaim_space(self, pages) }
     fn reconcile_orchestrator_batch(&mut self, run: &str, continuation: bool) -> Result<()> { DomainStore::reconcile_orchestrator_batch(self, run, continuation) }
     fn record_allowed_rule(&self, rule: &records::AllowedRule) -> Result<()> { DomainStore::record_allowed_rule(self, rule) }

@@ -76,7 +76,7 @@ async fn measure_real_domain_views() {
     let state = std::sync::Arc::clone(read.state());
 
     let at = Instant::now();
-    let live = super::live::gather(&client, &state, Lang::Es, &["home".to_owned()], true, false).await;
+    let live = super::live::gather(&client, &read, Lang::Es, &["home".to_owned()], true, false).await;
     println!("live gather (home): {:.1} ms", ms(at));
     let at = Instant::now();
     let _ = serde_json::to_vec(&live).unwrap();
@@ -215,10 +215,10 @@ async fn measure_background_per_change() {
         measure("Mac notices", cpu, at);
 
         let (cpu, at) = (cpu_ms(), Instant::now());
-        let state = client.domain.state().unwrap();
+        let read = client.domain.read();
         let keys = feeds.iter().flat_map(|(_, query)| query.split("views=").nth(1).unwrap().split(','))
             .map(|view| view.rsplit_once('@').unwrap().0.to_owned()).collect::<Vec<_>>();
-        std::hint::black_box(super::live::gather(&client, &state, Lang::Es, &keys, false, false).await);
+        std::hint::black_box(super::live::gather(&client, &read, Lang::Es, &keys, false, false).await);
         measure("live::gather, first read after the change (out of scope)", cpu, at);
 
         let (cpu, at) = (cpu_ms(), Instant::now());

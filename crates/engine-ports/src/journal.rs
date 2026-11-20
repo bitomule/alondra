@@ -177,6 +177,8 @@ pub trait Journal: Send {
     fn prs_without_size(&self, now: Millis, limit: usize) -> Result<Vec<(String, String)>>;
     fn public_task_context(&self, task: &TaskId, after: Option<&alondra_store::ContextRef>, limit: usize) -> Result<alondra_store::ContextPage>;
     fn read_mark(&self) -> Result<(u64, Revision)>;
+    /// Where this reader stands in what it reads; fails unless a read transaction is active.
+    fn read_cursor(&self) -> Result<ReadCursor>;
     fn reclaim_space(&self, pages: u32) -> Result<()>;
     fn reconcile_orchestrator_batch(&mut self, run: &str, continuation: bool) -> Result<()>;
     fn record_allowed_rule(&self, rule: &records::AllowedRule) -> Result<()>;
@@ -259,6 +261,29 @@ impl dyn Journal + '_ {
         self.select_batch_value(run, &serde_json::to_value(selection)?)
     }
 }
+
+/// Opaque and local to one reader: two cursors are equal only when nothing this reader reads
+/// changed between them, and a replaced connection never equals the one it replaced.
+#[derive(Clone, Debug)]
+pub struct ReadCursor {
+    identity: std::sync::Arc<()>,
+    mark: (u64, Revision),
+    local_writes: u64,
+}
+
+impl ReadCursor {
+    pub fn new(identity: std::sync::Arc<()>, mark: (u64, Revision), local_writes: u64) -> Self {
+        Self { identity, mark, local_writes }
+    }
+}
+
+impl PartialEq for ReadCursor {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.identity, &other.identity)
+            && self.mark == other.mark && self.local_writes == other.local_writes
+    }
+}
+impl Eq for ReadCursor {}
 
 /// One read transaction on a reader connection: every getter called through it reads the same
 /// committed state, never part of a commit. It ends when dropped.

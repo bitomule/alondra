@@ -9,6 +9,7 @@ load("//tools:rust_sources.bzl", "production_sources")
 TEST_ONLY = ["src/operation_journal/process_fixture.rs", "src/views/serialization.rs"]
 
 WORKSPACE_DEPS = [
+    "//crates/foundation:foundation",
     "//crates/core:alondra_core",
     "//crates/host:host",
     "//crates/domain:domain",
@@ -90,7 +91,6 @@ low_opt_rust_test(
         "//crates/engine-orchestrator:engine_orchestrator",
         "//crates/engine-sdk:engine_sdk",
         "//crates/agent-application:agent_application",
-        "//crates/foundation:foundation",
         "//crates/provider-contract:provider_contract",
         "//crates/store:store",
     ],

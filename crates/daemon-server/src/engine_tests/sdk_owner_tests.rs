@@ -31,7 +31,7 @@ fn a_reported_wait_reaches_every_client_task_screen_without_changing_slots_or_th
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let read = slice.domain.read();
         for lang in [Lang::En, Lang::Es] {
-            let live = runtime.block_on(crate::views::live::gather(&client, read.state(), lang, &[], false, false));
+            let live = runtime.block_on(crate::views::live::gather(&client, &read, lang, &[], false, false));
             let node = live.nodes.iter().find(|node| node.agent_id == driver.agent().0).unwrap();
             let wait = node.reported_wait.as_ref().unwrap();
             assert_eq!((&*wait.what, wait.progress.as_deref(), wait.detail.as_deref()), ("the server", Some("2 of 3"), Some("Acknowledgement")));
@@ -427,9 +427,9 @@ fn shown_context(prompt: &str) -> (Option<u32>, Option<u64>) {
     let mut driver = slice.launch_with(prompt);
     slice.settle(&mut driver);
     let client = crate::client_routes::Client::open(Arc::clone(&slice.domain), &slice._home, Default::default());
-    let state = slice.domain.state().unwrap();
+    let read = slice.domain.read();
     let live = tokio::runtime::Runtime::new().unwrap()
-        .block_on(crate::views::live::gather(&client, &state, alondra_view_model::Lang::En, &[], false, false));
+        .block_on(crate::views::live::gather(&client, &read, alondra_view_model::Lang::En, &[], false, false));
     let node = live.nodes.iter().find(|node| node.agent_id == driver.agent().0).expect("the task's node is live");
     let shown = (node.context_percent, node.context_window);
     driver.stop().unwrap();
