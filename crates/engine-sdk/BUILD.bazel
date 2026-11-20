@@ -25,7 +25,7 @@ WORKSPACE_DEPS = [
 
 application_crate(
     name = "engine_sdk",
-    srcs = production_sources() + ["//crates:test_support.rs"],
+    srcs = production_sources(test_only = ["src/model_fixture.rs"]) + ["//crates:test_support.rs"],
     crate_name = "alondra_engine_sdk",
     version = VERSION,
     test_visibility = ["//crates/machine-model:__pkg__"],
@@ -134,7 +134,7 @@ exports_files(["BUILD.bazel", "Cargo.toml"], visibility = ["//crates:__pkg__"])
 # file among them; alondrad's lock policy test reads them too.
 filegroup(
     name = "report_sources",
-    srcs = production_sources(),
+    srcs = production_sources(test_only = ["src/model_fixture.rs"]),
     visibility = ["//crates/alondra:__pkg__", "//crates/cli-report:__pkg__", "//crates/alondrad:__pkg__", "//crates/daemon-server:__pkg__"],
 )
 
