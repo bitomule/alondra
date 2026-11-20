@@ -130,7 +130,7 @@ pub fn run(scenario: &Scenario, accepted: Option<&Path>) -> Result<Outcome, Scen
 
 /// Runs the scenario as far as it goes: the checkpoints it passed, and the failure that stopped it.
 pub fn run_partial(scenario: &Scenario) -> (Outcome, Option<ScenarioError>) {
-    match run_inner(scenario, None, |_| ()) {
+    match run_inner(scenario, None, |_| (), None) {
         Ok((outcome, failure)) => (outcome, failure),
         Err(error) => (Outcome { checkpoints: Vec::new() }, Some(error)),
     }
@@ -139,7 +139,16 @@ pub fn run_partial(scenario: &Scenario) -> (Outcome, Option<ScenarioError>) {
 /// `run`, with `probe` handed the launcher the daemon starts processes through, once it is
 /// assembled: how a test of the harness makes something reach for a process.
 pub fn run_with(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnce(&Launcher)) -> Result<Outcome, ScenarioError> {
-    match run_inner(scenario, accepted, probe)? {
+    match run_inner(scenario, accepted, probe, None)? {
+        (outcome, None) => Ok(outcome),
+        (_, Some(failure)) => Err(failure),
+    }
+}
+
+/// `run`, with every Claude host taking `by` to exit once the daemon tells it to stop.
+#[cfg(test)]
+pub(crate) fn run_with_slow_host_exits(scenario: &Scenario, by: Duration) -> Result<Outcome, ScenarioError> {
+    match run_inner(scenario, None, |_| {}, Some(by))? {
         (outcome, None) => Ok(outcome),
         (_, Some(failure)) => Err(failure),
     }
@@ -149,12 +158,13 @@ fn run_inner(
     scenario: &Scenario,
     accepted: Option<&Path>,
     probe: impl FnOnce(&Launcher),
+    slow_exit: Option<Duration>,
 ) -> Result<(Outcome, Option<ScenarioError>), ScenarioError> {
     if std::env::var("TZ").as_deref() != Ok("UTC") {
         return Err(ScenarioError::Invalid("scenarios run with TZ=UTC: the views show local time, which differs from Mac to Mac".into()));
     }
     let runtime = alondra_core::clock::VirtualRuntime::new(EPOCH_MILLIS).map_err(|error| ScenarioError::Invalid(error.to_string()))?;
-    runtime.block_on(execute(scenario, accepted, probe))
+    runtime.block_on(execute(scenario, accepted, probe, slow_exit))
 }
 
 /// 2026-11-15 09:00 UTC: every scenario starts at the same instant.
@@ -211,7 +221,12 @@ struct Context<'a> {
     outcome: Outcome,
 }
 
-async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnce(&Launcher)) -> Result<(Outcome, Option<ScenarioError>), ScenarioError> {
+async fn execute(
+    scenario: &Scenario,
+    accepted: Option<&Path>,
+    probe: impl FnOnce(&Launcher),
+    slow_exit: Option<Duration>,
+) -> Result<(Outcome, Option<ScenarioError>), ScenarioError> {
     // Tokio jumps a paused clock to its next timer whenever the runtime waits, as it does on a view
     // read over HTTP, unless a blocking task runs: one runs for the whole scenario, so virtual time
     // moves only when a step moves it.
@@ -245,6 +260,9 @@ async fn execute(scenario: &Scenario, accepted: Option<&Path>, probe: impl FnOnc
     let mut startup_probe = None;
     let (launcher, backend, peer) = if codex.is_empty() {
         let edge = ClaudeEdge::new(&config.home, leaks.clone());
+        if let Some(by) = slow_exit {
+            edge.set_slow_exit(by);
+        }
         startup_probe = Some(edge.hold_startup_probe());
         let launcher = Launcher::new(edge.clone());
         let backend = claude_backend(&config.home, &scenario.world.release).map_err(|e| invalid(&e))?;
@@ -653,8 +671,9 @@ impl Context<'_> {
     /// The Claude hosts answer the daemon in real time, beside the virtual clock: waits, in the
     /// runtime's blocking pool (which keeps the clock where it is), until no takeover of a host is
     /// under way, the daemon is attached to every host that runs and acknowledged what each said,
-    /// and neither a frame nor a commit moved for a moment, so the next step reads what the daemon
-    /// did with them. Past the patience the run ends, naming what kept moving.
+    /// no thread of the daemon works on what the clock woke it for (`clock::working`), and neither
+    /// a frame nor a commit moved for a moment, so the next step reads what the daemon did with
+    /// them. Past the patience the run ends, naming what kept moving.
     async fn settle(&self) -> Result<(), ScenarioError> {
         if let Some(edge) = &self.claude {
             let edge = edge.clone();
@@ -683,14 +702,15 @@ impl Context<'_> {
                 loop {
                     std::thread::sleep(Duration::from_millis(2));
                     let now = (edge.activity(), revision());
-                    if now != last {
+                    let working = alondra_core::clock::working();
+                    if now != last || working > 0 {
                         (last, calm) = (now, 0);
                     } else {
                         calm += 1;
                     }
                     let enough = if undelivered() { OWNER_WAKE_POLLS } else { CALM_POLLS };
                     let (committed, retaking) = (edge.committed(), retaking());
-                    if calm >= enough && committed && !retaking {
+                    if calm >= enough && committed && !retaking && working == 0 {
                         return None;
                     }
                     patience = patience.saturating_sub(2);
@@ -698,6 +718,9 @@ impl Context<'_> {
                         let mut moving = Vec::new();
                         if calm < enough {
                             moving.push("frames or commits");
+                        }
+                        if working > 0 {
+                            moving.push("a thread of the daemon the clock woke, still working");
                         }
                         if !committed {
                             moving.push("a host the daemon did not attach to or acknowledge");
@@ -736,10 +759,32 @@ impl Context<'_> {
         .await
         .unwrap_or(false);
         if settled {
-            return Ok(());
+            return Self::threads_rest().await;
         }
         let seen = peer.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         Err(ScenarioError::HostsStalled { started: seen.remaining.len(), expected: hosts, remaining: seen.remaining.clone() })
+    }
+
+    /// Waits, in the blocking pool, until no thread of the daemon works on what the clock woke it
+    /// for (`clock::working`), so the next step reads what each did with its instant.
+    async fn threads_rest() -> Result<(), ScenarioError> {
+        let rested = tokio::task::spawn_blocking(|| {
+            let mut patience = PATIENCE_MS;
+            while alondra_core::clock::working() > 0 {
+                if patience == 0 {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+                patience = patience.saturating_sub(2);
+            }
+            true
+        })
+        .await
+        .unwrap_or(false);
+        match rested {
+            true => Ok(()),
+            false => Err(ScenarioError::Unsettled(format!("a thread of the daemon the clock woke, still working, after {} s", PATIENCE_MS / 1000))),
+        }
     }
 
     /// The task's node starts on Codex as a launch in production starts it: the daemon picks the

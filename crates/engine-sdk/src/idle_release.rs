@@ -44,12 +44,13 @@ pub struct Rests {
 impl Rests {
     /// Keeps only the tasks of `resting`, each as `(task, lifecycle revision)`, and returns the ones
     /// whose rest reached `wait` at `now` and when to look again: a due task still here then could
-    /// not close, and is asked once more.
-    fn due(&mut self, resting: Vec<(TaskId, u64)>, now: Millis, timing: &Timing) -> (Vec<TaskId>, Option<Millis>) {
+    /// not close, and is asked once more. A rest seen for the first time began at `since`, the
+    /// change that announced it, however late the look comes.
+    fn due(&mut self, resting: Vec<(TaskId, u64)>, since: Millis, now: Millis, timing: &Timing) -> (Vec<TaskId>, Option<Millis>) {
         let mut kept = BTreeMap::new();
         let (mut due, mut next) = (vec![], None::<Millis>);
         for (task, revision) in resting {
-            let rest = self.resting.get(&task).filter(|rest| rest.revision == revision).copied().unwrap_or(Rest { revision, since: now });
+            let rest = self.resting.get(&task).filter(|rest| rest.revision == revision).copied().unwrap_or(Rest { revision, since: since.min(now) });
             let closes = rest.since + timing.wait;
             let look = if now >= closes {
                 due.push(task.clone());
@@ -75,11 +76,11 @@ fn resting(domain: &DomainRuntime, state: &DomainState) -> Vec<(TaskId, u64)> {
 
 /// Asks to close what rested long enough, and says when to look again. A closed node with work
 /// comes back through the gate: its turn waits for a slot (`Admission::may_take_turn`), and the gate
-/// takes the task over when it gives one.
-pub fn pass(domain: &DomainRuntime, rests: &mut Rests, now: Millis, timing: &Timing) -> Option<Millis> {
+/// takes the task over when it gives one. `since` is when the changes this look reads began.
+pub fn pass(domain: &DomainRuntime, rests: &mut Rests, since: Millis, now: Millis, timing: &Timing) -> Option<Millis> {
     let read = domain.read();
     let state = read.state();
-    let (due, next) = rests.due(resting(domain, state), now, timing);
+    let (due, next) = rests.due(resting(domain, state), since, now, timing);
     for agent in due.iter().filter_map(|task| state.tasks.get(task).and_then(|task| task.agent_id.as_ref())) {
         domain.ask_to_release_host(agent);
     }
@@ -96,17 +97,22 @@ pub async fn run(domain: Arc<DomainRuntime>, timing: &'static Timing) {
     }
     let mut rests = Rests::default();
     let mut changes = domain.subscribe();
+    // When the first change the next look reads came: a rest it finds began then, whether the
+    // change was committed just before a look or just after it.
+    let mut changed = None;
     loop {
         let now = now_millis();
-        match pass(&domain, &mut rests, now, timing) {
+        let next = pass(&domain, &mut rests, changed.take().unwrap_or(now), now, timing);
+        match next {
             Some(at) => tokio::select! {
-                _ = changes.changed() => {}
+                _ = changes.changed() => changed = Some(now_millis()),
                 _ = clock::sleep(Duration::from_millis(u64::try_from(at - now).unwrap_or(0))) => {}
             },
             None => {
                 if changes.changed().await.is_err() {
                     return;
                 }
+                changed = Some(now_millis());
             }
         }
         clock::sleep(LOOK_SPACING).await;
@@ -126,30 +132,39 @@ mod tests {
     #[test]
     fn a_rest_closes_once_it_lasted_the_wait_and_says_when_to_look() {
         let mut rests = Rests::default();
-        assert_eq!(rests.due(vec![(task("t-1"), 7)], 1_000, &TIMING), (vec![], Some(1_100)));
-        assert_eq!(rests.due(vec![(task("t-1"), 7)], 1_099, &TIMING), (vec![], Some(1_100)));
-        assert_eq!(rests.due(vec![(task("t-1"), 7)], 1_100, &TIMING), (vec![task("t-1")], Some(1_200)));
+        assert_eq!(rests.due(vec![(task("t-1"), 7)], 1_000, 1_000, &TIMING), (vec![], Some(1_100)));
+        assert_eq!(rests.due(vec![(task("t-1"), 7)], 1_099, 1_099, &TIMING), (vec![], Some(1_100)));
+        assert_eq!(rests.due(vec![(task("t-1"), 7)], 1_100, 1_100, &TIMING), (vec![task("t-1")], Some(1_200)));
     }
 
     #[test]
     fn any_change_to_the_lifecycle_starts_the_rest_again() {
         let mut rests = Rests::default();
-        rests.due(vec![(task("t-1"), 7)], 1_000, &TIMING);
-        assert_eq!(rests.due(vec![(task("t-1"), 8)], 1_100, &TIMING), (vec![], Some(1_200)));
+        rests.due(vec![(task("t-1"), 7)], 1_000, 1_000, &TIMING);
+        assert_eq!(rests.due(vec![(task("t-1"), 8)], 1_100, 1_100, &TIMING), (vec![], Some(1_200)));
     }
 
     #[test]
     fn a_task_that_stopped_resting_forgets_its_rest() {
         let mut rests = Rests::default();
-        rests.due(vec![(task("t-1"), 7)], 1_000, &TIMING);
-        rests.due(vec![], 1_050, &TIMING);
-        assert_eq!(rests.due(vec![(task("t-1"), 7)], 1_100, &TIMING), (vec![], Some(1_200)));
+        rests.due(vec![(task("t-1"), 7)], 1_000, 1_000, &TIMING);
+        rests.due(vec![], 1_050, 1_050, &TIMING);
+        assert_eq!(rests.due(vec![(task("t-1"), 7)], 1_100, 1_100, &TIMING), (vec![], Some(1_200)));
+    }
+
+    /// The look that finds a rest may come after the change that began it: the rest counts from
+    /// that change, so when the host closes does not depend on which of the two came first.
+    #[test]
+    fn a_rest_a_later_look_finds_counts_from_the_change_that_began_it() {
+        let mut rests = Rests::default();
+        assert_eq!(rests.due(vec![(task("t-1"), 7)], 1_000, 1_040, &TIMING), (vec![], Some(1_100)));
+        assert_eq!(rests.due(vec![(task("t-1"), 7)], 1_060, 1_100, &TIMING), (vec![task("t-1")], Some(1_200)));
     }
 
     #[test]
     fn each_rest_is_counted_on_its_own() {
         let mut rests = Rests::default();
-        rests.due(vec![(task("t-1"), 1)], 1_000, &TIMING);
-        assert_eq!(rests.due(vec![(task("t-1"), 1), (task("t-2"), 1)], 1_100, &TIMING), (vec![task("t-1")], Some(1_200)));
+        rests.due(vec![(task("t-1"), 1)], 1_000, 1_000, &TIMING);
+        assert_eq!(rests.due(vec![(task("t-1"), 1), (task("t-2"), 1)], 1_100, 1_100, &TIMING), (vec![task("t-1")], Some(1_200)));
     }
 }

@@ -74,7 +74,13 @@ struct World {
     /// their requests cost; the hosts of other tasks report nothing.
     conversations: BTreeMap<String, u64>,
     sized: BTreeSet<String>,
+    /// How long each host takes to exit once told to stop, as a Claude Code that finishes writing
+    /// before it goes; without it, a host exits at once.
+    slow_exit: Option<std::time::Duration>,
 }
+
+/// The variable that tells a host's relay how many milliseconds it takes to exit once told to stop.
+pub const SLOW_EXIT: &str = "SCENARIO_HOST_SLOW_EXIT_MS";
 
 /// What went wrong between the daemon and the hosts, or something a host was asked it does not do.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -217,6 +223,11 @@ impl ClaudeEdge {
             runtime: tokio::runtime::Handle::try_current().ok(),
             startup_probe: (Mutex::new(false), std::sync::Condvar::new()),
         }))
+    }
+
+    /// Every host started from now on takes `by` to exit once the daemon tells it to stop.
+    pub fn set_slow_exit(&self, by: std::time::Duration) {
+        lock(&self.0.world).slow_exit = Some(by);
     }
 
     pub fn hold_startup_probe(&self) -> StartupProbeGate {
@@ -766,7 +777,11 @@ impl HostLauncher for ClaudeEdge {
         // host's folder, which the daemon hands over as its input, for as long as it lives: a
         // daemon that comes back finds it held, and finds it at the other end of the socket.
         let relay = relay().map_err(std::io::Error::other)?;
-        let child = Process::new(relay)
+        let mut relay = Process::new(relay);
+        if let Some(by) = lock(&self.0.world).slow_exit {
+            relay.env(SLOW_EXIT, by.as_millis().to_string());
+        }
+        let child = relay
             .arg(&bootstrap.socket_path)
             .arg(&back)
             .stdin(Stdio::from(spawn.stdin))

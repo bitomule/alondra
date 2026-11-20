@@ -6,6 +6,7 @@ use std::time::Duration;
 pub fn readable(stream: &UnixStream, timeout: Duration) -> io::Result<bool> {
     use rustix::event::{PollFd, PollFlags, Timespec, poll};
     let timeout = Timespec::try_from(timeout).map_err(|_| io::ErrorKind::InvalidInput)?;
+    let _waiting = crate::clock::stream_wait();
     loop {
         let mut fds = [PollFd::new(stream, PollFlags::IN)];
         match poll(&mut fds, Some(&timeout)) {
