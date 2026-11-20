@@ -706,6 +706,11 @@ rows before this change, with three runs each unless noted):
 | 16 | 18.2, 17.7, 16.9 s | 49 to 58 MB / 0.85 to 0.87 GB summed, at most 11 at once |
 | 16, after this change | 15.0, 14.7, 13.3 s | 50 to 58 MB / 0.87 to 0.88 GB summed |
 
+These rows predate the change that holds virtual time for the daemon threads the clock wakes.
+With it, on 20 cases, `paused-node-coming-back-can-be-paused-again` takes 51.5 s (three runs:
+51.46, 51.50, 51.60 s, 43 s of them in its rests) with or without this change, so the longest
+shard is that case; the other 19 take 4 to 15 s.
+
 A shard spends 1.4 to 4.9 s outside its case (start and end of the process and of the test
 wrapper); where is not measured.
 
