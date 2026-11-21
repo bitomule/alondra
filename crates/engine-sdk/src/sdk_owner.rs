@@ -2129,11 +2129,21 @@ impl Driver {
     }
 
     /// `idle_release` asked to close this host. What the host said last can move the task on, so
-    /// all of it is read first: `false` until nothing is left to read and the answer is known.
+    /// all of it is read first: `false` until nothing is left to read and the answer is known. A
+    /// host whose connection broke says nothing more here; the host that resumes the session reads
+    /// what it journaled.
     pub fn settle_release(&mut self) -> Result<bool, Failed> {
         self.sealed();
-        if self.worker.readable(Duration::ZERO).unwrap_or(true) {
-            return self.observe().map(|_| false);
+        if !self.host_closed && self.worker.readable(Duration::ZERO).unwrap_or(true) {
+            match self.observe() {
+                Ok(_) => return Ok(false),
+                Err(_) if self.host_closed => {}
+                Err(failed) => return Err(failed),
+            }
+        }
+        if let Some(permit) = self.controls.pop_front() {
+            self.control(permit)?;
+            return Ok(false);
         }
         let held = crate::provider_transition::holds_execution(&self.domain, &self.task) || crate::account_move::holds_execution(&self.domain, &self.task);
         self.releases = !held && self.awaiting.is_none() && self.results.is_empty() && self.permits.is_empty() && self.controls.is_empty()

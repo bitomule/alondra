@@ -77,8 +77,14 @@ pub async fn run(domain: Arc<DomainRuntime>, sessions: Arc<dyn Sessions>, timing
     if let Err(error) = domain.engine().sweep_worktree_shells().await {
         log!("could not delete what ended tasks left of their worktrees: {error:#}");
     }
+    let mut folders_swept = None;
     loop {
-        let pause = match pass(&domain, sessions.as_ref(), &timing, alondra_core::now_millis()).await {
+        let now = alondra_core::now_millis();
+        if folders_swept.is_none_or(|swept| now - swept >= FOLDERS_EVERY) {
+            sweep_host_folders(&domain, now);
+            folders_swept = Some(now);
+        }
+        let pause = match pass(&domain, sessions.as_ref(), &timing, now).await {
             Ok(()) => {
                 backoff = FIRST_BACKOFF;
                 timing.tick
@@ -97,6 +103,18 @@ pub async fn run(domain: Arc<DomainRuntime>, sessions: Arc<dyn Sessions>, timing
         if !woke {
             return;
         }
+    }
+}
+
+/// How often the folders hosts left are looked at: one goes only a week after its last write.
+const FOLDERS_EVERY: alondra_core::Millis = 60 * 60_000;
+
+fn sweep_host_folders(domain: &DomainRuntime, now: alondra_core::Millis) {
+    let Some((backend, _)) = domain.sdk() else { return };
+    let now = std::time::UNIX_EPOCH + Duration::from_millis(u64::try_from(now).unwrap_or(0));
+    match blocking(|| crate::host_folders::sweep(domain, backend, now)) {
+        0 => {}
+        removed => log!("deleted the folders of {removed} hosts that no task that goes on needs"),
     }
 }
 

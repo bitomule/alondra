@@ -44,6 +44,7 @@ pub mod ended_hosts;
 pub mod engine_assembly;
 #[cfg(test)]
 pub mod engine_fixtures;
+pub mod host_folders;
 #[cfg(test)]
 mod engine_tests;
 pub mod idle_release;
