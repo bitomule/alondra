@@ -143,6 +143,32 @@ pub fn is_version(token: &str) -> bool {
         && (parts.len() == 3 || !suffix.is_empty() || core.len() <= 6)
 }
 
+/// More than six digits before any decimal point, with or without a unit: a phone, an account or
+/// a card number as much as a count, so it is never safe in free text.
+fn is_long_number(token: &str) -> bool {
+    is_number(token) && token.trim_start_matches('-').chars().take_while(|c| *c != '.').filter(char::is_ascii_digit).count() > 6
+}
+
+/// Three numbers of up to 255 (`192.168.1`, `v2.1.3`): the start of an IPv4 address as much as a
+/// version. Only the versions `collect` reads from fields it knows keep their shape.
+fn is_address_triple(token: &str) -> bool {
+    let token = token.strip_prefix('v').unwrap_or(token);
+    let core = token.split_once(['-', '+']).map_or(token, |(core, _)| core);
+    let parts: Vec<&str> = core.split('.').collect();
+    is_version(token) && parts.len() == 3 && parts.iter().all(|p| p.len() <= 3 && p.parse::<u16>().is_ok_and(|n| n <= 255))
+}
+
+/// Three or more groups of four digits joined by a space or a hyphen: a card number.
+fn is_card_number(token: &str) -> bool {
+    let groups: Vec<&str> = token.split([' ', '-']).collect();
+    groups.len() >= 3 && groups.iter().all(|g| g.len() == 4 && g.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// A number that may say who the user is: it always gets a pseudonym of its own.
+fn is_private_number(token: &str) -> bool {
+    is_long_number(token) || is_address_triple(token) || is_card_number(token)
+}
+
 /// Alondra's random ids say nothing about the user: `sdk-<16 hex>`, `run-<hex>`, `o-<hex>`.
 pub fn is_random_id(token: &str) -> bool {
     let hex = |s: &str, min: usize| s.len() >= min && s.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase());
@@ -202,14 +228,14 @@ pub fn is_safe_token(token: &str, vocabulary: &HashSet<String>) -> bool {
 }
 
 fn is_safe_shape(token: &str) -> bool {
-    is_number(token)
+    (is_number(token) && !is_long_number(token))
         || is_compound_duration(token)
         || is_iso_time(token)
-        || is_version(token)
+        || (is_version(token) && !is_address_triple(token))
         || is_random_id(token)
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Part<'a> {
     Token(&'a str),
     Gap(&'a str),
@@ -244,6 +270,66 @@ fn split(value: &str) -> Vec<Part<'_>> {
     parts
 }
 
+/// The parts with each run of three or more four-digit tokens a single space apart joined into one
+/// token, so a card number gets one pseudonym and not one per group. A hyphen never splits a token,
+/// so `4111-1111-1111-1111` already is one.
+fn join_card_groups<'v>(value: &'v str, parts: Vec<Part<'v>>) -> Vec<Part<'v>> {
+    let group = |part: Option<&Part<'_>>| matches!(part, Some(Part::Token(t)) if t.len() == 4 && t.bytes().all(|b| b.is_ascii_digit()));
+    let separator = |part: Option<&Part<'_>>| matches!(part, Some(Part::Gap(" ")));
+    let offset = |s: &str| s.as_ptr() as usize - value.as_ptr() as usize;
+    let mut joined = Vec::with_capacity(parts.len());
+    let mut at = 0;
+    while at < parts.len() {
+        let mut end = at;
+        while group(parts.get(end)) && separator(parts.get(end + 1)) && group(parts.get(end + 2)) {
+            end += 2;
+        }
+        if group(parts.get(at)) && end - at >= 4 {
+            let (Part::Token(first), Part::Token(last)) = (&parts[at], &parts[end]) else { unreachable!() };
+            joined.push(Part::Token(&value[offset(first)..offset(last) + last.len()]));
+            at = end + 1;
+        } else {
+            joined.push(parts[at]);
+            at += 1;
+        }
+    }
+    joined
+}
+
+/// Where in free text a number that may say who the user is starts and ends: a card number, a long
+/// number or an address triple, wherever it stands.
+fn private_numbers(text: &str) -> Vec<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let digit = |at: usize| bytes.get(at).is_some_and(u8::is_ascii_digit);
+    let four = |at: usize| (at..at + 4).all(digit) && !digit(at + 4);
+    let mut found = Vec::new();
+    let mut at = 0;
+    while at < bytes.len() {
+        if !digit(at) || (at > 0 && (digit(at - 1) || bytes[at - 1] == b'.')) {
+            at += 1;
+            continue;
+        }
+        let mut card_end = at + 4;
+        let mut groups = 1;
+        while four(at) && matches!(bytes.get(card_end), Some(b' ' | b'-')) && four(card_end + 1) {
+            card_end += 5;
+            groups += 1;
+        }
+        if four(at) && groups >= 3 {
+            found.push((at, card_end));
+            at = card_end;
+            continue;
+        }
+        let run = at + bytes[at..].iter().take_while(|b| b.is_ascii_digit() || **b == b'.').count();
+        let end = at + text[at..run].trim_end_matches('.').len();
+        if is_long_number(&text[at..end]) || is_address_triple(&text[at..end]) {
+            found.push((at, end));
+        }
+        at = run;
+    }
+    found
+}
+
 pub struct Redactor<'a> {
     pub vocabulary: &'a HashSet<String>,
     pub pseudonyms: Pseudonyms,
@@ -266,9 +352,9 @@ impl<'a> Redactor<'a> {
         }
         let vocabulary = self.vocabulary;
         let safe = |token: &str| is_safe_shape(token) || (code_words && vocabulary.contains(token));
-        let parts = split(value);
+        let parts = join_card_groups(value, split(value));
         let tokens = || parts.iter().filter_map(|p| if let Part::Token(t) = p { Some(*t) } else { None });
-        if tokens().all(|t| safe(t) || kind_of_shape(t).is_some()) {
+        if tokens().all(|t| safe(t) || kind_of_shape(t).is_some() || is_private_number(t)) {
             return parts
                 .iter()
                 .map(|part| match part {
@@ -282,6 +368,19 @@ impl<'a> Redactor<'a> {
         }
         let kind = kind_of_shape(value).unwrap_or(hint);
         self.pseudonyms.of(kind, value)
+    }
+
+    /// Text the user wrote themselves, as they wrote it but for each number that may say who they are.
+    pub fn free_text(&mut self, text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut from = 0;
+        for (start, end) in private_numbers(text) {
+            out.push_str(&text[from..start]);
+            out.push_str(&self.pseudonyms.of(Kind::Value, &text[start..end]));
+            from = end;
+        }
+        out.push_str(&text[from..]);
+        out
     }
 
     /// An id, path or URL by its shape; a pull request URL keeps its number.

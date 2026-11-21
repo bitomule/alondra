@@ -2,16 +2,17 @@
   "about": "The safe-shape rule of crash reports, run by the CLI (Rust) and by the apps (Swift) on the same vectors.",
   "vocabulary": ["Connected", "relay", "via", "RelayOnly", "CaptivePortal", "NoPortMapping", "direct", "failed", "Mac", "is", "broken"],
   "safe": [
-    "12", "0.8", "250ms", "1.5s", "41%", "3GiB", "-2", "1m30s", "2h5m",
+    "12", "0.8", "250ms", "1.5s", "41%", "3GiB", "-2", "1m30s", "2h5m", "123456", "-999999", "250000ms", "1.234567891s",
     "2026-10-25T05:43:41.854Z", "2026-10-24T05:10:11.637+02:00",
-    "0.3.5", "v2.1.30", "1.2.3-beta.1", "26.4",
+    "120.0.6099", "26.4", "15.1",
     "sdk-0abdea5e130f80de", "run-1a2b3c", "o-feed01",
     "RelayOnly", "Connected"
   ],
   "unsafe": [
     "192.168.1.20", "ana.lopez", "acme-billing", "sdk-0ABDEA5E130F80DE", "sdk-0abd", "run-xyz123",
     "1.", "12abc", "Relayonly", "t-fix-acme-invoice-rounding", "/Users/ana.lopez", "https://github.com/acme/billing",
-    "ana@acme.com", "1.2.3.4.5"
+    "ana@acme.com", "1.2.3.4.5",
+    "600111222", "1234567", "1234567ms", "4111-1111-1111-1111", "192.168.1", "0.3.5", "v2.1.30", "1.2.3-beta.1"
   ],
   "split": [
     {"value": "RelayOnly [CaptivePortal, NoPortMapping]", "tokens": ["RelayOnly", "CaptivePortal", "NoPortMapping"]},
@@ -36,6 +37,12 @@
     {"value": "192.168.1.20", "hint": "device", "redacted": "device-1"},
     {"value": "Ana's iPhone", "hint": "device", "redacted": "device-2"},
     {"value": "t-fix-acme-invoice-rounding", "hint": "value", "redacted": "task-1"},
-    {"value": "", "hint": "value", "redacted": ""}
+    {"value": "", "hint": "value", "redacted": ""},
+    {"value": "600111222", "hint": "device", "redacted": "value-2"},
+    {"value": "4111 1111 1111 1111 3", "hint": "value", "redacted": "value-3 3"},
+    {"value": "4111-1111-1111-1111", "hint": "value", "redacted": "value-4"},
+    {"value": "4111 1111 3", "hint": "value", "redacted": "4111 1111 3"},
+    {"value": "192.168.1", "hint": "value", "redacted": "value-5"},
+    {"value": "120.0.6099 1m30s 123456", "hint": "value", "redacted": "120.0.6099 1m30s 123456"}
   ]
 }
