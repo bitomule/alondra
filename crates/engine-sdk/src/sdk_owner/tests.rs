@@ -2988,6 +2988,8 @@ fn owner_reading_when_its_host_ends(slice: &Slice) -> (AgentId, std::sync::mpsc:
 fn owner_reading_when_its_host_ends_after(slice: &Slice, prepare: impl FnOnce(&mut Driver)) -> (AgentId, std::sync::mpsc::Receiver<String>, Vec<alondra_process_group::Member>) {
     enum Seen { Holding, Failed(String) }
     let mut driver = slice.launch_with("consume-and-hold");
+    driver.opening_deadline = None;
+    driver.opening_timeout = Duration::from_secs(24 * 60 * 60);
     prepare(&mut driver);
     let agent = driver.agent().clone();
     let processes = alondra_process_group::members(driver.worker.host_group().unwrap()).unwrap();

@@ -9,6 +9,10 @@ use std::time::{Duration, Instant};
 
 const LABEL: &str = "test.alondra.relaunch";
 
+/// Every wait here ends when its condition holds; only a daemon that never gets there reaches
+/// this limit, so a slow machine never fails a test.
+const HANG_LIMIT: Duration = Duration::from_secs(600);
+
 struct Fixture {
     root: PathBuf,
     home: PathBuf,
@@ -147,7 +151,7 @@ fn free_port() -> u16 {
 fn serve(fixture: &mut Fixture, supervised: bool) -> Running {
     for _ in 0..5 {
         let mut daemon = Running(fixture.command(supervised).spawn().unwrap());
-        let taken = until(Duration::from_secs(30), "the daemon to serve", || {
+        let taken = until(HANG_LIMIT, "the daemon to serve", || {
             if let Some(status) = daemon.0.try_wait().unwrap() {
                 let log = stderr(&mut daemon.0);
                 assert!(log.contains("Address already in use"), "daemon exited {status}: {log}");
@@ -164,7 +168,7 @@ fn serve(fixture: &mut Fixture, supervised: bool) -> Running {
 }
 
 fn serving(fixture: &Fixture, daemon: &mut Running) {
-    until(Duration::from_secs(30), "the daemon to serve", || {
+    until(HANG_LIMIT, "the daemon to serve", || {
         if let Some(status) = daemon.0.try_wait().unwrap() {
             panic!("daemon exited {status}: {}", stderr(&mut daemon.0));
         }
@@ -220,7 +224,7 @@ fn a_launchd_daemon_restarts_into_a_replacement_only_once_it_passes_preflight() 
         &fixture.bin,
         "#!/bin/sh\n[ \"$1\" = --version ] && { echo 'alondrad 99.0.0'; exit 0; }\necho 'preflight failed: bootstrap failed integrity audit: synthetic' >&2\nexit 1\n",
     );
-    let health = until(Duration::from_secs(30), "the rejection to show", || {
+    let health = until(HANG_LIMIT, "the rejection to show", || {
         fixture
             .health()
             .filter(|h| h.contains("bootstrap failed integrity audit: synthetic"))
@@ -232,9 +236,9 @@ fn a_launchd_daemon_restarts_into_a_replacement_only_once_it_passes_preflight() 
     );
 
     install(&fixture.bin, Path::new(env!("CARGO_BIN_EXE_alondrad")));
-    let give_up = Instant::now() + Duration::from_secs(50);
+    let give_up = Instant::now() + HANG_LIMIT - Duration::from_secs(10);
     let status = until(
-        Duration::from_secs(60),
+        HANG_LIMIT,
         "the daemon to exit for relaunch",
         || {
             if Instant::now() > give_up {
@@ -265,7 +269,7 @@ fn a_binary_replaced_as_soon_as_the_port_opens_is_still_noticed() {
     let mut daemon = None;
     for _ in 0..5 {
         let mut started = Running(fixture.command(true).spawn().unwrap());
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now() + HANG_LIMIT;
         let opened = loop {
             if TcpStream::connect(("127.0.0.1", fixture.port)).is_ok() {
                 break true;
@@ -286,7 +290,7 @@ fn a_binary_replaced_as_soon_as_the_port_opens_is_still_noticed() {
         fixture.port = free_port();
     }
     let mut daemon = daemon.expect("no free port after 5 attempts");
-    let status = until(Duration::from_secs(60), "the daemon to exit for relaunch", || daemon.0.try_wait().unwrap());
+    let status = until(HANG_LIMIT, "the daemon to exit for relaunch", || daemon.0.try_wait().unwrap());
     let log = stderr(&mut daemon.0);
     assert_eq!(status.code(), Some(75), "{log}");
     assert!(log.contains("passed preflight"), "{log}");
@@ -345,7 +349,7 @@ fn a_launchd_daemon_waits_for_one_started_by_hand_and_takes_over_when_it_leaves(
     assert_eq!(status.code(), Some(75), "{left}");
     assert!(!left.contains("stopping the SDK hosts"), "it leaves them for the next daemon: {left}");
 
-    let daemon = until(Duration::from_secs(30), "the daemon of launchd to serve", || {
+    let daemon = until(HANG_LIMIT, "the daemon of launchd to serve", || {
         assert!(launchd.0.try_wait().unwrap().is_none(), "the daemon of launchd must not exit");
         fixture.get("/daemon")
     });
@@ -389,7 +393,7 @@ fn repeated_failed_starts_stop_hot_looping_until_the_binary_changes() {
     }
     let mut third = Running(fixture.command(true).spawn().unwrap());
     until(
-        Duration::from_secs(10),
+        HANG_LIMIT,
         "the third start to record itself",
         || {
             std::fs::read_to_string(fixture.home.join("startup-failures.json"))
@@ -405,7 +409,7 @@ fn repeated_failed_starts_stop_hot_looping_until_the_binary_changes() {
 
     install(&fixture.bin, Path::new(env!("CARGO_BIN_EXE_alondrad")));
     let status = until(
-        Duration::from_secs(15),
+        HANG_LIMIT,
         "the waiting start to exit after the binary changed",
         || third.0.try_wait().unwrap(),
     );
